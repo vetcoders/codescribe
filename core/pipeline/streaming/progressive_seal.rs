@@ -380,7 +380,17 @@ impl ProgressiveSealMachine {
         // No further window is coming, so everything recorded is as covered as
         // it will ever be — satisfy `whisper_ready` without inventing an id.
         self.whisper_covered_through_secs = self.whisper_covered_through_secs.max(horizon);
-        self.try_seal(horizon + APPLE_VOLATILE_WINDOW_SECS + 0.001, force_raw)
+        let tick = self.try_seal(horizon + APPLE_VOLATILE_WINDOW_SECS + 0.001, force_raw);
+        // The partial pool is spent once the end-of-session seal has run: every
+        // word it held is either inside a sealed span or inside the open
+        // partial the worker seals *before* calling this. Spans carry SFSpeech
+        // segment-clock ends while partials carry the receipt clock, which
+        // always runs slightly later — so a surviving partial reads as "past
+        // the last seal" to `compose_stop_path_residual` and re-appends text
+        // the seal already delivered. Live 2026-08-12 21:15: "Jaki chcesz.
+        // Kos." arrived twice in an 8s take exactly this way.
+        self.session_partials.clear();
+        tick
     }
 
     /// Why a pending span is not yet sealable, or None when both engines closed it.
@@ -581,6 +591,38 @@ mod progressive_seal_tests {
         assert!(
             m.pending_spans().is_empty(),
             "no span may outlive the session that produced it"
+        );
+    }
+
+    /// The 2026-08-12 21:15 live duplicate ("Jaki chcesz. Kos." delivered
+    /// twice): spans sealed at session end carry SFSpeech segment-clock ends,
+    /// while session partials carry the receipt clock, which always runs a
+    /// little later. The stop-path residual then saw the freshest partial as
+    /// "past the last seal" and appended text the seal already delivered.
+    /// After an end-of-session seal the partial pool must be empty — every
+    /// word it held is either in a span or in the open partial the worker
+    /// seals first.
+    #[test]
+    fn session_end_seal_leaves_no_partial_for_the_residual_to_duplicate() {
+        let mut m = ProgressiveSealMachine::new();
+        m.note_apple_commit(2, "jaki chcesz kos", 8.202, 8.202);
+        m.note_whisper_window_elapsed(2, 8.202);
+        // Receipt-clock partial restating the same tail, "later" than the seal.
+        m.note_session_partial("jaki chcesz kos", 8.4);
+
+        let tick = m.seal_remaining_at_session_end(false);
+        assert_eq!(tick.newly_sealed.len(), 1);
+
+        let residual = m.compose_stop_path_residual();
+        assert_eq!(
+            residual.residual_tail, "",
+            "a partial restating sealed text must not ride the residual back in"
+        );
+        assert_eq!(
+            residual.text.matches("chcesz").count(),
+            1,
+            "the delivered text must carry the phrase exactly once: {:?}",
+            residual.text
         );
     }
 

@@ -188,6 +188,9 @@ pub fn layered_phase() -> Option<u8> {
     }
 }
 
+/// Env override for [`TailPatchConfig::small_edit_token_floor`].
+pub const TAIL_PATCH_SMALL_EDIT_FLOOR_ENV: &str = "CODESCRIBE_TAIL_PATCH_SMALL_EDIT_FLOOR";
+
 /// Tuning for the tail-patch diff.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct TailPatchConfig {
@@ -195,13 +198,27 @@ pub struct TailPatchConfig {
     /// patch is skipped. `0.5` means: if more than half the utterance would be
     /// touched, leave Layer 0 output untouched.
     pub max_change_ratio: f64,
+    /// Absolute change budget under which a substitution-shaped fix bypasses
+    /// the ratio cap.
+    ///
+    /// The ratio alone starves short utterances structurally: on a 1-3-token
+    /// commit any real correction is ≥50% change, so the lane could never fix
+    /// a single misheard word — the very job it exists for. Measured on the
+    /// 2026-08-12 log: 116 skips, 0 applied patches, 38 of them at exactly
+    /// ratio 1.00 ("Kos" → "kombos" class). A substitution of this many tokens
+    /// or fewer is bounded by definition — wholesale divergence, which the
+    /// ratio guards against, always touches more. Pure insertions never use
+    /// this budget; they keep their under-commit / noise routing.
+    pub small_edit_token_floor: usize,
 }
 
 impl Default for TailPatchConfig {
-    /// Conservative default: skip the patch if more than half the tokens would change.
+    /// Conservative default: skip the patch if more than half the tokens would
+    /// change — unless the whole change fits inside the small-edit budget.
     fn default() -> Self {
         Self {
             max_change_ratio: 0.5,
+            small_edit_token_floor: 3,
         }
     }
 }
@@ -216,6 +233,12 @@ impl TailPatchConfig {
             .filter(|v| v.is_finite() && (0.0..=1.0).contains(v))
         {
             cfg.max_change_ratio = value;
+        }
+        if let Some(value) = std::env::var(TAIL_PATCH_SMALL_EDIT_FLOOR_ENV)
+            .ok()
+            .and_then(|raw| raw.trim().parse::<usize>().ok())
+        {
+            cfg.small_edit_token_floor = value;
         }
         cfg
     }
@@ -622,12 +645,27 @@ pub fn compute_tail_patch(
     }
 
     // Safety gate: count changed tokens against the committed token budget.
+    // The ratio is a wholesale-divergence guard; a SUBSTITUTION fix that fits
+    // inside the small-edit budget is bounded by definition and bypasses it —
+    // otherwise a short utterance can never be corrected at all (any one-word
+    // fix on a 1-3-token commit is ≥50% change, and the lane sat at 116 skips /
+    // 0 applied patches on the 2026-08-12 log because of exactly this).
+    //
+    // Substitution-shaped only, on purpose: every group must replace committed
+    // tokens with retranscribed ones. Pure insertions keep their deliberate
+    // routing from the under-commit work — head-loss recovery escalates as
+    // `UnderCommit`, tiny bursts ("tak" → "no tak") stay noise-skipped — and a
+    // blanket floor was measured to swallow all three of those contracts.
     let changed: usize = groups
         .iter()
         .map(|g| g.committed.len().max(g.retranscribed.len()))
         .sum();
+    let small_substitution_fix = changed <= cfg.small_edit_token_floor
+        && groups
+            .iter()
+            .all(|g| !g.committed.is_empty() && !g.retranscribed.is_empty());
     let ratio = changed as f64 / c_tokens.len() as f64;
-    if ratio > cfg.max_change_ratio {
+    if ratio > cfg.max_change_ratio && !small_substitution_fix {
         // Before the cap discards this: is the canvas starved rather than
         // wrong? The bounded diff was never an instrument for measuring lost
         // speech, and using it as one is what threw the recovered 104 s / 107 s
@@ -1081,6 +1119,54 @@ mod tests {
             apply_all(committed, &outcome),
             "spotkanie o dziesiątej i potem osiemnastej wieczorem"
         );
+    }
+
+    /// The 2026-08-12 live case: a short utterance can be corrected at all.
+    ///
+    /// "Kos" for "kombos" is a one-word fix on a three-token commit — ratio
+    /// 0.33? No: with re-segmentation the changed-token count hits the ratio
+    /// cap, and before the small-edit floor existed the lane logged
+    /// `change_ratio 1.50 exceeds max 0.50` and threw Whisper's correct
+    /// hearing away. Measured: 116 skips, 0 applied patches in the whole log.
+    #[test]
+    fn small_edit_on_short_utterance_bypasses_the_ratio_cap() {
+        let cfg = TailPatchConfig::default();
+        let committed = "Jaki chcesz. Kos.";
+        let retranscribed = "jaki chcesz kombos";
+        let outcome = compute_tail_patch(committed, retranscribed, 2, &cfg);
+        match &outcome {
+            TailPatchOutcome::Patches(_) => {}
+            other => panic!("a bounded one-word fix must patch, got {other:?}"),
+        }
+        assert!(
+            apply_all(committed, &outcome)
+                .to_lowercase()
+                .contains("kombos"),
+            "the corrected word must land on the canvas"
+        );
+    }
+
+    /// The floor is a small-edit budget, not a hole in the divergence guard: a
+    /// wholesale rewrite of a short utterance still skips.
+    #[test]
+    fn wholesale_divergence_on_short_utterance_still_skips() {
+        let cfg = TailPatchConfig::default();
+        let committed = "dobra nara";
+        let retranscribed = "zupełnie inne zdanie o niczym wcale niepodobne do tamtego";
+        let outcome = compute_tail_patch(committed, retranscribed, 3, &cfg);
+        match &outcome {
+            TailPatchOutcome::Skipped { reason } => {
+                assert!(
+                    reason.contains("change_ratio"),
+                    "unexpected reason: {reason}"
+                );
+            }
+            TailPatchOutcome::UnderCommit(_) => {
+                // Also acceptable: classified as recovered speech, which is a
+                // deliberate, bounded append path — never a rewrite.
+            }
+            other => panic!("wholesale divergence must not rewrite, got {other:?}"),
+        }
     }
 
     /// Polish diacritics: offsets are char-based so apply never corrupts UTF-8.
