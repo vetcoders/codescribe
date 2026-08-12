@@ -923,27 +923,14 @@ impl StdioConnection {
 }
 
 /// Mark the child's stdin pipe so writes to a dead peer return EPIPE instead
-/// of raising SIGPIPE. Per-fd (`F_SETNOSIGPIPE`) on purpose: it protects the
-/// MCP exchange without mutating the host process' signal table.
-#[cfg(target_os = "macos")]
+/// of raising SIGPIPE.
+///
+/// Now a thin alias over [`crate::util::pipes::disable_sigpipe`]: the same
+/// hazard reached the Apple STT bridge (2026-08-12), so the remedy lives in one
+/// place rather than being rediscovered per child.
 fn disable_sigpipe(stdin: &ChildStdin) {
-    use std::os::fd::AsRawFd;
-
-    // Darwin `sys/fcntl.h`: `#define F_SETNOSIGPIPE 73` — the libc crate does
-    // not export this per-fd fcntl command (only the socket-level
-    // `SO_NOSIGPIPE`), so pin the value here.
-    /// Darwin fcntl command: mark a fd so broken-pipe writes return EPIPE, not SIGPIPE.
-    const F_SETNOSIGPIPE: libc::c_int = 73;
-
-    // SAFETY: fcntl on an fd we own for the child's lifetime; F_SETNOSIGPIPE
-    // only flips a per-fd flag. A failure leaves the old behavior in place and
-    // is tolerable — the try_wait guard in `shutdown` still narrows exposure.
-    let _ = unsafe { libc::fcntl(stdin.as_raw_fd(), F_SETNOSIGPIPE, 1) };
+    crate::util::pipes::disable_sigpipe(stdin);
 }
-
-/// No-op outside macOS: `F_SETNOSIGPIPE` is a Darwin-specific fcntl.
-#[cfg(not(target_os = "macos"))]
-fn disable_sigpipe(_stdin: &ChildStdin) {}
 
 /// Build the `PATH` a spawned server sees: the server's own configured `PATH`
 /// first, then the process `PATH`, then the user bins and system fallbacks.

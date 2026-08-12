@@ -120,6 +120,11 @@ impl LiveStreamSession {
             .stdin
             .take()
             .context("Apple STT bridge stdin unavailable")?;
+        // Every `write_pcm` below targets this pipe. Without this the first
+        // write after the bridge dies raises SIGPIPE, which is fatal in the
+        // Swift host and leaves no crash report — killing the bridge took the
+        // whole app down on 2026-08-12. See `util::pipes`.
+        crate::util::pipes::disable_sigpipe(&stdin);
         let stdout = child
             .stdout
             .take()

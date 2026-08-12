@@ -542,6 +542,9 @@ fn run_bridge_stream(
             .stdin
             .as_mut()
             .context("Apple STT bridge stdin unavailable")?;
+        // A dead bridge must surface as EPIPE, not as a fatal signal in the
+        // Swift host (see `util::pipes`).
+        crate::util::pipes::disable_sigpipe(stdin);
 
         let request = BridgeRequest {
             protocol_version: 1,
@@ -713,6 +716,9 @@ fn run_bridge_with_timeout(
             .stdin
             .as_mut()
             .context("Apple STT bridge stdin unavailable")?;
+        // A dead bridge must surface as EPIPE, not as a fatal signal in the
+        // Swift host (see `util::pipes`).
+        crate::util::pipes::disable_sigpipe(stdin);
         let payload = serde_json::to_vec(request).context("serialize bridge request")?;
         stdin
             .write_all(&payload)
