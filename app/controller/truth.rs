@@ -154,6 +154,12 @@ pub(crate) struct RecordingTruthVerdict {
     /// Disposition of the explicit file-level final pass, when one ran.
     /// None means no final pass was attempted for this verdict.
     pub(crate) final_pass_disposition: Option<FinalPassDisposition>,
+    /// Whether the stop path actually invoked the local file pass.
+    pub(crate) final_pass_attempted: bool,
+    /// Runtime verdict for the explicit skip question used by acceptance evidence.
+    pub(crate) final_pass_skipped: bool,
+    /// Typed engine/controller reason when the pass was skipped.
+    pub(crate) final_pass_skip_reason: Option<String>,
     /// Actual serving engine label for sidecar/UI (`local_apple`, `local_whisper`, …).
     /// Preference-derived labels are forbidden when a verdict is present.
     pub(crate) engine_label: Option<String>,
@@ -302,6 +308,9 @@ pub(crate) fn build_truth_verdict(
         confidence_flags,
         sparkline,
         final_pass_disposition,
+        final_pass_attempted: false,
+        final_pass_skipped: false,
+        final_pass_skip_reason: None,
         engine_label,
         commit_trigger,
         display_status,
@@ -325,6 +334,39 @@ pub(crate) fn build_truth_verdict(
 ///    floor alone. Cloud fallback remains explicitly degraded.
 /// 5. Nothing usable: an empty verdict carrying the reason.
 pub(crate) fn adjudicate_recording_truth(
+    use_local_stt: bool,
+    local_final_pass_attempted: bool,
+    local_final_pass_verdict: Option<TranscriptionVerdict>,
+    streaming_text: String,
+    cloud_verdict: Option<crate::client::CloudTranscriptionVerdict>,
+    streaming_engine_label: Option<&str>,
+    session_telemetry: &SessionTelemetrySnapshot,
+) -> RecordingTruthVerdict {
+    let typed_skip = local_final_pass_verdict
+        .as_ref()
+        .and_then(|verdict| verdict.final_pass.as_ref())
+        .filter(|final_pass| final_pass.disposition == FinalPassDisposition::Skipped);
+    let final_pass_skipped = !local_final_pass_attempted || typed_skip.is_some();
+    let final_pass_skip_reason = typed_skip
+        .and_then(|final_pass| final_pass.reason.clone())
+        .or_else(|| (!local_final_pass_attempted).then(|| "not_attempted".to_string()));
+
+    let mut verdict = adjudicate_recording_truth_inner(
+        use_local_stt,
+        local_final_pass_attempted,
+        local_final_pass_verdict,
+        streaming_text,
+        cloud_verdict,
+        streaming_engine_label,
+        session_telemetry,
+    );
+    verdict.final_pass_attempted = local_final_pass_attempted;
+    verdict.final_pass_skipped = final_pass_skipped;
+    verdict.final_pass_skip_reason = final_pass_skip_reason;
+    verdict
+}
+
+fn adjudicate_recording_truth_inner(
     use_local_stt: bool,
     local_final_pass_attempted: bool,
     local_final_pass_verdict: Option<TranscriptionVerdict>,

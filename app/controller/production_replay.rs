@@ -55,6 +55,9 @@ pub struct ProductionOverlayReplay {
     pub layer1_armed: bool,
     pub transcript_source: Option<String>,
     pub engine_label: Option<String>,
+    pub final_pass_attempted: bool,
+    pub final_pass_skipped: bool,
+    pub final_pass_skip_reason: Option<String>,
     pub postprocess_stats: StreamPostProcessStats,
     pub boundary_evidence: ReplayBoundaryEvidence,
 }
@@ -118,6 +121,9 @@ struct ReplayDelivery {
     delivered_text: String,
     transcript_source: Option<String>,
     engine_label: Option<String>,
+    final_pass_attempted: bool,
+    final_pass_skipped: bool,
+    final_pass_skip_reason: Option<String>,
     postprocess_stats: StreamPostProcessStats,
 }
 
@@ -151,6 +157,9 @@ fn finish_replay_delivery(
             .transcript_source
             .map(|source| source.label().to_string()),
         engine_label: verdict.engine_label,
+        final_pass_attempted: verdict.final_pass_attempted,
+        final_pass_skipped: verdict.final_pass_skipped,
+        final_pass_skip_reason: verdict.final_pass_skip_reason,
         postprocess_stats: postprocessed.stats,
     })
 }
@@ -204,6 +213,9 @@ pub async fn replay_overlay_recording(
         layer1_armed: session.layer1_armed,
         transcript_source: delivery.transcript_source,
         engine_label: delivery.engine_label,
+        final_pass_attempted: delivery.final_pass_attempted,
+        final_pass_skipped: delivery.final_pass_skipped,
+        final_pass_skip_reason: delivery.final_pass_skip_reason,
         postprocess_stats: delivery.postprocess_stats,
         boundary_evidence,
     })
@@ -254,6 +266,23 @@ mod tests {
         );
         assert!(delivery.postprocess_stats.lexicon_rewrites >= 1);
         assert_eq!(delivery.engine_label.as_deref(), Some("live_apple"));
+        assert!(!delivery.final_pass_attempted);
+        assert!(delivery.final_pass_skipped);
+        assert_eq!(
+            delivery.final_pass_skip_reason.as_deref(),
+            Some("not_attempted")
+        );
+    }
+
+    #[test]
+    fn replay_carries_runtime_final_pass_attempt_verdict_out_of_adjudication() {
+        let delivery =
+            finish_replay_delivery("pacjent stabilny".to_string(), true, None, "live_apple")
+                .expect("live floor survives an unavailable attempted pass");
+
+        assert!(delivery.final_pass_attempted);
+        assert!(!delivery.final_pass_skipped);
+        assert_eq!(delivery.final_pass_skip_reason, None);
     }
 
     /// The exact field consumed by the production replay JSON must name the
