@@ -50,7 +50,7 @@ use crate::stt::apple_stt::{LiveStreamEvent, LiveStreamSession};
 use crate::stt::tail_patcher::{TailPatchConfig, TailPatchOutcome};
 
 use super::live_audio_buffer::{DEFAULT_RETENTION_SECS, LiveAudioBuffer};
-use super::progressive_seal::{ProgressiveSealMachine, seal_span_text};
+use super::progressive_seal::{ProgressiveSealMachine, SealTick, seal_span_text};
 #[cfg(test)]
 use super::session::emit_tail_patch_result;
 use super::session::{
@@ -67,6 +67,18 @@ use super::stream_log::append_to_stream_log;
 /// a stalled capture. A bounded queue plus a counted drop is the honest
 /// backpressure shape: Whisper falling behind costs patches, never audio.
 const TAIL_PATCH_QUEUE_CAP: usize = 8;
+
+/// How long the end-of-session closure loop waits for one outstanding Layer 1
+/// job to report back.
+///
+/// This sits directly on the stop path, in front of an operator watching the
+/// overlay, so it is a product budget rather than an engineering safety net.
+/// Every job it waits for was queued during capture against a model that is
+/// already warm, and the observed windows close well under a second; the cap is
+/// here for a genuinely wedged job, not for normal completion. It was 30s until
+/// 2026-08-12, when a stop that owed nothing at all still paid the full 30s
+/// because the loop was waiting on the wrong condition.
+const TAIL_PATCH_CLOSURE_TIMEOUT: Duration = Duration::from_secs(5);
 
 /// Content-free marker emitted when an Apple final callback contained segment
 /// time already committed by an earlier callback. The overlapping portion is
@@ -551,6 +563,11 @@ struct AppleSealState {
     tail_patch: Option<mpsc::Sender<TailPatchRequest>>,
     /// Seals whose tail-patch request found the queue full (F1 backpressure).
     tail_patch_backpressure_drops: u64,
+    /// Requests accepted by the Layer 1 queue that have not reported back yet.
+    /// This — not the pending-seal queue — is what the end-of-session closure
+    /// loop waits on: a span can also be held by the Apple volatile window, and
+    /// no Whisper completion will ever clear that gate.
+    tail_patch_awaiting_completion: u64,
     /// Concatenation of already progressive-sealed text — left context for
     /// Light+ casing on the next seal (w2-b).
     sealed_prefix: String,
@@ -581,6 +598,7 @@ impl AppleSealState {
             under_commit_escalations: 0,
             tail_patch: None,
             tail_patch_backpressure_drops: 0,
+            tail_patch_awaiting_completion: 0,
             sealed_prefix: String::new(),
             progressive: ProgressiveSealMachine::new(),
             pending_events: BTreeMap::new(),
@@ -608,6 +626,7 @@ impl AppleSealState {
         now_secs: f32,
     ) {
         let utterance_id = completion.utterance_id;
+        self.tail_patch_awaiting_completion = self.tail_patch_awaiting_completion.saturating_sub(1);
         self.tail_patch_outcomes
             .insert(utterance_id, completion.outcome);
         self.progressive
@@ -621,6 +640,21 @@ impl AppleSealState {
         now_secs: f32,
     ) {
         let tick = self.progressive.try_seal(now_secs, false);
+        self.emit_seal_tick(ev_tx, tick);
+    }
+
+    /// End-of-session drain: seal whatever the double-close gates still hold.
+    ///
+    /// Shares the emit path with the live tick on purpose — a span sealed at
+    /// session end must reach the sink as the same `UtteranceFinal` (+ patches)
+    /// a mid-session seal would, or the last utterance of every take would be
+    /// delivered by a different route than all the others.
+    fn seal_remaining_at_session_end(&mut self, ev_tx: &mpsc::UnboundedSender<EngineEvent>) {
+        let tick = self.progressive.seal_remaining_at_session_end(false);
+        self.emit_seal_tick(ev_tx, tick);
+    }
+
+    fn emit_seal_tick(&mut self, ev_tx: &mpsc::UnboundedSender<EngineEvent>, tick: SealTick) {
         for sealed in tick.newly_sealed {
             let Some(pending) = self.pending_events.remove(&sealed.id) else {
                 warn!(
@@ -907,7 +941,11 @@ fn seal_utterance_final(
             audio,
             covered_through_secs: end_ts,
         }) {
-            Ok(()) => true,
+            Ok(()) => {
+                state.tail_patch_awaiting_completion =
+                    state.tail_patch_awaiting_completion.saturating_add(1);
+                true
+            }
             Err(e) => {
                 state.tail_patch_backpressure_drops =
                     state.tail_patch_backpressure_drops.saturating_add(1);
@@ -1000,8 +1038,16 @@ fn apple_stream_worker(
     // Every accepted Layer 1 request must close (success, no-change, or
     // explicit skip) before the session task returns. This is bounded by the
     // queue cap and happens while the async side is still draining jobs.
-    while !state.progressive.pending_spans().is_empty() {
-        match tail_patch_done.recv_timeout(Duration::from_secs(30)) {
+    //
+    // Wait on the *jobs*, not on the pending-seal queue. Those are different
+    // conditions: a span still pending can be blocked by the Apple volatile
+    // window rather than by a missing Whisper window, and no completion will
+    // ever clear that gate. Waiting on the seal queue therefore parked the stop
+    // path on the full timeout whenever the last span was volatile-blocked —
+    // measured 2026-08-12, `rec_stop=36.701s` of which 30.005s was this loop
+    // waiting for a completion that had already arrived for every job it sent.
+    while state.tail_patch_awaiting_completion > 0 {
+        match tail_patch_done.recv_timeout(TAIL_PATCH_CLOSURE_TIMEOUT) {
             Ok(completion) => state.complete_whisper_window(
                 &ev_tx,
                 completion,
@@ -1014,6 +1060,13 @@ fn apple_stream_worker(
             }
         }
     }
+
+    // Capture is over: no later Apple callback can revise a span and no further
+    // Whisper window can arrive, so both double-close gates are satisfied by
+    // definition. Seal the remainder here instead of leaving it to the residual
+    // path — the machine's own span timestamps are the clock, because the audio
+    // clock is frozen at EOF and can sit milliseconds behind them.
+    state.seal_remaining_at_session_end(&ev_tx);
 
     Ok(AppleStreamOutcome {
         sealed: state.sealed_count,
@@ -1965,6 +2018,60 @@ mod tests {
             req.audio.len(),
             2 * TEST_SAMPLE_RATE as usize,
             "window is [previous seal end, end_ts) at session rate"
+        );
+        assert_eq!(
+            state.tail_patch_awaiting_completion, 1,
+            "an accepted request is what the end-of-session closure loop owes a wait to"
+        );
+    }
+
+    /// The closure loop must wait on outstanding Layer 1 *jobs*, never on the
+    /// pending-seal queue. The two diverge the moment a span is held by the
+    /// Apple volatile window: no completion can clear that gate, so a loop
+    /// watching the seal queue waits for an event that is not coming. That is
+    /// what parked the stop path for the full timeout on 2026-08-12.
+    #[test]
+    fn tail_patch_closure_counter_tracks_jobs_not_pending_seals() {
+        let (tx, _rx) = mpsc::unbounded_channel();
+        let (tp_tx, mut tp_rx) = mpsc::channel::<TailPatchRequest>(TAIL_PATCH_QUEUE_CAP);
+        let mut state = AppleSealState::new_with_tail_patch(TEST_SAMPLE_RATE, tp_tx);
+        push_capture(&mut state, 6.0);
+
+        emit_stream_events(
+            vec![LiveStreamEvent::PhraseFinal {
+                text: "uruchom doker".into(),
+                segments: vec![segment("uruchom doker", 0.5, 2.0)],
+            }],
+            &tx,
+            &mut state,
+            6.0,
+        );
+        let req = tp_rx
+            .try_recv()
+            .expect("sealed utterance enqueues a request");
+        assert_eq!(state.tail_patch_awaiting_completion, 1);
+
+        // Close the job on a clock that is still inside the span's volatile
+        // window — the exact shape the old exit condition could not express.
+        state.complete_whisper_window(
+            &tx,
+            TailPatchCompletion {
+                utterance_id: req.utterance_id,
+                covered_through_secs: req.covered_through_secs,
+                outcome: TailPatchOutcome::Skipped {
+                    reason: "no change".to_string(),
+                },
+            },
+            2.1,
+        );
+
+        assert_eq!(
+            state.tail_patch_awaiting_completion, 0,
+            "every job reported back — the stop path owes no further wait"
+        );
+        assert!(
+            !state.progressive.pending_spans().is_empty(),
+            "yet a span is still pending: waiting on this queue would hang on nothing"
         );
     }
 

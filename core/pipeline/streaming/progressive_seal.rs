@@ -350,6 +350,39 @@ impl ProgressiveSealMachine {
         }
     }
 
+    /// Seal every span still pending when the session itself ends.
+    ///
+    /// Both double-close gates are *vacuously* satisfied once capture is over:
+    /// no later Apple callback can revise a span, and no further Whisper window
+    /// can arrive. Holding a span past that point is not caution, it is a hang.
+    ///
+    /// # Why this exists as its own entry point
+    ///
+    /// The end-of-session caller used to reuse `try_seal(audio_secs + volatile
+    /// window + epsilon)`. That clock is derived from the PCM sample counter,
+    /// while `apple_committed_at_secs` comes from SFSpeech's own segment clock,
+    /// which can sit a few milliseconds *ahead* of it. Measured 2026-08-12:
+    /// audio clock 217.376s, last span committed at 217.378s → age 2.499s
+    /// against a 2.5s volatile window. The span missed by one millisecond, and
+    /// because the audio clock is frozen after EOF it could never age past the
+    /// gate — not even into the starvation ceiling. The worker then burned the
+    /// full 30s closure timeout waiting on a Whisper completion that would not
+    /// have unblocked it anyway (`rec_stop=36.701s` in the stop-path budget).
+    ///
+    /// Anchoring on the spans' own timestamps instead of the audio clock keeps
+    /// the volatile semantics exactly as written and removes the race.
+    pub fn seal_remaining_at_session_end(&mut self, force_raw: bool) -> SealTick {
+        let horizon = self
+            .pending
+            .iter()
+            .map(|span| span.apple_committed_at_secs.max(span.end_secs))
+            .fold(0.0_f32, f32::max);
+        // No further window is coming, so everything recorded is as covered as
+        // it will ever be — satisfy `whisper_ready` without inventing an id.
+        self.whisper_covered_through_secs = self.whisper_covered_through_secs.max(horizon);
+        self.try_seal(horizon + APPLE_VOLATILE_WINDOW_SECS + 0.001, force_raw)
+    }
+
     /// Why a pending span is not yet sealable, or None when both engines closed it.
     fn seal_block_reason(&self, span: &PendingSpan, now_secs: f32) -> Option<SealBlockReason> {
         let age = now_secs - span.apple_committed_at_secs;
@@ -508,6 +541,68 @@ mod progressive_seal_tests {
             "span 2 seals after volatile window closes"
         );
         assert!(m.pending_spans().is_empty());
+    }
+
+    /// The 2026-08-12 stop-path hang, reduced to its arithmetic.
+    ///
+    /// SFSpeech committed the last span at 217.378s on its own segment clock
+    /// while the PCM counter had reached 217.376s. The end-of-session seal used
+    /// the audio clock, so the span's age came out at 2.499s against a 2.5s
+    /// volatile window — short by one millisecond, and frozen there forever
+    /// because the audio clock stops advancing at EOF. The worker then sat on
+    /// its closure timeout, costing the operator 30s on a stop that owed
+    /// nothing (`rec_stop=36.701s`).
+    #[test]
+    fn session_end_seals_the_span_a_frozen_audio_clock_holds_forever() {
+        let mut m = ProgressiveSealMachine::new();
+        let audio_eof_secs = 217.376_f32;
+        let apple_commit_secs = 217.378_f32;
+        m.note_apple_commit(48, "ostatnie słowo", apple_commit_secs, apple_commit_secs);
+        // Whisper closed its side — the volatile gate is the only thing left.
+        m.note_whisper_window_elapsed(48, apple_commit_secs);
+
+        let frozen = m.try_seal(audio_eof_secs + APPLE_VOLATILE_WINDOW_SECS + 0.001, false);
+        assert!(
+            frozen.newly_sealed.is_empty(),
+            "regression guard: this clock is exactly the one that hung, it must still miss"
+        );
+        assert_eq!(
+            m.pending_spans().len(),
+            1,
+            "the span the old end-of-session clock could never release"
+        );
+
+        let at_end = m.seal_remaining_at_session_end(false);
+        assert_eq!(
+            at_end.newly_sealed.len(),
+            1,
+            "session end must seal on the span's own clock, not the audio counter"
+        );
+        assert!(
+            m.pending_spans().is_empty(),
+            "no span may outlive the session that produced it"
+        );
+    }
+
+    /// Session end also closes the Whisper gate: once capture stops, no further
+    /// window can arrive, so holding a span for one is waiting on nothing.
+    #[test]
+    fn session_end_seals_span_that_never_got_a_whisper_window() {
+        let mut m = ProgressiveSealMachine::new();
+        m.note_apple_commit(1, "bez lat ki", 10.0, 10.0);
+
+        let mid_session = m.try_seal(10.0 + APPLE_VOLATILE_WINDOW_SECS + 0.1, false);
+        assert!(
+            mid_session.newly_sealed.is_empty(),
+            "mid-session the un-elapsed Whisper window must still block"
+        );
+
+        let at_end = m.seal_remaining_at_session_end(false);
+        assert_eq!(
+            at_end.newly_sealed.len(),
+            1,
+            "at session end there is no window left to wait for"
+        );
     }
 
     /// Ctrl-hold force_raw skips Light+ but still seals words.
