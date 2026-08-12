@@ -1,6 +1,6 @@
 # CodescribeTests — what runs, and how
 
-Swift unit tests for the SwiftUI front-end. **318 tests, executed by
+Swift unit tests for the SwiftUI front-end. **337 tests, executed by
 `make test-swift`.**
 
 ```bash
@@ -93,8 +93,11 @@ latency, no CPU. Every other test lane in the repo already bypasses Keychain
 `.github/workflows/rust.yml`); this lane was the one that did not.
 
 `in_xctest_host()` now detects the host from the environment markers XCTest
-exports, so the bypass is attached to the **run** rather than to the invocation:
-Xcode, a script or a future CI job all inherit it.
+exports. The independent Swift `LicenseService` mirrors that exact marker set,
+because its `shared` instance can reach Keychain from `App.body` before
+`XCTestCase` class discovery is reliable. Both stores therefore bypass
+Keychain from process truth already present at host launch; neither depends on
+an environment variable inherited accidentally from the invoking shell.
 `SettingsTruthTests.testXCTestEnvMarkersPinTheSignalTheCoreKeysOn` asserts from
 inside a live host that at least one marker is still present, because the
 detector fails _open_ — if Xcode renames them, the slow classification returns
@@ -128,7 +131,7 @@ should branch on non-zero, not on the specific code.
 
 ## Coverage this actually buys
 
-318 tests across 28 files, including the two surfaces the W12 plan could
+337 tests across 30 Swift files, including the two surfaces the W12 plan could
 previously only verify by compilation:
 
 - `OverlayStateTests.swift` — the overlay marker rebase (`renderedOffset`,
