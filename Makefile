@@ -317,7 +317,7 @@ bump-major:
 # gate: test-engine-parity-layered class=operator ci=no -- Layer 1 parity arm judged on structure; private corpus, host-local bench
 # gate: test-engine-parity-both class=operator ci=no -- runs both parity arms and prints the delta
 # gate: test-teacher class=operator ci=no -- teacher CLI proof run, writes an HTML report
-# gate: test-swift class=operator ci=no -- 318 SwiftUI front-end tests; needs Xcode and a built ffi dylib
+# gate: test-swift class=operator ci=no -- SwiftUI suite + Apple phrase-restart Rust/Swift lockstep self-test; needs Xcode and built ffi/bridge binaries
 # gate: smoke-macos27 class=operator ci=no -- host smoke after an OS/Xcode bump; operator-only rows report SKIP
 #
 # ─────────────────────────────────────────────────────────────────────────────
@@ -775,9 +775,11 @@ smoke-macos27:
 SWIFT_TEST_CODESIGN_IDENTITY ?= -
 SWIFT_TEST_MAX_SECONDS ?= 30
 .PHONY: test-swift
-test-swift:
+test-swift: $(ENGINE_BRIDGE)
 	@set -o pipefail; \
 	$(TEST_DATA_DIR_SETUP); \
+	echo "=== Apple phrase-restart Rust/Swift lockstep self-test ==="; \
+	$(ENGINE_BRIDGE) --phrase-restart-self-test || exit $$?; \
 	if [ ! -f target/$(PROFILE)/libcodescribe_ffi.dylib ]; then \
 	  echo "test-swift: target/$(PROFILE)/libcodescribe_ffi.dylib is missing." >&2; \
 	  echo "test-swift: run 'make app-bindings' (or 'make app') first." >&2; \
@@ -1108,7 +1110,7 @@ help:
 	@printf '%s\n' '  Full classification: make -s gate-ledger'
 	@printf '    $(HELP_C_GREEN)%-18s$(HELP_C_RESET) %s\n' 'test' 'Full suite incl. ignored real-API tests (sources ~/.codescribe/.env)'
 	@printf '    $(HELP_C_GREEN)%-18s$(HELP_C_RESET) %s\n' 'test-quick' 'Workspace tests, no real API (sources ~/.codescribe/.env)'
-	@printf '    $(HELP_C_GREEN)%-18s$(HELP_C_RESET) %s\n' 'test-swift' '318 SwiftUI front-end tests (needs Xcode + ffi dylib)'
+	@printf '    $(HELP_C_GREEN)%-18s$(HELP_C_RESET) %s\n' 'test-swift' 'SwiftUI suite + phrase-restart lockstep (needs Xcode + ffi dylib)'
 	@printf '    $(HELP_C_GREEN)%-18s$(HELP_C_RESET) %s\n' 'smoke-macos27' 'Host smoke after an OS/Xcode bump (SMOKE_ARGS=--with-inference)'
 	@printf '    $(HELP_C_GREEN)%-18s$(HELP_C_RESET) %s\n' 'test-e2e' 'Run E2E tests (mock)'
 	@printf '    $(HELP_C_GREEN)%-18s$(HELP_C_RESET) %s\n' 'test-e2e-real' 'Run E2E tests with real API (needs LLM_*_API_KEY)'

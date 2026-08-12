@@ -150,6 +150,12 @@ for target in test test-quick test-e2e test-e2e-real test-sse test-formatting \
 done
 
 swift_recipe="$(make_target_block 'test-swift')"
+if [[ "$swift_recipe" != *'test-swift: $(ENGINE_BRIDGE)'* ]]; then
+    fail "test-swift must build the canonical Apple STT bridge dependency"
+fi
+if [[ "${swift_recipe%%xcodebuild test*}" != *'$(ENGINE_BRIDGE) --phrase-restart-self-test || exit $$?'* ]]; then
+    fail "test-swift must fail-fast on the phrase-restart Swift lockstep self-test before XCTest"
+fi
 if [[ "${swift_recipe%%xcodebuild test*}" != *'$(TEST_DATA_DIR_SETUP)'* ]]; then
     fail "test-swift must export its isolated data directory before xcodebuild test"
 fi
