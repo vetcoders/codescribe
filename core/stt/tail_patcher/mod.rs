@@ -393,17 +393,45 @@ struct EditGroup {
     has_prev_match: bool,
 }
 
-/// Longest-common-subsequence alignment over token text (exact match).
+/// Alignment key for LCS matching: casefolded, stripped of leading/trailing
+/// non-alphanumerics.
+///
+/// The two texts come from different normalization worlds — the committed
+/// canvas carries Apple's casing, punctuation and the lexicon's rewrites,
+/// while the Whisper re-transcription is bare lowercase. Compared byte-exact,
+/// "Jaki chcesz. Kos." vs "jaki chcesz kombos" shares zero tokens and reads
+/// as wholesale divergence; every skip ratio in the starved 2026-08-12 log
+/// was inflated this way. Matching on the key aligns what a listener would
+/// call the same word; matched tokens are never patched, so the canvas keeps
+/// its casing and punctuation. Diacritics stay significant — they are
+/// content, not decoration. A token that is all punctuation falls back to its
+/// lowercased raw form so it can only match another such token.
+fn alignment_key(token: &str) -> String {
+    let stripped = token.trim_matches(|c: char| !c.is_alphanumeric());
+    if stripped.is_empty() {
+        token.to_lowercase()
+    } else {
+        stripped.to_lowercase()
+    }
+}
+
+/// Longest-common-subsequence alignment over normalized token keys
+/// ([`alignment_key`]).
 ///
 /// Returns pairs `(committed_idx, retranscribed_idx)` of matched tokens, in order.
 fn lcs_matches(committed: &[Token], retranscribed: &[Token]) -> Vec<(usize, usize)> {
+    let c_keys: Vec<String> = committed.iter().map(|t| alignment_key(&t.text)).collect();
+    let r_keys: Vec<String> = retranscribed
+        .iter()
+        .map(|t| alignment_key(&t.text))
+        .collect();
     let m = committed.len();
     let n = retranscribed.len();
     // dp[i][j] = LCS length of committed[i..] and retranscribed[j..].
     let mut dp = vec![vec![0usize; n + 1]; m + 1];
     for i in (0..m).rev() {
         for j in (0..n).rev() {
-            dp[i][j] = if committed[i].text == retranscribed[j].text {
+            dp[i][j] = if c_keys[i] == r_keys[j] {
                 dp[i + 1][j + 1] + 1
             } else {
                 dp[i + 1][j].max(dp[i][j + 1])
@@ -414,7 +442,7 @@ fn lcs_matches(committed: &[Token], retranscribed: &[Token]) -> Vec<(usize, usiz
     let mut matches = Vec::new();
     let (mut i, mut j) = (0, 0);
     while i < m && j < n {
-        if committed[i].text == retranscribed[j].text {
+        if c_keys[i] == r_keys[j] {
             matches.push((i, j));
             i += 1;
             j += 1;
@@ -733,14 +761,35 @@ pub fn compute_tail_patch(
                 });
             }
         } else {
-            // Substitution: replace the committed span with the W text.
+            // Substitution: replace the committed span with the W text. The
+            // canvas span owns its trailing punctuation (Whisper emits bare
+            // words); carry it onto the replacement so fixing a word never
+            // eats the sentence boundary Apple already placed.
             let start = c_tokens[g.committed.start].char_start;
             let end = c_tokens[g.committed.end - 1].char_end;
+            let last_committed = c_tokens[g.committed.end - 1].text.as_str();
+            let trailing: String = last_committed
+                .chars()
+                .rev()
+                .take_while(|c| !c.is_alphanumeric())
+                .collect::<Vec<_>>()
+                .into_iter()
+                .rev()
+                .collect();
+            let keeps_own_boundary = replacement
+                .chars()
+                .last()
+                .is_some_and(|c| !c.is_alphanumeric());
+            let text = if trailing.is_empty() || keeps_own_boundary {
+                replacement
+            } else {
+                format!("{replacement}{trailing}")
+            };
             events.push(EngineEvent::ReplaceRange {
                 utterance_id,
                 start,
                 end,
-                text: replacement,
+                text,
                 source: LayerSource::TailPatch,
             });
         }
@@ -1144,6 +1193,40 @@ mod tests {
                 .contains("kombos"),
             "the corrected word must land on the canvas"
         );
+    }
+
+    /// Casing and punctuation are alignment facts, not edits. The canvas comes
+    /// from Apple + lexicon (capitalized, punctuated); the re-transcription is
+    /// bare-lowercase Whisper. Compared byte-exact they shared zero tokens and
+    /// every healthy sentence read as wholesale divergence — the structural
+    /// half of the 116-skips/0-applied starvation (live ratios 0.56-2.00 on
+    /// ordinary Polish takes, 2026-08-12 21:20 session). The one genuinely
+    /// different word must be the only patch, and it must keep the sentence
+    /// boundary Apple already placed.
+    #[test]
+    fn casing_and_punctuation_align_instead_of_counting_as_changes() {
+        let cfg = TailPatchConfig::default();
+        let committed = "Jaki chcesz. Kos.";
+        let retranscribed = "jaki chcesz kombos";
+        let outcome = compute_tail_patch(committed, retranscribed, 21, &cfg);
+        match &outcome {
+            TailPatchOutcome::Patches(events) => {
+                assert_eq!(events.len(), 1, "only the truly different word patches");
+            }
+            other => panic!("expected a single bounded patch, got {other:?}"),
+        }
+        assert_eq!(apply_all(committed, &outcome), "Jaki chcesz. kombos.");
+    }
+
+    /// The same words in Whisper's bare normalization are NoChange — the
+    /// canvas keeps its casing and punctuation and nothing moves.
+    #[test]
+    fn same_words_in_bare_normalization_are_no_change() {
+        let cfg = TailPatchConfig::default();
+        let committed = "To jest zdanie, które Apple dobrze usłyszało.";
+        let retranscribed = "to jest zdanie które apple dobrze usłyszało";
+        let outcome = compute_tail_patch(committed, retranscribed, 22, &cfg);
+        assert_eq!(outcome, TailPatchOutcome::NoChange);
     }
 
     /// The floor is a small-edit budget, not a hole in the divergence guard: a
