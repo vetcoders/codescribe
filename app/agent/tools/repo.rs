@@ -10,10 +10,12 @@ use anyhow::{Context, Result, bail};
 use codescribe_core::agent::{ToolDefinition, ToolRegistry, ToolResultContent, ToolRisk};
 use serde_json::{Value, json};
 
-use super::{path_policy, workspace};
+use super::{output_guard, path_policy, workspace};
 
-const MAX_OUTPUT_CHARS: usize = 40_000;
-
+/// Register the four native git tools on the shared [`ToolRegistry`].
+///
+/// `git_status` / `git_diff` / `git_log` are [`ToolRisk::ReadOnly`]; `git_commit`
+/// is [`ToolRisk::Mutating`] and therefore gated behind approval.
 pub fn register(registry: &mut ToolRegistry) {
     registry
         .register_native(
@@ -45,6 +47,7 @@ pub fn register(registry: &mut ToolRegistry) {
         .expect("register git_commit");
 }
 
+/// Tool schema for `git_status` (canonical capability `repo.status`).
 fn git_status_definition() -> ToolDefinition {
     ToolDefinition {
         name: "git_status".to_string(),
@@ -61,6 +64,7 @@ fn git_status_definition() -> ToolDefinition {
     }
 }
 
+/// Tool schema for `git_diff` (canonical capability `repo.diff`).
 fn git_diff_definition() -> ToolDefinition {
     ToolDefinition {
         name: "git_diff".to_string(),
@@ -78,6 +82,7 @@ fn git_diff_definition() -> ToolDefinition {
     }
 }
 
+/// Tool schema for `git_log` (canonical capability `repo.log`).
 fn git_log_definition() -> ToolDefinition {
     ToolDefinition {
         name: "git_log".to_string(),
@@ -94,6 +99,9 @@ fn git_log_definition() -> ToolDefinition {
     }
 }
 
+/// Tool schema for `git_commit` (canonical capability `repo.commit`).
+///
+/// Commits only — the tool never pushes.
 fn git_commit_definition() -> ToolDefinition {
     ToolDefinition {
         name: "git_commit".to_string(),
@@ -115,6 +123,7 @@ fn git_commit_definition() -> ToolDefinition {
     }
 }
 
+/// Dispatch adapter for `git_status`: turns a [`Result`] into tool content.
 fn handle_git_status(input: Value) -> Vec<ToolResultContent> {
     match run_status(&input) {
         Ok(text) => vec![ToolResultContent::Text(text)],
@@ -122,6 +131,7 @@ fn handle_git_status(input: Value) -> Vec<ToolResultContent> {
     }
 }
 
+/// Dispatch adapter for `git_diff`: turns a [`Result`] into tool content.
 fn handle_git_diff(input: Value) -> Vec<ToolResultContent> {
     match run_diff(&input) {
         Ok(text) => vec![ToolResultContent::Text(text)],
@@ -129,6 +139,7 @@ fn handle_git_diff(input: Value) -> Vec<ToolResultContent> {
     }
 }
 
+/// Dispatch adapter for `git_log`: turns a [`Result`] into tool content.
 fn handle_git_log(input: Value) -> Vec<ToolResultContent> {
     match run_log(&input) {
         Ok(text) => vec![ToolResultContent::Text(text)],
@@ -136,6 +147,7 @@ fn handle_git_log(input: Value) -> Vec<ToolResultContent> {
     }
 }
 
+/// Dispatch adapter for `git_commit`: turns a [`Result`] into tool content.
 fn handle_git_commit(input: Value) -> Vec<ToolResultContent> {
     match run_commit(&input) {
         Ok(text) => vec![ToolResultContent::Text(text)],
@@ -143,10 +155,13 @@ fn handle_git_commit(input: Value) -> Vec<ToolResultContent> {
     }
 }
 
+/// Canonicalized workspace roots every git path argument is confined to.
 fn roots() -> Vec<PathBuf> {
     path_policy::canonical_roots(&workspace::resolved_roots())
 }
 
+/// Read the required `cwd` field and prove it is an existing directory inside
+/// the configured workspace roots.
 fn resolve_cwd(input: &Value) -> Result<PathBuf> {
     let cwd = input
         .get("cwd")
@@ -159,6 +174,11 @@ fn resolve_cwd(input: &Value) -> Result<PathBuf> {
     Ok(cwd)
 }
 
+/// Run `git` as a single argv program in `cwd` and return its guarded output.
+///
+/// stdout and stderr are concatenated; a non-zero exit becomes an [`Err`]. Both
+/// paths pass through [`output_guard::guard_chunk`] so an oversized diff cannot
+/// flood the transcript.
 fn run_git(cwd: &PathBuf, args: &[&str]) -> Result<String> {
     let output = Command::new("git")
         .args(args)
@@ -173,26 +193,18 @@ fn run_git(cwd: &PathBuf, args: &[&str]) -> Result<String> {
         }
         text.push_str(&String::from_utf8_lossy(&output.stderr));
     }
+    let origin = format!("git {}", args.join(" "));
     if !output.status.success() {
         bail!(
-            "git {} failed (exit {:?}): {}",
-            args.join(" "),
+            "{origin} failed (exit {:?}): {}",
             output.status.code(),
-            truncate(&text)
+            output_guard::guard_chunk(&text, &origin)
         );
     }
-    Ok(truncate(&text))
+    Ok(output_guard::guard_chunk(&text, &origin))
 }
 
-fn truncate(text: &str) -> String {
-    if text.chars().count() <= MAX_OUTPUT_CHARS {
-        return text.to_string();
-    }
-    let mut out: String = text.chars().take(MAX_OUTPUT_CHARS).collect();
-    out.push_str("\n…[truncated]");
-    out
-}
-
+/// `repo.status` body: short branch-annotated status as a JSON envelope.
 fn run_status(input: &Value) -> Result<String> {
     let cwd = resolve_cwd(input)?;
     let body = run_git(&cwd, &["status", "--short", "--branch"])?;
@@ -205,6 +217,8 @@ fn run_status(input: &Value) -> Result<String> {
     .to_string())
 }
 
+/// `repo.diff` body: optional `staged` flag and an optional root-validated path
+/// filter, emitted as a JSON envelope.
 fn run_diff(input: &Value) -> Result<String> {
     let cwd = resolve_cwd(input)?;
     let staged = input
@@ -232,6 +246,7 @@ fn run_diff(input: &Value) -> Result<String> {
     .to_string())
 }
 
+/// `repo.log` body: one-line decorated history, bounded to 1..=50 commits.
 fn run_log(input: &Value) -> Result<String> {
     let cwd = resolve_cwd(input)?;
     let limit = input
@@ -253,6 +268,9 @@ fn run_log(input: &Value) -> Result<String> {
     .to_string())
 }
 
+/// `repo.commit` body: stage the optional validated paths, then commit.
+///
+/// The message travels as argv only, never through a shell.
 fn run_commit(input: &Value) -> Result<String> {
     let cwd = resolve_cwd(input)?;
     let message = input
@@ -285,12 +303,14 @@ fn run_commit(input: &Value) -> Result<String> {
     .to_string())
 }
 
+/// Exercises [`run_git`] directly against a throwaway repository.
 #[cfg(test)]
 mod tests {
     use super::*;
     use std::fs;
     use tempfile::TempDir;
 
+    /// git_status tool returns a structured status against a temporary git repo fixture.
     #[test]
     fn git_status_on_temp_repo() {
         let tmp = TempDir::new().unwrap();

@@ -9,17 +9,23 @@ use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result, bail};
 use codescribe_core::agent::{ToolDefinition, ToolRegistry, ToolResultContent, ToolRisk};
-use codescribe_core::util::safe_path::safe_write_bounded;
+use codescribe_core::util::safe_path::{safe_read_to_string_bounded, safe_write_bounded};
 use serde_json::{Value, json};
 
 use super::{path_policy, workspace};
 
+/// Maximum directory entries returned by one `fs.list` call.
 const MAX_LIST_ENTRIES: usize = 500;
+/// Maximum matches returned by one `fs.search` call.
 const MAX_SEARCH_HITS: usize = 50;
+/// Files larger than this are skipped during search — binaries and build
+/// artifacts would flood the result set without informing the model.
 const MAX_SEARCH_FILE_BYTES: u64 = 512 * 1024;
+/// Upper bound on a single `fs.write` / `fs.patch` payload.
 const MAX_WRITE_BYTES: usize = 512 * 1024;
-const MAX_RESULT_CHARS: usize = 40_000;
 
+/// Register the filesystem tool family, read-only tools first and mutating
+/// tools declared as [`ToolRisk::Mutating`] so approval defaults to Ask.
 pub fn register(registry: &mut ToolRegistry) {
     registry
         .register_native(
@@ -58,6 +64,7 @@ pub fn register(registry: &mut ToolRegistry) {
         .expect("register move_path");
 }
 
+/// Wire schema for `list_directory` (capability `fs.list`).
 fn list_directory_definition() -> ToolDefinition {
     ToolDefinition {
         name: "list_directory".to_string(),
@@ -74,6 +81,7 @@ fn list_directory_definition() -> ToolDefinition {
     }
 }
 
+/// Wire schema for `search_files` (capability `fs.search`).
 fn search_files_definition() -> ToolDefinition {
     ToolDefinition {
         name: "search_files".to_string(),
@@ -91,6 +99,7 @@ fn search_files_definition() -> ToolDefinition {
     }
 }
 
+/// Wire schema for `write_file` (capability `fs.write`).
 fn write_file_definition() -> ToolDefinition {
     ToolDefinition {
         name: "write_file".to_string(),
@@ -107,6 +116,7 @@ fn write_file_definition() -> ToolDefinition {
     }
 }
 
+/// Wire schema for `apply_patch` (capability `fs.patch`).
 fn apply_patch_definition() -> ToolDefinition {
     ToolDefinition {
         name: "apply_patch".to_string(),
@@ -124,6 +134,7 @@ fn apply_patch_definition() -> ToolDefinition {
     }
 }
 
+/// Wire schema for `move_path` (capability `fs.move`).
 fn move_path_definition() -> ToolDefinition {
     ToolDefinition {
         name: "move_path".to_string(),
@@ -140,6 +151,8 @@ fn move_path_definition() -> ToolDefinition {
     }
 }
 
+/// Adapt [`list_directory_from_input`] to the tool-result protocol: errors
+/// travel back to the model as text, never as a panic.
 fn handle_list_directory(input: Value) -> Vec<ToolResultContent> {
     match list_directory_from_input(&input) {
         Ok(text) => vec![ToolResultContent::Text(text)],
@@ -147,6 +160,7 @@ fn handle_list_directory(input: Value) -> Vec<ToolResultContent> {
     }
 }
 
+/// Tool-result adapter for [`search_files_from_input`].
 fn handle_search_files(input: Value) -> Vec<ToolResultContent> {
     match search_files_from_input(&input) {
         Ok(text) => vec![ToolResultContent::Text(text)],
@@ -154,6 +168,7 @@ fn handle_search_files(input: Value) -> Vec<ToolResultContent> {
     }
 }
 
+/// Tool-result adapter for [`write_file_from_input`].
 fn handle_write_file(input: Value) -> Vec<ToolResultContent> {
     match write_file_from_input(&input) {
         Ok(text) => vec![ToolResultContent::Text(text)],
@@ -161,6 +176,7 @@ fn handle_write_file(input: Value) -> Vec<ToolResultContent> {
     }
 }
 
+/// Tool-result adapter for [`apply_patch_from_input`].
 fn handle_apply_patch(input: Value) -> Vec<ToolResultContent> {
     match apply_patch_from_input(&input) {
         Ok(text) => vec![ToolResultContent::Text(text)],
@@ -168,6 +184,7 @@ fn handle_apply_patch(input: Value) -> Vec<ToolResultContent> {
     }
 }
 
+/// Tool-result adapter for [`move_path_from_input`].
 fn handle_move_path(input: Value) -> Vec<ToolResultContent> {
     match move_path_from_input(&input) {
         Ok(text) => vec![ToolResultContent::Text(text)],
@@ -175,10 +192,15 @@ fn handle_move_path(input: Value) -> Vec<ToolResultContent> {
     }
 }
 
+/// Canonicalized workspace roots every path in this module is bounded by.
+///
+/// Re-resolved per call rather than cached: the operator can change workspace
+/// roots mid-session, and a stale root would widen the sandbox.
 fn workspace_roots() -> Vec<PathBuf> {
     path_policy::canonical_roots(&workspace::resolved_roots())
 }
 
+/// Read a required string field, reporting the field name when it is missing.
 fn require_string<'a>(input: &'a Value, field: &str) -> Result<&'a str> {
     input
         .get(field)
@@ -186,6 +208,10 @@ fn require_string<'a>(input: &'a Value, field: &str) -> Result<&'a str> {
         .with_context(|| format!("Missing required string field '{field}'"))
 }
 
+/// List a workspace directory, optionally descending one level.
+///
+/// Entries are sorted and truncated to [`MAX_LIST_ENTRIES`]; the payload
+/// reports `truncated` so the model knows the listing is partial.
 fn list_directory_from_input(input: &Value) -> Result<String> {
     let path_str = require_string(input, "path")?;
     let recursive = input
@@ -220,20 +246,32 @@ fn list_directory_from_input(input: &Value) -> Result<String> {
     Ok(serde_json::to_string_pretty(&payload)?)
 }
 
+/// One row of a directory listing.
 struct DirEntryInfo {
+    /// Entry name, prefixed with `parent/` for recursed children.
     name: String,
+    /// Absolute path as displayed to the model.
     path: String,
+    /// `dir`, `file`, or `other`.
     kind: &'static str,
 }
 
+/// Walk `dir` into `out`, optionally descending one level into subdirectories.
+///
+/// Skips `.git`, `target`, and `node_modules`, re-checks root membership for
+/// every entry so a symlink cannot walk the listing out of the sandbox, and
+/// stops once [`MAX_LIST_ENTRIES`] is reached.
 fn collect_entries(dir: &Path, one_level_recurse: bool, out: &mut Vec<DirEntryInfo>) -> Result<()> {
-    let read =
-        fs::read_dir(dir).with_context(|| format!("Failed to list directory {}", dir.display()))?;
+    let roots = workspace_roots();
+    let read = open_dir_under_roots(dir, &roots)?;
     for entry in read.flatten() {
         if out.len() >= MAX_LIST_ENTRIES {
             break;
         }
         let path = entry.path();
+        if !path_stays_under_roots(&path, &roots) {
+            continue;
+        }
         let name = entry.file_name().to_string_lossy().to_string();
         if name == ".git" || name == "target" || name == "node_modules" {
             continue;
@@ -251,13 +289,16 @@ fn collect_entries(dir: &Path, one_level_recurse: bool, out: &mut Vec<DirEntryIn
             kind,
         });
         if one_level_recurse && path.is_dir() {
-            let sub = fs::read_dir(&path)
+            let sub = open_dir_under_roots(&path, &roots)
                 .with_context(|| format!("Failed to list subdirectory {}", path.display()))?;
             for child in sub.flatten() {
                 if out.len() >= MAX_LIST_ENTRIES {
                     break;
                 }
                 let child_path = child.path();
+                if !path_stays_under_roots(&child_path, &roots) {
+                    continue;
+                }
                 let child_name = child.file_name().to_string_lossy().to_string();
                 let kind = if child_path.is_dir() {
                     "dir"
@@ -277,6 +318,34 @@ fn collect_entries(dir: &Path, one_level_recurse: bool, out: &mut Vec<DirEntryIn
     Ok(())
 }
 
+/// Open a directory only after re-asserting workspace-root membership.
+///
+/// Callers already validated the top-level path via `path_policy`; this second
+/// gate closes TOCTOU/symlink races on walk entries and keeps the FS open site
+/// on a re-validated absolute path (not the raw agent string).
+fn open_dir_under_roots(dir: &Path, roots: &[PathBuf]) -> Result<fs::ReadDir> {
+    let dir_str = dir
+        .to_str()
+        .with_context(|| format!("Directory path is not valid UTF-8: {}", dir.display()))?;
+    let dir = path_policy::validate_existing(dir_str, roots)?;
+    if !dir.is_dir() {
+        bail!("Path is not a directory: {}", dir.display());
+    }
+    // nosemgrep: rust.actix.path-traversal.tainted-path.tainted-path -- path re-validated by path_policy::validate_existing (canonicalize + workspace-root bound) immediately above.
+    fs::read_dir(&dir).with_context(|| format!("Failed to list directory {}", dir.display()))
+}
+
+/// Reject walk children that escape roots via symlink after entry discovery.
+fn path_stays_under_roots(path: &Path, roots: &[PathBuf]) -> bool {
+    let Ok(canonical) = path.canonicalize() else {
+        // Non-existent / broken symlink: keep the lexical path only if under a root.
+        return roots.iter().any(|root| path.starts_with(root));
+    };
+    roots.iter().any(|root| canonical.starts_with(root))
+}
+
+/// Literal-substring search under a workspace path, with an optional filename
+/// suffix filter. Output passes through the guard that bounds tool payloads.
 fn search_files_from_input(input: &Value) -> Result<String> {
     let path_str = require_string(input, "path")?;
     let query = require_string(input, "query")?;
@@ -302,14 +371,19 @@ fn search_files_from_input(input: &Value) -> Result<String> {
         "provider": "native",
         "capability": "fs.search",
     });
-    let mut text = serde_json::to_string_pretty(&payload)?;
-    if text.chars().count() > MAX_RESULT_CHARS {
-        text = text.chars().take(MAX_RESULT_CHARS).collect();
-        text.push_str("\n…[truncated]");
-    }
-    Ok(text)
+    let text = serde_json::to_string_pretty(&payload)?;
+    Ok(super::output_guard::guard_chunk(
+        &text,
+        &format!("fs.search '{query}' in {}", root.display()),
+    ))
 }
 
+/// Recursive search worker collecting into `hits`.
+///
+/// Unreadable directories are skipped rather than failing the whole search — a
+/// single permission-denied subtree must not blank an otherwise useful result.
+/// Dotfiles, VCS/build directories, and oversized files are skipped; each hit
+/// records path, 1-based line number, and a 200-char snippet.
 fn walk_search(
     dir: &Path,
     query: &str,
@@ -319,7 +393,8 @@ fn walk_search(
     if hits.len() >= MAX_SEARCH_HITS {
         return Ok(());
     }
-    let read = match fs::read_dir(dir) {
+    let roots = workspace_roots();
+    let read = match open_dir_under_roots(dir, &roots) {
         Ok(r) => r,
         Err(_) => return Ok(()),
     };
@@ -328,6 +403,9 @@ fn walk_search(
             break;
         }
         let path = entry.path();
+        if !path_stays_under_roots(&path, &roots) {
+            continue;
+        }
         let name = entry.file_name().to_string_lossy().to_string();
         if name == ".git" || name == "target" || name == "node_modules" || name.starts_with('.') {
             continue;
@@ -351,9 +429,12 @@ fn walk_search(
         if meta.len() > MAX_SEARCH_FILE_BYTES {
             continue;
         }
-        let file = match fs::File::open(&path) {
-            Ok(f) => f,
-            Err(_) => continue,
+        // Open only files still under workspace roots (symlink-safe).
+        let Some(root) = roots.iter().find(|root| path.starts_with(root)) else {
+            continue;
+        };
+        let Ok(file) = codescribe_core::util::safe_path::safe_open_bounded(&path, root) else {
+            continue;
         };
         let reader = BufReader::new(file);
         for (idx, line) in reader.lines().enumerate() {
@@ -374,6 +455,10 @@ fn walk_search(
     Ok(())
 }
 
+/// Write UTF-8 text to a workspace path, creating parent directories.
+///
+/// The target is validated as a new-or-existing path inside a root, and the
+/// write itself goes through the bounded safe-path helper.
 fn write_file_from_input(input: &Value) -> Result<String> {
     let path_str = require_string(input, "path")?;
     let content = require_string(input, "content")?;
@@ -399,6 +484,10 @@ fn write_file_from_input(input: &Value) -> Result<String> {
     .to_string())
 }
 
+/// Replace an exact substring in a workspace file.
+///
+/// `old_string` must match exactly once: zero matches and multiple matches both
+/// fail loudly, so an ambiguous patch can never silently hit the wrong site.
 fn apply_patch_from_input(input: &Value) -> Result<String> {
     let path_str = require_string(input, "path")?;
     let old = require_string(input, "old_string")?;
@@ -416,8 +505,8 @@ fn apply_patch_from_input(input: &Value) -> Result<String> {
         .find(|root| path.starts_with(root))
         .cloned()
         .context("Path is outside configured agent workspace roots")?;
-    let original =
-        fs::read_to_string(&path).with_context(|| format!("Failed to read {}", path.display()))?;
+    let original = safe_read_to_string_bounded(&path, &root)
+        .with_context(|| format!("Failed to read {}", path.display()))?;
     let matches = original.matches(old).count();
     if matches == 0 {
         bail!("old_string not found in {}", path.display());
@@ -444,6 +533,8 @@ fn apply_patch_from_input(input: &Value) -> Result<String> {
     .to_string())
 }
 
+/// Move or rename a path, with both ends bounded by workspace roots and the
+/// destination's parent created on demand.
 fn move_path_from_input(input: &Value) -> Result<String> {
     let from_str = require_string(input, "from")?;
     let to_str = require_string(input, "to")?;
@@ -466,15 +557,18 @@ fn move_path_from_input(input: &Value) -> Result<String> {
     .to_string())
 }
 
+/// Path-policy bounded write/list/move coverage for the native FS tool.
 #[cfg(test)]
 mod tests {
     use super::*;
     use tempfile::TempDir;
 
+    /// Canonicalize a temp dir into the path-policy root list shape.
     fn roots_of(tmp: &TempDir) -> Vec<PathBuf> {
         path_policy::canonical_roots(&[tmp.path().to_path_buf()])
     }
 
+    /// Write, in-place patch, and rename stay inside the validated workspace root.
     #[test]
     fn list_and_search_and_write_patch_move_roundtrip() {
         let tmp = TempDir::new().unwrap();
@@ -507,6 +601,7 @@ mod tests {
         assert!(to.exists());
     }
 
+    /// Targets outside every workspace root are rejected before write.
     #[test]
     fn write_rejects_outside_workspace() {
         let tmp = TempDir::new().unwrap();

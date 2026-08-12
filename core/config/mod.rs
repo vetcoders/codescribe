@@ -17,14 +17,30 @@
 //!
 //! Note: Config is loaded via `Config::load()` and accessed via shared state in main.rs.
 
+/// Layer 1 ASR product mode, audio-egress consent, and gateway mint config.
+pub mod cloud_asr;
+/// Serde default helpers and default model/endpoint constants.
 mod defaults;
+/// Stop-path final-pass routing mode shared by controller and bridge lanes.
+pub mod final_pass;
+/// macOS Keychain storage for API keys (not plaintext `.env`).
 pub mod keychain;
+/// Load/save: defaults, settings.json, optional `.env`, process env overrides.
 mod loader;
+/// One-time legacy `.env` import into settings.json + Keychain.
 pub mod migrate;
+/// Runtime Whisper fallback model path resolution when not embedded.
 pub mod models;
+/// Secret-free portable profile export/import with dry-run validation.
 pub mod portable;
+/// On-disk prompt files (formatting, smart formatting, assistive): built-in
+/// defaults, user overrides, snapshots, and restore-to-default.
 pub mod prompts;
+/// GUI-managed user settings JSON (regular-user tier).
 pub mod settings;
+/// Process-wide app-data I/O fence used by destructive reset.
+pub mod storage_reset;
+/// Config enums and the main `Config` struct definitions.
 mod types;
 
 pub use defaults::{
@@ -38,11 +54,17 @@ pub use types::{
     ShortcutBinding, TranscriptSendMode, WorkMode,
 };
 // Language re-exported for external consumers (GUI apps)
+pub use cloud_asr::{
+    AsrProductMode, AudioEgressConsent, ConsentSource, GatewayMintError, GatewaySessionMint,
+    ModeDerivation, ResolvedAsrMode, resolve_asr_product_mode,
+};
+pub use final_pass::{FinalPassRoutingMode, final_pass_routing_mode};
 pub use portable::{
     ImportPlan, PortableProfile, export_portable, import_portable_apply, import_portable_dry_run,
     write_portable_export,
 };
 pub use settings::{FormattingPolicy, UserSettings};
+pub use storage_reset::{AppDataResetGuard, begin_app_data_reset};
 pub use types::Language;
 
 // Re-export prompts API (public API for GUI apps)
@@ -53,13 +75,16 @@ pub use prompts::{
     get_formatting_prompt_for_policy, get_formatting_prompt_path,
     get_formatting_prompt_path_for_policy, open_prompt_file, open_prompts_folder, prompt_snapshot,
     reset_to_defaults, restore_prompt_to_default, write_prompt, write_prompt_bytes,
+    write_prompt_bytes_during_reset,
 };
 
 #[cfg(test)]
+/// Config module unit tests (defaults, env overrides, parsing, sanitize).
 mod tests {
     use super::models;
     use super::*;
     use serial_test::serial;
+    /// Zero-state `Config::default` matches canonical defaults and flags.
     #[test]
     fn test_default_config() {
         let config = Config::default();
@@ -73,6 +98,7 @@ mod tests {
         assert_eq!(config.local_model, models::DEFAULT_MODEL);
     }
 
+    /// `SHOW_DOCK_ICON=0` forces `show_dock_icon` false on load (restores env).
     #[test]
     #[serial_test::serial]
     fn test_show_dock_icon_env_override_applies() {
@@ -89,6 +115,7 @@ mod tests {
         }
     }
 
+    /// Transcript tagging env vars override enable flag and template on load.
     #[test]
     #[serial_test::serial]
     fn test_transcript_tagging_env_override_applies() {
@@ -118,6 +145,7 @@ mod tests {
         }
     }
 
+    /// Language string aliases parse to Auto / Polish / English; invalid errs.
     #[test]
     fn test_language_parsing() {
         assert_eq!("auto".parse::<Language>(), Ok(Language::Auto));
@@ -128,6 +156,7 @@ mod tests {
         assert!("invalid".parse::<Language>().is_err());
     }
 
+    /// `ai_max_tokens = 0` means no limit; sanitize must leave it unchanged.
     #[test]
     fn test_token_limits_not_overridden() {
         // Token limits: 0 = no limit. Sanitize should NOT override.
@@ -139,6 +168,7 @@ mod tests {
         assert_eq!(config.ai_max_tokens, 0); // Stays 0, not overridden
     }
 
+    /// Sound volume clamps into [0.0, 1.0] during sanitize.
     #[test]
     fn test_sanitize_sound_volume() {
         let mut config = Config {
@@ -153,6 +183,7 @@ mod tests {
         assert_eq!(config.sound_volume, 0.0);
     }
 
+    /// `config_dir` respects `CODESCRIBE_DATA_DIR` or falls under `.codescribe`.
     #[test]
     #[serial]
     fn test_config_dir() {
@@ -167,6 +198,7 @@ mod tests {
         }
     }
 
+    /// `.env` parser skips comments/blanks and strips surrounding quotes.
     #[test]
     fn test_env_file_parse_write() {
         use std::io::Write;
@@ -190,6 +222,7 @@ mod tests {
         assert_eq!(vars.len(), 3);
     }
 
+    /// Transcript send-mode strings map to Streaming / EndOfUtterance.
     #[test]
     fn test_transcript_mode_parsing() {
         use types::TranscriptSendMode;
@@ -207,6 +240,7 @@ mod tests {
         );
     }
 
+    /// Overlay position mode strings map to snapped / custom variants.
     #[test]
     fn test_overlay_position_parsing() {
         use types::OverlayPositionMode;
