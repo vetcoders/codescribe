@@ -18,6 +18,6 @@ import Foundation
 /// Fails CLOSED for the user's data: when the marker is absent we assume
 /// production and write, which is the safe direction for a real dictation.
 enum QualityCaptureHost {
-    /// `XCTestCase` only exists in the process once the test bundle is loaded.
-    static let isRunningTests = NSClassFromString("XCTestCase") != nil
+  /// `XCTestCase` only exists in the process once the test bundle is loaded.
+  static let isRunningTests = NSClassFromString("XCTestCase") != nil
 }

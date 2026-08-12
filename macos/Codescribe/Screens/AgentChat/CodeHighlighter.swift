@@ -1,5 +1,5 @@
-import SwiftUI
 import HighlightSwift
+import SwiftUI
 
 // Syntax highlighting for finalized agent-chat code blocks.
 //
@@ -21,32 +21,32 @@ import HighlightSwift
 // here.
 
 enum CodeHighlighter {
-    // Lazily instantiated on first access (Swift `static let`), so the engine —
-    // and the JSContext it wraps — never warms during app launch.
-    private static let engine = Highlight()
+  // Lazily instantiated on first access (Swift `static let`), so the engine —
+  // and the JSContext it wraps — never warms during app launch.
+  private static let engine = Highlight()
 
-    /// Highlight `code` with the brand token theme, off the main render path.
-    ///
-    /// - Parameters:
-    ///   - language: the fence info-string hint (`rust`, `ts`, …). When present
-    ///     it is passed as a highlight.js language alias; an unknown alias makes
-    ///     HighlightSwift fall back to plain text internally. When `nil`/empty,
-    ///     highlight.js auto-detects the language.
-    ///   - dark: pick the dark or light token CSS.
-    /// - Returns: the highlighted `AttributedString`, or `nil` on failure so the
-    ///   caller keeps its plain-mono placeholder (never a crash, never empty).
-    static func attributed(_ code: String, language: String?, dark: Bool) async -> AttributedString? {
-        let colors = HighlightColors.custom(css: dark ? CodeTheme.darkCSS : CodeTheme.lightCSS)
-        do {
-            if let rawHint = language?.trimmingCharacters(in: .whitespaces), !rawHint.isEmpty {
-                let hint = rawHint.lowercased()
-                return try await engine.attributedText(code, language: hint, colors: colors)
-            }
-            return try await engine.attributedText(code, colors: colors)
-        } catch {
-            return nil
-        }
+  /// Highlight `code` with the brand token theme, off the main render path.
+  ///
+  /// - Parameters:
+  ///   - language: the fence info-string hint (`rust`, `ts`, …). When present
+  ///     it is passed as a highlight.js language alias; an unknown alias makes
+  ///     HighlightSwift fall back to plain text internally. When `nil`/empty,
+  ///     highlight.js auto-detects the language.
+  ///   - dark: pick the dark or light token CSS.
+  /// - Returns: the highlighted `AttributedString`, or `nil` on failure so the
+  ///   caller keeps its plain-mono placeholder (never a crash, never empty).
+  static func attributed(_ code: String, language: String?, dark: Bool) async -> AttributedString? {
+    let colors = HighlightColors.custom(css: dark ? CodeTheme.darkCSS : CodeTheme.lightCSS)
+    do {
+      if let rawHint = language?.trimmingCharacters(in: .whitespaces), !rawHint.isEmpty {
+        let hint = rawHint.lowercased()
+        return try await engine.attributedText(code, language: hint, colors: colors)
+      }
+      return try await engine.attributedText(code, colors: colors)
+    } catch {
+      return nil
     }
+  }
 }
 
 /// highlight.js token-class → CSColor mapping, emitted as CSS for
@@ -54,17 +54,17 @@ enum CodeHighlighter {
 /// so the code palette tracks the design system. No `background` rules — the code
 /// block keeps its own `surfaceRaised` fill.
 enum CodeTheme {
-    // Dark surface (the agent chat is pinned to .preferredColorScheme(.dark), so
-    // this is the variant in use today).
-    //   base            → textBodyAlt  #DFE2DB
-    //   keyword/type    → terracotta   #D97757  (the one brand accent)
-    //   string/addition → oliveLight   #9DB178
-    //   number/meta     → amber        #D6B24E
-    //   title/function  → terracottaLight #E9B79F
-    //   comment         → textFaint    #6F7268
-    //   attr/operator   → textMuted    #9A9D97
-    //   doctag/strong   → textHigh     #F4F2EC
-    static let darkCSS = """
+  // Dark surface (the agent chat is pinned to .preferredColorScheme(.dark), so
+  // this is the variant in use today).
+  //   base            → textBodyAlt  #DFE2DB
+  //   keyword/type    → terracotta   #D97757  (the one brand accent)
+  //   string/addition → oliveLight   #9DB178
+  //   number/meta     → amber        #D6B24E
+  //   title/function  → terracottaLight #E9B79F
+  //   comment         → textFaint    #6F7268
+  //   attr/operator   → textMuted    #9A9D97
+  //   doctag/strong   → textHigh     #F4F2EC
+  static let darkCSS = """
     .hljs{color:#DFE2DB}
     .hljs-comment,.hljs-quote{color:#6F7268}
     .hljs-keyword,.hljs-selector-tag,.hljs-built_in,.hljs-type,.hljs-tag,.hljs-name,.hljs-template-tag{color:#D97757}
@@ -76,12 +76,12 @@ enum CodeTheme {
     .hljs-deletion,.hljs-link{color:#D97757}
     """
 
-    // Light surface: a forward-looking variant (dormant while the chat is
-    // dark-pinned). Reuses darker CSColor tokens so tokens read on a light fill —
-    // olive #5F6B3E, terracottaDeep #C98A6E, eyebrowOlive #7F8C5E, textFaintAlt
-    // #5D6058, textMutedAlt #82857F, ink #090A0D — rather than inventing a new
-    // palette the design system does not carry.
-    static let lightCSS = """
+  // Light surface: a forward-looking variant (dormant while the chat is
+  // dark-pinned). Reuses darker CSColor tokens so tokens read on a light fill —
+  // olive #5F6B3E, terracottaDeep #C98A6E, eyebrowOlive #7F8C5E, textFaintAlt
+  // #5D6058, textMutedAlt #82857F, ink #090A0D — rather than inventing a new
+  // palette the design system does not carry.
+  static let lightCSS = """
     .hljs{color:#090A0D}
     .hljs-comment,.hljs-quote{color:#82857F}
     .hljs-keyword,.hljs-selector-tag,.hljs-built_in,.hljs-type,.hljs-tag,.hljs-name,.hljs-template-tag{color:#C98A6E}

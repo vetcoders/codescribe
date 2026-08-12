@@ -13,41 +13,41 @@ import SwiftUI
 
 @MainActor
 final class OnboardingWindowController {
-    private var window: NSWindow?
-    private let engine: OnboardingEngine
+  private var window: NSWindow?
+  private let engine: OnboardingEngine
 
-    init(engine: OnboardingEngine) {
-        self.engine = engine
-    }
+  init(engine: OnboardingEngine) {
+    self.engine = engine
+  }
 
-    /// Present the wizard only when the live gate says onboarding is due.
-    func presentIfNeeded() {
-        guard engine.shouldShowOnboarding() else { return }
-        present()
-    }
+  /// Present the wizard only when the live gate says onboarding is due.
+  func presentIfNeeded() {
+    guard engine.shouldShowOnboarding() else { return }
+    present()
+  }
 
-    /// Build (once) and front the wizard window. Idempotent — a second call just
-    /// re-fronts the existing window.
-    func present() {
-        if window == nil {
-            let model = OnboardingViewModel(engine: engine)
-            model.onFinished = { [weak self] in self?.close() }
-            let hosting = NSHostingController(rootView: OnboardingView(model: model))
-            let window = NSWindow(contentViewController: hosting)
-            window.title = "Welcome to codescribe"
-            window.setContentSize(NSSize(width: 720, height: 620))
-            window.styleMask = [.titled, .closable, .fullSizeContentView]
-            window.titlebarAppearsTransparent = true
-            window.isReleasedWhenClosed = false
-            window.center()
-            self.window = window
-        }
-        NSApp.activate(ignoringOtherApps: true)
-        window?.makeKeyAndOrderFront(nil)
+  /// Build (once) and front the wizard window. Idempotent — a second call just
+  /// re-fronts the existing window.
+  func present() {
+    if window == nil {
+      let model = OnboardingViewModel(engine: engine)
+      model.onFinished = { [weak self] in self?.close() }
+      let hosting = NSHostingController(rootView: OnboardingView(model: model))
+      let window = NSWindow(contentViewController: hosting)
+      window.title = "Welcome to codescribe"
+      window.setContentSize(NSSize(width: 720, height: 620))
+      window.styleMask = [.titled, .closable, .fullSizeContentView]
+      window.titlebarAppearsTransparent = true
+      window.isReleasedWhenClosed = false
+      window.center()
+      self.window = window
     }
+    NSApp.activate(ignoringOtherApps: true)
+    window?.makeKeyAndOrderFront(nil)
+  }
 
-    private func close() {
-        window?.close()
-        window = nil
-    }
+  private func close() {
+    window?.close()
+    window = nil
+  }
 }

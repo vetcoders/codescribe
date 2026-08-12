@@ -4,153 +4,156 @@ import OSLog
 /// Diagnostic breadcrumbs for the attachment staging path. Filter with:
 ///   log show --predicate 'subsystem == "com.vetcoders.codescribe"' --info
 private let attachLog = Logger(
-    subsystem: Bundle.main.bundleIdentifier ?? "com.vetcoders.codescribe",
-    category: "attachments"
+  subsystem: Bundle.main.bundleIdentifier ?? "com.vetcoders.codescribe",
+  category: "attachments"
 )
 
 // Backs the Agent Chat with the REAL codescribe engine via the UniFFI bridge
 // (CodescribeAgent / CsAgentListener). Streaming token deltas are hopped onto the
 // main actor (FIFO) so SwiftUI @Published updates stay ordered and thread-safe.
 final class RealChatEngine: AgentChatEngine {
-    private let agent = CodescribeAgent()
-    private var onToolApprovalRequested: (@MainActor (PendingToolApproval) -> Void)?
+  private let agent = CodescribeAgent()
+  private var onToolApprovalRequested: (@MainActor (PendingToolApproval) -> Void)?
 
-    func isAvailable() -> Bool { agent.isAvailable() }
+  func isAvailable() -> Bool { agent.isAvailable() }
 
-    func availabilityDetail() -> String? {
-        let availability = agent.availability()
-        if availability.available { return nil }
-        // The bridge always fills `detail`; the fallback keeps the chat honest
-        // if an older dylib ever returns an empty reason.
-        return availability.detail.isEmpty
-            ? "The assistive model isn't reachable yet — open Settings → Engine to configure the assistive lane."
-            : availability.detail
+  func availabilityDetail() -> String? {
+    let availability = agent.availability()
+    if availability.available { return nil }
+    // The bridge always fills `detail`; the fallback keeps the chat honest
+    // if an older dylib ever returns an empty reason.
+    return availability.detail.isEmpty
+      ? "The assistive model isn't reachable yet — open Settings → Engine to configure the assistive lane."
+      : availability.detail
+  }
+
+  func generateThreadTitle(_ text: String) async throws -> String? {
+    try await agent.generateThreadTitle(text: text)
+  }
+
+  func streamReply(
+    _ text: String,
+    threadId: String,
+    attachmentPaths: [String],
+    onDelta: @escaping @MainActor (String) -> Void,
+    onReasoning: @escaping @MainActor (String) -> Void,
+    onToolExecuting: @escaping @MainActor (_ name: String, _ id: String) -> Void,
+    onToolResult:
+      @escaping @MainActor (_ name: String, _ id: String, _ isError: Bool, _ reason: String) -> Void
+  ) async throws -> String {
+    let listener = StreamListener(
+      onDelta: onDelta,
+      onReasoning: onReasoning,
+      onToolExecuting: onToolExecuting,
+      onToolResult: onToolResult,
+      onToolApprovalRequested: onToolApprovalRequested
+    )
+    // Text-only path stays byte-identical to before; only route through the
+    // vision method when the composer actually staged an image.
+    if attachmentPaths.isEmpty {
+      attachLog.info("RealChatEngine.streamReply: text-only path (streamReply, no attachments)")
+      return try await agent.streamReply(text: text, threadId: threadId, listener: listener)
     }
+    attachLog.info(
+      "RealChatEngine.streamReply: vision path (streamReplyWithAttachments) with \(attachmentPaths.count, privacy: .public) attachment(s)"
+    )
+    let attachments = attachmentPaths.map { CsAttachment(path: $0) }
+    return try await agent.streamReplyWithAttachments(
+      text: text,
+      threadId: threadId,
+      attachments: attachments,
+      listener: listener
+    )
+  }
 
-    func generateThreadTitle(_ text: String) async throws -> String? {
-        try await agent.generateThreadTitle(text: text)
-    }
+  func cancelReply(threadId: String) -> Bool {
+    // Swift Task cancellation never reaches the Rust future through the
+    // generated UniFFI bindings (they poll to completion), so this explicit
+    // bridge call is what actually aborts the in-flight turn.
+    agent.cancelTurn(threadId: threadId)
+  }
 
-    func streamReply(
-        _ text: String,
-        threadId: String,
-        attachmentPaths: [String],
-        onDelta: @escaping @MainActor (String) -> Void,
-        onReasoning: @escaping @MainActor (String) -> Void,
-        onToolExecuting: @escaping @MainActor (_ name: String, _ id: String) -> Void,
-        onToolResult: @escaping @MainActor (_ name: String, _ id: String, _ isError: Bool, _ reason: String) -> Void
-    ) async throws -> String {
-        let listener = StreamListener(
-            onDelta: onDelta,
-            onReasoning: onReasoning,
-            onToolExecuting: onToolExecuting,
-            onToolResult: onToolResult,
-            onToolApprovalRequested: onToolApprovalRequested
-        )
-        // Text-only path stays byte-identical to before; only route through the
-        // vision method when the composer actually staged an image.
-        if attachmentPaths.isEmpty {
-            attachLog.info("RealChatEngine.streamReply: text-only path (streamReply, no attachments)")
-            return try await agent.streamReply(text: text, threadId: threadId, listener: listener)
-        }
-        attachLog.info(
-            "RealChatEngine.streamReply: vision path (streamReplyWithAttachments) with \(attachmentPaths.count, privacy: .public) attachment(s)"
-        )
-        let attachments = attachmentPaths.map { CsAttachment(path: $0) }
-        return try await agent.streamReplyWithAttachments(
-            text: text,
-            threadId: threadId,
-            attachments: attachments,
-            listener: listener
-        )
-    }
+  func installToolApprovalHandler(
+    _ handler: @escaping @MainActor (PendingToolApproval) -> Void
+  ) {
+    onToolApprovalRequested = handler
+  }
 
-    func cancelReply(threadId: String) -> Bool {
-        // Swift Task cancellation never reaches the Rust future through the
-        // generated UniFFI bindings (they poll to completion), so this explicit
-        // bridge call is what actually aborts the in-flight turn.
-        agent.cancelTurn(threadId: threadId)
-    }
-
-    func installToolApprovalHandler(
-        _ handler: @escaping @MainActor (PendingToolApproval) -> Void
-    ) {
-        onToolApprovalRequested = handler
-    }
-
-    func resolveToolApproval(
-        _ request: PendingToolApproval, approved: Bool, remember: Bool
-    ) -> Bool {
-        agent.resolveToolApproval(
-            sessionId: request.sessionID,
-            threadId: request.threadID,
-            callId: request.callID,
-            approved: approved,
-            remember: remember
-        )
-    }
+  func resolveToolApproval(
+    _ request: PendingToolApproval, approved: Bool, remember: Bool
+  ) -> Bool {
+    agent.resolveToolApproval(
+      sessionId: request.sessionID,
+      threadId: request.threadID,
+      callId: request.callID,
+      approved: approved,
+      remember: remember
+    )
+  }
 }
 
 /// Bridges Rust-side `CsAgentListener` callbacks (fired from a tokio thread) onto
 /// the main actor, preserving arrival order.
 final class StreamListener: CsAgentListener, @unchecked Sendable {
-    private let onDelta: @MainActor (String) -> Void
-    private let onReasoning: @MainActor (String) -> Void
-    private let onToolExecuting: @MainActor (String, String) -> Void
-    private let onToolResult: @MainActor (String, String, Bool, String) -> Void
-    private let onToolApprovalRequested: (@MainActor (PendingToolApproval) -> Void)?
+  private let onDelta: @MainActor (String) -> Void
+  private let onReasoning: @MainActor (String) -> Void
+  private let onToolExecuting: @MainActor (String, String) -> Void
+  private let onToolResult: @MainActor (String, String, Bool, String) -> Void
+  private let onToolApprovalRequested: (@MainActor (PendingToolApproval) -> Void)?
 
-    init(
-        onDelta: @escaping @MainActor (String) -> Void,
-        onReasoning: @escaping @MainActor (String) -> Void,
-        onToolExecuting: @escaping @MainActor (String, String) -> Void,
-        onToolResult: @escaping @MainActor (String, String, Bool, String) -> Void,
-        onToolApprovalRequested: (@MainActor (PendingToolApproval) -> Void)?
-    ) {
-        self.onDelta = onDelta
-        self.onReasoning = onReasoning
-        self.onToolExecuting = onToolExecuting
-        self.onToolResult = onToolResult
-        self.onToolApprovalRequested = onToolApprovalRequested
-    }
+  init(
+    onDelta: @escaping @MainActor (String) -> Void,
+    onReasoning: @escaping @MainActor (String) -> Void,
+    onToolExecuting: @escaping @MainActor (String, String) -> Void,
+    onToolResult: @escaping @MainActor (String, String, Bool, String) -> Void,
+    onToolApprovalRequested: (@MainActor (PendingToolApproval) -> Void)?
+  ) {
+    self.onDelta = onDelta
+    self.onReasoning = onReasoning
+    self.onToolExecuting = onToolExecuting
+    self.onToolResult = onToolResult
+    self.onToolApprovalRequested = onToolApprovalRequested
+  }
 
-    func onTextDelta(delta: String) {
-        DispatchQueue.main.async { MainActor.assumeIsolated { self.onDelta(delta) } }
+  func onTextDelta(delta: String) {
+    DispatchQueue.main.async { MainActor.assumeIsolated { self.onDelta(delta) } }
+  }
+  func onTextDone(text: String) {}
+  func onReasoningDelta(delta: String) {
+    DispatchQueue.main.async { MainActor.assumeIsolated { self.onReasoning(delta) } }
+  }
+  func onToolExecuting(name: String, id: String) {
+    DispatchQueue.main.async { MainActor.assumeIsolated { self.onToolExecuting(name, id) } }
+  }
+  func onToolApprovalRequested(request ffiRequest: CsToolApprovalRequest) {
+    let request = PendingToolApproval(
+      callID: ffiRequest.callId,
+      sessionID: ffiRequest.sessionId,
+      threadID: ffiRequest.threadId,
+      tool: ffiRequest.tool,
+      server: ffiRequest.server,
+      risk: ffiRequest.risk,
+      summary: ffiRequest.summary,
+      command: ffiRequest.command,
+      cwd: ffiRequest.cwd,
+      paths: ffiRequest.paths
+    )
+    DispatchQueue.main.async {
+      MainActor.assumeIsolated { self.onToolApprovalRequested?(request) }
     }
-    func onTextDone(text: String) {}
-    func onReasoningDelta(delta: String) {
-        DispatchQueue.main.async { MainActor.assumeIsolated { self.onReasoning(delta) } }
+  }
+  func onToolResult(name: String, id: String, summary: String, isError: Bool) {
+    // `summary` already carries the tool's error reason on failure (see the
+    // Rust AgentUiEvent::ToolResult contract); forward it so the chat row can
+    // reveal the cause instead of a bare "failed".
+    DispatchQueue.main.async {
+      MainActor.assumeIsolated { self.onToolResult(name, id, isError, summary) }
     }
-    func onToolExecuting(name: String, id: String) {
-        DispatchQueue.main.async { MainActor.assumeIsolated { self.onToolExecuting(name, id) } }
-    }
-    func onToolApprovalRequested(request ffiRequest: CsToolApprovalRequest) {
-        let request = PendingToolApproval(
-            callID: ffiRequest.callId,
-            sessionID: ffiRequest.sessionId,
-            threadID: ffiRequest.threadId,
-            tool: ffiRequest.tool,
-            server: ffiRequest.server,
-            risk: ffiRequest.risk,
-            summary: ffiRequest.summary,
-            command: ffiRequest.command,
-            cwd: ffiRequest.cwd,
-            paths: ffiRequest.paths
-        )
-        DispatchQueue.main.async {
-            MainActor.assumeIsolated { self.onToolApprovalRequested?(request) }
-        }
-    }
-    func onToolResult(name: String, id: String, summary: String, isError: Bool) {
-        // `summary` already carries the tool's error reason on failure (see the
-        // Rust AgentUiEvent::ToolResult contract); forward it so the chat row can
-        // reveal the cause instead of a bare "failed".
-        DispatchQueue.main.async { MainActor.assumeIsolated { self.onToolResult(name, id, isError, summary) } }
-    }
-    func onDone() {}
-    func onError(message: String) {
-        DispatchQueue.main.async { MainActor.assumeIsolated { self.onDelta("\n[error] " + message) } }
-    }
+  }
+  func onDone() {}
+  func onError(message: String) {
+    DispatchQueue.main.async { MainActor.assumeIsolated { self.onDelta("\n[error] " + message) } }
+  }
 }
 
 /// Bridges Rust-side `CsAgentDeliveryListener` callbacks (fired from a tokio
@@ -166,91 +169,92 @@ final class StreamListener: CsAgentListener, @unchecked Sendable {
 ///
 /// `onTurnStarted` also asks AppDelegate for a passive reveal. AppDelegate owns
 /// focus policy: explicit opens activate, voice delivery never steals focus.
-final class VoiceDeliveryListener: CsAgentDeliveryListener, VoiceTurnCancelling, @unchecked Sendable {
-    private let store: AgentChatStore
-    private let revealChat: @MainActor () -> Void
-    private let voiceTurns = CodescribeHotkeys()
+final class VoiceDeliveryListener: CsAgentDeliveryListener, VoiceTurnCancelling, @unchecked Sendable
+{
+  private let store: AgentChatStore
+  private let revealChat: @MainActor () -> Void
+  private let voiceTurns = CodescribeHotkeys()
 
-    @MainActor
-    init(store: AgentChatStore, revealChat: @escaping @MainActor () -> Void) {
-        self.store = store
-        self.revealChat = revealChat
-        store.voiceTurnCanceller = self
-    }
+  @MainActor
+  init(store: AgentChatStore, revealChat: @escaping @MainActor () -> Void) {
+    self.store = store
+    self.revealChat = revealChat
+    store.voiceTurnCanceller = self
+  }
 
-    func cancelVoiceTurn(threadId: String) -> Bool {
-        voiceTurns.cancelVoiceTurn(threadId: threadId)
-    }
+  func cancelVoiceTurn(threadId: String) -> Bool {
+    voiceTurns.cancelVoiceTurn(threadId: threadId)
+  }
 
-    func onTurnStarted(threadId: String, userText: String) {
-        DispatchQueue.main.async {
-            MainActor.assumeIsolated {
-                // The transcript is now the chat's You-bubble — the overlay's job
-                // is done, so it fades out instead of lingering over the reply.
-                // Order: hide overlay → passive reveal (no focus steal) → ingest
-                // so the You-bubble + streaming assistant render while the turn
-                // is still live. End-of-turn must not re-activate (W10-A).
-                AppModel.shared.overlay.hideForAgentHandoff()
-                self.revealChat()
-                self.store.ingestVoiceTurn(threadId: threadId, userText: userText)
-            }
-        }
+  func onTurnStarted(threadId: String, userText: String) {
+    DispatchQueue.main.async {
+      MainActor.assumeIsolated {
+        // The transcript is now the chat's You-bubble — the overlay's job
+        // is done, so it fades out instead of lingering over the reply.
+        // Order: hide overlay → passive reveal (no focus steal) → ingest
+        // so the You-bubble + streaming assistant render while the turn
+        // is still live. End-of-turn must not re-activate (W10-A).
+        AppModel.shared.overlay.hideForAgentHandoff()
+        self.revealChat()
+        self.store.ingestVoiceTurn(threadId: threadId, userText: userText)
+      }
     }
+  }
 
-    func onTextDelta(delta: String) {
-        DispatchQueue.main.async { MainActor.assumeIsolated { self.store.ingestVoiceDelta(delta) } }
+  func onTextDelta(delta: String) {
+    DispatchQueue.main.async { MainActor.assumeIsolated { self.store.ingestVoiceDelta(delta) } }
+  }
+  func onTextDone(text: String) {
+    DispatchQueue.main.async { MainActor.assumeIsolated { self.store.ingestVoiceTextDone(text) } }
+  }
+  func onReasoningDelta(delta: String) {
+    DispatchQueue.main.async { MainActor.assumeIsolated { self.store.ingestVoiceReasoning(delta) } }
+  }
+  func onToolExecuting(name: String, id: String) {
+    DispatchQueue.main.async {
+      MainActor.assumeIsolated {
+        self.store.ingestVoiceToolExecuting(name: name, id: id)
+      }
     }
-    func onTextDone(text: String) {
-        DispatchQueue.main.async { MainActor.assumeIsolated { self.store.ingestVoiceTextDone(text) } }
+  }
+  func onToolResult(name: String, id: String, summary: String, isError: Bool) {
+    DispatchQueue.main.async {
+      MainActor.assumeIsolated {
+        self.store.ingestVoiceToolResult(name: name, id: id, isError: isError, reason: summary)
+      }
     }
-    func onReasoningDelta(delta: String) {
-        DispatchQueue.main.async { MainActor.assumeIsolated { self.store.ingestVoiceReasoning(delta) } }
+  }
+  func onDone() {
+    // Terminal only — never open/activate the agent window here (W10-A).
+    DispatchQueue.main.async {
+      MainActor.assumeIsolated {
+        self.store.ingestVoiceDone()
+        // Turn-completed persistence edge: broadcast so every observer
+        // of the persisted thread set re-reads disk truth (rail live
+        // refresh, wave S cut C) — not just the store this listener
+        // happens to drive.
+        ThreadsChangeBus.postThreadsChanged()
+      }
     }
-    func onToolExecuting(name: String, id: String) {
-        DispatchQueue.main.async {
-            MainActor.assumeIsolated {
-                self.store.ingestVoiceToolExecuting(name: name, id: id)
-            }
-        }
+  }
+  func onError(message: String) {
+    DispatchQueue.main.async {
+      MainActor.assumeIsolated {
+        self.store.ingestVoiceError(message)
+        // Errored turns still persisted the user message (and any
+        // partial reply) — the rail must learn about the thread even
+        // without a clean onDone.
+        ThreadsChangeBus.postThreadsChanged()
+      }
     }
-    func onToolResult(name: String, id: String, summary: String, isError: Bool) {
-        DispatchQueue.main.async {
-            MainActor.assumeIsolated {
-                self.store.ingestVoiceToolResult(name: name, id: id, isError: isError, reason: summary)
-            }
-        }
+  }
+  func onCancelled(threadId: String) {
+    DispatchQueue.main.async {
+      MainActor.assumeIsolated {
+        self.store.ingestVoiceCancelled(threadId: threadId)
+        // Cancelled turns persist their user half too — same rule.
+        ThreadsChangeBus.postThreadsChanged()
+      }
     }
-    func onDone() {
-        // Terminal only — never open/activate the agent window here (W10-A).
-        DispatchQueue.main.async {
-            MainActor.assumeIsolated {
-                self.store.ingestVoiceDone()
-                // Turn-completed persistence edge: broadcast so every observer
-                // of the persisted thread set re-reads disk truth (rail live
-                // refresh, wave S cut C) — not just the store this listener
-                // happens to drive.
-                ThreadsChangeBus.postThreadsChanged()
-            }
-        }
-    }
-    func onError(message: String) {
-        DispatchQueue.main.async {
-            MainActor.assumeIsolated {
-                self.store.ingestVoiceError(message)
-                // Errored turns still persisted the user message (and any
-                // partial reply) — the rail must learn about the thread even
-                // without a clean onDone.
-                ThreadsChangeBus.postThreadsChanged()
-            }
-        }
-    }
-    func onCancelled(threadId: String) {
-        DispatchQueue.main.async {
-            MainActor.assumeIsolated {
-                self.store.ingestVoiceCancelled(threadId: threadId)
-                // Cancelled turns persist their user half too — same rule.
-                ThreadsChangeBus.postThreadsChanged()
-            }
-        }
-    }
+  }
 }

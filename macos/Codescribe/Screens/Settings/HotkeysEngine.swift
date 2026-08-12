@@ -14,19 +14,19 @@ import Foundation
 
 /// Read/write mode-binding surface the Shortcuts panel consumes.
 protocol HotkeysEngine {
-    /// Current per-mode bindings (Dictation / Formatting / Assistive), normalized.
-    func modeBindings() -> [CsModeBinding]
-    /// The closed set of selectable gestures (with labels) for the picker.
-    func availableBindings() -> [CsBindingOption]
-    /// Persist one mode's binding and live-reload the detector.
-    func setModeBinding(mode: CsWorkMode, binding: CsShortcutBinding) throws
-    /// Clear all custom bindings back to the built-in defaults.
-    func resetToDefaults() throws
-    /// Validate a candidate set WITHOUT persisting; returns detected conflicts.
-    func validate(candidate: [CsModeBinding]) -> [CsHotkeyConflict]
-    /// Re-arm the global CGEventTap after a first-run permission grant so hotkeys
-    /// go live without an app restart. Idempotent — safe on every Refresh.
-    func rearmAfterPermissionGrant()
+  /// Current per-mode bindings (Dictation / Formatting / Assistive), normalized.
+  func modeBindings() -> [CsModeBinding]
+  /// The closed set of selectable gestures (with labels) for the picker.
+  func availableBindings() -> [CsBindingOption]
+  /// Persist one mode's binding and live-reload the detector.
+  func setModeBinding(mode: CsWorkMode, binding: CsShortcutBinding) throws
+  /// Clear all custom bindings back to the built-in defaults.
+  func resetToDefaults() throws
+  /// Validate a candidate set WITHOUT persisting; returns detected conflicts.
+  func validate(candidate: [CsModeBinding]) -> [CsHotkeyConflict]
+  /// Re-arm the global CGEventTap after a first-run permission grant so hotkeys
+  /// go live without an app restart. Idempotent — safe on every Refresh.
+  func rearmAfterPermissionGrant()
 }
 
 // MARK: - Real engine (UniFFI bridge adapter)
@@ -36,24 +36,24 @@ protocol HotkeysEngine {
 /// listener state lives in process-global statics, and binding reads/writes go
 /// through settings.json.
 final class RealHotkeysEngine: HotkeysEngine {
-    private let hotkeys = CodescribeHotkeys()
+  private let hotkeys = CodescribeHotkeys()
 
-    func modeBindings() -> [CsModeBinding] { hotkeys.getModeBindings() }
-    func availableBindings() -> [CsBindingOption] { hotkeys.availableBindings() }
-    func setModeBinding(mode: CsWorkMode, binding: CsShortcutBinding) throws {
-        try hotkeys.setModeBinding(mode: mode, binding: binding)
-    }
-    func resetToDefaults() throws { try hotkeys.resetBindingsToDefaults() }
-    func validate(candidate: [CsModeBinding]) -> [CsHotkeyConflict] {
-        hotkeys.validateBindings(candidate: candidate)
-    }
+  func modeBindings() -> [CsModeBinding] { hotkeys.getModeBindings() }
+  func availableBindings() -> [CsBindingOption] { hotkeys.availableBindings() }
+  func setModeBinding(mode: CsWorkMode, binding: CsShortcutBinding) throws {
+    try hotkeys.setModeBinding(mode: mode, binding: binding)
+  }
+  func resetToDefaults() throws { try hotkeys.resetBindingsToDefaults() }
+  func validate(candidate: [CsModeBinding]) -> [CsHotkeyConflict] {
+    hotkeys.validateBindings(candidate: candidate)
+  }
 
-    func rearmAfterPermissionGrant() {
-        // Bridge call is idempotent and returns whether hotkeys are live; the UI
-        // reflects live status through the native permission probe, so the result
-        // is intentionally discarded here.
-        _ = hotkeys.rearmAfterPermissionGrant()
-    }
+  func rearmAfterPermissionGrant() {
+    // Bridge call is idempotent and returns whether hotkeys are live; the UI
+    // reflects live status through the native permission probe, so the result
+    // is intentionally discarded here.
+    _ = hotkeys.rearmAfterPermissionGrant()
+  }
 }
 
 // MARK: - Mock engine (previews)
@@ -61,70 +61,70 @@ final class RealHotkeysEngine: HotkeysEngine {
 /// In-memory stand-in for #Preview. Writes are no-ops; the view-model updates its
 /// own draft optimistically so the picker still feels live in previews.
 struct MockHotkeysEngine: HotkeysEngine {
-    var bindings: [CsModeBinding] = CsModeBinding.sampleBindings
+  var bindings: [CsModeBinding] = CsModeBinding.sampleBindings
 
-    func modeBindings() -> [CsModeBinding] { bindings }
-    func availableBindings() -> [CsBindingOption] { CsBindingOption.sampleOptions }
-    func setModeBinding(mode: CsWorkMode, binding: CsShortcutBinding) throws {}
-    func resetToDefaults() throws {}
-    func rearmAfterPermissionGrant() {}
-    func validate(candidate: [CsModeBinding]) -> [CsHotkeyConflict] {
-        // Surface a representative blocking conflict when dictation double-taps Ctrl
-        // while a toggle mode is also active — matches the core reachability rule.
-        let dictation = candidate.first { $0.mode == .dictation }?.binding
-        let formatting = candidate.first { $0.mode == .formatting }?.binding
-        guard dictation == .doubleCtrl, formatting == .doubleLeftOption else { return [] }
-        return [
-            CsHotkeyConflict(
-                gestureLabel: "Double-tap Left Option",
-                message: "Dictation is set to Double Ctrl, so Left Option toggle is disabled.",
-                blocking: true
-            )
-        ]
-    }
+  func modeBindings() -> [CsModeBinding] { bindings }
+  func availableBindings() -> [CsBindingOption] { CsBindingOption.sampleOptions }
+  func setModeBinding(mode: CsWorkMode, binding: CsShortcutBinding) throws {}
+  func resetToDefaults() throws {}
+  func rearmAfterPermissionGrant() {}
+  func validate(candidate: [CsModeBinding]) -> [CsHotkeyConflict] {
+    // Surface a representative blocking conflict when dictation double-taps Ctrl
+    // while a toggle mode is also active — matches the core reachability rule.
+    let dictation = candidate.first { $0.mode == .dictation }?.binding
+    let formatting = candidate.first { $0.mode == .formatting }?.binding
+    guard dictation == .doubleCtrl, formatting == .doubleLeftOption else { return [] }
+    return [
+      CsHotkeyConflict(
+        gestureLabel: "Double-tap Left Option",
+        message: "Dictation is set to Double Ctrl, so Left Option toggle is disabled.",
+        blocking: true
+      )
+    ]
+  }
 }
 
 // MARK: - Bridge value helpers (preview seeds)
 
 extension CsModeBinding {
-    /// Default binding set (Dictation=Hold Fn, Formatting=Double Left Option,
-    /// Assistive=Double Right Option) — preview seed matching the core defaults.
-    static let sampleBindings: [CsModeBinding] = [
-        CsModeBinding(
-            mode: .dictation,
-            modeLabel: "Dictation",
-            modeDescription: "Transcribes your voice and pastes the text.",
-            binding: .holdFn,
-            bindingLabel: "Hold Fn/Globe"
-        ),
-        CsModeBinding(
-            mode: .formatting,
-            modeLabel: "Formatting",
-            modeDescription: "Records dictation, then formats it before pasting.",
-            binding: .doubleLeftOption,
-            bindingLabel: "Double-tap Left Option"
-        ),
-        CsModeBinding(
-            mode: .assistive,
-            modeLabel: "Assistive",
-            modeDescription: "Sends your voice to the agent instead of pasting.",
-            binding: .doubleRightOption,
-            bindingLabel: "Double-tap Right Option"
-        )
-    ]
+  /// Default binding set (Dictation=Hold Fn, Formatting=Double Left Option,
+  /// Assistive=Double Right Option) — preview seed matching the core defaults.
+  static let sampleBindings: [CsModeBinding] = [
+    CsModeBinding(
+      mode: .dictation,
+      modeLabel: "Dictation",
+      modeDescription: "Transcribes your voice and pastes the text.",
+      binding: .holdFn,
+      bindingLabel: "Hold Fn/Globe"
+    ),
+    CsModeBinding(
+      mode: .formatting,
+      modeLabel: "Formatting",
+      modeDescription: "Records dictation, then formats it before pasting.",
+      binding: .doubleLeftOption,
+      bindingLabel: "Double-tap Left Option"
+    ),
+    CsModeBinding(
+      mode: .assistive,
+      modeLabel: "Assistive",
+      modeDescription: "Sends your voice to the agent instead of pasting.",
+      binding: .doubleRightOption,
+      bindingLabel: "Double-tap Right Option"
+    ),
+  ]
 }
 
 extension CsBindingOption {
-    /// The closed gesture set (mirrors `ShortcutBinding`), preview seed.
-    static let sampleOptions: [CsBindingOption] = [
-        CsBindingOption(binding: .disabled, label: "Disabled"),
-        CsBindingOption(binding: .holdFn, label: "Hold Fn/Globe"),
-        CsBindingOption(binding: .holdCtrl, label: "Hold Ctrl"),
-        CsBindingOption(binding: .holdCtrlAlt, label: "Hold Ctrl+Option"),
-        CsBindingOption(binding: .holdCtrlShift, label: "Hold Ctrl+Shift"),
-        CsBindingOption(binding: .holdCtrlCmd, label: "Hold Ctrl+Command"),
-        CsBindingOption(binding: .doubleCtrl, label: "Double-tap Ctrl"),
-        CsBindingOption(binding: .doubleLeftOption, label: "Double-tap Left Option"),
-        CsBindingOption(binding: .doubleRightOption, label: "Double-tap Right Option")
-    ]
+  /// The closed gesture set (mirrors `ShortcutBinding`), preview seed.
+  static let sampleOptions: [CsBindingOption] = [
+    CsBindingOption(binding: .disabled, label: "Disabled"),
+    CsBindingOption(binding: .holdFn, label: "Hold Fn/Globe"),
+    CsBindingOption(binding: .holdCtrl, label: "Hold Ctrl"),
+    CsBindingOption(binding: .holdCtrlAlt, label: "Hold Ctrl+Option"),
+    CsBindingOption(binding: .holdCtrlShift, label: "Hold Ctrl+Shift"),
+    CsBindingOption(binding: .holdCtrlCmd, label: "Hold Ctrl+Command"),
+    CsBindingOption(binding: .doubleCtrl, label: "Double-tap Ctrl"),
+    CsBindingOption(binding: .doubleLeftOption, label: "Double-tap Left Option"),
+    CsBindingOption(binding: .doubleRightOption, label: "Double-tap Right Option"),
+  ]
 }

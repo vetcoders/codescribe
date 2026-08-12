@@ -11,9 +11,9 @@ import Foundation
 /// *next* badge show — this bus only syncs UI observers; it does not live-resize
 /// a visible caret badge.
 enum ConfigChangeBus {
-    static let holdBadgeDidChange = Notification.Name("codescribe.config.holdBadgeDidChange")
+  static let holdBadgeDidChange = Notification.Name("codescribe.config.holdBadgeDidChange")
 
-    static func postHoldBadgeChanged() {
-        NotificationCenter.default.post(name: holdBadgeDidChange, object: nil)
-    }
+  static func postHoldBadgeChanged() {
+    NotificationCenter.default.post(name: holdBadgeDidChange, object: nil)
+  }
 }
