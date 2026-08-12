@@ -393,7 +393,11 @@ async fn transcribe_external(
 // WebSocket Streaming STT
 // ============================================================================
 
-/// Transcribe audio via WebSocket streaming
+/// LEGACY STOP/RECOVERY ONLY: upload one completed audio file over WebSocket.
+///
+/// This is not the live Layer 1 session transport. Do not add microphone frame
+/// streaming, normalized session state, or live adjudication here; those belong
+/// to `crate::asr_session::cloud` behind `AsrSessionProvider`.
 ///
 /// Protocol:
 /// 1. Connect to WebSocket

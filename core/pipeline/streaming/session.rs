@@ -12,6 +12,7 @@ use tokio::sync::mpsc;
 use tokio::time::{Duration, Instant};
 use tracing::{debug, error, info, warn};
 
+use crate::asr_session::recorder::{Layer1Decision, RecorderLifecycleEvents};
 use crate::audio::chunker::{SpeechEvent, SpeechSession};
 use crate::pipeline::contracts::{
     DropKind, EngineEvent, EventSink, LayerSource, LayerSummary, TranscriptSegment,
@@ -19,7 +20,7 @@ use crate::pipeline::contracts::{
 };
 use crate::stt::scheduler::{SttLane, SttScheduler, SttTaskHandle};
 use crate::stt::tail_patcher::{
-    TailPatchConfig, TailPatchOutcome, compute_tail_patch, layered_phase,
+    TailPatchConfig, TailPatchOutcome, UnderCommit, compute_tail_patch, layered_phase,
 };
 use crate::vad;
 
@@ -122,6 +123,15 @@ pub struct SessionConfig {
     pub stream_log_path: Option<std::path::PathBuf>,
     /// VAD silence threshold for utterance boundary (None = use default).
     pub utterance_silence_sec: Option<f32>,
+    /// Injected, already-authorized Layer 1 refiner decision (C1).
+    ///
+    /// The pipeline only consumes this — construction, consent, and mode
+    /// persistence belong to the settings owner. [`Layer1Decision::Disarmed`]
+    /// is the stock product: canvas + lexicon, complete, never an error.
+    pub layer1: Layer1Decision,
+    /// Per-recording host lifecycle boundaries. Present only for a live
+    /// recorder; buffered/offline helpers have no system observer owner.
+    pub lifecycle_events: Option<RecorderLifecycleEvents>,
 }
 
 /// What happened to one enqueue attempt.
@@ -252,6 +262,36 @@ pub(super) async fn compute_tail_patch_job(
     .map_err(|e| anyhow!("tail patch worker task failed: {e}"))?
 }
 
+/// Stable engine-event code carrying a Layer-1 under-commit outward.
+///
+/// The stop path keys on this to require residual gap fill for a session whose
+/// live canvas is known to be starved, independently of the committed-density
+/// floor that judges the same session from the audio side.
+pub const UNDER_COMMIT_WARNING_CODE: &str = "tail_patch_under_commit";
+
+/// Build the outward escalation for an under-commit that could not be placed
+/// live.
+///
+/// Counts only — the message crosses the IPC boundary and reaches the log, and
+/// the transcript is the user's speech. A `Warning` rather than a new event
+/// variant on purpose: every sink, the IPC wire and the Swift bridge already
+/// carry it, so the escalation costs no FFI surface.
+fn under_commit_warning(under: &UnderCommit) -> EngineEvent {
+    EngineEvent::Warning {
+        code: UNDER_COMMIT_WARNING_CODE.to_string(),
+        message: format!(
+            "residual gap fill required: committed_chars={} retranscribed_chars={} \
+             committed_tokens={} retranscribed_tokens={} commit_ratio={:.2} gap_appends={}",
+            under.committed_chars,
+            under.retranscribed_chars,
+            under.committed_tokens,
+            under.retranscribed_tokens,
+            under.commit_ratio,
+            under.appends.len(),
+        ),
+    }
+}
+
 /// Forward a tail-patch job's outcome to the sink and report how many
 /// replacements were emitted.
 ///
@@ -285,8 +325,42 @@ pub(super) fn emit_tail_patch_result(
             debug!(utterance_id, "Tail patch found no changes");
             0
         }
+        Ok((utterance_id, TailPatchOutcome::UnderCommit(under))) => {
+            let mut emitted = 0u64;
+            for event in &under.appends {
+                if matches!(
+                    event,
+                    EngineEvent::ReplaceRange {
+                        source: LayerSource::TailPatch,
+                        ..
+                    }
+                ) {
+                    emitted = emitted.saturating_add(1);
+                }
+                event_sink.on_event(event);
+            }
+            info!(
+                utterance_id,
+                reason = under.reason(),
+                committed_chars = under.committed_chars,
+                retranscribed_chars = under.retranscribed_chars,
+                committed_tokens = under.committed_tokens,
+                retranscribed_tokens = under.retranscribed_tokens,
+                gap_appends = emitted,
+                residual_required = under.residual_required,
+                "Layer 1 under-commit"
+            );
+            if under.residual_required {
+                event_sink.on_event(&under_commit_warning(&under));
+            }
+            emitted
+        }
         Ok((utterance_id, TailPatchOutcome::Skipped { reason })) => {
-            debug!(utterance_id, reason, "Tail patch skipped");
+            // INFO, not debug: a skipped patch is text Whisper had in hand and
+            // the canvas never received. The counts belong to the receipt the
+            // patcher already logs; this line proves the sink saw the same
+            // verdict for this utterance.
+            info!(utterance_id, reason, "Tail patch skipped");
             0
         }
         Err(e) => {
@@ -373,7 +447,21 @@ pub(crate) async fn vad_transcription_session(
         language,
         stream_log_path,
         utterance_silence_sec,
+        layer1,
+        lifecycle_events: _,
     } = config;
+
+    // C1 wires the live Layer 1 lane on the Apple progressive path only. On
+    // this canvas an armed decision is disarmed explicitly: a refiner that
+    // cannot run is a missing improvement, never an error, and never a reason
+    // to load anything heavier.
+    if layer1.is_armed() {
+        warn!(
+            "Layer 1 live lane is not wired on the VAD/scheduler path; \
+             proceeding canvas + lexicon"
+        );
+    }
+    drop(layer1);
 
     info!("Transcription session started (event-based pipeline)");
     let session_id = uuid::Uuid::new_v4().to_string();
@@ -1637,6 +1725,10 @@ pub async fn transcribe_buffered_samples(
             language,
             stream_log_path: None,
             utterance_silence_sec: None,
+            // Offline replay harness: Layer 1 arming is a live-recording
+            // decision owned elsewhere.
+            layer1: Layer1Decision::Disarmed,
+            lifecycle_events: None,
         },
     ));
 
@@ -1682,6 +1774,10 @@ pub async fn collect_buffered_engine_events(
             language,
             stream_log_path: None,
             utterance_silence_sec: None,
+            // Offline replay harness: Layer 1 arming is a live-recording
+            // decision owned elsewhere.
+            layer1: Layer1Decision::Disarmed,
+            lifecycle_events: None,
         },
     ));
 
@@ -1689,6 +1785,49 @@ pub async fn collect_buffered_engine_events(
         if tx.send(chunk.to_vec()).await.is_err() {
             return Err(anyhow!("Transcription session dropped channel"));
         }
+    }
+    drop(tx);
+
+    session
+        .await
+        .map_err(|e| anyhow!("Transcription session join error: {}", e))?;
+
+    Ok(collector.events())
+}
+
+/// Run buffered PCM through an explicitly supplied production session config.
+///
+/// Unlike [`collect_buffered_engine_events`], this seam never invents or
+/// hard-codes a Layer 1 decision. The recording owner must supply the complete
+/// [`SessionConfig`], which makes this suitable for production-owned replay
+/// witnesses while preserving the exact `transcription_session` implementation
+/// used by live capture.
+pub async fn collect_buffered_engine_events_with_config(
+    samples: &[f32],
+    config: SessionConfig,
+) -> Result<Vec<EngineEvent>> {
+    if samples.is_empty() {
+        return Ok(Vec::new());
+    }
+
+    let chunk_size = ((config.sample_rate as f32) * 0.1).round().max(1.0) as usize;
+    let (tx, rx) = mpsc::channel::<Vec<f32>>(8);
+    let collector = Arc::new(SessionEventCollector::new());
+    let event_sink: Arc<dyn EventSink> = collector.clone();
+    let session = tokio::spawn(transcription_session(rx, event_sink, config));
+
+    for chunk in samples.chunks(chunk_size) {
+        if tx.send(chunk.to_vec()).await.is_err() {
+            return Err(anyhow!("Transcription session dropped channel"));
+        }
+        // `transcription_session` consumes a live capture stream. Preserve
+        // that temporal contract for replay: flooding an entire recording in
+        // one scheduler tick advances `audio_secs` ahead of Apple's result
+        // timestamps and turns otherwise valid phrase windows into unresolved
+        // seals. A 100 ms packet therefore occupies 100 ms of wall time, just
+        // like the production callback cadence this seam replaces at its only
+        // unavoidable boundary.
+        tokio::time::sleep(Duration::from_millis(100)).await;
     }
     drop(tx);
 
@@ -1750,6 +1889,95 @@ mod session_tests {
                 source: LayerSource::TailPatch,
             }] if text == "kot"
         ));
+    }
+
+    /// Build an under-commit outcome with `appends` gap-appends and the given
+    /// escalation, without needing Whisper or a diff.
+    fn under_commit_fixture(appends: usize, residual_required: bool) -> UnderCommit {
+        UnderCommit {
+            appends: (0..appends)
+                .map(|idx| EngineEvent::ReplaceRange {
+                    utterance_id: 7,
+                    start: 11 + idx,
+                    end: 11 + idx,
+                    text: " odzyskane".to_string(),
+                    source: LayerSource::TailPatch,
+                })
+                .collect(),
+            residual_required,
+            committed_tokens: 3,
+            retranscribed_tokens: 12,
+            committed_chars: 21,
+            retranscribed_chars: 84,
+            commit_ratio: 0.25,
+        }
+    }
+
+    #[test]
+    /// W-C: recovered gap-appends reach the sink and are counted as Layer 1
+    /// work — the outcome the bounded cap used to discard in silence.
+    fn under_commit_gap_appends_reach_the_sink_and_count() {
+        let collector = SessionEventCollector::new();
+        let emitted = emit_tail_patch_result(
+            &collector,
+            Ok((
+                7,
+                TailPatchOutcome::UnderCommit(under_commit_fixture(1, false)),
+            )),
+        );
+
+        assert_eq!(emitted, 1, "an appended gap is Layer 1 work, not a skip");
+        let events = collector.events();
+        assert!(matches!(
+            events.as_slice(),
+            [EngineEvent::ReplaceRange {
+                start: 11,
+                end: 11,
+                source: LayerSource::TailPatch,
+                ..
+            }]
+        ));
+        assert!(
+            !events
+                .iter()
+                .any(|e| matches!(e, EngineEvent::Warning { .. })),
+            "nothing is owed to the stop path when everything landed live"
+        );
+    }
+
+    #[test]
+    /// W-C: an under-commit that could place nothing escalates outward instead
+    /// of leaving the stop path to call the starved canvas complete.
+    fn under_commit_without_safe_anchor_emits_residual_escalation() {
+        let collector = SessionEventCollector::new();
+        let emitted = emit_tail_patch_result(
+            &collector,
+            Ok((
+                7,
+                TailPatchOutcome::UnderCommit(under_commit_fixture(0, true)),
+            )),
+        );
+
+        assert_eq!(emitted, 0);
+        let events = collector.events();
+        let warning = events
+            .iter()
+            .find_map(|e| match e {
+                EngineEvent::Warning { code, message } if code == UNDER_COMMIT_WARNING_CODE => {
+                    Some(message.clone())
+                }
+                _ => None,
+            })
+            .expect("residual escalation must be emitted");
+        // Counts travel; transcript text never does.
+        assert!(warning.contains("committed_chars=21"));
+        assert!(warning.contains("retranscribed_chars=84"));
+        assert!(
+            !events
+                .iter()
+                .any(|e| matches!(e, EngineEvent::ReplaceRange { .. })),
+            "no anchor was safe, so no canvas may be touched"
+        );
     }
 
     #[test]

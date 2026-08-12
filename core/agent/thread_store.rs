@@ -967,6 +967,7 @@ mod tests {
     use anyhow::Result;
     use chrono::Duration;
     use serde_json::json;
+    use serial_test::serial;
     use std::collections::HashSet;
     use tempfile::TempDir;
 
@@ -1504,6 +1505,7 @@ mod tests {
 
     /// Inline image bytes persist as disk assets and restore without raw JSON.
     #[test]
+    #[serial]
     fn inline_image_roundtrips_through_disk_backed_asset() -> Result<()> {
         let tmp = TempDir::new()?;
         let store = ThreadStore::new_in(tmp.path().join("threads"))?;
@@ -1551,6 +1553,7 @@ mod tests {
 
     /// Identical image bytes map to one asset path and are not rewritten.
     #[test]
+    #[serial]
     fn inline_image_asset_is_written_once_across_saves() -> Result<()> {
         let block = ContentBlock::Image {
             data: b"w5a-dedup-bytes".to_vec(),

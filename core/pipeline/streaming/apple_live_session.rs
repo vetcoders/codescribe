@@ -39,6 +39,11 @@ use futures_util::stream::FuturesOrdered;
 use tokio::sync::mpsc;
 use tracing::{info, warn};
 
+use crate::asr_session::recorder::{
+    LAYER1_DEGRADED_WARNING_CODE, Layer1DegradeReason, RecorderLayer1Lane,
+    apply_recorder_lifecycle_event,
+};
+use crate::asr_session::{SessionId as Layer1SessionId, SessionInput as Layer1SessionInput};
 use crate::pipeline::contracts::{DropKind, EngineEvent, EventSink, TranscriptSegment};
 use crate::pipeline::stream_postprocess::StreamPostProcessor;
 use crate::stt::apple_stt::{LiveStreamEvent, LiveStreamSession};
@@ -49,7 +54,8 @@ use super::progressive_seal::{ProgressiveSealMachine, seal_span_text};
 #[cfg(test)]
 use super::session::emit_tail_patch_result;
 use super::session::{
-    SessionConfig, compute_tail_patch_job, emit_session_finalised, tail_patch_enabled,
+    SessionConfig, UNDER_COMMIT_WARNING_CODE, compute_tail_patch_job, emit_session_finalised,
+    tail_patch_enabled,
 };
 use super::stream_log::append_to_stream_log;
 
@@ -61,6 +67,11 @@ use super::stream_log::append_to_stream_log;
 /// a stalled capture. A bounded queue plus a counted drop is the honest
 /// backpressure shape: Whisper falling behind costs patches, never audio.
 const TAIL_PATCH_QUEUE_CAP: usize = 8;
+
+/// Content-free marker emitted when an Apple final callback contained segment
+/// time already committed by an earlier callback. The overlapping portion is
+/// removed before a new utterance id can be allocated.
+pub const APPLE_FINAL_OVERLAP_WARNING_CODE: &str = "apple_final_window_overlap_normalized";
 
 /// One sealed utterance handed from the worker thread to the async Layer 1 lane.
 struct TailPatchRequest {
@@ -157,14 +168,16 @@ impl AppleTailPatchLane {
     ) -> TailPatchCompletion {
         match result {
             Ok((utterance_id, outcome)) => {
-                if let TailPatchOutcome::Patches(events) = &outcome {
-                    self.replacements = self.replacements.saturating_add(
-                        events
-                            .iter()
-                            .filter(|event| matches!(event, EngineEvent::ReplaceRange { .. }))
-                            .count() as u64,
-                    );
-                }
+                // `events()` covers both bearing arms: ordinary patches and the
+                // gap-appends an under-commit recovered. Counting only `Patches`
+                // here would drop recovered speech from the session summary.
+                self.replacements = self.replacements.saturating_add(
+                    outcome
+                        .events()
+                        .iter()
+                        .filter(|event| matches!(event, EngineEvent::ReplaceRange { .. }))
+                        .count() as u64,
+                );
                 TailPatchCompletion {
                     utterance_id,
                     covered_through_secs: req_end_secs,
@@ -205,6 +218,17 @@ fn deliver_event(
     event_sink.on_event(event);
 }
 
+/// Surface one Layer 1 lane degrade as a counts-only warning event.
+///
+/// The message is the typed reason token and nothing else — no transcript,
+/// audio, provider payload, or endpoint detail can ride this event into a log.
+fn emit_layer1_degrade_warning(event_sink: &dyn EventSink, reason: Layer1DegradeReason) {
+    event_sink.on_event(&EngineEvent::Warning {
+        code: LAYER1_DEGRADED_WARNING_CODE.to_string(),
+        message: reason.as_token().to_string(),
+    });
+}
+
 /// Drive one progressive Apple stream session until the audio channel closes.
 pub(crate) async fn apple_stream_transcription_session(
     mut chunk_receiver: mpsc::Receiver<Vec<f32>>,
@@ -216,6 +240,8 @@ pub(crate) async fn apple_stream_transcription_session(
         language,
         stream_log_path,
         utterance_silence_sec,
+        layer1,
+        mut lifecycle_events,
     } = config;
     // SFSpeech owns phrase boundaries in progressive mode, so the VAD-path
     // silence knob cannot apply. Say so instead of silently differing from
@@ -234,6 +260,22 @@ pub(crate) async fn apple_stream_transcription_session(
         "Apple progressive live session started (stream multi-seal)"
     );
     let session_id = uuid::Uuid::new_v4().to_string();
+
+    // C1: open the injected Layer 1 lane at recording start. `Disarmed` is the
+    // stock product (canvas + lexicon); an armed provider only ever arrives
+    // here already authorized — construction and consent live with the
+    // settings owner, not in this pipeline. Every lane failure from here on
+    // degrades back to exactly the disarmed behavior.
+    let lane_input = Layer1SessionInput {
+        session_id: Layer1SessionId::new(session_id.clone())
+            .expect("uuid session ids are never blank"),
+        locale: language.clone(),
+        sample_rate,
+    };
+    let mut layer1_lane = RecorderLayer1Lane::open(layer1, &lane_input);
+    if let Some(reason) = layer1_lane.take_degrade_notice() {
+        emit_layer1_degrade_warning(event_sink.as_ref(), reason);
+    }
 
     // PCM → worker (None = EOF). Unbounded so the async select loop never
     // blocks on a full sync_channel while live Preview events wait to drain
@@ -299,6 +341,13 @@ pub(crate) async fn apple_stream_transcription_session(
             chunk = chunk_receiver.recv(), if !audio_eof => {
                 match chunk {
                     Some(chunk) => {
+                        // C1 fan-out: offer the frame to the Layer 1 lane
+                        // before forwarding to the Apple worker. The offer
+                        // returns immediately, always — a refiner that cannot
+                        // keep up costs refinement frames, never capture, and
+                        // sustained overflow degrades the lane instead of
+                        // exerting backpressure here.
+                        layer1_lane.offer_pcm(&chunk);
                         if pcm_tx.send(Some(chunk)).is_err() {
                             warn!("Apple live stream worker dropped PCM channel");
                             audio_eof = true;
@@ -310,6 +359,22 @@ pub(crate) async fn apple_stream_transcription_session(
                         let _ = pcm_tx.send(None);
                         audio_eof = true;
                     }
+                }
+            }
+            lifecycle = async {
+                match lifecycle_events.as_mut() {
+                    Some(events) => events.recv().await,
+                    None => std::future::pending().await,
+                }
+            } => {
+                match lifecycle {
+                    Some(event) => {
+                        apply_recorder_lifecycle_event(&mut layer1_lane, event);
+                        if let Some(reason) = layer1_lane.take_degrade_notice() {
+                            emit_layer1_degrade_warning(event_sink.as_ref(), reason);
+                        }
+                    }
+                    None => lifecycle_events = None,
                 }
             }
             // Admit one sealed utterance into Layer 1 at a time. The Whisper
@@ -331,6 +396,14 @@ pub(crate) async fn apple_stream_transcription_session(
                 let completion = tail_patch_lane.finish_for_worker(id, end, result);
                 let _ = tp_done_tx.send(completion);
             }
+        }
+        // C1: drain whatever the Layer 1 provider has ready. Partials stay
+        // volatile draft inside the lane (never canvas); finals pass the
+        // ingest doctrine. Non-blocking, so live Preview drainage above is
+        // never delayed by the refiner.
+        layer1_lane.poll();
+        if let Some(reason) = layer1_lane.take_degrade_notice() {
+            emit_layer1_degrade_warning(event_sink.as_ref(), reason);
         }
     }
 
@@ -379,12 +452,41 @@ pub(crate) async fn apple_stream_transcription_session(
         );
     }
 
+    // C1 stop-drain: close the Layer 1 lane with its bounded drain. Whatever
+    // happened inside (clean close, disconnect, incomplete drain), the method
+    // returns and the recording finishes on Apple + lexicon. The outcome's
+    // finals are doctrine-vetted gap-fill candidates: their one road to
+    // delivered text is `Layer1SessionOutcome::adjudicate_against_live_floor`
+    // (the T0 `merge_live_layer1` seam), owned by the stop-path truth
+    // adjudicator once the settings cut arms real providers.
+    let layer1_outcome = layer1_lane.stop();
+    if let Some(reason) = layer1_lane.take_degrade_notice() {
+        emit_layer1_degrade_warning(event_sink.as_ref(), reason);
+    }
+    let layer1_counts = layer1_outcome.telemetry();
+    if layer1_counts.frames_offered > 0 || layer1_counts.finals_accepted > 0 {
+        info!(
+            frames_forwarded = layer1_counts.frames_forwarded,
+            overflow_frame_drops = layer1_counts.overflow_frame_drops,
+            partials_applied = layer1_counts.partials_applied,
+            finals_accepted = layer1_counts.finals_accepted,
+            events_rejected = layer1_counts.events_rejected,
+            provider_errors = layer1_counts.provider_errors,
+            degrade_reason = layer1_outcome
+                .degrade_reason()
+                .map(|reason| reason.as_token())
+                .unwrap_or("none"),
+            "Layer 1 live lane closed"
+        );
+    }
+
     match worker.join() {
         Ok(Ok(outcome)) => {
             info!(
                 sealed = outcome.sealed,
                 filtered_empty_drops = outcome.filtered_empty_drops,
                 unresolved_windows = outcome.unresolved_windows,
+                under_commit_escalations = outcome.under_commit_escalations,
                 "Apple progressive live session finished"
             );
         }
@@ -427,6 +529,7 @@ struct AppleSealState {
     preview_rev: u64,
     utterance_id: u64,
     open_partial: String,
+    open_partial_segments: Vec<TranscriptSegment>,
     sealed_count: u64,
     filtered_empty_drops: u64,
     /// Bounded PCM retention, so a sealed boundary can be resolved back to the
@@ -435,8 +538,15 @@ struct AppleSealState {
     /// Session time of the previous seal — the lower bound of the next
     /// utterance's audio window.
     last_sealed_end: f32,
+    /// End of the last Apple segment admitted to committed canvas. Unlike the
+    /// PCM retention cursor, this advances even when Layer 1 audio lookup is
+    /// unavailable: Apple segment time is the authority for text disjointness.
+    last_apple_segment_end: f32,
     /// Seals whose audio window could not be resolved (F3 falsification).
     unresolved_windows: u64,
+    /// Seals where Layer 1 recovered speech it could not place on the canvas
+    /// (W-C). A non-zero count means the stop path is owed a residual gap fill.
+    under_commit_escalations: u64,
     /// Layer 1 hand-off, present only when layered transcription is armed.
     tail_patch: Option<mpsc::Sender<TailPatchRequest>>,
     /// Seals whose tail-patch request found the queue full (F1 backpressure).
@@ -461,11 +571,14 @@ impl AppleSealState {
             preview_rev: 0,
             utterance_id: 0,
             open_partial: String::new(),
+            open_partial_segments: Vec::new(),
             sealed_count: 0,
             filtered_empty_drops: 0,
             audio: LiveAudioBuffer::new(sample_rate, DEFAULT_RETENTION_SECS),
             last_sealed_end: 0.0,
+            last_apple_segment_end: 0.0,
             unresolved_windows: 0,
+            under_commit_escalations: 0,
             tail_patch: None,
             tail_patch_backpressure_drops: 0,
             sealed_prefix: String::new(),
@@ -531,10 +644,18 @@ impl AppleSealState {
                 quality_gate_dropped: false,
                 confidence_flags: Vec::new(),
             });
-            if let Some(TailPatchOutcome::Patches(events)) =
-                self.tail_patch_outcomes.remove(&sealed.id)
-            {
-                for event in events {
+            if let Some(outcome) = self.tail_patch_outcomes.remove(&sealed.id) {
+                // Escalate before the appends so the starved-canvas signal is
+                // never lost if a later send fails; both ride the same channel
+                // as the final, so ordering after `UtteranceFinal` holds.
+                if outcome.residual_required() {
+                    self.under_commit_escalations = self.under_commit_escalations.saturating_add(1);
+                    let _ = ev_tx.send(EngineEvent::Warning {
+                        code: UNDER_COMMIT_WARNING_CODE.to_string(),
+                        message: format!("residual gap fill required for utterance {}", sealed.id),
+                    });
+                }
+                for event in outcome.into_events() {
                     let _ = ev_tx.send(event);
                 }
             }
@@ -547,6 +668,8 @@ struct AppleStreamOutcome {
     sealed: u64,
     filtered_empty_drops: u64,
     unresolved_windows: u64,
+    /// How many seals escalated an unplaceable Layer 1 under-commit (W-C).
+    under_commit_escalations: u64,
 }
 
 /// Resolve a sealed utterance back to its audio span, then release what can
@@ -589,6 +712,24 @@ fn resolve_sealed_audio_window(state: &mut AppleSealState, end_ts: f32) -> Optio
     }
 }
 
+/// Case- and punctuation-insensitive projection for canvas containment checks
+/// (the sealed canvas carries Light+ casing and sentence terminals, raw
+/// callbacks carry neither).
+fn normalize_for_containment(text: &str) -> String {
+    text.chars()
+        .map(|c| {
+            if c.is_alphanumeric() {
+                c.to_lowercase().next().unwrap_or(c)
+            } else {
+                ' '
+            }
+        })
+        .collect::<String>()
+        .split_whitespace()
+        .collect::<Vec<_>>()
+        .join(" ")
+}
+
 /// Seal one Apple utterance: run the shared lexicon + cleanup pass, then emit
 /// `UtteranceFinal`. Returns `false` when postprocess filtered the text to
 /// empty — mirroring `PostprocessDrop::FilteredEmpty` on the VAD path, an
@@ -600,19 +741,126 @@ fn seal_utterance_final(
     state: &mut AppleSealState,
     ev_tx: &mpsc::UnboundedSender<EngineEvent>,
     raw: &str,
-    start_ts: f32,
-    end_ts: f32,
     segments: Vec<TranscriptSegment>,
+    audio_secs: f32,
 ) -> bool {
-    let raw_text = raw.trim().to_string();
+    const BOUNDARY_EPSILON_SECS: f32 = 0.002;
+
+    let callback_text = raw.trim().to_string();
+    let original_segment_count = segments.len();
+    let mut disjoint = Vec::with_capacity(original_segment_count);
+    let mut cursor = state.last_apple_segment_end;
+    let mut overlap_normalized = false;
+
+    for mut segment in segments {
+        let text = segment.text.trim();
+        if text.is_empty()
+            || !segment.start_ts.is_finite()
+            || !segment.end_ts.is_finite()
+            || segment.end_ts <= segment.start_ts
+        {
+            continue;
+        }
+        if segment.end_ts <= cursor + BOUNDARY_EPSILON_SECS
+            || segment.start_ts < cursor - BOUNDARY_EPSILON_SECS
+        {
+            overlap_normalized = true;
+            continue;
+        }
+        if segment.start_ts < cursor {
+            segment.start_ts = cursor;
+        }
+        segment.text = text.to_string();
+        cursor = segment.end_ts;
+        disjoint.push(segment);
+    }
+
+    if overlap_normalized {
+        let _ = ev_tx.send(EngineEvent::Warning {
+            code: APPLE_FINAL_OVERLAP_WARNING_CODE.to_string(),
+            message: "Apple final overlap removed at segment boundary".to_string(),
+        });
+    }
+
+    if disjoint.is_empty() {
+        if callback_text.is_empty() {
+            return false;
+        }
+        // Append doctrine: text Apple asserted must never die in the preview
+        // lane — the next partial replaces `open_partial` wholesale and the
+        // only copy is gone (session a5623d55, 2026-08-12). The trusted
+        // timing boundary exists to dedupe RE-HEARD text, so demotion is only
+        // legal for text already on the canvas. Cumulative callbacks re-state
+        // the whole phrase, so the longest canvas-known prefix splits off and
+        // only the NOVEL suffix commits, with a session-clock window (the
+        // fallback the doc header always promised for segment-less finals).
+        let mut canvas = state.progressive.sealed_prefix();
+        for span in state.progressive.pending_spans() {
+            canvas.push(' ');
+            canvas.push_str(&span.raw_text);
+        }
+        let canvas = normalize_for_containment(&canvas);
+        let words: Vec<&str> = callback_text.split_whitespace().collect();
+        let mut known_prefix_words = 0;
+        for take in (1..=words.len()).rev() {
+            let prefix_probe =
+                normalize_for_containment(&seal_span_text(&words[..take].join(" "), "", true));
+            if !prefix_probe.is_empty() && canvas.contains(prefix_probe.as_str()) {
+                known_prefix_words = take;
+                break;
+            }
+        }
+        let novel_text = words[known_prefix_words..].join(" ");
+        if novel_text.is_empty() {
+            // Fully re-heard text: safe to keep as in-flight preview.
+            state.open_partial = callback_text.clone();
+            state.preview_rev = state.preview_rev.saturating_add(1);
+            let _ = ev_tx.send(EngineEvent::Preview {
+                rev: state.preview_rev,
+                text: callback_text,
+            });
+            return false;
+        }
+        let start_ts = state.last_apple_segment_end.max(state.last_sealed_end);
+        let end_ts = audio_secs.max(start_ts + BOUNDARY_EPSILON_SECS);
+        info!(
+            audio_secs,
+            synthesized_start = start_ts,
+            synthesized_end = end_ts,
+            known_prefix_words,
+            text_chars = novel_text.chars().count(),
+            "apple_lifecycle: novel final suffix rescued with synthesized window"
+        );
+        disjoint.push(TranscriptSegment {
+            text: novel_text,
+            start_ts,
+            end_ts,
+        });
+    }
+
+    let start_ts = disjoint.first().map_or(0.0, |segment| segment.start_ts);
+    let end_ts = disjoint.last().map_or(start_ts, |segment| segment.end_ts);
+    let raw_text = if !overlap_normalized && disjoint.len() == original_segment_count {
+        callback_text
+    } else {
+        disjoint
+            .iter()
+            .map(|segment| segment.text.as_str())
+            .collect::<Vec<_>>()
+            .join(" ")
+    };
     if raw_text.is_empty() {
         return false;
     }
 
+    // Consume the Apple boundary even if cleanup filters the text. A later
+    // cumulative callback must not resurrect audio the product already judged.
+    state.last_apple_segment_end = end_ts;
+
     let Some(corrected) = state.postprocessor.process_utterance(&raw_text) else {
         state.filtered_empty_drops = state.filtered_empty_drops.saturating_add(1);
         warn!(
-            raw_text = %raw_text,
+            raw_chars = raw_text.chars().count(),
             "Apple seal dropped: empty after lexicon/cleanup"
         );
         let _ = ev_tx.send(EngineEvent::Drop {
@@ -635,7 +883,7 @@ fn seal_utterance_final(
             raw_text,
             start_ts,
             end_ts,
-            segments,
+            segments: disjoint,
         },
     );
 
@@ -734,7 +982,8 @@ fn apple_stream_worker(
     // not be the one route that commits uncorrected text.
     let open = state.open_partial.trim().to_string();
     if !open.is_empty() {
-        seal_utterance_final(&mut state, &ev_tx, &open, 0.0, audio_secs, Vec::new());
+        let segments = std::mem::take(&mut state.open_partial_segments);
+        seal_utterance_final(&mut state, &ev_tx, &open, segments, audio_secs);
     }
 
     // Every accepted Layer 1 request must close (success, no-change, or
@@ -759,6 +1008,7 @@ fn apple_stream_worker(
         sealed: state.sealed_count,
         filtered_empty_drops: state.filtered_empty_drops,
         unresolved_windows: state.unresolved_windows,
+        under_commit_escalations: state.under_commit_escalations,
     })
 }
 
@@ -778,22 +1028,33 @@ fn apple_stream_worker(
 /// collapse onto a short shared opener overwrote the prior utterance without
 /// sealing it.
 ///
-/// Freeze on collapse unless `next` is a **true substantial prefix** of `prev`
-/// (`len > 15`) — a same-phrase rewind, not a 1–2 word opener every sentence
-/// shares. Kept in lockstep with `SfSpeechPhraseAccumulator` in
-/// `codescribe-stt-bridge.swift`.
+/// Freeze whenever `next` does not retain `prev` in full. The old restart
+/// thresholds classify telemetry only; revision and same-phrase rewind are
+/// retained too because this call site otherwise overwrites the only copy.
+/// Kept in lockstep with `SfSpeechPhraseAccumulator` in the Swift bridge.
 pub(crate) fn phrase_restart_should_freeze_prior(prev: &str, next: &str) -> bool {
+    phrase_retention_reason(prev, next).is_some()
+}
+
+/// Telemetry classification for a retention decision. Text safety depends
+/// only on forward containment, never on the restart/revision classifier.
+fn phrase_retention_reason(prev: &str, next: &str) -> Option<&'static str> {
     let prev = prev.trim();
     let next = next.trim();
-    if prev.is_empty() || next.is_empty() {
-        return false;
+    if prev.is_empty() || next.contains(prev) {
+        return None;
     }
-    let restarted = (next.len() * 3 < prev.len()) || (next.len() <= 15 && prev.len() >= 25);
-    if !restarted {
-        return false;
+    if next.is_empty() {
+        return Some("empty_collapse_retained");
     }
-    let same_phrase_rewind = prev.starts_with(next) && next.len() > 15;
-    !same_phrase_rewind
+    let prev_chars = prev.chars().count();
+    let next_chars = next.chars().count();
+    let restarted = (next_chars * 3 < prev_chars) || (next_chars <= 15 && prev_chars >= 25);
+    Some(if restarted {
+        "restart_retained"
+    } else {
+        "revision_retained"
+    })
 }
 
 /// Map one poll's worth of bridge events onto `EngineEvent`s, sealing where the
@@ -834,28 +1095,30 @@ fn emit_stream_events(
                     "apple_lifecycle: recognizer end"
                 );
             }
-            LiveStreamEvent::Partial { text } => {
+            LiveStreamEvent::Partial { text, segments } => {
                 // Safety net for the named drop mechanism: if the bridge
                 // missed a freeze (shared opener collapse), seal the open
                 // partial here before the rewrite lands.
                 if phrase_restart_should_freeze_prior(&state.open_partial, &text) {
+                    let reason = phrase_retention_reason(&state.open_partial, &text)
+                        .expect("freeze decision must carry a telemetry reason");
                     let frozen = state.open_partial.clone();
                     info!(
                         audio_secs,
-                        prev_chars = frozen.len(),
-                        next_chars = text.len(),
-                        prev_head = %frozen.chars().take(40).collect::<String>(),
-                        next_head = %text.chars().take(40).collect::<String>(),
-                        reason = "shared_opener_restart_suppresses_freeze",
+                        prev_chars = frozen.chars().count(),
+                        next_chars = text.chars().count(),
+                        reason,
                         "apple_lifecycle: freeze open partial before restart partial"
                     );
-                    seal_utterance_final(state, ev_tx, &frozen, 0.0, audio_secs, Vec::new());
+                    let frozen_segments = std::mem::take(&mut state.open_partial_segments);
+                    seal_utterance_final(state, ev_tx, &frozen, frozen_segments, audio_secs);
                     state.open_partial.clear();
                 }
                 // Previews stay RAW: they are in-flight presentation, not
                 // canvas, and correcting them would make the lexicon rewrite
                 // flicker letter by letter while the phrase is still forming.
                 state.open_partial = text.clone();
+                state.open_partial_segments = segments;
                 state.progressive.note_session_partial(&text, audio_secs);
                 state.preview_rev = state.preview_rev.saturating_add(1);
                 let _ = ev_tx.send(EngineEvent::Preview {
@@ -869,14 +1132,11 @@ fn emit_stream_events(
                     audio_secs,
                     sealed_before = state.sealed_count,
                     text_chars = text.len(),
-                    text_head = %text.chars().take(40).collect::<String>(),
                     "apple_lifecycle: phrase final received"
                 );
                 state.open_partial.clear();
-                let start_ts = segments.first().map(|s| s.start_ts).unwrap_or(0.0);
-                let end_ts = segments.last().map(|s| s.end_ts).unwrap_or(audio_secs);
-                let committed =
-                    seal_utterance_final(state, ev_tx, &text, start_ts, end_ts, segments);
+                state.open_partial_segments.clear();
+                let committed = seal_utterance_final(state, ev_tx, &text, segments, audio_secs);
                 info!(
                     audio_secs,
                     committed,
@@ -906,12 +1166,14 @@ fn emit_stream_events(
                 }
                 // No phrase finals → seal the full summary once (partials-only engine).
                 if state.utterance_id == 0 {
-                    if seal_utterance_final(state, ev_tx, &text, 0.0, audio_secs, segments) {
+                    if seal_utterance_final(state, ev_tx, &text, segments, audio_secs) {
                         state.open_partial.clear();
+                        state.open_partial_segments.clear();
                     }
                 } else {
                     // Phrase seals already emitted; don't double-seal open partial.
                     state.open_partial.clear();
+                    state.open_partial_segments.clear();
                 }
             }
         }
@@ -947,6 +1209,7 @@ mod tests {
             vec![
                 LiveStreamEvent::Partial {
                     text: "uruchom doker".into(),
+                    segments: vec![segment("uruchom doker", 0.5, 2.0)],
                 },
                 LiveStreamEvent::PhraseFinal {
                     text: "uruchom doker".into(),
@@ -993,6 +1256,88 @@ mod tests {
         assert_eq!(state.progressive.sealed_spans().len(), 1);
     }
 
+    /// W-C: an under-commit's gap-appends reach the canvas through the same
+    /// seal gate as ordinary patches — strictly after `UtteranceFinal` — and an
+    /// unplaceable remainder rides out as the residual escalation.
+    #[test]
+    fn apple_seal_emits_under_commit_gap_appends_and_escalation() {
+        let (tx, mut rx) = mpsc::unbounded_channel();
+        let (tp_tx, _tp_rx) = mpsc::channel::<TailPatchRequest>(TAIL_PATCH_QUEUE_CAP);
+        let mut state = AppleSealState::new_with_tail_patch(TEST_SAMPLE_RATE, tp_tx);
+        push_capture(&mut state, 10.0);
+
+        emit_stream_events(
+            vec![
+                LiveStreamEvent::Partial {
+                    text: "raz dwa trzy cztery piec".into(),
+                    segments: vec![segment("raz dwa trzy cztery piec", 0.5, 2.0)],
+                },
+                LiveStreamEvent::PhraseFinal {
+                    text: "raz dwa trzy cztery piec".into(),
+                    segments: vec![segment("raz dwa trzy cztery piec", 0.5, 2.0)],
+                },
+            ],
+            &tx,
+            &mut state,
+            2.0,
+        );
+        while rx.try_recv().is_ok() {}
+
+        // Whisper recovered a tail that only partly has a safe anchor.
+        let outcome = compute_tail_patch(
+            "raz dwa trzy cztery piec szesc",
+            "raz dwa trzy alfa beta gamma cztery piec siedem osiem dziewiec dziesiec",
+            1,
+            &TailPatchConfig::default(),
+        );
+        assert!(
+            outcome.residual_required(),
+            "fixture must carry an unplaceable remainder"
+        );
+        state.complete_whisper_window(
+            &tx,
+            TailPatchCompletion {
+                utterance_id: 1,
+                covered_through_secs: 2.0,
+                outcome,
+            },
+            5.0,
+        );
+
+        let mut after = Vec::new();
+        while let Ok(event) = rx.try_recv() {
+            after.push(event);
+        }
+        let final_at = after
+            .iter()
+            .position(|e| matches!(e, EngineEvent::UtteranceFinal { .. }))
+            .expect("span must seal");
+        let patch_at = after
+            .iter()
+            .position(|e| {
+                matches!(
+                    e,
+                    EngineEvent::ReplaceRange {
+                        source: LayerSource::TailPatch,
+                        ..
+                    }
+                )
+            })
+            .expect("recovered gap must reach the canvas, not be discarded");
+        assert!(
+            final_at < patch_at,
+            "a gap-append must never overtake the final it addresses"
+        );
+        assert!(
+            after.iter().any(|e| matches!(
+                e,
+                EngineEvent::Warning { code, .. } if code == UNDER_COMMIT_WARNING_CODE
+            )),
+            "unplaceable recovered speech must escalate outward"
+        );
+        assert_eq!(state.under_commit_escalations, 1);
+    }
+
     /// Partial → Preview; each phrase final → UtteranceFinal with rising ids.
     #[test]
     fn emit_maps_partial_and_two_phrase_finals() {
@@ -1002,14 +1347,15 @@ mod tests {
             vec![
                 LiveStreamEvent::Partial {
                     text: "hello".into(),
+                    segments: vec![segment("hello", 0.0, 0.5)],
                 },
                 LiveStreamEvent::PhraseFinal {
                     text: "hello world".into(),
-                    segments: vec![],
+                    segments: vec![segment("hello world", 0.0, 1.0)],
                 },
                 LiveStreamEvent::PhraseFinal {
                     text: "second".into(),
-                    segments: vec![],
+                    segments: vec![segment("second", 1.0, 2.0)],
                 },
             ],
             &tx,
@@ -1057,6 +1403,98 @@ mod tests {
         }
     }
 
+    /// Append doctrine (session a5623d55, 2026-08-12): a phrase final whose
+    /// segments are entirely consumed by the trusted timing boundary but whose
+    /// text carries NOVEL content must still reach the canvas. Demoting it to
+    /// the preview lane is a silent replacement channel — the very next
+    /// partial overwrites `open_partial` wholesale and the only copy dies.
+    #[test]
+    fn boundary_consumed_final_with_novel_text_still_reaches_canvas() {
+        let (tx, mut rx) = mpsc::unbounded_channel();
+        let mut state = AppleSealState::new(TEST_SAMPLE_RATE);
+        push_capture(&mut state, 40.0);
+
+        // Utterance 1 commits normally; trusted boundary moves to 14.0.
+        emit_stream_events(
+            vec![LiveStreamEvent::PhraseFinal {
+                text: "Zmienili zobacz".into(),
+                segments: vec![segment("Zmienili zobacz", 0.5, 14.0)],
+            }],
+            &tx,
+            &mut state,
+            14.2,
+        );
+
+        // SFSpeech restart re-delivers with stale timings BEHIND the boundary
+        // but novel words; the collapsed restart partial lands right after.
+        emit_stream_events(
+            vec![
+                LiveStreamEvent::PhraseFinal {
+                    text: "Czyli dupa zbita".into(),
+                    segments: vec![segment("Czyli dupa zbita", 10.0, 13.5)],
+                },
+                LiveStreamEvent::Partial {
+                    text: "Tak".into(),
+                    segments: vec![segment("Tak", 17.0, 17.4)],
+                },
+            ],
+            &tx,
+            &mut state,
+            17.5,
+        );
+
+        let mut finals = Vec::new();
+        while let Ok(event) = rx.try_recv() {
+            if let EngineEvent::UtteranceFinal { text, .. } = event {
+                finals.push(text);
+            }
+        }
+        let canvas = finals.join(" ");
+        assert!(
+            canvas.contains("Czyli dupa zbita"),
+            "Apple-asserted novel text died in the preview lane (podmianka): canvas={canvas:?}"
+        );
+    }
+
+    /// Append doctrine, freeze path: the safety-net freeze seals the open
+    /// partial WITHOUT segments. That seal must not die on `disjoint.is_empty()`
+    /// — the frozen text is the only copy of a whole utterance.
+    #[test]
+    fn frozen_partial_without_segments_still_reaches_canvas() {
+        let (tx, mut rx) = mpsc::unbounded_channel();
+        let mut state = AppleSealState::new(TEST_SAMPLE_RATE);
+        push_capture(&mut state, 30.0);
+
+        emit_stream_events(
+            vec![
+                LiveStreamEvent::Partial {
+                    text: "pojebany tekst czyli dupa".into(),
+                    segments: Vec::new(),
+                },
+                // Collapsed restart: freeze must seal the prior hypothesis.
+                LiveStreamEvent::Partial {
+                    text: "Tak".into(),
+                    segments: Vec::new(),
+                },
+            ],
+            &tx,
+            &mut state,
+            12.0,
+        );
+
+        let mut finals = Vec::new();
+        while let Ok(event) = rx.try_recv() {
+            if let EngineEvent::UtteranceFinal { text, .. } = event {
+                finals.push(text);
+            }
+        }
+        let canvas = normalize_for_containment(&finals.join(" "));
+        assert!(
+            canvas.contains("pojebany tekst czyli dupa"),
+            "frozen open partial died sealing without segments: canvas={canvas:?}"
+        );
+    }
+
     /// F3 wiring contract: a seal must resolve to the audio actually retained
     /// for this session, and advance the lower bound for the next utterance.
     /// This is what W2-A's tail-patch will stand on.
@@ -1091,6 +1529,132 @@ mod tests {
         // Audio before the last boundary is committed canvas and released.
         assert!(state.audio.window(0.0, 1.0).is_none());
         assert!(state.audio.window(2.5, 4.0).is_some());
+    }
+
+    #[test]
+    fn cumulative_apple_final_commits_only_segments_after_last_boundary() {
+        let (tx, mut rx) = mpsc::unbounded_channel();
+        let mut state = AppleSealState::new(TEST_SAMPLE_RATE);
+        push_capture(&mut state, 4.0);
+
+        emit_stream_events(
+            vec![
+                LiveStreamEvent::PhraseFinal {
+                    text: "alpha beta".into(),
+                    segments: vec![segment("alpha", 0.0, 1.0), segment("beta", 1.0, 2.0)],
+                },
+                LiveStreamEvent::PhraseFinal {
+                    text: "alpha beta gamma".into(),
+                    segments: vec![
+                        segment("alpha", 0.0, 1.0),
+                        segment("beta", 1.0, 2.0),
+                        segment("gamma", 2.0, 3.0),
+                    ],
+                },
+            ],
+            &tx,
+            &mut state,
+            4.0,
+        );
+
+        let mut finals = Vec::new();
+        let mut overlap_warnings = 0;
+        while let Ok(event) = rx.try_recv() {
+            match event {
+                EngineEvent::UtteranceFinal {
+                    raw_text,
+                    start_ts,
+                    end_ts,
+                    ..
+                } => finals.push((raw_text, start_ts, end_ts)),
+                EngineEvent::Warning { code, .. } if code == APPLE_FINAL_OVERLAP_WARNING_CODE => {
+                    overlap_warnings += 1;
+                }
+                _ => {}
+            }
+        }
+        assert_eq!(
+            finals,
+            vec![("alpha beta".into(), 0.0, 2.0), ("gamma".into(), 2.0, 3.0)]
+        );
+        assert_eq!(overlap_warnings, 1);
+    }
+
+    #[test]
+    fn cumulative_final_commits_only_its_novel_suffix() {
+        let (tx, mut rx) = mpsc::unbounded_channel();
+        let mut state = AppleSealState::new(TEST_SAMPLE_RATE);
+        push_capture(&mut state, 3.0);
+
+        emit_stream_events(
+            vec![
+                LiveStreamEvent::PhraseFinal {
+                    text: "alpha beta".into(),
+                    segments: vec![segment("alpha", 0.0, 1.0), segment("beta", 1.0, 2.0)],
+                },
+                LiveStreamEvent::PhraseFinal {
+                    text: "alpha beta revised".into(),
+                    segments: vec![segment("alpha beta revised", 0.0, 2.0)],
+                },
+            ],
+            &tx,
+            &mut state,
+            3.0,
+        );
+
+        let events = std::iter::from_fn(|| rx.try_recv().ok()).collect::<Vec<_>>();
+        // Append doctrine: the canvas-known prefix "alpha beta" must not
+        // double-commit, but the novel suffix must never die in preview.
+        let finals: Vec<&String> = events
+            .iter()
+            .filter_map(|event| match event {
+                EngineEvent::UtteranceFinal { text, .. } => Some(text),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(finals.len(), 2, "novel suffix must commit: {events:?}");
+        assert!(
+            normalize_for_containment(finals[1]).contains("revised"),
+            "second final must carry only the novel suffix: {finals:?}"
+        );
+        assert!(
+            !normalize_for_containment(finals[1]).contains("alpha"),
+            "canvas-known prefix must not double-commit: {finals:?}"
+        );
+        assert_eq!(state.utterance_id, 2, "novel suffix gets a fresh ID");
+        assert_eq!(
+            state.last_apple_segment_end, 3.0,
+            "synthesized window consumes the boundary to the session clock"
+        );
+    }
+
+    #[test]
+    fn legitimate_repeated_words_survive_disjoint_apple_windows() {
+        let (tx, mut rx) = mpsc::unbounded_channel();
+        let mut state = AppleSealState::new(TEST_SAMPLE_RATE);
+        push_capture(&mut state, 3.0);
+        emit_stream_events(
+            vec![
+                LiveStreamEvent::PhraseFinal {
+                    text: "tak".into(),
+                    segments: vec![segment("tak", 0.0, 1.0)],
+                },
+                LiveStreamEvent::PhraseFinal {
+                    text: "tak".into(),
+                    segments: vec![segment("tak", 1.0, 2.0)],
+                },
+            ],
+            &tx,
+            &mut state,
+            3.0,
+        );
+        let raw_finals = std::iter::from_fn(|| rx.try_recv().ok())
+            .filter_map(|event| match event {
+                EngineEvent::UtteranceFinal { raw_text, .. } => Some(raw_text),
+                _ => None,
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(raw_finals, vec!["tak", "tak"]);
     }
 
     /// Falsification arm: an `end_ts` that does not describe this session's PCM
@@ -1182,7 +1746,7 @@ mod tests {
         emit_stream_events(
             vec![LiveStreamEvent::PhraseFinal {
                 text: "uruchom doker teraz".into(),
-                segments: vec![],
+                segments: vec![segment("uruchom doker teraz", 0.0, 1.0)],
             }],
             &tx,
             &mut state,
@@ -1212,6 +1776,7 @@ mod tests {
         emit_stream_events(
             vec![LiveStreamEvent::Partial {
                 text: "uruchom doker".into(),
+                segments: vec![segment("uruchom doker", 0.0, 1.0)],
             }],
             &tx,
             &mut state,
@@ -1236,7 +1801,7 @@ mod tests {
                 // Trailing-":D" burst: a known ASR artifact that cleanup strips
                 // to nothing.
                 text: ":D".into(),
-                segments: vec![],
+                segments: vec![segment(":D", 0.0, 1.0)],
             }],
             &tx,
             &mut state,
@@ -1266,7 +1831,7 @@ mod tests {
         emit_stream_events(
             vec![LiveStreamEvent::Summary {
                 text: "zbuduj obraz doker".into(),
-                segments: vec![],
+                segments: vec![segment("zbuduj obraz doker", 0.0, 2.0)],
                 ok: true,
                 error: None,
             }],
@@ -1292,7 +1857,7 @@ mod tests {
         emit_stream_events(
             vec![LiveStreamEvent::PhraseFinal {
                 text: "uruchom doker teraz".into(),
-                segments: vec![],
+                segments: vec![segment("uruchom doker teraz", 0.0, 1.0)],
             }],
             &tx,
             &mut state,
@@ -1596,6 +2161,51 @@ mod tests {
 
     // ── w1-b utterance_drop: shared_opener_restart_suppresses_freeze ────────
 
+    /// One checked-in vector source is consumed by this Rust mirror and the
+    /// Swift bridge self-test. The measured 40→20 non-prefix collapse is the
+    /// RED discriminator: threshold-only restart detection currently loses it.
+    #[test]
+    fn fleet_red_retention_missed_collapse_40_to_20() {
+        let vectors = include_str!("../../../tests/fixtures/phrase_restart_vectors.tsv");
+        let required_ids = [
+            "measured_restart_47_to_12",
+            "measured_revision_95_to_79",
+            "missed_collapse_40_to_20",
+            "shared_opener_sentence_restart",
+            "shared_opener_spoken_variant",
+        ];
+        let mut seen_ids = std::collections::BTreeSet::new();
+
+        for line in vectors.lines().filter(|line| !line.starts_with('#')) {
+            let fields: Vec<_> = line.split('\t').collect();
+            assert_eq!(fields.len(), 4, "malformed phrase restart vector: {line}");
+            seen_ids.insert(fields[0]);
+            let expected = fields[1]
+                .parse::<bool>()
+                .expect("expected_freeze must be true or false");
+            let actual = phrase_restart_should_freeze_prior(fields[2], fields[3]);
+            if fields[0] == "missed_collapse_40_to_20" {
+                assert_eq!(fields[2].chars().count(), 40);
+                assert_eq!(fields[3].chars().count(), 20);
+            }
+            assert_eq!(
+                actual,
+                expected,
+                "phrase restart vector {} diverged: prev_chars={} next_chars={}",
+                fields[0],
+                fields[2].chars().count(),
+                fields[3].chars().count()
+            );
+        }
+
+        for required_id in required_ids {
+            assert!(
+                seen_ids.contains(required_id),
+                "required phrase restart vector missing: {required_id}"
+            );
+        }
+    }
+
     /// Measured three-way pattern: after a long open partial, SFSpeech collapses
     /// onto the next sentence's shared opener (`Zdanie`). That collapse MUST
     /// freeze the prior utterance — the old rule did not, and s6/s8/s10 vanished.
@@ -1616,31 +2226,38 @@ mod tests {
         );
     }
 
-    /// Mid-phrase revision keeps most of the text without being a prefix
-    /// collapse — must NOT freeze (would double-seal the same span).
+    /// Revisions and rewinds must retain the prior text; only a forward
+    /// extension that contains the full prior hypothesis may replace it.
     #[test]
-    fn utterance_drop_revision_mid_reword_does_not_freeze() {
-        // 95 → 79 char mid-reword: not a restart collapse by the measured rule.
+    fn utterance_drop_revision_and_rewind_retain_prior() {
+        // 95 → 79 char mid-reword is classified as a revision, but still
+        // freezes because otherwise its removed span has no retained copy.
         let prev = format!("{}MIDDLE{}", "x".repeat(50), "y".repeat(39));
         let next = format!("{}REVISE{}", "x".repeat(50), "y".repeat(23));
         assert_eq!(prev.len(), 95);
         assert_eq!(next.len(), 79);
         assert!(
-            !phrase_restart_should_freeze_prior(&prev, &next),
-            "revision must not freeze (residual duplication bar)"
+            phrase_restart_should_freeze_prior(&prev, &next),
+            "revision must retain the prior hypothesis"
         );
-        // Growth is never a restart.
+        // Forward growth contains the complete prior hypothesis.
         assert!(!phrase_restart_should_freeze_prior(
             "Zdanie",
             "Zdanie szóste spokojnie"
         ));
-        // Same-phrase rewind to a substantial true prefix stays open.
+        // Same-phrase rewind is not safe unless the prior copy is retained.
         let long = "Hello world this is a long phrase that continues for a while more text here";
         let rewind: String = long.chars().take(40).collect();
         assert!(
-            !phrase_restart_should_freeze_prior(long, &rewind),
-            "substantial true-prefix rewind is same-phrase, not a freeze"
+            phrase_restart_should_freeze_prior(long, &rewind),
+            "substantial true-prefix rewind must retain its removed suffix"
         );
+        assert!(phrase_restart_should_freeze_prior(long, ""));
+        assert!(!phrase_restart_should_freeze_prior("", "new phrase"));
+        assert!(!phrase_restart_should_freeze_prior(
+            "middle retained",
+            "new prefix middle retained and suffix"
+        ));
     }
 
     /// End-to-end at the adjudication layer: a partial sequence that used to
@@ -1658,27 +2275,39 @@ mod tests {
             vec![
                 LiveStreamEvent::Partial {
                     text: s5.to_string(),
+                    segments: vec![segment(s5, 0.0, 5.0)],
                 },
                 // Stressor phrase seals cleanly (isFinal or prior freeze).
                 LiveStreamEvent::PhraseFinal {
                     text: s5.to_string(),
-                    segments: vec![],
+                    segments: vec![segment(s5, 0.0, 5.0)],
                 },
                 // Post-stressor sentence builds as open partial…
                 LiveStreamEvent::Partial {
                     text: s6.to_string(),
+                    segments: vec![segment(s6, 5.0, 10.0)],
                 },
                 // …then SFSpeech restarts onto the next opener without isFinal.
                 // Old rule overwrote s6; new rule freezes it first.
                 LiveStreamEvent::Partial {
                     text: "Zdanie".to_string(),
+                    segments: vec![segment("Zdanie", 10.0, 10.5)],
                 },
                 LiveStreamEvent::Partial {
                     text: "Zdanie siódme Overlap cztery angielskie terminy w polskim".to_string(),
+                    segments: vec![segment(
+                        "Zdanie siódme Overlap cztery angielskie terminy w polskim",
+                        10.0,
+                        15.0,
+                    )],
                 },
                 LiveStreamEvent::PhraseFinal {
                     text: "Zdanie siódme Overlap cztery angielskie terminy w polskim".to_string(),
-                    segments: vec![],
+                    segments: vec![segment(
+                        "Zdanie siódme Overlap cztery angielskie terminy w polskim",
+                        10.0,
+                        15.0,
+                    )],
                 },
             ],
             &tx,

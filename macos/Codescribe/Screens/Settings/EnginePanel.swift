@@ -14,6 +14,7 @@ struct EnginePanel: View {
     @State private var previewTimingExpanded = false
     @State private var silenceExpanded = false
     @State private var permissionsExpanded = false
+    @State private var cloudPrivacyExpanded = false
 
     private let matrixOrder: [PermissionKind] = [
         .microphone, .accessibility, .inputMonitoring, .screenRecording,
@@ -76,6 +77,13 @@ struct EnginePanel: View {
                 isExpanded: $silenceExpanded
             ) {
                 silenceSection
+            }
+
+            collapsibleSection(
+                title: CloudPrivacyCopy.title,
+                isExpanded: $cloudPrivacyExpanded
+            ) {
+                cloudPrivacySection
             }
 
             collapsibleSection(
@@ -448,6 +456,26 @@ struct EnginePanel: View {
             Slider(value: value, in: range, step: step)
                 .tint(CSColor.chromeAccent)
         }
+    }
+
+    // MARK: Cloud & privacy (C2 — copy pinned by CloudPrivacyCopyTests; the
+    // mode picker itself arrives with the recorder integration that consumes
+    // the resolved mode. Contract enforced in core: cloud requires explicit
+    // audio-egress consent, refusal = Apple + dictionary, never local weights.)
+
+    private var cloudPrivacySection: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            ForEach(CloudPrivacyCopy.lines, id: \.self) { line in
+                Text(line)
+                    .font(CSFont.ui(11.5))
+                    .foregroundStyle(CSColor.textMutedAlt)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+        }
+        .padding(15)
+        .background(card)
+        .overlay(cardBorder)
     }
 
     // MARK: Hands-free silence (toggle-mode VAD window — TOGGLE_SILENCE_SEC)

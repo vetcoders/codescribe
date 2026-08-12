@@ -54,7 +54,7 @@ struct TranscriptUtteranceRecord {
 /// fallback for a final that arrives empty (VAD sealed on a quiet tail), so a
 /// real utterance is not lost to a blank final.
 #[derive(Debug, Default)]
-struct SessionTranscriptState {
+pub struct TranscriptReducer {
     committed: Vec<TranscriptUtteranceRecord>,
     active_preview: String,
     last_non_empty_preview: String,
@@ -81,7 +81,7 @@ fn append_rendered_fragment(rendered: &mut String, fragment: &str) {
     rendered.push_str(&normalized);
 }
 
-impl SessionTranscriptState {
+impl TranscriptReducer {
     /// Replace the live preview tail. Previews supersede each other, so this
     /// overwrites rather than appends; a non-empty preview is also remembered as
     /// the fallback an empty final will fall back to.
@@ -166,6 +166,19 @@ impl SessionTranscriptState {
             return None;
         }
 
+        if let Some(existing) = self
+            .committed
+            .iter_mut()
+            .find(|record| record.utterance_id == utterance_id)
+        {
+            existing.text = committed_text;
+            existing.raw_text = raw_text.to_string();
+            existing.start_ts = start_ts;
+            existing.end_ts = end_ts;
+            existing.segments = segments;
+            return None;
+        }
+
         self.committed.push(TranscriptUtteranceRecord {
             utterance_id,
             text: committed_text.clone(),
@@ -189,7 +202,7 @@ impl SessionTranscriptState {
     /// preview tail. Rebuilt from state on every call, so the rendered string is
     /// always a function of the record list rather than an accumulated buffer
     /// that could drift from it.
-    fn rendered_text(&self) -> String {
+    pub fn rendered_text(&self) -> String {
         let mut rendered = String::new();
         for utterance in &self.committed {
             append_rendered_fragment(&mut rendered, &utterance.text);
@@ -214,7 +227,7 @@ impl SessionTranscriptState {
         let Some(record) = self
             .committed
             .iter_mut()
-            .find(|record| record.utterance_id == utterance_id)
+            .rfind(|record| record.utterance_id == utterance_id)
         else {
             return false;
         };
@@ -236,7 +249,72 @@ impl SessionTranscriptState {
     fn committed(&self) -> &[TranscriptUtteranceRecord] {
         &self.committed
     }
+
+    /// Apply one engine event using the exact transcript algebra owned by the
+    /// shipped presentation emitter. The returned text is present only when a
+    /// new final slot was inserted; same-id revisions update that slot without
+    /// dispatching a second per-utterance callback.
+    pub fn apply_event(&mut self, event: &EngineEvent) -> Option<String> {
+        match event {
+            EngineEvent::Preview { text, .. } => self.apply_preview(text),
+            EngineEvent::Correction {
+                text,
+                previous_text,
+                ..
+            } => self.apply_correction(previous_text, text),
+            EngineEvent::UtteranceFinal {
+                utterance_id,
+                text,
+                raw_text,
+                start_ts,
+                end_ts,
+                segments,
+                ..
+            } => {
+                return self.finalize(
+                    *utterance_id,
+                    text,
+                    raw_text,
+                    *start_ts,
+                    *end_ts,
+                    segments.clone(),
+                );
+            }
+            EngineEvent::ReplaceRange { .. } | EngineEvent::InsertAnnotation { .. } => {
+                let _ = self.apply_layered_patch(event);
+            }
+            EngineEvent::NoSpeech { .. } => self.clear_live_preview(),
+            _ => {}
+        }
+        None
+    }
+
+    /// Finalized canvas only, excluding the volatile preview tail.
+    pub fn streaming_floor(&self) -> String {
+        let mut rendered = String::new();
+        for utterance in &self.committed {
+            append_rendered_fragment(&mut rendered, &utterance.text);
+        }
+        rendered
+    }
+
+    /// Number of unique finalized slots currently held by the reducer.
+    pub fn committed_count(&self) -> usize {
+        self.committed.len()
+    }
 }
+
+/// Replay an ordered event vector through the production presentation algebra.
+pub fn reduce_transcript_events(events: &[EngineEvent]) -> TranscriptReducer {
+    let mut reducer = TranscriptReducer::default();
+    for event in events {
+        let _ = reducer.apply_event(event);
+    }
+    reducer
+}
+
+#[cfg(test)]
+type SessionTranscriptState = TranscriptReducer;
 
 /// Presentation emitter — bridges `EngineEvent`s to `BufferedEmitter`.
 ///
@@ -257,9 +335,7 @@ pub struct PresentationEmitter {
     vad_end_callback: Option<Arc<dyn Fn() + Send + Sync>>,
     vad_start_emitted: std::sync::atomic::AtomicBool,
     /// Source-of-truth transcript state: committed utterances + active preview tail.
-    session_state: std::sync::Mutex<SessionTranscriptState>,
-    /// Last utterance id delivered to callback (guards duplicate boundary commits).
-    last_dispatched_utterance_id: std::sync::atomic::AtomicU64,
+    session_state: std::sync::Mutex<TranscriptReducer>,
     /// Controls what the delta sink sees: full session text or only the live preview.
     delta_render_mode: DeltaRenderMode,
 }
@@ -335,8 +411,7 @@ impl PresentationEmitter {
             vad_start_callback: None,
             vad_end_callback: None,
             vad_start_emitted: std::sync::atomic::AtomicBool::new(false),
-            session_state: std::sync::Mutex::new(SessionTranscriptState::default()),
-            last_dispatched_utterance_id: std::sync::atomic::AtomicU64::new(0),
+            session_state: std::sync::Mutex::new(TranscriptReducer::default()),
             delta_render_mode: DeltaRenderMode::SessionRendered,
         }
     }
@@ -438,10 +513,10 @@ impl EventSink for PresentationEmitter {
                     cb();
                 }
             }
-            EngineEvent::Preview { text, .. } => {
+            EngineEvent::Preview { .. } => {
                 let rendered = {
                     let mut state = self.session_state.lock().unwrap_or_else(|e| e.into_inner());
-                    state.apply_preview(text);
+                    let _ = state.apply_event(event);
                     match self.delta_render_mode {
                         DeltaRenderMode::SessionRendered => state.rendered_text(),
                         DeltaRenderMode::ActivePreviewOnly => state.active_preview.clone(),
@@ -449,14 +524,10 @@ impl EventSink for PresentationEmitter {
                 };
                 self.send_cmd(EmitterCmd::SetTargetText(rendered));
             }
-            EngineEvent::Correction {
-                text,
-                previous_text,
-                ..
-            } => {
+            EngineEvent::Correction { .. } => {
                 let rendered = {
                     let mut state = self.session_state.lock().unwrap_or_else(|e| e.into_inner());
-                    state.apply_correction(previous_text, text);
+                    let _ = state.apply_event(event);
                     match self.delta_render_mode {
                         DeltaRenderMode::SessionRendered => state.rendered_text(),
                         DeltaRenderMode::ActivePreviewOnly => state.active_preview.clone(),
@@ -464,36 +535,10 @@ impl EventSink for PresentationEmitter {
                 };
                 self.send_cmd(EmitterCmd::SetTargetText(rendered));
             }
-            EngineEvent::UtteranceFinal {
-                utterance_id,
-                text,
-                raw_text,
-                start_ts,
-                end_ts,
-                segments,
-                ..
-            } => {
-                let duplicate = self
-                    .last_dispatched_utterance_id
-                    .swap(*utterance_id, std::sync::atomic::Ordering::SeqCst)
-                    == *utterance_id;
-                if duplicate {
-                    debug!(
-                        utterance_id = *utterance_id,
-                        "Ignoring duplicate UtteranceFinal callback dispatch"
-                    );
-                    return;
-                }
+            EngineEvent::UtteranceFinal { utterance_id, .. } => {
                 let callback_payload = {
                     let mut state = self.session_state.lock().unwrap_or_else(|e| e.into_inner());
-                    state.finalize(
-                        *utterance_id,
-                        text,
-                        raw_text,
-                        *start_ts,
-                        *end_ts,
-                        segments.clone(),
-                    )
+                    state.apply_event(event)
                 };
                 if let Some(cb) = &self.utterance_callback
                     && let Some(payload) = callback_payload
@@ -524,7 +569,7 @@ impl EventSink for PresentationEmitter {
             EngineEvent::NoSpeech { reason } => {
                 let rendered = {
                     let mut state = self.session_state.lock().unwrap_or_else(|e| e.into_inner());
-                    state.clear_live_preview();
+                    let _ = state.apply_event(event);
                     state.rendered_text()
                 };
                 self.send_cmd(EmitterCmd::SetTargetText(rendered));

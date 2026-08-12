@@ -2632,6 +2632,15 @@ public protocol CodescribeHotkeysProtocol: AnyObject, Sendable {
     func isRecording() async  -> Bool
 
     /**
+     * Forward a macOS sleep/wake boundary to the active recorder, if any.
+     *
+     * Querying this surface never constructs the shared controller. The host
+     * notification callback can therefore remain a cheap no-op while idle and
+     * cannot surprise-load a model or start a provider.
+     */
+    func noteSleepWake() async  -> Bool
+
+    /**
      * Name of the app latched for the current overlay session, if known.
      * Read-only: the paste path keeps owning target activation and delivery.
      */
@@ -2968,6 +2977,31 @@ open func isRecording()async  -> Bool  {
         try!  await uniffiRustCallAsync(
             rustFutureFunc: {
                 uniffi_codescribe_ffi_fn_method_codescribehotkeys_is_recording(
+                    self.uniffiCloneHandle()
+
+                )
+            },
+            pollFunc: ffi_codescribe_ffi_rust_future_poll_i8,
+            completeFunc: ffi_codescribe_ffi_rust_future_complete_i8,
+            freeFunc: ffi_codescribe_ffi_rust_future_free_i8,
+            liftFunc: FfiConverterBool.lift,
+            errorHandler: nil
+
+        )
+}
+
+    /**
+     * Forward a macOS sleep/wake boundary to the active recorder, if any.
+     *
+     * Querying this surface never constructs the shared controller. The host
+     * notification callback can therefore remain a cheap no-op while idle and
+     * cannot surprise-load a model or start a provider.
+     */
+open func noteSleepWake()async  -> Bool  {
+    return
+        try!  await uniffiRustCallAsync(
+            rustFutureFunc: {
+                uniffi_codescribe_ffi_fn_method_codescribehotkeys_note_sleep_wake(
                     self.uniffiCloneHandle()
 
                 )
@@ -9499,6 +9533,12 @@ public struct CsSettings: Equatable, Hashable {
     public var holdStartDelayMs: UInt64
     public var doubleTapIntervalMs: UInt64
     public var toggleSilenceSec: Float
+    /**
+     * Deferred-insert chord (`DeferredInsertShortcut::wire_id()`), sourced
+     * from the canonical merged config snapshot. `"disabled"` is the
+     * product default when no persisted choice exists.
+     */
+    public var deferredInsertShortcut: String
     public var whisperLanguage: CsLanguage
     public var aiFormattingEnabled: Bool
     /**
@@ -9588,7 +9628,12 @@ public struct CsSettings: Equatable, Hashable {
     public init(holdExclusive: Bool,
         /**
          * Assistive-arm modifier on hold base: `"shift"` (default) or `"cmd"` (W10-B).
-         */holdArmModifier: String, holdStartDelayMs: UInt64, doubleTapIntervalMs: UInt64, toggleSilenceSec: Float, whisperLanguage: CsLanguage, aiFormattingEnabled: Bool,
+         */holdArmModifier: String, holdStartDelayMs: UInt64, doubleTapIntervalMs: UInt64, toggleSilenceSec: Float,
+        /**
+         * Deferred-insert chord (`DeferredInsertShortcut::wire_id()`), sourced
+         * from the canonical merged config snapshot. `"disabled"` is the
+         * product default when no persisted choice exists.
+         */deferredInsertShortcut: String, whisperLanguage: CsLanguage, aiFormattingEnabled: Bool,
         /**
          * `TranscriptSendMode::as_str()` — `"end_of_utterance"` / `"streaming"`.
          */transcriptSendMode: String, transcriptTaggingEnabled: Bool, transcriptTagTemplate: String, aiMaxTokens: Int32, aiAssistiveMaxTokens: Int32, showTrayGlyph: Bool, showDockIcon: Bool, transcriptionOverlayEnabled: Bool, holdIndicator: Bool, holdBadgeSize: UInt32, holdBadgeOffsetX: Int32, holdBadgeOffsetY: Int32,
@@ -9627,6 +9672,7 @@ public struct CsSettings: Equatable, Hashable {
         self.holdStartDelayMs = holdStartDelayMs
         self.doubleTapIntervalMs = doubleTapIntervalMs
         self.toggleSilenceSec = toggleSilenceSec
+        self.deferredInsertShortcut = deferredInsertShortcut
         self.whisperLanguage = whisperLanguage
         self.aiFormattingEnabled = aiFormattingEnabled
         self.transcriptSendMode = transcriptSendMode
@@ -9698,6 +9744,7 @@ public struct FfiConverterTypeCsSettings: FfiConverterRustBuffer {
                 holdStartDelayMs: FfiConverterUInt64.read(from: &buf),
                 doubleTapIntervalMs: FfiConverterUInt64.read(from: &buf),
                 toggleSilenceSec: FfiConverterFloat.read(from: &buf),
+                deferredInsertShortcut: FfiConverterString.read(from: &buf),
                 whisperLanguage: FfiConverterTypeCsLanguage.read(from: &buf),
                 aiFormattingEnabled: FfiConverterBool.read(from: &buf),
                 transcriptSendMode: FfiConverterString.read(from: &buf),
@@ -9757,6 +9804,7 @@ public struct FfiConverterTypeCsSettings: FfiConverterRustBuffer {
         FfiConverterUInt64.write(value.holdStartDelayMs, into: &buf)
         FfiConverterUInt64.write(value.doubleTapIntervalMs, into: &buf)
         FfiConverterFloat.write(value.toggleSilenceSec, into: &buf)
+        FfiConverterString.write(value.deferredInsertShortcut, into: &buf)
         FfiConverterTypeCsLanguage.write(value.whisperLanguage, into: &buf)
         FfiConverterBool.write(value.aiFormattingEnabled, into: &buf)
         FfiConverterString.write(value.transcriptSendMode, into: &buf)
@@ -13702,6 +13750,9 @@ private let initializationResult: InitializationResult = {
         return InitializationResult.apiChecksumMismatch
     }
     if (uniffi_codescribe_ffi_checksum_method_codescribehotkeys_is_recording() != 25239) {
+        return InitializationResult.apiChecksumMismatch
+    }
+    if (uniffi_codescribe_ffi_checksum_method_codescribehotkeys_note_sleep_wake() != 35265) {
         return InitializationResult.apiChecksumMismatch
     }
     if (uniffi_codescribe_ffi_checksum_method_codescribehotkeys_paste_target_app_name() != 18571) {

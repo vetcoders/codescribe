@@ -10,7 +10,7 @@
 //!   cargo run --release --example demo_full_pipeline -- --assistive <audio_file>
 //!
 //! Requires:
-//!   - Model at ~/.codescribe/models/whisper-large-v3-turbo-mlx-q8 (or set --model)
+//!   - Model at ~/.codescribe/models/whisper-large-v3-turbo (or set --model)
 //!   - LLM_ENDPOINT + LLM_MODEL (or LLM_FORMATTING_* overrides) for formatting
 
 use anyhow::Result;
@@ -35,7 +35,7 @@ async fn main() -> Result<()> {
         println!();
         println!("Options:");
         println!(
-            "  --model PATH     Model directory (default: ~/.codescribe/models/whisper-large-v3-turbo-mlx-q8)"
+            "  --model PATH     Model directory (default: ~/.codescribe/models/whisper-large-v3-turbo)"
         );
         println!("  --assistive      Use assistive mode (kurier/enhancer) instead of formatting");
         println!("  --raw            Skip AI formatting, show raw transcription only");
@@ -50,7 +50,12 @@ async fn main() -> Result<()> {
     // Parse args
     // Model path: ~/.codescribe/models/ (unified standard)
     let home = std::env::var("HOME").unwrap_or_else(|_| ".".to_string());
-    let mut model = PathBuf::from(&home).join(".codescribe/models/whisper-large-v3-turbo-mlx-q8");
+    // fp16 default first, legacy q8 as fallback — mirrors runtime precedence.
+    let mut model = ["whisper-large-v3-turbo", "whisper-large-v3-turbo-mlx-q8"]
+        .iter()
+        .map(|name| PathBuf::from(&home).join(".codescribe/models").join(name))
+        .find(|p| p.join("config.json").exists())
+        .unwrap_or_else(|| PathBuf::from(&home).join(".codescribe/models/whisper-large-v3-turbo"));
     let mut assistive = false;
     let mut raw_only = false;
     let mut audio_file: Option<PathBuf> = None;

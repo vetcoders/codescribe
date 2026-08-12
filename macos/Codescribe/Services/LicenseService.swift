@@ -85,9 +85,29 @@ struct LicenseKeychainError: LocalizedError {
     }
 }
 
+/// Keep the independent Swift license store on the same no-Keychain contract as
+/// the Rust secret bundle. Xcode launches XCTest inside the app host before
+/// `XCTestCase` is necessarily visible to lifecycle code, but it installs these
+/// process markers before `App.body` evaluates `LicenseService.shared`.
+/// A relocated data directory or generic CI flag is not proof of a test host
+/// and must not discard persisted license truth.
+func licenseKeychainDisabledByEnvironment(
+    _ environment: [String: String] = ProcessInfo.processInfo.environment
+) -> Bool {
+    environment["CODESCRIBE_DISABLE_KEYCHAIN"] != nil
+        || environment["XCTestConfigurationFilePath"] != nil
+        || environment["XCTestSessionIdentifier"] != nil
+        || environment["XCTestBundlePath"] != nil
+}
+
 @MainActor
 final class LicenseService: ObservableObject {
-    static let shared = LicenseService(keychain: SystemLicenseKeychain(), autoload: true)
+    static let shared: LicenseService = {
+        let keychain: LicenseKeychainStoring? = licenseKeychainDisabledByEnvironment()
+            ? nil
+            : SystemLicenseKeychain()
+        return LicenseService(keychain: keychain, autoload: true)
+    }()
     static let preview = LicenseService(keychain: nil, autoload: false)
 
     @Published private(set) var status: CsLicenseStatus = .unlicensed

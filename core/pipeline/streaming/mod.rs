@@ -37,11 +37,15 @@ pub(crate) mod tuning;
 #[cfg(test)]
 mod tests;
 
+pub use apple_live_session::APPLE_FINAL_OVERLAP_WARNING_CODE;
 pub use emitter::{BufferedEmitter, emitter_tick_loop};
 pub use live_assembly::{LiveAssembly, assemble_live_from_events};
 #[cfg(any(test, feature = "offline_eval"))]
 pub use offline::transcribe_streaming_samples;
-pub use session::{SessionConfig, collect_buffered_engine_events, transcribe_buffered_samples};
+pub use session::{
+    SessionConfig, collect_buffered_engine_events, collect_buffered_engine_events_with_config,
+    transcribe_buffered_samples,
+};
 
 #[cfg(test)]
 pub(crate) use quality_gate::should_drop_silence_chunk;

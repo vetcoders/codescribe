@@ -324,10 +324,11 @@ qube-daemon --help
 
 ## Model
 
-Codescribe uses **whisper-large-v3-turbo-mlx-q8**:
+Codescribe uses **whisper-large-v3-turbo** (mlx-community, fp16):
 
 - 4-layer turbo architecture (vs 32 layers in full model)
-- Q8 quantization (~894MB weights)
+- fp16 weights (~1.6 GB): loads without q8→F32 dequantization, roughly
+  halving cold start; the legacy q8 model stays supported as a fallback
 - ~10x faster than whisper-large-v3
 - Metal GPU acceleration
 
@@ -340,9 +341,14 @@ Optional fat SKU (offline / curiosity): `make release-full` or `CODESCRIBE_EMBED
 Runtime resolution when Whisper is not embedded:
 
 1. `CODESCRIBE_MODEL_PATH` environment variable
-2. `~/.codescribe/models/whisper-large-v3-turbo-mlx-q8/`
-3. `./models/whisper-large-v3-turbo-mlx-q8/`
-4. Hugging Face cache snapshots for `LibraxisAI/whisper-large-v3-turbo-mlx-q8`
+2. `~/.codescribe/models/whisper-large-v3-turbo/` (fp16 default)
+3. Hugging Face cache snapshots for `mlx-community/whisper-large-v3-turbo`
+4. Legacy fallback: `~/.codescribe/models/whisper-large-v3-turbo-mlx-q8/` or
+   `LibraxisAI/whisper-large-v3-turbo-mlx-q8` snapshots
+
+The mlx-community repo ships only `config.json` + `weights.safetensors`;
+the download paths compose `tokenizer.json` + `mel_filters.npz` from the
+legacy repo (both files are quantization-independent).
 
 `CODESCRIBE_NO_EMBED=1` is a development/recovery path that also skips MiniLM embed; it is not the public slim product path.
 
@@ -381,7 +387,7 @@ git clone https://github.com/vetcoders/codescribe.git
 cd codescribe
 
 # Development app build with explicit runtime Whisper fallback
-CODESCRIBE_MODEL_PATH=./models/whisper-large-v3-turbo-mlx-q8 make app PROFILE=debug
+CODESCRIBE_MODEL_PATH=~/.codescribe/models/whisper-large-v3-turbo make app PROFILE=debug
 open macos/build/Build/Products/Debug/Codescribe.app
 
 # Quality checks

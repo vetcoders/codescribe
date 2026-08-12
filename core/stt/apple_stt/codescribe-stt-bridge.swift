@@ -104,6 +104,10 @@ private func dictationTranscriberEnabled() -> Bool {
     }
 }
 
+if CommandLine.arguments.contains("--phrase-restart-self-test") {
+    exit(runPhraseRestartVectorSelfTest())
+}
+
 respawnSelfResponsibleIfRequested()
 
 Task {
@@ -1372,14 +1376,9 @@ final class SfSpeechPhraseAccumulator: @unchecked Sendable {
         defer { lock.unlock() }
         let t = text.trimmingCharacters(in: .whitespacesAndNewlines)
         var frozen: FrozenPhrase? = nil
-        // Detect SFSpeech phrase restart without isFinal → freeze prior.
-        //
-        // A RESTART collapses the hypothesis to a few words; a REVISION keeps
-        // most of it and only rewords the middle. Measured on the parity
-        // fixture: all 13 restarts landed at ≤12 chars (from 47…191), while a
-        // revision shrank 95 → 79 — and the old "shorter by 12+" rule froze
-        // that revision as a phrase, sealing the same span twice (the residual
-        // duplication at similarity 0.872).
+        // Retain every prior hypothesis that the next hypothesis does not
+        // contain in full. Restart thresholds classify the transition for
+        // telemetry only; they never authorize overwriting speech.
         //
         // NAMED DROP MECHANISM (w1-b, 2026-08-10 three-way live):
         // `shared_opener_restart_suppresses_freeze`. Consecutive Polish
@@ -1388,19 +1387,19 @@ final class SfSpeechPhraseAccumulator: @unchecked Sendable {
         // so a post-stressor collapse to the next sentence's short opener
         // OVERWROTE the open hypothesis without freezing it — s6/s8/s10
         // vanished from committed raw while native dictation kept them.
-        // Same-phrase rewind only suppresses freeze when the short text is a
-        // TRUE substantial prefix (>15 chars) of the prior hypothesis.
-        if !partialText.isEmpty && !t.isEmpty {
+        // A same-phrase rewind is retained too: without a second retained copy,
+        // overwriting it would still discard the rewound suffix.
+        if !partialText.isEmpty {
             let prev = partialText
-            if Self.phraseRestartShouldFreezePrior(prev: prev, next: t) {
+            if let reason = Self.phraseRetentionReason(prev: prev, next: t) {
                 finals.append(prev)
                 finalSegments.append(contentsOf: partialSegments)
                 frozen = FrozenPhrase(text: prev, segments: partialSegments)
                 let ts = ISO8601DateFormatter().string(from: Date())
                 fputs(
-                    "apple_lifecycle: freeze reason=shared_opener_restart_suppresses_freeze "
+                    "INFO apple_lifecycle: freeze "
                         + "ts=\(ts) prev_chars=\(prev.count) next_chars=\(t.count) "
-                        + "prev_head=\(String(prev.prefix(40))) next_head=\(String(t.prefix(40)))\n",
+                        + "reason=\(reason)\n",
                     stderr
                 )
             }
@@ -1413,15 +1412,19 @@ final class SfSpeechPhraseAccumulator: @unchecked Sendable {
     /// Pure freeze decision — kept in lockstep with
     /// `phrase_restart_should_freeze_prior` in `apple_live_session.rs`.
     fileprivate static func phraseRestartShouldFreezePrior(prev: String, next: String) -> Bool {
+        phraseRetentionReason(prev: prev, next: next) != nil
+    }
+
+    /// Returns a telemetry classification only when the prior hypothesis must
+    /// be retained. Text safety depends solely on forward containment.
+    private static func phraseRetentionReason(prev: String, next: String) -> String? {
         let prev = prev.trimmingCharacters(in: .whitespacesAndNewlines)
         let next = next.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !prev.isEmpty, !next.isEmpty else { return false }
+        guard !prev.isEmpty else { return nil }
+        guard !next.contains(prev) else { return nil }
+        guard !next.isEmpty else { return "empty_collapse_retained" }
         let restarted = (next.count * 3 < prev.count) || (next.count <= 15 && prev.count >= 25)
-        guard restarted else { return false }
-        // Substantial true-prefix rewind of the SAME phrase — not a 1–2 word
-        // opener every "Zdanie N" sentence shares.
-        let samePhraseRewind = prev.hasPrefix(next) && next.count > 15
-        return !samePhraseRewind
+        return restarted ? "restart_retained" : "revision_retained"
     }
 
     /// Freeze whatever hypothesis is still open (stream ended mid-phrase).
@@ -1457,6 +1460,70 @@ final class SfSpeechPhraseAccumulator: @unchecked Sendable {
             segments: normalizeSegments(segs),
             backend: .sfSpeechRecognizer
         )
+    }
+}
+
+/// Test-only command path over the same accumulator decision used in live
+/// streaming. It intentionally reads the exact TSV compiled into the Rust
+/// mirror test, so fixture drift cannot make the two languages look aligned.
+private func runPhraseRestartVectorSelfTest() -> Int32 {
+    let source = URL(fileURLWithPath: #filePath)
+    let root = source
+        .deletingLastPathComponent()
+        .deletingLastPathComponent()
+        .deletingLastPathComponent()
+        .deletingLastPathComponent()
+    let fixture = root.appendingPathComponent("tests/fixtures/phrase_restart_vectors.tsv")
+
+    do {
+        let contents = try String(contentsOf: fixture, encoding: .utf8)
+        let requiredIDs: Set<String> = [
+            "measured_restart_47_to_12",
+            "measured_revision_95_to_79",
+            "missed_collapse_40_to_20",
+            "shared_opener_sentence_restart",
+            "shared_opener_spoken_variant",
+        ]
+        var seenIDs: Set<String> = []
+        for line in contents.split(separator: "\n").map(String.init)
+            where !line.hasPrefix("#")
+        {
+            let fields = line.split(separator: "\t", omittingEmptySubsequences: false).map(String.init)
+            guard fields.count == 4, let expected = Bool(fields[1]) else {
+                fputs("phrase_restart_self_test malformed_vector=\(line)\n", stderr)
+                return 2
+            }
+            seenIDs.insert(fields[0])
+            if fields[0] == "missed_collapse_40_to_20" {
+                guard fields[2].count == 40, fields[3].count == 20 else {
+                    fputs("phrase_restart_self_test invalid_40_to_20_lengths\n", stderr)
+                    return 2
+                }
+            }
+            let actual = SfSpeechPhraseAccumulator.phraseRestartShouldFreezePrior(
+                prev: fields[2],
+                next: fields[3]
+            )
+            guard actual == expected else {
+                fputs(
+                    "phrase_restart_self_test FAIL id=\(fields[0]) expected=\(expected) "
+                        + "actual=\(actual) prev_chars=\(fields[2].count) "
+                        + "next_chars=\(fields[3].count)\n",
+                    stderr
+                )
+                return 1
+            }
+        }
+        let missingIDs = requiredIDs.subtracting(seenIDs).sorted()
+        guard missingIDs.isEmpty else {
+            fputs("phrase_restart_self_test missing=\(missingIDs.joined(separator: ","))\n", stderr)
+            return 2
+        }
+        fputs("phrase_restart_self_test PASS\n", stderr)
+        return 0
+    } catch {
+        fputs("phrase_restart_self_test fixture_error=\(error)\n", stderr)
+        return 2
     }
 }
 

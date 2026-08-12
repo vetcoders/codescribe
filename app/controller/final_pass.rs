@@ -5,10 +5,11 @@
 //!   mode in which a full-file re-pass is permitted.
 //! - **Smart**: Whisper may final-pass **individual utterances only** — never the
 //!   whole file. When streaming completeness is adjudicated Complete, nothing runs
-//!   at stop. When complete-but-shapeless (long wall of words, no sentence
-//!   terminals — the shape row, operator 2026-08-09), Whisper transcribes the
-//!   file but only its punctuation/capitalization is adopted onto the committed
-//!   words (`punctuation_transplant`; word sequence invariant at THIS stage
+//!   at stop. When coverage-complete, plausibly dense, but shapeless (long wall
+//!   of words, no sentence terminals — the shape row, operator 2026-08-09),
+//!   Whisper transcribes the file but only its punctuation/capitalization is
+//!   adopted onto the committed words (`punctuation_transplant`; word sequence
+//!   invariant at THIS stage
 //!   because shape is the deficit here — live word corrections belong to the
 //!   Layer 1 tail patch, which is a core element, on by default). When
 //!   incomplete, only the uncommitted audio tail (from the last committed
@@ -211,6 +212,223 @@ pub(crate) fn assess_streaming_completeness_fields(
         committed_chars,
         total_utterances,
     })
+}
+
+// ── Committed-density floor over the structural verdict ─────────────────────
+//
+// Structural completeness answers "did the adjudicator seal everything it
+// saw". It cannot answer "was what it saw plausibly a whole minute of speech",
+// because every input it reads has already passed through the live
+// accumulator — so when the accumulator eats a phrase, coverage stays intact
+// over the survivors and reports Complete. Measured 2026-08-10/11: two Polish
+// takes delivered 220 chars over a COMPLETE 104 s WAV and 118 chars over a
+// complete 107 s WAV. Both were labelled `complete_streaming_transcript` and
+// skipped while 85–90% of the speech was gone. This floor is the second
+// opinion that skip decision never had.
+
+/// Below this audio length committed density is not judged at all.
+///
+/// A short note is legitimately sparse — "kup mleko i chleb" over nine seconds
+/// is a real dictation, not a starving one — and escalating those would put a
+/// Whisper pass on the stop path of every quick capture.
+const DENSITY_MIN_AUDIO_SECS: f32 = 10.0;
+
+/// Committed characters per audio second below which a coverage-complete
+/// verdict describes starvation rather than completeness.
+///
+/// Grounded in the measured pair — 2.1 chars/s (220 ch / 104 s) and 1.1 chars/s
+/// (118 ch / 107 s) — against a healthy take at ~13 chars/s. Conversational
+/// Polish runs roughly 12–15 chars/s, so this floor sits far below anything a
+/// real dictation produces. Deliberately loose: a false escalation costs one
+/// tail-gap pass, a false skip loses speech permanently, and the doctrine
+/// resolves that asymmetry in favour of keeping speech.
+const DENSITY_MIN_CHARS_PER_SEC: f32 = 4.0;
+
+/// Telemetry label replacing `complete_streaming_transcript` when the floor
+/// overrides the verdict. Stable string — it is a log/receipt contract.
+pub(crate) const DENSITY_STARVED_REASON: &str = "starved_density";
+
+/// Committed characters per second of recorded audio.
+///
+/// `None` when the denominator is unusable (non-finite, zero, negative). A
+/// missing audio length must never become a synthetic density: `0.0` would read
+/// as maximal starvation and escalate every session that reached this code.
+pub(crate) fn committed_density_chars_per_sec(
+    audio_secs: f32,
+    committed_chars: usize,
+) -> Option<f32> {
+    if !audio_secs.is_finite() || audio_secs <= 0.0 {
+        return None;
+    }
+    Some(committed_chars as f32 / audio_secs)
+}
+
+/// True when a session long enough to judge committed too few characters to be
+/// believable.
+///
+/// NaN-safe through [`committed_density_chars_per_sec`]: an unmeasurable
+/// duration yields `None` and reports "not starved" rather than escalating on
+/// evidence it does not have.
+pub(crate) fn committed_density_starved(audio_secs: f32, committed_chars: usize) -> bool {
+    let Some(density) = committed_density_chars_per_sec(audio_secs, committed_chars) else {
+        return false;
+    };
+    audio_secs > DENSITY_MIN_AUDIO_SECS && density < DENSITY_MIN_CHARS_PER_SEC
+}
+
+/// Apply the committed-density floor to a structural completeness verdict.
+///
+/// Every structurally complete verdict (`Complete` or
+/// `CompleteShapeDeficient`) is eligible for demotion into the existing
+/// `Incomplete` arm. [`final_pass_action`] carries the consequence with no new
+/// variant and no second controller: `Smart` +
+/// `Incomplete{starved_density}` → `TailGapFill`, which is the residual /
+/// tail-gap path the live session text already feeds through
+/// [`smart_tail_gap_source`]. This ordering matters: sentence shape cannot
+/// excuse implausibly sparse coverage, because a weak punctuation alignment
+/// may otherwise return the starving canvas untouched. `Off` still skips and
+/// `Always` still re-passes, because routing ignores completeness for both —
+/// the floor changes Smart alone.
+///
+/// `audio_secs = None` leaves the verdict untouched: an unknown denominator is
+/// not evidence of starvation. The call site logs that silence so the absence
+/// shows up in the receipts instead of having to be inferred from them.
+pub(crate) fn apply_committed_density_floor(
+    completeness: StreamingCompleteness,
+    audio_secs: Option<f32>,
+    committed_chars: usize,
+) -> StreamingCompleteness {
+    let Some(audio_secs) = audio_secs else {
+        return completeness;
+    };
+    if matches!(
+        completeness,
+        StreamingCompleteness::Complete | StreamingCompleteness::CompleteShapeDeficient
+    ) && committed_density_starved(audio_secs, committed_chars)
+    {
+        return StreamingCompleteness::Incomplete {
+            reason: DENSITY_STARVED_REASON,
+        };
+    }
+    completeness
+}
+
+/// Stable telemetry label for a completeness verdict.
+///
+/// One table for every receipt that names a verdict (the density override, the
+/// residual-required override, and the `final_pass_skipped` line at the call
+/// site) so a label cannot drift between logs that describe the same decision.
+/// `CompleteShapeDeficient` is unreachable through the Smart skip mapping — it
+/// routes to `PunctuationRepass` — but stays named here for any future mode
+/// that skips on it.
+pub(crate) fn completeness_label(completeness: StreamingCompleteness) -> &'static str {
+    match completeness {
+        StreamingCompleteness::Complete => "complete_streaming_transcript",
+        StreamingCompleteness::CompleteShapeDeficient => "shape_deficient",
+        StreamingCompleteness::Incomplete { reason } => reason,
+    }
+}
+
+/// Single INFO line for a density-overridden structural verdict.
+///
+/// Carries both verdict labels and the numbers behind the override — never the
+/// transcript. The guard fires precisely when the committed text is short
+/// enough to fit comfortably in a log line, which is exactly when writing user
+/// speech into `~/.codescribe/logs/codescribe.log` would be easiest to justify
+/// and still wrong.
+pub(crate) fn format_density_override_line(
+    overridden: StreamingCompleteness,
+    audio_secs: f32,
+    committed_chars: usize,
+) -> String {
+    let overridden = completeness_label(overridden);
+    format!(
+        "final_pass_density_guard overridden_verdict={overridden} new_verdict={reason} audio_secs={audio_secs:.3} committed_chars={committed_chars} density_chars_per_sec={density:.2} floor_chars_per_sec={floor:.1} min_audio_secs={min_secs:.1} route=tail_gap_fill",
+        reason = DENSITY_STARVED_REASON,
+        density = committed_density_chars_per_sec(audio_secs, committed_chars).unwrap_or(f32::NAN),
+        floor = DENSITY_MIN_CHARS_PER_SEC,
+        min_secs = DENSITY_MIN_AUDIO_SECS,
+    )
+}
+
+// ── Layer 1 residual-required demotion over the structural verdict ──────────
+//
+// The committed-density floor above asks "was what the accumulator kept
+// plausibly a whole minute of speech". This one carries a stricter fact: Layer
+// 1 re-transcribed the sealed window, found MORE speech than the canvas holds,
+// and could not place part of it on a demonstrably safe anchor (W-C, commit
+// `6d7eaa7f`). That is not an inference from a ratio — it is the engine
+// reporting a hole it measured and refused to paper over by rewriting committed
+// text. Density can miss it entirely: a session may commit a healthy 13 chars/s
+// and still have lost a phrase to a hypothesis collapse, which is exactly the
+// case the floor was never able to see.
+
+/// Telemetry label replacing a structurally complete verdict when Layer 1
+/// escalated an unplaceable under-commit residual. Stable string — it is a
+/// log/receipt contract, mirroring [`DENSITY_STARVED_REASON`].
+pub(crate) const RESIDUAL_REQUIRED_REASON: &str = "residual_required";
+
+/// Demote a structurally complete verdict when Layer 1 reported speech it
+/// recovered but could not place.
+///
+/// Pure and total, so the contract is testable without a session: the only
+/// input beyond the verdict is the monotonic
+/// [`SessionTelemetrySnapshot::residual_required`] flag. Deliberately NOT
+/// folded into [`apply_committed_density_floor`] — that helper's whole meaning
+/// is chars-per-second, and passing an unrelated boolean through it would make
+/// both contracts unreadable and untestable in isolation.
+///
+/// Consequence, carried by the existing typed matrix with no new variant and no
+/// second controller: `Smart` + `Incomplete{residual_required}` →
+/// [`FinalPassAction::TailGapFill`], the same residual / tail-gap ladder
+/// [`smart_tail_gap_source`] already feeds. `SkipStreamingFinal` and
+/// `PunctuationRepass` both become unreachable for this session under Smart —
+/// punctuation-only delivery would hand back the canvas with the hole still in
+/// it, shaped.
+///
+/// An already-`Incomplete` verdict keeps its OWN reason. `starved_density` and
+/// `pending_tail` are strictly more informative diagnoses (they carry measured
+/// numbers or a state machine position) and they route identically, so
+/// relabelling them would trade information for nothing.
+///
+/// Mode promises are untouched: routing ignores completeness for `Off` and
+/// `Always`, so this demotion changes Smart alone.
+pub(crate) fn apply_residual_required_demotion(
+    completeness: StreamingCompleteness,
+    residual_required: bool,
+) -> StreamingCompleteness {
+    if !residual_required {
+        return completeness;
+    }
+    match completeness {
+        StreamingCompleteness::Complete | StreamingCompleteness::CompleteShapeDeficient => {
+            StreamingCompleteness::Incomplete {
+                reason: RESIDUAL_REQUIRED_REASON,
+            }
+        }
+        already_diagnosed @ StreamingCompleteness::Incomplete { .. } => already_diagnosed,
+    }
+}
+
+/// Single INFO line emitted whenever Layer 1 raised the residual escalation,
+/// including when the verdict was already Incomplete and nothing changed.
+///
+/// Silence would be indistinguishable from "the warning never arrived", which
+/// is the failure mode this whole cut exists to close: under W-C the signal
+/// reached the log and the IPC wire and changed no verdict, and nothing in the
+/// receipts said so. Carries verdict labels and the warning code only — never
+/// transcript text, and never a character count that could reconstruct one.
+pub(crate) fn format_residual_required_line(
+    before: StreamingCompleteness,
+    after: StreamingCompleteness,
+) -> String {
+    format!(
+        "final_pass_residual_guard warning_code={code} verdict_before={before} verdict_after={after} demoted={demoted}",
+        code = super::helpers::UNDER_COMMIT_WARNING_CODE,
+        before = completeness_label(before),
+        after = completeness_label(after),
+        demoted = before != after,
+    )
 }
 
 /// Label from the actual engine verdict (not preference). Apple→Whisper fallback

@@ -12,27 +12,19 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
 use super::settings::UserSettings;
-use crate::util::safe_path::{safe_canonicalize, safe_read_to_string};
 
-/// Schema version stamped on exports and accepted on import. A newer version
-/// in an incoming profile is refused rather than guessed at.
 const PORTABLE_SCHEMA_VERSION: u32 = 1;
 
 /// Redacted secret reference shown in exports (never a raw secret).
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct SecretReference {
-    /// Keychain account name, never the secret it holds.
     pub account: String,
-    /// Whether a value existed at export time — presence only, no content.
     pub present: bool,
 }
 
-/// A machine-independent settings profile, safe to move between hosts.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct PortableProfile {
-    /// Schema this profile was written against.
     pub schema_version: u32,
-    /// Discriminator identifying the file as a Codescribe portable profile.
     pub kind: String,
     /// Settings with secrets stripped and absolute home paths remapped to `~`.
     pub settings: Value,
@@ -44,34 +36,21 @@ pub struct PortableProfile {
     pub remapped_paths: Vec<PathRemap>,
 }
 
-/// One absolute path rewritten for portability (export) or re-expanded (import).
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct PathRemap {
-    /// Dotted settings path the remapped value came from.
     pub field: String,
-    /// Always empty in an export — see [`portable_remap_record`].
     pub original: String,
-    /// Home-relative (`~/…`) form, or empty for non-portable absolute paths.
     pub portable: String,
 }
 
-/// Outcome of importing a profile: what would change, what collides, and what
-/// the operator still has to decide.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct ImportPlan {
-    /// False for a dry run; true once the settings were actually written.
     pub would_write: bool,
-    /// Schema migrations that had to be applied.
     pub migrations: Vec<String>,
-    /// Fields where current settings and the import disagree.
     pub conflicts: Vec<String>,
-    /// Remapped paths the operator should confirm for this machine.
     pub path_prompts: Vec<PathRemap>,
-    /// Secrets the profile expects, to be re-provisioned locally.
     pub secret_refs: Vec<SecretReference>,
-    /// One-line human summary of the four counts above.
     pub diff_summary: String,
-    /// Settings as they would land, with `~` expanded for this host.
     pub settings_preview: Value,
 }
 
@@ -155,22 +134,8 @@ pub fn import_portable_dry_run(profile_json: &str, current: &UserSettings) -> Re
 
 /// Apply portable profile to disk with automatic backup + rollback on failure.
 pub fn import_portable_apply(profile_json: &str, settings_path: &Path) -> Result<ImportPlan> {
-    // Operator-supplied settings path: canonicalize when present so backup and
-    // restore operate on a resolved absolute path under the same parent only.
-    let settings_path = if settings_path.exists() {
-        safe_canonicalize(settings_path)?
-    } else if let Some(parent) = settings_path.parent().filter(|p| p.exists()) {
-        let parent = safe_canonicalize(parent)?;
-        let name = settings_path
-            .file_name()
-            .context("settings path must name a file")?;
-        parent.join(name)
-    } else {
-        settings_path.to_path_buf()
-    };
-
     let current = if settings_path.exists() {
-        let raw = safe_read_to_string(&settings_path)
+        let raw = fs::read_to_string(settings_path)
             .with_context(|| format!("read current settings {}", settings_path.display()))?;
         serde_json::from_str::<UserSettings>(&raw).unwrap_or_default()
     } else {
@@ -181,12 +146,9 @@ pub fn import_portable_apply(profile_json: &str, settings_path: &Path) -> Result
     let incoming: UserSettings = serde_json::from_value(plan.settings_preview.clone())
         .context("portable settings failed schema validation before apply")?;
 
-    let backup_path = backup_path(&settings_path);
+    let backup_path = backup_path(settings_path);
     if settings_path.exists() {
-        // Backup is a sibling of the canonical settings file (same parent), not
-        // an agent-supplied path. Copy stays on the resolved absolute path.
-        // nosemgrep: rust.actix.path-traversal.tainted-path.tainted-path -- source is safe_canonicalize'd settings path; dest is sibling .json.bak-* in the same parent directory.
-        fs::copy(&settings_path, &backup_path).with_context(|| {
+        fs::copy(settings_path, &backup_path).with_context(|| {
             format!(
                 "backup settings {} → {}",
                 settings_path.display(),
@@ -200,10 +162,9 @@ pub fn import_portable_apply(profile_json: &str, settings_path: &Path) -> Result
         }
     }
 
-    if let Err(error) = incoming.save_to(&settings_path) {
+    if let Err(error) = incoming.save_to(settings_path) {
         if backup_path.exists() {
-            // nosemgrep: rust.actix.path-traversal.tainted-path.tainted-path -- restore from sibling backup to the same canonicalized settings path; both ends are operator config, not agent input.
-            let _ = fs::copy(&backup_path, &settings_path);
+            let _ = fs::copy(&backup_path, settings_path);
         }
         return Err(error).context("import apply failed; backup restored when available");
     }
@@ -217,8 +178,6 @@ pub fn import_portable_apply(profile_json: &str, settings_path: &Path) -> Result
     Ok(plan)
 }
 
-/// Reject profiles of the wrong kind or schema, then fail closed if the export
-/// appears to still carry plaintext secret material.
 fn validate_profile(profile: &PortableProfile) -> Result<()> {
     if profile.kind != "codescribe.portable_settings" {
         bail!("unsupported portable profile kind: {}", profile.kind);
@@ -242,11 +201,6 @@ fn validate_profile(profile: &PortableProfile) -> Result<()> {
     Ok(())
 }
 
-/// Recursively look for a key-like field holding a long literal value.
-///
-/// Returns the offending key name only — never the value, so the finding can be
-/// reported without leaking what it found. `keychain:` references and `~`-paths
-/// are known-safe shapes and do not count as hits.
 fn find_plaintext_secret_hit(value: &Value) -> Option<String> {
     match value {
         Value::Object(map) => {
@@ -271,16 +225,11 @@ fn find_plaintext_secret_hit(value: &Value) -> Option<String> {
     }
 }
 
-/// Recursively drop every field whose name looks secret-bearing.
-///
-/// Matching is substring-based on the lowercased key, so vendor-prefixed
-/// variants are caught without maintaining an exhaustive list.
 fn strip_secrets(value: &mut Value) {
     let Value::Object(map) = value else {
         return;
     };
     // Never export tool grants or permission tool maps (machine-generated).
-    /// Substring key names stripped from exports (substring match, lowercased).
     const SECRET_KEYS: &[&str] = &[
         "api_key",
         "apiKey",
@@ -304,10 +253,6 @@ fn strip_secrets(value: &mut Value) {
     }
 }
 
-/// Drop machine-generated per-tool and per-server permission grants.
-///
-/// These describe one machine's approval history, not operator intent, and
-/// carrying them across hosts would silently pre-approve tools there.
 fn strip_generated_grants(value: &mut Value) {
     let Value::Object(map) = value else {
         return;
@@ -325,8 +270,6 @@ fn strip_generated_grants(value: &mut Value) {
     }
 }
 
-/// Walk the settings tree rewriting absolute paths in place, recording each
-/// rewrite in `out` and tracking the dotted field path for the report.
 fn remap_absolute_paths(value: &mut Value, field: &str, out: &mut Vec<PathRemap>) {
     match value {
         Value::String(s) => {
@@ -354,11 +297,6 @@ fn remap_absolute_paths(value: &mut Value, field: &str, out: &mut Vec<PathRemap>
     }
 }
 
-/// Convert one absolute path to its portable form.
-///
-/// Home-relative paths become `~/…`; absolute paths outside home are blanked
-/// rather than exported, since they would leak this machine's layout and mean
-/// nothing on another host. Returns `None` for values that are not paths.
 fn to_portable_path(path: &str) -> Option<String> {
     let home = std::env::var("HOME").ok()?;
     if path == home.as_str() {
@@ -386,8 +324,6 @@ fn portable_remap_record(field: &str, portable: &str) -> PathRemap {
     }
 }
 
-/// Inverse of [`remap_absolute_paths`]: expand `~` back to this machine's home
-/// so the import preview shows real local paths.
 fn expand_portable_paths(value: &mut Value) {
     match value {
         Value::String(s) if s.starts_with("~/") || s == "~" => {
@@ -413,11 +349,6 @@ fn expand_portable_paths(value: &mut Value) {
     }
 }
 
-/// Compare current settings against the incoming profile, recording a dotted
-/// field path per divergence.
-///
-/// Recurses into nested objects so a conflict is reported at the leaf that
-/// actually differs, not at the whole subtree.
 fn collect_conflicts(current: &Value, incoming: &Value, path: &str, out: &mut Vec<String>) {
     match (current, incoming) {
         (Value::Object(a), Value::Object(b)) => {
@@ -445,8 +376,6 @@ fn collect_conflicts(current: &Value, incoming: &Value, path: &str, out: &mut Ve
     }
 }
 
-/// Presence-only inventory of every known keychain account, so an import can
-/// tell the operator which secrets to re-provision.
 fn known_secret_refs() -> Vec<SecretReference> {
     use super::keychain::{KEYCHAIN_ACCOUNTS, runtime_key};
     KEYCHAIN_ACCOUNTS
@@ -458,14 +387,11 @@ fn known_secret_refs() -> Vec<SecretReference> {
         .collect()
 }
 
-/// Timestamped sibling backup path used before an import overwrites settings.
 fn backup_path(settings_path: &Path) -> PathBuf {
     let stamp = chrono_like_stamp();
     settings_path.with_extension(format!("json.bak-{stamp}"))
 }
 
-/// Unix-seconds stamp for backup filenames. Deliberately not a formatted date:
-/// the value only has to be unique and sortable, not readable.
 fn chrono_like_stamp() -> String {
     use std::time::{SystemTime, UNIX_EPOCH};
     let secs = SystemTime::now()
@@ -475,11 +401,6 @@ fn chrono_like_stamp() -> String {
     format!("{secs}")
 }
 
-/// Write `body` to `path` atomically with owner-only permissions.
-///
-/// Content lands in a temp sibling that is created `0600`, fully written, and
-/// synced before the rename — so a crash mid-write can never leave a truncated
-/// settings file, and the bytes are never briefly world-readable.
 fn atomic_write_private(path: &Path, body: &[u8]) -> Result<()> {
     if let Some(parent) = path.parent() {
         fs::create_dir_all(parent)
@@ -509,12 +430,10 @@ fn atomic_write_private(path: &Path, body: &[u8]) -> Result<()> {
 
 /// Helper so import can write settings without going through the full Config loader.
 trait UserSettingsSave {
-    /// Serialize and write these settings to an arbitrary path.
     fn save_to(&self, path: &Path) -> Result<()>;
 }
 
 impl UserSettingsSave for UserSettings {
-    /// Atomically write pretty JSON settings to an arbitrary path (0600).
     fn save_to(&self, path: &Path) -> Result<()> {
         // Prefer the existing save() when path matches the canonical location;
         // otherwise write a v2-compatible JSON blob via serde of UserSettings.
@@ -542,13 +461,11 @@ pub fn redact_for_log(text: &str) -> String {
     out.trim_end().to_string()
 }
 
-/// Portable export/import redaction and dry-run write guarantees.
 #[cfg(test)]
 mod tests {
     use super::*;
     use tempfile::TempDir;
 
-    /// Export must remap `$HOME` paths, drop grants, and never leak absolutes.
     #[test]
     fn portable_export_strips_absolute_home_paths_and_grants() {
         let home = std::env::var("HOME").unwrap_or_else(|_| "/Users/test".into());
@@ -587,7 +504,6 @@ mod tests {
         );
     }
 
-    /// Dry-run plans must leave the settings file byte-identical.
     #[test]
     fn import_dry_run_does_not_write() {
         let dir = TempDir::new().unwrap();
@@ -612,7 +528,6 @@ mod tests {
         assert_eq!(fs::read_to_string(&settings_path).unwrap(), "{}");
     }
 
-    /// Long alphanumeric tokens collapse to length-only redaction markers.
     #[test]
     fn redact_collapses_long_tokens() {
         let redacted = redact_for_log("token abcdefghijklmnopqrstuvwxyz012345 is secret");

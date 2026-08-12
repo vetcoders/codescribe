@@ -11,8 +11,11 @@
 //! Swift constructs first wins and the rest are no-ops.
 
 use std::env;
-use std::path::PathBuf;
+use std::fs::File;
+use std::path::{Path, PathBuf};
 use std::sync::Once;
+
+use codescribe_core::config::Config;
 
 /// Once guard so tracing/logging subscribers install exactly once per process.
 static INIT: Once = Once::new();
@@ -20,8 +23,11 @@ static INIT: Once = Once::new();
 /// Install the global tracing subscriber (stderr + file) and the panic hook.
 ///
 /// Idempotent: guarded by a [`Once`], so repeated calls across FFI boundaries
-/// are cheap no-ops. Writes to `~/.codescribe/logs/codescribe.log` (append),
-/// honouring `RUST_LOG` (falling back to legacy `LOG_LEVEL`, then `info`).
+/// are cheap no-ops. Production processes append to
+/// `~/.codescribe/logs/codescribe.log`, honouring `RUST_LOG` (falling back to
+/// legacy `LOG_LEVEL`, then `info`). Rust and XCTest harnesses are refused a
+/// file sink at runtime, including integration tests where this library is
+/// compiled without `cfg(test)`; they retain the stderr subscriber.
 pub fn init_logging() {
     INIT.call_once(|| {
         init_tracing();
@@ -45,11 +51,6 @@ fn init_tracing() {
         },
     };
 
-    let home = env::var("HOME").unwrap_or_else(|_| ".".to_string());
-    let log_dir = PathBuf::from(home).join(".codescribe").join("logs");
-    let _ = std::fs::create_dir_all(&log_dir);
-    let log_path = log_dir.join("codescribe.log");
-
     let stderr_layer = fmt::layer()
         .with_ansi(true)
         .with_target(true)
@@ -58,12 +59,10 @@ fn init_tracing() {
 
     let filter_layer = EnvFilter::try_new(filter).unwrap_or_else(|_| EnvFilter::new("info"));
 
-    let file = std::fs::OpenOptions::new()
-        .create(true)
-        .append(true)
-        .open(&log_path);
+    let file = log_file_path(&Config::config_dir(), runtime_is_test_process())
+        .and_then(|path| open_file_log(&path).ok());
 
-    if let Ok(file) = file {
+    if let Some(file) = file {
         let file = std::sync::Arc::new(file);
         let file_layer = fmt::layer()
             .with_ansi(false)
@@ -83,6 +82,45 @@ fn init_tracing() {
             .with(stderr_layer)
             .try_init();
     }
+}
+
+/// Resolve the production file sink. Test harnesses deliberately receive no
+/// path: relying on a Makefile-exported data directory is insufficient because
+/// bare `cargo test` compiles integration-test dependencies without `cfg(test)`.
+fn log_file_path(config_dir: &Path, test_process: bool) -> Option<PathBuf> {
+    (!test_process).then(|| config_dir.join("logs").join("codescribe.log"))
+}
+
+/// Open the production log with append semantics, creating only its parent.
+fn open_file_log(path: &Path) -> std::io::Result<File> {
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent)?;
+    }
+    std::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(path)
+}
+
+/// Detect harnesses from runtime identity rather than only `cfg(test)`.
+///
+/// Cargo places unit- and integration-test executables under a `deps`
+/// directory. XCTest supplies a configuration variable or an `.xctest`
+/// argument even though the hosted Rust library is a normal production build.
+fn runtime_is_test_process() -> bool {
+    if cfg!(test)
+        || env::var_os("XCTestConfigurationFilePath").is_some()
+        || env::var_os("XCTestBundlePath").is_some()
+        || env::args_os().any(|arg| arg.to_string_lossy().contains(".xctest"))
+    {
+        return true;
+    }
+
+    env::current_exe().is_ok_and(|exe| {
+        exe.parent()
+            .and_then(Path::file_name)
+            .is_some_and(|name| name == "deps")
+    })
 }
 
 /// Install a global panic hook that logs every panic through `tracing` before
@@ -123,4 +161,33 @@ fn install_panic_hook() {
             "PANIC: {message}\nbacktrace:\n{backtrace}"
         );
     }));
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::io::Write as _;
+
+    #[test]
+    fn test_processes_are_refused_a_file_sink() {
+        let root = Path::new("/tmp/codescribe-test-logging-contract");
+        assert_eq!(log_file_path(root, true), None);
+    }
+
+    #[test]
+    fn production_logging_keeps_canonical_append_semantics() {
+        let root = tempfile::tempdir().expect("create production logging fixture");
+        let path = log_file_path(root.path(), false).expect("production file sink");
+        assert_eq!(path, root.path().join("logs/codescribe.log"));
+
+        writeln!(open_file_log(&path).expect("open first writer"), "first")
+            .expect("write first record");
+        writeln!(open_file_log(&path).expect("open append writer"), "second")
+            .expect("write second record");
+
+        assert_eq!(
+            std::fs::read_to_string(path).expect("read production log fixture"),
+            "first\nsecond\n"
+        );
+    }
 }

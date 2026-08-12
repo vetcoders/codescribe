@@ -151,6 +151,7 @@ discover_model() {
   fi
 
   for candidate in \
+    "$home_dir/.codescribe/models/whisper-large-v3-turbo" \
     "$home_dir/.codescribe/models/whisper-large-v3-turbo-mlx-q8" \
     "$home_dir/.codescribe/models/whisper-large-v3-mlx-q8"; do
     if model_is_complete "$candidate"; then
@@ -1136,7 +1137,7 @@ if [[ "$(($(count_lines "$manifest_tsv") - 1))" -le 0 ]]; then
 fi
 
 if ! model_path="$(discover_model)"; then
-  write_honest_report "No complete Whisper model found. Checked CODESCRIBE_MODEL_PATH, ~/.codescribe/models/{whisper-large-v3-turbo-mlx-q8,whisper-large-v3-mlx-q8}, and Hugging Face cache snapshots."
+  write_honest_report "No complete Whisper model found. Checked CODESCRIBE_MODEL_PATH, ~/.codescribe/models/{whisper-large-v3-turbo,whisper-large-v3-turbo-mlx-q8,whisper-large-v3-mlx-q8}, and Hugging Face cache snapshots."
 fi
 
 export CODESCRIBE_MODEL_PATH="$model_path"

@@ -791,6 +791,18 @@ impl CodescribeHotkeys {
             })
     }
 
+    /// Forward a macOS sleep/wake boundary to the active recorder, if any.
+    ///
+    /// Querying this surface never constructs the shared controller. The host
+    /// notification callback can therefore remain a cheap no-op while idle and
+    /// cannot surprise-load a model or start a provider.
+    pub async fn note_sleep_wake(&self) -> bool {
+        let Some(controller) = current_controller(&shared_controller()) else {
+            return false;
+        };
+        controller.note_sleep_wake().await
+    }
+
     /// True while the shared controller is in an active recording/conversation state.
     pub async fn is_recording(&self) -> bool {
         let Some(controller) = current_controller(&shared_controller()) else {
@@ -1733,11 +1745,57 @@ impl CodescribeHotkeys {
 mod mode_binding_tests {
     use super::*;
     use serial_test::serial;
+    use std::process::Command;
     use std::sync::Mutex;
 
     /// Serializes `CODESCRIBE_DATA_DIR` mutation for the persist/read-back test.
     // Serializes the CODESCRIBE_DATA_DIR-mutating test below within this module.
     static ENV_LOCK: Mutex<()> = Mutex::new(());
+
+    /// RED contract for the production-log pollution observed from this test
+    /// module. A child test process gives `init_logging` a fresh `Once`, a fake
+    /// HOME, and a distinct test data root; initialization must not create the
+    /// production-shaped `~/.codescribe/logs/codescribe.log` sink.
+    #[test]
+    #[serial]
+    fn fleet_red_test_logging_isolated() {
+        const CHILD_ENV: &str = "CODESCRIBE_FLEET_RED_LOG_CHILD";
+        if std::env::var_os(CHILD_ENV).is_some() {
+            let production_path = std::path::PathBuf::from(
+                std::env::var_os("HOME").expect("isolated child HOME must be set"),
+            )
+            .join(".codescribe")
+            .join("logs")
+            .join("codescribe.log");
+
+            codescribe::logging::init_logging();
+            assert!(
+                !production_path.exists(),
+                "test logger initialization resolved to production path: {}",
+                production_path.display()
+            );
+            return;
+        }
+
+        let fake_home = tempfile::tempdir().expect("create isolated HOME");
+        let test_data = tempfile::tempdir().expect("create isolated test data root");
+        let status = Command::new(std::env::current_exe().expect("resolve test binary"))
+            .args([
+                "--exact",
+                "hotkeys::mode_binding_tests::fleet_red_test_logging_isolated",
+                "--nocapture",
+            ])
+            .env(CHILD_ENV, "1")
+            .env("HOME", fake_home.path())
+            .env("CODESCRIBE_DATA_DIR", test_data.path())
+            .status()
+            .expect("launch isolated logging child");
+
+        assert!(
+            status.success(),
+            "isolated logger child must avoid the production log path"
+        );
+    }
 
     /// Every core work mode survives a UniFFI round-trip without loss.
     #[test]
@@ -2101,6 +2159,19 @@ mod preparing_compensation_tests {
             .lock()
             .unwrap_or_else(|e| e.into_inner()) = None;
         PREPARING_PENDING.store(false, Ordering::SeqCst);
+    }
+
+    /// A host lifecycle notification while idle must not construct the shared
+    /// controller (and therefore cannot prewarm or load an engine).
+    #[tokio::test]
+    #[serial]
+    async fn sleep_wake_without_active_controller_is_a_noop() {
+        let _guard = TEST_LOCK.lock().await;
+        teardown();
+
+        let hotkeys = CodescribeHotkeys::new();
+        assert!(!hotkeys.note_sleep_wake().await);
+        assert!(current_controller(&shared_controller()).is_none());
     }
 
     /// AudioLevel IPC payload forwards the RMS sample to the Swift listener.

@@ -63,12 +63,33 @@
 //! still count toward the change ratio so a wildly divergent re-transcription is
 //! skipped wholesale.
 //!
-//! This module is a **pure** function of its inputs. It performs no audio
-//! capture and no network calls.
+//! # Under-commit is not divergence (W-C)
+//!
+//! The change-ratio cap above assumes the two texts describe the *same* speech
+//! and merely disagree. When Layer 0 lost whole phrases — the measured
+//! 104 s / 220 ch and 107 s / 118 ch Polish sessions — the re-transcription is
+//! not a divergent opinion, it is the speech that never reached the canvas, and
+//! the cap silently threw it away. [`TailPatchOutcome::UnderCommit`] separates
+//! the two: a re-transcription that still *contains* the committed canvas
+//! ([`UNDER_COMMIT_MIN_COVERAGE`]) while carrying substantially more of it
+//! ([`UNDER_COMMIT_RATIO`]) is classified as under-commit, its recovered
+//! material is emitted as bounded gap-**appends** where the anchor is a matched
+//! committed token boundary, and anything that could only land by rewriting a
+//! committed span escalates [`UnderCommit::residual_required`] instead. A
+//! re-transcription that does *not* contain the canvas is still ordinary
+//! divergence and still `Skipped`.
+//!
+//! This module is a **pure** function of its inputs in the sense that matters:
+//! it performs no audio capture and no network calls, and its return value
+//! depends only on its arguments. Its one side effect is a single INFO receipt
+//! per non-patching outcome (counts and reason only — never transcript text),
+//! because the discarded-truth bug was invisible precisely for want of one.
 //!
 //! Contract: the `committed` argument is byte-identical to the emitted
 //! `UtteranceFinal.text` and is already trimmed by the emitter (single trim
 //! owner: `final_text` at the session.rs emit site).
+
+use tracing::info;
 
 use crate::pipeline::contracts::{EngineEvent, LayerSource};
 
@@ -90,6 +111,54 @@ const LAYERED_DEFAULT_PHASE: u8 = 1;
 
 /// Env override for [`TailPatchConfig::max_change_ratio`].
 pub const TAIL_PATCH_MAX_CHANGE_RATIO_ENV: &str = "CODESCRIBE_TAIL_PATCH_MAX_CHANGE_RATIO";
+
+/// Committed/retranscribed **token** ratio below which Layer 0 is judged to have
+/// under-committed rather than to have merely disagreed.
+///
+/// The measured eaten sessions sat far under this (220 ch of a 104 s take), and
+/// a healthy tail-patch — a word or two corrected in a phrase Layer 0 fully
+/// heard — sits at ~1.0. `0.6` leaves ordinary Whisper verbosity (articles,
+/// re-segmented compounds) on the normal path.
+pub const UNDER_COMMIT_RATIO: f64 = 0.6;
+
+/// Minimum re-transcribed token count before under-commit is even considered,
+/// for canvases of ≥3 tokens.
+///
+/// A two-word Whisper burst against a one-word canvas satisfies any ratio while
+/// carrying no recoverable speech; requiring a real sentence keeps the
+/// escalation attached to material worth recovering.
+///
+/// The floor SCALES DOWN for short canvases (see
+/// [`under_commit_min_retranscribed`]): session a5623d55 (2026-08-12) lost the
+/// utterance head three times in one minute because its live windows held only
+/// 1-2 committed tokens and Whisper's 5-token recovery could never reach an
+/// absolute 6. Coverage, not length, is the garbage discriminator.
+pub const UNDER_COMMIT_MIN_RETRANSCRIBED_TOKENS: usize = 6;
+
+/// Hard floor of the scaled minimum: even a one-token canvas needs at least
+/// this many recovered tokens before escalation is considered.
+pub const UNDER_COMMIT_MIN_SHORT_WINDOW_TOKENS: usize = 4;
+
+/// Effective minimum re-transcribed token count for a given canvas size:
+/// `min(6, max(4, 2 × committed))` — never stricter than the absolute
+/// constant, looser only where the canvas itself is one or two tokens.
+pub fn under_commit_min_retranscribed(committed_tokens: usize) -> usize {
+    (committed_tokens * 2).clamp(
+        UNDER_COMMIT_MIN_SHORT_WINDOW_TOKENS,
+        UNDER_COMMIT_MIN_RETRANSCRIBED_TOKENS,
+    )
+}
+
+/// Fraction of committed tokens that must be found inside the re-transcription
+/// before its anchors may be trusted.
+///
+/// **This is the discriminator, not the ratio.** Under-commit means Whisper
+/// heard everything the canvas holds *plus* what Layer 0 lost, so the committed
+/// tokens align and the gaps between them are addressable. A re-transcription
+/// that does not contain the canvas is ordinary divergence: its offsets mean
+/// nothing against the committed text, so it stays [`TailPatchOutcome::Skipped`]
+/// and Layer 0 stands.
+pub const UNDER_COMMIT_MIN_COVERAGE: f64 = 0.8;
 
 /// Parse a layered-transcription phase token (`phase1`..`phase4` or bare `1`..`4`).
 ///
@@ -164,6 +233,81 @@ pub enum TailPatchOutcome {
     /// Diff exceeded the safety threshold (or there was nothing to patch
     /// against); Layer 0 output stands unchanged.
     Skipped { reason: String },
+    /// Layer 0 committed substantially less than the audio carried, and the
+    /// committed canvas is still contained in the re-transcription. Recovered
+    /// speech, not a diff to clamp — see [`UnderCommit`].
+    UnderCommit(UnderCommit),
+}
+
+/// A Layer-0 under-commit: what was recovered, what could be placed live, and
+/// whether the stop path still owes the session a residual gap fill.
+///
+/// Append-plus-gap-fill is the whole contract here. `appends` never touches a
+/// committed span — every event is a zero-width `ReplaceRange` anchored on a
+/// matched committed token boundary (or on buffer start). Material that could
+/// only land by rewriting committed text is *not* emitted; it raises
+/// `residual_required` instead, because the asymmetry is settled doctrine: lost
+/// speech is unrecoverable, duplication is filterable downstream.
+#[derive(Debug, Clone, PartialEq)]
+pub struct UnderCommit {
+    /// Bounded gap-append events, descending by `start` so sequential
+    /// application against the committed text is offset-stable. May be empty.
+    pub appends: Vec<EngineEvent>,
+    /// Recovered speech that no safe anchor could place. The stop path must
+    /// treat this session as owing a residual gap fill rather than as a
+    /// complete streaming transcript.
+    pub residual_required: bool,
+    /// Whitespace-delimited token count of the committed canvas.
+    pub committed_tokens: usize,
+    /// Whitespace-delimited token count of the re-transcription.
+    pub retranscribed_tokens: usize,
+    /// Char count of the trimmed committed canvas (log/telemetry only).
+    pub committed_chars: usize,
+    /// Char count of the trimmed re-transcription (log/telemetry only).
+    pub retranscribed_chars: usize,
+    /// `committed_tokens / retranscribed_tokens` — under [`UNDER_COMMIT_RATIO`].
+    pub commit_ratio: f64,
+}
+
+impl UnderCommit {
+    /// Stable log/wire tag naming what this escalation asks of the stop path.
+    pub fn reason(&self) -> &'static str {
+        if self.residual_required {
+            "under_commit_residual_required"
+        } else {
+            "under_commit_gap_append"
+        }
+    }
+}
+
+impl TailPatchOutcome {
+    /// Bounded events this outcome contributes to the committed canvas.
+    ///
+    /// One accessor for both event-bearing arms so a sink cannot forward
+    /// `Patches` while silently dropping recovered gap-appends — the exact
+    /// shape of the bug this cut repairs.
+    pub fn events(&self) -> &[EngineEvent] {
+        match self {
+            Self::Patches(events) => events,
+            Self::UnderCommit(under) => &under.appends,
+            Self::NoChange | Self::Skipped { .. } => &[],
+        }
+    }
+
+    /// Same events, owned, for sinks that consume the outcome.
+    pub fn into_events(self) -> Vec<EngineEvent> {
+        match self {
+            Self::Patches(events) => events,
+            Self::UnderCommit(under) => under.appends,
+            Self::NoChange | Self::Skipped { .. } => Vec::new(),
+        }
+    }
+
+    /// Whether the stop path must run residual gap fill because recovered
+    /// speech could not be placed on the live canvas.
+    pub fn residual_required(&self) -> bool {
+        matches!(self, Self::UnderCommit(under) if under.residual_required)
+    }
 }
 
 /// A whitespace-delimited token with char-offset span inside the source string.
@@ -260,6 +404,136 @@ fn lcs_matches(committed: &[Token], retranscribed: &[Token]) -> Vec<(usize, usiz
     matches
 }
 
+/// One INFO receipt for a tail-patch outcome that put nothing on the canvas.
+///
+/// Counts and reason only. The transcript is the user's speech and never enters
+/// a log line; the counts are what makes a starved session diagnosable, which
+/// is exactly what was missing when `Skipped` was a `debug!` and the recovered
+/// text vanished without trace.
+fn log_skipped_receipt(
+    utterance_id: u64,
+    reason: &str,
+    committed: &str,
+    retranscribed: &str,
+    committed_tokens: usize,
+    retranscribed_tokens: usize,
+) {
+    info!(
+        utterance_id,
+        reason,
+        committed_chars = committed.trim().chars().count(),
+        retranscribed_chars = retranscribed.trim().chars().count(),
+        committed_tokens,
+        retranscribed_tokens,
+        "tail_patch_skipped"
+    );
+}
+
+/// Decide whether a change-ratio rejection is really an under-commit, and if so
+/// what of the recovered speech can be appended safely.
+///
+/// Returns `None` for ordinary divergence, leaving the caller to skip.
+///
+/// Three gates, in order of how much they can hurt if wrong:
+/// 1. the re-transcription must be substantial ([`UNDER_COMMIT_MIN_RETRANSCRIBED_TOKENS`]);
+/// 2. it must carry substantially more than the canvas ([`UNDER_COMMIT_RATIO`]);
+/// 3. it must still *contain* the canvas ([`UNDER_COMMIT_MIN_COVERAGE`]) — without
+///    this an unrelated decode would append its whole text to the user's transcript.
+fn classify_under_commit(
+    c_tokens: &[Token],
+    r_tokens: &[Token],
+    matched: &[(usize, usize)],
+    groups: &[EditGroup],
+    utterance_id: u64,
+    committed_chars: usize,
+    retranscribed_chars: usize,
+) -> Option<UnderCommit> {
+    let committed_tokens = c_tokens.len();
+    let retranscribed_tokens = r_tokens.len();
+    if retranscribed_tokens < under_commit_min_retranscribed(committed_tokens) {
+        return None;
+    }
+    let commit_ratio = committed_tokens as f64 / retranscribed_tokens as f64;
+    if commit_ratio >= UNDER_COMMIT_RATIO {
+        return None;
+    }
+    let coverage = matched.len() as f64 / committed_tokens as f64;
+    if coverage < UNDER_COMMIT_MIN_COVERAGE {
+        return None;
+    }
+
+    let mut appends: Vec<EngineEvent> = Vec::new();
+    let mut residual_required = false;
+    for g in groups {
+        if g.retranscribed.is_empty() {
+            // Deletion: Whisper heard less here. Nothing was recovered, and v1
+            // never removes text the user already saw.
+            continue;
+        }
+        if !g.committed.is_empty() {
+            // A committed span sits under this material, so placing it would
+            // rewrite the canvas — forbidden. Only escalate when the group
+            // actually carries more than the canvas holds; an equal-or-smaller
+            // substitution is a re-hearing, not lost speech.
+            if g.retranscribed.len() > g.committed.len() {
+                residual_required = true;
+            }
+            continue;
+        }
+        let replacement: String = g
+            .retranscribed
+            .clone()
+            .map(|idx| r_tokens[idx].text.as_str())
+            .collect::<Vec<_>>()
+            .join(" ");
+        // Zero-width range: a pure append at a boundary between committed
+        // tokens, never a replacement of one.
+        let (start, text) = if g.has_prev_match {
+            (g.anchor, format!(" {replacement}"))
+        } else {
+            (0usize, format!("{replacement} "))
+        };
+        appends.push(EngineEvent::ReplaceRange {
+            utterance_id,
+            start,
+            end: start,
+            text,
+            source: LayerSource::TailPatch,
+        });
+    }
+
+    if appends.is_empty() {
+        // Under-commit with nothing placeable: the whole recovery is owed to
+        // the stop path.
+        residual_required = true;
+    }
+    appends.sort_by_key(|e| std::cmp::Reverse(event_start(e)));
+
+    let under = UnderCommit {
+        appends,
+        residual_required,
+        committed_tokens,
+        retranscribed_tokens,
+        committed_chars,
+        retranscribed_chars,
+        commit_ratio,
+    };
+    info!(
+        utterance_id,
+        reason = under.reason(),
+        committed_chars,
+        retranscribed_chars,
+        committed_tokens,
+        retranscribed_tokens,
+        commit_ratio,
+        coverage,
+        gap_appends = under.appends.len(),
+        residual_required = under.residual_required,
+        "tail_patch_under_commit"
+    );
+    Some(under)
+}
+
 /// Compute bounded tail-patch events from a Layer-0 committed utterance and a
 /// Whisper re-transcription of the same audio slice.
 ///
@@ -272,11 +546,27 @@ pub fn compute_tail_patch(
 ) -> TailPatchOutcome {
     // Layer 0 owns the first commit: nothing to patch against an empty buffer.
     if committed.trim().is_empty() {
+        log_skipped_receipt(
+            utterance_id,
+            "empty_committed",
+            committed,
+            retranscribed,
+            0,
+            0,
+        );
         return TailPatchOutcome::Skipped {
             reason: "empty_committed".to_string(),
         };
     }
     if retranscribed.trim().is_empty() {
+        log_skipped_receipt(
+            utterance_id,
+            "empty_retranscription",
+            committed,
+            retranscribed,
+            tokenize(committed).len(),
+            0,
+        );
         return TailPatchOutcome::Skipped {
             reason: "empty_retranscription".to_string(),
         };
@@ -285,6 +575,14 @@ pub fn compute_tail_patch(
     let c_tokens = tokenize(committed);
     let r_tokens = tokenize(retranscribed);
     if c_tokens.is_empty() {
+        log_skipped_receipt(
+            utterance_id,
+            "no_committed_tokens",
+            committed,
+            retranscribed,
+            0,
+            r_tokens.len(),
+        );
         return TailPatchOutcome::Skipped {
             reason: "no_committed_tokens".to_string(),
         };
@@ -330,12 +628,34 @@ pub fn compute_tail_patch(
         .sum();
     let ratio = changed as f64 / c_tokens.len() as f64;
     if ratio > cfg.max_change_ratio {
-        return TailPatchOutcome::Skipped {
-            reason: format!(
-                "change_ratio {:.2} exceeds max {:.2}",
-                ratio, cfg.max_change_ratio
-            ),
-        };
+        // Before the cap discards this: is the canvas starved rather than
+        // wrong? The bounded diff was never an instrument for measuring lost
+        // speech, and using it as one is what threw the recovered 104 s / 107 s
+        // Polish takes away.
+        if let Some(under) = classify_under_commit(
+            &c_tokens,
+            &r_tokens,
+            &matches,
+            &groups,
+            utterance_id,
+            committed.trim().chars().count(),
+            retranscribed.trim().chars().count(),
+        ) {
+            return TailPatchOutcome::UnderCommit(under);
+        }
+        let reason = format!(
+            "change_ratio {:.2} exceeds max {:.2}",
+            ratio, cfg.max_change_ratio
+        );
+        log_skipped_receipt(
+            utterance_id,
+            &reason,
+            committed,
+            retranscribed,
+            c_tokens.len(),
+            r_tokens.len(),
+        );
+        return TailPatchOutcome::Skipped { reason };
     }
 
     let mut events: Vec<EngineEvent> = Vec::new();
@@ -415,13 +735,31 @@ mod tests {
     /// return the resulting buffer. Mirrors how a sink folds the events.
     fn apply_all(committed: &str, outcome: &TailPatchOutcome) -> String {
         let mut buf = committed.to_string();
-        if let TailPatchOutcome::Patches(events) = outcome {
-            for ev in events {
-                ev.apply_to_committed_text(&mut buf)
-                    .expect("bounded range must be valid against committed text");
-            }
+        // `events()` folds both event-bearing arms, so an under-commit's
+        // gap-appends are exercised by the same helper as ordinary patches.
+        for ev in outcome.events() {
+            ev.apply_to_committed_text(&mut buf)
+                .expect("bounded range must be valid against committed text");
         }
         buf
+    }
+
+    /// Every event an under-commit emits must be a zero-width append.
+    fn assert_all_zero_width(under: &UnderCommit) {
+        for event in &under.appends {
+            match event {
+                EngineEvent::ReplaceRange {
+                    start, end, source, ..
+                } => {
+                    assert_eq!(
+                        start, end,
+                        "under-commit may only append; a non-empty range rewrites committed text"
+                    );
+                    assert_eq!(*source, LayerSource::TailPatch);
+                }
+                other => panic!("under-commit emitted a non-ReplaceRange event: {other:?}"),
+            }
+        }
     }
 
     /// Exact re-transcription match must yield `NoChange` (no empty ReplaceRange).
@@ -523,6 +861,201 @@ mod tests {
         assert!(matches!(outcome, TailPatchOutcome::Skipped { .. }));
         // Layer 0 output stands.
         assert_eq!(apply_all(committed, &outcome), committed);
+    }
+
+    /// RED: once Whisper recovers substantially more non-trivial text than
+    /// Layer 0 committed, a bounded-diff rejection must escalate rather than
+    /// silently returning the same `Skipped` outcome as ordinary divergence.
+    #[test]
+    fn fleet_red_under_commit_escalates() {
+        let cfg = TailPatchConfig::default();
+        let committed = "pierwsza krótka fraza";
+        let retranscribed = "pierwsza krótka fraza oraz cały odzyskany dalszy fragment wypowiedzi z wieloma słowami";
+        let under_commit = compute_tail_patch(committed, retranscribed, 41, &cfg);
+
+        let normal = compute_tail_patch("ala ma kota", "ala ma psa", 42, &cfg);
+        assert!(matches!(normal, TailPatchOutcome::Patches(_)));
+
+        let empty = compute_tail_patch("ala ma kota", "", 43, &cfg);
+        assert_eq!(
+            empty,
+            TailPatchOutcome::Skipped {
+                reason: "empty_retranscription".to_string()
+            }
+        );
+
+        assert!(
+            !matches!(under_commit, TailPatchOutcome::Skipped { .. }),
+            "committed/retranscribed below 0.6 must escalate, got {under_commit:?}"
+        );
+    }
+
+    /// Recovered tail is appended, not discarded, and the canvas is untouched.
+    #[test]
+    fn under_commit_appends_recovered_tail_without_rewriting_canvas() {
+        // The measured shape: Layer 0 kept one phrase of a long take, Whisper
+        // returned that phrase plus everything Apple's partial-collapse ate.
+        let cfg = TailPatchConfig::default();
+        let committed = "pierwsza krótka fraza";
+        let retranscribed = "pierwsza krótka fraza oraz cały odzyskany dalszy fragment wypowiedzi z wieloma słowami";
+        let outcome = compute_tail_patch(committed, retranscribed, 41, &cfg);
+
+        let TailPatchOutcome::UnderCommit(under) = &outcome else {
+            panic!("expected UnderCommit, got {outcome:?}");
+        };
+        assert_eq!(under.committed_tokens, 3);
+        assert_eq!(under.retranscribed_tokens, 12);
+        assert!(under.commit_ratio < UNDER_COMMIT_RATIO);
+        assert_eq!(under.appends.len(), 1, "one bounded gap-append");
+        assert_all_zero_width(under);
+        assert!(
+            !under.residual_required,
+            "everything recovered landed live; nothing is owed to the stop path"
+        );
+        // Append-plus-gap-fill: the committed prefix survives byte-identical.
+        let applied = apply_all(committed, &outcome);
+        assert!(applied.starts_with(committed));
+        assert_eq!(applied, retranscribed);
+    }
+
+    /// Session a5623d55 (2026-08-12): the first live windows are SHORT — the
+    /// canvas held 2 tokens, Whisper recovered 5 (the eaten utterance head).
+    /// An absolute 6-token floor threw that recovery away three times in one
+    /// minute. Short-window under-commits must escalate too; the coverage
+    /// gate, not a length floor, is the garbage discriminator.
+    #[test]
+    fn short_window_under_commit_escalates_instead_of_skipping() {
+        let cfg = TailPatchConfig::default();
+        let committed = "zmienili zobacz";
+        let retranscribed = "coś się tutaj zmienili zobacz";
+        let outcome = compute_tail_patch(committed, retranscribed, 1, &cfg);
+
+        let TailPatchOutcome::UnderCommit(under) = &outcome else {
+            panic!("short-window head recovery must escalate, got {outcome:?}");
+        };
+        assert_eq!(under.committed_tokens, 2);
+        assert_eq!(under.retranscribed_tokens, 5);
+        // The head sits before the first match: a prepend, canvas untouched.
+        let applied = apply_all(committed, &outcome);
+        assert!(
+            applied.ends_with(committed),
+            "canvas must survive: {applied:?}"
+        );
+        assert!(
+            applied.contains("coś się tutaj"),
+            "recovered head must land: {applied:?}"
+        );
+    }
+
+    /// The floor still exists for genuinely tiny bursts: a two-word decode
+    /// against a one-word canvas carries nothing worth escalating.
+    #[test]
+    fn tiny_burst_still_skips() {
+        let cfg = TailPatchConfig::default();
+        let outcome = compute_tail_patch("tak", "no tak", 1, &cfg);
+        assert!(
+            matches!(outcome, TailPatchOutcome::Skipped { .. }),
+            "two-word burst must not escalate: {outcome:?}"
+        );
+    }
+
+    /// Recovered speech that would have to overwrite a committed span is never
+    /// emitted — it escalates to the stop path instead.
+    #[test]
+    fn under_commit_without_safe_anchor_requires_residual() {
+        let cfg = TailPatchConfig::default();
+        // "piec" is committed but absent from the re-transcription, so the whole
+        // recovered tail sits under a committed token: no safe anchor exists.
+        let committed = "raz dwa trzy cztery piec";
+        let retranscribed = "raz dwa trzy cztery szesc siedem osiem dziewiec dziesiec";
+        let outcome = compute_tail_patch(committed, retranscribed, 42, &cfg);
+
+        let TailPatchOutcome::UnderCommit(under) = &outcome else {
+            panic!("expected UnderCommit, got {outcome:?}");
+        };
+        assert!(under.appends.is_empty(), "no anchor was demonstrably safe");
+        assert!(under.residual_required);
+        assert_eq!(under.reason(), "under_commit_residual_required");
+        assert!(outcome.residual_required());
+        // Layer 0 stands exactly as the user saw it.
+        assert_eq!(apply_all(committed, &outcome), committed);
+    }
+
+    /// Mixed under-commit: the addressable gap is filled live, the unplaceable
+    /// remainder escalates, and no committed token is rewritten either way.
+    #[test]
+    fn under_commit_fills_safe_gap_and_still_escalates_remainder() {
+        let cfg = TailPatchConfig::default();
+        let committed = "raz dwa trzy cztery piec szesc";
+        let retranscribed =
+            "raz dwa trzy alfa beta gamma cztery piec siedem osiem dziewiec dziesiec";
+        let outcome = compute_tail_patch(committed, retranscribed, 43, &cfg);
+
+        let TailPatchOutcome::UnderCommit(under) = &outcome else {
+            panic!("expected UnderCommit, got {outcome:?}");
+        };
+        assert_eq!(under.appends.len(), 1);
+        assert_all_zero_width(under);
+        assert!(
+            under.residual_required,
+            "the tail under the committed span could not be placed"
+        );
+        assert_eq!(
+            apply_all(committed, &outcome),
+            "raz dwa trzy alfa beta gamma cztery piec szesc",
+            "gap filled in place; every committed token survives"
+        );
+    }
+
+    /// Coverage — not the length ratio — is what separates under-commit from
+    /// divergence. This decode is *shorter-ratio* than the escalation threshold
+    /// yet shares no token with the canvas, so its offsets mean nothing.
+    #[test]
+    fn divergence_without_canvas_coverage_never_escalates() {
+        let cfg = TailPatchConfig::default();
+        let committed = "ala ma kota";
+        let retranscribed = "zupełnie inny tekst o czymś innym";
+        assert!(
+            (tokenize(committed).len() as f64 / tokenize(retranscribed).len() as f64)
+                < UNDER_COMMIT_RATIO,
+            "fixture must sit below the ratio gate so coverage is the deciding gate"
+        );
+        let outcome = compute_tail_patch(committed, retranscribed, 44, &cfg);
+        assert!(matches!(outcome, TailPatchOutcome::Skipped { .. }));
+        assert_eq!(apply_all(committed, &outcome), committed);
+    }
+
+    /// A short Whisper burst satisfies any ratio while recovering nothing worth
+    /// appending; it stays on the ordinary skip path.
+    #[test]
+    fn short_retranscription_never_escalates() {
+        let cfg = TailPatchConfig::default();
+        let outcome = compute_tail_patch("tak", "tak jest dobrze", 45, &cfg);
+        assert!(
+            matches!(outcome, TailPatchOutcome::Skipped { .. }),
+            "under {UNDER_COMMIT_MIN_RETRANSCRIBED_TOKENS} tokens is noise, not recovered speech"
+        );
+    }
+
+    /// The escalation must not disturb the ordinary lane: a small diff still
+    /// patches, and an empty re-transcription still skips with its exact reason.
+    #[test]
+    fn small_diff_and_empty_retranscription_are_unchanged() {
+        let cfg = TailPatchConfig::default();
+        assert!(matches!(
+            compute_tail_patch("ala ma kota", "ala ma psa", 46, &cfg),
+            TailPatchOutcome::Patches(_)
+        ));
+        assert_eq!(
+            compute_tail_patch("ala ma kota", "", 47, &cfg),
+            TailPatchOutcome::Skipped {
+                reason: "empty_retranscription".to_string()
+            }
+        );
+        assert!(matches!(
+            compute_tail_patch("", "cokolwiek dłuższego tu jest naprawdę sporo", 48, &cfg),
+            TailPatchOutcome::Skipped { .. }
+        ));
     }
 
     /// Multiple substitutions emit descending-by-start for offset-stable apply.

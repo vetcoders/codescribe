@@ -22,6 +22,6 @@ pub mod qube_report;
 pub mod teacher;
 
 pub use teacher::{
-    MergeMode, MergedDelivery, TeacherInput, TeacherReport, merge_live_whisper,
-    merge_live_whisper_with_terms, report_to_html, teach,
+    Layer1MergeMode, Layer1MergedDelivery, MergeMode, MergedDelivery, TeacherInput, TeacherReport,
+    merge_live_layer1, merge_live_whisper, merge_live_whisper_with_terms, report_to_html, teach,
 };

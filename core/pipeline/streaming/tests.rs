@@ -8,6 +8,7 @@ use anyhow::Result;
 use tokio::sync::{Mutex, mpsc};
 use tokio::time::{Duration, Instant};
 
+use crate::asr_session::recorder::Layer1Decision;
 use crate::pipeline::contracts::{EngineEvent, EventSink, RawTranscript, TranscriptSegment};
 use crate::pipeline::sinks::CollectorEventSink;
 use crate::stt::scheduler::{SttLane, SttScheduler, SttTaskHandle};
@@ -1401,6 +1402,8 @@ async fn transcription_session_emits_no_speech_and_stats_for_empty_input() {
             language: Some("pl".to_string()),
             stream_log_path: None,
             utterance_silence_sec: None,
+            layer1: Layer1Decision::Disarmed,
+            lifecycle_events: None,
         },
     )
     .await;
@@ -1635,6 +1638,8 @@ async fn bench_stt_scheduler_latency_probe_from_env() -> Result<()> {
                 language: language.clone(),
                 stream_log_path: None,
                 utterance_silence_sec: None,
+                layer1: Layer1Decision::Disarmed,
+                lifecycle_events: None,
             },
         ));
 
@@ -1714,6 +1719,8 @@ async fn transcription_session_silent_callbacks_keep_no_speech_stats_coherent() 
             language: Some("pl".to_string()),
             stream_log_path: None,
             utterance_silence_sec: None,
+            layer1: Layer1Decision::Disarmed,
+            lifecycle_events: None,
         },
     )
     .await;

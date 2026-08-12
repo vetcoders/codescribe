@@ -93,6 +93,39 @@ Cross-agent signals live there (operator away, stalls canceled, peer wake-ups).
 At session start: `head -80 AGENT_BUS.md`. If you need another agent, write a `SIGNAL` block — the
 operator's orchestration tooling handles peer wake-ups.
 
+## Agent-Agnostic Worktrees and Evidence Planes
+
+All agents and dispatchers use the same Vibecrafted-owned geometry. Never encode a client,
+vendor, model, or agent name in infrastructure paths (`.claude`, `.codex`, `.gemini`, and similar
+roots are forbidden for new worktree infrastructure).
+
+The three canonical planes are separate:
+
+- linked checkout: `~/.vibecrafted/worktrees/<org>/<repo>/YYYY_MMDD/<cut-id>`
+- durable artifacts: `~/.vibecrafted/artifacts/<org>/<repo>/YYYY_MMDD/{plans,reports,...}`
+- ephemeral current-run state: `~/.vibecrafted/control_plane/...`
+
+Worktree branches use `cut/<cut-id>`. The dispatcher owns canonical `<org>`, `<repo>`, date, cut,
+artifact-root, and run-root resolution; workers consume those resolved values and must not invent
+their own vendor-specific paths. A linked checkout is disposable and must contain no sole copy of
+a report, plan, handoff, verifier result, or delivery proof. Durable evidence goes to the artifact
+plane. Heartbeats, locks, process metadata, transcripts, and other live supervision state go to
+the control-plane runtime and may be collected or removed according to its lifecycle.
+
+Every linked checkout owns its own ignored `target/` directory. Rust commands in a worker set
+`CARGO_TARGET_DIR=$PWD/target` (or use the equivalent checkout-local default) and must never point
+at the main checkout, another cut, or a shared fleet target. Sharing Cargo artifacts across
+concurrent worktrees can execute a binary compiled from another cut even when the current source
+tree differs. Integrators alone use the main checkout target, and integrator gates run with one
+writer. Cold compilation is part of trustworthy parallel isolation, not a reason to share target
+state.
+
+Do not create a repository-local `./.vibecrafted` as a competing fourth plane. Existing ignored
+repo-local scratch is legacy-only and is not authoritative. Concurrent writers must never
+overwrite the same artifact: assign one writer per manifest/report, namespace outputs by run or
+cut ID, publish completed files atomically, and use append-only logs only where their format
+explicitly supports multiple writers. Git commits remain the authority for source changes.
+
 Canonical per-repo instructions for every agent (Claude, Codex, Gemini, Junie, Grok, …). Read this
 before touching anything.
 

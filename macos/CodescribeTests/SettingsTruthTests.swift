@@ -903,6 +903,15 @@ final class SettingsTruthTests: XCTestCase {
         )
     }
 
+    func testOnlyPostDestructiveResetErrorsRequireRelaunch() {
+        XCTAssertFalse(resetFailureRequiresRelaunch("failed to prepare Trash destination"))
+        XCTAssertTrue(
+            resetFailureRequiresRelaunch(
+                "CODESCRIBE_RESET_RELAUNCH_REQUIRED: app data moved but prompt restore failed"
+            )
+        )
+    }
+
     func testClearMcpConfigurationUsesDedicatedEngineContract() {
         var calls = 0
         let model = SettingsViewModel(
@@ -914,6 +923,51 @@ final class SettingsTruthTests: XCTestCase {
         model.clearMcpConfiguration()
 
         XCTAssertEqual(calls, 1)
+    }
+
+    /// RED contract for the missing promoted deferred-insert picker. The test
+    /// names the intended Settings view-model seam directly; until the picker
+    /// exists the Swift target must fail at that missing API, not pass through
+    /// a test-only surrogate.
+    func testDeferredInsertPickerRoundTrips() {
+        var writes: [(String, String)] = []
+        let model = SettingsViewModel(
+            engine: MockSettingsEngine { key, value in writes.append((key, value)) }
+        )
+        _ = ShortcutsPanel(model: model)
+
+        let cases: [(DeferredInsertShortcutOption, String)] = [
+            (.disabled, "disabled"),
+            (.commandOptionV, "command_option_v"),
+            (.commandShiftV, "command_shift_v"),
+            (.commandControlV, "command_control_v"),
+        ]
+        for (option, wireValue) in cases {
+            model.setDeferredInsertShortcut(option)
+            XCTAssertEqual(writes.last?.0, "CODESCRIBE_DEFERRED_INSERT_SHORTCUT")
+            XCTAssertEqual(writes.last?.1, wireValue)
+        }
+    }
+
+    /// A passive Settings load must restore the canonical persisted chord and
+    /// never route it back through `update_config`. That prevents reopening
+    /// Shortcuts from overwriting a non-default choice with the UI default.
+    func testDeferredInsertPickerRestoresPersistedSelectionWithoutWriteBack() {
+        var persisted = CsSettings.sample
+        persisted.deferredInsertShortcut = "command_shift_v"
+        var writes: [(String, String)] = []
+        let engine = MockSettingsEngine(
+            settingsLoader: { persisted },
+            updateConfigObserver: { writes.append(($0, $1)) }
+        )
+
+        let model = SettingsViewModel(engine: engine)
+        XCTAssertEqual(model.deferredInsertShortcut, .commandShiftV)
+        XCTAssertTrue(writes.isEmpty, "construction must only read persisted truth")
+
+        model.refresh()
+        XCTAssertEqual(model.deferredInsertShortcut, .commandShiftV)
+        XCTAssertTrue(writes.isEmpty, "passive refresh must not write the picker value back")
     }
 
     /// Active STT consumes last serving verdict; Apple→Whisper fallback must not

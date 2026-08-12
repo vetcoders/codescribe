@@ -16,6 +16,24 @@ enum LicenseTestFixture {
 
 @MainActor
 final class LicenseServiceTests: XCTestCase {
+    func testExplicitSignalOrXCTestHostDisablesSwiftLicenseKeychain() {
+        XCTAssertFalse(licenseKeychainDisabledByEnvironment([:]))
+        XCTAssertFalse(licenseKeychainDisabledByEnvironment(["CI": "1"]))
+        XCTAssertFalse(
+            licenseKeychainDisabledByEnvironment(["CODESCRIBE_DATA_DIR": "/tmp/codescribe"])
+        )
+        XCTAssertTrue(
+            licenseKeychainDisabledByEnvironment(["CODESCRIBE_DISABLE_KEYCHAIN": "1"])
+        )
+        XCTAssertTrue(
+            licenseKeychainDisabledByEnvironment(["XCTestConfigurationFilePath": ""])
+        )
+        XCTAssertTrue(
+            licenseKeychainDisabledByEnvironment(["XCTestSessionIdentifier": "session"])
+        )
+        XCTAssertTrue(licenseKeychainDisabledByEnvironment(["XCTestBundlePath": "tests.xctest"]))
+    }
+
     func testDevKeyPersistsAcrossServiceRestartAndRemovalReturnsUnlicensed() {
         let keychain = MemoryLicenseKeychain()
         let activationDate = Date(timeIntervalSince1970: 1_775_304_000)

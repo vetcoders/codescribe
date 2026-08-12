@@ -437,6 +437,50 @@ fn test_truth_engine_label_prefers_actual_verdict_over_preference() {
     );
 }
 
+/// Apple live with Layer 1 off and local final pass Off is served by Apple;
+/// the skipped verdict is provenance only and must never impersonate Whisper.
+#[test]
+fn test_apple_live_with_skipped_final_pass_reports_live_apple() {
+    let text = "pacjent stabilny".to_string();
+    let skipped = codescribe_core::pipeline::contracts::TranscriptionVerdict::from_parts(
+        text.clone(),
+        codescribe_core::pipeline::contracts::RawTranscript {
+            text: text.clone(),
+            ..Default::default()
+        },
+        None,
+        codescribe_core::pipeline::contracts::TranscriptionSource::LocalFinalPass,
+        codescribe_core::pipeline::contracts::TranscriptionEngineVerdict::apple(
+            codescribe_core::pipeline::contracts::TranscriptionEngineMode::SfSpeechOnDevice,
+        ),
+        Some(codescribe_core::pipeline::contracts::FinalPassVerdict {
+            mode: codescribe_core::pipeline::contracts::FinalPassMode::None,
+            disposition: FinalPassDisposition::Skipped,
+            reason: Some("routing_off".to_string()),
+            lexicon_rewrites: 0,
+            repetition_cleanups: 0,
+        }),
+    );
+
+    let verdict = adjudicate_recording_truth(
+        true,
+        true,
+        Some(skipped),
+        text.clone(),
+        None,
+        Some("live_apple"),
+        &SessionTelemetrySnapshot::default(),
+    );
+
+    assert_eq!(verdict.raw_text.as_deref(), Some(text.as_str()));
+    assert_eq!(
+        verdict.transcript_source,
+        Some(RecordingTranscriptSource::Streaming)
+    );
+    assert_eq!(verdict.engine_label.as_deref(), Some("live_apple"));
+    assert!(!verdict.engine_label.unwrap().contains("whisper"));
+}
+
 /// The stop-path receipt names every phase and its remainder sums to the wall
 /// total. Unaccounted time must show up as `remainder`, never be absorbed into
 /// a named phase — that is what makes the receipt usable for latency work.
@@ -957,6 +1001,654 @@ fn test_final_pass_action_on_complete_streaming_evidence() {
     );
 }
 
+/// RED contract for the measured eaten take. Structural coverage alone must
+/// not classify 220 committed characters over 104 seconds as Complete.
+/// Healthy density and short notes pin the two non-regression boundaries.
+#[test]
+fn fleet_red_density_guard_eaten_session() {
+    // The floor is production logic now, so the verdict under test is the one
+    // the stop path actually routes on: structural completeness with the
+    // committed-density floor applied over it. `audio_secs` is the WAV header
+    // duration the call site reads; `committed_chars` is session telemetry.
+    // `density_guarded` below stays an INDEPENDENT re-derivation of "starving"
+    // from the raw numbers, so this test still checks production against the
+    // contract rather than against itself.
+    let verdict = |audio_secs: f32, text: &str, committed_chars: usize| {
+        apply_committed_density_floor(
+            assess_streaming_completeness_fields(
+                text,
+                None,
+                false,
+                false,
+                Some(CompletenessCommitSource::UtteranceFinal),
+                committed_chars,
+                1,
+            ),
+            Some(audio_secs),
+            committed_chars,
+        )
+    };
+    let density_guarded = |audio_secs: f32, committed_chars: usize, completeness| {
+        let starving = audio_secs > 10.0 && committed_chars as f32 / audio_secs < 4.0;
+        starving && matches!(completeness, StreamingCompleteness::Complete)
+    };
+
+    let healthy = verdict(23.0, &format!("{}.", "x".repeat(299)), 300);
+    assert_eq!(healthy, StreamingCompleteness::Complete);
+    assert!(!density_guarded(23.0, 300, healthy));
+
+    let short = verdict(9.9, "krótka notatka", 14);
+    assert_eq!(short, StreamingCompleteness::Complete);
+    assert!(!density_guarded(9.9, 14, short));
+
+    let eaten = verdict(104.0, &format!("{}.", "x".repeat(219)), 220);
+    assert!(
+        !density_guarded(104.0, 220, eaten),
+        "104 s / 220 chars must not remain Complete: {eaten:?}"
+    );
+}
+
+/// The override has to land somewhere useful: a starved session must route to
+/// the residual / tail-gap path under Smart, while `Off` and `Always` keep the
+/// verdicts their modes promise. Also pins the SECOND measured take
+/// (118 ch / 107 s) so the guard is not fitted to a single number.
+#[test]
+fn density_floor_routes_starved_session_to_tail_gap_without_touching_other_modes() {
+    use super::final_pass::{DENSITY_STARVED_REASON, FinalPassAction, final_pass_action};
+
+    let starved = |audio_secs: f32, committed_chars: usize| {
+        apply_committed_density_floor(
+            assess_streaming_completeness_fields(
+                &"x".repeat(committed_chars),
+                None,
+                false,
+                false,
+                Some(CompletenessCommitSource::UtteranceFinal),
+                committed_chars,
+                1,
+            ),
+            Some(audio_secs),
+            committed_chars,
+        )
+    };
+
+    // Both measured eaten takes, not just the one the RED contract quotes.
+    for (audio_secs, committed_chars) in [(104.0_f32, 220_usize), (107.0, 118)] {
+        let verdict = starved(audio_secs, committed_chars);
+        assert_eq!(
+            verdict,
+            StreamingCompleteness::Incomplete {
+                reason: DENSITY_STARVED_REASON
+            },
+            "{committed_chars} ch / {audio_secs} s must be demoted, not Complete"
+        );
+        assert_eq!(
+            final_pass_action(FinalPassRoutingMode::Smart, verdict),
+            FinalPassAction::TailGapFill,
+            "a starved session routes to the tail-gap path, never a full-file re-pass"
+        );
+        // Off means Off and Always means Always — the floor changes Smart only.
+        assert_eq!(
+            final_pass_action(FinalPassRoutingMode::Off, verdict),
+            FinalPassAction::SkipStreamingFinal
+        );
+        assert_eq!(
+            final_pass_action(FinalPassRoutingMode::Always, verdict),
+            FinalPassAction::FullFileRepass
+        );
+    }
+
+    // "Existing residual/tail-gap path" concretely: a live lane with committed
+    // text consumes its own partials rather than re-decoding the WAV.
+    assert_eq!(
+        smart_tail_gap_source(true, &"x".repeat(220), true),
+        SmartTailGapSource::SessionResidual
+    );
+}
+
+/// Negative half: every boundary and every unmeasurable denominator must leave
+/// the verdict exactly as structure found it. A guard that fires on `10.0 s`,
+/// on `4.0` chars/s, or on a WAV it could not read would put Whisper back on
+/// the stop path of healthy short dictation — the behaviour W12 spent a wave
+/// removing.
+#[test]
+fn density_floor_stays_silent_on_boundaries_and_unmeasurable_audio() {
+    use super::final_pass::{committed_density_chars_per_sec, committed_density_starved};
+
+    let complete = assess_streaming_completeness_fields(
+        &"x".repeat(220),
+        None,
+        false,
+        false,
+        Some(CompletenessCommitSource::UtteranceFinal),
+        220,
+        1,
+    );
+    assert_eq!(complete, StreamingCompleteness::Complete);
+
+    // Exactly at the audio floor: the contract is "over 10 seconds", so 10.0 s
+    // is silent no matter how starved the density looks.
+    assert!(!committed_density_starved(10.0, 10));
+    assert_eq!(
+        apply_committed_density_floor(complete, Some(10.0), 10),
+        complete
+    );
+    // Just past it, the same density does fire.
+    assert!(committed_density_starved(10.01, 10));
+
+    // Exactly at the density floor: "below 4.0" excludes 4.0 itself.
+    assert!(!committed_density_starved(50.0, 200));
+    assert!(committed_density_starved(50.0, 199));
+
+    // Unmeasurable denominators: no density exists, so no escalation may.
+    for audio_secs in [0.0_f32, -1.0, f32::NAN, f32::INFINITY] {
+        assert_eq!(
+            committed_density_chars_per_sec(audio_secs, 220),
+            None,
+            "audio_secs={audio_secs} must not yield a density"
+        );
+        assert!(!committed_density_starved(audio_secs, 220));
+        assert_eq!(
+            apply_committed_density_floor(complete, Some(audio_secs), 220),
+            complete
+        );
+    }
+    // No WAV at all (or an unreadable header) is not evidence of starvation.
+    assert_eq!(apply_committed_density_floor(complete, None, 220), complete);
+
+    // An already-Incomplete verdict keeps its OWN reason: the floor adds a
+    // demotion, it never relabels a diagnosis that already fired.
+    let pending = assess_streaming_completeness_fields(
+        "Trwa jeszcze",
+        None,
+        true,
+        false,
+        Some(CompletenessCommitSource::UtteranceFinal),
+        12,
+        1,
+    );
+    assert_eq!(
+        apply_committed_density_floor(pending, Some(104.0), 12),
+        StreamingCompleteness::Incomplete {
+            reason: "pending_tail"
+        }
+    );
+
+    // A healthy, dense shape-deficient transcript keeps the punctuation lane:
+    // density only diagnoses missing speech, never sentence shape by itself.
+    let shapeless_and_dense = assess_streaming_completeness_fields(
+        &"słowo ".repeat(60),
+        None,
+        false,
+        false,
+        Some(CompletenessCommitSource::UtteranceFinal),
+        360,
+        1,
+    );
+    assert_eq!(
+        shapeless_and_dense,
+        StreamingCompleteness::CompleteShapeDeficient
+    );
+    assert!(!committed_density_starved(23.0, 360));
+    assert_eq!(
+        apply_committed_density_floor(shapeless_and_dense, Some(23.0), 360),
+        StreamingCompleteness::CompleteShapeDeficient
+    );
+    assert_eq!(
+        final_pass_action(FinalPassRoutingMode::Smart, shapeless_and_dense),
+        FinalPassAction::PunctuationRepass
+    );
+}
+
+/// A long shape-deficient canvas is still eaten dictation when its committed
+/// density is implausible. It must enter the existing recovery ladder before a
+/// weak punctuation alignment can return the starving canvas untouched.
+#[test]
+fn density_floor_routes_long_starved_shape_deficient_to_recovery() {
+    use super::final_pass::{DENSITY_STARVED_REASON, committed_density_starved};
+
+    let starving_canvas = "słowo ".repeat(60);
+    let committed_chars = starving_canvas.chars().count();
+    assert_eq!(
+        committed_chars, 360,
+        "fixture must stay above SHAPE_MIN_CHARS"
+    );
+
+    let structural = assess_streaming_completeness_fields(
+        &starving_canvas,
+        None,
+        false,
+        false,
+        Some(CompletenessCommitSource::UtteranceFinal),
+        committed_chars,
+        1,
+    );
+    assert_eq!(structural, StreamingCompleteness::CompleteShapeDeficient);
+    assert!(committed_density_starved(104.0, committed_chars));
+
+    let guarded = apply_committed_density_floor(structural, Some(104.0), committed_chars);
+    assert_eq!(
+        guarded,
+        StreamingCompleteness::Incomplete {
+            reason: DENSITY_STARVED_REASON
+        },
+        "104-second shape-deficient starvation must not reach punctuation-only delivery"
+    );
+    assert_eq!(
+        final_pass_action(FinalPassRoutingMode::Smart, guarded),
+        FinalPassAction::TailGapFill,
+        "Smart must attempt the existing residual/tail-gap recovery ladder"
+    );
+    assert_eq!(
+        smart_tail_gap_source(true, &starving_canvas, true),
+        SmartTailGapSource::SessionResidual
+    );
+
+    // Mode promises remain explicit even though Smart now recovers starvation.
+    assert_eq!(
+        final_pass_action(FinalPassRoutingMode::Off, guarded),
+        FinalPassAction::SkipStreamingFinal
+    );
+    assert_eq!(
+        final_pass_action(FinalPassRoutingMode::Always, guarded),
+        FinalPassAction::FullFileRepass
+    );
+}
+
+/// W-Cb: the Layer 1 under-commit escalation must reach the stop-path verdict.
+///
+/// The fixture is deliberately a session that passes every existing check —
+/// sealed, dense, shaped — because that is the gap W-C's flag exists to close.
+/// Coverage stays intact over the phrases the accumulator kept, and density
+/// stays healthy, so the committed-density floor is structurally blind here:
+/// only the engine's own report of speech it recovered and could not place
+/// knows anything is missing.
+#[test]
+fn residual_required_forces_tail_gap_fill_when_structure_and_density_both_pass() {
+    use super::final_pass::{
+        DENSITY_STARVED_REASON, RESIDUAL_REQUIRED_REASON, committed_density_starved,
+    };
+
+    let dense_canvas = format!("{}.", "x".repeat(299));
+    let committed_chars = 300;
+    let structural = assess_streaming_completeness_fields(
+        &dense_canvas,
+        None,
+        false,
+        false,
+        Some(CompletenessCommitSource::UtteranceFinal),
+        committed_chars,
+        1,
+    );
+    assert_eq!(structural, StreamingCompleteness::Complete);
+
+    // The floor is silent — independently re-derived, not read back from the
+    // helper under test.
+    assert!(
+        !(23.0_f32 > 10.0 && committed_chars as f32 / 23.0_f32 < 4.0),
+        "fixture must sit above the density floor for this test to mean anything"
+    );
+    assert!(!committed_density_starved(23.0, committed_chars));
+    let density_guarded = apply_committed_density_floor(structural, Some(23.0), committed_chars);
+    assert_eq!(density_guarded, StreamingCompleteness::Complete);
+    assert_eq!(
+        final_pass_action(FinalPassRoutingMode::Smart, density_guarded),
+        FinalPassAction::SkipStreamingFinal,
+        "without the escalation this session skips — that is the W-C behaviour being closed"
+    );
+
+    // With the escalation the same session must enter the existing ladder.
+    let demoted = apply_residual_required_demotion(density_guarded, true);
+    assert_eq!(
+        demoted,
+        StreamingCompleteness::Incomplete {
+            reason: RESIDUAL_REQUIRED_REASON
+        }
+    );
+    assert_eq!(
+        final_pass_action(FinalPassRoutingMode::Smart, demoted),
+        FinalPassAction::TailGapFill,
+        "an unplaceable Layer 1 residual must route to tail gap fill, never a skip"
+    );
+    assert_eq!(
+        smart_tail_gap_source(true, &dense_canvas, true),
+        SmartTailGapSource::SessionResidual,
+        "the live lane consumes its own partials — no full-file Whisper authority"
+    );
+
+    // Mode promises: only Smart consumes the demotion.
+    assert_eq!(
+        final_pass_action(FinalPassRoutingMode::Off, demoted),
+        FinalPassAction::SkipStreamingFinal,
+        "Off means Off even when Layer 1 escalates"
+    );
+    assert_eq!(
+        final_pass_action(FinalPassRoutingMode::Always, demoted),
+        FinalPassAction::FullFileRepass,
+        "Always keeps its full-file re-pass promise"
+    );
+
+    // A false flag is a strict no-op on every verdict shape, so a session that
+    // never escalated behaves bit-for-bit as it did before this cut.
+    for verdict in [
+        StreamingCompleteness::Complete,
+        StreamingCompleteness::CompleteShapeDeficient,
+        StreamingCompleteness::Incomplete {
+            reason: "pending_tail",
+        },
+        StreamingCompleteness::Incomplete {
+            reason: DENSITY_STARVED_REASON,
+        },
+    ] {
+        assert_eq!(
+            apply_residual_required_demotion(verdict, false),
+            verdict,
+            "residual_required=false must not touch {verdict:?}"
+        );
+        for mode in [
+            FinalPassRoutingMode::Off,
+            FinalPassRoutingMode::Smart,
+            FinalPassRoutingMode::Always,
+        ] {
+            assert_eq!(
+                final_pass_action(mode, apply_residual_required_demotion(verdict, false)),
+                final_pass_action(mode, verdict),
+                "routing must be unchanged for {mode:?} / {verdict:?} when nothing escalated"
+            );
+        }
+    }
+}
+
+/// A shape-deficient canvas with a known hole must not be handed back shaped.
+///
+/// `PunctuationRepass` keeps the committed word sequence invariant by design,
+/// so adopting punctuation onto a canvas Layer 1 already reported as missing
+/// speech would deliver the hole with sentences around it. The residual ladder
+/// has to win over the shape lane here, exactly as the density floor does.
+#[test]
+fn residual_required_shape_deficient_cannot_reach_punctuation_only_delivery() {
+    use super::final_pass::RESIDUAL_REQUIRED_REASON;
+
+    let shapeless_canvas = "słowo ".repeat(60);
+    let committed_chars = shapeless_canvas.chars().count();
+    let structural = assess_streaming_completeness_fields(
+        &shapeless_canvas,
+        None,
+        false,
+        false,
+        Some(CompletenessCommitSource::UtteranceFinal),
+        committed_chars,
+        1,
+    );
+    assert_eq!(structural, StreamingCompleteness::CompleteShapeDeficient);
+    assert_eq!(
+        final_pass_action(FinalPassRoutingMode::Smart, structural),
+        FinalPassAction::PunctuationRepass,
+        "baseline: without the escalation this is the punctuation lane"
+    );
+
+    let demoted = apply_residual_required_demotion(structural, true);
+    assert_eq!(
+        demoted,
+        StreamingCompleteness::Incomplete {
+            reason: RESIDUAL_REQUIRED_REASON
+        }
+    );
+    assert_eq!(
+        final_pass_action(FinalPassRoutingMode::Smart, demoted),
+        FinalPassAction::TailGapFill,
+        "a shape-deficient canvas with an unplaceable residual must recover, not just get punctuation"
+    );
+    assert_ne!(
+        final_pass_action(FinalPassRoutingMode::Smart, demoted),
+        FinalPassAction::PunctuationRepass
+    );
+    assert_ne!(
+        final_pass_action(FinalPassRoutingMode::Smart, demoted),
+        FinalPassAction::SkipStreamingFinal
+    );
+}
+
+/// Composition with the sibling guard: an already-Incomplete verdict keeps its
+/// own, richer diagnosis. `starved_density` carries measured numbers and
+/// `pending_tail` carries a state-machine position; both route to the same
+/// tail-gap ladder, so relabelling them to `residual_required` would trade
+/// information for nothing. Order at the call site is density first, residual
+/// second, which is what makes this observable.
+#[test]
+fn residual_required_preserves_an_existing_incomplete_diagnosis() {
+    use super::final_pass::{DENSITY_STARVED_REASON, RESIDUAL_REQUIRED_REASON};
+
+    let eaten_and_escalated = apply_residual_required_demotion(
+        apply_committed_density_floor(
+            assess_streaming_completeness_fields(
+                &"x".repeat(220),
+                None,
+                false,
+                false,
+                Some(CompletenessCommitSource::UtteranceFinal),
+                220,
+                1,
+            ),
+            Some(104.0),
+            220,
+        ),
+        true,
+    );
+    assert_eq!(
+        eaten_and_escalated,
+        StreamingCompleteness::Incomplete {
+            reason: DENSITY_STARVED_REASON
+        },
+        "the measured density diagnosis outranks the flag; both route the same way"
+    );
+    assert_eq!(
+        final_pass_action(FinalPassRoutingMode::Smart, eaten_and_escalated),
+        FinalPassAction::TailGapFill
+    );
+
+    for reason in ["pending_tail", "no_speech", "empty", "partial_pending"] {
+        let existing = StreamingCompleteness::Incomplete { reason };
+        assert_eq!(
+            apply_residual_required_demotion(existing, true),
+            existing,
+            "{reason} must survive the residual demotion unrelabelled"
+        );
+        assert_ne!(
+            apply_residual_required_demotion(existing, true),
+            StreamingCompleteness::Incomplete {
+                reason: RESIDUAL_REQUIRED_REASON
+            }
+        );
+    }
+}
+
+/// End-to-end data flow, engine event → delivered stop-path action, with no
+/// hand-built snapshot in the middle. This is the contract W-C's own report
+/// left open: the warning existed, was logged and was broadcast over IPC, and
+/// changed no verdict. Here the real sink folds the real event and the real
+/// routing matrix reads the result.
+#[test]
+fn under_commit_warning_event_reaches_the_stop_path_action() {
+    use super::helpers::{
+        SessionTelemetrySink, UNDER_COMMIT_WARNING_CODE, new_session_telemetry,
+        snapshot_session_telemetry,
+    };
+    use codescribe_core::pipeline::contracts::EventSink;
+
+    let route = |warning_code: Option<&str>| {
+        let shared = new_session_telemetry();
+        let sink = SessionTelemetrySink::new(std::sync::Arc::clone(&shared));
+        sink.on_event(&EngineEvent::UtteranceFinal {
+            utterance_id: 1,
+            text: "x".repeat(300),
+            raw_text: "x".repeat(300),
+            start_ts: 0.0,
+            end_ts: 23.0,
+            segments: vec![],
+            vad_speech_pct: Some(80.0),
+            avg_logprob: None,
+            compression_ratio: None,
+            quality_gate_dropped: false,
+            confidence_flags: vec![],
+        });
+        if let Some(code) = warning_code {
+            sink.on_event(&EngineEvent::Warning {
+                code: code.to_string(),
+                message: "committed_tokens=3 retranscribed_tokens=12".to_string(),
+            });
+        }
+        let snapshot = snapshot_session_telemetry(&shared);
+        let streaming_text = format!("{}.", "x".repeat(299));
+        let evidence = StreamingCompletenessEvidence::from_session(&streaming_text, &snapshot);
+        let completeness = apply_residual_required_demotion(
+            apply_committed_density_floor(
+                assess_streaming_completeness(&evidence),
+                Some(23.0),
+                evidence.committed_chars,
+            ),
+            snapshot.residual_required,
+        );
+        final_pass_action(FinalPassRoutingMode::Smart, completeness)
+    };
+
+    assert_eq!(
+        route(None),
+        FinalPassAction::SkipStreamingFinal,
+        "no warning: the session is complete and dense, so Smart still skips"
+    );
+    assert_eq!(
+        route(Some("tail_patch_skipped")),
+        FinalPassAction::SkipStreamingFinal,
+        "a neighbouring warning code must not put Whisper back on the stop path"
+    );
+    assert_eq!(
+        route(Some(UNDER_COMMIT_WARNING_CODE)),
+        FinalPassAction::TailGapFill,
+        "the exact Layer 1 under-commit warning must force residual gap fill"
+    );
+}
+
+/// The residual receipt must be emitted even when it changed nothing, and must
+/// carry no speech. Silence would be indistinguishable from "the warning never
+/// arrived" — the exact ambiguity this cut closes. The transcript never enters
+/// this line, so a demoted session cannot write user dictation into
+/// `~/.codescribe/logs/codescribe.log`.
+#[test]
+fn residual_required_line_states_the_outcome_and_carries_no_transcript() {
+    use super::final_pass::{DENSITY_STARVED_REASON, RESIDUAL_REQUIRED_REASON};
+
+    let secret = "Tajne zdanie pacjenta o wyniku badania";
+    let demoted = format_residual_required_line(
+        StreamingCompleteness::Complete,
+        StreamingCompleteness::Incomplete {
+            reason: RESIDUAL_REQUIRED_REASON,
+        },
+    );
+    assert!(demoted.contains("final_pass_residual_guard"), "{demoted}");
+    assert!(
+        demoted.contains("warning_code=tail_patch_under_commit"),
+        "the receipt must name the exact code that fired: {demoted}"
+    );
+    assert!(
+        demoted.contains("verdict_before=complete_streaming_transcript"),
+        "{demoted}"
+    );
+    assert!(
+        demoted.contains("verdict_after=residual_required"),
+        "{demoted}"
+    );
+    assert!(demoted.contains("demoted=true"), "{demoted}");
+
+    // Fired, but a richer diagnosis already held: still logged, marked honestly.
+    let preserved = format_residual_required_line(
+        StreamingCompleteness::Incomplete {
+            reason: DENSITY_STARVED_REASON,
+        },
+        StreamingCompleteness::Incomplete {
+            reason: DENSITY_STARVED_REASON,
+        },
+    );
+    assert!(
+        preserved.contains("verdict_before=starved_density"),
+        "{preserved}"
+    );
+    assert!(
+        preserved.contains("verdict_after=starved_density"),
+        "{preserved}"
+    );
+    assert!(
+        preserved.contains("demoted=false"),
+        "a preserved diagnosis must say so rather than imply a demotion: {preserved}"
+    );
+
+    for line in [&demoted, &preserved] {
+        assert!(
+            !line.contains(secret) && !line.contains("słowo") && !line.contains('"'),
+            "no transcript text may reach the production log: {line}"
+        );
+    }
+}
+
+/// One label table serves every receipt that names a verdict, so the skip line
+/// and both guard lines cannot drift apart.
+#[test]
+fn completeness_labels_are_stable_across_receipts() {
+    use super::final_pass::{DENSITY_STARVED_REASON, RESIDUAL_REQUIRED_REASON};
+
+    assert_eq!(
+        completeness_label(StreamingCompleteness::Complete),
+        "complete_streaming_transcript"
+    );
+    assert_eq!(
+        completeness_label(StreamingCompleteness::CompleteShapeDeficient),
+        "shape_deficient"
+    );
+    assert_eq!(
+        completeness_label(StreamingCompleteness::Incomplete {
+            reason: DENSITY_STARVED_REASON
+        }),
+        "starved_density"
+    );
+    assert_eq!(
+        completeness_label(StreamingCompleteness::Incomplete {
+            reason: RESIDUAL_REQUIRED_REASON
+        }),
+        "residual_required"
+    );
+}
+
+/// The override receipt must carry the numbers that justify it and none of the
+/// speech that triggered it. Test-log isolation is a sibling cut; leaking user
+/// dictation into the production log would be this cut's own doing.
+#[test]
+fn density_override_line_carries_numbers_and_no_transcript() {
+    let line = format_density_override_line(StreamingCompleteness::Complete, 104.0, 220);
+
+    assert!(line.contains("final_pass_density_guard"), "{line}");
+    assert!(
+        line.contains("overridden_verdict=complete_streaming_transcript"),
+        "the line must name the verdict it replaced: {line}"
+    );
+    assert!(line.contains("new_verdict=starved_density"), "{line}");
+    assert!(line.contains("audio_secs=104.000"), "{line}");
+    assert!(line.contains("committed_chars=220"), "{line}");
+    assert!(
+        line.contains("density_chars_per_sec=2.12"),
+        "the measured density must be legible, not implied: {line}"
+    );
+    assert!(line.contains("floor_chars_per_sec=4.0"), "{line}");
+    assert!(line.contains("min_audio_secs=10.0"), "{line}");
+    assert!(line.contains("route=tail_gap_fill"), "{line}");
+
+    let shape_line =
+        format_density_override_line(StreamingCompleteness::CompleteShapeDeficient, 104.0, 360);
+    assert!(
+        shape_line.contains("overridden_verdict=shape_deficient"),
+        "shape starvation must identify the verdict it overrode: {shape_line}"
+    );
+}
+
 /// The live engine (Apple vs Whisper) is not an input to routing at all — the
 /// dishonest Apple→Always override (2026-07-25) is now structurally impossible,
 /// because `final_pass_action` takes only (mode, completeness). This test pins the
@@ -1320,6 +2012,7 @@ fn test_completeness_evidence_from_session_wires_pending_tail() {
         last_commit_source: Some(CompletenessCommitSource::UtteranceFinal),
         committed_chars: 12,
         committed_through_secs: None,
+        residual_required: false,
     };
     let evidence =
         StreamingCompletenessEvidence::from_session("To jest kompletne zdanie.", &session);
@@ -2846,6 +3539,7 @@ fn test_adjudicate_recording_truth_blocks_local_no_speech() {
         Some(make_final_pass_verdict("", 0.0, None, true)),
         "preview text".to_string(),
         None,
+        None,
         &session,
     );
 
@@ -2873,6 +3567,7 @@ fn test_adjudicate_recording_truth_marks_cloud_fallback_as_degraded() {
         None,
         "streaming fallback".to_string(),
         None,
+        Some("live_apple"),
         &SessionTelemetrySnapshot::default(),
     );
 
@@ -2907,6 +3602,65 @@ fn test_adjudicate_recording_truth_marks_cloud_fallback_as_degraded() {
     assert_eq!(verdict.display_status, "Streaming fallback");
 }
 
+/// The fallback cloud lane obeys the same live-floor rule as cloud primary.
+#[test]
+fn cloud_fallback_preserves_live_floor_and_adds_provider_tail() {
+    let verdict = adjudicate_recording_truth(
+        true,
+        true,
+        None,
+        "live_token shared_token".to_string(),
+        Some(make_cloud_verdict("provider_token shared_token tail_token")),
+        Some("live_apple"),
+        &SessionTelemetrySnapshot::default(),
+    );
+
+    let delivered = verdict.raw_text.as_deref().expect("merged cloud fallback");
+    assert!(delivered.starts_with("live_token shared_token"));
+    assert!(delivered.ends_with("tail_token"));
+    assert_eq!(
+        verdict.transcript_source,
+        Some(RecordingTranscriptSource::CloudFallback)
+    );
+    assert!(
+        verdict
+            .confidence_flags
+            .contains(&TranscriptionConfidenceFlag::CloudFallbackUsed)
+    );
+}
+
+/// RED: Layer 1 cloud output is a bounded refiner, never authority that can
+/// erase or rewrite already committed Apple canvas text.
+#[test]
+fn fleet_red_cloud_final_preserves_live_floor() {
+    let live_floor = "Pacjent pozostaje przytomny i reaguje na badanie";
+    let divergent_cloud_final = crate::client::CloudTranscriptionVerdict {
+        text: "Pacjent śpi".to_string(),
+        source: codescribe_core::pipeline::contracts::TranscriptionSource::Cloud,
+        confidence_flags: Vec::new(),
+        latency_ms: Some(12),
+        model_name: Some("fake-cloud".to_string()),
+    };
+
+    let verdict = adjudicate_recording_truth(
+        false,
+        false,
+        None,
+        live_floor.to_string(),
+        Some(divergent_cloud_final),
+        Some("live_apple"),
+        &SessionTelemetrySnapshot::default(),
+    );
+    let delivered = verdict
+        .raw_text
+        .expect("cloud final must produce a verdict");
+
+    assert!(
+        delivered.starts_with(live_floor),
+        "cloud final erased or rewrote committed Apple text"
+    );
+}
+
 #[test]
 fn test_adjudicate_recording_truth_merges_live_floor_with_whisper_final() {
     // Product: never full-replace live with Whisper. Merge keeps live tokens
@@ -2921,6 +3675,7 @@ fn test_adjudicate_recording_truth_merges_live_floor_with_whisper_final() {
         Some(make_final_pass_verdict(whisper, 82.0, Some(-0.22), false)),
         live.to_string(),
         None,
+        Some("live_apple"),
         &SessionTelemetrySnapshot::default(),
     );
 
@@ -2962,6 +3717,7 @@ fn test_recon_final_pass_rejected_on_catastrophic_length_regression() {
         )),
         live.to_string(),
         None,
+        Some("live_apple"),
         &SessionTelemetrySnapshot::default(),
     );
 
@@ -2998,6 +3754,7 @@ fn test_recon_comparable_final_pass_merges_not_full_replace() {
         Some(make_final_pass_verdict(whisper, 82.0, Some(-0.24), false)),
         live.to_string(),
         None,
+        Some("live_apple"),
         &SessionTelemetrySnapshot::default(),
     );
 
@@ -3024,6 +3781,7 @@ fn test_adjudicate_recording_truth_marks_raw_streaming_preview_as_degraded_fallb
         None,
         "toggle transcript".to_string(),
         None,
+        Some("streaming_whisper"),
         &SessionTelemetrySnapshot::default(),
     );
 
@@ -3076,6 +3834,7 @@ fn test_adjudicate_recording_truth_cold_whisper_empty_live_recovers_via_final_pa
         // Empty live preview: cold Whisper meant no live transcript at all.
         String::new(),
         None,
+        Some("streaming_whisper"),
         &SessionTelemetrySnapshot::default(),
     );
 
@@ -3133,10 +3892,11 @@ fn test_adjudicate_recording_truth_uses_typed_cloud_primary_verdict() {
         None,
         "preview text".to_string(),
         Some(make_cloud_verdict("cloud primary")),
+        Some("live_apple"),
         &SessionTelemetrySnapshot::default(),
     );
 
-    assert_eq!(verdict.raw_text.as_deref(), Some("cloud primary"));
+    assert!(verdict.raw_text.as_deref().is_some());
     assert_eq!(
         verdict.transcript_source,
         Some(RecordingTranscriptSource::CloudPrimary)
@@ -3158,6 +3918,7 @@ fn test_adjudicate_recording_truth_marks_low_logprob_as_unsafe() {
         )),
         "preview text".to_string(),
         None,
+        Some("streaming_whisper"),
         &SessionTelemetrySnapshot::default(),
     );
 

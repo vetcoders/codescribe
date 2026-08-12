@@ -1,7 +1,8 @@
 //! Product live assembly: freezed sealed utterances + open interim tail.
 //!
 //! This is the Codescribe engine contract for overlay and delivery floor:
-//! - each non-empty `UtteranceFinal` freezes a segment (append)
+//! - each new non-empty `UtteranceFinal` ID freezes a segment; the same ID
+//!   revises that slot in place
 //! - `Preview` / `Correction` only replace the open tail
 //! - full live text = freezed segments joined + optional open preview
 //!
@@ -69,8 +70,12 @@ pub fn assemble_live_from_events(events: &[EngineEvent]) -> LiveAssembly {
             } => {
                 let trimmed = text.trim();
                 if !trimmed.is_empty() {
-                    freezed.push(trimmed.to_string());
-                    freezed_ids.push(*utterance_id);
+                    if let Some(index) = freezed_ids.iter().rposition(|id| id == utterance_id) {
+                        freezed[index] = trimmed.to_string();
+                    } else {
+                        freezed.push(trimmed.to_string());
+                        freezed_ids.push(*utterance_id);
+                    }
                 }
                 preview.clear();
             }
@@ -80,14 +85,9 @@ pub fn assemble_live_from_events(events: &[EngineEvent]) -> LiveAssembly {
             // has to be visible here too — otherwise a layered-on run reads
             // exactly like a layered-off one and the bar gates nothing.
             //
-            // `rposition` mirrors `lastIndex(where:)` in BOTH Swift replays —
-            // `OverlayState.onReplaceRange` and `ComposerDictation`
-            // `.onReplaceRange` — so if an id was sealed twice all three patch
-            // the same slot. The mirror covers the PATCH lookup only: on a
-            // repeated seal this assembly appends a slot while both Swift
-            // surfaces overwrite in place, which is a real divergence and is
-            // pinned (not fixed) by
-            // `re_sealed_utterance_id_duplicates_here_but_not_in_the_swift_surfaces`.
+            // `rposition` mirrors `lastIndex(where:)` in both Swift replays.
+            // Finals are upserted by id above, so this always resolves the same
+            // unique slot as the production presentation reducer.
             EngineEvent::ReplaceRange { utterance_id, .. } => {
                 if let Some(index) = freezed_ids.iter().rposition(|id| id == utterance_id) {
                     // Out-of-range windows are dropped, not clamped: a patch
@@ -134,33 +134,10 @@ mod tests {
         }
     }
 
-    /// Characterization, not aspiration: this pins what a **re-sealed**
-    /// utterance id does here, because the three surfaces that replay this same
-    /// event stream disagree about it and nothing was measuring the gap.
-    ///
-    /// | surface | on a repeated `UtteranceFinal` id | on `ReplaceRange` |
-    /// |---|---|---|
-    /// | this assembly (measured by the parity harness) | **appends a 2nd slot** | `rposition` → the 2nd |
-    /// | `OverlayState.swift:1580` (what the operator sees) | **updates in place** | `lastIndex` → the only one |
-    /// | `ComposerDictation.swift:257` (the agent draft) | **updates in place** | `firstIndex` → the only one |
-    ///
-    /// So under a re-seal the measured assembly renders the utterance TWICE
-    /// while both shipped UIs render it once. That is not an index nit: it is
-    /// the parity harness scoring text the product never displays, and it
-    /// surfaces as inflated word count — the exact shape
-    /// `e2e_apple_live_parity`'s ratio bar reports as "duplicated phrases".
-    ///
-    /// The contract (`EngineEvent::UtteranceFinal`, contracts.rs) says "emitted
-    /// once per VAD-bounded speech segment", so today this is unreachable and
-    /// all three agree by accident of uniqueness. Nothing enforces it, and
-    /// `rposition`'s own comment reasons about "if an id was sealed twice" — so
-    /// the assumption is load-bearing, unstated, and defended three different
-    /// ways. Whether the fix is to enforce uniqueness upstream or to make this
-    /// assembly upsert like the UIs do is a design decision with parity-number
-    /// consequences; this test only makes the divergence impossible to ship
-    /// unnoticed.
+    /// Re-sealing one utterance id revises its existing slot. This mirrors the
+    /// production presentation reducer and both Swift live surfaces.
     #[test]
-    fn re_sealed_utterance_id_duplicates_here_but_not_in_the_swift_surfaces() {
+    fn re_sealed_utterance_id_upserts_one_slot_on_every_surface() {
         let events = vec![
             final_ev(1, "pierwsze zdanie"),
             // Same id sealed again — the Swift surfaces would overwrite slot 0.
@@ -170,18 +147,16 @@ mod tests {
 
         assert_eq!(
             assembly.sealed_count(),
-            2,
-            "re-seal appends here; if this ever becomes 1 the assembly was made to \
-             upsert like the Swift surfaces — update the table above and re-measure \
-             the parity arms, because the word-count denominator moves with it"
+            1,
+            "a revised final id must remain one measured and displayed slot"
         );
         assert_eq!(
             assembly.streaming_floor(),
-            "pierwsze zdanie pierwsze zdanie poprawione",
-            "the measured floor carries BOTH seals — the overlay would carry only the second"
+            "pierwsze zdanie poprawione",
+            "the measured floor must match the overlay's revised slot"
         );
 
-        // And the patch lands on the LAST slot, not the first: `rposition`.
+        // The bounded patch lands on that one revised slot.
         let mut patched = events.clone();
         patched.push(EngineEvent::ReplaceRange {
             utterance_id: 1,
@@ -191,12 +166,7 @@ mod tests {
             source: LayerSource::TailPatch,
         });
         let assembly = assemble_live_from_events(&patched);
-        assert_eq!(
-            assembly.streaming_floor(),
-            "pierwsze zdanie PIERWSZE zdanie poprawione",
-            "`rposition` targets the newest slot; `ComposerDictation.swift` uses \
-             `firstIndex`, which would target the oldest if a duplicate ever existed"
-        );
+        assert_eq!(assembly.streaming_floor(), "PIERWSZE zdanie poprawione");
     }
 
     /// Multiple UtteranceFinal seals must append freezed segments into the full live string.
