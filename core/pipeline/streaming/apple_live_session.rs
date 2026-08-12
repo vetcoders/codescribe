@@ -746,6 +746,105 @@ fn resolve_sealed_audio_window(state: &mut AppleSealState, end_ts: f32) -> Optio
     }
 }
 
+/// Longest callback prefix the canvas already carries, tolerating the word
+/// revisions SFSpeech makes when it re-states a phrase.
+///
+/// # Why exact substring matching was the repetition defect
+///
+/// Cumulative Apple finals do not merely extend the previous hypothesis — they
+/// REVISE it ("szuty" → "skróty", "dokładnie" → "dokładność"). An exact
+/// `canvas.contains(prefix)` probe is anchored at the callback's first word and
+/// all-or-nothing, so one revised word anywhere in the prefix invalidates every
+/// probe length at once and the whole restatement re-commits as "novel".
+/// Measured on the 2026-08-12 18:44 take: 30 of 42 rescues matched exactly one
+/// word, the delivery carried 72% of its words inside a repeated 6-gram, and
+/// the production replay of the same WAV reproduced full-sentence re-commits
+/// differing by a single word ([28]/[29]/[30] in the replay finals).
+///
+/// # Match rule
+///
+/// For the longest `k`, some canvas window must be within `allowed(k)` word
+/// edits (substitution, insertion, deletion) of `probe[..k]`, where `allowed`
+/// is 0 for `k ≤ 2` and `max(1, k/5)` (20%) beyond that. Edit distance rather
+/// than positional comparison on purpose: revisions include insertions and
+/// deletions ("spotkałem się" → "się", an interjected "a"), and under a
+/// positional rule one inserted word shifts every later word and cascades into
+/// wholesale mismatch — the verified replay showed 15–22-word restatements
+/// collapsing to a 6-word match exactly this way. Short probes stay exact: at
+/// one or two words a tolerated edit is not a revision, it is a different word.
+///
+/// One asymmetry is deliberate: the LAST word of the matched prefix must itself
+/// align to a canvas word (match or substitution). Otherwise a trailing novel
+/// word could be "deleted into" the match — "alpha beta revised" against a
+/// canvas holding "alpha beta" is one deletion away as a whole, and treating
+/// that as re-heard would demote genuinely new tail speech to the preview lane.
+/// A trailing deletion therefore shortens `k` instead of costing an edit.
+///
+/// Only the canvas tail (`2 × probe len + 16` words) is searched — a
+/// restatement re-states recent speech, and the bound keeps the DP cost flat
+/// no matter how long the session canvas grows.
+///
+/// # Why fuzziness is safe in this branch
+///
+/// This runs only for finals whose every segment was consumed by the trusted
+/// timing boundary — Apple itself asserts the audio was already judged. Genuine
+/// new speech arrives with fresh segment timestamps and never enters here, so a
+/// near-match against the canvas is a re-hearing, not the operator saying a
+/// similar sentence twice.
+///
+/// Returns `(known_prefix_words, word_edits_in_the_match)`.
+fn revision_tolerant_known_prefix(probe: &[String], canvas: &[&str]) -> (usize, usize) {
+    if probe.is_empty() || canvas.is_empty() {
+        return (0, 0);
+    }
+    let n = probe.len();
+    let band = (n / 5).max(1);
+    let tail_start = canvas.len().saturating_sub(2 * n + 16);
+    let tail = &canvas[tail_start..];
+
+    let allowed = |k: usize| if k <= 2 { 0 } else { (k / 5).max(1) };
+    let mut best_k = 0usize;
+    let mut best_edits = 0usize;
+
+    // One banded edit-distance DP per window start: row `i` covers probe[..i],
+    // column `j` the window tail[s..s+j]. For every prefix length the cheapest
+    // window end is `min over j`, so a single pass scores all `k` at once.
+    for s in 0..tail.len() {
+        let jmax = (tail.len() - s).min(n + band);
+        let mut prev: Vec<usize> = (0..=jmax).collect();
+        for i in 1..=n {
+            let mut current = vec![usize::MAX; jmax + 1];
+            current[0] = i;
+            // Best score whose final operation aligns probe[i-1] to a canvas
+            // word — the only endings that may close a matched prefix (see the
+            // trailing-deletion note in the doc comment).
+            let mut aligned_end = usize::MAX;
+            for j in 1..=jmax {
+                // Outside the band the distance already exceeds every budget.
+                if i.abs_diff(j) > band {
+                    continue;
+                }
+                let substitute = if probe[i - 1] == tail[s + j - 1] {
+                    prev[j - 1]
+                } else {
+                    prev[j - 1].saturating_add(1)
+                };
+                aligned_end = aligned_end.min(substitute);
+                let delete = prev[j].saturating_add(1);
+                let insert = current[j - 1].saturating_add(1);
+                current[j] = substitute.min(delete).min(insert);
+            }
+            let edits = aligned_end;
+            if edits <= allowed(i) && (i > best_k || (i == best_k && edits < best_edits)) {
+                best_k = i;
+                best_edits = edits;
+            }
+            prev = current;
+        }
+    }
+    (best_k, best_edits)
+}
+
 /// Case- and punctuation-insensitive projection for canvas containment checks
 /// (the sealed canvas carries Light+ casing and sentence terminals, raw
 /// callbacks carry neither).
@@ -835,59 +934,25 @@ fn seal_utterance_final(
         }
         let canvas = normalize_for_containment(&canvas);
         let words: Vec<&str> = callback_text.split_whitespace().collect();
-        let mut known_prefix_words = 0;
-        for take in (1..=words.len()).rev() {
-            // The probe MUST run the lexicon, because the canvas already has.
-            // `PendingSpan::raw_text` is the output of `process_utterance`
-            // (stream_postprocess.rs), which applies the global lexicon before
-            // anything else, and `sealed_prefix()` is `seal_span_text` output.
-            // Probing raw words against that compares "doker" with "docker" and
-            // truncates the known prefix at the first rewritten word — the
-            // remainder then re-commits as "novel", which is the repetition
-            // defect itself. `cumulative_final_prefix_survives_words_the_lexicon_rewrites`
-            // pins this: dropping the call yields ["Uruchom Docker.",
-            // "Docker i restart."]. Commit f8519df2 made exactly that mistake on
-            // the strength of a comment claiming the canvas was pre-lexicon.
-            let prefix_probe =
-                normalize_for_containment(&seal_span_text(&words[..take].join(" "), "", true));
-            if !prefix_probe.is_empty() && canvas.contains(prefix_probe.as_str()) {
-                known_prefix_words = take;
-                break;
-            }
-        }
-        // Diagnostic for the collapse-to-one-word failure mode.
-        //
-        // `contains` is all-or-nothing: one revised word anywhere inside the
-        // prefix invalidates every longer probe at once, so the loop falls all
-        // the way to `take=1`, where a single common word trivially matches
-        // somewhere in the canvas. Session 2026-08-12 shows the signature —
-        // 30 of 42 rescues matched exactly one word, on phrases up to 223
-        // characters, and the delivered take carried 72% of its words inside a
-        // repeated 6-gram. Distinguishing "genuinely novel" from "restated with
-        // one word revised" needs the first divergent word, which the counter
-        // alone cannot show. Logged only when a long callback collapses to a
-        // near-empty match, so healthy takes stay quiet.
-        if known_prefix_words <= 1 && words.len() > 4 {
-            let canvas_words: Vec<&str> = canvas.split_whitespace().collect();
-            let probe_words: Vec<String> = words
-                .iter()
-                .map(|word| normalize_for_containment(&seal_span_text(word, "", true)))
-                .collect();
-            let diverged_at = canvas_words
-                .windows(probe_words.len().min(canvas_words.len()).max(1))
-                .filter_map(|window| {
-                    window
-                        .iter()
-                        .zip(probe_words.iter())
-                        .position(|(canvas_word, probe)| canvas_word != probe)
-                })
-                .max();
+        // Each probe word runs the lexicon, because the canvas already has:
+        // `PendingSpan::raw_text` is `process_utterance` output (lexicon first)
+        // and `sealed_prefix()` is `seal_span_text` output. Probing raw words
+        // compares "doker" with "docker" and mismatches at every rewrite —
+        // f8519df2 shipped exactly that and re-committed whole phrases;
+        // `cumulative_final_prefix_survives_words_the_lexicon_rewrites` pins it.
+        let probe_words: Vec<String> = words
+            .iter()
+            .map(|word| normalize_for_containment(&seal_span_text(word, "", true)))
+            .collect();
+        let canvas_words: Vec<&str> = canvas.split_whitespace().collect();
+        let (known_prefix_words, revised_words) =
+            revision_tolerant_known_prefix(&probe_words, &canvas_words);
+        if revised_words > 0 {
             info!(
                 known_prefix_words,
+                revised_words,
                 callback_words = words.len(),
-                canvas_words = canvas_words.len(),
-                best_aligned_words = diverged_at.unwrap_or(0),
-                "apple_lifecycle: prefix match collapsed — canvas holds a longer aligned run than the substring probe found"
+                "apple_lifecycle: restated prefix matched through engine revisions"
             );
         }
         let novel_text = words[known_prefix_words..].join(" ");
@@ -1788,6 +1853,112 @@ mod tests {
             !novel.contains("doker") && !novel.contains("docker"),
             "the WHOLE known prefix must be consumed, not just the words the lexicon left alone — \
              stopping at the first rewritten word is exactly how a phrase re-commits: {finals:?}"
+        );
+    }
+
+    /// Threshold contract of the fuzzy prefix: short probes stay exact, longer
+    /// ones absorb ~20% revisions. At one or two words a tolerated mismatch is
+    /// not a revision, it is a different word — loosening that end would let
+    /// any two-word opener "match" the canvas and silently eat real speech.
+    #[test]
+    fn revision_tolerance_is_zero_for_short_probes_and_bounded_after() {
+        let canvas = vec!["ala", "ma", "kota", "i", "psa"];
+        let one = |s: &str| vec![s.to_string()];
+        let owned = |words: &[&str]| words.iter().map(|w| (*w).to_string()).collect::<Vec<_>>();
+
+        // k=1..2: exact only.
+        assert_eq!(revision_tolerant_known_prefix(&one("ala"), &canvas), (1, 0));
+        assert_eq!(revision_tolerant_known_prefix(&one("ela"), &canvas), (0, 0));
+        assert_eq!(
+            revision_tolerant_known_prefix(&owned(&["ela", "ma"]), &canvas),
+            (0, 0),
+            "a two-word probe with a revision must NOT match — that is a different phrase"
+        );
+
+        // k=3: one revision allowed ("ela" for "ala").
+        assert_eq!(
+            revision_tolerant_known_prefix(&owned(&["ela", "ma", "kota"]), &canvas),
+            (3, 1)
+        );
+        // Two revisions in three words: too different.
+        assert_eq!(
+            revision_tolerant_known_prefix(&owned(&["ela", "je", "kota"]), &canvas),
+            (0, 0)
+        );
+        // Full exact run wins with zero revisions.
+        assert_eq!(
+            revision_tolerant_known_prefix(&owned(&["ala", "ma", "kota", "i", "psa"]), &canvas),
+            (5, 0)
+        );
+
+        // Insertions and deletions are revisions too: a positional rule would
+        // cascade every word after the shift into a mismatch. Measured on the
+        // 2026-08-12 replay — 15-22-word restatements collapsed to a 6-word
+        // match because Apple interjected or dropped a single word mid-phrase.
+        assert_eq!(
+            revision_tolerant_known_prefix(&owned(&["ala", "ma", "dużego", "kota", "i"]), &canvas),
+            (5, 1),
+            "one inserted word must cost one edit, not shift-poison the rest"
+        );
+        assert_eq!(
+            revision_tolerant_known_prefix(&owned(&["ala", "kota", "i", "psa"]), &canvas),
+            (4, 1),
+            "one dropped word must cost one edit"
+        );
+    }
+
+    /// The 2026-08-12 18:44 repetition mechanism, pinned: a cumulative final
+    /// that REVISES its opening word ("szuty" → "skróty") used to defeat every
+    /// probe length at once, because the exact-substring prefix match was
+    /// anchored at the callback's first word. The whole restatement then
+    /// re-committed — the delivered take carried 72% of its words inside a
+    /// repeated 6-gram. `revision_tolerant_known_prefix` absorbs the revision.
+    #[test]
+    fn cumulative_final_with_revised_opening_word_must_not_recommit_the_phrase() {
+        let (tx, mut rx) = mpsc::unbounded_channel();
+        let mut state = AppleSealState::new(TEST_SAMPLE_RATE);
+        push_capture(&mut state, 40.0);
+
+        let heard_first = "szuty klawiszowe to podwójny lewy przycisk myszy";
+        let restated =
+            "skróty klawiszowe to podwójny lewy przycisk myszy lub klawisz na klawiaturze";
+
+        emit_stream_events(
+            vec![LiveStreamEvent::PhraseFinal {
+                text: heard_first.into(),
+                segments: vec![segment(heard_first, 0.0, 5.0)],
+            }],
+            &tx,
+            &mut state,
+            40.0,
+        );
+        emit_stream_events(
+            vec![LiveStreamEvent::PhraseFinal {
+                text: restated.into(),
+                segments: vec![segment(restated, 0.0, 6.0)],
+            }],
+            &tx,
+            &mut state,
+            40.0,
+        );
+
+        let events = std::iter::from_fn(|| rx.try_recv().ok()).collect::<Vec<_>>();
+        let finals: Vec<&String> = events
+            .iter()
+            .filter_map(|e| match e {
+                EngineEvent::UtteranceFinal { text, .. } => Some(text),
+                _ => None,
+            })
+            .collect();
+        let all = finals
+            .iter()
+            .map(|t| normalize_for_containment(t))
+            .collect::<Vec<_>>()
+            .join(" ");
+        let count = all.matches("lewy przycisk myszy").count();
+        assert_eq!(
+            count, 1,
+            "a restatement with one revised opening word must not re-commit the whole phrase: {finals:?}"
         );
     }
 
