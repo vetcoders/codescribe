@@ -1331,4 +1331,36 @@ final class OverlayStateTests: XCTestCase {
     XCTAssertFalse(state.toast?.contains("speech_auth") == true)
   }
 
+  /// Born from the 2026-08-12 operator report: a routine
+  /// `apple_final_window_overlap_normalized` warning reached `handleError`,
+  /// matched none of the three literal phrases the old guard looked for, and ran
+  /// `presentTerminalError` — discarding two utterances the engine log had
+  /// already recorded as committed (`rendered_chars=282`). The screen said
+  /// "failed" while the transcript existed.
+  ///
+  /// Asserted with a warning code that did not exist when the guard was written,
+  /// because that is precisely the case text matching cannot cover.
+  func testEngineWarningNeverDiscardsCommittedTranscript() {
+    let state = OverlayState()
+    state.applyFinal(utteranceId: 1, "zdanie pierwsze")
+    state.applyFinal(utteranceId: 2, "zdanie drugie")
+
+    state.handleError(
+      message:
+        "apple_final_window_overlap_normalized: Apple final overlap removed at segment boundary")
+
+    XCTAssertNotEqual(state.mode, .error, "a recoverable warning must not end the take")
+    XCTAssertEqual(state.committedUtterances, ["zdanie pierwsze", "zdanie drugie"])
+    XCTAssertTrue(state.liveText.contains("zdanie pierwsze"))
+  }
+
+  /// The other half of the rule: with no transcript to protect, the warning must
+  /// still be visible. Staying silent here would hide a genuine dead-on-arrival
+  /// session behind a toast the user may never notice.
+  func testEngineWarningOnEmptyTakeStaysTerminal() {
+    let state = OverlayState()
+    state.handleError(message: "layer1_lane_degraded: Layer 1 lane fell back")
+    XCTAssertEqual(state.mode, .error)
+  }
+
 }

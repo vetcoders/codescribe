@@ -734,8 +734,11 @@ impl EventSink for CsEventSink {
                 .listener
                 .on_session_finalised(session_id.clone(), layer_summary.into()),
             // Recoverable engine warning — surface as a non-fatal error string.
+            // Deliberately does NOT touch the tray: `TrayStatus::Error` means
+            // "backend not available", and a warning about degraded transcript
+            // quality leaves the backend fully alive. Painting the tray red here
+            // told the operator the engine had died while it was still running.
             EngineEvent::Warning { code, message } => {
-                tray_status::update_tray_status(TrayStatus::Error);
                 self.listener.on_error(format!("{code}: {message}"))
             }
             // Engine-internal bookkeeping (dropped content, session stats) has no

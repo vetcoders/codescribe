@@ -480,8 +480,9 @@ fn forward_event_to_listener(payload: IpcEventPayload, listener: Arc<dyn CsTrans
                 session_id,
                 layer_summary,
             } => listener.on_session_finalised(session_id, CsLayerSummary::from(&layer_summary)),
+            // Non-fatal by contract — see the matching arm in recording.rs. The
+            // tray stays as it is: a degraded-quality warning is not a dead backend.
             EngineEventWire::Warning { code, message } => {
-                tray_status::update_tray_status(TrayStatus::Error);
                 listener.on_error(format!("{code}: {message}"));
             }
             EngineEventWire::Drop { .. } | EngineEventWire::Stats { .. } => {}

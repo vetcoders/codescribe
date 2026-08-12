@@ -1236,17 +1236,32 @@ final class OverlayState: ObservableObject {
   }
 
   func handleError(message: String) {
-    // Mid-session Apple STT glitch with an existing draft must NOT kill the
-    // take (that was the "recording stopped before a transcript" dupa). Soft
-    // toast + keep listening; Whisper emergency recovery / next VAD segment
-    // can still fill. Empty take with hard fail stays terminal.
+    // This callback is the engine's *warning* channel, not a failure channel.
+    // `CsTranscriptionListener.on_error` is documented as "Recoverable engine
+    // warning. Not fatal — the session keeps running", and the bridge only ever
+    // calls it from `EngineEvent::Warning`; every code that travels here
+    // (`tail_patch_under_commit`, `layer1_lane_degraded`,
+    // `apple_final_window_overlap_normalized`) reports degraded quality, never a
+    // dead session. So the rule is about content, not about the message text:
+    // if we are holding any transcript, a warning must never destroy it.
+    //
+    // The previous guard matched three literal phrases ("Apple STT",
+    // "transcribe_live", "live path failed") and was itself a fix for this same
+    // "recording stopped before a transcript" report. It died the first time the
+    // engine gained a new warning code: `apple_final_window_overlap_normalized`
+    // matched none of them, so a routine overlap normalisation ran
+    // `presentTerminalError` and discarded two committed utterances — 282
+    // rendered characters that the log shows had already been committed.
+    // Matching on message text can only ever protect against warnings that were
+    // already written; this rule protects against the ones that are not.
+    //
+    // `liveText` is `committedUtterances + preview`, so a non-empty draft covers
+    // both the in-flight utterance and everything already sealed. An empty take
+    // stays terminal — with nothing to lose, the user must still learn that the
+    // engine complained.
     let draft = liveText.trimmingCharacters(in: .whitespacesAndNewlines)
-    let midSession = recording || warmingUp || transcribing
-    let appleish =
-      message.contains("Apple STT") || message.contains("transcribe_live")
-      || message.contains("live path failed")
-    if midSession && !draft.isEmpty && appleish {
-      showToast("Apple lag — keeping draft")
+    if !draft.isEmpty {
+      showToast("Engine warning — keeping transcript")
       return
     }
     presentTerminalError(message: message, toast: message)
