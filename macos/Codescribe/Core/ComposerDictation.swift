@@ -212,6 +212,13 @@ final class RealComposerDictation: ComposerDictating {
     transitioning = false
     listener = nil
     _ = hotkeys.setAgentCaptureActive(active: false)
+    // Never abandon a live recorder: dropping UI state without stopping the
+    // engine leaves the microphone captured behind an Idle tray, and the next
+    // toggle — reading the reset UI — starts a second, orphaned capture
+    // (2026-08-12 incident). Release the engine before reporting.
+    Task { @MainActor in
+      _ = try? await dictation.stopRecording()
+    }
     store.reportDictationFailure("Dictation stopped: \(message)")
   }
 

@@ -17,6 +17,7 @@ use codescribe_core::audio::streaming_recorder::StreamingRecorder;
 use codescribe_core::config::{FinalPassRoutingMode, UserSettings};
 use codescribe_core::pipeline::contracts::{
     AnnotationKind, EngineEvent, EventSink, FileTranscriptionOptions, LayerSource, LayerSummary,
+    warning_is_user_terminal,
 };
 use codescribe_core::stt::{TailGapBoundary, resolve_tail_gap_boundary, whisper};
 use cpal::traits::{DeviceTrait, HostTrait};
@@ -733,13 +734,20 @@ impl EventSink for CsEventSink {
             } => self
                 .listener
                 .on_session_finalised(session_id.clone(), layer_summary.into()),
-            // Recoverable engine warning — surface as a non-fatal error string.
-            // Deliberately does NOT touch the tray: `TrayStatus::Error` means
-            // "backend not available", and a warning about degraded transcript
-            // quality leaves the backend fully alive. Painting the tray red here
-            // told the operator the engine had died while it was still running.
+            // Warnings split by class (`warning_is_user_terminal`): a real
+            // failure surfaces on `on_error`; a quality receipt is log-only.
+            // Receipts must never ride the error channel — the composer treats
+            // `on_error` during capture as terminal, and a routine overlap
+            // receipt painted "Dictation stopped" over a live session, desynced
+            // the toggle parity and left an orphaned capture holding the mic
+            // behind an Idle tray (2026-08-12). The tray stays untouched either
+            // way: `TrayStatus::Error` means "backend not available".
             EngineEvent::Warning { code, message } => {
-                self.listener.on_error(format!("{code}: {message}"))
+                if warning_is_user_terminal(code) {
+                    self.listener.on_error(format!("{code}: {message}"));
+                } else {
+                    info!(code, message, "engine warning (receipt, not forwarded)");
+                }
             }
             // Engine-internal bookkeeping (dropped content, session stats) has no
             // listener surface; intentionally ignored.
@@ -1114,6 +1122,7 @@ mod tests {
     #[derive(Default)]
     struct CapturingListener {
         final_calls: StdMutex<Vec<(u64, String)>>,
+        error_calls: StdMutex<Vec<String>>,
     }
 
     impl CsTranscriptionListener for CapturingListener {
@@ -1171,8 +1180,10 @@ mod tests {
         fn on_audio_level(&self, _rms: f32) {}
         /// No-speech notices — unused by the capture fixture.
         fn on_no_speech(&self, _reason: String) {}
-        /// Recoverable engine errors — unused by the capture fixture.
-        fn on_error(&self, _message: String) {}
+        /// Record error-channel deliveries so tests can assert the class split.
+        fn on_error(&self, message: String) {
+            self.error_calls.lock().unwrap().push(message);
+        }
     }
 
     /// Build a minimal `UtteranceFinal` event with the given identity/text.
@@ -1190,6 +1201,40 @@ mod tests {
             quality_gate_dropped: false,
             confidence_flags: Vec::new(),
         }
+    }
+
+    /// Warnings split by class at the bridge: a quality receipt (engine kept
+    /// going) must never reach `on_error` — the composer treats that channel as
+    /// terminal, and a routine overlap receipt shown as "Dictation stopped"
+    /// desynced the toggle and left an orphaned capture holding the microphone
+    /// (2026-08-12). A real failure (`transcription_failed`) must still land,
+    /// or failures go silent again.
+    #[test]
+    fn warning_receipts_stay_off_the_error_channel_but_failures_land() {
+        let listener = Arc::new(CapturingListener::default());
+        let sink = CsEventSink {
+            listener: listener.clone(),
+            transcript: Arc::new(ComposerTranscript::default()),
+        };
+
+        sink.on_event(&EngineEvent::Warning {
+            code: "apple_final_window_overlap_normalized".to_string(),
+            message: "Apple final overlap removed at segment boundary".to_string(),
+        });
+        assert!(
+            listener.error_calls.lock().unwrap().is_empty(),
+            "a quality receipt must never ride the error channel"
+        );
+
+        sink.on_event(&EngineEvent::Warning {
+            code: "transcription_failed".to_string(),
+            message: "boom".to_string(),
+        });
+        assert_eq!(
+            listener.error_calls.lock().unwrap().as_slice(),
+            &["transcription_failed: boom".to_string()],
+            "a user-terminal failure must still surface on on_error"
+        );
     }
 
     /// The bridge must forward `utterance_id` on `UtteranceFinal` so committed
