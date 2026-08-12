@@ -803,8 +803,19 @@ fn seal_utterance_final(
         let words: Vec<&str> = callback_text.split_whitespace().collect();
         let mut known_prefix_words = 0;
         for take in (1..=words.len()).rev() {
-            let prefix_probe =
-                normalize_for_containment(&seal_span_text(&words[..take].join(" "), "", true));
+            // Probe the RAW words, deliberately not through `seal_span_text`.
+            // The canvas is built from `PendingSpan::raw_text`, i.e. pre-lexicon
+            // engine text, so sending the probe through the lexicon compared two
+            // different normalisations of the same sentence: the match then broke
+            // at the first word the lexicon rewrote. Measured on session
+            // f72fbbb7 (2026-08-12) with a 906-entry user lexicon holding
+            // function-word junk like `agent → agenta` and `to → go`:
+            // `known_prefix_words=1` on phrases sharing 100–250 characters, so
+            // nearly the whole phrase re-committed as "novel". The live overlay
+            // ran to 603 words against 318 spoken — +90%, with
+            // "a następnie przygotowałem zmotoryzowane DMG i wrzuciłem je do
+            // odpowiedniego" committed four times over.
+            let prefix_probe = normalize_for_containment(&words[..take].join(" "));
             if !prefix_probe.is_empty() && canvas.contains(prefix_probe.as_str()) {
                 known_prefix_words = take;
                 break;
