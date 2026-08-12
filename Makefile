@@ -293,7 +293,7 @@ bump-major:
 # bench instrument: real proof, host-local, never a merge gate.
 #
 # gate: check class=static ci=no -- cargo fmt, prettier, clippy, semgrep, validate-envs, validate-gates; executes ZERO tests
-# gate: lint class=static ci=no -- cargo fmt --check + clippy on the workspace; no tests
+# gate: lint class=static ci=no -- cargo fmt --check + clippy on the workspace + verify-swift-format; no tests
 # gate: semgrep class=static ci=no -- semgrep scan --config auto (semgrep.yml runs semgrep directly, not this target)
 # gate: verify class=hermetic ci=yes -- the workspace test set + doctests + env registry + this ledger; the command rust.yml runs
 # gate: verify-canaries class=hermetic ci=no -- claim-vs-execution canaries that read repo files only (scripts/canaries.sh); each row is born from a named incident
@@ -331,6 +331,8 @@ lint:
 	@cargo fmt -- --check
 	@echo "=== Clippy ==="
 	@cargo clippy --workspace -- -D warnings
+	@echo "=== Swift Format Check ==="
+	@$(MAKE) --no-print-directory verify-swift-format
 
 # The Swift side of the app had no format gate at all while `lint` covered only
 # Rust, so 100 of 100 sources drifted. Two things this recipe does NOT copy from
