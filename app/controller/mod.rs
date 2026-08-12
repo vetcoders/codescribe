@@ -782,14 +782,23 @@ impl RecordingController {
             None => match self.assistive_context.write().await.take() {
                 Some(context) => context,
                 None => {
+                    // An explicit send must never be refused for want of a
+                    // context. The trigger context dies with the session
+                    // (`reset_session_fields`), but the terminal overlay — and
+                    // its live "To Agent" button — outlives it by minutes; the
+                    // 2026-08-13 01:02 session logged six no_pending_context
+                    // refusals against a user clicking a button the UI showed
+                    // as available. Double-send protection lives in the Swift
+                    // `agentDeliveryStarted` latch, not here. Degrade to a
+                    // bare context: the click means "send this text".
                     info!(
                         "{}",
                         format_assistive_delivery_budget_line(
                             delivery_started.elapsed().as_secs_f64(),
-                            "no_pending_context",
+                            "degraded_no_context",
                         )
                     );
-                    return Ok(false);
+                    AssistiveContext::default()
                 }
             },
         };

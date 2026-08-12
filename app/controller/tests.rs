@@ -800,7 +800,10 @@ async fn test_assistive_delivery_budget_times_real_send_adapter() {
         "receipt must contain the real send duration (>= {ADAPTER_MS}ms), got {total}s"
     );
 
-    // One-shot: the second submit finds no pending context and says so.
+    // The CONTEXT is one-shot, but an explicit resend still delivers — with a
+    // degraded (bare) context and a receipt saying so. Refusing here painted
+    // "Agent delivery is no longer available" over a live button (2026-08-13
+    // 01:02, six refusals); double-send protection is the Swift latch's job.
     let redelivered = controller
         .deliver_pending_assistive_transcript_with(
             "assistive harness transcript".to_string(),
@@ -808,11 +811,14 @@ async fn test_assistive_delivery_budget_times_real_send_adapter() {
         )
         .await
         .expect("second delivery attempt");
-    assert!(!redelivered, "context is one-shot");
+    assert!(
+        redelivered,
+        "an explicit send must deliver even without context"
+    );
     let log = String::from_utf8(buf.0.lock().expect("log buf").clone()).expect("utf8 log");
     assert!(
-        log.contains("outcome=no_pending_context"),
-        "second attempt must emit a no_pending_context receipt: {log}"
+        log.contains("outcome=degraded_no_context"),
+        "context-less delivery must emit a degraded_no_context receipt: {log}"
     );
 }
 
@@ -847,7 +853,9 @@ async fn test_assistive_delivery_falls_back_to_session_trigger_context() {
     assert!(delivered, "session context present → delivery must run");
     assert!(sent.load(std::sync::atomic::Ordering::SeqCst));
 
-    // The fallback consumed the session context: delivery stays one-shot.
+    // The fallback consumed the session context; a further explicit send still
+    // delivers, degraded to a bare context (see the degraded_no_context
+    // doctrine at the take site — a live button must never refuse).
     let redelivered = controller
         .deliver_pending_assistive_transcript_with(
             "dictated transcript sent explicitly".to_string(),
@@ -855,7 +863,10 @@ async fn test_assistive_delivery_falls_back_to_session_trigger_context() {
         )
         .await
         .expect("second delivery attempt");
-    assert!(!redelivered, "fallback context is one-shot too");
+    assert!(
+        redelivered,
+        "explicit send after context expiry must deliver with a degraded context"
+    );
 }
 
 /// Routing over *real* completeness fixtures (adjudicator evidence, not synthetic
