@@ -837,19 +837,19 @@ fn seal_utterance_final(
         let words: Vec<&str> = callback_text.split_whitespace().collect();
         let mut known_prefix_words = 0;
         for take in (1..=words.len()).rev() {
-            // Probe the RAW words, deliberately not through `seal_span_text`.
-            // The canvas is built from `PendingSpan::raw_text`, i.e. pre-lexicon
-            // engine text, so sending the probe through the lexicon compared two
-            // different normalisations of the same sentence: the match then broke
-            // at the first word the lexicon rewrote. Measured on session
-            // f72fbbb7 (2026-08-12) with a 906-entry user lexicon holding
-            // function-word junk like `agent → agenta` and `to → go`:
-            // `known_prefix_words=1` on phrases sharing 100–250 characters, so
-            // nearly the whole phrase re-committed as "novel". The live overlay
-            // ran to 603 words against 318 spoken — +90%, with
-            // "a następnie przygotowałem zmotoryzowane DMG i wrzuciłem je do
-            // odpowiedniego" committed four times over.
-            let prefix_probe = normalize_for_containment(&words[..take].join(" "));
+            // The probe MUST run the lexicon, because the canvas already has.
+            // `PendingSpan::raw_text` is the output of `process_utterance`
+            // (stream_postprocess.rs), which applies the global lexicon before
+            // anything else, and `sealed_prefix()` is `seal_span_text` output.
+            // Probing raw words against that compares "doker" with "docker" and
+            // truncates the known prefix at the first rewritten word — the
+            // remainder then re-commits as "novel", which is the repetition
+            // defect itself. `cumulative_final_prefix_survives_words_the_lexicon_rewrites`
+            // pins this: dropping the call yields ["Uruchom Docker.",
+            // "Docker i restart."]. Commit f8519df2 made exactly that mistake on
+            // the strength of a comment claiming the canvas was pre-lexicon.
+            let prefix_probe =
+                normalize_for_containment(&seal_span_text(&words[..take].join(" "), "", true));
             if !prefix_probe.is_empty() && canvas.contains(prefix_probe.as_str()) {
                 known_prefix_words = take;
                 break;
@@ -1689,6 +1689,70 @@ mod tests {
         assert_eq!(
             state.last_apple_segment_end, 3.0,
             "synthesized window consumes the boundary to the session clock"
+        );
+    }
+
+    /// Regression guard for the prefix probe: the canvas-known prefix must be
+    /// recognised even when the lexicon rewrites words inside it.
+    ///
+    /// `cumulative_final_commits_only_its_novel_suffix` cannot catch this — its
+    /// "alpha beta revised" survives every rewrite table untouched, so it stayed
+    /// green through the whole defect. Here "doker" → "Docker" puts a real
+    /// rewrite inside the shared prefix, which is what broke the match: the
+    /// probe was normalised through `seal_span_text` while the canvas is built
+    /// from post-`process_utterance` text, so the two sides disagreed at the
+    /// first rewritten word and nearly the whole phrase re-committed as novel.
+    /// Measured on session f72fbbb7 (2026-08-12): 603 live words against 318
+    /// spoken, +90%.
+    #[test]
+    fn cumulative_final_prefix_survives_words_the_lexicon_rewrites() {
+        let (tx, mut rx) = mpsc::unbounded_channel();
+        let mut state = AppleSealState::new(TEST_SAMPLE_RATE);
+        push_capture(&mut state, 3.0);
+
+        emit_stream_events(
+            vec![
+                LiveStreamEvent::PhraseFinal {
+                    text: "uruchom doker".into(),
+                    segments: vec![segment("uruchom", 0.0, 1.0), segment("doker", 1.0, 2.0)],
+                },
+                LiveStreamEvent::PhraseFinal {
+                    text: "uruchom doker i restart".into(),
+                    segments: vec![segment("uruchom doker i restart", 0.0, 2.0)],
+                },
+            ],
+            &tx,
+            &mut state,
+            3.0,
+        );
+
+        let events = std::iter::from_fn(|| rx.try_recv().ok()).collect::<Vec<_>>();
+        let finals: Vec<&String> = events
+            .iter()
+            .filter_map(|event| match event {
+                EngineEvent::UtteranceFinal { text, .. } => Some(text),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(
+            finals.len(),
+            2,
+            "the novel suffix must still commit: {events:?}"
+        );
+
+        let novel = normalize_for_containment(finals[1]);
+        assert!(
+            novel.contains("restart"),
+            "novel suffix must reach the canvas: {finals:?}"
+        );
+        assert!(
+            !novel.contains("uruchom"),
+            "a rewritten prefix is still a known prefix — re-committing it is the repetition defect: {finals:?}"
+        );
+        assert!(
+            !novel.contains("doker") && !novel.contains("docker"),
+            "the WHOLE known prefix must be consumed, not just the words the lexicon left alone — \
+             stopping at the first rewritten word is exactly how a phrase re-commits: {finals:?}"
         );
     }
 
