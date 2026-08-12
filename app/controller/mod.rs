@@ -142,7 +142,7 @@ use quality_delivery::{
     ClipboardDeliverySink, compose_final_status, evaluate_quality_commit_trigger,
     maybe_wrap_transcript_for_delivery, maybe_wrap_transcript_for_delivery_with_quality,
     recording_mode_label, resolve_auto_paste_policy, session_auto_format_enabled,
-    truth_recording_mode_label,
+    session_prewarms_semantic_guard, truth_recording_mode_label,
 };
 pub(crate) use truth::{
     adjudicate_recording_truth, apply_ai_noop_signal, postprocess_transcript_for_delivery,
@@ -3828,6 +3828,30 @@ impl RecordingController {
         // - AI on selection? → Hold + Cmd (Selection)
         let mut is_ai_noop = false;
         let format_started = std::time::Instant::now();
+
+        // Start the embedder loading *alongside* the model call, not after it.
+        //
+        // The semantic guard below is the embedder's only consumer and runs once
+        // formatting returns, so a cold engine charged its full load to the stop
+        // path in series behind the LLM: `semantic_guard took_ms=1127` on
+        // 2026-08-12, ~1.0s of which was the model load and 0.13s the actual
+        // comparison. The round-trip it now overlaps with took 11.05s — the load
+        // fits inside it many times over.
+        //
+        // Deliberately scoped to lanes that are about to call the LLM: warming
+        // unconditionally (or at startup) would keep 471 MB resident for takes
+        // that never reach the guard, which is the opposite of the idle-RAM
+        // decision. `force_raw` and every no-LLM fallback stay cold.
+        if session_prewarms_semantic_guard(
+            &config,
+            assistive,
+            force_raw,
+            force_ai,
+            ai_key_available,
+        ) {
+            codescribe_core::embedder::singleton::warm();
+        }
+
         let (formatted_text, output_kind) = if assistive {
             info!(
                 "Assistive mode ({:?}): finalizing transcript before overlay delivery",

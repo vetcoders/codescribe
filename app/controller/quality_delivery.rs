@@ -291,6 +291,27 @@ pub(super) fn session_auto_format_enabled(
     force_ai || (!force_raw && config.ai_formatting_enabled)
 }
 
+/// Whether this session will hand text to the LLM and therefore reach the
+/// semantic guard afterwards — the predicate that decides whether pre-loading
+/// the embedder is worth its residency.
+///
+/// Mirrors the delivery lanes rather than [`session_auto_format_enabled`]
+/// alone. There, `force_ai` outranks `force_raw`; but the lanes test
+/// `force_raw` first, so a Ctrl hold stays literal even with the AI force set.
+/// Getting that precedence backwards would hold 471 MB of embedder weights
+/// resident for takes that never reach the guard at all.
+pub(super) fn session_prewarms_semantic_guard(
+    config: &Config,
+    assistive: bool,
+    force_raw: bool,
+    force_ai: bool,
+    ai_key_available: bool,
+) -> bool {
+    !force_raw
+        && ai_key_available
+        && session_auto_format_enabled(config, assistive, force_raw, force_ai)
+}
+
 /// Wrap a transcript in the configured tag template, without quality metadata.
 pub(super) fn maybe_wrap_transcript_for_delivery(
     text: &str,

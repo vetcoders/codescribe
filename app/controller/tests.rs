@@ -2955,6 +2955,51 @@ fn formatting_setting_is_orthogonal_to_hold_and_assistive_delivery() {
     assert!(!session_auto_format_enabled(&config, false, true, false));
 }
 
+/// The embedder is pre-loaded only for takes that will actually reach the
+/// semantic guard. It is 471 MB with a single consumer, so a predicate that is
+/// merely "close enough" buys stop-path latency with resident memory on takes
+/// that never use it.
+#[test]
+fn embedder_prewarm_follows_the_lane_that_will_call_the_llm() {
+    let on = Config {
+        ai_formatting_enabled: true,
+        ..Config::default()
+    };
+    let off = Config {
+        ai_formatting_enabled: false,
+        ..Config::default()
+    };
+
+    assert!(
+        session_prewarms_semantic_guard(&on, false, false, false, true),
+        "the ordinary formatted toggle is exactly the lane this exists for"
+    );
+    assert!(session_prewarms_semantic_guard(
+        &on, true, false, false, true
+    ));
+
+    assert!(
+        !session_prewarms_semantic_guard(&on, false, true, false, true),
+        "Ctrl hold promises literal words and never reaches the guard"
+    );
+    assert!(
+        !session_prewarms_semantic_guard(&on, false, true, true, true),
+        "force_raw outranks force_ai in the lanes — the prewarm must agree, or a Ctrl hold pays for weights it cannot use"
+    );
+    assert!(
+        !session_prewarms_semantic_guard(&off, false, false, false, true),
+        "formatting disabled means no LLM call and no guard"
+    );
+    assert!(
+        !session_prewarms_semantic_guard(&on, false, false, false, false),
+        "no key means the LLM lane falls back before it ever formats"
+    );
+    assert!(
+        session_prewarms_semantic_guard(&off, false, false, true, true),
+        "double Option forces formatting even with the setting off"
+    );
+}
+
 #[test]
 #[serial]
 fn one_indicator_transition_updates_shared_rust_state_and_tray_snapshot() {
