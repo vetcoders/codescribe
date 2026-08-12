@@ -429,7 +429,7 @@ fn sha256_file(path: &Path) -> String {
     format!("{:x}", Sha256::digest(bytes))
 }
 
-const REPAIR_WAVE_ROW_FIELDS: [&str; 20] = [
+const REPAIR_WAVE_ROW_FIELDS: [&str; 21] = [
     "opaque_id",
     "class",
     "audio_sha256",
@@ -447,6 +447,7 @@ const REPAIR_WAVE_ROW_FIELDS: [&str; 20] = [
     "overlapping_final_window_count",
     "head_present",
     "tail_present",
+    "final_pass_attempted",
     "final_pass_skipped",
     "final_pass_skip_reason",
     "acceptance",
