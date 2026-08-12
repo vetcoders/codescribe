@@ -55,7 +55,7 @@ use super::progressive_seal::{ProgressiveSealMachine, SealTick, seal_span_text};
 use super::session::emit_tail_patch_result;
 use super::session::{
     SessionConfig, UNDER_COMMIT_WARNING_CODE, compute_tail_patch_job, emit_session_finalised,
-    tail_patch_enabled,
+    log_tail_patch_session_receipt, tail_patch_enabled,
 };
 use super::stream_log::append_to_stream_log;
 
@@ -114,6 +114,10 @@ struct AppleTailPatchLane {
     language: Option<String>,
     config: TailPatchConfig,
     replacements: u64,
+    /// Jobs whose entire output was rejected (Skipped or failed). Feeds the
+    /// session-level starvation receipt — the 116-skips/0-applied class of
+    /// silent lane death must be one WARN, not a grep across log history.
+    skipped: u64,
 }
 
 impl AppleTailPatchLane {
@@ -128,6 +132,7 @@ impl AppleTailPatchLane {
             // F2: thresholds stay exactly where the shared primitive puts them.
             config: TailPatchConfig::from_env(),
             replacements: 0,
+            skipped: 0,
         }
     }
 
@@ -164,6 +169,9 @@ impl AppleTailPatchLane {
     /// that actually reached the canvas is counted.
     #[cfg(test)]
     fn complete(&mut self, event_sink: &dyn EventSink, result: Result<(u64, TailPatchOutcome)>) {
+        if matches!(&result, Ok((_, TailPatchOutcome::Skipped { .. })) | Err(_)) {
+            self.skipped = self.skipped.saturating_add(1);
+        }
         self.replacements = self
             .replacements
             .saturating_add(emit_tail_patch_result(event_sink, result));
@@ -190,19 +198,25 @@ impl AppleTailPatchLane {
                         .filter(|event| matches!(event, EngineEvent::ReplaceRange { .. }))
                         .count() as u64,
                 );
+                if matches!(outcome, TailPatchOutcome::Skipped { .. }) {
+                    self.skipped = self.skipped.saturating_add(1);
+                }
                 TailPatchCompletion {
                     utterance_id,
                     covered_through_secs: req_end_secs,
                     outcome,
                 }
             }
-            Err(error) => TailPatchCompletion {
-                utterance_id: request_id,
-                covered_through_secs: req_end_secs,
-                outcome: TailPatchOutcome::Skipped {
-                    reason: format!("tail patch failed: {error}"),
-                },
-            },
+            Err(error) => {
+                self.skipped = self.skipped.saturating_add(1);
+                TailPatchCompletion {
+                    utterance_id: request_id,
+                    covered_through_secs: req_end_secs,
+                    outcome: TailPatchOutcome::Skipped {
+                        reason: format!("tail patch failed: {error}"),
+                    },
+                }
+            }
         }
     }
 
@@ -210,6 +224,11 @@ impl AppleTailPatchLane {
     /// `SessionFinalised.layer_summary` reports.
     fn replacements(&self) -> u64 {
         self.replacements
+    }
+
+    /// How many jobs put nothing on the canvas (skipped or failed).
+    fn skipped(&self) -> u64 {
+        self.skipped
     }
 }
 
@@ -516,6 +535,7 @@ pub(crate) async fn apple_stream_transcription_session(
         }
     }
 
+    log_tail_patch_session_receipt(tail_patch_lane.replacements(), tail_patch_lane.skipped());
     emit_session_finalised(
         event_sink.as_ref(),
         session_id,
@@ -2502,6 +2522,11 @@ mod tests {
         lane.complete(&sink, result);
 
         assert_eq!(lane.replacements(), 0);
+        assert_eq!(
+            lane.skipped(),
+            1,
+            "a skipped job must count toward the starvation receipt"
+        );
         assert!(
             sink.events().is_empty(),
             "a skipped patch must not touch committed canvas"

@@ -393,6 +393,39 @@ pub(super) fn emit_session_finalised(
     });
 }
 
+/// Per-session skip count at which a zero-application session is an alarm.
+///
+/// One or two skips with nothing applied can be honest divergence (noise, a
+/// throat-clear window). Three computed corrections all rejected is the gate
+/// eating the lane's entire output — the 2026-08-12 audit found 116 skips and
+/// 0 applied patches across the log's whole history, and not one line said so
+/// out loud.
+pub(super) const TAIL_PATCH_STARVED_MIN_SKIPS: u64 = 3;
+
+/// Whether this session's Layer 1 lane was starved: corrections were computed
+/// and every single one was rejected.
+pub(super) fn tail_patch_lane_starved(applied: u64, skipped: u64) -> bool {
+    applied == 0 && skipped >= TAIL_PATCH_STARVED_MIN_SKIPS
+}
+
+/// One session-level receipt for the Layer 1 lane, emitted at finalise.
+///
+/// The per-utterance skip receipts diagnose a single verdict; this line
+/// diagnoses the lane. A starved session — Whisper burned inference on every
+/// sealed utterance and the canvas received none of it — is a WARN, because
+/// that is the lane not doing its one job, silently.
+pub(super) fn log_tail_patch_session_receipt(applied: u64, skipped: u64) {
+    if tail_patch_lane_starved(applied, skipped) {
+        warn!(
+            applied,
+            skipped,
+            "tail_patch_lane_starved: every computed Whisper correction this session was rejected"
+        );
+    } else if applied > 0 || skipped > 0 {
+        info!(applied, skipped, "tail_patch_session_receipt");
+    }
+}
+
 // ── Unified transcription session (event-based) ─────────────────────────────
 
 /// Unified transcription session exposed as a single event-emitting pipeline.
@@ -492,6 +525,7 @@ pub(crate) async fn vad_transcription_session(
     let mut filtered_empty_drops: u64 = 0;
     let mut corrections_applied: u64 = 0;
     let mut tail_patch_replacements: u64 = 0;
+    let mut tail_patch_skips: u64 = 0;
     let mut partial_telemetry = PartialPassTelemetry::default();
     let mut vad_started = false;
     let mut speech_activity_observed = false;
@@ -1135,6 +1169,9 @@ pub(crate) async fn vad_transcription_session(
             // Drain the pipeline. FuturesOrdered guarantees results arrive in the order submitted.
             // This is critical for timestamp calculation and text accumulation.
             Some(result) = tail_patch_pipeline.next() => {
+                if matches!(&result, Ok((_, TailPatchOutcome::Skipped { .. })) | Err(_)) {
+                    tail_patch_skips = tail_patch_skips.saturating_add(1);
+                }
                 tail_patch_replacements = tail_patch_replacements
                     .saturating_add(emit_tail_patch_result(event_sink.as_ref(), result));
             }
@@ -1552,6 +1589,7 @@ pub(crate) async fn vad_transcription_session(
         partial_dropped_count: partial_telemetry.dropped_count,
     });
 
+    log_tail_patch_session_receipt(tail_patch_replacements, tail_patch_skips);
     emit_session_finalised(event_sink.as_ref(), session_id, tail_patch_replacements);
 
     if dropped_utterances > 0 {
@@ -2030,6 +2068,25 @@ mod session_tests {
                 && layer_summary.final_bam_replacements == 0
                 && layer_summary.annotations_inserted == 0
         ));
+    }
+
+    #[test]
+    /// The starvation verdict: zero applied with the skip floor reached is the
+    /// lane not doing its job. One landed patch — even against 116 skips —
+    /// proves the lane alive; a skip or two with nothing applied is honest
+    /// divergence, not starvation.
+    fn tail_patch_starvation_fires_only_on_all_rejected_sessions() {
+        assert!(tail_patch_lane_starved(0, TAIL_PATCH_STARVED_MIN_SKIPS));
+        assert!(tail_patch_lane_starved(0, 116));
+        assert!(!tail_patch_lane_starved(1, 116), "one landed patch = alive");
+        assert!(
+            !tail_patch_lane_starved(0, TAIL_PATCH_STARVED_MIN_SKIPS - 1),
+            "a couple of honest divergences is not starvation"
+        );
+        assert!(
+            !tail_patch_lane_starved(0, 0),
+            "an idle lane is not starved"
+        );
     }
 
     #[test]
