@@ -155,6 +155,7 @@ i runtime nie może znaleźć Whispera przez cache / config:
 ### Audio
 
 - `AUDIO_INPUT_DEVICE` – nazwa urządzenia wejściowego (RESTART NEEDED)
+- `CODESCRIBE_CAPTURE_LEVEL_LOW_DB` (HOT RELOADED; default `-52`) — próg WARN `capture_level_low` w dBFS, liczony od **mediany RMS mowy aktywnej** (nie od mediany całego nagrania). Cyfrowe zera ciszy na macOS 27 nie mogą zaniżać progu. Receipt nigdy nie jest terminalny.
 - `AUTO_SILENCE` (RESTART NEEDED)
 
 ### Transkrypcja (local/cloud)
