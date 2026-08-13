@@ -1236,32 +1236,34 @@ final class OverlayState: ObservableObject {
   }
 
   func handleError(message: String) {
-    // This callback is the engine's *warning* channel, not a failure channel.
-    // `CsTranscriptionListener.on_error` is documented as "Recoverable engine
-    // warning. Not fatal — the session keeps running", and the bridge only ever
-    // calls it from `EngineEvent::Warning`; every code that travels here
-    // (`tail_patch_under_commit`, `layer1_lane_degraded`,
-    // `apple_final_window_overlap_normalized`) reports degraded quality, never a
-    // dead session. So the rule is about content, not about the message text:
-    // if we are holding any transcript, a warning must never destroy it.
+    // Since the bridge-side warning split (`warning_is_user_terminal`), quality
+    // receipts (`tail_patch_under_commit`, `layer1_lane_degraded`,
+    // `apple_final_window_overlap_normalized`, ...) never reach `on_error` —
+    // they are log-only in both bridges. What lands here is a user-terminal
+    // failure (`transcription_failed`, start failures): the session is over.
     //
-    // The previous guard matched three literal phrases ("Apple STT",
-    // "transcribe_live", "live path failed") and was itself a fix for this same
-    // "recording stopped before a transcript" report. It died the first time the
-    // engine gained a new warning code: `apple_final_window_overlap_normalized`
-    // matched none of them, so a routine overlap normalisation ran
-    // `presentTerminalError` and discarded two committed utterances — 282
-    // rendered characters that the log shows had already been committed.
-    // Matching on message text can only ever protect against warnings that were
-    // already written; this rule protects against the ones that are not.
+    // The content rule survives from the 2026-08-12 incident (a mislabelled
+    // warning ran `presentTerminalError` and discarded 282 already-committed
+    // characters): whatever the failure, a non-empty draft is sacred. But
+    // "sacred" no longer means pretending the take is alive behind an
+    // "Engine warning" toast while the engine is gone — that left the overlay
+    // in a zombie live-capture UI with no stop parity. A failure with a draft
+    // now ENDS the session exactly like a stop: engine released best-effort
+    // (the same orphan-mic guard as `ComposerDictation.handleEngineError`),
+    // state finalized through the single authoritative `finalizeTranscript`
+    // path, transcript kept on screen with the normal Copy/Format/Send surface.
     //
     // `liveText` is `committedUtterances + preview`, so a non-empty draft covers
     // both the in-flight utterance and everything already sealed. An empty take
     // stays terminal — with nothing to lose, the user must still learn that the
-    // engine complained.
+    // session died.
     let draft = liveText.trimmingCharacters(in: .whitespacesAndNewlines)
     if !draft.isEmpty {
-      showToast("Engine warning — keeping transcript")
+      if let engine {
+        Task { @MainActor in _ = try? await engine.stopRecording() }
+      }
+      finishControllerRecording()
+      showToast("Dictation failed — transcript kept")
       return
     }
     presentTerminalError(message: message, toast: message)

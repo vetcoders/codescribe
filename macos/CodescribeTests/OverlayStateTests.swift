@@ -1338,8 +1338,9 @@ final class OverlayStateTests: XCTestCase {
   /// already recorded as committed (`rendered_chars=282`). The screen said
   /// "failed" while the transcript existed.
   ///
-  /// Asserted with a warning code that did not exist when the guard was written,
-  /// because that is precisely the case text matching cannot cover.
+  /// Since the bridge-side warning split, quality receipts no longer travel
+  /// here at all — but the content rule this test pins is unconditional:
+  /// NOTHING arriving on this channel may discard a non-empty draft.
   func testEngineWarningNeverDiscardsCommittedTranscript() {
     let state = OverlayState()
     state.applyFinal(utteranceId: 1, "zdanie pierwsze")
@@ -1349,9 +1350,33 @@ final class OverlayStateTests: XCTestCase {
       message:
         "apple_final_window_overlap_normalized: Apple final overlap removed at segment boundary")
 
-    XCTAssertNotEqual(state.mode, .error, "a recoverable warning must not end the take")
+    XCTAssertNotEqual(state.mode, .error, "an error with a draft must not discard the take")
     XCTAssertEqual(state.committedUtterances, ["zdanie pierwsze", "zdanie drugie"])
     XCTAssertTrue(state.liveText.contains("zdanie pierwsze"))
+  }
+
+  /// Born from the PR #73 review (2026-08-13): after the bridge-side warning
+  /// split, everything reaching `on_error` is a user-terminal failure — yet a
+  /// failure arriving with a non-empty draft was still labelled
+  /// "Engine warning" and returned early, leaving the overlay in a zombie
+  /// live-capture UI (no stop parity, tray stuck on Recording, engine possibly
+  /// still holding the mic). A terminal failure with a draft must END the
+  /// session like a stop — finalized, stop callback fired, honest toast —
+  /// while the transcript stays on the normal terminal surface.
+  func testTerminalFailureWithDraftEndsSessionButKeepsTranscript() {
+    let state = OverlayState()
+    var stopped = false
+    state.onRecordingStopped = { stopped = true }
+    state.handleRecordingStarted()
+    state.applyFinal(utteranceId: 1, "zdanie pierwsze")
+
+    state.handleError(message: "transcription_failed: engine gave up mid-take")
+
+    XCTAssertEqual(state.mode, .formatted, "kept draft lands on the normal terminal surface")
+    XCTAssertEqual(state.statusText, "done", "the failed session must actually end")
+    XCTAssertTrue(stopped, "stop parity must fire — no zombie Recording pill")
+    XCTAssertEqual(state.committedUtterances, ["zdanie pierwsze"])
+    XCTAssertEqual(state.toast, "Dictation failed — transcript kept")
   }
 
   /// The other half of the rule: with no transcript to protect, the warning must
