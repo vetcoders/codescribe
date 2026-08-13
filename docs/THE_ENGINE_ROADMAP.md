@@ -2,13 +2,13 @@
 
 **Codescribe STT engine — current state vs. target, sealed.**
 
-| | |
-|---|---|
-| Status | SEALED — direction decided by the operator; execution tracked per cut |
-| Date | 2026-08-13 |
-| Plan pack | `~/.vibecrafted/artifacts/vetcoders/codescribe/2026_0813/plans/w13-tail-and-format/` (ATLAS + 6 briefs + DRIVER + de-risk recon) |
-| Branch | `fix/the-tail-patches` (Living Tree) |
-| Evidence | Every claim in this document is backed by a measurement or a `file:line` citation from the 2026-08-12/13 sessions. No aspirational numbers. |
+|           |                                                                                                                                             |
+| --------- | ------------------------------------------------------------------------------------------------------------------------------------------- |
+| Status    | SEALED — direction decided by the operator; execution tracked per cut                                                                       |
+| Date      | 2026-08-13                                                                                                                                  |
+| Plan pack | `~/.vibecrafted/artifacts/vetcoders/codescribe/2026_0813/plans/w13-tail-and-format/` (ATLAS + 6 briefs + DRIVER + de-risk recon)            |
+| Branch    | `fix/the-tail-patches` (Living Tree)                                                                                                        |
+| Evidence  | Every claim in this document is backed by a measurement or a `file:line` citation from the 2026-08-12/13 sessions. No aspirational numbers. |
 
 ---
 
@@ -38,8 +38,8 @@ before proposing anything. The direction questions are closed.
 
 ## 2. Executive summary
 
-**One organizing idea:** the canvas's primary key changes from *token
-position* to **TIME**. One session clock (the PCM sample counter), words
+**One organizing idea:** the canvas's primary key changes from _token
+position_ to **TIME**. One session clock (the PCM sample counter), words
 pinned to seconds, utterances bounded by Silero silence edges, and the
 transcript maintained as an append-only ledger of sealed (immutable)
 utterances. Everything else in this roadmap is a consequence of that
@@ -56,14 +56,14 @@ not to crown either engine.
 
 **Six cuts (W13-1 … W13-6)** deliver the finish:
 
-| Cut | One line | State |
-|---|---|---|
+| Cut   | One line                                                                                                                                  | State             |
+| ----- | ----------------------------------------------------------------------------------------------------------------------------------------- | ----------------- |
 | W13-1 | Inline-format buffer: sealed chunks stream to the formatting LLM during dictation (`previous_response_id` chain); stop pays only the tail | `[~]` in progress |
-| W13-2 | Tail-patch behind a provider seam: local ws sidecar (default target), remote opt-in, in-process fallback | `[ ]` |
-| W13-3 | **Keystone**: time-pinned canvas — Silero-bounded utterances, words pinned to seconds, sealed ledger | `[ ]` |
-| W13-4 | Gap-append dedup by time-span (shrinks to a corollary of W13-3) + in-span hallucination fence | `[ ]` |
-| W13-5 | Capture-level receipt + Audio menu truth (level, device, quality) | `[ ]` |
-| W13-6 | Lexicon gets a voice (Whisper `initial_prompt`, Apple `contextualStrings`) + word/gap highlighting feeding Teach | `[ ]` |
+| W13-2 | Tail-patch behind a provider seam: local ws sidecar (default target), remote opt-in, in-process fallback                                  | `[ ]`             |
+| W13-3 | **Keystone**: time-pinned canvas — Silero-bounded utterances, words pinned to seconds, sealed ledger                                      | `[ ]`             |
+| W13-4 | Gap-append dedup by time-span (shrinks to a corollary of W13-3) + in-span hallucination fence                                             | `[ ]`             |
+| W13-5 | Capture-level receipt + Audio menu truth (level, device, quality)                                                                         | `[ ]`             |
+| W13-6 | Lexicon gets a voice (Whisper `initial_prompt`, Apple `contextualStrings`) + word/gap highlighting feeding Teach                          | `[ ]`             |
 
 **What the user feels when this lands:** words stop vanishing; corrections
 actually arrive; stop is near-instant; deliberate repetition is never
@@ -89,7 +89,7 @@ vocabulary before it errs instead of being spell-checked after.
    its silence edges define utterance identity. ("Fundament stabilności"
    — operator, 2026-08-13.)
 6. **The lexicon has a voice, not only an eraser.** Vocabulary reaches the
-   decoders *before* they err (initial prompt / contextual strings);
+   decoders _before_ they err (initial prompt / contextual strings);
    post-hoc rewrite remains as the second line.
 7. **Content is never destroyed.** A failure with a non-empty draft ends
    the session and keeps the transcript (the 282-characters incident rule,
@@ -139,19 +139,19 @@ All measured 2026-08-12/13 unless noted.
 
 ## 5. Current state vs. target — the master table
 
-| Subsystem | Current (evidence) | Target (cut) |
-|---|---|---|
-| Utterance identity | Apple phrase boundaries; ids minted on `PhraseFinal`/frozen partials (`seal_utterance_final`, apple_live_session.rs:1040) | Silero silence edges on the PCM clock mint ids; Apple cumulative finals sliced by time (W13-3) |
-| Word timestamps | Apple per-word segments cross the bridge into `EngineEvent::UtteranceFinal.segments` — then die outbound in `CsEventSink::on_event` `..` destructure (recording.rs:686–707); Whisper segments dropped at `compute_tail_patch_job` (session.rs:258 takes `.text` only) | Words pinned to spans end-to-end; segments survive into the ledger and the UI (W13-3, W13-6 highlighting) |
-| Sealing | `ProgressiveSealMachine` IS production seal authority on the Apple lane (`AppleSealState.progressive`, wired `8d65f610`/`d64c3876`) — but `SealedSpan` has end-only time, no per-word payload; the `try_rewrite` fence has zero callers (patches bypass it via `ReplaceRange`) | Ledger of sealed spans with `[start,end)` + per-word payload; ALL rewrites go through the fence; sealed span = immutable (W13-3) |
-| Whisper windows | 3 s shards mid-phrase; `extract_speech` compaction corrupts segment timebase (vad/mod.rs:99–123); `TailPatchRequest` lacks window start | Utterance-bounded windows cut at Silero edges, exact offsets by construction, timestamps preserved (W13-2 payloads + W13-3) |
-| Replacement authority | Small-edit floors + conservative gates veto Whisper's better truth (18 skips/take) | Per-word fusion by span overlap inside the unsealed utterance; corrections land; skips carry a reason code (W13-3) |
-| Duplicates / repetition | Gap-append doubles raw; dedup once ate deliberate 5× repetition | Sealed span cannot be re-delivered (structural); deliberate repetition = different span, always survives; in-span loop fence for engine hallucinations (W13-4) |
-| Whisper hosting | In-process; RAM/battery in app; cold 3.9 s after TTL | Provider seam: local ws sidecar default target (qube-ws pattern — ends the SIGPIPE class), remote opt-in via STT_API_KEY slot, in-process fallback; per-window latency receipts (W13-2) |
-| AI formatting | One-shot full text at stop: 8.6–13.8 s; `LayerSource::InlineLlm` exists unwired | Sealed chunks stream to the LLM during dictation; `previous_response_id` chain; stop formats only the tail and closes coherently with full-chain context; fail-open per chunk; anti-invention guard (W13-1) |
-| Lexicon | seed.jsonl (2401) + programming.jsonl (155) compiled in and applied ONLY as post-hoc whole-word rewrites on enumerated variants — loses to generative mangling; `build_whisper_initial_prompt` ("Vocabulary:", 224-token budget) fully wired into the scheduler and file mode but **default OFF** (`loader.rs:2296`) and drawing from protected+custom only | The voice ON (operator flips with WER A/B numbers in hand), budget-aware selection incl. domain picks; Apple `contextualStrings` recon/wire; corrections + speech-gaps highlighted on canvas, one click to Teach (W13-6) |
-| Capture telemetry | None (drift found 3 weeks late by archaeology) | `capture_level_receipt` per session (median RMS + device), WARN below floor registered as NON-terminal, Audio menu section with input truth (W13-5) |
-| Failure UX | Fixed 2026-08-13 (`8bc1cc37`): terminal failure with draft ends session, keeps transcript, honest toast | Keep; regression-pinned |
+| Subsystem               | Current (evidence)                                                                                                                                                                                                                                                                                                                                          | Target (cut)                                                                                                                                                                                                             |
+| ----------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| Utterance identity      | Apple phrase boundaries; ids minted on `PhraseFinal`/frozen partials (`seal_utterance_final`, apple_live_session.rs:1040)                                                                                                                                                                                                                                   | Silero silence edges on the PCM clock mint ids; Apple cumulative finals sliced by time (W13-3)                                                                                                                           |
+| Word timestamps         | Apple per-word segments cross the bridge into `EngineEvent::UtteranceFinal.segments` — then die outbound in `CsEventSink::on_event` `..` destructure (recording.rs:686–707); Whisper segments dropped at `compute_tail_patch_job` (session.rs:258 takes `.text` only)                                                                                       | Words pinned to spans end-to-end; segments survive into the ledger and the UI (W13-3, W13-6 highlighting)                                                                                                                |
+| Sealing                 | `ProgressiveSealMachine` IS production seal authority on the Apple lane (`AppleSealState.progressive`, wired `8d65f610`/`d64c3876`) — but `SealedSpan` has end-only time, no per-word payload; the `try_rewrite` fence has zero callers (patches bypass it via `ReplaceRange`)                                                                              | Ledger of sealed spans with `[start,end)` + per-word payload; ALL rewrites go through the fence; sealed span = immutable (W13-3)                                                                                         |
+| Whisper windows         | 3 s shards mid-phrase; `extract_speech` compaction corrupts segment timebase (vad/mod.rs:99–123); `TailPatchRequest` lacks window start                                                                                                                                                                                                                     | Utterance-bounded windows cut at Silero edges, exact offsets by construction, timestamps preserved (W13-2 payloads + W13-3)                                                                                              |
+| Replacement authority   | Small-edit floors + conservative gates veto Whisper's better truth (18 skips/take)                                                                                                                                                                                                                                                                          | Per-word fusion by span overlap inside the unsealed utterance; corrections land; skips carry a reason code (W13-3)                                                                                                       |
+| Duplicates / repetition | Gap-append doubles raw; dedup once ate deliberate 5× repetition                                                                                                                                                                                                                                                                                             | Sealed span cannot be re-delivered (structural); deliberate repetition = different span, always survives; in-span loop fence for engine hallucinations (W13-4)                                                           |
+| Whisper hosting         | In-process; RAM/battery in app; cold 3.9 s after TTL                                                                                                                                                                                                                                                                                                        | Provider seam: local ws sidecar default target (qube-ws pattern — ends the SIGPIPE class), remote opt-in via STT_API_KEY slot, in-process fallback; per-window latency receipts (W13-2)                                  |
+| AI formatting           | One-shot full text at stop: 8.6–13.8 s; `LayerSource::InlineLlm` exists unwired                                                                                                                                                                                                                                                                             | Sealed chunks stream to the LLM during dictation; `previous_response_id` chain; stop formats only the tail and closes coherently with full-chain context; fail-open per chunk; anti-invention guard (W13-1)              |
+| Lexicon                 | seed.jsonl (2401) + programming.jsonl (155) compiled in and applied ONLY as post-hoc whole-word rewrites on enumerated variants — loses to generative mangling; `build_whisper_initial_prompt` ("Vocabulary:", 224-token budget) fully wired into the scheduler and file mode but **default OFF** (`loader.rs:2296`) and drawing from protected+custom only | The voice ON (operator flips with WER A/B numbers in hand), budget-aware selection incl. domain picks; Apple `contextualStrings` recon/wire; corrections + speech-gaps highlighted on canvas, one click to Teach (W13-6) |
+| Capture telemetry       | None (drift found 3 weeks late by archaeology)                                                                                                                                                                                                                                                                                                              | `capture_level_receipt` per session (median RMS + device), WARN below floor registered as NON-terminal, Audio menu section with input truth (W13-5)                                                                      |
+| Failure UX              | Fixed 2026-08-13 (`8bc1cc37`): terminal failure with draft ends session, keeps transcript, honest toast                                                                                                                                                                                                                                                     | Keep; regression-pinned                                                                                                                                                                                                  |
 
 ## 6. The cuts — every implementation point
 
@@ -165,6 +165,7 @@ Current: formatting is a single full-text LLM pass at stop (8.6–13.8 s
 measured). `LayerSource::InlineLlm` exists with no producer.
 
 Implementation points:
+
 1. Sealed sentence/segment triggers an async format request for that chunk
    while recording continues; results keyed by chunk span.
 2. Chunks chain via `previous_response_id` (Responses API; both OpenAI and
@@ -191,6 +192,7 @@ Current: one in-process path behind `whisper_tail_patch_transcribe`
 key_liveness; cold 3.9 s after TTL inside the app process.
 
 Implementation points:
+
 1. One seam, three incarnations selected by config
    (`STT_TAIL_PROVIDER=sidecar|remote|inprocess`); no call-site branching.
 2. Local sidecar: ws transport (qube-ws pattern from vista-kernel — ws
@@ -219,6 +221,7 @@ located points (see §5 rows 2–5). De-risk recon (evidence-grade, in the
 plan pack: `recon-w13-3-derisk.md`) settles the build-vs-reuse questions.
 
 Implementation points:
+
 1. **One clock:** PCM sample counter as session timeline; map the SFSpeech
    span clock at ingestion (divergence documented at
    progressive_seal.rs:360–373). Silero edges computed on the PCM counter.
@@ -264,13 +267,14 @@ Current: gap-appends double raw text; content-similarity dedup is banned
 
 Implementation points (post-W13-3 re-scope — most of the original cut
 falls out of the ledger):
+
 1. Sealed span cannot be re-delivered: incoming text overlapping a sealed
    span is suppressed once with receipt `gap_append_superseded` —
    append-only holds (drop the duplicate, never rewrite the canvas).
 2. Deliberate repetition = different time span ⇒ passes untouched, always.
 3. In-span engine-loop fence: repetition-loop detection
    (`has_repetition_loop` candidate from qube-ws) flags and truncates
-   engine-hallucinated loops *within* one span; receipt-only, no silent
+   engine-hallucinated loops _within_ one span; receipt-only, no silent
    drops.
 4. Two regression fixtures decide: the operator's duplicated-canvas take
    (segment appears exactly once) and a deliberate 5× repetition take
@@ -285,6 +289,7 @@ weeks late; the take that produced the decisive A/B/C ran at −42 dB
 unnoticed.
 
 Implementation points:
+
 1. Running RMS accumulated per buffer on the capture path (follow the
    `AUDIO_INPUT_DEVICE` env contract, 4 files).
 2. `capture_level_receipt` at finalization next to the tail-patch session
@@ -317,6 +322,7 @@ word→word rejection after the function-word poisoning incident) are
 healthy and stay.
 
 Implementation points:
+
 1. Budget-aware deterministic prompt selection: protected > custom >
    session-relevant seed/programming picks; receipt logs selected terms +
    token count.
@@ -357,17 +363,17 @@ W13-6 highlight-half ◄──┴── after W13-3 ────┘
 
 ## 8. Risks
 
-| Risk | Grounding | Mitigation |
-|---|---|---|
-| Apple-boundary machinery vs. Silero identity (THE hard part) | All freeze/restart/novel-suffix guards assume Apple boundaries (recon Q2) | Slice cumulative finals by time; land behind a lane flag; replay harness before live |
-| pl-PL per-word timestamp fidelity unverified | Only synthetic fixtures test it (live_stream.rs:433–448) | First execution step of W13-3 = histogram on a real take; fallback: proportional span distribution |
-| Seal latency vs. live feel | Seal waits for the utterance's Whisper pass (~0.4–1 s after silence edge) | Preview lane unaffected; only committed status trails; stop pays one utterance max |
-| Continuous speech without silence | Silero finds no edge | Max-length cut at the weakest Silero dip |
-| Degraded input starves Silero too | Corpus: current sessions run ~−45 dB | W13-5 receipt calibrates thresholds; operator fixes gain with data |
-| LLM formatter invents content | Observed live 2026-08-13 | W13-1 anti-invention guard; fail-open to raw |
-| Living Tree concurrency | Concurrent sessions clobbered a shared test log 2026-08-13 (false "0 tests") | Isolated `SWIFT_TEST_LOG` per session; re-read before edit; commit in small packs |
-| Sidecar supervision scope creep | — | Seam + remote + fallback land first; sidecar may follow (brief §10) |
-| Stale memory as false ground truth | The "seal machine orphan" memory survived 3 days past its wiring | Verify wiring claims via `loct who-imports` on HEAD before acting |
+| Risk                                                         | Grounding                                                                    | Mitigation                                                                                         |
+| ------------------------------------------------------------ | ---------------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------- |
+| Apple-boundary machinery vs. Silero identity (THE hard part) | All freeze/restart/novel-suffix guards assume Apple boundaries (recon Q2)    | Slice cumulative finals by time; land behind a lane flag; replay harness before live               |
+| pl-PL per-word timestamp fidelity unverified                 | Only synthetic fixtures test it (live_stream.rs:433–448)                     | First execution step of W13-3 = histogram on a real take; fallback: proportional span distribution |
+| Seal latency vs. live feel                                   | Seal waits for the utterance's Whisper pass (~0.4–1 s after silence edge)    | Preview lane unaffected; only committed status trails; stop pays one utterance max                 |
+| Continuous speech without silence                            | Silero finds no edge                                                         | Max-length cut at the weakest Silero dip                                                           |
+| Degraded input starves Silero too                            | Corpus: current sessions run ~−45 dB                                         | W13-5 receipt calibrates thresholds; operator fixes gain with data                                 |
+| LLM formatter invents content                                | Observed live 2026-08-13                                                     | W13-1 anti-invention guard; fail-open to raw                                                       |
+| Living Tree concurrency                                      | Concurrent sessions clobbered a shared test log 2026-08-13 (false "0 tests") | Isolated `SWIFT_TEST_LOG` per session; re-read before edit; commit in small packs                  |
+| Sidecar supervision scope creep                              | —                                                                            | Seam + remote + fallback land first; sidecar may follow (brief §10)                                |
+| Stale memory as false ground truth                           | The "seal machine orphan" memory survived 3 days past its wiring             | Verify wiring claims via `loct who-imports` on HEAD before acting                                  |
 
 ## 9. Acceptance discipline
 
@@ -444,10 +450,10 @@ unit-green-as-delivery-proof.
 
 ---
 
-*Provenance: distilled from the 2026-08-12/13 measurement sessions, the
+_Provenance: distilled from the 2026-08-12/13 measurement sessions, the
 W13 plan pack (ATLAS incl. Amendments 1–3, briefs W13-1…W13-6, DRIVER,
 de-risk recon with file:line evidence), the triple-agent feasibility
 study `rese-260813-190311-53919`, and the operator's engine doctrine as
-recorded in the session registry.*
+recorded in the session registry._
 
 𝚅𝚒𝚋𝚎𝚌𝚛𝚊𝚏𝚝𝚎𝚍. with AI Agents by VetCoders (c)2024-2026 LibraxisAI
