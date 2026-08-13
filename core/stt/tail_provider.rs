@@ -118,11 +118,31 @@ pub enum TailTimingQuality {
     Synthetic,
 }
 
+impl TailTimingQuality {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::ExactSampleRange => "exact_sample_range",
+            Self::CompactedSpeechRelative => "compacted_speech_relative",
+            Self::Synthetic => "synthetic",
+        }
+    }
+}
+
 /// Engine family that produced the evidence.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum TailEvidenceSource {
+    AppleSpeech,
     Whisper,
+}
+
+impl TailEvidenceSource {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::AppleSpeech => "apple_speech",
+            Self::Whisper => "whisper",
+        }
+    }
 }
 
 /// Provenance fields that must exist before confidence participates in fusion.
@@ -290,7 +310,8 @@ impl TailProvider for InProcessTailProvider {
     ) -> Result<TailProviderPayload> {
         request.validate_pcm(pcm)?;
         let started = Instant::now();
-        let (speech, _) = crate::vad::extract_speech(pcm, request.sample_rate);
+        let (speech, _, speech_index) =
+            crate::vad::extract_speech_indexed(pcm, request.sample_rate);
         let raw = if speech.is_empty() {
             RawTranscript::default()
         } else {
@@ -301,24 +322,33 @@ impl TailProvider for InProcessTailProvider {
             )?
         };
         let request_range = &request.identity.range;
-        let max_relative = request_range.sample_len()?;
+        let max_compacted = speech.len() as u64;
         let to_sample = |seconds: f32| -> u64 {
             if !seconds.is_finite() || seconds <= 0.0 {
                 return 0;
             }
-            ((seconds as f64 * request.sample_rate as f64).round() as u64).min(max_relative)
+            ((seconds as f64 * request.sample_rate as f64).round() as u64).min(max_compacted)
         };
         let segments = raw
             .segments
             .into_iter()
-            .map(|segment| TimedTailSegment {
-                text: segment.text,
-                range: TailSampleRange {
-                    session: request_range.session.clone(),
-                    capture_epoch: request_range.capture_epoch,
-                    sample_start: request_range.sample_start + to_sample(segment.start_ts),
-                    sample_end: request.range_end_for(to_sample(segment.end_ts)),
-                },
+            .filter_map(|segment| {
+                let compacted_start = to_sample(segment.start_ts);
+                let compacted_end = to_sample(segment.end_ts).max(compacted_start);
+                let (source_start, source_end) = crate::vad::map_compacted_sample_range(
+                    &speech_index,
+                    compacted_start,
+                    compacted_end,
+                )?;
+                Some(TimedTailSegment {
+                    text: segment.text,
+                    range: TailSampleRange {
+                        session: request_range.session.clone(),
+                        capture_epoch: request_range.capture_epoch,
+                        sample_start: request.range_end_for(source_start),
+                        sample_end: request.range_end_for(source_end),
+                    },
+                })
             })
             .collect();
         let payload = TailProviderPayload {
@@ -334,7 +364,7 @@ impl TailProvider for InProcessTailProvider {
                 source: TailEvidenceSource::Whisper,
                 revision: None,
                 stability: TailEvidenceStability::Final,
-                timing_quality: TailTimingQuality::CompactedSpeechRelative,
+                timing_quality: TailTimingQuality::ExactSampleRange,
                 avg_logprob: raw.avg_logprob,
             },
         };
@@ -412,6 +442,10 @@ pub fn transcribe_configured(
         capture_epoch = payload.identity.range.capture_epoch,
         sample_start = payload.identity.range.sample_start,
         sample_end = payload.identity.range.sample_end,
+        segment_count = payload.segments.len(),
+        evidence_source = payload.evidence.source.as_str(),
+        timing_quality = payload.evidence.timing_quality.as_str(),
+        avg_logprob = payload.evidence.avg_logprob,
         elapsed_ms = payload.elapsed_ms,
         "tail_provider_receipt"
     );

@@ -51,14 +51,18 @@ use crate::pipeline::contracts::{DropKind, EngineEvent, EventSink, TranscriptSeg
 use crate::pipeline::stream_postprocess::StreamPostProcessor;
 use crate::stt::apple_stt::{LiveStreamEvent, LiveStreamSession};
 use crate::stt::tail_patcher::{TailPatchConfig, TailPatchOutcome};
+use crate::stt::tail_provider::{
+    TailEvidenceSource, TailEvidenceStability, TailProviderEvidence, TailProviderPayload,
+    TailProviderRequest, TailRequestIdentity, TailSampleRange, TailTimingQuality, TimedTailSegment,
+};
 
-use super::live_audio_buffer::{DEFAULT_RETENTION_SECS, LiveAudioBuffer};
+use super::live_audio_buffer::{DEFAULT_RETENTION_SECS, LiveAudioBuffer, ResolvedAudioWindow};
 use super::progressive_seal::{ProgressiveSealMachine, SealTick, seal_span_text};
 #[cfg(test)]
 use super::session::emit_tail_patch_result;
 use super::session::{
-    SessionConfig, UNDER_COMMIT_WARNING_CODE, compute_tail_patch_job, emit_session_finalised,
-    log_tail_patch_session_receipt, tail_patch_enabled,
+    SessionConfig, TailPatchJobResult, UNDER_COMMIT_WARNING_CODE, compute_tail_patch_job,
+    emit_session_finalised, log_tail_patch_session_receipt, tail_patch_enabled,
 };
 use super::stream_log::append_to_stream_log;
 
@@ -96,6 +100,8 @@ struct TailPatchRequest {
     committed_text: String,
     /// PCM behind exactly this utterance: `[previous seal end, end_ts)`.
     audio: Vec<f32>,
+    /// Exact capture range behind `audio`; this is the window-start authority.
+    provider_request: TailProviderRequest,
     covered_through_secs: f32,
 }
 
@@ -104,6 +110,7 @@ struct TailPatchCompletion {
     utterance_id: u64,
     covered_through_secs: f32,
     outcome: TailPatchOutcome,
+    payload: Option<TailProviderPayload>,
 }
 
 /// Async Layer 1 lane for the Apple progressive path.
@@ -112,8 +119,7 @@ struct TailPatchCompletion {
 /// `SessionFinalised.layer_summary` reports. Jobs are boxed so the lane can be
 /// driven by a stub future in tests without a model on disk.
 struct AppleTailPatchLane {
-    jobs: FuturesOrdered<BoxFuture<'static, Result<(u64, TailPatchOutcome)>>>,
-    sample_rate: u32,
+    jobs: FuturesOrdered<BoxFuture<'static, Result<TailPatchJobResult>>>,
     language: Option<String>,
     config: TailPatchConfig,
     replacements: u64,
@@ -127,10 +133,9 @@ impl AppleTailPatchLane {
     /// Open an empty lane. `TailPatchConfig::from_env` is read once here so the
     /// whole session judges every patch against the same thresholds, even if the
     /// env flips mid-hold.
-    fn new(sample_rate: u32, language: Option<String>) -> Self {
+    fn new(_sample_rate: u32, language: Option<String>) -> Self {
         Self {
             jobs: FuturesOrdered::new(),
-            sample_rate,
             language,
             // F2: thresholds stay exactly where the shared primitive puts them.
             config: TailPatchConfig::from_env(),
@@ -142,13 +147,13 @@ impl AppleTailPatchLane {
     /// Turn a sealed utterance into a Whisper gap-fill job and queue it. The job
     /// is only constructed — inference happens inside it on `spawn_blocking`, so
     /// this call never sits on the event-drain path.
-    fn push_request(&mut self, req: TailPatchRequest) {
+    fn push_request(&mut self, mut req: TailPatchRequest) {
+        req.provider_request.language = self.language.clone();
         let job = compute_tail_patch_job(
             req.utterance_id,
             req.committed_text,
             req.audio,
-            self.sample_rate,
-            self.language.clone(),
+            req.provider_request,
             self.config,
         );
         self.push_job(Box::pin(job));
@@ -156,14 +161,14 @@ impl AppleTailPatchLane {
 
     /// Queue an already-built job. Boxed and separate from `push_request` so
     /// tests can drive the lane with a stub future, with no model on disk.
-    fn push_job(&mut self, job: BoxFuture<'static, Result<(u64, TailPatchOutcome)>>) {
+    fn push_job(&mut self, job: BoxFuture<'static, Result<TailPatchJobResult>>) {
         self.jobs.push_back(job);
     }
 
     /// Await the next finished job. `FuturesOrdered` (not `Unordered`) is the
     /// point: patches must reach the sink in seal order, or a later utterance's
     /// `ReplaceRange` could land before an earlier one's.
-    async fn next(&mut self) -> Option<Result<(u64, TailPatchOutcome)>> {
+    async fn next(&mut self) -> Option<Result<TailPatchJobResult>> {
         self.jobs.next().await
     }
 
@@ -171,10 +176,13 @@ impl AppleTailPatchLane {
     /// session total. A skipped or failed patch contributes zero — only text
     /// that actually reached the canvas is counted.
     #[cfg(test)]
-    fn complete(&mut self, event_sink: &dyn EventSink, result: Result<(u64, TailPatchOutcome)>) {
-        if matches!(&result, Ok((_, TailPatchOutcome::Skipped { .. })) | Err(_)) {
+    fn complete(&mut self, event_sink: &dyn EventSink, result: Result<TailPatchJobResult>) {
+        if matches!(&result, Ok(job) if matches!(job.outcome, TailPatchOutcome::Skipped { .. }))
+            || result.is_err()
+        {
             self.skipped = self.skipped.saturating_add(1);
         }
+        let result = result.map(TailPatchJobResult::into_outcome);
         self.replacements = self
             .replacements
             .saturating_add(emit_tail_patch_result(event_sink, result));
@@ -187,10 +195,12 @@ impl AppleTailPatchLane {
         &mut self,
         request_id: u64,
         req_end_secs: f32,
-        result: Result<(u64, TailPatchOutcome)>,
+        result: Result<TailPatchJobResult>,
     ) -> TailPatchCompletion {
         match result {
-            Ok((utterance_id, outcome)) => {
+            Ok(job) => {
+                let utterance_id = job.utterance_id;
+                let outcome = job.outcome;
                 // `events()` covers both bearing arms: ordinary patches and the
                 // gap-appends an under-commit recovered. Counting only `Patches`
                 // here would drop recovered speech from the session summary.
@@ -208,6 +218,7 @@ impl AppleTailPatchLane {
                     utterance_id,
                     covered_through_secs: req_end_secs,
                     outcome,
+                    payload: Some(job.payload),
                 }
             }
             Err(error) => {
@@ -218,6 +229,7 @@ impl AppleTailPatchLane {
                     outcome: TailPatchOutcome::Skipped {
                         reason: format!("tail patch failed: {error}"),
                     },
+                    payload: None,
                 }
             }
         }
@@ -345,12 +357,14 @@ pub(crate) async fn apple_stream_transcription_session(
     // and its branch never yields: zero jobs, zero behaviour change.
     let worker_tp_tx = tail_patch_on.then_some(tp_tx);
 
+    let worker_session_id = session_id.clone();
     let worker = thread::spawn(move || {
         apple_stream_worker(
             pcm_rx,
             ev_tx,
             sample_rate,
             language.as_deref(),
+            worker_session_id,
             worker_tp_tx,
             tp_done_rx,
         )
@@ -571,6 +585,9 @@ struct PendingAppleSeal {
 }
 
 struct AppleSealState {
+    session_id: String,
+    capture_epoch: u64,
+    sample_rate: u32,
     postprocessor: StreamPostProcessor,
     preview_rev: u64,
     utterance_id: u64,
@@ -616,8 +633,16 @@ struct AppleSealState {
 impl AppleSealState {
     /// Fresh seal state with Layer 1 disabled (`tail_patch: None`) — the default
     /// shape when `CODESCRIBE_LAYERED_TRANSCRIPTION` is unset.
+    #[cfg(test)]
     fn new(sample_rate: u32) -> Self {
+        Self::new_for_session(sample_rate, uuid::Uuid::new_v4().to_string())
+    }
+
+    fn new_for_session(sample_rate: u32, session_id: String) -> Self {
         Self {
+            session_id,
+            capture_epoch: 0,
+            sample_rate,
             postprocessor: StreamPostProcessor::new(),
             preview_rev: 0,
             utterance_id: 0,
@@ -643,10 +668,22 @@ impl AppleSealState {
     /// Same state, armed with the Layer 1 hand-off. Holding the sender is what
     /// makes `seal_utterance_final` clone the committed text at all — with no
     /// wire there is nothing to diff against later.
+    #[cfg(test)]
     fn new_with_tail_patch(sample_rate: u32, tail_patch: mpsc::Sender<TailPatchRequest>) -> Self {
         Self {
             tail_patch: Some(tail_patch),
             ..Self::new(sample_rate)
+        }
+    }
+
+    fn new_with_tail_patch_for_session(
+        sample_rate: u32,
+        session_id: String,
+        tail_patch: mpsc::Sender<TailPatchRequest>,
+    ) -> Self {
+        Self {
+            tail_patch: Some(tail_patch),
+            ..Self::new_for_session(sample_rate, session_id)
         }
     }
 
@@ -663,8 +700,16 @@ impl AppleSealState {
         self.tail_patch_awaiting_completion = self.tail_patch_awaiting_completion.saturating_sub(1);
         self.tail_patch_outcomes
             .insert(utterance_id, completion.outcome);
+        let (evidence, words) = completion.payload.map_or((None, Vec::new()), |payload| {
+            (Some(payload.evidence), payload.segments)
+        });
         self.progressive
-            .note_whisper_window_elapsed(utterance_id, completion.covered_through_secs);
+            .note_whisper_window_elapsed_with_provenance(
+                utterance_id,
+                completion.covered_through_secs,
+                evidence,
+                words,
+            );
         self.emit_ready_progressive_seals(ev_tx, now_secs);
     }
 
@@ -753,9 +798,12 @@ struct AppleStreamOutcome {
 /// older than the retention cap — that must be visible here, in the live path.
 /// A silent miss would surface as canvas patched from the wrong audio, so an
 /// unresolved boundary yields `None` and never reaches Layer 1.
-fn resolve_sealed_audio_window(state: &mut AppleSealState, end_ts: f32) -> Option<Vec<f32>> {
+fn resolve_sealed_audio_window(
+    state: &mut AppleSealState,
+    end_ts: f32,
+) -> Option<ResolvedAudioWindow> {
     let from = state.last_sealed_end;
-    match state.audio.window(from, end_ts) {
+    match state.audio.window_with_range(from, end_ts) {
         Some(window) => {
             state.last_sealed_end = end_ts;
             // Everything before this utterance is committed canvas; no future
@@ -764,7 +812,7 @@ fn resolve_sealed_audio_window(state: &mut AppleSealState, end_ts: f32) -> Optio
             tracing::debug!(
                 from_secs = from,
                 end_ts,
-                window_samples = window.len(),
+                window_samples = window.samples.len(),
                 retained_samples = state.audio.len(),
                 "Apple seal resolved to audio window"
             );
@@ -782,6 +830,39 @@ fn resolve_sealed_audio_window(state: &mut AppleSealState, end_ts: f32) -> Optio
             None
         }
     }
+}
+
+fn seconds_to_captured_sample(seconds: f32, sample_rate: u32, captured_end: u64) -> u64 {
+    if !seconds.is_finite() || seconds <= 0.0 {
+        return 0;
+    }
+    ((seconds as f64 * sample_rate.max(1) as f64).round() as u64).min(captured_end)
+}
+
+fn apple_segments_on_pcm_clock(
+    state: &AppleSealState,
+    segments: &[TranscriptSegment],
+) -> Vec<TimedTailSegment> {
+    let captured_end = state.audio.session_sample_end();
+    segments
+        .iter()
+        .map(|segment| {
+            let sample_start =
+                seconds_to_captured_sample(segment.start_ts, state.sample_rate, captured_end);
+            let sample_end =
+                seconds_to_captured_sample(segment.end_ts, state.sample_rate, captured_end)
+                    .max(sample_start);
+            TimedTailSegment {
+                text: segment.text.clone(),
+                range: TailSampleRange {
+                    session: state.session_id.clone(),
+                    capture_epoch: state.capture_epoch,
+                    sample_start,
+                    sample_end,
+                },
+            }
+        })
+        .collect()
 }
 
 /// Longest callback prefix the canvas already carries, tolerating the word
@@ -1057,9 +1138,36 @@ fn seal_utterance_final(
     let after_lexicon = corrected.trim().to_string();
     state.utterance_id = state.utterance_id.saturating_add(1);
     let utterance_id = state.utterance_id;
-    state
-        .progressive
-        .note_apple_commit(utterance_id, after_lexicon.clone(), end_ts, end_ts);
+    let apple_words = apple_segments_on_pcm_clock(state, &disjoint);
+    let captured_end = state.audio.session_sample_end();
+    let span_sample_start = apple_words.first().map_or_else(
+        || seconds_to_captured_sample(start_ts, state.sample_rate, captured_end),
+        |word| word.range.sample_start,
+    );
+    let span_sample_end = apple_words.last().map_or_else(
+        || seconds_to_captured_sample(end_ts, state.sample_rate, captured_end),
+        |word| word.range.sample_end,
+    );
+    state.progressive.note_apple_commit_timed(
+        utterance_id,
+        after_lexicon.clone(),
+        end_ts,
+        end_ts,
+        TailSampleRange {
+            session: state.session_id.clone(),
+            capture_epoch: state.capture_epoch,
+            sample_start: span_sample_start,
+            sample_end: span_sample_end.max(span_sample_start),
+        },
+        apple_words,
+        TailProviderEvidence {
+            source: TailEvidenceSource::AppleSpeech,
+            revision: None,
+            stability: TailEvidenceStability::Final,
+            timing_quality: TailTimingQuality::ExactSampleRange,
+            avg_logprob: None,
+        },
+    );
     state.pending_events.insert(
         utterance_id,
         PendingAppleSeal {
@@ -1072,11 +1180,25 @@ fn seal_utterance_final(
 
     let window = resolve_sealed_audio_window(state, end_ts);
     let committed_text = seal_span_text(&after_lexicon, &state.sealed_prefix, false);
-    let queued = if let (Some(audio), Some(tx)) = (window, state.tail_patch.as_ref()) {
+    let queued = if let (Some(window), Some(tx)) = (window, state.tail_patch.as_ref()) {
+        let provider_request = TailProviderRequest {
+            identity: TailRequestIdentity {
+                request_id: utterance_id,
+                range: TailSampleRange {
+                    session: state.session_id.clone(),
+                    capture_epoch: state.capture_epoch,
+                    sample_start: window.sample_start,
+                    sample_end: window.sample_end,
+                },
+            },
+            sample_rate: state.sample_rate,
+            language: None,
+        };
         match tx.try_send(TailPatchRequest {
             utterance_id,
             committed_text,
-            audio,
+            audio: window.samples,
+            provider_request,
             covered_through_secs: end_ts,
         }) {
             Ok(()) => {
@@ -1119,13 +1241,14 @@ fn apple_stream_worker(
     ev_tx: mpsc::UnboundedSender<EngineEvent>,
     sample_rate: u32,
     language: Option<&str>,
+    session_id: String,
     tail_patch: Option<mpsc::Sender<TailPatchRequest>>,
     tail_patch_done: std_mpsc::Receiver<TailPatchCompletion>,
 ) -> anyhow::Result<AppleStreamOutcome> {
     let mut stream = LiveStreamSession::open(language, sample_rate)?;
     let mut state = match tail_patch {
-        Some(tx) => AppleSealState::new_with_tail_patch(sample_rate, tx),
-        None => AppleSealState::new(sample_rate),
+        Some(tx) => AppleSealState::new_with_tail_patch_for_session(sample_rate, session_id, tx),
+        None => AppleSealState::new_for_session(sample_rate, session_id),
     };
     let mut samples_seen: u64 = 0;
 
@@ -1397,6 +1520,30 @@ mod tests {
     /// text, not audio retention, so any valid rate is representative.
     const TEST_SAMPLE_RATE: u32 = 16_000;
 
+    fn synthetic_tail_payload(
+        request_id: u64,
+        range: TailSampleRange,
+        segments: Vec<TimedTailSegment>,
+    ) -> TailProviderPayload {
+        TailProviderPayload {
+            identity: TailRequestIdentity { request_id, range },
+            text: String::new(),
+            segments,
+            avg_logprob: None,
+            compression_ratio: None,
+            quality_gate_dropped: false,
+            provider_id: crate::stt::tail_provider::TailProviderId::Fake,
+            elapsed_ms: 0,
+            evidence: TailProviderEvidence {
+                source: TailEvidenceSource::Whisper,
+                revision: Some("synthetic-test".to_string()),
+                stability: TailEvidenceStability::Final,
+                timing_quality: TailTimingQuality::Synthetic,
+                avg_logprob: None,
+            },
+        }
+    }
+
     /// Integration boundary: the real Apple state owns the progressive
     /// machine. Apple commit + live partial alone stay pending; an elapsed
     /// Whisper window seals before session end.
@@ -1435,12 +1582,18 @@ mod tests {
             "Apple commit alone must not bypass the double-seal condition"
         );
 
+        let whisper_range = state.progressive.pending_spans()[0].range.clone();
+        let whisper_word = TimedTailSegment {
+            text: "doker".to_string(),
+            range: whisper_range.clone(),
+        };
         state.complete_whisper_window(
             &tx,
             TailPatchCompletion {
                 utterance_id: 1,
                 covered_through_secs: 2.0,
                 outcome: TailPatchOutcome::NoChange,
+                payload: Some(synthetic_tail_payload(1, whisper_range, vec![whisper_word])),
             },
             5.0,
         );
@@ -1456,6 +1609,23 @@ mod tests {
             "double-closed span must seal live"
         );
         assert_eq!(state.progressive.sealed_spans().len(), 1);
+        let sealed = &state.progressive.sealed_spans()[0];
+        assert_eq!(sealed.range.sample_start, 8_000);
+        assert_eq!(sealed.range.sample_end, 32_000);
+        assert_eq!(sealed.words.len(), 1);
+        assert_eq!(sealed.words[0].range, sealed.range);
+        assert_eq!(
+            sealed.apple_evidence.source,
+            TailEvidenceSource::AppleSpeech
+        );
+        assert_eq!(
+            sealed
+                .whisper_evidence
+                .as_ref()
+                .map(|evidence| evidence.source),
+            Some(TailEvidenceSource::Whisper)
+        );
+        assert_eq!(sealed.whisper_words.len(), 1);
     }
 
     /// W-C: an under-commit's gap-appends reach the canvas through the same
@@ -1502,6 +1672,7 @@ mod tests {
                 utterance_id: 1,
                 covered_through_secs: 2.0,
                 outcome,
+                payload: None,
             },
             5.0,
         );
@@ -2294,6 +2465,20 @@ mod tests {
         }
     }
 
+    fn synthetic_tail_job(utterance_id: u64, outcome: TailPatchOutcome) -> TailPatchJobResult {
+        let range = TailSampleRange {
+            session: "test-session".to_string(),
+            capture_epoch: 0,
+            sample_start: 0,
+            sample_end: 0,
+        };
+        TailPatchJobResult {
+            utterance_id,
+            outcome,
+            payload: synthetic_tail_payload(utterance_id, range, Vec::new()),
+        }
+    }
+
     /// Wiring contract: a sealed utterance must hand Layer 1 the exact audio
     /// behind it plus the exact committed string `ReplaceRange` offsets are
     /// computed against. Anything else patches canvas from the wrong source.
@@ -2327,10 +2512,39 @@ mod tests {
             2 * TEST_SAMPLE_RATE as usize,
             "window is [previous seal end, end_ts) at session rate"
         );
+        assert_eq!(req.provider_request.identity.range.sample_start, 0);
+        assert_eq!(req.provider_request.identity.range.sample_end, 32_000);
+        assert_eq!(req.provider_request.identity.request_id, req.utterance_id);
         assert_eq!(
             state.tail_patch_awaiting_completion, 1,
             "an accepted request is what the end-of-session closure loop owes a wait to"
         );
+    }
+
+    /// SFSpeech may report a word end a few milliseconds past PCM capture.
+    /// Ingestion clamps it once onto the integer sample clock; later stages do
+    /// not compare the two floating clocks as if they were identical.
+    #[test]
+    fn apple_segments_map_to_captured_pcm_samples_at_ingestion() {
+        let (tx, _rx) = mpsc::unbounded_channel();
+        let mut state = AppleSealState::new(TEST_SAMPLE_RATE);
+        push_capture(&mut state, 2.0);
+
+        emit_stream_events(
+            vec![LiveStreamEvent::PhraseFinal {
+                text: "zegar pcm".into(),
+                segments: vec![segment("zegar pcm", 0.5, 2.002)],
+            }],
+            &tx,
+            &mut state,
+            2.0,
+        );
+
+        let sealed = &state.progressive.sealed_spans()[0];
+        assert_eq!(sealed.range.sample_start, 8_000);
+        assert_eq!(sealed.range.sample_end, 32_000);
+        assert_eq!(sealed.words[0].range.sample_end, 32_000);
+        assert_eq!(sealed.end_secs_millis, 2_002, "legacy adapter unchanged");
     }
 
     /// The closure loop must wait on outstanding Layer 1 *jobs*, never on the
@@ -2369,6 +2583,7 @@ mod tests {
                 outcome: TailPatchOutcome::Skipped {
                     reason: "no change".to_string(),
                 },
+                payload: None,
             },
             2.1,
         );
@@ -2483,7 +2698,7 @@ mod tests {
             1,
             &TailPatchConfig::default(),
         );
-        lane.push_job(Box::pin(async move { Ok((1u64, outcome)) }));
+        lane.push_job(Box::pin(async move { Ok(synthetic_tail_job(1, outcome)) }));
 
         let result = lane.next().await.expect("one job in flight");
         lane.complete(&sink, result);
@@ -2534,7 +2749,7 @@ mod tests {
             matches!(outcome, TailPatchOutcome::Skipped { .. }),
             "shared threshold must reject a wholesale divergence"
         );
-        lane.push_job(Box::pin(async move { Ok((1u64, outcome)) }));
+        lane.push_job(Box::pin(async move { Ok(synthetic_tail_job(1, outcome)) }));
 
         let result = lane.next().await.expect("one job in flight");
         lane.complete(&sink, result);
