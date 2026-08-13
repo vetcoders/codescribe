@@ -183,6 +183,16 @@ final class OverlayState: ObservableObject {
   @Published private(set) var sessionSpeechPct: Float?
   @Published private(set) var sessionConfidenceFlags: [String] = []
   @Published var errorMessage: String?
+  /// W13-6B highlight layer. Default follows the OFF flag; tests inject `true`.
+  @Published var highlightsEnabled = false
+  /// Span highlights (lexicon-corrected words + speech-gap pustki).
+  @Published private(set) var highlights: [OverlayHighlight] = []
+  @Published private(set) var selectedHighlightId: String?
+  /// Last Teach acknowledgement for tests and the toast.
+  @Published private(set) var lastTeachAcknowledgement: String?
+  /// Injected Teach writer. Production uses `qualityTeachSpan`; tests replace
+  /// this so XCTest never writes the operator's live lexicon.
+  var teachSpan: ((OverlayHighlight) throws -> String)?
   @Published var isFormatting: Bool = false
   @Published var formatFailureStatus: String?
   /// Prompt-free policy snapshot from C02's persisted settings owner. These
@@ -257,6 +267,8 @@ final class OverlayState: ObservableObject {
   static let defaultNoSpeechNotice = "No speech detected"
 
   private var recording = false
+  /// True after `on_vad_active(true)` until an empty-or-nonempty final consumes it.
+  private var speechWasActive = false
   /// Reason from `on_no_speech`, captured before the terminal stop so
   /// `finalizeTranscript` can pick the right notice when it resolves to empty.
   private var pendingNoSpeechMessage: String?
@@ -323,6 +335,11 @@ final class OverlayState: ObservableObject {
 
   init(nowProvider: @escaping () -> TimeInterval = { ProcessInfo.processInfo.systemUptime }) {
     self.nowProvider = nowProvider
+    // Production reads the UniFFI flag (default OFF). XCTest hosts stay off
+    // unless a test flips `highlightsEnabled` — never inherit a leaked env.
+    if !QualityCaptureHost.isRunningTests {
+      highlightsEnabled = overlayHighlightsEnabled()
+    }
   }
 
   func attach() {
@@ -481,6 +498,18 @@ final class OverlayState: ObservableObject {
     if isFinalPass { return "final pass…" }
     if transcribing { return "transcribing…" }
     return warmingUp ? "starting…" : "listening…"
+  }
+
+  /// Visual runs for the highlight canvas. Empty when the lane is off.
+  var highlightCanvasRuns: [OverlayCanvasRun] {
+    guard highlightsEnabled else { return [.text(listeningDisplay)] }
+    let segments = committedSegments.map { (utteranceId: $0.utteranceId, text: $0.text) }
+    let runs = OverlayCanvas.runs(
+      segments: segments,
+      highlights: highlights,
+      preview: preview
+    )
+    return runs.isEmpty ? [.text(listeningDisplay)] : runs
   }
 
   /// Whatever the action row should copy/send for the current state.
@@ -1296,6 +1325,9 @@ final class OverlayState: ObservableObject {
     preview = ""
     committedSegments = []
     committedUtterances = []
+    highlights = []
+    selectedHighlightId = nil
+    speechWasActive = false
     authoritativeFinalText = nil
     pendingNoSpeechMessage = nil
     noSpeechNotice = OverlayState.defaultNoSpeechNotice
@@ -1380,12 +1412,23 @@ final class OverlayState: ObservableObject {
     )
     if !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
       upsertFinalSegment(utteranceId: utteranceId, text: text)
+    } else if highlightsEnabled {
+      noteSpeechGap(
+        utteranceId: utteranceId,
+        speechPct: speechPct
+      )
     }
     preview = ""
     refreshFormattedTranscriptIfNeeded()
   }
 
-  func applyReplaceRange(utteranceId: UInt64, start: UInt64, end: UInt64, text: String) {
+  func applyReplaceRange(
+    utteranceId: UInt64,
+    start: UInt64,
+    end: UInt64,
+    text: String,
+    source: CsLayerSource = .tailPatch
+  ) {
     guard !finalized else { return }
     guard let index = committedSegments.lastIndex(where: { $0.utteranceId == utteranceId }) else {
       showToast("Skipped unbound transcript patch")
@@ -1403,6 +1446,7 @@ final class OverlayState: ObservableObject {
     let spanEnd = origin + before.renderedOffset(forTextOffset: Int(exactly: end) ?? .max)
     let renderedLengthBefore = before.renderedText.count
 
+    let replaced = sliceUtteranceText(before.text, start: start, end: end)
     guard committedSegments[index].replaceRange(start: start, end: end, replacement: text) else {
       showToast("Skipped out-of-range transcript patch")
       return
@@ -1412,6 +1456,20 @@ final class OverlayState: ObservableObject {
       spanEnd: spanEnd,
       delta: committedSegments[index].renderedText.count - renderedLengthBefore
     )
+    rebaseHighlights(
+      utteranceId: utteranceId,
+      start: start,
+      end: end,
+      replacementCount: UInt64(text.count)
+    )
+    if highlightsEnabled, source == .lexicon, let highlight = OverlayCanvas.lexiconHighlight(
+      utteranceId: utteranceId,
+      start: start,
+      replacement: text,
+      before: replaced
+    ) {
+      highlights.append(highlight)
+    }
     syncCommittedUtterances()
   }
 
@@ -1630,6 +1688,10 @@ final class OverlayState: ObservableObject {
     committedSegments = []
     committedUtterances = []
     contextMarkers = []
+    highlights = []
+    selectedHighlightId = nil
+    lastTeachAcknowledgement = nil
+    speechWasActive = false
     authoritativeFinalText = nil
     deliveredText = ""
     sttRawText = ""
@@ -1777,9 +1839,102 @@ final class OverlayState: ObservableObject {
     guard !finalized else { return }
     vadActive = active
     if active {
+      speechWasActive = true
       cancelWarmupWatchdog()
       warmingUp = false
       audioReady = true
+    }
+  }
+
+  func selectHighlight(_ highlight: OverlayHighlight) {
+    selectedHighlightId = highlight.id
+  }
+
+  /// One-click send-span-to-Teach. Production goes through `qualityTeachSpan`
+  /// behind `QualityCaptureHost`; tests inject `teachSpan`.
+  func sendHighlightToTeach(_ highlight: OverlayHighlight) {
+    guard highlightsEnabled else { return }
+    guard let index = highlights.firstIndex(where: { $0.id == highlight.id }) else { return }
+    if let teachSpan {
+      do {
+        let acknowledgement = try teachSpan(highlight)
+        highlights[index].taught = true
+        lastTeachAcknowledgement = acknowledgement
+        if !acknowledgement.isEmpty { showToast(acknowledgement) }
+      } catch {
+        showToast("Teach failed")
+      }
+      return
+    }
+    guard !QualityCaptureHost.isRunningTests else { return }
+    let variant = highlight.teachVariant
+    let canonical = highlight.teachCanonical
+    let kind = highlight.teachKind
+    Task.detached(priority: .utility) { [weak self] in
+      let result = try? qualityTeachSpan(
+        variant: variant,
+        canonical: canonical,
+        kind: kind
+      )
+      await MainActor.run {
+        guard let self else { return }
+        if let acknowledgement = result?.acknowledgement {
+          if let idx = self.highlights.firstIndex(where: { $0.id == highlight.id }) {
+            self.highlights[idx].taught = true
+          }
+          self.lastTeachAcknowledgement = acknowledgement
+          if !acknowledgement.isEmpty { self.showToast(acknowledgement) }
+        } else {
+          self.showToast("Teach failed")
+        }
+      }
+    }
+  }
+
+  private func noteSpeechGap(utteranceId: UInt64, speechPct: Float?) {
+    let heard = speechWasActive || (speechPct ?? 0) > 0
+    speechWasActive = false
+    guard heard else { return }
+    let gap = OverlayCanvas.speechGap(utteranceId: utteranceId)
+    if !highlights.contains(where: { $0.id == gap.id }) {
+      highlights.append(gap)
+    }
+  }
+
+  private func sliceUtteranceText(_ text: String, start: UInt64, end: UInt64) -> String {
+    guard let startOffset = Int(exactly: start),
+      let endOffset = Int(exactly: end),
+      startOffset <= endOffset,
+      endOffset <= text.count
+    else { return "" }
+    let startIndex = text.index(text.startIndex, offsetBy: startOffset)
+    let endIndex = text.index(text.startIndex, offsetBy: endOffset)
+    return String(text[startIndex..<endIndex])
+  }
+
+  private func rebaseHighlights(
+    utteranceId: UInt64,
+    start: UInt64,
+    end: UInt64,
+    replacementCount: UInt64
+  ) {
+    let removed = end >= start ? end - start : 0
+    let delta = Int64(replacementCount) - Int64(removed)
+    highlights = highlights.compactMap { highlight in
+      guard highlight.utteranceId == utteranceId, highlight.kind == .lexiconCorrected else {
+        return highlight
+      }
+      if highlight.charEnd <= start { return highlight }
+      if highlight.charStart >= end {
+        var shifted = highlight
+        let startShift = Int64(highlight.charStart) + delta
+        let endShift = Int64(highlight.charEnd) + delta
+        guard startShift >= 0, endShift >= startShift else { return nil }
+        shifted.charStart = UInt64(startShift)
+        shifted.charEnd = UInt64(endShift)
+        return shifted
+      }
+      return nil
     }
   }
 
@@ -1981,7 +2136,13 @@ final class DictationListener: CsTranscriptionListener, @unchecked Sendable {
   ) {
     DispatchQueue.main.async {
       MainActor.assumeIsolated {
-        self.state?.applyReplaceRange(utteranceId: utteranceId, start: start, end: end, text: text)
+        self.state?.applyReplaceRange(
+          utteranceId: utteranceId,
+          start: start,
+          end: end,
+          text: text,
+          source: source
+        )
       }
     }
   }

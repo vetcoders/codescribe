@@ -49,8 +49,10 @@ pub use hotkeys::CodescribeHotkeys;
 pub use hotkeys::CsAppActionListener;
 pub use licensing::{CsLicenseState, CsLicenseStatus};
 pub use quality::{
-    CsLexiconEntry, CsQualityCommitResult, CsQualityRecord, commit_overlay_quality_record,
-    lexicon_custom_entries, quality_finalize_correction, quality_recent_records,
+    CsLexiconEntry, CsOverlayHighlight, CsOverlayHighlightKind, CsQualityCommitResult,
+    CsQualityRecord, commit_overlay_quality_record, lexicon_custom_entries,
+    overlay_highlights_enabled, quality_finalize_correction, quality_recent_records,
+    quality_teach_span,
 };
 pub use tray_status::{
     CodescribeTrayStatus, CsTrayStatusKind, CsTrayStatusListener, CsTrayStatusPayload,

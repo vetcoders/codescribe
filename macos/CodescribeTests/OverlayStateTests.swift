@@ -1,4 +1,5 @@
 import AppKit
+import SwiftUI
 import XCTest
 
 @testable import Codescribe
@@ -1386,6 +1387,132 @@ final class OverlayStateTests: XCTestCase {
     let state = OverlayState()
     state.handleError(message: "layer1_lane_degraded: Layer 1 lane fell back")
     XCTAssertEqual(state.mode, .error)
+  }
+
+  // MARK: W13-6B highlights + Teach
+
+  func testHighlightLaneDefaultsOffSoExistingReplaceDoesNotTint() {
+    let state = OverlayState()
+    state.handleRecordingStarted()
+    state.applyFinal(utteranceId: 1, "uni agentka")
+    state.applyReplaceRange(
+      utteranceId: 1, start: 0, end: 11, text: "Junie", source: .lexicon)
+    XCTAssertTrue(state.highlights.isEmpty)
+    XCTAssertEqual(state.committedUtterances, ["Junie"])
+  }
+
+  func testLexiconReplaceRecordsHighlightWhenLaneArmed() {
+    let state = OverlayState()
+    state.highlightsEnabled = true
+    state.handleRecordingStarted()
+    state.applyFinal(utteranceId: 1, "RIPOS i Edyta")
+    state.applyReplaceRange(
+      utteranceId: 1, start: 0, end: 5, text: "Reports", source: .lexicon)
+    XCTAssertEqual(state.highlights.count, 1)
+    XCTAssertEqual(state.highlights[0].kind, .lexiconCorrected)
+    XCTAssertEqual(state.highlights[0].before, "RIPOS")
+    XCTAssertEqual(state.highlights[0].after, "Reports")
+    XCTAssertEqual(state.highlights[0].charStart, 0)
+    XCTAssertEqual(state.highlights[0].charEnd, 7)
+    XCTAssertEqual(state.committedUtterances, ["Reports i Edyta"])
+  }
+
+  func testEmptyFinalAfterVadBecomesSpeechGap() {
+    let state = OverlayState()
+    state.highlightsEnabled = true
+    state.handleRecordingStarted()
+    state.applyFinal(utteranceId: 1, "słowo")
+    state.applyVad(true)
+    state.applyFinal(utteranceId: 2, "")
+    XCTAssertEqual(state.highlights.map(\.kind), [.speechGap])
+    XCTAssertEqual(state.highlights[0].after, "∅")
+    XCTAssertEqual(state.highlights[0].utteranceId, 2)
+    XCTAssertEqual(state.committedUtterances, ["słowo"])
+  }
+
+  func testEmptyFinalWithoutSpeechDoesNotInventAGap() {
+    let state = OverlayState()
+    state.highlightsEnabled = true
+    state.handleRecordingStarted()
+    state.applyFinal(utteranceId: 1, "")
+    XCTAssertTrue(state.highlights.isEmpty)
+  }
+
+  func testSendHighlightToTeachUsesInjectedWriterAndMarksTaught() {
+    let state = OverlayState()
+    state.highlightsEnabled = true
+    var taught: [String] = []
+    state.teachSpan = { highlight in
+      taught.append("\(highlight.teachVariant)->\(highlight.teachCanonical)")
+      return "Saved — 1 pair learned"
+    }
+    state.handleRecordingStarted()
+    state.applyFinal(utteranceId: 1, "uni agentka")
+    state.applyReplaceRange(
+      utteranceId: 1, start: 0, end: 11, text: "Junie", source: .lexicon)
+    XCTAssertEqual(state.highlights.count, 1)
+    state.sendHighlightToTeach(state.highlights[0])
+    XCTAssertEqual(taught, ["uni agentka->Junie"])
+    XCTAssertTrue(state.highlights[0].taught)
+    XCTAssertEqual(state.lastTeachAcknowledgement, "Saved — 1 pair learned")
+    XCTAssertEqual(state.toast, "Saved — 1 pair learned")
+  }
+
+  func testCanvasRunsSplitLexiconWordAndKeepPreview() {
+    let runs = OverlayCanvas.runs(
+      segments: [(utteranceId: 1, text: "Reports i Edyta")],
+      highlights: [
+        OverlayCanvas.lexiconHighlight(
+          utteranceId: 1, start: 0, replacement: "Reports", before: "RIPOS")!
+      ],
+      preview: "dalej"
+    )
+    XCTAssertEqual(runs, [
+      .highlight(
+        OverlayCanvas.lexiconHighlight(
+          utteranceId: 1, start: 0, replacement: "Reports", before: "RIPOS")!),
+      .text(" i Edyta dalej"),
+    ])
+  }
+
+  func testHighlightScreenshotRendersLexiconAndGap() throws {
+    let highlight = OverlayCanvas.lexiconHighlight(
+      utteranceId: 1, start: 0, replacement: "Reports", before: "RIPOS")!
+    let gap = OverlayCanvas.speechGap(utteranceId: 2)
+    let view = OverlayHighlightScreenshot(
+      runs: OverlayCanvas.runs(
+        segments: [(utteranceId: 1, text: "Reports")],
+        highlights: [highlight, gap],
+        preview: ""
+      ),
+      highlights: [highlight, gap]
+    )
+    .frame(width: 520, height: 220)
+    let renderer = ImageRenderer(content: view)
+    renderer.scale = 2
+    guard let image = renderer.nsImage else {
+      XCTFail("ImageRenderer produced no nsImage")
+      return
+    }
+    let dest = FileManager.default.temporaryDirectory
+      .appendingPathComponent("w13-6b-highlights.png")
+    let reportDest = URL(fileURLWithPath: NSHomeDirectory())
+      .appendingPathComponent(
+        ".vibecrafted/artifacts/vetcoders/codescribe/2026_0813/reports/implement/w13-6b-highlights.png"
+      )
+    guard let tiff = image.tiffRepresentation,
+      let rep = NSBitmapImageRep(data: tiff),
+      let png = rep.representation(using: .png, properties: [:])
+    else {
+      XCTFail("could not encode highlight screenshot")
+      return
+    }
+    try png.write(to: dest)
+    try? FileManager.default.createDirectory(
+      at: reportDest.deletingLastPathComponent(), withIntermediateDirectories: true)
+    try? png.write(to: reportDest)
+    XCTAssertGreaterThan(png.count, 800)
+    XCTAssertTrue(FileManager.default.fileExists(atPath: dest.path))
   }
 
 }
