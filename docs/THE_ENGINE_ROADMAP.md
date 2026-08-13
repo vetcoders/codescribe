@@ -408,11 +408,46 @@ the state, not the CI color.
   replacing weaker evidence with stronger regardless of which engine
   produced it.
 
+## 12. Independent feasibility verdict (2026-08-13 evening)
+
+A triple-agent research study (grok + claude + codex, independent lanes,
+adversarial synthesis; run `rese-260813-190311-53919`) reviewed this
+roadmap against the codebase and world SoTA. Verdict: **GO WITH
+AMENDMENTS** — the doctrine is confirmed and SoTA-aligned (the same shape
+appears in Apple time-ranged finality, streaming-Whisper stable prefixes,
+WhisperX segmentation and two-pass ASR); all amendments target contracts,
+not direction. Binding contract amendments (full text: plan-pack ATLAS,
+Amendment 3):
+
+- new **W13-0** first: real pl-PL clock/timestamp falsification + frozen
+  golden replay fixtures before any fusion;
+- canonical time = **integer sample ranges**
+  (`session, capture_epoch, sample_start, sample_end`); seconds only at
+  adapters;
+- **typed evidence** (source, revision, stability, timing quality, raw
+  confidence) precedes any confidence-based fusion; until calibration,
+  commit agreements and clear gap fills, receipt the rest;
+- **W13-2 → 2A/2B** (timed provider contract gates W13-3; sidecar hosting
+  follows), **W13-3 → 3A/3B** (provenance before conservative fusion, with
+  a bounded-context A/B), **W13-6 → 6A/6B** (voice early, highlighting
+  after provenance);
+- W13-4 auto-removal only on **non-content evidence**; continuous
+  repetition protected;
+- W13-5 warnings keyed to **active-speech** level (+ clipping/dropout/
+  noise/SNR), not all-audio medians;
+- no Apple backend migration this wave; vocabulary A/B must report
+  U-WER + false insertions.
+
+Rejected unanimously: full-file replacement, single-engine authority,
+content-similarity dedup, unbounded prompting, and
+unit-green-as-delivery-proof.
+
 ---
 
 *Provenance: distilled from the 2026-08-12/13 measurement sessions, the
-W13 plan pack (ATLAS incl. Amendments 1–2, briefs W13-1…W13-6, DRIVER,
-de-risk recon with file:line evidence), and the operator's engine
-doctrine as recorded in the session registry.*
+W13 plan pack (ATLAS incl. Amendments 1–3, briefs W13-1…W13-6, DRIVER,
+de-risk recon with file:line evidence), the triple-agent feasibility
+study `rese-260813-190311-53919`, and the operator's engine doctrine as
+recorded in the session registry.*
 
 𝚅𝚒𝚋𝚎𝚌𝚛𝚊𝚏𝚝𝚎𝚍. with AI Agents by VetCoders (c)2024-2026 LibraxisAI
