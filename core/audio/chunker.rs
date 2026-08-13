@@ -742,6 +742,16 @@ impl SpeechSession {
         events
     }
 
+    /// Half-open raw-sample range of the currently open Supervisor segment.
+    ///
+    /// `None` when Silero has not opened a speech edge. Used by the W13-3B
+    /// fusion lane to mint utterance identity on the same PCM cursor the
+    /// Apple worker already owns.
+    pub(crate) fn open_segment_raw_range(&self) -> Option<(u64, u64)> {
+        let start = self.segment_start?;
+        Some((start as u64, self.raw_cursor as u64))
+    }
+
     /// Close the session and emit whatever is still open.
     ///
     /// Recording usually stops mid-segment, so an open Supervisor segment is

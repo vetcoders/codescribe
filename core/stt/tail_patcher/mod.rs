@@ -244,6 +244,44 @@ impl TailPatchConfig {
     }
 }
 
+/// Stable skip-reason code on a tail-patch or fusion receipt.
+///
+/// The string [`TailPatchOutcome::Skipped::reason`] stays human-readable; this
+/// code is what a later starvation diagnosis greps. W13-3B adds the time-slice
+/// and fusion tokens; the LCS tokens keep the v1 receipts diagnosable.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SkipReasonCode {
+    EmptyCommitted,
+    EmptyRetranscription,
+    NoCommittedTokens,
+    ChangeRatio,
+    HeadGarbage,
+    NoTimeOverlap,
+    LowConfidence,
+    UnresolvedAlternative,
+    SealedFence,
+    Divergence,
+    ProviderError,
+}
+
+impl SkipReasonCode {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::EmptyCommitted => "empty_committed",
+            Self::EmptyRetranscription => "empty_retranscription",
+            Self::NoCommittedTokens => "no_committed_tokens",
+            Self::ChangeRatio => "change_ratio",
+            Self::HeadGarbage => "head_garbage",
+            Self::NoTimeOverlap => "no_time_overlap",
+            Self::LowConfidence => "low_confidence",
+            Self::UnresolvedAlternative => "unresolved_alternative",
+            Self::SealedFence => "sealed_fence",
+            Self::Divergence => "divergence",
+            Self::ProviderError => "provider_error",
+        }
+    }
+}
+
 /// Result of a tail-patch diff.
 #[derive(Debug, Clone, PartialEq)]
 pub enum TailPatchOutcome {
@@ -255,11 +293,24 @@ pub enum TailPatchOutcome {
     NoChange,
     /// Diff exceeded the safety threshold (or there was nothing to patch
     /// against); Layer 0 output stands unchanged.
-    Skipped { reason: String },
+    Skipped {
+        code: SkipReasonCode,
+        reason: String,
+    },
     /// Layer 0 committed substantially less than the audio carried, and the
     /// committed canvas is still contained in the re-transcription. Recovered
     /// speech, not a diff to clamp — see [`UnderCommit`].
     UnderCommit(UnderCommit),
+}
+
+impl TailPatchOutcome {
+    /// Construct a skipped outcome with a stable reason code.
+    pub fn skipped(code: SkipReasonCode, reason: impl Into<String>) -> Self {
+        Self::Skipped {
+            code,
+            reason: reason.into(),
+        }
+    }
 }
 
 /// A Layer-0 under-commit: what was recovered, what could be placed live, and
@@ -605,9 +656,7 @@ pub fn compute_tail_patch(
             0,
             0,
         );
-        return TailPatchOutcome::Skipped {
-            reason: "empty_committed".to_string(),
-        };
+        return TailPatchOutcome::skipped(SkipReasonCode::EmptyCommitted, "empty_committed");
     }
     if retranscribed.trim().is_empty() {
         log_skipped_receipt(
@@ -618,9 +667,10 @@ pub fn compute_tail_patch(
             tokenize(committed).len(),
             0,
         );
-        return TailPatchOutcome::Skipped {
-            reason: "empty_retranscription".to_string(),
-        };
+        return TailPatchOutcome::skipped(
+            SkipReasonCode::EmptyRetranscription,
+            "empty_retranscription",
+        );
     }
 
     let c_tokens = tokenize(committed);
@@ -634,9 +684,7 @@ pub fn compute_tail_patch(
             0,
             r_tokens.len(),
         );
-        return TailPatchOutcome::Skipped {
-            reason: "no_committed_tokens".to_string(),
-        };
+        return TailPatchOutcome::skipped(SkipReasonCode::NoCommittedTokens, "no_committed_tokens");
     }
 
     let matches = lcs_matches(&c_tokens, &r_tokens);
@@ -721,7 +769,7 @@ pub fn compute_tail_patch(
             c_tokens.len(),
             r_tokens.len(),
         );
-        return TailPatchOutcome::Skipped { reason };
+        return TailPatchOutcome::skipped(SkipReasonCode::ChangeRatio, reason);
     }
 
     let mut events: Vec<EngineEvent> = Vec::new();
@@ -966,9 +1014,10 @@ mod tests {
         let empty = compute_tail_patch("ala ma kota", "", 43, &cfg);
         assert_eq!(
             empty,
-            TailPatchOutcome::Skipped {
-                reason: "empty_retranscription".to_string()
-            }
+            TailPatchOutcome::skipped(
+                SkipReasonCode::EmptyRetranscription,
+                "empty_retranscription",
+            )
         );
 
         assert!(
@@ -1135,9 +1184,10 @@ mod tests {
         ));
         assert_eq!(
             compute_tail_patch("ala ma kota", "", 47, &cfg),
-            TailPatchOutcome::Skipped {
-                reason: "empty_retranscription".to_string()
-            }
+            TailPatchOutcome::skipped(
+                SkipReasonCode::EmptyRetranscription,
+                "empty_retranscription",
+            )
         );
         assert!(matches!(
             compute_tail_patch("", "cokolwiek dłuższego tu jest naprawdę sporo", 48, &cfg),
@@ -1238,7 +1288,7 @@ mod tests {
         let retranscribed = "zupełnie inne zdanie o niczym wcale niepodobne do tamtego";
         let outcome = compute_tail_patch(committed, retranscribed, 3, &cfg);
         match &outcome {
-            TailPatchOutcome::Skipped { reason } => {
+            TailPatchOutcome::Skipped { reason, .. } => {
                 assert!(
                     reason.contains("change_ratio"),
                     "unexpected reason: {reason}"

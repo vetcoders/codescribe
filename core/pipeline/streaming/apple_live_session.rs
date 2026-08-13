@@ -50,7 +50,7 @@ use crate::audio::capture_receipt::{
 use crate::pipeline::contracts::{DropKind, EngineEvent, EventSink, TranscriptSegment};
 use crate::pipeline::stream_postprocess::StreamPostProcessor;
 use crate::stt::apple_stt::{LiveStreamEvent, LiveStreamSession};
-use crate::stt::tail_patcher::{TailPatchConfig, TailPatchOutcome};
+use crate::stt::tail_patcher::{SkipReasonCode, TailPatchConfig, TailPatchOutcome};
 use crate::stt::tail_provider::{
     TailEvidenceSource, TailEvidenceStability, TailProviderEvidence, TailProviderPayload,
     TailProviderRequest, TailRequestIdentity, TailSampleRange, TailTimingQuality, TimedTailSegment,
@@ -63,6 +63,10 @@ use super::session::emit_tail_patch_result;
 use super::session::{
     SessionConfig, TailPatchJobResult, UNDER_COMMIT_WARNING_CODE, compute_tail_patch_job,
     emit_session_finalised, log_tail_patch_session_receipt, tail_patch_enabled,
+};
+use super::silero_fusion::{
+    FusionContextMode, FusionWord, SileroIngress, bound_context_range, conservative_fuse,
+    fusion_receipt, lane_enabled, slice_apple_words,
 };
 use super::stream_log::append_to_stream_log;
 
@@ -226,9 +230,10 @@ impl AppleTailPatchLane {
                 TailPatchCompletion {
                     utterance_id: request_id,
                     covered_through_secs: req_end_secs,
-                    outcome: TailPatchOutcome::Skipped {
-                        reason: format!("tail patch failed: {error}"),
-                    },
+                    outcome: TailPatchOutcome::skipped(
+                        crate::stt::tail_patcher::SkipReasonCode::ProviderError,
+                        format!("tail patch failed: {error}"),
+                    ),
                     payload: None,
                 }
             }
@@ -628,6 +633,10 @@ struct AppleSealState {
     pending_events: BTreeMap<u64, PendingAppleSeal>,
     /// Whisper outcomes retained until their final has been emitted.
     tail_patch_outcomes: BTreeMap<u64, TailPatchOutcome>,
+    /// Silero Supervisor identity ledger. `None` unless the W13-3B lane flag
+    /// is explicitly armed — default keeps Apple-boundary production identical.
+    fusion: Option<SileroIngress>,
+    fusion_context: FusionContextMode,
 }
 
 impl AppleSealState {
@@ -662,6 +671,8 @@ impl AppleSealState {
             progressive: ProgressiveSealMachine::new(),
             pending_events: BTreeMap::new(),
             tail_patch_outcomes: BTreeMap::new(),
+            fusion: None,
+            fusion_context: FusionContextMode::UtteranceOnly,
         }
     }
 
@@ -698,11 +709,15 @@ impl AppleSealState {
     ) {
         let utterance_id = completion.utterance_id;
         self.tail_patch_awaiting_completion = self.tail_patch_awaiting_completion.saturating_sub(1);
-        self.tail_patch_outcomes
-            .insert(utterance_id, completion.outcome);
         let (evidence, words) = completion.payload.map_or((None, Vec::new()), |payload| {
             (Some(payload.evidence), payload.segments)
         });
+        let outcome = if self.fusion.is_some() {
+            apply_conservative_fusion(self, ev_tx, utterance_id, &words, completion.outcome)
+        } else {
+            completion.outcome
+        };
+        self.tail_patch_outcomes.insert(utterance_id, outcome);
         self.progressive
             .note_whisper_window_elapsed_with_provenance(
                 utterance_id,
@@ -982,6 +997,257 @@ fn normalize_for_containment(text: &str) -> String {
         .join(" ")
 }
 
+/// Fuse Whisper words onto the pending Apple span through the rewrite fence.
+///
+/// Agreements and clear gap fills become the pending text. Unresolved
+/// alternatives stay on Apple and emit a content-free receipt. The LCS
+/// `ReplaceRange` outcome is dropped: the fused text is already in the span.
+fn apply_conservative_fusion(
+    state: &mut AppleSealState,
+    ev_tx: &mpsc::UnboundedSender<EngineEvent>,
+    utterance_id: u64,
+    whisper_words: &[TimedTailSegment],
+    fallback: TailPatchOutcome,
+) -> TailPatchOutcome {
+    let apple_words: Vec<FusionWord> = state
+        .progressive
+        .pending_spans()
+        .iter()
+        .find(|span| span.id == utterance_id)
+        .map(|span| span.words.iter().map(FusionWord::from_timed).collect())
+        .unwrap_or_default();
+    let whisper: Vec<FusionWord> = whisper_words.iter().map(FusionWord::from_timed).collect();
+    if apple_words.is_empty() && whisper.is_empty() {
+        return fallback;
+    }
+    let decision = conservative_fuse(&apple_words, &whisper);
+    if !state.progressive.try_rewrite(utterance_id, &decision.text) {
+        let _ = ev_tx.send(EngineEvent::Warning {
+            code: SkipReasonCode::SealedFence.as_str().to_string(),
+            message: format!("fusion rewrite refused for utterance {utterance_id}"),
+        });
+        return TailPatchOutcome::skipped(SkipReasonCode::SealedFence, "sealed_fence");
+    }
+    if !decision.unresolved.is_empty() {
+        let receipt = fusion_receipt(utterance_id, &decision);
+        let _ = ev_tx.send(EngineEvent::Warning {
+            code: receipt.code.as_str().to_string(),
+            message: format!(
+                "fusion unresolved={} agreements={} gap_fills={}",
+                receipt.unresolved, receipt.agreements, receipt.gap_fills
+            ),
+        });
+    }
+    TailPatchOutcome::NoChange
+}
+
+/// Slice a cumulative Apple final onto Silero-minted utterance ranges.
+///
+/// Returns `true` when at least one Silero span accepted words (the callback
+/// is consumed). `false` leaves the caller on the Apple-boundary path so
+/// speech is never dropped when Silero has not yet opened an edge.
+fn seal_sliced_by_silero(
+    state: &mut AppleSealState,
+    ev_tx: &mpsc::UnboundedSender<EngineEvent>,
+    raw_text: &str,
+    after_lexicon: &str,
+    start_ts: f32,
+    end_ts: f32,
+    disjoint: &[TranscriptSegment],
+) -> bool {
+    let Some(ledger) = state.fusion.as_ref().map(|fusion| fusion.ledger().clone()) else {
+        return false;
+    };
+    if ledger.utterances().is_empty() {
+        return false;
+    }
+    let apple_words = apple_segments_on_pcm_clock(state, disjoint);
+    let fusion_words: Vec<FusionWord> = apple_words.iter().map(FusionWord::from_timed).collect();
+    let (sliced, leftover) = slice_apple_words(&ledger, &fusion_words);
+    if sliced.is_empty() {
+        if !leftover.is_empty() {
+            let _ = ev_tx.send(EngineEvent::Warning {
+                code: SkipReasonCode::NoTimeOverlap.as_str().to_string(),
+                message: format!(
+                    "apple words={} had no Silero utterance overlap",
+                    leftover.len()
+                ),
+            });
+        }
+        return false;
+    }
+    if !leftover.is_empty() {
+        let _ = ev_tx.send(EngineEvent::Warning {
+            code: SkipReasonCode::NoTimeOverlap.as_str().to_string(),
+            message: format!(
+                "apple leftover_words={} sliced_utterances={}",
+                leftover.len(),
+                sliced.len()
+            ),
+        });
+    }
+
+    let rate = state.sample_rate.max(1) as f32;
+    let pad_samples = (super::silero_fusion::DEFAULT_LEFT_PAD_SECS * rate).round() as u64;
+    let long_silence = (super::silero_fusion::LONG_SILENCE_FENCE_SECS * rate).round() as u64;
+    let context = state.fusion_context;
+
+    for (utterance_id, words) in sliced {
+        let Some(silero) = ledger
+            .utterances()
+            .iter()
+            .find(|utterance| utterance.id == utterance_id)
+            .cloned()
+        else {
+            continue;
+        };
+        if !state.progressive.may_rewrite(utterance_id)
+            && state
+                .progressive
+                .sealed_spans()
+                .iter()
+                .any(|span| span.id == utterance_id)
+        {
+            continue;
+        }
+        let text = words
+            .iter()
+            .map(|word| word.text.as_str())
+            .collect::<Vec<_>>()
+            .join(" ");
+        let text = if text.trim().is_empty() {
+            after_lexicon.to_string()
+        } else {
+            text
+        };
+        let span_start = words
+            .first()
+            .map(|word| word.sample_start as f32 / rate)
+            .unwrap_or(start_ts);
+        let span_end = words
+            .last()
+            .map(|word| word.sample_end as f32 / rate)
+            .unwrap_or(end_ts);
+        let timed: Vec<TimedTailSegment> = words
+            .iter()
+            .map(|word| TimedTailSegment {
+                text: word.text.clone(),
+                range: TailSampleRange {
+                    session: state.session_id.clone(),
+                    capture_epoch: state.capture_epoch,
+                    sample_start: word.sample_start,
+                    sample_end: word.sample_end,
+                },
+            })
+            .collect();
+        if state
+            .progressive
+            .pending_spans()
+            .iter()
+            .any(|p| p.id == utterance_id)
+        {
+            let _ = state.progressive.try_rewrite(utterance_id, &text);
+        } else {
+            state.progressive.note_apple_commit_timed(
+                utterance_id,
+                text.clone(),
+                span_end,
+                span_end,
+                silero.range.clone(),
+                timed,
+                TailProviderEvidence {
+                    source: TailEvidenceSource::AppleSpeech,
+                    revision: None,
+                    stability: TailEvidenceStability::Final,
+                    timing_quality: TailTimingQuality::ExactSampleRange,
+                    avg_logprob: None,
+                },
+            );
+            state.pending_events.insert(
+                utterance_id,
+                PendingAppleSeal {
+                    raw_text: raw_text.to_string(),
+                    start_ts: span_start,
+                    end_ts: span_end,
+                    segments: disjoint.to_vec(),
+                },
+            );
+        }
+
+        let fence = ledger
+            .utterances()
+            .iter()
+            .rev()
+            .find(|prev| prev.closed && prev.range.sample_end <= silero.range.sample_start)
+            .map(|prev| {
+                let gap = silero
+                    .range
+                    .sample_start
+                    .saturating_sub(prev.range.sample_end);
+                if gap >= long_silence {
+                    silero.range.sample_start
+                } else {
+                    0
+                }
+            })
+            .unwrap_or(0);
+        let request_range = bound_context_range(&silero.range, fence, context, pad_samples);
+        let window = state
+            .audio
+            .window_by_samples(request_range.sample_start, request_range.sample_end);
+        let queued = if let (Some(window), Some(tx)) = (window, state.tail_patch.as_ref()) {
+            let committed_text = seal_span_text(&text, &state.sealed_prefix, false);
+            match tx.try_send(TailPatchRequest {
+                utterance_id,
+                committed_text,
+                audio: window.samples,
+                provider_request: TailProviderRequest {
+                    identity: TailRequestIdentity {
+                        request_id: utterance_id,
+                        range: TailSampleRange {
+                            session: state.session_id.clone(),
+                            capture_epoch: state.capture_epoch,
+                            sample_start: window.sample_start,
+                            sample_end: window.sample_end,
+                        },
+                    },
+                    sample_rate: state.sample_rate,
+                    language: None,
+                },
+                covered_through_secs: span_end,
+            }) {
+                Ok(()) => {
+                    state.tail_patch_awaiting_completion =
+                        state.tail_patch_awaiting_completion.saturating_add(1);
+                    true
+                }
+                Err(error) => {
+                    state.tail_patch_backpressure_drops =
+                        state.tail_patch_backpressure_drops.saturating_add(1);
+                    warn!(
+                        utterance_id,
+                        "Layer 1 tail-patch request dropped — queue full or lane gone: {error}"
+                    );
+                    false
+                }
+            }
+        } else {
+            false
+        };
+        if !queued {
+            state
+                .progressive
+                .note_whisper_window_elapsed(utterance_id, span_end);
+            state.emit_ready_progressive_seals(
+                ev_tx,
+                span_end + super::progressive_seal::APPLE_VOLATILE_WINDOW_SECS + 0.001,
+            );
+        }
+        state.utterance_id = state.utterance_id.max(utterance_id);
+    }
+    true
+}
+
 /// Seal one Apple utterance: run the shared lexicon + cleanup pass, then emit
 /// `UtteranceFinal`. Returns `false` when postprocess filtered the text to
 /// empty — mirroring `PostprocessDrop::FilteredEmpty` on the VAD path, an
@@ -1136,6 +1402,19 @@ fn seal_utterance_final(
     };
 
     let after_lexicon = corrected.trim().to_string();
+    if state.fusion.is_some()
+        && seal_sliced_by_silero(
+            state,
+            ev_tx,
+            &raw_text,
+            &after_lexicon,
+            start_ts,
+            end_ts,
+            &disjoint,
+        )
+    {
+        return true;
+    }
     state.utterance_id = state.utterance_id.saturating_add(1);
     let utterance_id = state.utterance_id;
     let apple_words = apple_segments_on_pcm_clock(state, &disjoint);
@@ -1250,6 +1529,18 @@ fn apple_stream_worker(
         Some(tx) => AppleSealState::new_with_tail_patch_for_session(sample_rate, session_id, tx),
         None => AppleSealState::new_for_session(sample_rate, session_id),
     };
+    if lane_enabled() {
+        state.fusion = Some(SileroIngress::new(
+            sample_rate,
+            state.session_id.clone(),
+            state.capture_epoch,
+        ));
+        state.fusion_context = FusionContextMode::from_env();
+        info!(
+            context = state.fusion_context.as_str(),
+            "W13-3B Silero fusion lane armed (default remains off unless flagged)"
+        );
+    }
     let mut samples_seen: u64 = 0;
 
     loop {
@@ -1270,6 +1561,9 @@ fn apple_stream_worker(
                 // lock-free (2026-07-27 interleave contract) because the buffer
                 // is never shared across the thread boundary.
                 state.audio.push(&samples);
+                if let Some(fusion) = state.fusion.as_mut() {
+                    fusion.ingest(&samples, samples_seen);
+                }
                 stream.write_pcm(&samples)?;
                 let audio_secs = samples_seen as f32 / sample_rate.max(1) as f32;
                 emit_stream_events(stream.poll_events(), &ev_tx, &mut state, audio_secs);
@@ -1284,6 +1578,9 @@ fn apple_stream_worker(
     }
 
     let audio_secs = samples_seen as f32 / sample_rate.max(1) as f32;
+    if let Some(fusion) = state.fusion.as_mut() {
+        fusion.flush(samples_seen);
+    }
     let trailing = stream.finish()?;
     emit_stream_events(trailing, &ev_tx, &mut state, audio_secs);
 
@@ -2580,9 +2877,10 @@ mod tests {
             TailPatchCompletion {
                 utterance_id: req.utterance_id,
                 covered_through_secs: req.covered_through_secs,
-                outcome: TailPatchOutcome::Skipped {
-                    reason: "no change".to_string(),
-                },
+                outcome: TailPatchOutcome::skipped(
+                    crate::stt::tail_patcher::SkipReasonCode::EmptyRetranscription,
+                    "no change",
+                ),
                 payload: None,
             },
             2.1,
