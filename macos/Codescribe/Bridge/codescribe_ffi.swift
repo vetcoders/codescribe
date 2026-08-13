@@ -2708,6 +2708,15 @@ public protocol CodescribeHotkeysProtocol: AnyObject, Sendable {
     func setAppActionListener(listener: CsAppActionListener)
 
     /**
+     * Publish the Agent UI's current thread selection as the voice-assistive
+     * routing target (operator contract 2026-08-13: dictation goes to the
+     * thread the user is looking at; a new thread only via an explicit
+     * "+ New thread"). `None` = the selection is a not-yet-persisted thread,
+     * so the next assistive turn mints a fresh one.
+     */
+    func setAssistiveTargetThread(backendId: String?)
+
+    /**
      * Register the Swift overlay listener for the shared controller event stream.
      */
     func setListener(listener: CsTranscriptionListener)
@@ -3169,6 +3178,21 @@ open func setAppActionListener(listener: CsAppActionListener)  {try! rustCall() 
     uniffi_codescribe_ffi_fn_method_codescribehotkeys_set_app_action_listener(
             self.uniffiCloneHandle(),
         FfiConverterTypeCsAppActionListener_lower(listener),$0
+    )
+}
+}
+
+    /**
+     * Publish the Agent UI's current thread selection as the voice-assistive
+     * routing target (operator contract 2026-08-13: dictation goes to the
+     * thread the user is looking at; a new thread only via an explicit
+     * "+ New thread"). `None` = the selection is a not-yet-persisted thread,
+     * so the next assistive turn mints a fresh one.
+     */
+open func setAssistiveTargetThread(backendId: String?)  {try! rustCall() {
+    uniffi_codescribe_ffi_fn_method_codescribehotkeys_set_assistive_target_thread(
+            self.uniffiCloneHandle(),
+        FfiConverterOptionString.lower(backendId),$0
     )
 }
 }
@@ -13780,6 +13804,9 @@ private let initializationResult: InitializationResult = {
         return InitializationResult.apiChecksumMismatch
     }
     if (uniffi_codescribe_ffi_checksum_method_codescribehotkeys_set_app_action_listener() != 65409) {
+        return InitializationResult.apiChecksumMismatch
+    }
+    if (uniffi_codescribe_ffi_checksum_method_codescribehotkeys_set_assistive_target_thread() != 31256) {
         return InitializationResult.apiChecksumMismatch
     }
     if (uniffi_codescribe_ffi_checksum_method_codescribehotkeys_set_listener() != 43285) {

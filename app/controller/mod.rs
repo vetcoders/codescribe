@@ -46,7 +46,7 @@ mod types;
 
 pub use helpers::{
     is_assistive_session, is_conversation_session, publish_recording_indicator,
-    set_assistive_session, set_conversation_session,
+    set_assistive_session, set_assistive_target_thread, set_conversation_session,
 };
 pub use overlay_paste::{OverlayPasteDelivery, OverlayPasteResult};
 pub use types::{HotkeyAction, HotkeyInput, HotkeyType, State, TranscriptionActionContractMode};

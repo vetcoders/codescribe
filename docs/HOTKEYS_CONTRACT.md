@@ -37,6 +37,16 @@ capture. Assistive never enters `RecordingController` and never shows the
 transcription overlay. A single process-wide capture owner makes Agent and
 overlay recording mutually exclusive; a competing start fails closed.
 
+**Thread routing (operator contract 2026-08-13).** An assistive turn always
+lands in the thread the Agent rail currently has selected — the thread the
+user is looking at. The rail publishes every selection change through
+`CodescribeHotkeys.set_assistive_target_thread`; the controller rebinds its
+runtime (rejoin + rehydrate) when the target differs from the bound thread. A
+new thread is only ever minted by an explicit "+ New thread" (published as a
+`nil` target, consumed once — one press mints one thread, not one per
+utterance). If the Agent UI never published a selection (window never
+opened), the lane continues its bound conversation as before.
+
 ```mermaid
 flowchart TB
     subgraph Input["🎹 Input Layer"]

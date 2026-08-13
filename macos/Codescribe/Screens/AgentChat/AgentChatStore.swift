@@ -83,6 +83,11 @@ extension AgentChatEngine {
   func resolveToolApproval(
     _ request: PendingToolApproval, approved: Bool, remember: Bool
   ) -> Bool { false }
+  /// Publish the rail's current selection as the voice-assistive routing
+  /// target (operator contract 2026-08-13: dictation goes to the thread the
+  /// user is looking at; a new thread only via an explicit "+ New thread").
+  /// Default no-op keeps preview/mock stores standalone.
+  func setAssistiveTargetThread(backendId: String?) {}
 }
 
 /// Source-specific adapter for hotkey/voice turns owned by the shared controller
@@ -540,7 +545,12 @@ protocol ComposerDictating: AnyObject {
 @MainActor
 final class AgentChatStore: ObservableObject {
   @Published var threads: [ChatThread]
-  @Published var selectedThreadID: UUID?
+  @Published var selectedThreadID: UUID? {
+    // Every selection change re-routes the voice-assistive lane to the thread
+    // the user is looking at (operator contract 2026-08-13). Observers do not
+    // fire during init — the seeding path publishes once explicitly.
+    didSet { publishAssistiveTarget() }
+  }
   @Published var draft: String = ""
   /// Monotonic UI command consumed by the composer. It carries no text and
   /// deliberately does not mutate the selected thread or staged attachments.
@@ -837,6 +847,9 @@ final class AgentChatStore: ObservableObject {
     }
     self.threads = seeded
     self.selectedThreadID = seeded.first?.id
+    // didSet does not fire inside init — publish the seed selection once so
+    // the assistive lane routes to what the rail shows from the first frame.
+    publishAssistiveTarget()
     engine?.installToolApprovalHandler { [weak self] request in
       guard let self else { return }
       self.pendingToolApprovals.removeAll { $0.id == request.id }
@@ -895,6 +908,14 @@ final class AgentChatStore: ObservableObject {
 
   var currentThread: ChatThread? {
     threads.first { $0.id == selectedThreadID }
+  }
+
+  /// Push the rail's current selection down as the voice-assistive routing
+  /// target. A selection without a backend id (freshly minted "+ New thread")
+  /// publishes `nil`, which the controller reads as "mint a fresh thread on
+  /// the next assistive turn".
+  private func publishAssistiveTarget() {
+    engine?.setAssistiveTargetThread(backendId: currentThread?.backendId)
   }
 
   var usesRealThreadSearch: Bool { threadsProvider != nil }

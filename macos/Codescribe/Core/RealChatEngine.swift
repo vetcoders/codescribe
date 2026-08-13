@@ -13,9 +13,16 @@ private let attachLog = Logger(
 // main actor (FIFO) so SwiftUI @Published updates stay ordered and thread-safe.
 final class RealChatEngine: AgentChatEngine {
   private let agent = CodescribeAgent()
+  /// Same bridge surface the voice lane uses; carries the rail-selection
+  /// routing target down to the controller (operator contract 2026-08-13).
+  private let assistiveRouting = CodescribeHotkeys()
   private var onToolApprovalRequested: (@MainActor (PendingToolApproval) -> Void)?
 
   func isAvailable() -> Bool { agent.isAvailable() }
+
+  func setAssistiveTargetThread(backendId: String?) {
+    assistiveRouting.setAssistiveTargetThread(backendId: backendId)
+  }
 
   func availabilityDetail() -> String? {
     let availability = agent.availability()

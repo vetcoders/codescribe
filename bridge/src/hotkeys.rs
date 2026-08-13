@@ -957,6 +957,15 @@ impl CodescribeHotkeys {
     pub fn cancel_voice_turn(&self, thread_id: String) -> bool {
         codescribe::agent_delivery::cancel_agent_delivery_turn(&thread_id)
     }
+
+    /// Publish the Agent UI's current thread selection as the voice-assistive
+    /// routing target (operator contract 2026-08-13: dictation goes to the
+    /// thread the user is looking at; a new thread only via an explicit
+    /// "+ New thread"). `None` = the selection is a not-yet-persisted thread,
+    /// so the next assistive turn mints a fresh one.
+    pub fn set_assistive_target_thread(&self, backend_id: Option<String>) {
+        codescribe::controller::set_assistive_target_thread(backend_id);
+    }
 }
 
 /// Honest outcome of the overlay Insert action, mirrored to Swift so the UI

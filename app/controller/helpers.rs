@@ -334,6 +334,56 @@ impl AgentRuntimeState {
             true
         }
     }
+
+    /// Rebind the assistive conversation to the UI-selected thread (operator
+    /// contract 2026-08-13: dictation routes to the thread the user is looking
+    /// at; a new thread is only ever minted by an explicit "+ New thread").
+    ///
+    /// Dropping the runtime on a change deliberately reuses the degrade→rejoin
+    /// machinery: the next `ensure_runtime` rebuilds onto the new identity and
+    /// rehydrates its persisted history. `None` clears the identity so the next
+    /// send mints a fresh thread. Same-target calls are no-ops — the live
+    /// runtime and its in-memory history stay untouched.
+    fn retarget_thread(&mut self, target: Option<String>) {
+        if self.thread_store_id == target {
+            return;
+        }
+        let previous = self.thread_store_id.clone();
+        self.runtime = None;
+        self.thread_store_id = target;
+        info!(
+            from = previous.as_deref().unwrap_or("<unassigned>"),
+            to = self.thread_store_id.as_deref().unwrap_or("<fresh>"),
+            "Assistive lane retargeted to UI-selected thread"
+        );
+    }
+}
+
+/// UI-selected assistive routing target.
+///
+/// Outer `None`: the Agent UI never published a selection (window never
+/// opened) — the lane keeps its legacy behavior of continuing the bound
+/// conversation. `Some(None)`: the UI selected a not-yet-persisted thread
+/// (explicit "+ New thread") — the next send mints a fresh thread, then the
+/// send path syncs the minted identity back here so ONE conscious new-thread
+/// press produces one thread, not one per utterance.
+static ASSISTIVE_TARGET_THREAD: std::sync::RwLock<Option<Option<String>>> =
+    std::sync::RwLock::new(None);
+
+/// Publish the Agent UI's current thread selection as the assistive routing
+/// target. Called from the bridge whenever the selection changes.
+pub fn set_assistive_target_thread(backend_id: Option<String>) {
+    *ASSISTIVE_TARGET_THREAD
+        .write()
+        .unwrap_or_else(|e| e.into_inner()) = Some(backend_id);
+}
+
+/// Snapshot the published routing target, if the UI ever published one.
+fn assistive_target_thread() -> Option<Option<String>> {
+    ASSISTIVE_TARGET_THREAD
+        .read()
+        .unwrap_or_else(|e| e.into_inner())
+        .clone()
 }
 
 /// The lazily-initialized slot holding the process-global runtime state.
@@ -1149,7 +1199,24 @@ async fn run_agent_send_with_fallback(
     let stream_options = build_agent_stream_options(ai_assistive_max_tokens, use_assistive_persona);
     let agent_result = {
         let mut guard = runtime_state.lock().await;
-        run_agent_send_path(&mut guard, text.clone(), stream_options).await
+        // Route to the thread the user is looking at (operator contract
+        // 2026-08-13). No published selection → legacy bound conversation.
+        let fresh_mint_requested = match assistive_target_thread() {
+            Some(target) => {
+                let fresh = target.is_none();
+                guard.retarget_thread(target);
+                fresh
+            }
+            None => false,
+        };
+        let result = run_agent_send_path(&mut guard, text.clone(), stream_options).await;
+        if fresh_mint_requested {
+            // One conscious "+ New thread" = one thread: adopt the minted
+            // identity as the target so the next utterance continues it. The
+            // UI's own post-turn refresh republishes the same identity.
+            set_assistive_target_thread(guard.thread_store_id.clone());
+        }
+        result
     };
 
     match agent_result {
@@ -1459,6 +1526,49 @@ mod tests {
     };
     use std::collections::VecDeque;
     use std::sync::atomic::{AtomicBool, AtomicUsize};
+
+    // ── Assistive routing target (operator contract 2026-08-13) ─────────────
+
+    /// Retargeting to another persisted thread drops the runtime (so the next
+    /// send rejoins + rehydrates) and adopts the new identity; retargeting to
+    /// the SAME thread must not touch a live runtime — steady-state sends may
+    /// re-apply the target on every turn.
+    #[test]
+    fn retarget_thread_rebinds_on_change_and_noops_on_same() {
+        let mut state = AgentRuntimeState {
+            runtime: None,
+            thread_store_id: Some("thread-a".to_string()),
+            runtime_degraded: false,
+        };
+
+        state.retarget_thread(Some("thread-a".to_string()));
+        assert_eq!(state.thread_store_id.as_deref(), Some("thread-a"));
+
+        state.retarget_thread(Some("thread-b".to_string()));
+        assert_eq!(
+            state.thread_store_id.as_deref(),
+            Some("thread-b"),
+            "a changed selection must adopt the new identity"
+        );
+        assert!(
+            state.runtime.is_none(),
+            "rebind goes through the rejoin machinery (runtime dropped)"
+        );
+    }
+
+    /// A `None` target is the explicit "+ New thread": the durable identity is
+    /// cleared so the next send mints a fresh thread instead of continuing the
+    /// previous conversation.
+    #[test]
+    fn retarget_thread_none_clears_identity_for_a_fresh_mint() {
+        let mut state = AgentRuntimeState {
+            runtime: None,
+            thread_store_id: Some("thread-a".to_string()),
+            runtime_degraded: false,
+        };
+        state.retarget_thread(None);
+        assert!(state.thread_store_id.is_none());
+    }
 
     // ── Collapsible Tool Evidence: friendly tool-name mapping ───────────────
 
