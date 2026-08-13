@@ -37,6 +37,8 @@ pub mod punctuation_transplant;
 pub mod scheduler;
 /// Layer-1 on-the-go Whisper tail-patch helpers for append-only gap fill.
 pub mod tail_patcher;
+/// Typed, time-ranged provider seam for Whisper tail-patch windows.
+pub mod tail_provider;
 /// Candle Whisper engine, singleton, and file final-pass routes.
 pub mod whisper;
 
@@ -335,11 +337,7 @@ pub(crate) fn whisper_tail_patch_transcribe(
     sample_rate: u32,
     language: Option<&str>,
 ) -> anyhow::Result<RawTranscript> {
-    let (speech, _) = crate::vad::extract_speech(audio, sample_rate);
-    if speech.is_empty() {
-        return Ok(RawTranscript::default());
-    }
-    candle_transcribe_long_with_segments(&speech, sample_rate, language)
+    tail_provider::transcribe_legacy_window(audio, sample_rate, language)
 }
 
 /// First sample index of the uncommitted tail, clamped into `0..=total_samples`.
