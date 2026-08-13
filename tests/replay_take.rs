@@ -26,6 +26,13 @@
 //!   admitting it at stop time.
 //! - Take audio survives in `/var/folders/**/codescribe_recording_<epoch_ms>.wav`
 //!   (the audio spill); copy it out before the OS purges the directory.
+//!
+//! W13-0: when the replay emits `UtteranceFinal.segments`, this harness prints
+//! a word-span histogram (duration / overlap / restart). That is the only
+//! honest pl-PL Apple-span measurement — the in-repo fixtures are synthetic.
+
+#[path = "support/w13_clock.rs"]
+mod w13_clock;
 
 #[tokio::test(flavor = "multi_thread")]
 #[ignore = "diagnostic harness: needs CODESCRIBE_REPLAY_WAV and a live SFSpeech bridge"]
@@ -49,15 +56,36 @@ async fn replay_operator_take() {
     .expect("replay");
 
     eprintln!("=== FINALS ===");
+    let mut word_spans: Vec<(f32, f32)> = Vec::new();
     for event in &replay.events {
         if let codescribe_core::pipeline::contracts::EngineEvent::UtteranceFinal {
             utterance_id,
             text,
+            segments,
             ..
         } = event
         {
-            eprintln!("[{utterance_id}] {text}");
+            // Counts and span bounds only — never echo transcript content.
+            eprintln!(
+                "[{utterance_id}] chars={} words={} segments={}",
+                text.chars().count(),
+                text.split_whitespace().count(),
+                segments.len()
+            );
+            for seg in segments {
+                word_spans.push((seg.start_ts, seg.end_ts));
+            }
         }
+    }
+    let (hist, overlap, restarts) = w13_clock::histogram_apple_word_spans(&word_spans);
+    eprintln!(
+        "=== APPLE WORD SPANS === n={} overlap={} restarts={}",
+        word_spans.len(),
+        overlap,
+        restarts
+    );
+    for bucket in hist {
+        eprintln!("  {:>8} {}", bucket.label, bucket.count);
     }
     eprintln!(
         "=== LIVE TEXT ({} chars) ===",
