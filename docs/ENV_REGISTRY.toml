@@ -516,6 +516,41 @@ reload = "hot"
 category = "stt"
 description = "Layered incremental transcription phase gate: phase1 (DEFAULT since 2026-08-09 — operator directive: the live tail patch is a core element of the triangulation, not an opt-in; explicit off/0/false disables) or phase1..phase4 (bare 1..4 accepted). Orthogonal to FINAL_PASS_MODE/Smart — Smart never enables this. Phase ≥ 1 turns on Layer 1 Whisper tail-patch during hold on BOTH live paths: the VAD/scheduler session and the default Apple progressive live session (wired W2-A, a6b1233d). phase1 = Apple Layer 0 + Whisper ReplaceRange patches. Power-user key: not promoted to settings.json, so a stale ~/.codescribe/.env line arms it in every process that loads the core."
 
+[vars.CODESCRIBE_INLINE_FORMAT]
+default = "0"
+type = "bool"
+reload = "hot"
+category = "llm"
+description = "W13-1 live inline-format buffer master switch. Default OFF; a default flip is an operator decision."
+
+[vars.CODESCRIBE_INLINE_FORMAT_CHUNK_TIMEOUT_MS]
+default = "10000"
+type = "int"
+reload = "hot"
+category = "llm"
+description = "Per-chunk inline-format LLM timeout in milliseconds; timeout keeps the raw chunk."
+
+[vars.CODESCRIBE_INLINE_FORMAT_FLUSH_TIMEOUT_MS]
+default = "2500"
+type = "int"
+reload = "hot"
+category = "llm"
+description = "Stop-path budget in milliseconds for draining queued inline-format chunks."
+
+[vars.CODESCRIBE_INLINE_FORMAT_TAIL_TIMEOUT_MS]
+default = "15000"
+type = "int"
+reload = "hot"
+category = "llm"
+description = "Stop-path budget in milliseconds for the final inline-format tail request."
+
+[vars.STT_TAIL_PROVIDER]
+default = "inprocess"
+type = "string"
+reload = "hot"
+category = "stt"
+description = "Tail-patch provider contract selector: inprocess is the only armed implementation in W13-2A; sidecar and remote parse but fail closed until W13-2B supplies their hosts. Default flips remain an operator decision."
+
 [vars.CODESCRIBE_TAIL_PATCH_MAX_CHANGE_RATIO]
 default = "0.5"
 type = "f32"
