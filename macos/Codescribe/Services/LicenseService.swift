@@ -115,9 +115,22 @@ final class LicenseService: ObservableObject {
   @Published private(set) var status: CsLicenseStatus = .unlicensed
   @Published private(set) var lastError: String?
 
-  var canUseAgentic: Bool { status.agenticEntitled }
+  /// Core's contract (`LicenseStatus::allows_agentic`) is explicit: the SKU
+  /// answers "was this key ever entitled", never "is the entitlement current" —
+  /// callers must combine it with the evaluated state. Gating on the SKU alone
+  /// made every activated key a lifetime unlock because `updates_until` was
+  /// computed by core and then ignored here.
+  var canUseAgentic: Bool {
+    guard status.agenticEntitled else { return false }
+    switch status.state {
+    case .active, .graceOffline: return true
+    case .unlicensed, .expiredUpdates: return false
+    }
+  }
   var agenticBlockMessage: String {
-    "Agentic requires a license. Basic dictation remains free."
+    status.state == .expiredUpdates
+      ? "Your license period ended. Renew to keep using Agentic — Basic dictation remains free."
+      : "Agentic requires a license. Basic dictation remains free."
   }
 
   private let keychain: LicenseKeychainStoring?

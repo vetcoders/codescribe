@@ -64,6 +64,23 @@ final class LicenseServiceTests: XCTestCase {
     XCTAssertNil(keychain.data)
   }
 
+  func testExpiredUpdatesClosesTheAgenticGate() {
+    // Past the fixture's updates_until (2027-08-04): the key still verifies
+    // (claims present, SKU entitled) but the entitlement is not current, so
+    // the gate must close instead of treating the SKU as a lifetime unlock.
+    let afterExpiry = Date(timeIntervalSince1970: 1_827_600_000)  // 2027-11-27
+    let service = LicenseService(
+      keychain: MemoryLicenseKeychain(),
+      autoload: false,
+      now: { afterExpiry }
+    )
+    XCTAssertTrue(service.activate(LicenseTestFixture.devKey))
+    XCTAssertEqual(service.status.state, .expiredUpdates)
+    XCTAssertTrue(service.status.agenticEntitled, "SKU stays entitled — state is what expires")
+    XCTAssertFalse(service.canUseAgentic)
+    XCTAssertTrue(service.agenticBlockMessage.contains("ended"))
+  }
+
   func testInvalidKeyFailsClosedWithoutPersisting() {
     let keychain = MemoryLicenseKeychain()
     let service = LicenseService(keychain: keychain, autoload: false)
