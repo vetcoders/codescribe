@@ -25,6 +25,13 @@ use crate::stt::scheduler::{SttLane, SttScheduler, SttTaskHandle};
 use crate::stt::tail_patcher::{
     TailPatchConfig, TailPatchOutcome, UnderCommit, compute_tail_patch, layered_phase,
 };
+#[cfg(test)]
+use crate::stt::tail_provider::{
+    TailEvidenceSource, TailEvidenceStability, TailProviderId, TailTimingQuality, TimedTailSegment,
+};
+use crate::stt::tail_provider::{
+    TailProviderPayload, TailProviderRequest, TailRequestIdentity, TailSampleRange,
+};
 use crate::vad;
 
 use super::correction::{
@@ -239,14 +246,48 @@ fn record_semantic_gate_drop(counter: &mut u64, quality_gate_dropped: bool, is_f
 /// `UtteranceFinal.text`: the resulting `ReplaceRange` offsets are computed
 /// against it, so a differently-trimmed copy would produce patches that land at
 /// the wrong characters. The debug assertion pins that contract in test builds.
+#[derive(Debug)]
+pub(super) struct TailPatchJobResult {
+    pub utterance_id: u64,
+    pub outcome: TailPatchOutcome,
+    pub payload: TailProviderPayload,
+}
+
+impl TailPatchJobResult {
+    pub fn into_outcome(self) -> (u64, TailPatchOutcome) {
+        (self.utterance_id, self.outcome)
+    }
+}
+
 pub(super) async fn compute_tail_patch_job(
     utterance_id: u64,
     committed_text: String,
     audio: Vec<f32>,
-    sample_rate: u32,
-    language: Option<String>,
+    request: TailProviderRequest,
     config: TailPatchConfig,
-) -> Result<(u64, TailPatchOutcome)> {
+) -> Result<TailPatchJobResult> {
+    compute_tail_patch_job_with(
+        utterance_id,
+        committed_text,
+        audio,
+        request,
+        config,
+        crate::stt::tail_provider::transcribe_configured,
+    )
+    .await
+}
+
+async fn compute_tail_patch_job_with<F>(
+    utterance_id: u64,
+    committed_text: String,
+    audio: Vec<f32>,
+    request: TailProviderRequest,
+    config: TailPatchConfig,
+    transcribe: F,
+) -> Result<TailPatchJobResult>
+where
+    F: FnOnce(&TailProviderRequest, &[f32]) -> Result<TailProviderPayload> + Send + 'static,
+{
     debug_assert_eq!(
         committed_text.trim(),
         committed_text,
@@ -254,12 +295,13 @@ pub(super) async fn compute_tail_patch_job(
          (single trim owner: final_text at the emit site)"
     );
     tokio::task::spawn_blocking(move || {
-        let retranscribed =
-            crate::stt::whisper_tail_patch_transcribe(&audio, sample_rate, language.as_deref())?;
-        Ok((
+        let payload = transcribe(&request, &audio)?;
+        let outcome = compute_tail_patch(&committed_text, &payload.text, utterance_id, &config);
+        Ok(TailPatchJobResult {
             utterance_id,
-            compute_tail_patch(&committed_text, &retranscribed.text, utterance_id, &config),
-        ))
+            outcome,
+            payload,
+        })
     })
     .await
     .map_err(|e| anyhow!("tail patch worker task failed: {e}"))?
@@ -603,7 +645,9 @@ pub(crate) async fn vad_transcription_session(
         "Phase 1 inference pipeline configured"
     );
     let mut inference_pipeline = FuturesOrdered::new();
-    let mut tail_patch_pipeline = FuturesUnordered::new();
+    let mut tail_patch_pipeline: FuturesUnordered<
+        futures_util::future::BoxFuture<'static, Result<TailPatchJobResult>>,
+    > = FuturesUnordered::new();
 
     // Phase 2 (buffered correction) — request tracked for stale guards.
     let mut correction_in_flight: Option<SttTaskHandle> = None;
@@ -1174,9 +1218,12 @@ pub(crate) async fn vad_transcription_session(
             // Drain the pipeline. FuturesOrdered guarantees results arrive in the order submitted.
             // This is critical for timestamp calculation and text accumulation.
             Some(result) = tail_patch_pipeline.next() => {
-                if matches!(&result, Ok((_, TailPatchOutcome::Skipped { .. })) | Err(_)) {
+                if matches!(&result, Ok(job) if matches!(job.outcome, TailPatchOutcome::Skipped { .. }))
+                    || result.is_err()
+                {
                     tail_patch_skips = tail_patch_skips.saturating_add(1);
                 }
+                let result = result.map(TailPatchJobResult::into_outcome);
                 tail_patch_replacements = tail_patch_replacements
                     .saturating_add(emit_tail_patch_result(event_sink.as_ref(), result));
             }
@@ -1408,14 +1455,30 @@ pub(crate) async fn vad_transcription_session(
                                 if tail_patch_enabled
                                     && let Some(audio) = item.tail_patch_audio.take()
                                 {
-                                    tail_patch_pipeline.push(compute_tail_patch_job(
+                                    let sample_start = ((utterance_start_s.max(0.0) as f64)
+                                        * output_sample_rate as f64)
+                                        .round() as u64;
+                                    let sample_end = sample_start.saturating_add(audio.len() as u64);
+                                    let request = TailProviderRequest {
+                                        identity: TailRequestIdentity {
+                                            request_id: utterance_id,
+                                            range: TailSampleRange {
+                                                session: session_id.clone(),
+                                                capture_epoch: 0,
+                                                sample_start,
+                                                sample_end,
+                                            },
+                                        },
+                                        sample_rate: output_sample_rate,
+                                        language: pipeline.language.clone(),
+                                    };
+                                    tail_patch_pipeline.push(Box::pin(compute_tail_patch_job(
                                         utterance_id,
                                         final_text,
                                         audio,
-                                        output_sample_rate,
-                                        pipeline.language.clone(),
+                                        request,
                                         tail_patch_config,
-                                    ));
+                                    )));
                                 }
                             } else {
                                 utterance_segments.clear();
@@ -1905,6 +1968,71 @@ mod session_tests {
 
         record_semantic_gate_drop(&mut drops, true, true);
         assert_eq!(drops, 1);
+    }
+
+    #[tokio::test]
+    async fn w13_provenance_survives_tail_patch_job() {
+        let range = TailSampleRange {
+            session: "w13-replay-191351".to_string(),
+            capture_epoch: 4,
+            sample_start: 48_000,
+            sample_end: 48_320,
+        };
+        let identity = TailRequestIdentity {
+            request_id: 73,
+            range: range.clone(),
+        };
+        let evidence = crate::stt::tail_provider::TailProviderEvidence {
+            source: TailEvidenceSource::Whisper,
+            revision: Some("fixture-r1".to_string()),
+            stability: TailEvidenceStability::Final,
+            timing_quality: TailTimingQuality::ExactSampleRange,
+            avg_logprob: Some(-0.21),
+        };
+        let payload = TailProviderPayload {
+            identity: identity.clone(),
+            text: "ala ma kota".to_string(),
+            segments: vec![TimedTailSegment {
+                text: "kota".to_string(),
+                range: TailSampleRange {
+                    sample_start: 48_160,
+                    sample_end: 48_300,
+                    ..range.clone()
+                },
+            }],
+            avg_logprob: Some(-0.21),
+            compression_ratio: Some(1.03),
+            quality_gate_dropped: false,
+            provider_id: TailProviderId::Fake,
+            elapsed_ms: 7,
+            evidence: evidence.clone(),
+        };
+        let request = TailProviderRequest {
+            identity,
+            sample_rate: 16_000,
+            language: Some("pl-PL".to_string()),
+        };
+
+        let job = compute_tail_patch_job_with(
+            73,
+            "ala ma kota".to_string(),
+            vec![0.0; 320],
+            request,
+            TailPatchConfig::default(),
+            move |request, pcm| {
+                request.validate_pcm(pcm)?;
+                Ok(payload)
+            },
+        )
+        .await
+        .expect("typed fake tail job");
+
+        assert!(matches!(job.outcome, TailPatchOutcome::NoChange));
+        assert_eq!(job.payload.identity.range, range);
+        assert_eq!(job.payload.segments[0].range.sample_start, 48_160);
+        assert_eq!(job.payload.segments[0].range.sample_end, 48_300);
+        assert_eq!(job.payload.evidence, evidence);
+        assert_eq!(job.payload.provider_id, TailProviderId::Fake);
     }
 
     #[test]

@@ -17,6 +17,10 @@
 
 use crate::pipeline::light_plus;
 use crate::pipeline::stream_postprocess;
+use crate::stt::tail_provider::{
+    TailEvidenceSource, TailEvidenceStability, TailProviderEvidence, TailSampleRange,
+    TailTimingQuality, TimedTailSegment,
+};
 
 /// Seconds after an Apple utterance commit during which the engine may still
 /// rewrite the open tail. Measured operator range ~2–3 s; pin the mid point.
@@ -27,7 +31,7 @@ pub const APPLE_VOLATILE_WINDOW_SECS: f32 = 2.5;
 pub const SEAL_STARVATION_CEILING_SECS: f32 = 28.0;
 
 /// One byte-stable committed span after lexicon + (optional) Light+.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct SealedSpan {
     /// Utterance / span identity (monotonic per session).
     pub id: u64,
@@ -36,6 +40,16 @@ pub struct SealedSpan {
     pub text: String,
     /// Absolute session end of the sealed audio span, in seconds.
     pub end_secs_millis: u32,
+    /// Canonical half-open PCM range for this sealed Apple span.
+    pub range: TailSampleRange,
+    /// Apple word/segment evidence pinned to the same PCM clock.
+    pub words: Vec<TimedTailSegment>,
+    /// Typed Apple evidence recorded before any later fusion policy.
+    pub apple_evidence: TailProviderEvidence,
+    /// Typed Whisper evidence for the covering window, when Layer 1 ran.
+    pub whisper_evidence: Option<TailProviderEvidence>,
+    /// Whisper segments mapped back to the capture PCM clock.
+    pub whisper_words: Vec<TimedTailSegment>,
 }
 
 impl SealedSpan {
@@ -57,6 +71,11 @@ pub struct PendingSpan {
     pub end_secs: f32,
     /// Whisper window that fully covers this span, once known.
     pub covering_whisper_window_id: Option<u64>,
+    pub range: TailSampleRange,
+    pub words: Vec<TimedTailSegment>,
+    pub apple_evidence: TailProviderEvidence,
+    pub whisper_evidence: Option<TailProviderEvidence>,
+    pub whisper_words: Vec<TimedTailSegment>,
 }
 
 /// One live-lane partial retained for residual stop-path fill.
@@ -85,7 +104,7 @@ pub struct ProgressiveSealMachine {
 }
 
 /// Outcome of one seal evaluation pass.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct SealTick {
     /// Spans that sealed on this tick (lexicon → Light+ applied).
     pub newly_sealed: Vec<SealedSpan>,
@@ -135,6 +154,43 @@ impl ProgressiveSealMachine {
         end_secs: f32,
         committed_at_secs: f32,
     ) {
+        let end_sample = (end_secs.max(0.0) * 1_000.0).round() as u64;
+        self.note_apple_commit_timed(
+            id,
+            raw_text,
+            end_secs,
+            committed_at_secs,
+            TailSampleRange {
+                session: "legacy_progressive".to_string(),
+                capture_epoch: 0,
+                sample_start: 0,
+                sample_end: end_sample,
+            },
+            Vec::new(),
+            TailProviderEvidence {
+                source: TailEvidenceSource::AppleSpeech,
+                revision: None,
+                stability: TailEvidenceStability::Final,
+                timing_quality: TailTimingQuality::Synthetic,
+                avg_logprob: None,
+            },
+        );
+    }
+
+    /// Record an Apple commit together with canonical PCM and word provenance.
+    /// This is data-only: seal eligibility and text transformation are the same
+    /// as [`note_apple_commit`].
+    #[allow(clippy::too_many_arguments)]
+    pub fn note_apple_commit_timed(
+        &mut self,
+        id: u64,
+        raw_text: impl Into<String>,
+        end_secs: f32,
+        committed_at_secs: f32,
+        range: TailSampleRange,
+        words: Vec<TimedTailSegment>,
+        apple_evidence: TailProviderEvidence,
+    ) {
         let raw_text = raw_text.into();
         if raw_text.trim().is_empty() {
             return;
@@ -145,6 +201,9 @@ impl ProgressiveSealMachine {
             existing.raw_text = raw_text;
             existing.end_secs = end_secs;
             existing.apple_committed_at_secs = committed_at_secs;
+            existing.range = range;
+            existing.words = words;
+            existing.apple_evidence = apple_evidence;
             return;
         }
         if self.sealed.iter().any(|s| s.id == id) {
@@ -157,11 +216,33 @@ impl ProgressiveSealMachine {
             apple_committed_at_secs: committed_at_secs,
             end_secs,
             covering_whisper_window_id: None,
+            range,
+            words,
+            apple_evidence,
+            whisper_evidence: None,
+            whisper_words: Vec::new(),
         });
     }
 
     /// An elapsed Whisper window now covers audio through `covered_through_secs`.
     pub fn note_whisper_window_elapsed(&mut self, window_id: u64, covered_through_secs: f32) {
+        self.note_whisper_window_elapsed_with_provenance(
+            window_id,
+            covered_through_secs,
+            None,
+            Vec::new(),
+        );
+    }
+
+    /// Record elapsed coverage plus provider provenance without changing the
+    /// existing double-close decision.
+    pub fn note_whisper_window_elapsed_with_provenance(
+        &mut self,
+        window_id: u64,
+        covered_through_secs: f32,
+        evidence: Option<TailProviderEvidence>,
+        words: Vec<TimedTailSegment>,
+    ) {
         if window_id > self.last_elapsed_whisper_window_id {
             self.last_elapsed_whisper_window_id = window_id;
         }
@@ -171,6 +252,10 @@ impl ProgressiveSealMachine {
         for pending in &mut self.pending {
             if pending.end_secs <= self.whisper_covered_through_secs + f32::EPSILON {
                 pending.covering_whisper_window_id = Some(window_id);
+                if pending.id == window_id {
+                    pending.whisper_evidence = evidence.clone();
+                    pending.whisper_words = words.clone();
+                }
             }
         }
     }
@@ -249,6 +334,11 @@ impl ProgressiveSealMachine {
                         id: span.id,
                         text: sealed,
                         end_secs_millis: (span.end_secs.max(0.0) * 1000.0).round() as u32,
+                        range: span.range,
+                        words: span.words,
+                        apple_evidence: span.apple_evidence,
+                        whisper_evidence: span.whisper_evidence,
+                        whisper_words: span.whisper_words,
                     };
                     if !left_context.is_empty() && !sealed_span.text.is_empty() {
                         left_context.push(' ');
@@ -267,6 +357,11 @@ impl ProgressiveSealMachine {
                         id: span.id,
                         text: sealed,
                         end_secs_millis: (span.end_secs.max(0.0) * 1000.0).round() as u32,
+                        range: span.range,
+                        words: span.words,
+                        apple_evidence: span.apple_evidence,
+                        whisper_evidence: span.whisper_evidence,
+                        whisper_words: span.whisper_words,
                     };
                     if !left_context.is_empty() && !sealed_span.text.is_empty() {
                         left_context.push(' ');
