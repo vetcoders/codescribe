@@ -2044,6 +2044,17 @@ final class SettingsViewModel: ObservableObject {
     persist("AGENT_WORKSPACE_ROOTS", cleaned.joined(separator: ":"))
   }
 
+  /// Current cloud STT endpoint override, empty when the provider default applies.
+  var sttEndpoint: String { settings.sttEndpoint ?? "" }
+
+  /// Persist the cloud STT endpoint (`STT_ENDPOINT`). Blank clears the override
+  /// so cloud lanes fall back to the provider default. Restart-scoped, like the
+  /// env contract says — the field exists so the key's companion endpoint no
+  /// longer requires hand-editing ~/.codescribe/.env.
+  func setSttEndpoint(_ value: String) {
+    persist("STT_ENDPOINT", value.trimmingCharacters(in: .whitespaces))
+  }
+
   private func persist(_ key: String, _ value: String) {
     guard let engine else { return }
     do {
