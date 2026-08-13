@@ -273,6 +273,10 @@ pub struct Recorder {
     diagnostics: RecorderDiagnostics,
     /// Actual sample rate used for recording (may differ from config)
     actual_sample_rate: u32,
+    /// Last resolved input device name (empty until `start`).
+    last_input_device: String,
+    /// Native channel count of the last opened stream (1 after downmix).
+    last_native_channels: u16,
     on_data: Option<AudioCallback>,
     /// Disk spill of the full streaming take (operator decision B): survives
     /// the RAM ring cap; `None` when disabled or not a streaming session.
@@ -320,6 +324,8 @@ impl Recorder {
             last_duration: 0.0,
             diagnostics: RecorderDiagnostics::default(),
             actual_sample_rate: config.sample_rate, // Will be updated in start()
+            last_input_device: String::new(),
+            last_native_channels: 1,
             on_data: None,
             on_vad_stop: None,
             recorder_vad: None,
@@ -359,6 +365,17 @@ impl Recorder {
     /// the device stream at its native rate for compatibility.
     pub fn actual_sample_rate(&self) -> u32 {
         self.actual_sample_rate
+    }
+
+    /// Device name resolved for the last `start()`, if any.
+    pub fn last_input_device(&self) -> Option<&str> {
+        let name = self.last_input_device.trim();
+        if name.is_empty() { None } else { Some(name) }
+    }
+
+    /// Native channel count of the last opened input stream.
+    pub fn last_native_channels(&self) -> u16 {
+        self.last_native_channels.max(1)
     }
 
     /// Returns true when the recorder still has an active stream/session.
@@ -439,6 +456,7 @@ impl Recorder {
             .map(|d| d.to_string())
             .unwrap_or_else(|_| "Unknown".to_string());
         info!("Using input device: {}", device_name);
+        self.last_input_device = device_name;
 
         // Get supported config
         let supported_config = device
@@ -449,6 +467,7 @@ impl Recorder {
         // (backend will handle resampling if needed)
         let native_sample_rate = supported_config.sample_rate();
         let native_channels = supported_config.channels().max(1);
+        self.last_native_channels = native_channels;
 
         // Build stream config using native sample rate/channel count. The
         // callback downmixes interleaved native channels to mono for downstream.

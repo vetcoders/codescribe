@@ -44,6 +44,9 @@ use crate::asr_session::recorder::{
     apply_recorder_lifecycle_event,
 };
 use crate::asr_session::{SessionId as Layer1SessionId, SessionInput as Layer1SessionInput};
+use crate::audio::capture_receipt::{
+    CaptureLevelAccumulator, CapturePathMeta, emit_capture_level_receipt,
+};
 use crate::pipeline::contracts::{DropKind, EngineEvent, EventSink, TranscriptSegment};
 use crate::pipeline::stream_postprocess::StreamPostProcessor;
 use crate::stt::apple_stt::{LiveStreamEvent, LiveStreamSession};
@@ -274,6 +277,7 @@ pub(crate) async fn apple_stream_transcription_session(
         layer1,
         mut lifecycle_events,
     } = config;
+    let mut capture_level = CaptureLevelAccumulator::new();
     // SFSpeech owns phrase boundaries in progressive mode, so the VAD-path
     // silence knob cannot apply. Say so instead of silently differing from
     // the `CODESCRIBE_APPLE_STT_LIVE_MODE=wav` escape hatch.
@@ -377,6 +381,7 @@ pub(crate) async fn apple_stream_transcription_session(
             chunk = chunk_receiver.recv(), if !audio_eof => {
                 match chunk {
                     Some(chunk) => {
+                        capture_level.push_samples(&chunk);
                         // C1 fan-out: offer the frame to the Layer 1 lane
                         // before forwarding to the Apple worker. The offer
                         // returns immediately, always — a refiner that cannot
@@ -541,6 +546,10 @@ pub(crate) async fn apple_stream_transcription_session(
     }
 
     log_tail_patch_session_receipt(tail_patch_lane.replacements(), tail_patch_lane.skipped());
+    emit_capture_level_receipt(
+        event_sink.as_ref(),
+        &capture_level.finalize(CapturePathMeta::resolve(sample_rate, 1, None)),
+    );
     emit_session_finalised(
         event_sink.as_ref(),
         session_id,

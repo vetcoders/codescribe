@@ -291,6 +291,13 @@ impl StreamingRecorder {
 
         // Update sample rate to match real input stream
         let actual_sample_rate = self.recorder.actual_sample_rate();
+        crate::audio::capture_receipt::publish_open_capture_path(
+            crate::audio::capture_receipt::CapturePathMeta::from_open_path(
+                actual_sample_rate,
+                self.recorder.last_native_channels(),
+                self.recorder.last_input_device(),
+            ),
+        );
         if actual_sample_rate != self.sample_rate {
             info!(
                 "StreamingRecorder sample_rate updated: config={}Hz -> actual={}Hz",

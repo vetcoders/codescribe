@@ -71,6 +71,13 @@ category = "audio"
 description = "Sound volume (0.0-1.0)"
 range = "0.0-1.0"
 
+[vars.CODESCRIBE_CAPTURE_LEVEL_LOW_DB]
+default = "-52"
+type = "f32"
+reload = "hot"
+category = "audio"
+description = "W13-5 capture-level WARN floor in dBFS, keyed on active-speech median RMS (not all-audio). Corpus: golden era ≈ −38, break ≈ −44; −52 leaves headroom. Must stay a non-terminal quality receipt."
+
 # ═══════════════════════════════════════════════════════════════════════════════
 # Streaming / Buffering
 # ═══════════════════════════════════════════════════════════════════════════════

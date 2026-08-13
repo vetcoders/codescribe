@@ -768,6 +768,9 @@ pub const USER_TERMINAL_WARNING_CODES: &[&str] = &["transcription_failed"];
 
 /// Whether a [`EngineEvent::Warning`] code is a user-terminal failure
 /// (forward to `on_error`) rather than a quality receipt (log only).
+///
+/// W13-5 `capture_level_low` is a receipt. It must never be added here —
+/// the composer treats `on_error` during capture as "Dictation stopped".
 pub fn warning_is_user_terminal(code: &str) -> bool {
     USER_TERMINAL_WARNING_CODES.contains(&code)
 }
