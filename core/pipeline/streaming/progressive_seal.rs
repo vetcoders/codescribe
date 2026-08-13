@@ -18,9 +18,11 @@
 use crate::pipeline::light_plus;
 use crate::pipeline::stream_postprocess;
 use crate::stt::tail_provider::{
-    TailEvidenceSource, TailEvidenceStability, TailProviderEvidence, TailSampleRange,
-    TailTimingQuality, TimedTailSegment,
+    TailEvidenceSource, TailEvidenceStability, TailProviderEvidence, TailRequestIdentity,
+    TailSampleRange, TailTimingQuality, TimedTailSegment,
 };
+
+use super::span_idempotence::{self, SpanIdempotenceLedger, SpanOffer};
 
 /// Seconds after an Apple utterance commit during which the engine may still
 /// rewrite the open tail. Measured operator range ~2–3 s; pin the mid point.
@@ -101,6 +103,8 @@ pub struct ProgressiveSealMachine {
     starvation_ceiling_hits: u64,
     /// Live lane health — when false, stop path may fall back to file inference.
     live_lane_alive: bool,
+    /// W13-4 range-identity ledger. Consulted only when the lane flag is ON.
+    span_idempotence: SpanIdempotenceLedger,
 }
 
 /// Outcome of one seal evaluation pass.
@@ -190,10 +194,10 @@ impl ProgressiveSealMachine {
         range: TailSampleRange,
         words: Vec<TimedTailSegment>,
         apple_evidence: TailProviderEvidence,
-    ) {
+    ) -> bool {
         let raw_text = raw_text.into();
         if raw_text.trim().is_empty() {
-            return;
+            return false;
         }
         // Idempotent on id: a re-commit of the same utterance refreshes the
         // pending text but does not invent a second pending slot.
@@ -204,11 +208,25 @@ impl ProgressiveSealMachine {
             existing.range = range;
             existing.words = words;
             existing.apple_evidence = apple_evidence;
-            return;
+            return true;
         }
         if self.sealed.iter().any(|s| s.id == id) {
             // Already sealed — byte-stable fence: ignore re-commits.
-            return;
+            return false;
+        }
+        if span_idempotence::lane_enabled() {
+            let verdict = self.span_idempotence.offer(SpanOffer {
+                identity: TailRequestIdentity {
+                    request_id: id,
+                    range: range.clone(),
+                },
+                text: raw_text.clone(),
+                timestamps_progressed: true,
+                decode_ok: true,
+            });
+            if !verdict.lands_on_canvas() {
+                return false;
+            }
         }
         self.pending.push(PendingSpan {
             id,
@@ -222,6 +240,12 @@ impl ProgressiveSealMachine {
             whisper_evidence: None,
             whisper_words: Vec::new(),
         });
+        true
+    }
+
+    /// W13-4 receipts collected while the lane flag is ON.
+    pub fn span_idempotence_receipts(&self) -> &[span_idempotence::SpanIdempotenceReceipt] {
+        self.span_idempotence.receipts()
     }
 
     /// An elapsed Whisper window now covers audio through `covered_through_secs`.
@@ -345,6 +369,7 @@ impl ProgressiveSealMachine {
                     }
                     left_context.push_str(&sealed_span.text);
                     newly_sealed.push(sealed_span.clone());
+                    self.span_idempotence.mark_sealed(&sealed_span.range);
                     self.sealed.push(sealed_span);
                 }
                 Some(SealBlockReason::StarvationCeiling) => {
@@ -368,6 +393,7 @@ impl ProgressiveSealMachine {
                     }
                     left_context.push_str(&sealed_span.text);
                     newly_sealed.push(sealed_span.clone());
+                    self.span_idempotence.mark_sealed(&sealed_span.range);
                     self.sealed.push(sealed_span);
                     tracing::info!(
                         span_id = span.id,
@@ -835,5 +861,64 @@ mod progressive_seal_tests {
             "stop_path_residual_phase_secs={phase_secs:.6} baseline=8.458 sealed={}",
             m.sealed_spans().len()
         );
+    }
+
+    #[test]
+    fn w13_live_seal_refuses_replayed_range_identity_when_armed() {
+        let previous = std::env::var(span_idempotence::SPAN_IDEMPOTENCE_ENV).ok();
+        unsafe { std::env::set_var(span_idempotence::SPAN_IDEMPOTENCE_ENV, "1") };
+
+        let range = TailSampleRange {
+            session: "w13-4-live".into(),
+            capture_epoch: 1,
+            sample_start: 0,
+            sample_end: 8_000,
+        };
+        let evidence = TailProviderEvidence {
+            source: TailEvidenceSource::AppleSpeech,
+            revision: None,
+            stability: TailEvidenceStability::Final,
+            timing_quality: TailTimingQuality::Synthetic,
+            avg_logprob: None,
+        };
+        let mut m = ProgressiveSealMachine::new();
+        assert!(m.note_apple_commit_timed(
+            1,
+            "fragment odzyskany",
+            0.5,
+            0.5,
+            range.clone(),
+            Vec::new(),
+            evidence.clone(),
+        ));
+        m.note_whisper_window_elapsed(1, 4.0);
+        let tick = m.try_seal(APPLE_VOLATILE_WINDOW_SECS + 1.0, true);
+        assert_eq!(tick.newly_sealed.len(), 1);
+
+        let replayed = m.note_apple_commit_timed(
+            2,
+            "fragment odzyskany",
+            0.5,
+            0.5,
+            range,
+            Vec::new(),
+            evidence,
+        );
+        assert!(!replayed, "new Apple id on a sealed range must be refused");
+        assert_eq!(m.pending_spans().len(), 0);
+        assert_eq!(m.sealed_spans().len(), 1);
+        assert_eq!(m.sealed_prefix(), "fragment odzyskany");
+        assert!(
+            m.span_idempotence_receipts()
+                .iter()
+                .any(|r| r.code == "replayed_range_identity")
+        );
+
+        match previous {
+            Some(value) => unsafe {
+                std::env::set_var(span_idempotence::SPAN_IDEMPOTENCE_ENV, value)
+            },
+            None => unsafe { std::env::remove_var(span_idempotence::SPAN_IDEMPOTENCE_ENV) },
+        }
     }
 }

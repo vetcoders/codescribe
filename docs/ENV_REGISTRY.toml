@@ -445,6 +445,13 @@ reload = "restart"
 category = "stt"
 description = "Bounded-context A/B for W13-3B Whisper windows: utterance (default), left_pad, or stable_prompt. Left pad never crosses a Silero-sized silence fence."
 
+[vars.CODESCRIBE_SPAN_IDEMPOTENCE]
+default = "0"
+type = "bool"
+reload = "restart"
+category = "stt"
+description = "W13-4 sealed-span replay refusal + in-span loop fence. Default OFF. When 1/true/on: live seal path refuses a replayed PCM-range / request identity (SessionIngest RejectedSealedUtterance ported onto ledger identity) and fences non-progressing timestamps or decode failure. Content-similar offers on a new identity are WARN-preserved. No default flip."
+
 [vars.CODESCRIBE_WHISPER_IDLE_UNLOAD_SECS]
 default = "300"
 type = "u64"

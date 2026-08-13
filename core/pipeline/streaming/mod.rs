@@ -30,6 +30,8 @@ pub(crate) mod quality_gate;
 pub(crate) mod session;
 /// W13-3B Silero identity + conservative per-word fusion (lane flag default OFF).
 pub(crate) mod silero_fusion;
+/// W13-4 sealed-span replay refusal + in-span loop fence (lane flag default OFF).
+pub(crate) mod span_idempotence;
 /// Session stream-log sink (`CODESCRIBE_STREAM_LOG*` env contract).
 pub(crate) mod stream_log;
 /// Env-tunable runtime knobs shared across these modules.

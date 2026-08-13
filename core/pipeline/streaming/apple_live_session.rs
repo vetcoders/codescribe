@@ -1148,7 +1148,7 @@ fn seal_sliced_by_silero(
         {
             let _ = state.progressive.try_rewrite(utterance_id, &text);
         } else {
-            state.progressive.note_apple_commit_timed(
+            if !state.progressive.note_apple_commit_timed(
                 utterance_id,
                 text.clone(),
                 span_end,
@@ -1162,7 +1162,9 @@ fn seal_sliced_by_silero(
                     timing_quality: TailTimingQuality::ExactSampleRange,
                     avg_logprob: None,
                 },
-            );
+            ) {
+                continue;
+            }
             state.pending_events.insert(
                 utterance_id,
                 PendingAppleSeal {
@@ -1427,7 +1429,7 @@ fn seal_utterance_final(
         || seconds_to_captured_sample(end_ts, state.sample_rate, captured_end),
         |word| word.range.sample_end,
     );
-    state.progressive.note_apple_commit_timed(
+    if !state.progressive.note_apple_commit_timed(
         utterance_id,
         after_lexicon.clone(),
         end_ts,
@@ -1446,7 +1448,9 @@ fn seal_utterance_final(
             timing_quality: TailTimingQuality::ExactSampleRange,
             avg_logprob: None,
         },
-    );
+    ) {
+        return false;
+    }
     state.pending_events.insert(
         utterance_id,
         PendingAppleSeal {
