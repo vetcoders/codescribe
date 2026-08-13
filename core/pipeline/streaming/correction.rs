@@ -734,13 +734,16 @@ pub(crate) fn schedule_partial_pass(
         "BOUNDARY correction_scheduled"
     );
 
+    let window_prompt = crate::pipeline::stream_postprocess::compose_whisper_window_prompt(
+        previous_window_prompt.as_deref(),
+    );
     match stt_scheduler.submit_for_utterance_with_prompt(
         SttLane::Refine,
         audio,
         output_sample_rate,
         pipeline_language,
         window_id,
-        previous_window_prompt,
+        window_prompt,
     ) {
         Ok(handle) => {
             rolling_window.commit(correction_audio_buf, output_sample_rate, &candidate);

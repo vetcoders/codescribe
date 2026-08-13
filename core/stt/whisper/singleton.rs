@@ -39,7 +39,6 @@ use tracing::{info, warn};
 use crate::config::models::resolve_runtime_whisper_model_path;
 use crate::config::{Config, UserSettings};
 use crate::pipeline::contracts::{FileTranscriptionOptions, RawTranscript, TranscriptionVerdict};
-use crate::pipeline::stream_postprocess::whisper_initial_prompt;
 
 use super::engine::LocalWhisperEngine;
 use super::params::DecodingParams;
@@ -349,12 +348,11 @@ fn with_engine_initial_prompt<R>(
     })
 }
 
-/// Initial prompt used by file transcription, or `None` when the feature is off.
-///
-/// Opt-in: the underlying builder returns `None` unless the initial-prompt env
-/// flag is set, so file transcription stays prompt-free by default.
+/// Full-file decoding is deliberately prompt-free. The live A/B measured a
+/// vocabulary prompt deleting roughly half the file; lexicon voice belongs to
+/// bounded tail/utterance windows only.
 fn file_transcription_initial_prompt() -> Option<String> {
-    whisper_initial_prompt()
+    None
 }
 
 /// Like [`with_engine`] but never blocks: if the engine is busy, return an error
@@ -529,7 +527,7 @@ mod tests {
         }
     }
 
-    /// Initial prompt for file transcription stays off unless explicitly opted in.
+    /// File transcription stays prompt-free by contract.
     #[test]
     #[serial]
     fn file_transcription_initial_prompt_defaults_off() {
@@ -551,10 +549,10 @@ mod tests {
         assert_eq!(file_transcription_initial_prompt(), None);
     }
 
-    /// Opt-in env builds the file-transcription initial prompt (contains lexicon terms).
+    /// Window opt-in must never leak into full-file transcription.
     #[test]
     #[serial]
-    fn file_transcription_initial_prompt_is_opt_in() {
+    fn file_transcription_initial_prompt_stays_off_when_window_prompt_is_opted_in() {
         let _data_dir = EnvRestore::capture("CODESCRIBE_DATA_DIR");
         let _env_path = EnvRestore::capture("CODESCRIBE_ENV_PATH");
         let _prompt_enabled = EnvRestore::capture(
@@ -571,8 +569,11 @@ mod tests {
             );
         }
 
-        let prompt = file_transcription_initial_prompt().expect("opt-in prompt should be built");
-        assert!(prompt.contains("Loctree"));
+        assert_eq!(
+            file_transcription_initial_prompt(),
+            None,
+            "full-file prompting is forbidden even when window prompting is enabled"
+        );
     }
 
     /// RED: normal default is five minutes rather than the current 45 minutes.

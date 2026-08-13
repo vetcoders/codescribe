@@ -28,6 +28,7 @@ struct BridgeRequest: Codable {
     let command: String
     let locale: String
     let audioPath: String?
+    let contextualStrings: [String]?
     let allowDownload: Bool
 }
 
@@ -223,6 +224,7 @@ private func readRequest() throws -> BridgeRequest {
             command: command,
             locale: locale,
             audioPath: nil,
+            contextualStrings: nil,
             allowDownload: false
         )
     }
@@ -294,7 +296,10 @@ private func handle(request: BridgeRequest) async throws -> BridgeResponse {
         // {"rate":48000,"channels":1}, then raw interleaved f32le frames, EOF
         // ends the stream.
         // Speech TCC: requested inside transcribeStreaming (SF-only path).
-        let payload = try await transcribeStreaming(locale: locale)
+        let payload = try await transcribeStreaming(
+            locale: locale,
+            contextualStrings: request.contextualStrings
+        )
         return BridgeResponse(
             ok: true,
             status: "ok",
@@ -312,7 +317,11 @@ private func handle(request: BridgeRequest) async throws -> BridgeResponse {
         guard let audioPath = request.audioPath, !audioPath.isEmpty else {
             throw BridgeError.missingAudioPath
         }
-        let transcription = try await transcribeLiveBuffered(audioPath: audioPath, locale: locale)
+        let transcription = try await transcribeLiveBuffered(
+            audioPath: audioPath,
+            locale: locale,
+            contextualStrings: request.contextualStrings
+        )
         return BridgeResponse(
             ok: true,
             status: "ok",
@@ -813,7 +822,11 @@ private func transcribeWithSpeechTranscriber(
 ///
 /// WAV on disk is only a *source of samples* — same as a virtual CoreAudio device
 /// would deliver. Recognition uses the buffer API Apple designs for live mic.
-private func transcribeLiveBuffered(audioPath: String, locale: Locale) async throws -> TranscriptionPayload {
+private func transcribeLiveBuffered(
+    audioPath: String,
+    locale: Locale,
+    contextualStrings: [String]?
+) async throws -> TranscriptionPayload {
     // Prefer SpeechTranscriber streaming when locale is installed; else SF buffer.
     let stSupported = await SpeechTranscriber.supportedLocales
     if let effectiveLocale = bestAvailableLocale(requested: locale, available: stSupported) {
@@ -832,12 +845,35 @@ private func transcribeLiveBuffered(audioPath: String, locale: Locale) async thr
             )
         }
     }
-    return try await transcribeWithSfSpeechAudioBuffer(audioPath: audioPath, locale: locale)
+    return try await transcribeWithSfSpeechAudioBuffer(
+        audioPath: audioPath,
+        locale: locale,
+        contextualStrings: contextualStrings
+    )
+}
+
+/// Defensive mirror of SFSpeech's 100-entry contextualStrings contract. Rust
+/// already emits a deterministic, budgeted list; this keeps direct bridge
+/// callers from smuggling empty or duplicate entries into the recognizer.
+private func sanitizedContextualStrings(_ values: [String]?) -> [String] {
+    var seen = Set<String>()
+    var result: [String] = []
+    for raw in values ?? [] {
+        let value = raw.trimmingCharacters(in: .whitespacesAndNewlines)
+        if value.isEmpty { continue }
+        let key = value.lowercased()
+        if seen.insert(key).inserted {
+            result.append(value)
+        }
+        if result.count == 100 { break }
+    }
+    return result
 }
 
 private func transcribeWithSfSpeechAudioBuffer(
     audioPath: String,
-    locale: Locale
+    locale: Locale,
+    contextualStrings: [String]?
 ) async throws -> TranscriptionPayload {
     // SFSpeech path only — Speech Recognition TCC required here (not on ST).
     try await ensureSpeechAuthorizedForSfSpeech()
@@ -883,7 +919,8 @@ private func transcribeWithSfSpeechAudioBuffer(
             recognizer: recognizer,
             startFrame: 0,
             frameCount: AVAudioFramePosition(audioFile.length),
-            timeOffset: 0
+            timeOffset: 0,
+            contextualStrings: contextualStrings
         )
     }
 
@@ -905,7 +942,8 @@ private func transcribeWithSfSpeechAudioBuffer(
             recognizer: recognizer,
             startFrame: frame,
             frameCount: windowFrames,
-            timeOffset: timeOffset
+            timeOffset: timeOffset,
+            contextualStrings: contextualStrings
         )
         let trimmed = part.text.trimmingCharacters(in: .whitespacesAndNewlines)
         if !trimmed.isEmpty {
@@ -935,7 +973,8 @@ private func recognizeSfSpeechBufferWindow(
     recognizer: SFSpeechRecognizer,
     startFrame: AVAudioFramePosition,
     frameCount: AVAudioFramePosition,
-    timeOffset: Double
+    timeOffset: Double,
+    contextualStrings: [String]?
 ) async throws -> TranscriptionPayload {
     let fileFormat = audioFile.processingFormat
     let rate = max(fileFormat.sampleRate, 1.0)
@@ -952,6 +991,7 @@ private func recognizeSfSpeechBufferWindow(
     request.requiresOnDeviceRecognition = true
     request.shouldReportPartialResults = true
     request.taskHint = .dictation
+    request.contextualStrings = sanitizedContextualStrings(contextualStrings)
     // Isolate non-Sendable Speech request behind a serial-queue handle so
     // Dispatch/AVAudio @Sendable completions never capture it bare (S-4).
     let requestHandle = SfSpeechRequestHandle(request, label: "com.vetcoders.codescribe.stt.sf-buffer")
@@ -1148,7 +1188,10 @@ private struct StreamHeader: Codable {
 /// replay. Partials become `partial` events, phrase finals become `final`
 /// events (with `SFTranscriptionSegment.confidence`), EOF ends audio and the
 /// accumulated text is returned as the summary payload.
-private func transcribeStreaming(locale: Locale) async throws -> TranscriptionPayload {
+private func transcribeStreaming(
+    locale: Locale,
+    contextualStrings: [String]?
+) async throws -> TranscriptionPayload {
     // Stream command is SFSpeechAudioBuffer only today — gate Speech TCC here.
     try await ensureSpeechAuthorizedForSfSpeech()
     guard let headerData = readRawStdinLine(),
@@ -1183,6 +1226,7 @@ private func transcribeStreaming(locale: Locale) async throws -> TranscriptionPa
     request.requiresOnDeviceRecognition = true
     request.shouldReportPartialResults = true
     request.taskHint = .dictation
+    request.contextualStrings = sanitizedContextualStrings(contextualStrings)
     // Stream PCM pump runs on a Dispatch queue (@Sendable); isolate the bare
     // request so append/endAudio never cross the Sendable boundary (L1068).
     let requestHandle = SfSpeechRequestHandle(request, label: "com.vetcoders.codescribe.stt.sf-stream")

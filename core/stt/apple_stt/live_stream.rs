@@ -130,11 +130,13 @@ impl LiveStreamSession {
             .take()
             .context("Apple STT bridge stdout unavailable")?;
 
+        let contextual_strings = crate::pipeline::stream_postprocess::apple_contextual_strings();
         let request = BridgeRequest {
             protocol_version: 1,
             command: "stream",
             locale: &locale,
             audio_path: None,
+            contextual_strings: contextual_strings.as_deref(),
             allow_download: env_bool(ENV_ALLOW_DOWNLOAD, true),
         };
         let req_payload = serde_json::to_vec(&request).context("serialize stream request")?;
