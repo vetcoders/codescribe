@@ -1247,10 +1247,24 @@ final class SettingsViewModel: ObservableObject {
 
   /// Reload durable policy + live capability list from the same registry the
   /// agent dispatcher builds.
+  ///
+  /// NEVER on the main thread: building the capability list spawns and
+  /// handshakes every configured MCP server (`discover_mcp_tools_blocking`),
+  /// which costs seconds with a dozen servers configured. The 2026-08-13
+  /// beachball sample held the whole app in `pthread_join` inside this call —
+  /// on panel open AND on every permission click. Snapshot off-main, publish
+  /// back on the main actor; a stale list for a moment beats a frozen app.
   func reloadToolPermissions() {
     guard let mcpAdmin else { return }
-    permissionPolicy = mcpAdmin.getPermissionPolicy()
-    toolCapabilities = mcpAdmin.listToolCapabilities()
+    Task.detached(priority: .userInitiated) { [weak self] in
+      let policy = mcpAdmin.getPermissionPolicy()
+      let capabilities = mcpAdmin.listToolCapabilities()
+      await MainActor.run { [weak self] in
+        guard let self else { return }
+        self.permissionPolicy = policy
+        self.toolCapabilities = capabilities
+      }
+    }
   }
 
   func setPermissionDefault(kind: PermissionDefaultKind, level: String) {
