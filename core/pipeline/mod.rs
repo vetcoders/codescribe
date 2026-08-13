@@ -6,6 +6,8 @@
 pub mod contracts;
 /// Overlap/duplicate utterance suppression for streamed transcript events.
 pub mod dedup;
+/// W13-6B overlay highlight layer (lexicon corrections + speech-gap pustki).
+pub mod highlight;
 /// Light-plus post-pass for low-latency transcript cleanup.
 pub mod light_plus;
 /// MiniLM meaning check for AI-formatted deliveries (calibrated floor).

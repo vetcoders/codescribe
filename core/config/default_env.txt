@@ -54,6 +54,8 @@ CODESCRIBE_STT_THERMAL_SERIOUS_MULT=2.0
 CODESCRIBE_STT_THERMAL_CRITICAL_MULT=4.0
 # Runtime lexicon initial_prompt is opt-in; default OFF.
 CODESCRIBE_STT_INITIAL_PROMPT_ENABLED=0
+# W13-6B overlay highlight layer is opt-in; default OFF.
+CODESCRIBE_OVERLAY_HIGHLIGHTS=0
 # VAD config is hardcoded in core/vad/config.rs (Silero defaults, no env knobs).
 CODESCRIBE_STREAM_SIMILARITY=0.90
 CODESCRIBE_STREAM_NOVELTY=0.20
