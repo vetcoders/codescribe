@@ -2030,6 +2030,94 @@ async fn call_llm_endpoint(
     Ok(output)
 }
 
+/// One chained Responses request over the formatting lane, chain owned by the
+/// caller (W13-1 inline-format buffer).
+///
+/// Deliberately does NOT touch [`crate::state::conversation`]: the inline
+/// buffer keeps its own `previous_response_id` per dictation session, so chunk
+/// chaining can reset per session without disturbing the persistent
+/// formatting-mode conversation. Returns `(assistant_text, response_id)`.
+pub(crate) async fn format_inline_chunk(
+    chunk_text: &str,
+    language: Option<&str>,
+    previous_response_id: Option<String>,
+    system_prompt: &str,
+) -> Result<(String, Option<String>)> {
+    let endpoint = get_formatting_endpoint()?;
+    let model = get_formatting_model()?;
+    let api_key = get_formatting_api_key()?;
+    format_inline_chunk_resolved(
+        chunk_text,
+        language,
+        previous_response_id,
+        system_prompt,
+        &endpoint,
+        &model,
+        &api_key,
+    )
+    .await
+}
+
+/// Send one inline-chunk Responses request against explicitly supplied wire
+/// values. Resolution is split out (mirroring
+/// [`call_anthropic_messages_resolved`]) so the delivery harness can exercise
+/// the wire contract against a mock without config in play.
+pub(crate) async fn format_inline_chunk_resolved(
+    chunk_text: &str,
+    language: Option<&str>,
+    previous_response_id: Option<String>,
+    system_prompt: &str,
+    endpoint: &str,
+    model: &str,
+    api_key: &str,
+) -> Result<(String, Option<String>)> {
+    let user_message = match language {
+        Some(lang) => format!("[Language: {lang}]\n\n{chunk_text}"),
+        None => chunk_text.to_string(),
+    };
+    let request = ResponsesRequest {
+        model: model.to_string(),
+        input: vec![InputItem {
+            role: "user",
+            content: vec![InputContent::Text { text: user_message }],
+        }],
+        previous_response_id,
+        instructions: Some(system_prompt.to_string()),
+        max_output_tokens: None,
+        temperature: get_temperature(false),
+        stream: false,
+    };
+
+    let response = get_client()
+        .post(endpoint)
+        .header("Authorization", format!("Bearer {api_key}"))
+        .header("x-api-key", api_key)
+        .header("Content-Type", "application/json")
+        .json(&request)
+        .send()
+        .await
+        .context("Inline chunk request failed")?;
+
+    if !response.status().is_success() {
+        let status = response.status();
+        let body = response.text().await.unwrap_or_default();
+        anyhow::bail!("Inline chunk HTTP {} - {}", status, body);
+    }
+
+    let responses_result: ResponsesResponse = response
+        .json()
+        .await
+        .context("Failed to parse inline chunk response")?;
+    let output = extract_output_channels(&responses_result.output);
+    if output.assistant_text.is_empty() {
+        anyhow::bail!(
+            "No text content in inline chunk response (id: {})",
+            responses_result.id
+        );
+    }
+    Ok((output.assistant_text, Some(responses_result.id)))
+}
+
 /// Resolve assistive-lane auth: signed-in ChatGPT OAuth wins over a stored API key.
 /// Returns `(secret, bearer_only)` — OAuth tokens must not also go out as `x-api-key`.
 async fn resolve_assistive_auth(lane: &AssistiveLaneSnapshot) -> Result<(String, bool)> {

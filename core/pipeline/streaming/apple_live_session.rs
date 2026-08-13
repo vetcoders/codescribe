@@ -292,6 +292,11 @@ pub(crate) async fn apple_stream_transcription_session(
     );
     let session_id = uuid::Uuid::new_v4().to_string();
 
+    // W13-1 inline-format buffer: arm a fresh chunk/chain session (no-op when
+    // `CODESCRIBE_INLINE_FORMAT` is off). Must happen on the async side — the
+    // blocking seal worker only ever enqueues sealed chunks.
+    crate::llm::inline_format::begin_session(language.as_deref());
+
     // C1: open the injected Layer 1 lane at recording start. `Disarmed` is the
     // stock product (canvas + lexicon); an armed provider only ever arrives
     // here already authorized — construction and consent live with the
@@ -685,6 +690,10 @@ impl AppleSealState {
             };
             self.sealed_count = self.sealed_count.saturating_add(1);
             self.sealed_prefix = self.progressive.sealed_prefix();
+            // Seal = "format now" signal (W13-1): a sealed span is byte-stable,
+            // so the inline-format buffer may chunk-format it while dictation
+            // continues. Sync + non-blocking; no-op unless the flag is armed.
+            crate::llm::inline_format::on_chunk_sealed(sealed.id, &sealed.text);
             let _ = ev_tx.send(EngineEvent::UtteranceFinal {
                 utterance_id: sealed.id,
                 text: sealed.text,
