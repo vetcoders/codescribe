@@ -400,12 +400,17 @@ pub(super) fn emit_tail_patch_result(
             }
             emitted
         }
-        Ok((utterance_id, TailPatchOutcome::Skipped { reason })) => {
+        Ok((utterance_id, TailPatchOutcome::Skipped { code, reason })) => {
             // INFO, not debug: a skipped patch is text Whisper had in hand and
             // the canvas never received. The counts belong to the receipt the
             // patcher already logs; this line proves the sink saw the same
             // verdict for this utterance.
-            info!(utterance_id, reason, "Tail patch skipped");
+            info!(
+                utterance_id,
+                code = code.as_str(),
+                reason,
+                "Tail patch skipped"
+            );
             0
         }
         Err(e) => {

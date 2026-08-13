@@ -431,6 +431,20 @@ reload = "hot"
 category = "stt"
 description = "Opt-in gate for Candle Whisper runtime-lexicon initial_prompt. Default OFF after W2-F measured a 100% WER regression with the active prompt."
 
+[vars.CODESCRIBE_SILERO_FUSION]
+default = "0"
+type = "bool"
+reload = "restart"
+category = "stt"
+description = "W13-3B Silero-identity conservative fusion lane. Default OFF. When 1/true/on: Supervisor edges mint utterance ids at Apple PCM ingress, cumulative Apple finals are sliced by time, and Whisper/Apple fuse by span overlap (agreements + clear gap fills; unresolved alternatives are receipted). No default flip."
+
+[vars.CODESCRIBE_SILERO_FUSION_CONTEXT]
+default = "utterance"
+type = "string"
+reload = "restart"
+category = "stt"
+description = "Bounded-context A/B for W13-3B Whisper windows: utterance (default), left_pad, or stable_prompt. Left pad never crosses a Silero-sized silence fence."
+
 [vars.CODESCRIBE_WHISPER_IDLE_UNLOAD_SECS]
 default = "300"
 type = "u64"

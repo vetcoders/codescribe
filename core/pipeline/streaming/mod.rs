@@ -28,6 +28,8 @@ pub mod progressive_seal;
 pub(crate) mod quality_gate;
 /// Event-based transcription session: VAD ingestion, the Whisper inference loop, final emission.
 pub(crate) mod session;
+/// W13-3B Silero identity + conservative per-word fusion (lane flag default OFF).
+pub(crate) mod silero_fusion;
 /// Session stream-log sink (`CODESCRIBE_STREAM_LOG*` env contract).
 pub(crate) mod stream_log;
 /// Env-tunable runtime knobs shared across these modules.

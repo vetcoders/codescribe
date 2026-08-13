@@ -180,6 +180,32 @@ impl LiveAudioBuffer {
         self.end_index
     }
 
+    /// Cut `[sample_start, sample_end)` on the capture PCM clock.
+    ///
+    /// `None` when the range is inverted or has already fallen off retention.
+    /// Unlike [`window_with_range`](Self::window_with_range) this never
+    /// converts through seconds.
+    pub(crate) fn window_by_samples(
+        &self,
+        sample_start: u64,
+        sample_end: u64,
+    ) -> Option<ResolvedAudioWindow> {
+        if sample_end < sample_start
+            || sample_start < self.start_index
+            || sample_start > self.end_index
+        {
+            return None;
+        }
+        let to = sample_end.min(self.end_index);
+        let lo = (sample_start - self.start_index) as usize;
+        let hi = (to - self.start_index) as usize;
+        Some(ResolvedAudioWindow {
+            samples: self.samples.range(lo..hi).copied().collect(),
+            sample_start,
+            sample_end: to,
+        })
+    }
+
     /// Absolute session-sample index for a session-time second, or `None` when
     /// the value cannot address audio at all.
     fn index_for(&self, secs: f32) -> Option<u64> {
