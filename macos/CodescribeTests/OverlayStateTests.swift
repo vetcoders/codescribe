@@ -1,4 +1,5 @@
 import AppKit
+import SwiftUI
 import XCTest
 
 @testable import Codescribe
@@ -1493,8 +1494,12 @@ final class OverlayStateTests: XCTestCase {
       XCTFail("ImageRenderer produced no nsImage")
       return
     }
-    let dest = URL(fileURLWithPath: FileManager.default.currentDirectoryPath)
-      .appendingPathComponent("swift-tests-highlight.png")
+    let dest = FileManager.default.temporaryDirectory
+      .appendingPathComponent("w13-6b-highlights.png")
+    let reportDest = URL(fileURLWithPath: NSHomeDirectory())
+      .appendingPathComponent(
+        ".vibecrafted/artifacts/vetcoders/codescribe/2026_0813/reports/implement/w13-6b-highlights.png"
+      )
     guard let tiff = image.tiffRepresentation,
       let rep = NSBitmapImageRep(data: tiff),
       let png = rep.representation(using: .png, properties: [:])
@@ -1503,6 +1508,9 @@ final class OverlayStateTests: XCTestCase {
       return
     }
     try png.write(to: dest)
+    try? FileManager.default.createDirectory(
+      at: reportDest.deletingLastPathComponent(), withIntermediateDirectories: true)
+    try? png.write(to: reportDest)
     XCTAssertGreaterThan(png.count, 800)
     XCTAssertTrue(FileManager.default.fileExists(atPath: dest.path))
   }

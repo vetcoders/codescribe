@@ -8947,6 +8947,94 @@ public func FfiConverterTypeCsModelOption_lower(_ value: CsModelOption) -> RustB
 
 
 /**
+ * Span-based canvas highlight. Sample fields are the 3A PCM identity;
+ * char offsets are the Swift adapter onto already-committed utterance text.
+ */
+public struct CsOverlayHighlight: Equatable, Hashable {
+    public var kind: CsOverlayHighlightKind
+    public var utteranceId: UInt64
+    public var charStart: UInt64
+    public var charEnd: UInt64
+    public var session: String
+    public var captureEpoch: UInt64
+    public var sampleStart: UInt64
+    public var sampleEnd: UInt64
+    public var before: String
+    public var after: String
+
+    // Default memberwise initializers are never public by default, so we
+    // declare one manually.
+    public init(kind: CsOverlayHighlightKind, utteranceId: UInt64, charStart: UInt64, charEnd: UInt64, session: String, captureEpoch: UInt64, sampleStart: UInt64, sampleEnd: UInt64, before: String, after: String) {
+        self.kind = kind
+        self.utteranceId = utteranceId
+        self.charStart = charStart
+        self.charEnd = charEnd
+        self.session = session
+        self.captureEpoch = captureEpoch
+        self.sampleStart = sampleStart
+        self.sampleEnd = sampleEnd
+        self.before = before
+        self.after = after
+    }
+
+
+}
+
+#if compiler(>=6)
+extension CsOverlayHighlight: Sendable {}
+#endif
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public struct FfiConverterTypeCsOverlayHighlight: FfiConverterRustBuffer {
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> CsOverlayHighlight {
+        return
+            try CsOverlayHighlight(
+                kind: FfiConverterTypeCsOverlayHighlightKind.read(from: &buf),
+                utteranceId: FfiConverterUInt64.read(from: &buf),
+                charStart: FfiConverterUInt64.read(from: &buf),
+                charEnd: FfiConverterUInt64.read(from: &buf),
+                session: FfiConverterString.read(from: &buf),
+                captureEpoch: FfiConverterUInt64.read(from: &buf),
+                sampleStart: FfiConverterUInt64.read(from: &buf),
+                sampleEnd: FfiConverterUInt64.read(from: &buf),
+                before: FfiConverterString.read(from: &buf),
+                after: FfiConverterString.read(from: &buf)
+        )
+    }
+
+    public static func write(_ value: CsOverlayHighlight, into buf: inout [UInt8]) {
+        FfiConverterTypeCsOverlayHighlightKind.write(value.kind, into: &buf)
+        FfiConverterUInt64.write(value.utteranceId, into: &buf)
+        FfiConverterUInt64.write(value.charStart, into: &buf)
+        FfiConverterUInt64.write(value.charEnd, into: &buf)
+        FfiConverterString.write(value.session, into: &buf)
+        FfiConverterUInt64.write(value.captureEpoch, into: &buf)
+        FfiConverterUInt64.write(value.sampleStart, into: &buf)
+        FfiConverterUInt64.write(value.sampleEnd, into: &buf)
+        FfiConverterString.write(value.before, into: &buf)
+        FfiConverterString.write(value.after, into: &buf)
+    }
+}
+
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeCsOverlayHighlight_lift(_ buf: RustBuffer) throws -> CsOverlayHighlight {
+    return try FfiConverterTypeCsOverlayHighlight.lift(buf)
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeCsOverlayHighlight_lower(_ value: CsOverlayHighlight) -> RustBuffer {
+    return FfiConverterTypeCsOverlayHighlight.lower(value)
+}
+
+
+/**
  * Full delivery truth for one overlay Insert, including the app names observed
  * at the exact delivery boundary and the Paste Here shortcut (or the reason it
  * was unavailable), so Swift can explain any degradation instead of guessing.
@@ -11936,6 +12024,75 @@ public func FfiConverterTypeCsMcpRowTone_lower(_ value: CsMcpRowTone) -> RustBuf
 // Note that we don't yet support `indirect` for enums.
 // See https://github.com/mozilla/uniffi-rs/issues/396 for further discussion.
 /**
+ * W13-6B highlight kind. Stringly so Swift can switch without another enum
+ * reshape if a third kind appears.
+ */
+
+public enum CsOverlayHighlightKind: Equatable, Hashable {
+
+    case lexiconCorrected
+    case speechGap
+
+
+
+}
+
+#if compiler(>=6)
+extension CsOverlayHighlightKind: Sendable {}
+#endif
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public struct FfiConverterTypeCsOverlayHighlightKind: FfiConverterRustBuffer {
+    typealias SwiftType = CsOverlayHighlightKind
+
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> CsOverlayHighlightKind {
+        let variant: Int32 = try readInt(&buf)
+        switch variant {
+
+        case 1: return .lexiconCorrected
+
+        case 2: return .speechGap
+
+        default: throw UniffiInternalError.unexpectedEnumCase
+        }
+    }
+
+    public static func write(_ value: CsOverlayHighlightKind, into buf: inout [UInt8]) {
+        switch value {
+
+
+        case .lexiconCorrected:
+            writeInt(&buf, Int32(1))
+
+
+        case .speechGap:
+            writeInt(&buf, Int32(2))
+
+        }
+    }
+}
+
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeCsOverlayHighlightKind_lift(_ buf: RustBuffer) throws -> CsOverlayHighlightKind {
+    return try FfiConverterTypeCsOverlayHighlightKind.lift(buf)
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeCsOverlayHighlightKind_lower(_ value: CsOverlayHighlightKind) -> RustBuffer {
+    return FfiConverterTypeCsOverlayHighlightKind.lower(value)
+}
+
+
+// Note that we don't yet support `indirect` for enums.
+// See https://github.com/mozilla/uniffi-rs/issues/396 for further discussion.
+/**
  * Honest outcome of the overlay Insert action, mirrored to Swift so the UI
  * can tell the user when the self-paste guard degraded a paste to a tagged
  * clipboard copy.
@@ -13444,6 +13601,15 @@ public func micPermissionGranted() -> Bool  {
 })
 }
 /**
+ * W13-6B lane flag. Default OFF. Read-only; no permission prompt.
+ */
+public func overlayHighlightsEnabled() -> Bool  {
+    return try!  FfiConverterBool.lift(try! rustCall() {
+    uniffi_codescribe_ffi_fn_func_overlay_highlights_enabled($0
+    )
+})
+}
+/**
  * Finalize one correction: the revision always saves; word-level lexicon
  * pairs are derived and gated individually. `Err` means the SAVE failed.
  */
@@ -13473,6 +13639,19 @@ public func qualityRecentRecords(limit: UInt64)throws  -> [CsQualityRecord]  {
 public func qualityTeachDictionaryFromStore()throws  -> CsDictionaryTeachResult  {
     return try  FfiConverterTypeCsDictionaryTeachResult_lift(try rustCallWithError(FfiConverterTypeCsError_lift) {
     uniffi_codescribe_ffi_fn_func_quality_teach_dictionary_from_store($0
+    )
+})
+}
+/**
+ * One-click Teach from a highlighted span. Reuses the existing quality +
+ * custom-lexicon writers — no new disk root, no new permission.
+ */
+public func qualityTeachSpan(variant: String, canonical: String, kind: String)throws  -> CsQualityCommitResult  {
+    return try  FfiConverterTypeCsQualityCommitResult_lift(try rustCallWithError(FfiConverterTypeCsError_lift) {
+    uniffi_codescribe_ffi_fn_func_quality_teach_span(
+        FfiConverterString.lower(variant),
+        FfiConverterString.lower(canonical),
+        FfiConverterString.lower(kind),$0
     )
 })
 }
@@ -13539,6 +13718,9 @@ private let initializationResult: InitializationResult = {
     if (uniffi_codescribe_ffi_checksum_func_mic_permission_granted() != 26303) {
         return InitializationResult.apiChecksumMismatch
     }
+    if (uniffi_codescribe_ffi_checksum_func_overlay_highlights_enabled() != 21886) {
+        return InitializationResult.apiChecksumMismatch
+    }
     if (uniffi_codescribe_ffi_checksum_func_quality_finalize_correction() != 53355) {
         return InitializationResult.apiChecksumMismatch
     }
@@ -13546,6 +13728,9 @@ private let initializationResult: InitializationResult = {
         return InitializationResult.apiChecksumMismatch
     }
     if (uniffi_codescribe_ffi_checksum_func_quality_teach_dictionary_from_store() != 46244) {
+        return InitializationResult.apiChecksumMismatch
+    }
+    if (uniffi_codescribe_ffi_checksum_func_quality_teach_span() != 20307) {
         return InitializationResult.apiChecksumMismatch
     }
     if (uniffi_codescribe_ffi_checksum_func_request_mic_permission() != 61967) {
