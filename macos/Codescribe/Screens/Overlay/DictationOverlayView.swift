@@ -317,13 +317,30 @@ struct DictationOverlayView: View {
       ScrollView(.vertical, showsIndicators: true) {
         VStack(alignment: .leading, spacing: 0) {
           HStack(alignment: .bottom, spacing: 2) {
-            Text(state.listeningDisplay)
-              .csFont(15, .medium)
-              .lineSpacing(5)
-              .foregroundStyle(CSColor.textBody)
-              .fixedSize(horizontal: false, vertical: true)
-              .accessibilityIdentifier("overlay-transcript-live")
+            if state.highlightsEnabled, !state.highlights.isEmpty {
+              OverlayHighlightCanvas(
+                runs: state.highlightCanvasRuns,
+                selectedId: state.selectedHighlightId,
+                onSelect: { state.selectHighlight($0) }
+              )
+            } else {
+              Text(state.listeningDisplay)
+                .csFont(15, .medium)
+                .lineSpacing(5)
+                .foregroundStyle(CSColor.textBody)
+                .fixedSize(horizontal: false, vertical: true)
+                .accessibilityIdentifier("overlay-transcript-live")
+            }
             BlinkingCaret()
+          }
+          if state.highlightsEnabled {
+            OverlayHighlightTeachBar(
+              highlights: state.highlights,
+              selectedId: state.selectedHighlightId,
+              onSelect: { state.selectHighlight($0) },
+              onTeach: { state.sendHighlightToTeach($0) }
+            )
+            .padding(.top, 8)
           }
           Color.clear
             .frame(height: 1)
