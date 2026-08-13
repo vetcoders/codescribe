@@ -7,22 +7,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
-### Changed
-
-- **Whisper residency is bounded and observable** — the normal idle-weight TTL
-  is now 300 seconds (five minutes), while `CODESCRIBE_WHISPER_IDLE_UNLOAD_SECS=0`
-  remains the explicit power-user keep-warm override. INFO lifecycle events now
-  expose the effective TTL plus load/unload/reclaim counts and durations without
-  logging audio or transcript content. Host `vmmap` reclaim remains a release
-  acceptance measurement, not a unit-test claim.
-
-## [0.13.3] - 2026-08-04
+## [0.13.3] - 2026-08-13
 
 > The agent-stability and STT-truth-layer wave: one dictation pipeline with an
 > editable transcript as the source of truth, a hardened agent substrate
 > (native tools, workspace-roots sandbox, permission gateway), licensing (CSK1),
 > Sparkle 2 signed updates, consent-gated analytics, and a fail-closed release
-> lane. Rolls up PR #65 (operator feedback wave 9) and PR #68.
+> lane. Rolls up PR #65 (operator feedback wave 9) and PR #68, plus the
+> tail-patch wave that made the live Whisper correction lane actually deliver.
 
 ### Added
 
@@ -58,6 +50,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- **Whisper residency is bounded and observable** — the normal idle-weight TTL
+  is now 300 seconds (five minutes), while `CODESCRIBE_WHISPER_IDLE_UNLOAD_SECS=0`
+  remains the explicit power-user keep-warm override. INFO lifecycle events now
+  expose the effective TTL plus load/unload/reclaim counts and durations without
+  logging audio or transcript content. Host `vmmap` reclaim remains a release
+  acceptance measurement, not a unit-test claim.
+- **Engine warnings are classed** — only `transcription_failed` reaches the UI
+  as a user-terminal error; routine quality receipts (overlap normalization,
+  under-commit, VAD degradation, backpressure) are log-only. Guarded by
+  `warning_is_user_terminal` in the pipeline contracts and a bridge-side test.
 - **Assistive capture ownership** — assistive capture and agent-window controls
   unified under one owner; the capture contract is documented in `AGENTS.md`.
 - **Hold dictation is always raw** (#65) — the detector-level force-AI chord on
@@ -73,6 +75,27 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **Live Whisper tail patches finally land** — the correction lane compared
+  tokens character-for-character, so the Apple+lexicon canvas (casing,
+  punctuation) never matched Whisper's bare lowercase and every healthy
+  sentence read as wholesale divergence (a month of 116 counted, 0 applied
+  corrections). Tokens now align on words via a casefolded, edge-punctuation-
+  stripped key (diacritics stay significant); matched tokens keep the canvas
+  casing and substitutions carry the canvas trailing punctuation. A
+  substitution-shaped small-edit floor (≤3 tokens) stops the relative
+  change-ratio gate from starving short utterances. Measured after the fix:
+  147 applied / 99 skipped across 12 sessions in one night.
+- **Tail-patch lane is observable per session** — every finalisation logs a
+  `tail_patch_session_receipt applied=X skipped=Y` INFO row, and a session
+  that rejected every patch (≥3 skips, 0 applied) raises a
+  `tail_patch_lane_starved` WARN instead of dying silently.
+- **Quality receipts no longer kill the dictation UI** — a routine engine
+  warning during recording used to paint "Dictation stopped", reset the UI
+  without stopping the engine, and leave an orphaned live microphone stream
+  (hot mic at tray Idle). Receipts stay off the error channel, and the error
+  handler now always stops the recorder before reporting failure.
+- **Explicit To Agent delivers even after the session context expires** — the
+  runtime thread is re-created instead of dropping the user's dictated turn.
 - **Overlay Insert no longer pastes back into Codescribe itself** — the overlay
   is a non-activating panel that can hold the caret (editable FINAL) while
   another app stays frontmost, so the synthetic Cmd+V followed OUR key window
