@@ -65,6 +65,7 @@ DYLIB="$TARGET_DIR/libcodescribe_ffi.dylib"
 BINDGEN="$TARGET_DIR/uniffi-bindgen"
 STT_BRIDGE_SRC="core/stt/apple_stt/codescribe-stt-bridge.swift"
 STT_BRIDGE_BIN="$TARGET_DIR/codescribe-stt-bridge"
+STT_SIDECAR_BIN="$TARGET_DIR/codescribe-stt-sidecar"
 
 # ── Build provenance (Pensieve-style) ───────────────────────────────────────
 # Stamp MUST be computed BEFORE cargo/uniffi/xcodegen. Those steps rewrite
@@ -98,9 +99,12 @@ echo "==> stamp (pre-build): v${STAMP_VERSION} build ${STAMP_BUILD_NUM} commit $
 echo "==> [1/7] Building codescribe-ffi ($PROFILE)"
 if [ "$PROFILE" = "local-release" ]; then
   CODESCRIBE_LOCAL_INSTALL=1 cargo build -p codescribe-ffi "${CARGO_PROFILE_ARGS[@]}"
+  CODESCRIBE_LOCAL_INSTALL=1 cargo build -p codescribe-core --bin codescribe-stt-sidecar "${CARGO_PROFILE_ARGS[@]}"
 else
   env -u CODESCRIBE_LOCAL_INSTALL \
     cargo build -p codescribe-ffi "${CARGO_PROFILE_ARGS[@]}"
+  env -u CODESCRIBE_LOCAL_INSTALL \
+    cargo build -p codescribe-core --bin codescribe-stt-sidecar "${CARGO_PROFILE_ARGS[@]}"
 fi
 
 echo "==> [2/7] Rewriting dylib install_name to @rpath (relocatable bundle)"
@@ -161,6 +165,8 @@ FRAMEWORKS="$APP/Contents/Frameworks"
 MACOS_DIR="$APP/Contents/MacOS"
 mkdir -p "$FRAMEWORKS" "$MACOS_DIR"
 cp "$DYLIB" "$FRAMEWORKS/"
+cp "$STT_SIDECAR_BIN" "$MACOS_DIR/codescribe-stt-sidecar"
+chmod 755 "$MACOS_DIR/codescribe-stt-sidecar"
 STT_BRIDGE_BUNDLED=0
 # Same host-triple pin as Makefile ENGINE_BRIDGE_TARGET (W0-B / S-1): avoid
 # inheriting the builder's macosxN.0 so bundled bridges match CI/dev hosts.
@@ -205,3 +211,4 @@ if [ "$STT_BRIDGE_BUNDLED" = "1" ]; then
 else
   echo "    Apple STT bridge is not bundled; runtime resolution will use env/PATH/fallback."
 fi
+echo "    Whisper tail-patch sidecar is bundled beside the app executable in Contents/MacOS."

@@ -2,19 +2,40 @@
 //!
 //! Time on this seam is always an integer PCM sample range. Floating-point
 //! seconds exist only in the adapter back to the legacy [`TranscriptSegment`]
-//! surface. Hosting and transport belong to W13-2B; this module provides the
-//! in-process implementation and a deterministic fake that pin the contract.
+//! surface. The in-process implementation, localhost WebSocket sidecar, and
+//! remote multipart client all terminate on this one seam. Sidecar/remote
+//! failures fall back without changing the caller's append-only contract.
 
+use std::net::{IpAddr, Ipv4Addr, SocketAddr, TcpListener, TcpStream};
+use std::path::PathBuf;
+use std::process::{Child, Command, Stdio};
 use std::sync::atomic::{AtomicU64, Ordering};
-use std::time::Instant;
+use std::sync::{Mutex, OnceLock};
+use std::time::{Duration, Instant};
 
-use anyhow::{Result, anyhow, bail};
+use anyhow::{Context, Result, anyhow, bail};
+use rand::RngCore;
+use reqwest::Url;
+use reqwest::blocking::Client;
+use reqwest::blocking::multipart::{Form, Part};
 use serde::{Deserialize, Serialize};
+use tokio_tungstenite::tungstenite::{Message, accept, client};
 
 use crate::pipeline::contracts::{RawTranscript, TranscriptSegment};
 
 /// Environment key selecting the tail-patch provider.
 pub const STT_TAIL_PROVIDER_ENV: &str = "STT_TAIL_PROVIDER";
+/// Optional development override for the sidecar executable.
+pub const STT_SIDECAR_BIN_ENV: &str = "CODESCRIBE_STT_SIDECAR_BIN";
+/// Child-only authentication token; never read from operator config.
+pub const STT_SIDECAR_TOKEN_ENV: &str = "CODESCRIBE_STT_SIDECAR_TOKEN";
+
+const SIDECAR_PROTOCOL_VERSION: u8 = 1;
+const SIDECAR_CONNECT_TIMEOUT: Duration = Duration::from_secs(2);
+const SIDECAR_IO_TIMEOUT: Duration = Duration::from_secs(30);
+const REMOTE_REQUEST_TIMEOUT: Duration = Duration::from_secs(30);
+const DEFAULT_LOCAL_REMOTE_ENDPOINT: &str = "http://127.0.0.1:8000/v1/audio/transcriptions";
+const MAX_TAIL_PROVIDER_PCM_BYTES: usize = 32 * 1024 * 1024;
 
 /// Maximum transcript bytes accepted across the provider seam.
 pub const MAX_TAIL_PROVIDER_TEXT_BYTES: usize = 64 * 1024;
@@ -48,8 +69,7 @@ impl TailProviderId {
         }
     }
 
-    /// Parse config without arming an implementation. Sidecar and remote are
-    /// valid contract values whose hosts land in W13-2B.
+    /// Parse the provider selector without changing the default.
     pub fn parse(value: &str) -> Result<Self> {
         match value.trim().to_ascii_lowercase().as_str() {
             "" | "inprocess" | "in_process" => Ok(Self::InProcess),
@@ -414,9 +434,706 @@ impl TailProvider for FakeTailProvider {
     }
 }
 
+/// Normalized reason why the selected transport yielded to its fallback.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum TailProviderFailureKind {
+    Unavailable,
+    RemoteRequest,
+}
+
+impl TailProviderFailureKind {
+    fn as_str(self) -> &'static str {
+        match self {
+            Self::Unavailable => "unavailable",
+            Self::RemoteRequest => "remote_request",
+        }
+    }
+}
+
+/// Content-free proof of which provider actually served one PCM range.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct TailProviderReceipt {
+    pub identity: TailRequestIdentity,
+    pub requested_provider: TailProviderId,
+    pub served_provider: TailProviderId,
+    pub fallback_used: bool,
+    pub primary_failure: Option<TailProviderFailureKind>,
+    pub elapsed_ms: u64,
+}
+
+/// Result plus its routing receipt. Keeping the receipt typed lets the real
+/// kill-mid-take harness assert fallback without scraping log prose.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct TailProviderOutcome {
+    pub payload: TailProviderPayload,
+    pub receipt: TailProviderReceipt,
+}
+
+/// Run one selected provider and fall back exactly once. The error itself is
+/// deliberately collapsed into a safe category before it reaches telemetry.
+pub fn transcribe_with_fallback(
+    primary: &dyn TailProvider,
+    fallback: &dyn TailProvider,
+    primary_failure: TailProviderFailureKind,
+    request: &TailProviderRequest,
+    pcm: &[f32],
+) -> Result<TailProviderOutcome> {
+    let started = Instant::now();
+    let requested_provider = primary.provider_id();
+    match primary.transcribe(request, pcm) {
+        Ok(payload) => Ok(TailProviderOutcome {
+            receipt: TailProviderReceipt {
+                identity: request.identity.clone(),
+                requested_provider,
+                served_provider: payload.provider_id,
+                fallback_used: false,
+                primary_failure: None,
+                elapsed_ms: started.elapsed().as_millis().min(u64::MAX as u128) as u64,
+            },
+            payload,
+        }),
+        Err(_primary_error) => {
+            let payload = fallback.transcribe(request, pcm).with_context(|| {
+                format!(
+                    "tail provider {} and fallback {} both failed (primary category {})",
+                    requested_provider.as_str(),
+                    fallback.provider_id().as_str(),
+                    primary_failure.as_str()
+                )
+            })?;
+            tracing::debug!(
+                requested_provider = requested_provider.as_str(),
+                primary_failure = primary_failure.as_str(),
+                "tail provider yielded to fallback"
+            );
+            Ok(TailProviderOutcome {
+                receipt: TailProviderReceipt {
+                    identity: request.identity.clone(),
+                    requested_provider,
+                    served_provider: payload.provider_id,
+                    fallback_used: true,
+                    primary_failure: Some(primary_failure),
+                    elapsed_ms: started.elapsed().as_millis().min(u64::MAX as u128) as u64,
+                },
+                payload,
+            })
+        }
+    }
+}
+
+struct UnavailableTailProvider(TailProviderId);
+
+impl TailProvider for UnavailableTailProvider {
+    fn provider_id(&self) -> TailProviderId {
+        self.0
+    }
+
+    fn transcribe(
+        &self,
+        _request: &TailProviderRequest,
+        _pcm: &[f32],
+    ) -> Result<TailProviderPayload> {
+        bail!("configured tail provider is unavailable")
+    }
+}
+
+#[derive(Serialize, Deserialize)]
+struct SidecarWireRequest {
+    protocol_version: u8,
+    token: String,
+    request: TailProviderRequest,
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+enum SidecarWireError {
+    Unauthorized,
+    Protocol,
+    Provider,
+}
+
+#[derive(Serialize, Deserialize)]
+struct SidecarWireResponse {
+    protocol_version: u8,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    payload: Option<TailProviderPayload>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    error: Option<SidecarWireError>,
+}
+
+/// WebSocket client for one already-running localhost sidecar.
+pub struct SidecarTailProvider {
+    endpoint: String,
+    token: String,
+}
+
+impl std::fmt::Debug for SidecarTailProvider {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("SidecarTailProvider")
+            .field("endpoint", &self.endpoint)
+            .field("token", &"[redacted]")
+            .finish()
+    }
+}
+
+impl SidecarTailProvider {
+    pub fn new(endpoint: impl Into<String>, token: impl Into<String>) -> Result<Self> {
+        let endpoint = endpoint.into();
+        sidecar_socket_address(&endpoint)?;
+        let token = token.into();
+        if token.len() < 32 || token.len() > MAX_TAIL_PROVIDER_ID_BYTES {
+            bail!("sidecar token must be 32..={MAX_TAIL_PROVIDER_ID_BYTES} bytes");
+        }
+        Ok(Self { endpoint, token })
+    }
+}
+
+impl TailProvider for SidecarTailProvider {
+    fn provider_id(&self) -> TailProviderId {
+        TailProviderId::Sidecar
+    }
+
+    fn transcribe(
+        &self,
+        request: &TailProviderRequest,
+        pcm: &[f32],
+    ) -> Result<TailProviderPayload> {
+        request.validate_pcm(pcm)?;
+        let pcm_bytes = pcm_f32le(pcm)?;
+        let address = sidecar_socket_address(&self.endpoint)?;
+        let stream = TcpStream::connect_timeout(&address, SIDECAR_CONNECT_TIMEOUT)
+            .context("sidecar unavailable")?;
+        stream
+            .set_read_timeout(Some(SIDECAR_IO_TIMEOUT))
+            .context("set sidecar read timeout")?;
+        stream
+            .set_write_timeout(Some(SIDECAR_IO_TIMEOUT))
+            .context("set sidecar write timeout")?;
+        let (mut socket, _) = client(self.endpoint.as_str(), stream)
+            .map_err(|_| anyhow!("sidecar WebSocket handshake failed"))?;
+        let header = SidecarWireRequest {
+            protocol_version: SIDECAR_PROTOCOL_VERSION,
+            token: self.token.clone(),
+            request: request.clone(),
+        };
+        socket
+            .send(Message::Text(serde_json::to_string(&header)?.into()))
+            .map_err(|_| anyhow!("sidecar request header send failed"))?;
+        socket
+            .send(Message::Binary(pcm_bytes.into()))
+            .map_err(|_| anyhow!("sidecar PCM send failed"))?;
+        let response_message = socket
+            .read()
+            .map_err(|error| anyhow!("sidecar response read failed: {error}"))?;
+        let response_text = response_message
+            .into_text()
+            .map_err(|_| anyhow!("sidecar response was not JSON text"))?;
+        let response: SidecarWireResponse =
+            serde_json::from_str(&response_text).context("sidecar response JSON was invalid")?;
+        if response.protocol_version != SIDECAR_PROTOCOL_VERSION {
+            bail!("sidecar protocol version mismatch");
+        }
+        if let Some(error) = response.error {
+            bail!("sidecar returned normalized error {error:?}");
+        }
+        let payload = response
+            .payload
+            .ok_or_else(|| anyhow!("sidecar response omitted payload"))?;
+        if payload.identity != request.identity || payload.provider_id != TailProviderId::Sidecar {
+            bail!("sidecar response identity/provider mismatch");
+        }
+        payload.validate()?;
+        Ok(payload)
+    }
+}
+
+fn sidecar_socket_address(endpoint: &str) -> Result<SocketAddr> {
+    let url = Url::parse(endpoint).context("invalid sidecar endpoint")?;
+    if url.scheme() != "ws" || url.path() != "/tail" || url.query().is_some() {
+        bail!("sidecar endpoint must be ws://127.0.0.1:<port>/tail");
+    }
+    let host = url
+        .host_str()
+        .ok_or_else(|| anyhow!("sidecar endpoint has no host"))?;
+    let ip: IpAddr = host
+        .trim_matches(['[', ']'])
+        .parse()
+        .map_err(|_| anyhow!("sidecar endpoint must use a numeric loopback host"))?;
+    if !ip.is_loopback() {
+        bail!("sidecar endpoint must stay on loopback");
+    }
+    let port = url
+        .port()
+        .ok_or_else(|| anyhow!("sidecar endpoint has no port"))?;
+    Ok(SocketAddr::new(ip, port))
+}
+
+fn pcm_f32le(pcm: &[f32]) -> Result<Vec<u8>> {
+    let byte_len = pcm
+        .len()
+        .checked_mul(std::mem::size_of::<f32>())
+        .ok_or_else(|| anyhow!("sidecar PCM byte length overflow"))?;
+    if byte_len > MAX_TAIL_PROVIDER_PCM_BYTES {
+        bail!("sidecar PCM exceeds bounded request size");
+    }
+    let mut bytes = Vec::with_capacity(byte_len);
+    for sample in pcm {
+        if !sample.is_finite() {
+            bail!("sidecar PCM contains a non-finite sample");
+        }
+        bytes.extend_from_slice(&sample.to_le_bytes());
+    }
+    Ok(bytes)
+}
+
+fn decode_pcm_f32le(bytes: &[u8]) -> Result<Vec<f32>> {
+    if bytes.len() > MAX_TAIL_PROVIDER_PCM_BYTES || !bytes.len().is_multiple_of(4) {
+        bail!("sidecar PCM frame has an invalid bounded length");
+    }
+    bytes
+        .chunks_exact(4)
+        .map(|chunk| {
+            let sample = f32::from_le_bytes(chunk.try_into().expect("four-byte chunk"));
+            if sample.is_finite() {
+                Ok(sample)
+            } else {
+                bail!("sidecar PCM contains a non-finite sample")
+            }
+        })
+        .collect()
+}
+
+/// Serve the sidecar protocol on an explicitly loopback address. This API owns
+/// no capture device: its only audio input is the binary PCM WebSocket frame.
+pub fn serve_sidecar(
+    bind: SocketAddr,
+    token: String,
+    provider: &dyn TailProvider,
+    parent_pid: Option<u32>,
+) -> Result<()> {
+    if !bind.ip().is_loopback() || token.len() < 32 {
+        bail!("sidecar requires loopback bind and a process token");
+    }
+    let listener = TcpListener::bind(bind).context("bind sidecar loopback listener")?;
+    listener
+        .set_nonblocking(true)
+        .context("set sidecar listener nonblocking")?;
+    loop {
+        if parent_pid.is_some_and(|pid| !parent_process_alive(pid)) {
+            return Ok(());
+        }
+        match listener.accept() {
+            Ok((stream, _)) => {
+                let _ = handle_sidecar_connection(stream, &token, provider);
+            }
+            Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {
+                std::thread::sleep(Duration::from_millis(20));
+            }
+            Err(error) => return Err(error).context("accept sidecar connection"),
+        }
+    }
+}
+
+fn handle_sidecar_connection(
+    stream: TcpStream,
+    token: &str,
+    provider: &dyn TailProvider,
+) -> Result<()> {
+    stream.set_nonblocking(false)?;
+    stream.set_read_timeout(Some(SIDECAR_IO_TIMEOUT))?;
+    stream.set_write_timeout(Some(SIDECAR_IO_TIMEOUT))?;
+    let mut socket = accept(stream).map_err(|_| anyhow!("sidecar handshake rejected"))?;
+    let header_text = socket
+        .read()
+        .map_err(|error| anyhow!("sidecar header read failed: {error}"))?
+        .into_text()
+        .map_err(|_| anyhow!("sidecar header was not JSON text"))?;
+    let header: SidecarWireRequest = match serde_json::from_str(&header_text) {
+        Ok(header) => header,
+        Err(_) => return send_sidecar_error(&mut socket, SidecarWireError::Protocol),
+    };
+    if header.protocol_version != SIDECAR_PROTOCOL_VERSION || header.token != token {
+        return send_sidecar_error(&mut socket, SidecarWireError::Unauthorized);
+    }
+    let pcm_message = socket
+        .read()
+        .map_err(|_| anyhow!("sidecar PCM read failed"))?;
+    if !pcm_message.is_binary() {
+        return send_sidecar_error(&mut socket, SidecarWireError::Protocol);
+    }
+    let pcm = match decode_pcm_f32le(&pcm_message.into_data()) {
+        Ok(pcm) => pcm,
+        Err(_) => return send_sidecar_error(&mut socket, SidecarWireError::Protocol),
+    };
+    if header.request.validate_pcm(&pcm).is_err() {
+        return send_sidecar_error(&mut socket, SidecarWireError::Protocol);
+    }
+    let started = Instant::now();
+    let mut payload = match provider.transcribe(&header.request, &pcm) {
+        Ok(payload) => payload,
+        Err(_) => return send_sidecar_error(&mut socket, SidecarWireError::Provider),
+    };
+    payload.provider_id = TailProviderId::Sidecar;
+    payload.elapsed_ms = started.elapsed().as_millis().min(u64::MAX as u128) as u64;
+    payload.validate()?;
+    let response = SidecarWireResponse {
+        protocol_version: SIDECAR_PROTOCOL_VERSION,
+        payload: Some(payload),
+        error: None,
+    };
+    socket
+        .send(Message::Text(serde_json::to_string(&response)?.into()))
+        .map_err(|_| anyhow!("sidecar response send failed"))?;
+    Ok(())
+}
+
+fn send_sidecar_error(
+    socket: &mut tokio_tungstenite::tungstenite::WebSocket<TcpStream>,
+    error: SidecarWireError,
+) -> Result<()> {
+    let response = SidecarWireResponse {
+        protocol_version: SIDECAR_PROTOCOL_VERSION,
+        payload: None,
+        error: Some(error),
+    };
+    socket
+        .send(Message::Text(serde_json::to_string(&response)?.into()))
+        .map_err(|_| anyhow!("sidecar error response send failed"))?;
+    Ok(())
+}
+
+#[cfg(target_os = "macos")]
+fn parent_process_alive(pid: u32) -> bool {
+    // SAFETY: signal 0 performs an existence/permission probe and does not
+    // deliver a signal to the parent process.
+    unsafe { libc::kill(pid as libc::pid_t, 0) == 0 }
+}
+
+#[cfg(not(target_os = "macos"))]
+fn parent_process_alive(_pid: u32) -> bool {
+    true
+}
+
+struct SupervisedSidecar {
+    child: Child,
+    endpoint: String,
+    token: String,
+}
+
+impl Drop for SupervisedSidecar {
+    fn drop(&mut self) {
+        let _ = self.child.kill();
+        let _ = self.child.wait();
+    }
+}
+
+#[derive(Default)]
+struct SidecarSupervisor {
+    process: Mutex<Option<SupervisedSidecar>>,
+}
+
+impl SidecarSupervisor {
+    fn transcribe(
+        &self,
+        request: &TailProviderRequest,
+        pcm: &[f32],
+    ) -> Result<TailProviderPayload> {
+        let mut guard = self
+            .process
+            .lock()
+            .map_err(|_| anyhow!("sidecar supervisor lock poisoned"))?;
+        let needs_spawn = guard
+            .as_mut()
+            .map(|process| process.child.try_wait().ok().flatten().is_some())
+            .unwrap_or(true);
+        if needs_spawn {
+            *guard = Some(spawn_sidecar()?);
+        }
+        let process = guard.as_ref().expect("spawned sidecar");
+        let client = SidecarTailProvider::new(&process.endpoint, &process.token)?;
+        match client.transcribe(request, pcm) {
+            Ok(payload) => Ok(payload),
+            Err(error) => {
+                *guard = None;
+                Err(error)
+            }
+        }
+    }
+}
+
+impl TailProvider for SidecarSupervisor {
+    fn provider_id(&self) -> TailProviderId {
+        TailProviderId::Sidecar
+    }
+
+    fn transcribe(
+        &self,
+        request: &TailProviderRequest,
+        pcm: &[f32],
+    ) -> Result<TailProviderPayload> {
+        self.transcribe(request, pcm)
+    }
+}
+
+fn spawn_sidecar() -> Result<SupervisedSidecar> {
+    let reservation =
+        TcpListener::bind((Ipv4Addr::LOCALHOST, 0)).context("reserve sidecar loopback port")?;
+    let address = reservation.local_addr()?;
+    drop(reservation);
+
+    let mut token_bytes = [0_u8; 32];
+    rand::thread_rng().fill_bytes(&mut token_bytes);
+    let token = token_bytes
+        .iter()
+        .map(|byte| format!("{byte:02x}"))
+        .collect::<String>();
+    let binary = resolve_sidecar_binary()?;
+    let mut child = Command::new(&binary)
+        .arg("--bind")
+        .arg(address.to_string())
+        .arg("--parent-pid")
+        .arg(std::process::id().to_string())
+        .env(STT_SIDECAR_TOKEN_ENV, &token)
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .spawn()
+        .with_context(|| format!("spawn sidecar helper {}", binary.display()))?;
+
+    let deadline = Instant::now() + SIDECAR_CONNECT_TIMEOUT;
+    loop {
+        if child.try_wait()?.is_some() {
+            bail!("sidecar helper exited before becoming ready");
+        }
+        if TcpStream::connect_timeout(&address, Duration::from_millis(50)).is_ok() {
+            break;
+        }
+        if Instant::now() >= deadline {
+            let _ = child.kill();
+            let _ = child.wait();
+            bail!("sidecar helper readiness timed out");
+        }
+        std::thread::sleep(Duration::from_millis(20));
+    }
+    Ok(SupervisedSidecar {
+        child,
+        // nosemgrep: javascript.lang.security.detect-insecure-websocket.detect-insecure-websocket -- numeric loopback is enforced by both server and client; TLS adds no trust inside this one-host authenticated channel.
+        endpoint: format!("ws://{address}/tail"),
+        token,
+    })
+}
+
+fn resolve_sidecar_binary() -> Result<PathBuf> {
+    if let Some(path) = std::env::var_os(STT_SIDECAR_BIN_ENV).filter(|value| !value.is_empty()) {
+        return Ok(PathBuf::from(path));
+    }
+    let executable = std::env::current_exe().context("resolve current executable")?;
+    let parent = executable
+        .parent()
+        .ok_or_else(|| anyhow!("current executable has no parent"))?;
+    let sibling = parent.join("codescribe-stt-sidecar");
+    if sibling.is_file() {
+        return Ok(sibling);
+    }
+    if parent.file_name().is_some_and(|name| name == "deps") {
+        let test_sibling = parent
+            .parent()
+            .ok_or_else(|| anyhow!("test executable has no target parent"))?
+            .join("codescribe-stt-sidecar");
+        if test_sibling.is_file() {
+            return Ok(test_sibling);
+        }
+    }
+    Ok(PathBuf::from("codescribe-stt-sidecar"))
+}
+
+#[derive(Debug)]
+pub struct RemoteTailProvider {
+    endpoint: String,
+    api_key: String,
+}
+
+impl RemoteTailProvider {
+    pub fn new(endpoint: impl Into<String>, api_key: impl Into<String>) -> Result<Self> {
+        let endpoint = endpoint.into();
+        validate_remote_endpoint(&endpoint)?;
+        let api_key = api_key.into();
+        if api_key.trim().is_empty() {
+            bail!("STT_API_KEY is required for remote tail provider");
+        }
+        Ok(Self { endpoint, api_key })
+    }
+
+    fn from_config() -> Result<Self> {
+        let config = crate::config::Config::load();
+        let endpoint = config
+            .stt_endpoint
+            .filter(|value| !value.trim().is_empty())
+            .unwrap_or_else(|| DEFAULT_LOCAL_REMOTE_ENDPOINT.to_string());
+        let api_key = config
+            .stt_api_key
+            .filter(|value| !value.trim().is_empty())
+            .ok_or_else(|| anyhow!("STT_API_KEY is required for remote tail provider"))?;
+        Self::new(endpoint, api_key)
+    }
+}
+
+impl TailProvider for RemoteTailProvider {
+    fn provider_id(&self) -> TailProviderId {
+        TailProviderId::Remote
+    }
+
+    fn transcribe(
+        &self,
+        request: &TailProviderRequest,
+        pcm: &[f32],
+    ) -> Result<TailProviderPayload> {
+        request.validate_pcm(pcm)?;
+        let started = Instant::now();
+        let wav = pcm16_wav(pcm, request.sample_rate)?;
+        let language = request.language.as_deref().unwrap_or("pl");
+        let model = std::env::var("WHISPER_MODEL")
+            .unwrap_or_else(|_| "mlx-community/whisper-large-v3-mlx".to_string());
+        let file = Part::bytes(wav)
+            .file_name("tail-window.wav")
+            .mime_str("audio/wav")?;
+        let form = Form::new()
+            .part("file", file)
+            .text("model", model.clone())
+            .text("language", language.to_string())
+            .text("response_format", "verbose_json");
+        let response = Client::builder()
+            .timeout(REMOTE_REQUEST_TIMEOUT)
+            .connect_timeout(SIDECAR_CONNECT_TIMEOUT)
+            .build()?
+            .post(&self.endpoint)
+            .header("x-api-key", &self.api_key)
+            .multipart(form)
+            .send()
+            .context("remote tail request failed")?;
+        if !response.status().is_success() {
+            bail!("remote tail endpoint returned status {}", response.status());
+        }
+        let response: RemoteTailResponse = response
+            .json()
+            .context("remote tail response was not compatible JSON")?;
+        let to_absolute = |seconds: f64| -> u64 {
+            if !seconds.is_finite() || seconds <= 0.0 {
+                return request.identity.range.sample_start;
+            }
+            request
+                .identity
+                .range
+                .sample_start
+                .saturating_add((seconds * request.sample_rate as f64).round() as u64)
+                .min(request.identity.range.sample_end)
+        };
+        let segments = response
+            .segments
+            .into_iter()
+            .map(|segment| TimedTailSegment {
+                text: segment.text,
+                range: TailSampleRange {
+                    session: request.identity.range.session.clone(),
+                    capture_epoch: request.identity.range.capture_epoch,
+                    sample_start: to_absolute(segment.start),
+                    sample_end: to_absolute(segment.end).max(to_absolute(segment.start)),
+                },
+            })
+            .collect();
+        let payload = TailProviderPayload {
+            identity: request.identity.clone(),
+            text: response.text,
+            segments,
+            avg_logprob: response.avg_logprob,
+            compression_ratio: response.compression_ratio,
+            quality_gate_dropped: false,
+            provider_id: TailProviderId::Remote,
+            elapsed_ms: started.elapsed().as_millis().min(u64::MAX as u128) as u64,
+            evidence: TailProviderEvidence {
+                source: TailEvidenceSource::Whisper,
+                revision: Some(model),
+                stability: TailEvidenceStability::Final,
+                timing_quality: TailTimingQuality::ExactSampleRange,
+                avg_logprob: response.avg_logprob,
+            },
+        };
+        payload.validate()?;
+        Ok(payload)
+    }
+}
+
+#[derive(Deserialize)]
+struct RemoteTailResponse {
+    text: String,
+    #[serde(default)]
+    segments: Vec<RemoteTailSegment>,
+    #[serde(default)]
+    avg_logprob: Option<f32>,
+    #[serde(default)]
+    compression_ratio: Option<f32>,
+}
+
+#[derive(Deserialize)]
+struct RemoteTailSegment {
+    text: String,
+    start: f64,
+    end: f64,
+}
+
+pub(crate) fn validate_remote_endpoint(endpoint: &str) -> Result<()> {
+    let url = Url::parse(endpoint).context("invalid remote STT endpoint")?;
+    let host = url
+        .host_str()
+        .ok_or_else(|| anyhow!("remote STT endpoint has no host"))?
+        .trim_matches(['[', ']']);
+    let loopback = host == "localhost" || host.parse::<IpAddr>().is_ok_and(|ip| ip.is_loopback());
+    if url.scheme() != "https" && !(url.scheme() == "http" && loopback) {
+        bail!("remote STT endpoint requires HTTPS except on loopback");
+    }
+    if !url.username().is_empty() || url.password().is_some() {
+        bail!("remote STT endpoint must not contain credentials");
+    }
+    Ok(())
+}
+
+pub(crate) fn pcm16_wav(pcm: &[f32], sample_rate: u32) -> Result<Vec<u8>> {
+    if sample_rate == 0 {
+        bail!("remote tail sample rate must be non-zero");
+    }
+    let data_len = pcm
+        .len()
+        .checked_mul(2)
+        .and_then(|bytes| u32::try_from(bytes).ok())
+        .ok_or_else(|| anyhow!("remote tail PCM is too large for WAV"))?;
+    let mut wav = Vec::with_capacity(44 + data_len as usize);
+    wav.extend_from_slice(b"RIFF");
+    wav.extend_from_slice(&(36_u32 + data_len).to_le_bytes());
+    wav.extend_from_slice(b"WAVEfmt ");
+    wav.extend_from_slice(&16_u32.to_le_bytes());
+    wav.extend_from_slice(&1_u16.to_le_bytes());
+    wav.extend_from_slice(&1_u16.to_le_bytes());
+    wav.extend_from_slice(&sample_rate.to_le_bytes());
+    wav.extend_from_slice(&(sample_rate * 2).to_le_bytes());
+    wav.extend_from_slice(&2_u16.to_le_bytes());
+    wav.extend_from_slice(&16_u16.to_le_bytes());
+    wav.extend_from_slice(b"data");
+    wav.extend_from_slice(&data_len.to_le_bytes());
+    for sample in pcm {
+        if !sample.is_finite() {
+            bail!("remote tail PCM contains a non-finite sample");
+        }
+        let value = (sample.clamp(-1.0, 1.0) * i16::MAX as f32).round() as i16;
+        wav.extend_from_slice(&value.to_le_bytes());
+    }
+    Ok(wav)
+}
+
 /// Resolve and run the configured provider, emitting only content-free receipt
-/// fields. Sidecar and remote values are parsed now but intentionally remain
-/// unarmed until W13-2B supplies their implementations.
+/// fields. New transports remain opt-in; their failure returns through the
+/// in-process provider instead of starving the tail lane.
 pub fn transcribe_configured(
     request: &TailProviderRequest,
     pcm: &[f32],
@@ -426,18 +1143,60 @@ pub fn transcribe_configured(
         Err(std::env::VarError::NotPresent) => TailProviderId::InProcess,
         Err(error) => return Err(error.into()),
     };
-    let payload = match provider_id {
-        TailProviderId::InProcess => InProcessTailProvider.transcribe(request, pcm)?,
-        TailProviderId::Sidecar | TailProviderId::Remote => {
-            bail!(
-                "tail provider {} is not armed until W13-2B",
-                provider_id.as_str()
-            )
+    let inprocess = InProcessTailProvider;
+    let outcome = match provider_id {
+        TailProviderId::InProcess => {
+            let started = Instant::now();
+            let payload = inprocess.transcribe(request, pcm)?;
+            TailProviderOutcome {
+                receipt: TailProviderReceipt {
+                    identity: request.identity.clone(),
+                    requested_provider: TailProviderId::InProcess,
+                    served_provider: TailProviderId::InProcess,
+                    fallback_used: false,
+                    primary_failure: None,
+                    elapsed_ms: started.elapsed().as_millis().min(u64::MAX as u128) as u64,
+                },
+                payload,
+            }
         }
+        TailProviderId::Sidecar => {
+            static SIDECAR: OnceLock<SidecarSupervisor> = OnceLock::new();
+            transcribe_with_fallback(
+                SIDECAR.get_or_init(SidecarSupervisor::default),
+                &inprocess,
+                TailProviderFailureKind::Unavailable,
+                request,
+                pcm,
+            )?
+        }
+        TailProviderId::Remote => match RemoteTailProvider::from_config() {
+            Ok(remote) => transcribe_with_fallback(
+                &remote,
+                &inprocess,
+                TailProviderFailureKind::RemoteRequest,
+                request,
+                pcm,
+            )?,
+            Err(_) => transcribe_with_fallback(
+                &UnavailableTailProvider(TailProviderId::Remote),
+                &inprocess,
+                TailProviderFailureKind::RemoteRequest,
+                request,
+                pcm,
+            )?,
+        },
         TailProviderId::Fake => unreachable!("fake is injectable, never selected from config"),
     };
+    let payload = outcome.payload;
     tracing::info!(
-        provider = payload.provider_id.as_str(),
+        requested_provider = outcome.receipt.requested_provider.as_str(),
+        served_provider = outcome.receipt.served_provider.as_str(),
+        fallback_used = outcome.receipt.fallback_used,
+        primary_failure = outcome
+            .receipt
+            .primary_failure
+            .map(TailProviderFailureKind::as_str),
         request_id = payload.identity.request_id,
         capture_epoch = payload.identity.range.capture_epoch,
         sample_start = payload.identity.range.sample_start,
@@ -446,7 +1205,8 @@ pub fn transcribe_configured(
         evidence_source = payload.evidence.source.as_str(),
         timing_quality = payload.evidence.timing_quality.as_str(),
         avg_logprob = payload.evidence.avg_logprob,
-        elapsed_ms = payload.elapsed_ms,
+        provider_elapsed_ms = payload.elapsed_ms,
+        routing_elapsed_ms = outcome.receipt.elapsed_ms,
         "tail_provider_receipt"
     );
     Ok(payload)

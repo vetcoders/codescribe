@@ -577,7 +577,21 @@ default = "inprocess"
 type = "string"
 reload = "hot"
 category = "stt"
-description = "Tail-patch provider contract selector: inprocess is the only armed implementation in W13-2A; sidecar and remote parse but fail closed until W13-2B supplies their hosts. Default flips remain an operator decision."
+description = "Tail-patch provider selector: inprocess | sidecar | remote. Sidecar and remote fall back to inprocess with typed receipts. Default remains inprocess; flipping it is an operator decision."
+
+[vars.CODESCRIBE_STT_SIDECAR_BIN]
+default = ""
+type = "path"
+reload = "restart"
+category = "stt"
+description = "Development override for the codescribe-stt-sidecar executable; packaged apps resolve the bundled sibling automatically."
+
+[vars.CODESCRIBE_STT_SIDECAR_TOKEN]
+default = ""
+type = "secret"
+reload = "restart"
+category = "internal"
+description = "Internal per-process sidecar authentication token injected only into the supervised child. Never configure or persist this value."
 
 [vars.CODESCRIBE_TAIL_PATCH_MAX_CHANGE_RATIO]
 default = "0.5"
@@ -780,7 +794,7 @@ default = ""
 type = "string"
 reload = "restart"
 category = "stt"
-description = "Cloud STT API endpoint (when USE_LOCAL_STT=0)"
+description = "Multipart STT API endpoint used by cloud final pass and STT_TAIL_PROVIDER=remote; remote tail defaults to the loopback endpoint when unset"
 
 [vars.STT_API_KEY]
 default = ""
