@@ -13,6 +13,9 @@ use tokio::time::{Duration, Instant};
 use tracing::{debug, error, info, warn};
 
 use crate::asr_session::recorder::{Layer1Decision, RecorderLifecycleEvents};
+use crate::audio::capture_receipt::{
+    CaptureLevelAccumulator, CapturePathMeta, emit_capture_level_receipt,
+};
 use crate::audio::chunker::{SpeechEvent, SpeechSession};
 use crate::pipeline::contracts::{
     DropKind, EngineEvent, EventSink, LayerSource, LayerSummary, TranscriptSegment,
@@ -498,6 +501,7 @@ pub(crate) async fn vad_transcription_session(
 
     info!("Transcription session started (event-based pipeline)");
     let session_id = uuid::Uuid::new_v4().to_string();
+    let mut capture_level = CaptureLevelAccumulator::new();
 
     let mut session = if let Some(sec) = utterance_silence_sec {
         SpeechSession::new_utterance_with_silence(sample_rate, sec)
@@ -768,6 +772,7 @@ pub(crate) async fn vad_transcription_session(
             maybe_data = chunk_receiver.recv(), if !audio_closed => {
                 match maybe_data {
                     Some(data) => {
+                        capture_level.push_samples(&data);
                         for event in session.feed(&data, sample_rate) {
                             let speech_vad_samples = session.take_event_speech_vad_samples();
                             let max_speech_prob = session.segment_speech_prob();
@@ -1590,6 +1595,10 @@ pub(crate) async fn vad_transcription_session(
     });
 
     log_tail_patch_session_receipt(tail_patch_replacements, tail_patch_skips);
+    emit_capture_level_receipt(
+        event_sink.as_ref(),
+        &capture_level.finalize(CapturePathMeta::resolve(sample_rate, 1, None)),
+    );
     emit_session_finalised(event_sink.as_ref(), session_id, tail_patch_replacements);
 
     if dropped_utterances > 0 {

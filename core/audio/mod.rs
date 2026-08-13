@@ -8,6 +8,8 @@
 
 /// Offline audio archive helpers (internal packaging of captured WAV/PCM).
 pub(crate) mod archive;
+/// Per-session capture-level receipt (active-speech RMS, non-terminal WARN).
+pub mod capture_receipt;
 /// Fixed-size PCM framing for STT windows and streaming hops.
 pub mod chunker;
 /// Decode audio files (WAV/MP3/…) into mono PCM for the STT path.
