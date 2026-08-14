@@ -231,6 +231,27 @@ impl TranscriptReducer {
         else {
             return false;
         };
+        // Last-mile duplicate guard. A patch is computed against the canvas as
+        // it stood when Layer 1 was dispatched; by the time it arrives SFSpeech
+        // may have restated the SAME utterance at greater length, already
+        // delivering the words the patch recovers. Measured 2026-08-14: an
+        // append computed for a 15-character canvas landed on the 47-character
+        // restatement of it and duplicated the phrase ("…hard pruna I road
+        // która pozwoli nam na zrobienie hard Pru."), costing more WER than the
+        // recovery gained. Only pure insertions are checked — a substitution
+        // replaces the very span it would be compared against.
+        if let EngineEvent::ReplaceRange {
+            start, end, text, ..
+        } = event
+            && start == end
+            && codescribe_core::stt::tail_patcher::text_already_carries(&record.text, text)
+        {
+            tracing::debug!(
+                utterance_id,
+                "layered patch already carried by the canvas; dropped"
+            );
+            return false;
+        }
         match event.apply_to_committed_text(&mut record.text) {
             Ok(applied) => applied,
             Err(error) => {
@@ -666,6 +687,63 @@ mod tests {
     };
     use std::sync::{Arc, Mutex as StdMutex};
     use tokio::sync::Mutex;
+
+    /// Regression for the 2026-08-14 patch/restatement race.
+    ///
+    /// Layer 1 computes a recovery against the canvas as it stood when the job
+    /// was dispatched. SFSpeech may then restate the SAME utterance at greater
+    /// length and deliver those words itself. Measured on take 144425: the
+    /// append was computed for a 15-character canvas, the final arrived at 47
+    /// characters carrying the phrase, and applying the patch duplicated it
+    /// ("…hard pruna I road która pozwoli nam na zrobienie hard Pru.") — three
+    /// repeated 4-grams, WER 0.463 → 0.610. The reducer is the last place that
+    /// sees the canvas as it actually stands, so the guard belongs here.
+    #[test]
+    fn patch_already_delivered_by_a_restatement_is_dropped() {
+        let mut reducer = SessionTranscriptState::default();
+        reducer.apply_event(&EngineEvent::UtteranceFinal {
+            utterance_id: 6,
+            text: "I road która pozwoli nam na zrobienie hard Pru.".to_string(),
+            raw_text: "i road ktora pozwoli nam na zrobienie hard pru".to_string(),
+            start_ts: 0.0,
+            end_ts: 1.0,
+            segments: Vec::new(),
+            vad_speech_pct: None,
+            avg_logprob: None,
+            compression_ratio: None,
+            quality_gate_dropped: false,
+            confidence_flags: Vec::new(),
+        });
+        let before = reducer.rendered_text();
+
+        // The patch Layer 1 computed against the earlier, shorter canvas.
+        reducer.apply_event(&EngineEvent::ReplaceRange {
+            utterance_id: 6,
+            start: 5,
+            end: 5,
+            text: " która pozwoli nam na zrobienie hard pruna".to_string(),
+            source: LayerSource::TailPatch,
+        });
+        assert_eq!(
+            reducer.rendered_text(),
+            before,
+            "a recovery the restatement already delivered must not be applied twice"
+        );
+
+        // A genuine gap fill on the same utterance still lands.
+        reducer.apply_event(&EngineEvent::ReplaceRange {
+            utterance_id: 6,
+            start: 46,
+            end: 46,
+            text: " przed wydaniem".to_string(),
+            source: LayerSource::TailPatch,
+        });
+        assert!(
+            reducer.rendered_text().contains("przed wydaniem"),
+            "novel recovered material must still reach the canvas: {:?}",
+            reducer.rendered_text()
+        );
+    }
 
     /// Regression for the 2026-08-14 tripled-RAW incident (Monika's take:
     /// reducer said 228 chars, the RAW pulled by `recorder.stop()` said 791).

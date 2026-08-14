@@ -512,6 +512,21 @@ fn alignment_key(token: &str) -> String {
 /// zrobienie" (3) recurs naturally, "która pozwoli nam na" (4) does not.
 pub const DUPLICATE_RUN_TOKENS: usize = 4;
 
+/// Whether `canvas` already carries the words in `candidate`.
+///
+/// Public seam for the presentation layer, which applies a patch against the
+/// canvas as it stands NOW — not the canvas the patch was computed against.
+/// Measured 2026-08-14: Layer 1 computed an append for a 15-character canvas
+/// while SFSpeech went on to restate the SAME utterance at 47 characters,
+/// already delivering the words the append recovered; the append landed on the
+/// restatement and duplicated the phrase.
+pub fn text_already_carries(canvas: &str, candidate: &str) -> bool {
+    let canvas_tokens = tokenize(canvas);
+    let candidate_tokens = tokenize(candidate);
+    let refs: Vec<&Token> = candidate_tokens.iter().collect();
+    canvas_already_carries(&canvas_tokens, &refs)
+}
+
 /// Whether the canvas already carries this recovered run of words.
 ///
 /// Compared on [`alignment_key`] — the same key the aligner matches on — so a
