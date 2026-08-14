@@ -817,7 +817,24 @@ fn resolve_sealed_audio_window(
     state: &mut AppleSealState,
     end_ts: f32,
 ) -> Option<ResolvedAudioWindow> {
-    let from = state.last_sealed_end;
+    let mut from = state.last_sealed_end;
+    // A `from` that fell off retention is not a disagreeing clock — that audio
+    // is gone because SFSpeech withheld its first final past the retention
+    // horizon (measured 2026-08-14: a 247 s take whose first final arrived at
+    // 156 s went 11/11 unresolved and starved Layer 1 for the WHOLE take,
+    // because one miss keeps `last_sealed_end` pinned forever). Clamp the
+    // start to retained audio; genuine clock lies (an `end_ts` that itself
+    // precedes retention or overshoots the session) stay fail-closed below.
+    let retained_start = state.audio.retained_start_secs();
+    if from < retained_start && end_ts > retained_start {
+        warn!(
+            from_secs = from,
+            retained_start_secs = retained_start,
+            end_ts,
+            "Apple seal window start fell off retention — clamped to retained audio"
+        );
+        from = retained_start;
+    }
     match state.audio.window_with_range(from, end_ts) {
         Some(window) => {
             state.last_sealed_end = end_ts;
@@ -2864,6 +2881,45 @@ mod tests {
             state.tail_patch_awaiting_completion, 1,
             "an accepted request is what the end-of-session closure loop owes a wait to"
         );
+    }
+
+    /// A first final that arrives after the retention horizon must not poison
+    /// the whole session. Measured live 2026-08-14: a 247 s take whose first
+    /// SFSpeech final came at 156 s went 11/11 unresolved — `last_sealed_end`
+    /// stayed 0.0 because it only advances on success, so Layer 1 received
+    /// zero windows for the entire take. The window start clamps to retained
+    /// audio (everything older is committed canvas by definition); a genuinely
+    /// lying `end_ts` stays fail-closed.
+    #[test]
+    fn seal_window_clamps_start_after_retention_eviction() {
+        let mut state = AppleSealState::new(TEST_SAMPLE_RATE);
+        push_capture(&mut state, 200.0);
+        let retained_start = state.audio.retained_start_secs();
+        assert!(
+            retained_start > 0.0,
+            "fixture must push past the retention cap to evict the session head"
+        );
+
+        let window = resolve_sealed_audio_window(&mut state, 150.0)
+            .expect("stale `from` must clamp to retained audio, not fail the take");
+        assert_eq!(
+            window.sample_start,
+            (retained_start as f64 * TEST_SAMPLE_RATE as f64) as u64,
+            "clamped window starts at the oldest retained sample"
+        );
+        assert_eq!(window.sample_end, 150 * TEST_SAMPLE_RATE as u64);
+
+        // The poison spiral is broken: the next window chains normally.
+        let next = resolve_sealed_audio_window(&mut state, 180.0)
+            .expect("later windows must resolve once the first seal landed");
+        assert_eq!(next.sample_start, 150 * TEST_SAMPLE_RATE as u64);
+
+        // A boundary that precedes the already-sealed canvas is still a lie.
+        assert!(
+            resolve_sealed_audio_window(&mut state, 100.0).is_none(),
+            "end_ts behind the sealed canvas must stay fail-closed"
+        );
+        assert_eq!(state.unresolved_windows, 1);
     }
 
     /// SFSpeech may report a word end a few milliseconds past PCM capture.
