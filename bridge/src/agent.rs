@@ -749,14 +749,17 @@ fn build_bridge_stream_options(ai_assistive_max_tokens: i32) -> StreamOptions {
 /// Compose the agent system prompt exactly like the controller path
 /// (`app/controller/helpers.rs::compose_agent_system_prompt`): the base assistive
 /// prompt, the WORKSPACE section (6238ca1) that pins project roots and tells the
-/// model to resolve names via `list_projects` instead of guessing paths, and the
+/// model to resolve names via `list_projects` instead of guessing paths, the
 /// review-tool + connector doctrine for long-running MCP review calls and
-/// GitHub-connector fallback.
+/// GitHub-connector fallback, and the measured Responses/streaming API ground
+/// truth with the answer-first rule (operator incident 2026-08-14: a spoken
+/// engine question got a clarification questionnaire instead of an answer).
 fn compose_agent_system_prompt() -> String {
     let base = codescribe_core::config::prompts::get_assistive_prompt();
     let workspace = codescribe::agent::tools::workspace::workspace_prompt_section();
     let doctrine = codescribe::agent::tools::doctrine::review_doctrine_prompt_section();
-    format!("{base}\n\n{workspace}\n\n{doctrine}")
+    let api_truth = codescribe::agent::tools::api_truth::responses_api_prompt_section();
+    format!("{base}\n\n{workspace}\n\n{doctrine}\n\n{api_truth}")
 }
 
 /// Load + validate composer attachments into vision `ImageAttachment`s.

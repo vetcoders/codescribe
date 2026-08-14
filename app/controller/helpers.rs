@@ -499,12 +499,16 @@ fn build_agent_stream_options(
 fn compose_agent_system_prompt(use_assistive_persona: bool) -> String {
     let workspace = crate::agent::tools::workspace::workspace_prompt_section();
     let doctrine = crate::agent::tools::doctrine::review_doctrine_prompt_section();
+    // Measured Responses/streaming contract facts + the answer-first rule —
+    // rides BOTH lanes so a spoken engine question gets substance, not a
+    // clarification questionnaire (operator incident 2026-08-14).
+    let api_truth = crate::agent::tools::api_truth::responses_api_prompt_section();
     if use_assistive_persona {
         let base = crate::config::get_assistive_prompt();
-        format!("{base}\n\n{workspace}\n\n{doctrine}")
+        format!("{base}\n\n{workspace}\n\n{doctrine}\n\n{api_truth}")
     } else {
         format!(
-            "You are the Codescribe agent. Answer and act on the user's spoken request using the available tools when helpful.\n\n{workspace}\n\n{doctrine}"
+            "You are the Codescribe agent. Answer and act on the user's spoken request using the available tools when helpful.\n\n{workspace}\n\n{doctrine}\n\n{api_truth}"
         )
     }
 }
