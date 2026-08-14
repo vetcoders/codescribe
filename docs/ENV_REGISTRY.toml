@@ -439,11 +439,11 @@ category = "stt"
 description = "W13-6B span-based overlay highlight layer (lexicon-corrected words + Silero speech-gap pustki) and one-click send-span-to-Teach. Default OFF. No new permission prompts; consumes ReplaceRange/on_final/VAD data already crossing the bridge after W13-3A."
 
 [vars.CODESCRIBE_SILERO_FUSION]
-default = "0"
+default = "1"
 type = "bool"
 reload = "restart"
 category = "stt"
-description = "W13-3B Silero-identity conservative fusion lane. Default OFF. When 1/true/on: Supervisor edges mint utterance ids at Apple PCM ingress, cumulative Apple finals are sliced by time, and Whisper/Apple fuse by span overlap (agreements + clear gap fills; unresolved alternatives are receipted). No default flip."
+description = "W13-3B Silero-identity seal authority. Default ON since 2026-08-14 — the flag is the OFF switch. Armed: Supervisor edges mint utterance ids at Apple PCM ingress, cumulative Apple finals are sliced by time onto those ranges, sealed spans carry silero_utterance_id, and Whisper/Apple fuse by span overlap (agreements + clear gap fills; unresolved alternatives are receipted). Set 0/false/no/off to return seal identity to Apple segment boundaries; the session Silero still runs whenever hands-free silence arms the engine lifecycle."
 
 [vars.CODESCRIBE_SILERO_FUSION_CONTEXT]
 default = "utterance"

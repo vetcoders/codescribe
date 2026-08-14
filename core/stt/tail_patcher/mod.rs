@@ -160,6 +160,46 @@ pub fn under_commit_min_retranscribed(committed_tokens: usize) -> usize {
 /// and Layer 0 stands.
 pub const UNDER_COMMIT_MIN_COVERAGE: f64 = 0.8;
 
+/// Canvas/re-transcription token ratio under which the canvas is treated as
+/// *structurally starved* rather than merely incomplete: Whisper carries about
+/// three times the material Layer 0 committed.
+pub const UNDER_COMMIT_STARVED_CANVAS_RATIO: f64 = 0.35;
+
+/// Coverage required of a structurally starved canvas.
+///
+/// # Why the full bar is the wrong instrument here
+///
+/// Token coverage measures whether the two texts agree on *words*. That is a
+/// sound proxy for "same speech" while Layer 0 hears well. It stops being one
+/// exactly when this lane matters most: when SFSpeech mangles the phonetics,
+/// its tokens stop matching anything ("zrób z loctree" committed as "gdzieś in.
+/// zrope"), coverage collapses, and the full bar rejects the recovery — so the
+/// worse Layer 0 heard, the more certain the rejection. Measured on the
+/// operator's live log 2026-08-14: 295 change-ratio skips, 181 of them (61%)
+/// carrying MORE material than the canvas, 5341 characters of speech discarded;
+/// the sharpest single case committed 15 characters against 223 re-transcribed.
+///
+/// What the full bar is really defending against — an unrelated decode pasting
+/// its text onto the user's transcript — cannot happen on this seam: the window
+/// handed to Whisper is cut from the sealed span's own PCM range
+/// (`resolve_sealed_audio_window`), so both texts describe the same samples by
+/// construction. Audio identity is the guarantee; token coverage was standing
+/// in for it. A starved canvas therefore keeps a real but lower bar — enough
+/// anchors to place appends honestly, not enough to demand agreement from a
+/// canvas that is mostly noise. Everything unplaceable still escalates to
+/// `residual_required`; nothing is ever rewritten.
+pub const UNDER_COMMIT_STARVED_MIN_COVERAGE: f64 = 0.45;
+
+/// Coverage bar for this canvas: the full bar normally, the starved bar when
+/// Whisper carries several times the canvas's material.
+pub fn under_commit_min_coverage(commit_ratio: f64) -> f64 {
+    if commit_ratio <= UNDER_COMMIT_STARVED_CANVAS_RATIO {
+        UNDER_COMMIT_STARVED_MIN_COVERAGE
+    } else {
+        UNDER_COMMIT_MIN_COVERAGE
+    }
+}
+
 /// Parse a layered-transcription phase token (`phase1`..`phase4` or bare `1`..`4`).
 ///
 /// Returns `None` for off/empty/garbage — including final-pass tokens
@@ -466,6 +506,28 @@ fn alignment_key(token: &str) -> String {
     }
 }
 
+/// Whether the canvas already carries this recovered run of words.
+///
+/// Compared on [`alignment_key`] — the same key the aligner matches on — so a
+/// phrase the canvas holds in mangled casing/punctuation still counts as
+/// present. Single-token runs are exempt: one repeated short word ("i", "no")
+/// is ordinary speech, not a duplicated recovery, and refusing those would
+/// starve the lane again.
+fn canvas_already_carries(canvas: &[Token], recovered: &[&Token]) -> bool {
+    if recovered.len() < 2 {
+        return false;
+    }
+    let needle: Vec<String> = recovered
+        .iter()
+        .map(|token| alignment_key(&token.text))
+        .collect();
+    let hay: Vec<String> = canvas
+        .iter()
+        .map(|token| alignment_key(&token.text))
+        .collect();
+    hay.windows(needle.len()).any(|window| window == needle)
+}
+
 /// Longest-common-subsequence alignment over normalized token keys
 /// ([`alignment_key`]).
 ///
@@ -560,13 +622,29 @@ fn classify_under_commit(
         return None;
     }
     let coverage = matched.len() as f64 / committed_tokens as f64;
-    if coverage < UNDER_COMMIT_MIN_COVERAGE {
+    let min_coverage = under_commit_min_coverage(commit_ratio);
+    // Two different decisions were fused into this one bar, and fusing them is
+    // what discarded speech:
+    //
+    // 1. May recovered material be PLACED into the canvas? That needs trusted
+    //    anchors — a matched committed token to append beside — so it keeps the
+    //    coverage bar.
+    // 2. May the recovery be ESCALATED to the stop path? That touches nothing
+    //    live, so a failed coverage check is no argument for dropping it. Under
+    //    the old rule the answer to both was "no", and 5341 measured characters
+    //    left as a `change_ratio` receipt.
+    //
+    // Below the bar the canvas is too mangled to anchor against, so nothing is
+    // placed inline — but the material is owed to the stop path, not to /dev/null.
+    let anchors_trusted = coverage >= min_coverage;
+    if !anchors_trusted && commit_ratio > UNDER_COMMIT_STARVED_CANVAS_RATIO {
+        // Not starved and not alignable: ordinary divergence, Layer 0 stands.
         return None;
     }
 
     let mut appends: Vec<EngineEvent> = Vec::new();
     let mut residual_required = false;
-    for g in groups {
+    for g in groups.iter().filter(|_| anchors_trusted) {
         if g.retranscribed.is_empty() {
             // Deletion: Whisper heard less here. Nothing was recovered, and v1
             // never removes text the user already saw.
@@ -588,6 +666,27 @@ fn classify_under_commit(
             .map(|idx| r_tokens[idx].text.as_str())
             .collect::<Vec<_>>()
             .join(" ");
+        // Anti-duplication: a gap the aligner found is not always a gap in the
+        // SPEECH. When Layer 0 mangled the words around a phrase, the aligner
+        // cannot match them, so a phrase the canvas already carries reads as
+        // missing and gets appended a second time. Measured 2026-08-14 on the
+        // operator's take, the moment recoveries first reached the canvas:
+        // "…która pozwoli nam na zrobienie hard pruna I road która pozwoli nam
+        // na zrobienie hard Pru." — three repeated 4-grams, and a WER worse
+        // than before the recovery landed. A recovery whose words already sit
+        // in the canvas is a re-hearing of mangled text, not lost speech: it
+        // belongs to substitution (which this lane does not do) or to the stop
+        // path, never to a second copy in front of the user.
+        if canvas_already_carries(
+            c_tokens,
+            &g.retranscribed
+                .clone()
+                .map(|idx| &r_tokens[idx])
+                .collect::<Vec<_>>(),
+        ) {
+            residual_required = true;
+            continue;
+        }
         // Zero-width range: a pure append at a boundary between committed
         // tokens, never a replacement of one.
         let (start, text) = if g.has_prev_match {
@@ -629,6 +728,9 @@ fn classify_under_commit(
         retranscribed_tokens,
         commit_ratio,
         coverage,
+        min_coverage,
+        starved_canvas = min_coverage < UNDER_COMMIT_MIN_COVERAGE,
+        anchors_trusted,
         gap_appends = under.appends.len(),
         residual_required = under.residual_required,
         "tail_patch_under_commit"
@@ -1243,6 +1345,112 @@ mod tests {
                 .contains("kombos"),
             "the corrected word must land on the canvas"
         );
+    }
+
+    /// A canvas that is mostly mangled must still be recoverable.
+    ///
+    /// The operator's live log 2026-08-14: SFSpeech committed a fragment while
+    /// Whisper heard the whole sentence, and the full coverage bar rejected the
+    /// recovery precisely because Layer 0 had mangled the words it did commit —
+    /// the worse it heard, the fewer tokens matched, the more certain the
+    /// rejection. 5341 characters of speech went to the receipt that way.
+    /// The canvas here mirrors the measured shape (a short mangled fragment
+    /// against a re-transcription carrying several times the material).
+    #[test]
+    fn starved_canvas_recovers_instead_of_being_rejected_for_low_coverage() {
+        let cfg = TailPatchConfig::default();
+        // Two canvas tokens survive inside the re-transcription; the rest is
+        // mangled — coverage 0.5, under the full 0.8 bar, over the starved one.
+        let committed = "no gdzieś in zrope analizę";
+        let retranscribed = "zrób z loctree analizę pełną martwego kodu bo mamy nową wersję \
+             która pozwoli nam zrobić hard pruna przed wydaniem";
+        let outcome = compute_tail_patch(committed, retranscribed, 7, &cfg);
+        let under = match &outcome {
+            TailPatchOutcome::UnderCommit(under) => under,
+            other => panic!("a starved canvas must classify as under-commit, got {other:?}"),
+        };
+        assert!(
+            under.residual_required,
+            "a canvas too mangled to anchor against owes its recovery to the stop \
+             path — it must never be dropped as a change-ratio receipt"
+        );
+        // Nothing is placed inline: the anchors are not trustworthy, so the
+        // canvas the user is watching is left exactly as it was.
+        assert!(
+            under.appends.is_empty(),
+            "untrusted anchors must not place text into the live canvas"
+        );
+        assert_eq!(apply_all(committed, &outcome), committed);
+    }
+
+    /// The same lane, with a canvas Layer 0 heard well enough to anchor against:
+    /// here the recovery lands inline, append-only, and the canvas grows.
+    #[test]
+    fn starved_canvas_with_trusted_anchors_places_the_recovery_inline() {
+        let cfg = TailPatchConfig::default();
+        let committed = "mamy nową wersję";
+        let retranscribed = "mamy nową wersję pełną analizę martwego kodu która pozwoli nam zrobić \
+             hard pruna przed wydaniem";
+        let outcome = compute_tail_patch(committed, retranscribed, 9, &cfg);
+        let under = match &outcome {
+            TailPatchOutcome::UnderCommit(under) => under,
+            other => panic!("under-commit expected, got {other:?}"),
+        };
+        assert!(
+            !under.appends.is_empty(),
+            "trusted anchors must place the recovered material"
+        );
+        let applied = apply_all(committed, &outcome);
+        assert!(
+            applied.len() > committed.len(),
+            "canvas must grow: {applied:?}"
+        );
+        for token in ["mamy", "nową", "wersję"] {
+            assert!(
+                applied.contains(token),
+                "committed text must never be rewritten, missing {token:?} in {applied:?}"
+            );
+        }
+    }
+
+    /// The live canvas stays protected: a re-transcription that shares almost
+    /// nothing with the canvas may still be owed to the stop path (which has its
+    /// own hallucination and semantic gates), but it must never place a single
+    /// character into the text the user is watching.
+    #[test]
+    fn low_agreement_recovery_never_touches_the_live_canvas() {
+        let cfg = TailPatchConfig::default();
+        let committed = "spotkanie o dziesiątej";
+        let retranscribed = "całkiem inne zdanie o zupełnie innych sprawach które nigdy nie padło \
+             w tym nagraniu ani razu w żadnej formie";
+        let outcome = compute_tail_patch(committed, retranscribed, 8, &cfg);
+        match &outcome {
+            TailPatchOutcome::Skipped { .. } => {}
+            TailPatchOutcome::UnderCommit(under) => assert!(
+                under.appends.is_empty() && under.residual_required,
+                "low agreement may only escalate, never place: {under:?}"
+            ),
+            other => panic!("a low-agreement decode must not patch inline, got {other:?}"),
+        }
+        assert_eq!(
+            apply_all(committed, &outcome),
+            committed,
+            "the canvas the user is watching must be byte-identical"
+        );
+    }
+
+    /// Ordinary divergence on a HEALTHY canvas keeps the old contract: Layer 0
+    /// stands, nothing escalates. The starved path must not become a blanket
+    /// amnesty for every disagreement.
+    #[test]
+    fn divergence_on_a_healthy_canvas_still_skips() {
+        let cfg = TailPatchConfig::default();
+        let committed = "spotkanie o dziesiątej rano w poniedziałek";
+        let retranscribed = "zupełnie inne słowa nie mające z tym wspólnego";
+        match compute_tail_patch(committed, retranscribed, 10, &cfg) {
+            TailPatchOutcome::Skipped { .. } => {}
+            other => panic!("healthy-canvas divergence must stay skipped, got {other:?}"),
+        }
     }
 
     /// Casing and punctuation are alignment facts, not edits. The canvas comes

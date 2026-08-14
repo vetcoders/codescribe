@@ -52,6 +52,11 @@ pub struct SealedSpan {
     pub whisper_evidence: Option<TailProviderEvidence>,
     /// Whisper segments mapped back to the capture PCM clock.
     pub whisper_words: Vec<TimedTailSegment>,
+    /// Silero utterance this span was bound to, when the spectrum had an edge
+    /// enclosing it. `Some` is the evidence that [`Self::range`] came from the
+    /// VAD spectrum rather than from Apple's own segment boundaries; `None`
+    /// records the fail-open case, never a dropped span.
+    pub silero_utterance_id: Option<u64>,
 }
 
 impl SealedSpan {
@@ -78,6 +83,33 @@ pub struct PendingSpan {
     pub apple_evidence: TailProviderEvidence,
     pub whisper_evidence: Option<TailProviderEvidence>,
     pub whisper_words: Vec<TimedTailSegment>,
+    /// Silero utterance this span was bound to. Carried to [`SealedSpan`].
+    pub silero_utterance_id: Option<u64>,
+}
+
+/// One Apple commit offered to the machine, with its PCM and identity
+/// provenance. A record rather than a nine-argument call: every field is
+/// provenance for the same span, and a positional list of that length is how
+/// a range and an identity end up silently swapped.
+#[derive(Debug, Clone, PartialEq)]
+pub struct AppleCommit {
+    /// Span identity (monotonic per session; from the Silero ledger when the
+    /// fusion lane minted it, otherwise reserved from the same id space).
+    pub id: u64,
+    /// Raw engine text (or lexicon-ready canvas text) awaiting the seal pass.
+    pub raw_text: String,
+    /// Absolute end of the span in session audio seconds.
+    pub end_secs: f32,
+    /// Session time when Apple committed the utterance.
+    pub committed_at_secs: f32,
+    /// Canonical half-open PCM range for the span.
+    pub range: TailSampleRange,
+    /// Apple word/segment evidence pinned to the same PCM clock.
+    pub words: Vec<TimedTailSegment>,
+    /// Typed Apple evidence recorded before any later fusion policy.
+    pub apple_evidence: TailProviderEvidence,
+    /// Silero utterance the range was taken from, when one enclosed the span.
+    pub silero_utterance_id: Option<u64>,
 }
 
 /// One live-lane partial retained for residual stop-path fill.
@@ -159,43 +191,43 @@ impl ProgressiveSealMachine {
         committed_at_secs: f32,
     ) {
         let end_sample = (end_secs.max(0.0) * 1_000.0).round() as u64;
-        self.note_apple_commit_timed(
+        self.note_apple_commit_timed(AppleCommit {
             id,
-            raw_text,
+            raw_text: raw_text.into(),
             end_secs,
             committed_at_secs,
-            TailSampleRange {
+            range: TailSampleRange {
                 session: "legacy_progressive".to_string(),
                 capture_epoch: 0,
                 sample_start: 0,
                 sample_end: end_sample,
             },
-            Vec::new(),
-            TailProviderEvidence {
+            words: Vec::new(),
+            apple_evidence: TailProviderEvidence {
                 source: TailEvidenceSource::AppleSpeech,
                 revision: None,
                 stability: TailEvidenceStability::Final,
                 timing_quality: TailTimingQuality::Synthetic,
                 avg_logprob: None,
             },
-        );
+            silero_utterance_id: None,
+        });
     }
 
-    /// Record an Apple commit together with canonical PCM and word provenance.
-    /// This is data-only: seal eligibility and text transformation are the same
-    /// as [`note_apple_commit`].
-    #[allow(clippy::too_many_arguments)]
-    pub fn note_apple_commit_timed(
-        &mut self,
-        id: u64,
-        raw_text: impl Into<String>,
-        end_secs: f32,
-        committed_at_secs: f32,
-        range: TailSampleRange,
-        words: Vec<TimedTailSegment>,
-        apple_evidence: TailProviderEvidence,
-    ) -> bool {
-        let raw_text = raw_text.into();
+    /// Record an Apple commit together with canonical PCM, word and Silero
+    /// identity provenance. This is data-only: seal eligibility and text
+    /// transformation are the same as [`note_apple_commit`].
+    pub fn note_apple_commit_timed(&mut self, commit: AppleCommit) -> bool {
+        let AppleCommit {
+            id,
+            raw_text,
+            end_secs,
+            committed_at_secs,
+            range,
+            words,
+            apple_evidence,
+            silero_utterance_id,
+        } = commit;
         if raw_text.trim().is_empty() {
             return false;
         }
@@ -208,6 +240,7 @@ impl ProgressiveSealMachine {
             existing.range = range;
             existing.words = words;
             existing.apple_evidence = apple_evidence;
+            existing.silero_utterance_id = silero_utterance_id;
             return true;
         }
         if self.sealed.iter().any(|s| s.id == id) {
@@ -239,6 +272,7 @@ impl ProgressiveSealMachine {
             apple_evidence,
             whisper_evidence: None,
             whisper_words: Vec::new(),
+            silero_utterance_id,
         });
         true
     }
@@ -363,6 +397,7 @@ impl ProgressiveSealMachine {
                         apple_evidence: span.apple_evidence,
                         whisper_evidence: span.whisper_evidence,
                         whisper_words: span.whisper_words,
+                        silero_utterance_id: span.silero_utterance_id,
                     };
                     if !left_context.is_empty() && !sealed_span.text.is_empty() {
                         left_context.push(' ');
@@ -387,6 +422,7 @@ impl ProgressiveSealMachine {
                         apple_evidence: span.apple_evidence,
                         whisper_evidence: span.whisper_evidence,
                         whisper_words: span.whisper_words,
+                        silero_utterance_id: span.silero_utterance_id,
                     };
                     if !left_context.is_empty() && !sealed_span.text.is_empty() {
                         left_context.push(' ');
@@ -882,28 +918,35 @@ mod progressive_seal_tests {
             avg_logprob: None,
         };
         let mut m = ProgressiveSealMachine::new();
-        assert!(m.note_apple_commit_timed(
-            1,
-            "fragment odzyskany",
-            0.5,
-            0.5,
-            range.clone(),
-            Vec::new(),
-            evidence.clone(),
-        ));
+        assert!(m.note_apple_commit_timed(AppleCommit {
+            id: 1,
+            raw_text: "fragment odzyskany".into(),
+            end_secs: 0.5,
+            committed_at_secs: 0.5,
+            range: range.clone(),
+            words: Vec::new(),
+            apple_evidence: evidence.clone(),
+            silero_utterance_id: Some(1),
+        }));
         m.note_whisper_window_elapsed(1, 4.0);
         let tick = m.try_seal(APPLE_VOLATILE_WINDOW_SECS + 1.0, true);
         assert_eq!(tick.newly_sealed.len(), 1);
-
-        let replayed = m.note_apple_commit_timed(
-            2,
-            "fragment odzyskany",
-            0.5,
-            0.5,
-            range,
-            Vec::new(),
-            evidence,
+        assert_eq!(
+            tick.newly_sealed[0].silero_utterance_id,
+            Some(1),
+            "the Silero identity a span was bound to must survive the seal"
         );
+
+        let replayed = m.note_apple_commit_timed(AppleCommit {
+            id: 2,
+            raw_text: "fragment odzyskany".into(),
+            end_secs: 0.5,
+            committed_at_secs: 0.5,
+            range,
+            words: Vec::new(),
+            apple_evidence: evidence,
+            silero_utterance_id: Some(2),
+        });
         assert!(!replayed, "new Apple id on a sealed range must be refused");
         assert_eq!(m.pending_spans().len(), 0);
         assert_eq!(m.sealed_spans().len(), 1);
