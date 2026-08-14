@@ -1886,18 +1886,8 @@ pub async fn collect_buffered_engine_events(
     sample_rate: u32,
     language: Option<String>,
 ) -> Result<Vec<EngineEvent>> {
-    if samples.is_empty() {
-        return Ok(Vec::new());
-    }
-
-    let chunk_size = ((sample_rate as f32) * 0.1).round().max(1.0) as usize;
-
-    let (tx, rx) = mpsc::channel::<Vec<f32>>(8);
-    let collector = Arc::new(SessionEventCollector::new());
-    let event_sink: Arc<dyn EventSink> = collector.clone();
-    let session = tokio::spawn(transcription_session(
-        rx,
-        event_sink,
+    collect_buffered_engine_events_with_config(
+        samples,
         SessionConfig {
             sample_rate,
             language,
@@ -1908,20 +1898,8 @@ pub async fn collect_buffered_engine_events(
             layer1: Layer1Decision::Disarmed,
             lifecycle_events: None,
         },
-    ));
-
-    for chunk in samples.chunks(chunk_size) {
-        if tx.send(chunk.to_vec()).await.is_err() {
-            return Err(anyhow!("Transcription session dropped channel"));
-        }
-    }
-    drop(tx);
-
-    session
-        .await
-        .map_err(|e| anyhow!("Transcription session join error: {}", e))?;
-
-    Ok(collector.events())
+    )
+    .await
 }
 
 /// Run buffered PCM through an explicitly supplied production session config.

@@ -216,19 +216,6 @@ impl AppleTailPatchLane {
             Ok(job) => {
                 let utterance_id = job.utterance_id;
                 let outcome = job.outcome;
-                // `events()` covers both bearing arms: ordinary patches and the
-                // gap-appends an under-commit recovered. Counting only `Patches`
-                // here would drop recovered speech from the session summary.
-                self.replacements = self.replacements.saturating_add(
-                    outcome
-                        .events()
-                        .iter()
-                        .filter(|event| matches!(event, EngineEvent::ReplaceRange { .. }))
-                        .count() as u64,
-                );
-                if matches!(outcome, TailPatchOutcome::Skipped { .. }) {
-                    self.skipped = self.skipped.saturating_add(1);
-                }
                 TailPatchCompletion {
                     utterance_id,
                     covered_through_secs: req_end_secs,
@@ -236,19 +223,45 @@ impl AppleTailPatchLane {
                     payload: Some(job.payload),
                 }
             }
-            Err(error) => {
-                self.skipped = self.skipped.saturating_add(1);
-                TailPatchCompletion {
-                    utterance_id: request_id,
-                    covered_through_secs: req_end_secs,
-                    outcome: TailPatchOutcome::skipped(
-                        crate::stt::tail_patcher::SkipReasonCode::ProviderError,
-                        format!("tail patch failed: {error}"),
-                    ),
-                    payload: None,
-                }
-            }
+            Err(error) => TailPatchCompletion {
+                utterance_id: request_id,
+                covered_through_secs: req_end_secs,
+                outcome: TailPatchOutcome::skipped(
+                    crate::stt::tail_patcher::SkipReasonCode::ProviderError,
+                    format!("tail patch failed: {error}"),
+                ),
+                payload: None,
+            },
         }
+    }
+
+    /// Hand a completion to the live seal owner and only then account it in
+    /// the session receipt. A closed receiver means the worker has already
+    /// sealed raw and no patch can reach the canvas.
+    fn forward_completion_to_worker(
+        &mut self,
+        tx: &std_mpsc::Sender<TailPatchCompletion>,
+        completion: TailPatchCompletion,
+    ) -> bool {
+        // `events()` covers both bearing arms: ordinary patches and the
+        // gap-appends an under-commit recovered. Counting only `Patches` would
+        // drop recovered speech from the session summary.
+        let replacements = completion
+            .outcome
+            .events()
+            .iter()
+            .filter(|event| matches!(event, EngineEvent::ReplaceRange { .. }))
+            .count() as u64;
+        let skipped = u64::from(matches!(
+            &completion.outcome,
+            TailPatchOutcome::Skipped { .. }
+        ));
+        if tx.send(completion).is_err() {
+            return false;
+        }
+        self.replacements = self.replacements.saturating_add(replacements);
+        self.skipped = self.skipped.saturating_add(skipped);
+        true
     }
 
     /// How many bounded replacements Layer 1 landed this session — the number
@@ -469,7 +482,12 @@ pub(crate) async fn apple_stream_transcription_session(
                 tail_patch_in_flight = false;
                 let (id, end) = tail_patch_lane_in_flight.take().unwrap_or_default();
                 let completion = tail_patch_lane.finish_for_worker(id, end, result);
-                let _ = tp_done_tx.send(completion);
+                if !tail_patch_lane.forward_completion_to_worker(&tp_done_tx, completion) {
+                    warn!(
+                        utterance_id = id,
+                        "Layer 1 completion rejected — Apple seal worker already closed"
+                    );
+                }
             }
         }
         // C1: drain whatever the Layer 1 provider has ready. Partials stay
@@ -495,35 +513,19 @@ pub(crate) async fn apple_stream_transcription_session(
         while chunk_receiver.recv().await.is_some() {}
     }
 
-    // No new seals can arrive — but seals the worker emitted just before
-    // exiting (the trailing summary, the open partial) may still be queued.
-    // Whether the select loop admitted them before `ev_rx` closed is a race, so
-    // finish the backlog here instead: a patch that lands only sometimes is
-    // worse than one that always lands.
-    //
-    // This is bounded work, not a stop-time re-pass: at most `TAIL_PATCH_QUEUE_CAP`
-    // already-sealed utterances, one job at a time, each emitting only bounded
-    // `ReplaceRange` events. No Preview is waiting on it — capture is over.
-    let mut settled_at_stop = 0u64;
-    loop {
-        while let Some(result) = tail_patch_lane.next().await {
-            let (id, end) = tail_patch_lane_in_flight.take().unwrap_or_default();
-            let completion = tail_patch_lane.finish_for_worker(id, end, result);
-            let _ = tp_done_tx.send(completion);
-        }
-        match tp_rx.try_recv() {
-            Ok(req) => {
-                tail_patch_lane_in_flight = Some((req.utterance_id, req.covered_through_secs));
-                tail_patch_lane.push_request(req);
-                settled_at_stop = settled_at_stop.saturating_add(1);
-            }
-            Err(_) => break,
-        }
+    // `ev_rx` closes only when the seal worker has returned and dropped both
+    // its event sender and completion receiver. Running queued Whisper jobs at
+    // this point cannot change canvas; it only lengthens stop and used to make
+    // the receipt count undeliverable patches. Preserve the Apple floor and
+    // abandon the orphaned refinement work explicitly.
+    let mut abandoned_tail_patch_jobs = u64::from(tail_patch_in_flight);
+    while tp_rx.try_recv().is_ok() {
+        abandoned_tail_patch_jobs = abandoned_tail_patch_jobs.saturating_add(1);
     }
-    if settled_at_stop > 0 {
-        info!(
-            settled_at_stop,
-            "Layer 1 tail-patch backlog settled after capture stopped"
+    if abandoned_tail_patch_jobs > 0 {
+        warn!(
+            abandoned_tail_patch_jobs,
+            "Layer 1 tail-patch work abandoned after Apple seal worker closed"
         );
     }
 
@@ -902,13 +904,33 @@ fn resolve_sealed_audio_window(
     }
     match state.audio.window_with_range(from, end_ts) {
         Some(window) => {
-            state.last_sealed_end = end_ts;
+            // `window_with_range` is the ingestion boundary where Apple's
+            // floating span clock becomes the canonical integer PCM clock. A
+            // small Apple overshoot is intentionally clamped there; carrying
+            // the *requested* `end_ts` forward would make the next window
+            // start beyond captured audio even though this window resolved.
+            let pcm_start_secs = window.sample_start as f32 / state.sample_rate.max(1) as f32;
+            let pcm_end_secs = window.sample_end as f32 / state.sample_rate.max(1) as f32;
+            state.last_sealed_end = pcm_end_secs;
             // Everything before this utterance is committed canvas; no future
             // patch reaches back past it.
-            state.audio.committed_through(from);
+            state.audio.committed_through(pcm_start_secs);
+            if window.samples.is_empty() {
+                // A cumulative final may assert novel text after the PCM clock
+                // has reached EOF. Content still seals, but zero samples are
+                // not a Whisper window and this known clamp is not a clock lie.
+                tracing::debug!(
+                    from_secs = from,
+                    requested_end_secs = end_ts,
+                    pcm_end_secs,
+                    "Apple seal resolved at PCM boundary with no new audio"
+                );
+                return None;
+            }
             tracing::debug!(
                 from_secs = from,
-                end_ts,
+                requested_end_secs = end_ts,
+                pcm_end_secs,
                 window_samples = window.samples.len(),
                 retained_samples = state.audio.len(),
                 "Apple seal resolved to audio window"
@@ -2849,6 +2871,89 @@ mod tests {
         );
     }
 
+    /// A trailing cumulative callback can assert novel text after capture has
+    /// already reached EOF. The text still belongs on the append-only canvas,
+    /// but its synthetic Apple boundary must clamp to the canonical PCM clock:
+    /// advancing the window floor to the unclamped Apple timestamp makes every
+    /// later suffix start beyond retained audio and queues an empty Whisper
+    /// window before the failure becomes visible.
+    #[test]
+    fn eof_clamped_novel_suffixes_do_not_poison_pcm_window_floor_or_queue_empty_audio() {
+        let (tx, _rx) = mpsc::unbounded_channel();
+        let (tp_tx, mut tp_rx) = mpsc::channel::<TailPatchRequest>(TAIL_PATCH_QUEUE_CAP);
+        let mut state = AppleSealState::new_with_tail_patch(TEST_SAMPLE_RATE, tp_tx);
+        push_capture(&mut state, 3.0);
+
+        emit_stream_events(
+            vec![LiveStreamEvent::PhraseFinal {
+                text: "alpha beta".into(),
+                segments: vec![segment("alpha beta", 0.0, 3.0)],
+            }],
+            &tx,
+            &mut state,
+            3.0,
+        );
+        let initial = tp_rx
+            .try_recv()
+            .expect("the real captured span must reach Layer 1");
+        assert!(!initial.audio.is_empty());
+
+        emit_stream_events(
+            vec![
+                LiveStreamEvent::PhraseFinal {
+                    text: "alpha beta gamma".into(),
+                    segments: vec![segment("alpha beta gamma", 0.0, 3.0)],
+                },
+                LiveStreamEvent::PhraseFinal {
+                    text: "alpha beta gamma delta".into(),
+                    segments: vec![segment("alpha beta gamma delta", 0.0, 3.0)],
+                },
+            ],
+            &tx,
+            &mut state,
+            3.0,
+        );
+
+        let extra_windows = std::iter::from_fn(|| tp_rx.try_recv().ok()).collect::<Vec<_>>();
+        assert!(
+            extra_windows.is_empty(),
+            "novel text at EOF has no new PCM and must not queue empty Layer 1 windows: {:?}",
+            extra_windows
+                .iter()
+                .map(|request| request.audio.len())
+                .collect::<Vec<_>>()
+        );
+        assert_eq!(
+            state.last_sealed_end, 3.0,
+            "the window floor is canonical PCM time, never an unclamped Apple timestamp"
+        );
+        assert_eq!(
+            state.unresolved_windows, 0,
+            "a clamped EOF suffix is known to have no new PCM; it is not a clock lie"
+        );
+        let landed = state
+            .progressive
+            .pending_spans()
+            .iter()
+            .map(|span| normalize_for_containment(&span.raw_text))
+            .chain(
+                state
+                    .progressive
+                    .sealed_spans()
+                    .iter()
+                    .map(|span| normalize_for_containment(&span.text)),
+            )
+            .collect::<Vec<_>>();
+        assert!(
+            landed.iter().any(|text| text.contains("gamma")),
+            "the first EOF suffix must remain on the canvas: {landed:?}"
+        );
+        assert!(
+            landed.iter().any(|text| text.contains("delta")),
+            "the later EOF suffix must remain on the canvas: {landed:?}"
+        );
+    }
+
     /// Regression guard for the prefix probe: the canvas-known prefix must be
     /// recognised even when the lexicon rewrites words inside it.
     ///
@@ -3340,6 +3445,55 @@ mod tests {
             outcome,
             payload: synthetic_tail_payload(utterance_id, range, Vec::new()),
         }
+    }
+
+    /// Computing a bearing patch is not delivery. The worker can already have
+    /// timed out and dropped its completion receiver; counting before that
+    /// hand-off makes `tail_patch_session_receipt` claim patches that never
+    /// reached the canvas.
+    #[test]
+    fn finishing_tail_patch_does_not_count_before_worker_accepts_it() {
+        let mut lane = AppleTailPatchLane::new(TEST_SAMPLE_RATE, None);
+        let outcome = compute_tail_patch(
+            "ala ma kota w domu",
+            "ala ma kota w domu swoim",
+            1,
+            &TailPatchConfig::default(),
+        );
+        let completion = lane.finish_for_worker(1, 2.0, Ok(synthetic_tail_job(1, outcome)));
+        assert!(
+            completion
+                .outcome
+                .events()
+                .iter()
+                .any(|event| matches!(event, EngineEvent::ReplaceRange { .. })),
+            "fixture must carry a bearing patch"
+        );
+        assert_eq!(
+            lane.replacements(),
+            0,
+            "completion construction alone must not report canvas delivery"
+        );
+
+        let (done_tx, done_rx) = std_mpsc::channel();
+        assert!(lane.forward_completion_to_worker(&done_tx, completion));
+        assert_eq!(lane.replacements(), 1);
+        let _accepted = done_rx.try_recv().expect("live worker receives completion");
+
+        drop(done_rx);
+        let rejected_outcome = compute_tail_patch(
+            "drugi fragment",
+            "drugi fragment odzyskany",
+            2,
+            &TailPatchConfig::default(),
+        );
+        let rejected = lane.finish_for_worker(2, 3.0, Ok(synthetic_tail_job(2, rejected_outcome)));
+        assert!(!lane.forward_completion_to_worker(&done_tx, rejected));
+        assert_eq!(
+            lane.replacements(),
+            1,
+            "a closed worker cannot turn computed text into reported delivery"
+        );
     }
 
     /// Wiring contract: a sealed utterance must hand Layer 1 the exact audio
