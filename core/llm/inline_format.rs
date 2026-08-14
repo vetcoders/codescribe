@@ -811,6 +811,12 @@ mod tests {
                 EnvGuard::set("LLM_FORMATTING_API_KEY", "mock-key"),
                 EnvGuard::remove("LLM_FORMATTING_TEMPERATURE"),
                 EnvGuard::remove("LLM_TEMPERATURE"),
+                // Pin the operation clocks to their defaults: the operator's
+                // dotenv injects into every test process, and the settle
+                // waiter's 30s backstop is calibrated against THESE numbers.
+                EnvGuard::set("CODESCRIBE_INLINE_FORMAT_CHUNK_TIMEOUT_MS", "10000"),
+                EnvGuard::set("CODESCRIBE_INLINE_FORMAT_FLUSH_TIMEOUT_MS", "2500"),
+                EnvGuard::set("CODESCRIBE_INLINE_FORMAT_TAIL_TIMEOUT_MS", "15000"),
             ]
         }
 
@@ -848,8 +854,12 @@ mod tests {
             Harness { tx, shared }
         }
 
+        // Backstop, not a claim: it must sit OUT OF REACH of the chunk
+        // request's own 10s budget, or the two clocks race under machine load
+        // (measured flake 2026-08-14: chunk still Pending at the waiter's
+        // 10s while its own timeout was about to settle it).
         async fn wait_for_settled_chunks(shared: &Arc<Mutex<SessionStore>>, expected: usize) {
-            let deadline = Instant::now() + Duration::from_secs(10);
+            let deadline = Instant::now() + Duration::from_secs(30);
             loop {
                 {
                     let s = shared.lock().expect("store lock");
@@ -861,7 +871,7 @@ mod tests {
                 }
                 assert!(
                     Instant::now() < deadline,
-                    "chunks did not settle in flight within 10s: {:?}",
+                    "chunks did not settle in flight within 30s: {:?}",
                     shared.lock().expect("store lock").chunks
                 );
                 tokio::time::sleep(Duration::from_millis(20)).await;
@@ -1001,13 +1011,17 @@ mod tests {
                 .expect(1)
                 .create_async()
                 .await;
-            // One ordered regex (chain id precedes instructions in the wire
-            // body): proves the chain still points at the last ACCEPTED chunk
-            // AND that this is the closing request.
+            // One ordered regex over the CURRENT wire truth (5d62aacb): a
+            // chained request re-carries the closing prompt as a leading
+            // `developer` input item (instructions do NOT persist server-side
+            // across previous_response_id), and `input` serializes before
+            // `previous_response_id`. Proves this is the closing request AND
+            // that the chain still points at the last ACCEPTED chunk.
             let tail = server
                 .mock("POST", "/v1/responses")
                 .match_body(Matcher::Regex(
-                    r#""previous_response_id":"resp_1"[\s\S]*FINAL chunk"#.into(),
+                    r#""role":"developer"[\s\S]*FINAL chunk[\s\S]*"previous_response_id":"resp_1""#
+                        .into(),
                 ))
                 .with_status(200)
                 .with_header("content-type", "application/json")
