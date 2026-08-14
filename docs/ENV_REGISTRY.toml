@@ -549,7 +549,7 @@ default = "phase1"
 type = "string"
 reload = "hot"
 category = "stt"
-description = "Layered incremental transcription phase gate: phase1 (DEFAULT since 2026-08-09 — operator directive: the live tail patch is a core element of the triangulation, not an opt-in; explicit off/0/false disables) or phase1..phase4 (bare 1..4 accepted). Orthogonal to FINAL_PASS_MODE/Smart — Smart never enables this. Phase ≥ 1 turns on Layer 1 Whisper tail-patch during hold on BOTH live paths: the VAD/scheduler session and the default Apple progressive live session (wired W2-A, a6b1233d). phase1 = Apple Layer 0 + Whisper ReplaceRange patches. Power-user key: not promoted to settings.json, so a stale ~/.codescribe/.env line arms it in every process that loads the core."
+description = "Layered incremental transcription phase gate: phase1 (DEFAULT since 2026-08-09 — operator directive: the live tail patch is a core element of the triangulation, not an opt-in; explicit off/0/false disables) or phase1..phase4 (bare 1..4 accepted). Orthogonal to FINAL_PASS_MODE/Smart — Smart never enables this. Phase ≥ 1 turns on Layer 1 Whisper tail-patch during hold on BOTH live paths: the VAD/scheduler session and the default Apple progressive live session (wired W2-A, a6b1233d). phase1 = Apple Layer 0 + Whisper ReplaceRange patches. Promoted 2026-08-10 to settings.json (single-brain; a stale ~/.codescribe/.env line must not lottery the live path)."
 
 [vars.CODESCRIBE_INLINE_FORMAT]
 default = "0"
@@ -578,6 +578,13 @@ type = "int"
 reload = "hot"
 category = "llm"
 description = "Stop-path budget in milliseconds for the final inline-format tail request."
+
+[vars.CODESCRIBE_RESPONSES_PROBE_URL]
+default = ""
+type = "string"
+reload = "hot"
+category = "llm"
+description = "Override target for the sign-in Responses authorization probe (empty = provider's official endpoint). Hermetic tests point it at a mock; production leaves it unset."
 
 [vars.STT_TAIL_PROVIDER]
 default = "inprocess"
@@ -815,7 +822,7 @@ default = "smart"
 type = "string"
 reload = "restart"
 category = "stt"
-description = "Stop-path full re-pass routing only: always | smart (default) | off. Always = full WAV Whisper re-pass every stop; smart = skip full re-pass when streaming completeness is adjudicated Complete (incomplete may still re-pass); off = never full re-pass (does not force Whisper at stop). Does NOT enable CODESCRIBE_LAYERED_TRANSCRIPTION — live gap-fill via Layer 1 tail-patch is a separate opt-in. Live engine never rewrites the mode. Dictionary/lexicon always applies in postprocess regardless of mode. Seeds from Settings → Final pass. Alias: CODESCRIBE_FINAL_PASS_MODE."
+description = "Stop-path full re-pass routing only: always | smart (default) | off. Always = full WAV Whisper re-pass every stop; smart = skip full re-pass when streaming completeness is adjudicated Complete (incomplete may still re-pass); off = never full re-pass (does not force Whisper at stop). Does NOT enable or disable CODESCRIBE_LAYERED_TRANSCRIPTION — live gap-fill via Layer 1 tail-patch is a separate gate (default phase1). Live engine never rewrites the mode. Dictionary/lexicon always applies in postprocess regardless of mode. Seeds from Settings → Final pass. Alias: CODESCRIBE_FINAL_PASS_MODE."
 
 [vars.CODESCRIBE_FINAL_PASS_MODE]
 default = "smart"
