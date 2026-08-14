@@ -1634,43 +1634,43 @@ fn apple_stream_worker(
     // every sealed span with its PCM-pinned word payload as JSON. Runs on the
     // worker's own final state after the session-end seal, so the file is what
     // the session actually delivered — never a reconstruction. No env, no-op.
-    if let Ok(dump_path) = std::env::var("CODESCRIBE_SEAL_ATLAS_DUMP") {
-        if !dump_path.trim().is_empty() {
-            let spans: Vec<serde_json::Value> = state
-                .progressive
-                .sealed_spans()
-                .iter()
-                .map(|span| {
-                    serde_json::json!({
-                        "id": span.id,
-                        "text": span.text,
-                        "end_secs_millis": span.end_secs_millis,
-                        "range": span.range,
-                        "words": span.words,
-                        "apple_evidence": span.apple_evidence,
-                        "whisper_evidence": span.whisper_evidence,
-                        "whisper_words": span.whisper_words,
-                    })
+    if let Ok(dump_path) = std::env::var("CODESCRIBE_SEAL_ATLAS_DUMP")
+        && !dump_path.trim().is_empty()
+    {
+        let spans: Vec<serde_json::Value> = state
+            .progressive
+            .sealed_spans()
+            .iter()
+            .map(|span| {
+                serde_json::json!({
+                    "id": span.id,
+                    "text": span.text,
+                    "end_secs_millis": span.end_secs_millis,
+                    "range": span.range,
+                    "words": span.words,
+                    "apple_evidence": span.apple_evidence,
+                    "whisper_evidence": span.whisper_evidence,
+                    "whisper_words": span.whisper_words,
                 })
-                .collect();
-            let atlas = serde_json::json!({
-                "session": state.session_id,
-                "capture_epoch": state.capture_epoch,
-                "sample_rate": sample_rate,
-                "audio_samples_seen": samples_seen,
-                "sealed_spans": spans,
-            });
-            match serde_json::to_vec_pretty(&atlas)
-                .map_err(anyhow::Error::from)
-                .and_then(|bytes| std::fs::write(&dump_path, bytes).map_err(anyhow::Error::from))
-            {
-                Ok(()) => info!(
-                    path = %dump_path,
-                    spans = state.progressive.sealed_spans().len(),
-                    "seal atlas dump written"
-                ),
-                Err(error) => warn!(path = %dump_path, %error, "seal atlas dump failed"),
-            }
+            })
+            .collect();
+        let atlas = serde_json::json!({
+            "session": state.session_id,
+            "capture_epoch": state.capture_epoch,
+            "sample_rate": sample_rate,
+            "audio_samples_seen": samples_seen,
+            "sealed_spans": spans,
+        });
+        match serde_json::to_vec_pretty(&atlas)
+            .map_err(anyhow::Error::from)
+            .and_then(|bytes| std::fs::write(&dump_path, bytes).map_err(anyhow::Error::from))
+        {
+            Ok(()) => info!(
+                path = %dump_path,
+                spans = state.progressive.sealed_spans().len(),
+                "seal atlas dump written"
+            ),
+            Err(error) => warn!(path = %dump_path, %error, "seal atlas dump failed"),
         }
     }
 
