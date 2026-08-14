@@ -448,6 +448,74 @@ Rejected unanimously: full-file replacement, single-engine authority,
 content-similarity dedup, unbounded prompting, and
 unit-green-as-delivery-proof.
 
+## 13. Comparative bench vs lbrx-stt-engine (2026-08-14) — the bar is low and the live lane is still under it
+
+Same-host comparison against `lbrx-stt-engine` (whisper-large-v3-mlx-q8,
+MLX; three transports: HTTP :8444, NDJSON :8445 `stt-jsonl-v1`,
+WS :8446 `stt-ws-v1`). Grading context, stated plainly: that API is a
+**neglected, low-intensity** file-mode service — slow-moving, with its own
+hallucinations — not a state-of-the-art target. Codescribe receives an
+order of magnitude more engineering. That is exactly what makes this bench
+binding: **even a neglected engine beats our live canvas on content.**
+
+### Measured (W13-0 golden takes, warm engine)
+
+| Take   |   Audio | lbrx wall |   RTF | word-sim canvas↔lbrx | Decisive content deltas                                                                   |
+| ------ | ------: | --------: | ----: | -------------------: | ----------------------------------------------------------------------------------------- |
+| 171939 | 135.7 s |    4.02 s | 0.030 |                0.660 | canvas tail garbled ("czytą lebymiałą", "Pt. River ton"); lbrx tail clean and grammatical |
+| 191351 | 337.4 s |    9.60 s | 0.028 |                0.686 | lbrx catches "voice isolation" 3×; canvas 0× (pl-PL code-switching blindness)             |
+| 193523 |  27.9 s |    1.27 s | 0.045 |                0.789 | lbrx "WorkTrees" 3× correct; canvas 0× (Workplace/Warp3s manglings)                       |
+
+lbrx word counts track the canvas (136/149, 364/344, 36/35) — no mass
+hallucination, no mass loss; the delta is concentrated exactly in the
+classes this roadmap names: vocabulary, code-switching, tail integrity.
+
+### Honest defects of the reference engine (measured, not assumed)
+
+- **Its segment timestamps lie by compaction**: reported coverage ends at
+  70.6 s of 135.7 s and 199.6 s of 337.4 s while the transcribed content
+  demonstrably reaches the end of both takes. This is the same clock-lie
+  class W13-0 froze (compact drop 0.377 / 0.311). Any integration maps by
+  **integer sample ranges, never by its reported seconds** — Amendment 3
+  confirmed by a second, independent engine.
+- Its own manglings exist ("Wipeshotted", "WordLine", "konkurencji" for
+  "równoległości") — file-mode Whisper is a ruler with scratches, not
+  truth. The only truth reference remains the human transcript (U-WER).
+- File-mode warm RTF 0.028–0.045 is a batch number, not a live-latency
+  claim.
+
+### Diagnosis (holistic)
+
+The gap is **not model capability** — we embed the same Whisper family.
+The gap is the live lane: window feeding, patch authority, and buffer
+integrity. Field evidence, same morning (Monika, 2026-08-14): 42% of
+Layer-1 tail patches rejected (80 applied / 59 rejected across 10
+sessions), and a dual-writer `transcript_buffer` split-brain (reducer 228
+chars, final Apple partial 264, RAW 791 ≈ 3×264 — the same sentence
+delivered almost three times). No ledger can save a buffer with two
+writers; the single-writer emitter fix is a prerequisite cut.
+
+The machinery to close the gap **already landed** in the W13 settlement
+(`13b1eed8`, all defaults OFF): Silero-boundary fusion (3B, synthetic
+starvation −67%), span idempotence (4), typed tail providers (2A/2B),
+lexicon voice (6A). "Catching up" is therefore not new architecture — it
+is wiring, measurement, and the operator's flip matrix, in this order:
+
+1. single-writer emitter + final snapshot barrier (new cut, field P0);
+2. real take-614 fusion A/B → `CODESCRIBE_SILERO_FUSION` decision;
+3. span idempotence observed on a real session → flip decision;
+4. optional: lbrx as a **remote tail provider** — its
+   `hello/ack/vad/transcript.final` stream protocol is shape-compatible
+   with the W13-2B remote slot, moving ~4 GB of Whisper RSS out of the
+   app on hosts where the service runs anyway.
+
+### Bench discipline going forward
+
+The golden-take bench gains an lbrx column. The bar that ends this
+section's shame: **layered-ON ≥ lbrx file-mode on U-WER vs human, at live
+latency, on all three golden takes.** Apple-similarity stays a ruler,
+never the gate (§12).
+
 ---
 
 _Provenance: distilled from the 2026-08-12/13 measurement sessions, the
