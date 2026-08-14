@@ -681,6 +681,13 @@ fn classify_under_commit(
     //
     // Below the bar the canvas is too mangled to anchor against, so nothing is
     // placed inline — but the material is owed to the stop path, not to /dev/null.
+    // Placing on weak anchors was tried and MEASURED DOWN, 2026-08-14: five
+    // takes, delivered text against the lbrx reference, mean WER 0.604 -> 0.612
+    // (worst case 01_no-to-dobra 0.356 -> 0.425). Recovered words placed beside
+    // an anchor the canvas cannot really vouch for land in the wrong part of the
+    // sentence more often than they fill a real gap, and the last-mile duplicate
+    // guard cannot catch that — it only catches repeats, not misplacement.
+    // The bar stays; the recovery that cannot be anchored is owed elsewhere.
     let anchors_trusted = coverage >= min_coverage;
     if !anchors_trusted && commit_ratio > UNDER_COMMIT_STARVED_CANVAS_RATIO {
         // Not starved and not alignable: ordinary divergence, Layer 0 stands.
