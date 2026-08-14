@@ -506,6 +506,12 @@ fn alignment_key(token: &str) -> String {
     }
 }
 
+/// Consecutive matching tokens that mark a recovery as already carried.
+///
+/// Four is the shortest run that is not ordinary Polish repetition: "nam na
+/// zrobienie" (3) recurs naturally, "która pozwoli nam na" (4) does not.
+pub const DUPLICATE_RUN_TOKENS: usize = 4;
+
 /// Whether the canvas already carries this recovered run of words.
 ///
 /// Compared on [`alignment_key`] — the same key the aligner matches on — so a
@@ -514,9 +520,6 @@ fn alignment_key(token: &str) -> String {
 /// is ordinary speech, not a duplicated recovery, and refusing those would
 /// starve the lane again.
 fn canvas_already_carries(canvas: &[Token], recovered: &[&Token]) -> bool {
-    if recovered.len() < 2 {
-        return false;
-    }
     let needle: Vec<String> = recovered
         .iter()
         .map(|token| alignment_key(&token.text))
@@ -525,7 +528,20 @@ fn canvas_already_carries(canvas: &[Token], recovered: &[&Token]) -> bool {
         .iter()
         .map(|token| alignment_key(&token.text))
         .collect();
-    hay.windows(needle.len()).any(|window| window == needle)
+    // A run counts as already carried when a long-enough CONTIGUOUS stretch of
+    // it appears in the canvas — not when the whole run matches end to end.
+    // Requiring the full run is defeated by exactly the defect this guards
+    // against: Layer 0 mangles a word at the edge ("hard Pru" against the
+    // recovered "hard pruna"), one key differs, and the duplicate is placed
+    // anyway. Four consecutive content words repeating verbatim is speech the
+    // canvas already holds; three or fewer is ordinary Polish repetition.
+    let span = DUPLICATE_RUN_TOKENS.min(needle.len());
+    if span < DUPLICATE_RUN_TOKENS {
+        return false;
+    }
+    needle
+        .windows(span)
+        .any(|run| hay.windows(span).any(|window| window == run))
 }
 
 /// Longest-common-subsequence alignment over normalized token keys
@@ -593,6 +609,16 @@ fn log_skipped_receipt(
     );
 }
 
+/// Everything the under-commit classifier reads about one alignment.
+struct UnderCommitScan<'a> {
+    c_tokens: &'a [Token],
+    r_tokens: &'a [Token],
+    matched: &'a [(usize, usize)],
+    groups: &'a [EditGroup],
+    /// Canvas sealed before this utterance; read-only duplicate guard.
+    neighbour_tokens: &'a [Token],
+}
+
 /// Decide whether a change-ratio rejection is really an under-commit, and if so
 /// what of the recovered speech can be appended safely.
 ///
@@ -604,14 +630,18 @@ fn log_skipped_receipt(
 /// 3. it must still *contain* the canvas ([`UNDER_COMMIT_MIN_COVERAGE`]) — without
 ///    this an unrelated decode would append its whole text to the user's transcript.
 fn classify_under_commit(
-    c_tokens: &[Token],
-    r_tokens: &[Token],
-    matched: &[(usize, usize)],
-    groups: &[EditGroup],
+    scan: UnderCommitScan<'_>,
     utterance_id: u64,
     committed_chars: usize,
     retranscribed_chars: usize,
 ) -> Option<UnderCommit> {
+    let UnderCommitScan {
+        c_tokens,
+        r_tokens,
+        matched,
+        groups,
+        neighbour_tokens,
+    } = scan;
     let committed_tokens = c_tokens.len();
     let retranscribed_tokens = r_tokens.len();
     if retranscribed_tokens < under_commit_min_retranscribed(committed_tokens) {
@@ -677,13 +707,10 @@ fn classify_under_commit(
         // in the canvas is a re-hearing of mangled text, not lost speech: it
         // belongs to substitution (which this lane does not do) or to the stop
         // path, never to a second copy in front of the user.
-        if canvas_already_carries(
-            c_tokens,
-            &g.retranscribed
-                .clone()
-                .map(|idx| &r_tokens[idx])
-                .collect::<Vec<_>>(),
-        ) {
+        let recovered: Vec<&Token> = g.retranscribed.clone().map(|idx| &r_tokens[idx]).collect();
+        if canvas_already_carries(c_tokens, &recovered)
+            || canvas_already_carries(neighbour_tokens, &recovered)
+        {
             residual_required = true;
             continue;
         }
@@ -745,6 +772,25 @@ fn classify_under_commit(
 pub fn compute_tail_patch(
     committed: &str,
     retranscribed: &str,
+    utterance_id: u64,
+    cfg: &TailPatchConfig,
+) -> TailPatchOutcome {
+    compute_tail_patch_with_context(committed, retranscribed, "", utterance_id, cfg)
+}
+
+/// As [`compute_tail_patch`], plus the canvas already sealed BEFORE this
+/// utterance.
+///
+/// Layer 1 sees one utterance at a time. A phrase the PREVIOUS utterance
+/// already carries therefore reads as a gap here and is appended a second
+/// time — measured 2026-08-14 the moment recoveries first reached the canvas:
+/// three repeated 4-grams and a WER worse than before the recovery landed.
+/// The context is read-only; it is never patched, only consulted so a
+/// duplicate escalates to the stop path instead of being placed.
+pub fn compute_tail_patch_with_context(
+    committed: &str,
+    retranscribed: &str,
+    neighbour_context: &str,
     utterance_id: u64,
     cfg: &TailPatchConfig,
 ) -> TailPatchOutcome {
@@ -849,10 +895,13 @@ pub fn compute_tail_patch(
         // speech, and using it as one is what threw the recovered 104 s / 107 s
         // Polish takes away.
         if let Some(under) = classify_under_commit(
-            &c_tokens,
-            &r_tokens,
-            &matches,
-            &groups,
+            UnderCommitScan {
+                c_tokens: &c_tokens,
+                r_tokens: &r_tokens,
+                matched: &matches,
+                groups: &groups,
+                neighbour_tokens: &tokenize(neighbour_context),
+            },
             utterance_id,
             committed.trim().chars().count(),
             retranscribed.trim().chars().count(),
@@ -1411,6 +1460,46 @@ mod tests {
                 "committed text must never be rewritten, missing {token:?} in {applied:?}"
             );
         }
+    }
+
+    /// The exact duplication measured on the operator's take 2026-08-14, the
+    /// first run where recoveries reached the canvas at all.
+    ///
+    /// Whisper's window for a short utterance ("Zrób.") carried the phrase the
+    /// NEXT utterance already holds, so the aligner saw a gap and appended a
+    /// second copy: "…hard pruna I road która pozwoli nam na zrobienie hard
+    /// Pru." — three repeated 4-grams, WER 0.463 → 0.610. With the neighbour
+    /// canvas in hand the recovery escalates instead of duplicating.
+    #[test]
+    fn recovery_already_carried_by_the_neighbour_utterance_is_not_appended() {
+        let cfg = TailPatchConfig::default();
+        let committed = "Zrób.";
+        let retranscribed = "zrób która pozwoli nam na zrobienie hard pruna";
+        let neighbour = "I road która pozwoli nam na zrobienie hard Pru.";
+
+        // Without the neighbour context this lane duplicates the phrase.
+        let blind = compute_tail_patch(committed, retranscribed, 5, &cfg);
+        let blind_text = apply_all(committed, &blind);
+        assert!(
+            blind_text.to_lowercase().contains("pozwoli nam na"),
+            "fixture must reproduce the duplication when the neighbour is unknown: {blind_text:?}"
+        );
+
+        // With it, nothing is placed and the recovery is owed to the stop path.
+        let outcome = compute_tail_patch_with_context(committed, retranscribed, neighbour, 5, &cfg);
+        match &outcome {
+            TailPatchOutcome::UnderCommit(under) => assert!(
+                under.appends.is_empty() && under.residual_required,
+                "a phrase the neighbour carries must escalate, not duplicate: {under:?}"
+            ),
+            TailPatchOutcome::Skipped { .. } => {}
+            other => panic!("must not place a duplicate, got {other:?}"),
+        }
+        assert_eq!(
+            apply_all(committed, &outcome),
+            committed,
+            "the canvas must be byte-identical when the recovery is a duplicate"
+        );
     }
 
     /// The live canvas stays protected: a re-transcription that shares almost

@@ -102,6 +102,16 @@ struct TailPatchRequest {
     /// Byte-identical to the emitted `UtteranceFinal.text` — the string every
     /// `ReplaceRange` char offset is computed against.
     committed_text: String,
+    /// Canvas already sealed BEFORE this utterance.
+    ///
+    /// Layer 1 sees one utterance at a time, so a phrase the previous
+    /// utterance already carries reads as a gap here and is appended a second
+    /// time — measured 2026-08-14 the moment recoveries first reached the
+    /// canvas ("…hard pruna I road która pozwoli nam na zrobienie hard Pru."),
+    /// which cost more WER than the recovery gained. The neighbour context is
+    /// read-only: it is never patched, only consulted so a duplicate is
+    /// escalated instead of placed.
+    neighbour_context: String,
     /// PCM behind exactly this utterance: `[previous seal end, end_ts)`.
     audio: Vec<f32>,
     /// Exact capture range behind `audio`; this is the window-start authority.
@@ -156,6 +166,7 @@ impl AppleTailPatchLane {
         let job = compute_tail_patch_job(
             req.utterance_id,
             req.committed_text,
+            req.neighbour_context,
             req.audio,
             req.provider_request,
             self.config,
@@ -1287,6 +1298,7 @@ fn seal_sliced_by_silero(
             match tx.try_send(TailPatchRequest {
                 utterance_id,
                 committed_text,
+                neighbour_context: state.sealed_prefix.clone(),
                 audio: window.samples,
                 provider_request: TailProviderRequest {
                     identity: TailRequestIdentity {
@@ -1597,6 +1609,7 @@ fn seal_utterance_final(
         match tx.try_send(TailPatchRequest {
             utterance_id,
             committed_text,
+            neighbour_context: state.sealed_prefix.clone(),
             audio: window.samples,
             provider_request,
             covered_through_secs: end_ts,
