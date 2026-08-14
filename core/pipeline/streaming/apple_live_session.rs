@@ -47,6 +47,7 @@ use crate::asr_session::{SessionId as Layer1SessionId, SessionInput as Layer1Ses
 use crate::audio::capture_receipt::{
     CaptureLevelAccumulator, CapturePathMeta, emit_capture_level_receipt,
 };
+use crate::audio::chunker::{SpeechEvent, SpeechSession};
 use crate::pipeline::contracts::{DropKind, EngineEvent, EventSink, TranscriptSegment};
 use crate::pipeline::stream_postprocess::StreamPostProcessor;
 use crate::stt::apple_stt::{LiveStreamEvent, LiveStreamSession};
@@ -295,15 +296,16 @@ pub(crate) async fn apple_stream_transcription_session(
         mut lifecycle_events,
     } = config;
     let mut capture_level = CaptureLevelAccumulator::new();
-    // SFSpeech owns phrase boundaries in progressive mode, so the VAD-path
-    // silence knob cannot apply. Say so instead of silently differing from
-    // the `CODESCRIBE_APPLE_STT_LIVE_MODE=wav` escape hatch.
+    // Hands-free silence is the ENGINE LIFECYCLE on this lane, not a chunker
+    // knob: SFSpeech still owns phrase boundaries inside an utterance, but the
+    // threshold decides when the engine rests (mic + Silero keep watching) and
+    // when a fresh epoch wakes on the next speech edge. Unset = one continuous
+    // stream for the whole take, the pre-lifecycle behaviour.
     if let Some(sec) = utterance_silence_sec {
-        warn!(
+        info!(
             utterance_silence_sec = sec,
-            "Apple progressive live mode ignores utterance_silence_sec \
-             (SFSpeech decides phrase boundaries; use CODESCRIBE_APPLE_STT_LIVE_MODE=wav \
-             for the VAD silence contract)"
+            "Apple progressive live mode: engine lifecycle armed on the hands-free silence \
+             threshold (speech epochs)"
         );
     }
 
@@ -367,11 +369,14 @@ pub(crate) async fn apple_stream_transcription_session(
         apple_stream_worker(
             pcm_rx,
             ev_tx,
-            sample_rate,
-            language.as_deref(),
-            worker_session_id,
             worker_tp_tx,
             tp_done_rx,
+            AppleWorkerConfig {
+                sample_rate,
+                language: language.as_deref(),
+                session_id: worker_session_id,
+                utterance_silence_sec,
+            },
         )
     });
 
@@ -1535,17 +1540,288 @@ fn seal_utterance_final(
     true
 }
 
-/// Blocking worker: owns the stream session for its full lifetime.
+// ═══════════════════════════════════════════════════════════
+// Engine lifecycle: speech epochs (hands-free silence)
+// ═══════════════════════════════════════════════════════════
+
+/// Audio replayed into a fresh epoch ahead of the detected speech edge, so the
+/// first phoneme is not eaten by bridge spin-up (~0.24 s measured). Same value
+/// the fusion lane pads windows with.
+const EPOCH_PREROLL_SECS: f32 = super::silero_fusion::DEFAULT_LEFT_PAD_SECS;
+
+/// Lift one poll's worth of bridge events onto the session PCM clock.
+///
+/// Bridge time is **per request**: every `LiveStreamSession` restarts its
+/// segment clock at zero, while every consumer downstream
+/// ([`apple_segments_on_pcm_clock`], the seal windows, the Layer 1 ranges)
+/// reads those seconds as session time. With one stream per take the two
+/// clocks coincide and this is the identity; with an epoch lifecycle they
+/// diverge by exactly the epoch base, so the shift happens once, here, before
+/// any event reaches [`emit_stream_events`].
+fn shift_events(events: Vec<LiveStreamEvent>, base_secs: f32) -> Vec<LiveStreamEvent> {
+    if !base_secs.is_finite() || base_secs <= 0.0 {
+        return events;
+    }
+    events
+        .into_iter()
+        .map(|event| match event {
+            LiveStreamEvent::Partial { text, segments } => LiveStreamEvent::Partial {
+                text,
+                segments: shift_segments(segments, base_secs),
+            },
+            LiveStreamEvent::PhraseFinal { text, segments } => LiveStreamEvent::PhraseFinal {
+                text,
+                segments: shift_segments(segments, base_secs),
+            },
+            LiveStreamEvent::Summary {
+                text,
+                segments,
+                ok,
+                error,
+            } => LiveStreamEvent::Summary {
+                text,
+                segments: shift_segments(segments, base_secs),
+                ok,
+                error,
+            },
+            other @ (LiveStreamEvent::Ready
+            | LiveStreamEvent::End
+            | LiveStreamEvent::Error { .. }) => other,
+        })
+        .collect()
+}
+
+fn shift_segments(segments: Vec<TranscriptSegment>, base_secs: f32) -> Vec<TranscriptSegment> {
+    segments
+        .into_iter()
+        .map(|mut segment| {
+            if segment.start_ts.is_finite() {
+                segment.start_ts += base_secs;
+            }
+            if segment.end_ts.is_finite() {
+                segment.end_ts += base_secs;
+            }
+            segment
+        })
+        .collect()
+}
+
+/// What the worker must do with one capture chunk under the epoch lifecycle.
+#[derive(Debug, Clone, Copy, PartialEq)]
+enum EpochDecision {
+    /// Write the chunk into the currently open stream.
+    Forward,
+    /// Speech edge while asleep: open a stream based at `preroll_from`.
+    Wake { preroll_from: u64 },
+    /// Silence threshold crossed: close the epoch. Chunk is trailing silence.
+    Sleep { silence_secs: f32 },
+    /// Asleep and still silent — retain audio only.
+    Idle,
+}
+
+/// Source of speech edges for [`EpochGate`].
+///
+/// A trait rather than a hard `SpeechSession` dependency because the state
+/// machine must be testable on synthetic PCM: Silero loads from embedded bytes
+/// and a unit test that silently degrades to "no model" would test nothing.
+trait SpeechEdgeSource {
+    /// Observe one capture chunk (`samples_seen` is the cursor AFTER it) and
+    /// report whether speech is live in this window.
+    fn observe(&mut self, samples: &[f32], samples_seen: u64) -> bool;
+}
+
+/// Silero-backed edge source — the production wiring.
+///
+/// Deliberately independent of `CODESCRIBE_SILERO_FUSION`: the fusion lane is
+/// an experiment, the engine lifecycle is the product contract, and one must
+/// not gate the other. Speech is "live" while a Supervisor segment is open, and
+/// for the chunk a segment closes in — so the silence counter starts at the
+/// segment close, i.e. **after** Silero's own hysteresis (`0.55 s` by default)
+/// has already elapsed. The wall silence before an epoch closes is therefore
+/// the product threshold plus that hysteresis, never less than the setting.
+struct SileroEdgeSource {
+    vad: SpeechSession,
+}
+
+impl SpeechEdgeSource for SileroEdgeSource {
+    fn observe(&mut self, samples: &[f32], _samples_seen: u64) -> bool {
+        let events = self.vad.feed(samples, 0);
+        let closed_here = events
+            .iter()
+            .any(|event| matches!(event, SpeechEvent::UtteranceFinal(_)));
+        closed_here || self.vad.open_segment_raw_range().is_some()
+    }
+}
+
+/// Engine lifecycle for the Apple progressive lane: speech opens an SFSpeech
+/// epoch, silence past the product threshold closes it, and the engine rests
+/// (mic + Silero keep running) until the next speech edge.
+///
+/// Disarmed (`utterance_silence_sec: None`) it answers [`EpochDecision::Forward`]
+/// to everything, which is the pre-epoch worker bit for bit.
+struct EpochGate {
+    source: Option<Box<dyn SpeechEdgeSource>>,
+    sample_rate: u32,
+    silence_threshold_samples: u64,
+    preroll_samples: u64,
+    awake: bool,
+    /// Session cursor of the last chunk speech was live in.
+    last_speech_sample: u64,
+    /// Session cursor the previous epoch closed at — the pre-roll floor, so a
+    /// new epoch never re-feeds audio the closed one already carried.
+    epoch_closed_at: u64,
+}
+
+impl EpochGate {
+    /// Legacy lane: one stream for the whole take.
+    fn disarmed() -> Self {
+        Self {
+            source: None,
+            sample_rate: 1,
+            silence_threshold_samples: 0,
+            preroll_samples: 0,
+            awake: false,
+            last_speech_sample: 0,
+            epoch_closed_at: 0,
+        }
+    }
+
+    fn armed(sample_rate: u32, silence_sec: f32, source: Box<dyn SpeechEdgeSource>) -> Self {
+        let rate = sample_rate.max(1);
+        Self {
+            source: Some(source),
+            sample_rate: rate,
+            silence_threshold_samples: (silence_sec.max(0.1) * rate as f32) as u64,
+            preroll_samples: (EPOCH_PREROLL_SECS * rate as f32) as u64,
+            awake: false,
+            last_speech_sample: 0,
+            epoch_closed_at: 0,
+        }
+    }
+
+    /// Build the gate the session config asks for. `None` → legacy.
+    fn for_session(sample_rate: u32, utterance_silence_sec: Option<f32>) -> Self {
+        let Some(silence_sec) = utterance_silence_sec else {
+            return Self::disarmed();
+        };
+        // Keep the VAD's own closing silence at its tuned default: it must
+        // close segments promptly so the product threshold is measured from
+        // the end of speech, not stacked on top of a second long timer.
+        let vad = SpeechSession::new_utterance(sample_rate);
+        if !vad.vad_available() {
+            // Fail open. Without Silero every frame reads as non-speech, so an
+            // armed gate would sleep forever and the take would be silent.
+            warn!(
+                utterance_silence_sec = silence_sec,
+                "Silero unavailable — Apple engine lifecycle disarmed, falling back to one \
+                 continuous stream for this session"
+            );
+            return Self::disarmed();
+        }
+        Self::armed(sample_rate, silence_sec, Box::new(SileroEdgeSource { vad }))
+    }
+
+    fn is_armed(&self) -> bool {
+        self.source.is_some()
+    }
+
+    fn feed_pcm(&mut self, samples: &[f32], samples_seen: u64) -> EpochDecision {
+        let Some(source) = self.source.as_mut() else {
+            return EpochDecision::Forward;
+        };
+        let chunk_start = samples_seen.saturating_sub(samples.len() as u64);
+        if source.observe(samples, samples_seen) {
+            self.last_speech_sample = samples_seen;
+            if self.awake {
+                return EpochDecision::Forward;
+            }
+            self.awake = true;
+            let preroll_from = chunk_start
+                .saturating_sub(self.preroll_samples)
+                .max(self.epoch_closed_at);
+            return EpochDecision::Wake { preroll_from };
+        }
+        if !self.awake {
+            return EpochDecision::Idle;
+        }
+        let silence = samples_seen.saturating_sub(self.last_speech_sample);
+        if silence >= self.silence_threshold_samples {
+            self.awake = false;
+            self.epoch_closed_at = samples_seen;
+            return EpochDecision::Sleep {
+                silence_secs: silence as f32 / self.sample_rate as f32,
+            };
+        }
+        EpochDecision::Forward
+    }
+}
+
+/// Session-time base of the open epoch, in seconds.
+fn epoch_base_secs(epoch_base_samples: u64, sample_rate: u32) -> f32 {
+    epoch_base_samples as f32 / sample_rate.max(1) as f32
+}
+
+/// Seal an open partial that never received a phrase final.
+///
+/// Shared by the two places a stream can end without one: capture EOF (stop
+/// mid-phrase) and an epoch close. Both must run the same seal-time correction
+/// — a phrase that ends by silence must not be the one route that commits
+/// uncorrected text, or dies in the preview lane.
+fn seal_open_partial(
+    state: &mut AppleSealState,
+    ev_tx: &mpsc::UnboundedSender<EngineEvent>,
+    audio_secs: f32,
+) {
+    let open = state.open_partial.trim().to_string();
+    if open.is_empty() {
+        return;
+    }
+    let segments = std::mem::take(&mut state.open_partial_segments);
+    seal_utterance_final(state, ev_tx, &open, segments, audio_secs);
+    state.open_partial.clear();
+}
+
+/// Everything the blocking worker needs that is not a channel.
+struct AppleWorkerConfig<'a> {
+    sample_rate: u32,
+    language: Option<&'a str>,
+    session_id: String,
+    /// Product "Hands-free silence". `Some` arms the engine lifecycle (speech
+    /// epochs); `None` keeps one continuous SFSpeech stream for the whole take.
+    utterance_silence_sec: Option<f32>,
+}
+
+/// Blocking worker: owns the SFSpeech stream(s) for the session's full lifetime.
 fn apple_stream_worker(
     pcm_rx: std_mpsc::Receiver<Option<Vec<f32>>>,
     ev_tx: mpsc::UnboundedSender<EngineEvent>,
-    sample_rate: u32,
-    language: Option<&str>,
-    session_id: String,
     tail_patch: Option<mpsc::Sender<TailPatchRequest>>,
     tail_patch_done: std_mpsc::Receiver<TailPatchCompletion>,
+    config: AppleWorkerConfig<'_>,
 ) -> anyhow::Result<AppleStreamOutcome> {
-    let mut stream = LiveStreamSession::open(language, sample_rate)?;
+    let AppleWorkerConfig {
+        sample_rate,
+        language,
+        session_id,
+        utterance_silence_sec,
+    } = config;
+    // Engine lifecycle. Disarmed → one stream opened here for the whole take
+    // (legacy). Armed → the bridge stays unspawned until the first speech edge,
+    // and every epoch closes on the product silence threshold.
+    let mut epoch = EpochGate::for_session(sample_rate, utterance_silence_sec);
+    let mut stream = if epoch.is_armed() {
+        info!(
+            utterance_silence_sec = utterance_silence_sec.unwrap_or_default(),
+            preroll_secs = EPOCH_PREROLL_SECS,
+            "Apple progressive engine lifecycle armed — SFSpeech rests between utterances"
+        );
+        None
+    } else {
+        Some(LiveStreamSession::open(language, sample_rate)?)
+    };
+    // Session-time base of the open epoch. Zero for the legacy single stream,
+    // which is what makes `shift_events` the identity on that path.
+    let mut epoch_base_samples: u64 = 0;
     let mut state = match tail_patch {
         Some(tx) => AppleSealState::new_with_tail_patch_for_session(sample_rate, session_id, tx),
         None => AppleSealState::new_for_session(sample_rate, session_id),
@@ -1581,18 +1857,87 @@ fn apple_stream_worker(
                 // This is worker-side on purpose: the async select loop stays
                 // lock-free (2026-07-27 interleave contract) because the buffer
                 // is never shared across the thread boundary.
+                //
+                // Retention runs in every lifecycle state, including while the
+                // engine rests: it is what the pre-roll of the next epoch is cut
+                // from, and what Layer 1 windows still resolve against.
                 state.audio.push(&samples);
                 if let Some(fusion) = state.fusion.as_mut() {
                     fusion.ingest(&samples, samples_seen);
                 }
-                stream.write_pcm(&samples)?;
                 let audio_secs = samples_seen as f32 / sample_rate.max(1) as f32;
-                emit_stream_events(stream.poll_events(), &ev_tx, &mut state, audio_secs);
+                match epoch.feed_pcm(&samples, samples_seen) {
+                    EpochDecision::Forward => {
+                        if let Some(session) = stream.as_mut() {
+                            session.write_pcm(&samples)?;
+                            let events = shift_events(
+                                session.poll_events(),
+                                epoch_base_secs(epoch_base_samples, sample_rate),
+                            );
+                            emit_stream_events(events, &ev_tx, &mut state, audio_secs);
+                        }
+                    }
+                    EpochDecision::Wake { preroll_from } => {
+                        let mut session = LiveStreamSession::open(language, sample_rate)?;
+                        let chunk_start = samples_seen.saturating_sub(samples.len() as u64);
+                        // The base is whatever audio this epoch ACTUALLY starts
+                        // with, never what was asked for: a pre-roll that fell
+                        // off retention resolves to nothing, and basing the
+                        // epoch on it would shift every timestamp in it earlier
+                        // by the missing audio.
+                        let preroll = state.audio.window_by_samples(preroll_from, chunk_start);
+                        epoch_base_samples =
+                            preroll.as_ref().map_or(chunk_start, |w| w.sample_start);
+                        let preroll_samples =
+                            preroll.as_ref().map_or(0, |window| window.samples.len());
+                        if let Some(window) = preroll.filter(|w| !w.samples.is_empty()) {
+                            session.write_pcm(&window.samples)?;
+                        }
+                        session.write_pcm(&samples)?;
+                        info!(
+                            audio_secs,
+                            epoch_base_secs = epoch_base_secs(epoch_base_samples, sample_rate),
+                            preroll_samples,
+                            "apple_lifecycle: epoch open (speech edge)"
+                        );
+                        let events = shift_events(
+                            session.poll_events(),
+                            epoch_base_secs(epoch_base_samples, sample_rate),
+                        );
+                        emit_stream_events(events, &ev_tx, &mut state, audio_secs);
+                        stream = Some(session);
+                    }
+                    EpochDecision::Sleep { silence_secs } => {
+                        if let Some(session) = stream.take() {
+                            let base_secs = epoch_base_secs(epoch_base_samples, sample_rate);
+                            let trailing = shift_events(session.finish()?, base_secs);
+                            emit_stream_events(trailing, &ev_tx, &mut state, audio_secs);
+                            // Same close as capture EOF: whatever the engine
+                            // left open is sealed here, because no later
+                            // callback from this epoch can arrive.
+                            seal_open_partial(&mut state, &ev_tx, audio_secs);
+                            info!(
+                                audio_secs,
+                                silence_secs,
+                                epoch_base_secs = base_secs,
+                                "apple_lifecycle: epoch close (hands-free silence)"
+                            );
+                        }
+                    }
+                    // Resting: audio is retained, the engine is not running.
+                    EpochDecision::Idle => {}
+                }
             }
             Ok(None) => break, // EOF from async side
             Err(std_mpsc::RecvTimeoutError::Timeout) => {
                 let audio_secs = samples_seen as f32 / sample_rate.max(1) as f32;
-                emit_stream_events(stream.poll_events(), &ev_tx, &mut state, audio_secs);
+                if let Some(session) = stream.as_mut() {
+                    let events = shift_events(
+                        session.poll_events(),
+                        epoch_base_secs(epoch_base_samples, sample_rate),
+                    );
+                    emit_stream_events(events, &ev_tx, &mut state, audio_secs);
+                }
             }
             Err(std_mpsc::RecvTimeoutError::Disconnected) => break,
         }
@@ -1602,17 +1947,18 @@ fn apple_stream_worker(
     if let Some(fusion) = state.fusion.as_mut() {
         fusion.flush(samples_seen);
     }
-    let trailing = stream.finish()?;
-    emit_stream_events(trailing, &ev_tx, &mut state, audio_secs);
+    if let Some(session) = stream.take() {
+        let trailing = shift_events(
+            session.finish()?,
+            epoch_base_secs(epoch_base_samples, sample_rate),
+        );
+        emit_stream_events(trailing, &ev_tx, &mut state, audio_secs);
+    }
 
     // Seal open partial that never got a phrase final (stop mid-phrase).
     // Same seal-time correction as the phrase path — a stop mid-utterance must
     // not be the one route that commits uncorrected text.
-    let open = state.open_partial.trim().to_string();
-    if !open.is_empty() {
-        let segments = std::mem::take(&mut state.open_partial_segments);
-        seal_utterance_final(&mut state, &ev_tx, &open, segments, audio_secs);
-    }
+    seal_open_partial(&mut state, &ev_tx, audio_secs);
 
     // Every accepted Layer 1 request must close (success, no-change, or
     // explicit skip) before the session task returns. This is bounded by the
@@ -3385,6 +3731,192 @@ mod tests {
             state.sealed_count >= 3,
             "s5 + frozen s6 + s7 → at least 3 seals, got {}",
             state.sealed_count
+        );
+    }
+
+    // ═══════════════════════════════════════════════════════════
+    // Engine lifecycle: speech epochs (hands-free silence)
+    // ═══════════════════════════════════════════════════════════
+
+    /// Amplitude-gated stand-in for Silero, so the epoch state machine can be
+    /// tested on synthetic PCM without loading the VAD model (unit tests must
+    /// not depend on `init_silero_vad` succeeding).
+    struct AmplitudeEdgeSource {
+        threshold: f32,
+    }
+
+    impl SpeechEdgeSource for AmplitudeEdgeSource {
+        fn observe(&mut self, samples: &[f32], _samples_seen: u64) -> bool {
+            samples.iter().any(|s| s.abs() >= self.threshold)
+        }
+    }
+
+    /// One second of 200 Hz tone at `amplitude`, the "speech" side of the fixture.
+    fn tone(secs: f32, amplitude: f32) -> Vec<f32> {
+        let total = (secs * TEST_SAMPLE_RATE as f32) as usize;
+        (0..total)
+            .map(|i| {
+                let t = i as f32 / TEST_SAMPLE_RATE as f32;
+                amplitude * (2.0 * std::f32::consts::PI * 200.0 * t).sin()
+            })
+            .collect()
+    }
+
+    fn silence(secs: f32) -> Vec<f32> {
+        vec![0.0; (secs * TEST_SAMPLE_RATE as f32) as usize]
+    }
+
+    /// Drive the gate the way the worker does — chunk by chunk — collecting
+    /// every decision together with the cursor it was taken at.
+    fn drive(gate: &mut EpochGate, audio: &[f32], samples_seen: &mut u64) -> Vec<EpochDecision> {
+        let mut out = Vec::new();
+        for chunk in audio.chunks(1024) {
+            *samples_seen += chunk.len() as u64;
+            out.push(gate.feed_pcm(chunk, *samples_seen));
+        }
+        out
+    }
+
+    /// Timestamp shim: bridge time is per-epoch (seconds since that SFSpeech
+    /// request opened), so every event leaving a non-zero epoch must be lifted
+    /// onto the session PCM clock before any seal maps it to samples.
+    #[test]
+    fn epoch_shift_lifts_segment_times_onto_the_session_pcm_clock() {
+        let mut state = AppleSealState::new(TEST_SAMPLE_RATE);
+        push_capture(&mut state, 110.0);
+
+        let shifted = shift_events(
+            vec![LiveStreamEvent::PhraseFinal {
+                text: "uruchom doker".into(),
+                segments: vec![segment("uruchom doker", 0.5, 2.0)],
+            }],
+            100.0,
+        );
+        let LiveStreamEvent::PhraseFinal { segments, .. } = &shifted[0] else {
+            panic!("shim must preserve the event kind");
+        };
+        assert_eq!(segments[0].start_ts, 100.5);
+        assert_eq!(segments[0].end_ts, 102.0);
+
+        let on_pcm = apple_segments_on_pcm_clock(&state, segments);
+        assert_eq!(
+            on_pcm[0].range.sample_start,
+            (100.5 * TEST_SAMPLE_RATE as f32) as u64
+        );
+        assert_eq!(
+            on_pcm[0].range.sample_end,
+            (102.0 * TEST_SAMPLE_RATE as f32) as u64
+        );
+    }
+
+    /// The first epoch is based at 0, so the shim must be the identity there —
+    /// this is what keeps a single-epoch take bit-identical to the legacy lane.
+    #[test]
+    fn epoch_shift_at_base_zero_is_identity() {
+        let shifted = shift_events(
+            vec![
+                LiveStreamEvent::Partial {
+                    text: "uruchom".into(),
+                    segments: vec![segment("uruchom", 0.5, 2.0)],
+                },
+                LiveStreamEvent::Summary {
+                    text: "uruchom doker".into(),
+                    segments: vec![segment("uruchom doker", 0.5, 4.0)],
+                    ok: true,
+                    error: None,
+                },
+            ],
+            0.0,
+        );
+        let LiveStreamEvent::Partial { segments, .. } = &shifted[0] else {
+            panic!("kind preserved");
+        };
+        assert_eq!((segments[0].start_ts, segments[0].end_ts), (0.5, 2.0));
+        let LiveStreamEvent::Summary { segments, .. } = &shifted[1] else {
+            panic!("kind preserved");
+        };
+        assert_eq!((segments[0].start_ts, segments[0].end_ts), (0.5, 4.0));
+    }
+
+    /// Engine lifecycle: speech opens an epoch, silence past the product
+    /// threshold closes it, and the next speech edge wakes a new one whose
+    /// base carries the pre-roll.
+    #[test]
+    fn epoch_gate_sleeps_after_threshold_silence_and_wakes_with_preroll() {
+        let mut gate = EpochGate::armed(
+            TEST_SAMPLE_RATE,
+            5.0,
+            Box::new(AmplitudeEdgeSource { threshold: 0.1 }),
+        );
+        let mut seen = 0u64;
+
+        let speech = drive(&mut gate, &tone(2.0, 0.5), &mut seen);
+        assert!(
+            matches!(
+                speech.first(),
+                Some(EpochDecision::Wake { preroll_from: 0 })
+            ),
+            "first speech chunk must open epoch 0 (nothing retained before it), got {:?}",
+            speech.first()
+        );
+        assert!(
+            speech[1..].iter().all(|d| *d == EpochDecision::Forward),
+            "speech after the wake must forward, got {:?}",
+            &speech[1..]
+        );
+
+        let quiet = drive(&mut gate, &silence(6.0), &mut seen);
+        let sleep_at = quiet
+            .iter()
+            .position(|d| matches!(d, EpochDecision::Sleep { .. }))
+            .expect("6 s of silence at a 5 s threshold must close the epoch");
+        let sleep_secs = (sleep_at + 1) as f32 * 1024.0 / TEST_SAMPLE_RATE as f32;
+        assert!(
+            (5.0..5.2).contains(&sleep_secs),
+            "epoch must close within a chunk of the 5 s threshold, closed at {sleep_secs}s"
+        );
+        assert!(
+            quiet[sleep_at + 1..]
+                .iter()
+                .all(|d| *d == EpochDecision::Idle),
+            "after sleeping the engine rests until the next speech edge"
+        );
+
+        let sleep_cursor = seen - (quiet.len() - sleep_at - 1) as u64 * 1024;
+        let resume_cursor = seen;
+        let woke = drive(&mut gate, &tone(1.0, 0.5), &mut seen);
+        let EpochDecision::Wake { preroll_from } = woke[0] else {
+            panic!("speech after rest must wake a new epoch, got {:?}", woke[0]);
+        };
+        let preroll = (EPOCH_PREROLL_SECS * TEST_SAMPLE_RATE as f32) as u64;
+        assert_eq!(
+            preroll_from,
+            resume_cursor.saturating_sub(preroll),
+            "the new epoch base is one pre-roll ahead of the waking chunk"
+        );
+        assert!(
+            preroll_from >= sleep_cursor,
+            "pre-roll must not reach back into the closed epoch ({preroll_from} < {sleep_cursor})"
+        );
+    }
+
+    /// `utterance_silence_sec: None` is the legacy contract: one stream for the
+    /// whole take, no epoch decisions at all.
+    #[test]
+    fn epoch_gate_disarmed_never_sleeps_or_wakes() {
+        let mut gate = EpochGate::disarmed();
+        assert!(!gate.is_armed());
+        let mut seen = 0u64;
+        let mut decisions = drive(&mut gate, &tone(1.0, 0.5), &mut seen);
+        decisions.extend(drive(&mut gate, &silence(30.0), &mut seen));
+        decisions.extend(drive(&mut gate, &tone(1.0, 0.5), &mut seen));
+        assert!(
+            decisions.iter().all(|d| *d == EpochDecision::Forward),
+            "disarmed gate must forward every chunk, got {:?}",
+            decisions
+                .iter()
+                .filter(|d| **d != EpochDecision::Forward)
+                .collect::<Vec<_>>()
         );
     }
 }

@@ -1100,6 +1100,16 @@ impl SpeechSession {
         self.output_sample_rate
     }
 
+    /// Whether Silero actually loaded for this session.
+    ///
+    /// A missing model is not fatal here — [`Self::predict_speech_prob`] reads
+    /// every frame as non-speech — but a consumer that *gates* on speech edges
+    /// (the Apple engine lifecycle) would then never see one and would rest
+    /// forever. Such consumers must ask first and fail open.
+    pub(crate) fn vad_available(&self) -> bool {
+        self.vad.is_some()
+    }
+
     /// Speech probability at the last VAD Start/End boundary.
     pub(crate) fn boundary_prob(&self) -> f32 {
         self.last_boundary_prob
