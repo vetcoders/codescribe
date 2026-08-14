@@ -697,6 +697,27 @@ final class OverlayState: ObservableObject {
     }
   }
 
+  /// Arm the one-step revert slot after an AUTO-formatted FINAL, so Revert
+  /// restores the raw first version — the same undo manual Format already has.
+  /// Operator agreement (2026-08-13, re-raised 2026-08-14): an auto-formatted
+  /// transcript must never be a one-way door; before this, `preFormatText` was
+  /// only set by the manual path, so auto results showed no Revert at all.
+  /// Only arms when auto formatting is actually on, the shown text came from
+  /// the controller's authoritative final, a different non-empty raw assembly
+  /// exists, and no manual slot is already held.
+  private func armAutoFormatRevertSlot(shown: String) {
+    guard autoFormatLevel != .off,
+      usableAuthoritativeFinalText != nil,
+      preFormatText == nil
+    else { return }
+    let rawSource = insertingContextMarkers(into: rawLiveText)
+    guard !rawSource.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
+      rawSource != shown
+    else { return }
+    preFormatText = rawSource
+    preFormatLevel = .off
+  }
+
   /// Restore the exact source of the most recent successful changed format.
   /// The slot is consumed once and this explicit user activity starts a fresh
   /// terminal lifetime from the injected monotonic clock.
@@ -1589,6 +1610,7 @@ final class OverlayState: ObservableObject {
     let rendered = insertingContextMarkers(into: clean)
     if mode == .formatted, formattedText != rendered {
       formattedText = rendered
+      armAutoFormatRevertSlot(shown: rendered)
     } else if mode == .noSpeech {
       // Real text arrived after we finalised to no-speech (empty at the
       // time): recover it as the normal FINAL rather than losing it.
@@ -1646,6 +1668,7 @@ final class OverlayState: ObservableObject {
       if formattedText != resolved { formattedText = resolved }
       if deliveredText.isEmpty { deliveredText = resolved }
       qualityFormattingLevel = autoFormatLevel
+      armAutoFormatRevertSlot(shown: resolved)
       if sttRawText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
         // Best effort: if no STT raw from per-utterance finals yet, fall back to the
         // resolved assembly (still the raw-streaming path, not AI formatted).

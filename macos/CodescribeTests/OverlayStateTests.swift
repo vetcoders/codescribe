@@ -875,6 +875,62 @@ final class OverlayStateTests: XCTestCase {
     XCTAssertEqual(closeCount, 1)
   }
 
+  func testAutoFormattedFinalArmsRevertToRawFirstVersion() {
+    let clock = OverlayStateTestClock()
+    let engine = OverlayStateTestEngine()
+    let state = OverlayState(nowProvider: { clock.now })
+    state.engine = engine
+    state.handleRecordingPreparing()
+    state.handleRecordingStarted()
+    state.applyFinal(utteranceId: 1, "surowe słowa operatora")
+    // Controller's LocalFinalPass delivers the AUTO-formatted authoritative
+    // text before the terminal finalize — the normal stop ordering.
+    state.applyFinalTranscript("Surowe słowa operatora.")
+    state.finishControllerRecording()
+
+    XCTAssertEqual(state.formattedText, "Surowe słowa operatora.")
+    XCTAssertTrue(state.canRevert, "auto-formatted FINAL must offer Revert to the raw first version")
+    state.revertFormat()
+    XCTAssertEqual(state.formattedText, "surowe słowa operatora")
+    XCTAssertFalse(state.canRevert)
+  }
+
+  func testLateAuthoritativeFormatArmsRevertAndRawFinalizeDoesNot() {
+    let clock = OverlayStateTestClock()
+    let engine = OverlayStateTestEngine()
+    let state = OverlayState(nowProvider: { clock.now })
+    state.engine = engine
+    state.handleRecordingPreparing()
+    state.handleRecordingStarted()
+    state.applyFinal(utteranceId: 1, "raw take")
+    state.finishControllerRecording()
+    XCTAssertFalse(state.canRevert, "raw FINAL (shown == raw) must not arm Revert")
+
+    // Authoritative formatted text arrives AFTER the finalize (late order).
+    state.applyFinalTranscript("Raw take, formatted.")
+    XCTAssertEqual(state.formattedText, "Raw take, formatted.")
+    XCTAssertTrue(state.canRevert)
+    state.revertFormat()
+    XCTAssertEqual(state.formattedText, "raw take")
+  }
+
+  func testAutoFormatOffNeverArmsRevertSlot() {
+    let clock = OverlayStateTestClock()
+    let engine = OverlayStateTestEngine()
+    engine.persistedPolicy = OverlayPolicySnapshot(
+      autoPasteEnabled: true,
+      autoFormatLevel: .off
+    )
+    let state = OverlayState(nowProvider: { clock.now })
+    state.engine = engine
+    state.handleRecordingPreparing()
+    state.handleRecordingStarted()
+    state.applyFinal(utteranceId: 1, "raw take")
+    state.applyFinalTranscript("Raw take, formatted.")
+    state.finishControllerRecording()
+    XCTAssertFalse(state.canRevert, "with Auto Format off the slot must stay manual-only")
+  }
+
   func testCloseIsImmediateAndAgentButtonUsesControllerDelivery() async {
     let clock = OverlayStateTestClock()
     let engine = OverlayStateTestEngine()
