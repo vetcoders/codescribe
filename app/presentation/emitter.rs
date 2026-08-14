@@ -667,6 +667,84 @@ mod tests {
     use std::sync::{Arc, Mutex as StdMutex};
     use tokio::sync::Mutex;
 
+    /// Regression for the 2026-08-14 tripled-RAW incident (Monika's take:
+    /// reducer said 228 chars, the RAW pulled by `recorder.stop()` said 791).
+    /// Two writers raced on the shared buffer: the command worker snapshotted
+    /// the full target AND the tick loop appended the same suffix again, so
+    /// cumulative Apple previews multiplied the trailing sentence.
+    ///
+    /// This walks the exact runtime seam — `on_event` → reducer → command
+    /// channel → worker snapshot → tick animation → shared buffer — with the
+    /// only substituted boundary being the event source, and demands the buffer
+    /// end byte-identical to the reducer truth.
+    #[tokio::test]
+    async fn transcript_buffer_matches_reducer_truth_after_cumulative_previews() {
+        let transcript = Arc::new(Mutex::new(String::new()));
+        let mut emitter = PresentationEmitter::new(transcript.clone(), None, None);
+
+        let final_event = |id: u64, text: &str, start: f32, end: f32| EngineEvent::UtteranceFinal {
+            utterance_id: id,
+            text: text.to_string(),
+            raw_text: text.to_string(),
+            start_ts: start,
+            end_ts: end,
+            segments: Vec::new(),
+            vad_speech_pct: Some(100.0),
+            avg_logprob: None,
+            compression_ratio: None,
+            quality_gate_dropped: false,
+            confidence_flags: Vec::new(),
+        };
+
+        // The Apple-lane shape from the incident log: per-utterance previews
+        // grow until a final seals them (the restated-prefix guards upstream
+        // strip whole-session restatements before emission), and stop arrives
+        // with an open partial still on the canvas — sealed=2 + open tail.
+        let events = vec![
+            EngineEvent::Preview {
+                rev: 1,
+                text: "Pies od wczoraj".to_string(),
+            },
+            EngineEvent::Preview {
+                rev: 2,
+                text: "Pies od wczoraj wymiotuje.".to_string(),
+            },
+            final_event(1, "Pies od wczoraj wymiotuje.", 0.0, 2.0),
+            EngineEvent::Preview {
+                rev: 3,
+                text: "Nie je i nie".to_string(),
+            },
+            EngineEvent::Preview {
+                rev: 4,
+                text: "Nie je i nie pije.".to_string(),
+            },
+            final_event(2, "Nie je i nie pije.", 2.0, 4.0),
+            EngineEvent::Preview {
+                rev: 5,
+                text: "Podałam mu".to_string(),
+            },
+        ];
+
+        let mut reference = SessionTranscriptState::default();
+        for event in &events {
+            emitter.on_event(event);
+            let _ = reference.apply_event(event);
+        }
+        emitter.finish().await;
+
+        let raw = transcript.lock().await.clone();
+        assert_eq!(
+            raw,
+            reference.rendered_text(),
+            "the RAW buffer recorder.stop() reads must be byte-identical to the reducer truth"
+        );
+        assert_eq!(
+            raw.matches("wymiotuje").count(),
+            1,
+            "a sentence delivered once must appear exactly once in the RAW, got: {raw:?}"
+        );
+    }
+
     /// Live preview appends after committed text in the rendered session canvas.
     #[test]
     fn session_state_appends_preview_after_committed_text() {

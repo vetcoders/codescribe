@@ -976,6 +976,47 @@ fn test_correction_bootstraps_when_no_output_emitted_yet() {
 }
 
 #[test]
+fn test_transcript_buffer_has_single_writer_no_duplication() {
+    // Regression for 2026-08-14: the command worker snapshotted the full target
+    // into the shared buffer AND the tick loop appended the same suffix again,
+    // so repeated sentences tripled in the final RAW (a 264-char cumulative
+    // preview became a 791-char transcript). The buffer has exactly one writer:
+    // store_transcript_snapshot. Ticking must never grow it past the target.
+    let rt = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .unwrap();
+    rt.block_on(async {
+        let buf = Arc::new(Mutex::new(String::new()));
+        let mut emitter = BufferedEmitter::new(buf.clone(), None, None);
+
+        // Cumulative targets, the shape the Apple lane delivers — each one is a
+        // superset of the previous, mirroring the command-worker snapshot flow.
+        for target in ["Ala ma", "Ala ma kota. ", "Ala ma kota. Ala ma kota. "] {
+            if let Some(snapshot) = emitter.set_target_text(target.to_string()) {
+                emitter.store_transcript_snapshot(snapshot).await;
+            }
+        }
+        emitter.finish();
+
+        // Generous deadline: the typing profile is env-tunable and an operator
+        // dotenv can slow the animation; the drain itself is sub-second.
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(20);
+        while !emitter.tick().await {
+            assert!(
+                std::time::Instant::now() < deadline,
+                "emitter failed to drain within 20s"
+            );
+            tokio::time::sleep(Duration::from_millis(2)).await;
+        }
+
+        let final_buffer = buf.lock().await.clone();
+        assert_eq!(final_buffer, "Ala ma kota. Ala ma kota. ");
+        assert_eq!(emitter.emitted_text, "Ala ma kota. Ala ma kota. ");
+    });
+}
+
+#[test]
 fn test_correction_delta() {
     let before = "This is a dratf.";
     let after = "This is a draft.";

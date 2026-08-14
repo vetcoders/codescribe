@@ -154,8 +154,12 @@ impl BufferedEmitter {
     }
 
     /// Overwrite the shared transcript buffer wholesale, bypassing the animation.
-    /// For callers that already hold the authoritative text (e.g. a finalized
-    /// pass) and need the buffer to match immediately.
+    ///
+    /// This is the ONLY writer of the shared buffer. The tick loop animates the
+    /// `DeltaSink` but never touches the buffer: when both wrote (snapshot of the
+    /// full target + the same suffix appended again by the animation), repeated
+    /// sentences tripled in the final RAW (2026-08-14 incident: a 264-char
+    /// cumulative preview became a 791-char transcript).
     pub async fn store_transcript_snapshot(&self, snapshot: String) {
         let mut buffer = self.transcript_buffer.lock().await;
         *buffer = snapshot;
@@ -216,10 +220,6 @@ impl BufferedEmitter {
                 && let Some(delta) = build_redacted_delta(&self.emitted_text, &corrected)
             {
                 apply_delta_to_string(&mut self.emitted_text, &delta);
-                {
-                    let mut buffer = self.transcript_buffer.lock().await;
-                    *buffer = self.emitted_text.clone();
-                }
                 if let Some(sink) = &self.delta_callback {
                     sink.apply(&TranscriptDelta::from_raw(&delta));
                 }
@@ -245,10 +245,6 @@ impl BufferedEmitter {
         if let Some(delta) = self.next_emit_chunk() {
             self.has_output = true;
             self.emitted_text.push_str(&delta);
-            {
-                let mut buffer = self.transcript_buffer.lock().await;
-                apply_delta_to_string(&mut buffer, &delta);
-            }
 
             if let Some(sink) = &self.delta_callback {
                 sink.apply(&TranscriptDelta::from_raw(&delta));
