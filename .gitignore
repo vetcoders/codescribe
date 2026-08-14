@@ -104,3 +104,4 @@ tests/assets/data_assets/*
 /*.txt
 /.aiassistant
 /.atuin
+/target-fusion
