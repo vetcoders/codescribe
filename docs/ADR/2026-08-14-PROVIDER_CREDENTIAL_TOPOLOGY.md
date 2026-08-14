@@ -39,11 +39,11 @@ object, always**:
 
 ### Tier 1 — Vendors (endpoints PINNED, no URL field at all)
 
-| Provider  | Credentials offered              | Endpoint                     |
-| --------- | -------------------------------- | ---------------------------- |
-| OpenAI    | API key AND/OR ChatGPT OAuth     | official, pinned, not shown as editable |
-| xAI       | API key AND/OR xAI OAuth         | official, pinned             |
-| Anthropic | API key                          | official, pinned             |
+| Provider  | Credentials offered          | Endpoint                                |
+| --------- | ---------------------------- | --------------------------------------- |
+| OpenAI    | API key AND/OR ChatGPT OAuth | official, pinned, not shown as editable |
+| xAI       | API key AND/OR xAI OAuth     | official, pinned                        |
+| Anthropic | API key                      | official, pinned                        |
 
 "Zero samowolki w urlach": a vendor row never exposes an endpoint editor.
 If both credentials are present, the row states which one the runtime will

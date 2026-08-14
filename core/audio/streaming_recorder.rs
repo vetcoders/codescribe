@@ -100,7 +100,15 @@ pub async fn replay_production_session(
         "streaming_whisper"
     }
     .to_string();
-    let config = recording_session_config(sample_rate, language, None, None, layer1, None);
+    let utterance_silence_sec = settings.toggle_silence_sec.filter(|&sec| sec >= 0.5);
+    let config = recording_session_config(
+        sample_rate,
+        language,
+        None,
+        utterance_silence_sec,
+        layer1,
+        None,
+    );
     let events = collect_buffered_engine_events_with_config(samples, config).await?;
     Ok(ProductionSessionReplay {
         events,

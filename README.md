@@ -278,7 +278,7 @@ WHISPER_LANGUAGE=auto                # auto | pl | en
 HOLD_EXCLUSIVE=1                     # ignore extra modifiers during hold
 HOLD_START_DELAY_MS=800              # Delay before recording starts
 DOUBLE_TAP_INTERVAL_MS=200           # Toggle gesture timing
-TOGGLE_SILENCE_SEC=5.0               # Auto-send after silence in toggle modes
+TOGGLE_SILENCE_SEC=5.0               # Apple epoch rest after this much silence (next recording)
 
 # AI Formatting
 AI_FORMATTING_ENABLED=1              # 1=format via LLM, 0=raw transcript

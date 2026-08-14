@@ -1948,10 +1948,10 @@ final class SettingsViewModel: ObservableObject {
     persist("FINAL_PASS_MODE", normalized)
   }
 
-  /// ON for any phase value ("phase1".."phase4" or bare "1".."4"); anything
-  /// else (including "off"/absent) is OFF — mirrors the core `layered_phase`.
+  /// ON for any phase value ("phase1".."phase4" or bare "1".."4"); explicit
+  /// "off" disarms. Absent matches the core default (`unset` → phase1).
   var layeredTranscriptionEnabled: Bool {
-    let value = settings.layeredTranscription ?? "off"
+    let value = settings.layeredTranscription ?? "phase1"
     return value.hasPrefix("phase") || Int(value) != nil
   }
 

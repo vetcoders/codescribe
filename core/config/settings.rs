@@ -252,8 +252,8 @@ pub struct UserSettings {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub final_pass_mode: Option<String>,
     /// Layered incremental transcription phase ("off" | "phase1").
-    /// Seeds `CODESCRIBE_LAYERED_TRANSCRIPTION`; anything other than
-    /// "phase1".."phase4" (or bare "1".."4") is treated as OFF by the core.
+    /// Seeds `CODESCRIBE_LAYERED_TRANSCRIPTION`. Absent matches the core
+    /// default (`unset` → phase1). Explicit "off" / "0" / "false" disarms.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub layered_transcription: Option<String>,
     /// Opt-in Whisper `initial_prompt` vocabulary hint.

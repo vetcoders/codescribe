@@ -2192,8 +2192,11 @@ impl RecordingController {
                 set_assistive_session(false);
                 return;
             }
-            // Hold-to-talk: the key-down is the source of truth. Don't auto-stop mid-hold.
+            // Hold-to-talk: the key-down is the source of truth. Don't auto-stop
+            // the session mid-hold. Silence still closes an SFSpeech epoch so
+            // Layer 1 can be fed — same knob as toggle (`TOGGLE_SILENCE_SEC`).
             rec.recorder.config.auto_silence = false;
+            rec.set_utterance_silence_sec(Some(config.toggle_silence_sec));
             rec.recorder.set_on_vad_stop(move || {
                 info!("VAD callback: setting vad_triggered flag");
                 vad_flag.store(true, Ordering::SeqCst);

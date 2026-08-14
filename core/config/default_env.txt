@@ -16,7 +16,7 @@ WHISPER_LANGUAGE=auto
 HOLD_EXCLUSIVE=1
 HOLD_START_DELAY_MS=800
 DOUBLE_TAP_INTERVAL_MS=200
-TOGGLE_SILENCE_SEC=5.0
+TOGGLE_SILENCE_SEC=5.0              # Apple epoch rest; not CODESCRIBE_VAD_*
 # Mode bindings are canonical and persisted in settings.json:
 # - dictation: hold_fn
 # - formatting: double_left_option

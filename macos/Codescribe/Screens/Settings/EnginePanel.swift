@@ -238,7 +238,7 @@ struct EnginePanel: View {
       }
       SettingsControlRow(
         title: "Layered transcription",
-        subtitle: "Experimental: Apple live layer + Whisper tail patches"
+        subtitle: "Apple live canvas + Whisper tail patches (on by default)"
       ) {
         Toggle("", isOn: layeredBinding)
           .toggleStyle(.switch)
@@ -489,7 +489,7 @@ struct EnginePanel: View {
     .overlay(cardBorder)
   }
 
-  // MARK: Hands-free silence (toggle-mode VAD window — TOGGLE_SILENCE_SEC)
+  // MARK: Hands-free silence (Apple engine epoch — TOGGLE_SILENCE_SEC)
 
   private var silenceSection: some View {
     VStack(alignment: .leading, spacing: 10) {
@@ -498,7 +498,9 @@ struct EnginePanel: View {
           Text("Hands-free silence")
             .font(CSFont.ui(13, .semibold))
             .foregroundStyle(CSColor.textBody)
-          Text("End a toggle-mode utterance after this much live VAD silence")
+          Text(
+            "Rest the Apple engine after this much silence; the next speech edge wakes a fresh epoch so Whisper can patch the sealed span"
+          )
             .font(CSFont.ui(11.5))
             .foregroundStyle(CSColor.textMutedAlt)
         }

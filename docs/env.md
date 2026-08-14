@@ -34,7 +34,7 @@ Poniższe działają „same z siebie” — jeśli ich nie ustawisz, aplikacja 
 - `HOLD_ARM_MODIFIER` – domyślnie `shift` — `cmd` ustawia Command jako modifier armujący assistive (W10-B)
 - `HOLD_START_DELAY_MS` – domyślnie `800` (RESTART NEEDED)
 - `DOUBLE_TAP_INTERVAL_MS` – domyślnie `200` (RESTART NEEDED)
-- `TOGGLE_SILENCE_SEC` – domyślnie `5.0` (RESTART NEEDED)
+- `TOGGLE_SILENCE_SEC` – domyślnie `5.0` (HOT — next recording): cisza zamyka epokę Apple (silnik odpoczywa, Layer 1 dostaje zapieczętowany span). Nie `CODESCRIBE_VAD_*` (te nazwy nigdy nie były czytane).
 - `SHOW_TRAY_GLYPH` – domyślnie `1` (RESTART NEEDED)
 - `HOLD_INDICATOR` – domyślnie `1` (HOT — next badge show; K3 W10-E, no live redraw of visible badge)
 - `HOLD_BADGE_SIZE` – domyślnie `8` (HOT — next badge show; K3 W10-E)
@@ -212,7 +212,7 @@ i runtime nie może znaleźć Whispera przez cache / config:
 - `HOLD_EXCLUSIVE` (RESTART NEEDED)
 - `HOLD_START_DELAY_MS` (RESTART NEEDED)
 - `DOUBLE_TAP_INTERVAL_MS` (RESTART NEEDED)
-- `TOGGLE_SILENCE_SEC` (RESTART NEEDED)
+- `TOGGLE_SILENCE_SEC` (HOT — next recording; Apple epoch lifecycle, not wav-VAD auto-send)
 
 ### UI / Overlay / Feedback
 

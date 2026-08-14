@@ -23,6 +23,11 @@ updated = "2026-07-16"
 # ═══════════════════════════════════════════════════════════════════════════════
 # VAD internals are hardcoded in `core/vad/config.rs` based on Silero defaults.
 # No user-configurable VAD env vars.
+#
+# Dead folklore (never read; leftover .env lines, not product knobs):
+#   CODESCRIBE_VAD_SILENCE_SEC, CODESCRIBE_VAD_PRE_ROLL_MS, CODESCRIBE_VAD_SILENCE_DB
+# Product silence on the live Apple lane is TOGGLE_SILENCE_SEC → EpochGate
+# (speech opens an SFSpeech epoch, silence past the slider closes it).
 
 # ═══════════════════════════════════════════════════════════════════════════════
 # Audio / Recording
@@ -550,6 +555,13 @@ type = "string"
 reload = "hot"
 category = "stt"
 description = "Layered incremental transcription phase gate: phase1 (DEFAULT since 2026-08-09 — operator directive: the live tail patch is a core element of the triangulation, not an opt-in; explicit off/0/false disables) or phase1..phase4 (bare 1..4 accepted). Orthogonal to FINAL_PASS_MODE/Smart — Smart never enables this. Phase ≥ 1 turns on Layer 1 Whisper tail-patch during hold on BOTH live paths: the VAD/scheduler session and the default Apple progressive live session (wired W2-A, a6b1233d). phase1 = Apple Layer 0 + Whisper ReplaceRange patches. Promoted 2026-08-10 to settings.json (single-brain; a stale ~/.codescribe/.env line must not lottery the live path)."
+
+[vars.CODESCRIBE_SEAL_ATLAS_DUMP]
+default = ""
+type = "string"
+reload = "hot"
+category = "stt"
+description = "Operator evidence path. When set to a non-empty filesystem path, the Apple progressive worker writes one JSON file of sealed spans (id, text, PCM-pinned words, Apple/Whisper evidence) at session end. Empty = no-op. Diagnostic only — not a product setting."
 
 [vars.CODESCRIBE_INLINE_FORMAT]
 default = "0"
@@ -1195,9 +1207,9 @@ description = "Double-tap interval for toggle detection (ms)"
 [vars.TOGGLE_SILENCE_SEC]
 default = "5.0"
 type = "f32"
-reload = "restart"
-category = "hotkeys"
-description = "Silence duration before sending a toggle utterance (seconds)"
+reload = "hot"
+category = "stt"
+description = "Hands-free silence on the live Apple lane: seconds of Silero-detected quiet that close the current SFSpeech epoch (seal + rest) and let Layer 1 Whisper patch the sealed span. Next speech edge wakes a fresh epoch with pre-roll. Next recording session. Not a wav-only chunker knob and not CODESCRIBE_VAD_*."
 
 # ═══════════════════════════════════════════════════════════════════════════════
 # UI / Overlay

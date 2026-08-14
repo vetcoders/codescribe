@@ -80,7 +80,7 @@ Tray "Start Dictation" calls that. Computer Use is not required for engine truth
 One truth, do not re-litigate:
 
 1. Apple remains the live canvas. Whisper remains the live gap-filler. Lexicon last. **Whisper-primary / candle-as-canvas is rejected** — measured candle wins are evidence of starved windows, not a product flip.
-2. `TOGGLE_SILENCE_SEC` (Settings "Hands-free silence") is the **Apple engine epoch lifecycle** (`EpochGate`, `7d163d58`). Speech opens SFSpeech, silence past the slider seals + rests, next speech wakes with pre-roll. Layer 1 can then be fed. The old WARN "progressive ignores utterance_silence_sec" is dead.
+2. `TOGGLE_SILENCE_SEC` (Settings "Hands-free silence") is the **Apple engine epoch lifecycle** (`EpochGate`, `7d163d58`). Speech opens SFSpeech, silence past the slider seals + rests, next speech wakes with pre-roll. Layer 1 can then be fed. Wired on **hold and toggle**. The old WARN "progressive ignores utterance_silence_sec" is dead. Settings Layer 1 absent = ON (matches core `phase1`).
 3. `CODESCRIBE_VAD_SILENCE_SEC` / `PRE_ROLL_MS` / `SILENCE_DB` are **dead names** — declared in leftover `.env`, never read. Do not wire them. Do not treat env-truth orphans as the product slider.
 4. `lbrx-stt-engine` stays a U-WER bench. Fusion / idempotence / highlights stay OFF until operator A/B. Next field cut is still take-614 fusion.
 5. Surfaces aligned this pass: EnginePanel copy, ENV_REGISTRY, env.md, HOTKEYS_CONTRACT, README, default_env, ROADMAP §5/§13.
