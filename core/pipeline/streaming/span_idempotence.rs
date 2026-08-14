@@ -22,13 +22,17 @@ pub const SPAN_IDEMPOTENCE_ENV: &str = "CODESCRIBE_SPAN_IDEMPOTENCE";
 
 /// Whether the W13-4 idempotence lane is armed. Default OFF.
 pub fn lane_enabled() -> bool {
-    match std::env::var(SPAN_IDEMPOTENCE_ENV) {
-        Ok(raw) => {
-            let raw = raw.trim().to_ascii_lowercase();
-            matches!(raw.as_str(), "1" | "true" | "yes" | "on")
-        }
-        Err(_) => false,
-    }
+    let raw = std::env::var(SPAN_IDEMPOTENCE_ENV).ok();
+    lane_enabled_from_raw(raw.as_deref())
+}
+
+fn lane_enabled_from_raw(raw: Option<&str>) -> bool {
+    raw.is_some_and(|raw| {
+        matches!(
+            raw.trim().to_ascii_lowercase().as_str(),
+            "1" | "true" | "yes" | "on"
+        )
+    })
 }
 
 /// Non-content evidence that may auto-remove a delivery.
@@ -330,13 +334,9 @@ mod tests {
 
     #[test]
     fn lane_defaults_off() {
-        let previous = std::env::var(SPAN_IDEMPOTENCE_ENV).ok();
-        unsafe { std::env::remove_var(SPAN_IDEMPOTENCE_ENV) };
-        assert!(!lane_enabled());
-        match previous {
-            Some(value) => unsafe { std::env::set_var(SPAN_IDEMPOTENCE_ENV, value) },
-            None => unsafe { std::env::remove_var(SPAN_IDEMPOTENCE_ENV) },
-        }
+        assert!(!lane_enabled_from_raw(None));
+        assert!(!lane_enabled_from_raw(Some("off")));
+        assert!(lane_enabled_from_raw(Some("on")));
     }
 
     #[test]

@@ -23,7 +23,7 @@ use crate::pipeline::contracts::{
 };
 use crate::stt::scheduler::{SttLane, SttScheduler, SttTaskHandle};
 use crate::stt::tail_patcher::{
-    TailPatchConfig, TailPatchOutcome, UnderCommit, compute_tail_patch, layered_phase,
+    TailPatchConfig, TailPatchOutcome, UnderCommit, compute_tail_patch_with_context, layered_phase,
 };
 #[cfg(test)]
 use crate::stt::tail_provider::{
@@ -262,6 +262,7 @@ impl TailPatchJobResult {
 pub(super) async fn compute_tail_patch_job(
     utterance_id: u64,
     committed_text: String,
+    neighbour_context: String,
     audio: Vec<f32>,
     request: TailProviderRequest,
     config: TailPatchConfig,
@@ -269,6 +270,7 @@ pub(super) async fn compute_tail_patch_job(
     compute_tail_patch_job_with(
         utterance_id,
         committed_text,
+        neighbour_context,
         audio,
         request,
         config,
@@ -280,6 +282,7 @@ pub(super) async fn compute_tail_patch_job(
 async fn compute_tail_patch_job_with<F>(
     utterance_id: u64,
     committed_text: String,
+    neighbour_context: String,
     audio: Vec<f32>,
     request: TailProviderRequest,
     config: TailPatchConfig,
@@ -296,7 +299,13 @@ where
     );
     tokio::task::spawn_blocking(move || {
         let payload = transcribe(&request, &audio)?;
-        let outcome = compute_tail_patch(&committed_text, &payload.text, utterance_id, &config);
+        let outcome = compute_tail_patch_with_context(
+            &committed_text,
+            &payload.text,
+            &neighbour_context,
+            utterance_id,
+            &config,
+        );
         Ok(TailPatchJobResult {
             utterance_id,
             outcome,
@@ -1480,6 +1489,11 @@ pub(crate) async fn vad_transcription_session(
                                     tail_patch_pipeline.push(Box::pin(compute_tail_patch_job(
                                         utterance_id,
                                         final_text,
+                                        // VAD lane: no sealed-prefix accumulator on this
+                                        // path, so the anti-duplication check falls back
+                                        // to the utterance's own canvas (pre-2026-08-14
+                                        // behaviour, no regression).
+                                        String::new(),
                                         audio,
                                         request,
                                         tail_patch_config,
@@ -2021,6 +2035,7 @@ mod session_tests {
         let job = compute_tail_patch_job_with(
             73,
             "ala ma kota".to_string(),
+            String::new(),
             vec![0.0; 320],
             request,
             TailPatchConfig::default(),
@@ -2171,7 +2186,7 @@ mod session_tests {
 
         // Retranscribed side mimics real Whisper output shape: leading/trailing
         // whitespace and a newline. It must never skew offsets or get skipped.
-        let outcome = compute_tail_patch(
+        let outcome = crate::stt::tail_patcher::compute_tail_patch(
             &final_text,
             " ala ma psa \n",
             1,

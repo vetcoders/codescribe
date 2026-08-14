@@ -448,7 +448,7 @@ default = "0"
 type = "bool"
 reload = "restart"
 category = "stt"
-description = "W13-3B Silero-identity conservative fusion lane. Default OFF. When 1/true/on: Supervisor edges mint utterance ids at Apple PCM ingress, cumulative Apple finals are sliced by time, and Whisper/Apple fuse by span overlap (agreements + clear gap fills; unresolved alternatives are receipted). No default flip."
+description = "W13-3B Silero-identity seal authority. Default OFF pending the operator A/B. Armed: Supervisor edges mint utterance ids at Apple PCM ingress, cumulative Apple finals are sliced by time onto those ranges, sealed spans carry silero_utterance_id, and Whisper/Apple fuse by span overlap (agreements + clear gap fills; unresolved alternatives are receipted). The session Silero still runs whenever hands-free silence arms the engine lifecycle."
 
 [vars.CODESCRIBE_SILERO_FUSION_CONTEXT]
 default = "utterance"

@@ -47,7 +47,6 @@ use crate::asr_session::{SessionId as Layer1SessionId, SessionInput as Layer1Ses
 use crate::audio::capture_receipt::{
     CaptureLevelAccumulator, CapturePathMeta, emit_capture_level_receipt,
 };
-use crate::audio::chunker::{SpeechEvent, SpeechSession};
 use crate::pipeline::contracts::{DropKind, EngineEvent, EventSink, TranscriptSegment};
 use crate::pipeline::stream_postprocess::StreamPostProcessor;
 use crate::stt::apple_stt::{LiveStreamEvent, LiveStreamSession};
@@ -58,7 +57,7 @@ use crate::stt::tail_provider::{
 };
 
 use super::live_audio_buffer::{DEFAULT_RETENTION_SECS, LiveAudioBuffer, ResolvedAudioWindow};
-use super::progressive_seal::{ProgressiveSealMachine, SealTick, seal_span_text};
+use super::progressive_seal::{AppleCommit, ProgressiveSealMachine, SealTick, seal_span_text};
 #[cfg(test)]
 use super::session::emit_tail_patch_result;
 use super::session::{
@@ -103,6 +102,16 @@ struct TailPatchRequest {
     /// Byte-identical to the emitted `UtteranceFinal.text` — the string every
     /// `ReplaceRange` char offset is computed against.
     committed_text: String,
+    /// Canvas already sealed BEFORE this utterance.
+    ///
+    /// Layer 1 sees one utterance at a time, so a phrase the previous
+    /// utterance already carries reads as a gap here and is appended a second
+    /// time — measured 2026-08-14 the moment recoveries first reached the
+    /// canvas ("…hard pruna I road która pozwoli nam na zrobienie hard Pru."),
+    /// which cost more WER than the recovery gained. The neighbour context is
+    /// read-only: it is never patched, only consulted so a duplicate is
+    /// escalated instead of placed.
+    neighbour_context: String,
     /// PCM behind exactly this utterance: `[previous seal end, end_ts)`.
     audio: Vec<f32>,
     /// Exact capture range behind `audio`; this is the window-start authority.
@@ -157,6 +166,7 @@ impl AppleTailPatchLane {
         let job = compute_tail_patch_job(
             req.utterance_id,
             req.committed_text,
+            req.neighbour_context,
             req.audio,
             req.provider_request,
             self.config,
@@ -638,9 +648,14 @@ struct AppleSealState {
     pending_events: BTreeMap<u64, PendingAppleSeal>,
     /// Whisper outcomes retained until their final has been emitted.
     tail_patch_outcomes: BTreeMap<u64, TailPatchOutcome>,
-    /// Silero Supervisor identity ledger. `None` unless the W13-3B lane flag
-    /// is explicitly armed — default keeps Apple-boundary production identical.
+    /// The session's single Silero: Supervisor VAD + utterance ledger. `None`
+    /// only when neither consumer wants it, or when the model failed to load.
     fusion: Option<SileroIngress>,
+    /// Whether Silero identity may reach the seal (`CODESCRIBE_SILERO_FUSION`,
+    /// default ON). Independent of [`Self::fusion`] existing: the engine
+    /// lifecycle needs the VAD even when an operator has pinned the seal path
+    /// back to Apple's own segment boundaries.
+    fusion_seal_armed: bool,
     fusion_context: FusionContextMode,
 }
 
@@ -677,6 +692,7 @@ impl AppleSealState {
             pending_events: BTreeMap::new(),
             tail_patch_outcomes: BTreeMap::new(),
             fusion: None,
+            fusion_seal_armed: false,
             fusion_context: FusionContextMode::UtteranceOnly,
         }
     }
@@ -731,6 +747,37 @@ impl AppleSealState {
                 words,
             );
         self.emit_ready_progressive_seals(ev_tx, now_secs);
+        // A window that finishes AFTER its span sealed had no reader: the only
+        // drain of `tail_patch_outcomes` runs inside the seal tick, so a patch
+        // arriving even a millisecond late sat in the map until the session
+        // dropped it. Measured 2026-08-14 on the operator's take: the patcher
+        // logged two `residual_required` recoveries, the session counted
+        // `under_commit_escalations=0`, and zero warnings reached the UI — the
+        // recovered speech was computed, stored, and never delivered. Ordering
+        // is unchanged for the normal case (still emitted after `UtteranceFinal`,
+        // which the seal already sent).
+        self.deliver_sealed_tail_patch(ev_tx, utterance_id);
+    }
+
+    /// Deliver a tail-patch outcome whose span is already sealed and emitted.
+    /// No-op while the span is still pending — the seal tick owns that path.
+    fn deliver_sealed_tail_patch(
+        &mut self,
+        ev_tx: &mpsc::UnboundedSender<EngineEvent>,
+        utterance_id: u64,
+    ) {
+        if !self
+            .progressive
+            .sealed_spans()
+            .iter()
+            .any(|span| span.id == utterance_id)
+        {
+            return;
+        }
+        let Some(outcome) = self.tail_patch_outcomes.remove(&utterance_id) else {
+            return;
+        };
+        self.emit_tail_patch_outcome(ev_tx, utterance_id, outcome);
     }
 
     fn emit_ready_progressive_seals(
@@ -782,20 +829,33 @@ impl AppleSealState {
                 confidence_flags: Vec::new(),
             });
             if let Some(outcome) = self.tail_patch_outcomes.remove(&sealed.id) {
-                // Escalate before the appends so the starved-canvas signal is
-                // never lost if a later send fails; both ride the same channel
-                // as the final, so ordering after `UtteranceFinal` holds.
-                if outcome.residual_required() {
-                    self.under_commit_escalations = self.under_commit_escalations.saturating_add(1);
-                    let _ = ev_tx.send(EngineEvent::Warning {
-                        code: UNDER_COMMIT_WARNING_CODE.to_string(),
-                        message: format!("residual gap fill required for utterance {}", sealed.id),
-                    });
-                }
-                for event in outcome.into_events() {
-                    let _ = ev_tx.send(event);
-                }
+                self.emit_tail_patch_outcome(ev_tx, sealed.id, outcome);
             }
+        }
+    }
+
+    /// Send one Layer 1 outcome for an already-emitted `UtteranceFinal`.
+    ///
+    /// Shared by the seal tick and the late-completion path so a recovery is
+    /// delivered identically whichever side wins the race.
+    fn emit_tail_patch_outcome(
+        &mut self,
+        ev_tx: &mpsc::UnboundedSender<EngineEvent>,
+        utterance_id: u64,
+        outcome: TailPatchOutcome,
+    ) {
+        // Escalate before the appends so the starved-canvas signal is never
+        // lost if a later send fails; both ride the same channel as the final,
+        // so ordering after `UtteranceFinal` holds.
+        if outcome.residual_required() {
+            self.under_commit_escalations = self.under_commit_escalations.saturating_add(1);
+            let _ = ev_tx.send(EngineEvent::Warning {
+                code: UNDER_COMMIT_WARNING_CODE.to_string(),
+                message: format!("residual gap fill required for utterance {utterance_id}"),
+            });
+        }
+        for event in outcome.into_events() {
+            let _ = ev_tx.send(event);
         }
     }
 }
@@ -1044,11 +1104,22 @@ fn apply_conservative_fusion(
     }
     let decision = conservative_fuse(&apple_words, &whisper);
     if !state.progressive.try_rewrite(utterance_id, &decision.text) {
+        // The span sealed before fusion could rewrite it. That is a refusal of
+        // THIS route, not a verdict on the recovery: Layer 1 already computed
+        // bounded, append-only patches for the same audio, and they remain
+        // valid against sealed text. Returning `Skipped` here discarded them —
+        // measured 2026-08-14 on the operator's take, where the patcher logged
+        // two `residual_required` recoveries and the session delivered zero.
+        // Hand the fallback back instead: fusion loses the race, the append
+        // lane still lands.
         let _ = ev_tx.send(EngineEvent::Warning {
             code: SkipReasonCode::SealedFence.as_str().to_string(),
-            message: format!("fusion rewrite refused for utterance {utterance_id}"),
+            message: format!(
+                "fusion rewrite refused for utterance {utterance_id}; \
+                 falling back to bounded tail patches"
+            ),
         });
-        return TailPatchOutcome::skipped(SkipReasonCode::SealedFence, "sealed_fence");
+        return fallback;
     }
     if !decision.unresolved.is_empty() {
         let receipt = fusion_receipt(utterance_id, &decision);
@@ -1170,21 +1241,24 @@ fn seal_sliced_by_silero(
         {
             let _ = state.progressive.try_rewrite(utterance_id, &text);
         } else {
-            if !state.progressive.note_apple_commit_timed(
-                utterance_id,
-                text.clone(),
-                span_end,
-                span_end,
-                silero.range.clone(),
-                timed,
-                TailProviderEvidence {
+            if !state.progressive.note_apple_commit_timed(AppleCommit {
+                id: utterance_id,
+                raw_text: text.clone(),
+                end_secs: span_end,
+                committed_at_secs: span_end,
+                // The span IS the Silero utterance here: identity and range
+                // both come from the edge, not from Apple's segment clock.
+                range: silero.range.clone(),
+                words: timed,
+                apple_evidence: TailProviderEvidence {
                     source: TailEvidenceSource::AppleSpeech,
                     revision: None,
                     stability: TailEvidenceStability::Final,
                     timing_quality: TailTimingQuality::ExactSampleRange,
                     avg_logprob: None,
                 },
-            ) {
+                silero_utterance_id: Some(utterance_id),
+            }) {
                 continue;
             }
             state.pending_events.insert(
@@ -1224,6 +1298,7 @@ fn seal_sliced_by_silero(
             match tx.try_send(TailPatchRequest {
                 utterance_id,
                 committed_text,
+                neighbour_context: state.sealed_prefix.clone(),
                 audio: window.samples,
                 provider_request: TailProviderRequest {
                     identity: TailRequestIdentity {
@@ -1431,7 +1506,7 @@ fn seal_utterance_final(
     };
 
     let after_lexicon = corrected.trim().to_string();
-    if state.fusion.is_some()
+    if state.fusion_seal_armed
         && seal_sliced_by_silero(
             state,
             ev_tx,
@@ -1444,38 +1519,70 @@ fn seal_utterance_final(
     {
         return true;
     }
-    state.utterance_id = state.utterance_id.saturating_add(1);
-    let utterance_id = state.utterance_id;
     let apple_words = apple_segments_on_pcm_clock(state, &disjoint);
     let captured_end = state.audio.session_sample_end();
     let span_sample_start = apple_words.first().map_or_else(
         || seconds_to_captured_sample(start_ts, state.sample_rate, captured_end),
         |word| word.range.sample_start,
     );
-    let span_sample_end = apple_words.last().map_or_else(
-        || seconds_to_captured_sample(end_ts, state.sample_rate, captured_end),
-        |word| word.range.sample_end,
-    );
-    if !state.progressive.note_apple_commit_timed(
-        utterance_id,
-        after_lexicon.clone(),
-        end_ts,
-        end_ts,
-        TailSampleRange {
-            session: state.session_id.clone(),
-            capture_epoch: state.capture_epoch,
-            sample_start: span_sample_start,
-            sample_end: span_sample_end.max(span_sample_start),
-        },
-        apple_words,
-        TailProviderEvidence {
+    let span_sample_end = apple_words
+        .last()
+        .map_or_else(
+            || seconds_to_captured_sample(end_ts, state.sample_rate, captured_end),
+            |word| word.range.sample_end,
+        )
+        .max(span_sample_start);
+    // Bind this span to the spectrum even off the sliced path: when a Silero
+    // edge already encloses every sample Apple claimed, the utterance range is
+    // the canonical one and the span records which identity it came from. No
+    // enclosing edge (Silero off, model missing, an edge still open, or a span
+    // that straddles two utterances) leaves the Apple-derived range untouched —
+    // binding never costs content.
+    let apple_range = TailSampleRange {
+        session: state.session_id.clone(),
+        capture_epoch: state.capture_epoch,
+        sample_start: span_sample_start,
+        sample_end: span_sample_end,
+    };
+    let (span_range, silero_utterance_id) = match state
+        .fusion
+        .as_ref()
+        .filter(|_| state.fusion_seal_armed)
+        .and_then(|fusion| {
+            fusion
+                .ledger()
+                .utterance_enclosing(span_sample_start, span_sample_end)
+        }) {
+        Some(utterance) => (utterance.range.clone(), Some(utterance.id)),
+        None => (apple_range, None),
+    };
+    // One id space. While the seal path can mint span ids FROM the ledger, the
+    // fallback must burn its id there too, or Silero would later mint the same
+    // id for a real utterance — `note_apple_commit_timed` is idempotent on id,
+    // so the collision would silently merge two unrelated spans. With the seal
+    // path disarmed no ledger id ever becomes a span id, and the counter stays
+    // the plain monotonic one the Apple-boundary lane always used.
+    let utterance_id = match state.fusion.as_mut().filter(|_| state.fusion_seal_armed) {
+        Some(fusion) => fusion.ledger_mut().reserve_id(),
+        None => state.utterance_id.saturating_add(1),
+    };
+    state.utterance_id = state.utterance_id.max(utterance_id);
+    if !state.progressive.note_apple_commit_timed(AppleCommit {
+        id: utterance_id,
+        raw_text: after_lexicon.clone(),
+        end_secs: end_ts,
+        committed_at_secs: end_ts,
+        range: span_range,
+        words: apple_words,
+        apple_evidence: TailProviderEvidence {
             source: TailEvidenceSource::AppleSpeech,
             revision: None,
             stability: TailEvidenceStability::Final,
             timing_quality: TailTimingQuality::ExactSampleRange,
             avg_logprob: None,
         },
-    ) {
+        silero_utterance_id,
+    }) {
         return false;
     }
     state.pending_events.insert(
@@ -1507,6 +1614,7 @@ fn seal_utterance_final(
         match tx.try_send(TailPatchRequest {
             utterance_id,
             committed_text,
+            neighbour_context: state.sealed_prefix.clone(),
             audio: window.samples,
             provider_request,
             covered_through_secs: end_ts,
@@ -1624,48 +1732,30 @@ enum EpochDecision {
     Idle,
 }
 
-/// Source of speech edges for [`EpochGate`].
-///
-/// A trait rather than a hard `SpeechSession` dependency because the state
-/// machine must be testable on synthetic PCM: Silero loads from embedded bytes
-/// and a unit test that silently degrades to "no model" would test nothing.
-trait SpeechEdgeSource {
-    /// Observe one capture chunk (`samples_seen` is the cursor AFTER it) and
-    /// report whether speech is live in this window.
-    fn observe(&mut self, samples: &[f32], samples_seen: u64) -> bool;
-}
-
-/// Silero-backed edge source — the production wiring.
-///
-/// Deliberately independent of `CODESCRIBE_SILERO_FUSION`: the fusion lane is
-/// an experiment, the engine lifecycle is the product contract, and one must
-/// not gate the other. Speech is "live" while a Supervisor segment is open, and
-/// for the chunk a segment closes in — so the silence counter starts at the
-/// segment close, i.e. **after** Silero's own hysteresis (`0.55 s` by default)
-/// has already elapsed. The wall silence before an epoch closes is therefore
-/// the product threshold plus that hysteresis, never less than the setting.
-struct SileroEdgeSource {
-    vad: SpeechSession,
-}
-
-impl SpeechEdgeSource for SileroEdgeSource {
-    fn observe(&mut self, samples: &[f32], _samples_seen: u64) -> bool {
-        let events = self.vad.feed(samples, 0);
-        let closed_here = events
-            .iter()
-            .any(|event| matches!(event, SpeechEvent::UtteranceFinal(_)));
-        closed_here || self.vad.open_segment_raw_range().is_some()
-    }
-}
-
 /// Engine lifecycle for the Apple progressive lane: speech opens an SFSpeech
 /// epoch, silence past the product threshold closes it, and the engine rests
 /// (mic + Silero keep running) until the next speech edge.
 ///
-/// Disarmed (`utterance_silence_sec: None`) it answers [`EpochDecision::Forward`]
-/// to everything, which is the pre-epoch worker bit for bit.
+/// Disarmed (`utterance_silence_sec: None`, or no Silero) it answers
+/// [`EpochDecision::Forward`] to everything, which is the pre-epoch worker bit
+/// for bit.
+///
+/// # The gate observes nothing itself
+///
+/// It is a pure state machine over one bit per chunk — `speech_live` — supplied
+/// by [`SileroIngress::ingest`], the session's single VAD. It used to own a
+/// second `SpeechSession` of its own, which meant two Silero instances scoring
+/// the same PCM: the lifecycle woke and slept on one set of edges while the
+/// fusion ledger minted utterance identity on another, and nothing kept the two
+/// spectra in step. One session, one spectrum, one set of boundaries.
+///
+/// Speech is "live" while a Supervisor segment is open, and for the chunk a
+/// segment closes in — so the silence counter starts at the segment close, i.e.
+/// **after** Silero's own hysteresis (`0.55 s` by default) has already elapsed.
+/// The wall silence before an epoch closes is therefore the product threshold
+/// plus that hysteresis, never less than the setting.
 struct EpochGate {
-    source: Option<Box<dyn SpeechEdgeSource>>,
+    armed: bool,
     sample_rate: u32,
     silence_threshold_samples: u64,
     preroll_samples: u64,
@@ -1681,7 +1771,7 @@ impl EpochGate {
     /// Legacy lane: one stream for the whole take.
     fn disarmed() -> Self {
         Self {
-            source: None,
+            armed: false,
             sample_rate: 1,
             silence_threshold_samples: 0,
             preroll_samples: 0,
@@ -1691,10 +1781,10 @@ impl EpochGate {
         }
     }
 
-    fn armed(sample_rate: u32, silence_sec: f32, source: Box<dyn SpeechEdgeSource>) -> Self {
+    fn armed(sample_rate: u32, silence_sec: f32) -> Self {
         let rate = sample_rate.max(1);
         Self {
-            source: Some(source),
+            armed: true,
             sample_rate: rate,
             silence_threshold_samples: (silence_sec.max(0.1) * rate as f32) as u64,
             preroll_samples: (EPOCH_PREROLL_SECS * rate as f32) as u64,
@@ -1704,18 +1794,18 @@ impl EpochGate {
         }
     }
 
-    /// Build the gate the session config asks for. `None` → legacy.
-    fn for_session(sample_rate: u32, utterance_silence_sec: Option<f32>) -> Self {
+    /// Build the gate the session config asks for. No silence setting → legacy;
+    /// no session Silero → legacy, because without edges an armed gate would
+    /// rest forever and the take would be silent (fail open).
+    fn for_session(
+        sample_rate: u32,
+        utterance_silence_sec: Option<f32>,
+        speech_edges_available: bool,
+    ) -> Self {
         let Some(silence_sec) = utterance_silence_sec else {
             return Self::disarmed();
         };
-        // Keep the VAD's own closing silence at its tuned default: it must
-        // close segments promptly so the product threshold is measured from
-        // the end of speech, not stacked on top of a second long timer.
-        let vad = SpeechSession::new_utterance(sample_rate);
-        if !vad.vad_available() {
-            // Fail open. Without Silero every frame reads as non-speech, so an
-            // armed gate would sleep forever and the take would be silent.
+        if !speech_edges_available {
             warn!(
                 utterance_silence_sec = silence_sec,
                 "Silero unavailable — Apple engine lifecycle disarmed, falling back to one \
@@ -1723,19 +1813,21 @@ impl EpochGate {
             );
             return Self::disarmed();
         }
-        Self::armed(sample_rate, silence_sec, Box::new(SileroEdgeSource { vad }))
+        Self::armed(sample_rate, silence_sec)
     }
 
     fn is_armed(&self) -> bool {
-        self.source.is_some()
+        self.armed
     }
 
-    fn feed_pcm(&mut self, samples: &[f32], samples_seen: u64) -> EpochDecision {
-        let Some(source) = self.source.as_mut() else {
+    /// One chunk. `speech_live` is the session Silero's verdict on it — the
+    /// same observation the utterance ledger was minted from.
+    fn feed_pcm(&mut self, samples: &[f32], samples_seen: u64, speech_live: bool) -> EpochDecision {
+        if !self.armed {
             return EpochDecision::Forward;
-        };
+        }
         let chunk_start = samples_seen.saturating_sub(samples.len() as u64);
-        if source.observe(samples, samples_seen) {
+        if speech_live {
             self.last_speech_sample = samples_seen;
             if self.awake {
                 return EpochDecision::Forward;
@@ -1810,10 +1902,39 @@ fn apple_stream_worker(
         session_id,
         utterance_silence_sec,
     } = config;
+    let mut state = match tail_patch {
+        Some(tx) => AppleSealState::new_with_tail_patch_for_session(sample_rate, session_id, tx),
+        None => AppleSealState::new_for_session(sample_rate, session_id),
+    };
+    // The session's ONE Silero. Both consumers of speech edges read it: the
+    // utterance ledger (identity, ranges) and the engine lifecycle (wake/sleep).
+    // It is built whenever either consumer wants it — the fusion flag decides
+    // whether identity reaches the seal, not whether the VAD exists.
+    state.fusion_seal_armed = lane_enabled();
+    if state.fusion_seal_armed || utterance_silence_sec.is_some() {
+        let ingress =
+            SileroIngress::new(sample_rate, state.session_id.clone(), state.capture_epoch);
+        if ingress.vad_available() {
+            state.fusion_context = FusionContextMode::from_env();
+            info!(
+                context = state.fusion_context.as_str(),
+                seal_armed = state.fusion_seal_armed,
+                lifecycle_armed = utterance_silence_sec.is_some(),
+                "Silero ingress armed — single VAD feeding utterance identity and engine lifecycle"
+            );
+            state.fusion = Some(ingress);
+        } else {
+            warn!(
+                "Silero model unavailable — no utterance identity and no engine lifecycle \
+                 this session; Apple segment boundaries stay the seal authority"
+            );
+        }
+    }
     // Engine lifecycle. Disarmed → one stream opened here for the whole take
     // (legacy). Armed → the bridge stays unspawned until the first speech edge,
     // and every epoch closes on the product silence threshold.
-    let mut epoch = EpochGate::for_session(sample_rate, utterance_silence_sec);
+    let mut epoch =
+        EpochGate::for_session(sample_rate, utterance_silence_sec, state.fusion.is_some());
     let mut stream = if epoch.is_armed() {
         info!(
             utterance_silence_sec = utterance_silence_sec.unwrap_or_default(),
@@ -1827,22 +1948,6 @@ fn apple_stream_worker(
     // Session-time base of the open epoch. Zero for the legacy single stream,
     // which is what makes `shift_events` the identity on that path.
     let mut epoch_base_samples: u64 = 0;
-    let mut state = match tail_patch {
-        Some(tx) => AppleSealState::new_with_tail_patch_for_session(sample_rate, session_id, tx),
-        None => AppleSealState::new_for_session(sample_rate, session_id),
-    };
-    if lane_enabled() {
-        state.fusion = Some(SileroIngress::new(
-            sample_rate,
-            state.session_id.clone(),
-            state.capture_epoch,
-        ));
-        state.fusion_context = FusionContextMode::from_env();
-        info!(
-            context = state.fusion_context.as_str(),
-            "W13-3B Silero fusion lane armed (default remains off unless flagged)"
-        );
-    }
     let mut samples_seen: u64 = 0;
 
     loop {
@@ -1867,11 +1972,14 @@ fn apple_stream_worker(
                 // engine rests: it is what the pre-roll of the next epoch is cut
                 // from, and what Layer 1 windows still resolve against.
                 state.audio.push(&samples);
-                if let Some(fusion) = state.fusion.as_mut() {
-                    fusion.ingest(&samples, samples_seen);
-                }
+                // One observation of the spectrum, two consumers: the ledger
+                // mints identity from it and the lifecycle wakes/sleeps on it.
+                let speech_live = state
+                    .fusion
+                    .as_mut()
+                    .is_some_and(|fusion| fusion.ingest(&samples, samples_seen).speech_live);
                 let audio_secs = samples_seen as f32 / sample_rate.max(1) as f32;
-                match epoch.feed_pcm(&samples, samples_seen) {
+                match epoch.feed_pcm(&samples, samples_seen, speech_live) {
                     EpochDecision::Forward => {
                         if let Some(session) = stream.as_mut() {
                             session.write_pcm(&samples)?;
@@ -2019,14 +2127,41 @@ fn apple_stream_worker(
                     "apple_evidence": span.apple_evidence,
                     "whisper_evidence": span.whisper_evidence,
                     "whisper_words": span.whisper_words,
+                    // Which spectrum edge this span's range came from. `null`
+                    // means no Silero edge enclosed it and the range is Apple's.
+                    "silero_utterance_id": span.silero_utterance_id,
                 })
             })
             .collect();
+        // The other half of the binding proof: the edges themselves, so a span's
+        // `silero_utterance_id` can be resolved to the sample range Silero
+        // actually minted and every word checked against it.
+        let silero_utterances: Vec<serde_json::Value> = state
+            .fusion
+            .as_ref()
+            .map(|fusion| {
+                fusion
+                    .ledger()
+                    .utterances()
+                    .iter()
+                    .map(|utterance| {
+                        serde_json::json!({
+                            "id": utterance.id,
+                            "sample_start": utterance.range.sample_start,
+                            "sample_end": utterance.range.sample_end,
+                            "closed": utterance.closed,
+                        })
+                    })
+                    .collect()
+            })
+            .unwrap_or_default();
         let atlas = serde_json::json!({
             "session": state.session_id,
             "capture_epoch": state.capture_epoch,
             "sample_rate": sample_rate,
             "audio_samples_seen": samples_seen,
+            "silero_seal_armed": state.fusion_seal_armed,
+            "silero_utterances": silero_utterances,
             "sealed_spans": spans,
         });
         match serde_json::to_vec_pretty(&atlas)
@@ -2224,9 +2359,9 @@ mod tests {
     use super::*;
     use crate::pipeline::contracts::LayerSource;
     use crate::stt::apple_stt::parse_stream_stdout_line;
-    use crate::stt::tail_patcher::{LAYERED_TRANSCRIPTION_ENV, compute_tail_patch};
-    use serial_test::serial;
-    use std::ffi::OsString;
+    use crate::stt::tail_patcher::{
+        compute_tail_patch, layered_phase_from_raw, parse_layered_phase_value,
+    };
     use std::sync::Mutex;
 
     /// Capture rate the Apple bridge is opened with; these tests exercise seal
@@ -3175,33 +3310,6 @@ mod tests {
 
     // ── W2-A · Layer 1 tail-patch on the Apple progressive path ──────────────
 
-    /// Restores an env var to its pre-test value, so a serial env test cannot
-    /// leak a phase flag into the rest of the binary.
-    struct EnvRestore {
-        key: &'static str,
-        previous: Option<OsString>,
-    }
-
-    impl EnvRestore {
-        /// Snapshot `key`'s current value (or absence) for later restore on drop.
-        fn capture(key: &'static str) -> Self {
-            Self {
-                key,
-                previous: std::env::var_os(key),
-            }
-        }
-    }
-
-    impl Drop for EnvRestore {
-        /// Put the env var back exactly as it was when `capture` ran.
-        fn drop(&mut self) {
-            match &self.previous {
-                Some(value) => unsafe { std::env::set_var(self.key, value) },
-                None => unsafe { std::env::remove_var(self.key) },
-            }
-        }
-    }
-
     /// Collecting sink for Layer 1 / SessionFinalised event assertions.
     #[derive(Default)]
     struct RecordingSink(Mutex<Vec<EngineEvent>>);
@@ -3565,18 +3673,20 @@ mod tests {
     /// live tail patch is a core element of the triangulation, not an opt-in
     /// (operator directive 2026-08-09). Explicit `off` is the one way out.
     #[test]
-    #[serial]
     fn apple_tail_patch_lane_is_wired_by_default_and_off_disarms() {
-        let _restore = EnvRestore::capture(LAYERED_TRANSCRIPTION_ENV);
-
-        unsafe { std::env::remove_var(LAYERED_TRANSCRIPTION_ENV) };
-        assert!(tail_patch_enabled(), "default arms the live tail patch");
-
-        unsafe { std::env::set_var(LAYERED_TRANSCRIPTION_ENV, "off") };
-        assert!(!tail_patch_enabled(), "explicit off disarms");
-
-        unsafe { std::env::set_var(LAYERED_TRANSCRIPTION_ENV, "phase1") };
-        assert!(tail_patch_enabled(), "phase1 arms Layer 1");
+        assert!(
+            layered_phase_from_raw(None).is_some_and(|phase| phase >= 1),
+            "the unset production default must arm the live tail patch"
+        );
+        assert!(
+            parse_layered_phase_value("off").is_none(),
+            "explicit off disarms"
+        );
+        assert_eq!(
+            parse_layered_phase_value("phase1"),
+            Some(1),
+            "phase1 arms Layer 1"
+        );
     }
 
     /// Bridge stdout lines with multiple `final` events parse as phrase seals.
@@ -3785,17 +3895,11 @@ mod tests {
     // Engine lifecycle: speech epochs (hands-free silence)
     // ═══════════════════════════════════════════════════════════
 
-    /// Amplitude-gated stand-in for Silero, so the epoch state machine can be
-    /// tested on synthetic PCM without loading the VAD model (unit tests must
-    /// not depend on `init_silero_vad` succeeding).
-    struct AmplitudeEdgeSource {
-        threshold: f32,
-    }
-
-    impl SpeechEdgeSource for AmplitudeEdgeSource {
-        fn observe(&mut self, samples: &[f32], _samples_seen: u64) -> bool {
-            samples.iter().any(|s| s.abs() >= self.threshold)
-        }
+    /// Amplitude stand-in for the session Silero's `speech_live` bit, so the
+    /// epoch state machine can be driven on synthetic PCM without loading the
+    /// VAD model (unit tests must not depend on `init_silero_vad` succeeding).
+    fn amplitude_edge(samples: &[f32], threshold: f32) -> bool {
+        samples.iter().any(|s| s.abs() >= threshold)
     }
 
     /// One second of 200 Hz tone at `amplitude`, the "speech" side of the fixture.
@@ -3819,7 +3923,7 @@ mod tests {
         let mut out = Vec::new();
         for chunk in audio.chunks(1024) {
             *samples_seen += chunk.len() as u64;
-            out.push(gate.feed_pcm(chunk, *samples_seen));
+            out.push(gate.feed_pcm(chunk, *samples_seen, amplitude_edge(chunk, 0.1)));
         }
         out
     }
@@ -3890,11 +3994,7 @@ mod tests {
     /// base carries the pre-roll.
     #[test]
     fn epoch_gate_sleeps_after_threshold_silence_and_wakes_with_preroll() {
-        let mut gate = EpochGate::armed(
-            TEST_SAMPLE_RATE,
-            5.0,
-            Box::new(AmplitudeEdgeSource { threshold: 0.1 }),
-        );
+        let mut gate = EpochGate::armed(TEST_SAMPLE_RATE, 5.0);
         let mut seen = 0u64;
 
         let speech = drive(&mut gate, &tone(2.0, 0.5), &mut seen);
@@ -3965,5 +4065,271 @@ mod tests {
                 .filter(|d| **d != EpochDecision::Forward)
                 .collect::<Vec<_>>()
         );
+    }
+
+    /// No Silero ⇒ no edges ⇒ the lifecycle must NOT arm, or the take would rest
+    /// forever on a stream that never opened. Fail open, every time.
+    #[test]
+    fn epoch_gate_without_speech_edges_falls_back_to_one_stream() {
+        let gate = EpochGate::for_session(TEST_SAMPLE_RATE, Some(5.0), false);
+        assert!(
+            !gate.is_armed(),
+            "an armed gate with no edge source would sleep the engine forever"
+        );
+        let armed = EpochGate::for_session(TEST_SAMPLE_RATE, Some(5.0), true);
+        assert!(armed.is_armed());
+        assert!(
+            !EpochGate::for_session(TEST_SAMPLE_RATE, None, true).is_armed(),
+            "no hands-free silence setting is still the legacy single stream"
+        );
+    }
+
+    // ═══════════════════════════════════════════════════════════
+    // Utterance identity bound to the spectrum
+    // ═══════════════════════════════════════════════════════════
+
+    /// Samples per second at the test rate, as a `u64` sample cursor.
+    fn at(secs: f32) -> u64 {
+        (secs * TEST_SAMPLE_RATE as f32) as u64
+    }
+
+    /// Arm a state with the session Silero and mint two utterances separated by
+    /// a silence wider than the long-silence fence, exactly as the Supervisor
+    /// would: an open edge that extends, then a close, then a new edge.
+    ///
+    /// The ledger is driven through the production decision function
+    /// ([`SileroIngress::observe`]) rather than a synthetic ledger, so what the
+    /// seal reads is what a real chunk observation produces. Only the two facts
+    /// Silero derives from the waveform are supplied by the fixture — the unit
+    /// suite must not depend on `init_silero_vad` succeeding.
+    fn arm_two_utterances(state: &mut AppleSealState) -> (u64, u64) {
+        let mut ingress = SileroIngress::new(TEST_SAMPLE_RATE, state.session_id.clone(), 0);
+        let first = ingress
+            .observe(Some((at(0.0), at(1.0))), false, at(1.0))
+            .open
+            .expect("first speech edge mints an identity");
+        ingress.observe(Some((at(0.0), at(2.0))), false, at(2.0));
+        let closed = ingress.observe(None, true, at(2.0)).closed;
+        assert_eq!(closed, vec![first]);
+
+        // Silence well past LONG_SILENCE_FENCE_SECS, then a second edge.
+        let gap = at(super::super::silero_fusion::LONG_SILENCE_FENCE_SECS) + at(1.0);
+        let second_start = at(2.0) + gap;
+        let second = ingress
+            .observe(
+                Some((second_start, second_start + at(2.0))),
+                false,
+                second_start + at(2.0),
+            )
+            .open
+            .expect("speech after the fence mints a SECOND identity");
+        assert_ne!(first, second, "the fence must split identity");
+
+        state.fusion = Some(ingress);
+        state.fusion_seal_armed = true;
+        (first, second)
+    }
+
+    /// (a) Utterance identity comes from the spectrum, and the seal carries it.
+    ///
+    /// Two Apple finals landing inside two Silero-bounded utterances must seal
+    /// as two spans whose ids ARE the ledger ids and whose ranges ARE the
+    /// ledger ranges — not Apple's own segment boundaries.
+    #[test]
+    fn sealed_spans_take_identity_and_range_from_silero_edges() {
+        let (tx, _rx) = mpsc::unbounded_channel();
+        let mut state = AppleSealState::new(TEST_SAMPLE_RATE);
+        push_capture(&mut state, 12.0);
+        let (first, second) = arm_two_utterances(&mut state);
+        let ledger = state.fusion.as_ref().unwrap().ledger().clone();
+
+        // One final inside utterance 1, one inside utterance 2.
+        emit_stream_events(
+            vec![LiveStreamEvent::PhraseFinal {
+                text: "pierwsza fraza".into(),
+                segments: vec![segment("pierwsza fraza", 0.2, 1.8)],
+            }],
+            &tx,
+            &mut state,
+            2.2,
+        );
+        let second_start =
+            ledger.utterances()[1].range.sample_start as f32 / TEST_SAMPLE_RATE as f32;
+        emit_stream_events(
+            vec![LiveStreamEvent::PhraseFinal {
+                text: "druga fraza".into(),
+                segments: vec![segment(
+                    "druga fraza",
+                    second_start + 0.2,
+                    second_start + 1.8,
+                )],
+            }],
+            &tx,
+            &mut state,
+            second_start + 2.2,
+        );
+
+        let sealed = state.progressive.sealed_spans();
+        assert_eq!(sealed.len(), 2, "two utterances ⇒ two spans: {sealed:#?}");
+        for (span, utterance_id) in sealed.iter().zip([first, second]) {
+            let utterance = ledger
+                .utterances()
+                .iter()
+                .find(|u| u.id == utterance_id)
+                .expect("fixture identity must exist in the ledger");
+            assert_eq!(
+                span.silero_utterance_id,
+                Some(utterance_id),
+                "span {} did not record the spectrum edge it came from",
+                span.id
+            );
+            assert_eq!(
+                span.range.sample_start, utterance.range.sample_start,
+                "span {} start is not the Silero edge",
+                span.id
+            );
+            assert_eq!(
+                span.range.sample_end, utterance.range.sample_end,
+                "span {} end is not the Silero edge",
+                span.id
+            );
+        }
+        assert_ne!(
+            sealed[0].silero_utterance_id, sealed[1].silero_utterance_id,
+            "a fenced silence must produce two DIFFERENT identities"
+        );
+    }
+
+    /// (c) Words stay pinned to the PCM counter after binding: every Apple word
+    /// range on a bound span lies inside the utterance range it was bound to.
+    /// This is the "words on spectrum events" claim — without it a span could
+    /// carry an utterance id while its words describe other seconds.
+    #[test]
+    fn bound_span_words_stay_inside_their_utterance_on_the_pcm_clock() {
+        let (tx, _rx) = mpsc::unbounded_channel();
+        let mut state = AppleSealState::new(TEST_SAMPLE_RATE);
+        push_capture(&mut state, 12.0);
+        arm_two_utterances(&mut state);
+        let ledger = state.fusion.as_ref().unwrap().ledger().clone();
+
+        emit_stream_events(
+            vec![LiveStreamEvent::PhraseFinal {
+                text: "uruchom doker".into(),
+                segments: vec![segment("uruchom", 0.2, 0.9), segment("doker", 0.9, 1.8)],
+            }],
+            &tx,
+            &mut state,
+            2.2,
+        );
+
+        let sealed = state.progressive.sealed_spans();
+        assert_eq!(sealed.len(), 1);
+        let span = &sealed[0];
+        let utterance_id = span
+            .silero_utterance_id
+            .expect("the span must be bound to an edge");
+        let utterance = ledger
+            .utterances()
+            .iter()
+            .find(|u| u.id == utterance_id)
+            .unwrap();
+        assert!(!span.words.is_empty(), "a bound span must keep its words");
+        for word in &span.words {
+            assert!(
+                word.range.sample_start >= utterance.range.sample_start
+                    && word.range.sample_end <= utterance.range.sample_end,
+                "word {:?} at {}..{} escapes utterance {} at {}..{}",
+                word.text,
+                word.range.sample_start,
+                word.range.sample_end,
+                utterance_id,
+                utterance.range.sample_start,
+                utterance.range.sample_end
+            );
+            assert!(
+                word.range.sample_start < word.range.sample_end,
+                "a word must occupy real samples, not a point"
+            );
+        }
+        assert_eq!(
+            span.words.first().unwrap().range.sample_start,
+            at(0.2),
+            "word start must stay on the PCM counter it was mapped from"
+        );
+        assert_eq!(span.words.last().unwrap().range.sample_end, at(1.8));
+    }
+
+    /// A span the spectrum does not enclose keeps Apple's own range and records
+    /// no identity — binding is fail-open and never costs content.
+    #[test]
+    fn span_outside_every_silero_edge_keeps_the_apple_range() {
+        let (tx, _rx) = mpsc::unbounded_channel();
+        let mut state = AppleSealState::new(TEST_SAMPLE_RATE);
+        push_capture(&mut state, 30.0);
+        arm_two_utterances(&mut state);
+
+        // 20 s is past every minted edge; slicing finds no cover either, so the
+        // Apple-boundary path runs and must still seal.
+        emit_stream_events(
+            vec![LiveStreamEvent::PhraseFinal {
+                text: "poza spektrum".into(),
+                segments: vec![segment("poza spektrum", 20.0, 21.0)],
+            }],
+            &tx,
+            &mut state,
+            21.5,
+        );
+
+        let sealed = state.progressive.sealed_spans();
+        assert_eq!(
+            sealed.len(),
+            1,
+            "content must never be dropped for want of an edge"
+        );
+        assert_eq!(
+            sealed[0].silero_utterance_id, None,
+            "no enclosing edge ⇒ no identity claimed"
+        );
+        assert_eq!(sealed[0].range.sample_start, at(20.0));
+        assert_eq!(sealed[0].range.sample_end, at(21.0));
+        assert!(
+            !state
+                .fusion
+                .as_ref()
+                .unwrap()
+                .ledger()
+                .utterances()
+                .iter()
+                .any(|u| u.id == sealed[0].id),
+            "the fallback id must be reserved out of the ledger's id space, \
+             never collide with a minted utterance"
+        );
+    }
+
+    /// (b) Fail-open: no Silero at all is today's behaviour, bit for bit.
+    /// Spans still seal, on Apple's own boundaries, with no identity claimed.
+    #[test]
+    fn without_silero_the_seal_path_is_unchanged() {
+        let (tx, _rx) = mpsc::unbounded_channel();
+        let mut state = AppleSealState::new(TEST_SAMPLE_RATE);
+        push_capture(&mut state, 12.0);
+        assert!(state.fusion.is_none(), "fixture has no VAD");
+
+        emit_stream_events(
+            vec![LiveStreamEvent::PhraseFinal {
+                text: "uruchom doker".into(),
+                segments: vec![segment("uruchom doker", 0.5, 2.0)],
+            }],
+            &tx,
+            &mut state,
+            2.2,
+        );
+
+        let sealed = state.progressive.sealed_spans();
+        assert_eq!(sealed.len(), 1);
+        assert_eq!(sealed[0].id, 1, "legacy ids still start at 1");
+        assert_eq!(sealed[0].silero_utterance_id, None);
+        assert_eq!(sealed[0].range.sample_start, at(0.5));
+        assert_eq!(sealed[0].range.sample_end, at(2.0));
     }
 }
