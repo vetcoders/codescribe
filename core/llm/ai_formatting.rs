@@ -861,6 +861,19 @@ struct ResponsesRequest {
     stream: bool,
 }
 
+/// Instructions for a Responses request: sent on the FIRST turn of a chain
+/// only. `previous_response_id` preserves them server-side, and endpoints
+/// reject the pair with HTTP 400 ("instructions and previous_response_id
+/// together") — same contract as `chained_instructions` in the agent's
+/// OpenAI provider.
+fn chained_instructions(system_prompt: &str, previous_response_id: Option<&str>) -> Option<String> {
+    if previous_response_id.is_some() {
+        None
+    } else {
+        Some(system_prompt.to_string())
+    }
+}
+
 /// Input item for Responses API
 #[derive(Debug, Serialize)]
 struct InputItem {
@@ -1985,9 +1998,9 @@ async fn call_llm_endpoint(
             role: "user",
             content: build_responses_user_content(user_message),
         }],
+        // First request only — sending them with previous_response_id is HTTP 400.
+        instructions: chained_instructions(system_prompt, previous_response_id.as_deref()),
         previous_response_id: previous_response_id.clone(),
-        // Only send instructions on first request - Responses API preserves them via previous_response_id
-        instructions: Some(system_prompt.to_string()),
         max_output_tokens: None,
         temperature,
         stream: false,
@@ -2081,8 +2094,9 @@ pub(crate) async fn format_inline_chunk_resolved(
             role: "user",
             content: vec![InputContent::Text { text: user_message }],
         }],
+        // First request only — sending them with previous_response_id is HTTP 400.
+        instructions: chained_instructions(system_prompt, previous_response_id.as_deref()),
         previous_response_id,
-        instructions: Some(system_prompt.to_string()),
         max_output_tokens: None,
         temperature: get_temperature(false),
         stream: false,
@@ -2199,9 +2213,9 @@ async fn call_llm_endpoint_streaming(
             role: "user",
             content: build_responses_user_content(user_message),
         }],
+        // First request only — sending them with previous_response_id is HTTP 400.
+        instructions: chained_instructions(system_prompt, previous_response_id.as_deref()),
         previous_response_id: previous_response_id.clone(),
-        // Only send instructions on first request - Responses API preserves them via previous_response_id
-        instructions: Some(system_prompt.to_string()),
         max_output_tokens: None,
         temperature,
         stream: true,
@@ -2393,6 +2407,31 @@ mod tests {
     ];
     /// Env flag set in the lane-truth child process so nested tests skip re-spawn.
     const LANE_TRUTH_TEST_CHILD: &str = "CODESCRIBE_LANE_TRUTH_TEST_CHILD";
+
+    /// Regression for the field HTTP 400 ("instructions and
+    /// previous_response_id together", 2026-08-14): every chained Responses
+    /// request must drop `instructions` — the chain preserves them
+    /// server-side. First turn keeps them.
+    #[test]
+    fn responses_chain_never_carries_instructions_with_previous_id() {
+        assert_eq!(chained_instructions("SYS", None).as_deref(), Some("SYS"));
+        assert_eq!(chained_instructions("SYS", Some("resp_123")), None);
+
+        // Wire proof: the chained request serializes without an
+        // `instructions` key at all (serde skips the None).
+        let request = ResponsesRequest {
+            model: "m".into(),
+            input: vec![],
+            instructions: chained_instructions("SYS", Some("resp_123")),
+            previous_response_id: Some("resp_123".into()),
+            max_output_tokens: None,
+            temperature: None,
+            stream: false,
+        };
+        let wire = serde_json::to_value(&request).expect("serialize");
+        assert!(wire.get("instructions").is_none());
+        assert_eq!(wire["previous_response_id"], "resp_123");
+    }
 
     /// RAII holder that restores one env var to its prior value on drop.
     ///
