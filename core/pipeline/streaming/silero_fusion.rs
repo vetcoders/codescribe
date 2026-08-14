@@ -1,6 +1,6 @@
 //! W13-3B — Silero utterance identity + conservative per-word fusion.
 //!
-//! Lane flag [`SILERO_FUSION_ENV`] is **default ON** (2026-08-14 operator cut).
+//! Lane flag [`SILERO_FUSION_ENV`] is **default OFF**. When armed:
 //! Silero Supervisor edges mint utterance identity on the PCM sample clock;
 //! Apple cumulative finals are sliced onto those ranges by time; Whisper and
 //! Apple then fuse conservatively (agreements + clear gap fills). Unresolved
@@ -21,8 +21,8 @@ use crate::audio::chunker::{SpeechEvent, SpeechSession};
 use crate::stt::tail_patcher::SkipReasonCode;
 use crate::stt::tail_provider::{TailSampleRange, TimedTailSegment};
 
-/// Lane flag for Silero-identity conservative fusion. `0` / `false` / `off` /
-/// `no` returns the session to the Apple-boundary path; unset means ON.
+/// Lane flag for Silero-identity conservative fusion. Unset / `0` / `false` /
+/// `off` / `no` keep the existing production path bit-identical.
 pub const SILERO_FUSION_ENV: &str = "CODESCRIBE_SILERO_FUSION";
 
 /// Bounded-context A/B selector. Never crosses a long-silence cut.
@@ -35,20 +35,18 @@ pub const LONG_SILENCE_FENCE_SECS: f32 = 0.55;
 /// Default left-audio pad when [`FusionContextMode::LeftAudioPad`] is armed.
 pub const DEFAULT_LEFT_PAD_SECS: f32 = 0.40;
 
-/// Whether the W13-3B fusion lane is armed. **Default ON** — the flag is now
-/// the off-switch, not the on-switch. Utterance identity belongs to the
-/// spectrum; an operator who wants Apple's own segment boundaries back sets
-/// `CODESCRIBE_SILERO_FUSION=0`.
+/// Whether the W13-3B fusion lane is armed. Default OFF pending the operator's
+/// live A/B decision required by the original engine roadmap.
 pub fn lane_enabled() -> bool {
     let raw = std::env::var(SILERO_FUSION_ENV).ok();
     lane_enabled_from_raw(raw.as_deref())
 }
 
 fn lane_enabled_from_raw(raw: Option<&str>) -> bool {
-    raw.is_none_or(|raw| {
-        !matches!(
+    raw.is_some_and(|raw| {
+        matches!(
             raw.trim().to_ascii_lowercase().as_str(),
-            "0" | "false" | "no" | "off"
+            "1" | "true" | "yes" | "on"
         )
     })
 }
@@ -646,10 +644,10 @@ mod tests {
     }
 
     #[test]
-    fn lane_defaults_on_and_flag_is_the_off_switch() {
+    fn lane_defaults_off_until_operator_flip() {
         assert!(
-            lane_enabled_from_raw(None),
-            "unset must arm the production lane"
+            !lane_enabled_from_raw(None),
+            "unset must keep the experimental lane off"
         );
         for off in ["0", "false", "no", "off", " OFF "] {
             assert!(
@@ -660,7 +658,7 @@ mod tests {
         for on in ["1", "true", "yes", "on"] {
             assert!(
                 lane_enabled_from_raw(Some(on)),
-                "{on:?} must keep the lane armed"
+                "{on:?} must explicitly arm the lane"
             );
         }
     }
