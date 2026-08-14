@@ -92,6 +92,14 @@ async fn replay_operator_take() {
         replay.live_text.chars().count()
     );
     eprintln!("{}", replay.live_text);
+    // What actually reaches the user after stop — the live canvas is only the
+    // during-hold view, and Layer 1 recoveries that could not be placed inline
+    // are owed to this path, so measuring `live_text` alone understates it.
+    eprintln!(
+        "=== DELIVERED ({} chars) ===",
+        replay.delivered_text.chars().count()
+    );
+    eprintln!("{}", replay.delivered_text);
     eprintln!(
         "=== BOUNDARY === finals={} unique={} repeated={} overlap={}",
         replay.boundary_evidence.final_count,
