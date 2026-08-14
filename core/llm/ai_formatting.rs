@@ -235,6 +235,17 @@ fn duration_from_env_ms(key: &str, default_ms: u64) -> Duration {
 /// from several transports. The listed shapes are deterministic — an empty
 /// completion, a refusal, or a rejected request will reproduce identically on
 /// retry, so retrying only multiplies latency.
+/// A chain id the requesting key cannot see (`previous_response_not_found`).
+/// Measured mechanism (2026-08-12 22:31→23:02): the id was minted under the
+/// OLD key, the operator swapped Keychain keys at 22:47–22:51, and the new
+/// key's org cannot read the old org's response — three identical formatting
+/// failures, transcript delivered raw. NOT retention: the same-key chain was
+/// proven alive hours later (2026-08-14, full recall of the 10:38 take). The
+/// stored id is poison for THIS key, so drop it and go unchained.
+fn is_stale_chain_error(error: &anyhow::Error) -> bool {
+    error.to_string().contains("previous_response_not_found")
+}
+
 fn should_retry_provider_error(error: &anyhow::Error) -> bool {
     let message = error.to_string();
     !(message.contains("No text content in SSE stream")
@@ -1542,7 +1553,21 @@ async fn format_text_with_status_channels_for_policy(
         retry_policy.inter_chunk_timeout
     );
 
-    for attempt in 0..=max_retries {
+    // Mode key for the conversation chain this call rides on — needed by the
+    // stale-chain self-heal below to reset the RIGHT stream (modes have
+    // separate chains and separate key slots).
+    let ai_mode = if assistive {
+        crate::state::conversation::AiMode::Assistive
+    } else {
+        crate::state::conversation::AiMode::Formatting
+    };
+    // One-shot chain self-heal: a stale stored response_id re-runs the SAME
+    // attempt unchained instead of consuming the retry budget (the budget is
+    // often 0, and a poisoned chain would otherwise hard-fail every take
+    // until restart).
+    let mut stale_chain_retry_used = false;
+    let mut attempt = 0;
+    while attempt <= max_retries {
         info!(
             "AI formatting attempt {} (assistive={}, input_len={})",
             attempt + 1,
@@ -1647,6 +1672,14 @@ async fn format_text_with_status_channels_for_policy(
                         max_retries + 1,
                         e
                     );
+                    if !stale_chain_retry_used && is_stale_chain_error(&e) {
+                        warn!(
+                            "stale conversation chain: dropping stored response_id and retrying unchained"
+                        );
+                        crate::state::conversation::reset_conversation_for_mode(ai_mode);
+                        stale_chain_retry_used = true;
+                        continue;
+                    }
                     None
                 }
             }
@@ -1679,6 +1712,14 @@ async fn format_text_with_status_channels_for_policy(
                         max_retries + 1,
                         e
                     );
+                    if !stale_chain_retry_used && is_stale_chain_error(&e) {
+                        warn!(
+                            "stale conversation chain: dropping stored response_id and retrying unchained"
+                        );
+                        crate::state::conversation::reset_conversation_for_mode(ai_mode);
+                        stale_chain_retry_used = true;
+                        continue;
+                    }
                     None
                 }
                 Err(_) => {
@@ -1751,6 +1792,7 @@ async fn format_text_with_status_channels_for_policy(
             if should_retry {
                 if attempt < max_retries {
                     warn!("Triggering retry...");
+                    attempt += 1;
                     continue;
                 } else {
                     warn!("Max retries reached, accepting output.");
@@ -1784,6 +1826,7 @@ async fn format_text_with_status_channels_for_policy(
             warn!("Provider returned deterministic empty-content error; skipping retries");
             break;
         }
+        attempt += 1;
     }
 
     // All providers failed
@@ -2443,6 +2486,21 @@ mod tests {
     ];
     /// Env flag set in the lane-truth child process so nested tests skip re-spawn.
     const LANE_TRUTH_TEST_CHILD: &str = "CODESCRIBE_LANE_TRUTH_TEST_CHILD";
+
+    /// The stale-chain classifier keys on the provider's error code alone:
+    /// `previous_response_not_found` (id minted under a rotated-away key) is
+    /// self-healable; everything else is not a chain problem.
+    #[test]
+    fn stale_chain_classifier_matches_only_the_not_found_code() {
+        let stale = anyhow::anyhow!(
+            "HTTP 400 Bad Request - {{\"error\":{{\"code\":\"previous_response_not_found\"}}}}"
+        );
+        assert!(is_stale_chain_error(&stale));
+        let pair = anyhow::anyhow!("HTTP 400 - instructions and previous_response_id together");
+        assert!(!is_stale_chain_error(&pair));
+        let auth = anyhow::anyhow!("HTTP 401 Unauthorized - missing scopes");
+        assert!(!is_stale_chain_error(&auth));
+    }
 
     /// Regression for the field HTTP 400 ("instructions and
     /// previous_response_id together", 2026-08-14): every chained Responses
