@@ -5,7 +5,7 @@
 |           |                                                                                                                                             |
 | --------- | ------------------------------------------------------------------------------------------------------------------------------------------- |
 | Status    | SEALED — direction decided by the operator; execution tracked per cut                                                                       |
-| Date      | 2026-08-13                                                                                                                                  |
+| Date      | 2026-08-13 (polarized 2026-08-14)                                                                                                           |
 | Plan pack | `~/.vibecrafted/artifacts/vetcoders/codescribe/2026_0813/plans/w13-tail-and-format/` (ATLAS + 6 briefs + DRIVER + de-risk recon)            |
 | Branch    | `fix/the-tail-patches` (Living Tree)                                                                                                        |
 | Evidence  | Every claim in this document is backed by a measurement or a `file:line` citation from the 2026-08-12/13 sessions. No aspirational numbers. |
@@ -54,16 +54,28 @@ same engine. The layered model is not a compromise between them — it is
 the invention that fuses them. The wave's goal is to FINISH the fusion,
 not to crown either engine.
 
-**Six cuts (W13-1 … W13-6)** deliver the finish:
+**Six cuts (W13-1 … W13-6)** deliver the finish. Code for W13-2…6 is on
+`HEAD` behind default-OFF flags (`13b1eed8`). Empty `[ ]` here was a lie
+after settlement — do not re-open those cuts as unstarted work.
 
-| Cut   | One line                                                                                                                                  | State             |
-| ----- | ----------------------------------------------------------------------------------------------------------------------------------------- | ----------------- |
-| W13-1 | Inline-format buffer: sealed chunks stream to the formatting LLM during dictation (`previous_response_id` chain); stop pays only the tail | `[~]` in progress |
-| W13-2 | Tail-patch behind a provider seam: local ws sidecar (default target), remote opt-in, in-process fallback                                  | `[ ]`             |
-| W13-3 | **Keystone**: time-pinned canvas — Silero-bounded utterances, words pinned to seconds, sealed ledger                                      | `[ ]`             |
-| W13-4 | Gap-append dedup by time-span (shrinks to a corollary of W13-3) + in-span hallucination fence                                             | `[ ]`             |
-| W13-5 | Capture-level receipt + Audio menu truth (level, device, quality)                                                                         | `[ ]`             |
-| W13-6 | Lexicon gets a voice (Whisper `initial_prompt`, Apple `contextualStrings`) + word/gap highlighting feeding Teach                          | `[ ]`             |
+| Cut   | One line                                                                                                                                  | State                                                        |
+| ----- | ----------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------ |
+| W13-0 | Clock falsification + frozen golden replay (171939 / 191351 / 193523)                                                                     | landed                                                       |
+| W13-1 | Inline-format buffer: sealed chunks stream to the formatting LLM during dictation (`previous_response_id` chain); stop pays only the tail | `[~]` in progress — `CODESCRIBE_INLINE_FORMAT` default OFF   |
+| W13-2 | Tail-patch behind a provider seam: local ws sidecar (default target), remote opt-in, in-process fallback                                  | landed OFF — 2A contract + 2B sidecar slot                   |
+| W13-3 | **Keystone**: time-pinned canvas — Silero-bounded utterances, words pinned to seconds, sealed ledger                                      | landed OFF — 3A provenance + 3B `CODESCRIBE_SILERO_FUSION=0` |
+| W13-4 | Gap-append dedup by time-span (shrinks to a corollary of W13-3) + in-span hallucination fence                                             | landed OFF — `CODESCRIBE_SPAN_IDEMPOTENCE=0`                 |
+| W13-5 | Capture-level receipt + Audio menu truth (level, device, quality)                                                                         | landed — WARN is non-terminal                                |
+| W13-6 | Lexicon gets a voice (Whisper `initial_prompt`, Apple `contextualStrings`) + word/gap highlighting feeding Teach                          | landed OFF — 6A voice + 6B `CODESCRIBE_OVERLAY_HIGHLIGHTS=0` |
+
+**Current truth (2026-08-14, polarize):** the live product already runs
+Apple canvas + Layer 1 Whisper tail-patch by default (`unset` →
+`phase1`, `core/stt/tail_patcher/mod.rs::LAYERED_DEFAULT_PHASE`). W13
+fusion / idempotence / highlights stay OFF until an operator flip.
+`lbrx-stt-engine` file-mode is a **bench**, not a replacement engine.
+Single-writer emitter landed in `75c89f56`. Next field cut is take-614
+fusion A/B. Closing bar: layered-ON ≥ lbrx file-mode on U-WER vs human,
+at live latency, on all three golden takes.
 
 **What the user feels when this lands:** words stop vanishing; corrections
 actually arrive; stop is near-instant; deliberate repetition is never
@@ -378,10 +390,8 @@ W13-6 highlight-half ◄──┴── after W13-3 ────┘
 ## 9. Acceptance discipline
 
 Every cut carries a delivery-verifier (listed per cut above). Gates for
-every commit: `cargo check --workspace`, `cargo clippy --workspace
---all-targets -- -D warnings`, `cargo test --workspace` (pin env — the
-operator dotenv leaks into tests), and for Swift surfaces `make
-app-bindings` + `make test-swift` with an isolated `SWIFT_TEST_LOG`.
+every commit: `cargo check --workspace`, `cargo clippy --workspace --all-targets -- -D warnings`, `cargo test --workspace` (pin env — the
+operator dotenv leaks into tests), and for Swift surfaces `make app-bindings` + `make test-swift` with an isolated `SWIFT_TEST_LOG`.
 Green gates are necessary, not sufficient: the verifier measurement flips
 the state, not the CI color.
 
@@ -486,28 +496,40 @@ classes this roadmap names: vocabulary, code-switching, tail integrity.
 
 ### Diagnosis (holistic)
 
-The gap is **not model capability** — we embed the same Whisper family.
-The gap is the live lane: window feeding, patch authority, and buffer
-integrity. Field evidence, same morning (Monika, 2026-08-14): 42% of
-Layer-1 tail patches rejected (80 applied / 59 rejected across 10
+The gap is **not model capability** — we embed the same Whisper family,
+and Layer 1 is already the stock live default (`phase1`). The gap is the
+live lane: window feeding, patch authority, and (until this morning)
+buffer integrity. Field evidence, same morning (Monika, 2026-08-14): 42%
+of Layer-1 tail patches rejected (80 applied / 59 rejected across 10
 sessions), and a dual-writer `transcript_buffer` split-brain (reducer 228
 chars, final Apple partial 264, RAW 791 ≈ 3×264 — the same sentence
 delivered almost three times). No ledger can save a buffer with two
-writers; the single-writer emitter fix is a prerequisite cut.
+writers.
 
-The machinery to close the gap **already landed** in the W13 settlement
-(`13b1eed8`, all defaults OFF): Silero-boundary fusion (3B, synthetic
-starvation −67%), span idempotence (4), typed tail providers (2A/2B),
-lexicon voice (6A). "Catching up" is therefore not new architecture — it
-is wiring, measurement, and the operator's flip matrix, in this order:
+That dual-writer cut **landed** in `75c89f56`:
+`store_transcript_snapshot` is the shared buffer's only writer; the tick
+loop animates the `DeltaSink` only. Do not re-open it as "field P0".
 
-1. single-writer emitter + final snapshot barrier (new cut, field P0);
+The W13 close-the-gap machinery **already landed** in the settlement
+(`13b1eed8`). "All defaults OFF" names the **W13 flip flags**
+(`CODESCRIBE_SILERO_FUSION`, `CODESCRIBE_SPAN_IDEMPOTENCE`,
+`CODESCRIBE_OVERLAY_HIGHLIGHTS`, `CODESCRIBE_INLINE_FORMAT`) — it does
+**not** describe Layer 1, which has been `phase1` since the 2026-08-09
+operator directive. Silero-boundary fusion (3B, synthetic starvation
+−67%), span idempotence (4), typed tail providers (2A/2B), and lexicon
+voice (6A) sit behind those OFF flags. "Catching up" is therefore not
+new architecture — it is measurement and the operator's flip matrix, in
+this order:
+
+1. ~~single-writer emitter + final snapshot barrier~~ **done**
+   (`75c89f56`);
 2. real take-614 fusion A/B → `CODESCRIBE_SILERO_FUSION` decision;
 3. span idempotence observed on a real session → flip decision;
 4. optional: lbrx as a **remote tail provider** — its
    `hello/ack/vad/transcript.final` stream protocol is shape-compatible
    with the W13-2B remote slot, moving ~4 GB of Whisper RSS out of the
-   app on hosts where the service runs anyway.
+   app on hosts where the service runs anyway. lbrx is not a product
+   engine and must not replace the Apple canvas.
 
 ### Bench discipline going forward
 

@@ -15,11 +15,14 @@ events that visibly patch tokens Apple missed — mixed-language inserts, rare t
 nouns. The legacy "Whisper-as-primary" path stays as automatic fallback when Apple Speech
 is unavailable (no permission, no macOS Speech framework).
 
-> **Delivery status (2026-08-08).** Layer 1 is wired on **both** live paths — VAD/scheduler and
-> the default Apple progressive live (`a6b1233d`) — but it is **opt-in and off by default**:
-> `CODESCRIBE_LAYERED_TRANSCRIPTION` ships as `off`. On a stock install Whisper still earns its
-> keep at **stop time** (`FINAL_PASS_MODE`, Smart by default), not as a live tail-patcher.
-> Layer 2's inline LLM, Layer 3 and Layer 4 have no producer at all — see the ADR's
+> **Delivery status (2026-08-14).** Layer 1 is wired on **both** live paths — VAD/scheduler and
+> the default Apple progressive live (`a6b1233d`) — and is **on by default**:
+> `CODESCRIBE_LAYERED_TRANSCRIPTION` unset → `phase1` (operator directive
+> 2026-08-09). Explicit `off`/`0`/`false` disarms. Whisper also still earns
+> its keep at **stop time** (`FINAL_PASS_MODE`, Smart by default) as the
+> residual file pass, never as a live full-replace. W13 fusion /
+> idempotence / highlights stay OFF. Layer 2's inline LLM, Layer 3 and
+> Layer 4 have no producer at all — see the ADR's
 > [Phase delivery status](./ADR/2026-05-26-LAYERED_INCREMENTAL_TRANSCRIPTION.md#phase-delivery-status-2026-08-08).
 
 **Hard invariant that gates every Whisper write:** _NEVER REWRITE FROM ZERO._ Tail Patch may

@@ -13,7 +13,7 @@
 //! | Control | Env | Default | What it does |
 //! | --- | --- | --- | --- |
 //! | Final pass | `FINAL_PASS_MODE` | `smart` | Stop-path only: whether to run a full WAV Whisper re-pass after release |
-//! | Layered / Layer 1 | `CODESCRIBE_LAYERED_TRANSCRIPTION` | **off** | During-hold gap-fill: Whisper tail patches on sealed utterances |
+//! | Layered / Layer 1 | `CODESCRIBE_LAYERED_TRANSCRIPTION` | **phase1** | During-hold gap-fill: Whisper tail patches on sealed utterances. Unset → phase1; explicit `off`/`0`/`false` disarms. |
 //!
 //! - **Smart** = skip full stop re-pass when streaming completeness is
 //!   adjudicated Complete. It does **not** enable layered transcription.
@@ -21,9 +21,9 @@
 //! - Layered phase ≥ 1 may run under any final-pass mode when the live session
 //!   path actually wires Layer 1 (see below).
 //!
-//! Product intent: Smart *works with* layered (completeness skip + optional
-//! live gap-fill), but layered stays opt-in until Phase 1 is proven on the
-//! default Apple progressive path.
+//! Product intent: Smart *works with* layered (completeness skip + live
+//! gap-fill). Phase 1 is the stock live default; W13 fusion / idempotence /
+//! highlight flags remain the operator-flip surface, not this gate.
 //!
 //! # Where Layer 1 is wired today
 //!

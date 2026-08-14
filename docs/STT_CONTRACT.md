@@ -7,10 +7,12 @@
 > Whisper transcribing **partials on the go** to fill canvas gaps — NOT final-pass-only.
 > Lexicon substitution is the FINAL automated layer, after Whisper.
 >
-> **Status (2026-08-08):** on-the-go gap-fill now **exists** as Layer 1 tail-patch on both live
-> paths (`a6b1233d`), but it is **opt-in and off by default** — `CODESCRIBE_LAYERED_TRANSCRIPTION`
-> ships as `off` and no default flip has been taken. So for a stock install the stop-time file
-> final-pass described below is still what runs. It is the shipped path, not the destination.
+> **Status (2026-08-14):** on-the-go gap-fill **exists and is the stock live
+> default** as Layer 1 tail-patch on both live paths (`a6b1233d`, default
+> flip 2026-08-09). `CODESCRIBE_LAYERED_TRANSCRIPTION` unset → `phase1`;
+> explicit `off`/`0`/`false` disarms. Stop-path `FINAL_PASS_MODE=smart`
+> remains the residual file pass, never a live full-replace. W13 fusion /
+> idempotence / highlights stay OFF until an operator flip.
 > Planning report: internal plan `stt-apple-must-have` (operator artifact store, 2026-07-24).
 
 ---

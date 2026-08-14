@@ -156,10 +156,14 @@ Whisper on partials, on the go — transcribes during the session, filling canva
 appear. Whisper is never a stop-time full-text authority. A full-file "final pass" that replaces
 the live transcript is a doctrine violation. (On-the-go partial transcription now **exists** —
 Layer 1 tail-patch runs on both live paths, including the default Apple progressive one, since
-`a6b1233d`. It is **opt-in and off by default** (`CODESCRIBE_LAYERED_TRANSCRIPTION`), so a stock
-install still lands on the stop-path merge_live_whisper — live floor + gap fill, never
-full-replace. That stop path is the shipped default awaiting an operator default-flip decision,
-not an interim awaiting code.)
+`a6b1233d`. It is **on by default** (`CODESCRIBE_LAYERED_TRANSCRIPTION`
+unset → `phase1`; explicit `off`/`0`/`false` disarms). A stock install therefore
+already runs live tail-patch on both live paths. The stop-path
+`merge_live_whisper` remains the residual floor + gap fill — never a
+full-replace. W13 fusion / idempotence / highlight / inline-format flags
+stay OFF until an operator flip. The bar that ends the live-lane shame is
+layered-ON ≥ lbrx file-mode on U-WER vs human at live latency — see
+`docs/THE_ENGINE_ROADMAP.md` §13.)
 Lexicon correction — the FINAL automated layer — substitution from dictionary heuristics, applied
 after Whisper, at the end.
 Human correction — feeds lexicon perfectness. The human loop teaches the dictionary; the
