@@ -652,7 +652,20 @@ impl EventSink for PresentationEmitter {
                     self.send_cmd(EmitterCmd::SetTargetText(rendered));
                 }
             }
-            EngineEvent::SessionFinalised { .. } => {}
+            EngineEvent::SessionFinalised { .. } => {
+                // The Apple progressive lane closes with SessionFinalised and
+                // does not emit Stats. Persist only immutable canvas here: a
+                // cumulative final can re-state committed text as the last
+                // Preview, and ignoring the close event would deliver
+                // `committed + restatement` at stop.
+                let rendered = {
+                    let mut state = self.session_state.lock().unwrap_or_else(|e| e.into_inner());
+                    state.clear_live_preview();
+                    state.streaming_floor()
+                };
+                self.send_cmd(EmitterCmd::SetTargetText(rendered));
+                self.send_cmd(EmitterCmd::Finish);
+            }
         }
     }
 }
@@ -662,7 +675,7 @@ impl EventSink for PresentationEmitter {
 mod tests {
     use super::{DeltaRenderMode, PresentationEmitter, SessionTranscriptState};
     use codescribe_core::pipeline::contracts::{
-        AnnotationKind, EngineEvent, EventSink, LayerSource, TranscriptSegment,
+        AnnotationKind, EngineEvent, EventSink, LayerSource, LayerSummary, TranscriptSegment,
     };
     use std::sync::{Arc, Mutex as StdMutex};
     use tokio::sync::Mutex;
@@ -1177,6 +1190,44 @@ mod tests {
         tokio::time::sleep(std::time::Duration::from_millis(220)).await;
         let snapshot = transcript.lock().await.clone();
         assert_eq!(snapshot, "Ala ma kota");
+    }
+
+    /// Apple progressive closes with `SessionFinalised`, not `Stats`. A fully
+    /// re-heard cumulative final can leave the committed canvas in Preview;
+    /// ignoring the closing event then persists `committed + restatement`.
+    #[tokio::test]
+    async fn session_finalised_clears_reheard_preview_without_stats() {
+        let transcript = Arc::new(Mutex::new(String::new()));
+        let mut emitter = PresentationEmitter::new(transcript.clone(), None, None);
+
+        emitter.on_event(&EngineEvent::UtteranceFinal {
+            utterance_id: 1,
+            text: "Ala ma kota".to_string(),
+            raw_text: "Ala ma kota".to_string(),
+            start_ts: 0.0,
+            end_ts: 1.0,
+            segments: Vec::new(),
+            vad_speech_pct: Some(100.0),
+            avg_logprob: None,
+            compression_ratio: None,
+            quality_gate_dropped: false,
+            confidence_flags: Vec::new(),
+        });
+        emitter.on_event(&EngineEvent::Preview {
+            rev: 2,
+            text: "Ala ma kota".to_string(),
+        });
+        emitter.on_event(&EngineEvent::SessionFinalised {
+            session_id: "session".to_string(),
+            layer_summary: LayerSummary::default(),
+        });
+        emitter.finish().await;
+
+        let snapshot = transcript.lock().await.clone();
+        assert_eq!(
+            snapshot, "Ala ma kota",
+            "SessionFinalised must persist committed canvas only"
+        );
     }
 
     /// Late correction matching penultimate commit patches it, never appends.

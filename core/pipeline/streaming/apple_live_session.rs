@@ -1366,12 +1366,17 @@ fn seal_utterance_final(
         }
         let novel_text = words[known_prefix_words..].join(" ");
         if novel_text.is_empty() {
-            // Fully re-heard text: safe to keep as in-flight preview.
-            state.open_partial = callback_text.clone();
+            // Fully re-heard text has no volatile tail. Keeping the cumulative
+            // callback as Preview makes session renderers show
+            // `committed canvas + restatement`; on the Apple path that duplicate
+            // survived into the stop-time delivery buffer because the session
+            // closes with `SessionFinalised`, not `Stats`.
+            state.open_partial.clear();
+            state.open_partial_segments.clear();
             state.preview_rev = state.preview_rev.saturating_add(1);
             let _ = ev_tx.send(EngineEvent::Preview {
                 rev: state.preview_rev,
-                text: callback_text,
+                text: String::new(),
             });
             return false;
         }
@@ -2876,6 +2881,48 @@ mod tests {
         assert_eq!(
             count, 1,
             "a restatement with one revised opening word must not re-commit the whole phrase: {finals:?}"
+        );
+    }
+
+    /// A later cumulative final can be entirely covered by already-committed
+    /// spans. It is not an active tail: surfacing the whole callback as Preview
+    /// makes the presentation reducer render `committed + restatement` and the
+    /// delivery buffer duplicates the take at stop.
+    #[test]
+    fn fully_reheard_cumulative_final_clears_preview_instead_of_repeating_canvas() {
+        let (tx, mut rx) = mpsc::unbounded_channel();
+        let mut state = AppleSealState::new(TEST_SAMPLE_RATE);
+        push_capture(&mut state, 8.0);
+
+        let heard_first = "szuty klawiszowe to podwójny lewy przycisk myszy";
+        let restated =
+            "skróty klawiszowe to podwójny lewy przycisk myszy lub klawisz na klawiaturze";
+
+        for (text, end) in [(heard_first, 5.0), (restated, 6.0), (restated, 6.5)] {
+            emit_stream_events(
+                vec![LiveStreamEvent::PhraseFinal {
+                    text: text.into(),
+                    segments: vec![segment(text, 0.0, end)],
+                }],
+                &tx,
+                &mut state,
+                8.0,
+            );
+        }
+
+        let events = std::iter::from_fn(|| rx.try_recv().ok()).collect::<Vec<_>>();
+        let last_preview = events.iter().rev().find_map(|event| match event {
+            EngineEvent::Preview { text, .. } => Some(text.as_str()),
+            _ => None,
+        });
+        assert_eq!(
+            last_preview,
+            Some(""),
+            "a fully re-heard final must clear the volatile tail, not repeat the canvas: {events:?}"
+        );
+        assert!(
+            state.open_partial.is_empty(),
+            "a fully re-heard final must not survive as stop-time open partial"
         );
     }
 
