@@ -108,6 +108,46 @@ pub const ENGINE_CONTRACT: EngineContract = EngineContract {
     product_goal: "energy × time → the true sentence, live in the buffer, ~10ms to paste",
 };
 
+/// Required visual of a private quality HTML. WER is a footnote.
+pub const QUALITY_REPORT_SURFACE: &str = "seal-atlas";
+
+/// Gold take checked into the repo — the report an agent must not replace
+/// with a scores table.
+pub const SEAL_ATLAS_GOLD_HTML: &str = "docs/quality-reports/seal-atlas.take01.html";
+
+/// Speech faster than this (characters / second over a span range) is a
+/// clock-lie: the range is not the range of that speech. Take 01 span 2
+/// is 410 chars/s. Conversational Polish sits well below 20.
+pub const CLOCK_LIE_CHARS_PER_SEC: f32 = 30.0;
+
+/// How a sealed span's word payload is allowed to be read.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum SpanGrain {
+    /// SFSpeech returned more than one distinct word pin.
+    Word,
+    /// One segment covering the Apple commit-to-commit window.
+    Utterance,
+}
+
+/// Classify grain. Per-word pins are real where they exist and never
+/// guaranteed — two or more distinct ranges = word-grain, otherwise utterance.
+pub fn span_grain(distinct_word_ranges: usize) -> SpanGrain {
+    if distinct_word_ranges >= 2 {
+        SpanGrain::Word
+    } else {
+        SpanGrain::Utterance
+    }
+}
+
+/// Clock-lie: too many characters for the claimed PCM duration.
+pub fn is_clock_lie(chars: usize, duration_secs: f32) -> bool {
+    duration_secs > 0.0 && (chars as f32 / duration_secs) > CLOCK_LIE_CHARS_PER_SEC
+}
+
+/// Grapheme ticks inside a word range are an even split, never a measurement.
+pub const LETTER_TIMING: &str = "interpolation_not_measurement";
+
 /// Role of a named quality-report column. WER against a column does not
 /// promote that column to document.
 pub fn surface_role(column: &str) -> Option<ReportSurfaceRole> {
@@ -307,6 +347,10 @@ mod tests {
             "rewrite_from_zero",
             "button_only_proposal",
             "Apple → Whisper → lexicon → formatter → human",
+            "seal-atlas",
+            "SealedSpan.words",
+            "clock-lie",
+            "interpolation",
         ] {
             assert!(
                 body.contains(needle),
@@ -323,5 +367,43 @@ mod tests {
     fn full_file_pass_is_never_automatic() {
         assert_eq!(ENGINE_CONTRACT.full_file_pass, "button_only_proposal");
         assert!(ENGINE_CONTRACT.whisper_window.contains("3-5s"));
+    }
+
+    #[test]
+    fn take01_span2_is_the_canonical_clock_lie() {
+        assert!(is_clock_lie(41, 0.10));
+        assert!(!is_clock_lie(6, 0.24)); // "ten" @ 240 ms
+        assert_eq!(span_grain(6), SpanGrain::Word);
+        assert_eq!(span_grain(1), SpanGrain::Utterance);
+        assert_eq!(LETTER_TIMING, "interpolation_not_measurement");
+        assert_eq!(QUALITY_REPORT_SURFACE, "seal-atlas");
+    }
+
+    #[test]
+    fn gold_atlas_html_is_a_pcm_instrument_not_a_wer_table() {
+        let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("..");
+        let path = root.join(SEAL_ATLAS_GOLD_HTML);
+        let body = std::fs::read_to_string(&path)
+            .unwrap_or_else(|err| panic!("{} must exist: {err}", path.display()));
+        for needle in [
+            "Seal Atlas",
+            "SealedSpan.words",
+            "kłamstwo zegarowe",
+            "word-grain",
+            "utterance-grain",
+            "równomierna interpolacja",
+            "CODESCRIBE_SEAL_ATLAS_DUMP",
+            "vad_atlas_probe",
+            "whisper_words",
+        ] {
+            assert!(
+                body.contains(needle),
+                "{SEAL_ATLAS_GOLD_HTML} missing {needle:?}"
+            );
+        }
+        assert!(
+            !body.contains("Avg WER"),
+            "gold atlas must not be a scores table"
+        );
     }
 }
