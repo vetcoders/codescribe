@@ -359,7 +359,12 @@ struct Composer: View {
     .animation(.easeOut(duration: 0.15), value: store.dictationPhase)
   }
 
+  /// One shared recorder ⇒ the live-capture affordances belong to exactly one
+  /// thread: the one the rail was on when the mic was pressed. Browsing to any
+  /// other thread mid-sentence shows the honest "busy" mic instead of a ripple
+  /// for a dictation that is not landing here.
   private var micState: ComposerMicVisualState {
+    guard store.dictationOwnsSelectedThread else { return .blocked }
     switch store.dictationPhase {
     case .preparing: return .preparing
     case .recording: return .recording

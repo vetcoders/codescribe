@@ -67,6 +67,11 @@ protocol AgentChatEngine: AnyObject {
   /// "cancelled" turn.
   @discardableResult
   func cancelReply(threadId: String) -> Bool
+  /// Publish the rail's current logical selection to the shared assistive
+  /// controller. This must be a protocol requirement: calls through the
+  /// `AgentChatEngine` existential otherwise statically dispatch to the
+  /// extension's preview no-op instead of `RealChatEngine`.
+  func setAssistiveTargetThread(backendId: String?)
   func installToolApprovalHandler(
     _ handler: @escaping @MainActor (PendingToolApproval) -> Void
   )
@@ -544,6 +549,24 @@ final class AgentChatStore: ObservableObject {
   /// True while the one shared controller owns the microphone.
   @Published var dictationBlocked: Bool = false
 
+  /// The thread that owned the rail when the live capture started. Latched on the
+  /// first non-idle phase and released on every terminal one.
+  ///
+  /// Without this latch every voice-lane fact (mic ripple, routing target) was
+  /// read live and globally, so switching threads mid-capture painted a "ghost"
+  /// recording mic on a thread that was not receiving the dictation AND re-routed
+  /// the in-flight transcript to it — the card then landed somewhere the user was
+  /// no longer looking. One shared recorder ⇒ one owning thread, decided at the
+  /// gesture and not re-decided until the session ends.
+  @Published private(set) var dictationThreadID: UUID?
+
+  /// True when the rail selection is the thread that owns the live capture (or
+  /// no capture is live). The composer only shows preparing/recording affordances
+  /// for the owning thread; every other thread sees the mic as busy.
+  var dictationOwnsSelectedThread: Bool {
+    dictationThreadID == nil || dictationThreadID == selectedThreadID
+  }
+
   /// Injected real adapter (Core). `nil` in previews / mock → mic is inert.
   var dictation: ComposerDictating?
 
@@ -560,19 +583,53 @@ final class AgentChatStore: ObservableObject {
 
   /// Set by the real adapter as the dictation session transitions. No-op-safe
   /// when no adapter is wired.
-  func setDictationPhase(_ phase: ComposerDictationPhase) { dictationPhase = phase }
+  ///
+  /// This is the single choke point every lifecycle path funnels through
+  /// (composer gesture, hotkey, tray, orphan compensator), so the ownership latch
+  /// lives here rather than at any one caller.
+  func setDictationPhase(_ phase: ComposerDictationPhase) {
+    switch phase {
+    case .preparing, .recording:
+      if dictationThreadID == nil { dictationThreadID = selectedThreadID }
+    case .idle, .failed:
+      let hadSession = dictationThreadID != nil
+      dictationThreadID = nil
+      // Selection changes were suppressed while the capture was latched — resync
+      // the routing target to whatever the rail shows now that it is free again.
+      if hadSession { publishAssistiveTarget(force: true) }
+    }
+    dictationPhase = phase
+  }
+
+  /// Terminal lifecycle beat for the shared recorder: the microphone is free.
+  ///
+  /// Unconditional by design. The previous wiring only reset the composer when an
+  /// assistive latch read true at stop time, so a single missed latch read left
+  /// the mic pinned in `.preparing`/`.recording` — both non-actionable states —
+  /// with no recovery short of an app restart. A terminal event must always be
+  /// able to return the surface to rest. A `.failed` banner is kept so its own
+  /// self-clearing timer can run out.
+  func endDictationSession() {
+    dictationBlocked = false
+    if case .failed = dictationPhase {
+      dictationThreadID = nil
+      publishAssistiveTarget(force: true)
+      return
+    }
+    setDictationPhase(.idle)
+  }
 
   /// Surface a recoverable dictation failure with a self-clearing inline message
   /// (auto-returns to `.idle` after a few seconds so the composer doesn't keep a
   /// stale error banner).
   func reportDictationFailure(_ message: String) {
-    dictationPhase = .failed(message)
+    setDictationPhase(.failed(message))
     let token = UUID()
     dictationFailureToken = token
     Task { @MainActor in
       try? await Task.sleep(nanoseconds: 4_000_000_000)
       guard dictationFailureToken == token, case .failed = dictationPhase else { return }
-      dictationPhase = .idle
+      setDictationPhase(.idle)
     }
   }
 
@@ -775,7 +832,15 @@ final class AgentChatStore: ObservableObject {
   /// target. A selection without a backend id (freshly minted "+ New thread")
   /// publishes `nil`, which the controller reads as "mint a fresh thread on
   /// the next assistive turn".
-  private func publishAssistiveTarget() {
+  ///
+  /// Selection-driven publishes are frozen while a capture session is latched:
+  /// the target belongs to the thread the user was in when they pressed the mic,
+  /// and browsing the rail mid-sentence must not steal the in-flight transcript.
+  /// `force` is for identity transitions that are not the user moving away —
+  /// binding a draft to a freshly minted backend id, and the resync when the
+  /// session ends.
+  private func publishAssistiveTarget(force: Bool = false) {
+    guard force || dictationThreadID == nil else { return }
     engine?.setAssistiveTargetThread(backendId: currentThread?.backendId)
   }
 
@@ -1652,6 +1717,10 @@ final class AgentChatStore: ObservableObject {
       threadID = thread.id
       isFirstExchange = true
     }
+    // Binding a selected empty draft does not mutate `selectedThreadID`, so its
+    // didSet cannot publish the new backend. Close that identity transition now
+    // before any later capture or external refresh can observe a stale nil target.
+    if threadID == selectedThreadID { publishAssistiveTarget(force: true) }
     // A skeleton turn can carry context with an empty instruction (e.g. a
     // clipped dictation) — the bubble still renders for the chip.
     if !userTurn.text.isEmpty || userTurn.wireText != nil {
@@ -2342,10 +2411,21 @@ final class AgentChatStore: ObservableObject {
     }
 
     if keepLocalDrafts {
-      let locals = threads.filter { thread in
-        thread.backendId == nil && (thread.id == previousSelectedID || !thread.messages.isEmpty)
+      let retained = threads.filter { thread in
+        let isSelected = thread.id == previousSelectedID
+        let isPopulatedDraft = thread.backendId == nil && !thread.messages.isEmpty
+        guard isSelected || isPopulatedDraft else { return false }
+        if let backendId = thread.backendId {
+          return !next.contains(where: { $0.backendId == backendId })
+        }
+        return !next.contains(where: { $0.id == thread.id })
       }
-      next.append(contentsOf: locals)
+      // Disk/index publication is not transactional with TurnStarted/Done. If
+      // one refresh snapshot temporarily omits the selected persisted row,
+      // retain that logical row instead of falling through to `threads.first`
+      // and silently publishing a different assistive target. A real explicit
+      // select/new/delete still changes `previousSelectedID` before this path.
+      next.append(contentsOf: retained)
     }
 
     let resolved =
@@ -2362,7 +2442,8 @@ final class AgentChatStore: ObservableObject {
     threads = resolved
     // Selection is user-owned. A completion refresh may reorder or replace
     // rail rows, but it must preserve the thread the user is reading. The
-    // completed backend is only a fallback when that selection disappeared.
+    // selected logical row is retained above across transient index gaps; the
+    // completed backend is only a fallback after an explicit removal path.
     if let previousSelectedID, threads.contains(where: { $0.id == previousSelectedID }) {
       selectedThreadID = previousSelectedID
     } else if let backendId, let match = threads.first(where: { $0.backendId == backendId }) {
