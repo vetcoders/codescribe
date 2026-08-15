@@ -338,8 +338,10 @@ pub fn report_to_html(report: &TeacherReport) -> String {
   th {{ background: #1c1f26; text-align: left; }}
   code {{ color: #fbbf24; }}
   .meta {{ color: #9aa0a6; font-size: 0.85rem; }}
+  {contract_css}
 </style></head><body>
 <h1>Codescribe Teacher</h1>
+{contract}
 <p class="meta">label: {label} · live tokens: {live_n} · whisper tokens: {wh_n} ·
 equal ops: {eq} · whisper errors: {we} · at live-weak: {wl} · hit-rate: {hit}</p>
 <div class="thesis"><strong>Thesis:</strong> {thesis}</div>
@@ -362,6 +364,8 @@ equal ops: {eq} · whisper errors: {we} · at live-weak: {wl} · hit-rate: {hit}
         hit = hit,
         thesis = html_escape(&report.thesis_summary),
         rows = rows,
+        contract = crate::quality::engine_contract::render_engine_contract_html(),
+        contract_css = crate::quality::engine_contract::engine_contract_css(),
         lex = if lex.is_empty() {
             "<li><em>none</em></li>".into()
         } else {

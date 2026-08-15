@@ -899,7 +899,8 @@ pub fn render_html(report: &QualityReport, config: &QualityReportConfig) -> Stri
     let mut body = String::new();
 
     body.push_str(&format!(
-        "<h1>Codescribe Quality Report</h1><p>Generated: {}</p><p>Metrics reference: {}</p><p>Raw semantics: text_committed={} • quality_gate_dropped={} • no_speech_detected={}</p>",
+        "<h1>Codescribe Quality Report</h1>{}<p>Generated: {}</p><p>Metrics reference: {}</p><p>Raw semantics: text_committed={} • quality_gate_dropped={} • no_speech_detected={}</p>",
+        crate::quality::engine_contract::render_engine_contract_html(),
         html_escape(&report.generated_at),
         html_escape(&report.environment.metrics_reference),
         report.summary.raw_text_committed,
@@ -1028,11 +1029,16 @@ pub fn render_html(report: &QualityReport, config: &QualityReportConfig) -> Stri
         );
         render_ref_section(
             &mut body,
-            "AI formatted (candidate)",
+            "AI formatted (proposal — not the document)",
             t.ai_formatted.as_deref(),
             debug,
         );
-        render_ref_section(&mut body, "Cloud reference", t.cloud.as_deref(), debug);
+        render_ref_section(
+            &mut body,
+            "Cloud (proposal — not the document)",
+            t.cloud.as_deref(),
+            debug,
+        );
         render_ref_section(
             &mut body,
             "Corpus reference (.txt)",
@@ -1053,6 +1059,7 @@ pub fn render_html(report: &QualityReport, config: &QualityReportConfig) -> Stri
     }
 
     let debug_flag = if debug { "true" } else { "false" };
+    let contract_css = crate::quality::engine_contract::engine_contract_css();
     format!(
         r#"<!doctype html>
 <html lang="en">
@@ -1089,6 +1096,7 @@ audio {{ width: 100%; margin: 8px 0; }}
 .ref pre {{ background: #f6f6f6; padding: 10px; border-radius: 6px; white-space: pre-wrap; }}
 .ref.hidden {{ display: none; }}
 .errors {{ margin-top: 10px; color: #a00; }}
+{contract_css}
 </style>
 </head>
 <body>
