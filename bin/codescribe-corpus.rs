@@ -1119,11 +1119,14 @@ async fn run_worker(args: WorkerArgs) -> Result<()> {
     let successful = rows.iter().filter(|row| row.status == "ok").count();
     let failed = rows.len() - successful;
     let total_tail_patches = rows.iter().map(|row| row.tail_patches).sum();
-    let observed_layered = total_tail_patches > 0;
     let successful_rows = rows
         .iter()
         .filter(|row| row.status == "ok")
         .collect::<Vec<_>>();
+    let (observed_layered, profile_observation_matches) = layering_observation(
+        args.profile.layered(),
+        successful_rows.iter().map(|row| row.layer1_provider_armed),
+    );
     let mean_wer = mean(successful_rows.iter().map(|row| row.wer));
     let mean_cer = mean(successful_rows.iter().map(|row| row.cer));
     let mean_character_parity = mean(successful_rows.iter().map(|row| row.character_parity));
@@ -1173,7 +1176,7 @@ async fn run_worker(args: WorkerArgs) -> Result<()> {
         total_tail_patches,
         requested_layered: args.profile.layered(),
         observed_layered,
-        profile_observation_matches: observed_layered == args.profile.layered(),
+        profile_observation_matches,
         mean_wer,
         mean_cer,
         mean_character_parity,
@@ -1187,6 +1190,24 @@ async fn run_worker(args: WorkerArgs) -> Result<()> {
     };
     atomic_write_json(&args.out, &report)?;
     Ok(())
+}
+
+fn layering_observation(
+    requested_layered: bool,
+    provider_armed: impl IntoIterator<Item = bool>,
+) -> (bool, bool) {
+    let mut successful_executions = 0usize;
+    let mut observed_layered = false;
+    let mut every_execution_matches = true;
+    for armed in provider_armed {
+        successful_executions += 1;
+        observed_layered |= armed;
+        every_execution_matches &= armed == requested_layered;
+    }
+    (
+        observed_layered,
+        successful_executions > 0 && every_execution_matches,
+    )
 }
 
 fn publish_quality_audio(quality_audio_dir: &Path, clip: &Clip) -> Result<String> {
@@ -1878,6 +1899,16 @@ mod tests {
         ] {
             assert_eq!(profile.token().parse::<ReplayProfile>(), Ok(profile));
         }
+    }
+
+    #[test]
+    fn layering_observation_reads_provider_arming_not_tail_patch_count() {
+        assert_eq!(layering_observation(true, [true, true]), (true, true));
+        assert_eq!(layering_observation(false, [false, false]), (false, true));
+        assert_eq!(layering_observation(true, [true, false]), (true, false));
+        assert_eq!(layering_observation(false, [false, true]), (true, false));
+        assert_eq!(layering_observation(true, []), (false, false));
+        assert_eq!(layering_observation(false, []), (false, false));
     }
 
     #[test]
