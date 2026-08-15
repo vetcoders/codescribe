@@ -69,7 +69,8 @@ measure-uses-product-path|hermetic|the latency benchmark measures a hard-coded m
 dist-inputs|host|a release chain discovers a missing key minutes (or one notarisation) too late|2026-08-09: 'VAR=x make a && make b' scoped the licence key to the first command; SUPublicEDKey failed AFTER notarisation
 appcast-feed-live|host|the shipped SUFeedURL points at a feed that does not exist|2026-08-08: appcast never published — SUFeedURL 404, updater dead on arrival for every shipped build
 store-purity|host|the test suite writes fixtures into the operator's live corrections store|2026-08-04 audit: 61 % of corrections.jsonl was Swift-test fixtures; leak closed by d2dec16a on 2026-08-09
-sparkle-key-parity|host|the installed app verifies updates against a different key than the one we sign with|2026-08-09: local release had no SUPublicEDKey source at all; parity was unverifiable"
+sparkle-key-parity|host|the installed app verifies updates against a different key than the one we sign with|2026-08-09: local release had no SUPublicEDKey source at all; parity was unverifiable
+keychain-domain-clean|host|a release borrowed the operator's user keychain domain and did not give it back|2026-08-15: the user search list AND the default keychain both pointed at /private/tmp/vibecrafted-release-3.7.1.*/dist/Vibecrafted-signing.keychain-db while build-vibecrafted-release.sh was still running — every app in the login session, Codescribe included, resolved there first and asked for a uuidgen password no human has"
 
 if [[ "$LIST" == "1" ]]; then
     echo "== Canary catalog =="
@@ -217,6 +218,24 @@ canary_sparkle_key_parity() {
 }
 
 # ---------------------------------------------------------------------------
+# keychain-domain-clean (host)
+# A signing run borrows the operator's user keychain domain: it prepends an
+# ephemeral keychain to the search list and makes it the default. If it does
+# not hand both back, every later keychain access on this host asks for a
+# password to a file that may no longer exist. scripts/keychain-doctor.sh is
+# the read-only judge; this row is the standing alarm. It never mutates.
+# ---------------------------------------------------------------------------
+canary_keychain_domain_clean() {
+    local out rc
+    out="$(bash scripts/keychain-doctor.sh 2>&1)"; rc=$?
+    case "$rc" in
+        0) record "keychain-domain-clean" "PASS" "user search list and default keychain all resolve to existing files" ;;
+        1) record "keychain-domain-clean" "FAIL" "$(printf '%s' "$out" | awk '/STALE/{print "stale: " $3; exit}') — run scripts/keychain-doctor.sh for the derived recovery line" ;;
+        *) record "keychain-domain-clean" "SKIP" "keychain domain unreadable (no /usr/bin/security?) — not a macOS host" ;;
+    esac
+}
+
+# ---------------------------------------------------------------------------
 # Run
 # ---------------------------------------------------------------------------
 canary_idle_default_truth
@@ -227,8 +246,9 @@ if [[ "$HOST" == "1" ]]; then
     canary_appcast_feed_live
     canary_store_purity
     canary_sparkle_key_parity
+    canary_keychain_domain_clean
 else
-    record "host-canaries" "SKIP" "run with --host for dist-inputs, appcast-feed-live, store-purity, sparkle-key-parity"
+    record "host-canaries" "SKIP" "run with --host for dist-inputs, appcast-feed-live, store-purity, sparkle-key-parity, keychain-domain-clean"
 fi
 
 echo "--------------------------------------------------------------------------"

@@ -65,21 +65,28 @@ jobs:
         env:
           CODESIGN_CERTIFICATE_BASE64: ${{ secrets.CODESIGN_CERTIFICATE_BASE64 }}
           CODESIGN_CERTIFICATE_PASSWORD: ${{ secrets.CODESIGN_CERTIFICATE_PASSWORD }}
+          KEYCHAIN_SESSION_STATE_DIR: ${{ runner.temp }}/keychain-session
         run: |
+          set -euo pipefail
           CERT_PATH="$RUNNER_TEMP/codesign.p12"
-          KEYCHAIN_PATH="$RUNNER_TEMP/codesign.keychain-db"
           echo "$CODESIGN_CERTIFICATE_BASE64" | base64 -D > "$CERT_PATH"
-          security create-keychain -p "" "$KEYCHAIN_PATH"
-          security set-keychain-settings -lut 21600 "$KEYCHAIN_PATH"
-          security unlock-keychain -p "" "$KEYCHAIN_PATH"
+
+          # The search-list / default-keychain dance is NOT inlined here any
+          # more. This step used to prepend an ephemeral keychain to the user
+          # search list and never put the list back — it relied on
+          # `delete-keychain` unlisting it, which only works while the file
+          # still exists. On a self-hosted runner that leaves the operator's
+          # own keychain domain pointing at a deleted path (2026-08-15 P0).
+          # scripts/lib/keychain-session.sh snapshots as structured argv,
+          # unlists before deleting, and is concurrency-safe.
+          KEYCHAIN_PATH="$(scripts/lib/keychain-session.sh begin codescribe-signing)"
+          echo "CODESCRIBE_SIGNING_KEYCHAIN=$KEYCHAIN_PATH" >> "$GITHUB_ENV"
+
+          # Read into a variable, never echo. The ephemeral password exists so
+          # the keychain is not world-openable on a shared runner.
+          KEYCHAIN_PASSWORD="$(cat "$(scripts/lib/keychain-session.sh password-file codescribe-signing)")"
           security import "$CERT_PATH" -P "$CODESIGN_CERTIFICATE_PASSWORD" -A -t cert -f pkcs12 -k "$KEYCHAIN_PATH"
-          existing_keychains=()
-          while IFS= read -r keychain; do
-            keychain="${keychain//\"/}"
-            [[ -n "$keychain" ]] && existing_keychains+=("$keychain")
-          done < <(security list-keychains -d user)
-          security list-keychains -d user -s "$KEYCHAIN_PATH" "${existing_keychains[@]}"
-          security set-key-partition-list -S apple-tool:,apple: -s -k "" "$KEYCHAIN_PATH"
+          security set-key-partition-list -S apple-tool:,apple: -s -k "$KEYCHAIN_PASSWORD" "$KEYCHAIN_PATH" >/dev/null
           security find-identity -v -p codesigning "$KEYCHAIN_PATH"
           # The identity now lives in the keychain; the raw PKCS12 has no
           # further use. Overwrite-then-unlink so the private key material
@@ -187,12 +194,24 @@ jobs:
             appcast.xml
           generate_release_notes: true
 
-      - name: Remove signing keychain
+      - name: Release the signing keychain
         # Runs on every outcome: a failed build must not leave the imported
-        # Developer ID identity resident on the runner.
+        # Developer ID identity resident on the runner, AND must not leave the
+        # ephemeral keychain in the user search list or as the default
+        # keychain. `end` unlists first and deletes second, so it still cleans
+        # up when the keychain file has already been destroyed — the exact
+        # sequence that poisoned the operator's host on 2026-08-15.
         if: always()
+        env:
+          KEYCHAIN_SESSION_STATE_DIR: ${{ runner.temp }}/keychain-session
         run: |
-          KEYCHAIN_PATH="$RUNNER_TEMP/codesign.keychain-db"
-          if [ -f "$KEYCHAIN_PATH" ]; then
-            security delete-keychain "$KEYCHAIN_PATH"
+          if [ ! -x scripts/lib/keychain-session.sh ]; then
+            echo "::warning::checkout missing; cannot release the signing keychain"
+            exit 0
           fi
+          scripts/lib/keychain-session.sh end codescribe-signing
+          # Read-only verdict on what the runner's keychain domain looks like
+          # now. Advisory: a dirty domain must be visible, not silent, but it
+          # must not fail an otherwise successful release.
+          scripts/keychain-doctor.sh || \
+            echo "::warning::runner keychain domain still has stale entries after cleanup"
