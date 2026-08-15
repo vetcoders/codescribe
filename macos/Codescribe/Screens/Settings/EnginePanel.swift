@@ -501,8 +501,8 @@ struct EnginePanel: View {
           Text(
             "Rest the Apple engine after this much silence; the next speech edge wakes a fresh epoch so Whisper can patch the sealed span"
           )
-            .font(CSFont.ui(11.5))
-            .foregroundStyle(CSColor.textMutedAlt)
+          .font(CSFont.ui(11.5))
+          .foregroundStyle(CSColor.textMutedAlt)
         }
         Spacer(minLength: 12)
         Text(String(format: "%.1f s", model.settings.toggleSilenceSec))
