@@ -6,7 +6,7 @@
 | corpus schema | `codescribe-corpus-parity/v3` |
 | primary key | `pcm_time` |
 | source of truth | `core/quality/engine_contract.rs` |
-| surfaces | Qube `index.html`, `codescribe-corpus` private quality HTML, Teacher HTML |
+| surfaces | **Seal Atlas** (`docs/quality-reports/seal-atlas.take01.html`); Qube / corpus private HTML must become this, not a WER table |
 
 Do not re-derive this. If a sentence here disagrees with `ENGINE_CONTRACT` in Rust, the Rust constant wins and this file is wrong.
 
@@ -79,8 +79,21 @@ A first-wins final string is not enough. The real document is the ordered span l
 
 ## How a quality HTML must behave
 
-1. Embed the contract plate from `render_engine_contract_html()` before scores.
-2. Carry `data-contract="the-engine/v1"` and `data-primary-key="pcm_time"`.
-3. Treat Cloud / HQ / AI-formatted as proposals.
-4. Never present WER as if a full-file pass were the live engine.
-5. `codescribe-corpus` machine JSON stays fail-closed on privacy (no source paths, no transcript bodies). The private Qube HTML may show bodies and is the only place the plate sits next to audio.
+The private quality HTML is a **Seal Atlas**, not a WER table with a banner.
+
+Gold visual: [`docs/quality-reports/seal-atlas.take01.html`](quality-reports/seal-atlas.take01.html)
+(take 01 „no to dobra", replay `cff0817b…`, 44100 Hz, 2650112 samples).
+
+1. **One take, one clock.** X-axis is the capture PCM sample counter. Apple sealed spans, `SealedSpan.words`, Whisper segments, and Silero p(speech) share that axis. No reconstructed timeline.
+2. **Production Silero.** Curve from the engine's embedded ONNX + default `VadConfig`, 32 ms chunks — `vad_atlas_probe`, not a toy VAD.
+3. **Words from the live dump.** `CODESCRIBE_SEAL_ATLAS_DUMP` after session-end seal. Never rebuilt from the final string.
+4. **Two grain classes, labeled.**
+   - *word-grain* — SFSpeech actually returned per-word pins (take 01: spans 3 and 9).
+   - *utterance-grain* — one “word” covering the whole Apple commit-to-commit window. Per-word payload is real where it exists and **not guaranteed**.
+5. **Clock-lie** (`clock-lie`) is a first-class finding. Span 2 of take 01: 41 characters pinned to 100 ms (410 chars/s). Physically impossible. Silero can still say “speech 100%” — the range is not the range of that speech. Same class as `seal window unresolved`.
+6. **Utterance-grain includes silence tails.** Span 8: 36% speech. The span range is the distance between Apple commits, not the speech outline. This is why W13-3B mints identity from Silero silence edges.
+7. **Letters = interpolation.** Grapheme ticks inside a word are an even split of the word range, drawn as such. Not a measurement. Forced-aligner would be required for real grapheme times — we do not pretend to have one.
+8. Whisper is drawn as `whisper_words` mapped **back** onto the same clock. HQ / Cloud / AI-formatted stay proposals.
+9. `codescribe-corpus` machine JSON stays fail-closed on privacy. The private Atlas HTML is the only place bodies sit next to audio.
+10. A WER table may exist as a footnote. It must not replace the atlas and must not present a full-file pass as the live engine.
+
