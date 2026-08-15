@@ -305,11 +305,19 @@ _ks_arm_traps() {
   local sig prior body
   for sig in EXIT INT TERM HUP; do
     prior="$(trap -p "$sig")"
-    # `trap -p EXIT` prints: trap -- 'body' EXIT
+    # `trap -p` prints: trap -- 'body' SIGNAME
+    #
+    # SIGNAME is NOT what you passed in. Bash normalizes real signals to their
+    # SIG- form (`trap -p INT` answers `... SIGINT`) but leaves the pseudo
+    # signal EXIT bare. Stripping a literal " $sig" therefore worked for EXIT
+    # and silently mangled INT/TERM/HUP into an unparsable handler — which
+    # dropped the caller's own trap on exactly the three signals a bare EXIT
+    # trap cannot cover. So: strip the LAST whitespace-delimited word, whatever
+    # bash chose to call it.
     body=""
     if [[ -n "$prior" ]]; then
       body="${prior#trap -- }"
-      body="${body% "$sig"}"
+      body="${body% *}"
       body="${body#\'}"
       body="${body%\'}"
     fi
