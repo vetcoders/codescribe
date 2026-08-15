@@ -311,7 +311,8 @@ bump-major:
 # gate: verify class=hermetic ci=yes -- the workspace test set + doctests + env registry + this ledger; the command rust.yml runs
 # gate: verify-canaries class=hermetic ci=no -- claim-vs-execution canaries that read repo files only (scripts/canaries.sh); each row is born from a named incident
 # gate: verify-swift-format class=static ci=no -- swift-format lint --strict over macos/Codescribe + macos/CodescribeTests; skips the generated UniFFI binding; no Swift tests (that is test-swift)
-# gate: smoke-canaries class=operator ci=no -- verify-canaries + host rows: dist inputs, appcast feed, live-store purity, Sparkle key parity (scripts/canaries.sh --host)
+# gate: smoke-canaries class=operator ci=no -- verify-canaries + host rows: dist inputs, appcast feed, live-store purity, Sparkle key parity, keychain domain cleanliness (scripts/canaries.sh --host)
+# gate: test-keychain-session class=hermetic ci=no -- ephemeral signing-keychain contract (scripts/tests/keychain-session-test.sh) against a FAKE security binary and a temp HOME; touches no real keychain
 # gate: verify-dmg class=operator ci=no -- fail-closed payload check against an already-built DMG; release.yml runs the same check via scripts/verify-dmg-payload.sh, not via this target
 # gate: test class=operator ci=no -- workspace tests + #[ignore] real-API tests + STT pipeline; sources ~/.codescribe/.env and opens Console
 # gate: test-quick class=operator ci=no -- workspace tests only, but still sources ~/.codescribe/.env and opens Console
@@ -1109,6 +1110,15 @@ verify-canaries:
 
 smoke-canaries:
 	@bash scripts/canaries.sh --host
+
+# The signing keychain borrows the operator's user keychain domain. This proves
+# it always gives it back — on success, on failure, on Ctrl-C, under concurrent
+# releases, and when the keychain file was destroyed before cleanup ran (the
+# 2026-08-15 P0). Hermetic: `security` is a fake binary in a temp dir and HOME
+# is redirected, so running it on this host cannot touch a real keychain.
+.PHONY: test-keychain-session
+test-keychain-session:
+	@bash scripts/tests/keychain-session-test.sh
 
 .PHONY: canary-catalog
 canary-catalog:
