@@ -10,7 +10,7 @@
 use std::collections::BTreeMap;
 use std::ffi::OsStr;
 use std::fmt::Write as _;
-use std::fs::{self, File, OpenOptions};
+use std::fs::{self, OpenOptions};
 use std::io::{self, Read};
 use std::path::{Path, PathBuf};
 use std::process::{Command as ProcessCommand, ExitCode, Stdio};
@@ -18,7 +18,7 @@ use std::str::FromStr;
 use std::time::Instant;
 
 #[cfg(unix)]
-use std::os::unix::fs::{PermissionsExt, symlink};
+use std::os::unix::fs::PermissionsExt;
 
 use anyhow::{Context, Result, anyhow, bail};
 use chrono::Utc;
@@ -32,6 +32,7 @@ use codescribe::qube_report::{
 use codescribe_core::asr_session::GatewaySessionAvailability;
 use codescribe_core::config::UserSettings;
 use codescribe_core::pipeline::contracts::{EngineEvent, LayerSource};
+use codescribe_core::util::safe_path::{safe_open, safe_symlink_or_copy_bounded};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 
@@ -1079,48 +1080,25 @@ async fn run_worker(args: WorkerArgs) -> Result<()> {
             .await;
             let wall_seconds = started.elapsed().as_secs_f64();
             total_audio_seconds_executed += duration_seconds;
+            let execution = ReplayExecutionContext {
+                clip,
+                reference,
+                truth: &truth,
+                run,
+                profile: args.profile,
+                duration_seconds,
+                sample_rate,
+                wall_seconds,
+                audio_rel_path: &quality_audio_rel,
+            };
             match replay {
                 Ok(replay) => {
-                    quality_entries.push(success_quality_entry(
-                        clip,
-                        reference,
-                        &truth,
-                        run,
-                        args.profile,
-                        duration_seconds,
-                        &quality_audio_rel,
-                        &replay,
-                    ));
-                    rows.push(success_row(
-                        clip,
-                        reference,
-                        &truth,
-                        run,
-                        duration_seconds,
-                        sample_rate,
-                        wall_seconds,
-                        replay,
-                    )?);
+                    quality_entries.push(success_quality_entry(&execution, &replay));
+                    rows.push(success_row(&execution, replay)?);
                 }
                 Err(error) => {
-                    quality_entries.push(failure_quality_entry(
-                        clip,
-                        reference,
-                        &truth,
-                        run,
-                        args.profile,
-                        duration_seconds,
-                        &quality_audio_rel,
-                        &format!("{error:#}"),
-                    ));
-                    rows.push(failure_row(
-                        clip,
-                        reference,
-                        run,
-                        duration_seconds,
-                        sample_rate,
-                        wall_seconds,
-                    )?);
+                    quality_entries.push(failure_quality_entry(&execution, &format!("{error:#}")));
+                    rows.push(failure_row(&execution)?);
                 }
             }
             eprintln!(
@@ -1227,43 +1205,58 @@ fn publish_quality_audio(quality_audio_dir: &Path, clip: &Clip) -> Result<String
             );
         }
     } else {
-        symlink(&clip.path, &published)
+        let source_root = clip
+            .path
+            .parent()
+            .ok_or_else(|| anyhow!("quality audio source has no parent"))?;
+        safe_symlink_or_copy_bounded(&clip.path, source_root, &published, quality_audio_dir)
             .with_context(|| format!("publish private quality audio {}", published.display()))?;
     }
     Ok(format!("audio/{file_name}"))
 }
 
-fn success_quality_entry(
-    clip: &Clip,
-    _reference: &Reference,
-    truth: &str,
+struct ReplayExecutionContext<'a> {
+    clip: &'a Clip,
+    reference: &'a Reference,
+    truth: &'a str,
     run: usize,
     profile: ReplayProfile,
     duration_seconds: f64,
-    audio_rel_path: &str,
+    sample_rate: u32,
+    wall_seconds: f64,
+    audio_rel_path: &'a str,
+}
+
+fn success_quality_entry(
+    execution: &ReplayExecutionContext<'_>,
     replay: &codescribe::controller::production_replay::ProductionOverlayReplay,
 ) -> ReportEntry {
-    let raw_wer = word_error_rate(truth, &replay.live_text) as f32;
-    let raw_cer = character_error_rate(truth, &replay.live_text) as f32;
-    let post_wer = word_error_rate(truth, &replay.delivered_text) as f32;
-    let post_cer = character_error_rate(truth, &replay.delivered_text) as f32;
+    let raw_wer = word_error_rate(execution.truth, &replay.live_text) as f32;
+    let raw_cer = character_error_rate(execution.truth, &replay.live_text) as f32;
+    let post_wer = word_error_rate(execution.truth, &replay.delivered_text) as f32;
+    let post_cer = character_error_rate(execution.truth, &replay.delivered_text) as f32;
     let raw_state = if replay.live_text.trim().is_empty() {
         ReportTranscriptState::EmptyTranscript
     } else {
         ReportTranscriptState::TextCommitted
     };
     ReportEntry {
-        id: format!("{}-run{run}-{}", opaque_id(&clip.sha256), profile.token()),
-        audio_path: opaque_id(&clip.sha256),
-        audio_rel_path: audio_rel_path.to_string(),
+        id: format!(
+            "{}-run{}-{}",
+            opaque_id(&execution.clip.sha256),
+            execution.run,
+            execution.profile.token()
+        ),
+        audio_path: opaque_id(&execution.clip.sha256),
+        audio_rel_path: execution.audio_rel_path.to_string(),
         reference_path: None,
-        duration_secs: duration_seconds as f32,
+        duration_secs: execution.duration_seconds as f32,
         transcripts: ReportTranscripts {
             raw: Some(replay.live_text.clone()),
             post: Some(replay.delivered_text.clone()),
             ai_formatted: None,
             cloud: None,
-            reference: Some(truth.to_string()),
+            reference: Some(execution.truth.to_string()),
         },
         raw_semantics: Some(ReportTranscriptSemantics {
             state: raw_state,
@@ -1281,24 +1274,20 @@ fn success_quality_entry(
     }
 }
 
-fn failure_quality_entry(
-    clip: &Clip,
-    _reference: &Reference,
-    truth: &str,
-    run: usize,
-    profile: ReplayProfile,
-    duration_seconds: f64,
-    audio_rel_path: &str,
-    error: &str,
-) -> ReportEntry {
+fn failure_quality_entry(execution: &ReplayExecutionContext<'_>, error: &str) -> ReportEntry {
     ReportEntry {
-        id: format!("{}-run{run}-{}", opaque_id(&clip.sha256), profile.token()),
-        audio_path: opaque_id(&clip.sha256),
-        audio_rel_path: audio_rel_path.to_string(),
+        id: format!(
+            "{}-run{}-{}",
+            opaque_id(&execution.clip.sha256),
+            execution.run,
+            execution.profile.token()
+        ),
+        audio_path: opaque_id(&execution.clip.sha256),
+        audio_rel_path: execution.audio_rel_path.to_string(),
         reference_path: None,
-        duration_secs: duration_seconds as f32,
+        duration_secs: execution.duration_seconds as f32,
         transcripts: ReportTranscripts {
-            reference: Some(truth.to_string()),
+            reference: Some(execution.truth.to_string()),
             ..ReportTranscripts::default()
         },
         raw_semantics: None,
@@ -1449,16 +1438,10 @@ fn validate_worker_environment(profile: ReplayProfile, apple_bridge: &Path) -> R
 }
 
 fn success_row(
-    clip: &Clip,
-    reference: &Reference,
-    truth: &str,
-    run: usize,
-    duration_seconds: f64,
-    sample_rate: u32,
-    wall_seconds: f64,
+    execution: &ReplayExecutionContext<'_>,
     replay: codescribe::controller::production_replay::ProductionOverlayReplay,
 ) -> Result<ExecutionRow> {
-    let reference_tokens = normalized_words(truth);
+    let reference_tokens = normalized_words(execution.truth);
     let delivered_tokens = normalized_words(&replay.delivered_text);
     let head_present = reference_tokens
         .iter()
@@ -1493,19 +1476,20 @@ fn success_row(
             )
         })
         .count();
-    let audio_hash_unchanged = sha256_file(&clip.path)? == clip.sha256;
-    let reference_hash_unchanged = sha256_file(&reference.path)? == reference.sha256;
+    let audio_hash_unchanged = sha256_file(&execution.clip.path)? == execution.clip.sha256;
+    let reference_hash_unchanged =
+        sha256_file(&execution.reference.path)? == execution.reference.sha256;
     Ok(ExecutionRow {
-        opaque_id: opaque_id(&clip.sha256),
-        run,
-        audio_sha256: clip.sha256.clone(),
-        reference_sha256: reference.sha256.clone(),
-        reference_kind: reference.kind,
-        duration_seconds,
-        sample_rate_hz: sample_rate,
+        opaque_id: opaque_id(&execution.clip.sha256),
+        run: execution.run,
+        audio_sha256: execution.clip.sha256.clone(),
+        reference_sha256: execution.reference.sha256.clone(),
+        reference_kind: execution.reference.kind,
+        duration_seconds: execution.duration_seconds,
+        sample_rate_hz: execution.sample_rate,
         status: "ok".to_string(),
         error_class: None,
-        wall_seconds,
+        wall_seconds: execution.wall_seconds,
         events: replay.events.len(),
         previews,
         sealed_finals,
@@ -1523,10 +1507,10 @@ fn success_row(
         token_ratio,
         head_present,
         tail_present,
-        wer: word_error_rate(truth, &replay.delivered_text),
-        cer: character_error_rate(truth, &replay.delivered_text),
-        character_parity: normalized_character_parity(truth, &replay.delivered_text),
-        teacher_similarity: teacher_similarity(truth, &replay.delivered_text),
+        wer: word_error_rate(execution.truth, &replay.delivered_text),
+        cer: character_error_rate(execution.truth, &replay.delivered_text),
+        character_parity: normalized_character_parity(execution.truth, &replay.delivered_text),
+        teacher_similarity: teacher_similarity(execution.truth, &replay.delivered_text),
         final_pass_attempted: replay.final_pass_attempted,
         final_pass_skipped: replay.final_pass_skipped,
         lexicon_rewrites: replay.postprocess_stats.lexicon_rewrites,
@@ -1536,25 +1520,18 @@ fn success_row(
     })
 }
 
-fn failure_row(
-    clip: &Clip,
-    reference: &Reference,
-    run: usize,
-    duration_seconds: f64,
-    sample_rate: u32,
-    wall_seconds: f64,
-) -> Result<ExecutionRow> {
+fn failure_row(execution: &ReplayExecutionContext<'_>) -> Result<ExecutionRow> {
     Ok(ExecutionRow {
-        opaque_id: opaque_id(&clip.sha256),
-        run,
-        audio_sha256: clip.sha256.clone(),
-        reference_sha256: reference.sha256.clone(),
-        reference_kind: reference.kind,
-        duration_seconds,
-        sample_rate_hz: sample_rate,
+        opaque_id: opaque_id(&execution.clip.sha256),
+        run: execution.run,
+        audio_sha256: execution.clip.sha256.clone(),
+        reference_sha256: execution.reference.sha256.clone(),
+        reference_kind: execution.reference.kind,
+        duration_seconds: execution.duration_seconds,
+        sample_rate_hz: execution.sample_rate,
         status: "error".to_string(),
         error_class: Some("production_replay_failed".to_string()),
-        wall_seconds,
+        wall_seconds: execution.wall_seconds,
         events: 0,
         previews: 0,
         sealed_finals: 0,
@@ -1580,8 +1557,9 @@ fn failure_row(
         final_pass_skipped: false,
         lexicon_rewrites: 0,
         gate_drops: 0,
-        audio_hash_unchanged: sha256_file(&clip.path)? == clip.sha256,
-        reference_hash_unchanged: sha256_file(&reference.path)? == reference.sha256,
+        audio_hash_unchanged: sha256_file(&execution.clip.path)? == execution.clip.sha256,
+        reference_hash_unchanged: sha256_file(&execution.reference.path)?
+            == execution.reference.sha256,
     })
 }
 
@@ -1660,7 +1638,7 @@ fn opaque_id(sha256: &str) -> String {
 }
 
 fn sha256_file(path: &Path) -> Result<String> {
-    let mut file = File::open(path).with_context(|| format!("open input {}", path.display()))?;
+    let mut file = safe_open(path).with_context(|| format!("open input {}", path.display()))?;
     let mut hasher = Sha256::new();
     let mut buffer = [0_u8; 64 * 1024];
     loop {

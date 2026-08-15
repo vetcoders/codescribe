@@ -1479,9 +1479,11 @@ impl Config {
             })
             .collect::<Vec<_>>()
             .join("\n");
-        let output = (!output.is_empty())
-            .then(|| format!("{output}\n"))
-            .unwrap_or_default();
+        let output = if output.is_empty() {
+            String::new()
+        } else {
+            format!("{output}\n")
+        };
         safe_write_bounded(&path, &root, &output)
     }
 
