@@ -14,7 +14,7 @@ use codescribe_core::pipeline::streaming::BufferedEmitter;
 use tokio::sync::Mutex;
 use tracing::{debug, info};
 
-use super::transcript_bus::{CommittedTranscript, TranscriptBus};
+use super::transcript_bus::{TranscriptBus, TranscriptDraft, TranscriptDraftStatus};
 
 /// Commands sent through the ordered channel to the emitter worker.
 enum EmitterCmd {
@@ -34,7 +34,7 @@ pub enum DeltaRenderMode {
     ActivePreviewOnly,
 }
 
-/// One committed utterance. `text` is the corrected string every later
+/// One mutable engine-finalized utterance. `text` is the working string every later
 /// `ReplaceRange` / `InsertAnnotation` char offset is computed against;
 /// `raw_text` keeps the uncorrected engine output for the quality loop.
 #[derive(Debug, Clone, PartialEq)]
@@ -50,8 +50,8 @@ struct TranscriptUtteranceRecord {
 impl TranscriptUtteranceRecord {
     /// Narrow the reducer's internal record to the clean public bus contract.
     /// `raw_text` is deliberately excluded at this boundary.
-    fn clean_transcript(&self) -> CommittedTranscript {
-        CommittedTranscript {
+    fn clean_draft(&self) -> TranscriptDraft {
+        TranscriptDraft {
             utterance_id: self.utterance_id,
             text: self.text.clone(),
             start_seconds: self.start_ts,
@@ -588,7 +588,7 @@ impl EventSink for PresentationEmitter {
                     let revised = state
                         .apply_correction(previous_text, text)
                         .and_then(|index| state.committed.get(index))
-                        .map(TranscriptUtteranceRecord::clean_transcript);
+                        .map(TranscriptUtteranceRecord::clean_draft);
                     let rendered = match self.delta_render_mode {
                         DeltaRenderMode::SessionRendered => state.rendered_text(),
                         DeltaRenderMode::ActivePreviewOnly => state.active_preview.clone(),
@@ -596,7 +596,7 @@ impl EventSink for PresentationEmitter {
                     (rendered, revised)
                 };
                 if let (Some(bus), Some(revised)) = (&self.transcript_bus, revised) {
-                    bus.publish_utterance("utterance_revised", revised);
+                    bus.publish_draft(TranscriptDraftStatus::Revised, revised);
                 }
                 self.send_cmd(EmitterCmd::SetTargetText(rendered));
             }
@@ -612,15 +612,15 @@ impl EventSink for PresentationEmitter {
                         .committed
                         .iter()
                         .rfind(|record| record.utterance_id == *utterance_id)
-                        .map(TranscriptUtteranceRecord::clean_transcript);
+                        .map(TranscriptUtteranceRecord::clean_draft);
                     (callback_payload, committed, existed)
                 };
                 if let (Some(bus), Some(committed)) = (&self.transcript_bus, committed) {
-                    bus.publish_utterance(
+                    bus.publish_draft(
                         if revised {
-                            "utterance_revised"
+                            TranscriptDraftStatus::Revised
                         } else {
-                            "utterance_committed"
+                            TranscriptDraftStatus::Created
                         },
                         committed,
                     );
@@ -709,15 +709,6 @@ impl EventSink for PresentationEmitter {
                     state.rendered_text()
                 };
                 self.send_cmd(EmitterCmd::SetTargetText(rendered));
-                if let Some(bus) = &self.transcript_bus {
-                    bus.publish_final(
-                        self.session_state
-                            .lock()
-                            .unwrap_or_else(|error| error.into_inner())
-                            .streaming_floor(),
-                        None,
-                    );
-                }
                 // Stats is the last event from transcription_session.
                 // Signal BufferedEmitter to finish through the ordered channel,
                 // ensuring all pending pushes are processed first.
@@ -747,20 +738,20 @@ impl EventSink for PresentationEmitter {
                             .committed
                             .iter()
                             .rfind(|record| record.utterance_id == utterance_id)
-                            .map(TranscriptUtteranceRecord::clean_transcript);
+                            .map(TranscriptUtteranceRecord::clean_draft);
                         (rendered, revised)
                     } else {
                         (None, None)
                     }
                 };
                 if let (Some(bus), Some(revised)) = (&self.transcript_bus, revised) {
-                    bus.publish_utterance("utterance_revised", revised);
+                    bus.publish_draft(TranscriptDraftStatus::Revised, revised);
                 }
                 if let Some(rendered) = rendered {
                     self.send_cmd(EmitterCmd::SetTargetText(rendered));
                 }
             }
-            EngineEvent::SessionFinalised { session_id, .. } => {
+            EngineEvent::SessionFinalised { .. } => {
                 // The Apple progressive lane closes with SessionFinalised and
                 // does not emit Stats. Persist only immutable canvas here: a
                 // cumulative final can re-state committed text as the last
@@ -771,9 +762,9 @@ impl EventSink for PresentationEmitter {
                     state.clear_live_preview();
                     state.streaming_floor()
                 };
-                if let Some(bus) = &self.transcript_bus {
-                    bus.publish_final(rendered.clone(), Some(session_id.clone()));
-                }
+                // Engine close is not product truth. The controller can still
+                // run Smart/Always final pass, adjudication, postprocess, and
+                // formatting. Only that controller result may seal the bus.
                 self.send_cmd(EmitterCmd::SetTargetText(rendered));
                 self.send_cmd(EmitterCmd::Finish);
             }
@@ -1458,10 +1449,10 @@ mod tests {
     }
 
     /// Dictation and Agent differ only in metadata/consumer choice. The exact
-    /// same engine fixture must produce byte-equivalent committed truth and an
-    /// Agent utterance event before the stop-time session final.
+    /// same engine fixture must produce byte-equivalent draft events. The
+    /// controller-owned product seal is simulated explicitly after engine close.
     #[tokio::test]
-    async fn dictation_and_agent_publish_identical_committed_events_before_consumers() {
+    async fn dictation_and_agent_publish_identical_drafts_before_controller_seal() {
         use crate::presentation::transcript_bus::{
             CleanTranscriptEvent, TranscriptBus, TranscriptMode, TranscriptSession,
         };
@@ -1484,8 +1475,12 @@ mod tests {
                 .unwrap(),
             );
             let transcript = Arc::new(Mutex::new(String::new()));
-            let emitter =
-                PresentationEmitter::new_with_transcript_bus(transcript, None, None, Some(bus));
+            let emitter = PresentationEmitter::new_with_transcript_bus(
+                transcript,
+                None,
+                None,
+                Some(Arc::clone(&bus)),
+            );
             emitter.on_event(&EngineEvent::Preview {
                 rev: 1,
                 text: "shared clean truth".to_string(),
@@ -1511,6 +1506,10 @@ mod tests {
                 session_id: format!("pipeline-{session_id}"),
                 layer_summary: LayerSummary::default(),
             });
+            bus.publish_sealed(
+                "shared clean truth".to_string(),
+                Some(format!("pipeline-{session_id}")),
+            );
 
             std::fs::read_to_string(path)
                 .unwrap()
@@ -1543,8 +1542,8 @@ mod tests {
                 .collect::<Vec<_>>()
         };
         assert_eq!(comparable(&dictation), comparable(&agent));
-        assert_eq!(agent[1].status, "utterance_committed");
-        assert_eq!(agent[2].status, "session_finalized");
+        assert_eq!(agent[1].status, "utterance_draft");
+        assert_eq!(agent[2].status, "transcript_sealed");
         assert!(
             !agent
                 .iter()

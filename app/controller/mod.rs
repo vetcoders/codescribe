@@ -361,6 +361,10 @@ pub struct RecordingController {
 
     /// Current session ID for tracking
     session_id: Arc<RwLock<Option<String>>>,
+    /// The one observer bus for the active recording. Presentation may publish
+    /// mutable drafts through it, but only the stop controller publishes the
+    /// immutable product seal after every automatic stage completes.
+    active_transcript_bus: Arc<RwLock<Option<Arc<TranscriptBus>>>>,
 
     /// Task handle for delayed hold-start (800ms default)
     hold_start_task: Arc<Mutex<Option<JoinHandle<()>>>>,
@@ -574,6 +578,7 @@ impl RecordingController {
             force_raw_mode: Arc::new(RwLock::new(false)),
             force_ai_mode: Arc::new(RwLock::new(false)),
             session_id: Arc::new(RwLock::new(None)),
+            active_transcript_bus: Arc::new(RwLock::new(None)),
             hold_start_task: Arc::new(Mutex::new(None)),
             hold_start_generation: Arc::new(AtomicU64::new(0)),
             start_transition_in_flight: Arc::new(AtomicBool::new(false)),
@@ -635,6 +640,17 @@ impl RecordingController {
     async fn show_processing_badge_if_enabled(&self) {
         let hold_indicator = self.config.read().await.hold_indicator;
         publish_recording_indicator(BadgeMode::Processing, hold_indicator);
+    }
+
+    /// Cross the product truth boundary exactly once. Engine finals and engine
+    /// session close are still mutable draft stages: Smart/Always final pass,
+    /// adjudication, dictionary cleanup, and formatting all happen later. The
+    /// text handed here is the same text used for history and delivery.
+    async fn seal_active_transcript(&self, text: String) {
+        let bus = self.active_transcript_bus.read().await.clone();
+        if let Some(bus) = bus {
+            bus.publish_sealed(text, None);
+        }
     }
 
     /// Publish a cursor-badge mode, honoring the user's badge setting.
@@ -1131,6 +1147,7 @@ impl RecordingController {
         *self.force_raw_mode.write().await = false;
         *self.force_ai_mode.write().await = false;
         *self.session_id.write().await = None;
+        *self.active_transcript_bus.write().await = None;
         *self.assistive_context.write().await = None;
         *self.pre_overlay_frontmost_app.write().await = None;
         self.start_transition_in_flight
@@ -2105,6 +2122,7 @@ impl RecordingController {
         let hold_start_generation = Arc::clone(&self.hold_start_generation);
         let start_transition_in_flight = Arc::clone(&self.start_transition_in_flight);
         let session_telemetry = Arc::clone(&self.session_telemetry);
+        let active_transcript_bus = Arc::clone(&self.active_transcript_bus);
 
         let task = tokio::spawn(async move {
             // Wait for the configured delay
@@ -2284,6 +2302,7 @@ impl RecordingController {
                 }
             }
 
+            *active_transcript_bus.write().await = transcript_bus.clone();
             if let Some(bus) = &transcript_bus {
                 bus.publish_started();
             }
@@ -2496,6 +2515,7 @@ impl RecordingController {
                 return Err(e);
             }
         }
+        *self.active_transcript_bus.write().await = transcript_bus.clone();
         if let Some(bus) = &transcript_bus {
             bus.publish_started();
         }
@@ -3661,6 +3681,7 @@ impl RecordingController {
                 // No-speech stops still paid the final pass — keep the stage
                 // receipt so latency truth covers every real stop.
                 info!("{}", format_final_pass_stages_line(final_pass_stages));
+                self.seal_active_transcript(String::new()).await;
                 return Ok(ProcessRecordingOutcome::no_speech(reason));
             }
         };
@@ -4193,6 +4214,13 @@ impl RecordingController {
         }
 
         let final_formatted_text = formatted_text.clone();
+
+        // This is the first point at which the text is product-final: live
+        // layers, optional file/cloud adjudication, dictionary cleanup, and
+        // formatting are all complete. Seal the same bytes that history and
+        // delivery consume; the bus rejects every later machine write.
+        self.seal_active_transcript(final_formatted_text.clone())
+            .await;
 
         // Surface the authoritative final transcript to external dictation surfaces
         // (the SwiftUI overlay). This is the same `final_formatted_text` that is

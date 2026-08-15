@@ -13,6 +13,46 @@ async fn test_initial_state() {
     assert_eq!(controller.current_state().await, State::Idle);
 }
 
+/// Product truth crosses one controller-owned boundary. The first seal wins;
+/// a late automatic rewrite cannot append another truth event.
+#[tokio::test]
+async fn test_controller_product_seal_is_first_writer_wins() {
+    use crate::presentation::transcript_bus::CleanTranscriptEvent;
+
+    let temp = tempfile::tempdir().unwrap();
+    let path = temp.path().join("controller-seal.jsonl");
+    let bus = Arc::new(
+        TranscriptBus::open_at(
+            TranscriptSession {
+                session_id: "controller-seal".to_string(),
+                mode: TranscriptMode::Dictation,
+            },
+            path.clone(),
+            Some(48_000),
+        )
+        .unwrap(),
+    );
+    let controller = RecordingController::new();
+    *controller.active_transcript_bus.write().await = Some(bus);
+
+    controller
+        .seal_active_transcript("sealed committed truth".to_string())
+        .await;
+    controller
+        .seal_active_transcript("late automatic rewrite".to_string())
+        .await;
+
+    let events = std::fs::read_to_string(path)
+        .unwrap()
+        .lines()
+        .map(|line| serde_json::from_str::<CleanTranscriptEvent>(line).unwrap())
+        .collect::<Vec<_>>();
+    assert_eq!(events.len(), 2);
+    assert_eq!(events[0].status, "session_started");
+    assert_eq!(events[1].status, "transcript_sealed");
+    assert_eq!(events[1].text, "sealed committed truth");
+}
+
 /// The paste target reports the app latched before the overlay took focus, and
 /// `None` when nothing was latched — the delivery path must never guess a target.
 #[tokio::test]
