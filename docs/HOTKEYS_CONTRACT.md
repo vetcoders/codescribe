@@ -47,6 +47,18 @@ new thread is only ever minted by an explicit "+ New thread" (published as a
 utterance). If the Agent UI never published a selection (window never
 opened), the lane continues its bound conversation as before.
 
+**Delivery destination (operator contract 2026-08-15).** The hotkey picks the
+*intent*; it does not paste into the frontmost app. `resolve_delivery_route`
+(`docs/DELIVERY_ROUTE.md`) is the only destination function:
+
+- Assistive hold → Agent composer (first-class message, never Cmd+V)
+- Hold Fn / Globe → Orient canvas, plus auto-paste **only** into the app
+  latched at key-down — never into Codescribe itself
+- Overlay **To Agent** → Agent composer, even after the session reset
+
+Focus at stop time is not an input. A tagged `<codescribe mode="raw">` paste
+into the Agent composer is a doctrine violation.
+
 ```mermaid
 flowchart TB
     subgraph Input["🎹 Input Layer"]
