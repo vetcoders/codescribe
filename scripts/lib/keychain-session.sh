@@ -321,6 +321,11 @@ _ks_arm_traps() {
       body="${body#\'}"
       body="${body%\'}"
     fi
+    # shellcheck disable=SC2064
+    # Expanding now is the point, not an oversight: $body is the handler that
+    # was already registered, read back a few lines above, and it has to be
+    # baked into the new handler at arm time. Deferring it would splice the
+    # variable's value at signal time, when it no longer holds anything.
     case "$sig" in
       EXIT) trap "_ks_trap_cleanup${body:+; $body}" EXIT ;;
       INT)  trap "_ks_trap_cleanup; ${body:-exit 130}" INT ;;
