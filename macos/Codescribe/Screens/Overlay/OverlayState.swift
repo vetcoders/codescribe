@@ -1594,20 +1594,25 @@ final class OverlayState: ObservableObject {
   }
 
   /// The Rust controller's authoritative post-stop transcript (LocalFinalPass) —
-  /// the SAME text that is delivered/pasted and shown by tray "Copy". Stored so
+  /// the SAME text that is delivered/pasted and shown by tray "Copy". This is
+  /// the product seal: the first non-empty value wins byte-for-byte and no later
+  /// machine event may replace it. Stored so
   /// the single `finalizeTranscript()` uses it instead of the raw streaming
   /// assembly. Emitted inside the awaited stop pipeline, so it normally arrives
   /// before the stop/finalise events; if it arrives AFTER (mode already
   /// `.formatted`), replace the FINAL immediately. Live PREVIEW is untouched —
   /// it stays raw-streaming on purpose ("live preview · raw").
   func applyFinalTranscript(_ text: String) {
-    let clean = text.trimmingCharacters(in: .whitespacesAndNewlines)
-    // Dedupe: this event fires once per stop, but a redundant re-emit must not
-    // reassign `@Published` state (each write re-invalidates the TextEditor).
-    guard !clean.isEmpty, clean != authoritativeFinalText else { return }
-    authoritativeFinalText = clean
+    guard !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return }
+    if let sealed = authoritativeFinalText {
+      if text != sealed {
+        NSLog("codescribe: rejected automatic FinalTranscript rewrite after product seal")
+      }
+      return
+    }
+    authoritativeFinalText = text
     formatFailureStatus = nil
-    let rendered = insertingContextMarkers(into: clean)
+    let rendered = insertingContextMarkers(into: text)
     if mode == .formatted, formattedText != rendered {
       formattedText = rendered
       armAutoFormatRevertSlot(shown: rendered)
@@ -1618,14 +1623,14 @@ final class OverlayState: ObservableObject {
       mode = .formatted
       restartAutoHideCountdown()
     }
-    if deliveredText.isEmpty, !clean.isEmpty {
+    if deliveredText.isEmpty {
       deliveredText = rendered
     }
     if agentSessionArmed {
       agentFinalTranscriptAppeared = true
     }
-    if sttRawText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty, !clean.isEmpty {
-      sttRawText = clean
+    if sttRawText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+      sttRawText = text
     }
   }
 
@@ -1702,8 +1707,7 @@ final class OverlayState: ObservableObject {
 
   private var usableAuthoritativeFinalText: String? {
     guard let text = authoritativeFinalText else { return nil }
-    let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
-    return trimmed.isEmpty ? nil : trimmed
+    return text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? nil : text
   }
 
   private func resetTranscript() {

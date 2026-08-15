@@ -915,6 +915,22 @@ final class OverlayStateTests: XCTestCase {
     XCTAssertEqual(state.formattedText, "raw take")
   }
 
+  func testProductSealRejectsMachineRewriteButAllowsHumanEdit() {
+    let clock = OverlayStateTestClock()
+    let state = OverlayState(nowProvider: { clock.now })
+    state.handleRecordingPreparing()
+    state.handleRecordingStarted()
+    state.applyFinal(utteranceId: 1, "working draft")
+    state.applyFinalTranscript("  sealed committed truth  ")
+    state.finishControllerRecording()
+
+    state.applyFinalTranscript("late automatic rewrite")
+    XCTAssertEqual(state.formattedText, "  sealed committed truth  ")
+
+    state.userEditedTranscript("human-authored version")
+    XCTAssertEqual(state.formattedText, "human-authored version")
+  }
+
   func testAutoFormatOffNeverArmsRevertSlot() {
     let clock = OverlayStateTestClock()
     let engine = OverlayStateTestEngine()

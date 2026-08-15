@@ -20,7 +20,8 @@
 //! - `-f/--format` = the AI-formatted lane (same `ai_formatting` call and
 //!   lane config the GUI uses; requires a configured key).
 //! - `transcribe live` = follow the app-owned clean transcript bus and flush
-//!   newly committed utterances to stdout one line at a time. It never opens a
+//!   newly created utterance drafts to stdout one line at a time. Revisions and
+//!   the final product seal remain explicit bus events. It never opens a
 //!   second microphone or reconstructs text from UI previews.
 //!
 //! Provenance goes to stderr, GUI-truth style, so stdout stays pipeable.
@@ -64,7 +65,7 @@ enum Command {
 
 #[derive(Subcommand)]
 enum TranscribeMode {
-    /// Follow the app's committed transcript bus; Ctrl-C closes the reader
+    /// Follow the app's transcript draft/seal bus; Ctrl-C closes the reader
     Live,
 }
 
@@ -110,7 +111,7 @@ fn transcribe_live(language: Option<String>) -> anyhow::Result<()> {
         .build()?;
 
     runtime.block_on(async move {
-        eprintln!("codescribe live: app transcript bus -> committed stdout");
+        eprintln!("codescribe live: app transcript bus -> live draft stdout");
         eprintln!("bus={} start=end stop=Ctrl-C", path.display());
         eprintln!(
             "language_hint={} owner=Codescribe.app",
@@ -170,17 +171,23 @@ fn transcribe_live(language: Option<String>) -> anyhow::Result<()> {
                             .map(|id| id.to_string())
                             .unwrap_or_else(|| "unknown".to_string())
                     );
+                } else if event.status == "transcript_sealed" {
+                    eprintln!(
+                        "codescribe live: transcript sealed session={} chars={}",
+                        event.session_id,
+                        event.text.chars().count()
+                    );
                 }
             }
         }
     })
 }
 
-/// Plain stdout is intentionally append-only. Revisions remain machine-readable
-/// in the canonical NDJSON bus and are announced on stderr without transcript
-/// content; consumers that need patch semantics should follow the bus directly.
+/// Plain stdout is intentionally append-only and therefore shows each new draft
+/// slot once. Revisions and the final seal remain machine-readable in the
+/// canonical NDJSON bus and are announced on stderr without transcript content.
 fn live_event_text<'a>(status: &str, text: &'a str) -> Option<&'a str> {
-    if status != "utterance_committed" {
+    if status != "utterance_draft" {
         return None;
     }
     let text = text.trim();
@@ -297,13 +304,13 @@ mod tests {
     }
 
     #[test]
-    fn live_plain_text_emits_only_nonempty_commits() {
+    fn live_plain_text_emits_only_nonempty_new_drafts() {
         assert_eq!(
-            live_event_text("utterance_committed", "  instrukcja  "),
+            live_event_text("utterance_draft", "  instrukcja  "),
             Some("instrukcja")
         );
-        assert_eq!(live_event_text("utterance_committed", "  "), None);
+        assert_eq!(live_event_text("utterance_draft", "  "), None);
         assert_eq!(live_event_text("utterance_revised", "poprawka"), None);
-        assert_eq!(live_event_text("session_finalized", "całość"), None);
+        assert_eq!(live_event_text("transcript_sealed", "całość"), None);
     }
 }

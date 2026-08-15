@@ -1,7 +1,8 @@
 //! Durable clean transcript events for operator and control-plane consumers.
 //!
-//! The bus is an observer of the committed [`PresentationEmitter`] reducer. It
-//! never opens audio, re-transcribes a file, or reconstructs text from UI
+//! The bus observes the mutable [`PresentationEmitter`] draft and the one
+//! authoritative product seal chosen by [`crate::controller::RecordingController`].
+//! It never opens audio, re-transcribes a file, or reconstructs text from UI
 //! deltas. One append-only JSON object is flushed per state transition.
 
 use std::fs::{File, OpenOptions};
@@ -37,14 +38,31 @@ pub struct TranscriptSession {
     pub mode: TranscriptMode,
 }
 
-/// One utterance after it has entered the authoritative committed reducer.
+/// One mutable utterance slot in the live transcript draft.
 #[derive(Debug, Clone, PartialEq)]
-pub struct CommittedTranscript {
+pub struct TranscriptDraft {
     pub utterance_id: u64,
     pub text: String,
     pub start_seconds: f32,
     pub end_seconds: f32,
     pub segments: Vec<TranscriptSegment>,
+}
+
+/// Typed draft transition. Product truth is never represented by this enum;
+/// only [`TranscriptBus::publish_sealed`] can cross the immutable boundary.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TranscriptDraftStatus {
+    Created,
+    Revised,
+}
+
+impl TranscriptDraftStatus {
+    fn as_str(self) -> &'static str {
+        match self {
+            Self::Created => "utterance_draft",
+            Self::Revised => "utterance_revised",
+        }
+    }
 }
 
 /// Append-only public event contract. `text` is always clean reducer truth;
@@ -70,9 +88,9 @@ pub struct CleanTranscriptEvent {
     pub pipeline_session_id: Option<String>,
 }
 
-/// Synchronous low-frequency writer. Commits occur on the STT worker, not the
-/// CoreAudio callback, and each line is flushed so a live tailer sees it before
-/// the next utterance or process exit.
+/// Synchronous low-frequency writer. Draft boundaries occur on the STT worker,
+/// not the CoreAudio callback, and each line is flushed so a live tailer sees
+/// them before the next utterance or process exit.
 pub struct TranscriptBus {
     session: TranscriptSession,
     path: PathBuf,
@@ -87,7 +105,7 @@ struct TranscriptBusWriter {
     file: File,
     sequence: u64,
     started: bool,
-    finalized: bool,
+    sealed: bool,
 }
 
 impl TranscriptBus {
@@ -136,7 +154,7 @@ impl TranscriptBus {
                 file,
                 sequence: 0,
                 started: false,
-                finalized: false,
+                sealed: false,
             }),
             sample_rate_override,
         };
@@ -160,8 +178,9 @@ impl TranscriptBus {
         }
     }
 
-    /// Publish a new committed slot or a later bounded revision of that slot.
-    pub fn publish_utterance(&self, status: &'static str, utterance: CommittedTranscript) {
+    /// Publish a new mutable utterance slot or a bounded revision of that slot.
+    pub fn publish_draft(&self, status: TranscriptDraftStatus, utterance: TranscriptDraft) {
+        let status = status.as_str();
         let sample_rate = self.sample_rate();
         let event = CleanTranscriptEvent {
             schema: "codescribe.transcript.v1".to_string(),
@@ -185,8 +204,8 @@ impl TranscriptBus {
             .writer
             .lock()
             .unwrap_or_else(|error| error.into_inner());
-        if writer.finalized {
-            tracing::warn!(session_id = %self.session.session_id, %status, "clean transcript event ignored after session finalization");
+        if writer.sealed {
+            tracing::warn!(session_id = %self.session.session_id, %status, "transcript draft ignored after product seal");
             return;
         }
         if let Err(error) = self
@@ -197,13 +216,15 @@ impl TranscriptBus {
         }
     }
 
-    /// Publish the immutable session canvas at the engine close boundary.
-    pub fn publish_final(&self, text: String, pipeline_session_id: Option<String>) {
+    /// Publish the one immutable product truth after every configured automatic
+    /// stage (engine layers, final pass, adjudication, postprocess, formatting)
+    /// has completed. The first call wins byte-for-byte; later calls are ignored.
+    pub fn publish_sealed(&self, text: String, pipeline_session_id: Option<String>) {
         let mut writer = self
             .writer
             .lock()
             .unwrap_or_else(|error| error.into_inner());
-        if writer.finalized {
+        if writer.sealed {
             return;
         }
         let event = CleanTranscriptEvent {
@@ -213,7 +234,7 @@ impl TranscriptBus {
             mode: self.session.mode,
             utterance_id: None,
             emitted_at: String::new(),
-            status: "session_finalized".to_string(),
+            status: "transcript_sealed".to_string(),
             sample_rate_hz: self.sample_rate(),
             sample_start: None,
             sample_end: None,
@@ -227,7 +248,7 @@ impl TranscriptBus {
             .ensure_started_locked(&mut writer)
             .and_then(|_| self.write_event_locked(&mut writer, event))
         {
-            Ok(()) => writer.finalized = true,
+            Ok(()) => writer.sealed = true,
             Err(error) => self.log_write_error(error),
         }
     }
@@ -343,7 +364,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn bus_flushes_start_commit_and_final_as_private_ndjson() {
+    fn bus_flushes_start_draft_and_seal_as_private_ndjson() {
         let temp = tempfile::tempdir().unwrap();
         let path = temp.path().join("events.jsonl");
         let bus = TranscriptBus::open_at(
@@ -355,9 +376,9 @@ mod tests {
             Some(48_000),
         )
         .unwrap();
-        bus.publish_utterance(
-            "utterance_committed",
-            CommittedTranscript {
+        bus.publish_draft(
+            TranscriptDraftStatus::Created,
+            TranscriptDraft {
                 utterance_id: 7,
                 text: "clean final".to_string(),
                 start_seconds: 0.25,
@@ -365,13 +386,13 @@ mod tests {
                 segments: Vec::new(),
             },
         );
-        bus.publish_final(
+        bus.publish_sealed(
             "clean final".to_string(),
             Some("engine-session".to_string()),
         );
-        bus.publish_utterance(
-            "utterance_revised",
-            CommittedTranscript {
+        bus.publish_draft(
+            TranscriptDraftStatus::Revised,
+            TranscriptDraft {
                 utterance_id: 7,
                 text: "must not escape finalization".to_string(),
                 start_seconds: 0.25,
@@ -379,7 +400,7 @@ mod tests {
                 segments: Vec::new(),
             },
         );
-        bus.publish_final("duplicate final".to_string(), None);
+        bus.publish_sealed("duplicate final".to_string(), None);
 
         let lines: Vec<CleanTranscriptEvent> = std::fs::read_to_string(&path)
             .unwrap()
@@ -388,10 +409,10 @@ mod tests {
             .collect();
         assert_eq!(lines.len(), 3);
         assert_eq!(lines[0].status, "session_started");
-        assert_eq!(lines[1].status, "utterance_committed");
+        assert_eq!(lines[1].status, "utterance_draft");
         assert_eq!(lines[1].sample_start, Some(12_000));
         assert_eq!(lines[1].sample_end, Some(72_000));
-        assert_eq!(lines[2].status, "session_finalized");
+        assert_eq!(lines[2].status, "transcript_sealed");
         assert_eq!(lines[2].text, "clean final");
         assert_eq!(
             lines.iter().map(|event| event.sequence).collect::<Vec<_>>(),
