@@ -1673,31 +1673,47 @@ fn sha256_file(path: &Path) -> Result<String> {
     Ok(format!("{:x}", hasher.finalize()))
 }
 
+fn sha256_plist_semantics(path: &Path) -> Result<String> {
+    let output = ProcessCommand::new("/usr/bin/plutil")
+        .args(["-convert", "xml1", "-o", "-", "--"])
+        .arg(path)
+        .output()
+        .with_context(|| format!("canonicalize preferences plist {}", path.display()))?;
+    if !output.status.success() {
+        bail!(
+            "plutil could not canonicalize preferences plist {} (status={})",
+            path.display(),
+            output.status
+        );
+    }
+    Ok(format!("{:x}", Sha256::digest(&output.stdout)))
+}
+
 fn operator_configuration_fingerprints() -> Result<Vec<FileFingerprint>> {
     let home = std::env::var_os("HOME")
         .map(PathBuf::from)
         .ok_or_else(|| anyhow!("HOME is unavailable for configuration fingerprinting"))?;
-    [
+    let mut fingerprints = [
         (
             "settings_json",
             home.join("Library/Application Support/Codescribe/settings.json"),
         ),
         ("dotenv", home.join(".codescribe/.env")),
-        (
-            "preferences_plist",
-            home.join("Library/Preferences/com.vetcoders.codescribe.plist"),
-        ),
     ]
     .into_iter()
-    .map(|(label, path)| {
-        let exists = path.is_file();
-        Ok(FileFingerprint {
-            label: label.to_string(),
-            exists,
-            sha256: exists.then(|| sha256_file(&path)).transpose()?,
-        })
-    })
-    .collect()
+    .map(|(label, path)| fingerprint_file(label, &path))
+    .collect::<Result<Vec<_>>>()?;
+
+    let preferences = home.join("Library/Preferences/com.vetcoders.codescribe.plist");
+    let exists = preferences.is_file();
+    fingerprints.push(FileFingerprint {
+        label: "preferences_plist_semantic".to_string(),
+        exists,
+        sha256: exists
+            .then(|| sha256_plist_semantics(&preferences))
+            .transpose()?,
+    });
+    Ok(fingerprints)
 }
 
 fn fingerprint_file(label: &str, path: &Path) -> Result<FileFingerprint> {
@@ -1911,6 +1927,43 @@ mod tests {
     fn isolated_data_dir_is_not_removed_with_profile_overrides() {
         assert!(!CONTROLLED_ENV.contains(&"CODESCRIBE_DATA_DIR"));
         assert!(!CONTROLLED_ENV.contains(&"CODESCRIBE_DISABLE_KEYCHAIN"));
+    }
+
+    #[test]
+    fn plist_fingerprint_ignores_storage_encoding() {
+        let temp = tempfile::tempdir().unwrap();
+        let xml_path = temp.path().join("preferences.xml.plist");
+        let binary_path = temp.path().join("preferences.binary.plist");
+        fs::write(
+            &xml_path,
+            br#"<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>agentEnabled</key>
+    <true/>
+    <key>launchCount</key>
+    <integer>7</integer>
+</dict>
+</plist>
+"#,
+        )
+        .unwrap();
+        fs::copy(&xml_path, &binary_path).unwrap();
+        let conversion = ProcessCommand::new("/usr/bin/plutil")
+            .args(["-convert", "binary1", "--"])
+            .arg(&binary_path)
+            .status()
+            .unwrap();
+        assert!(conversion.success());
+        assert_ne!(
+            sha256_file(&xml_path).unwrap(),
+            sha256_file(&binary_path).unwrap()
+        );
+        assert_eq!(
+            sha256_plist_semantics(&xml_path).unwrap(),
+            sha256_plist_semantics(&binary_path).unwrap()
+        );
     }
 
     #[test]
