@@ -1306,6 +1306,19 @@ public protocol CodescribeConfigProtocol: AnyObject, Sendable {
     func onboardingProgress()  -> UInt32
 
     /**
+     * Reset only durable Agent state. Conversations and tool/MCP files are
+     * moved to Trash; provider credentials are deleted from Keychain and are
+     * intentionally not recoverable. This deliberately does not use the
+     * full-app reset fence or its broad root move.
+     */
+    func resetAgentData() throws
+
+    /**
+     * Preview the Agent-only reset without changing disk or Keychain state.
+     */
+    func resetAgentPreview()  -> CsAgentResetPreview
+
+    /**
      * Move all local codescribe data to a recoverable folder in the user's
      * Trash, append an external audit entry, and optionally remove Keychain
      * keys. The two data roots come from the runtime path helpers, so
@@ -1790,6 +1803,30 @@ open func onboardingMode() -> String?  {
 open func onboardingProgress() -> UInt32  {
     return try!  FfiConverterUInt32.lift(try! rustCall() {
     uniffi_codescribe_ffi_fn_method_codescribeconfig_onboarding_progress(
+            self.uniffiCloneHandle(),$0
+    )
+})
+}
+
+    /**
+     * Reset only durable Agent state. Conversations and tool/MCP files are
+     * moved to Trash; provider credentials are deleted from Keychain and are
+     * intentionally not recoverable. This deliberately does not use the
+     * full-app reset fence or its broad root move.
+     */
+open func resetAgentData()throws   {try rustCallWithError(FfiConverterTypeCsError_lift) {
+    uniffi_codescribe_ffi_fn_method_codescribeconfig_reset_agent_data(
+            self.uniffiCloneHandle(),$0
+    )
+}
+}
+
+    /**
+     * Preview the Agent-only reset without changing disk or Keychain state.
+     */
+open func resetAgentPreview() -> CsAgentResetPreview  {
+    return try!  FfiConverterTypeCsAgentResetPreview_lift(try! rustCall() {
+    uniffi_codescribe_ffi_fn_method_codescribeconfig_reset_agent_preview(
             self.uniffiCloneHandle(),$0
     )
 })
@@ -7137,6 +7174,71 @@ public func FfiConverterTypeCsAgentAvailability_lift(_ buf: RustBuffer) throws -
 #endif
 public func FfiConverterTypeCsAgentAvailability_lower(_ value: CsAgentAvailability) -> RustBuffer {
     return FfiConverterTypeCsAgentAvailability.lower(value)
+}
+
+
+/**
+ * Non-secret impact summary for the narrowly-scoped Agent reset.  Unlike the
+ * app-data reset, this never counts or touches recordings, transcripts,
+ * prompts, lexicon data, license state, or dictation preferences.
+ */
+public struct CsAgentResetPreview: Equatable, Hashable {
+    public var threads: UInt64
+    public var files: UInt64
+    public var totalBytes: UInt64
+    public var secretsPresent: Bool
+
+    // Default memberwise initializers are never public by default, so we
+    // declare one manually.
+    public init(threads: UInt64, files: UInt64, totalBytes: UInt64, secretsPresent: Bool) {
+        self.threads = threads
+        self.files = files
+        self.totalBytes = totalBytes
+        self.secretsPresent = secretsPresent
+    }
+
+
+}
+
+#if compiler(>=6)
+extension CsAgentResetPreview: Sendable {}
+#endif
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public struct FfiConverterTypeCsAgentResetPreview: FfiConverterRustBuffer {
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> CsAgentResetPreview {
+        return
+            try CsAgentResetPreview(
+                threads: FfiConverterUInt64.read(from: &buf),
+                files: FfiConverterUInt64.read(from: &buf),
+                totalBytes: FfiConverterUInt64.read(from: &buf),
+                secretsPresent: FfiConverterBool.read(from: &buf)
+        )
+    }
+
+    public static func write(_ value: CsAgentResetPreview, into buf: inout [UInt8]) {
+        FfiConverterUInt64.write(value.threads, into: &buf)
+        FfiConverterUInt64.write(value.files, into: &buf)
+        FfiConverterUInt64.write(value.totalBytes, into: &buf)
+        FfiConverterBool.write(value.secretsPresent, into: &buf)
+    }
+}
+
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeCsAgentResetPreview_lift(_ buf: RustBuffer) throws -> CsAgentResetPreview {
+    return try FfiConverterTypeCsAgentResetPreview.lift(buf)
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeCsAgentResetPreview_lower(_ value: CsAgentResetPreview) -> RustBuffer {
+    return FfiConverterTypeCsAgentResetPreview.lower(value)
 }
 
 
@@ -13830,6 +13932,12 @@ private let initializationResult: InitializationResult = {
         return InitializationResult.apiChecksumMismatch
     }
     if (uniffi_codescribe_ffi_checksum_method_codescribeconfig_onboarding_progress() != 28580) {
+        return InitializationResult.apiChecksumMismatch
+    }
+    if (uniffi_codescribe_ffi_checksum_method_codescribeconfig_reset_agent_data() != 41646) {
+        return InitializationResult.apiChecksumMismatch
+    }
+    if (uniffi_codescribe_ffi_checksum_method_codescribeconfig_reset_agent_preview() != 8135) {
         return InitializationResult.apiChecksumMismatch
     }
     if (uniffi_codescribe_ffi_checksum_method_codescribeconfig_reset_app_data() != 24728) {

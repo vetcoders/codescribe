@@ -1452,6 +1452,39 @@ impl Config {
         Ok(())
     }
 
+    /// Remove a narrow set of persisted `.env` rows while preserving every
+    /// unrelated user-written row, comment and ordering. Used by scoped reset
+    /// flows; callers must name their owned keys explicitly.
+    pub fn remove_env_keys(keys: &[&str]) -> anyhow::Result<()> {
+        use crate::safe_path::{safe_read_to_string_bounded, safe_write_bounded};
+
+        let _data_io = super::storage_reset::begin_app_data_io()?;
+        let _persistence = config_persistence_guard();
+        let path = Self::env_path();
+        if !path.exists() {
+            return Ok(());
+        }
+        let path = path.canonicalize()?;
+        let root = path
+            .parent()
+            .map(|parent| parent.to_path_buf())
+            .unwrap_or_else(Self::config_dir);
+        let contents = safe_read_to_string_bounded(&path, &root)?;
+        let owned: HashSet<&str> = keys.iter().copied().collect();
+        let output = contents
+            .lines()
+            .filter(|line| {
+                let key = line.trim().split_once('=').map(|(key, _)| key.trim());
+                !key.is_some_and(|key| owned.contains(key))
+            })
+            .collect::<Vec<_>>()
+            .join("\n");
+        let output = (!output.is_empty())
+            .then(|| format!("{output}\n"))
+            .unwrap_or_default();
+        safe_write_bounded(&path, &root, &output)
+    }
+
     /// Migrate legacy keys inside .env to the current contract.
     fn migrate_env_legacy_keys() {
         let env_path = Self::env_path();

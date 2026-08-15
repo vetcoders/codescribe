@@ -39,6 +39,7 @@ use crate::{CsError, CsLanguage};
 /// error, because at least one app-data root has already moved and the Rust
 /// process fence is permanently latched.
 const RESET_RELAUNCH_REQUIRED_MARKER: &str = "CODESCRIBE_RESET_RELAUNCH_REQUIRED";
+const AGENT_RESET_RELAUNCH_REQUIRED_MARKER: &str = "CODESCRIBE_AGENT_RESET_RELAUNCH_REQUIRED";
 
 /// Preserve the ordinary error contract before the destructive boundary, but
 /// mark every post-boundary error so the host cannot leave a half-reset,
@@ -47,6 +48,16 @@ fn reset_error(reset: &AppDataResetGuard, message: impl Into<String>) -> CsError
     let message = message.into();
     let msg = if reset.relaunch_required() {
         format!("{RESET_RELAUNCH_REQUIRED_MARKER}: {message}")
+    } else {
+        message
+    };
+    CsError::Config { msg }
+}
+
+fn agent_reset_error(mutation_started: bool, message: impl Into<String>) -> CsError {
+    let message = message.into();
+    let msg = if mutation_started {
+        format!("{AGENT_RESET_RELAUNCH_REQUIRED_MARKER}: {message}")
     } else {
         message
     };
@@ -164,6 +175,17 @@ pub struct CsResetPreview {
     pub transcript_days: u64,
     pub threads: u64,
     pub total_bytes: u64,
+}
+
+/// Non-secret impact summary for the narrowly-scoped Agent reset.  Unlike the
+/// app-data reset, this never counts or touches recordings, transcripts,
+/// prompts, lexicon data, license state, or dictation preferences.
+#[derive(uniffi::Record, Clone, Debug, Default, PartialEq, Eq)]
+pub struct CsAgentResetPreview {
+    pub threads: u64,
+    pub files: u64,
+    pub total_bytes: u64,
+    pub secrets_present: bool,
 }
 
 /// UI-safe view of one base prompt. Content is included because this surface is
@@ -1226,6 +1248,63 @@ impl CodescribeConfig {
         reset_preview_for_dirs(&app_data_dirs())
     }
 
+    /// Preview the Agent-only reset without changing disk or Keychain state.
+    pub fn reset_agent_preview(&self) -> CsAgentResetPreview {
+        agent_reset_preview_for_paths(&agent_reset_paths())
+    }
+
+    /// Reset only durable Agent state. Conversations and tool/MCP files are
+    /// moved to Trash; provider credentials are deleted from Keychain and are
+    /// intentionally not recoverable. This deliberately does not use the
+    /// full-app reset fence or its broad root move.
+    pub fn reset_agent_data(&self) -> Result<(), CsError> {
+        let trash = codescribe_trash_dir()?;
+        let destination = create_agent_reset_destination(&trash)?;
+        let paths = agent_reset_paths();
+        let mut mutation_started = false;
+
+        for source in &paths {
+            if source.exists() {
+                let name = source.file_name().ok_or_else(|| {
+                    agent_reset_error(mutation_started, "Agent reset path has no filename")
+                })?;
+                let target = unique_destination(&destination, &name.to_string_lossy(), None);
+                move_path_recoverably(source, &target).map_err(|error| {
+                    agent_reset_error(
+                        mutation_started,
+                        format!("failed to move Agent data to Trash: {error}"),
+                    )
+                })?;
+                mutation_started = true;
+            }
+        }
+
+        clear_agent_settings().map_err(|error| {
+            agent_reset_error(
+                mutation_started,
+                format!("failed to clear Agent settings: {error}"),
+            )
+        })?;
+        mutation_started = true;
+        Config::remove_env_keys(agent_env_keys()).map_err(|error| {
+            agent_reset_error(
+                mutation_started,
+                format!("failed to clear Agent .env settings: {error}"),
+            )
+        })?;
+
+        for account in agent_secret_accounts() {
+            mutation_started = true;
+            delete_key(account).map_err(|error| {
+                agent_reset_error(
+                    mutation_started,
+                    format!("failed to remove Agent secret {account}: {error}"),
+                )
+            })?;
+        }
+        Ok(())
+    }
+
     /// Move only `mcp.json` to Trash. This intentionally does not touch any
     /// other config, transcripts, threads, logs, preferences, or Keychain keys.
     pub fn clear_mcp_configuration(&self) -> Result<(), CsError> {
@@ -1474,6 +1553,123 @@ fn app_data_dirs() -> Vec<PathBuf> {
         selected.push((candidate, identity));
     }
     selected.into_iter().map(|(path, _)| path).collect()
+}
+
+/// The complete durable Agent-owned file surface. Keep this explicit: a reset
+/// is allowed to move only these paths, never a parent data root.
+fn agent_reset_paths() -> Vec<PathBuf> {
+    let data = UserSettings::settings_dir();
+    let config = Config::config_dir();
+    vec![
+        // `ThreadStore` keeps attachments at `threads/blobs/`; moving the
+        // parent once avoids a second overlapping move and preserves recovery.
+        data.join("threads"),
+        config.join("mcp.json"),
+        config.join("tool_grants.json"),
+    ]
+}
+
+fn agent_secret_accounts() -> &'static [&'static str] {
+    &[
+        "LLM_ASSISTIVE_API_KEY",
+        "LLM_ANTHROPIC_API_KEY",
+        "LLM_XAI_API_KEY",
+        account_auth::OPENAI_ACCOUNT_TOKENS_ACCOUNT,
+        account_auth::ANTHROPIC_ACCOUNT_TOKENS_ACCOUNT,
+        account_auth::XAI_ACCOUNT_TOKENS_ACCOUNT,
+    ]
+}
+
+/// Legacy/power-user Agent rows that can otherwise outlive settings.json and
+/// become the effective provider again after relaunch. Keep this list narrow:
+/// dictation, formatting, audio and hotkey rows are intentionally absent.
+fn agent_env_keys() -> &'static [&'static str] {
+    &[
+        "LLM_ASSISTIVE_ENDPOINT",
+        "LLM_ASSISTIVE_MODEL",
+        "LLM_ASSISTIVE_PROVIDER",
+        "LLM_ASSISTIVE_API_KEY",
+        "LLM_ANTHROPIC_API_KEY",
+        "LLM_XAI_API_KEY",
+        "LLM_OPENAI_ACCOUNT_TOKENS",
+        "LLM_ANTHROPIC_ACCOUNT_TOKENS",
+        "LLM_XAI_ACCOUNT_TOKENS",
+        "LLM_OPENAI_OAUTH_CLIENT_ID",
+        "LLM_ANTHROPIC_OAUTH_CLIENT_ID",
+        "LLM_XAI_OAUTH_CLIENT_ID",
+        "AGENT_WORKSPACE_ROOTS",
+        "AGENT_ENTER_SENDS",
+    ]
+}
+
+fn agent_reset_preview_for_paths(paths: &[PathBuf]) -> CsAgentResetPreview {
+    let mut preview = CsAgentResetPreview {
+        secrets_present: agent_secret_accounts().iter().any(|account| {
+            codescribe_core::config::keychain::load_key(account)
+                .map(|value| !value.trim().is_empty())
+                .unwrap_or(false)
+        }),
+        ..CsAgentResetPreview::default()
+    };
+
+    for path in paths {
+        if path.ends_with("threads") {
+            preview.threads = preview
+                .threads
+                .saturating_add(thread_index_count(&path.join("index.json")));
+        }
+        preview.files = preview.files.saturating_add(path_file_count(path));
+        preview.total_bytes = preview.total_bytes.saturating_add(path_size(path));
+    }
+    preview
+}
+
+fn path_file_count(path: &Path) -> u64 {
+    let Ok(metadata) = fs::symlink_metadata(path) else {
+        return 0;
+    };
+    if metadata.file_type().is_symlink() || metadata.is_file() {
+        return 1;
+    }
+    if !metadata.is_dir() {
+        return 0;
+    }
+    fs::read_dir(path)
+        .ok()
+        .into_iter()
+        .flatten()
+        .filter_map(Result::ok)
+        .map(|entry| path_file_count(&entry.path()))
+        .sum()
+}
+
+/// Remove only settings that define an Agent identity, its provider, its
+/// workspace and its tool policy. All transcription, audio, hotkey, lexicon,
+/// license and other ordinary app settings remain in the same JSON document.
+fn clear_agent_settings() -> anyhow::Result<()> {
+    let mut settings = UserSettings::load();
+    settings.llm_assistive_endpoint = None;
+    settings.llm_assistive_model = None;
+    settings.llm_assistive_provider = None;
+    settings.openai_oauth_client_id = None;
+    settings.anthropic_oauth_client_id = None;
+    settings.xai_oauth_client_id = None;
+    settings.agent_workspace_roots = None;
+    settings.agent_permissions = None;
+    settings.agent_capabilities = None;
+    settings.agent_enter_sends = None;
+    settings.save()
+}
+
+fn create_agent_reset_destination(trash: &Path) -> anyhow::Result<PathBuf> {
+    fs::create_dir_all(trash)?;
+    let destination = unique_destination(
+        trash,
+        &format!("codescribe-agent-reset-{}", timestamp_slug(&Utc::now())),
+        None,
+    );
+    fs::create_dir_all(&destination)?;
+    Ok(destination)
 }
 
 /// The user's `~/.Trash`, which is where a reset parks data so it stays
@@ -2208,13 +2404,14 @@ fn ensure_known_account(account: &str) -> Result<(), CsError> {
 #[cfg(test)]
 mod reset_tests {
     use super::{
-        CsResetPreview, ResetAuditEvent, app_data_dirs, append_reset_audit, capture_base_prompts,
-        clear_mcp_configuration_to, create_reset_destination, move_path_recoverably_with,
-        move_reset_dirs_to_destination, remove_path_without_following_symlinks,
-        reset_preview_for_dirs, restore_base_prompts,
+        CsResetPreview, ResetAuditEvent, agent_env_keys, agent_reset_error, agent_reset_paths,
+        agent_reset_preview_for_paths, agent_secret_accounts, app_data_dirs, append_reset_audit,
+        capture_base_prompts, clear_mcp_configuration_to, create_reset_destination,
+        move_path_recoverably, move_path_recoverably_with, move_reset_dirs_to_destination,
+        remove_path_without_following_symlinks, reset_preview_for_dirs, restore_base_prompts,
     };
     use chrono::{DateTime, Utc};
-    use codescribe_core::config::begin_app_data_reset;
+    use codescribe_core::config::{Config, begin_app_data_reset};
     use serial_test::serial;
     use std::ffi::{OsStr, OsString};
     use std::path::{Path, PathBuf};
@@ -2275,6 +2472,95 @@ mod reset_tests {
         "2026-07-16T16:15:00Z"
             .parse()
             .expect("valid fixed reset timestamp")
+    }
+
+    #[test]
+    #[serial]
+    fn agent_reset_scope_moves_only_agent_files_and_keeps_dictation_roots() {
+        let sandbox = scratch("agent_scope");
+        let root = sandbox.join("data");
+        let trash = sandbox.join("trash");
+        write(
+            &root.join("threads/index.json"),
+            br#"{"threads":[{"id":"one"}]}"#,
+        );
+        write(&root.join("threads/one.json"), b"agent conversation");
+        write(&root.join("threads/blobs/image.png"), b"agent attachment");
+        write(&root.join("mcp.json"), b"{\"mcpServers\":{}}");
+        write(&root.join("tool_grants.json"), b"{\"always_allow\":{}}");
+        write(
+            &root.join("transcriptions/2026-08-15/voice.txt"),
+            b"must survive",
+        );
+        write(&root.join("prompts/assistive.txt"), b"must survive");
+        write(&root.join("dictionary/custom.json"), b"must survive");
+        let _data_dir = EnvGuard::set("CODESCRIBE_DATA_DIR", &root);
+
+        let paths = agent_reset_paths();
+        let preview = agent_reset_preview_for_paths(&paths);
+        assert_eq!(preview.threads, 1);
+        assert_eq!(preview.files, 5);
+
+        let destination = trash.join("codescribe-agent-reset-test");
+        std::fs::create_dir_all(&destination).expect("create agent Trash destination");
+        for source in &paths {
+            if source.exists() {
+                let name = source.file_name().expect("Agent fixture path name");
+                move_path_recoverably(source, &destination.join(name))
+                    .expect("move only Agent-owned path");
+            }
+        }
+
+        assert!(destination.join("threads/one.json").is_file());
+        assert!(destination.join("mcp.json").is_file());
+        assert!(root.join("transcriptions/2026-08-15/voice.txt").is_file());
+        assert!(root.join("prompts/assistive.txt").is_file());
+        assert!(root.join("dictionary/custom.json").is_file());
+        let _ = std::fs::remove_dir_all(&sandbox);
+    }
+
+    #[test]
+    fn agent_reset_secret_scope_excludes_stt_and_non_agent_keys() {
+        let accounts = agent_secret_accounts();
+        assert!(accounts.contains(&"LLM_ASSISTIVE_API_KEY"));
+        assert!(accounts.contains(&"LLM_OPENAI_ACCOUNT_TOKENS"));
+        assert!(!accounts.contains(&"STT_API_KEY"));
+        assert!(!accounts.contains(&"LLM_API_KEY"));
+        assert!(!accounts.contains(&"GITHUB_TOKEN"));
+    }
+
+    #[test]
+    fn agent_reset_marks_only_post_mutation_failures_for_relaunch() {
+        assert!(
+            !format!("{:?}", agent_reset_error(false, "prepare failed"))
+                .contains("CODESCRIBE_AGENT_RESET_RELAUNCH_REQUIRED")
+        );
+        assert!(
+            format!("{:?}", agent_reset_error(true, "Keychain failed"))
+                .contains("CODESCRIBE_AGENT_RESET_RELAUNCH_REQUIRED")
+        );
+    }
+
+    #[test]
+    #[serial]
+    fn agent_reset_env_scope_removes_only_agent_rows() {
+        let sandbox = scratch("agent_env");
+        let env_path = sandbox.join(".env");
+        write(
+            &env_path,
+            b"# preserve this comment\nLLM_ASSISTIVE_MODEL=agent-model\nAGENT_WORKSPACE_ROOTS=~/work\nSTT_ENDPOINT=https://stt.example\nWHISPER_LANGUAGE=pl\nLLM_FORMATTING_MODEL=formatter\n",
+        );
+        let _env_path = EnvGuard::set("CODESCRIBE_ENV_PATH", &env_path);
+
+        Config::remove_env_keys(agent_env_keys()).expect("remove only Agent env rows");
+        let rewritten = std::fs::read_to_string(&env_path).expect("read rewritten env");
+        assert!(!rewritten.contains("LLM_ASSISTIVE_MODEL="));
+        assert!(!rewritten.contains("AGENT_WORKSPACE_ROOTS="));
+        assert!(rewritten.contains("# preserve this comment"));
+        assert!(rewritten.contains("STT_ENDPOINT=https://stt.example"));
+        assert!(rewritten.contains("WHISPER_LANGUAGE=pl"));
+        assert!(rewritten.contains("LLM_FORMATTING_MODEL=formatter"));
+        let _ = std::fs::remove_dir_all(&sandbox);
     }
 
     /// The reset scope follows `CODESCRIBE_DATA_DIR`, previews live counts, and
