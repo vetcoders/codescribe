@@ -7,9 +7,8 @@ import Foundation
 //   • CodescribeConfig    — quick config toggles (settings.json / .env router).
 //   • CodescribeThreads   — most-recent transcript path + text.
 //
-// Dictation deliberately routes through CodescribeHotkeys instead of
-// CodescribeDictation so tray + keyboard shortcuts share one RecordingController
-// and cannot open two independent overlays/recorders.
+// Dictation routes through CodescribeHotkeys so tray, Agent, and keyboard
+// shortcuts share one RecordingController and cannot open parallel recorders.
 final class RealTrayEngine: TrayEngine {
   private let agent: CodescribeAgent
   private let hotkeys: CodescribeHotkeys

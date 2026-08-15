@@ -31,6 +31,11 @@ HOLD_BADGE_SIZE=8
 HOLD_BADGE_OFFSET_X=10
 HOLD_BADGE_OFFSET_Y=-10
 
+# Clean committed transcript observer. Unset uses
+# $XDG_STATE_HOME/codescribe/transcript-events.jsonl when available, otherwise
+# CODESCRIBE_DATA_DIR/transcript-events.jsonl (default ~/.codescribe/...).
+# CODESCRIBE_TRANSCRIPT_BUS_PATH=
+
 # Unified runtime pipeline (event-based) is always active.
 # Golden low-latency / high-fidelity defaults for live preview:
 CODESCRIBE_STREAM_CHUNK_SEC=3.0

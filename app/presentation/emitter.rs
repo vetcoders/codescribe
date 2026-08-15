@@ -14,6 +14,8 @@ use codescribe_core::pipeline::streaming::BufferedEmitter;
 use tokio::sync::Mutex;
 use tracing::{debug, info};
 
+use super::transcript_bus::{CommittedTranscript, TranscriptBus};
+
 /// Commands sent through the ordered channel to the emitter worker.
 enum EmitterCmd {
     SetTargetText(String),
@@ -43,6 +45,20 @@ struct TranscriptUtteranceRecord {
     start_ts: f32,
     end_ts: f32,
     segments: Vec<TranscriptSegment>,
+}
+
+impl TranscriptUtteranceRecord {
+    /// Narrow the reducer's internal record to the clean public bus contract.
+    /// `raw_text` is deliberately excluded at this boundary.
+    fn clean_transcript(&self) -> CommittedTranscript {
+        CommittedTranscript {
+            utterance_id: self.utterance_id,
+            text: self.text.clone(),
+            start_seconds: self.start_ts,
+            end_seconds: self.end_ts,
+            segments: self.segments.clone(),
+        }
+    }
 }
 
 /// Source of truth for the session transcript: everything already committed,
@@ -101,7 +117,7 @@ impl TranscriptReducer {
     /// correction falls through to the preview path — treating it as new
     /// content. Without the search, a late correction to a non-tail utterance
     /// would append a duplicate instead of fixing the original.
-    fn apply_correction(&mut self, previous_text: &str, text: &str) {
+    fn apply_correction(&mut self, previous_text: &str, text: &str) -> Option<usize> {
         let previous = normalize_transcript_fragment(previous_text);
         let corrected = normalize_transcript_fragment(text);
 
@@ -111,15 +127,16 @@ impl TranscriptReducer {
         // Only falls back to preview-append if no match found (new content).
         if self.active_preview.is_empty() {
             // Fast path + P3-03: search from tail (last first). Collapsed if for clippy.
-            for rec in self.committed.iter_mut().rev() {
+            for (index, rec) in self.committed.iter_mut().enumerate().rev() {
                 if normalize_transcript_fragment(&rec.text) == previous {
                     rec.text = corrected;
-                    return;
+                    return Some(index);
                 }
             }
         }
 
         self.apply_preview(&corrected);
+        None
     }
 
     /// Test helper: delete chars from the live preview tail only.
@@ -282,7 +299,9 @@ impl TranscriptReducer {
                 text,
                 previous_text,
                 ..
-            } => self.apply_correction(previous_text, text),
+            } => {
+                let _ = self.apply_correction(previous_text, text);
+            }
             EngineEvent::UtteranceFinal {
                 utterance_id,
                 text,
@@ -359,6 +378,8 @@ pub struct PresentationEmitter {
     session_state: std::sync::Mutex<TranscriptReducer>,
     /// Controls what the delta sink sees: full session text or only the live preview.
     delta_render_mode: DeltaRenderMode,
+    /// Durable observer of this exact reducer's committed/final truth.
+    transcript_bus: Option<Arc<TranscriptBus>>,
 }
 
 impl PresentationEmitter {
@@ -374,6 +395,17 @@ impl PresentationEmitter {
         transcript_buffer: Arc<Mutex<String>>,
         delta_callback: Option<Arc<dyn DeltaSink>>,
         stream_log_path: Option<std::path::PathBuf>,
+    ) -> Self {
+        Self::new_with_transcript_bus(transcript_buffer, delta_callback, stream_log_path, None)
+    }
+
+    /// Build an emitter observed by the clean transcript bus. The bus sees the
+    /// same reducer mutation as paste/history and never reconstructs UI deltas.
+    pub fn new_with_transcript_bus(
+        transcript_buffer: Arc<Mutex<String>>,
+        delta_callback: Option<Arc<dyn DeltaSink>>,
+        stream_log_path: Option<std::path::PathBuf>,
+        transcript_bus: Option<Arc<TranscriptBus>>,
     ) -> Self {
         let emitter = Arc::new(Mutex::new(BufferedEmitter::new(
             transcript_buffer,
@@ -434,6 +466,7 @@ impl PresentationEmitter {
             vad_start_emitted: std::sync::atomic::AtomicBool::new(false),
             session_state: std::sync::Mutex::new(TranscriptReducer::default()),
             delta_render_mode: DeltaRenderMode::SessionRendered,
+            transcript_bus,
         }
     }
 
@@ -545,22 +578,53 @@ impl EventSink for PresentationEmitter {
                 };
                 self.send_cmd(EmitterCmd::SetTargetText(rendered));
             }
-            EngineEvent::Correction { .. } => {
-                let rendered = {
+            EngineEvent::Correction {
+                text,
+                previous_text,
+                ..
+            } => {
+                let (rendered, revised) = {
                     let mut state = self.session_state.lock().unwrap_or_else(|e| e.into_inner());
-                    let _ = state.apply_event(event);
-                    match self.delta_render_mode {
+                    let revised = state
+                        .apply_correction(previous_text, text)
+                        .and_then(|index| state.committed.get(index))
+                        .map(TranscriptUtteranceRecord::clean_transcript);
+                    let rendered = match self.delta_render_mode {
                         DeltaRenderMode::SessionRendered => state.rendered_text(),
                         DeltaRenderMode::ActivePreviewOnly => state.active_preview.clone(),
-                    }
+                    };
+                    (rendered, revised)
                 };
+                if let (Some(bus), Some(revised)) = (&self.transcript_bus, revised) {
+                    bus.publish_utterance("utterance_revised", revised);
+                }
                 self.send_cmd(EmitterCmd::SetTargetText(rendered));
             }
             EngineEvent::UtteranceFinal { utterance_id, .. } => {
-                let callback_payload = {
+                let (callback_payload, committed, revised) = {
                     let mut state = self.session_state.lock().unwrap_or_else(|e| e.into_inner());
-                    state.apply_event(event)
+                    let existed = state
+                        .committed
+                        .iter()
+                        .any(|record| record.utterance_id == *utterance_id);
+                    let callback_payload = state.apply_event(event);
+                    let committed = state
+                        .committed
+                        .iter()
+                        .rfind(|record| record.utterance_id == *utterance_id)
+                        .map(TranscriptUtteranceRecord::clean_transcript);
+                    (callback_payload, committed, existed)
                 };
+                if let (Some(bus), Some(committed)) = (&self.transcript_bus, committed) {
+                    bus.publish_utterance(
+                        if revised {
+                            "utterance_revised"
+                        } else {
+                            "utterance_committed"
+                        },
+                        committed,
+                    );
+                }
                 if let Some(cb) = &self.utterance_callback
                     && let Some(payload) = callback_payload
                 {
@@ -645,6 +709,15 @@ impl EventSink for PresentationEmitter {
                     state.rendered_text()
                 };
                 self.send_cmd(EmitterCmd::SetTargetText(rendered));
+                if let Some(bus) = &self.transcript_bus {
+                    bus.publish_final(
+                        self.session_state
+                            .lock()
+                            .unwrap_or_else(|error| error.into_inner())
+                            .streaming_floor(),
+                        None,
+                    );
+                }
                 // Stats is the last event from transcription_session.
                 // Signal BufferedEmitter to finish through the ordered channel,
                 // ensuring all pending pushes are processed first.
@@ -658,22 +731,36 @@ impl EventSink for PresentationEmitter {
                 // (transcript_buffer → paste/history) that the overlay already
                 // received, so phase-1 layered patches don't diverge between the
                 // two sinks. Only re-render when the buffer actually changed.
-                let rendered = {
+                let (rendered, revised) = {
                     let mut state = self.session_state.lock().unwrap_or_else(|e| e.into_inner());
                     if state.apply_layered_patch(event) {
-                        Some(match self.delta_render_mode {
+                        let rendered = Some(match self.delta_render_mode {
                             DeltaRenderMode::SessionRendered => state.rendered_text(),
                             DeltaRenderMode::ActivePreviewOnly => state.active_preview.clone(),
-                        })
+                        });
+                        let utterance_id = match event {
+                            EngineEvent::ReplaceRange { utterance_id, .. }
+                            | EngineEvent::InsertAnnotation { utterance_id, .. } => *utterance_id,
+                            _ => unreachable!(),
+                        };
+                        let revised = state
+                            .committed
+                            .iter()
+                            .rfind(|record| record.utterance_id == utterance_id)
+                            .map(TranscriptUtteranceRecord::clean_transcript);
+                        (rendered, revised)
                     } else {
-                        None
+                        (None, None)
                     }
                 };
+                if let (Some(bus), Some(revised)) = (&self.transcript_bus, revised) {
+                    bus.publish_utterance("utterance_revised", revised);
+                }
                 if let Some(rendered) = rendered {
                     self.send_cmd(EmitterCmd::SetTargetText(rendered));
                 }
             }
-            EngineEvent::SessionFinalised { .. } => {
+            EngineEvent::SessionFinalised { session_id, .. } => {
                 // The Apple progressive lane closes with SessionFinalised and
                 // does not emit Stats. Persist only immutable canvas here: a
                 // cumulative final can re-state committed text as the last
@@ -684,6 +771,9 @@ impl EventSink for PresentationEmitter {
                     state.clear_live_preview();
                     state.streaming_floor()
                 };
+                if let Some(bus) = &self.transcript_bus {
+                    bus.publish_final(rendered.clone(), Some(session_id.clone()));
+                }
                 self.send_cmd(EmitterCmd::SetTargetText(rendered));
                 self.send_cmd(EmitterCmd::Finish);
             }
@@ -1365,5 +1455,100 @@ mod tests {
         );
         // No duplication of the corrected text.
         assert_eq!(snapshot.matches("Ala ma").count(), 1);
+    }
+
+    /// Dictation and Agent differ only in metadata/consumer choice. The exact
+    /// same engine fixture must produce byte-equivalent committed truth and an
+    /// Agent utterance event before the stop-time session final.
+    #[tokio::test]
+    async fn dictation_and_agent_publish_identical_committed_events_before_consumers() {
+        use crate::presentation::transcript_bus::{
+            CleanTranscriptEvent, TranscriptBus, TranscriptMode, TranscriptSession,
+        };
+
+        fn run_route(
+            root: &std::path::Path,
+            mode: TranscriptMode,
+            session_id: &str,
+        ) -> Vec<CleanTranscriptEvent> {
+            let path = root.join(format!("{mode:?}.jsonl"));
+            let bus = Arc::new(
+                TranscriptBus::open_at(
+                    TranscriptSession {
+                        session_id: session_id.to_string(),
+                        mode,
+                    },
+                    path.clone(),
+                    Some(48_000),
+                )
+                .unwrap(),
+            );
+            let transcript = Arc::new(Mutex::new(String::new()));
+            let emitter =
+                PresentationEmitter::new_with_transcript_bus(transcript, None, None, Some(bus));
+            emitter.on_event(&EngineEvent::Preview {
+                rev: 1,
+                text: "shared clean truth".to_string(),
+            });
+            emitter.on_event(&EngineEvent::UtteranceFinal {
+                utterance_id: 42,
+                text: "shared clean truth".to_string(),
+                raw_text: "unpublished raw hypothesis".to_string(),
+                start_ts: 0.25,
+                end_ts: 1.5,
+                segments: vec![TranscriptSegment {
+                    text: "shared clean truth".to_string(),
+                    start_ts: 0.25,
+                    end_ts: 1.5,
+                }],
+                vad_speech_pct: Some(91.0),
+                avg_logprob: Some(-0.2),
+                compression_ratio: None,
+                quality_gate_dropped: false,
+                confidence_flags: Vec::new(),
+            });
+            emitter.on_event(&EngineEvent::SessionFinalised {
+                session_id: format!("pipeline-{session_id}"),
+                layer_summary: LayerSummary::default(),
+            });
+
+            std::fs::read_to_string(path)
+                .unwrap()
+                .lines()
+                .map(|line| serde_json::from_str(line).unwrap())
+                .collect()
+        }
+
+        let temp = tempfile::tempdir().unwrap();
+        let dictation = run_route(temp.path(), TranscriptMode::Dictation, "dictation-session");
+        let agent = run_route(temp.path(), TranscriptMode::Agent, "agent-session");
+
+        let comparable = |events: &[CleanTranscriptEvent]| {
+            events
+                .iter()
+                .skip(1)
+                .map(|event| {
+                    (
+                        event.status.clone(),
+                        event.utterance_id,
+                        event.sample_rate_hz,
+                        event.sample_start,
+                        event.sample_end,
+                        event.audio_start_seconds,
+                        event.audio_end_seconds,
+                        event.text.clone(),
+                        event.segments.clone(),
+                    )
+                })
+                .collect::<Vec<_>>()
+        };
+        assert_eq!(comparable(&dictation), comparable(&agent));
+        assert_eq!(agent[1].status, "utterance_committed");
+        assert_eq!(agent[2].status, "session_finalized");
+        assert!(
+            !agent
+                .iter()
+                .any(|event| event.text.contains("unpublished raw"))
+        );
     }
 }

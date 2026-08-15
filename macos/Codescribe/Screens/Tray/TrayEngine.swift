@@ -4,7 +4,7 @@ import Foundation
 // UniFFI bridge. The tray needs three slices of the engine — agent readiness,
 // dictation control, and a couple of quick config toggles — plus read access to
 // the most recent transcript. The concrete `RealTrayEngine` (see its own file)
-// wraps CodescribeAgent / CodescribeDictation / CodescribeConfig /
+// wraps CodescribeAgent / CodescribeHotkeys / CodescribeConfig /
 // CodescribeThreads; `MockTrayEngine` keeps `#Preview` self-contained.
 
 /// Navigation intents the tray emits. App.swift binds each one to the action

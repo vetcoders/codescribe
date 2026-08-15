@@ -161,12 +161,12 @@ Smart does **not** turn layered on. Off final-pass does **not** force Whisper at
 
 ### 3.3 Dictation overlay / tray
 
-| Front                         | UniFFI                                             | Handler                        |
-| ----------------------------- | -------------------------------------------------- | ------------------------------ |
-| Live partials / final text    | `CsTranscriptionListener` callbacks                | streaming pipeline → listener  |
-| Dictation service object      | `CodescribeDictation`                              | wraps controller recording API |
-| Tray status glyphs            | `CodescribeTrayStatus` + listener                  | controller tray payload        |
-| Auto-paste / auto-format tray | `set_auto_paste_enabled` / `set_auto_format_level` | `UserSettings` + live toggles  |
+| Front                         | UniFFI                                             | Handler                         |
+| ----------------------------- | -------------------------------------------------- | ------------------------------- |
+| Live partials / final text    | `CsTranscriptionListener` callbacks                | streaming pipeline → listener   |
+| Recording service object      | `CodescribeHotkeys`                                | shared controller recording API |
+| Tray status glyphs            | `CodescribeTrayStatus` + listener                  | controller tray payload         |
+| Auto-paste / auto-format tray | `set_auto_paste_enabled` / `set_auto_format_level` | `UserSettings` + live toggles   |
 
 ### 3.4 STT engine dispatch (the nit)
 
@@ -239,18 +239,18 @@ unless you accept Apple lottery on every session.
 
 ## 6. Full front surface map (non-STT, for completeness)
 
-| Domain                        | Front / UniFFI                   | Backend owner                          |
-| ----------------------------- | -------------------------------- | -------------------------------------- |
-| Config / keys                 | `CodescribeConfig`               | `core/config/*`, Keychain              |
-| Hotkeys                       | `CodescribeHotkeys`              | `app/os/hotkeys`, controller           |
-| Recording / STT               | `CodescribeDictation`, listeners | controller + `core/stt` + `core/audio` |
-| Agent chat                    | `CodescribeAgent`                | `core/agent/*`, LLM lane               |
-| Agent delivery (voice→thread) | `CsAgentDeliveryListener`        | `ThreadDeliveryGateway`                |
-| Threads                       | `CodescribeThreads`              | `core/agent/thread_*`                  |
-| MCP                           | `CodescribeMcpAdmin`             | `core/mcp`                             |
-| Quality / lexicon             | `quality_*`, lexicon FFI         | `core/quality`                         |
-| Notes                         | `CodescribeNotes`                | notes store                            |
-| Tray                          | `CodescribeTrayStatus`           | controller tray                        |
+| Domain                        | Front / UniFFI                 | Backend owner                          |
+| ----------------------------- | ------------------------------ | -------------------------------------- |
+| Config / keys                 | `CodescribeConfig`             | `core/config/*`, Keychain              |
+| Hotkeys                       | `CodescribeHotkeys`            | `app/os/hotkeys`, controller           |
+| Recording / STT               | `CodescribeHotkeys`, listeners | controller + `core/stt` + `core/audio` |
+| Agent chat                    | `CodescribeAgent`              | `core/agent/*`, LLM lane               |
+| Agent delivery (voice→thread) | `CsAgentDeliveryListener`      | `ThreadDeliveryGateway`                |
+| Threads                       | `CodescribeThreads`            | `core/agent/thread_*`                  |
+| MCP                           | `CodescribeMcpAdmin`           | `core/mcp`                             |
+| Quality / lexicon             | `quality_*`, lexicon FFI       | `core/quality`                         |
+| Notes                         | `CodescribeNotes`              | notes store                            |
+| Tray                          | `CodescribeTrayStatus`         | controller tray                        |
 
 ---
 

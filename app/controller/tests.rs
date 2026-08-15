@@ -5149,6 +5149,7 @@ async fn hold_event_sink_forwards_live_preview_then_final_in_order() {
         true,
         controller.event_broadcast.clone(),
         Arc::clone(&controller.session_telemetry),
+        None,
     );
 
     sink.on_event(&EngineEvent::Preview {
@@ -5187,6 +5188,7 @@ async fn late_correction_after_final_is_a_single_patch_event_not_a_second_final(
         true,
         controller.event_broadcast.clone(),
         Arc::clone(&controller.session_telemetry),
+        None,
     );
 
     sink.on_event(&EngineEvent::Preview {

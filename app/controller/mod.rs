@@ -53,7 +53,7 @@ pub use helpers::{
 pub use overlay_paste::{OverlayPasteDelivery, OverlayPasteResult};
 pub use types::{HotkeyAction, HotkeyInput, HotkeyType, State, TranscriptionActionContractMode};
 
-use crate::presentation::emitter::PresentationEmitter;
+use crate::presentation::{PresentationEmitter, TranscriptBus, TranscriptMode, TranscriptSession};
 use anyhow::{Context, Result};
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -720,23 +720,6 @@ impl RecordingController {
         }
     }
 
-    /// Capture the assistive trigger context (selection + frontmost app) for a
-    /// session whose microphone is owned by the Agent composer. The controller
-    /// start paths (`schedule_hold_start` / `start_toggle_recording`) never run
-    /// on that route, so without this arm the HOTKEYS_CONTRACT line "Selection
-    /// is captured in the trigger handler, never at send time" had no executor
-    /// on the primary assistive path and auto-send delivered the spoken text
-    /// alone (review P0-02). The bridge calls this exactly when a NEW agent
-    /// capture is about to start (capture owner still none).
-    pub async fn arm_assistive_trigger_context(&self) {
-        let context = tokio::task::spawn_blocking(capture_assistive_context)
-            .await
-            .unwrap_or_default();
-        *self.pre_overlay_frontmost_app.write().await = context.frontmost_app.clone();
-        *self.assistive_context.write().await = Some(context.clone());
-        *self.pending_assistive_context.write().await = Some(context);
-    }
-
     /// Deliver the overlay's current transcript with the context captured at
     /// trigger time. Taking the context makes delivery one-shot.
     pub async fn deliver_pending_assistive_transcript(&self, transcript: String) -> Result<bool> {
@@ -1315,14 +1298,19 @@ impl RecordingController {
         preview_deltas_enabled: bool,
         event_broadcast: broadcast::Sender<IpcEvent>,
         session_telemetry: SharedSessionTelemetry,
+        transcript_bus: Option<Arc<TranscriptBus>>,
     ) -> Arc<dyn codescribe_core::pipeline::contracts::EventSink> {
         let delta_sink = preview_deltas_enabled.then(|| {
             Arc::new(helpers::RoutingDeltaSink)
                 as Arc<dyn codescribe_core::pipeline::contracts::DeltaSink>
         });
-        let pe: Arc<dyn codescribe_core::pipeline::contracts::EventSink> = Arc::new(
-            PresentationEmitter::new(transcript_buffer, delta_sink, None),
-        );
+        let pe: Arc<dyn codescribe_core::pipeline::contracts::EventSink> =
+            Arc::new(PresentationEmitter::new_with_transcript_bus(
+                transcript_buffer,
+                delta_sink,
+                None,
+                transcript_bus,
+            ));
         let ipc_sink: Arc<dyn codescribe_core::pipeline::contracts::EventSink> =
             Arc::new(helpers::IpcBroadcastSink::new(event_broadcast));
         let telemetry_sink: Arc<dyn codescribe_core::pipeline::contracts::EventSink> =
@@ -1370,6 +1358,7 @@ impl RecordingController {
         preview_deltas_enabled: bool,
         event_broadcast: broadcast::Sender<IpcEvent>,
         session_telemetry: SharedSessionTelemetry,
+        transcript_bus: Option<Arc<TranscriptBus>>,
     ) {
         Self::configure_level_broadcast(recorder, event_broadcast.clone());
         recorder.set_event_sink(Some(Self::build_recording_event_sink(
@@ -1377,6 +1366,7 @@ impl RecordingController {
             preview_deltas_enabled,
             event_broadcast,
             session_telemetry,
+            transcript_bus,
         )));
     }
 
@@ -1388,6 +1378,7 @@ impl RecordingController {
         _flush_voice_chat_on_vad_end: bool,
         event_broadcast: broadcast::Sender<IpcEvent>,
         session_telemetry: SharedSessionTelemetry,
+        transcript_bus: Option<Arc<TranscriptBus>>,
     ) {
         // Hands-off is ONE continuous recorder session (ADR 2026-05-28 Faza 1).
         // Normal hands-off uses cumulative SessionRendered deltas in the transcription overlay.
@@ -1402,6 +1393,7 @@ impl RecordingController {
             preview_deltas_enabled,
             event_broadcast,
             session_telemetry,
+            transcript_bus,
         )));
     }
 
@@ -2231,6 +2223,15 @@ impl RecordingController {
             // so the very first deltas route to the correct overlay.
             set_assistive_session(is_assistive);
             reset_session_telemetry(&session_telemetry);
+            let transcript_bus = TranscriptBus::open(TranscriptSession {
+                session_id: new_session_id,
+                mode: if is_assistive {
+                    TranscriptMode::Assistive
+                } else {
+                    TranscriptMode::Dictation
+                },
+            })
+            .map(Arc::new);
 
             // Runtime pipeline is always event-based. Hold mode has no utterance callback;
             // text is finalized on key-up in `finish_recording`.
@@ -2239,6 +2240,7 @@ impl RecordingController {
                 is_assistive || overlay_enabled,
                 event_broadcast.clone(),
                 Arc::clone(&session_telemetry),
+                transcript_bus.clone(),
             );
             rec.configure_layer1(
                 &UserSettings::load(),
@@ -2262,6 +2264,7 @@ impl RecordingController {
                             is_assistive || overlay_enabled,
                             event_broadcast.clone(),
                             Arc::clone(&session_telemetry),
+                            transcript_bus.clone(),
                         );
                         let retry_result = rec.start_event_session(language_hint).await;
                         if let Err(retry_err) = retry_result {
@@ -2279,6 +2282,10 @@ impl RecordingController {
                         return;
                     }
                 }
+            }
+
+            if let Some(bus) = &transcript_bus {
+                bus.publish_started();
             }
 
             if hold_start_generation.load(Ordering::SeqCst) != task_generation {
@@ -2430,6 +2437,15 @@ impl RecordingController {
         // so the very first deltas route to the correct overlay.
         set_assistive_session(is_assistive);
         reset_session_telemetry(&self.session_telemetry);
+        let transcript_bus = TranscriptBus::open(TranscriptSession {
+            session_id: new_session_id,
+            mode: if is_assistive {
+                TranscriptMode::Agent
+            } else {
+                TranscriptMode::Dictation
+            },
+        })
+        .map(Arc::new);
 
         // Runtime pipeline is always event-based.
         Self::configure_toggle_event_sink(
@@ -2438,6 +2454,7 @@ impl RecordingController {
             is_assistive,
             self.event_broadcast.clone(),
             Arc::clone(&self.session_telemetry),
+            transcript_bus.clone(),
         );
         recorder.configure_layer1(
             &UserSettings::load(),
@@ -2463,6 +2480,7 @@ impl RecordingController {
                     is_assistive,
                     self.event_broadcast.clone(),
                     Arc::clone(&self.session_telemetry),
+                    transcript_bus.clone(),
                 );
                 if let Err(retry_err) = recorder.start_event_session(language_hint).await {
                     drop(recorder_guard);
@@ -2477,6 +2495,9 @@ impl RecordingController {
                 self.reset_session_after_start_failure("Toggle-start").await;
                 return Err(e);
             }
+        }
+        if let Some(bus) = &transcript_bus {
+            bus.publish_started();
         }
         drop(recorder_guard);
 

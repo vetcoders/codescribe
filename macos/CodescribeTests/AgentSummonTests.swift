@@ -80,21 +80,6 @@ final class AgentSummonTests: XCTestCase {
     await fulfillment(of: [delivered], timeout: 1.0)
   }
 
-  func testAssistiveCallbackFrontsExistingAgentAndRoutesCaptureCommand() async {
-    let delivered = expectation(description: "Agent capture action")
-    let listener = AgentAppActionListener(
-      summonAgent: {},
-      captureAgent: { command in
-        XCTAssertEqual(command, .toggle)
-        delivered.fulfill()
-      }
-    )
-
-    listener.onAgentCapture(command: .toggle)
-
-    await fulfillment(of: [delivered], timeout: 1.0)
-  }
-
   func testAgentPinMapsToFloatingAndNormalWindowLevels() {
     XCTAssertEqual(
       AgentWindowLevelPolicy.level(isPinned: true).rawValue,
