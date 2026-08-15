@@ -180,14 +180,20 @@ assert_default_is() {
 }
 
 # Runs a snippet in a child bash that has sourced the library.
+#
+# The snippet is written VERBATIM — deliberately not through an unquoted
+# heredoc. With a heredoc the parent shell would expand the snippet's own `$$`
+# and `$(...)` before the child ever saw them, so `kill -INT $$` would signal
+# the test harness instead of the child, and every assertion about interrupted
+# flows would be measuring the wrong process.
 run_child() {
   local snippet="$1" script="$ROOT/child.sh"
-  cat > "$script" <<CHILD
-#!/usr/bin/env bash
-set -uo pipefail
-. "$LIB"
-$snippet
-CHILD
+  {
+    printf '#!/usr/bin/env bash\n'
+    printf 'set -uo pipefail\n'
+    printf '. %q\n' "$LIB"
+    printf '%s\n' "$snippet"
+  } > "$script"
   bash "$script"
 }
 
@@ -467,6 +473,55 @@ REPORT="$(bash "$DOCTOR" 2>&1)"; DRC=$?
 [[ "$REPORT" == *"release is running"* || "$REPORT" == *"release is signing"* ]] \
   && ok "doctor warns against recovering under a live release" \
   || bad "doctor did not warn about a live release"
+teardown_env
+
+# ==========================================================================
+# 17. Trap chaining. A release script very likely already has `trap ... EXIT`
+#     of its own (build-vibecrafted-release.sh does). Installing ours must not
+#     silently drop theirs — and ours must run FIRST, before the caller starts
+#     deleting the directories our keychain might live in.
+# ==========================================================================
+setup_env
+test_case "an existing EXIT trap survives, and ours runs before it"
+LOGIN="$HOME/Library/Keychains/login.keychain-db"
+seed_list "$LOGIN"
+ORDER="$ROOT/order.txt"
+: > "$ORDER"
+run_child "trap 'printf \"caller\\n\" >> \"$ORDER\"' EXIT
+           keychain_session_begin codescribe-signing >/dev/null
+           printf 'list-during=%s\n' \"\$(wc -l < \"$FAKE_SECURITY_STATE/search-list\" | tr -d ' ')\" >> \"$ORDER\"" >/dev/null
+if grep -q '^caller$' "$ORDER"; then
+  ok "the caller's own EXIT trap still ran"
+else
+  bad "the caller's EXIT trap was clobbered"
+fi
+assert_list_equals "$LOGIN"
+if [[ "$(tail -n1 "$ORDER")" == "caller" ]]; then
+  ok "keychain cleanup ran before the caller's handler"
+else
+  bad "ordering wrong: $(tr '\n' '|' < "$ORDER")"
+fi
+teardown_env
+
+# ==========================================================================
+# 18. Same, for SIGINT — the case a bare EXIT trap misses entirely
+# ==========================================================================
+setup_env
+test_case "an existing INT trap survives alongside ours"
+LOGIN="$HOME/Library/Keychains/login.keychain-db"
+seed_list "$LOGIN"
+MARK="$ROOT/int-mark.txt"
+: > "$MARK"
+run_child "trap 'printf \"caller-int\\n\" >> \"$MARK\"; exit 130' INT
+           keychain_session_begin codescribe-signing >/dev/null
+           kill -INT \$\$
+           sleep 5" >/dev/null 2>&1
+if grep -q '^caller-int$' "$MARK"; then
+  ok "the caller's own INT trap still ran"
+else
+  bad "the caller's INT trap was clobbered"
+fi
+assert_list_equals "$LOGIN"
 teardown_env
 
 printf '\n============================================================\n'
