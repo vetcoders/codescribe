@@ -109,14 +109,20 @@ final class OverlayController: ObservableObject {
     // overlay already receives. The tray view-model otherwise only polls on
     // appear (and the popover is built once), so it stayed "Recording" after
     // Finish. These hooks fire for every start/stop path (hotkey, tray, auto).
+    // The composer's phase is DERIVED from the lane the session turned out to be
+    // (`sessionWasAssistive`) — never left to whatever the optimistic gesture set.
+    // `.preparing` and `.recording` are both non-actionable in the composer, so a
+    // phase that is entered optimistically and only cleared on a latch that read
+    // true is a mic that can die permanently. Non-assistive sessions therefore
+    // push the composer back to `.idle` (it renders as `.blocked` off
+    // `dictationBlocked`, which is the honest "busy elsewhere" state), and every
+    // terminal beat resets unconditionally.
     state.onRecordingPreparing = { [weak self] in
       guard let self else { return }
       self.sessionWasAssistive = false
       self.refreshAssistiveLatch()
       self.showForRecording()
-      if self.sessionWasAssistive {
-        AppModel.shared.chat.setDictationPhase(.preparing)
-      }
+      AppModel.shared.chat.setDictationPhase(self.sessionWasAssistive ? .preparing : .idle)
       AppModel.shared.tray.isStartingDictation = true
       // Block the composer mic while the shared recorder owns the microphone.
       AppModel.shared.chat.dictationBlocked = true
@@ -125,9 +131,7 @@ final class OverlayController: ObservableObject {
       guard let self else { return }
       self.refreshAssistiveLatch()
       self.showForRecording()
-      if self.sessionWasAssistive {
-        AppModel.shared.chat.setDictationPhase(.recording)
-      }
+      AppModel.shared.chat.setDictationPhase(self.sessionWasAssistive ? .recording : .idle)
       AppModel.shared.tray.isRecording = true
       AppModel.shared.tray.isStartingDictation = false
       AppModel.shared.chat.dictationBlocked = true
@@ -135,13 +139,12 @@ final class OverlayController: ObservableObject {
     state.onRecordingStopped = { [weak self] in
       guard let self else { return }
       self.refreshAssistiveLatch()
-      if self.sessionWasAssistive {
-        AppModel.shared.chat.setDictationPhase(.idle)
-      }
       self.markStopped()
       AppModel.shared.tray.isRecording = false
       AppModel.shared.tray.isStartingDictation = false
-      AppModel.shared.chat.dictationBlocked = false
+      // Unconditional: releases the composer phase, the blocked flag and the
+      // thread-ownership latch in one beat, whatever the lane turned out to be.
+      AppModel.shared.chat.endDictationSession()
     }
     state.onSuccessfulDictation = {
       Task { @MainActor in

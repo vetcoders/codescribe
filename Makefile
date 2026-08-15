@@ -881,6 +881,12 @@ test-swift: $(ENGINE_BRIDGE)
 	  echo "test-swift: run 'make app-bindings' (or 'make app') first." >&2; \
 	  exit 2; \
 	fi; \
+	if ! command -v xcodegen >/dev/null 2>&1; then \
+	  echo "test-swift: xcodegen is required because the Xcode project is generated, not committed." >&2; \
+	  exit 2; \
+	fi; \
+	echo "=== Regenerating Xcode project from project.yml ==="; \
+	( cd macos && xcodegen generate ) || exit $$?; \
 	echo "=== Swift front-end tests (CodescribeTests) ==="; \
 	cd macos && xcodebuild test \
 	  -scheme Codescribe \

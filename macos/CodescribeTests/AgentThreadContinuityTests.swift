@@ -1,3 +1,4 @@
+import AppKit
 import Foundation
 import XCTest
 
@@ -10,6 +11,27 @@ import XCTest
 /// `ingestVoiceTurn` and the completion refresh in `replaceThreads`.
 @MainActor
 final class AgentThreadContinuityTests: XCTestCase {
+  private final class SpyRoutingEngine: AgentChatEngine {
+    private(set) var assistiveTargets: [String?] = []
+
+    func isAvailable() -> Bool { true }
+    func availabilityDetail() -> String? { nil }
+    func generateThreadTitle(_ text: String) async throws -> String? { nil }
+    func streamReply(
+      _ text: String,
+      threadId: String,
+      attachmentPaths: [String],
+      onDelta: @escaping @MainActor (String) -> Void,
+      onReasoning: @escaping @MainActor (String) -> Void,
+      onToolExecuting: @escaping @MainActor (String, String) -> Void,
+      onToolResult: @escaping @MainActor (String, String, Bool, String) -> Void
+    ) async throws -> String { "" }
+    func cancelReply(threadId: String) -> Bool { false }
+    func setAssistiveTargetThread(backendId: String?) {
+      assistiveTargets.append(backendId)
+    }
+  }
+
   private final class StubThreadsProvider: ChatThreadsProviding {
     var rows: [(id: String, title: String)]
 
@@ -41,6 +63,12 @@ final class AgentThreadContinuityTests: XCTestCase {
 
   private func thread(_ backendID: String, in store: AgentChatStore) -> ChatThread? {
     store.threads.first { $0.backendId == backendID }
+  }
+
+  private func drainMainQueue() {
+    let drained = expectation(description: "main queue drained")
+    DispatchQueue.main.async { drained.fulfill() }
+    wait(for: [drained], timeout: 2)
   }
 
   func testActivationAppendsToCurrentlyOpenMatchingThreadWithoutChangingSelection() {
@@ -107,6 +135,101 @@ final class AgentThreadContinuityTests: XCTestCase {
       } == true)
     XCTAssertEqual(store.currentThread?.messages.last?.text, "odpowiedź")
     XCTAssertNotEqual(store.currentThread?.title, "New thread", "adopted draft takes a real title")
+  }
+
+  func testCaptureOwnerSurvivesDoneQueuedRefreshAndSummonUntilExplicitSelection() {
+    let provider = StubThreadsProvider([
+      ("t_history", "History"),
+      ("t_other", "Other"),
+    ])
+    let engine = SpyRoutingEngine()
+    let store = AgentChatStore(engine: engine, threadsProvider: provider)
+    XCTAssertEqual(engine.assistiveTargets.compactMap { $0 }.last, "t_history")
+
+    // Starting from an explicit empty thread publishes nil: the controller
+    // must mint a backend for this selected logical owner.
+    let targetsBeforeNewThread = engine.assistiveTargets.count
+    store.newThread()
+    let captureOwnerID = store.selectedThreadID
+    XCTAssertGreaterThan(engine.assistiveTargets.count, targetsBeforeNewThread)
+    XCTAssertNil(engine.assistiveTargets.last!)
+
+    // TurnStarted binds the backend to that same local row and immediately
+    // republishes the now-stable backend routing target.
+    store.ingestVoiceTurn(threadId: "t_voice_owner", userText: "keep this thread")
+    XCTAssertEqual(store.selectedThreadID, captureOwnerID)
+    XCTAssertEqual(store.currentThread?.backendId, "t_voice_owner")
+    XCTAssertEqual(engine.assistiveTargets.compactMap { $0 }.last, "t_voice_owner")
+
+    provider.rows = [
+      ("t_voice_owner", "Persisted voice turn"),
+      ("t_other", "Other"),
+      ("t_history", "History"),
+    ]
+    store.ingestVoiceDone()
+
+    // Reproduce the persistence/index seam: a queued bus refresh and the
+    // didBecomeKey emitted by a later summon both observe a transient index
+    // snapshot without the just-completed owner row.
+    provider.rows = [
+      ("t_other", "Other"),
+      ("t_history", "History"),
+    ]
+    ThreadsChangeBus.postThreadsChanged()
+    let summon = AgentSummonAction(store: store) {
+      NotificationCenter.default.post(name: NSWindow.didBecomeKeyNotification, object: nil)
+    }
+    summon.perform()
+    drainMainQueue()
+
+    XCTAssertEqual(store.selectedThreadID, captureOwnerID)
+    XCTAssertEqual(store.currentThread?.backendId, "t_voice_owner")
+    XCTAssertEqual(engine.assistiveTargets.compactMap { $0 }.last, "t_voice_owner")
+
+    // Explicit navigation remains authoritative and is preserved by the same
+    // later refresh path; continuity must never become a UI pin.
+    let otherID = thread("t_other", in: store)!.id
+    store.select(otherID)
+    provider.rows = [
+      ("t_voice_owner", "Persisted voice turn"),
+      ("t_other", "Other"),
+      ("t_history", "History"),
+    ]
+    ThreadsChangeBus.postThreadsChanged()
+    drainMainQueue()
+
+    XCTAssertEqual(store.selectedThreadID, otherID)
+    XCTAssertEqual(store.currentThread?.backendId, "t_other")
+    XCTAssertEqual(engine.assistiveTargets.compactMap { $0 }.last, "t_other")
+  }
+
+  func testStoppedCaptureHasNoComposerPreviewCallbackSurfaceToResurrect() throws {
+    let macosDir = URL(fileURLWithPath: #filePath)
+      .deletingLastPathComponent()  // CodescribeTests/
+      .deletingLastPathComponent()  // macos/
+    let sources = [
+      "Codescribe/Core/ComposerDictation.swift",
+      "Codescribe/Screens/AgentChat/AgentChatStore.swift",
+      "Codescribe/Screens/AgentChat/Composer.swift",
+    ]
+    let orphanedPreviewTokens = [
+      "ComposerDictationListener",
+      "CsTranscriptionListener",
+      "dictationPreview",
+      "onPreview(",
+      "onVadState(",
+    ]
+
+    for relative in sources {
+      let text = try String(
+        contentsOf: macosDir.appendingPathComponent(relative), encoding: .utf8)
+      for token in orphanedPreviewTokens {
+        XCTAssertFalse(
+          text.contains(token),
+          "\(relative) must not retain `\(token)`; a late callback after stop could recreate the orphaned composer preview"
+        )
+      }
+    }
   }
 
   func testVoiceTurnWithUnknownIdStillMintsThreadWhenSelectionIsBound() {

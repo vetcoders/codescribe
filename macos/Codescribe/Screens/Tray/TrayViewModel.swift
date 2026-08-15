@@ -123,6 +123,14 @@ final class TrayViewModel: ObservableObject {
   }
 
   /// Pull prompt-free runtime flags from the engine (call on appear).
+  ///
+  /// Also the operator's guaranteed un-stick gesture. `isStartingDictation` is
+  /// written by the shared recording lifecycle (`onRecordingPreparing`), so a
+  /// session that never broadcast a terminal event pinned the pill on "Starting"
+  /// AND — because the same flag is this screen's re-entrancy lock — left the
+  /// dictation row permanently dead. Reconciling it against the controller here
+  /// means opening the tray always recovers. Guarded on `startsInFlight` so a
+  /// genuine start still in flight keeps its lock.
   func refreshStatus() {
     guard let engine else { return }
     if let toggles = engine.currentToggles() {
@@ -136,9 +144,18 @@ final class TrayViewModel: ObservableObject {
     }
     Task { [weak self] in
       guard let self else { return }
-      self.isRecording = await engine.isRecording()
+      let live = await engine.isRecording()
+      self.isRecording = live
+      if !live, self.startsInFlight == 0 {
+        self.isStartingDictation = false
+      }
     }
   }
+
+  /// Count of tray-initiated starts still awaiting the controller. Only these
+  /// own the `isStartingDictation` lock; a lifecycle-set flag with no local start
+  /// behind it is reconcilable state, not a lock.
+  private var startsInFlight = 0
 
   // MARK: - Dictation toggle
 
@@ -158,6 +175,7 @@ final class TrayViewModel: ObservableObject {
     if !wasRecording {
       isStartingDictation = true
       isRecording = true
+      startsInFlight += 1
       onDictationStartRequested()
     }
     Task { [weak self] in
@@ -171,6 +189,7 @@ final class TrayViewModel: ObservableObject {
       } catch {
         // Swallow: the reconcile below reflects the real session state.
       }
+      if !wasRecording { self.startsInFlight = max(0, self.startsInFlight - 1) }
       self.isStartingDictation = false
       self.isRecording = await engine.isRecording()
     }

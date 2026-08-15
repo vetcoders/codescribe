@@ -159,6 +159,9 @@ fi
 if [[ "${swift_recipe%%xcodebuild test*}" != *'$(TEST_DATA_DIR_SETUP)'* ]]; then
     fail "test-swift must export its isolated data directory before xcodebuild test"
 fi
+if [[ "${swift_recipe%%xcodebuild test*}" != *'xcodegen generate'* ]]; then
+    fail "test-swift must regenerate the ignored Xcode project so new Swift tests enter XCTest"
+fi
 
 # ---------------------------------------------------------------------------
 # Collect: verification targets, ledger rows
