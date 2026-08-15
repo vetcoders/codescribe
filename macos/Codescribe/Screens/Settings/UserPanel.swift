@@ -280,7 +280,7 @@ private struct ResetAgentSection: View {
 
       Text(
         "Moves only Agent conversations, runtime identity, MCP and tool state to Trash. "
-          + "Provider API and OAuth secrets are deleted permanently. "
+          + "Agent provider and MCP connector secrets are deleted permanently. "
           + "Recordings, transcriptions, dictionary, lexicon, quality reports, prompts, audio, hotkeys, dictation, license, and macOS permissions are preserved."
       )
       .font(CSFont.mono(11, .medium))
@@ -310,7 +310,8 @@ private struct ResetAgentSection: View {
       .csFocusRing(cornerRadius: 8)
       .padding(.top, 13)
       .accessibilityLabel("Reset Agent. Destructive action.")
-      .accessibilityHint("Shows Agent-only impact and requires typing RESET AGENT before continuing.")
+      .accessibilityHint(
+        "Shows Agent-only impact and requires typing RESET AGENT before continuing.")
     }
     .frame(maxWidth: .infinity, alignment: .leading)
     .padding(.horizontal, 16)

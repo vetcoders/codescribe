@@ -64,7 +64,7 @@ pub fn list_servers() -> Result<Vec<McpServerSummary>> {
 /// Path-explicit twin of [`list_servers`]. Every public entry point in this
 /// module delegates to an `_at` variant so the tests can drive the real logic
 /// against a temp dir instead of the operator's live `~/.codescribe/mcp.json`.
-fn list_servers_at(path: &Path) -> Result<Vec<McpServerSummary>> {
+pub fn list_servers_at(path: &Path) -> Result<Vec<McpServerSummary>> {
     let Some(config) = McpConfigFile::load_optional(path)? else {
         return Ok(Vec::new());
     };
