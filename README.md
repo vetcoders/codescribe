@@ -103,7 +103,7 @@ Codescribe can load custom MCP servers from `~/.codescribe/mcp.json`. That keeps
 ## Features
 
 - **Rust core + SwiftUI app** — Native macOS SwiftUI shell over the Rust engine through UniFFI, with candle-core + Metal GPU
-- **Two DMG variants** — Standard (daily) embeds Silero VAD + MiniLM; Whisper is downloaded from Settings → Dictation or HF cache. Optional `_full` DMG also embeds Whisper for offline/curiosity installs.
+- **Two DMG variants** — Standard (daily) embeds Silero VAD and signs MiniLM as a runtime app resource; Whisper is downloaded from Settings → Dictation or HF cache. Optional `_full` DMG also embeds Whisper for offline/curiosity installs.
 - **Whisper Live** — Streaming transcription happens _during recording_ (chunks + overlap), so `stop()` is
   near-instant
 - **Stream postprocess** — semantic gating + cleanup of live chunks before final output
@@ -334,7 +334,7 @@ Codescribe uses **whisper-large-v3-turbo** (mlx-community, fp16):
 
 ### Runtime Whisper (Current)
 
-**Daily public builds are slim.** `make release`, `make dmg` / `dmg-signed`, and `make release-standard` embed **Silero VAD** (required) and **MiniLM** when available. **Whisper is not baked in** (~900 MB–1.5 GB saved). Install local Candle Whisper from **Settings → Dictation → Download Whisper**, or run `make download-model`.
+**Daily public builds keep large weights out of Cargo artifacts.** `make release`, `make dmg` / `dmg-signed`, and `make release-standard` embed only **Silero VAD** in the Rust engine. **MiniLM** is copied into the signed app as a runtime resource, while **Whisper is not baked in** (~900 MB–1.5 GB saved). Install local Candle Whisper from **Settings → Dictation → Download Whisper**, or run `make download-model`.
 
 Optional fat SKU (offline / curiosity): `make release-full` or `CODESCRIBE_EMBED_WHISPER=1` / `make release-codescribe-embedded`.
 
@@ -350,7 +350,7 @@ The mlx-community repo ships only `config.json` + `weights.safetensors`;
 the download paths compose `tokenizer.json` + `mel_filters.npz` from the
 legacy repo (both files are quantization-independent).
 
-`CODESCRIBE_NO_EMBED=1` is a development/recovery path that also skips MiniLM embed; it is not the public slim product path.
+`CODESCRIBE_EMBED_EMBEDDER=1` is an explicit fat/debug path that compiles MiniLM into Rust artifacts. Normal builds resolve MiniLM from the signed app resource or HF cache. `CODESCRIBE_NO_EMBED=1` disables every optional binary embed; Silero remains embedded.
 
 Model files required:
 

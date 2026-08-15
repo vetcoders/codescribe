@@ -29,7 +29,7 @@
   * com.apple.security.cs.disable-library-validation is REMOVED.
       Library validation lets a binary link any library signed with the SAME
       team identifier (or an Apple system library). The Developer ID build
-      disables it only because the embedded Whisper/MiniLM dylibs are signed
+      disables it only because the Candle Whisper/MiniLM dylibs are signed
       ad-hoc / under a foreign team. For a MAS build, RE-SIGN every nested
       dylib/framework under the app's own team ID at bundle time; then library
       validation is satisfied and this relaxation is unnecessary.

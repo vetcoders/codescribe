@@ -1,7 +1,7 @@
 //! Embedder Engine - offline MiniLM embeddings via Candle BERT.
 //!
-//! Provides text embeddings using a local/embedded paraphrase-multilingual-MiniLM-L12-v2 model (fp16).
-//! No runtime downloads; model must be embedded or present on disk.
+//! Provides text embeddings using a local/embedded paraphrase-multilingual-MiniLM-L12-v2 model.
+//! No runtime downloads; model must be embedded, bundled in the app, or present in the HF cache.
 
 use std::path::{Path, PathBuf};
 use std::sync::OnceLock;
@@ -366,7 +366,8 @@ impl EmbedderEngine {
 }
 
 /// Locate a model directory: explicit path, then `CODESCRIBE_EMBEDDER_PATH`,
-/// then an HF cache snapshot for the configured or default repo.
+/// then the signed app's runtime resource, then an HF cache snapshot for the
+/// configured or default repo.
 ///
 /// Never downloads. Failure returns an error naming the exact commands and env
 /// vars that would fix it.
@@ -380,6 +381,15 @@ fn resolve_model_path(explicit: Option<&PathBuf>, repo_override: Option<&str>) -
         if model_files_present(&p) {
             return Ok(p);
         }
+    }
+
+    // A public app carries MiniLM as a normal signed resource rather than
+    // compiling 471 MB through every Cargo target. An explicit repo override
+    // still wins by bypassing this default-model resource.
+    if repo_override.is_none()
+        && let Some(bundled) = bundled_app_model_path()
+    {
+        return Ok(bundled);
     }
 
     if let Some(repo) = repo_override {
@@ -403,6 +413,20 @@ fn resolve_model_path(explicit: Option<&PathBuf>, repo_override: Option<&str>) -
         repo_override.unwrap_or(DEFAULT_REPO),
         ENV_EMBEDDER_REPO
     ))
+}
+
+/// Resolve `Codescribe.app/Contents/Resources/models/embedder` without assuming
+/// a fixed install location. CLI/test binaries naturally return `None` and fall
+/// through to the HF cache.
+fn bundled_app_model_path() -> Option<PathBuf> {
+    let executable = std::env::current_exe().ok()?;
+    bundled_model_path_for_executable(&executable)
+}
+
+fn bundled_model_path_for_executable(executable: &Path) -> Option<PathBuf> {
+    let macos_dir = executable.parent()?;
+    let candidate = macos_dir.join("../Resources/models/embedder");
+    model_files_present(&candidate).then(|| candidate.canonicalize().unwrap_or(candidate))
 }
 
 /// Whether `path` holds a usable model: both config files plus safetensors or
@@ -592,5 +616,24 @@ mod tests {
         let b = vec![0.0, 1.0, 0.0];
         let sim = EmbedderEngine::similarity(&a, &b);
         assert!(sim.abs() < 0.001);
+    }
+
+    #[test]
+    fn resolves_signed_app_embedder_resource_from_executable_geometry() {
+        let temp = tempfile::tempdir().unwrap();
+        let contents = temp.path().join("Codescribe.app/Contents");
+        let executable = contents.join("MacOS/Codescribe");
+        let model = contents.join("Resources/models/embedder");
+        std::fs::create_dir_all(executable.parent().unwrap()).unwrap();
+        std::fs::create_dir_all(&model).unwrap();
+        std::fs::write(&executable, b"").unwrap();
+        for name in ["config.json", "tokenizer.json", "model.safetensors"] {
+            std::fs::write(model.join(name), b"fixture").unwrap();
+        }
+
+        assert_eq!(
+            bundled_model_path_for_executable(&executable),
+            Some(model.canonicalize().unwrap())
+        );
     }
 }

@@ -10,8 +10,8 @@
     <!-- dead code with 0 references and was removed).                                    -->
     <!--                                                                                  -->
     <!-- DO NOT flip the hardened-runtime relaxations below back to <false/>: they are    -->
-    <!-- REQUIRED by the embedded ML dylibs (Whisper STT + MiniLM embeddings) that ship   -->
-    <!-- inside the bundle. Tightening them WILL break model loading at launch. Any change -->
+    <!-- REQUIRED by Candle ML execution (Whisper STT + MiniLM embeddings), whether model -->
+    <!-- weights are runtime resources or binary payloads. Tightening them WILL break ML  -->
     <!-- here must be verified by an operator-side launch test (app starts + STT/embed    -->
     <!-- models load) before merging. App Sandbox is intentionally NOT enabled (this app  -->
     <!-- is distributed outside the Mac App Store).                                        -->
@@ -20,12 +20,12 @@
     <key>com.apple.security.device.audio-input</key>
     <true/>
 
-    <!-- REQUIRED by embedded ML dylibs (Whisper/MiniLM): unsigned executable memory for -->
+    <!-- REQUIRED by Candle ML dylibs (Whisper/MiniLM): unsigned executable memory for -->
     <!-- JIT/codegen used by the ML runtime. Do not set <false/> without a launch test. -->
     <key>com.apple.security.cs.allow-unsigned-executable-memory</key>
     <true/>
 
-    <!-- REQUIRED by embedded ML dylibs: DYLD environment variables for runtime/library -->
+    <!-- REQUIRED by Candle ML dylibs: DYLD environment variables for runtime/library -->
     <!-- path resolution. Do not set <false/> without a launch test. -->
     <key>com.apple.security.cs.allow-dyld-environment-variables</key>
     <true/>

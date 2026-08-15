@@ -306,16 +306,21 @@ The Rust AppKit `ui/voice_chat/` module (`mod.rs` / `api.rs` / `handlers.rs` / `
 
 ## Model Location
 
-**Current runtime truth**: Whisper is embedded by default when the model snapshot is
-available at build time. Runtime lookup remains available as a fallback when
-embedding is disabled with `CODESCRIBE_NO_EMBED=1` or the build cannot embed the
-model:
+**Current runtime truth**: daily builds keep Whisper and MiniLM weights out of
+Cargo artifacts. MiniLM loads from the signed app resource (or HF cache for CLI
+and development); Whisper resolves from the paths below. Explicit fat builds
+may still opt into binary embedding:
 
 1. `CODESCRIBE_MODEL_PATH` environment variable
 2. `~/.codescribe/models/whisper-large-v3-turbo/` (fp16 default)
 3. Hugging Face cache snapshots for `mlx-community/whisper-large-v3-turbo`
 4. Legacy fallback: `whisper-large-v3-turbo-mlx-q8` dir or
    `LibraxisAI/whisper-large-v3-turbo-mlx-q8` snapshots
+
+MiniLM resolution: `CODESCRIBE_EMBEDDER_PATH`, then
+`Codescribe.app/Contents/Resources/models/embedder`, then the configured/default
+Hugging Face cache snapshot. `CODESCRIBE_EMBED_EMBEDDER=1` is the explicit
+binary-embed escape hatch.
 
 ## Related Documentation
 

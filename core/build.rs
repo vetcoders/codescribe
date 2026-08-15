@@ -8,7 +8,10 @@
 //! (`resolve_runtime_whisper_model_path`) — the model is held in memory for the
 //! session anyway, so baking ~1GB into every artifact only multiplied target/
 //! into tens of GB for zero runtime win (2026-06-10 policy, operator-decided).
-//! Release builds still embed Silero VAD + MiniLM embedder by default.
+//! MiniLM follows the same runtime-load policy as Whisper: normal builds load
+//! it from the app resource bundle or HF cache; only
+//! `CODESCRIBE_EMBED_EMBEDDER=1` bakes it into the Rust artifact. Silero VAD
+//! remains embedded because it is small and part of capture identity.
 //! Opt-out of all optional embedding with CODESCRIBE_NO_EMBED=1 (except Silero).
 //! TTS requires opt-in via CODESCRIBE_EMBED_TTS.
 //!
@@ -45,10 +48,10 @@ const DEFAULT_TTS_REPO: &str = "sesame/csm-1b";
 /// Hugging Face repo id for Mimi codec weights used with TTS embedding.
 const DEFAULT_MIMI_REPO: &str = "kyutai/mimi";
 
-/// Default embedder model — MiniLM multilingual (~224MB fp16, always embedded like Silero)
+/// Default embedder model — MiniLM multilingual (~471MB fp32 weights on disk).
 /// Override with CODESCRIBE_EMBEDDER_REPO for alternative models
 const DEFAULT_EMBEDDER_MODEL_NAME: &str = "minilm-l12-v2";
-/// Default sentence-transformers MiniLM repo embedded unless `CODESCRIBE_NO_EMBED`.
+/// Default sentence-transformers MiniLM repo resolved from bundle/cache at runtime.
 const DEFAULT_EMBEDDER_REPO: &str = "sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2";
 /// Env flag: local install path skips release license-key hardening in `main`.
 const LOCAL_INSTALL_ENV: &str = "CODESCRIBE_LOCAL_INSTALL";
@@ -57,8 +60,8 @@ const LOCAL_INSTALL_ENV: &str = "CODESCRIBE_LOCAL_INSTALL";
 /// compiles against.
 ///
 /// Each asset has its own policy, and they are not symmetrical: Silero VAD is
-/// non-negotiable and its absence panics; MiniLM embeds by default; Whisper and
-/// TTS are opt-in. A requested-but-missing model degrades to a `cargo:warning`
+/// non-negotiable and its absence panics; MiniLM, Whisper and TTS are opt-in.
+/// A requested-but-missing model degrades to a `cargo:warning`
 /// and a runtime lookup rather than failing the build — only the committed
 /// Silero file is treated as a repo invariant.
 fn main() {
@@ -67,6 +70,7 @@ fn main() {
     println!("cargo:rerun-if-env-changed=CODESCRIBE_MODEL_PATH");
     println!("cargo:rerun-if-env-changed=CODESCRIBE_NO_EMBED");
     println!("cargo:rerun-if-env-changed=CODESCRIBE_EMBED_WHISPER");
+    println!("cargo:rerun-if-env-changed=CODESCRIBE_EMBED_EMBEDDER");
     println!("cargo:rerun-if-env-changed=CODESCRIBE_EMBED_TTS");
     println!("cargo:rerun-if-env-changed=CODESCRIBE_TTS_PATH");
     println!("cargo:rerun-if-env-changed=CODESCRIBE_EMBEDDER_REPO");
@@ -212,8 +216,9 @@ fn main() {
             );
         }
 
-        // MiniLM embedder — always embedded (like Silero), ~224MB fp16
-        // Skip only with CODESCRIBE_NO_EMBED=1
+        // MiniLM embedder — runtime bundle/cache by default, matching Whisper.
+        // Binary embedding is an explicit fat-SKU/debug request only.
+        let embed_embedder_requested = env_flag("CODESCRIBE_EMBED_EMBEDDER", false);
         let embedder_repo = env::var("CODESCRIBE_EMBEDDER_REPO")
             .ok()
             .map(|v| v.trim().to_string())
@@ -226,7 +231,8 @@ fn main() {
             && embedder_model_path.join("tokenizer.json").exists()
             && embedder_model_path.join("model.safetensors").exists();
 
-        if !no_embed && embedder_model_exists {
+        let embedder_embedded = embed_embedder_requested && !no_embed && embedder_model_exists;
+        if embedder_embedded {
             println!(
                 "cargo:warning=Embedding MiniLM model from: {}",
                 embedder_model_path.display()
@@ -247,7 +253,7 @@ fn main() {
             fs::write(&embedder_dest_path, embedder_content)
                 .expect("Failed to write embedded_embedder_data.rs");
             println!("cargo:rustc-cfg=embed_embedder");
-        } else if !no_embed && !embedder_model_exists {
+        } else if embed_embedder_requested && !no_embed && !embedder_model_exists {
             println!(
                 "cargo:warning=Embedder model not found at: {}",
                 embedder_model_path.display()
@@ -323,12 +329,12 @@ fn main() {
         };
         let embedder_summary = if qube_context {
             "not_used"
-        } else if !no_embed && embedder_model_exists {
+        } else if embedder_embedded {
             "embedded"
-        } else if no_embed {
-            "runtime_load_from_cache"
-        } else {
+        } else if embed_embedder_requested && !no_embed {
             "missing_at_build_time"
+        } else {
+            "runtime_load_from_bundle_or_cache"
         };
         let tts_summary = if qube_context {
             "not_used"

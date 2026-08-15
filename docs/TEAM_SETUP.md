@@ -59,10 +59,11 @@ Grant in: System Settings > Privacy & Security
 
 ## Model
 
-**Embedded-first Whisper policy**: `whisper-large-v3-turbo` (mlx-community fp16; legacy q8 fallback)
-**Embedded Embedder**: `paraphrase-multilingual-MiniLM-L12-v2` (for semantic gating)
+**Runtime Whisper policy**: `whisper-large-v3-turbo` (mlx-community fp16; legacy q8 fallback)
+**Runtime Embedder**: `paraphrase-multilingual-MiniLM-L12-v2` (signed app resource or HF cache, for semantic gating)
 
-- `core/build.rs` embeds Whisper by default when a complete model is available at build time.
+- `core/build.rs` keeps Whisper and MiniLM out of normal Cargo artifacts; explicit
+  `CODESCRIBE_EMBED_WHISPER=1` / `CODESCRIBE_EMBED_EMBEDDER=1` builds are fat debug/offline paths.
 - Runtime fallback resolves Whisper from exactly one shared contract in `core/config/models.rs`:
   `CODESCRIBE_MODEL_PATH` → configured local model path/alias → configured HF repo snapshot →
   default local turbo model → default HF cache snapshot.
