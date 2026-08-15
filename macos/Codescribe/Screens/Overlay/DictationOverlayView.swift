@@ -44,10 +44,6 @@ struct DictationOverlayView: View {
   private let transcriptMinHeight: CGFloat = 84
   private let buttonRadius: CGFloat = 10
 
-  /// Anchor id for the live transcript's tail. `scrollTo` pins it to the bottom on
-  /// every append so the newest text stays visible without any user interaction.
-  private let transcriptBottomAnchor = "overlayTranscriptBottom"
-
   var body: some View {
     GlassPanel(cornerRadius: CSRadius.window) {
       VStack(alignment: .leading, spacing: 0) {
@@ -308,74 +304,32 @@ struct DictationOverlayView: View {
     }
   }
 
-  /// Scrollable live transcript that ALWAYS follows the tail: every append pins
-  /// the view to the newest text with no user interaction required. The follow is
-  /// unconditional and intentional here because this scroll only exists while
-  /// `.listening` — during a hold-to-talk session the modifier key is held, so the
-  /// user physically cannot scroll, and pinning to the bottom is the only way the
-  /// growing transcript stays legible (an earlier "pause on manual scroll up"
-  /// heuristic mis-read normal content overflow as a scroll gesture and killed the
-  /// follow exactly when it was needed, hiding the newest chunk). Manual scroll is
-  /// owned by the terminal `.formatted` TextEditor, which is never driven by this.
-  /// A `minHeight` reserves ~2–3 lines so the tail is visible even at the min
-  /// window size instead of collapsing behind the waveform.
+  /// Native live transcript: follows the newest words until the user clicks or
+  /// selects an older phrase. The `NSTextView` keeps that selection stable across
+  /// ongoing stream updates, so drag selection, Cmd-C and context-menu Copy work
+  /// during recording without stopping capture. A `minHeight` reserves ~2–3 lines
+  /// at the window floor.
   private var transcriptScroll: some View {
-    ScrollViewReader { proxy in
-      ScrollView(.vertical, showsIndicators: true) {
-        VStack(alignment: .leading, spacing: 0) {
-          HStack(alignment: .bottom, spacing: 2) {
-            if state.highlightsEnabled, !state.highlights.isEmpty {
-              OverlayHighlightCanvas(
-                runs: state.highlightCanvasRuns,
-                selectedId: state.selectedHighlightId,
-                onSelect: { state.selectHighlight($0) }
-              )
-            } else {
-              Text(state.listeningDisplay)
-                .csFont(15, .medium)
-                .lineSpacing(5)
-                .foregroundStyle(CSColor.textBody)
-                .fixedSize(horizontal: false, vertical: true)
-                .accessibilityIdentifier("overlay-transcript-live")
-            }
-            BlinkingCaret()
-          }
-          if state.highlightsEnabled {
-            OverlayHighlightTeachBar(
-              highlights: state.highlights,
-              selectedId: state.selectedHighlightId,
-              onSelect: { state.selectHighlight($0) },
-              onTeach: { state.sendHighlightToTeach($0) }
-            )
-            .padding(.top, 8)
-          }
-          Color.clear
-            .frame(height: 1)
-            .id(transcriptBottomAnchor)
+    VStack(alignment: .leading, spacing: 0) {
+      LiveTranscriptTextView(runs: state.highlightCanvasRuns)
+        .overlay(alignment: .bottomTrailing) {
+          BlinkingCaret()
+            .padding(.trailing, 3)
+            .allowsHitTesting(false)
         }
-        .frame(maxWidth: .infinity, alignment: .leading)
-      }
-      .frame(minHeight: transcriptMinHeight)
-      .accessibilityIdentifier("overlay-transcript-area")
-      .onChange(of: state.listeningDisplay) { _, _ in
-        scrollToTail(proxy)
-      }
-      .onAppear { scrollToTail(proxy) }
-    }
-  }
-
-  /// Pin the live transcript to its bottom anchor. A short ease keeps rapid
-  /// word-by-word appends from snapping harshly while still tracking the tail.
-  private func scrollToTail(_ proxy: ScrollViewProxy) {
-    // Defer one runloop tick: `onChange` fires before SwiftUI lays out the
-    // freshly appended text, so scrolling synchronously targets the previous
-    // content height and clips the newest word. By the next tick the bottom
-    // anchor sits below the new tail.
-    DispatchQueue.main.async {
-      withAnimation(.easeOut(duration: 0.14)) {
-        proxy.scrollTo(transcriptBottomAnchor, anchor: .bottom)
+        .frame(minHeight: transcriptMinHeight)
+        .accessibilityIdentifier("overlay-transcript-area")
+      if state.highlightsEnabled {
+        OverlayHighlightTeachBar(
+          highlights: state.highlights,
+          selectedId: state.selectedHighlightId,
+          onSelect: { state.selectHighlight($0) },
+          onTeach: { state.sendHighlightToTeach($0) }
+        )
+        .padding(.top, 8)
       }
     }
+    .frame(maxWidth: .infinity, alignment: .leading)
   }
 
   private var formattedBody: some View {
