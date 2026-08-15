@@ -19,6 +19,9 @@
 //! - `--raw` = the Ctrl-hold contract: literal words, no Light+.
 //! - `-f/--format` = the AI-formatted lane (same `ai_formatting` call and
 //!   lane config the GUI uses; requires a configured key).
+//! - `transcribe live` = follow the app-owned clean transcript bus and flush
+//!   newly committed utterances to stdout one line at a time. It never opens a
+//!   second microphone or reconstructs text from UI previews.
 //!
 //! Provenance goes to stderr, GUI-truth style, so stdout stays pipeable.
 //! The old `daemon` mode is gone on purpose: the SwiftUI app owns runtime.
@@ -38,12 +41,12 @@ struct Cli {
 
 #[derive(Subcommand)]
 enum Command {
-    /// Transcribe an audio file (wav/mp3/m4a) through the product pipeline
+    /// Transcribe a file or follow the app-owned live transcript bus
     Transcribe {
-        /// Path to the audio file
-        file: std::path::PathBuf,
-        /// Language code (e.g. pl, en). Default: auto-detect
-        #[arg(short, long)]
+        /// Path to the audio file (omit when using `transcribe live`)
+        file: Option<std::path::PathBuf>,
+        /// File language; live accepts it for compatibility but app settings own capture
+        #[arg(short, long, global = true)]
         language: Option<String>,
         /// Live-canvas view: flush each decoded segment as it lands
         #[arg(long)]
@@ -54,7 +57,15 @@ enum Command {
         /// AI formatting via the configured formatting lane (same as the GUI)
         #[arg(short, long)]
         format: bool,
+        #[command(subcommand)]
+        mode: Option<TranscribeMode>,
     },
+}
+
+#[derive(Subcommand)]
+enum TranscribeMode {
+    /// Follow the app's committed transcript bus; Ctrl-C closes the reader
+    Live,
 }
 
 fn main() -> anyhow::Result<()> {
@@ -66,8 +77,114 @@ fn main() -> anyhow::Result<()> {
             stream,
             raw,
             format,
-        } => transcribe(&file, language.as_deref(), stream, raw, format),
+            mode,
+        } => match mode {
+            Some(TranscribeMode::Live) => {
+                anyhow::ensure!(
+                    file.is_none() && !stream && !raw && !format,
+                    "`transcribe live` does not accept a file, --stream, --raw, or --format"
+                );
+                transcribe_live(language)
+            }
+            None => {
+                let file = file.ok_or_else(|| {
+                    anyhow::anyhow!("missing <FILE> (or use `codescribe transcribe live`)")
+                })?;
+                transcribe(&file, language.as_deref(), stream, raw, format)
+            }
+        },
     }
+}
+
+fn transcribe_live(language: Option<String>) -> anyhow::Result<()> {
+    use codescribe::presentation::transcript_bus::{CleanTranscriptEvent, transcript_bus_path};
+    use std::io::{Read, Seek, SeekFrom, Write as _};
+
+    let path = transcript_bus_path();
+    let mut offset = std::fs::metadata(&path)
+        .map(|metadata| metadata.len())
+        .unwrap_or(0);
+    let mut pending = Vec::<u8>::new();
+    let runtime = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()?;
+
+    runtime.block_on(async move {
+        eprintln!("codescribe live: app transcript bus -> committed stdout");
+        eprintln!("bus={} start=end stop=Ctrl-C", path.display());
+        eprintln!(
+            "language_hint={} owner=Codescribe.app",
+            language.as_deref().unwrap_or("auto")
+        );
+
+        loop {
+            tokio::select! {
+                signal = tokio::signal::ctrl_c() => {
+                    signal?;
+                    eprintln!("codescribe live: stopped");
+                    return Ok(());
+                }
+                () = tokio::time::sleep(std::time::Duration::from_millis(100)) => {}
+            }
+
+            let mut file = match std::fs::File::open(&path) {
+                Ok(file) => file,
+                Err(error) if error.kind() == std::io::ErrorKind::NotFound => continue,
+                Err(error) => return Err(error.into()),
+            };
+            let file_len = file.metadata()?.len();
+            if file_len < offset {
+                offset = 0;
+                pending.clear();
+            }
+            file.seek(SeekFrom::Start(offset))?;
+            let mut chunk = Vec::new();
+            file.read_to_end(&mut chunk)?;
+            offset = offset.saturating_add(u64::try_from(chunk.len()).unwrap_or(u64::MAX));
+            pending.extend_from_slice(&chunk);
+
+            while let Some(newline) = pending.iter().position(|byte| *byte == b'\n') {
+                let line: Vec<u8> = pending.drain(..=newline).collect();
+                let line = &line[..line.len().saturating_sub(1)];
+                if line.is_empty() {
+                    continue;
+                }
+                let event: CleanTranscriptEvent = match serde_json::from_slice(line) {
+                    Ok(event) => event,
+                    Err(error) => {
+                        eprintln!("codescribe live: invalid transcript event: {error}");
+                        continue;
+                    }
+                };
+                if let Some(text) = live_event_text(&event.status, &event.text) {
+                    let stdout = std::io::stdout();
+                    let mut out = stdout.lock();
+                    writeln!(out, "{text}")?;
+                    out.flush()?;
+                } else if event.status == "utterance_revised" {
+                    eprintln!(
+                        "codescribe live: revision available session={} utterance={}",
+                        event.session_id,
+                        event
+                            .utterance_id
+                            .map(|id| id.to_string())
+                            .unwrap_or_else(|| "unknown".to_string())
+                    );
+                }
+            }
+        }
+    })
+}
+
+/// Plain stdout is intentionally append-only. Revisions remain machine-readable
+/// in the canonical NDJSON bus and are announced on stderr without transcript
+/// content; consumers that need patch semantics should follow the bus directly.
+fn live_event_text<'a>(status: &str, text: &'a str) -> Option<&'a str> {
+    if status != "utterance_committed" {
+        return None;
+    }
+    let text = text.trim();
+    (!text.is_empty()).then_some(text)
 }
 
 fn transcribe(
@@ -158,4 +275,35 @@ fn transcribe(
         ai_status.as_deref().unwrap_or("off"),
     );
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn live_command_is_a_subcommand_not_a_file_named_live() {
+        let cli = Cli::try_parse_from(["codescribe", "transcribe", "live", "--language", "pl"])
+            .expect("live command should parse");
+        let Command::Transcribe {
+            file,
+            language,
+            mode,
+            ..
+        } = cli.command;
+        assert!(file.is_none());
+        assert_eq!(language.as_deref(), Some("pl"));
+        assert!(matches!(mode, Some(TranscribeMode::Live)));
+    }
+
+    #[test]
+    fn live_plain_text_emits_only_nonempty_commits() {
+        assert_eq!(
+            live_event_text("utterance_committed", "  instrukcja  "),
+            Some("instrukcja")
+        );
+        assert_eq!(live_event_text("utterance_committed", "  "), None);
+        assert_eq!(live_event_text("utterance_revised", "poprawka"), None);
+        assert_eq!(live_event_text("session_finalized", "całość"), None);
+    }
 }
