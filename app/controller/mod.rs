@@ -267,6 +267,17 @@ impl Drop for AtomicFlagGuard {
     }
 }
 
+/// Keep the last session WAV at a stable path so overlay Retranscribe
+/// (Full HQ / Cloud) can re-run without depending on a temp file still
+/// being there after stop.
+fn retain_last_session_audio(path: &std::path::Path) {
+    let dest = crate::config::Config::config_dir().join("last_session.wav");
+    match std::fs::copy(path, &dest) {
+        Ok(_) => info!("last_session.wav retained at {}", dest.display()),
+        Err(err) => warn!("last_session.wav retain failed: {err:#}"),
+    }
+}
+
 /// What one stop-and-process pass produced: the delivery decision plus the
 /// per-phase wall clock that the stop-path budget line reports.
 #[derive(Debug, Clone, Default)]
@@ -2744,6 +2755,9 @@ impl RecordingController {
         } else {
             None
         };
+        if let Some(path) = &audio_path {
+            retain_last_session_audio(path.as_path());
+        }
 
         let recording_timestamp = chrono::Local::now();
 

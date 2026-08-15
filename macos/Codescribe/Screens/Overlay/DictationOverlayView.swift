@@ -5,7 +5,9 @@ import SwiftUI
 //
 // Layout (top → bottom):
 //   header      brand wordmark · status pill · Auto Paste · placement (…) menu
-//   mode + meta tag chip (RECORDING/AGENT/PROCESSING/READY) · meta line
+//   mode + meta tag chip (RECORDING/AGENT/PROCESSING/READY) · timer · meta
+//   body        listening = light spectrometer + sealed transcript (main)
+//               formatted = editable finalized transcript (main)
 //   body        listening = waveform (live RMS level) + word-reveal transcript
 //               formatted = editable finalized transcript
 //   action row  recording: Finish; finalized: Copy · Insert · Format · To Agent.
@@ -40,8 +42,8 @@ struct DictationOverlayView: View {
     // with the transcript. `DictationOverlayWindow.minSize.height` (300) still
     // covers chrome + this floor — the content column stays ≤ the window frame
     // (see the corner-clip note above).
-    private let bodyMinHeight: CGFloat = 130
-    private let transcriptMinHeight: CGFloat = 84
+    private let bodyMinHeight: CGFloat = 148
+    private let transcriptMinHeight: CGFloat = 118
     private let buttonRadius: CGFloat = 10
 
     /// Anchor id for the live transcript's tail. `scrollTo` pins it to the bottom on
@@ -292,12 +294,12 @@ struct DictationOverlayView: View {
         VStack(alignment: .leading, spacing: 0) {
             WaveformView(
                 active: !state.transcribing && !state.isFinalPass && (state.audioReady || state.vadActive),
-                transcribing: state.transcribing || state.isFinalPass,
+                transcribing: state.transcribing || state.isFinalPass || state.isRetranscribing,
                 indicatorMode: state.indicatorMode,
                 meter: state.levelMeter
             )
-            .padding(.top, 4)
-            .padding(.bottom, 8)
+            .padding(.top, 2)
+            .padding(.bottom, 4)
             transcriptScroll
         }
     }
@@ -319,8 +321,8 @@ struct DictationOverlayView: View {
                 VStack(alignment: .leading, spacing: 0) {
                     HStack(alignment: .bottom, spacing: 2) {
                         Text(state.listeningCanvas)
-                            .csFont(15, .medium)
-                            .lineSpacing(5)
+                            .csFont(19, .medium)
+                            .lineSpacing(6)
                             .fixedSize(horizontal: false, vertical: true)
                             .textSelection(.enabled)
                             .accessibilityIdentifier("overlay-transcript-live")
@@ -362,9 +364,9 @@ struct DictationOverlayView: View {
                 get: { state.formattedText },
                 set: { state.userEditedTranscript($0) }
             ))
-                .csFont(15)
+                .csFont(19)
                 .foregroundStyle(CSColor.textHigh)
-                .lineSpacing(5)
+                .lineSpacing(6)
                 .scrollContentBackground(.hidden)
                 .background(Color.clear)
                 .frame(minHeight: bodyMinHeight)
@@ -502,6 +504,8 @@ struct DictationOverlayView: View {
 
                 manualFormatMenu(iconOnly: iconOnly)
 
+                manualRetranscribeMenu(iconOnly: iconOnly)
+
                 actionButton(
                     title: OverlayActionPresentation.sendTitle,
                     help: OverlayActionPresentation.sendHelp,
@@ -510,6 +514,8 @@ struct DictationOverlayView: View {
                     iconOnly: iconOnly,
                     action: { state.sendToAgent() }
                 )
+            } else if state.mode == .noSpeech {
+                manualRetranscribeMenu(iconOnly: iconOnly)
             }
 
             Spacer(minLength: 0)
@@ -549,6 +555,32 @@ struct DictationOverlayView: View {
         .accessibilityValue(state.autoFormatLevel == .off ? "Auto Format Off" : "Auto Format \(state.autoFormatLevel.visibleName)")
         .accessibilityHint(OverlayActionPresentation.formatHelp)
         .accessibilityIdentifier("overlay-format-menu")
+    }
+
+    private func manualRetranscribeMenu(iconOnly: Bool) -> some View {
+        Menu {
+            ForEach(OverlayRetranscribePass.allCases) { pass in
+                Button(pass.visibleName) {
+                    state.retranscribe(pass: pass)
+                }
+            }
+        } label: {
+            actionButtonLabel(
+                title: state.isRetranscribing ? "Retranscribing..." : OverlayActionPresentation.retranscribeTitle,
+                icon: "arrow.triangle.2.circlepath",
+                tone: .neutral,
+                iconOnly: iconOnly
+            )
+        }
+        .menuStyle(.button)
+        .csFocusRing(cornerRadius: 8)
+        .menuIndicator(.hidden)
+        .help(OverlayActionPresentation.retranscribeHelp)
+        .disabled(!state.canRetranscribe)
+        .opacity(state.canRetranscribe ? 1 : 0.45)
+        .accessibilityLabel(OverlayActionPresentation.retranscribeTitle)
+        .accessibilityHint(OverlayActionPresentation.retranscribeHelp)
+        .accessibilityIdentifier("overlay-retranscribe-menu")
     }
 
     private func actionButton(

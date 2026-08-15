@@ -104,6 +104,7 @@ protocol DictationEngine: AnyObject {
     func pasteTargetAppName() async -> String?
     func sendAssistiveTranscript(text: String) async throws -> Bool
     func transcribeFile(path: String) async throws -> CsTranscription
+    func lastSessionAudioPath() -> String?
 }
 
 struct OverlayPolicySnapshot: Equatable {
@@ -115,8 +116,31 @@ enum OverlayActionPresentation {
     static let manualFormatLevels = FormattingPolicyOption.editablePrompts
     static let formatTitle = "Format"
     static let formatHelp = "Format transcript once as Correction, Smart, or Max"
+    static let retranscribeTitle = "Retranscribe"
+    static let retranscribeHelp = "Re-run the session audio as Full HQ file pass or Cloud pass"
     static let sendTitle = "To Agent"
     static let sendHelp = "Send transcript to the agent"
+}
+
+enum OverlayRetranscribePass: String, CaseIterable, Identifiable {
+    case fullHq = "hq"
+    case cloud = "cloud"
+
+    var id: String { rawValue }
+
+    var visibleName: String {
+        switch self {
+        case .fullHq: "Full HQ file pass"
+        case .cloud: "Cloud pass"
+        }
+    }
+
+    var help: String {
+        switch self {
+        case .fullHq: "Full local Whisper file pass over the last session audio"
+        case .cloud: "Cloud STT pass over the last session audio"
+        }
+    }
 }
 
 struct OverlayInsertActionPresentation: Equatable {
@@ -182,6 +206,7 @@ final class OverlayState: ObservableObject {
     @Published private(set) var sessionConfidenceFlags: [String] = []
     @Published var errorMessage: String?
     @Published var isFormatting: Bool = false
+    @Published var isRetranscribing: Bool = false
     @Published var formatFailureStatus: String?
     /// Prompt-free policy snapshot from C02's persisted settings owner. These
     /// values are replaced only by a fresh engine read, never by optimistic UI.
@@ -548,8 +573,17 @@ final class OverlayState: ObservableObject {
     var canFormat: Bool {
         mode == .formatted
             && !isFormatting
+            && !isRetranscribing
             && engine?.isFormattingAvailable() == true
             && !formattedText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+    }
+
+    var canRetranscribe: Bool {
+        !recording
+            && !isRetranscribing
+            && !isFormatting
+            && (mode == .formatted || mode == .noSpeech)
+            && engine?.lastSessionAudioPath() != nil
     }
 
     var canRevert: Bool {
@@ -714,6 +748,35 @@ final class OverlayState: ObservableObject {
                 self.cancelAutoHide()
                 self.errorMessage = "Couldn't format transcript: \(error)"
                 self.showToast("Couldn't format transcript")
+            }
+        }
+    }
+
+    func retranscribe(pass: OverlayRetranscribePass) {
+        guard let engine, canRetranscribe else { return }
+        guard let audioPath = engine.lastSessionAudioPath() else { return }
+        let source = activeText
+        isRetranscribing = true
+        cancelAutoHide()
+        Task { @MainActor in
+            defer { self.isRetranscribing = false }
+            do {
+                let prefixed = "\(pass.rawValue):\(audioPath)"
+                let result = try await engine.transcribeFile(path: prefixed)
+                let next = result.text.trimmingCharacters(in: .whitespacesAndNewlines)
+                if next.isEmpty {
+                    self.formatFailureStatus = "retranscribe — empty"
+                    self.showToast("Retranscribe returned no speech")
+                    return
+                }
+                if !source.isEmpty { self.preFormatText = source }
+                self.formattedText = result.text
+                self.formatFailureStatus = nil
+                self.mode = .formatted
+                self.cancelAutoHide()
+            } catch {
+                self.formatFailureStatus = "retranscribe — \(pass.visibleName) failed"
+                self.showToast("Couldn't retranscribe")
             }
         }
     }
@@ -1874,6 +1937,7 @@ final class OverlayState: ObservableObject {
 final class ControllerDictationEngine: DictationEngine {
     private let hotkeys = CodescribeHotkeys()
     private let config = CodescribeConfig()
+    private let dictation = CodescribeDictation()
 
     func setListener(_ listener: CsTranscriptionListener) {
         hotkeys.setListener(listener: listener)
@@ -1933,9 +1997,11 @@ final class ControllerDictationEngine: DictationEngine {
         try await hotkeys.sendAssistiveTranscript(text: text)
     }
     func transcribeFile(path: String) async throws -> CsTranscription {
-        throw NSError(domain: "CodescribeRedesign", code: 1, userInfo: [
-            NSLocalizedDescriptionKey: "File transcription is not available through the hotkey controller."
-        ])
+        try await dictation.transcribeFile(path: path)
+    }
+    func lastSessionAudioPath() -> String? {
+        let path = (config.configDir() as NSString).appendingPathComponent("last_session.wav")
+        return FileManager.default.fileExists(atPath: path) ? path : nil
     }
 }
 
@@ -2081,5 +2147,6 @@ final class MockDictationEngine: DictationEngine {
     func transcribeFile(path: String) async throws -> CsTranscription {
         CsTranscription(text: "", language: "en")
     }
+    func lastSessionAudioPath() -> String? { nil }
 }
 #endif
