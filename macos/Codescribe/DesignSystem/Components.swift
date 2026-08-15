@@ -171,26 +171,39 @@ extension View {
 }
 
 /// Dark glass container: ultraThinMaterial tinted + hairline border + deep shadow.
+/// Overlay passes `sitsInForest` so the panel drinks the desktop instead of
+/// painting an opaque under-layer that killed the original glass.
 struct GlassPanel<Content: View>: View {
     var cornerRadius: CGFloat = CSRadius.window
     var blurTint: Double = 0.84
+    var sitsInForest: Bool = false
     @ViewBuilder var content: Content
 
     var body: some View {
         content
             .background(
                 ZStack {
-                    CSColor.glassUnder
-                    Rectangle().fill(.ultraThinMaterial).environment(\.colorScheme, .dark)
-                    CSColor.glassBase.opacity(blurTint - 0.6) // subtle warm tint over the material
+                    if sitsInForest {
+                        Rectangle().fill(.ultraThinMaterial).environment(\.colorScheme, .dark)
+                        CSColor.ink.opacity(0.22)
+                    } else {
+                        CSColor.glassUnder
+                        Rectangle().fill(.ultraThinMaterial).environment(\.colorScheme, .dark)
+                        CSColor.glassBase.opacity(blurTint - 0.6)
+                    }
                 }
             )
             .clipShape(RoundedRectangle(cornerRadius: cornerRadius, style: .continuous))
             .overlay(
                 RoundedRectangle(cornerRadius: cornerRadius, style: .continuous)
-                    .strokeBorder(CSColor.hairline(0.09), lineWidth: 1)
+                    .strokeBorder(CSColor.hairline(sitsInForest ? 0.07 : 0.09), lineWidth: 1)
             )
-            .shadow(color: .black.opacity(0.6), radius: 50, x: 0, y: 40)
+            .shadow(
+                color: .black.opacity(sitsInForest ? 0.22 : 0.6),
+                radius: sitsInForest ? 22 : 50,
+                x: 0,
+                y: sitsInForest ? 10 : 40
+            )
     }
 }
 

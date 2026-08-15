@@ -223,6 +223,94 @@ final class OverlayStateTests: XCTestCase {
         XCTAssertEqual(state.mode, .formatted)
     }
 
+    func testTranscriptEditIsOptInUntilClick() {
+        let state = OverlayState()
+        state.mode = .formatted
+        state.formattedText = "hello"
+        XCTAssertFalse(state.isEditingTranscript)
+        state.beginTranscriptEdit()
+        XCTAssertTrue(state.isEditingTranscript)
+        state.endTranscriptEdit()
+        XCTAssertFalse(state.isEditingTranscript)
+    }
+
+    func testPresencePolicyRisesForScreenshotAndYieldsToAlerts() {
+        XCTAssertEqual(
+            OverlayPresencePolicy.resolve(screenshotChord: true, shouldYield: true),
+            .capture
+        )
+        XCTAssertEqual(
+            OverlayPresencePolicy.resolve(screenshotChord: false, shouldYield: true),
+            .yield
+        )
+        XCTAssertEqual(
+            OverlayPresencePolicy.resolve(screenshotChord: false, shouldYield: false),
+            .rest
+        )
+        XCTAssertTrue(
+            OverlayPresencePolicy.shouldYield(
+                frontmostBundleId: "com.apple.SecurityAgent",
+                modalWindowPresent: false
+            )
+        )
+        XCTAssertFalse(
+            OverlayPresencePolicy.shouldYield(
+                frontmostBundleId: "com.apple.Terminal",
+                modalWindowPresent: false
+            )
+        )
+        XCTAssertTrue(
+            OverlayPresencePolicy.shouldYield(
+                frontmostBundleId: "com.apple.Terminal",
+                modalWindowPresent: true
+            )
+        )
+    }
+
+    func testTranscriptEditIsOptInUntilClick() {
+        let state = OverlayState()
+        state.mode = .formatted
+        state.formattedText = "hello"
+        XCTAssertFalse(state.isEditingTranscript)
+        state.beginTranscriptEdit()
+        XCTAssertTrue(state.isEditingTranscript)
+        state.endTranscriptEdit()
+        XCTAssertFalse(state.isEditingTranscript)
+    }
+
+    func testPresencePolicyRisesForScreenshotAndYieldsToAlerts() {
+        XCTAssertEqual(
+            OverlayPresencePolicy.resolve(screenshotChord: true, shouldYield: true),
+            .capture
+        )
+        XCTAssertEqual(
+            OverlayPresencePolicy.resolve(screenshotChord: false, shouldYield: true),
+            .yield
+        )
+        XCTAssertEqual(
+            OverlayPresencePolicy.resolve(screenshotChord: false, shouldYield: false),
+            .rest
+        )
+        XCTAssertTrue(
+            OverlayPresencePolicy.shouldYield(
+                frontmostBundleId: "com.apple.SecurityAgent",
+                modalWindowPresent: false
+            )
+        )
+        XCTAssertFalse(
+            OverlayPresencePolicy.shouldYield(
+                frontmostBundleId: "com.apple.Terminal",
+                modalWindowPresent: false
+            )
+        )
+        XCTAssertTrue(
+            OverlayPresencePolicy.shouldYield(
+                frontmostBundleId: "com.apple.Terminal",
+                modalWindowPresent: true
+            )
+        )
+    }
+
     func testApprovedOverlayActionPresentationIsLiteralAndLevelBounded() {
         XCTAssertEqual(OverlayActionPresentation.sendTitle, "To Agent")
         XCTAssertEqual(OverlayActionPresentation.sendHelp, "Send transcript to the agent")

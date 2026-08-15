@@ -207,6 +207,7 @@ final class OverlayState: ObservableObject {
     @Published var errorMessage: String?
     @Published var isFormatting: Bool = false
     @Published var isRetranscribing: Bool = false
+    @Published var isEditingTranscript: Bool = false
     @Published var formatFailureStatus: String?
     /// Prompt-free policy snapshot from C02's persisted settings owner. These
     /// values are replaced only by a fresh engine read, never by optimistic UI.
@@ -949,6 +950,7 @@ final class OverlayState: ObservableObject {
         warmingUp = false
         transcribing = false
         isFinalPass = false
+        isEditingTranscript = false
         onClose?()
     }
 
@@ -971,6 +973,17 @@ final class OverlayState: ObservableObject {
         guard let truth = engine?.currentOverlayPolicy() else { return }
         autoPasteEnabled = truth.autoPasteEnabled
         autoFormatLevel = truth.autoFormatLevel
+    }
+
+    func beginTranscriptEdit() {
+        guard mode == .formatted else { return }
+        isEditingTranscript = true
+        cancelAutoHide()
+    }
+
+    func endTranscriptEdit() {
+        guard isEditingTranscript else { return }
+        isEditingTranscript = false
     }
 
     /// TextEditor writes through this seam so only actual user edits — never a
@@ -1135,6 +1148,7 @@ final class OverlayState: ObservableObject {
         isFinalPass = false
         mode = .listening
         warmingUp = true
+        isEditingTranscript = false
         audioReady = false
         hasMeasuredAudioLevel = false
         levelMeter.reset()
