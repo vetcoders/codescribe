@@ -145,7 +145,7 @@ current_list() { cat "$FAKE_SECURITY_STATE/search-list"; }
 current_default() { cat "$FAKE_SECURITY_STATE/default"; }
 
 assert_list_equals() {
-  local expected want got
+  local expected got
   expected="$(printf '%s\n' "$@")"
   got="$(current_list)"
   if [[ "$got" == "$expected" ]]; then
@@ -248,7 +248,7 @@ test_case "failed build (exit 7) still restores the search list"
 seed_list "$HOME/Library/Keychains/login.keychain-db"
 run_child 'keychain_session_begin codescribe-signing >/dev/null; exit 7' >/dev/null
 rc=$?
-[[ $rc -eq 7 ]] && ok "child exit code preserved (7)" || bad "child exit code was $rc, expected 7"
+if [[ $rc -eq 7 ]]; then ok "child exit code preserved (7)"; else bad "child exit code was $rc, expected 7"; fi
 assert_list_equals "$HOME/Library/Keychains/login.keychain-db"
 teardown_env
 
@@ -358,6 +358,7 @@ teardown_env
 setup_env
 test_case "no password material is ever printed"
 seed_list "$HOME/Library/Keychains/login.keychain-db"
+# shellcheck disable=SC2016  # the $(...) is for the child shell, not this one
 OUT="$(run_child 'keychain_session_begin codescribe-signing >/dev/null
                   cat "$(keychain_session_password_file)" > "'"$ROOT"'/pw.txt"
                   keychain_session_end' 2>&1)"
@@ -386,12 +387,13 @@ DEAD="/private/tmp/wiped-release/dist/Vibecrafted-signing.keychain-db"
 printf '%s\n%s\n' "$DEAD" "$LOGIN" > "$FAKE_SECURITY_STATE/search-list"
 printf '%s\n' "$DEAD" > "$FAKE_SECURITY_STATE/default"
 BEFORE="$(cat "$FAKE_SECURITY_STATE/search-list")$(cat "$FAKE_SECURITY_STATE/default")"
-REPORT="$(bash "$DOCTOR" 2>&1)"; DRC=$?
-[[ $DRC -eq 1 ]] && ok "doctor exit 1 on a poisoned domain" || bad "doctor exit was $DRC, expected 1"
-[[ "$REPORT" == *"STALE"* ]] && ok "doctor names the stale entries" || bad "doctor did not report STALE"
-[[ "$REPORT" == *"$LOGIN"* ]] && ok "doctor derives recovery from the surviving entries" || bad "doctor did not print a derived recovery line"
+DRC=0
+REPORT="$(bash "$DOCTOR" 2>&1)" || DRC=$?
+if [[ $DRC -eq 1 ]]; then ok "doctor exit 1 on a poisoned domain"; else bad "doctor exit was $DRC, expected 1"; fi
+if [[ "$REPORT" == *"STALE"* ]]; then ok "doctor names the stale entries"; else bad "doctor did not report STALE"; fi
+if [[ "$REPORT" == *"$LOGIN"* ]]; then ok "doctor derives recovery from the surviving entries"; else bad "doctor did not print a derived recovery line"; fi
 AFTER="$(cat "$FAKE_SECURITY_STATE/search-list")$(cat "$FAKE_SECURITY_STATE/default")"
-[[ "$BEFORE" == "$AFTER" ]] && ok "doctor mutated nothing" || bad "doctor changed the keychain domain"
+if [[ "$BEFORE" == "$AFTER" ]]; then ok "doctor mutated nothing"; else bad "doctor changed the keychain domain"; fi
 if awk -F'\t' '{for(i=1;i<=NF;i++) if($i=="-s") exit 1} END{exit 0}' "$FAKE_SECURITY_STATE/argv.log"; then
   ok "doctor never issued a mutating -s form"
 else
@@ -405,8 +407,11 @@ teardown_env
 setup_env
 test_case "doctor is green on a healthy domain"
 seed_list "$HOME/Library/Keychains/login.keychain-db"
-bash "$DOCTOR" >/dev/null 2>&1
-[[ $? -eq 0 ]] && ok "doctor exit 0 when every path exists" || bad "doctor flagged a healthy domain"
+if bash "$DOCTOR" >/dev/null 2>&1; then
+  ok "doctor exit 0 when every path exists"
+else
+  bad "doctor flagged a healthy domain"
+fi
 teardown_env
 
 # ==========================================================================
@@ -419,6 +424,7 @@ setup_env
 test_case "the login session's default keychain is never taken by default"
 LOGIN="$HOME/Library/Keychains/login.keychain-db"
 seed_list "$LOGIN"
+# shellcheck disable=SC2016  # the $(...) is for the child shell, not this one
 run_child 'keychain_session_begin codescribe-signing >/dev/null
            printf "%s" "$(cat "'"$FAKE_SECURITY_STATE"'/default")" > "'"$ROOT"'/default-during.txt"
            keychain_session_end' >/dev/null
@@ -444,13 +450,17 @@ test_case "KEYCHAIN_SESSION_SET_DEFAULT=1 takes the default and gives it back"
 LOGIN="$HOME/Library/Keychains/login.keychain-db"
 seed_list "$LOGIN"
 export KEYCHAIN_SESSION_SET_DEFAULT=1
+# shellcheck disable=SC2016  # the $(...) is for the child shell, not this one
 run_child 'keychain_session_begin codescribe-signing >/dev/null
            printf "%s" "$(cat "'"$FAKE_SECURITY_STATE"'/default")" > "'"$ROOT"'/default-during.txt"
            keychain_session_end' >/dev/null 2>&1
 unset KEYCHAIN_SESSION_SET_DEFAULT
 DUR="$(cat "$ROOT/default-during.txt")"
-[[ "$DUR" != "$LOGIN" && -n "$DUR" ]] && ok "opt-in took the default during the session" \
-  || bad "opt-in did not take the default (saw '$DUR')"
+if [[ "$DUR" != "$LOGIN" && -n "$DUR" ]]; then
+  ok "opt-in took the default during the session"
+else
+  bad "opt-in did not take the default (saw '$DUR')"
+fi
 assert_default_is "$LOGIN" "opt-in default handed back on end"
 teardown_env
 
@@ -465,14 +475,17 @@ LIVE="$ROOT/private-tmp/vibecrafted-ci/dist/Vibecrafted-signing.keychain-db"
 mkdir -p "$(dirname "$LIVE")"; printf 'live\n' > "$LIVE"
 printf '%s\n%s\n' "$LIVE" "$LOGIN" > "$FAKE_SECURITY_STATE/search-list"
 printf '%s\n' "$LIVE" > "$FAKE_SECURITY_STATE/default"
-REPORT="$(bash "$DOCTOR" 2>&1)"; DRC=$?
-[[ $DRC -eq 1 ]] && ok "doctor exit 1 although every file exists" || bad "doctor exit was $DRC, expected 1"
-[[ "$REPORT" == *"FOREIGN"* ]] && ok "doctor grades the build keychain FOREIGN" || bad "doctor did not grade it FOREIGN"
-[[ "$REPORT" == *"HIJACKED"* ]] && ok "doctor grades the stolen default HIJACKED" || bad "doctor did not grade the default HIJACKED"
-[[ "$REPORT" == *"$LOGIN"* ]] && ok "doctor derives recovery from the resident entries" || bad "no derived recovery line"
-[[ "$REPORT" == *"release is running"* || "$REPORT" == *"release is signing"* ]] \
-  && ok "doctor warns against recovering under a live release" \
-  || bad "doctor did not warn about a live release"
+DRC=0
+REPORT="$(bash "$DOCTOR" 2>&1)" || DRC=$?
+if [[ $DRC -eq 1 ]]; then ok "doctor exit 1 although every file exists"; else bad "doctor exit was $DRC, expected 1"; fi
+if [[ "$REPORT" == *"FOREIGN"* ]]; then ok "doctor grades the build keychain FOREIGN"; else bad "doctor did not grade it FOREIGN"; fi
+if [[ "$REPORT" == *"HIJACKED"* ]]; then ok "doctor grades the stolen default HIJACKED"; else bad "doctor did not grade the default HIJACKED"; fi
+if [[ "$REPORT" == *"$LOGIN"* ]]; then ok "doctor derives recovery from the resident entries"; else bad "no derived recovery line"; fi
+if [[ "$REPORT" == *"release is running"* || "$REPORT" == *"release is signing"* ]]; then
+  ok "doctor warns against recovering under a live release"
+else
+  bad "doctor did not warn about a live release"
+fi
 teardown_env
 
 # ==========================================================================
