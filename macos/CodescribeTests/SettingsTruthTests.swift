@@ -924,6 +924,61 @@ final class SettingsTruthTests: XCTestCase {
     )
   }
 
+  func testAgentResetIsSeparatelyConfirmedAndNamesPreservedSurfaces() throws {
+    var calls = 0
+    let preview = CsAgentResetPreview(
+      threads: 2,
+      files: 5,
+      totalBytes: 2_048,
+      secretsPresent: true
+    )
+    let engine = MockSettingsEngine(
+      agentResetPreviewValue: preview,
+      resetAgentDataObserver: { calls += 1 }
+    )
+    let model = SettingsViewModel(engine: engine)
+
+    model.refreshAgentResetPreview()
+    XCTAssertEqual(model.agentResetPreview.threads, 2)
+    XCTAssertTrue(resetAgentConfirmationMatches("RESET AGENT"))
+    XCTAssertFalse(resetAgentConfirmationMatches("RESET"))
+    XCTAssertFalse(resetAgentConfirmationMatches("reset agent"))
+    XCTAssertTrue(model.resetAgentImpactDescription().contains("Recordings, transcriptions"))
+    XCTAssertTrue(model.resetAgentImpactDescription().contains("license"))
+
+    try engine.resetAgentData()
+    XCTAssertEqual(calls, 1)
+  }
+
+  func testAgentDefaultsResetLeavesHotkeysAndOtherPreferencesUntouched() {
+    let suite = "SettingsTruthTests.agent-reset-\(UUID().uuidString)"
+    guard let defaults = UserDefaults(suiteName: suite) else {
+      XCTFail("create isolated defaults suite")
+      return
+    }
+    defaults.set("queued Agent turn", forKey: AgentChatStore.acceptedTurnsDefaultsKey)
+    defaults.set("attachment metadata", forKey: AgentChatStore.attachmentMetadataDefaultsKey)
+    defaults.set("ctrl-space", forKey: "codescribe.hotkey")
+    defaults.set("dictation preference", forKey: "codescribe.dictation")
+
+    AppRelaunch.clearAgentDefaults(defaults: defaults)
+
+    XCTAssertNil(defaults.object(forKey: AgentChatStore.acceptedTurnsDefaultsKey))
+    XCTAssertNil(defaults.object(forKey: AgentChatStore.attachmentMetadataDefaultsKey))
+    XCTAssertEqual(defaults.string(forKey: "codescribe.hotkey"), "ctrl-space")
+    XCTAssertEqual(defaults.string(forKey: "codescribe.dictation"), "dictation preference")
+    defaults.removePersistentDomain(forName: suite)
+  }
+
+  func testOnlyPostMutationAgentResetErrorsRequireRelaunch() {
+    XCTAssertFalse(agentResetFailureRequiresRelaunch("failed to prepare Agent Trash destination"))
+    XCTAssertTrue(
+      agentResetFailureRequiresRelaunch(
+        "CODESCRIBE_AGENT_RESET_RELAUNCH_REQUIRED: failed to remove Agent secret"
+      )
+    )
+  }
+
   func testOnlyPostDestructiveResetErrorsRequireRelaunch() {
     XCTAssertFalse(resetFailureRequiresRelaunch("failed to prepare Trash destination"))
     XCTAssertTrue(

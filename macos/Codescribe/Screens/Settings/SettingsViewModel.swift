@@ -545,11 +545,19 @@ func resetConfirmationMatches(_ text: String) -> Bool {
   text == "RESET"
 }
 
+func resetAgentConfirmationMatches(_ text: String) -> Bool {
+  text == "RESET AGENT"
+}
+
 /// Rust marks failures that occurred after the first irreversible data move.
 /// Those are errors for audit/recovery, but staying in the current process is
 /// no longer safe because its app-data plane is deliberately latched.
 func resetFailureRequiresRelaunch(_ description: String) -> Bool {
   description.contains("CODESCRIBE_RESET_RELAUNCH_REQUIRED")
+}
+
+func agentResetFailureRequiresRelaunch(_ description: String) -> Bool {
+  description.contains("CODESCRIBE_AGENT_RESET_RELAUNCH_REQUIRED")
 }
 
 func resetImpactSummary(_ preview: CsResetPreview) -> String {
@@ -788,11 +796,29 @@ extension UInt64 {
 /// guard would terminate the freshly-launched copy.
 @MainActor
 enum AppRelaunch {
+  /// Erases only durable Agent queue/attachment state. Agent window layout and
+  /// all non-Agent preferences (including hotkeys and dictation) deliberately
+  /// survive this narrow reset.
+  static func clearAgentDefaults(defaults: UserDefaults = .standard) {
+    defaults.removeObject(forKey: AgentChatStore.acceptedTurnsDefaultsKey)
+    defaults.removeObject(forKey: AgentChatStore.attachmentMetadataDefaultsKey)
+    defaults.synchronize()
+  }
+
+  static func clearAgentDefaultsAndRelaunch() {
+    clearAgentDefaults()
+    relaunch()
+  }
+
   static func clearDefaultsAndRelaunch() {
     if let bundleId = Bundle.main.bundleIdentifier {
       UserDefaults.standard.removePersistentDomain(forName: bundleId)
       UserDefaults.standard.synchronize()
     }
+    relaunch()
+  }
+
+  private static func relaunch() {
     let bundlePath = Bundle.main.bundlePath
     let task = Process()
     task.launchPath = "/bin/sh"
@@ -925,6 +951,7 @@ final class SettingsViewModel: ObservableObject {
   @Published private(set) var audioInput: CsAudioInputSnapshot
   @Published private(set) var audioInputReadError: String?
   @Published private(set) var resetPreview: CsResetPreview
+  @Published private(set) var agentResetPreview: CsAgentResetPreview
   @Published private(set) var licenseStatus: CsLicenseStatus
   /// Provider ids with a "Sign in with ChatGPT" flow in flight (browser open,
   /// local callback server listening). Guards double-clicks.
@@ -1031,6 +1058,7 @@ final class SettingsViewModel: ObservableObject {
     self.audioInput = .sample
     self.audioInputReadError = nil
     self.resetPreview = .sample
+    self.agentResetPreview = .sample
     self.licenseStatus = self.licenseService.status
     // K4: tray cycles arrive on the bus; reload Settings badge display.
     // Register after every stored property is initialized (Swift init order).
@@ -1219,7 +1247,11 @@ final class SettingsViewModel: ObservableObject {
       try hotkeys.resetToDefaults()
       loadHotkeys()
     } catch {
-      lastError = String(describing: error)
+      let description = String(describing: error)
+      lastError = description
+      if agentResetFailureRequiresRelaunch(description) {
+        AppRelaunch.clearAgentDefaultsAndRelaunch()
+      }
     }
   }
 
@@ -1439,6 +1471,41 @@ final class SettingsViewModel: ObservableObject {
       return
     }
     AppRelaunch.clearDefaultsAndRelaunch()
+  }
+
+  // MARK: - Reset Agent (narrow destructive action)
+
+  func refreshAgentResetPreview() {
+    guard let engine else { return }
+    agentResetPreview = engine.resetAgentPreview()
+  }
+
+  func resetAgentImpactDescription() -> String {
+    let preview = agentResetPreview
+    let threadWord = preview.threads == 1 ? "thread" : "threads"
+    let fileWord = preview.files == 1 ? "file" : "files"
+    let secretState = preview.secretsPresent ? "Provider API/OAuth secrets are present and will be deleted permanently." : "No provider API/OAuth secrets are currently stored."
+    return "Moves \(preview.threads) Agent \(threadWord) and \(preview.files) Agent \(fileWord) to Trash. "
+      + secretState
+      + " Recordings, transcriptions, dictionary and lexicon data, quality corpus and reports, prompts, audio, hotkeys, dictation settings, license, and macOS permissions stay unchanged."
+  }
+
+  func resetAgentData() {
+    guard let engine else { return }
+    do {
+      try engine.resetAgentData()
+      mcpTestResults = [:]
+      reloadMcpServers()
+      refreshAgentStatus()
+      refreshAgentResetPreview()
+      AppRelaunch.clearAgentDefaultsAndRelaunch()
+    } catch {
+      let description = String(describing: error)
+      lastError = description
+      if agentResetFailureRequiresRelaunch(description) {
+        AppRelaunch.clearAgentDefaultsAndRelaunch()
+      }
+    }
   }
 
   func clearMcpConfiguration() {

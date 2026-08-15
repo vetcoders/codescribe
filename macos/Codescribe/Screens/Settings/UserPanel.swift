@@ -188,6 +188,9 @@ struct UserPanel: View {
       }
       .padding(.top, 11)
 
+      ResetAgentSection(model: model)
+        .padding(.top, 24)
+
       ResetAppDataSection(model: model)
         .padding(.top, 30)
     }
@@ -262,6 +265,74 @@ struct UserPanel: View {
 }
 
 // MARK: - Danger zone
+
+/// A deliberately narrow reset for Agent state. It is separate from the full
+/// app-data reset so it cannot clear dictation, recordings, prompts or license.
+private struct ResetAgentSection: View {
+  @ObservedObject var model: SettingsViewModel
+  @State private var confirming = false
+  @State private var confirmationText = ""
+
+  var body: some View {
+    VStack(alignment: .leading, spacing: 0) {
+      SettingsSectionLabel("Reset Agent")
+        .foregroundStyle(CSColor.dangerLight)
+
+      Text(
+        "Moves only Agent conversations, runtime identity, MCP and tool state to Trash. "
+          + "Provider API and OAuth secrets are deleted permanently. "
+          + "Recordings, transcriptions, dictionary, lexicon, quality reports, prompts, audio, hotkeys, dictation, license, and macOS permissions are preserved."
+      )
+      .font(CSFont.mono(11, .medium))
+      .foregroundStyle(CSColor.textMutedAlt)
+      .fixedSize(horizontal: false, vertical: true)
+      .padding(.top, 6)
+
+      Button(role: .destructive) {
+        model.refreshAgentResetPreview()
+        confirmationText = ""
+        confirming = true
+      } label: {
+        Text("Reset Agent…")
+          .font(CSFont.ui(12, .semibold))
+          .foregroundStyle(CSColor.dangerLight)
+          .padding(.horizontal, 16)
+          .padding(.vertical, 8)
+          .background(
+            RoundedRectangle(cornerRadius: CSRadius.input, style: .continuous)
+              .fill(CSColor.danger.opacity(0.14))
+          )
+          .overlay(
+            RoundedRectangle(cornerRadius: CSRadius.input, style: .continuous)
+              .strokeBorder(CSColor.danger.opacity(0.42), lineWidth: 1)
+          )
+      }
+      .csFocusRing(cornerRadius: 8)
+      .padding(.top, 13)
+      .accessibilityLabel("Reset Agent. Destructive action.")
+      .accessibilityHint("Shows Agent-only impact and requires typing RESET AGENT before continuing.")
+    }
+    .frame(maxWidth: .infinity, alignment: .leading)
+    .padding(.horizontal, 16)
+    .padding(.vertical, 16)
+    .background(
+      RoundedRectangle(cornerRadius: CSRadius.card, style: .continuous)
+        .fill(CSColor.danger.opacity(0.055))
+    )
+    .overlay(
+      RoundedRectangle(cornerRadius: CSRadius.card, style: .continuous)
+        .strokeBorder(CSColor.danger.opacity(0.55), lineWidth: 1)
+    )
+    .alert("Reset Agent?", isPresented: $confirming) {
+      TextField("Type RESET AGENT to continue", text: $confirmationText)
+      Button("Cancel", role: .cancel) { confirmationText = "" }
+      Button("Reset Agent", role: .destructive) { model.resetAgentData() }
+        .disabled(!resetAgentConfirmationMatches(confirmationText))
+    } message: {
+      Text(model.resetAgentImpactDescription())
+    }
+  }
+}
 
 /// The full-data reset lives only at the foot of User settings, away from MCP
 /// editing. Data is recoverable from Trash; Keychain deletion remains opt-in.

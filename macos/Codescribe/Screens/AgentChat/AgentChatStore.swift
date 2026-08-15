@@ -2080,7 +2080,9 @@ final class AgentChatStore: ObservableObject {
     let attachments: [PersistedAttachmentMetadata]
   }
 
-  private static let attachmentMetadataDefaultsKey = "AgentChatStore.attachmentMetadata.v1"
+  /// Agent-owned attachment sidecar. Reset Agent clears this alongside queued
+  /// accepted turns; UI layout preferences intentionally remain untouched.
+  static let attachmentMetadataDefaultsKey = "AgentChatStore.attachmentMetadata.v1"
 
   // MARK: Durable accepted-turn sidecar (queue persistence)
 

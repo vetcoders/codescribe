@@ -80,6 +80,8 @@ protocol SettingsEngine {
   // optionally remove Keychain keys. MCP-only clear is a separate concern.
   func resetPreview() -> CsResetPreview
   func resetAppData(includeKeys: Bool, includePrompts: Bool) throws
+  func resetAgentPreview() -> CsAgentResetPreview
+  func resetAgentData() throws
   func clearMcpConfiguration() throws
 }
 
@@ -184,6 +186,8 @@ final class RealSettingsEngine: SettingsEngine {
   func resetAppData(includeKeys: Bool, includePrompts: Bool) throws {
     try config.resetAppData(includeKeys: includeKeys, includePrompts: includePrompts)
   }
+  func resetAgentPreview() -> CsAgentResetPreview { config.resetAgentPreview() }
+  func resetAgentData() throws { try config.resetAgentData() }
   func clearMcpConfiguration() throws { try config.clearMcpConfiguration() }
 }
 
@@ -204,11 +208,13 @@ struct MockSettingsEngine: SettingsEngine {
   var lexiconEntriesLoader: (() throws -> [CsLexiconEntry])?
   var audioSnapshot: CsAudioInputSnapshot = .sample
   var resetPreviewValue: CsResetPreview = .sample
+  var agentResetPreviewValue: CsAgentResetPreview = .sample
   var formattingSnapshot: CsPromptSnapshot = .sampleFormatting
   var assistiveSnapshot: CsPromptSnapshot = .sampleAssistive
   var promptSaveObserver: ((String, String) throws -> Void)?
   var promptRestoreObserver: ((String) throws -> Void)?
   var resetAppDataObserver: ((Bool, Bool) throws -> Void)?
+  var resetAgentDataObserver: (() throws -> Void)?
   var clearMcpConfigurationObserver: (() throws -> Void)?
   var settingsLoader: (() -> CsSettings)?
   var updateConfigManyObserver: (([CsConfigEntry]) throws -> Void)?
@@ -367,6 +373,8 @@ struct MockSettingsEngine: SettingsEngine {
   func resetAppData(includeKeys: Bool, includePrompts: Bool) throws {
     try resetAppDataObserver?(includeKeys, includePrompts)
   }
+  func resetAgentPreview() -> CsAgentResetPreview { agentResetPreviewValue }
+  func resetAgentData() throws { try resetAgentDataObserver?() }
   func clearMcpConfiguration() throws {
     try clearMcpConfigurationObserver?()
   }
@@ -391,6 +399,15 @@ extension CsResetPreview {
     transcriptDays: 6,
     threads: 12,
     totalBytes: 31_981_568
+  )
+}
+
+extension CsAgentResetPreview {
+  static let sample = CsAgentResetPreview(
+    threads: 3,
+    files: 8,
+    totalBytes: 12_288,
+    secretsPresent: true
   )
 }
 
