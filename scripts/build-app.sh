@@ -22,6 +22,7 @@
 # Env toggles:
 #   SKIP_XCODEBUILD=1   stop after xcodegen (verifies stages 1-4 without Xcode)
 #   CODE_SIGNING_ALLOWED=YES|NO   passed through to xcodebuild (default NO)
+#   CODESCRIBE_EMBEDDER_BUNDLE_SOURCE=/path/to/model  explicit MiniLM resource source
 set -euo pipefail
 
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
@@ -57,6 +58,44 @@ require xcodegen "the app's .xcodeproj is generated, not committed: brew install
 if [ "${SKIP_XCODEBUILD:-0}" != "1" ]; then
   require xcodebuild "install Xcode (App Store), then: sudo xcodebuild -runFirstLaunch"
   require swiftc "install Xcode command line tools: xcode-select --install"
+fi
+
+resolve_embedder_source() {
+  local explicit="${CODESCRIBE_EMBEDDER_BUNDLE_SOURCE:-${CODESCRIBE_EMBEDDER_PATH:-}}"
+  if [[ -n "$explicit" && -f "$explicit/config.json" && -f "$explicit/tokenizer.json" && -f "$explicit/model.safetensors" ]]; then
+    printf '%s\n' "$explicit"
+    return 0
+  fi
+
+  local repo="${CODESCRIBE_EMBEDDER_REPO:-sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2}"
+  local repo_dir="models--${repo//\//--}"
+  local cache_roots=()
+  [[ -n "${CODESCRIBE_HF_CACHE:-}" ]] && cache_roots+=("$CODESCRIBE_HF_CACHE")
+  [[ -n "${HUGGINGFACE_HUB_CACHE:-}" ]] && cache_roots+=("$HUGGINGFACE_HUB_CACHE")
+  [[ -n "${HF_HUB_CACHE:-}" ]] && cache_roots+=("$HF_HUB_CACHE")
+  [[ -n "${HF_HOME:-}" ]] && cache_roots+=("$HF_HOME/hub")
+  cache_roots+=("$HOME/.cache/huggingface/hub")
+  cache_roots+=("$HOME/.codescribe/embeddings" "$HOME/.codescribe/embeddings/hub")
+
+  local cache snapshot
+  for cache in "${cache_roots[@]}"; do
+    [[ -d "$cache/$repo_dir/snapshots" ]] || continue
+    for snapshot in "$cache/$repo_dir/snapshots"/*; do
+      if [[ -f "$snapshot/config.json" && -f "$snapshot/tokenizer.json" && -f "$snapshot/model.safetensors" ]]; then
+        printf '%s\n' "$snapshot"
+        return 0
+      fi
+    done
+  done
+  return 1
+}
+
+EMBEDDER_RUNTIME_SOURCE=""
+if [[ "${SKIP_XCODEBUILD:-0}" != "1" && "${CODESCRIBE_EMBED_EMBEDDER:-0}" != "1" ]]; then
+  if ! EMBEDDER_RUNTIME_SOURCE="$(resolve_embedder_source)"; then
+    echo "error: MiniLM runtime resource not found; run 'make download-embedder' or set CODESCRIBE_EMBEDDER_BUNDLE_SOURCE" >&2
+    exit 1
+  fi
 fi
 
 SCHEME="Codescribe"
@@ -167,6 +206,17 @@ mkdir -p "$FRAMEWORKS" "$MACOS_DIR"
 cp "$DYLIB" "$FRAMEWORKS/"
 cp "$STT_SIDECAR_BIN" "$MACOS_DIR/codescribe-stt-sidecar"
 chmod 755 "$MACOS_DIR/codescribe-stt-sidecar"
+if [[ -n "$EMBEDDER_RUNTIME_SOURCE" ]]; then
+  EMBEDDER_BUNDLE_DIR="$APP/Contents/Resources/models/embedder"
+  mkdir -p "$EMBEDDER_BUNDLE_DIR"
+  cp -L "$EMBEDDER_RUNTIME_SOURCE/config.json" "$EMBEDDER_BUNDLE_DIR/config.json"
+  cp -L "$EMBEDDER_RUNTIME_SOURCE/tokenizer.json" "$EMBEDDER_BUNDLE_DIR/tokenizer.json"
+  cp -L "$EMBEDDER_RUNTIME_SOURCE/model.safetensors" "$EMBEDDER_BUNDLE_DIR/model.safetensors"
+  chmod 644 "$EMBEDDER_BUNDLE_DIR/config.json" "$EMBEDDER_BUNDLE_DIR/tokenizer.json" "$EMBEDDER_BUNDLE_DIR/model.safetensors"
+  echo "    MiniLM runtime resource bundled from HF/local model directory."
+else
+  echo "    MiniLM is compiled into the binary by explicit CODESCRIBE_EMBED_EMBEDDER=1."
+fi
 STT_BRIDGE_BUNDLED=0
 # Same host-triple pin as Makefile ENGINE_BRIDGE_TARGET (W0-B / S-1): avoid
 # inheriting the builder's macosxN.0 so bundled bridges match CI/dev hosts.

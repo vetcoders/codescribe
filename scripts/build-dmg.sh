@@ -21,9 +21,9 @@ APP_PATH="$ROOT_DIR/macos/build/Build/Products/Release/${APP_NAME}.app"
 SIGN=0
 NOTARIZE=0
 NO_EMBED=0
-# Public daily release is slim: Silero VAD + MiniLM only. Whisper resolves at
-# runtime (HF cache / ~/.codescribe/models / Settings download). Embed Whisper
-# only via --embed-whisper (curiosity / offline / experimental fat SKU).
+# Public daily release keeps Silero in the dylib and packages MiniLM as a signed
+# runtime resource. Whisper resolves from cache / Settings download. Embed
+# Whisper only via --embed-whisper (curiosity / offline / experimental fat SKU).
 EMBED_WHISPER=0
 EMBED_WHISPER_EXPLICIT=0
 DMG_SUFFIX=""
@@ -32,7 +32,8 @@ usage() {
   cat <<EOF
 Usage: $0 [options]
 
-Builds the public user artifact by default: embedded Silero VAD + MiniLM.
+Builds the public user artifact by default: embedded Silero VAD plus MiniLM as
+a signed runtime resource (not compiled through Cargo).
 Whisper is NOT baked into the standard DMG (~1GB saved); users download it
 from Settings → Dictation when they want local Candle Whisper.
 
@@ -87,14 +88,14 @@ BUILD_ENV=(env)
 # All `-u` (unset) flags MUST precede any name=value assignments: BSD/macOS
 # `env` stops parsing options at the first assignment (unlike GNU env), so an
 # interleaved `-u` would be treated as the utility name (env: -u: No such file).
-BUILD_ENV+=(-u CODESCRIBE_EMBED_TTS -u CODESCRIBE_LOCAL_INSTALL)
+BUILD_ENV+=(-u CODESCRIBE_EMBED_TTS -u CODESCRIBE_EMBED_EMBEDDER -u CODESCRIBE_LOCAL_INSTALL)
 if [[ "$NO_EMBED" -eq 1 ]]; then
   BUILD_ENV+=(-u CODESCRIBE_EMBED_WHISPER CODESCRIBE_NO_EMBED=1)
 elif [[ "$EMBED_WHISPER" -eq 1 ]]; then
-  # Optional fat SKU: Silero + MiniLM + Whisper baked in.
+  # Optional fat SKU: Silero + Whisper baked in; MiniLM stays a runtime resource.
   BUILD_ENV+=(-u CODESCRIBE_NO_EMBED CODESCRIBE_EMBED_WHISPER=1)
 else
-  # Public slim default: Silero + MiniLM; Whisper at runtime / Settings download.
+  # Public slim default: Silero in dylib; MiniLM resource; Whisper runtime.
   BUILD_ENV+=(-u CODESCRIBE_NO_EMBED -u CODESCRIBE_EMBED_WHISPER)
 fi
 
@@ -105,9 +106,9 @@ echo "Version: $VERSION"
 if [[ "$NO_EMBED" -eq 1 ]]; then
   echo "Models: runtime assets only (CODESCRIBE_NO_EMBED=1) — dev/recovery build, not the public artifact"
 elif [[ "$EMBED_WHISPER" -eq 1 ]]; then
-  echo "Models: embedded Silero + MiniLM + Whisper (fat SKU)"
+  echo "Models: embedded Silero + Whisper; MiniLM signed runtime resource (fat SKU)"
 else
-  echo "Models: embedded Silero + MiniLM; Whisper runtime/download (slim public default)"
+  echo "Models: embedded Silero; MiniLM signed runtime resource; Whisper runtime/download (slim public default)"
 fi
 echo "DMG: $DMG_PATH"
 

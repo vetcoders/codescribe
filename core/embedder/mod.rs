@@ -1,7 +1,7 @@
 //! Text Embedder module - semantic embeddings using MiniLM (offline).
 //!
 //! Provides semantic text embeddings for RAG, similarity search, and context matching.
-//! Uses a local/embedded paraphrase-multilingual-MiniLM-L12-v2 model (no runtime downloads by default).
+//! Uses a bundled, cached, or explicitly embedded paraphrase-multilingual-MiniLM-L12-v2 model (no runtime downloads).
 //! Override with `CODESCRIBE_EMBEDDER_REPO=sentence-transformers/...` (HF cache).
 //!
 //! ## Quick Start

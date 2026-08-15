@@ -114,22 +114,23 @@ build:
 	@echo "Building (debug)..."
 	@cargo build
 
-# Slim public default: Silero VAD + MiniLM. Whisper is runtime/cache/Settings download.
-# Do NOT set CODESCRIBE_EMBED_WHISPER here — that is the fat experimental SKU only.
+# Slim public default: Silero in the dylib; MiniLM is a signed app resource;
+# Whisper is runtime/cache/Settings download. Large model bytes never flow
+# through normal Cargo targets.
 release-codescribe: dist-preflight
-	@echo "Building codescribe-ffi (release dylib, embedded: Silero + MiniLM; Whisper runtime)..."
+	@echo "Building codescribe-ffi (release dylib: Silero embedded; MiniLM/Whisper runtime)..."
 	@echo "  The app front-end is no longer a Rust bin; this builds the UniFFI bridge dylib."
 	@echo "  Produce the runnable SwiftUI app with: make app PROFILE=release"
 	@echo "  Fat Whisper embed: make release-codescribe-embedded"
 	@CODESCRIBE_LICENSE_PUBLIC_KEY_HEX="$(CODESCRIBE_DIST_LICENSE_KEY)" \
-	 env -u CODESCRIBE_EMBED_WHISPER -u CODESCRIBE_NO_EMBED cargo build --release -p codescribe-ffi
+	 env -u CODESCRIBE_EMBED_WHISPER -u CODESCRIBE_EMBED_EMBEDDER -u CODESCRIBE_NO_EMBED cargo build --release -p codescribe-ffi
 
 # Optional fat SKU / offline curiosity: bake Whisper into the dylib (~1GB+).
 # Not the daily release path. Pair with `make release-full` for a _full DMG.
 release-codescribe-embedded: dist-preflight ensure-models
-	@echo "Building codescribe-ffi (FAT: Silero + MiniLM + Whisper embedded)..."
+	@echo "Building codescribe-ffi (FAT Whisper: Silero + Whisper embedded; MiniLM runtime resource)..."
 	@CODESCRIBE_EMBED_WHISPER=1 CODESCRIBE_LICENSE_PUBLIC_KEY_HEX="$(CODESCRIBE_DIST_LICENSE_KEY)" \
-	 cargo build --release -p codescribe-ffi
+	 env -u CODESCRIBE_EMBED_EMBEDDER cargo build --release -p codescribe-ffi
 
 # ── SwiftUI app (macos/) via the codescribe-ffi UniFFI bridge ────────────────
 # Full verified pipeline: cargo (ffi dylib) → uniffi-bindgen → xcodegen → xcodebuild.
@@ -150,10 +151,10 @@ release-qube: dist-preflight
 release: release-codescribe release-qube
 
 install:
-	@echo "Installing qube tools + codescribe CLI (slim: Silero + MiniLM; Whisper from cache / Settings)..."
+	@echo "Installing qube tools + codescribe CLI (Silero embedded; MiniLM/Whisper from cache)..."
 	@echo "Local install uses the development license verifier — same contract as install-app."
 	@./scripts/download-embedder.sh || true
-	@env -u CODESCRIBE_EMBED_WHISPER -u CODESCRIBE_NO_EMBED -u CODESCRIBE_LICENSE_PUBLIC_KEY_HEX \
+	@env -u CODESCRIBE_EMBED_WHISPER -u CODESCRIBE_EMBED_EMBEDDER -u CODESCRIBE_NO_EMBED -u CODESCRIBE_LICENSE_PUBLIC_KEY_HEX \
 	 CODESCRIBE_LOCAL_INSTALL=1 cargo install --path . --force
 	@mkdir -p ~/.codescribe
 	@$(MAKE) hooks
@@ -797,6 +798,8 @@ test-corpus-parity:
 	@set -euo pipefail; \
 	 root_args=(); \
 	 max_args=(); \
+	 source_identity="$$(git rev-parse HEAD)"; \
+	 if [ -n "$$(git status --porcelain --untracked-files=all)" ]; then source_identity="$$source_identity-dirty"; fi; \
 	 if [ ! -x "$(CORPUS_APPLE_BRIDGE)" ]; then \
 	   printf 'corpus parity refused: signed Apple STT bridge is not executable: %s\n' "$(CORPUS_APPLE_BRIDGE)" >&2; \
 	   exit 2; \
@@ -813,7 +816,7 @@ test-corpus-parity:
 	   --runs "$(CORPUS_RUNS)" \
 	   --references "$(CORPUS_REFERENCE_POLICY)" \
 	   --apple-bridge "$(CORPUS_APPLE_BRIDGE)" \
-	   --commit "$$(git rev-parse HEAD)"
+	   --commit "$$source_identity"
 
 # Host smoke for the macOS surfaces we own — run after every OS/Xcode bump.
 # Headless, raises no TCC dialog, posts no synthetic events; operator-only rows
@@ -1155,7 +1158,7 @@ help:
 	@printf '\n'
 	@printf '  $(HELP_C_YELLOW)%s$(HELP_C_RESET)\n' 'BUILD & INSTALL'
 	@printf '    $(HELP_C_GREEN)%-18s$(HELP_C_RESET) %s\n' 'build' 'Build debug binary'
-	@printf '    $(HELP_C_GREEN)%-18s$(HELP_C_RESET) %s\n' 'release' 'Build release dylib slim (Silero + MiniLM; Whisper runtime)'
+	@printf '    $(HELP_C_GREEN)%-18s$(HELP_C_RESET) %s\n' 'release' 'Build release dylib slim (Silero embedded; MiniLM/Whisper runtime)'
 	@printf '    $(HELP_C_GREEN)%-18s$(HELP_C_RESET) %s\n' 'install' 'Install CLI slim (Whisper via cache/Settings, not embedded)'
 	@printf '%s\n' '  make install-no-embed DEV/RECOVERY: no optional embeds (runtime paths only)'
 	@printf '%s\n' '  make release-codescribe-embedded Fat dylib with Whisper baked in (not daily)'
@@ -1260,7 +1263,8 @@ dist-preflight-signed: dist-preflight
 	fi
 	@echo "dist preflight: Sparkle public key OK (32-byte Ed25519 from $(if $(SPARKLE_ED_PUBLIC_KEY),environment,$(CODESCRIBE_SPARKLE_PUBLIC_KEY_FILE)))"
 
-# Daily slim DMG (public default): Silero + MiniLM, Whisper NOT embedded.
+# Daily slim DMG (public default): Silero embedded, MiniLM runtime resource,
+# Whisper NOT embedded.
 dmg: dist-preflight
 	@CODESCRIBE_LICENSE_PUBLIC_KEY_HEX="$(CODESCRIBE_DIST_LICENSE_KEY)" ./scripts/build-dmg.sh
 
@@ -1289,7 +1293,8 @@ release-standard: dist-preflight-signed
 	./scripts/verify-dmg-payload.sh "$$DMG" --variant slim --version "$$VERSION"
 
 # Optional fat SKU: bake Whisper (~1GB+) into the app. Not the daily path.
-# Ends with the fail-closed payload gate (full = Silero + MiniLM + Whisper).
+# Ends with the fail-closed payload gate (full = Silero + Whisper embedded,
+# MiniLM runtime resource).
 release-full: dist-preflight-signed ensure-models
 	@CODESCRIBE_CODESIGN_IDENTITY="$(CODESCRIBE_DIST_CODESIGN_IDENTITY)" \
 	 CODESCRIBE_LICENSE_PUBLIC_KEY_HEX="$(CODESCRIBE_DIST_LICENSE_KEY)" \

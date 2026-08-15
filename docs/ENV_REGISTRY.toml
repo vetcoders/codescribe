@@ -912,11 +912,11 @@ category = "embedder"
 description = "Override path to E5 embedder model directory"
 
 [vars.CODESCRIBE_EMBEDDER_REPO]
-default = "intfloat/multilingual-e5-large"
+default = "sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2"
 type = "string"
 reload = "rebuild"
 category = "embedder"
-description = "HF repo for E5 embedder (used for embedding at build/runtime)"
+description = "HF repo for the MiniLM semantic-gate model (runtime cache resolution and optional build-time embedding)"
 
 [vars.CODESCRIBE_EMBEDDER_DEVICE]
 default = ""
@@ -1450,7 +1450,7 @@ default = "0"
 type = "bool"
 reload = "rebuild"
 category = "build"
-description = "Skip embedding Whisper model in binary"
+description = "Skip every optional model embed in Rust artifacts; Silero remains embedded"
 
 [vars.CODESCRIBE_EMBED_WHISPER]
 default = "0"
@@ -1458,6 +1458,13 @@ type = "bool"
 reload = "rebuild"
 category = "build"
 description = "Opt-in: embed Whisper model in binary (distribution builds); default loads from HF cache at runtime"
+
+[vars.CODESCRIBE_EMBED_EMBEDDER]
+default = "0"
+type = "bool"
+reload = "rebuild"
+category = "build"
+description = "Opt-in fat/debug path: compile MiniLM into Rust artifacts; normal app builds package it as a signed runtime resource"
 
 [vars.CODESCRIBE_EMBED_TTS]
 default = "0"

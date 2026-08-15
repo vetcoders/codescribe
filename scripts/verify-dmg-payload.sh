@@ -1,24 +1,23 @@
 #!/bin/bash
 # verify-dmg-payload.sh — fail-closed DMG payload gate
 #
-# Signed ≠ complete. Regression 0.13.2 (≈89 MB DMG, dylib ≈30 MB, no MiniLM)
+# Signed ≠ complete. Regression 0.13.2 (≈89 MB DMG, no MiniLM)
 # passed codesign + notarize + staple. This gate is the defense class that
 # refuses an incomplete public artifact.
 #
 # Payload contract (core/build.rs + Makefile release-codescribe):
-#   slim: Silero VAD + MiniLM embedded; Whisper runtime/download
-#   full: Silero + MiniLM + Whisper embedded
-# CODESCRIBE_NO_EMBED=1 skips MiniLM — a known regression vector; size floors
-# catch it regardless of cause.
+#   slim: Silero VAD embedded + MiniLM signed runtime resource; Whisper runtime
+#   full: Silero + Whisper embedded + MiniLM signed runtime resource
+# MiniLM is checked directly under Contents/Resources/models/embedder; Cargo
+# target size is no longer used as a proxy for product completeness.
 #
 # Probe mechanism (calibrated 2026-08-04 on fixtures):
-#   Models land in libcodescribe_ffi.dylib via include_bytes! (__DATA).
-#   String markers alone are NOT reliable (runtime download paths keep the
-#   MiniLM/Whisper repo names even when weights are not embedded).
-#   Hard size floors on DMG + dylib are the primary fail-closed signal:
+#   Silero/optional Whisper land in libcodescribe_ffi.dylib. MiniLM is a normal
+#   signed app resource loaded at runtime. Hard file-presence/size checks plus
+#   DMG/dylib floors are the fail-closed signal:
 #     BAD 0.13.2:      dmg≈85 MB,  dylib≈29 MB
-#     GOOD slim 0.13.3: dmg≈501 MB, dylib≈488 MB
-#     GOOD full 0.13.3: dmg≈1.3 GB, dylib≈1.3 GB
+#     expected slim:    dmg≈501 MB, dylib≈30 MB, MiniLM≈471 MB resource
+#     expected full:    dmg≈1.3 GB, dylib≈800+ MB, MiniLM≈471 MB resource
 #
 # Usage:
 #   ./scripts/verify-dmg-payload.sh <dmg> --variant slim|full --version X.Y.Z
@@ -32,14 +31,15 @@
 set -euo pipefail
 
 # ── Calibrated thresholds (bytes) ────────────────────────────────────────────
-# MiniLM fp16 alone is ~224 MB; slim dylib with Silero+MiniLM+code ≈ 488 MB.
-# Floor at 400 MB leaves headroom for model-format changes without accepting
-# the no-embed regression (≈30 MB dylib).
+# The slim dylib contains code + Silero only; MiniLM has its own direct resource
+# gate below. Keep a low engine-presence floor instead of forcing model bytes
+# through Cargo artifacts.
 readonly SLIM_DMG_MIN=$((400 * 1024 * 1024))
-readonly SLIM_DYLIB_MIN=$((400 * 1024 * 1024))
-# Whisper large-v3-turbo-mlx-q8 + MiniLM + Silero ≈ 1.3 GB dylib.
+readonly SLIM_DYLIB_MIN=$((20 * 1024 * 1024))
+# Whisper large-v3-turbo + code/Silero remains in the full dylib.
 readonly FULL_DMG_MIN=$((1000 * 1024 * 1024))
-readonly FULL_DYLIB_MIN=$((1000 * 1024 * 1024))
+readonly FULL_DYLIB_MIN=$((700 * 1024 * 1024))
+readonly EMBEDDER_WEIGHTS_MIN=$((400 * 1024 * 1024))
 
 # Soft markers (advisory + secondary). Size is primary.
 readonly MARKER_MINILM='paraphrase-multilingual-MiniLM'
@@ -60,7 +60,7 @@ Usage: $0 <dmg> --variant slim|full --version X.Y.Z [--skip-notary]
 Fail-closed payload gate for Codescribe release DMGs.
 
   <dmg>               Path to Codescribe_*.dmg
-  --variant slim|full slim = Silero+MiniLM; full = +Whisper embedded
+  --variant slim|full slim = Silero + MiniLM resource; full = +Whisper embedded
   --version X.Y.Z     Expected CFBundleShortVersionString
   --skip-notary       Skip stapler + spctl (pre-notarization smoke)
 
@@ -185,7 +185,7 @@ case "$VARIANT" in
     ;;
 esac
 if (( DMG_BYTES < MIN_DMG )); then
-  fail "DMG too small for $VARIANT: $(human_mb "$DMG_BYTES") MB < $(human_mb "$MIN_DMG") MB floor — missing embedded payload (likely MiniLM/Whisper absent; CODESCRIBE_NO_EMBED or embed skip)"
+  fail "DMG too small for $VARIANT: $(human_mb "$DMG_BYTES") MB < $(human_mb "$MIN_DMG") MB floor — missing MiniLM resource and/or Whisper payload"
 else
   ok "DMG size $(human_mb "$DMG_BYTES") MB ≥ $(human_mb "$MIN_DMG") MB"
 fi
@@ -313,6 +313,22 @@ if [[ -n "${APP_PATH:-}" ]]; then
 
   # dylib payload
   echo ""
+  echo "▶ MiniLM runtime resource proof"
+  EMBEDDER_DIR="$APP_PATH/Contents/Resources/models/embedder"
+  EMBEDDER_WEIGHTS="$EMBEDDER_DIR/model.safetensors"
+  if [[ ! -f "$EMBEDDER_DIR/config.json" || ! -f "$EMBEDDER_DIR/tokenizer.json" || ! -f "$EMBEDDER_WEIGHTS" ]]; then
+    fail "MiniLM runtime resource incomplete at Contents/Resources/models/embedder"
+  else
+    EMBEDDER_BYTES=$(stat -f%z "$EMBEDDER_WEIGHTS")
+    if (( EMBEDDER_BYTES < EMBEDDER_WEIGHTS_MIN )); then
+      fail "MiniLM weights too small: $(human_mb "$EMBEDDER_BYTES") MB < $(human_mb "$EMBEDDER_WEIGHTS_MIN") MB"
+    else
+      ok "MiniLM runtime resource complete ($(human_mb "$EMBEDDER_BYTES") MB weights)"
+    fi
+  fi
+
+  # dylib payload
+  echo ""
   echo "▶ payload proof (libcodescribe_ffi.dylib, variant=$VARIANT)"
   DYLIB=$(find "$APP_PATH" -name 'libcodescribe_ffi.dylib' 2>/dev/null | head -1 || true)
   if [[ -z "$DYLIB" || ! -f "$DYLIB" ]]; then
@@ -322,17 +338,16 @@ if [[ -n "${APP_PATH:-}" ]]; then
     case "$VARIANT" in
       slim)
         MIN_DYLIB=$SLIM_DYLIB_MIN
-        EXPECT_LABEL="Silero + MiniLM (~224 MB MiniLM + Silero + code → dylib ≥ 400 MB)"
+        EXPECT_LABEL="engine code + embedded Silero (MiniLM is checked as a resource)"
         ;;
       full)
         MIN_DYLIB=$FULL_DYLIB_MIN
-        EXPECT_LABEL="Silero + MiniLM + Whisper (dylib ≥ 1000 MB)"
+        EXPECT_LABEL="engine code + Silero + embedded Whisper"
         ;;
     esac
 
     if (( DYLIB_BYTES < MIN_DYLIB )); then
-      # Primary regression signal for missing MiniLM (0.13.2 class).
-      fail "missing MiniLM (and/or Whisper) embed: dylib=$(human_mb "$DYLIB_BYTES") MB < $(human_mb "$MIN_DYLIB") MB floor for $VARIANT — expected $EXPECT_LABEL. Regression class: signed incomplete payload (0.13.2 had ≈29 MB dylib)."
+      fail "dylib=$(human_mb "$DYLIB_BYTES") MB < $(human_mb "$MIN_DYLIB") MB floor for $VARIANT — expected $EXPECT_LABEL"
     else
       ok "dylib size $(human_mb "$DYLIB_BYTES") MB ≥ $(human_mb "$MIN_DYLIB") MB ($VARIANT)"
     fi
@@ -348,10 +363,9 @@ if [[ -n "${APP_PATH:-}" ]]; then
     fi
 
     if grep -a -q -F "$MARKER_MINILM" "$DYLIB" 2>/dev/null; then
-      ok "minilm repo marker present in dylib (secondary; size is authority)"
+      ok "minilm runtime resolver marker present in dylib (secondary)"
     else
-      # Soft: repo string may relocate; size floor already enforced.
-      echo "  · note: MiniLM repo string not found via strings — size floor already applied"
+      echo "  · note: MiniLM repo marker absent from dylib — direct resource gate already applied"
     fi
 
     if [[ "$VARIANT" == "full" ]]; then

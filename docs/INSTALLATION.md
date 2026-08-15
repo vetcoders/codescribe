@@ -52,7 +52,7 @@ make notarize         # Notarize with Apple (requires Developer ID)
 # make release-dmgs    # Build + sign + notarize standard and full DMGs
 ```
 
-**Result**: standard `Codescribe_X.Y.Z-….dmg` (slim: Silero + MiniLM; Whisper via Settings download / cache) and optional `…_full.dmg` (embeds Whisper too). Daily operator flow is slim: `make release && make dmg-signed && make notarize`.
+**Result**: standard `Codescribe_X.Y.Z-….dmg` (slim: Silero embedded, MiniLM signed as a runtime resource, Whisper via Settings download / cache) and optional `…_full.dmg` (embeds Whisper too). Daily operator flow is slim: `make release && make dmg-signed && make notarize`.
 
 ### About panel commit stamp
 
