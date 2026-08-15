@@ -1247,11 +1247,7 @@ final class SettingsViewModel: ObservableObject {
       try hotkeys.resetToDefaults()
       loadHotkeys()
     } catch {
-      let description = String(describing: error)
-      lastError = description
-      if agentResetFailureRequiresRelaunch(description) {
-        AppRelaunch.clearAgentDefaultsAndRelaunch()
-      }
+      lastError = String(describing: error)
     }
   }
 
@@ -1484,8 +1480,12 @@ final class SettingsViewModel: ObservableObject {
     let preview = agentResetPreview
     let threadWord = preview.threads == 1 ? "thread" : "threads"
     let fileWord = preview.files == 1 ? "file" : "files"
-    let secretState = preview.secretsPresent ? "Provider API/OAuth secrets are present and will be deleted permanently." : "No provider API/OAuth secrets are currently stored."
-    return "Moves \(preview.threads) Agent \(threadWord) and \(preview.files) Agent \(fileWord) to Trash. "
+    let secretState =
+      preview.secretsPresent
+      ? "Agent provider and MCP connector secrets are present and will be deleted permanently."
+      : "No Agent provider or MCP connector secrets are currently stored."
+    return
+      "Moves \(preview.threads) Agent \(threadWord) and \(preview.files) Agent \(fileWord) to Trash. "
       + secretState
       + " Recordings, transcriptions, dictionary and lexicon data, quality corpus and reports, prompts, audio, hotkeys, dictation settings, license, and macOS permissions stay unchanged."
   }

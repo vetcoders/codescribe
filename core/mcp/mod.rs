@@ -23,7 +23,7 @@ pub use client::{
     default_mcp_config_path,
 };
 pub use config_store::{
-    McpProbeSummary, McpServerSpec, McpServerSummary, add_server, list_servers,
+    McpProbeSummary, McpServerSpec, McpServerSummary, add_server, list_servers, list_servers_at,
     probe_server_blocking, remove_server, test_server_blocking, update_server,
 };
 pub use secret_migration::{

@@ -1258,6 +1258,17 @@ impl CodescribeConfig {
     /// intentionally not recoverable. This deliberately does not use the
     /// full-app reset fence or its broad root move.
     pub fn reset_agent_data(&self) -> Result<(), CsError> {
+        // Resolve connector-owned Keychain accounts before `mcp.json` is moved.
+        // A malformed config fails closed while no destructive mutation has
+        // started; otherwise its bearer tokens would become invisible orphans.
+        let mut secret_accounts: Vec<String> = agent_secret_accounts()
+            .iter()
+            .map(|account| (*account).to_string())
+            .collect();
+        secret_accounts.extend(
+            agent_connector_secret_accounts()
+                .map_err(|error| agent_reset_error(false, error.to_string()))?,
+        );
         let trash = codescribe_trash_dir()?;
         let destination = create_agent_reset_destination(&trash)?;
         let paths = agent_reset_paths();
@@ -1293,7 +1304,7 @@ impl CodescribeConfig {
             )
         })?;
 
-        for account in agent_secret_accounts() {
+        for account in &secret_accounts {
             mutation_started = true;
             delete_key(account).map_err(|error| {
                 agent_reset_error(
@@ -1580,6 +1591,22 @@ fn agent_secret_accounts() -> &'static [&'static str] {
     ]
 }
 
+/// Connector tokens created by the MCP Settings UI use a private account
+/// namespace and are referenced from `mcp.json`. Delete only those app-owned
+/// accounts: a hand-written auth_ref may deliberately point at a shared secret
+/// such as GITHUB_TOKEN and Reset Agent must not infer ownership of it.
+fn agent_connector_secret_accounts() -> anyhow::Result<Vec<String>> {
+    let mut accounts: Vec<String> =
+        codescribe_core::mcp::list_servers_at(&Config::config_dir().join("mcp.json"))?
+            .into_iter()
+            .filter_map(|server| server.auth_ref)
+            .filter(|account| account.starts_with("MCP_CONNECTOR_") && account.ends_with("_TOKEN"))
+            .collect();
+    accounts.sort();
+    accounts.dedup();
+    Ok(accounts)
+}
+
 /// Legacy/power-user Agent rows that can otherwise outlive settings.json and
 /// become the effective provider again after relaunch. Keep this list narrow:
 /// dictation, formatting, audio and hotkey rows are intentionally absent.
@@ -1603,12 +1630,21 @@ fn agent_env_keys() -> &'static [&'static str] {
 }
 
 fn agent_reset_preview_for_paths(paths: &[PathBuf]) -> CsAgentResetPreview {
+    let (connector_accounts, connector_scan_failed) = match agent_connector_secret_accounts() {
+        Ok(accounts) => (accounts, false),
+        Err(_) => (Vec::new(), true),
+    };
     let mut preview = CsAgentResetPreview {
-        secrets_present: agent_secret_accounts().iter().any(|account| {
-            codescribe_core::config::keychain::load_key(account)
-                .map(|value| !value.trim().is_empty())
-                .unwrap_or(false)
-        }),
+        secrets_present: connector_scan_failed
+            || agent_secret_accounts()
+                .iter()
+                .map(|account| (*account).to_string())
+                .chain(connector_accounts)
+                .any(|account| {
+                    codescribe_core::config::keychain::load_key(&account)
+                        .map(|value| !value.trim().is_empty())
+                        .unwrap_or(false)
+                }),
         ..CsAgentResetPreview::default()
     };
 
@@ -1647,18 +1683,7 @@ fn path_file_count(path: &Path) -> u64 {
 /// workspace and its tool policy. All transcription, audio, hotkey, lexicon,
 /// license and other ordinary app settings remain in the same JSON document.
 fn clear_agent_settings() -> anyhow::Result<()> {
-    let mut settings = UserSettings::load();
-    settings.llm_assistive_endpoint = None;
-    settings.llm_assistive_model = None;
-    settings.llm_assistive_provider = None;
-    settings.openai_oauth_client_id = None;
-    settings.anthropic_oauth_client_id = None;
-    settings.xai_oauth_client_id = None;
-    settings.agent_workspace_roots = None;
-    settings.agent_permissions = None;
-    settings.agent_capabilities = None;
-    settings.agent_enter_sends = None;
-    settings.save()
+    UserSettings::remove_agent_owned_state()
 }
 
 fn create_agent_reset_destination(trash: &Path) -> anyhow::Result<PathBuf> {
@@ -2404,11 +2429,12 @@ fn ensure_known_account(account: &str) -> Result<(), CsError> {
 #[cfg(test)]
 mod reset_tests {
     use super::{
-        CsResetPreview, ResetAuditEvent, agent_env_keys, agent_reset_error, agent_reset_paths,
-        agent_reset_preview_for_paths, agent_secret_accounts, app_data_dirs, append_reset_audit,
-        capture_base_prompts, clear_mcp_configuration_to, create_reset_destination,
-        move_path_recoverably, move_path_recoverably_with, move_reset_dirs_to_destination,
-        remove_path_without_following_symlinks, reset_preview_for_dirs, restore_base_prompts,
+        CsResetPreview, ResetAuditEvent, agent_connector_secret_accounts, agent_env_keys,
+        agent_reset_error, agent_reset_paths, agent_reset_preview_for_paths, agent_secret_accounts,
+        app_data_dirs, append_reset_audit, capture_base_prompts, clear_mcp_configuration_to,
+        create_reset_destination, move_path_recoverably, move_path_recoverably_with,
+        move_reset_dirs_to_destination, remove_path_without_following_symlinks,
+        reset_preview_for_dirs, restore_base_prompts,
     };
     use chrono::{DateTime, Utc};
     use codescribe_core::config::{Config, begin_app_data_reset};
@@ -2527,6 +2553,41 @@ mod reset_tests {
         assert!(!accounts.contains(&"STT_API_KEY"));
         assert!(!accounts.contains(&"LLM_API_KEY"));
         assert!(!accounts.contains(&"GITHUB_TOKEN"));
+    }
+
+    #[test]
+    #[serial]
+    fn agent_reset_connector_secret_scope_uses_only_managed_auth_refs() {
+        let sandbox = scratch("agent_connector_secret_scope");
+        write(
+            &sandbox.join("mcp.json"),
+            br#"{
+              "mcpServers": {
+                "managed": {
+                  "command": "managed",
+                  "args": [],
+                  "auth_ref": "MCP_CONNECTOR_MANAGED_TOKEN"
+                },
+                "shared": {
+                  "command": "shared",
+                  "args": [],
+                  "auth_ref": "GITHUB_TOKEN"
+                },
+                "handwritten": {
+                  "command": "handwritten",
+                  "args": [],
+                  "auth_ref": "my_custom_secret"
+                }
+              }
+            }"#,
+        );
+        let _data_dir = EnvGuard::set("CODESCRIBE_DATA_DIR", &sandbox);
+
+        assert_eq!(
+            agent_connector_secret_accounts().expect("read connector accounts"),
+            vec!["MCP_CONNECTOR_MANAGED_TOKEN"]
+        );
+        let _ = std::fs::remove_dir_all(&sandbox);
     }
 
     #[test]

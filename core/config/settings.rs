@@ -1235,6 +1235,83 @@ impl UserSettings {
         self.save_unlocked()
     }
 
+    /// Remove only Agent-owned fields from the persisted JSON document.
+    ///
+    /// This intentionally edits the raw JSON value instead of doing a
+    /// `load()` -> `save()` round-trip. `load()` is fail-soft and returns
+    /// defaults for malformed input; using it in a destructive reset could
+    /// therefore replace an unreadable settings file with defaults and erase
+    /// unrelated user choices. Unknown fields and every non-Agent subtree are
+    /// preserved value-for-value. A malformed document is left untouched.
+    pub fn remove_agent_owned_state() -> anyhow::Result<()> {
+        let _data_io = super::storage_reset::begin_app_data_io()?;
+        let _settings_io = settings_io_lock();
+        let path = Self::settings_path();
+        if !path.exists() {
+            return Ok(());
+        }
+
+        let contents = fs::read_to_string(&path)?;
+        let mut value: serde_json::Value = serde_json::from_str(&contents)?;
+        let is_v2 = value.get("schema_version").is_some();
+
+        if is_v2 {
+            let before: SettingsV2 = serde_json::from_value(value.clone())?;
+            Self::validate_v2(&before)?;
+        } else {
+            let _: Self = serde_json::from_value(value.clone())?;
+        }
+
+        let mut changed = false;
+        if is_v2 {
+            changed |= remove_json_keys_at(
+                &mut value,
+                &["speech", "assistive"],
+                &["llm_endpoint", "llm_model", "provider"],
+            )?;
+            changed |= remove_json_keys_at(
+                &mut value,
+                &["system"],
+                &[
+                    "agent_workspace_roots",
+                    "openai_oauth_client_id",
+                    "anthropic_oauth_client_id",
+                    "xai_oauth_client_id",
+                ],
+            )?;
+            changed |=
+                remove_json_keys_at(&mut value, &["agent"], &["permissions", "capabilities"])?;
+            changed |= remove_json_keys_at(&mut value, &["interaction"], &["agent_enter_sends"])?;
+
+            let after: SettingsV2 = serde_json::from_value(value.clone())?;
+            Self::validate_v2(&after)?;
+        } else {
+            changed |= remove_json_keys_at(
+                &mut value,
+                &[],
+                &[
+                    "llm_assistive_endpoint",
+                    "llm_assistive_model",
+                    "llm_assistive_provider",
+                    "openai_oauth_client_id",
+                    "anthropic_oauth_client_id",
+                    "xai_oauth_client_id",
+                    "agent_workspace_roots",
+                    "agent_permissions",
+                    "agent_capabilities",
+                    "agent_enter_sends",
+                ],
+            )?;
+            let _: Self = serde_json::from_value(value.clone())?;
+        }
+
+        if !changed {
+            return Ok(());
+        }
+        let json = serde_json::to_string_pretty(&value)?;
+        Self::write_json_atomic(&path, &json)
+    }
+
     /// Persist while the settings transaction lock and app-data admission are held.
     fn save_unlocked(&self) -> anyhow::Result<()> {
         let dir = Self::settings_dir();
@@ -1583,6 +1660,38 @@ impl UserSettings {
     }
 }
 
+/// Remove named keys from an existing JSON object reached by `path`. Missing
+/// sections are a no-op; a present non-object is an error so reset never
+/// normalizes malformed state by destroying sibling settings.
+fn remove_json_keys_at(
+    value: &mut serde_json::Value,
+    path: &[&str],
+    keys: &[&str],
+) -> anyhow::Result<bool> {
+    let mut current = value;
+    for component in path {
+        let Some(next) = current.get_mut(*component) else {
+            return Ok(false);
+        };
+        current = next;
+    }
+    let object = current.as_object_mut().ok_or_else(|| {
+        anyhow::anyhow!(
+            "settings path {} must be an object",
+            if path.is_empty() {
+                "<root>".to_string()
+            } else {
+                path.join(".")
+            }
+        )
+    })?;
+    let mut changed = false;
+    for key in keys {
+        changed |= object.remove(*key).is_some();
+    }
+    Ok(changed)
+}
+
 /// Persistence is exercised against real files in a temp data dir, not against
 /// in-memory conversions — the failures these guard against (ghosted fields,
 /// migration loss, write amplification) only appear on the round-trip through
@@ -1607,6 +1716,107 @@ mod tests {
             std::env::remove_var("TOGGLE_TRIGGER");
         }
         tmp
+    }
+
+    #[test]
+    #[serial]
+    fn agent_reset_removes_only_owned_json_fields_and_preserves_unknowns() {
+        let _tmp = setup_isolated_data_dir();
+        let path = UserSettings::settings_path();
+        let seeded = serde_json::json!({
+            "schema_version": 3,
+            "interaction": {
+                "agent_enter_sends": true,
+                "auto_paste_enabled": false,
+                "future_interaction": "keep"
+            },
+            "speech": {
+                "language": "pl",
+                "assistive": {
+                    "llm_endpoint": "https://agent.example",
+                    "llm_model": "agent-model",
+                    "provider": "openai-responses"
+                },
+                "formatting": { "level": "smart" },
+                "future_speech": { "keep": true }
+            },
+            "system": {
+                "agent_workspace_roots": ["/tmp/project"],
+                "openai_oauth_client_id": "openai-client",
+                "anthropic_oauth_client_id": "anthropic-client",
+                "xai_oauth_client_id": "xai-client",
+                "onboarding_mode": "basic",
+                "future_system": 42
+            },
+            "agent": {
+                "permissions": null,
+                "capabilities": null,
+                "future_agent": "keep"
+            },
+            "future_top_level": { "keep": "exactly" }
+        });
+        fs::write(
+            &path,
+            serde_json::to_string_pretty(&seeded).expect("serialize fixture"),
+        )
+        .expect("seed settings");
+
+        UserSettings::remove_agent_owned_state().expect("surgical Agent settings reset");
+
+        let after: serde_json::Value =
+            serde_json::from_str(&fs::read_to_string(&path).expect("read reset settings"))
+                .expect("parse reset settings");
+        for pointer in [
+            "/interaction/agent_enter_sends",
+            "/speech/assistive/llm_endpoint",
+            "/speech/assistive/llm_model",
+            "/speech/assistive/provider",
+            "/system/agent_workspace_roots",
+            "/system/openai_oauth_client_id",
+            "/system/anthropic_oauth_client_id",
+            "/system/xai_oauth_client_id",
+            "/agent/permissions",
+            "/agent/capabilities",
+        ] {
+            assert!(
+                after.pointer(pointer).is_none(),
+                "Agent field survived: {pointer}"
+            );
+        }
+        for pointer in [
+            "/interaction/auto_paste_enabled",
+            "/interaction/future_interaction",
+            "/speech/language",
+            "/speech/formatting",
+            "/speech/future_speech",
+            "/system/onboarding_mode",
+            "/system/future_system",
+            "/agent/future_agent",
+            "/future_top_level",
+        ] {
+            assert_eq!(
+                after.pointer(pointer),
+                seeded.pointer(pointer),
+                "non-Agent field changed: {pointer}"
+            );
+        }
+    }
+
+    #[test]
+    #[serial]
+    fn agent_reset_refuses_malformed_settings_without_rewriting_bytes() {
+        let _tmp = setup_isolated_data_dir();
+        let path = UserSettings::settings_path();
+        let malformed = b"{ this is not valid settings JSON";
+        fs::write(&path, malformed).expect("seed malformed settings");
+
+        UserSettings::remove_agent_owned_state().expect_err("malformed settings must fail closed");
+
+        assert_eq!(
+            fs::read(&path).expect("read malformed settings after refusal"),
+            malformed,
+            "Agent reset rewrote malformed settings"
+        );
     }
 
     /// Zoom normalization: clamped to the supported range, rounded to two
