@@ -148,6 +148,41 @@ pub fn is_clock_lie(chars: usize, duration_secs: f32) -> bool {
 /// Grapheme ticks inside a word range are an even split, never a measurement.
 pub const LETTER_TIMING: &str = "interpolation_not_measurement";
 
+/// Directory Voice Lab scans. Corpus atlas HTML must land here (or under
+/// `$CODESCRIBE_ARTIFACTS_DIR`) or the operator never sees it.
+pub const VOICE_LAB_ARTIFACTS_ROOT: &str = "~/.vibecrafted/artifacts/vetcoders/codescribe";
+
+/// How Voice Lab labels a discovered HTML. Mirrors `discover_quality_reports`
+/// in voice-lab `server.py` — change both or the catalog lies.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum VoiceLabReportKind {
+    SealAtlas,
+    QualityContract,
+    QualityReport,
+}
+
+impl VoiceLabReportKind {
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::SealAtlas => "seal_atlas",
+            Self::QualityContract => "quality_contract",
+            Self::QualityReport => "quality_report",
+        }
+    }
+}
+
+/// Same classifier Voice Lab uses on `title + relative path`.
+pub fn voice_lab_kind(title: &str, relative_path: &str) -> VoiceLabReportKind {
+    let lowered = format!("{title} {relative_path}").to_ascii_lowercase();
+    if lowered.contains("seal atlas") || lowered.contains("seal-atlas") {
+        VoiceLabReportKind::SealAtlas
+    } else if lowered.contains("quality") && lowered.contains("contract") {
+        VoiceLabReportKind::QualityContract
+    } else {
+        VoiceLabReportKind::QualityReport
+    }
+}
+
 /// Role of a named quality-report column. WER against a column does not
 /// promote that column to document.
 pub fn surface_role(column: &str) -> Option<ReportSurfaceRole> {
@@ -351,6 +386,8 @@ mod tests {
             "SealedSpan.words",
             "clock-lie",
             "interpolation",
+            "Voice Lab",
+            "seal_atlas",
         ] {
             assert!(
                 body.contains(needle),
@@ -404,6 +441,22 @@ mod tests {
         assert!(
             !body.contains("Avg WER"),
             "gold atlas must not be a scores table"
+        );
+        assert!(body.contains(r#"class="stat""#));
+        assert_eq!(
+            voice_lab_kind(
+                "Seal Atlas — take 01",
+                "quality-reports/seal-atlas.take01.html"
+            ),
+            VoiceLabReportKind::SealAtlas
+        );
+        assert_eq!(
+            voice_lab_kind("Codescribe Quality Report", "quality/apple-layer0.html"),
+            VoiceLabReportKind::QualityReport
+        );
+        assert_eq!(
+            voice_lab_kind("THE ENGINE quality-report contract", "docs/contract.html"),
+            VoiceLabReportKind::QualityContract
         );
     }
 }

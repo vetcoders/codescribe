@@ -6,7 +6,7 @@
 | corpus schema | `codescribe-corpus-parity/v3` |
 | primary key | `pcm_time` |
 | source of truth | `core/quality/engine_contract.rs` |
-| surfaces | **Seal Atlas** (`docs/quality-reports/seal-atlas.take01.html`); Qube / corpus private HTML must become this, not a WER table |
+| surfaces | **Seal Atlas** in Voice Lab (`voice-lab` tab); gold HTML `docs/quality-reports/seal-atlas.take01.html` |
 
 Do not re-derive this. If a sentence here disagrees with `ENGINE_CONTRACT` in Rust, the Rust constant wins and this file is wrong.
 
@@ -96,4 +96,27 @@ Gold visual: [`docs/quality-reports/seal-atlas.take01.html`](quality-reports/sea
 8. Whisper is drawn as `whisper_words` mapped **back** onto the same clock. HQ / Cloud / AI-formatted stay proposals.
 9. `codescribe-corpus` machine JSON stays fail-closed on privacy. The private Atlas HTML is the only place bodies sit next to audio.
 10. A WER table may exist as a footnote. It must not replace the atlas and must not present a full-file pass as the live engine.
+
+## Voice Lab handshake
+
+The operator does not open these HTML files from Finder. **Voice Lab**
+(`vetcoders-tools` / `voice-lab`) is the console. Tab **Seal Atlas** lists
+private HTML under:
+
+`~/.vibecrafted/artifacts/vetcoders/codescribe` (`CODESCRIBE_ARTIFACTS_DIR`)
+
+`codescribe-corpus` must write atlas HTML **into that tree**. Voice Lab then:
+
+1. Classifies by title + relative path (case-insensitive):
+   - contains `seal atlas` or `seal-atlas` → kind `seal_atlas` (sorted first)
+   - contains `quality` **and** `contract` → kind `quality_contract`
+   - else → `quality_report` (the old Qube WER page lands here — not the throne)
+2. Pulls fact cards from `<div class="stat"><b>VALUE</b><span>LABEL</span></div>`
+   (take 01: 20/20 word-grain, 11 spans, 2 per-word, 1 clock-lie, Silero 0.5).
+3. Iframes the file (`sandbox=allow-scripts`). Absolute paths never leave the
+   catalog JSON.
+
+A report that fails this handshake is invisible in the lab, whatever its WER.
+The gold take 01 HTML already satisfies it. Qube `Codescribe Quality Report`
+does not — that title is the thing we are retiring.
 
