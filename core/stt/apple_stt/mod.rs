@@ -351,6 +351,38 @@ fn init_impl() -> Result<()> {
     Ok(())
 }
 
+/// Fail-closed readiness probe for unattended tools that must never raise a
+/// Speech Recognition dialog or install Apple speech assets.
+///
+/// This deliberately bypasses the cached [`init`] path: `probe` with
+/// `allow_download=false` is observational, while `init` is allowed to request
+/// SFSpeech authorization and download SpeechTranscriber assets. Callers may
+/// proceed only when the selected backend is already installed and either does
+/// not require Speech TCC or is already authorized.
+pub fn ensure_noninteractive_ready(language: Option<&str>) -> Result<()> {
+    ensure_supported_platform()?;
+    let locale = resolved_locale(language);
+    let probe = probe_bridge(&locale, false)?;
+    if !probe.supported {
+        bail!("Apple on-device STT does not support locale '{locale}' without changing host state");
+    }
+    if !probe.installed {
+        bail!(
+            "Apple on-device STT assets for locale '{locale}' are not installed; unattended replay refuses to download them"
+        );
+    }
+    match speech_auth_init_decision(probe.backend, probe.speech_auth.as_deref()) {
+        SpeechAuthInitDecision::NotRequired | SpeechAuthInitDecision::Proceed => Ok(()),
+        SpeechAuthInitDecision::RequestAuthorization => bail!(
+            "Speech Recognition permission is not determined; unattended replay refuses to request it"
+        ),
+        SpeechAuthInitDecision::HardFail => {
+            let auth = probe.speech_auth.as_deref().unwrap_or("unknown");
+            bail!("Speech Recognition permission is {auth}; unattended replay will not change it")
+        }
+    }
+}
+
 /// Runtime availability guard used by engine router.
 pub(crate) fn is_runtime_available() -> bool {
     if !cfg!(target_os = "macos") {

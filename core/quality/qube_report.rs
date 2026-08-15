@@ -888,7 +888,13 @@ fn render_markdown(report: &QualityReport) -> String {
 /// stays portable. Reference transcripts are emitted but hidden unless
 /// `debug_mode` is set — the operator is meant to judge the audio first, not read
 /// the answer. Every interpolated value goes through [`html_escape`].
-fn render_html(report: &QualityReport, config: &QualityReportConfig) -> String {
+/// Render the reusable, self-contained Qube review surface.
+///
+/// Production replay tools call this renderer with an in-memory report so the
+/// operator gets the same audio controls, keyboard navigation and annotation
+/// workflow without routing the recording through Qube's legacy LocalWhisper
+/// runner.
+pub fn render_html(report: &QualityReport, config: &QualityReportConfig) -> String {
     let debug = config.debug_mode;
     let mut body = String::new();
 
