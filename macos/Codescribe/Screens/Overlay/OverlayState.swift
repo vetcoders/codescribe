@@ -1483,12 +1483,14 @@ final class OverlayState: ObservableObject {
       end: end,
       replacementCount: UInt64(text.count)
     )
-    if highlightsEnabled, source == .lexicon, let highlight = OverlayCanvas.lexiconHighlight(
-      utteranceId: utteranceId,
-      start: start,
-      replacement: text,
-      before: replaced
-    ) {
+    if highlightsEnabled, source == .lexicon,
+      let highlight = OverlayCanvas.lexiconHighlight(
+        utteranceId: utteranceId,
+        start: start,
+        replacement: text,
+        before: replaced
+      )
+    {
       highlights.append(highlight)
     }
     syncCommittedUtterances()

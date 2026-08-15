@@ -135,7 +135,8 @@ enum OverlayCanvas {
     text: String,
     highlights: [OverlayHighlight]
   ) {
-    let lexicon = highlights
+    let lexicon =
+      highlights
       .filter { $0.kind == .lexiconCorrected }
       .sorted { $0.charStart < $1.charStart }
     var cursor = 0
