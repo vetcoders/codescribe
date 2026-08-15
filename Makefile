@@ -9,7 +9,7 @@
         bump bump-patch bump-minor bump-major version \
         lint format test test-quick test-e2e test-e2e-real test-sse test-sse-release test-responses-live test-sse-heavy test-formatting test-all \
         test-engine test-engine-apple test-engine-candle test-teacher \
-        demo demo-raw demo-assistive check verify semgrep fix clean help \
+        demo demo-raw demo-assistive check verify semgrep fix clean help corpus-census test-corpus-parity \
         dist-preflight dist-preflight-signed verify-canaries smoke-canaries \
         dmg dmg-signed release-standard release-full release-dmgs notarize verify-dmg download-model download-e5 download-embedder ensure-models \
         hooks
@@ -76,6 +76,18 @@ TEST_USE_LOCAL_LLM ?= 0
 LOCAL_LLM_ENDPOINT ?= http://localhost:11434/v1/responses
 LOCAL_LLM_MODEL ?= gpt-oss:120b-cloud
 LOCAL_LLM_API_KEY ?= local
+
+# Content-private corpus inventory and production-session replay. The binary
+# hard-disables Keychain and never loads operator settings/.env. Machine reports
+# are content-redacted; private mode-0600 Qube HTML carries review transcripts.
+CORPUS_ROOTS ?= $(HOME)/.codescribe/data_assets $(HOME)/.codescribe/transcriptions
+CORPUS_REFERENCE_POLICY ?= human
+CORPUS_PROFILES ?= apple-layer0,apple-layer1-inprocess
+CORPUS_RUNS ?= 1
+CORPUS_MAX_RECORDINGS ?= 1
+CORPUS_APPLE_BRIDGE ?= /Applications/Codescribe.app/Contents/MacOS/codescribe-stt-bridge
+CORPUS_RUN_ID ?= $(shell date +%Y%m%d-%H%M%S)
+CORPUS_OUT ?= $(HOME)/.vibecrafted/artifacts/vetcoders/codescribe/$(shell date +%Y_%m%d)/reports/corpus-$(CORPUS_RUN_ID)
 
 define APPLY_TEST_LLM
 if [[ "$(TEST_USE_LOCAL_LLM)" == "1" ]]; then \
@@ -317,6 +329,7 @@ bump-major:
 # gate: test-engine-parity class=operator ci=no -- Layer 0 parity bar vs the Apple reference; private corpus, host-local bench
 # gate: test-engine-parity-layered class=operator ci=no -- Layer 1 parity arm judged on structure; private corpus, host-local bench
 # gate: test-engine-parity-both class=operator ci=no -- runs both parity arms and prints the delta
+# gate: test-corpus-parity class=operator ci=no -- isolated production-session file replay; private corpus and local STT models
 # gate: test-teacher class=operator ci=no -- teacher CLI proof run, writes an HTML report
 # gate: test-swift class=operator ci=no -- SwiftUI suite + Apple phrase-restart Rust/Swift lockstep self-test; needs Xcode and built ffi/bridge binaries
 # gate: smoke-macos27 class=operator ci=no -- host smoke after an OS/Xcode bump; operator-only rows report SKIP
@@ -763,6 +776,45 @@ test-engine-parity-both:
 	 fi; \
 	 [ "$$off_rc" -eq 0 ] && [ "$$on_rc" -eq 0 ]
 
+# Inventory every configured corpus root without loading operator settings,
+# dotenv or Keychain. Census always discovers historical same-stem references;
+# replay decides separately whether they are admissible as quality references.
+.PHONY: corpus-census
+corpus-census:
+	@set -euo pipefail; \
+	 root_args=(); \
+	 for root in $(CORPUS_ROOTS); do root_args+=(--root "$$root"); done; \
+	 CODESCRIBE_DISABLE_KEYCHAIN=1 cargo run --quiet --bin codescribe-corpus -- census \
+	   "$${root_args[@]}" \
+	   --include-historical \
+	   --out "$(CORPUS_OUT)/census.json"
+
+# Production PCM-session replay. One recording x the two core arms is the safe
+# default; expand CORPUS_PROFILES / CORPUS_MAX_RECORDINGS deliberately for a
+# retained matrix. Each profile runs in a fresh process and isolated data root.
+.PHONY: test-corpus-parity
+test-corpus-parity:
+	@set -euo pipefail; \
+	 root_args=(); \
+	 max_args=(); \
+	 if [ ! -x "$(CORPUS_APPLE_BRIDGE)" ]; then \
+	   printf 'corpus parity refused: signed Apple STT bridge is not executable: %s\n' "$(CORPUS_APPLE_BRIDGE)" >&2; \
+	   exit 2; \
+	 fi; \
+	 for root in $(CORPUS_ROOTS); do root_args+=(--root "$$root"); done; \
+	 if [ -n "$(strip $(CORPUS_MAX_RECORDINGS))" ]; then \
+	   max_args+=(--max-recordings "$(CORPUS_MAX_RECORDINGS)"); \
+	 fi; \
+	 CODESCRIBE_DISABLE_KEYCHAIN=1 cargo run --quiet --bin codescribe-corpus -- run \
+	   "$${root_args[@]}" \
+	   "$${max_args[@]}" \
+	   --out-dir "$(CORPUS_OUT)" \
+	   --profiles "$(CORPUS_PROFILES)" \
+	   --runs "$(CORPUS_RUNS)" \
+	   --references "$(CORPUS_REFERENCE_POLICY)" \
+	   --apple-bridge "$(CORPUS_APPLE_BRIDGE)" \
+	   --commit "$$(git rev-parse HEAD)"
+
 # Host smoke for the macOS surfaces we own — run after every OS/Xcode bump.
 # Headless, raises no TCC dialog, posts no synthetic events; operator-only rows
 # report SKIP instead of passing quietly. SMOKE_ARGS='--with-inference' adds the
@@ -1160,6 +1212,8 @@ help:
 	@printf '    $(HELP_C_GREEN)%-18s$(HELP_C_RESET) %s\n' 'test-engine-apple' 'Apple live multi-utterance e2e (ENGINE_CLIP / ENGINE_ALL_CLIPS=1)'
 	@printf '    $(HELP_C_GREEN)%-18s$(HELP_C_RESET) %s\n' 'test-engine-candle' 'Candle live multi-utterance e2e (same engine bar)'
 	@printf '%s\n' '  make test-engine-parity-both Both parity arms + delta (needs the private corpus)'
+	@printf '    $(HELP_C_GREEN)%-18s$(HELP_C_RESET) %s\n' 'corpus-census' 'Inventory both private corpus roots; hashes/counts only'
+	@printf '    $(HELP_C_GREEN)%-18s$(HELP_C_RESET) %s\n' 'test-corpus-parity' 'Isolated production replay (profiles/runs/recordings are explicit vars)'
 	@printf '    $(HELP_C_GREEN)%-18s$(HELP_C_RESET) %s\n' 'test-teacher' 'Teacher CLI proof HTML (live×whisper×human)'
 	@printf '    $(HELP_C_GREEN)%-18s$(HELP_C_RESET) %s\n' 'test-all' 'Run full test suite'
 
