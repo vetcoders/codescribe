@@ -47,6 +47,8 @@ struct DictationOverlayView: View {
     /// Anchor id for the live transcript's tail. `scrollTo` pins it to the bottom on
     /// every append so the newest text stays visible without any user interaction.
     private let transcriptBottomAnchor = "overlayTranscriptBottom"
+    /// Action chrome stays put but whispers until the pointer is on the row.
+    @State private var actionRowHovered = false
 
     var body: some View {
         GlassPanel(cornerRadius: CSRadius.window) {
@@ -438,6 +440,11 @@ struct DictationOverlayView: View {
         .frame(height: actionRowContentHeight)
         .padding(.horizontal, 20)
         .padding(.vertical, 6)
+        .contentShape(Rectangle())
+        .opacity(actionRowHovered ? 1 : 0.22)
+        .animation(.easeOut(duration: 0.16), value: actionRowHovered)
+        .onHover { actionRowHovered = $0 }
+        .accessibilityElement(children: .contain)
     }
 
     @ViewBuilder
