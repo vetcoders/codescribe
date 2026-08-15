@@ -25,6 +25,8 @@
 mod assistive_delivery;
 /// Per-session assistive context bag (selection, app, images).
 mod context_bucket;
+/// One destination throne: intent → Agent / Orient / paste. Focus is not king.
+mod delivery_route;
 /// Stop-path final-pass routing, completeness, and budget reporting.
 mod final_pass;
 /// Session telemetry, image attach helpers, assistive send wiring.
@@ -97,6 +99,10 @@ pub(crate) use assistive_delivery::{AssistiveDelivery, AssistiveLane};
 use assistive_delivery::{
     assemble_assistive_delivery_lane, assemble_raw_paste_wire, capture_combo_context_with_image,
 };
+use delivery_route::{
+    DeliveryFacts, DeliveryIntent, DeliveryRoute, delivery_intent_from_session,
+    format_delivery_route_line, resolve_delivery_route, target_is_self_app,
+};
 pub(crate) use final_pass::{
     FinalPassAction, FinalPassRoutingMode, FinalPassStages, SmartTailGapSource, StopPathBudget,
     StreamingCompletenessEvidence, append_tail_gap, apply_committed_density_floor,
@@ -138,11 +144,14 @@ use overlay_paste::{
 #[cfg(test)]
 use quality_delivery::AutomaticDeliverySink;
 use quality_delivery::{
-    ActionQualityProbe, AutoPastePolicyContext, AutoPasteTrigger, AutomaticDeliveryOwner,
-    ClipboardDeliverySink, compose_final_status, evaluate_quality_commit_trigger,
-    maybe_wrap_transcript_for_delivery, maybe_wrap_transcript_for_delivery_with_quality,
-    recording_mode_label, resolve_auto_paste_policy, session_auto_format_enabled,
-    session_prewarms_semantic_guard, truth_recording_mode_label,
+    ActionQualityProbe, AutomaticDeliveryOwner, ClipboardDeliverySink, compose_final_status,
+    evaluate_quality_commit_trigger, maybe_wrap_transcript_for_delivery,
+    maybe_wrap_transcript_for_delivery_with_quality, recording_mode_label,
+    session_auto_format_enabled, session_prewarms_semantic_guard, truth_recording_mode_label,
+};
+#[cfg(test)]
+pub(crate) use quality_delivery::{
+    AutoPastePolicyContext, AutoPasteTrigger, resolve_auto_paste_policy,
 };
 pub(crate) use truth::{
     adjudicate_recording_truth, apply_ai_noop_signal, postprocess_transcript_for_delivery,
@@ -770,6 +779,22 @@ impl RecordingController {
             );
             return Ok(false);
         }
+        let to_agent = resolve_delivery_route(
+            DeliveryIntent::OverlayToAgent,
+            DeliveryFacts {
+                has_text: true,
+                no_speech: false,
+                auto_paste_enabled: false,
+                overlay_enabled: true,
+                live_stream_session: false,
+                commit_required: false,
+                latched_target_is_self: false,
+            },
+        );
+        info!(
+            "{}",
+            format_delivery_route_line(DeliveryIntent::OverlayToAgent, to_agent, None,)
+        );
         // Dictation/formatting sessions never run the assistive pipeline branch
         // that arms `pending_assistive_context`, so the overlay's explicit
         // "To Agent" used to fail closed behind a live button (review P0-03).
@@ -4249,24 +4274,28 @@ impl RecordingController {
 
         let has_final_text = !final_formatted_text.trim().is_empty();
         let notes_save_only = config.quick_notes_enabled && config.quick_notes_save_only;
-        let should_auto_paste = resolve_auto_paste_policy(AutoPastePolicyContext {
-            trigger: if force_ai {
-                AutoPasteTrigger::DoubleLeftOption
-            } else {
-                AutoPasteTrigger::Hold
+        let latched_target = self.pre_overlay_frontmost_app.read().await.clone();
+        let intent = delivery_intent_from_session(assistive, force_ai, notes_save_only);
+        let decision = resolve_delivery_route(
+            intent,
+            DeliveryFacts {
+                has_text: has_final_text,
+                no_speech: truth_no_speech_reason.is_some(),
+                auto_paste_enabled: config.auto_paste_enabled,
+                overlay_enabled: config.transcription_overlay_enabled,
+                live_stream_session,
+                commit_required: commit_trigger.is_some(),
+                latched_target_is_self: latched_target.as_deref().is_some_and(target_is_self_app),
             },
-            persisted_enabled: config.auto_paste_enabled,
-            overlay_enabled: config.transcription_overlay_enabled,
-            assistive,
-            no_speech: truth_no_speech_reason.is_some(),
-            empty_output: !has_final_text,
-            notes_save_only,
-            // Live-stream preview and explicit quality/safety commit branches
-            // remain separate named vetoes. Toggle-adjudicated final delivery is
-            // no longer a veto.
-            live_stream_session,
-            commit_required: commit_trigger.is_some(),
-        });
+        );
+        info!(
+            "{}",
+            format_delivery_route_line(intent, decision, latched_target.as_deref())
+        );
+        // Destination is the route, not a second policy boolean. The legacy
+        // auto-paste matrix still exists for its own tests; the stop path no
+        // longer consults it as a competing king.
+        let should_auto_paste = decision.route.posts_synthetic_paste();
 
         // Delivery span: history persistence + paste/deliver_once handoff.
         // This is the user-visible delivery cone — not phase-4 cleanup.
@@ -4298,9 +4327,9 @@ impl RecordingController {
 
         // Paste lane consumes the ContextBucket exactly like assistive delivery
         // does (assemble + archive under one lock — parity with
-        // deliver_pending_assistive_transcript). Assistive sessions never take
-        // this branch (`resolve_auto_paste_policy` vetoes them), so their bucket
-        // stays intact for the overlay delivery lane.
+        // deliver_pending_assistive_transcript). Agent-composer sessions never
+        // take this branch (`DeliveryRoute::ClipboardPaste` is the only paste
+        // king), so their bucket stays intact for the overlay To Agent lane.
         let paste_wire = if should_auto_paste {
             let mut bucket = self.context_bucket.lock().await;
             let wire = assemble_raw_paste_wire(&final_formatted_text, &bucket);
@@ -4323,17 +4352,51 @@ impl RecordingController {
                 &mode_label,
                 Some(&truth_metadata),
             );
-            if self
-                .automatic_delivery
-                .deliver_once(recording_timestamp, &paste_text)
-                .await?
-            {
-                info!("Text pasted successfully");
+            // Restore the *latched* target before Cmd+V. Frontmost-at-stop is
+            // not the destination — that is how tagged raw landed in the Agent
+            // composer (operator: walka o tron, delivery axis).
+            if let Some(app_name) = latched_target.as_deref() {
+                let activated = activate_app_by_name(app_name);
+                let focus_confirmed =
+                    activated && wait_for_frontmost_app(app_name, OVERLAY_PASTE_FOCUS_BUDGET);
+                debug!(
+                    app_name,
+                    activated, focus_confirmed, "Stop-path paste target activation"
+                );
+            }
+            let frontmost = crate::os::selection::current_frontmost_app_name();
+            let preflight = clipboard::synthetic_paste_preflight();
+            let disposition = overlay_paste_disposition(
+                latched_target.as_deref(),
+                frontmost.as_deref(),
+                preflight.can_post_events(),
+            );
+            if disposition == OverlayPasteDisposition::Paste {
+                if self
+                    .automatic_delivery
+                    .deliver_once(recording_timestamp, &paste_text)
+                    .await?
+                {
+                    info!("Text pasted successfully");
+                } else {
+                    info!("Automatic delivery skipped: recording timestamp already delivered");
+                }
             } else {
-                info!("Automatic delivery skipped: recording timestamp already delivered");
+                clipboard::set_clipboard(&paste_text)
+                    .context("Failed to copy transcript after paste target was not confirmed")?;
+                info!(
+                    ?disposition,
+                    target = ?latched_target,
+                    frontmost = ?frontmost,
+                    "delivery_route: synthetic paste refused; clipboard copy only"
+                );
             }
         } else {
-            info!("Auto-paste skipped (mode={})", mode_label);
+            info!(
+                "Auto-paste skipped (mode={mode_label} route={route} reason={reason})",
+                route = decision.route.as_str(),
+                reason = decision.reason,
+            );
         }
         let delivery_secs = delivery_started.elapsed().as_secs_f64();
 
