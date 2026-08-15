@@ -268,8 +268,12 @@ struct DictationOverlayView: View {
         listeningBody
           .transition(.opacity.combined(with: .offset(y: 8)))
       case .formatted:
+        // TextEditor is an AppKit-backed platform view. Moving it with a SwiftUI
+        // transition can leave its native text layer painting at the old frame
+        // while the surrounding stack has already settled, which lets transcript
+        // glyphs bleed through the action row during finalization. The FINAL body
+        // swaps in place; the containing clip below is the hard sibling boundary.
         formattedBody
-          .transition(.opacity.combined(with: .offset(y: 8)))
       case .noSpeech:
         noSpeechBody
           .transition(.opacity.combined(with: .offset(y: 8)))
@@ -284,6 +288,9 @@ struct DictationOverlayView: View {
     .padding(.horizontal, 20)
     .padding(.top, 4)
     .padding(.bottom, 10)
+    // Platform-backed TextEditor content must never paint into the action/footer
+    // siblings, including the mode-transition and live-resize frames.
+    .clipped()
     .animation(CSMotion.floatIn, value: state.mode)
   }
 

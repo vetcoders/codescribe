@@ -889,7 +889,8 @@ final class OverlayStateTests: XCTestCase {
     state.finishControllerRecording()
 
     XCTAssertEqual(state.formattedText, "Surowe słowa operatora.")
-    XCTAssertTrue(state.canRevert, "auto-formatted FINAL must offer Revert to the raw first version")
+    XCTAssertTrue(
+      state.canRevert, "auto-formatted FINAL must offer Revert to the raw first version")
     state.revertFormat()
     XCTAssertEqual(state.formattedText, "surowe słowa operatora")
     XCTAssertFalse(state.canRevert)
@@ -1523,12 +1524,14 @@ final class OverlayStateTests: XCTestCase {
       ],
       preview: "dalej"
     )
-    XCTAssertEqual(runs, [
-      .highlight(
-        OverlayCanvas.lexiconHighlight(
-          utteranceId: 1, start: 0, replacement: "Reports", before: "RIPOS")!),
-      .text(" i Edyta dalej"),
-    ])
+    XCTAssertEqual(
+      runs,
+      [
+        .highlight(
+          OverlayCanvas.lexiconHighlight(
+            utteranceId: 1, start: 0, replacement: "Reports", before: "RIPOS")!),
+        .text(" i Edyta dalej"),
+      ])
   }
 
   func testHighlightScreenshotRendersLexiconAndGap() throws {
@@ -1569,6 +1572,66 @@ final class OverlayStateTests: XCTestCase {
     try? png.write(to: reportDest)
     XCTAssertGreaterThan(png.count, 800)
     XCTAssertTrue(FileManager.default.fileExists(atPath: dest.path))
+  }
+
+  @MainActor
+  func testFormattedOverlayMinimumHeightSnapshotRenders() throws {
+    let state = OverlayState.previewListening()
+    state.formattedText = Array(
+      repeating:
+        "Choose Insert to paste the text where you want it and press Return. The clipboard is untouched.",
+      count: 20
+    ).joined(separator: "\n")
+    let size = CGSize(
+      width: 617,
+      height: DictationOverlayWindow.minSize.height
+    )
+    let hostingView = NSHostingView(
+      rootView: DictationOverlayView(state: state)
+        .environment(\.csTextScale, 0.8)
+        .frame(width: size.width, height: size.height)
+        .preferredColorScheme(.dark)
+    )
+    hostingView.frame = CGRect(origin: .zero, size: size)
+    hostingView.layoutSubtreeIfNeeded()
+    RunLoop.main.run(until: Date().addingTimeInterval(0.03))
+    state.mode = .formatted
+    hostingView.layoutSubtreeIfNeeded()
+    RunLoop.main.run(until: Date().addingTimeInterval(0.03))
+    guard let bitmap = hostingView.bitmapImageRepForCachingDisplay(in: hostingView.bounds) else {
+      return XCTFail("could not allocate the formatted overlay bitmap")
+    }
+    hostingView.cacheDisplay(in: hostingView.bounds, to: bitmap)
+    guard let png = bitmap.representation(using: .png, properties: [:]) else {
+      XCTFail("could not render the formatted overlay")
+      return
+    }
+    let dest = FileManager.default.temporaryDirectory
+      .appendingPathComponent("codescribe-formatted-overlay-min-height.png")
+    try png.write(to: dest)
+    XCTAssertGreaterThan(png.count, 800)
+
+    // The middle of the action row is deliberately empty between To Agent and
+    // Close. Bright pixels here mean the native TextEditor escaped its body and
+    // painted transcript glyphs underneath the action controls (the observed
+    // live FINAL regression). Hairlines and glass stay below this threshold.
+    var leakedBrightPixels = 0
+    for x in 330..<520 {
+      for y in 35..<65 {
+        guard let color = bitmap.colorAt(x: x, y: y)?.usingColorSpace(.deviceRGB) else {
+          continue
+        }
+        if color.redComponent > 0.7 && color.greenComponent > 0.7
+          && color.blueComponent > 0.7 && color.alphaComponent > 0.5
+        {
+          leakedBrightPixels += 1
+        }
+      }
+    }
+    XCTAssertLessThan(
+      leakedBrightPixels, 5,
+      "formatted transcript painted into the action-row spacer"
+    )
   }
 
 }
