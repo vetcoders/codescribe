@@ -32,11 +32,12 @@ use codescribe::qube_report::{
 use codescribe_core::asr_session::GatewaySessionAvailability;
 use codescribe_core::config::UserSettings;
 use codescribe_core::pipeline::contracts::{EngineEvent, LayerSource};
+use codescribe_core::quality::engine_contract::{CORPUS_REPORT_SCHEMA, ENGINE_CONTRACT_ID};
 use codescribe_core::util::safe_path::{safe_open, safe_symlink_or_copy_bounded};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 
-const REPORT_SCHEMA: &str = "codescribe-corpus-parity/v2";
+const REPORT_SCHEMA: &str = CORPUS_REPORT_SCHEMA;
 const AUDIO_EXTENSIONS: [&str; 3] = ["wav", "m4a", "mp3"];
 const CONTROLLED_ENV: [&str; 14] = [
     "CODESCRIBE_STT_ENGINE",
@@ -338,6 +339,7 @@ impl Default for PrivacyContract {
 #[derive(Debug, Serialize, Deserialize)]
 struct ProfileReport {
     schema: String,
+    engine_contract: String,
     generated_at: String,
     commit: String,
     profile: ReplayProfile,
@@ -430,6 +432,7 @@ struct ProfileStatus {
 #[derive(Debug, Serialize, Deserialize)]
 struct MatrixReport {
     schema: String,
+    engine_contract: String,
     generated_at: String,
     commit: String,
     corpus: CorpusCensus,
@@ -890,6 +893,7 @@ fn run_matrix(args: MatrixArgs) -> Result<()> {
     let requested_executions = discovery.selected.len() * args.runs * args.profiles.len();
     let matrix = MatrixReport {
         schema: REPORT_SCHEMA.to_string(),
+        engine_contract: ENGINE_CONTRACT_ID.to_string(),
         generated_at: Utc::now().to_rfc3339(),
         commit: args.commit,
         corpus: discovery.census,
@@ -1154,6 +1158,7 @@ async fn run_worker(args: WorkerArgs) -> Result<()> {
 
     let report = ProfileReport {
         schema: REPORT_SCHEMA.to_string(),
+        engine_contract: ENGINE_CONTRACT_ID.to_string(),
         generated_at: Utc::now().to_rfc3339(),
         commit: args.commit,
         profile: args.profile,
@@ -1761,6 +1766,7 @@ fn census_markdown(census: &CorpusCensus) -> String {
 fn matrix_markdown(report: &MatrixReport) -> String {
     let mut output = String::new();
     writeln!(output, "# Codescribe corpus parity report\n").unwrap();
+    writeln!(output, "- Engine contract: `{}`", report.engine_contract).unwrap();
     writeln!(output, "- Commit: `{}`", report.commit).unwrap();
     writeln!(
         output,
@@ -1881,6 +1887,13 @@ mod tests {
         assert!(!contract.source_filenames_emitted);
         assert!(!contract.transcript_bodies_emitted);
         assert!(contract.opaque_ids_are_hash_prefixes);
+    }
+
+    #[test]
+    fn corpus_schema_carries_the_engine_contract() {
+        assert_eq!(REPORT_SCHEMA, CORPUS_REPORT_SCHEMA);
+        assert_eq!(REPORT_SCHEMA, "codescribe-corpus-parity/v3");
+        assert_eq!(ENGINE_CONTRACT_ID, "the-engine/v1");
     }
 
     #[test]
