@@ -226,11 +226,15 @@ canary_sparkle_key_parity() {
 # the read-only judge; this row is the standing alarm. It never mutates.
 # ---------------------------------------------------------------------------
 canary_keychain_domain_clean() {
-    local out rc
-    out="$(bash scripts/keychain-doctor.sh 2>&1)"; rc=$?
+    local out rc=0
+    # `out="$(cmd)"; rc=$?` never reaches the second statement under `set -e`:
+    # the assignment takes the substitution's exit status and aborts the whole
+    # canary run. The FAIL branch below would have been unreachable — the exact
+    # class of silent hole these canaries exist to catch.
+    out="$(bash scripts/keychain-doctor.sh 2>&1)" || rc=$?
     case "$rc" in
-        0) record "keychain-domain-clean" "PASS" "user search list and default keychain all resolve to existing files" ;;
-        1) record "keychain-domain-clean" "FAIL" "$(printf '%s' "$out" | awk '/STALE/{print "stale: " $3; exit}') — run scripts/keychain-doctor.sh for the derived recovery line" ;;
+        0) record "keychain-domain-clean" "PASS" "search list holds only the operator's own keychains and the default is one of them — no build keychain borrowed the domain" ;;
+        1) record "keychain-domain-clean" "FAIL" "$(printf '%s' "$out" | awk '/STALE|FOREIGN|HIJACKED/{print tolower($1) ": " $2; exit}') — run scripts/keychain-doctor.sh for the derived recovery line" ;;
         *) record "keychain-domain-clean" "SKIP" "keychain domain unreadable (no /usr/bin/security?) — not a macOS host" ;;
     esac
 }
