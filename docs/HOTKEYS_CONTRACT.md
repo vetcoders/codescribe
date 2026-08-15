@@ -30,12 +30,15 @@ repeat cannot emit duplicate commands.
 This fixed MVP chord is intentionally outside the configurable
 `WorkMode -> ShortcutBinding` contract.
 
-Assistive bindings use the same app-action plane, but also deliver an Agent
-composer capture command (`Start`, `Stop`, or `Toggle`). The existing Agent
-window is fronted, its composer is focused, and its existing mic pipeline owns
-capture. Assistive never enters `RecordingController` and never shows the
-transcription overlay. A single process-wide capture owner makes Agent and
-overlay recording mutually exclusive; a competing start fails closed.
+Assistive bindings use the same recording plane as Dictation and Formatting:
+capture → live overlay → optional format → delivery. Overlay is the routing
+throne. A Shift arm (or a selection already held) is captured at the trigger
+and attached when the transcript is sent to the Agent. The Agent window is
+the workspace — not the capture owner.
+
+The only Agent-owned capture is the composer microphone inside the Agent
+window. That shortcut stays local to the field. It never hides the overlay
+for a hotkey-started Assistive session.
 
 ```mermaid
 flowchart TB
@@ -68,10 +71,8 @@ flowchart TB
     ToggleGesture --> ToggleEvent
     CGEventTap --> CommandGesture
     CommandGesture --> ShowAgent
-    HoldEvent --> AssistiveSplit{"Assistive?"}
-    ToggleEvent --> AssistiveSplit
-    AssistiveSplit -->|No| Handler
-    AssistiveSplit -->|Yes| AgentCapture["CsAppActionListener<br/>show Agent + composer capture"]
+    HoldEvent --> Handler
+    ToggleEvent --> Handler
     ShowAgent --> AppAction["CsAppActionListener<br/>showAgent + focus"]
 
     Handler --> StateMachine
@@ -162,20 +163,24 @@ HotkeyInput { key_type: Toggle, action: Press, assistive: true }  // Right Optio
 
 ### Capture ownership
 
-Dictation and Formatting use `RecordingController`: capture → live overlay →
-final pass → editable overlay delivery. Assistive uses the existing Agent
-composer mic pipeline: capture → bounded live preview → explicit live/final
-choice → composer delivery. These routes share one atomic capture owner but do
-not share presentation surfaces.
+Dictation, Formatting, and Assistive use `RecordingController`: capture → live
+overlay → final pass → overlay delivery. Assistive latches on Shift (or a
+selection already held) and hands the transcript to the Agent as a first-class
+message. The large Agent window is the workspace for long work; a light
+overlay float is enough to speak, attach a selection, and send.
 
-The Agent preview keeps the live canvas and any differing final hypothesis.
-A materially shorter final result cannot erase live text; a human edit always
-wins and cancels Assistive auto-send. The preview remains selectable,
-scrollable, and expandable while capture stays inside the Agent window.
+The composer microphone inside the Agent window is a separate capture owner.
+It does not steal overlay-started Assistive sessions.
 
 Selection is captured in the trigger handler, never at send time. Rust remains
-the indicator/tray authority, while the transcription overlay is exclusive to
-Dictation and Formatting.
+the indicator/tray authority. Status colors are one language everywhere:
+
+| Color | Means |
+| ----- | ----- |
+| Red | recording |
+| Orange | processing (text or audio) |
+| Purple | Agent at work or in an intermediate state |
+| Green | idle — engine ready |
 
 ---
 
@@ -193,34 +198,29 @@ turn‑taking. Requires Moshi models at `~/.codescribe/models/moshiko-q8/`.
 stateDiagram-v2
     [*] --> IDLE
 
-    IDLE --> REC_HOLD : Dictation/Formatting Hold Down
-    IDLE --> REC_TOGGLE : Dictation/Formatting Toggle
-    IDLE --> AGENT_CAPTURE : Assistive Start/Toggle
+    IDLE --> REC_HOLD : Dictation/Formatting/Assistive Hold Down
+    IDLE --> REC_TOGGLE : Dictation/Formatting/Assistive Toggle
     IDLE --> CONVERSATION : Conversation Down<br/>(custom binding)
 
     REC_HOLD --> BUSY : Hold Up<br/>(Fn released)
     REC_HOLD --> REC_HOLD : Shift pressed<br/>(upgrade to assistive)
 
     REC_TOGGLE --> BUSY : Toggle again
-    AGENT_CAPTURE --> IDLE : Assistive Stop/Toggle
 
     CONVERSATION --> IDLE : Conversation Up
 
-    BUSY --> IDLE : Processing complete<br/>(paste to app)
+    BUSY --> IDLE : Processing complete<br/>(paste or To Agent)
 
     note right of REC_HOLD
         VAD: DISABLED
         User controls via key release
+        Shift latches Assistive on the overlay
     end note
 
     note right of REC_TOGGLE
         VAD: ENABLED
         Utterance boundary on silence (no stop)
-    end note
-
-    note right of AGENT_CAPTURE
-        Agent composer owns mic
-        Overlay forbidden
+        ToggleAssistive stays on the overlay
     end note
 
     note right of CONVERSATION
@@ -234,7 +234,6 @@ stateDiagram-v2
 - `IDLE` - Waiting for hotkey
 - `REC_HOLD` - Recording (hold mode, no VAD)
 - `REC_TOGGLE` - Recording (toggle mode, VAD active)
-- `AGENT_CAPTURE` - Agent composer recording (overlay excluded)
 - `BUSY` - Processing transcription/AI formatting
 - `CONVERSATION` - Moshi full-duplex active
 

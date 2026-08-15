@@ -141,7 +141,7 @@ final class ThreadRailSectionTests: XCTestCase {
         let subtitle = ThreadRailMeta.drawerSubtitle(
             model: "gpt-5", tokens: 1_234, updatedAt: date(2026, 7, 16, 14, 5),
             now: now, calendar: calendar)
-        XCTAssertEqual(subtitle, "today 14:05 · gpt-5 · 1.2k tok")
+        XCTAssertEqual(subtitle, "today 14:05 · 1.2k tok")
     }
 
     func testDrawerSubtitleSkipsMissingMiddlePart() {
@@ -151,10 +151,14 @@ final class ThreadRailSectionTests: XCTestCase {
         XCTAssertEqual(subtitle, "yesterday · 999 tok")
     }
 
-    func testDrawerSubtitleModelOnlyStripsProviderPrefixAndZeroTokensHidden() {
+    func testDrawerSubtitleModelMovesToTagNotSubtitle() {
         let subtitle = ThreadRailMeta.drawerSubtitle(
-            model: "openai/gpt-5", tokens: 0, updatedAt: nil, now: now, calendar: calendar)
-        XCTAssertEqual(subtitle, "gpt-5")
+            model: "openai/gpt-5.6-terra", tokens: 0, updatedAt: nil, now: now, calendar: calendar)
+        XCTAssertEqual(subtitle, "")
+        XCTAssertEqual(ModelTag.display(for: "openai/gpt-5.6-terra"), "gpt-5.6-terra")
+        XCTAssertEqual(ModelTag.display(for: "claude-fable-5"), "claude-fable-5")
+        XCTAssertEqual(ModelTag.display(for: "grok-4.5"), "grok-4.5")
+        XCTAssertEqual(ThreadRailMeta.timeOnly(from: "today 08:09 · grok-4.5"), "today 08:09")
     }
 
     func testDrawerSubtitleOlderDateUsesMonthDay() {
@@ -243,8 +247,10 @@ final class AccentColorTokenTests: XCTestCase {
 
     func testModeTokensRemainAppSemanticColors() {
         assertSameColor(NSColor(CSColor.modeDictation), NSColor(CSColor.terracotta))
-        assertSameColor(NSColor(CSColor.modeRecording), NSColor(CSColor.modeDictation))
+        assertSameColor(NSColor(CSColor.modeRecording), NSColor(CSColor.indicatorRecording))
         assertSameColor(NSColor(CSColor.modeAgent), NSColor(CSColor.assistive))
+        assertSameColor(NSColor(CSColor.modeProcessing), NSColor(Color(hex: 0xF28C45)))
+        assertSameColor(NSColor(CSColor.modeReady), NSColor(CSColor.oliveLight))
     }
 
     private func assertSameColor(

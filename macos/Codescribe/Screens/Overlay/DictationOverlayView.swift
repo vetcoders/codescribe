@@ -5,7 +5,7 @@ import SwiftUI
 //
 // Layout (top → bottom):
 //   header      brand wordmark · status pill · Auto Paste · placement (…) menu
-//   mode + meta tag chip (DICTATION/FINAL) · meta line
+//   mode + meta tag chip (RECORDING/AGENT/PROCESSING/READY) · meta line
 //   body        listening = waveform (live RMS level) + word-reveal transcript
 //               formatted = editable finalized transcript
 //   action row  recording: Finish; finalized: Copy · Insert · Format · To Agent.
@@ -247,11 +247,12 @@ struct DictationOverlayView: View {
     /// capture stops, so the final displayed value is the session's true length.
     @ViewBuilder
     private var sessionTimer: some View {
-        if state.mode == .listening, state.captureStartedAtUptime != nil {
+        if state.showsSessionTimer {
             TimelineView(.periodic(from: .now, by: 1)) { _ in
                 Text(state.sessionTimerText)
                     .csMono(11, .semibold)
                     .foregroundStyle(CSColor.textFaint)
+                    .monospacedDigit()
             }
             .accessibilityIdentifier("overlay-session-timer")
             .accessibilityLabel("Recording time")
@@ -315,12 +316,13 @@ struct DictationOverlayView: View {
             ScrollView(.vertical, showsIndicators: true) {
                 VStack(alignment: .leading, spacing: 0) {
                     HStack(alignment: .bottom, spacing: 2) {
-                        Text(state.listeningDisplay)
+                        Text(state.listeningCanvas)
                             .csFont(15, .medium)
                             .lineSpacing(5)
-                            .foregroundStyle(CSColor.textBody)
                             .fixedSize(horizontal: false, vertical: true)
+                            .textSelection(.enabled)
                             .accessibilityIdentifier("overlay-transcript-live")
+                            .accessibilityValue(state.listeningDisplay)
                         BlinkingCaret()
                     }
                     Color.clear
@@ -449,16 +451,26 @@ struct DictationOverlayView: View {
                     iconOnly: iconOnly,
                     action: { state.stop() }
                 )
+                if state.canCopy {
+                    actionButton(
+                        title: "Copy",
+                        icon: "doc.on.doc",
+                        tone: .neutral,
+                        iconOnly: iconOnly,
+                        action: { state.copyToPasteboard() }
+                    )
+                }
             } else if state.mode == .formatted {
-                // Terminal empty/error outcomes intentionally show no Copy/Format/Send;
-                // there is nothing to act on, so only the trailing Close remains.
-                actionButton(
-                    title: "Copy",
-                    icon: "doc.on.doc",
-                    tone: .neutral,
-                    iconOnly: iconOnly,
-                    action: { state.copyToPasteboard() }
-                )
+                // Copy is live from the first letter; empty FINAL still hides it.
+                if state.canCopy {
+                    actionButton(
+                        title: "Copy",
+                        icon: "doc.on.doc",
+                        tone: .neutral,
+                        iconOnly: iconOnly,
+                        action: { state.copyToPasteboard() }
+                    )
+                }
 
                 actionButton(
                     title: state.insertActionPresentation.title,

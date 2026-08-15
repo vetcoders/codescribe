@@ -168,6 +168,33 @@ final class OverlayStateTests: XCTestCase {
         XCTAssertEqual(state.elapsedCaptureSeconds(), 0)
         clock.now = 3900
         XCTAssertEqual(state.sessionTimerText, "1:00:00")
+        XCTAssertTrue(state.showsSessionTimer)
+    }
+
+    func testSealedCanvasHighlightsCommittedTruthAndCopyIsLiveFromFirstLetter() {
+        let state = OverlayState()
+        XCTAssertFalse(state.canCopy)
+        XCTAssertFalse(state.showsSessionTimer)
+        XCTAssertEqual(state.listeningSealedText, "")
+        XCTAssertEqual(state.listeningPreviewText, "")
+
+        state.handleRecordingPreparing()
+        state.handleRecordingStarted()
+        XCTAssertTrue(state.showsSessionTimer)
+
+        state.applyPreview("analyze the repo")
+        XCTAssertEqual(state.listeningPreviewText, "analyze the repo")
+        XCTAssertEqual(state.listeningSealedText, "")
+        XCTAssertTrue(state.canCopy)
+        XCTAssertEqual(state.activeText, "analyze the repo")
+
+        state.applyFinal(utteranceId: 1, "analyze the repo")
+        state.applyPreview("for duplicate dispatch")
+        XCTAssertEqual(state.listeningSealedText, "analyze the repo")
+        XCTAssertEqual(state.listeningPreviewText, "for duplicate dispatch")
+        XCTAssertTrue(state.canCopy)
+        XCTAssertTrue(String(state.listeningCanvas.characters).contains("analyze the repo"))
+        XCTAssertTrue(String(state.listeningCanvas.characters).contains("for duplicate dispatch"))
     }
 
     func testApprovedOverlayActionPresentationIsLiteralAndLevelBounded() {

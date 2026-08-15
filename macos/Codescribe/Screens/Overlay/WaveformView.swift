@@ -119,14 +119,14 @@ struct WaveformView: View {
     }
 
     private func color(for i: Int) -> Color {
-        // Muted terracotta so the phase reads as our brand "at work", clearly
-        // dimmer than the live-capture bars.
+        // One language with the tray: orange = processing, purple = agent,
+        // red = recording. Never reuse terracotta as a live-capture signal.
         if transcribing { return CSColor.modeProcessing.opacity(0.55) }
         guard active else { return CSColor.hairline(0.16) }
         if indicatorMode == .assistive {
             return i % 5 == 0 ? CSColor.assistiveLight : CSColor.modeAgent
         }
-        return i % 5 == 0 ? CSColor.terracottaTintBars : CSColor.modeRecording
+        return i % 5 == 0 ? CSColor.modeRecording.opacity(0.7) : CSColor.modeRecording
     }
 }
 

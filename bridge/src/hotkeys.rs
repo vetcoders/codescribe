@@ -114,52 +114,27 @@ fn event_can_start_overlay(event: &HotkeyEvent) -> bool {
     )
 }
 
-/// Translate an assistive-lane hotkey into an Agent composer command, or `None`
-/// when the event belongs to the recording controller instead.
+/// Translate a hotkey into an Agent-composer capture command.
 ///
-/// This is the fork that keeps exactly one Assistive capture owner: Chat and
-/// Selection hold modes plus the assistive toggle are Agent-owned, everything
-/// else falls through to `RecordingController`.
-fn agent_capture_command(event: &HotkeyEvent) -> Option<CsAgentCaptureCommand> {
-    match event {
-        HotkeyEvent::ToggleAssistive => Some(CsAgentCaptureCommand::Toggle),
-        HotkeyEvent::Hold {
-            action: HoldAction::Down,
-            mode: HoldMode::Chat | HoldMode::Selection,
-        }
-        | HotkeyEvent::HoldUpdate {
-            mode: HoldMode::Chat | HoldMode::Selection,
-        } => Some(CsAgentCaptureCommand::Start),
-        HotkeyEvent::Hold {
-            action: HoldAction::Up,
-            mode: HoldMode::Chat | HoldMode::Selection,
-        } => Some(CsAgentCaptureCommand::Stop),
-        _ => None,
-    }
+/// Overlay owns routing for Assistive hold (Fn+Shift), Selection, and
+/// ToggleAssistive. Those sessions stay on `RecordingController` so selection
+/// is captured at the trigger and the transcript can be handed to the Agent
+/// without stealing the overlay.
+///
+/// Agent-owned capture is only the composer microphone in the Agent window
+/// (`set_agent_capture_active` from Swift). No hotkey in this fork opens that
+/// path — a previous split routed Chat/Selection/ToggleAssistive here and
+/// hid the overlay, which is how Shift-after-selection died.
+fn agent_capture_command(_event: &HotkeyEvent) -> Option<CsAgentCaptureCommand> {
+    None
 }
 
-/// A Shift upgrade can arrive after raw hold capture already started. Ownership
-/// cannot migrate mid-recording: keep the existing overlay session raw and make
-/// sure its eventual key-up still reaches the controller that owns the mic.
-fn overlay_owned_assistive_hold_fallback(event: &HotkeyEvent) -> Option<HotkeyEvent> {
-    if CAPTURE_OWNER.load(Ordering::Acquire) != CAPTURE_OWNER_OVERLAY {
-        return None;
-    }
-    match event {
-        HotkeyEvent::HoldUpdate {
-            mode: HoldMode::Chat | HoldMode::Selection,
-        } => Some(HotkeyEvent::HoldUpdate {
-            mode: HoldMode::Raw,
-        }),
-        HotkeyEvent::Hold {
-            action: HoldAction::Up,
-            mode: HoldMode::Chat | HoldMode::Selection,
-        } => Some(HotkeyEvent::Hold {
-            action: HoldAction::Up,
-            mode: HoldMode::Raw,
-        }),
-        _ => None,
-    }
+/// Mid-hold Shift used to be remapped to Raw so ownership could not migrate
+/// to the Agent composer. Overlay is the Assistive throne again: pass the
+/// event through so the controller can latch Chat/Selection and capture the
+/// current selection on the same session.
+fn overlay_owned_assistive_hold_fallback(_event: &HotkeyEvent) -> Option<HotkeyEvent> {
+    None
 }
 
 /// Process-global slot for the lazily-created `RecordingController`.
@@ -199,9 +174,10 @@ fn current_app_action_listener() -> Option<Arc<dyn CsAppActionListener>> {
 /// controller or runtime.
 ///
 /// Precedence is deliberate and must not be reordered:
-/// 1. overlay-owned assistive fallback — ownership cannot migrate mid-recording;
-/// 2. Agent capture commands — arming the trigger context BEFORE the composer
-///    mic takes over, per `docs/HOTKEYS_CONTRACT.md`;
+/// 1. overlay-owned assistive fallback — currently a no-op; Shift upgrades
+///    stay on the overlay session instead of being flattened to Raw;
+/// 2. Agent capture commands — reserved; hotkeys no longer steal Assistive
+///    from the overlay (composer mic claims capture in Swift);
 /// 3. UI-only commands (`ShowAgent`, `InsertHere`);
 /// 4. everything else → the recording controller.
 fn route_hotkey_event<F, G, H>(
@@ -745,15 +721,15 @@ impl CodescribeHotkeys {
         start_recording_with_event(HotkeyEvent::ToggleNormal).await
     }
 
-    /// Start the same toggle flow in the assistive lane for UI-initiated recording.
+    /// Start the same toggle flow in the assistive lane. Overlay owns this
+    /// route — the Agent composer mic is a separate, UI-initiated capture.
     pub async fn start_assistive_recording(&self) -> Result<(), CsError> {
-        let Some(listener) = current_app_action_listener() else {
+        if CAPTURE_OWNER.load(Ordering::Acquire) == CAPTURE_OWNER_AGENT {
             return Err(CsError::Recording {
-                msg: "Agent action listener unavailable".to_string(),
+                msg: "Agent voice input already owns the microphone".to_string(),
             });
-        };
-        listener.on_agent_capture(CsAgentCaptureCommand::Toggle);
-        Ok(())
+        }
+        start_recording_with_event(HotkeyEvent::ToggleAssistive).await
     }
 
     /// Atomically claim/release the one process-wide capture owner. Returns
@@ -1215,9 +1191,9 @@ mod dispatch_tests {
 }
 
 /// The routing contract of [`route_hotkey_event`]: capture ownership is atomic
-/// and mutually exclusive, assistive holds map to Agent start/stop, UI-only
-/// commands never reach recording dispatch, and the assistive trigger context is
-/// armed on start but never re-armed at send time.
+/// and mutually exclusive, Assistive hold/toggle stay on the overlay, UI-only
+/// commands never reach recording dispatch, and the composer mic is the only
+/// Agent-owned capture.
 #[cfg(test)]
 mod app_action_tests {
     use super::*;
@@ -1262,39 +1238,48 @@ mod app_action_tests {
         assert_eq!(CAPTURE_OWNER.load(Ordering::SeqCst), CAPTURE_OWNER_NONE);
     }
 
-    /// Chat/Selection hold Down→Start and Up→Stop; pure mapping, no ownership.
+    /// Chat/Selection hold stays on the overlay. Composer mic is the only
+    /// Agent-owned capture, and it never comes through this fork.
     #[test]
-    fn assistive_hold_maps_to_agent_start_and_stop() {
+    fn assistive_hold_stays_on_the_overlay() {
         assert_eq!(
             agent_capture_command(&HotkeyEvent::Hold {
                 action: HoldAction::Down,
                 mode: HoldMode::Chat,
             }),
-            Some(CsAgentCaptureCommand::Start)
+            None
         );
         assert_eq!(
             agent_capture_command(&HotkeyEvent::Hold {
                 action: HoldAction::Up,
                 mode: HoldMode::Selection,
             }),
-            Some(CsAgentCaptureCommand::Stop)
+            None
+        );
+        assert_eq!(
+            agent_capture_command(&HotkeyEvent::ToggleAssistive),
+            None
         );
     }
 
-    /// Mid-recording assistive upgrade cannot migrate ownership; release stays raw.
+    /// Mid-recording Shift must reach the controller as Chat, not be flattened
+    /// to Raw. Overlay owns the upgrade; selection is captured there.
     #[test]
     #[serial_test::serial]
-    fn overlay_owned_assistive_release_still_stops_the_overlay_owner() {
+    fn overlay_owned_shift_upgrade_is_not_flattened_to_raw() {
         CAPTURE_OWNER.store(CAPTURE_OWNER_OVERLAY, Ordering::SeqCst);
         assert_eq!(
             overlay_owned_assistive_hold_fallback(&HotkeyEvent::Hold {
                 action: HoldAction::Up,
                 mode: HoldMode::Chat,
             }),
-            Some(HotkeyEvent::Hold {
-                action: HoldAction::Up,
-                mode: HoldMode::Raw,
-            })
+            None
+        );
+        assert_eq!(
+            overlay_owned_assistive_hold_fallback(&HotkeyEvent::HoldUpdate {
+                mode: HoldMode::Chat,
+            }),
+            None
         );
         CAPTURE_OWNER.store(CAPTURE_OWNER_NONE, Ordering::SeqCst);
     }
@@ -1362,10 +1347,11 @@ mod app_action_tests {
                 arm_calls_for_route.fetch_add(1, Ordering::SeqCst);
             },
         );
-        assert_eq!(listener.capture_calls.load(Ordering::SeqCst), 1);
-        assert_eq!(recording_calls.load(Ordering::SeqCst), 1);
-        // Capture owner was NONE → a new agent capture starts → trigger armed.
-        assert_eq!(arm_calls.load(Ordering::SeqCst), 1);
+        // ToggleAssistive is overlay-owned again — recording dispatch, no
+        // composer capture, no trigger-arm from this fork.
+        assert_eq!(listener.capture_calls.load(Ordering::SeqCst), 0);
+        assert_eq!(recording_calls.load(Ordering::SeqCst), 2);
+        assert_eq!(arm_calls.load(Ordering::SeqCst), 0);
 
         let deferred_calls = Arc::new(AtomicUsize::new(0));
         let deferred_calls_for_route = Arc::clone(&deferred_calls);
@@ -1382,28 +1368,37 @@ mod app_action_tests {
         assert_eq!(listener.show_agent_calls.load(Ordering::SeqCst), 1);
     }
 
-    /// Stop on an AGENT-owned capture must not re-arm trigger selection at send.
+    /// Chat hold Up on an Agent-owned composer session must not be stolen by
+    /// the overlay either — but hotkeys no longer emit Agent capture. A stale
+    /// Chat Up while the composer owns the mic is a no-op at this fork
+    /// (composer Stop is Swift-side). Route it to recording only when overlay
+    /// / none owns capture; if AGENT owns, refuse to flatten into overlay.
     #[test]
     #[serial_test::serial]
-    fn assistive_stop_does_not_recapture_at_send_time() {
-        // Owner already AGENT → this command stops an active capture; the
-        // contract forbids capturing selection at send time.
+    fn assistive_hotkey_does_not_recapture_at_send_time() {
         CAPTURE_OWNER.store(CAPTURE_OWNER_AGENT, Ordering::SeqCst);
         let listener = Arc::new(CountingAppActionListener {
             show_agent_calls: AtomicUsize::new(0),
             capture_calls: AtomicUsize::new(0),
         });
+        let recording_calls = Arc::new(AtomicUsize::new(0));
+        let recording_calls_for_route = Arc::clone(&recording_calls);
         route_hotkey_event(
             HotkeyEvent::Hold {
                 action: HoldAction::Up,
                 mode: HoldMode::Chat,
             },
             Some(listener.clone()),
-            |_| panic!("assistive stop must not enter recording dispatch"),
+            move |_| {
+                recording_calls_for_route.fetch_add(1, Ordering::SeqCst);
+            },
             || panic!("assistive stop must not dispatch deferred insert"),
             || panic!("assistive stop must not re-arm the trigger context"),
         );
-        assert_eq!(listener.capture_calls.load(Ordering::SeqCst), 1);
+        // Overlay throne: Chat Up is a recording event. Composer ownership is
+        // enforced later at `start_recording_with_event` (fails closed).
+        assert_eq!(listener.capture_calls.load(Ordering::SeqCst), 0);
+        assert_eq!(recording_calls.load(Ordering::SeqCst), 1);
         CAPTURE_OWNER.store(CAPTURE_OWNER_NONE, Ordering::SeqCst);
     }
 }

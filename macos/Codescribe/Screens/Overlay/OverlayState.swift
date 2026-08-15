@@ -367,20 +367,23 @@ final class OverlayState: ObservableObject {
     var statusRippling: Bool { mode == .listening && !transcribing && !isFinalPass && (audioReady || vadActive) }
 
     var tagText: String {
+        if isFinalPass || transcribing { return "PROCESSING" }
         switch mode {
-        case .listening: return "DICTATION"
-        case .formatted: return "FINAL"
+        case .listening:
+            return indicatorMode == .assistive ? "AGENT" : "RECORDING"
+        case .formatted: return "READY"
         case .noSpeech: return "NO SPEECH"
         case .error: return "ERROR"
         }
     }
     var tagColor: Color {
+        if isFinalPass || transcribing { return CSColor.modeProcessing }
         switch mode {
         case .listening:
-            return indicatorMode == .assistive ? CSColor.assistiveLight : CSColor.terracottaLight
-        case .formatted: return CSColor.oliveLight
+            return indicatorMode == .assistive ? CSColor.modeAgent : CSColor.modeRecording
+        case .formatted: return CSColor.modeReady
         case .noSpeech: return CSColor.textMuted
-        case .error: return CSColor.terracotta
+        case .error: return CSColor.danger
         }
     }
 
@@ -477,6 +480,60 @@ final class OverlayState: ObservableObject {
         if isFinalPass { return "final pass…" }
         if transcribing { return "transcribing…" }
         return warmingUp ? "starting…" : "listening…"
+    }
+
+    /// Sealed committed utterances — engine must not rewrite these except via
+    /// a human edit on the FINAL canvas. Highlighted on the live canvas.
+    var listeningSealedText: String {
+        let sealed = committedUtterances
+            .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
+            .filter { !$0.isEmpty }
+            .joined(separator: " ")
+        return insertingContextMarkers(into: sealed)
+    }
+
+    /// Unsealed interim hypothesis. Dimmer than sealed; copy includes it.
+    var listeningPreviewText: String {
+        preview.trimmingCharacters(in: .whitespacesAndNewlines)
+    }
+
+    /// Live canvas: sealed truth highlighted, interim unsealed. Empty canvas
+    /// keeps the phase placeholder so the body never goes blank.
+    var listeningCanvas: AttributedString {
+        let sealed = listeningSealedText
+        let previewRun = listeningPreviewText
+        if sealed.isEmpty && previewRun.isEmpty {
+            var placeholder = AttributedString(listeningDisplay)
+            placeholder.foregroundColor = CSColor.textBody
+            return placeholder
+        }
+        var canvas = AttributedString()
+        if !sealed.isEmpty {
+            var run = AttributedString(sealed)
+            run.foregroundColor = CSColor.textHigh
+            run.backgroundColor = CSColor.modeReady.opacity(0.18)
+            canvas.append(run)
+        }
+        if !sealed.isEmpty && !previewRun.isEmpty {
+            canvas.append(AttributedString(" "))
+        }
+        if !previewRun.isEmpty {
+            var run = AttributedString(previewRun)
+            run.foregroundColor = CSColor.textMuted
+            canvas.append(run)
+        }
+        return canvas
+    }
+
+    /// Copy is live from the first captured letter — listening or FINAL.
+    var canCopy: Bool {
+        !activeText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+    }
+
+    /// Timer is mandatory for any session that has started, including the
+    /// frozen value after stop.
+    var showsSessionTimer: Bool {
+        captureStartedAtUptime != nil
     }
 
     /// Whatever the action row should copy/send for the current state.

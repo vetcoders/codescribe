@@ -5,8 +5,8 @@ import SwiftUI
 // Locked palette from the handoff (README-HANDOFF.md · Design Tokens).
 // Terracotta carries app-owned mode, state, and brand meaning.
 // Decorative controls use the operator's macOS accent instead.
-// Assistive violet = voice routed to the agent. Olive/green = healthy status.
-// Amber = reasoning/format meta.
+// Assistive violet = Agent at work. Olive/green = idle / ready.
+// Red = recording. Orange = processing (text or audio).
 // Never hardcode a replacement for the system accent: the operator owns it.
 
 extension Color {
@@ -38,10 +38,12 @@ enum CSColor {
 
     static let modeDictation = terracotta
     static let modeAgent = assistive
-    static let modeRecording = modeDictation
+    static let indicatorRecording = Color(hex: 0xFF3B30)
+    /// Recording is red everywhere — tray, overlay, waveform. Terracotta is
+    /// brand/dictation identity, not the live-capture signal.
+    static let modeRecording = indicatorRecording
     static let modeProcessing = Color(hex: 0xF28C45)
     static let modeReady = oliveLight
-    static let indicatorRecording = Color(hex: 0xFF3B30)
 
     // UI chrome — selection, focus, and interactive controls follow macOS.
     static var chromeAccent: Color { Color(nsColor: .controlAccentColor) }
