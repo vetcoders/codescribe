@@ -24,7 +24,6 @@ struct Composer: View {
   @Environment(\.csTextScale) private var textScale
   @Environment(\.openSettings) private var openSettings
   @State private var fieldHeight = ComposerTextLayout.minimumHeight(fontSize: 13.5)
-  @AppStorage("AgentChat.dictationPreviewExpanded.v1") private var dictationPreviewExpanded = false
   @State private var previewAttachment: PendingAttachment?
 
   // ⌘V interception. The native text editor consumes `paste:` before any
@@ -136,7 +135,6 @@ struct Composer: View {
       .overlay(dropCatcher)
       .animation(.easeOut(duration: 0.12), value: isDragging)
 
-      dictationPreview
       dictationFeedback
 
       // Affordance row
@@ -340,10 +338,9 @@ struct Composer: View {
 
   // MARK: Voice-note mic
 
-  /// The composer mic: click to start a voice note, click again to stop and
-  /// insert the transcript into the draft. The ripple lives only while
-  /// recording; a spinner shows the preparing transition. Disabled (and dimmed)
-  /// while a hotkey/overlay dictation session owns the microphone.
+  /// The composer mic starts/stops the same Agent route as Right Option. The
+  /// ripple follows the shared controller lifecycle; no composer recorder or
+  /// editable transcript copy exists.
   private var micButton: some View {
     Button(action: { store.toggleDictation() }) {
       micVisual
@@ -363,11 +360,10 @@ struct Composer: View {
   }
 
   private var micState: ComposerMicVisualState {
-    if store.dictationBlocked { return .blocked }
     switch store.dictationPhase {
     case .preparing: return .preparing
     case .recording: return .recording
-    case .idle, .failed: return .idle
+    case .idle, .failed: return store.dictationBlocked ? .blocked : .idle
     }
   }
 
@@ -401,91 +397,6 @@ struct Composer: View {
       .foregroundStyle(CSColor.amber)
       .padding(.leading, 2)
       .transition(.opacity)
-    }
-  }
-
-  @ViewBuilder
-  private var dictationPreview: some View {
-    if !store.dictationPreview.isEmpty {
-      VStack(alignment: .leading, spacing: 7) {
-        HStack(spacing: 7) {
-          CSIconView(icon: .mic, size: 10.5, color: CSColor.terracottaLight)
-          Text(dictationPhaseLabel)
-          Text(store.dictationVadActive ? "speech" : "silence")
-            .foregroundStyle(store.dictationVadActive ? CSColor.oliveLight : CSColor.textFaintAlt)
-          if store.dictationFinalChangedText {
-            Text("final differs · \(store.dictationDeliverySource.label)")
-              .foregroundStyle(CSColor.amber)
-          }
-          if store.dictationPreviewUserEdited {
-            Text("edited · auto-send off")
-              .foregroundStyle(CSColor.chromeAccent)
-          }
-          Spacer(minLength: 8)
-          Button(dictationPreviewExpanded ? "Collapse" : "Expand") {
-            dictationPreviewExpanded.toggle()
-          }
-          .csFocusRing(cornerRadius: 8)
-          .accessibilityLabel(
-            dictationPreviewExpanded ? "Collapse transcript preview" : "Expand transcript preview")
-        }
-        .font(CSFont.mono(10.5, .medium))
-        .foregroundStyle(CSColor.textFaintAlt)
-
-        TextEditor(
-          text: Binding(
-            get: { store.dictationPreview },
-            set: { store.editDictationPreview($0) }
-          )
-        )
-        .font(CSFont.ui(12.5 * textScale))
-        .foregroundStyle(CSColor.textBodyAlt)
-        .scrollContentBackground(.hidden)
-        .frame(
-          minHeight: dictationPreviewExpanded ? 150 : 58,
-          maxHeight: dictationPreviewExpanded ? 260 : 96
-        )
-        .accessibilityLabel("Live transcript preview")
-
-        if store.dictationFinalChangedText,
-          let final = store.dictationFinalPreview,
-          final != store.dictationLivePreview
-        {
-          DisclosureGroup(
-            store.dictationDeliverySource == .final ? "Live capture" : "Final-pass alternative"
-          ) {
-            // Bounded on purpose: an unbounded Text with a long
-            // transcript grew the composer past the window and
-            // wrecked the split-view layout on expand (operator
-            // screenshot, 2026-08-09). The alternative scrolls
-            // inside its own strip instead.
-            ScrollView {
-              Text(store.dictationDeliverySource == .final ? store.dictationLivePreview : final)
-                .font(CSFont.ui(11.5 * textScale))
-                .foregroundStyle(CSColor.textFaint)
-                .textSelection(.enabled)
-                .frame(maxWidth: .infinity, alignment: .leading)
-                .padding(.top, 4)
-            }
-            .frame(maxHeight: 140)
-          }
-          .font(CSFont.mono(10.5, .medium))
-          .foregroundStyle(CSColor.textFaintAlt)
-        }
-      }
-      .padding(10)
-      .background(CSColor.surfaceRaised(0.04))
-      .clipShape(RoundedRectangle(cornerRadius: CSRadius.input, style: .continuous))
-      .transition(.opacity.combined(with: .move(edge: .top)))
-    }
-  }
-
-  private var dictationPhaseLabel: String {
-    switch store.dictationPhase {
-    case .idle: return "captured"
-    case .preparing: return "preparing"
-    case .recording: return "recording"
-    case .failed: return "stopped"
     }
   }
 

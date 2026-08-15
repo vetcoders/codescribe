@@ -50,11 +50,10 @@ final class AppModel: ObservableObject {
       mcpAdmin: RealMCPAdminEngine()
     )
     self.chat = chat
-    self.overlay = OverlayController(store: chat, engine: ControllerDictationEngine())
+    self.overlay = OverlayController(engine: ControllerDictationEngine())
     self.tray = TrayViewModel(engine: RealTrayEngine())
-    // AgentChatStore/composer is the sole Assistive route owner. Its existing
-    // dictation adapter is also used by the composer mic button; legacy
-    // Dictation/Formatting stay on RecordingController + overlay.
+    // The composer is a gesture-only adapter over RecordingController. Right
+    // Option, composer mic, Dictation, and Formatting share one recorder/STT.
     chat.dictation = RealComposerDictation(store: chat)
     AgentPerf.log("app bootstrap (AppModel init)", since: bootstrapStart)
   }
@@ -66,7 +65,6 @@ final class AppModel: ObservableObject {
 @MainActor
 final class OverlayController: ObservableObject {
   let state: OverlayState
-  private weak var store: AgentChatStore?
   /// Independent text scale for the dictation overlay (⌘+/-/0 while the panel is
   /// key). Separate from the chat scale so a distance-readable transcript and an
   /// up-close chat can be tuned independently.
@@ -84,7 +82,6 @@ final class OverlayController: ObservableObject {
   private var sessionWasAssistive = false
 
   init(
-    store: AgentChatStore? = nil,
     state: OverlayState? = nil,
     engine: DictationEngine? = nil,
     overlayEnabledProvider: @escaping () -> Bool = {
@@ -99,7 +96,6 @@ final class OverlayController: ObservableObject {
   ) {
     let state = state ?? OverlayState()
     self.state = state
-    self.store = store
     self.overlayEnabledProvider = overlayEnabledProvider
     self.assistiveStatusProvider = assistiveStatusProvider
     self.panelFactory =
@@ -118,6 +114,9 @@ final class OverlayController: ObservableObject {
       self.sessionWasAssistive = false
       self.refreshAssistiveLatch()
       self.showForRecording()
+      if self.sessionWasAssistive {
+        AppModel.shared.chat.setDictationPhase(.preparing)
+      }
       AppModel.shared.tray.isStartingDictation = true
       // Block the composer mic while the shared recorder owns the microphone.
       AppModel.shared.chat.dictationBlocked = true
@@ -126,6 +125,9 @@ final class OverlayController: ObservableObject {
       guard let self else { return }
       self.refreshAssistiveLatch()
       self.showForRecording()
+      if self.sessionWasAssistive {
+        AppModel.shared.chat.setDictationPhase(.recording)
+      }
       AppModel.shared.tray.isRecording = true
       AppModel.shared.tray.isStartingDictation = false
       AppModel.shared.chat.dictationBlocked = true
@@ -133,6 +135,9 @@ final class OverlayController: ObservableObject {
     state.onRecordingStopped = { [weak self] in
       guard let self else { return }
       self.refreshAssistiveLatch()
+      if self.sessionWasAssistive {
+        AppModel.shared.chat.setDictationPhase(.idle)
+      }
       self.markStopped()
       AppModel.shared.tray.isRecording = false
       AppModel.shared.tray.isStartingDictation = false
@@ -168,7 +173,7 @@ final class OverlayController: ObservableObject {
   /// hiding the overlay never suppresses the paste.
   func showForRecording() {
     refreshAssistiveLatch()
-    guard !agentCaptureOwnsMicrophone, !sessionWasAssistive else {
+    guard !sessionWasAssistive else {
       hide()
       return
     }
@@ -180,10 +185,6 @@ final class OverlayController: ObservableObject {
   }
 
   func show() {
-    guard !agentCaptureOwnsMicrophone else {
-      hide()
-      return
-    }
     let panel = panel ?? panelFactory(state, textScale)
     self.panel = panel
     // A pending fade-out must not leave a freshly shown panel invisible.
@@ -222,8 +223,8 @@ final class OverlayController: ObservableObject {
     state.finishControllerRecording()
   }
 
-  /// Called by the live TrayStatusStore listener. Assistive is Agent-owned and
-  /// therefore forces the transcription overlay closed.
+  /// Called by the live TrayStatusStore listener. Assistive uses the shared
+  /// controller but keeps the Dictation overlay closed in favor of Agent UI.
   func handleIndicatorModeChange(_ mode: CsIndicatorMode) {
     if mode == .assistive {
       sessionWasAssistive = true
@@ -239,11 +240,6 @@ final class OverlayController: ObservableObject {
 
   private func refreshAssistiveLatch() {
     handleAssistiveStatusChange(assistiveStatusProvider())
-  }
-
-  private var agentCaptureOwnsMicrophone: Bool {
-    guard let store else { return false }
-    return store.dictationPhase == .preparing || store.dictationPhase == .recording
   }
 
   func hide() {

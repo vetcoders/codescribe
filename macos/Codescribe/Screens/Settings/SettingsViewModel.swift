@@ -1542,8 +1542,8 @@ final class SettingsViewModel: ObservableObject {
   }
 
   /// STT is "healthy" (olive dot) when a local model is configured, or when a
-  /// cloud endpoint is set. We can't probe live Whisper load state from the
-  /// config engine alone — that lives on `CodescribeDictation` (tracked gap).
+  /// cloud endpoint is set. Runtime serving truth comes from the shared
+  /// controller snapshot, not this configuration-only health estimate.
   var sttHealthy: Bool {
     settings.useLocalStt
       ? !settings.localModel.isEmpty

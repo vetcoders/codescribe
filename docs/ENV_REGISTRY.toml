@@ -15,8 +15,8 @@
 # Created by Vetcoders (c)2026
 
 [meta]
-version = "1.1.0"
-updated = "2026-07-16"
+version = "1.2.0"
+updated = "2026-08-15"
 
 # ═══════════════════════════════════════════════════════════════════════════════
 # VAD (Voice Activity Detection) - Silero Neural Network
@@ -1355,6 +1355,20 @@ type = "string"
 reload = "restart"
 category = "storage"
 description = "Override data directory (default: ~/.codescribe)"
+
+[vars.CODESCRIBE_TRANSCRIPT_BUS_PATH]
+default = ""
+type = "string"
+reload = "restart"
+category = "storage"
+description = "Override the private append-only clean transcript NDJSON bus; default is $XDG_STATE_HOME/codescribe/transcript-events.jsonl when XDG_STATE_HOME is set, otherwise CODESCRIBE_DATA_DIR/transcript-events.jsonl"
+
+[vars.XDG_STATE_HOME]
+default = ""
+type = "string"
+reload = "restart"
+category = "storage"
+description = "Standard XDG state root; when set, owns the default Codescribe clean transcript bus directory"
 
 [vars.VIBECRAFTED_CONTROL_PLANE_DIR]
 default = ""

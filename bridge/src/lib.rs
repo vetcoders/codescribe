@@ -10,7 +10,7 @@
 //!   - `agent_status` — CodescribeAgentStatus (read-only readiness + MCP status) [W-C1]
 //!   - `mcp_admin` — CodescribeMcpAdmin (add/update/remove/test MCP servers)     [W-C4]
 //!   - `config`    — CodescribeConfig (settings/prompts/keychain/onboarding)   [W3 #1]
-//!   - `recording` — CodescribeDictation + CsTranscriptionListener (STT)       [W3 #3]
+//!   - `recording` — shared controller listener + audio/model settings          [live]
 //!   - `threads`   — CodescribeThreads (thread persistence + history)          [W3 #5]
 //!
 //! Shared cross-slice types (`CsError`, `CsLanguage`) live here so each submodule

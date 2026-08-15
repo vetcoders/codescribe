@@ -2184,418 +2184,6 @@ public func FfiConverterTypeCodescribeConfig_lower(_ value: CodescribeConfig) ->
 
 
 /**
- * Thin handle to the codescribe dictation engine (streaming recorder +
- * Whisper). Holds the active session behind an async mutex and the current
- * foreign listener behind an `RwLock`.
- */
-public protocol CodescribeDictationProtocol: AnyObject, Sendable {
-
-    /**
-     * Optionally warm Whisper weights. Runs on a blocking thread because model
-     * load touches the GPU and can take seconds.
-     *
-     * When the live engine is Apple, Whisper is **gap-fill only** (file final /
-     * emergency recovery). Missing weights must never refuse recording start —
-     * we log an honest degraded-mode note and return `Ok(())`. Candle-live
-     * still requires a model and surfaces load errors.
-     * Wraps `whisper::init` (stt/whisper/singleton.rs).
-     */
-    func initModel() async throws
-
-    /**
-     * True when the Whisper engine is currently loaded. May flip back to
-     * `false` after idle-unload; the next transcription reloads transparently.
-     * Wraps `whisper::is_initialized` (stt/whisper/singleton.rs:207).
-     */
-    func isModelLoaded()  -> Bool
-
-    /**
-     * True while a dictation session is active.
-     * Wraps `StreamingRecorder::is_recording` (audio/streaming_recorder.rs:79).
-     */
-    func isRecording() async  -> Bool
-
-    /**
-     * Fire the foreign `on_recording_finalising` callback and publish processing.
-     */
-    func notifyRecordingFinalising()
-
-    /**
-     * Fire the foreign `on_recording_stopped` callback if a listener is set.
-     */
-    func notifyRecordingStopped()
-
-    /**
-     * Register (or replace) the foreign listener that receives dictation
-     * events. Must be called before `start_recording`.
-     */
-    func setListener(listener: CsTranscriptionListener)
-
-    /**
-     * Start microphone dictation. Builds a `CsEventSink` from the registered
-     * listener, wires it into a fresh `StreamingRecorder`, and starts the
-     * event-based transcription session.
-     *
-     * Wraps `StreamingRecorder::new` (audio/streaming_recorder.rs:25),
-     * `set_event_sink` (:74) and `start_event_session` (:87). Errors if no
-     * listener was set (the core pipeline requires an event sink).
-     */
-    func startRecording(language: CsLanguage?) async throws
-
-    /**
-     * Stop the active dictation session and return the composed transcript.
-     *
-     * Two-phase, within one shared budget (`compose_stop_timeout`):
-     *
-     * 1. `StreamingRecorder::stop` is the completion signal — it stops the
-     * audio stream, joins the transcription task (which only finishes AFTER
-     * every `UtteranceFinal` has been emitted synchronously into our
-     * accumulator), and saves the WAV. So the streaming splice is complete
-     * once stop returns cleanly.
-     * 2. The final pass `FINAL_PASS_MODE` permits (`composer_final_pass_plan`,
-     * same law as the controller lane): **Always** re-transcribes the whole
-     * saved WAV with the `transcribe_file_verdict` adjudicator the
-     * hotkey/overlay toggle-stop uses; **Smart** transcribes only the audio
-     * after the last committed utterance and merges it as gap-fill;
-     * **Off** runs no Whisper at all and streaming is final.
-     *
-     * The final pass wins whenever it yields non-empty text; the streaming
-     * splice is the fallback for a failed/timed-out/empty final pass (or a
-     * drain timeout, where no WAV is composed). Either way the UI never hangs:
-     * the shared budget bounds both phases and overrun degrades quality, not
-     * correctness. The streaming recorder's own transcript buffer is ignored —
-     * it stays empty on this path.
-     */
-    func stopRecording() async throws  -> String
-
-    /**
-     * Transcribe an existing audio file. Loads + decodes the file, detects the
-     * language, then runs Whisper. All blocking work runs off the async runtime.
-     *
-     * Wraps `audio::load_audio_file` (audio/loader.rs:10),
-     * `whisper::detect_language` (stt/whisper/singleton.rs:249) and
-     * `whisper::transcribe` (stt/whisper/singleton.rs:214).
-     */
-    func transcribeFile(path: String) async throws  -> CsTranscription
-
-    /**
-     * Whether the default Whisper weights are on disk / embedded (not necessarily loaded).
-     */
-    func whisperModelReadyStatus()  -> CsWhisperModelStatus
-
-}
-/**
- * Thin handle to the codescribe dictation engine (streaming recorder +
- * Whisper). Holds the active session behind an async mutex and the current
- * foreign listener behind an `RwLock`.
- */
-open class CodescribeDictation: CodescribeDictationProtocol, @unchecked Sendable {
-    fileprivate let handle: UInt64
-
-    /// Used to instantiate a [FFIObject] without an actual handle, for fakes in tests, mostly.
-#if swift(>=5.8)
-    @_documentation(visibility: private)
-#endif
-    public struct NoHandle {
-        public init() {}
-    }
-
-    // TODO: We'd like this to be `private` but for Swifty reasons,
-    // we can't implement `FfiConverter` without making this `required` and we can't
-    // make it `required` without making it `public`.
-#if swift(>=5.8)
-    @_documentation(visibility: private)
-#endif
-    required public init(unsafeFromHandle handle: UInt64) {
-        self.handle = handle
-    }
-
-    // This constructor can be used to instantiate a fake object.
-    // - Parameter noHandle: Placeholder value so we can have a constructor separate from the default empty one that may be implemented for classes extending [FFIObject].
-    //
-    // - Warning:
-    //     Any object instantiated with this constructor cannot be passed to an actual Rust-backed object. Since there isn't a backing handle the FFI lower functions will crash.
-#if swift(>=5.8)
-    @_documentation(visibility: private)
-#endif
-    public init(noHandle: NoHandle) {
-        self.handle = 0
-    }
-
-#if swift(>=5.8)
-    @_documentation(visibility: private)
-#endif
-    public func uniffiCloneHandle() -> UInt64 {
-        return try! rustCall { uniffi_codescribe_ffi_fn_clone_codescribedictation(self.handle, $0) }
-    }
-    /**
-     * Build an idle dictation handle and initialize logging. No microphone or
-     * model work happens here — call `set_listener` then `start_recording`.
-     */
-public convenience init() {
-    let handle =
-        try! rustCall() {
-    uniffi_codescribe_ffi_fn_constructor_codescribedictation_new($0
-    )
-}
-    self.init(unsafeFromHandle: handle)
-}
-
-    deinit {
-        try! rustCall { uniffi_codescribe_ffi_fn_free_codescribedictation(handle, $0) }
-    }
-
-
-
-
-    /**
-     * Optionally warm Whisper weights. Runs on a blocking thread because model
-     * load touches the GPU and can take seconds.
-     *
-     * When the live engine is Apple, Whisper is **gap-fill only** (file final /
-     * emergency recovery). Missing weights must never refuse recording start —
-     * we log an honest degraded-mode note and return `Ok(())`. Candle-live
-     * still requires a model and surfaces load errors.
-     * Wraps `whisper::init` (stt/whisper/singleton.rs).
-     */
-open func initModel()async throws   {
-    return
-        try  await uniffiRustCallAsync(
-            rustFutureFunc: {
-                uniffi_codescribe_ffi_fn_method_codescribedictation_init_model(
-                    self.uniffiCloneHandle()
-
-                )
-            },
-            pollFunc: ffi_codescribe_ffi_rust_future_poll_void,
-            completeFunc: ffi_codescribe_ffi_rust_future_complete_void,
-            freeFunc: ffi_codescribe_ffi_rust_future_free_void,
-            liftFunc: { $0 },
-            errorHandler: FfiConverterTypeCsError_lift
-        )
-}
-
-    /**
-     * True when the Whisper engine is currently loaded. May flip back to
-     * `false` after idle-unload; the next transcription reloads transparently.
-     * Wraps `whisper::is_initialized` (stt/whisper/singleton.rs:207).
-     */
-open func isModelLoaded() -> Bool  {
-    return try!  FfiConverterBool.lift(try! rustCall() {
-    uniffi_codescribe_ffi_fn_method_codescribedictation_is_model_loaded(
-            self.uniffiCloneHandle(),$0
-    )
-})
-}
-
-    /**
-     * True while a dictation session is active.
-     * Wraps `StreamingRecorder::is_recording` (audio/streaming_recorder.rs:79).
-     */
-open func isRecording()async  -> Bool  {
-    return
-        try!  await uniffiRustCallAsync(
-            rustFutureFunc: {
-                uniffi_codescribe_ffi_fn_method_codescribedictation_is_recording(
-                    self.uniffiCloneHandle()
-
-                )
-            },
-            pollFunc: ffi_codescribe_ffi_rust_future_poll_i8,
-            completeFunc: ffi_codescribe_ffi_rust_future_complete_i8,
-            freeFunc: ffi_codescribe_ffi_rust_future_free_i8,
-            liftFunc: FfiConverterBool.lift,
-            errorHandler: nil
-
-        )
-}
-
-    /**
-     * Fire the foreign `on_recording_finalising` callback and publish processing.
-     */
-open func notifyRecordingFinalising()  {try! rustCall() {
-    uniffi_codescribe_ffi_fn_method_codescribedictation_notify_recording_finalising(
-            self.uniffiCloneHandle(),$0
-    )
-}
-}
-
-    /**
-     * Fire the foreign `on_recording_stopped` callback if a listener is set.
-     */
-open func notifyRecordingStopped()  {try! rustCall() {
-    uniffi_codescribe_ffi_fn_method_codescribedictation_notify_recording_stopped(
-            self.uniffiCloneHandle(),$0
-    )
-}
-}
-
-    /**
-     * Register (or replace) the foreign listener that receives dictation
-     * events. Must be called before `start_recording`.
-     */
-open func setListener(listener: CsTranscriptionListener)  {try! rustCall() {
-    uniffi_codescribe_ffi_fn_method_codescribedictation_set_listener(
-            self.uniffiCloneHandle(),
-        FfiConverterTypeCsTranscriptionListener_lower(listener),$0
-    )
-}
-}
-
-    /**
-     * Start microphone dictation. Builds a `CsEventSink` from the registered
-     * listener, wires it into a fresh `StreamingRecorder`, and starts the
-     * event-based transcription session.
-     *
-     * Wraps `StreamingRecorder::new` (audio/streaming_recorder.rs:25),
-     * `set_event_sink` (:74) and `start_event_session` (:87). Errors if no
-     * listener was set (the core pipeline requires an event sink).
-     */
-open func startRecording(language: CsLanguage?)async throws   {
-    return
-        try  await uniffiRustCallAsync(
-            rustFutureFunc: {
-                uniffi_codescribe_ffi_fn_method_codescribedictation_start_recording(
-                    self.uniffiCloneHandle(),
-                    FfiConverterOptionTypeCsLanguage.lower(language)
-                )
-            },
-            pollFunc: ffi_codescribe_ffi_rust_future_poll_void,
-            completeFunc: ffi_codescribe_ffi_rust_future_complete_void,
-            freeFunc: ffi_codescribe_ffi_rust_future_free_void,
-            liftFunc: { $0 },
-            errorHandler: FfiConverterTypeCsError_lift
-        )
-}
-
-    /**
-     * Stop the active dictation session and return the composed transcript.
-     *
-     * Two-phase, within one shared budget (`compose_stop_timeout`):
-     *
-     * 1. `StreamingRecorder::stop` is the completion signal — it stops the
-     * audio stream, joins the transcription task (which only finishes AFTER
-     * every `UtteranceFinal` has been emitted synchronously into our
-     * accumulator), and saves the WAV. So the streaming splice is complete
-     * once stop returns cleanly.
-     * 2. The final pass `FINAL_PASS_MODE` permits (`composer_final_pass_plan`,
-     * same law as the controller lane): **Always** re-transcribes the whole
-     * saved WAV with the `transcribe_file_verdict` adjudicator the
-     * hotkey/overlay toggle-stop uses; **Smart** transcribes only the audio
-     * after the last committed utterance and merges it as gap-fill;
-     * **Off** runs no Whisper at all and streaming is final.
-     *
-     * The final pass wins whenever it yields non-empty text; the streaming
-     * splice is the fallback for a failed/timed-out/empty final pass (or a
-     * drain timeout, where no WAV is composed). Either way the UI never hangs:
-     * the shared budget bounds both phases and overrun degrades quality, not
-     * correctness. The streaming recorder's own transcript buffer is ignored —
-     * it stays empty on this path.
-     */
-open func stopRecording()async throws  -> String  {
-    return
-        try  await uniffiRustCallAsync(
-            rustFutureFunc: {
-                uniffi_codescribe_ffi_fn_method_codescribedictation_stop_recording(
-                    self.uniffiCloneHandle()
-
-                )
-            },
-            pollFunc: ffi_codescribe_ffi_rust_future_poll_rust_buffer,
-            completeFunc: ffi_codescribe_ffi_rust_future_complete_rust_buffer,
-            freeFunc: ffi_codescribe_ffi_rust_future_free_rust_buffer,
-            liftFunc: FfiConverterString.lift,
-            errorHandler: FfiConverterTypeCsError_lift
-        )
-}
-
-    /**
-     * Transcribe an existing audio file. Loads + decodes the file, detects the
-     * language, then runs Whisper. All blocking work runs off the async runtime.
-     *
-     * Wraps `audio::load_audio_file` (audio/loader.rs:10),
-     * `whisper::detect_language` (stt/whisper/singleton.rs:249) and
-     * `whisper::transcribe` (stt/whisper/singleton.rs:214).
-     */
-open func transcribeFile(path: String)async throws  -> CsTranscription  {
-    return
-        try  await uniffiRustCallAsync(
-            rustFutureFunc: {
-                uniffi_codescribe_ffi_fn_method_codescribedictation_transcribe_file(
-                    self.uniffiCloneHandle(),
-                    FfiConverterString.lower(path)
-                )
-            },
-            pollFunc: ffi_codescribe_ffi_rust_future_poll_rust_buffer,
-            completeFunc: ffi_codescribe_ffi_rust_future_complete_rust_buffer,
-            freeFunc: ffi_codescribe_ffi_rust_future_free_rust_buffer,
-            liftFunc: FfiConverterTypeCsTranscription_lift,
-            errorHandler: FfiConverterTypeCsError_lift
-        )
-}
-
-    /**
-     * Whether the default Whisper weights are on disk / embedded (not necessarily loaded).
-     */
-open func whisperModelReadyStatus() -> CsWhisperModelStatus  {
-    return try!  FfiConverterTypeCsWhisperModelStatus_lift(try! rustCall() {
-    uniffi_codescribe_ffi_fn_method_codescribedictation_whisper_model_ready_status(
-            self.uniffiCloneHandle(),$0
-    )
-})
-}
-
-
-
-}
-
-
-#if swift(>=5.8)
-@_documentation(visibility: private)
-#endif
-public struct FfiConverterTypeCodescribeDictation: FfiConverter {
-    typealias FfiType = UInt64
-    typealias SwiftType = CodescribeDictation
-
-    public static func lift(_ handle: UInt64) throws -> CodescribeDictation {
-        return CodescribeDictation(unsafeFromHandle: handle)
-    }
-
-    public static func lower(_ value: CodescribeDictation) -> UInt64 {
-        return value.uniffiCloneHandle()
-    }
-
-    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> CodescribeDictation {
-        let handle: UInt64 = try readInt(&buf)
-        return try lift(handle)
-    }
-
-    public static func write(_ value: CodescribeDictation, into buf: inout [UInt8]) {
-        writeInt(&buf, lower(value))
-    }
-}
-
-
-#if swift(>=5.8)
-@_documentation(visibility: private)
-#endif
-public func FfiConverterTypeCodescribeDictation_lift(_ handle: UInt64) throws -> CodescribeDictation {
-    return try FfiConverterTypeCodescribeDictation.lift(handle)
-}
-
-#if swift(>=5.8)
-@_documentation(visibility: private)
-#endif
-public func FfiConverterTypeCodescribeDictation_lower(_ value: CodescribeDictation) -> UInt64 {
-    return FfiConverterTypeCodescribeDictation.lower(value)
-}
-
-
-
-
-
-
-/**
  * Process-global hotkey runtime owner.
  *
  * `start()` installs the native listener but creates `RecordingController`
@@ -2724,12 +2312,6 @@ public protocol CodescribeHotkeysProtocol: AnyObject, Sendable {
      * controller attaches the trigger-time selection and accepts this once.
      */
     func sendAssistiveTranscript(text: String) async throws  -> Bool
-
-    /**
-     * Atomically claim/release the one process-wide capture owner. Returns
-     * false when the legacy overlay already owns the microphone.
-     */
-    func setAgentCaptureActive(active: Bool)  -> Bool
 
     /**
      * Register the Swift AgentChat listener that renders voice-assistive replies
@@ -3179,19 +2761,6 @@ open func sendAssistiveTranscript(text: String)async throws  -> Bool  {
             liftFunc: FfiConverterBool.lift,
             errorHandler: FfiConverterTypeCsError_lift
         )
-}
-
-    /**
-     * Atomically claim/release the one process-wide capture owner. Returns
-     * false when the legacy overlay already owns the microphone.
-     */
-open func setAgentCaptureActive(active: Bool) -> Bool  {
-    return try!  FfiConverterBool.lift(try! rustCall() {
-    uniffi_codescribe_ffi_fn_method_codescribehotkeys_set_agent_capture_active(
-            self.uniffiCloneHandle(),
-        FfiConverterBool.lower(active),$0
-    )
-})
 }
 
     /**
@@ -5491,12 +5060,6 @@ public protocol CsAppActionListener: AnyObject, Sendable {
      */
     func onShowAgent()
 
-    /**
-     * Drive the Agent-owned composer microphone. The bridge has already claimed
-     * (or verified) capture ownership before this fires.
-     */
-    func onAgentCapture(command: CsAgentCaptureCommand)
-
 }
 /**
  * Foreign callback for UI-only global commands. These actions are deliberately
@@ -5561,18 +5124,6 @@ open func onShowAgent()  {try! rustCall() {
 }
 }
 
-    /**
-     * Drive the Agent-owned composer microphone. The bridge has already claimed
-     * (or verified) capture ownership before this fires.
-     */
-open func onAgentCapture(command: CsAgentCaptureCommand)  {try! rustCall() {
-    uniffi_codescribe_ffi_fn_method_csappactionlistener_on_agent_capture(
-            self.uniffiCloneHandle(),
-        FfiConverterTypeCsAgentCaptureCommand_lower(command),$0
-    )
-}
-}
-
 
 
 }
@@ -5613,30 +5164,6 @@ fileprivate struct UniffiCallbackInterfaceCsAppActionListener {
                     throw UniffiInternalError.unexpectedStaleHandle
                 }
                 return uniffiObj.onShowAgent(
-                )
-            }
-
-
-            let writeReturn = { () }
-            uniffiTraitInterfaceCall(
-                callStatus: uniffiCallStatus,
-                makeCall: makeCall,
-                writeReturn: writeReturn
-            )
-        },
-        onAgentCapture: { (
-            uniffiHandle: UInt64,
-            command: RustBuffer,
-            uniffiOutReturn: UnsafeMutableRawPointer,
-            uniffiCallStatus: UnsafeMutablePointer<RustCallStatus>
-        ) in
-            let makeCall = {
-                () throws -> () in
-                guard let uniffiObj = try? FfiConverterTypeCsAppActionListener.handleMap.get(handle: uniffiHandle) else {
-                    throw UniffiInternalError.unexpectedStaleHandle
-                }
-                return uniffiObj.onAgentCapture(
-                     command: try FfiConverterTypeCsAgentCaptureCommand_lift(command)
                 )
             }
 
@@ -11298,83 +10825,6 @@ public func FfiConverterTypeCsWhisperModelStatus_lower(_ value: CsWhisperModelSt
 // Note that we don't yet support `indirect` for enums.
 // See https://github.com/mozilla/uniffi-rs/issues/396 for further discussion.
 /**
- * UI commands for the Agent-owned composer microphone. Assistive hotkeys are
- * translated here, before the legacy RecordingController can prepare/show its
- * overlay, so there is exactly one Assistive capture owner.
- */
-
-public enum CsAgentCaptureCommand: Equatable, Hashable {
-
-    case start
-    case stop
-    case toggle
-
-
-
-}
-
-#if compiler(>=6)
-extension CsAgentCaptureCommand: Sendable {}
-#endif
-
-#if swift(>=5.8)
-@_documentation(visibility: private)
-#endif
-public struct FfiConverterTypeCsAgentCaptureCommand: FfiConverterRustBuffer {
-    typealias SwiftType = CsAgentCaptureCommand
-
-    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> CsAgentCaptureCommand {
-        let variant: Int32 = try readInt(&buf)
-        switch variant {
-
-        case 1: return .start
-
-        case 2: return .stop
-
-        case 3: return .toggle
-
-        default: throw UniffiInternalError.unexpectedEnumCase
-        }
-    }
-
-    public static func write(_ value: CsAgentCaptureCommand, into buf: inout [UInt8]) {
-        switch value {
-
-
-        case .start:
-            writeInt(&buf, Int32(1))
-
-
-        case .stop:
-            writeInt(&buf, Int32(2))
-
-
-        case .toggle:
-            writeInt(&buf, Int32(3))
-
-        }
-    }
-}
-
-
-#if swift(>=5.8)
-@_documentation(visibility: private)
-#endif
-public func FfiConverterTypeCsAgentCaptureCommand_lift(_ buf: RustBuffer) throws -> CsAgentCaptureCommand {
-    return try FfiConverterTypeCsAgentCaptureCommand.lift(buf)
-}
-
-#if swift(>=5.8)
-@_documentation(visibility: private)
-#endif
-public func FfiConverterTypeCsAgentCaptureCommand_lower(_ value: CsAgentCaptureCommand) -> RustBuffer {
-    return FfiConverterTypeCsAgentCaptureCommand.lower(value)
-}
-
-
-// Note that we don't yet support `indirect` for enums.
-// See https://github.com/mozilla/uniffi-rs/issues/396 for further discussion.
-/**
  * UI-safe API-key liveness bucket. No variant carries secret material.
  */
 
@@ -14009,36 +13459,6 @@ private let initializationResult: InitializationResult = {
     if (uniffi_codescribe_ffi_checksum_method_codescribeconfig_update_config_many() != 23821) {
         return InitializationResult.apiChecksumMismatch
     }
-    if (uniffi_codescribe_ffi_checksum_method_codescribedictation_init_model() != 36342) {
-        return InitializationResult.apiChecksumMismatch
-    }
-    if (uniffi_codescribe_ffi_checksum_method_codescribedictation_is_model_loaded() != 16019) {
-        return InitializationResult.apiChecksumMismatch
-    }
-    if (uniffi_codescribe_ffi_checksum_method_codescribedictation_is_recording() != 44927) {
-        return InitializationResult.apiChecksumMismatch
-    }
-    if (uniffi_codescribe_ffi_checksum_method_codescribedictation_notify_recording_finalising() != 54267) {
-        return InitializationResult.apiChecksumMismatch
-    }
-    if (uniffi_codescribe_ffi_checksum_method_codescribedictation_notify_recording_stopped() != 16148) {
-        return InitializationResult.apiChecksumMismatch
-    }
-    if (uniffi_codescribe_ffi_checksum_method_codescribedictation_set_listener() != 48324) {
-        return InitializationResult.apiChecksumMismatch
-    }
-    if (uniffi_codescribe_ffi_checksum_method_codescribedictation_start_recording() != 14108) {
-        return InitializationResult.apiChecksumMismatch
-    }
-    if (uniffi_codescribe_ffi_checksum_method_codescribedictation_stop_recording() != 3278) {
-        return InitializationResult.apiChecksumMismatch
-    }
-    if (uniffi_codescribe_ffi_checksum_method_codescribedictation_transcribe_file() != 13892) {
-        return InitializationResult.apiChecksumMismatch
-    }
-    if (uniffi_codescribe_ffi_checksum_method_codescribedictation_whisper_model_ready_status() != 38237) {
-        return InitializationResult.apiChecksumMismatch
-    }
     if (uniffi_codescribe_ffi_checksum_method_codescribehotkeys_available_bindings() != 35701) {
         return InitializationResult.apiChecksumMismatch
     }
@@ -14088,9 +13508,6 @@ private let initializationResult: InitializationResult = {
         return InitializationResult.apiChecksumMismatch
     }
     if (uniffi_codescribe_ffi_checksum_method_codescribehotkeys_send_assistive_transcript() != 10588) {
-        return InitializationResult.apiChecksumMismatch
-    }
-    if (uniffi_codescribe_ffi_checksum_method_codescribehotkeys_set_agent_capture_active() != 8943) {
         return InitializationResult.apiChecksumMismatch
     }
     if (uniffi_codescribe_ffi_checksum_method_codescribehotkeys_set_agent_delivery_listener() != 36044) {
@@ -14267,9 +13684,6 @@ private let initializationResult: InitializationResult = {
     if (uniffi_codescribe_ffi_checksum_method_csappactionlistener_on_show_agent() != 40684) {
         return InitializationResult.apiChecksumMismatch
     }
-    if (uniffi_codescribe_ffi_checksum_method_csappactionlistener_on_agent_capture() != 63731) {
-        return InitializationResult.apiChecksumMismatch
-    }
     if (uniffi_codescribe_ffi_checksum_method_cstranscriptionlistener_on_recording_preparing() != 27049) {
         return InitializationResult.apiChecksumMismatch
     }
@@ -14334,9 +13748,6 @@ private let initializationResult: InitializationResult = {
         return InitializationResult.apiChecksumMismatch
     }
     if (uniffi_codescribe_ffi_checksum_constructor_codescribeconfig_new() != 56915) {
-        return InitializationResult.apiChecksumMismatch
-    }
-    if (uniffi_codescribe_ffi_checksum_constructor_codescribedictation_new() != 62362) {
         return InitializationResult.apiChecksumMismatch
     }
     if (uniffi_codescribe_ffi_checksum_constructor_codescribehotkeys_new() != 29673) {

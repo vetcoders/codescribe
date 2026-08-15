@@ -498,10 +498,9 @@ protocol ChatThreadsProviding: AnyObject {
   func generateThreadId() -> String
 }
 
-// MARK: - Composer dictation seam (voice message → transcript into the draft)
+// MARK: - Composer gesture seam (Agent capture on the shared controller)
 
-/// Lifecycle of the composer's own voice-note dictation. Independent from the
-/// hotkey / overlay dictation session — this drives only the composer mic.
+/// Agent-facing view of the shared controller lifecycle.
 enum ComposerDictationPhase: Equatable {
   case idle
   case preparing  // permission / model load / start-stop transition in flight
@@ -509,35 +508,11 @@ enum ComposerDictationPhase: Equatable {
   case failed(String)
 }
 
-enum ComposerCaptureCommand {
-  case startAssistive
-  case stopAssistive
-  case toggleAssistive
-}
-
-enum DictationDeliverySource: Equatable {
-  case live
-  case final
-  case edited
-
-  var label: String {
-    switch self {
-    case .live: return "live chosen"
-    case .final: return "final chosen"
-    case .edited: return "edited text chosen"
-    }
-  }
-}
-
-/// UI-only seam over the composer dictation controller. The real adapter
-/// (`RealComposerDictation`, Core layer) wraps the `CodescribeDictation` bridge;
-/// kept bridge-free here so the view-model + #Preview stay standalone (nil = mic
-/// is a no-op, e.g. in previews).
+/// UI-only gesture seam over the shared recording controller.
 @MainActor
 protocol ComposerDictating: AnyObject {
-  /// Start recording when idle, stop-and-insert when recording.
+  /// Start Agent capture when idle, stop-and-send when recording.
   func toggle()
-  func handle(_ command: ComposerCaptureCommand)
 }
 
 // MARK: - Store
@@ -555,14 +530,6 @@ final class AgentChatStore: ObservableObject {
   /// Monotonic UI command consumed by the composer. It carries no text and
   /// deliberately does not mutate the selected thread or staged attachments.
   @Published private(set) var composerFocusRequest: UInt64 = 0
-  @Published private(set) var dictationPreview: String = ""
-  @Published private(set) var dictationLivePreview: String = ""
-  @Published private(set) var dictationFinalPreview: String?
-  @Published private(set) var dictationFinalChangedText = false
-  @Published private(set) var dictationVadActive = false
-  @Published private(set) var dictationPreviewUserEdited = false
-  @Published private(set) var dictationDeliverySource: DictationDeliverySource = .live
-
   /// Images staged in the composer for the next message. Cleared when the
   /// message is dispatched.
   @Published var pendingAttachments: [PendingAttachment] = []
@@ -574,9 +541,7 @@ final class AgentChatStore: ObservableObject {
   /// affordance (ripple while `.recording`) and the inline error feedback.
   @Published private(set) var dictationPhase: ComposerDictationPhase = .idle
 
-  /// True while a hotkey / tray / overlay dictation session owns the microphone.
-  /// Set from the authoritative recording lifecycle hooks (see OverlayController)
-  /// so the composer mic can't open a second, colliding recorder.
+  /// True while the one shared controller owns the microphone.
   @Published var dictationBlocked: Bool = false
 
   /// Injected real adapter (Core). `nil` in previews / mock → mic is inert.
@@ -586,12 +551,8 @@ final class AgentChatStore: ObservableObject {
   /// a newer state.
   private var dictationFailureToken = UUID()
 
-  /// Toggle the composer voice note (start ↔ stop-and-insert).
+  /// Toggle Agent capture (start ↔ stop-and-send).
   func toggleDictation() { dictation?.toggle() }
-
-  func handleAssistiveCapture(_ command: ComposerCaptureCommand) {
-    dictation?.handle(command)
-  }
 
   func requestComposerFocus() {
     composerFocusRequest &+= 1
@@ -601,97 +562,10 @@ final class AgentChatStore: ObservableObject {
   /// when no adapter is wired.
   func setDictationPhase(_ phase: ComposerDictationPhase) { dictationPhase = phase }
 
-  /// Latest live voice-note preview. This is a snapshot buffer from the STT
-  /// listener, not a delta stream, and stays separate from `draft` until stop.
-  func beginDictationPreviewSession() {
-    dictationPreview = ""
-    dictationLivePreview = ""
-    dictationFinalPreview = nil
-    dictationFinalChangedText = false
-    dictationVadActive = false
-    dictationPreviewUserEdited = false
-    dictationDeliverySource = .live
-  }
-
-  /// Idempotent on purpose. Apple live polls partials every ~40 ms, so during a
-  /// pause the SAME text arrives ~25×/s. Publishing an unchanged value still
-  /// fires `objectWillChange`, rebuilding the whole Agent window body — and the
-  /// preview's `TextEditor` is NSTextView-backed, so each rebuild mutates the
-  /// AppKit subtree, invalidates the window's structural regions and re-runs the
-  /// deep `cursorUpdate:` walk (measured 2026-08-05: ~30% of main-thread samples
-  /// in `setCursorForMouseLocation:` → `NSCursor _reallySet`, visible as the
-  /// pointer flickering between I-beam and arrow, plus a PDF cursor-image reload
-  /// per frame). Writing only on real change removes the whole storm at the
-  /// source; see `plans/gtm-closure-260804/evidence/2026-08-05_cursor-storm-sample.txt`.
-  func updateDictationPreview(_ text: String) {
-    let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
-    if dictationLivePreview != trimmed { dictationLivePreview = trimmed }
-    guard !dictationPreviewUserEdited else { return }
-    if dictationPreview != trimmed { dictationPreview = trimmed }
-  }
-
-  func editDictationPreview(_ text: String) {
-    dictationPreview = text
-    dictationPreviewUserEdited = true
-    dictationDeliverySource = .edited
-  }
-
-  func noteDictationFinalPreview(_ text: String) {
-    let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
-    let final = trimmed.isEmpty ? nil : trimmed
-    let changed = !trimmed.isEmpty && trimmed != dictationLivePreview
-    if dictationFinalPreview != final { dictationFinalPreview = final }
-    if dictationFinalChangedText != changed { dictationFinalChangedText = changed }
-  }
-
-  /// Same idempotence contract as `updateDictationPreview`: the VAD callback
-  /// fires per audio chunk, and republishing an unchanged flag rebuilds the
-  /// window body for nothing.
-  func setDictationVadActive(_ active: Bool) {
-    guard dictationVadActive != active else { return }
-    dictationVadActive = active
-  }
-
-  /// Preserve both hypotheses and explicitly choose the delivery text. A
-  /// materially shorter final pass may fill gaps but must never erase a better
-  /// live canvas. User edits always win and cancel Assistive auto-send.
-  func resolveDictationDelivery(final text: String, autoSend: Bool) -> (
-    text: String, autoSend: Bool
-  ) {
-    let final = text.trimmingCharacters(in: .whitespacesAndNewlines)
-    dictationFinalPreview = final.isEmpty ? nil : final
-    dictationFinalChangedText = !final.isEmpty && final != dictationLivePreview
-
-    if dictationPreviewUserEdited {
-      dictationDeliverySource = .edited
-      return (dictationPreview.trimmingCharacters(in: .whitespacesAndNewlines), false)
-    }
-
-    let live = dictationLivePreview.trimmingCharacters(in: .whitespacesAndNewlines)
-    let liveWords = live.split(whereSeparator: \Character.isWhitespace).count
-    let finalWords = final.split(whereSeparator: \Character.isWhitespace).count
-    let finalRegressed = !live.isEmpty && (final.isEmpty || finalWords * 100 < liveWords * 85)
-    let chosen = finalRegressed ? live : final
-    dictationDeliverySource = finalRegressed ? .live : .final
-    dictationPreview = chosen
-    return (chosen, autoSend)
-  }
-
-  func clearDictationPreview() {
-    dictationPreview = ""
-    dictationLivePreview = ""
-    dictationFinalPreview = nil
-    dictationFinalChangedText = false
-    dictationVadActive = false
-    dictationPreviewUserEdited = false
-    dictationDeliverySource = .live
-  }
-
   /// Surface a recoverable dictation failure with a self-clearing inline message
   /// (auto-returns to `.idle` after a few seconds so the composer doesn't keep a
   /// stale error banner).
   func reportDictationFailure(_ message: String) {
-    clearDictationPreview()
     dictationPhase = .failed(message)
     let token = UUID()
     dictationFailureToken = token
@@ -699,19 +573,6 @@ final class AgentChatStore: ObservableObject {
       try? await Task.sleep(nanoseconds: 4_000_000_000)
       guard dictationFailureToken == token, case .failed = dictationPhase else { return }
       dictationPhase = .idle
-    }
-  }
-
-  /// Append the explicitly resolved voice transcript to the editable draft.
-  /// Preview provenance remains visible until the next capture starts.
-  func appendDictatedTranscript(_ text: String) {
-    let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
-    guard !trimmed.isEmpty else { return }
-    if draft.isEmpty {
-      draft = trimmed
-    } else {
-      let needsSeparator = !(draft.last?.isWhitespace ?? false)
-      draft += (needsSeparator ? " " : "") + trimmed
     }
   }
 
