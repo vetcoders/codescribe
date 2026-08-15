@@ -1161,6 +1161,36 @@ fn legacy_fallback_assistant_text(
     }
 }
 
+const LEGACY_FALLBACK_UNAVAILABLE_MESSAGE: &str =
+    "Agent provider and fallback are unavailable. Check Settings → Providers.";
+
+/// Build the one terminal sequence the Swift Agent surface must receive after
+/// the runtime has handed a voice turn to the legacy formatter. The fallback
+/// used to persist its result without publishing anything, leaving the
+/// assistant placeholder permanently in `Thinking` after a fast provider/key
+/// failure. Keep this mapping pure so the terminal contract is testable without
+/// a live provider or a Swift listener.
+fn legacy_fallback_terminal_events(assistant_text: Option<&str>) -> Vec<AgentDeliveryEvent> {
+    match assistant_text
+        .map(str::trim)
+        .filter(|text| !text.is_empty())
+    {
+        Some(text) => vec![
+            AgentDeliveryEvent::TextDone(text.to_string()),
+            AgentDeliveryEvent::Done,
+        ],
+        None => vec![AgentDeliveryEvent::Error(
+            LEGACY_FALLBACK_UNAVAILABLE_MESSAGE.to_string(),
+        )],
+    }
+}
+
+fn publish_legacy_fallback_terminal(assistant_text: Option<&str>) {
+    for event in legacy_fallback_terminal_events(assistant_text) {
+        crate::agent_delivery::publish_agent_delivery_event(event);
+    }
+}
+
 /// Answer one turn through the legacy formatter instead of the agent runtime.
 /// Returns the assistant text only when there is genuine output to persist; a
 /// formatter failure logs and yields `None` rather than writing a junk thread.
@@ -1236,18 +1266,25 @@ async fn run_agent_send_with_fallback(
             );
             debug!("Legacy fallback input length: {}", text.len());
             let fallback_assistant_text = run_legacy_send_path(&text, whisper_language).await;
-            if let Some(assistant_text) = fallback_assistant_text {
-                match deliver_legacy_assistive_thread(&text, &assistant_text) {
-                    Ok(Some(receipt)) => debug!(
-                        backend_thread_id = %receipt.backend_id,
-                        message_count = receipt.message_count,
-                        "Legacy assistive fallback delivered"
-                    ),
-                    Ok(None) => {}
-                    Err(error) => {
-                        warn!("Failed to deliver legacy assistive fallback thread: {error}")
+            match fallback_assistant_text {
+                Some(assistant_text) => {
+                    match deliver_legacy_assistive_thread(&text, &assistant_text) {
+                        Ok(Some(receipt)) => {
+                            debug!(
+                                backend_thread_id = %receipt.backend_id,
+                                message_count = receipt.message_count,
+                                "Legacy assistive fallback delivered"
+                            );
+                            publish_legacy_fallback_terminal(Some(&assistant_text));
+                        }
+                        Ok(None) => publish_legacy_fallback_terminal(None),
+                        Err(error) => {
+                            warn!("Failed to deliver legacy assistive fallback thread: {error}");
+                            publish_legacy_fallback_terminal(None);
+                        }
                     }
                 }
+                None => publish_legacy_fallback_terminal(None),
             }
         }
     }
@@ -1753,6 +1790,32 @@ mod tests {
         assert_eq!(
             legacy_fallback_assistant_text(AiFormatStatus::AiNoop, "verbatim reply".to_string()),
             Some("verbatim reply".to_string())
+        );
+    }
+
+    /// A formatter fallback is still the terminal owner of the already-open
+    /// voice bubble. Success must fill and close it; failure must close it with
+    /// an actionable error. Neither branch may leave Swift in `Thinking`.
+    #[test]
+    fn legacy_fallback_always_publishes_a_terminal_ui_sequence() {
+        assert_eq!(
+            legacy_fallback_terminal_events(Some("  recovered reply  ")),
+            vec![
+                AgentDeliveryEvent::TextDone("recovered reply".to_string()),
+                AgentDeliveryEvent::Done,
+            ]
+        );
+        assert_eq!(
+            legacy_fallback_terminal_events(None),
+            vec![AgentDeliveryEvent::Error(
+                LEGACY_FALLBACK_UNAVAILABLE_MESSAGE.to_string()
+            )]
+        );
+        assert_eq!(
+            legacy_fallback_terminal_events(Some("  ")),
+            vec![AgentDeliveryEvent::Error(
+                LEGACY_FALLBACK_UNAVAILABLE_MESSAGE.to_string()
+            )]
         );
     }
 
