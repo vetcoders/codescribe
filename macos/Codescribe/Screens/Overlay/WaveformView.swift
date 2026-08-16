@@ -57,10 +57,10 @@ struct WaveformView: View {
   /// Real capture level, when the engine streams it. nil → ambient animation.
   var meter: AudioLevelMeter? = nil
 
-  private let barWidth: CGFloat = 3
-  private let gap: CGFloat = 4
-  private let maxBarHeight: CGFloat = 26
-  private let trackHeight: CGFloat = 34
+  private let barWidth: CGFloat = 2
+  private let gap: CGFloat = 3
+  private let maxBarHeight: CGFloat = 12
+  private let trackHeight: CGFloat = 16
   private let minScale: CGFloat = 0.35
 
   private var contentWidth: CGFloat {

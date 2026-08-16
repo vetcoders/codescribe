@@ -12,6 +12,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **Voice Lab on the website** (`/voice/lab`). Teacher + Seal Atlas as a
   Codescribe module, not a sidecar: same `teach()` triangle as
   `codescribe-teacher`, idle until Run; Atlas HTML loads only on demand.
+- **Overlay stays the canvas.** Assistive hold/toggle stays on the live
+  overlay (composer mic is the only Agent-owned capture). Action row whispers
+  at rest. Retranscribe runs Full HQ / Cloud on `last_session.wav`. Forest
+  glass drinks the desktop; the panel stays non-key until you click FINAL.
 
 ### Changed
 

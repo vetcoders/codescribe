@@ -633,9 +633,21 @@ impl CodescribeHotkeys {
         start_recording_with_event(HotkeyEvent::ToggleNormal).await
     }
 
-    /// Start the same toggle flow in the assistive lane for UI-initiated recording.
+    /// Start the same toggle flow in the assistive lane. Overlay owns this
+    /// route — the Agent composer mic is a separate, UI-initiated capture.
     pub async fn start_assistive_recording(&self) -> Result<(), CsError> {
         start_recording_with_event(HotkeyEvent::ToggleAssistive).await
+    }
+
+    /// Overlay Retranscribe: `hq:` / `cloud:` prefixes pick the pass.
+    /// Bare paths are a Full HQ file pass.
+    pub async fn transcribe_file(&self, path: String) -> Result<CsTranscription, CsError> {
+        crate::recording::transcribe_session_file(path).await
+    }
+
+    /// Stable path of the last retained session WAV, if it exists.
+    pub fn last_session_audio_path(&self) -> Option<String> {
+        crate::recording::last_session_audio_path()
     }
 
     /// Stop the active legacy-controller recording flow, if one is live.

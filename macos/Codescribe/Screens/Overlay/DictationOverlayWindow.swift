@@ -14,9 +14,11 @@ import SwiftUI
 final class FloatingOverlayPanel: NSPanel, NSWindowDelegate {
   var onUserMove: (() -> Void)?
   var onUserResize: (() -> Void)?
+  fileprivate var presence: OverlayPresence?
 
-  override var canBecomeKey: Bool { true }
+  override var canBecomeKey: Bool { allowsKeyForEdit }
   override var canBecomeMain: Bool { false }
+  var allowsKeyForEdit = false
 
   func windowDidMove(_ notification: Notification) {
     onUserMove?()
@@ -146,17 +148,24 @@ enum DictationOverlayWindow {
     panel.hasShadow = false  // GlassPanel paints its own deep shadow.
 
     // Float above normal windows, ride along every Space, never take app focus.
-    panel.level = .floating
+    // sharingType stays readable so PrintScreen can see the panel; presence
+    // raises to statusBar for the capture chord and yields to system alerts.
+    panel.level = OverlayPresencePolicy.rest.windowLevel
+    panel.sharingType = .readOnly
     panel.collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary, .stationary]
     panel.isFloatingPanel = true
     panel.hidesOnDeactivate = false
-    panel.isMovableByWindowBackground = true  // draggable via background; edges resize
+    panel.isMovableByWindowBackground = true  // chrome drag handles + empty background
 
     panel.titleVisibility = .hidden
     panel.titlebarAppearsTransparent = true
     panel.standardWindowButton(.closeButton)?.isHidden = true
     panel.standardWindowButton(.miniaturizeButton)?.isHidden = true
     panel.standardWindowButton(.zoomButton)?.isHidden = true
+
+    let presence = OverlayPresence(panel: panel)
+    presence.start()
+    panel.presence = presence
 
     // Size is window-owned (user-resizable) — do NOT resize to fittingSize each frame.
     return panel
@@ -190,5 +199,190 @@ enum DictationOverlayWindow {
     let defaults = UserDefaults.standard
     defaults.set(Double(size.width), forKey: sizeDefaultsKey + ".w")
     defaults.set(Double(size.height), forKey: sizeDefaultsKey + ".h")
+  }
+}
+
+/// Rest / yield / capture. Screenshot chords rise above the forest so PrintScreen
+/// actually sees the panel; system alerts push it back down.
+enum OverlayPresencePolicy: Equatable {
+  case rest
+  case yield
+  case capture
+
+  var windowLevel: NSWindow.Level {
+    switch self {
+    case .rest: .floating
+    case .yield: .normal
+    case .capture: .statusBar
+    }
+  }
+
+  static let yieldBundleIds: Set<String> = [
+    "com.apple.SecurityAgent",
+    "com.apple.UserNotificationCenter",
+    "com.apple.CoreServicesUIAgent",
+    "com.apple.loginwindow",
+  ]
+
+  static func resolve(screenshotChord: Bool, shouldYield: Bool) -> OverlayPresencePolicy {
+    if screenshotChord { return .capture }
+    if shouldYield { return .yield }
+    return .rest
+  }
+
+  static func isScreenshotChord(_ event: NSEvent) -> Bool {
+    let flags = event.modifierFlags.intersection(.deviceIndependentFlagsMask)
+    guard flags.contains([.command, .shift]), !flags.contains(.option) else { return false }
+    return event.keyCode == 20 || event.keyCode == 21 || event.keyCode == 23
+  }
+
+  static func shouldYield(frontmostBundleId: String?, modalWindowPresent: Bool) -> Bool {
+    if modalWindowPresent { return true }
+    guard let frontmostBundleId else { return false }
+    return yieldBundleIds.contains(frontmostBundleId)
+  }
+}
+
+/// Keeps the overlay in the forest until a screenshot needs it on top, or an
+/// alert needs it out of the way. Never takes the insertion point.
+@MainActor
+final class OverlayPresence {
+  private weak var panel: NSPanel?
+  private var localMonitor: Any?
+  private var globalMonitor: Any?
+  private var workspaceObserver: NSObjectProtocol?
+  private var captureUntil: Date?
+  private var captureTimer: Timer?
+
+  init(panel: NSPanel) {
+    self.panel = panel
+  }
+
+  func start() {
+    localMonitor = NSEvent.addLocalMonitorForEvents(matching: .keyDown) { [weak self] event in
+      self?.noteScreenshotIfNeeded(event)
+      return event
+    }
+    globalMonitor = NSEvent.addGlobalMonitorForEvents(matching: .keyDown) { [weak self] event in
+      self?.noteScreenshotIfNeeded(event)
+    }
+    workspaceObserver = NSWorkspace.shared.notificationCenter.addObserver(
+      forName: NSWorkspace.didActivateApplicationNotification,
+      object: nil,
+      queue: .main
+    ) { [weak self] _ in
+      Task { @MainActor in self?.apply() }
+    }
+    apply()
+  }
+
+  deinit {
+    if let localMonitor { NSEvent.removeMonitor(localMonitor) }
+    if let globalMonitor { NSEvent.removeMonitor(globalMonitor) }
+    if let workspaceObserver {
+      NSWorkspace.shared.notificationCenter.removeObserver(workspaceObserver)
+    }
+    captureTimer?.invalidate()
+  }
+
+  private func noteScreenshotIfNeeded(_ event: NSEvent) {
+    guard OverlayPresencePolicy.isScreenshotChord(event) else { return }
+    captureUntil = Date().addingTimeInterval(4)
+    apply()
+    captureTimer?.invalidate()
+    captureTimer = Timer.scheduledTimer(withTimeInterval: 4.1, repeats: false) { [weak self] _ in
+      Task { @MainActor in self?.apply() }
+    }
+  }
+
+  private func apply() {
+    guard let panel else { return }
+    let capturing = captureUntil.map { $0 > Date() } ?? false
+    let front = NSWorkspace.shared.frontmostApplication?.bundleIdentifier
+    let policy = OverlayPresencePolicy.resolve(
+      screenshotChord: capturing,
+      shouldYield: OverlayPresencePolicy.shouldYield(
+        frontmostBundleId: front,
+        modalWindowPresent: NSApp.modalWindow != nil
+      )
+    )
+    if panel.level != policy.windowLevel {
+      panel.level = policy.windowLevel
+    }
+    if policy == .capture {
+      panel.orderFrontRegardless()
+    }
+  }
+}
+
+/// Chrome hit target: the view itself moves the window. Interactive siblings
+/// (buttons, editor) sit above it and keep their clicks.
+struct OverlayDragHandle: NSViewRepresentable {
+  func makeNSView(context: Context) -> OverlayDragHandleView {
+    OverlayDragHandleView()
+  }
+
+  func updateNSView(_ nsView: OverlayDragHandleView, context: Context) {}
+}
+
+final class OverlayDragHandleView: NSView {
+  override var mouseDownCanMoveWindow: Bool { true }
+  override var isOpaque: Bool { false }
+  override func acceptsFirstMouse(for event: NSEvent?) -> Bool { true }
+}
+
+/// The overlay becomes key only while the user is editing the transcript.
+/// Any other click leaves the caret in the previous app.
+struct OverlayKeyGate: NSViewRepresentable {
+  var editing: Bool
+  var onResign: () -> Void
+
+  func makeNSView(context: Context) -> OverlayKeyGateView {
+    let view = OverlayKeyGateView()
+    view.onResign = onResign
+    return view
+  }
+
+  func updateNSView(_ nsView: OverlayKeyGateView, context: Context) {
+    nsView.onResign = onResign
+    nsView.apply(editing: editing)
+  }
+}
+
+final class OverlayKeyGateView: NSView {
+  var onResign: (() -> Void)?
+  private var resignObserver: NSObjectProtocol?
+
+  override func viewDidMoveToWindow() {
+    super.viewDidMoveToWindow()
+    if let resignObserver {
+      NotificationCenter.default.removeObserver(resignObserver)
+      self.resignObserver = nil
+    }
+    guard let window else { return }
+    resignObserver = NotificationCenter.default.addObserver(
+      forName: NSWindow.didResignKeyNotification,
+      object: window,
+      queue: .main
+    ) { [weak self] _ in
+      self?.onResign?()
+    }
+  }
+
+  func apply(editing: Bool) {
+    guard let panel = window as? FloatingOverlayPanel else { return }
+    panel.allowsKeyForEdit = editing
+    if editing {
+      if !panel.isKeyWindow { panel.makeKey() }
+    } else if panel.isKeyWindow {
+      panel.makeFirstResponder(nil)
+      panel.resignKey()
+    }
+  }
+
+  deinit {
+    if let resignObserver {
+      NotificationCenter.default.removeObserver(resignObserver)
+    }
   }
 }

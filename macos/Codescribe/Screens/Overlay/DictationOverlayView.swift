@@ -5,7 +5,7 @@ import SwiftUI
 //
 // Layout (top → bottom):
 //   header      brand wordmark · status pill · Auto Paste · placement (…) menu
-//   mode + meta tag chip (DICTATION/FINAL) · meta line
+//   mode + meta tag chip (RECORDING/AGENT/PROCESSING/READY) · meta line
 //   body        listening = waveform (live RMS level) + word-reveal transcript
 //               formatted = editable finalized transcript
 //   action row  recording: Finish; finalized: Copy · Insert · Format · To Agent.
@@ -43,9 +43,11 @@ struct DictationOverlayView: View {
   private let bodyMinHeight: CGFloat = 130
   private let transcriptMinHeight: CGFloat = 84
   private let buttonRadius: CGFloat = 10
+  /// Action chrome stays put but whispers until the pointer is on the row.
+  @State private var actionRowHovered = false
 
   var body: some View {
-    GlassPanel(cornerRadius: CSRadius.window) {
+    GlassPanel(cornerRadius: CSRadius.window, sitsInForest: true) {
       VStack(alignment: .leading, spacing: 0) {
         header
         hairline(0.06)
@@ -58,6 +60,15 @@ struct DictationOverlayView: View {
       }
     }
     .csFocusPolicy()
+    .background(
+      OverlayKeyGate(
+        editing: state.isEditingTranscript,
+        onResign: { state.endTranscriptEdit() }
+      )
+      .frame(width: 0, height: 0)
+      .allowsHitTesting(false)
+    )
+    .onExitCommand { state.endTranscriptEdit() }
     .frame(minWidth: windowMinWidth, maxWidth: .infinity, maxHeight: .infinity)
     // Terminal corner clip (U22): GlassPanel paints its background from the
     // CONTENT column's size, not the window's. Whenever the column outgrows
@@ -104,6 +115,7 @@ struct DictationOverlayView: View {
           .font(CSFont.ui(15, .bold))
           .tracking(-0.3)
           .foregroundStyle(CSColor.textHigh)
+          .allowsHitTesting(false)
       }
       // Swap the whole VIEW TYPE on live vs idle, not just a flag: the
       // animated pill (with @State + repeatForever) exists ONLY while live,
@@ -116,10 +128,12 @@ struct DictationOverlayView: View {
           rippling: true
         )
         .padding(.leading, 6)
+        .allowsHitTesting(false)
         .accessibilityIdentifier("overlay-phase-status")
       } else {
         StaticStatusPill(text: state.statusText, color: state.statusColor)
           .padding(.leading, 6)
+          .allowsHitTesting(false)
           .accessibilityIdentifier("overlay-phase-status")
       }
       if let badge = state.confidenceBadgeText {
@@ -130,6 +144,7 @@ struct DictationOverlayView: View {
           .padding(.vertical, 4)
           .background(CSColor.terracotta.opacity(0.12))
           .clipShape(Capsule())
+          .allowsHitTesting(false)
           .accessibilityIdentifier("overlay-confidence-badge")
           .accessibilityLabel(badge)
       }
@@ -142,6 +157,7 @@ struct DictationOverlayView: View {
     }
     .padding(.horizontal, 20)
     .padding(.vertical, 12)
+    .background(OverlayDragHandle())
   }
 
   /// Compact persisted delivery control. `ViewThatFits` keeps the literal label
@@ -235,6 +251,7 @@ struct DictationOverlayView: View {
     .padding(.horizontal, 20)
     .padding(.top, 8)
     .padding(.bottom, 4)
+    .background(OverlayDragHandle())
   }
 
   /// Live `00:00` session counter — the absolute reference for audio sync,
@@ -243,11 +260,12 @@ struct DictationOverlayView: View {
   /// capture stops, so the final displayed value is the session's true length.
   @ViewBuilder
   private var sessionTimer: some View {
-    if state.mode == .listening, state.captureStartedAtUptime != nil {
+    if state.showsSessionTimer {
       TimelineView(.periodic(from: .now, by: 1)) { _ in
         Text(state.sessionTimerText)
           .csMono(11, .semibold)
           .foregroundStyle(CSColor.textFaint)
+          .monospacedDigit()
       }
       .accessibilityIdentifier("overlay-session-timer")
       .accessibilityLabel("Recording time")
@@ -300,6 +318,8 @@ struct DictationOverlayView: View {
       )
       .padding(.top, 4)
       .padding(.bottom, 8)
+      .allowsHitTesting(false)
+      .background(OverlayDragHandle())
       transcriptScroll
     }
   }
@@ -334,19 +354,31 @@ struct DictationOverlayView: View {
 
   private var formattedBody: some View {
     VStack(alignment: .leading, spacing: 8) {
-      TextEditor(
-        text: Binding(
-          get: { state.formattedText },
-          set: { state.userEditedTranscript($0) }
+      if state.isEditingTranscript {
+        TextEditor(
+          text: Binding(
+            get: { state.formattedText },
+            set: { state.userEditedTranscript($0) }
+          )
         )
-      )
-      .csFont(15)
-      .foregroundStyle(CSColor.textHigh)
-      .lineSpacing(5)
-      .scrollContentBackground(.hidden)
-      .background(Color.clear)
-      .frame(minHeight: bodyMinHeight)
-      .accessibilityIdentifier("overlay-transcript-formatted")
+        .csFont(19)
+        .foregroundStyle(CSColor.textHigh)
+        .lineSpacing(6)
+        .scrollContentBackground(.hidden)
+        .background(Color.clear)
+        .frame(minHeight: bodyMinHeight)
+        .accessibilityIdentifier("overlay-transcript-formatted")
+      } else {
+        Text(state.formattedText)
+          .csFont(19, .medium)
+          .foregroundStyle(CSColor.textHigh)
+          .lineSpacing(6)
+          .frame(maxWidth: .infinity, minHeight: bodyMinHeight, alignment: .topLeading)
+          .contentShape(Rectangle())
+          .onTapGesture { state.beginTranscriptEdit() }
+          .accessibilityIdentifier("overlay-transcript-formatted")
+          .help("Click to edit. The caret stays in the other app until you do.")
+      }
       if let status = state.formatFailureStatus {
         Text(status)
           .csMono(11, .medium)
@@ -418,6 +450,11 @@ struct DictationOverlayView: View {
     .frame(height: actionRowContentHeight)
     .padding(.horizontal, 20)
     .padding(.vertical, 6)
+    .contentShape(Rectangle())
+    .opacity(actionRowHovered ? 1 : 0.22)
+    .animation(.easeOut(duration: 0.16), value: actionRowHovered)
+    .onHover { actionRowHovered = $0 }
+    .accessibilityElement(children: .contain)
   }
 
   @ViewBuilder
@@ -431,16 +468,25 @@ struct DictationOverlayView: View {
           iconOnly: iconOnly,
           action: { state.stop() }
         )
+        if state.canCopy {
+          actionButton(
+            title: "Copy",
+            icon: "doc.on.doc",
+            tone: .neutral,
+            iconOnly: iconOnly,
+            action: { state.copyToPasteboard() }
+          )
+        }
       } else if state.mode == .formatted {
-        // Terminal empty/error outcomes intentionally show no Copy/Format/Send;
-        // there is nothing to act on, so only the trailing Close remains.
-        actionButton(
-          title: "Copy",
-          icon: "doc.on.doc",
-          tone: .neutral,
-          iconOnly: iconOnly,
-          action: { state.copyToPasteboard() }
-        )
+        if state.canCopy {
+          actionButton(
+            title: "Copy",
+            icon: "doc.on.doc",
+            tone: .neutral,
+            iconOnly: iconOnly,
+            action: { state.copyToPasteboard() }
+          )
+        }
 
         actionButton(
           title: state.insertActionPresentation.title,
@@ -465,6 +511,8 @@ struct DictationOverlayView: View {
 
         manualFormatMenu(iconOnly: iconOnly)
 
+        manualRetranscribeMenu(iconOnly: iconOnly)
+
         actionButton(
           title: OverlayActionPresentation.sendTitle,
           help: OverlayActionPresentation.sendHelp,
@@ -473,6 +521,8 @@ struct DictationOverlayView: View {
           iconOnly: iconOnly,
           action: { state.sendToAgent() }
         )
+      } else if state.mode == .noSpeech {
+        manualRetranscribeMenu(iconOnly: iconOnly)
       }
 
       Spacer(minLength: 0)
@@ -515,6 +565,33 @@ struct DictationOverlayView: View {
     )
     .accessibilityHint(OverlayActionPresentation.formatHelp)
     .accessibilityIdentifier("overlay-format-menu")
+  }
+
+  private func manualRetranscribeMenu(iconOnly: Bool) -> some View {
+    Menu {
+      ForEach(OverlayRetranscribePass.allCases) { pass in
+        Button(pass.visibleName) {
+          state.retranscribe(pass: pass)
+        }
+      }
+    } label: {
+      actionButtonLabel(
+        title: state.isRetranscribing
+          ? "Retranscribing..." : OverlayActionPresentation.retranscribeTitle,
+        icon: "arrow.triangle.2.circlepath",
+        tone: .neutral,
+        iconOnly: iconOnly
+      )
+    }
+    .menuStyle(.button)
+    .csFocusRing(cornerRadius: 8)
+    .menuIndicator(.hidden)
+    .help(OverlayActionPresentation.retranscribeHelp)
+    .disabled(!state.canRetranscribe)
+    .opacity(state.canRetranscribe ? 1 : 0.45)
+    .accessibilityLabel(OverlayActionPresentation.retranscribeTitle)
+    .accessibilityHint(OverlayActionPresentation.retranscribeHelp)
+    .accessibilityIdentifier("overlay-retranscribe-menu")
   }
 
   private func actionButton(
@@ -606,6 +683,7 @@ struct DictationOverlayView: View {
     .csMono(10, .medium)
     .padding(.horizontal, 20)
     .padding(.vertical, 8)
+    .background(OverlayDragHandle())
   }
 
   private var footerEngineDot: Color {
