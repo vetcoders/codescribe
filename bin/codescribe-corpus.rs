@@ -33,6 +33,9 @@ use codescribe_core::asr_session::GatewaySessionAvailability;
 use codescribe_core::config::UserSettings;
 use codescribe_core::pipeline::contracts::{EngineEvent, LayerSource};
 use codescribe_core::quality::engine_contract::{CORPUS_REPORT_SCHEMA, ENGINE_CONTRACT_ID};
+use codescribe_core::quality::seal_atlas_html::{
+    SealAtlasPage, SealAtlasStats, render_seal_atlas_html,
+};
 use codescribe_core::util::safe_path::{safe_open, safe_symlink_or_copy_bounded};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
@@ -1133,7 +1136,8 @@ async fn run_worker(args: WorkerArgs) -> Result<()> {
     let input_hashes_unchanged = rows
         .iter()
         .all(|row| row.audio_hash_unchanged && row.reference_hash_unchanged);
-    let quality_html = format!("quality/{}.html", args.profile.token());
+    let quality_html = format!("quality/seal-atlas.{}.html", args.profile.token());
+    let qube_html = format!("quality/qube.{}.html", args.profile.token());
     let quality_report = build_quality_report(
         args.profile,
         &args.language,
@@ -1154,8 +1158,30 @@ async fn run_worker(args: WorkerArgs) -> Result<()> {
         metrics_reference: MetricsReference::Corpus,
         local_transcription: LocalTranscriptionMode::LocalWhisper,
     };
+    let atlas = SealAtlasPage {
+        title: format!("Seal Atlas — corpus {}", args.profile.token()),
+        lede: format!(
+            "Corpus profile {}. One take, one PCM clock. Words from SealedSpan.words when a dump is attached — not from the final string.",
+            args.profile.token()
+        ),
+        stats: SealAtlasStats {
+            sealed_spans: quality_report.entries.len().to_string(),
+            ..SealAtlasStats::default()
+        },
+        findings: vec![
+            format!(
+                "Qube scores (footnote) live at {}. Avg WER is not the live engine.",
+                qube_html
+            ),
+        ],
+        dump_present: false,
+    };
     atomic_write_private(
         &output_root.join(&quality_html),
+        render_seal_atlas_html(&atlas).as_bytes(),
+    )?;
+    atomic_write_private(
+        &output_root.join(&qube_html),
         render_qube_html(&quality_report, &quality_config).as_bytes(),
     )?;
 

@@ -7,6 +7,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **Voice Lab on the website** (`/voice/lab`). Teacher + Seal Atlas as a
+  Codescribe module, not a sidecar: same `teach()` triangle as
+  `codescribe-teacher`, idle until Run; Atlas HTML loads only on demand.
+
+### Changed
+
+- **Quality HTML is Seal Atlas.** `codescribe-corpus` writes
+  `quality/seal-atlas.{profile}.html` as the report (handshake in
+  `docs/quality-reports/CONTRACT.md`). Qube scores move to
+  `quality/qube.{profile}.html` and stay a footnote. Gold take 01 remains
+  `docs/quality-reports/seal-atlas.take01.html`.
+
 ## [0.13.3] - 2026-08-13
 
 > The agent-stability and STT-truth-layer wave: one dictation pipeline with an

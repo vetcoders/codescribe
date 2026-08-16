@@ -84,6 +84,9 @@ The private quality HTML is a **Seal Atlas**, not a WER table with a banner.
 Gold visual: [`docs/quality-reports/seal-atlas.take01.html`](quality-reports/seal-atlas.take01.html)
 (take 01 „no to dobra", replay `cff0817b…`, 44100 Hz, 2650112 samples).
 
+HTML handshake (meta, `.stat` cards, lanes): [`docs/quality-reports/CONTRACT.md`](quality-reports/CONTRACT.md).
+`codescribe-corpus` writes `quality/seal-atlas.{profile}.html`. Qube is a footnote.
+
 1. **One take, one clock.** X-axis is the capture PCM sample counter. Apple sealed spans, `SealedSpan.words`, Whisper segments, and Silero p(speech) share that axis. No reconstructed timeline.
 2. **Production Silero.** Curve from the engine's embedded ONNX + default `VadConfig`, 32 ms chunks — `vad_atlas_probe`, not a toy VAD.
 3. **Words from the live dump.** `CODESCRIBE_SEAL_ATLAS_DUMP` after session-end seal. Never rebuilt from the final string.

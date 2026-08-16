@@ -1,18 +1,30 @@
 ---
-import { asset } from '../lib/asset';
+import { asset, page } from '../lib/asset';
+
+interface Props {
+  current?: 'home' | 'lab';
+}
+const { current = 'home' } = Astro.props;
 ---
 
 <header class="nav">
   <nav aria-label="Primary">
-    <div class="brand">
+    <a class="brand" href={page('')}>
       <img src={asset('icon.png')} width="25" height="25" alt="" />
       <span class="wordmark">codescribe</span>
-    </div>
+    </a>
     <div class="links">
-      <a href="#modes">modes</a>
-      <a href="#agent-stack">agents</a>
+      {current === 'home' ? (
+        <>
+          <a href="#modes">modes</a>
+          <a href="#agent-stack">agents</a>
+        </>
+      ) : (
+        <a href={page('')}>home</a>
+      )}
+      <a href={page('voice/lab')} aria-current={current === 'lab' ? 'page' : undefined}>lab</a>
       <a href="https://github.com/vetcoders/codescribe" target="_blank" rel="noopener noreferrer">github ↗</a>
-      <a class="install" href="#install">Install</a>
+      <a class="install" href={current === 'home' ? '#install' : `${page('')}#install`}>Install</a>
     </div>
   </nav>
 </header>
@@ -37,6 +49,8 @@ import { asset } from '../lib/asset';
     display: flex;
     align-items: center;
     gap: 10px;
+    text-decoration: none;
+    color: inherit;
   }
   .wordmark {
     font: 700 17px var(--font-display);
@@ -55,7 +69,8 @@ import { asset } from '../lib/asset';
     text-decoration: none;
     color: inherit;
   }
-  .links a:not(.install):hover {
+  .links a:not(.install):hover,
+  .links a[aria-current='page'] {
     color: var(--ink-2);
   }
   .install {
@@ -72,8 +87,7 @@ import { asset } from '../lib/asset';
     .links {
       gap: 16px;
     }
-    /* Collapse the text links on small screens; keep brand + Install visible. */
-    .links a:not(.install) {
+    .links a:not(.install):not([href*='voice/lab']) {
       display: none;
     }
   }
