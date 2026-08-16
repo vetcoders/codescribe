@@ -5,12 +5,14 @@
 //! It never opens audio, re-transcribes a file, or reconstructs text from UI
 //! deltas. One append-only JSON object is flushed per state transition.
 
+use std::collections::BTreeMap;
 use std::fs::{File, OpenOptions};
 use std::io::{self, Write};
 use std::path::{Path, PathBuf};
 use std::sync::Mutex;
 
 use chrono::{SecondsFormat, Utc};
+use codescribe_core::audio::capture_receipt::session_energy_db;
 use codescribe_core::pipeline::contracts::TranscriptSegment;
 use serde::{Deserialize, Serialize};
 
@@ -65,6 +67,32 @@ impl TranscriptDraftStatus {
     }
 }
 
+/// Grain of one published span. Word pins are engine evidence; utterance
+/// grain is the honest fallback when Apple committed a window, not words.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum TranscriptWordGrain {
+    #[default]
+    Word,
+    Utterance,
+}
+
+fn is_word_grain(grain: &TranscriptWordGrain) -> bool {
+    matches!(grain, TranscriptWordGrain::Word)
+}
+
+/// One span on the capture PCM clock: text + samples + intensity.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct TranscriptWordSpan {
+    pub text: String,
+    pub sample_start: u64,
+    pub sample_end: u64,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub energy_db: Option<f32>,
+    #[serde(default, skip_serializing_if = "is_word_grain")]
+    pub grain: TranscriptWordGrain,
+}
+
 /// Append-only public event contract. `text` is always clean reducer truth;
 /// unfiltered engine `raw_text` never crosses this boundary.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -84,6 +112,8 @@ pub struct CleanTranscriptEvent {
     pub text: String,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub segments: Vec<TranscriptSegment>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub words: Vec<TranscriptWordSpan>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub pipeline_session_id: Option<String>,
 }
@@ -106,6 +136,7 @@ struct TranscriptBusWriter {
     sequence: u64,
     started: bool,
     sealed: bool,
+    drafts: BTreeMap<u64, TranscriptDraft>,
 }
 
 impl TranscriptBus {
@@ -155,6 +186,7 @@ impl TranscriptBus {
                 sequence: 0,
                 started: false,
                 sealed: false,
+                drafts: BTreeMap::new(),
             }),
             sample_rate_override,
         };
@@ -182,6 +214,7 @@ impl TranscriptBus {
     pub fn publish_draft(&self, status: TranscriptDraftStatus, utterance: TranscriptDraft) {
         let status = status.as_str();
         let sample_rate = self.sample_rate();
+        let words = word_spans_from_draft(&utterance, sample_rate);
         let event = CleanTranscriptEvent {
             schema: "codescribe.transcript.v1".to_string(),
             sequence: 0,
@@ -195,8 +228,9 @@ impl TranscriptBus {
             sample_end: sample_rate.map(|rate| seconds_to_sample(utterance.end_seconds, rate)),
             audio_start_seconds: Some(utterance.start_seconds),
             audio_end_seconds: Some(utterance.end_seconds),
-            text: utterance.text,
-            segments: utterance.segments,
+            text: utterance.text.clone(),
+            segments: utterance.segments.clone(),
+            words,
             pipeline_session_id: None,
         };
 
@@ -208,6 +242,7 @@ impl TranscriptBus {
             tracing::warn!(session_id = %self.session.session_id, %status, "transcript draft ignored after product seal");
             return;
         }
+        writer.drafts.insert(utterance.utterance_id, utterance);
         if let Err(error) = self
             .ensure_started_locked(&mut writer)
             .and_then(|_| self.write_event_locked(&mut writer, event))
@@ -227,6 +262,8 @@ impl TranscriptBus {
         if writer.sealed {
             return;
         }
+        let sample_rate = self.sample_rate();
+        let clock = aggregate_seal_clock(&writer.drafts, sample_rate);
         let event = CleanTranscriptEvent {
             schema: "codescribe.transcript.v1".to_string(),
             sequence: 0,
@@ -235,13 +272,14 @@ impl TranscriptBus {
             utterance_id: None,
             emitted_at: String::new(),
             status: "transcript_sealed".to_string(),
-            sample_rate_hz: self.sample_rate(),
-            sample_start: None,
-            sample_end: None,
-            audio_start_seconds: None,
-            audio_end_seconds: None,
+            sample_rate_hz: sample_rate,
+            sample_start: clock.sample_start,
+            sample_end: clock.sample_end,
+            audio_start_seconds: clock.audio_start_seconds,
+            audio_end_seconds: clock.audio_end_seconds,
             text,
-            segments: Vec::new(),
+            segments: clock.segments,
+            words: clock.words,
             pipeline_session_id,
         };
         match self
@@ -287,6 +325,7 @@ impl TranscriptBus {
                 audio_end_seconds: None,
                 text: String::new(),
                 segments: Vec::new(),
+                words: Vec::new(),
                 pipeline_session_id: None,
             },
         )?;
@@ -343,6 +382,108 @@ fn seconds_to_sample(seconds: f32, sample_rate: u32) -> u64 {
         return 0;
     }
     (f64::from(seconds) * f64::from(sample_rate)).round() as u64
+}
+
+fn finite_audio_window(start: f32, end: f32) -> Option<(f32, f32)> {
+    if start.is_finite() && end.is_finite() && end > start {
+        Some((start, end))
+    } else {
+        None
+    }
+}
+
+fn word_span_from_seconds(
+    text: String,
+    start: f32,
+    end: f32,
+    sample_rate: Option<u32>,
+    grain: TranscriptWordGrain,
+) -> Option<TranscriptWordSpan> {
+    let (start, end) = finite_audio_window(start, end)?;
+    if text.trim().is_empty() {
+        return None;
+    }
+    let rate = sample_rate.filter(|rate| *rate > 0)?;
+    let sample_start = seconds_to_sample(start, rate);
+    let sample_end = seconds_to_sample(end, rate).max(sample_start.saturating_add(1));
+    Some(TranscriptWordSpan {
+        text,
+        sample_start,
+        sample_end,
+        energy_db: session_energy_db(sample_start, sample_end),
+        grain,
+    })
+}
+
+fn word_spans_from_draft(
+    utterance: &TranscriptDraft,
+    sample_rate: Option<u32>,
+) -> Vec<TranscriptWordSpan> {
+    if !utterance.segments.is_empty() {
+        return utterance
+            .segments
+            .iter()
+            .filter_map(|segment| {
+                word_span_from_seconds(
+                    segment.text.clone(),
+                    segment.start_ts,
+                    segment.end_ts,
+                    sample_rate,
+                    TranscriptWordGrain::Word,
+                )
+            })
+            .collect();
+    }
+    word_span_from_seconds(
+        utterance.text.clone(),
+        utterance.start_seconds,
+        utterance.end_seconds,
+        sample_rate,
+        TranscriptWordGrain::Utterance,
+    )
+    .into_iter()
+    .collect()
+}
+
+struct SealClock {
+    sample_start: Option<u64>,
+    sample_end: Option<u64>,
+    audio_start_seconds: Option<f32>,
+    audio_end_seconds: Option<f32>,
+    segments: Vec<TranscriptSegment>,
+    words: Vec<TranscriptWordSpan>,
+}
+
+fn aggregate_seal_clock(
+    drafts: &BTreeMap<u64, TranscriptDraft>,
+    sample_rate: Option<u32>,
+) -> SealClock {
+    let mut audio_start = None;
+    let mut audio_end = None;
+    let mut segments = Vec::new();
+    let mut words = Vec::new();
+    for draft in drafts.values() {
+        if let Some((start, end)) = finite_audio_window(draft.start_seconds, draft.end_seconds) {
+            audio_start = Some(audio_start.map_or(start, |seen: f32| seen.min(start)));
+            audio_end = Some(audio_end.map_or(end, |seen: f32| seen.max(end)));
+        }
+        segments.extend(draft.segments.iter().cloned());
+        words.extend(word_spans_from_draft(draft, sample_rate));
+    }
+    SealClock {
+        sample_start: match (sample_rate, audio_start) {
+            (Some(rate), Some(start)) => Some(seconds_to_sample(start, rate)),
+            _ => None,
+        },
+        sample_end: match (sample_rate, audio_end) {
+            (Some(rate), Some(end)) => Some(seconds_to_sample(end, rate)),
+            _ => None,
+        },
+        audio_start_seconds: audio_start,
+        audio_end_seconds: audio_end,
+        segments,
+        words,
+    }
 }
 
 fn expand_tilde(path: &str) -> PathBuf {
@@ -414,6 +555,14 @@ mod tests {
         assert_eq!(lines[1].sample_end, Some(72_000));
         assert_eq!(lines[2].status, "transcript_sealed");
         assert_eq!(lines[2].text, "clean final");
+        assert_eq!(lines[2].sample_start, Some(12_000));
+        assert_eq!(lines[2].sample_end, Some(72_000));
+        assert_eq!(lines[2].audio_start_seconds, Some(0.25));
+        assert_eq!(lines[2].audio_end_seconds, Some(1.5));
+        assert_eq!(lines[2].words.len(), 1);
+        assert_eq!(lines[2].words[0].sample_start, 12_000);
+        assert_eq!(lines[2].words[0].sample_end, 72_000);
+        assert_eq!(lines[2].words[0].grain, TranscriptWordGrain::Utterance);
         assert_eq!(
             lines.iter().map(|event| event.sequence).collect::<Vec<_>>(),
             vec![1, 2, 3]
@@ -427,5 +576,63 @@ mod tests {
                 0o600
             );
         }
+    }
+
+    #[test]
+    fn seal_publishes_word_spans_on_the_pcm_clock() {
+        let temp = tempfile::tempdir().unwrap();
+        let path = temp.path().join("words.jsonl");
+        let bus = TranscriptBus::open_at(
+            TranscriptSession {
+                session_id: "session-words".to_string(),
+                mode: TranscriptMode::Dictation,
+            },
+            path.clone(),
+            Some(16_000),
+        )
+        .unwrap();
+        bus.publish_draft(
+            TranscriptDraftStatus::Created,
+            TranscriptDraft {
+                utterance_id: 3,
+                text: "dwa slowa".to_string(),
+                start_seconds: 1.0,
+                end_seconds: 2.0,
+                segments: vec![
+                    TranscriptSegment {
+                        text: "dwa".to_string(),
+                        start_ts: 1.0,
+                        end_ts: 1.4,
+                    },
+                    TranscriptSegment {
+                        text: "slowa".to_string(),
+                        start_ts: 1.4,
+                        end_ts: 2.0,
+                    },
+                ],
+            },
+        );
+        bus.publish_sealed("dwa slowa".to_string(), None);
+
+        let lines: Vec<CleanTranscriptEvent> = std::fs::read_to_string(&path)
+            .unwrap()
+            .lines()
+            .map(|line| serde_json::from_str(line).unwrap())
+            .collect();
+        let seal = lines
+            .iter()
+            .find(|event| event.status == "transcript_sealed")
+            .expect("seal");
+        assert_eq!(seal.sample_start, Some(16_000));
+        assert_eq!(seal.sample_end, Some(32_000));
+        assert_eq!(seal.segments.len(), 2);
+        assert_eq!(seal.words.len(), 2);
+        assert_eq!(seal.words[0].text, "dwa");
+        assert_eq!(seal.words[0].sample_start, 16_000);
+        assert_eq!(seal.words[0].sample_end, 22_400);
+        assert_eq!(seal.words[0].grain, TranscriptWordGrain::Word);
+        assert_eq!(seal.words[1].text, "slowa");
+        assert_eq!(seal.words[1].sample_start, 22_400);
+        assert_eq!(seal.words[1].sample_end, 32_000);
     }
 }

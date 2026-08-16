@@ -45,7 +45,8 @@ use crate::asr_session::recorder::{
 };
 use crate::asr_session::{SessionId as Layer1SessionId, SessionInput as Layer1SessionInput};
 use crate::audio::capture_receipt::{
-    CaptureLevelAccumulator, CapturePathMeta, emit_capture_level_receipt,
+    CaptureLevelAccumulator, CapturePathMeta, begin_session_energy_clock,
+    emit_capture_level_receipt,
 };
 use crate::pipeline::contracts::{
     DropKind, EngineEvent, EventSink, LayerSource, TranscriptSegment,
@@ -323,6 +324,7 @@ pub(crate) async fn apple_stream_transcription_session(
         mut lifecycle_events,
     } = config;
     let mut capture_level = CaptureLevelAccumulator::new();
+    begin_session_energy_clock();
     // Hands-free silence is the ENGINE LIFECYCLE on this lane, not a chunker
     // knob: SFSpeech still owns phrase boundaries inside an utterance, but the
     // threshold decides when the engine rests (mic + Silero keep watching) and
@@ -837,13 +839,18 @@ impl AppleSealState {
             // so the inline-format buffer may chunk-format it while dictation
             // continues. Sync + non-blocking; no-op unless the flag is armed.
             crate::llm::inline_format::on_chunk_sealed(sealed.id, &sealed.text);
+            let segments = if sealed.words.is_empty() {
+                pending.segments
+            } else {
+                timed_words_to_segments(&sealed.words, self.sample_rate)
+            };
             let _ = ev_tx.send(EngineEvent::UtteranceFinal {
                 utterance_id: sealed.id,
                 text: sealed.text,
                 raw_text: pending.raw_text,
                 start_ts: pending.start_ts,
                 end_ts: pending.end_ts,
-                segments: pending.segments,
+                segments,
                 vad_speech_pct: None,
                 avg_logprob: None,
                 compression_ratio: None,
@@ -1135,6 +1142,21 @@ fn seconds_to_captured_sample(seconds: f32, sample_rate: u32, captured_end: u64)
         return 0;
     }
     ((seconds as f64 * sample_rate.max(1) as f64).round() as u64).min(captured_end)
+}
+
+fn timed_words_to_segments(words: &[TimedTailSegment], sample_rate: u32) -> Vec<TranscriptSegment> {
+    let rate = sample_rate.max(1) as f32;
+    words
+        .iter()
+        .filter(|word| {
+            word.range.sample_end > word.range.sample_start && !word.text.trim().is_empty()
+        })
+        .map(|word| TranscriptSegment {
+            text: word.text.clone(),
+            start_ts: word.range.sample_start as f32 / rate,
+            end_ts: word.range.sample_end as f32 / rate,
+        })
+        .collect()
 }
 
 fn apple_segments_on_pcm_clock(
