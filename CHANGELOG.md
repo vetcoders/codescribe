@@ -69,7 +69,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Changed
 
 - **Whisper residency is bounded and observable** — the normal idle-weight TTL
-  is now 300 seconds (five minutes), while `CODESCRIBE_WHISPER_IDLE_UNLOAD_SECS=0`
+  is now 60 seconds (one minute), while `CODESCRIBE_WHISPER_IDLE_UNLOAD_SECS=0`
   remains the explicit power-user keep-warm override. INFO lifecycle events now
   expose the effective TTL plus load/unload/reclaim counts and durations without
   logging audio or transcript content. Host `vmmap` reclaim remains a release

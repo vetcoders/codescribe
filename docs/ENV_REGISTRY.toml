@@ -465,11 +465,11 @@ category = "stt"
 description = "W13-4 sealed-span replay refusal + in-span loop fence. Default OFF. When 1/true/on: live seal path refuses a replayed PCM-range / request identity (SessionIngest RejectedSealedUtterance ported onto ledger identity) and fences non-progressing timestamps or decode failure. Content-similar offers on a new identity are WARN-preserved. No default flip."
 
 [vars.CODESCRIBE_WHISPER_IDLE_UNLOAD_SECS]
-default = "300"
+default = "60"
 type = "u64"
 reload = "hot"
 category = "stt"
-description = "Unload idle Whisper weights after this many seconds (default 300 = 5 min). Metal Device is process-cached and retained; the Metal free-buffer pool is force-pruned on unload so RSS actually drops. 0 is the explicit keep-warm override (weights stay resident). INFO-only residency events expose the effective TTL plus load/unload/reclaim counts and durations without audio or transcript content."
+description = "Unload idle Whisper weights after this many seconds (default 60 = 1 min). The full fp16 payload avoids q8 dequantization on the next cold load. Metal Device is process-cached and retained; the Metal free-buffer pool is force-pruned on unload so RSS actually drops. 0 is the explicit keep-warm override (weights stay resident). INFO-only residency events expose the effective TTL plus load/unload/reclaim counts and durations without audio or transcript content."
 
 [vars.CANDLE_METAL_COMPUTE_PER_BUFFER]
 default = "50"
@@ -820,7 +820,7 @@ default = ""
 type = "string"
 reload = "restart"
 category = "stt"
-description = "Multipart STT API endpoint used by cloud final pass and STT_TAIL_PROVIDER=remote; remote tail defaults to the loopback endpoint when unset"
+description = "Canonical STT service endpoint. Explicit retranscribe and STT_TAIL_PROVIDER=remote use multipart file upload; normal cloud recording maps the known Libraxis or loopback endpoint to its live Voice Lab WebSocket. OpenAI multipart endpoints are never treated as live WSS."
 
 [vars.STT_API_KEY]
 default = ""
@@ -834,14 +834,14 @@ default = "smart"
 type = "string"
 reload = "restart"
 category = "stt"
-description = "Stop-path full re-pass routing only: always | smart (default) | off. Always = full WAV Whisper re-pass every stop; smart = skip full re-pass when streaming completeness is adjudicated Complete (incomplete may still re-pass); off = never full re-pass (does not force Whisper at stop). Does NOT enable or disable CODESCRIBE_LAYERED_TRANSCRIPTION — live gap-fill via Layer 1 tail-patch is a separate gate (default phase1). Live engine never rewrites the mode. Dictionary/lexicon always applies in postprocess regardless of mode. Seeds from Settings → Final pass. Alias: CODESCRIBE_FINAL_PASS_MODE."
+description = "Legacy settings-migration token (always|smart|off). Normal stop never performs a saved-WAV file pass; explicit Retranscribe owns whole-file inference. Does not enable or disable CODESCRIBE_LAYERED_TRANSCRIPTION, and Dictionary/lexicon always applies in postprocess. Alias: CODESCRIBE_FINAL_PASS_MODE."
 
 [vars.CODESCRIBE_FINAL_PASS_MODE]
 default = "smart"
 type = "string"
 reload = "restart"
 category = "stt"
-description = "Alias of FINAL_PASS_MODE (always|smart|off)"
+description = "Legacy alias of FINAL_PASS_MODE; retained for settings migration only"
 
 [vars.CODESCRIBE_LOCAL_STT_FINAL_PASS]
 default = "0"
@@ -855,7 +855,7 @@ default = "1"
 type = "bool"
 reload = "restart"
 category = "stt"
-description = "Use saved-WAV final-pass adjudication when stopping toggle dictation (0 restores preview-only stop path)"
+description = "Deprecated toggle alias retained for migration; normal toggle stop never performs saved-WAV inference"
 
 [vars.CODESCRIBE_HF_CACHE]
 default = ""

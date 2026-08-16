@@ -10,8 +10,8 @@
 > **Status (2026-08-14):** on-the-go gap-fill **exists and is the stock live
 > default** as Layer 1 tail-patch on both live paths (`a6b1233d`, default
 > flip 2026-08-09). `CODESCRIBE_LAYERED_TRANSCRIPTION` unset → `phase1`;
-> explicit `off`/`0`/`false` disarms. Stop-path `FINAL_PASS_MODE=smart`
-> remains the residual file pass, never a live full-replace. W13 fusion /
+> explicit `off`/`0`/`false` disarms. Legacy `FINAL_PASS_MODE` no longer owns
+> any normal-stop inference. W13 fusion /
 > idempotence / highlights stay OFF until an operator flip.
 > Planning report: internal plan `stt-apple-must-have` (operator artifact store, 2026-07-24).
 
@@ -55,12 +55,25 @@ Recording stopped before a transcript was available.
 | ------------------------------- | ----------------------- | ----------------------- | ---------------------------------------------------- | ---------------------------- |
 | `speech.language`               | `whisper_language`      | `WHISPER_LANGUAGE`      | `pl`, `en`, …                                        | Yes (you have `pl` ✓)        |
 | `speech.engine.stt_engine`      | `stt_engine`            | `CODESCRIBE_STT_ENGINE` | `auto` \| `apple` \| `whisper` \| `candle` \| `onnx` | **Yes — pick explicit**      |
-| `speech.engine.final_pass_mode` | `final_pass_mode`       | `FINAL_PASS_MODE`       | `always` \| `smart` \| `off`                         | Recommended (`smart`)        |
+| `speech.engine.final_pass_mode` | `final_pass_mode`       | `FINAL_PASS_MODE`       | legacy migration token                               | No                           |
 | `speech.engine.whisper_model`   | `whisper_model`         | `WHISPER_MODEL`         | model id                                             | If engine = whisper          |
 | `speech.engine.mode`            | maps to `use_local_stt` | legacy                  | `local_whisper` / `cloud_whisper`                    | Optional legacy              |
 | `speech.engine.local_model`     | `local_model`           | path                    | model path                                           | Optional                     |
 | `speech.formatting.level`       | `formatting_level`      | —                       | `off`/`correction`/`smart`/`max`                     | AI format (not STT)          |
 | `speech.emission.*`             | buffer/typing           | Voice Lab               | numbers                                              | Overlay pacing only          |
+
+STT authentication follows endpoint ownership: `api.openai.com` and
+`api.libraxis.cloud` use `Authorization: Bearer`; loopback servers require no
+API key; remaining custom endpoints retain the `x-api-key` contract. The key
+probe, live socket handshake, and explicit retranscribe path use the same
+resolver, so Settings cannot disagree with delivery.
+
+Transport ownership is equally explicit. Normal cloud capture uses the proven
+Voice Lab WebSocket (`config` → bounded PCM `chunk` → periodic `flush` →
+`end`) and streams its normalized events into `PresentationEmitter`. A complete
+audio-file multipart request is allowed only for an explicit retranscribe
+action (Overlay, Dictionary, or Teacher). An OpenAI multipart URL has no Voice
+Lab mapping, so it cannot silently turn a normal stop into a whole-file upload.
 
 **Yours today:**
 
@@ -126,12 +139,14 @@ Still env-seedable when unset (not dual writers): `CODESCRIBE_LAYERED_TRANSCRIPT
 
 **Final pass vs layered (orthogonal):**
 
-| Setting    | Env                                | Default | Role                                                                                                                                                                |
-| ---------- | ---------------------------------- | ------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| Final pass | `FINAL_PASS_MODE`                  | `smart` | Stop-path only: full WAV re-pass routing (`always` / skip-if-complete / `off`)                                                                                      |
-| Layered    | `CODESCRIBE_LAYERED_TRANSCRIPTION` | `off`   | During-hold Layer 1 Whisper tail-patch when phase ≥ 1, on **both** live paths — VAD/scheduler and the default Apple progressive live (wired 2026-08-08, `a6b1233d`) |
+| Setting    | Env                                | Default  | Role                                                                                                                 |
+| ---------- | ---------------------------------- | -------- | -------------------------------------------------------------------------------------------------------------------- |
+| Final pass | `FINAL_PASS_MODE`                  | legacy   | No effect on normal stop; retained only for settings migration while explicit Retranscribe owns whole-file inference |
+| Layered    | `CODESCRIBE_LAYERED_TRANSCRIPTION` | `phase1` | During-hold Layer 1 tail-patch on **both** live paths — local Whisper or live cloud WSS, selected by product mode    |
 
-Smart does **not** turn layered on. Off final-pass does **not** force Whisper at stop. Layered phase tokens (`phase1`…) are not final-pass tokens (`smart`/`always`/`off`).
+Normal capture ignores legacy final-pass routing and never decodes/uploads the
+completed WAV. Layered phase tokens (`phase1`…) select live refinement;
+whole-file inference is an explicit Retranscribe action.
 
 ---
 
@@ -145,7 +160,9 @@ Smart does **not** turn layered on. Off final-pass does **not** force Whisper at
 | Double Left Option (formatting) | `formatting = double_left_option`   | same                             | hold/toggle + force AI format path                         | STT same, then `core/llm` formatting         |
 | Double Right Option (assistive) | `assistive = double_right_option`   | same                             | assistive session                                          | STT same, then agent lane                    |
 
-**Stop** always drains recorder → live/final transcription → delivery (paste / overlay / agent).
+**Stop** drains the live recorder/session and delivers its committed transcript
+(paste / overlay / agent). It does not upload the completed WAV. Whole-file
+file-pass belongs only to explicit retranscribe surfaces.
 
 ### 3.2 Settings UI → config
 
@@ -170,11 +187,12 @@ Smart does **not** turn layered on. Off final-pass does **not** force Whisper at
 
 ### 3.4 STT engine dispatch (the nit)
 
-| Call site                 | When                 | Function                                                 | Engine rule                                     |
-| ------------------------- | -------------------- | -------------------------------------------------------- | ----------------------------------------------- |
-| Live chunk / long / try   | during recording     | `transcribe_*` via `run_apple_live_only` if engine=Apple | **Apple only — no Whisper**                     |
-| Adapter acquisition       | init / some paths    | `get_adapter`                                            | Apple uses `run_apple_or_whisper` (fallback OK) |
-| Offline / file final-pass | after stop, non-live | final pass routing                                       | can still Apple→Whisper depending on mode       |
+| Call site             | When             | Function / transport                           | Engine rule                                              |
+| --------------------- | ---------------- | ---------------------------------------------- | -------------------------------------------------------- |
+| Live Layer 0          | during recording | Apple progressive                              | committed canvas floor                                   |
+| Live Layer 1 local    | during recording | bounded Whisper windows                        | gap/tail fill only                                       |
+| Live Layer 1 cloud    | during recording | Voice Lab WSS                                  | normalized gap/tail fill only                            |
+| Explicit Retranscribe | operator action  | local completed-file decode or cloud multipart | may replace the selected artifact, never the live canvas |
 
 **This split is the MacGyver fracture:** UI can show Whisper readiness while live is Apple-only and fails closed.
 
@@ -275,7 +293,7 @@ unless you accept Apple lottery on every session.
 | P0 Default empty engine → apple + smart final                | **landed**           | `UserSettings::from_v2`                                |
 | P1 Preflight Apple before hold/toggle start                  | **landed**           | `preflight_apple_live_ready` + controller start        |
 | P1 Settings truth note (pref vs last Active STT)             | **landed**           | `sttEngineTruthNote` + Engine panel                    |
-| P1 Mid-live Apple fail → Whisper recovery with audio         | **open** (next wave) | keep audio; stop-path recovery                         |
+| P1 Mid-live Apple fail → live Layer 1 recovery               | **open** (next wave) | recover inside session; no stop-path file decode       |
 | Operator machine pin                                         | **done**             | `settings.json` + `.env` → `apple`                     |
 
 ---

@@ -65,6 +65,20 @@ fn is_complete_whisper_model_dir(path: &Path) -> bool {
             .any(|name| path.join(name).exists())
 }
 
+/// Whether a candidate models root owns at least one complete Whisper model.
+///
+/// A bundled `Resources/models` directory may contain only another model
+/// family (for example the semantic embedder). Treating mere directory
+/// existence as Whisper ownership shadows the user-installed fp16 model and
+/// incorrectly drops runtime resolution to the legacy q8 cache.
+fn models_root_contains_complete_whisper_model(path: &Path) -> bool {
+    fs::read_dir(path).is_ok_and(|entries| {
+        entries
+            .filter_map(std::result::Result::ok)
+            .any(|entry| is_complete_whisper_model_dir(&entry.path()))
+    })
+}
+
 /// Find a complete Hugging Face cache snapshot for a model reference.
 ///
 /// A reference containing `/` is treated as a repo id and looked up directly.
@@ -144,7 +158,7 @@ impl ModelManager {
 
         // 1. Bundled .app: Contents/MacOS/binary -> Contents/Resources/models/
         let bundled_path = exe_dir.join("../Resources/models");
-        if bundled_path.exists() {
+        if models_root_contains_complete_whisper_model(&bundled_path) {
             return bundled_path
                 .canonicalize()
                 .context("Failed to canonicalize bundled models path");
@@ -156,7 +170,7 @@ impl ModelManager {
         // means "directory with ALL models" — hijacking it from tests sends
         // runtime Whisper resolution to the wrong place.
         let dev_path = exe_dir.join("../../models");
-        if dev_path.exists() {
+        if models_root_contains_complete_whisper_model(&dev_path) {
             return dev_path
                 .canonicalize()
                 .context("Failed to canonicalize dev models path");
@@ -164,7 +178,7 @@ impl ModelManager {
 
         // 3. Direct ./models/ (running from repo root)
         let local_path = PathBuf::from("../../models");
-        if local_path.exists() {
+        if models_root_contains_complete_whisper_model(&local_path) {
             return local_path
                 .canonicalize()
                 .context("Failed to canonicalize local models path");
@@ -613,6 +627,24 @@ mod tests {
         fs::write(path.join("tokenizer.json"), "{}").unwrap();
         fs::write(path.join("mel_filters.npz"), "npz").unwrap();
         fs::write(path.join("model.safetensors"), "weights").unwrap();
+    }
+
+    /// A bundle containing only the semantic embedder must not claim ownership
+    /// of Whisper resolution and hide the user's complete fp16 install.
+    #[test]
+    fn embedder_only_models_root_does_not_qualify_as_whisper_root() {
+        let temp_dir = TempDir::new().unwrap();
+        let models_dir = temp_dir.path().join("models");
+        let embedder = models_dir.join("embedder");
+        fs::create_dir_all(&embedder).unwrap();
+        fs::write(embedder.join("config.json"), "{}").unwrap();
+        fs::write(embedder.join("tokenizer.json"), "{}").unwrap();
+        fs::write(embedder.join("model.safetensors"), "weights").unwrap();
+
+        assert!(!models_root_contains_complete_whisper_model(&models_dir));
+
+        create_complete_whisper_model(&models_dir.join(DEFAULT_MODEL));
+        assert!(models_root_contains_complete_whisper_model(&models_dir));
     }
 
     /// Smoke: `list_models` succeeds against the live models dir.

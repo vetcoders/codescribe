@@ -23,7 +23,7 @@
 //! inference. The reaper therefore forces that prune right after the drop
 //! (`memory::reclaim_metal_buffer_pool`) so RSS actually falls while idle.
 //!
-//! Default TTL is five minutes. Set `CODESCRIBE_WHISPER_IDLE_UNLOAD_SECS=0` to
+//! Default TTL is one minute. Set `CODESCRIBE_WHISPER_IDLE_UNLOAD_SECS=0` to
 //! explicitly keep weights resident for the whole process life.
 
 // This entire module is a public API for library consumers
@@ -48,11 +48,13 @@ pub use crate::config::models::DEFAULT_MODEL;
 
 /// Default idle period after which Whisper **weights** are unloaded.
 ///
-/// Five minutes bounds the operator-measured multi-GB resident floor while
-/// leaving an explicit `0` override for power users who choose keep-warm.
+/// One minute bounds the operator-measured multi-GB resident floor while the
+/// full fp16 payload keeps the next cold load free of q8 dequantization. An
+/// explicit `0` override remains available for power users who choose
+/// keep-warm.
 /// Metal `Device` stays process-cached (see engine module), so reloads after
 /// TTL reuse the same device.
-const DEFAULT_IDLE_UNLOAD_SECS: u64 = 300;
+const DEFAULT_IDLE_UNLOAD_SECS: u64 = 60;
 
 /// How often the reaper wakes to check for idleness.
 const REAPER_TICK: Duration = Duration::from_secs(30);
@@ -576,17 +578,18 @@ mod tests {
         );
     }
 
-    /// RED: normal default is five minutes rather than the current 45 minutes.
+    /// Normal default is one minute: fp16 makes reload cheap enough that a
+    /// multi-GB five-minute idle floor is no longer a good product tradeoff.
     #[test]
     #[serial]
-    fn fleet_red_whisper_default_ttl_is_300() {
+    fn whisper_default_ttl_is_60() {
         let _ttl = EnvRestore::capture("CODESCRIBE_WHISPER_IDLE_UNLOAD_SECS");
 
         unsafe { std::env::remove_var("CODESCRIBE_WHISPER_IDLE_UNLOAD_SECS") };
         assert_eq!(
             idle_unload_after(),
-            Some(Duration::from_secs(300)),
-            "normal Whisper residency must default to 300 seconds"
+            Some(Duration::from_secs(60)),
+            "normal Whisper residency must default to 60 seconds"
         );
     }
 
@@ -617,7 +620,7 @@ mod tests {
         assert_eq!(
             whisper_residency_policy(),
             WhisperResidencyPolicy {
-                effective_ttl_secs: 300,
+                effective_ttl_secs: 60,
                 keep_warm: false,
             }
         );

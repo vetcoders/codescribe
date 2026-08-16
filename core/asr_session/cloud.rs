@@ -1,9 +1,11 @@
-//! Dedicated live cloud transport for the normalized Libraxis gateway contract.
+//! Dedicated live cloud transport for the Libraxis Voice Lab WebSocket.
 //!
-//! This module is intentionally a second path beside the legacy whole-file
-//! WebSocket uploader. It owns a live session: one start message, bounded PCM
-//! frames, normalized receive events, and a bounded end/drain. It does not own
-//! recorder wiring, consent, provider selection, or a vendor protocol.
+//! This module owns normal live capture: a `config` message, bounded base64 PCM
+//! `chunk` messages, periodic `flush`, and a bounded `end`/drain. The receive
+//! adapter converts Voice Lab events into Codescribe's normalized vocabulary.
+//! Whole-file multipart upload lives outside this session and is reserved for
+//! explicit retranscribe actions. This module does not own recorder wiring,
+//! consent, or provider selection.
 //!
 //! Provider ordering is evidence, not authority. Transcript revisions are
 //! compared only inside their utterance, duplicates and stale revisions are
@@ -15,12 +17,13 @@ use std::fmt;
 use std::thread::JoinHandle;
 use std::time::{Duration, Instant};
 
+use base64::{Engine as _, engine::general_purpose::STANDARD as BASE64};
 use futures_util::{SinkExt, StreamExt};
 use serde::{Deserialize, Serialize};
 use tokio::sync::mpsc;
 use tokio::time::timeout;
 use tokio_tungstenite::tungstenite::client::IntoClientRequest;
-use tokio_tungstenite::tungstenite::http::header::{AUTHORIZATION, HeaderValue};
+use tokio_tungstenite::tungstenite::http::header::{AUTHORIZATION, HeaderName, HeaderValue};
 use tokio_tungstenite::tungstenite::{Error as WebSocketError, Message};
 use tokio_tungstenite::{MaybeTlsStream, WebSocketStream, connect_async};
 
@@ -89,14 +92,15 @@ impl CloudSessionLimits {
     }
 }
 
-/// Gateway endpoint and short-lived bearer minted outside the desktop transport.
+/// Live endpoint and its endpoint-owned authentication credential.
 ///
 /// Its `Debug` representation is deliberately content-free. Endpoints can carry
 /// signed query parameters and bearer values are credentials; neither belongs
 /// in logs, panic output, or telemetry.
 pub struct GatewayConnection {
     endpoint: String,
-    bearer: String,
+    credential: String,
+    auth_mode: crate::stt::tail_provider::SttAuthMode,
 }
 
 impl GatewayConnection {
@@ -106,10 +110,10 @@ impl GatewayConnection {
     /// allowed but remains redacted by the type's `Debug` implementation.
     pub fn new(
         endpoint: impl Into<String>,
-        bearer: impl Into<String>,
+        credential: impl Into<String>,
     ) -> Result<Self, AsrErrorKind> {
         let endpoint = endpoint.into();
-        let bearer = bearer.into();
+        let credential = credential.into();
         let parsed = reqwest::Url::parse(&endpoint).map_err(|_| AsrErrorKind::Protocol)?;
         let host = parsed
             .host_str()
@@ -117,17 +121,24 @@ impl GatewayConnection {
             .ok_or(AsrErrorKind::Protocol)?;
         let encrypted = parsed.scheme() == "wss";
         let loopback = matches!(host, "localhost" | "127.0.0.1" | "::1");
+        let auth_mode = crate::stt::tail_provider::stt_auth_mode(&endpoint);
         if (!encrypted && !(parsed.scheme() == "ws" && loopback))
             || !parsed.username().is_empty()
             || parsed.password().is_some()
-            || bearer.trim().is_empty()
+            || (auth_mode != crate::stt::tail_provider::SttAuthMode::Unauthenticated
+                && credential.trim().is_empty())
         {
             return Err(AsrErrorKind::Protocol);
         }
 
-        let authorization = format!("Bearer {bearer}");
-        HeaderValue::from_str(&authorization).map_err(|_| AsrErrorKind::Protocol)?;
-        Ok(Self { endpoint, bearer })
+        if auth_mode != crate::stt::tail_provider::SttAuthMode::Unauthenticated {
+            HeaderValue::from_str(credential.trim()).map_err(|_| AsrErrorKind::Protocol)?;
+        }
+        Ok(Self {
+            endpoint,
+            credential,
+            auth_mode,
+        })
     }
 }
 
@@ -136,7 +147,7 @@ impl fmt::Debug for GatewayConnection {
         formatter
             .debug_struct("GatewayConnection")
             .field("endpoint", &"[REDACTED]")
-            .field("bearer", &"[REDACTED]")
+            .field("credential", &"[REDACTED]")
             .finish()
     }
 }
@@ -205,12 +216,122 @@ impl GatewayPcmFrame {
         self.pcm_s16le.len()
     }
 
+    #[cfg(test)]
     fn into_wire_bytes(self) -> Vec<u8> {
         let mut wire = Vec::with_capacity(8 + self.pcm_s16le.len());
         wire.extend_from_slice(&self.sequence_id.to_be_bytes());
         wire.extend_from_slice(&self.pcm_s16le);
         wire
     }
+}
+
+/// Stateful adapter from the proven Voice Lab wire into Codescribe's strict
+/// normalized event vocabulary.
+struct VoiceLabReceiveState {
+    session_id: String,
+    next_event_id: u64,
+    utterance_id: u64,
+    revision: u64,
+}
+
+impl VoiceLabReceiveState {
+    fn new(session_id: String) -> Self {
+        Self {
+            session_id,
+            next_event_id: 1,
+            utterance_id: 1,
+            revision: 0,
+        }
+    }
+
+    fn event_id(&mut self) -> Result<String, AsrErrorKind> {
+        let id = self.next_event_id;
+        self.next_event_id = self
+            .next_event_id
+            .checked_add(1)
+            .ok_or(AsrErrorKind::Protocol)?;
+        Ok(format!("voice-lab-{id}"))
+    }
+
+    fn adapt(&mut self, text: &str) -> Result<Option<GatewayEvent>, AsrErrorKind> {
+        if let Ok(event) = serde_json::from_str::<GatewayEvent>(text) {
+            return Ok(Some(event));
+        }
+        let value: serde_json::Value =
+            serde_json::from_str(text).map_err(|_| AsrErrorKind::Protocol)?;
+        let message_type = value
+            .get("type")
+            .and_then(serde_json::Value::as_str)
+            .ok_or(AsrErrorKind::Protocol)?;
+        match message_type {
+            "ack" | "ready" => Ok(None),
+            "transcript.partial" | "transcript" => {
+                let text = voice_lab_text(&value)?;
+                self.revision = self.revision.checked_add(1).ok_or(AsrErrorKind::Protocol)?;
+                let event_id = self.event_id()?;
+                Ok(Some(GatewayEvent::Partial {
+                    event_id,
+                    session_id: self.session_id.clone(),
+                    utterance_id: self.utterance_id,
+                    revision: self.revision,
+                    text,
+                    start_ms: None,
+                    end_ms: None,
+                }))
+            }
+            "transcript.final" => {
+                let text = voice_lab_text(&value)?;
+                self.revision = self.revision.checked_add(1).ok_or(AsrErrorKind::Protocol)?;
+                let event_id = self.event_id()?;
+                let event = GatewayEvent::Final {
+                    event_id,
+                    session_id: self.session_id.clone(),
+                    utterance_id: self.utterance_id,
+                    revision: self.revision,
+                    text,
+                    start_ms: None,
+                    end_ms: None,
+                };
+                self.utterance_id = self
+                    .utterance_id
+                    .checked_add(1)
+                    .ok_or(AsrErrorKind::Protocol)?;
+                self.revision = 0;
+                Ok(Some(event))
+            }
+            "error" => {
+                let code = match value.get("code").and_then(serde_json::Value::as_str) {
+                    Some("auth" | "unauthorized" | "forbidden") => GatewayErrorCode::Auth,
+                    Some("quota" | "payment_required") => GatewayErrorCode::Quota,
+                    Some("rate_limited") => GatewayErrorCode::RateLimited,
+                    Some("timeout") => GatewayErrorCode::Timeout,
+                    Some("backpressure") => GatewayErrorCode::Backpressure,
+                    _ => GatewayErrorCode::Protocol,
+                };
+                let event_id = self.event_id()?;
+                Ok(Some(GatewayEvent::Error {
+                    event_id,
+                    session_id: self.session_id.clone(),
+                    utterance_id: self.utterance_id,
+                    code,
+                }))
+            }
+            "end" | "session.ended" => Ok(Some(GatewayEvent::SessionEnded {
+                session_id: self.session_id.clone(),
+            })),
+            _ => Err(AsrErrorKind::Protocol),
+        }
+    }
+}
+
+fn voice_lab_text(value: &serde_json::Value) -> Result<String, AsrErrorKind> {
+    value
+        .get("text")
+        .and_then(serde_json::Value::as_str)
+        .map(str::trim)
+        .filter(|text| !text.is_empty())
+        .map(str::to_string)
+        .ok_or(AsrErrorKind::Protocol)
 }
 
 impl fmt::Debug for GatewayPcmFrame {
@@ -379,9 +500,9 @@ enum WorkerSignal {
     Closed,
 }
 
-/// Real bounded WebSocket actor for the normalized gateway contract.
+/// Real bounded WebSocket actor for the Voice Lab wire contract.
 ///
-/// The socket and bearer live on a dedicated current-thread Tokio runtime.
+/// The socket and credential live on a dedicated current-thread Tokio runtime.
 /// The synchronous provider side only performs bounded `try_send`/`try_recv`
 /// channel operations; it never performs network I/O on the audio callback.
 pub struct GatewayWebSocketTransport {
@@ -432,7 +553,7 @@ impl CloudGatewayTransport for GatewayWebSocketTransport {
 
         let (command_tx, command_rx) = mpsc::channel(self.limits.outbound_queue_capacity);
         let (event_tx, event_rx) = mpsc::channel(self.limits.inbound_queue_capacity);
-        // Move the short-lived bearer into the socket worker. The synchronous
+        // Move the credential into the socket worker. The synchronous
         // provider retains no spare credential copy after session start.
         let connection = self.connection.take().ok_or(AsrErrorKind::Protocol)?;
         let limits = self.limits;
@@ -546,9 +667,22 @@ async fn run_gateway_socket(
         .as_str()
         .into_client_request()
         .map_err(|_| AsrErrorKind::Protocol)?;
-    let authorization = HeaderValue::from_str(&format!("Bearer {}", connection.bearer))
-        .map_err(|_| AsrErrorKind::Protocol)?;
-    request.headers_mut().insert(AUTHORIZATION, authorization);
+    match connection.auth_mode {
+        crate::stt::tail_provider::SttAuthMode::Unauthenticated => {}
+        crate::stt::tail_provider::SttAuthMode::Bearer => {
+            let authorization =
+                HeaderValue::from_str(&format!("Bearer {}", connection.credential.trim()))
+                    .map_err(|_| AsrErrorKind::Protocol)?;
+            request.headers_mut().insert(AUTHORIZATION, authorization);
+        }
+        crate::stt::tail_provider::SttAuthMode::ApiKey => {
+            let value = HeaderValue::from_str(connection.credential.trim())
+                .map_err(|_| AsrErrorKind::Protocol)?;
+            request
+                .headers_mut()
+                .insert(HeaderName::from_static("x-api-key"), value);
+        }
+    }
 
     let connected = timeout(limits.connect_timeout, connect_async(request))
         .await
@@ -556,7 +690,13 @@ async fn run_gateway_socket(
         .map_err(|error| classify_socket_error(&error))?;
     let (mut socket, _) = connected;
 
-    let start = serde_json::to_string(&config).map_err(|_| AsrErrorKind::Protocol)?;
+    // Proven Voice Lab wire: credentials stay in the WebSocket handshake,
+    // never in the JSON body.
+    let start = serde_json::json!({
+        "type": "config",
+        "language": config.locale.as_deref().unwrap_or("pl"),
+    })
+    .to_string();
     send_socket_message(
         &mut socket,
         Message::Text(start.into()),
@@ -564,25 +704,47 @@ async fn run_gateway_socket(
     )
     .await?;
 
+    let mut receive_state = VoiceLabReceiveState::new(config.session_id.clone());
+    let mut flush = tokio::time::interval_at(
+        tokio::time::Instant::now() + Duration::from_millis(2_500),
+        Duration::from_millis(2_500),
+    );
     loop {
         tokio::select! {
             command = command_rx.recv() => {
                 match command {
                     Some(GatewayCommand::Pcm(frame)) => {
+                        let chunk = serde_json::json!({
+                            "type": "chunk",
+                            "audio_base64": BASE64.encode(&frame.pcm_s16le),
+                            "sample_rate": config.audio.sample_rate_hz,
+                            "encoding": "pcm16",
+                        }).to_string();
                         send_socket_message(
                             &mut socket,
-                            Message::Binary(frame.into_wire_bytes().into()),
+                            Message::Text(chunk.into()),
                             limits.send_timeout,
                         ).await?;
                     }
                     Some(GatewayCommand::End) => {
-                        let end = serde_json::json!({"type": "session.end"}).to_string();
+                        let flush = serde_json::json!({"type": "flush"}).to_string();
+                        send_socket_message(
+                            &mut socket,
+                            Message::Text(flush.into()),
+                            limits.send_timeout,
+                        ).await?;
+                        let end = serde_json::json!({"type": "end"}).to_string();
                         send_socket_message(
                             &mut socket,
                             Message::Text(end.into()),
                             limits.send_timeout,
                         ).await?;
-                        return drain_gateway_tail(&mut socket, limits, event_tx).await;
+                        return drain_gateway_tail(
+                            &mut socket,
+                            limits,
+                            event_tx,
+                            &mut receive_state,
+                        ).await;
                     }
                     Some(GatewayCommand::Abort) | None => {
                         let _ = socket.close(None).await;
@@ -590,8 +752,22 @@ async fn run_gateway_socket(
                     }
                 }
             }
+            _ = flush.tick() => {
+                let message = serde_json::json!({"type": "flush"}).to_string();
+                send_socket_message(
+                    &mut socket,
+                    Message::Text(message.into()),
+                    limits.send_timeout,
+                ).await?;
+            }
             incoming = socket.next() => {
-                if forward_gateway_message(incoming, &mut socket, limits.send_timeout, event_tx).await? {
+                if forward_gateway_message(
+                    incoming,
+                    &mut socket,
+                    limits.send_timeout,
+                    event_tx,
+                    &mut receive_state,
+                ).await? {
                     return Err(AsrErrorKind::Transport);
                 }
             }
@@ -603,13 +779,22 @@ async fn drain_gateway_tail(
     socket: &mut WebSocketStream<MaybeTlsStream<tokio::net::TcpStream>>,
     limits: CloudSessionLimits,
     event_tx: &mpsc::Sender<WorkerSignal>,
+    receive_state: &mut VoiceLabReceiveState,
 ) -> Result<(), AsrErrorKind> {
     let deadline = tokio::time::Instant::now() + limits.close_timeout;
     loop {
         let incoming = tokio::time::timeout_at(deadline, socket.next())
             .await
             .map_err(|_| AsrErrorKind::Transport)?;
-        if forward_gateway_message(incoming, socket, limits.send_timeout, event_tx).await? {
+        if forward_gateway_message(
+            incoming,
+            socket,
+            limits.send_timeout,
+            event_tx,
+            receive_state,
+        )
+        .await?
+        {
             return Ok(());
         }
     }
@@ -620,11 +805,13 @@ async fn forward_gateway_message(
     socket: &mut WebSocketStream<MaybeTlsStream<tokio::net::TcpStream>>,
     send_timeout: Duration,
     event_tx: &mpsc::Sender<WorkerSignal>,
+    receive_state: &mut VoiceLabReceiveState,
 ) -> Result<bool, AsrErrorKind> {
     match incoming {
         Some(Ok(Message::Text(text))) => {
-            let event: GatewayEvent =
-                serde_json::from_str(text.as_ref()).map_err(|_| AsrErrorKind::Protocol)?;
+            let Some(event) = receive_state.adapt(text.as_ref())? else {
+                return Ok(false);
+            };
             let ended = matches!(event, GatewayEvent::SessionEnded { .. });
             event_tx
                 .send(WorkerSignal::Event(event))
@@ -1286,6 +1473,54 @@ mod tests {
     }
 
     #[test]
+    fn voice_lab_wire_is_adapted_without_credential_fields() {
+        let mut state = VoiceLabReceiveState::new(session_id().to_string());
+        assert_eq!(
+            state.adapt(r#"{"type":"ack","received_bytes":320}"#),
+            Ok(None)
+        );
+
+        let partial = state
+            .adapt(r#"{"type":"transcript.partial","text":"pierwszy"}"#)
+            .expect("valid partial")
+            .expect("partial event");
+        assert!(matches!(
+            partial,
+            GatewayEvent::Partial {
+                utterance_id: 1,
+                revision: 1,
+                ref text,
+                ..
+            } if text == "pierwszy"
+        ));
+
+        let final_event = state
+            .adapt(r#"{"type":"transcript.final","text":"pierwszy final"}"#)
+            .expect("valid final")
+            .expect("final event");
+        assert!(matches!(
+            final_event,
+            GatewayEvent::Final {
+                utterance_id: 1,
+                revision: 2,
+                ref text,
+                ..
+            } if text == "pierwszy final"
+        ));
+        assert!(matches!(
+            state
+                .adapt(r#"{"type":"transcript.final","text":"drugi"}"#)
+                .expect("second final")
+                .expect("second event"),
+            GatewayEvent::Final {
+                utterance_id: 2,
+                revision: 1,
+                ..
+            }
+        ));
+    }
+
+    #[test]
     fn local_sequence_is_global_across_reordered_utterances_and_duplicates() {
         let duplicate = partial("u2-r1", 2, 1, "drugi");
         let script = [
@@ -1510,6 +1745,10 @@ mod tests {
         assert!(
             GatewayConnection::new(format!("{plain_websocket}127.0.0.1:9000/live"), "token")
                 .is_ok()
+        );
+        assert!(
+            GatewayConnection::new(format!("{plain_websocket}127.0.0.1:9000/live"), "").is_ok(),
+            "loopback live STT must not require a key"
         );
     }
 }

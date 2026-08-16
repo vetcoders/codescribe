@@ -86,9 +86,10 @@ impl From<MergedDelivery> for Layer1MergedDelivery {
 
 /// Merge a live (Apple/stream) floor with a provider-neutral Layer 1 result.
 ///
-/// Layer 1 may add aligned gaps and tail tokens, but substitutions always keep
-/// the committed live token. Provider-specific lexicon evidence belongs in an
-/// explicit extension such as [`merge_live_whisper_with_terms`].
+/// Layer 1 may add aligned gaps and tail tokens. Ordinary substitutions keep
+/// the committed live token; an obvious short-prefix truncation may be
+/// completed by the provider. Provider-specific lexicon evidence belongs in
+/// an explicit extension such as [`merge_live_whisper_with_terms`].
 pub fn merge_live_layer1(live: &str, layer1: &str) -> Layer1MergedDelivery {
     merge_live_whisper_with_terms(live, layer1, &[]).into()
 }
@@ -119,6 +120,20 @@ fn contains_known_term(haystack: &str, term_norms: &[String]) -> bool {
     term_norms
         .iter()
         .any(|t| !t.is_empty() && padded.contains(&format!(" {t} ")))
+}
+
+/// A very short live prefix followed by a materially longer provider token is
+/// an interrupted word, not an ordinary substitution (`pow.` →
+/// `powkurwiać`). Replacing that fragment cannot delete a complete Apple word.
+fn provider_expands_truncated_live(
+    live: &super::tokenize::Token,
+    provider: &super::tokenize::Token,
+) -> bool {
+    let live_len = live.norm.chars().count();
+    let provider_len = provider.norm.chars().count();
+    (2..=4).contains(&live_len)
+        && provider_len >= live_len.saturating_add(3)
+        && provider.norm.starts_with(&live.norm)
 }
 
 /// Merge with a known-terms catalog (Voice Lab / custom lexicon canonical
@@ -236,6 +251,12 @@ pub fn merge_live_whisper_with_terms(
                         out.push(whisper_toks[*b].surface.clone());
                         *whisper_fill_tokens += 1;
                     }
+                    AlignOp::Substitute { a, b }
+                        if provider_expands_truncated_live(&live_toks[*a], &whisper_toks[*b]) =>
+                    {
+                        out.push(whisper_toks[*b].surface.clone());
+                        *whisper_won_substitutes += 1;
+                    }
                     AlignOp::Substitute { a, .. } => {
                         out.push(live_toks[*a].surface.clone());
                         *live_kept_substitutes += 1;
@@ -308,6 +329,18 @@ mod layer1_contract_tests {
             Layer1MergedDelivery::from(merge_live_whisper(live, layer1)),
             merge_live_layer1(live, layer1)
         );
+    }
+
+    #[test]
+    fn provider_completes_a_truncated_live_word_without_wholesale_rewrite() {
+        let merged = merge_live_layer1(
+            "Możesz odczytać i też pow.",
+            "Możesz odczytać i też powkurwiać się razem.",
+        );
+
+        assert_eq!(merged.text, "Możesz odczytać i też powkurwiać się razem.");
+        assert_eq!(merged.provider_won_substitutes, 1);
+        assert_eq!(merged.live_kept_substitutes, 0);
     }
 }
 

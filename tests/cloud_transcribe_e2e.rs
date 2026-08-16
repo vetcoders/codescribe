@@ -30,7 +30,8 @@ async fn contract_cloud_transcribe_success() {
 
     let success = server
         .mock("POST", "/v1/audio/transcriptions")
-        .match_header("x-api-key", "test-key")
+        .match_header("authorization", mockito::Matcher::Missing)
+        .match_header("x-api-key", mockito::Matcher::Missing)
         .with_status(200)
         .with_header("content-type", "application/json")
         .with_body(r#"{"text":"hello from cloud"}"#)
@@ -39,10 +40,9 @@ async fn contract_cloud_transcribe_success() {
         .await;
 
     let audio = write_min_valid_audio_file();
-    let verdict =
-        codescribe::client::transcribe_cloud(audio.path(), Some("en"), &endpoint, "test-key")
-            .await
-            .expect("cloud transcription should succeed");
+    let verdict = codescribe::client::transcribe_cloud(audio.path(), Some("en"), &endpoint, "")
+        .await
+        .expect("cloud transcription should succeed");
 
     success.assert_async().await;
     assert_eq!(verdict.text, "hello from cloud");
@@ -148,13 +148,14 @@ async fn test_cloud_transcribe_e2e() {
             return;
         }
     };
-    let api_key = match std::env::var("STT_API_KEY") {
-        Ok(val) if !val.trim().is_empty() => val,
-        _ => {
-            eprintln!("Skipping cloud E2E (STT_API_KEY missing)");
-            return;
-        }
-    };
+    let api_key = std::env::var("STT_API_KEY").unwrap_or_default();
+    if codescribe_core::stt::tail_provider::stt_auth_mode(&endpoint)
+        != codescribe_core::stt::tail_provider::SttAuthMode::Unauthenticated
+        && api_key.trim().is_empty()
+    {
+        eprintln!("Skipping cloud E2E (STT_API_KEY missing for remote endpoint)");
+        return;
+    }
 
     let audio = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/assets/1.fretka-Ziggy.mp3");
     assert!(audio.exists(), "Missing test audio at {}", audio.display());

@@ -75,11 +75,9 @@ fn w13_sidecar_fallback_receipts() {
         }
         let request_text = String::from_utf8_lossy(&bytes);
         assert!(request_text.starts_with("POST /v1/audio/transcriptions HTTP/1.1"));
-        assert!(
-            request_text
-                .to_ascii_lowercase()
-                .contains("x-api-key: test-key")
-        );
+        let request_lower = request_text.to_ascii_lowercase();
+        assert!(!request_lower.contains("x-api-key:"));
+        assert!(!request_lower.contains("authorization:"));
         assert!(request_text.contains("verbose_json"));
         let body = r#"{"text":"remote-window","segments":[{"text":"remote-window","start":0.0,"end":0.02}],"avg_logprob":-0.2,"compression_ratio":1.1}"#;
         write!(
@@ -93,7 +91,7 @@ fn w13_sidecar_fallback_receipts() {
     let remote_request = request(0, 0);
     let remote = RemoteTailProvider::new(
         format!("http://{remote_address}/v1/audio/transcriptions"),
-        "test-key",
+        "",
     )
     .expect("remote provider");
     let remote_payload = remote

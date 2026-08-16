@@ -30,6 +30,47 @@ pub const STT_SIDECAR_BIN_ENV: &str = "CODESCRIBE_STT_SIDECAR_BIN";
 /// Child-only authentication token; never read from operator config.
 pub const STT_SIDECAR_TOKEN_ENV: &str = "CODESCRIBE_STT_SIDECAR_TOKEN";
 
+/// Authentication header required by a multipart STT endpoint.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SttAuthMode {
+    /// Loopback transcription servers are host-local and need no API key.
+    Unauthenticated,
+    /// Official/vendor endpoints authenticate API keys as bearer tokens.
+    Bearer,
+    /// Custom non-loopback endpoints retain the historical `x-api-key` contract.
+    ApiKey,
+}
+
+/// Resolve STT authentication from the endpoint owner.
+///
+/// OpenAI and Libraxis both expose OpenAI-compatible multipart transcription
+/// endpoints authenticated with `Authorization: Bearer`. Loopback endpoints
+/// need no API key. Unknown custom endpoints preserve the existing `x-api-key`
+/// contract until provider-registry v2 carries an explicit auth mode.
+pub fn stt_auth_mode(endpoint: &str) -> SttAuthMode {
+    let host = Url::parse(endpoint).ok().and_then(|url| {
+        url.host_str()
+            .map(|host| host.trim_matches(['[', ']']).to_owned())
+    });
+    match host.as_deref() {
+        Some(host)
+            if host.eq_ignore_ascii_case("localhost")
+                || host
+                    .parse::<IpAddr>()
+                    .is_ok_and(|address| address.is_loopback()) =>
+        {
+            SttAuthMode::Unauthenticated
+        }
+        Some(host)
+            if host.eq_ignore_ascii_case("api.openai.com")
+                || host.eq_ignore_ascii_case("api.libraxis.cloud") =>
+        {
+            SttAuthMode::Bearer
+        }
+        _ => SttAuthMode::ApiKey,
+    }
+}
+
 const SIDECAR_PROTOCOL_VERSION: u8 = 1;
 const SIDECAR_CONNECT_TIMEOUT: Duration = Duration::from_secs(2);
 const SIDECAR_IO_TIMEOUT: Duration = Duration::from_secs(30);
@@ -960,7 +1001,7 @@ impl RemoteTailProvider {
         let endpoint = endpoint.into();
         validate_remote_endpoint(&endpoint)?;
         let api_key = api_key.into();
-        if api_key.trim().is_empty() {
+        if stt_auth_mode(&endpoint) != SttAuthMode::Unauthenticated && api_key.trim().is_empty() {
             bail!("STT_API_KEY is required for remote tail provider");
         }
         Ok(Self { endpoint, api_key })
@@ -975,7 +1016,7 @@ impl RemoteTailProvider {
         let api_key = config
             .stt_api_key
             .filter(|value| !value.trim().is_empty())
-            .ok_or_else(|| anyhow!("STT_API_KEY is required for remote tail provider"))?;
+            .unwrap_or_default();
         Self::new(endpoint, api_key)
     }
 }
@@ -1004,12 +1045,17 @@ impl TailProvider for RemoteTailProvider {
             .text("model", model.clone())
             .text("language", language.to_string())
             .text("response_format", "verbose_json");
-        let response = Client::builder()
+        let http_request = Client::builder()
             .timeout(REMOTE_REQUEST_TIMEOUT)
             .connect_timeout(SIDECAR_CONNECT_TIMEOUT)
             .build()?
-            .post(&self.endpoint)
-            .header("x-api-key", &self.api_key)
+            .post(&self.endpoint);
+        let http_request = match stt_auth_mode(&self.endpoint) {
+            SttAuthMode::Unauthenticated => http_request,
+            SttAuthMode::Bearer => http_request.bearer_auth(&self.api_key),
+            SttAuthMode::ApiKey => http_request.header("x-api-key", &self.api_key),
+        };
+        let response = http_request
             .multipart(form)
             .send()
             .context("remote tail request failed")?;
@@ -1238,6 +1284,30 @@ pub(crate) fn transcribe_legacy_window(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn stt_auth_mode_follows_endpoint_owner() {
+        assert_eq!(
+            stt_auth_mode("https://api.openai.com/v1/audio/transcriptions"),
+            SttAuthMode::Bearer
+        );
+        assert_eq!(
+            stt_auth_mode("https://api.libraxis.cloud/v1/audio/transcriptions"),
+            SttAuthMode::Bearer
+        );
+        assert_eq!(
+            stt_auth_mode("http://localhost:8000/v1/audio/transcriptions"),
+            SttAuthMode::Unauthenticated
+        );
+        assert_eq!(
+            stt_auth_mode("http://[::1]:8000/v1/audio/transcriptions"),
+            SttAuthMode::Unauthenticated
+        );
+        assert_eq!(
+            stt_auth_mode("https://stt.example.test/v1/audio/transcriptions"),
+            SttAuthMode::ApiKey
+        );
+    }
 
     #[test]
     fn w13_tail_provider_contract_typed_payload() {

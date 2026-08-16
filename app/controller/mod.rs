@@ -78,7 +78,7 @@ use crate::os::selection::{
     wait_for_frontmost_app,
 };
 use crate::os::shortcut_registry;
-use codescribe_core::asr_session::GatewaySessionAvailability;
+use codescribe_core::asr_session::gateway_session_availability;
 use context_bucket::ContextBucket;
 #[cfg(test)]
 pub(crate) use context_bucket::ContextMarker;
@@ -103,8 +103,10 @@ use delivery_route::{
     DeliveryFacts, DeliveryIntent, DeliveryRoute, delivery_intent_from_session,
     format_delivery_route_line, overlay_insert_facts, resolve_delivery_route, target_is_self_app,
 };
+#[cfg(test)]
+pub(crate) use final_pass::FinalPassRoutingMode;
 pub(crate) use final_pass::{
-    FinalPassAction, FinalPassRoutingMode, FinalPassStages, SmartTailGapSource, StopPathBudget,
+    FinalPassAction, FinalPassStages, SmartTailGapSource, StopPathBudget,
     StreamingCompletenessEvidence, append_tail_gap, apply_committed_density_floor,
     apply_residual_required_demotion, assess_streaming_completeness, completeness_label,
     compose_stop_path_residual_from_partials, final_pass_action, final_pass_routing_mode,
@@ -548,7 +550,8 @@ impl RecordingController {
                 //
                 // Product invariant: recording readiness is NOT engine readiness.
                 // Audio capture must start the moment the user presses record; the
-                // live pipeline and the final pass lazy-load the engine on first use.
+                // live local refinement and explicit Retranscribe lazy-load the
+                // engine on first use.
                 // A failed prewarm is a warning, not an app or recording failure.
                 // The idle-unload reaper (commit 2b8bb1f) may legitimately drop the
                 // engine later and the next call reloads it — pinning it here would
@@ -654,8 +657,8 @@ impl RecordingController {
     }
 
     /// Cross the product truth boundary exactly once. Engine finals and engine
-    /// session close are still mutable draft stages: Smart/Always final pass,
-    /// adjudication, dictionary cleanup, and formatting all happen later. The
+    /// session close are still mutable draft stages: adjudication, dictionary
+    /// cleanup, and formatting all happen later. Normal stop has no file pass. The
     /// text handed here is the same text used for history and delivery.
     async fn seal_active_transcript(&self, text: String) {
         let bus = self.active_transcript_bus.read().await.clone();
@@ -2311,10 +2314,8 @@ impl RecordingController {
                 Arc::clone(&session_telemetry),
                 transcript_bus.clone(),
             );
-            rec.configure_layer1(
-                &UserSettings::load(),
-                GatewaySessionAvailability::Unavailable,
-            );
+            let settings = UserSettings::load();
+            rec.configure_layer1(&settings, gateway_session_availability(&config));
             if !cfg!(test) {
                 let language_hint = language.whisper_hint().map(str::to_string);
                 // Audio-first cold start: do not preflight Whisper here. The
@@ -2526,10 +2527,8 @@ impl RecordingController {
             Arc::clone(&self.session_telemetry),
             transcript_bus.clone(),
         );
-        recorder.configure_layer1(
-            &UserSettings::load(),
-            GatewaySessionAvailability::Unavailable,
-        );
+        let settings = UserSettings::load();
+        recorder.configure_layer1(&settings, gateway_session_availability(&config));
 
         // Skip actual audio stream in tests (no CoreAudio device needed)
         let language_hint = language.whisper_hint().map(str::to_string);
@@ -2591,9 +2590,9 @@ impl RecordingController {
 
     /// Stop a toggle session under a watchdog.
     ///
-    /// The full stop — recorder drain, final-pass STT, post-process, delivery —
-    /// must finish within `STOP_TIMEOUT`. When it does not (final-pass deadlock
-    /// on the Metal device, lock contention, a `stop` blocked in a CoreAudio
+    /// The full stop — recorder drain, live-session adjudication, post-process,
+    /// delivery — must finish within `STOP_TIMEOUT`. When it does not (lock
+    /// contention, a `stop` blocked in a CoreAudio
     /// callback), recovery forces `Idle` so the next toggle press registers, the
     /// badge clears, and the tray stops claiming idle over a hung recording.
     async fn stop_toggle_and_adjudicate(&self) -> Result<()> {
@@ -2601,9 +2600,9 @@ impl RecordingController {
             return Ok(());
         }
 
-        // Watchdog: full stop+adjudicate (recorder.stop + final-pass STT + post-process
-        // + paste) must complete within STOP_TIMEOUT. If it stalls — final-pass deadlock
-        // on Metal device, RwLock contention, recorder.stop blocked on cpal callback —
+        // Watchdog: full stop+adjudicate (recorder.stop + live truth + post-process
+        // + paste) must complete within STOP_TIMEOUT. If it stalls — RwLock
+        // contention or recorder.stop blocked on a cpal callback —
         // force recovery to Idle so subsequent toggle presses register, badge clears,
         // and tray reflects truth instead of showing Idle while recording is hung.
         match tokio::time::timeout(STOP_TIMEOUT, self.stop_toggle_and_adjudicate_inner()).await {
@@ -2868,17 +2867,14 @@ impl RecordingController {
         result.map(|_| ())
     }
 
-    /// Turn a stopped recording into a delivered transcript: decide the final
-    /// pass, adjudicate which transcript is the truth, then run the text
-    /// pipeline.
+    /// Turn a stopped recording into a delivered transcript: drain the live
+    /// transcript, adjudicate its truth, then run the text pipeline.
     ///
-    /// Final-pass routing is typed rather than heuristic. `Always` re-passes the
-    /// whole file; `Smart` on a complete streaming transcript skips; `Smart` on
-    /// an incomplete one transcribes only the uncommitted audio tail and appends
-    /// it, because committed streaming text is immutable under the append-only
-    /// overlay doctrine and a full re-pass there would rewrite what the user
-    /// already watched being typed. `Off` still emits a skipped LocalFinalPass
-    /// so provenance stays honest — it gates the WAV re-pass, never the lexicon.
+    /// Normal stop never uploads or decodes the completed WAV. Both local and
+    /// cloud refinement happen inside the live session; whole-file inference is
+    /// reserved for explicit Retranscribe actions (Overlay, Dictionary,
+    /// Teacher). A typed skipped LocalFinalPass is still emitted so old
+    /// provenance readers remain honest while the legacy routing UI is retired.
     ///
     /// A missing tail boundary is carried by the type, not by a sentinel: the
     /// `Skip` variant produces no `from_secs` at all, so handing `0.0` to the
@@ -2921,46 +2917,16 @@ impl RecordingController {
         let use_local_stt = config.use_local_stt;
         let raw_save_enabled = raw_save_enabled(assistive);
 
-        let cloud_config = if use_local_stt {
-            None
-        } else {
-            match (config.stt_endpoint.clone(), config.stt_api_key.clone()) {
-                (Some(endpoint), Some(api_key))
-                    if !endpoint.trim().is_empty() && !api_key.trim().is_empty() =>
-                {
-                    Some((endpoint, api_key))
-                }
-                _ => None,
-            }
-        };
-
         let assistive_loop = assistive && self.assistive_loop_active.load(Ordering::SeqCst);
 
         let mut local_final_pass_verdict = None;
-        let mut cloud_verdict_opt = None;
-        let mut cloud_handle: Option<JoinHandle<Result<crate::client::CloudTranscriptionVerdict>>> =
+        // Normal recording never uploads the completed WAV. Cloud audio is
+        // already carried by the bounded live WSS Layer 1 session; multipart
+        // file upload belongs only to explicit retranscribe surfaces.
+        let cloud_verdict_opt = None;
+        let cloud_handle: Option<JoinHandle<Result<crate::client::CloudTranscriptionVerdict>>> =
             None;
         let mut local_final_pass_attempted = false;
-
-        if let Some((cloud_endpoint, cloud_api_key)) = cloud_config {
-            if let Some(path) = &audio_path {
-                let cloud_path = path.as_path().to_path_buf();
-                let cloud_language = language_opt.map(str::to_string);
-                cloud_handle = Some(tokio::spawn(async move {
-                    crate::client::transcribe_cloud(
-                        &cloud_path,
-                        cloud_language.as_deref(),
-                        &cloud_endpoint,
-                        &cloud_api_key,
-                    )
-                    .await
-                }));
-            } else {
-                warn!("Cloud STT disabled: no audio file available");
-            }
-        } else if !use_local_stt {
-            warn!("Cloud STT disabled: STT_ENDPOINT/STT_API_KEY missing");
-        }
 
         let routing_mode = final_pass_routing_mode();
         let prefer_apple = codescribe_core::stt::active_engine_is_apple();
@@ -2969,10 +2935,10 @@ impl RecordingController {
         } else {
             "streaming_whisper"
         };
-        // Honest mode: Off never runs a full file re-pass (Apple or not).
-        // Smart/Always decide via final_pass_action — no silent rewrite.
-        let run_local_final_pass =
-            use_local_stt && !matches!(routing_mode, FinalPassRoutingMode::Off);
+        // Product contract: a normal stop is never a file-pass trigger. Keep
+        // the legacy typed routing below inert until it is removed with the
+        // obsolete settings surface; explicit retranscribe owns file decoding.
+        let run_local_final_pass = false;
         let effective_routing = routing_mode;
         let mut final_pass_secs = 0.0;
         let mut final_pass_stages = FinalPassStages::default();
@@ -3568,19 +3534,6 @@ impl RecordingController {
             );
         }
 
-        if !use_local_stt {
-            if let Some(handle) = cloud_handle.take() {
-                info!("Awaiting cloud STT as selected transcript backend");
-                match handle.await {
-                    Ok(Ok(verdict)) => cloud_verdict_opt = Some(verdict),
-                    Ok(Err(e)) => error!("Cloud transcription failed: {}", e),
-                    Err(e) => error!("Cloud transcription task failed: {}", e),
-                }
-            } else {
-                warn!("Cloud backend unavailable (cloud disabled or missing credentials)");
-            }
-        }
-
         let session_telemetry = snapshot_session_telemetry(&self.session_telemetry);
         let mut truth_verdict = adjudicate_recording_truth(
             use_local_stt,
@@ -3732,8 +3685,8 @@ impl RecordingController {
                     write_truth_sidecar_logged(&audio_saved_path, &truth_metadata);
                 }
 
-                // No-speech stops still paid the final pass — keep the stage
-                // receipt so latency truth covers every real stop.
+                // Keep the all-zero legacy stage receipt so latency truth
+                // explicitly proves that no file pass ran on this stop.
                 info!("{}", format_final_pass_stages_line(final_pass_stages));
                 self.seal_active_transcript(String::new()).await;
                 return Ok(ProcessRecordingOutcome::no_speech(reason));
@@ -3847,8 +3800,8 @@ impl RecordingController {
     /// post-process, format per mode, persist, then paste or hand off.
     ///
     /// The dictionary step (lexicon, cleanup, semantic gate) always runs — it is
-    /// independent of the final-pass mode, which routes only the optional WAV
-    /// re-pass. Formatting then follows the mode the hotkey chose, and the
+    /// independent of the legacy final-pass setting. Formatting then follows
+    /// the mode the hotkey chose, and the
     /// Light+ sentence-shape floor is applied to every lane that *promised*
     /// formatting. RAW lanes are excluded on purpose: `force_raw` and Toggle-OFF
     /// promise the user their literal words.
