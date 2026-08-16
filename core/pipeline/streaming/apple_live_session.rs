@@ -47,7 +47,9 @@ use crate::asr_session::{SessionId as Layer1SessionId, SessionInput as Layer1Ses
 use crate::audio::capture_receipt::{
     CaptureLevelAccumulator, CapturePathMeta, emit_capture_level_receipt,
 };
-use crate::pipeline::contracts::{DropKind, EngineEvent, EventSink, TranscriptSegment};
+use crate::pipeline::contracts::{
+    DropKind, EngineEvent, EventSink, LayerSource, TranscriptSegment,
+};
 use crate::pipeline::stream_postprocess::StreamPostProcessor;
 use crate::stt::apple_stt::{LiveStreamEvent, LiveStreamSession};
 use crate::stt::tail_patcher::{SkipReasonCode, TailPatchConfig, TailPatchOutcome};
@@ -57,7 +59,9 @@ use crate::stt::tail_provider::{
 };
 
 use super::live_audio_buffer::{DEFAULT_RETENTION_SECS, LiveAudioBuffer, ResolvedAudioWindow};
-use super::progressive_seal::{AppleCommit, ProgressiveSealMachine, SealTick, seal_span_text};
+use super::progressive_seal::{
+    AppleCommit, ProgressiveSealMachine, SealTick, SealedSpan, seal_span_text,
+};
 #[cfg(test)]
 use super::session::emit_tail_patch_result;
 use super::session::{
@@ -537,6 +541,7 @@ pub(crate) async fn apple_stream_transcription_session(
     // (the T0 `merge_live_layer1` seam), owned by the stop-path truth
     // adjudicator once the settings cut arms real providers.
     let layer1_outcome = layer1_lane.stop();
+    let layer1_candidate = layer1_outcome.refined_transcript();
     if let Some(reason) = layer1_lane.take_degrade_notice() {
         emit_layer1_degrade_warning(event_sink.as_ref(), reason);
     }
@@ -557,6 +562,7 @@ pub(crate) async fn apple_stream_transcription_session(
         );
     }
 
+    let mut sealed_spans = Vec::new();
     match worker.join() {
         Ok(Ok(outcome)) => {
             info!(
@@ -566,6 +572,7 @@ pub(crate) async fn apple_stream_transcription_session(
                 under_commit_escalations = outcome.under_commit_escalations,
                 "Apple progressive live session finished"
             );
+            sealed_spans = outcome.sealed_spans;
         }
         Ok(Err(e)) => {
             warn!("Apple live stream worker failed: {e:#}");
@@ -582,6 +589,17 @@ pub(crate) async fn apple_stream_transcription_session(
     }
 
     log_tail_patch_session_receipt(tail_patch_lane.replacements(), tail_patch_lane.skipped());
+    let mut live_cloud_patches = 0u64;
+    if let Some(candidate) = layer1_candidate {
+        for event in plan_live_layer1_gap_patches(&sealed_spans, &candidate) {
+            event_sink.on_event(&event);
+            live_cloud_patches = live_cloud_patches.saturating_add(1);
+        }
+        info!(
+            provider_chars = candidate.chars().count(),
+            live_cloud_patches, "Live cloud Layer 1 reconciled against committed Apple floor"
+        );
+    }
     emit_capture_level_receipt(
         event_sink.as_ref(),
         &capture_level.finalize(CapturePathMeta::resolve(sample_rate, 1, None)),
@@ -589,7 +607,9 @@ pub(crate) async fn apple_stream_transcription_session(
     emit_session_finalised(
         event_sink.as_ref(),
         session_id,
-        tail_patch_lane.replacements(),
+        tail_patch_lane
+            .replacements()
+            .saturating_add(live_cloud_patches),
     );
 }
 
@@ -869,6 +889,165 @@ struct AppleStreamOutcome {
     unresolved_windows: u64,
     /// How many seals escalated an unplaceable Layer 1 under-commit (W-C).
     under_commit_escalations: u64,
+    sealed_spans: Vec<SealedSpan>,
+}
+
+#[derive(Debug)]
+struct LivePatchToken {
+    utterance_id: u64,
+    start: usize,
+    end: usize,
+}
+
+/// Convert provider-neutral Layer 1 gap-fill into existing bounded utterance
+/// patches. The merge first preserves every Apple token; only tokens present
+/// in the merged result but absent from that floor become zero-width inserts.
+fn plan_live_layer1_gap_patches(spans: &[SealedSpan], candidate: &str) -> Vec<EngineEvent> {
+    if spans.is_empty() || candidate.trim().is_empty() {
+        return Vec::new();
+    }
+    let live = spans
+        .iter()
+        .map(|span| span.text.trim())
+        .filter(|text| !text.is_empty())
+        .collect::<Vec<_>>()
+        .join(" ");
+    let merged = crate::quality::merge_live_layer1(&live, candidate);
+    if merged.provider_fill_tokens == 0 {
+        return Vec::new();
+    }
+
+    let live_tokens = crate::quality::teacher::tokenize(&live);
+    let merged_tokens = crate::quality::teacher::tokenize(&merged.text);
+    let mapped = mapped_live_tokens(spans);
+    if mapped.len() != live_tokens.len() {
+        warn!(
+            mapped_tokens = mapped.len(),
+            live_tokens = live_tokens.len(),
+            "Live cloud gap planner refused inconsistent span token map"
+        );
+        return Vec::new();
+    }
+    let ops = crate::quality::teacher::align_words(&live_tokens, &merged_tokens);
+    let mut patches = Vec::new();
+    let mut previous_live: Option<usize> = None;
+    let mut index = 0usize;
+    while index < ops.len() {
+        match &ops[index] {
+            crate::quality::teacher::AlignOp::InsertB { .. } => {
+                let start = index;
+                while matches!(
+                    ops.get(index),
+                    Some(crate::quality::teacher::AlignOp::InsertB { .. })
+                ) {
+                    index += 1;
+                }
+                let words = ops[start..index]
+                    .iter()
+                    .filter_map(|op| match op {
+                        crate::quality::teacher::AlignOp::InsertB { b } => {
+                            Some(merged_tokens[*b].surface.as_str())
+                        }
+                        _ => None,
+                    })
+                    .collect::<Vec<_>>()
+                    .join(" ");
+                let next_live = ops[index..].iter().find_map(live_op_index);
+                if let Some(previous) = previous_live.and_then(|idx| mapped.get(idx)) {
+                    patches.push(EngineEvent::ReplaceRange {
+                        utterance_id: previous.utterance_id,
+                        start: previous.end,
+                        end: previous.end,
+                        text: format!(" {words}"),
+                        source: LayerSource::TailPatch,
+                    });
+                } else if let Some(next) = next_live.and_then(|idx| mapped.get(idx)) {
+                    patches.push(EngineEvent::ReplaceRange {
+                        utterance_id: next.utterance_id,
+                        start: next.start,
+                        end: next.start,
+                        text: format!("{words} "),
+                        source: LayerSource::TailPatch,
+                    });
+                }
+            }
+            crate::quality::teacher::AlignOp::Substitute { a, b } => {
+                if let Some(live_token) = mapped.get(*a) {
+                    patches.push(EngineEvent::ReplaceRange {
+                        utterance_id: live_token.utterance_id,
+                        start: live_token.start,
+                        end: live_token.end,
+                        text: merged_tokens[*b].surface.clone(),
+                        source: LayerSource::TailPatch,
+                    });
+                }
+                previous_live = Some(*a);
+                index += 1;
+            }
+            op => {
+                previous_live = live_op_index(op).or(previous_live);
+                index += 1;
+            }
+        }
+    }
+
+    // Multiple inserts into one utterance use offsets from the same immutable
+    // Apple text. Apply right-to-left so an earlier insertion cannot shift a
+    // later one's char boundary.
+    patches.sort_by(|left, right| {
+        patch_position(right)
+            .cmp(&patch_position(left))
+            .then_with(|| patch_utterance(right).cmp(&patch_utterance(left)))
+    });
+    patches
+}
+
+fn live_op_index(op: &crate::quality::teacher::AlignOp) -> Option<usize> {
+    match op {
+        crate::quality::teacher::AlignOp::Equal { a, .. }
+        | crate::quality::teacher::AlignOp::DeleteA { a }
+        | crate::quality::teacher::AlignOp::Substitute { a, .. } => Some(*a),
+        crate::quality::teacher::AlignOp::InsertB { .. } => None,
+    }
+}
+
+fn mapped_live_tokens(spans: &[SealedSpan]) -> Vec<LivePatchToken> {
+    let mut mapped = Vec::new();
+    for span in spans {
+        let chars = span.text.chars().collect::<Vec<_>>();
+        let mut cursor = 0usize;
+        while cursor < chars.len() {
+            while cursor < chars.len() && chars[cursor].is_whitespace() {
+                cursor += 1;
+            }
+            let start = cursor;
+            while cursor < chars.len() && !chars[cursor].is_whitespace() {
+                cursor += 1;
+            }
+            if start < cursor {
+                mapped.push(LivePatchToken {
+                    utterance_id: span.id,
+                    start,
+                    end: cursor,
+                });
+            }
+        }
+    }
+    mapped
+}
+
+fn patch_position(event: &EngineEvent) -> usize {
+    match event {
+        EngineEvent::ReplaceRange { start, .. } => *start,
+        _ => 0,
+    }
+}
+
+fn patch_utterance(event: &EngineEvent) -> u64 {
+    match event {
+        EngineEvent::ReplaceRange { utterance_id, .. } => *utterance_id,
+        _ => 0,
+    }
 }
 
 /// Resolve a sealed utterance back to its audio span, then release what can
@@ -1125,6 +1304,22 @@ fn apply_conservative_fusion(
         return fallback;
     }
     let decision = conservative_fuse(&apple_words, &whisper);
+    if !decision.unresolved.is_empty() {
+        // An unresolved fusion verdict means the rewrite text intentionally
+        // kept Apple's shorter alternative. Consuming the fallback here used
+        // to erase already-computed, safely anchored gap appends — exactly the
+        // first-utterance loss visible in the operator's local take. Keep the
+        // pending Apple span immutable and let the bounded patch lane land.
+        let receipt = fusion_receipt(utterance_id, &decision);
+        let _ = ev_tx.send(EngineEvent::Warning {
+            code: receipt.code.as_str().to_string(),
+            message: format!(
+                "fusion unresolved={} agreements={} gap_fills={}; bounded fallback retained",
+                receipt.unresolved, receipt.agreements, receipt.gap_fills
+            ),
+        });
+        return fallback;
+    }
     if !state.progressive.try_rewrite(utterance_id, &decision.text) {
         // The span sealed before fusion could rewrite it. That is a refusal of
         // THIS route, not a verdict on the recovery: Layer 1 already computed
@@ -1142,16 +1337,6 @@ fn apply_conservative_fusion(
             ),
         });
         return fallback;
-    }
-    if !decision.unresolved.is_empty() {
-        let receipt = fusion_receipt(utterance_id, &decision);
-        let _ = ev_tx.send(EngineEvent::Warning {
-            code: receipt.code.as_str().to_string(),
-            message: format!(
-                "fusion unresolved={} agreements={} gap_fills={}",
-                receipt.unresolved, receipt.agreements, receipt.gap_fills
-            ),
-        });
     }
     TailPatchOutcome::NoChange
 }
@@ -2204,6 +2389,7 @@ fn apple_stream_worker(
         filtered_empty_drops: state.filtered_empty_drops,
         unresolved_windows: state.unresolved_windows,
         under_commit_escalations: state.under_commit_escalations,
+        sealed_spans: state.progressive.sealed_spans().to_vec(),
     })
 }
 
@@ -2412,6 +2598,68 @@ mod tests {
                 avg_logprob: None,
             },
         }
+    }
+
+    fn sealed_span(id: u64, text: &str) -> SealedSpan {
+        SealedSpan {
+            id,
+            text: text.to_string(),
+            end_secs_millis: id as u32 * 1_000,
+            range: TailSampleRange {
+                session: "live-cloud-gap-test".to_string(),
+                capture_epoch: 0,
+                sample_start: (id - 1) * 16_000,
+                sample_end: id * 16_000,
+            },
+            words: Vec::new(),
+            apple_evidence: TailProviderEvidence {
+                source: TailEvidenceSource::AppleSpeech,
+                revision: None,
+                stability: TailEvidenceStability::Final,
+                timing_quality: TailTimingQuality::Synthetic,
+                avg_logprob: None,
+            },
+            whisper_evidence: None,
+            whisper_words: Vec::new(),
+            silero_utterance_id: None,
+        }
+    }
+
+    #[test]
+    fn live_cloud_gap_plan_preserves_apple_and_inserts_missing_words() {
+        let spans = vec![
+            sealed_span(1, "I będziesz miał po prostu lokalnej teraz sobie."),
+            sealed_span(2, "Możesz odczytać i też pow."),
+        ];
+        let candidate = "I będziesz miał po prostu z lokalnej sesji teraz sobie. Możesz odczytać i też powkurwiać się razem.";
+        let patches = plan_live_layer1_gap_patches(&spans, candidate);
+        assert!(
+            !patches.is_empty(),
+            "provider-only gaps must become patches"
+        );
+
+        let mut rendered = spans
+            .iter()
+            .map(|span| (span.id, span.text.clone()))
+            .collect::<BTreeMap<_, _>>();
+        for patch in &patches {
+            let utterance_id = patch_utterance(patch);
+            patch
+                .apply_to_committed_text(rendered.get_mut(&utterance_id).expect("known span"))
+                .expect("bounded patch");
+        }
+        let patched = rendered.into_values().collect::<Vec<_>>().join(" ");
+        let live = spans
+            .iter()
+            .map(|span| span.text.as_str())
+            .collect::<Vec<_>>()
+            .join(" ");
+        assert_eq!(
+            patched,
+            crate::quality::merge_live_layer1(&live, candidate).text
+        );
+        assert!(patched.contains("z lokalnej sesji"));
+        assert!(patched.contains("powkurwiać się razem"));
     }
 
     /// Integration boundary: the real Apple state owns the progressive

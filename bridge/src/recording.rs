@@ -331,12 +331,21 @@ async fn transcribe_file_cloud(path: String) -> Result<CsTranscription, CsError>
     let key = config
         .stt_api_key
         .clone()
-        .filter(|value| !value.trim().is_empty());
-    let (Some(endpoint), Some(key)) = (endpoint, key) else {
+        .filter(|value| !value.trim().is_empty())
+        .unwrap_or_default();
+    let Some(endpoint) = endpoint else {
         return Err(CsError::Recording {
-            msg: "Cloud pass needs STT_ENDPOINT and STT_API_KEY".to_string(),
+            msg: "Cloud pass needs STT_ENDPOINT".to_string(),
         });
     };
+    if codescribe_core::stt::tail_provider::stt_auth_mode(&endpoint)
+        != codescribe_core::stt::tail_provider::SttAuthMode::Unauthenticated
+        && key.is_empty()
+    {
+        return Err(CsError::Recording {
+            msg: "Cloud pass needs STT_API_KEY for this endpoint".to_string(),
+        });
+    }
     let verdict =
         codescribe::client::transcribe_cloud(std::path::Path::new(&path), None, &endpoint, &key)
             .await

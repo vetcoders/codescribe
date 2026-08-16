@@ -91,7 +91,16 @@ pub fn probe_api_key_liveness(account: &str) -> ApiKeyLivenessResult {
     }
 
     let config = Config::load();
-    let Some(api_key) = lane_truth::secret(account) else {
+    let api_key = lane_truth::secret(account);
+    let stt_is_unauthenticated = account == "STT_API_KEY"
+        && config
+            .stt_endpoint
+            .as_deref()
+            .filter(|value| !value.trim().is_empty())
+            .map(crate::stt::tail_provider::stt_auth_mode)
+            .unwrap_or(crate::stt::tail_provider::SttAuthMode::Unauthenticated)
+            == crate::stt::tail_provider::SttAuthMode::Unauthenticated;
+    let Some(api_key) = api_key.or_else(|| stt_is_unauthenticated.then(String::new)) else {
         return ApiKeyLivenessResult::new(
             account,
             ApiKeyLivenessStatus::Missing,
@@ -203,12 +212,21 @@ fn probe_stt_key(
         .text("model", "whisper-1")
         .text("language", "pl")
         .text("response_format", "json");
-    let response = client
-        .post(&endpoint)
-        .header("x-api-key", api_key)
-        .multipart(form)
-        .send();
-    response_result(account, endpoint, response)
+    let request = client.post(&endpoint);
+    let auth_mode = crate::stt::tail_provider::stt_auth_mode(&endpoint);
+    let request = match auth_mode {
+        crate::stt::tail_provider::SttAuthMode::Unauthenticated => request,
+        crate::stt::tail_provider::SttAuthMode::Bearer => request.bearer_auth(api_key),
+        crate::stt::tail_provider::SttAuthMode::ApiKey => request.header("x-api-key", api_key),
+    };
+    let response = request.multipart(form).send();
+    let mut result = response_result(account, endpoint, response);
+    if auth_mode == crate::stt::tail_provider::SttAuthMode::Unauthenticated
+        && result.status == ApiKeyLivenessStatus::Ok
+    {
+        result.message = "local STT endpoint accepts unauthenticated requests".to_string();
+    }
+    result
 }
 
 /// Classify one provider HTTP response. This is the tested contract; network
@@ -490,8 +508,14 @@ mod tests {
         );
         let request = server.join().expect("STT probe server");
         assert!(request.starts_with("POST /v1/audio/transcriptions HTTP/1.1"));
-        assert!(request.to_ascii_lowercase().contains("x-api-key: test-key"));
+        let request_lower = request.to_ascii_lowercase();
+        assert!(!request_lower.contains("x-api-key:"));
+        assert!(!request_lower.contains("authorization:"));
         assert!(request.contains("codescribe-key-probe.wav"));
+        assert_eq!(
+            result.message,
+            "local STT endpoint accepts unauthenticated requests"
+        );
     }
 
     /// 2xx means the provider accepted the key and returned a usable response.

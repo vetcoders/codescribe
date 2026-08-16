@@ -812,9 +812,13 @@ async fn transcribe_multipart(
 
 /// Send a single multipart STT transcription request (used by retry loop)
 async fn transcribe_multipart_request(url: &str, api_key: &str, form: Form) -> Result<String> {
-    let response = get_client()
-        .post(url)
-        .header("x-api-key", api_key)
+    let request = get_client().post(url);
+    let request = match crate::stt::tail_provider::stt_auth_mode(url) {
+        crate::stt::tail_provider::SttAuthMode::Unauthenticated => request,
+        crate::stt::tail_provider::SttAuthMode::Bearer => request.bearer_auth(api_key),
+        crate::stt::tail_provider::SttAuthMode::ApiKey => request.header("x-api-key", api_key),
+    };
+    let response = request
         .multipart(form)
         .send()
         .await

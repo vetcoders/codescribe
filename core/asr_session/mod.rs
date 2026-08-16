@@ -17,11 +17,12 @@
 //!   Layer 0 canvas choice and Layer 1 refiner mode on two separate axes.
 //! - [`fake`] — a deterministic in-memory provider for tests and later cuts.
 //! - [`cloud`] — the dedicated live gateway session, bounded PCM transport,
-//!   and Codescribe-owned stream-global event sequencing.
+//!   Voice Lab wire adapter, and Codescribe-owned stream-global event
+//!   sequencing.
 //! - [`local_helper`] — the provider-compatible, injected child-process
 //!   boundary whose confirmed exit is the local-weight reclaim authority.
 //! - [`bootstrap`] — the recording-start join between persisted mode/consent
-//!   truth and a validated, short-lived gateway session.
+//!   truth and a validated live endpoint.
 //! - [`recorder`] — the per-recording lane the live session drives: injected
 //!   [`recorder::Layer1Decision`], bounded non-blocking PCM fan-out, volatile
 //!   partial draft, and typed degrade paths that always land on canvas +
@@ -32,15 +33,14 @@
 //!
 //! ## What deliberately does NOT live here
 //!
-//! No settings UI, gateway session-mint client, vendor protocol, or local
-//! model. The live socket consumes only a normalized gateway contract; the
-//! mode/consent *records* live in `crate::config::cloud_asr` (the settings
-//! brain), while [`bootstrap`] joins that truth to the recorder.
+//! No settings UI or local model. The Voice Lab wire is isolated behind the
+//! normalized provider contract; the mode/consent *records* live in
+//! `crate::config::cloud_asr` (the settings brain), while [`bootstrap`] joins
+//! that truth to the recorder.
 //!
-//! The existing whole-file `client::transcribe_cloud` / `transcribe_websocket`
-//! API is **outside** this contract. It uploads one completed recording and is
-//! a stop/recovery path, not a live session — routing it through this interface
-//! and calling the result "live" is precisely the confusion this seam prevents.
+//! The existing whole-file `client::transcribe_cloud` API is **outside** this
+//! contract. It uploads one completed recording only for explicit retranscribe
+//! surfaces — normal recording never routes that file pass through this seam.
 //!
 //! ## Doctrine encoded in the types
 //!
@@ -74,7 +74,9 @@ pub mod recorder;
 #[cfg(test)]
 mod tests;
 
-pub use bootstrap::{GatewaySessionAvailability, layer1_decision_for_recording};
+pub use bootstrap::{
+    GatewaySessionAvailability, gateway_session_availability, layer1_decision_for_recording,
+};
 pub use cloud::{
     CloudGatewayTransport, CloudSessionLimits, CloudSessionTelemetry, GatewayConnection,
     GatewayErrorCode, GatewayEvent, GatewayPcmFrame, GatewaySessionConfig, GatewayTransportPoll,

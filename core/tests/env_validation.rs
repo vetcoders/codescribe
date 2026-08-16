@@ -48,11 +48,14 @@ fn missing_required_envs(config: &Config) -> Vec<&'static str> {
         {
             missing.push("STT_ENDPOINT");
         }
-        if config
-            .stt_api_key
-            .as_ref()
-            .map(|v| v.trim().is_empty())
-            .unwrap_or(true)
+        let endpoint = config.stt_endpoint.as_deref().unwrap_or_default().trim();
+        if codescribe_core::stt::tail_provider::stt_auth_mode(endpoint)
+            != codescribe_core::stt::tail_provider::SttAuthMode::Unauthenticated
+            && config
+                .stt_api_key
+                .as_ref()
+                .map(|v| v.trim().is_empty())
+                .unwrap_or(true)
         {
             missing.push("STT_API_KEY");
         }
@@ -135,6 +138,23 @@ fn required_cloud_stt_vars_when_local_disabled() {
     let missing = missing_required_envs(&cfg);
     assert!(missing.contains(&"STT_ENDPOINT"));
     assert!(missing.contains(&"STT_API_KEY"));
+}
+
+#[test]
+#[serial]
+fn loopback_cloud_stt_does_not_require_api_key() {
+    let _g1 = EnvGuard::set("USE_LOCAL_STT", "0");
+    let _g2 = EnvGuard::set(
+        "STT_ENDPOINT",
+        "http://127.0.0.1:8000/v1/audio/transcriptions",
+    );
+    let _g3 = EnvGuard::unset("STT_API_KEY");
+
+    let mut cfg = Config::default();
+    cfg.load_from_env();
+
+    let missing = missing_required_envs(&cfg);
+    assert!(!missing.contains(&"STT_API_KEY"));
 }
 
 #[test]

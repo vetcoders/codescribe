@@ -466,14 +466,18 @@ fn prepare_cloud_jobs(
     CloudJobSet::Running(jobs)
 }
 
-/// The cloud STT endpoint and key, or `None` when either is absent or blank.
-/// Whitespace-only values count as absent — a half-filled setting is not
-/// credentials, and treating it as such would fail later with a worse message.
+/// The cloud STT endpoint and optional key, or `None` when required input is
+/// absent. Loopback servers intentionally accept an empty key; remote owners
+/// still require one.
 fn cloud_reference_credentials(app_config: &Config) -> Option<(String, String)> {
     let endpoint = app_config.stt_endpoint.as_deref()?.trim();
-    let api_key = app_config.stt_api_key.as_deref()?.trim();
+    let api_key = app_config.stt_api_key.as_deref().unwrap_or_default().trim();
 
-    if endpoint.is_empty() || api_key.is_empty() {
+    if endpoint.is_empty()
+        || (crate::stt::tail_provider::stt_auth_mode(endpoint)
+            != crate::stt::tail_provider::SttAuthMode::Unauthenticated
+            && api_key.is_empty())
+    {
         return None;
     }
 
@@ -2025,6 +2029,15 @@ mod tests {
 
         config.stt_api_key = Some("   ".into());
         assert_eq!(cloud_reference_credentials(&config), None);
+
+        config.stt_endpoint = Some("http://127.0.0.1:8000/v1/audio/transcriptions".into());
+        assert_eq!(
+            cloud_reference_credentials(&config),
+            Some((
+                "http://127.0.0.1:8000/v1/audio/transcriptions".into(),
+                String::new(),
+            ))
+        );
     }
 
     /// Spot-checks WER on a one-token substitution (ala ma kota → ala ma psa).
