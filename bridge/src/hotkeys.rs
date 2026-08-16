@@ -25,7 +25,9 @@ use tokio::sync::broadcast::error::RecvError;
 use crate::agent_delivery::{
     CsAgentDeliveryListener, set_delivery_listener, spawn_delivery_forwarder,
 };
-use crate::recording::{CsAnnotationKind, CsLayerSummary, CsTranscriptionListener};
+use crate::recording::{
+    CsAnnotationKind, CsLayerSummary, CsTranscription, CsTranscriptionListener,
+};
 use crate::{CsError, CsLanguage};
 
 /// Shared process-wide slot for the lazily-created `RecordingController`.

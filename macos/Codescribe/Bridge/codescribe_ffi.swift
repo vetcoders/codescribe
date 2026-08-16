@@ -2257,6 +2257,11 @@ public protocol CodescribeHotkeysProtocol: AnyObject, Sendable {
     func isRecording() async  -> Bool
 
     /**
+     * Stable path of the last retained session WAV, if it exists.
+     */
+    func lastSessionAudioPath()  -> String?
+
+    /**
      * Forward a macOS sleep/wake boundary to the active recorder, if any.
      *
      * Querying this surface never constructs the shared controller. The host
@@ -2352,7 +2357,8 @@ public protocol CodescribeHotkeysProtocol: AnyObject, Sendable {
     func start() async throws
 
     /**
-     * Start the same toggle flow in the assistive lane for UI-initiated recording.
+     * Start the same toggle flow in the assistive lane. Overlay owns this
+     * route — the Agent composer mic is a separate, UI-initiated capture.
      */
     func startAssistiveRecording() async throws
 
@@ -2370,6 +2376,12 @@ public protocol CodescribeHotkeysProtocol: AnyObject, Sendable {
      * Stop the active legacy-controller recording flow, if one is live.
      */
     func stopRecording() async throws
+
+    /**
+     * Overlay Retranscribe: `hq:` / `cloud:` prefixes pick the pass.
+     * Bare paths are a Full HQ file pass.
+     */
+    func transcribeFile(path: String) async throws  -> CsTranscription
 
     /**
      * Validate a candidate binding set WITHOUT persisting it. Returns every
@@ -2619,6 +2631,17 @@ open func isRecording()async  -> Bool  {
 }
 
     /**
+     * Stable path of the last retained session WAV, if it exists.
+     */
+open func lastSessionAudioPath() -> String?  {
+    return try!  FfiConverterOptionString.lift(try! rustCall() {
+    uniffi_codescribe_ffi_fn_method_codescribehotkeys_last_session_audio_path(
+            self.uniffiCloneHandle(),$0
+    )
+})
+}
+
+    /**
      * Forward a macOS sleep/wake boundary to the active recorder, if any.
      *
      * Querying this surface never constructs the shared controller. The host
@@ -2848,7 +2871,8 @@ open func start()async throws   {
 }
 
     /**
-     * Start the same toggle flow in the assistive lane for UI-initiated recording.
+     * Start the same toggle flow in the assistive lane. Overlay owns this
+     * route — the Agent composer mic is a separate, UI-initiated capture.
      */
 open func startAssistiveRecording()async throws   {
     return
@@ -2913,6 +2937,27 @@ open func stopRecording()async throws   {
             completeFunc: ffi_codescribe_ffi_rust_future_complete_void,
             freeFunc: ffi_codescribe_ffi_rust_future_free_void,
             liftFunc: { $0 },
+            errorHandler: FfiConverterTypeCsError_lift
+        )
+}
+
+    /**
+     * Overlay Retranscribe: `hq:` / `cloud:` prefixes pick the pass.
+     * Bare paths are a Full HQ file pass.
+     */
+open func transcribeFile(path: String)async throws  -> CsTranscription  {
+    return
+        try  await uniffiRustCallAsync(
+            rustFutureFunc: {
+                uniffi_codescribe_ffi_fn_method_codescribehotkeys_transcribe_file(
+                    self.uniffiCloneHandle(),
+                    FfiConverterString.lower(path)
+                )
+            },
+            pollFunc: ffi_codescribe_ffi_rust_future_poll_rust_buffer,
+            completeFunc: ffi_codescribe_ffi_rust_future_complete_rust_buffer,
+            freeFunc: ffi_codescribe_ffi_rust_future_free_rust_buffer,
+            liftFunc: FfiConverterTypeCsTranscription_lift,
             errorHandler: FfiConverterTypeCsError_lift
         )
 }
@@ -13489,6 +13534,9 @@ private let initializationResult: InitializationResult = {
     if (uniffi_codescribe_ffi_checksum_method_codescribehotkeys_is_recording() != 25239) {
         return InitializationResult.apiChecksumMismatch
     }
+    if (uniffi_codescribe_ffi_checksum_method_codescribehotkeys_last_session_audio_path() != 51069) {
+        return InitializationResult.apiChecksumMismatch
+    }
     if (uniffi_codescribe_ffi_checksum_method_codescribehotkeys_note_sleep_wake() != 35265) {
         return InitializationResult.apiChecksumMismatch
     }
@@ -13528,7 +13576,7 @@ private let initializationResult: InitializationResult = {
     if (uniffi_codescribe_ffi_checksum_method_codescribehotkeys_start() != 63389) {
         return InitializationResult.apiChecksumMismatch
     }
-    if (uniffi_codescribe_ffi_checksum_method_codescribehotkeys_start_assistive_recording() != 48629) {
+    if (uniffi_codescribe_ffi_checksum_method_codescribehotkeys_start_assistive_recording() != 39512) {
         return InitializationResult.apiChecksumMismatch
     }
     if (uniffi_codescribe_ffi_checksum_method_codescribehotkeys_start_recording() != 17686) {
@@ -13538,6 +13586,9 @@ private let initializationResult: InitializationResult = {
         return InitializationResult.apiChecksumMismatch
     }
     if (uniffi_codescribe_ffi_checksum_method_codescribehotkeys_stop_recording() != 38552) {
+        return InitializationResult.apiChecksumMismatch
+    }
+    if (uniffi_codescribe_ffi_checksum_method_codescribehotkeys_transcribe_file() != 38781) {
         return InitializationResult.apiChecksumMismatch
     }
     if (uniffi_codescribe_ffi_checksum_method_codescribehotkeys_validate_bindings() != 29971) {

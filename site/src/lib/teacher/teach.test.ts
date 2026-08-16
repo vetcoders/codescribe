@@ -19,7 +19,10 @@ test("proof take emits needs-attention and jargon lexicon hints", () => {
   assert.ok(report.whisper_errors_vs_human > 0);
 
   const joined = report.lexicon_hints
-    .map((hint) => `${hint.from_whisper.toLowerCase()}->${hint.to_human.toLowerCase()}`)
+    .map(
+      (hint) =>
+        `${hint.from_whisper.toLowerCase()}->${hint.to_human.toLowerCase()}`
+    )
     .join(" | ");
 
   const hasJargon = report.lexicon_hints.some((hint) => {

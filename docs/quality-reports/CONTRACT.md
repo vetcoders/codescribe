@@ -9,22 +9,22 @@ passes this handshake. A WER table is a footnote, never the throne.
 
 ## Identity
 
-| | |
-| --- | --- |
-| surface | `seal-atlas` |
-| engine | `the-engine/v1` |
-| primary key | `pcm_time` |
-| Voice Lab kind | `seal_atlas` |
+|                |                 |
+| -------------- | --------------- |
+| surface        | `seal-atlas`    |
+| engine         | `the-engine/v1` |
+| primary key    | `pcm_time`      |
+| Voice Lab kind | `seal_atlas`    |
 
 Required `<head>`:
 
 ```html
-<meta name="engine-contract" content="the-engine/v1"/>
-<meta name="quality-report-surface" content="seal-atlas"/>
+<meta name="engine-contract" content="the-engine/v1" />
+<meta name="quality-report-surface" content="seal-atlas" />
 <title>Seal Atlas — …</title>
 ```
 
-Title **must** contain `Seal Atlas` (or `seal-atlas`).  
+Title **must** contain `Seal Atlas` (or `seal-atlas`).
 `Codescribe Quality Report` is the retired Qube page. It may still be
 written as `quality/qube.{profile}.html`. It is not the report.
 
@@ -38,13 +38,13 @@ Voice Lab reads:
 
 Take 01 cards (labels may be PL or EN):
 
-| value | meaning |
-| --- | --- |
+| value   | meaning                           |
+| ------- | --------------------------------- |
 | `20/20` | word-grain words with ≥75% speech |
-| `11` | sealed spans |
-| `2` | spans with per-word pins |
-| `1` | clock-lie (span 2) |
-| `0.5` | Silero threshold |
+| `11`    | sealed spans                      |
+| `2`     | spans with per-word pins          |
+| `1`     | clock-lie (span 2)                |
+| `0.5`   | Silero threshold                  |
 
 A corpus atlas without a dump still emits these five `.stat` cards
 (values may be `n/a`). Missing the class is a handshake miss.
@@ -74,12 +74,12 @@ The HTML must say, in some language:
 
 ## Files corpus must write
 
-| path | kind | role |
-| --- | --- | --- |
-| `quality/seal-atlas.{profile}.html` | `seal_atlas` | **the** quality report |
-| `docs/quality-reports/seal-atlas.take01.html` | `seal_atlas` | gold take, never regenerated from WER |
-| `quality/qube.{profile}.html` | `quality_report` | retired scores surface, footnote |
-| `docs/THE_ENGINE_CONTRACT.md` + engine plate | `quality_contract` | doctrine, not a take |
+| path                                          | kind               | role                                  |
+| --------------------------------------------- | ------------------ | ------------------------------------- |
+| `quality/seal-atlas.{profile}.html`           | `seal_atlas`       | **the** quality report                |
+| `docs/quality-reports/seal-atlas.take01.html` | `seal_atlas`       | gold take, never regenerated from WER |
+| `quality/qube.{profile}.html`                 | `quality_report`   | retired scores surface, footnote      |
+| `docs/THE_ENGINE_CONTRACT.md` + engine plate  | `quality_contract` | doctrine, not a take                  |
 
 Destination the operator sees: `~/.vibecrafted/artifacts/vetcoders/codescribe`
 (or `$CODESCRIBE_ARTIFACTS_DIR`). If the atlas does not land there, Voice Lab

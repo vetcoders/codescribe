@@ -1,58 +1,164 @@
 <!DOCTYPE html>
 <html lang="en">
-<head>
-<meta charset="utf-8"/>
-<meta name="engine-contract" content="the-engine/v1"/>
-<meta name="quality-report-surface" content="seal-atlas"/>
-<title>THE ENGINE · quality-report contract</title>
-<style>
-:root { --bg:#0e1319; --panel:#151c25; --ink:#dae4ee; --mut:#8598ab; --line:#2a3644; --ok:#3fd6a0; --warn:#e0a33c; --lie:#e5584d; }
-body { margin:0; background:var(--bg); color:var(--ink); font:15px/1.55 "Avenir Next", system-ui, sans-serif; }
-main { max-width:880px; margin:0 auto; padding:28px 20px 60px; display:flex; flex-direction:column; gap:18px; }
-h1 { margin:0 0 6px; font-size:26px; }
-p { margin:0; color:var(--mut); max-width:70ch; }
-.stats { display:flex; flex-wrap:wrap; gap:10px; margin-top:14px; }
-.stat { background:var(--panel); border:1px solid var(--line); border-radius:6px; padding:8px 14px; }
-.stat b { display:block; font-size:20px; font-variant-numeric:tabular-nums; }
-.stat span { font-size:12px; color:var(--mut); text-transform:uppercase; letter-spacing:.06em; }
-section { background:var(--panel); border:1px solid var(--line); border-radius:8px; padding:16px 18px; }
-table { width:100%; border-collapse:collapse; font-size:14px; }
-th, td { text-align:left; padding:8px 6px; border-bottom:1px solid var(--line); vertical-align:top; }
-th { color:#93c5fd; width:28%; }
-code { color:#fecaca; }
-.forbidden { color:#fca5a5; }
-</style>
-</head>
-<body>
-<main>
-<header>
-<h1>THE ENGINE · quality-report contract</h1>
-<p>Place on the canvas is given by energy in time. Quality HTML is a Seal Atlas, not a WER table. Source of truth: <code>the-engine/v1</code>.</p>
-<div class="stats">
-<div class="stat"><b>pcm_time</b><span>primary key</span></div>
-<div class="stat"><b>3</b><span>finality bars</span></div>
-<div class="stat"><b>seal-atlas</b><span>required surface</span></div>
-<div class="stat"><b>proposal</b><span>HQ / Cloud / AI</span></div>
-</div>
-</header>
-<section>
-<h2>Three bars — not synonyms</h2>
-<table>
-<tr><th>utterance_final / committed</th><td>This layer finished its hypothesis. That layer is banned from further overwrite of this span. Not the document.</td></tr>
-<tr><th>utterance_sealed</th><td>Apple + Whisper + lexicon fused a Silero-bounded span. Record [sample_start, sample_end) is append-only.</td></tr>
-<tr><th>transcript_sealed</th><td>Session assembled. Automation hands down. Full HQ / Cloud may only propose a variant.</td></tr>
-</table>
-</section>
-<section>
-<h2>Atlas rules</h2>
-<ul>
-<li>One take, one PCM clock. Live dump + production Silero. Never a reconstructed timeline.</li>
-<li>Word-grain vs utterance-grain labeled. Per-word pins are real where they exist and not guaranteed.</li>
-<li>Clock-lie is a finding. Letters are interpolation, not measurement.</li>
-<li>Whisper is mapped backward onto the same clock. It does not hallucinate into silence.</li>
-</ul>
-<p class="forbidden">Forbidden: <code>rewrite_from_zero</code> · <code>reorder_spans</code> · <code>hallucinate_into_silence</code> · <code>full_file_in_automatic_pipeline</code> · <code>treat_whole_text_mutable_until_session_seal</code></p>
-</section>
-</main>
-</body>
+  <head>
+    <meta charset="utf-8" />
+    <meta name="engine-contract" content="the-engine/v1" />
+    <meta name="quality-report-surface" content="seal-atlas" />
+    <title>THE ENGINE · quality-report contract</title>
+    <style>
+      :root {
+        --bg: #0e1319;
+        --panel: #151c25;
+        --ink: #dae4ee;
+        --mut: #8598ab;
+        --line: #2a3644;
+        --ok: #3fd6a0;
+        --warn: #e0a33c;
+        --lie: #e5584d;
+      }
+      body {
+        margin: 0;
+        background: var(--bg);
+        color: var(--ink);
+        font: 15px/1.55 "Avenir Next", system-ui, sans-serif;
+      }
+      main {
+        max-width: 880px;
+        margin: 0 auto;
+        padding: 28px 20px 60px;
+        display: flex;
+        flex-direction: column;
+        gap: 18px;
+      }
+      h1 {
+        margin: 0 0 6px;
+        font-size: 26px;
+      }
+      p {
+        margin: 0;
+        color: var(--mut);
+        max-width: 70ch;
+      }
+      .stats {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 10px;
+        margin-top: 14px;
+      }
+      .stat {
+        background: var(--panel);
+        border: 1px solid var(--line);
+        border-radius: 6px;
+        padding: 8px 14px;
+      }
+      .stat b {
+        display: block;
+        font-size: 20px;
+        font-variant-numeric: tabular-nums;
+      }
+      .stat span {
+        font-size: 12px;
+        color: var(--mut);
+        text-transform: uppercase;
+        letter-spacing: 0.06em;
+      }
+      section {
+        background: var(--panel);
+        border: 1px solid var(--line);
+        border-radius: 8px;
+        padding: 16px 18px;
+      }
+      table {
+        width: 100%;
+        border-collapse: collapse;
+        font-size: 14px;
+      }
+      th,
+      td {
+        text-align: left;
+        padding: 8px 6px;
+        border-bottom: 1px solid var(--line);
+        vertical-align: top;
+      }
+      th {
+        color: #93c5fd;
+        width: 28%;
+      }
+      code {
+        color: #fecaca;
+      }
+      .forbidden {
+        color: #fca5a5;
+      }
+    </style>
+  </head>
+  <body>
+    <main>
+      <header>
+        <h1>THE ENGINE · quality-report contract</h1>
+        <p>
+          Place on the canvas is given by energy in time. Quality HTML is a Seal
+          Atlas, not a WER table. Source of truth: <code>the-engine/v1</code>.
+        </p>
+        <div class="stats">
+          <div class="stat"><b>pcm_time</b><span>primary key</span></div>
+          <div class="stat"><b>3</b><span>finality bars</span></div>
+          <div class="stat"><b>seal-atlas</b><span>required surface</span></div>
+          <div class="stat"><b>proposal</b><span>HQ / Cloud / AI</span></div>
+        </div>
+      </header>
+      <section>
+        <h2>Three bars — not synonyms</h2>
+        <table>
+          <tr>
+            <th>utterance_final / committed</th>
+            <td>
+              This layer finished its hypothesis. That layer is banned from
+              further overwrite of this span. Not the document.
+            </td>
+          </tr>
+          <tr>
+            <th>utterance_sealed</th>
+            <td>
+              Apple + Whisper + lexicon fused a Silero-bounded span. Record
+              [sample_start, sample_end) is append-only.
+            </td>
+          </tr>
+          <tr>
+            <th>transcript_sealed</th>
+            <td>
+              Session assembled. Automation hands down. Full HQ / Cloud may only
+              propose a variant.
+            </td>
+          </tr>
+        </table>
+      </section>
+      <section>
+        <h2>Atlas rules</h2>
+        <ul>
+          <li>
+            One take, one PCM clock. Live dump + production Silero. Never a
+            reconstructed timeline.
+          </li>
+          <li>
+            Word-grain vs utterance-grain labeled. Per-word pins are real where
+            they exist and not guaranteed.
+          </li>
+          <li>
+            Clock-lie is a finding. Letters are interpolation, not measurement.
+          </li>
+          <li>
+            Whisper is mapped backward onto the same clock. It does not
+            hallucinate into silence.
+          </li>
+        </ul>
+        <p class="forbidden">
+          Forbidden: <code>rewrite_from_zero</code> ·
+          <code>reorder_spans</code> · <code>hallucinate_into_silence</code> ·
+          <code>full_file_in_automatic_pipeline</code> ·
+          <code>treat_whole_text_mutable_until_session_seal</code>
+        </p>
+      </section>
+    </main>
+  </body>
 </html>

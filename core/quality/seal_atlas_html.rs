@@ -46,7 +46,9 @@ impl Default for SealAtlasPage {
     fn default() -> Self {
         Self {
             title: "Seal Atlas".into(),
-            lede: "One take, one PCM clock. Words from SealedSpan.words — not from the final string.".into(),
+            lede:
+                "One take, one PCM clock. Words from SealedSpan.words — not from the final string."
+                    .into(),
             stats: SealAtlasStats::default(),
             findings: Vec::new(),
             dump_present: false,
@@ -154,10 +156,10 @@ code {{ color:#fecaca; }}
 
 fn html_escape(value: &str) -> String {
     value
-        .replace('&', "&")
-        .replace('<', "<")
-        .replace('>', ">")
-        .replace('"', """)
+        .replace('&', "&amp;")
+        .replace('<', "&lt;")
+        .replace('>', "&gt;")
+        .replace('"', "&quot;")
 }
 
 #[cfg(test)]
@@ -176,5 +178,20 @@ mod tests {
         assert!(html.contains("Seal Atlas — profile apple-layer0"));
         assert!(!html.contains("Avg WER"));
         assert!(!html.contains("Codescribe Quality Report"));
+    }
+
+    #[test]
+    fn renderer_escapes_page_content() {
+        let html = render_seal_atlas_html(&SealAtlasPage {
+            title: "Seal Atlas <take & one>".into(),
+            lede: "\"measured\" <script>".into(),
+            findings: vec!["clock < pcm & words".into()],
+            ..SealAtlasPage::default()
+        });
+
+        assert!(html.contains("Seal Atlas &lt;take &amp; one&gt;"));
+        assert!(html.contains("&quot;measured&quot; &lt;script&gt;"));
+        assert!(html.contains("clock &lt; pcm &amp; words"));
+        assert!(!html.contains("<script>"));
     }
 }

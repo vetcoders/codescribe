@@ -18,14 +18,14 @@
 
 ## Intent → route
 
-| Intent | Typical gesture | Route |
-|---|---|---|
-| `AgentVoice` | Double Right Option / assistive hold | `AgentComposer` |
-| `OverlayToAgent` | overlay **To Agent** | `AgentComposer` |
-| `OrientDictation` | Hold Fn / Globe | `ClipboardPaste` if auto-paste + latched foreign app; else `OrientCanvas` |
-| `OrientFormat` | Double Left Option | same as dictation |
-| `OverlayInsert` | overlay Insert / defer | `ClipboardPaste` if the latched target is a foreign app; `DeferredInsert` if the latched target (or the caret) is Codescribe |
-| `NotesOnly` | save-only notes | `ArchiveOnly` |
+| Intent            | Typical gesture                      | Route                                                                                                                        |
+| ----------------- | ------------------------------------ | ---------------------------------------------------------------------------------------------------------------------------- |
+| `AgentVoice`      | Double Right Option / assistive hold | `AgentComposer`                                                                                                              |
+| `OverlayToAgent`  | overlay **To Agent**                 | `AgentComposer`                                                                                                              |
+| `OrientDictation` | Hold Fn / Globe                      | `ClipboardPaste` if auto-paste + latched foreign app; else `OrientCanvas`                                                    |
+| `OrientFormat`    | Double Left Option                   | same as dictation                                                                                                            |
+| `OverlayInsert`   | overlay Insert / defer               | `ClipboardPaste` if the latched target is a foreign app; `DeferredInsert` if the latched target (or the caret) is Codescribe |
+| `NotesOnly`       | save-only notes                      | `ArchiveOnly`                                                                                                                |
 
 Vetoes that keep Orient off the paste gun: empty / no-speech, live-stream
 session, quality-commit pending, latched target is Codescribe.

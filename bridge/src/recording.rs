@@ -337,14 +337,10 @@ async fn transcribe_file_cloud(path: String) -> Result<CsTranscription, CsError>
             msg: "Cloud pass needs STT_ENDPOINT and STT_API_KEY".to_string(),
         });
     };
-    let verdict = codescribe::client::transcribe_cloud(
-        std::path::Path::new(&path),
-        None,
-        &endpoint,
-        &key,
-    )
-    .await
-    .map_err(|e| CsError::Recording { msg: e.to_string() })?;
+    let verdict =
+        codescribe::client::transcribe_cloud(std::path::Path::new(&path), None, &endpoint, &key)
+            .await
+            .map_err(|e| CsError::Recording { msg: e.to_string() })?;
     Ok(CsTranscription {
         text: verdict.text,
         language: "und".to_string(),
