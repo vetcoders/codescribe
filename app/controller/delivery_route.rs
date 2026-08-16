@@ -25,7 +25,8 @@ pub enum DeliveryRoute {
     /// Auto-paste / overlay Insert into the *latched session target*.
     /// Focus at stop time is not the authority.
     ClipboardPaste,
-    /// Armed for a later explicit Paste Here.
+    /// Armed for a later explicit Paste Here. Constructed when the overlay
+    /// Insert / defer click refuses a synthetic paste into Codescribe.
     DeferredInsert,
     /// History / notes / RAW only — no user-visible delivery.
     ArchiveOnly,
@@ -60,7 +61,7 @@ pub enum DeliveryIntent {
     AgentVoice,
     /// Explicit overlay "To Agent" after any session.
     OverlayToAgent,
-    /// Explicit overlay Insert / Paste Here.
+    /// Explicit overlay Insert / Paste Here. Frozen at the click, not at stop.
     OverlayInsert,
     /// Notes-only / save-only.
     NotesOnly,
@@ -123,6 +124,23 @@ pub fn target_is_self_app(name: &str) -> bool {
     name.trim().eq_ignore_ascii_case("codescribe")
 }
 
+/// Facts an overlay Insert / defer click may feed the throne.
+///
+/// Focus-at-click is not an input. `latched_target_is_self` is true when the
+/// recorded target is Codescribe, or when Swift already knows the caret is
+/// still inside our chrome (`defer_text_from_overlay`).
+pub fn overlay_insert_facts(has_text: bool, latched_target_is_self: bool) -> DeliveryFacts {
+    DeliveryFacts {
+        has_text,
+        no_speech: false,
+        auto_paste_enabled: false,
+        overlay_enabled: true,
+        live_stream_session: false,
+        commit_required: false,
+        latched_target_is_self,
+    }
+}
+
 /// Single destination function. Advisors (quality gate, overlay flag, auto-paste
 /// toggle) may veto a paste; they may not pick a different throne.
 pub fn resolve_delivery_route(intent: DeliveryIntent, facts: DeliveryFacts) -> DeliveryDecision {
@@ -146,11 +164,24 @@ pub fn resolve_delivery_route(intent: DeliveryIntent, facts: DeliveryFacts) -> D
             route: DeliveryRoute::ArchiveOnly,
             reason: "notes_save_only",
         },
-        DeliveryIntent::OverlayInsert => DeliveryDecision {
-            route: DeliveryRoute::ClipboardPaste,
-            reason: "explicit_insert",
-        },
+        DeliveryIntent::OverlayInsert => overlay_insert_route(facts),
         DeliveryIntent::OrientDictation | DeliveryIntent::OrientFormat => orient_route(facts),
+    }
+}
+
+/// Explicit overlay click. Orient vetoes (live stream, quality commit) do not
+/// apply — the user asked to insert *now*. Codescribe as the latched target
+/// still refuses Cmd+V into ourselves.
+fn overlay_insert_route(facts: DeliveryFacts) -> DeliveryDecision {
+    if facts.latched_target_is_self {
+        return DeliveryDecision {
+            route: DeliveryRoute::DeferredInsert,
+            reason: "refuse_paste_into_self",
+        };
+    }
+    DeliveryDecision {
+        route: DeliveryRoute::ClipboardPaste,
+        reason: "explicit_insert",
     }
 }
 
@@ -320,6 +351,51 @@ mod tests {
         );
         assert_eq!(live.route, DeliveryRoute::OrientCanvas);
         assert_eq!(live.reason, "live_stream_owns_canvas");
+    }
+
+    #[test]
+    fn overlay_insert_to_foreign_app_is_clipboard_paste() {
+        let decision = resolve_delivery_route(DeliveryIntent::OverlayInsert, facts(|_| {}));
+        assert_eq!(decision.route, DeliveryRoute::ClipboardPaste);
+        assert_eq!(decision.reason, "explicit_insert");
+        assert!(decision.route.posts_synthetic_paste());
+    }
+
+    #[test]
+    fn overlay_insert_into_self_is_deferred() {
+        let decision = resolve_delivery_route(
+            DeliveryIntent::OverlayInsert,
+            facts(|f| {
+                f.latched_target_is_self = true;
+                f.auto_paste_enabled = true;
+            }),
+        );
+        assert_eq!(decision.route, DeliveryRoute::DeferredInsert);
+        assert_eq!(decision.reason, "refuse_paste_into_self");
+        assert!(!decision.route.posts_synthetic_paste());
+    }
+
+    #[test]
+    fn overlay_insert_ignores_live_stream_and_commit_vetoes() {
+        let decision = resolve_delivery_route(
+            DeliveryIntent::OverlayInsert,
+            facts(|f| {
+                f.live_stream_session = true;
+                f.commit_required = true;
+            }),
+        );
+        assert_eq!(decision.route, DeliveryRoute::ClipboardPaste);
+        assert_eq!(decision.reason, "explicit_insert");
+    }
+
+    #[test]
+    fn overlay_insert_facts_are_the_click_constructor() {
+        let click = overlay_insert_facts(true, true);
+        assert!(!click.auto_paste_enabled);
+        assert!(click.overlay_enabled);
+        assert!(click.latched_target_is_self);
+        let decision = resolve_delivery_route(DeliveryIntent::OverlayInsert, click);
+        assert_eq!(decision.route, DeliveryRoute::DeferredInsert);
     }
 
     #[test]
