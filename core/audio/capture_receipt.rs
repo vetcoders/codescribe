@@ -32,6 +32,20 @@ pub const CLIP_ABS: f32 = 0.99;
 
 static LAST_RECEIPT: OnceLock<Mutex<Option<CaptureLevelReceipt>>> = OnceLock::new();
 static LAST_OPEN_PATH: OnceLock<Mutex<Option<CapturePathMeta>>> = OnceLock::new();
+static SESSION_ENERGY: OnceLock<Mutex<SessionEnergyClock>> = OnceLock::new();
+
+/// One capture hop on the session PCM axis. Intensity lives here, not on tokens.
+#[derive(Debug, Clone, Copy)]
+struct EnergyHop {
+    sample_start: u64,
+    sample_end: u64,
+    rms: f32,
+}
+
+#[derive(Debug, Default)]
+struct SessionEnergyClock {
+    hops: Vec<EnergyHop>,
+}
 
 fn last_receipt_slot() -> &'static Mutex<Option<CaptureLevelReceipt>> {
     LAST_RECEIPT.get_or_init(|| Mutex::new(None))
@@ -39,6 +53,62 @@ fn last_receipt_slot() -> &'static Mutex<Option<CaptureLevelReceipt>> {
 
 fn last_open_path_slot() -> &'static Mutex<Option<CapturePathMeta>> {
     LAST_OPEN_PATH.get_or_init(|| Mutex::new(None))
+}
+
+fn session_energy_slot() -> &'static Mutex<SessionEnergyClock> {
+    SESSION_ENERGY.get_or_init(|| Mutex::new(SessionEnergyClock::default()))
+}
+
+/// Open a new capture epoch's energy ladder. Call at live-session start only.
+pub fn begin_session_energy_clock() {
+    *session_energy_slot()
+        .lock()
+        .unwrap_or_else(|e| e.into_inner()) = SessionEnergyClock::default();
+}
+
+fn record_session_energy_hop(sample_start: u64, sample_end: u64, rms: f32) {
+    if sample_end <= sample_start || !rms.is_finite() || rms < 0.0 {
+        return;
+    }
+    session_energy_slot()
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .hops
+        .push(EnergyHop {
+            sample_start,
+            sample_end,
+            rms,
+        });
+}
+
+/// Mean RMS of hops overlapping `[sample_start, sample_end)`, as dBFS.
+///
+/// Missing hops, inverted ranges, or a silent window return `None`. This is
+/// intensity on the PCM clock — not a confidence score.
+pub fn session_energy_db(sample_start: u64, sample_end: u64) -> Option<f32> {
+    if sample_end <= sample_start {
+        return None;
+    }
+    let hops = session_energy_slot()
+        .lock()
+        .unwrap_or_else(|e| e.into_inner());
+    let mut weighted = 0.0_f64;
+    let mut covered = 0.0_f64;
+    for hop in &hops.hops {
+        let lo = hop.sample_start.max(sample_start);
+        let hi = hop.sample_end.min(sample_end);
+        if hi <= lo {
+            continue;
+        }
+        let width = (hi - lo) as f64;
+        weighted += f64::from(hop.rms) * width;
+        covered += width;
+    }
+    if covered <= 0.0 {
+        return None;
+    }
+    let db = linear_to_db((weighted / covered) as f32);
+    db.is_finite().then_some(db)
 }
 
 /// Remember the live capture path (device / rate / channels) without a new TCC prompt.
@@ -195,7 +265,9 @@ impl CaptureLevelAccumulator {
             sum_sq += f64::from(x) * f64::from(x);
         }
         let rms = (sum_sq / samples.len() as f64).sqrt() as f32;
+        let sample_start = self.sample_count;
         self.sample_count += samples.len() as u64;
+        record_session_energy_hop(sample_start, self.sample_count, rms);
         self.digital_zero_samples += zeros;
         self.clipping_samples += clips;
         if peak > self.peak_linear {
@@ -523,5 +595,23 @@ mod tests {
             !warning_is_user_terminal(CAPTURE_LEVEL_LOW_CODE),
             "emitting the WARN must not change the terminal class"
         );
+    }
+
+    #[test]
+    fn session_energy_db_is_pcm_range_intensity() {
+        begin_session_energy_clock();
+        let mut acc = CaptureLevelAccumulator::new();
+        acc.push_samples(&vec![0.0; 160]);
+        acc.push_samples(&vec![0.1; 160]);
+        acc.push_samples(&vec![0.0; 160]);
+        assert!(
+            session_energy_db(0, 160).is_none(),
+            "digital-zero hops have no finite dBFS"
+        );
+        let speech = session_energy_db(160, 320).expect("speech hop");
+        assert!(speech.is_finite());
+        assert!(session_energy_db(480, 640).is_none());
+        begin_session_energy_clock();
+        assert!(session_energy_db(160, 320).is_none());
     }
 }

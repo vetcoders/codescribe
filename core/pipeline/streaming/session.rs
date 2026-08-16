@@ -14,7 +14,8 @@ use tracing::{debug, error, info, warn};
 
 use crate::asr_session::recorder::{Layer1Decision, RecorderLifecycleEvents};
 use crate::audio::capture_receipt::{
-    CaptureLevelAccumulator, CapturePathMeta, emit_capture_level_receipt,
+    CaptureLevelAccumulator, CapturePathMeta, begin_session_energy_clock,
+    emit_capture_level_receipt,
 };
 use crate::audio::chunker::{SpeechEvent, SpeechSession};
 use crate::pipeline::contracts::{
@@ -558,6 +559,7 @@ pub(crate) async fn vad_transcription_session(
     info!("Transcription session started (event-based pipeline)");
     let session_id = uuid::Uuid::new_v4().to_string();
     let mut capture_level = CaptureLevelAccumulator::new();
+    begin_session_energy_clock();
 
     let mut session = if let Some(sec) = utterance_silence_sec {
         SpeechSession::new_utterance_with_silence(sample_rate, sec)

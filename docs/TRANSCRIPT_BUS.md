@@ -30,6 +30,15 @@ Each line is one JSON object with:
 - `audio_start_seconds`, `audio_end_seconds`
 - clean draft or sealed `text`, structured `segments`, optional
   `pipeline_session_id`
+- `words`: PCM-pinned spans (`text`, `sample_start`, `sample_end`, optional
+  `energy_db`, `grain`). `grain` is `word` when the engine supplied pins and
+  `utterance` when the span is the commit-to-commit window. Intensity is the
+  overlap-weighted capture RMS in dBFS for that sample range. Overlay live
+  text is not a word source.
+
+`transcript_sealed` inherits the draft ledger's sample range, segments, and
+words. A controller seal with no prior drafts stays honest: times and words
+are omitted.
 
 Statuses are `session_started`, `utterance_draft`, `utterance_revised`, and
 `transcript_sealed`. A revision keeps the original utterance identity.
