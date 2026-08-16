@@ -24,15 +24,22 @@
 | `OverlayToAgent` | overlay **To Agent** | `AgentComposer` |
 | `OrientDictation` | Hold Fn / Globe | `ClipboardPaste` if auto-paste + latched foreign app; else `OrientCanvas` |
 | `OrientFormat` | Double Left Option | same as dictation |
-| `OverlayInsert` | overlay Insert | `ClipboardPaste` (fail-closed to copy / Paste Here) |
+| `OverlayInsert` | overlay Insert / defer | `ClipboardPaste` if the latched target is a foreign app; `DeferredInsert` if the latched target (or the caret) is Codescribe |
 | `NotesOnly` | save-only notes | `ArchiveOnly` |
 
 Vetoes that keep Orient off the paste gun: empty / no-speech, live-stream
 session, quality-commit pending, latched target is Codescribe.
 
+Explicit overlay clicks do **not** inherit the live-stream or quality-commit
+vetoes. The user asked to insert now. Codescribe as the latched target still
+refuses Cmd+V into ourselves and arms Paste Here instead.
+
+`paste_text_from_overlay` and `defer_text_from_overlay` consult
+`resolve_delivery_route`. They do not pick a destination on their own.
+
 ## Telemetry
 
-One INFO line per stop / To Agent:
+One INFO line per stop / To Agent / overlay Insert / defer:
 
 ```text
 delivery_route: intent=orient_dictation route=clipboard_paste reason=auto_paste_to_latched_target target=Ghostty

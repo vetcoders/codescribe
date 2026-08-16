@@ -66,7 +66,12 @@ pub enum RelayLayer {
 
 /// Machine-readable lock. Quality HTML and corpus JSON must serialize this
 /// object, not a free-form paragraph an agent can paraphrase.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+///
+/// Serialize-only: the lock lives as a `const` with `&'static` slices.
+/// serde cannot `Deserialize` those borrows, and nothing in the tree
+/// reads this type back from JSON — the compile-time constant is the
+/// source of truth.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct EngineContract {
     pub id: &'static str,
     pub primary_key: &'static str,

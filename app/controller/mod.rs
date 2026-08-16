@@ -101,7 +101,7 @@ use assistive_delivery::{
 };
 use delivery_route::{
     DeliveryFacts, DeliveryIntent, DeliveryRoute, delivery_intent_from_session,
-    format_delivery_route_line, resolve_delivery_route, target_is_self_app,
+    format_delivery_route_line, overlay_insert_facts, resolve_delivery_route, target_is_self_app,
 };
 pub(crate) use final_pass::{
     FinalPassAction, FinalPassRoutingMode, FinalPassStages, SmartTailGapSource, StopPathBudget,
@@ -910,16 +910,30 @@ impl RecordingController {
         self.pre_overlay_frontmost_app.read().await.clone()
     }
 
-    /// Paste user-edited overlay text through the same controller-owned delivery
-    /// path as automatic dictation delivery: restore the pre-overlay target app,
-    /// apply transcript tagging config, then synthesize Cmd+V via clipboard.
+    /// Paste user-edited overlay text through the delivery throne, then restore
+    /// the latched target and synthesize Cmd+V via clipboard.
     ///
-    /// Delivery is fail-closed: Cmd+V is posted only when the runtime frontmost
-    /// app exactly matches the latched target and Accessibility permits event
-    /// posting. Every unconfirmed case becomes a tagged clipboard copy.
+    /// `resolve_delivery_route(OverlayInsert)` picks the destination. Codescribe
+    /// as the latched target arms Paste Here instead of pasting into ourselves.
+    /// Otherwise delivery is fail-closed: Cmd+V is posted only when the runtime
+    /// frontmost app exactly matches the latched target and Accessibility
+    /// permits event posting. Every unconfirmed case becomes a tagged copy.
     pub async fn paste_text_from_overlay(&self, text: String) -> Result<OverlayPasteResult> {
         let trimmed = text.trim();
-        if trimmed.is_empty() {
+        let target_app = self.pre_overlay_frontmost_app.read().await.clone();
+        let intent = DeliveryIntent::OverlayInsert;
+        let decision = resolve_delivery_route(
+            intent,
+            overlay_insert_facts(
+                !trimmed.is_empty(),
+                target_app.as_deref().is_some_and(target_is_self_app),
+            ),
+        );
+        info!(
+            "{}",
+            format_delivery_route_line(intent, decision, target_app.as_deref())
+        );
+        if trimmed.is_empty() || decision.route == DeliveryRoute::ArchiveOnly {
             return Ok(OverlayPasteResult {
                 delivery: OverlayPasteDelivery::Noop,
                 target_app_name: None,
@@ -928,8 +942,12 @@ impl RecordingController {
                 deferred_insert_failure: None,
             });
         }
+        if decision.route == DeliveryRoute::DeferredInsert {
+            return self
+                .arm_overlay_text(trimmed, target_app, Some("Codescribe".to_string()))
+                .await;
+        }
 
-        let target_app = self.pre_overlay_frontmost_app.read().await.clone();
         if let Some(app_name) = target_app.as_deref() {
             let activated = activate_app_by_name(app_name);
             let focus_confirmed =
@@ -1035,20 +1053,15 @@ impl RecordingController {
         }
     }
 
-    /// Arm the edited overlay transcript without attempting target activation.
-    /// Used when the caret is known to still be inside Codescribe.
-    pub async fn defer_text_from_overlay(&self, text: String) -> Result<OverlayPasteResult> {
-        let trimmed = text.trim();
-        if trimmed.is_empty() {
-            return Ok(OverlayPasteResult {
-                delivery: OverlayPasteDelivery::Noop,
-                target_app_name: None,
-                frontmost_app_name: None,
-                deferred_insert_shortcut: None,
-                deferred_insert_failure: None,
-            });
-        }
-        let target_app = self.pre_overlay_frontmost_app.read().await.clone();
+    /// Arm tagged overlay text for Paste Here (or copy if that shortcut cannot
+    /// register). Shared by the throne's `DeferredInsert` verdict and by the
+    /// explicit defer click.
+    async fn arm_overlay_text(
+        &self,
+        trimmed: &str,
+        target_app: Option<String>,
+        frontmost_app_name: Option<String>,
+    ) -> Result<OverlayPasteResult> {
         let config = self.config.read().await.clone();
         let payload = maybe_wrap_transcript_for_delivery(trimmed, &config, "dictation");
         let mut deferred_insert_shortcut = None;
@@ -1062,10 +1075,37 @@ impl RecordingController {
         Ok(OverlayPasteResult {
             delivery,
             target_app_name: target_app,
-            frontmost_app_name: Some("Codescribe".to_string()),
+            frontmost_app_name,
             deferred_insert_shortcut,
             deferred_insert_failure,
         })
+    }
+
+    /// Arm the edited overlay transcript without attempting target activation.
+    /// Used when the caret is known to still be inside Codescribe.
+    pub async fn defer_text_from_overlay(&self, text: String) -> Result<OverlayPasteResult> {
+        let trimmed = text.trim();
+        let target_app = self.pre_overlay_frontmost_app.read().await.clone();
+        let intent = DeliveryIntent::OverlayInsert;
+        // This entry exists because Swift already knows the caret is inside
+        // Codescribe. That is a latched-self fact, not a focus-at-click fact.
+        let decision =
+            resolve_delivery_route(intent, overlay_insert_facts(!trimmed.is_empty(), true));
+        info!(
+            "{}",
+            format_delivery_route_line(intent, decision, target_app.as_deref())
+        );
+        if trimmed.is_empty() || decision.route == DeliveryRoute::ArchiveOnly {
+            return Ok(OverlayPasteResult {
+                delivery: OverlayPasteDelivery::Noop,
+                target_app_name: None,
+                frontmost_app_name: None,
+                deferred_insert_shortcut: None,
+                deferred_insert_failure: None,
+            });
+        }
+        self.arm_overlay_text(trimmed, target_app, Some("Codescribe".to_string()))
+            .await
     }
 
     /// Copy the tagged transcript to the clipboard without any synthetic paste.

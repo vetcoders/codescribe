@@ -138,8 +138,12 @@ fn word_sequence(text: &str) -> Vec<String> {
 }
 
 /// Which gesture ended the recording that is now up for auto-paste.
+/// Production stop-path now asks [`DeliveryFacts::auto_paste_enabled`]; this
+/// matrix stays as the test-visible predecessor so existing cases do not
+/// evaporate.
+#[cfg(test)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(super) enum AutoPasteTrigger {
+pub(crate) enum AutoPasteTrigger {
     /// Push-to-talk hold released.
     Hold,
     /// Double-tap of the left Option key.
@@ -148,8 +152,9 @@ pub(super) enum AutoPasteTrigger {
 
 /// Everything the auto-paste decision is allowed to depend on, gathered in one
 /// place so the policy stays a pure function of explicit state.
+#[cfg(test)]
 #[derive(Debug, Clone, Copy)]
-pub(super) struct AutoPastePolicyContext {
+pub(crate) struct AutoPastePolicyContext {
     pub trigger: AutoPasteTrigger,
     pub persisted_enabled: bool,
     pub overlay_enabled: bool,
@@ -166,7 +171,8 @@ pub(super) struct AutoPastePolicyContext {
 /// Every veto is independent and fail-closed: assistive sessions, no-speech and
 /// empty results, notes-only saves, live streaming sessions, and pending quality
 /// commits each suppress the paste on their own.
-pub(super) fn resolve_auto_paste_policy(context: AutoPastePolicyContext) -> bool {
+#[cfg(test)]
+pub(crate) fn resolve_auto_paste_policy(context: AutoPastePolicyContext) -> bool {
     // Trigger and presentation state deliberately do not fork policy. Keeping
     // the explicit matrix here makes that parity reviewable and testable.
     let persisted_policy = match (context.trigger, context.overlay_enabled) {
