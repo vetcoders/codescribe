@@ -1168,12 +1168,10 @@ async fn run_worker(args: WorkerArgs) -> Result<()> {
             sealed_spans: quality_report.entries.len().to_string(),
             ..SealAtlasStats::default()
         },
-        findings: vec![
-            format!(
-                "Qube scores (footnote) live at {}. Avg WER is not the live engine.",
-                qube_html
-            ),
-        ],
+        findings: vec![format!(
+            "Qube scores (footnote) live at {}. Avg WER is not the live engine.",
+            qube_html
+        )],
         dump_present: false,
     };
     atomic_write_private(

@@ -5,7 +5,6 @@ The locked quality-report / seal / relay contract lives in
 (`the-engine/v1`, `core/quality/engine_contract.rs`). This roadmap is the
 execution plan. Do not re-litigate the three bars here.
 
-
 **Codescribe STT engine — current state vs. target, sealed.**
 
 |           |                                                                                                                                             |

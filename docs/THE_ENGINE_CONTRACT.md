@@ -1,12 +1,12 @@
 # THE ENGINE — quality-report contract
 
-| | |
-| --- | --- |
-| id | `the-engine/v1` |
-| corpus schema | `codescribe-corpus-parity/v3` |
-| primary key | `pcm_time` |
-| source of truth | `core/quality/engine_contract.rs` |
-| surfaces | **Seal Atlas** in Voice Lab (`voice-lab` tab); gold HTML `docs/quality-reports/seal-atlas.take01.html` |
+|                 |                                                                                                        |
+| --------------- | ------------------------------------------------------------------------------------------------------ |
+| id              | `the-engine/v1`                                                                                        |
+| corpus schema   | `codescribe-corpus-parity/v3`                                                                          |
+| primary key     | `pcm_time`                                                                                             |
+| source of truth | `core/quality/engine_contract.rs`                                                                      |
+| surfaces        | **Seal Atlas** in Voice Lab (`voice-lab` tab); gold HTML `docs/quality-reports/seal-atlas.take01.html` |
 
 Do not re-derive this. If a sentence here disagrees with `ENGINE_CONTRACT` in Rust, the Rust constant wins and this file is wrong.
 
@@ -36,15 +36,15 @@ This is a band, not a queue of correctors. Ban is **per layer, per span**. The l
 
 ## Three bars — not synonyms
 
-| Bar | Means |
-| --- | --- |
-| `utterance_final` / committed | This layer finished its hypothesis for the fragment. That layer is banned from further overwrite of this span. Preview grey, committed bright. **Not the document.** |
-| `utterance_sealed` | Apple + Whisper + lexicon finished fusion for the Silero-bounded span. Record `[sample_start, sample_end)` becomes append-only and may start inline formatting. Order on the PCM axis is frozen. |
-| `transcript_sealed` | The whole session — tail and formatter included — was assembled into the document. Automation puts its hands down. Full HQ / Cloud may only propose a variant. |
+| Bar                           | Means                                                                                                                                                                                            |
+| ----------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| `utterance_final` / committed | This layer finished its hypothesis for the fragment. That layer is banned from further overwrite of this span. Preview grey, committed bright. **Not the document.**                             |
+| `utterance_sealed`            | Apple + Whisper + lexicon finished fusion for the Silero-bounded span. Record `[sample_start, sample_end)` becomes append-only and may start inline formatting. Order on the PCM axis is frozen. |
+| `transcript_sealed`           | The whole session — tail and formatter included — was assembled into the document. Automation puts its hands down. Full HQ / Cloud may only propose a variant.                                   |
 
 `committed` does **not** mean "this is already the document". It means: **this layer finished its work here; the next layer takes the same time slice.**
 
-## What is *not* true
+## What is _not_ true
 
 Before `transcript_sealed` the whole document is **not** mutable.
 
@@ -59,13 +59,13 @@ A first-wins final string is not enough. The real document is the ordered span l
 
 ## Quality-report column roles
 
-| Column | Role |
-| --- | --- |
-| `raw` / `live` | live hypothesis |
-| `post` / `layer1` | Whisper hole-fill |
-| `sealed` | sealed span |
-| `delivered` / `session` | session document |
-| `ai` / `cloud` / `hq` | `HumanTriggeredProposal` — WER against a proposal does not promote it to document |
+| Column                  | Role                                                                              |
+| ----------------------- | --------------------------------------------------------------------------------- |
+| `raw` / `live`          | live hypothesis                                                                   |
+| `post` / `layer1`       | Whisper hole-fill                                                                 |
+| `sealed`                | sealed span                                                                       |
+| `delivered` / `session` | session document                                                                  |
+| `ai` / `cloud` / `hq`   | `HumanTriggeredProposal` — WER against a proposal does not promote it to document |
 
 ## Forbidden (reports and agents)
 
@@ -91,8 +91,8 @@ HTML handshake (meta, `.stat` cards, lanes): [`docs/quality-reports/CONTRACT.md`
 2. **Production Silero.** Curve from the engine's embedded ONNX + default `VadConfig`, 32 ms chunks — `vad_atlas_probe`, not a toy VAD.
 3. **Words from the live dump.** `CODESCRIBE_SEAL_ATLAS_DUMP` after session-end seal. Never rebuilt from the final string.
 4. **Two grain classes, labeled.**
-   - *word-grain* — SFSpeech actually returned per-word pins (take 01: spans 3 and 9).
-   - *utterance-grain* — one “word” covering the whole Apple commit-to-commit window. Per-word payload is real where it exists and **not guaranteed**.
+   - _word-grain_ — SFSpeech actually returned per-word pins (take 01: spans 3 and 9).
+   - _utterance-grain_ — one “word” covering the whole Apple commit-to-commit window. Per-word payload is real where it exists and **not guaranteed**.
 5. **Clock-lie** (`clock-lie`) is a first-class finding. Span 2 of take 01: 41 characters pinned to 100 ms (410 chars/s). Physically impossible. Silero can still say “speech 100%” — the range is not the range of that speech. Same class as `seal window unresolved`.
 6. **Utterance-grain includes silence tails.** Span 8: 36% speech. The span range is the distance between Apple commits, not the speech outline. This is why W13-3B mints identity from Silero silence edges.
 7. **Letters = interpolation.** Grapheme ticks inside a word are an even split of the word range, drawn as such. Not a measurement. Forced-aligner would be required for real grapheme times — we do not pretend to have one.
@@ -122,4 +122,3 @@ private HTML under:
 A report that fails this handshake is invisible in the lab, whatever its WER.
 The gold take 01 HTML already satisfies it. Qube `Codescribe Quality Report`
 does not — that title is the thing we are retiring.
-

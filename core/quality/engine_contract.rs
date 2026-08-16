@@ -14,6 +14,9 @@ pub const CORPUS_REPORT_SCHEMA: &str = "codescribe-corpus-parity/v3";
 /// Stable id of the engine contract itself.
 pub const ENGINE_CONTRACT_ID: &str = "the-engine/v1";
 
+/// Path of the agent-facing prose lock, relative to the repo root.
+pub const ENGINE_CONTRACT_DOC: &str = "docs/THE_ENGINE_CONTRACT.md";
+
 /// Path of the HTML-surface contract, relative to the repo root.
 pub const QUALITY_HTML_CONTRACT_DOC: &str = "docs/quality-reports/CONTRACT.md";
 
@@ -58,14 +61,13 @@ pub fn validate_quality_html(html: &str) -> Vec<String> {
     }
     let wer_at = lowered.find("avg wer");
     let footnote_at = lowered.find("footnote");
-    if let Some(wer) = wer_at {
-        if footnote_at.map(|f| f < wer).unwrap_or(false) == false {
-            failures.push("Avg WER may only appear after a footnote marker".into());
-        }
+    if let Some(wer) = wer_at
+        && !footnote_at.map(|footnote| footnote < wer).unwrap_or(false)
+    {
+        failures.push("Avg WER may only appear after a footnote marker".into());
     }
     failures
 }
-
 
 /// What a quality report is allowed to treat as the document vs a proposal.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -478,7 +480,10 @@ mod tests {
         let body = std::fs::read_to_string(&path)
             .unwrap_or_else(|err| panic!("{} must exist: {err}", path.display()));
         let failures = validate_quality_html(&body);
-        assert!(failures.is_empty(), "gold take 01 failed handshake: {failures:?}");
+        assert!(
+            failures.is_empty(),
+            "gold take 01 failed handshake: {failures:?}"
+        );
     }
 
     #[test]
@@ -549,4 +554,3 @@ mod tests {
         );
     }
 }
-

@@ -48,7 +48,7 @@ utterance). If the Agent UI never published a selection (window never
 opened), the lane continues its bound conversation as before.
 
 **Delivery destination (operator contract 2026-08-15).** The hotkey picks the
-*intent*; it does not paste into the frontmost app. `resolve_delivery_route`
+_intent_; it does not paste into the frontmost app. `resolve_delivery_route`
 (`docs/DELIVERY_ROUTE.md`) is the only destination function:
 
 - Assistive hold → Agent composer (first-class message, never Cmd+V)

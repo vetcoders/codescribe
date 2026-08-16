@@ -86,7 +86,9 @@ export function tokenize(text: string): Token[] {
 export function alignWords(a: Token[], b: Token[]): AlignOp[] {
   const n = a.length;
   const m = b.length;
-  const dp: number[][] = Array.from({ length: n + 1 }, () => Array(m + 1).fill(0));
+  const dp: number[][] = Array.from({ length: n + 1 }, () =>
+    Array(m + 1).fill(0)
+  );
   for (let i = n - 1; i >= 0; i -= 1) {
     for (let j = m - 1; j >= 0; j -= 1) {
       dp[i]![j] =
@@ -245,7 +247,9 @@ export function teach(input: TeacherInput): TeacherReport {
             live_tokens: [liveToks[op.a]!.surface],
             whisper_tokens: [],
             human_tokens: [h.surface],
-            note: `Live«${liveToks[op.a]!.surface}» missed human«${h.surface}» which Whisper carried — Apple/live gap`,
+            note: `Live«${liveToks[op.a]!.surface}» missed human«${
+              h.surface
+            }» which Whisper carried — Apple/live gap`,
           });
         }
       } else if (op.kind === "insert_b") {
@@ -263,12 +267,17 @@ export function teach(input: TeacherInput): TeacherReport {
     }
   }
 
-  const hitRate = whisperErrors > 0 ? whisperErrorsAtLiveWeak / whisperErrors : null;
+  const hitRate =
+    whisperErrors > 0 ? whisperErrorsAtLiveWeak / whisperErrors : null;
   let thesisSummary: string;
   if (hitRate != null && hitRate >= 0.5) {
-    thesisSummary = `LIVE-WEAK × WHISPER-ERR co-locates ${whisperErrorsAtLiveWeak}/${whisperErrors} (${Math.round(hitRate * 100)}%). Valid Apple-gap≡Whisper-halu bet ONLY if live leg is Apple; candle-live is same-family baseline / lexicon harvest.`;
+    thesisSummary = `LIVE-WEAK × WHISPER-ERR co-locates ${whisperErrorsAtLiveWeak}/${whisperErrors} (${Math.round(
+      hitRate * 100
+    )}%). Valid Apple-gap≡Whisper-halu bet ONLY if live leg is Apple; candle-live is same-family baseline / lexicon harvest.`;
   } else if (hitRate != null) {
-    thesisSummary = `LIVE-WEAK × WHISPER-ERR co-locates only ${whisperErrorsAtLiveWeak}/${whisperErrors} (${Math.round(hitRate * 100)}%). Need more sessions, time-tagged gaps, or true Apple live leg (candle-live alone cannot falsify/prove the Apple bet).`;
+    thesisSummary = `LIVE-WEAK × WHISPER-ERR co-locates only ${whisperErrorsAtLiveWeak}/${whisperErrors} (${Math.round(
+      hitRate * 100
+    )}%). Need more sessions, time-tagged gaps, or true Apple live leg (candle-live alone cannot falsify/prove the Apple bet).`;
   } else if (!input.human) {
     thesisSummary = `No human ref — emitted ${attention.length} live×whisper attention spans for Needs attention UI. Add --human to score co-location; Apple bet still needs Apple live.`;
   } else {
@@ -283,7 +292,12 @@ export function teach(input: TeacherInput): TeacherReport {
   const deduped: LexiconHint[] = [];
   for (const hint of lexiconHints) {
     const last = deduped[deduped.length - 1];
-    if (last && last.from_whisper === hint.from_whisper && last.to_human === hint.to_human) continue;
+    if (
+      last &&
+      last.from_whisper === hint.from_whisper &&
+      last.to_human === hint.to_human
+    )
+      continue;
     deduped.push(hint);
   }
 
