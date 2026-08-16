@@ -125,8 +125,9 @@ pub struct CsSettings {
     /// `"whisper"`. `None` means the built-in auto policy. Written back via
     /// `update_config` with the same key (promoted → settings.json).
     pub stt_engine: Option<String>,
-    /// Final-pass routing (`FINAL_PASS_MODE`): `"always"` | `"smart"` | `"off"`.
-    /// `None` means Smart default. Written back via `update_config`.
+    /// Legacy stop-file-pass token (`FINAL_PASS_MODE`). Runtime ignores it
+    /// on stop; Settings no longer exposes Always/Smart/Off. Persist `off`
+    /// if a value must still be written.
     pub final_pass_mode: Option<String>,
     // ── LLM backend (base) ──
     pub llm_endpoint: Option<String>,
@@ -165,6 +166,15 @@ pub struct CsSettings {
     pub emit_words_max: Option<u64>,
     pub buffered_interim_sec: Option<f32>,
     pub backend_max_upload_mb: Option<u64>,
+    /// Product ASR lane (`CODESCRIBE_ASR_MODE`): `"apple_only"` |
+    /// `"local_power"` | `"cloud"`. Written back via `update_config`.
+    pub asr_mode: Option<String>,
+    /// Audio-egress consent (`CODESCRIBE_CLOUD_CONSENT`): `"granted"` |
+    /// `"denied"`. Cloud without `granted` resolves to Apple-only.
+    pub cloud_consent: Option<String>,
+    /// Libraxis gateway session-mint URL (`CODESCRIBE_ASR_GATEWAY_URL`).
+    /// Session mint, not the live WSS socket (`STT_ENDPOINT`).
+    pub asr_gateway_url: Option<String>,
 }
 
 /// Live, non-secret impact summary shown before a full local-data reset.
@@ -643,6 +653,21 @@ impl CodescribeConfig {
             backend_max_upload_mb: effective_settings_parse(
                 "BACKEND_MAX_UPLOAD_MB",
                 settings.backend_max_upload_mb,
+                &env_file,
+            ),
+            asr_mode: effective_settings_string(
+                "CODESCRIBE_ASR_MODE",
+                settings.asr_mode.clone(),
+                &env_file,
+            ),
+            cloud_consent: effective_settings_string(
+                "CODESCRIBE_CLOUD_CONSENT",
+                settings.cloud_consent.clone(),
+                &env_file,
+            ),
+            asr_gateway_url: effective_settings_string(
+                "CODESCRIBE_ASR_GATEWAY_URL",
+                settings.asr_gateway_url.clone(),
                 &env_file,
             ),
         }

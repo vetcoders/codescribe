@@ -12,8 +12,13 @@ import Foundation
 /// a visible caret badge.
 enum ConfigChangeBus {
   static let holdBadgeDidChange = Notification.Name("codescribe.config.holdBadgeDidChange")
+  static let servingStatusDidChange = Notification.Name("codescribe.servingStatusDidChange")
 
   static func postHoldBadgeChanged() {
     NotificationCenter.default.post(name: holdBadgeDidChange, object: nil)
+  }
+
+  static func postServingStatusChanged() {
+    NotificationCenter.default.post(name: servingStatusDidChange, object: nil)
   }
 }

@@ -54,14 +54,6 @@ struct KeysPanel: View {
       }
       .padding(.top, 11)
 
-      SettingsSectionLabel("Cloud STT endpoint")
-        .padding(.top, 22)
-      SttEndpointRow(
-        current: model.sttEndpoint,
-        onSave: { model.setSttEndpoint($0) }
-      )
-      .padding(.top, 11)
-
       HStack(spacing: 8) {
         Text("●").font(CSFont.mono(11, .medium)).foregroundStyle(CSColor.olive)
         Text("secrets live only in the Keychain — presence shown, value hidden")
@@ -466,11 +458,10 @@ struct WorkspaceRootsSection: View {
 
 // MARK: - Key row
 
-/// Editor for `STT_ENDPOINT` — the cloud speech-to-text base URL that pairs
-/// with the `STT_API_KEY` Keychain entry above. Until this row existed the
-/// endpoint was reachable only by hand-editing `~/.codescribe/.env`, so the
-/// key had a Settings surface while its companion endpoint did not.
-private struct SttEndpointRow: View {
+/// Editor for `STT_ENDPOINT` — the live WSS socket mapper (Libraxis multipart
+/// URL → `wss://…/v1/audio/transcribe`). The API key stays in the Keychain
+/// on Providers. Persist key is unchanged.
+struct SttEndpointRow: View {
   let current: String
   let onSave: (String) -> Void
 
@@ -484,7 +475,7 @@ private struct SttEndpointRow: View {
     VStack(alignment: .leading, spacing: 10) {
       HStack(spacing: 10) {
         Circle().fill(accent.opacity(0.85)).frame(width: 7, height: 7)
-        Text("Cloud transcription endpoint")
+        Text("Live WSS socket")
           .font(CSFont.ui(13.5, .semibold))
           .foregroundStyle(CSColor.textBody)
         Text("STT_ENDPOINT")
@@ -535,7 +526,7 @@ private struct SttEndpointRow: View {
       }
 
       Text(
-        "Used by cloud reference lanes (quality reports, cloud STT). Not a secret — the API key above stays in the Keychain. Clearing the field restores the provider default; takes effect after restart."
+        "Live Cloud Layer-1 WebSocket mapper (Libraxis multipart URL → wss://…/v1/audio/transcribe). Not a secret — the API key stays in the Keychain on Providers. Clearing restores the provider default."
       )
       .font(CSFont.ui(11.5))
       .lineSpacing(2)
@@ -551,6 +542,92 @@ private struct SttEndpointRow: View {
       RoundedRectangle(cornerRadius: 11, style: .continuous)
         .strokeBorder(accent.opacity(0.18), lineWidth: 1)
     )
+    .onAppear {
+      if !loadedInitial {
+        draft = current
+        loadedInitial = true
+      }
+    }
+    .onChange(of: current) { _, newValue in
+      draft = newValue
+    }
+  }
+}
+
+/// Non-secret URL field used for the Cloud session-mint endpoint.
+struct SettingsUrlRow: View {
+  let title: String
+  let keyLabel: String
+  let current: String
+  let placeholder: String
+  let help: String
+  let onSave: (String) -> Void
+
+  @State private var draft: String = ""
+  @State private var loadedInitial = false
+
+  private var isSet: Bool { !current.isEmpty }
+  private var accent: Color { isSet ? CSColor.olive : CSColor.textFaint }
+
+  var body: some View {
+    VStack(alignment: .leading, spacing: 10) {
+      HStack(spacing: 10) {
+        Circle().fill(accent.opacity(0.85)).frame(width: 7, height: 7)
+        Text(title)
+          .font(CSFont.ui(13.5, .semibold))
+          .foregroundStyle(CSColor.textBody)
+        Text(keyLabel)
+          .font(CSFont.mono(10, .medium))
+          .foregroundStyle(CSColor.textFaint)
+        Spacer(minLength: 0)
+        Text(isSet ? "set" : "unset")
+          .font(CSFont.mono(10, .semibold))
+          .foregroundStyle(isSet ? CSColor.oliveLight : CSColor.textFaint)
+      }
+
+      HStack(spacing: 8) {
+        TextField(placeholder, text: $draft)
+          .textFieldStyle(.plain)
+          .font(CSFont.mono(12, .regular))
+          .foregroundStyle(CSColor.textBody)
+          .autocorrectionDisabled()
+          .padding(.horizontal, 11)
+          .padding(.vertical, 8)
+          .background(
+            RoundedRectangle(cornerRadius: CSRadius.input, style: .continuous)
+              .fill(CSColor.surfaceRaised(0.03))
+          )
+          .overlay(
+            RoundedRectangle(cornerRadius: CSRadius.input, style: .continuous)
+              .strokeBorder(CSColor.hairline(0.08), lineWidth: 1)
+          )
+          .onSubmit { onSave(draft) }
+
+        Button(action: { onSave(draft) }) {
+          Text("Save")
+            .font(CSFont.ui(12, .semibold))
+            .foregroundStyle(draft == current ? CSColor.textFaint : CSColor.chromeAccent)
+            .padding(.horizontal, 14)
+            .padding(.vertical, 8)
+            .background(
+              RoundedRectangle(cornerRadius: CSRadius.input, style: .continuous)
+                .fill(CSColor.chromeAccent.opacity(draft == current ? 0.06 : 0.14))
+            )
+            .overlay(
+              RoundedRectangle(cornerRadius: CSRadius.input, style: .continuous)
+                .strokeBorder(
+                  CSColor.chromeAccent.opacity(draft == current ? 0.1 : 0.28), lineWidth: 1)
+            )
+        }
+        .csFocusRing(cornerRadius: 8)
+        .disabled(draft == current)
+      }
+
+      Text(help)
+        .font(CSFont.ui(11.5))
+        .lineSpacing(2)
+        .foregroundStyle(CSColor.textMutedAlt)
+    }
     .onAppear {
       if !loadedInitial {
         draft = current

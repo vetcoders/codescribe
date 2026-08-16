@@ -19,6 +19,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- **Settings matches the live STT contract.** Dictation owns the ASR mode
+  picker (`apple_only` / `local_power` / `cloud`) and writes
+  `CODESCRIBE_ASR_MODE` plus explicit Cloud consent. Final pass is no longer
+  an engine control. Active STT is the last serving take (`local_apple` →
+  Apple). `STT_ENDPOINT` is the live WSS socket on Dictation. Retranscribe
+  toasts the real error, including a missing `last_session.wav`.
 - **Quality HTML is Seal Atlas.** `codescribe-corpus` writes
   `quality/seal-atlas.{profile}.html` as the report (handshake in
   `docs/quality-reports/CONTRACT.md`). Qube scores move to
