@@ -532,7 +532,8 @@ final class OverlayState: ObservableObject {
   /// Sealed committed utterances — engine must not rewrite these except via
   /// a human edit on the FINAL canvas. Highlighted on the live canvas.
   var listeningSealedText: String {
-    let sealed = committedUtterances
+    let sealed =
+      committedUtterances
       .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
       .filter { !$0.isEmpty }
       .joined(separator: " ")
@@ -617,7 +618,6 @@ final class OverlayState: ObservableObject {
       && !isRetranscribing
       && !isFormatting
       && (mode == .formatted || mode == .noSpeech)
-      && engine?.lastSessionAudioPath() != nil
   }
 
   var canRevert: Bool {
@@ -811,8 +811,14 @@ final class OverlayState: ObservableObject {
   }
 
   func retranscribe(pass: OverlayRetranscribePass) {
-    guard let engine, canRetranscribe else { return }
-    guard let audioPath = engine.lastSessionAudioPath() else { return }
+    guard let engine else { return }
+    guard !recording, !isRetranscribing, !isFormatting else { return }
+    guard mode == .formatted || mode == .noSpeech else { return }
+    guard let audioPath = engine.lastSessionAudioPath() else {
+      formatFailureStatus = "retranscribe — no last_session.wav"
+      showToast("No last_session.wav — record a take first")
+      return
+    }
     let source = activeText
     isRetranscribing = true
     cancelAutoHide()
@@ -833,8 +839,9 @@ final class OverlayState: ObservableObject {
         self.mode = .formatted
         self.cancelAutoHide()
       } catch {
-        self.formatFailureStatus = "retranscribe — \(pass.visibleName) failed"
-        self.showToast("Couldn't retranscribe")
+        let reason = error.localizedDescription
+        self.formatFailureStatus = "retranscribe — \(pass.visibleName) failed: \(reason)"
+        self.showToast("Couldn't retranscribe — \(reason)")
       }
     }
   }
@@ -870,6 +877,7 @@ final class OverlayState: ObservableObject {
       recording = false
       isFinalPass = false
       finalizeTranscript()  // clears `transcribing` as it flips to `.formatted`
+      ConfigChangeBus.postServingStatusChanged()
     } catch {
       presentTerminalError(
         message: "Couldn't finalize transcript: \(error)",
@@ -1262,6 +1270,7 @@ final class OverlayState: ObservableObject {
     isFinalPass = false
     freezeCaptureClock()
     finalizeTranscript()
+    ConfigChangeBus.postServingStatusChanged()
   }
 
   /// Native hold-release / toggle stop: the controller entered `Busy` (final
@@ -2231,21 +2240,10 @@ final class ControllerDictationEngine: DictationEngine {
     try await hotkeys.sendAssistiveTranscript(text: text)
   }
   func transcribeFile(path: String) async throws -> CsTranscription {
-    // Rust already owns hq:/cloud: on CodescribeHotkeys.transcribe_file.
-    // Swift bindings appear after `make app-bindings`; until then this
-    // seam stays compile-safe so OverlayState + tests still ship.
-    throw NSError(
-      domain: "CodescribeRetranscribe",
-      code: 1,
-      userInfo: [
-        NSLocalizedDescriptionKey:
-          "Retranscribe bindings regenerate on make app-bindings"
-      ]
-    )
+    try await hotkeys.transcribeFile(path: path)
   }
   func lastSessionAudioPath() -> String? {
-    let path = (config.configDir() as NSString).appendingPathComponent("last_session.wav")
-    return FileManager.default.fileExists(atPath: path) ? path : nil
+    hotkeys.lastSessionAudioPath()
   }
 }
 

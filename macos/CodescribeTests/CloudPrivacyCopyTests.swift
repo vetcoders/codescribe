@@ -7,6 +7,7 @@ import XCTest
 /// surface: if it drifts from the enforced behavior — consent-gated egress,
 /// Apple-only fallback, no vendor keys, content-free telemetry — these tests
 /// are the tripwire.
+@MainActor
 final class CloudPrivacyCopyTests: XCTestCase {
   /// The copy states the explicit-consent contract for audio egress.
   func testCopyStatesExplicitConsentBeforeEgress() {
@@ -57,6 +58,34 @@ final class CloudPrivacyCopyTests: XCTestCase {
 
   /// The telemetry promise is bounded exactly like the typed core telemetry:
   /// identifiers and counters, never audio or transcript content.
+  /// The picker is clickable and writes the promoted consent + mode keys.
+  /// Copy stays; this pins that Cloud is not display-only prose.
+  func testPickerPersistsCloudOnlyAfterExplicitGrant() {
+    var writes: [(String, String)] = []
+    var persisted = CsSettings.sample
+    persisted.asrMode = nil
+    persisted.cloudConsent = nil
+    let applyWrite: (String, String) -> Void = { key, value in
+      writes.append((key, value))
+      if key == "CODESCRIBE_ASR_MODE" { persisted.asrMode = value }
+      if key == "CODESCRIBE_CLOUD_CONSENT" { persisted.cloudConsent = value }
+    }
+    let model = SettingsViewModel(
+      engine: MockSettingsEngine(
+        settingsLoader: { persisted },
+        updateConfigManyObserver: { entries in
+          for entry in entries { applyWrite(entry.key, entry.value) }
+        },
+        updateConfigObserver: applyWrite
+      )
+    )
+    XCTAssertEqual(model.asrModeId, "apple_only")
+    model.setAsrMode("cloud")
+    XCTAssertTrue(writes.contains { $0 == ("CODESCRIBE_CLOUD_CONSENT", "granted") })
+    XCTAssertTrue(writes.contains { $0 == ("CODESCRIBE_ASR_MODE", "cloud") })
+    XCTAssertEqual(model.asrModeId, "cloud")
+  }
+
   func testTelemetryCopyExcludesContent() {
     XCTAssertTrue(CloudPrivacyCopy.telemetry.contains("Never audio"))
     XCTAssertTrue(CloudPrivacyCopy.telemetry.contains("never transcript text"))

@@ -519,7 +519,10 @@ extension CsSettings {
     typingCps: nil,
     emitWordsMax: nil,
     bufferedInterimSec: nil,
-    backendMaxUploadMb: nil
+    backendMaxUploadMb: nil,
+    asrMode: nil,
+    cloudConsent: nil,
+    asrGatewayUrl: nil
   )
 
   static let samplePrompt =

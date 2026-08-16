@@ -1067,10 +1067,7 @@ final class SettingsTruthTests: XCTestCase {
     XCTAssertTrue(label.contains("Whisper"), "got \(label)")
     XCTAssertTrue(label.contains("fallback"), "got \(label)")
     XCTAssertFalse(label.contains("Apple"), "fallback must not show Apple: \(label)")
-    XCTAssertEqual(
-      formatActiveSTT(lastServing: fallback),
-      "Whisper (fallback) · Smart final pass · changed"
-    )
+    XCTAssertEqual(formatActiveSTT(lastServing: fallback), "Whisper (fallback)")
 
     model.lastServingVerdict = LastServingVerdict(
       engine: "local_apple",
@@ -1078,9 +1075,79 @@ final class SettingsTruthTests: XCTestCase {
       disposition: "unchanged",
       fallbackUsed: false
     )
-    XCTAssertEqual(
-      model.activeSTT,
-      "Apple on-device · Smart final pass · unchanged"
+    XCTAssertEqual(model.activeSTT, "Apple")
+    XCTAssertFalse(model.activeSTT.contains("Smart final pass"))
+    XCTAssertFalse(model.activeSTT.contains("Not yet served"))
+  }
+
+  func testActiveSTTRefreshesFromServingProviderOnDemand() {
+    var snapshot: LastServingVerdict? = nil
+    let model = SettingsViewModel(
+      engine: MockSettingsEngine(),
+      servingStatusProvider: { snapshot }
     )
+    XCTAssertEqual(model.activeSTT, "Not yet served")
+
+    snapshot = LastServingVerdict(
+      engine: "local_apple",
+      routingMode: "off",
+      disposition: nil,
+      fallbackUsed: false
+    )
+    model.refreshServingStatus()
+    XCTAssertEqual(model.activeSTT, "Apple")
+  }
+
+  func testAsrModePickerPersistsPromotedKeysAndRequiresCloudConsent() {
+    var writes: [(String, String)] = []
+    var persisted = CsSettings.sample
+    persisted.asrMode = "cloud"
+    persisted.cloudConsent = nil
+    let applyWrite: (String, String) -> Void = { key, value in
+      writes.append((key, value))
+      switch key {
+      case "CODESCRIBE_ASR_MODE": persisted.asrMode = value
+      case "CODESCRIBE_CLOUD_CONSENT": persisted.cloudConsent = value
+      case "CODESCRIBE_ASR_GATEWAY_URL": persisted.asrGatewayUrl = value
+      case "STT_ENDPOINT": persisted.sttEndpoint = value
+      default: break
+      }
+    }
+    let engine = MockSettingsEngine(
+      settingsLoader: { persisted },
+      updateConfigManyObserver: { entries in
+        for entry in entries { applyWrite(entry.key, entry.value) }
+      },
+      updateConfigObserver: applyWrite
+    )
+    let model = SettingsViewModel(engine: engine)
+    _ = EnginePanel(model: model)
+
+    XCTAssertEqual(model.asrModeId, "apple_only")
+    XCTAssertEqual(model.asrModeLabel, "Apple only")
+    XCTAssertFalse(model.cloudConsentGranted)
+
+    model.setAsrMode("local_power")
+    XCTAssertEqual(writes.last?.0, "CODESCRIBE_ASR_MODE")
+    XCTAssertEqual(writes.last?.1, "local_power")
+    XCTAssertEqual(model.asrModeId, "local_power")
+
+    model.setAsrMode("cloud")
+    XCTAssertEqual(
+      writes.suffix(2).map(\.0),
+      ["CODESCRIBE_CLOUD_CONSENT", "CODESCRIBE_ASR_MODE"]
+    )
+    XCTAssertEqual(writes.suffix(2).map(\.1), ["granted", "cloud"])
+    XCTAssertEqual(model.asrModeId, "cloud")
+    XCTAssertTrue(model.cloudConsentGranted)
+
+    model.setSttEndpoint("wss://asr.example/v1/audio/transcribe")
+    XCTAssertEqual(writes.last?.0, "STT_ENDPOINT")
+    model.setAsrGatewayUrl("https://gateway.example/session")
+    XCTAssertEqual(writes.last?.0, "CODESCRIBE_ASR_GATEWAY_URL")
+
+    model.setFinalPassMode("smart")
+    XCTAssertEqual(writes.last?.0, "FINAL_PASS_MODE")
+    XCTAssertEqual(writes.last?.1, "off")
   }
 }

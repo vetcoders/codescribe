@@ -37,6 +37,7 @@ private final class OverlayStateTestEngine: DictationEngine {
   var onAssistiveSend: (() -> Void)?
   var transcribedPaths: [String] = []
   var transcribedResult = "hq file pass transcript"
+  var transcribedError: Error?
   var lastAudioPath: String? = "/tmp/last_session.wav"
   var onTranscribe: (() -> Void)?
 
@@ -110,6 +111,7 @@ private final class OverlayStateTestEngine: DictationEngine {
   func transcribeFile(path: String) async throws -> CsTranscription {
     transcribedPaths.append(path)
     onTranscribe?()
+    if let transcribedError { throw transcribedError }
     return CsTranscription(text: transcribedResult, language: "pl")
   }
   func lastSessionAudioPath() -> String? { lastAudioPath }
@@ -223,6 +225,44 @@ final class OverlayStateTests: XCTestCase {
     XCTAssertEqual(state.formattedText, "full hq file pass")
     XCTAssertTrue(state.canRevert)
     XCTAssertEqual(state.mode, .formatted)
+  }
+
+  func testRetranscribeMissingWavToastsInsteadOfSilentReturn() {
+    let clock = OverlayStateTestClock()
+    let state = makeFinalizedState(clock: clock, text: "live draft")
+    let engine = OverlayStateTestEngine()
+    engine.lastAudioPath = nil
+    state.engine = engine
+    XCTAssertTrue(state.canRetranscribe)
+
+    state.retranscribe(pass: .fullHq)
+    XCTAssertTrue(engine.transcribedPaths.isEmpty)
+    XCTAssertEqual(state.toast, "No last_session.wav — record a take first")
+    XCTAssertEqual(state.formatFailureStatus, "retranscribe — no last_session.wav")
+  }
+
+  func testRetranscribeSurfacesEngineErrorInToast() async {
+    let clock = OverlayStateTestClock()
+    let state = makeFinalizedState(clock: clock, text: "live draft")
+    let engine = OverlayStateTestEngine()
+    engine.transcribedError = NSError(
+      domain: "Retranscribe",
+      code: 7,
+      userInfo: [NSLocalizedDescriptionKey: "Metal device lost"]
+    )
+    let called = expectation(description: "retranscribe-error")
+    engine.onTranscribe = { called.fulfill() }
+    state.engine = engine
+
+    state.retranscribe(pass: .fullHq)
+    await fulfillment(of: [called], timeout: 1)
+    await Task.yield()
+    XCTAssertEqual(engine.transcribedPaths, ["hq:/tmp/last_session.wav"])
+    XCTAssertEqual(state.toast, "Couldn't retranscribe — Metal device lost")
+    XCTAssertEqual(
+      state.formatFailureStatus,
+      "retranscribe — Full HQ file pass failed: Metal device lost"
+    )
   }
 
   func testTranscriptEditIsOptInUntilClick() {

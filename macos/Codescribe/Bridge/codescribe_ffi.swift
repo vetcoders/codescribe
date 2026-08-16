@@ -9365,8 +9365,9 @@ public struct CsSettings: Equatable, Hashable {
      */
     public var sttEngine: String?
     /**
-     * Final-pass routing (`FINAL_PASS_MODE`): `"always"` | `"smart"` | `"off"`.
-     * `None` means Smart default. Written back via `update_config`.
+     * Legacy stop-file-pass token (`FINAL_PASS_MODE`). Runtime ignores it
+     * on stop; Settings no longer exposes Always/Smart/Off. Persist `off`
+     * if a value must still be written.
      */
     public var finalPassMode: String?
     public var llmEndpoint: String?
@@ -9408,6 +9409,21 @@ public struct CsSettings: Equatable, Hashable {
     public var emitWordsMax: UInt64?
     public var bufferedInterimSec: Float?
     public var backendMaxUploadMb: UInt64?
+    /**
+     * Product ASR lane (`CODESCRIBE_ASR_MODE`): `"apple_only"` |
+     * `"local_power"` | `"cloud"`. Written back via `update_config`.
+     */
+    public var asrMode: String?
+    /**
+     * Audio-egress consent (`CODESCRIBE_CLOUD_CONSENT`): `"granted"` |
+     * `"denied"`. Cloud without `granted` resolves to Apple-only.
+     */
+    public var cloudConsent: String?
+    /**
+     * Libraxis gateway session-mint URL (`CODESCRIBE_ASR_GATEWAY_URL`).
+     * Session mint, not the live WSS socket (`STT_ENDPOINT`).
+     */
+    public var asrGatewayUrl: String?
 
     // Default memberwise initializers are never public by default, so we
     // declare one manually.
@@ -9432,8 +9448,9 @@ public struct CsSettings: Equatable, Hashable {
          * `update_config` with the same key (promoted → settings.json).
          */sttEngine: String?,
         /**
-         * Final-pass routing (`FINAL_PASS_MODE`): `"always"` | `"smart"` | `"off"`.
-         * `None` means Smart default. Written back via `update_config`.
+         * Legacy stop-file-pass token (`FINAL_PASS_MODE`). Runtime ignores it
+         * on stop; Settings no longer exposes Always/Smart/Off. Persist `off`
+         * if a value must still be written.
          */finalPassMode: String?, llmEndpoint: String?, restoreClipboard: Bool, restoreClipboardDelayMs: UInt64, startAtLogin: Bool, agentEnterSends: Bool, dumpAudioLogs: Bool, llmModel: String?, llmFormattingEndpoint: String?, llmFormattingModel: String?, llmAssistiveEndpoint: String?, llmAssistiveModel: String?,
         /**
          * Assistive/agent-lane provider identity (`LLM_ASSISTIVE_PROVIDER`):
@@ -9452,7 +9469,19 @@ public struct CsSettings: Equatable, Hashable {
          * `["~/.codescribe"]` so the Settings UI always shows the root the tool
          * will actually scan. Written back via `update_config` with the same key
          * (env-managed, NOT promoted).
-         */agentWorkspaceRoots: [String], bufferDelayMs: UInt64?, typingCps: Float?, emitWordsMax: UInt64?, bufferedInterimSec: Float?, backendMaxUploadMb: UInt64?) {
+         */agentWorkspaceRoots: [String], bufferDelayMs: UInt64?, typingCps: Float?, emitWordsMax: UInt64?, bufferedInterimSec: Float?, backendMaxUploadMb: UInt64?,
+        /**
+         * Product ASR lane (`CODESCRIBE_ASR_MODE`): `"apple_only"` |
+         * `"local_power"` | `"cloud"`. Written back via `update_config`.
+         */asrMode: String?,
+        /**
+         * Audio-egress consent (`CODESCRIBE_CLOUD_CONSENT`): `"granted"` |
+         * `"denied"`. Cloud without `granted` resolves to Apple-only.
+         */cloudConsent: String?,
+        /**
+         * Libraxis gateway session-mint URL (`CODESCRIBE_ASR_GATEWAY_URL`).
+         * Session mint, not the live WSS socket (`STT_ENDPOINT`).
+         */asrGatewayUrl: String?) {
         self.holdExclusive = holdExclusive
         self.holdArmModifier = holdArmModifier
         self.holdStartDelayMs = holdStartDelayMs
@@ -9509,6 +9538,9 @@ public struct CsSettings: Equatable, Hashable {
         self.emitWordsMax = emitWordsMax
         self.bufferedInterimSec = bufferedInterimSec
         self.backendMaxUploadMb = backendMaxUploadMb
+        self.asrMode = asrMode
+        self.cloudConsent = cloudConsent
+        self.asrGatewayUrl = asrGatewayUrl
     }
 
 
@@ -9580,7 +9612,10 @@ public struct FfiConverterTypeCsSettings: FfiConverterRustBuffer {
                 typingCps: FfiConverterOptionFloat.read(from: &buf),
                 emitWordsMax: FfiConverterOptionUInt64.read(from: &buf),
                 bufferedInterimSec: FfiConverterOptionFloat.read(from: &buf),
-                backendMaxUploadMb: FfiConverterOptionUInt64.read(from: &buf)
+                backendMaxUploadMb: FfiConverterOptionUInt64.read(from: &buf),
+                asrMode: FfiConverterOptionString.read(from: &buf),
+                cloudConsent: FfiConverterOptionString.read(from: &buf),
+                asrGatewayUrl: FfiConverterOptionString.read(from: &buf)
         )
     }
 
@@ -9641,6 +9676,9 @@ public struct FfiConverterTypeCsSettings: FfiConverterRustBuffer {
         FfiConverterOptionUInt64.write(value.emitWordsMax, into: &buf)
         FfiConverterOptionFloat.write(value.bufferedInterimSec, into: &buf)
         FfiConverterOptionUInt64.write(value.backendMaxUploadMb, into: &buf)
+        FfiConverterOptionString.write(value.asrMode, into: &buf)
+        FfiConverterOptionString.write(value.cloudConsent, into: &buf)
+        FfiConverterOptionString.write(value.asrGatewayUrl, into: &buf)
     }
 }
 

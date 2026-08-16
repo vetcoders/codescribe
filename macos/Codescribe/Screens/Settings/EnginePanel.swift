@@ -52,6 +52,7 @@ struct EnginePanel: View {
 
       runtimeRows
         .padding(.top, 20)
+        .onAppear { model.refreshServingStatus() }
 
       SettingsSectionLabel("Engine controls")
         .padding(.top, 22)
@@ -138,7 +139,7 @@ struct EnginePanel: View {
         tint: true, trailing: .dot(model.sttHealthy ? CSColor.oliveLight : CSColor.amber))
       divider
       RuntimeRow(
-        key: "STT model", value: model.sttModelDescription,
+        key: "STT model (preference)", value: model.sttModelDescription,
         tint: false, mono: true, trailing: .none)
       divider
       RuntimeRow(
@@ -166,10 +167,10 @@ struct EnginePanel: View {
     ("whisper", "Whisper (Candle)"),
   ]
 
-  private static let finalPassModeOptions: [(id: String, label: String)] = [
-    ("always", "Always"),
-    ("smart", "Smart"),
-    ("off", "Off"),
+  private static let asrModeOptions: [(id: String, label: String)] = [
+    ("apple_only", "Apple only"),
+    ("local_power", "Local power"),
+    ("cloud", "Cloud"),
   ]
 
   private var layeredBinding: Binding<Bool> {
@@ -180,8 +181,6 @@ struct EnginePanel: View {
 
   private var engineControls: some View {
     VStack(spacing: 8) {
-      // Preferred live engine is Apple (must-have). Whisper is final-pass /
-      // recovery / offline — not the silent dual-brain lottery.
       if let note = model.sttEngineTruthNote {
         Text(note)
           .font(CSFont.ui(11.5))
@@ -190,8 +189,32 @@ struct EnginePanel: View {
           .padding(.bottom, 2)
       }
       SettingsControlRow(
+        title: "ASR mode",
+        subtitle:
+          "Apple only = live Apple. Local power = on-device Layer-1 weights. Cloud requires an explicit grant and stays Apple until consent is recorded."
+      ) {
+        Menu {
+          ForEach(Self.asrModeOptions, id: \.id) { option in
+            Button {
+              model.setAsrMode(option.id)
+            } label: {
+              if option.id == model.asrModeId {
+                Label(option.label, systemImage: "checkmark")
+              } else {
+                Text(option.label)
+              }
+            }
+          }
+        } label: {
+          SettingsMenuLabel(text: model.asrModeLabel)
+        }
+        .menuStyle(.borderlessButton)
+        .menuIndicator(.hidden)
+        .fixedSize()
+      }
+      SettingsControlRow(
         title: "STT engine",
-        subtitle: "Apple = live speech (product default). Whisper = final pass / offline."
+        subtitle: "Apple = live speech (product default). Whisper = Layer-1 / offline preference."
       ) {
         Menu {
           ForEach(Self.sttEngineOptions, id: \.id) { option in
@@ -213,32 +236,8 @@ struct EnginePanel: View {
         .fixedSize()
       }
       SettingsControlRow(
-        title: "Final pass",
-        subtitle:
-          "Always = full re-pass; Smart = skip full re-pass when complete (pair with Layered for live tail-patch); Off = off. Dictionary always applies."
-      ) {
-        Menu {
-          ForEach(Self.finalPassModeOptions, id: \.id) { option in
-            Button {
-              model.setFinalPassMode(option.id)
-            } label: {
-              if option.id == model.finalPassModeId {
-                Label(option.label, systemImage: "checkmark")
-              } else {
-                Text(option.label)
-              }
-            }
-          }
-        } label: {
-          SettingsMenuLabel(text: model.finalPassModeLabel)
-        }
-        .menuStyle(.borderlessButton)
-        .menuIndicator(.hidden)
-        .fixedSize()
-      }
-      SettingsControlRow(
         title: "Layered transcription",
-        subtitle: "Apple live canvas + Whisper tail patches (on by default)"
+        subtitle: "Live in-flight correction only. Stop does not run a file Whisper pass."
       ) {
         Toggle("", isOn: layeredBinding)
           .toggleStyle(.switch)
@@ -470,12 +469,11 @@ struct EnginePanel: View {
   }
 
   // MARK: Cloud & privacy (C2 — copy pinned by CloudPrivacyCopyTests; the
-  // mode picker itself arrives with the recorder integration that consumes
-  // the resolved mode. Contract enforced in core: cloud requires explicit
-  // audio-egress consent, refusal = Apple + dictionary, never local weights.)
+  // ASR picker above is the clickable grant. Cloud never displays without
+  // a granted consent record.)
 
   private var cloudPrivacySection: some View {
-    VStack(alignment: .leading, spacing: 8) {
+    VStack(alignment: .leading, spacing: 12) {
       ForEach(CloudPrivacyCopy.lines, id: \.self) { line in
         Text(line)
           .font(CSFont.ui(11.5))
@@ -483,6 +481,26 @@ struct EnginePanel: View {
           .frame(maxWidth: .infinity, alignment: .leading)
           .fixedSize(horizontal: false, vertical: true)
       }
+      Text(
+        model.cloudConsentGranted
+          ? "Cloud consent is granted. Audio may leave this Mac only in Cloud mode."
+          : "Cloud consent is not granted. The picker stays on Apple only."
+      )
+      .font(CSFont.ui(11.5, .medium))
+      .foregroundStyle(model.cloudConsentGranted ? CSColor.oliveLight : CSColor.amber)
+      SttEndpointRow(
+        current: model.sttEndpoint,
+        onSave: { model.setSttEndpoint($0) }
+      )
+      SettingsUrlRow(
+        title: "Gateway session URL",
+        keyLabel: "CODESCRIBE_ASR_GATEWAY_URL",
+        current: model.asrGatewayUrl,
+        placeholder: "https://…/session",
+        help:
+          "Session-mint endpoint for live Cloud Layer 1. Not the WSS socket. Clearing restores unset.",
+        onSave: { model.setAsrGatewayUrl($0) }
+      )
     }
     .padding(15)
     .background(card)

@@ -44,36 +44,23 @@ struct LastServingVerdict: Equatable {
 }
 
 /// Format Active STT from the last serving verdict. Config projection is forbidden.
+/// Live Apple is `local_apple` → `Apple`. Do not append the dead Smart-final-pass token.
 func formatActiveSTT(lastServing: LastServingVerdict?) -> String {
   guard let verdict = lastServing else {
     return "Not yet served"
   }
-  let engine: String
   switch verdict.engine {
   case "local_apple":
-    engine = "Apple on-device"
+    return "Apple"
   case "local_whisper":
-    engine = verdict.fallbackUsed ? "Whisper (fallback)" : "Whisper"
+    return verdict.fallbackUsed ? "Whisper (fallback)" : "Whisper"
   case "streaming_whisper":
-    engine = "Streaming Whisper"
+    return "Streaming Whisper"
   case "cloud_stt":
-    engine = "Cloud"
+    return "Cloud"
   default:
-    engine = verdict.engine.isEmpty ? "Unknown" : verdict.engine
+    return verdict.engine.isEmpty ? "Unknown" : verdict.engine
   }
-  let mode: String
-  switch verdict.routingMode.lowercased() {
-  case "always":
-    mode = "Always final pass"
-  case "off":
-    mode = "Off final pass"
-  default:
-    mode = "Smart final pass"
-  }
-  if let disposition = verdict.disposition, !disposition.isEmpty {
-    return "\(engine) · \(mode) · \(disposition)"
-  }
-  return "\(engine) · \(mode)"
 }
 
 enum SettingsSectionAvailability: Equatable {
@@ -305,7 +292,8 @@ enum SettingsSection: String, CaseIterable, Identifiable {
     case .keys: return ["api key", "provider", "openai", "anthropic", "endpoint", "model", "token"]
     case .agent: return ["mcp", "tools", "workspace", "permissions", "server"]
     case .prompts: return ["system prompt", "persona", "assistive", "instructions"]
-    case .engine: return ["stt", "whisper", "apple", "speech", "transcription", "final pass"]
+    case .engine:
+      return ["stt", "whisper", "apple", "speech", "transcription", "asr", "cloud", "consent"]
     case .audio: return ["microphone", "mikrofon", "input", "device", "levels"]
     case .voiceLab: return ["lexicon", "dictionary", "vocabulary", "corrections", "słownik"]
     case .license: return ["subscription", "activation", "trial", "billing"]
@@ -1005,6 +993,7 @@ final class SettingsViewModel: ObservableObject {
       modelEditGeneration: Int
     )?
   private var holdBadgeObserver: NSObjectProtocol?
+  private var servingStatusObserver: NSObjectProtocol?
 
   init(
     engine: SettingsEngine? = nil,
@@ -1071,11 +1060,24 @@ final class SettingsViewModel: ObservableObject {
         self?.reloadHoldBadgeFromDisk()
       }
     }
+    servingStatusObserver = NotificationCenter.default.addObserver(
+      forName: ConfigChangeBus.servingStatusDidChange,
+      object: nil,
+      queue: .main
+    ) { [weak self] _ in
+      MainActor.assumeIsolated {
+        self?.refreshServingStatus()
+      }
+    }
+    lastServingVerdict = servingStatusProvider()
   }
 
   deinit {
     if let holdBadgeObserver {
       NotificationCenter.default.removeObserver(holdBadgeObserver)
+    }
+    if let servingStatusObserver {
+      NotificationCenter.default.removeObserver(servingStatusObserver)
     }
   }
 
@@ -1524,8 +1526,10 @@ final class SettingsViewModel: ObservableObject {
 
   /// Last serving verdict published by the runtime owner (not config).
   /// Tests inject directly; live path refreshes via `servingStatusProvider`
-  /// (UniFFI `currentServingVerdict()`) in `refresh()` and on panel entry.
-  var lastServingVerdict: LastServingVerdict?
+  /// (UniFFI `currentServingVerdict()`) in `refresh()`, on panel appear, and
+  /// after stop. Published so a take while Settings is open does not keep a
+  /// stale nil snapshot.
+  @Published var lastServingVerdict: LastServingVerdict?
 
   /// Runtime serving-truth source — defaults to the UniFFI bridge snapshot.
   let servingStatusProvider: () -> LastServingVerdict?
@@ -1553,9 +1557,8 @@ final class SettingsViewModel: ObservableObject {
   var whisperLanguageCode: String { settings.whisperLanguage.shortCode }
 
   var sttModelDescription: String {
-    settings.useLocalStt
-      ? settings.localModel
-      : (settings.sttEndpoint ?? "cloud default")
+    let preference = settings.whisperModel ?? settings.localModel
+    return preference.isEmpty ? "unset" : preference
   }
 
   private var assistiveKeyState: SettingsKeyState {
@@ -1987,32 +1990,64 @@ final class SettingsViewModel: ObservableObject {
     persist("CODESCRIBE_STT_ENGINE", normalized)
   }
 
-  /// Final-pass routing: always | smart | off (default smart).
-  var finalPassModeId: String {
-    let raw = (settings.finalPassMode ?? "smart").lowercased()
-    switch raw {
-    case "always", "off": return raw
-    default: return "smart"
-    }
-  }
-
-  var finalPassModeLabel: String {
-    switch finalPassModeId {
-    case "always": return "Always"
-    case "off": return "Off"
-    default: return "Smart"
-    }
-  }
+  /// Legacy stop-file-pass token. Settings no longer exposes Always/Smart/Off.
+  /// If a value must persist, write `off` — `smart` is a dead migration token.
+  var finalPassModeId: String { "off" }
 
   func setFinalPassMode(_ id: String) {
-    let normalized: String
-    switch id.lowercased() {
-    case "always": normalized = "always"
-    case "off": normalized = "off"
-    default: normalized = "smart"
+    _ = id
+    settings.finalPassMode = "off"
+    persist("FINAL_PASS_MODE", "off")
+  }
+
+  /// Product ASR lane shown in Dictation. Cloud never displays without granted consent.
+  var asrModeId: String {
+    let raw = (settings.asrMode ?? "apple_only").lowercased()
+    switch raw {
+    case "local_power":
+      return "local_power"
+    case "cloud":
+      return cloudConsentGranted ? "cloud" : "apple_only"
+    default:
+      return "apple_only"
     }
-    settings.finalPassMode = normalized
-    persist("FINAL_PASS_MODE", normalized)
+  }
+
+  var asrModeLabel: String {
+    switch asrModeId {
+    case "local_power": return "Local power"
+    case "cloud": return "Cloud"
+    default: return "Apple only"
+    }
+  }
+
+  var cloudConsentGranted: Bool {
+    settings.cloudConsent?.lowercased() == "granted"
+  }
+
+  /// Persist the product lane. Selecting Cloud is the explicit grant.
+  func setAsrMode(_ id: String) {
+    switch id.lowercased() {
+    case "local_power":
+      settings.asrMode = "local_power"
+      persist("CODESCRIBE_ASR_MODE", "local_power")
+    case "cloud":
+      settings.asrMode = "cloud"
+      settings.cloudConsent = "granted"
+      persistMany([
+        CsConfigEntry(key: "CODESCRIBE_CLOUD_CONSENT", value: "granted"),
+        CsConfigEntry(key: "CODESCRIBE_ASR_MODE", value: "cloud"),
+      ])
+    default:
+      settings.asrMode = "apple_only"
+      persist("CODESCRIBE_ASR_MODE", "apple_only")
+    }
+  }
+
+  var asrGatewayUrl: String { settings.asrGatewayUrl ?? "" }
+
+  func setAsrGatewayUrl(_ value: String) {
+    persist("CODESCRIBE_ASR_GATEWAY_URL", value.trimmingCharacters(in: .whitespaces))
   }
 
   /// ON for any phase value ("phase1".."phase4" or bare "1".."4"); explicit

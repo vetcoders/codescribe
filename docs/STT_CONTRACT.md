@@ -166,15 +166,16 @@ file-pass belongs only to explicit retranscribe surfaces.
 
 ### 3.2 Settings UI → config
 
-| Front control                   | UniFFI                                              | Core                                                                         |
-| ------------------------------- | --------------------------------------------------- | ---------------------------------------------------------------------------- |
-| Load Settings form              | `CodescribeConfig.load_settings()`                  | `UserSettings::load` + `Config::load` + env merge → `CsSettings`             |
-| Save knobs                      | `update_config` / `update_config_many`              | `UserSettings::set_*` → write `settings.json`; may seed env                  |
-| Active STT row                  | `current_serving_verdict()`                         | `serving_status::current_last_serving` (**last actual run**, not preference) |
-| Whisper model status / download | `whisper_model_status` / `download_whisper_model`   | `core/config/models.rs`                                                      |
-| Audio device                    | `audio_input_snapshot` + config keys                | `UserSettings.audio_input_device` + cpal                                     |
-| Mic permission                  | `mic_permission_granted` / `request_mic_permission` | `app/os/permissions`                                                         |
-| Lane (LLM) truth                | `lane_truth_snapshot(lane)`                         | `core/llm/lane_truth.rs`                                                     |
+| Front control                   | UniFFI                                              | Core                                                                   |
+| ------------------------------- | --------------------------------------------------- | ---------------------------------------------------------------------- |
+| Load Settings form              | `CodescribeConfig.load_settings()`                  | `UserSettings::load` + `Config::load` + env merge → `CsSettings`       |
+| Save knobs                      | `update_config` / `update_config_many`              | `UserSettings::set_*` → write `settings.json`; may seed env            |
+| ASR mode picker                 | `CODESCRIBE_ASR_MODE` + `CODESCRIBE_CLOUD_CONSENT`  | Cloud never displays without `granted`; stop ignores `FINAL_PASS_MODE` |
+| Active STT row                  | `current_serving_verdict()`                         | last live take (`local_apple` → Apple). No Smart-final-pass suffix     |
+| Whisper model status / download | `whisper_model_status` / `download_whisper_model`   | `core/config/models.rs`                                                |
+| Audio device                    | `audio_input_snapshot` + config keys                | `UserSettings.audio_input_device` + cpal                               |
+| Mic permission                  | `mic_permission_granted` / `request_mic_permission` | `app/os/permissions`                                                   |
+| Lane (LLM) truth                | `lane_truth_snapshot(lane)`                         | `core/llm/lane_truth.rs`                                               |
 
 ### 3.3 Dictation overlay / tray
 
