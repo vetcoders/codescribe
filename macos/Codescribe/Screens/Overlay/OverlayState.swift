@@ -106,6 +106,7 @@ protocol DictationEngine: AnyObject {
   func pasteTargetAppName() async -> String?
   func sendAssistiveTranscript(text: String) async throws -> Bool
   func transcribeFile(path: String) async throws -> CsTranscription
+  func lastSessionAudioPath() -> String?
 }
 
 struct OverlayPolicySnapshot: Equatable {
@@ -117,8 +118,31 @@ enum OverlayActionPresentation {
   static let manualFormatLevels = FormattingPolicyOption.editablePrompts
   static let formatTitle = "Format"
   static let formatHelp = "Format transcript once as Correction, Smart, or Max"
+  static let retranscribeTitle = "Retranscribe"
+  static let retranscribeHelp = "Re-run the session audio as Full HQ file pass or Cloud pass"
   static let sendTitle = "To Agent"
   static let sendHelp = "Send transcript to the agent"
+}
+
+enum OverlayRetranscribePass: String, CaseIterable, Identifiable {
+  case fullHq = "hq"
+  case cloud = "cloud"
+
+  var id: String { rawValue }
+
+  var visibleName: String {
+    switch self {
+    case .fullHq: "Full HQ file pass"
+    case .cloud: "Cloud pass"
+    }
+  }
+
+  var help: String {
+    switch self {
+    case .fullHq: "Full local Whisper file pass over the last session audio"
+    case .cloud: "Cloud STT pass over the last session audio"
+    }
+  }
 }
 
 struct OverlayInsertActionPresentation: Equatable {
@@ -194,6 +218,8 @@ final class OverlayState: ObservableObject {
   /// this so XCTest never writes the operator's live lexicon.
   var teachSpan: ((OverlayHighlight) throws -> String)?
   @Published var isFormatting: Bool = false
+  @Published var isRetranscribing: Bool = false
+  @Published var isEditingTranscript: Bool = false
   @Published var formatFailureStatus: String?
   /// Prompt-free policy snapshot from C02's persisted settings owner. These
   /// values are replaced only by a fresh engine read, never by optimistic UI.
@@ -388,20 +414,23 @@ final class OverlayState: ObservableObject {
   }
 
   var tagText: String {
+    if isFinalPass || transcribing { return "PROCESSING" }
     switch mode {
-    case .listening: return "DICTATION"
-    case .formatted: return "FINAL"
+    case .listening:
+      return indicatorMode == .assistive ? "AGENT" : "RECORDING"
+    case .formatted: return "READY"
     case .noSpeech: return "NO SPEECH"
     case .error: return "ERROR"
     }
   }
   var tagColor: Color {
+    if isFinalPass || transcribing { return CSColor.modeProcessing }
     switch mode {
     case .listening:
-      return indicatorMode == .assistive ? CSColor.assistiveLight : CSColor.terracottaLight
-    case .formatted: return CSColor.oliveLight
+      return indicatorMode == .assistive ? CSColor.modeAgent : CSColor.modeRecording
+    case .formatted: return CSColor.modeReady
     case .noSpeech: return CSColor.textMuted
-    case .error: return CSColor.terracotta
+    case .error: return CSColor.danger
     }
   }
 
@@ -500,6 +529,60 @@ final class OverlayState: ObservableObject {
     return warmingUp ? "starting…" : "listening…"
   }
 
+  /// Sealed committed utterances — engine must not rewrite these except via
+  /// a human edit on the FINAL canvas. Highlighted on the live canvas.
+  var listeningSealedText: String {
+    let sealed = committedUtterances
+      .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
+      .filter { !$0.isEmpty }
+      .joined(separator: " ")
+    return insertingContextMarkers(into: sealed)
+  }
+
+  /// Unsealed interim hypothesis. Dimmer than sealed; copy includes it.
+  var listeningPreviewText: String {
+    preview.trimmingCharacters(in: .whitespacesAndNewlines)
+  }
+
+  /// Live canvas: sealed truth highlighted, interim unsealed. Empty canvas
+  /// keeps the phase placeholder so the body never goes blank.
+  var listeningCanvas: AttributedString {
+    let sealed = listeningSealedText
+    let previewRun = listeningPreviewText
+    if sealed.isEmpty && previewRun.isEmpty {
+      var placeholder = AttributedString(listeningDisplay)
+      placeholder.foregroundColor = CSColor.textBody
+      return placeholder
+    }
+    var canvas = AttributedString()
+    if !sealed.isEmpty {
+      var run = AttributedString(sealed)
+      run.foregroundColor = CSColor.textHigh
+      run.backgroundColor = CSColor.modeReady.opacity(0.18)
+      canvas.append(run)
+    }
+    if !sealed.isEmpty && !previewRun.isEmpty {
+      canvas.append(AttributedString(" "))
+    }
+    if !previewRun.isEmpty {
+      var run = AttributedString(previewRun)
+      run.foregroundColor = CSColor.textMuted
+      canvas.append(run)
+    }
+    return canvas
+  }
+
+  /// Copy is live from the first captured letter — listening or FINAL.
+  var canCopy: Bool {
+    !activeText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+  }
+
+  /// Timer is mandatory for any session that has started, including the
+  /// frozen value after stop.
+  var showsSessionTimer: Bool {
+    captureStartedAtUptime != nil
+  }
+
   /// Visual runs for the highlight canvas. Empty when the lane is off.
   var highlightCanvasRuns: [OverlayCanvasRun] {
     guard highlightsEnabled else { return [.text(listeningDisplay)] }
@@ -524,12 +607,21 @@ final class OverlayState: ObservableObject {
   var canFormat: Bool {
     mode == .formatted
       && !isFormatting
+      && !isRetranscribing
       && engine?.isFormattingAvailable() == true
       && !formattedText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
   }
 
+  var canRetranscribe: Bool {
+    !recording
+      && !isRetranscribing
+      && !isFormatting
+      && (mode == .formatted || mode == .noSpeech)
+      && engine?.lastSessionAudioPath() != nil
+  }
+
   var canRevert: Bool {
-    preFormatText != nil && !isFormatting
+    preFormatText != nil && !isFormatting && !isRetranscribing
   }
 
   var insertActionPresentation: OverlayInsertActionPresentation {
@@ -718,6 +810,35 @@ final class OverlayState: ObservableObject {
     preFormatLevel = .off
   }
 
+  func retranscribe(pass: OverlayRetranscribePass) {
+    guard let engine, canRetranscribe else { return }
+    guard let audioPath = engine.lastSessionAudioPath() else { return }
+    let source = activeText
+    isRetranscribing = true
+    cancelAutoHide()
+    Task { @MainActor in
+      defer { self.isRetranscribing = false }
+      do {
+        let prefixed = "\(pass.rawValue):\(audioPath)"
+        let result = try await engine.transcribeFile(path: prefixed)
+        let next = result.text.trimmingCharacters(in: .whitespacesAndNewlines)
+        if next.isEmpty {
+          self.formatFailureStatus = "retranscribe — empty"
+          self.showToast("Retranscribe returned no speech")
+          return
+        }
+        if !source.isEmpty { self.preFormatText = source }
+        self.formattedText = result.text
+        self.formatFailureStatus = nil
+        self.mode = .formatted
+        self.cancelAutoHide()
+      } catch {
+        self.formatFailureStatus = "retranscribe — \(pass.visibleName) failed"
+        self.showToast("Couldn't retranscribe")
+      }
+    }
+  }
+
   /// Restore the exact source of the most recent successful changed format.
   /// The slot is consumed once and this explicit user activity starts a fresh
   /// terminal lifetime from the injected monotonic clock.
@@ -888,6 +1009,8 @@ final class OverlayState: ObservableObject {
     warmingUp = false
     transcribing = false
     isFinalPass = false
+    isEditingTranscript = false
+    isRetranscribing = false
     onClose?()
   }
 
@@ -911,6 +1034,17 @@ final class OverlayState: ObservableObject {
     guard let truth = engine?.currentOverlayPolicy() else { return }
     autoPasteEnabled = truth.autoPasteEnabled
     autoFormatLevel = truth.autoFormatLevel
+  }
+
+  func beginTranscriptEdit() {
+    guard mode == .formatted else { return }
+    isEditingTranscript = true
+    cancelAutoHide()
+  }
+
+  func endTranscriptEdit() {
+    guard isEditingTranscript else { return }
+    isEditingTranscript = false
   }
 
   /// TextEditor writes through this seam so only actual user edits — never a
@@ -1076,6 +1210,7 @@ final class OverlayState: ObservableObject {
     isFinalPass = false
     mode = .listening
     warmingUp = true
+    isEditingTranscript = false
     audioReady = false
     hasMeasuredAudioLevel = false
     levelMeter.reset()
@@ -2096,12 +2231,21 @@ final class ControllerDictationEngine: DictationEngine {
     try await hotkeys.sendAssistiveTranscript(text: text)
   }
   func transcribeFile(path: String) async throws -> CsTranscription {
+    // Rust already owns hq:/cloud: on CodescribeHotkeys.transcribe_file.
+    // Swift bindings appear after `make app-bindings`; until then this
+    // seam stays compile-safe so OverlayState + tests still ship.
     throw NSError(
-      domain: "CodescribeRedesign", code: 1,
+      domain: "CodescribeRetranscribe",
+      code: 1,
       userInfo: [
         NSLocalizedDescriptionKey:
-          "File transcription is not available through the hotkey controller."
-      ])
+          "Retranscribe bindings regenerate on make app-bindings"
+      ]
+    )
+  }
+  func lastSessionAudioPath() -> String? {
+    let path = (config.configDir() as NSString).appendingPathComponent("last_session.wav")
+    return FileManager.default.fileExists(atPath: path) ? path : nil
   }
 }
 
@@ -2265,5 +2409,6 @@ final class DictationListener: CsTranscriptionListener, @unchecked Sendable {
     func transcribeFile(path: String) async throws -> CsTranscription {
       CsTranscription(text: "", language: "en")
     }
+    func lastSessionAudioPath() -> String? { nil }
   }
 #endif

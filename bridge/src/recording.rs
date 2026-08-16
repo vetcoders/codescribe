@@ -277,6 +277,101 @@ impl From<&LayerSummary> for CsLayerSummary {
     }
 }
 
+/// Path prefixes pick the Retranscribe pass:
+/// - `hq:` or no prefix — Full HQ file pass (`transcribe_file_verdict`)
+/// - `cloud:` — Cloud pass (`transcribe_cloud` with Settings STT credentials)
+pub(crate) async fn transcribe_session_file(path: String) -> Result<CsTranscription, CsError> {
+    let (pass, file_path) = split_retranscribe_path(&path);
+    match pass {
+        RetranscribePass::Hq => tokio::task::spawn_blocking(move || transcribe_file_hq(file_path))
+            .await
+            .map_err(|e| CsError::Recording {
+                msg: format!("transcribe_file task join error: {e}"),
+            })?,
+        RetranscribePass::Cloud => transcribe_file_cloud(file_path).await,
+    }
+}
+
+/// `~/.codescribe/last_session.wav` when the last stop retained audio.
+pub(crate) fn last_session_audio_path() -> Option<String> {
+    let dest = codescribe_core::config::Config::config_dir().join("last_session.wav");
+    dest.exists().then(|| dest.to_string_lossy().into_owned())
+}
+
+enum RetranscribePass {
+    Hq,
+    Cloud,
+}
+
+fn split_retranscribe_path(path: &str) -> (RetranscribePass, String) {
+    if let Some(rest) = path.strip_prefix("cloud:") {
+        (RetranscribePass::Cloud, rest.to_string())
+    } else if let Some(rest) = path.strip_prefix("hq:") {
+        (RetranscribePass::Hq, rest.to_string())
+    } else {
+        (RetranscribePass::Hq, path.to_string())
+    }
+}
+
+fn transcribe_file_hq(path: String) -> Result<CsTranscription, CsError> {
+    let verdict = codescribe_core::stt::transcribe_file_verdict(std::path::Path::new(&path), None)
+        .map_err(|e| CsError::Recording { msg: e.to_string() })?;
+    Ok(CsTranscription {
+        text: verdict.text,
+        language: "und".to_string(),
+    })
+}
+
+async fn transcribe_file_cloud(path: String) -> Result<CsTranscription, CsError> {
+    let config = codescribe_core::config::Config::load();
+    let endpoint = config
+        .stt_endpoint
+        .clone()
+        .filter(|value| !value.trim().is_empty());
+    let key = config
+        .stt_api_key
+        .clone()
+        .filter(|value| !value.trim().is_empty());
+    let (Some(endpoint), Some(key)) = (endpoint, key) else {
+        return Err(CsError::Recording {
+            msg: "Cloud pass needs STT_ENDPOINT and STT_API_KEY".to_string(),
+        });
+    };
+    let verdict = codescribe::client::transcribe_cloud(
+        std::path::Path::new(&path),
+        None,
+        &endpoint,
+        &key,
+    )
+    .await
+    .map_err(|e| CsError::Recording { msg: e.to_string() })?;
+    Ok(CsTranscription {
+        text: verdict.text,
+        language: "und".to_string(),
+    })
+}
+
+#[cfg(test)]
+mod retranscribe_tests {
+    use super::*;
+
+    #[test]
+    fn retranscribe_path_prefixes_select_hq_or_cloud() {
+        assert!(matches!(
+            split_retranscribe_path("/tmp/last_session.wav"),
+            (RetranscribePass::Hq, path) if path == "/tmp/last_session.wav"
+        ));
+        assert!(matches!(
+            split_retranscribe_path("hq:/tmp/last_session.wav"),
+            (RetranscribePass::Hq, path) if path == "/tmp/last_session.wav"
+        ));
+        assert!(matches!(
+            split_retranscribe_path("cloud:/tmp/last_session.wav"),
+            (RetranscribePass::Cloud, path) if path == "/tmp/last_session.wav"
+        ));
+    }
+}
+
 /// Foreign callback trait — dictation events forwarded to Swift.
 ///
 /// Distilled from the engine's richer `EngineEvent` stream:

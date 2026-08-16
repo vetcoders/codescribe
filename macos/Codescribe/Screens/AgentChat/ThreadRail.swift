@@ -388,9 +388,23 @@ private struct ThreadRow: View {
         .opacity(thread.isFavorite || isActive ? 1 : 0.38)
         .help(thread.isFavorite ? "Unfavorite thread" : "Favorite thread")
       }
-      Text(thread.meta)
-        .font(CSFont.mono(10, .medium))
-        .foregroundStyle(isActive ? ChatPalette.activeThreadSub : CSColor.textFaintAlt)
+      HStack(spacing: 6) {
+        if let tag = ModelTag.display(for: thread.model) {
+          Text(tag)
+            .font(CSFont.mono(9, .semibold))
+            .foregroundStyle(isActive ? CSColor.modeAgent : CSColor.textFaintAlt)
+            .padding(.horizontal, 6)
+            .padding(.vertical, 2)
+            .background(
+              (isActive ? CSColor.modeAgent : CSColor.textFaintAlt).opacity(0.14)
+            )
+            .clipShape(Capsule())
+            .accessibilityLabel("model \(tag)")
+        }
+        Text(ThreadRailMeta.timeOnly(from: thread.meta))
+          .font(CSFont.mono(10, .medium))
+          .foregroundStyle(isActive ? ChatPalette.activeThreadSub : CSColor.textFaintAlt)
+      }
     }
     .frame(maxWidth: .infinity, alignment: .leading)
     .padding(.horizontal, 12)
@@ -413,6 +427,19 @@ private struct ThreadRow: View {
         onRequestDelete()
       }
     }
+  }
+}
+
+/// Short model chip on a thread row. Path prefixes are stripped; the three
+/// operator tags (`claude-fable-5`, `grok-4.5`, `gpt-5.6-terra`) pass through
+/// unchanged so the rail matches the palette the user actually runs.
+enum ModelTag {
+  static func display(for model: String?) -> String? {
+    guard let model else { return nil }
+    let id = String(model.split(separator: "/").last ?? Substring(model))
+      .trimmingCharacters(in: .whitespacesAndNewlines)
+    guard !id.isEmpty else { return nil }
+    return id
   }
 }
 
@@ -486,6 +513,12 @@ enum ThreadRailMeta {
       parts.append(tokenLabel(tokens))
     }
     return parts.joined(separator: " · ")
+  }
+
+  /// First segment of a rail meta line — the time, not the model/token tail.
+  static func timeOnly(from meta: String) -> String {
+    let head = meta.split(separator: "·").first.map { $0.trimmingCharacters(in: .whitespaces) }
+    return (head?.isEmpty == false) ? head! : meta
   }
 
   /// "today HH:mm" / "yesterday" / "MMM d" — same shape the rail always used.

@@ -35,6 +35,10 @@ private final class OverlayStateTestEngine: DictationEngine {
   var sentAssistiveTexts: [String] = []
   var assistiveSendResult = true
   var onAssistiveSend: (() -> Void)?
+  var transcribedPaths: [String] = []
+  var transcribedResult = "hq file pass transcript"
+  var lastAudioPath: String? = "/tmp/last_session.wav"
+  var onTranscribe: (() -> Void)?
 
   func setListener(_ listener: CsTranscriptionListener) {}
   func startRecording(language: CsLanguage?) async throws {}
@@ -104,8 +108,11 @@ private final class OverlayStateTestEngine: DictationEngine {
     return assistiveSendResult
   }
   func transcribeFile(path: String) async throws -> CsTranscription {
-    CsTranscription(text: "", language: "en")
+    transcribedPaths.append(path)
+    onTranscribe?()
+    return CsTranscription(text: transcribedResult, language: "pl")
   }
+  func lastSessionAudioPath() -> String? { lastAudioPath }
 }
 
 private final class OverlayStateTestClock {
@@ -170,11 +177,106 @@ final class OverlayStateTests: XCTestCase {
     XCTAssertEqual(state.elapsedCaptureSeconds(), 0)
     clock.now = 3900
     XCTAssertEqual(state.sessionTimerText, "1:00:00")
+    XCTAssertTrue(state.showsSessionTimer)
+  }
+
+  func testSealedCanvasHighlightsCommittedTruthAndCopyIsLiveFromFirstLetter() {
+    let state = OverlayState()
+    XCTAssertFalse(state.canCopy)
+    XCTAssertFalse(state.showsSessionTimer)
+    XCTAssertEqual(state.listeningSealedText, "")
+    XCTAssertEqual(state.listeningPreviewText, "")
+
+    state.handleRecordingPreparing()
+    state.handleRecordingStarted()
+    XCTAssertTrue(state.showsSessionTimer)
+
+    state.applyPreview("analyze the repo")
+    XCTAssertEqual(state.listeningPreviewText, "analyze the repo")
+    XCTAssertEqual(state.listeningSealedText, "")
+    XCTAssertTrue(state.canCopy)
+    XCTAssertEqual(state.activeText, "analyze the repo")
+
+    state.applyFinal(utteranceId: 1, "analyze the repo")
+    state.applyPreview("for duplicate dispatch")
+    XCTAssertEqual(state.listeningSealedText, "analyze the repo")
+    XCTAssertEqual(state.listeningPreviewText, "for duplicate dispatch")
+    XCTAssertTrue(state.canCopy)
+    XCTAssertTrue(String(state.listeningCanvas.characters).contains("analyze the repo"))
+    XCTAssertTrue(String(state.listeningCanvas.characters).contains("for duplicate dispatch"))
+  }
+
+  func testRetranscribeHqPassReplacesFormattedTextAndArmsRevert() async {
+    let clock = OverlayStateTestClock()
+    let state = makeFinalizedState(clock: clock, text: "live draft")
+    let engine = OverlayStateTestEngine()
+    engine.transcribedResult = "full hq file pass"
+    let called = expectation(description: "retranscribe")
+    engine.onTranscribe = { called.fulfill() }
+    state.engine = engine
+    XCTAssertTrue(state.canRetranscribe)
+
+    state.retranscribe(pass: .fullHq)
+    await fulfillment(of: [called], timeout: 1)
+    await Task.yield()
+    XCTAssertEqual(engine.transcribedPaths, ["hq:/tmp/last_session.wav"])
+    XCTAssertEqual(state.formattedText, "full hq file pass")
+    XCTAssertTrue(state.canRevert)
+    XCTAssertEqual(state.mode, .formatted)
+  }
+
+  func testTranscriptEditIsOptInUntilClick() {
+    let state = OverlayState()
+    state.mode = .formatted
+    state.formattedText = "hello"
+    XCTAssertFalse(state.isEditingTranscript)
+    state.beginTranscriptEdit()
+    XCTAssertTrue(state.isEditingTranscript)
+    state.endTranscriptEdit()
+    XCTAssertFalse(state.isEditingTranscript)
+  }
+
+  func testPresencePolicyRisesForScreenshotAndYieldsToAlerts() {
+    XCTAssertEqual(
+      OverlayPresencePolicy.resolve(screenshotChord: true, shouldYield: true),
+      .capture
+    )
+    XCTAssertEqual(
+      OverlayPresencePolicy.resolve(screenshotChord: false, shouldYield: true),
+      .yield
+    )
+    XCTAssertEqual(
+      OverlayPresencePolicy.resolve(screenshotChord: false, shouldYield: false),
+      .rest
+    )
+    XCTAssertTrue(
+      OverlayPresencePolicy.shouldYield(
+        frontmostBundleId: "com.apple.SecurityAgent",
+        modalWindowPresent: false
+      )
+    )
+    XCTAssertFalse(
+      OverlayPresencePolicy.shouldYield(
+        frontmostBundleId: "com.apple.Terminal",
+        modalWindowPresent: false
+      )
+    )
+    XCTAssertTrue(
+      OverlayPresencePolicy.shouldYield(
+        frontmostBundleId: "com.apple.Terminal",
+        modalWindowPresent: true
+      )
+    )
   }
 
   func testApprovedOverlayActionPresentationIsLiteralAndLevelBounded() {
     XCTAssertEqual(OverlayActionPresentation.sendTitle, "To Agent")
     XCTAssertEqual(OverlayActionPresentation.sendHelp, "Send transcript to the agent")
+    XCTAssertEqual(OverlayActionPresentation.retranscribeTitle, "Retranscribe")
+    XCTAssertEqual(
+      OverlayRetranscribePass.allCases.map(\.visibleName),
+      ["Full HQ file pass", "Cloud pass"]
+    )
     XCTAssertEqual(
       OverlayActionPresentation.manualFormatLevels.map(\.rawValue),
       ["correction", "smart", "max"]
@@ -1326,6 +1428,7 @@ final class OverlayStateTests: XCTestCase {
     XCTAssertTrue(panel.styleMask.contains(.nonactivatingPanel))
     XCTAssertTrue(panel.isFloatingPanel)
     XCTAssertFalse(panel.canBecomeMain)
+    XCTAssertFalse(panel.canBecomeKey)
   }
 
   func testLowConfidenceBadgeVisibilityLogic() {
