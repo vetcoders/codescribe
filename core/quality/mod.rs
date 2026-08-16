@@ -18,6 +18,8 @@
 /// Locked THE ENGINE contract for quality-report HTML and corpus JSON.
 pub mod engine_contract;
 pub mod overlay_quality;
+/// Seal Atlas HTML renderer — the quality-report surface corpus writes.
+pub mod seal_atlas_html;
 /// Background Qube donor daemon: opt-in stop-path WAV/transcript persistence.
 pub mod qube_daemon;
 /// Qube report types and serialization for quality/donor telemetry surfaces.
@@ -27,8 +29,9 @@ pub mod teacher;
 
 pub use engine_contract::{
     CORPUS_REPORT_SCHEMA, ENGINE_CONTRACT, ENGINE_CONTRACT_ID, EngineContract,
-    render_engine_contract_html,
+    render_engine_contract_html, validate_quality_html,
 };
+pub use seal_atlas_html::{SealAtlasPage, SealAtlasStats, render_seal_atlas_html};
 pub use teacher::{
     Layer1MergeMode, Layer1MergedDelivery, MergeMode, MergedDelivery, TeacherInput, TeacherReport,
     merge_live_layer1, merge_live_whisper, merge_live_whisper_with_terms, report_to_html, teach,

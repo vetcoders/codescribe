@@ -14,8 +14,58 @@ pub const CORPUS_REPORT_SCHEMA: &str = "codescribe-corpus-parity/v3";
 /// Stable id of the engine contract itself.
 pub const ENGINE_CONTRACT_ID: &str = "the-engine/v1";
 
-/// Path of the agent-facing prose lock, relative to the repo root.
-pub const ENGINE_CONTRACT_DOC: &str = "docs/THE_ENGINE_CONTRACT.md";
+/// Path of the HTML-surface contract, relative to the repo root.
+pub const QUALITY_HTML_CONTRACT_DOC: &str = "docs/quality-reports/CONTRACT.md";
+
+/// Failures if this string is not a Seal Atlas quality report.
+pub fn validate_quality_html(html: &str) -> Vec<String> {
+    let lowered = html.to_ascii_lowercase();
+    let mut failures = Vec::new();
+    if !html.contains(r#"name="engine-contract""#) || !html.contains(ENGINE_CONTRACT_ID) {
+        failures.push("missing meta engine-contract=the-engine/v1".into());
+    }
+    if !html.contains(r#"name="quality-report-surface""#)
+        || !lowered.contains("seal-atlas") && !lowered.contains("seal atlas")
+    {
+        failures.push("missing meta quality-report-surface=seal-atlas".into());
+    }
+    if !lowered.contains("seal atlas") && !lowered.contains("seal-atlas") {
+        failures.push("title/body must name Seal Atlas".into());
+    }
+    if !html.contains(r#"class="stat""#) {
+        failures.push("Voice Lab handshake needs div.stat cards".into());
+    }
+    if !lowered.contains("word-grain") {
+        failures.push("must label word-grain".into());
+    }
+    if !lowered.contains("utterance-grain") {
+        failures.push("must label utterance-grain".into());
+    }
+    if !lowered.contains("clock-lie") && !html.contains("kłamstwo zegarowe") {
+        failures.push("clock-lie must be a first-class finding".into());
+    }
+    if !html.contains("SealedSpan.words")
+        && !lowered.contains("sealedspan.words")
+        && !lowered.contains("sealed spans")
+    {
+        failures.push("must name SealedSpan.words or sealed spans".into());
+    }
+    if !lowered.contains("whisper") {
+        failures.push("must mention whisper_words / Whisper on the same clock".into());
+    }
+    if lowered.contains("<h1>codescribe quality report</h1>") {
+        failures.push("retired Qube H1 is not a Seal Atlas".into());
+    }
+    let wer_at = lowered.find("avg wer");
+    let footnote_at = lowered.find("footnote");
+    if let Some(wer) = wer_at {
+        if footnote_at.map(|f| f < wer).unwrap_or(false) == false {
+            failures.push("Avg WER may only appear after a footnote marker".into());
+        }
+    }
+    failures
+}
+
 
 /// What a quality report is allowed to treat as the document vs a proposal.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -422,6 +472,40 @@ mod tests {
     }
 
     #[test]
+    fn gold_atlas_passes_html_handshake() {
+        let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("..");
+        let path = root.join(SEAL_ATLAS_GOLD_HTML);
+        let body = std::fs::read_to_string(&path)
+            .unwrap_or_else(|err| panic!("{} must exist: {err}", path.display()));
+        let failures = validate_quality_html(&body);
+        assert!(failures.is_empty(), "gold take 01 failed handshake: {failures:?}");
+    }
+
+    #[test]
+    fn html_contract_doc_exists() {
+        let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("..");
+        let body = std::fs::read_to_string(root.join(QUALITY_HTML_CONTRACT_DOC))
+            .unwrap_or_else(|err| panic!("{QUALITY_HTML_CONTRACT_DOC} must exist: {err}"));
+        for needle in [
+            "quality-report-surface",
+            "div class=\"stat\"",
+            "word-grain",
+            "clock-lie",
+            "quality/seal-atlas.",
+        ] {
+            assert!(body.contains(needle), "CONTRACT.md missing {needle:?}");
+        }
+    }
+
+    #[test]
+    fn retired_qube_title_fails_handshake() {
+        let fake = r#"<html><head><title>Codescribe Quality Report</title></head>
+<body><h1>Codescribe Quality Report</h1><p>Avg WER 12%</p></body></html>"#;
+        let failures = validate_quality_html(fake);
+        assert!(failures.len() >= 3, "{failures:?}");
+    }
+
+    #[test]
     fn gold_atlas_html_is_a_pcm_instrument_not_a_wer_table() {
         let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("..");
         let path = root.join(SEAL_ATLAS_GOLD_HTML);
@@ -465,3 +549,4 @@ mod tests {
         );
     }
 }
+

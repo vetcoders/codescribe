@@ -1,0 +1,409 @@
+---
+import Layout from '../../layouts/Layout.astro';
+import Nav from '../../components/Nav.astro';
+import Footer from '../../components/Footer.astro';
+import { page } from '../../lib/asset';
+---
+
+<Layout
+  title="Voice Lab — codescribe"
+  description="Teacher and Seal Atlas, on demand. Live × Whisper × human. Not a daemon."
+  path="voice/lab"
+>
+  <Nav current="lab" />
+  <main id="main" class="lab">
+    <header class="hero">
+      <p class="eyebrow">codescribe · voice lab</p>
+      <h1>Teacher <span class="accent">on demand.</span> Atlas <span class="accent">on demand.</span></h1>
+      <p class="lede">
+        This is not a second product and not a phone PWA. It is the Codescribe
+        quality module: the same triangle as <code>codescribe-teacher</code>.
+        Apple/live under-generates. Whisper over-fills the gaps. Human writes
+        the sentence. Teach runs when you ask — never on the live path.
+      </p>
+      <p class="axiom">time × energy <strong>→ faithful sentence</strong></p>
+    </header>
+
+    <section class="panel" aria-labelledby="teach-title">
+      <div class="panel-head">
+        <div>
+          <p class="eyebrow">command</p>
+          <h2 id="teach-title">Teach</h2>
+        </div>
+        <p class="hint">Same <code>teach()</code> as the Rust CLI. Idle until you run it.</p>
+      </div>
+
+      <div class="legs">
+        <label>
+          <span>Live / Apple</span>
+          <textarea id="live" rows="7" placeholder="Under-generated assembly"></textarea>
+        </label>
+        <label>
+          <span>Whisper</span>
+          <textarea id="whisper" rows="7" placeholder="Final-pass over-fill"></textarea>
+        </label>
+        <label>
+          <span>Human</span>
+          <textarea id="human" rows="7" placeholder="Optional reference"></textarea>
+        </label>
+      </div>
+
+      <div class="actions">
+        <button type="button" id="run-teach" class="primary">Run teacher</button>
+        <button type="button" id="load-proof" class="ghost">Load proof take 01</button>
+        <button type="button" id="clear-teach" class="ghost">Clear</button>
+      </div>
+
+      <aside id="thesis" class="thesis" hidden></aside>
+      <div id="stats" class="stats" hidden></div>
+      <div class="split">
+        <div>
+          <h3>Needs attention</h3>
+          <div id="attention" class="table-wrap">
+            <p class="empty">Nothing yet. Teach is a command, not a loop.</p>
+          </div>
+        </div>
+        <div>
+          <h3>Lexicon hints</h3>
+          <ul id="lexicon" class="lex">
+            <li class="empty">No candidates until a human reference disagrees with Whisper.</li>
+          </ul>
+        </div>
+      </div>
+    </section>
+
+    <section class="panel" aria-labelledby="atlas-title">
+      <div class="panel-head">
+        <div>
+          <p class="eyebrow">evidence</p>
+          <h2 id="atlas-title">Seal Atlas</h2>
+        </div>
+        <p class="hint">One take, one PCM clock. Loaded only when you open it.</p>
+      </div>
+      <div class="actions">
+        <button type="button" id="open-atlas" class="primary">Open take 01</button>
+        <button type="button" id="close-atlas" class="ghost" hidden>Close atlas</button>
+        <a class="ghost linkish" href="/voice/atlas/seal-atlas.take01.html" target="_blank" rel="noopener">open raw ↗</a>
+      </div>
+      <div id="atlas-stage" class="atlas-stage" hidden>
+        <iframe title="Seal Atlas take 01" sandbox="allow-scripts" referrerpolicy="no-referrer"></iframe>
+      </div>
+    </section>
+
+    <p class="foot-note">
+      <a href={page('')}>← codescribe</a>
+      · module, not a sidecar · <code>codescribe.vetcoders.io/voice/lab</code>
+    </p>
+  </main>
+  <Footer />
+</Layout>
+
+<script>
+  import { PROOF_TAKE, teach, type TeacherReport } from '../../lib/teacher/teach';
+
+  const live = document.querySelector<HTMLTextAreaElement>('#live')!;
+  const whisper = document.querySelector<HTMLTextAreaElement>('#whisper')!;
+  const human = document.querySelector<HTMLTextAreaElement>('#human')!;
+  const thesis = document.querySelector<HTMLElement>('#thesis')!;
+  const stats = document.querySelector<HTMLElement>('#stats')!;
+  const attention = document.querySelector<HTMLElement>('#attention')!;
+  const lexicon = document.querySelector<HTMLElement>('#lexicon')!;
+  const atlasStage = document.querySelector<HTMLElement>('#atlas-stage')!;
+  const openAtlas = document.querySelector<HTMLButtonElement>('#open-atlas')!;
+  const closeAtlas = document.querySelector<HTMLButtonElement>('#close-atlas')!;
+
+  function render(report: TeacherReport) {
+    thesis.hidden = false;
+    thesis.textContent = report.thesis_summary;
+    stats.hidden = false;
+    const hit =
+      report.gap_hallucination_hit_rate == null
+        ? 'n/a'
+        : `${(report.gap_hallucination_hit_rate * 100).toFixed(0)}%`;
+    stats.innerHTML = [
+      ['live', report.live_token_count],
+      ['whisper', report.whisper_token_count],
+      ['equal', report.equal_ops],
+      ['errors', report.whisper_errors_vs_human],
+      ['at live-weak', report.whisper_errors_at_live_weak],
+      ['hit-rate', hit],
+    ]
+      .map(
+        ([label, value]) =>
+          `<span><b>${value}</b>${label}</span>`,
+      )
+      .join('');
+
+    if (!report.attention.length) {
+      attention.innerHTML = '<p class="empty">No spans. The legs already agree.</p>';
+    } else {
+      attention.innerHTML = `<table>
+        <thead><tr><th>#</th><th>kind</th><th>live</th><th>whisper</th><th>human</th></tr></thead>
+        <tbody>${report.attention
+          .map(
+            (span, index) => `<tr>
+              <td>${index + 1}</td>
+              <td><code>${span.kind}</code></td>
+              <td>${escapeHtml(span.live_tokens.join(' '))}</td>
+              <td>${escapeHtml(span.whisper_tokens.join(' '))}</td>
+              <td>${escapeHtml(span.human_tokens.join(' '))}</td>
+            </tr>`,
+          )
+          .join('')}</tbody></table>`;
+    }
+
+    if (!report.lexicon_hints.length) {
+      lexicon.innerHTML =
+        '<li class="empty">No candidates until a human reference disagrees with Whisper.</li>';
+    } else {
+      lexicon.innerHTML = report.lexicon_hints
+        .map(
+          (hint) =>
+            `<li><code>${escapeHtml(hint.from_whisper)}</code> → <code>${escapeHtml(hint.to_human)}</code></li>`,
+        )
+        .join('');
+    }
+  }
+
+  function escapeHtml(value: string): string {
+    return value
+      .replaceAll('&', '&')
+      .replaceAll('<', '<')
+      .replaceAll('>', '>')
+      .replaceAll('"', '"');
+  }
+
+  document.querySelector('#run-teach')?.addEventListener('click', () => {
+    render(
+      teach({
+        live: live.value,
+        whisper: whisper.value,
+        human: human.value.trim() || null,
+        label: 'voice-lab on-demand',
+      }),
+    );
+  });
+
+  document.querySelector('#load-proof')?.addEventListener('click', () => {
+    live.value = PROOF_TAKE.live;
+    whisper.value = PROOF_TAKE.whisper;
+    human.value = PROOF_TAKE.human;
+  });
+
+  document.querySelector('#clear-teach')?.addEventListener('click', () => {
+    live.value = '';
+    whisper.value = '';
+    human.value = '';
+    thesis.hidden = true;
+    stats.hidden = true;
+    attention.innerHTML = '<p class="empty">Nothing yet. Teach is a command, not a loop.</p>';
+    lexicon.innerHTML =
+      '<li class="empty">No candidates until a human reference disagrees with Whisper.</li>';
+  });
+
+  openAtlas.addEventListener('click', () => {
+    const frame = atlasStage.querySelector('iframe');
+    if (frame && !frame.getAttribute('src')) {
+      frame.src = '/voice/atlas/seal-atlas.take01.html';
+    }
+    atlasStage.hidden = false;
+    closeAtlas.hidden = false;
+    openAtlas.hidden = true;
+  });
+
+  closeAtlas.addEventListener('click', () => {
+    atlasStage.hidden = true;
+    closeAtlas.hidden = true;
+    openAtlas.hidden = false;
+  });
+</script>
+
+<style>
+  .lab {
+    max-width: 1100px;
+    margin: 0 auto;
+    padding: 36px 24px 80px;
+  }
+  .hero {
+    padding-bottom: 36px;
+    border-bottom: 1px solid var(--hairline);
+  }
+  .eyebrow {
+    margin: 0 0 10px;
+    font: 500 12px var(--font-mono);
+    letter-spacing: 0.14em;
+    text-transform: uppercase;
+    color: var(--eyebrow);
+  }
+  h1 {
+    margin: 0 0 16px;
+    font: 600 clamp(2rem, 5vw, 3.4rem)/1.05 var(--font-display);
+    letter-spacing: -0.035em;
+    color: var(--ink);
+  }
+  .accent { color: var(--terracotta); }
+  .lede {
+    max-width: 68ch;
+    margin: 0 0 18px;
+    color: var(--muted);
+    font: 400 1.05rem/1.55 var(--font-display);
+  }
+  .lede code, .hint code, .foot-note code {
+    font-family: var(--font-mono);
+    font-size: 0.86em;
+    color: var(--terracotta-ink);
+  }
+  .axiom {
+    margin: 0;
+    font: 500 13px var(--font-mono);
+    color: var(--muted-3);
+  }
+  .axiom strong { color: var(--olive-ink); font-weight: 500; }
+  .panel {
+    margin-top: 36px;
+    padding: 24px;
+    border: 1px solid var(--stroke);
+    border-radius: 16px;
+    background: var(--bg-card);
+  }
+  .panel-head {
+    display: flex;
+    justify-content: space-between;
+    gap: 16px;
+    align-items: end;
+    flex-wrap: wrap;
+    margin-bottom: 18px;
+  }
+  .panel-head h2 {
+    margin: 4px 0 0;
+    font: 600 1.6rem/1.1 var(--font-display);
+    letter-spacing: -0.03em;
+  }
+  .hint { margin: 0; max-width: 36ch; color: var(--muted-2); font-size: 0.9rem; }
+  .legs {
+    display: grid;
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+    gap: 12px;
+  }
+  label span {
+    display: block;
+    margin-bottom: 6px;
+    font: 500 11px var(--font-mono);
+    letter-spacing: 0.08em;
+    text-transform: uppercase;
+    color: var(--muted-3);
+  }
+  textarea {
+    width: 100%;
+    resize: vertical;
+    border: 1px solid var(--stroke);
+    border-radius: 8px;
+    background: var(--bg-soft);
+    color: var(--ink-2);
+    padding: 12px;
+    font: 400 13px/1.45 var(--font-mono);
+  }
+  .actions {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 10px;
+    margin: 16px 0 8px;
+  }
+  button, .linkish {
+    height: 42px;
+    padding: 0 16px;
+    border-radius: 9px;
+    border: 1px solid transparent;
+    font: 600 14px var(--font-display);
+    cursor: pointer;
+    display: inline-flex;
+    align-items: center;
+  }
+  .primary { background: var(--terracotta); color: #0a0a0a; }
+  .ghost, .linkish {
+    background: transparent;
+    color: var(--ink-2);
+    border-color: var(--stroke-3);
+    text-decoration: none;
+  }
+  .thesis {
+    margin-top: 16px;
+    padding: 14px 16px;
+    border-left: 3px solid var(--olive);
+    background: rgba(95, 107, 62, 0.12);
+    color: var(--ink-2);
+    font-size: 0.95rem;
+  }
+  .stats {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 10px;
+    margin: 14px 0;
+  }
+  .stats span {
+    min-width: 88px;
+    padding: 8px 10px;
+    border: 1px solid var(--stroke);
+    border-radius: 8px;
+    font: 400 11px var(--font-mono);
+    color: var(--muted-3);
+    text-transform: lowercase;
+  }
+  .stats b {
+    display: block;
+    color: var(--ink);
+    font: 500 16px var(--font-mono);
+    text-transform: none;
+  }
+  .split {
+    display: grid;
+    grid-template-columns: minmax(0, 1.4fr) minmax(0, 0.8fr);
+    gap: 20px;
+    margin-top: 8px;
+  }
+  h3 {
+    margin: 0 0 10px;
+    font: 600 0.95rem var(--font-display);
+  }
+  .table-wrap { overflow: auto; }
+  table {
+    width: 100%;
+    border-collapse: collapse;
+    font: 400 12px/1.4 var(--font-mono);
+  }
+  th, td {
+    border-bottom: 1px solid var(--hairline);
+    padding: 7px 6px;
+    text-align: left;
+    vertical-align: top;
+  }
+  th { color: var(--muted-3); font-weight: 500; }
+  code { color: var(--gold); }
+  .lex { margin: 0; padding-left: 1.1rem; }
+  .lex li { margin: 0 0 8px; font: 400 13px var(--font-mono); }
+  .empty { color: var(--muted-3); font: 400 0.9rem var(--font-display); }
+  .atlas-stage {
+    margin-top: 14px;
+    min-height: 64vh;
+    border: 1px solid var(--stroke);
+    border-radius: 12px;
+    overflow: hidden;
+    background: #eef1f4;
+  }
+  .atlas-stage iframe {
+    width: 100%;
+    height: 70vh;
+    border: 0;
+  }
+  .foot-note {
+    margin: 36px 0 0;
+    color: var(--muted-3);
+    font: 400 13px var(--font-mono);
+  }
+  .foot-note a { color: var(--ink-2); }
+  @media (max-width: 880px) {
+    .legs, .split { grid-template-columns: 1fr; }
+    .lab { padding: 24px 16px 64px; }
+    .panel { padding: 16px; }
+  }
+</style>
