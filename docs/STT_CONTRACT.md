@@ -75,6 +75,15 @@ audio-file multipart request is allowed only for an explicit retranscribe
 action (Overlay, Dictionary, or Teacher). An OpenAI multipart URL has no Voice
 Lab mapping, so it cannot silently turn a normal stop into a whole-file upload.
 
+**Dictionary helper (everyone, 2026-08-17):** Settings → Dictionary Retranscribe
+is an explicit file surface on the row's archived `<stem>_raw.{m4a,wav,flac}`.
+Helper engine follows `speech.engine.asr_mode`: `local_power` → `hq:` (same
+candle file pass as Overlay HQ / `codescribe transcribe --raw`); `cloud` →
+`cloud:` file upload. `apple_only` has no helper. The daily transcript is not
+overwritten until the user saves a correction. Missing archive must refuse —
+never fall back to `last_session.wav`. Lab three-judge / `:8444` is not this
+button.
+
 **Yours today:**
 
 ```json

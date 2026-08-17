@@ -85,7 +85,9 @@ final class OverlayController: ObservableObject {
     state: OverlayState? = nil,
     engine: DictationEngine? = nil,
     overlayEnabledProvider: @escaping () -> Bool = {
-      CodescribeConfig().trayToggles().transcriptionOverlayEnabled
+      DictationOverlayGate.shouldShowOverlay(
+        trayEnabled: CodescribeConfig().trayToggles().transcriptionOverlayEnabled
+      )
     },
     assistiveStatusProvider: @escaping () -> Bool = {
       CodescribeTrayStatus().currentStatus().assistive
@@ -181,6 +183,11 @@ final class OverlayController: ObservableObject {
       return
     }
     guard overlayEnabledProvider() else {
+      if DictationOverlayGate.isLabModeOn() {
+        DictationOverlayGate.logger.info("overlay suppressed: lab_mode")
+      } else {
+        DictationOverlayGate.logger.info("overlay suppressed: tray toggle off")
+      }
       if panel != nil { hide() }
       return
     }

@@ -176,6 +176,8 @@ struct VoiceLabPanel: View {
   @State private var playbackMessage: String?
   @State private var playingRowID: String?
   @State private var helperCompare: String?
+  @State private var helperText: String?
+  @State private var helperPending = false
   @State private var playbackDelegate = VoiceLabPlaybackDelegate()
 
   private var corrections: [VoiceLabCorrectionRow] {
@@ -325,9 +327,22 @@ struct VoiceLabPanel: View {
             }
             .buttonStyle(.bordered)
             .controlSize(.small)
-            .disabled(helperRetranscribePass(asrMode: model.asrModeId) == nil
-              || archivedAudioURL(configDir: model.configDir, rawText: row.rawText) == nil)
+            .disabled(
+              helperPending
+                || helperRetranscribePass(asrMode: model.asrModeId) == nil
+                || archivedAudioURL(configDir: model.configDir, rawText: row.rawText) == nil
+            )
             .accessibilityLabel("Retranscribe this take on the helper engine")
+            if let helperText, !helperText.isEmpty {
+              Button("Use helper as correction") {
+                editor.begin(row)
+                editor.canonical = helperText
+              }
+              .buttonStyle(.bordered)
+              .controlSize(.small)
+              .disabled(helperPending)
+              .accessibilityLabel("Load helper text into the correction editor without saving")
+            }
           }
           Text(row.rawText)
             .font(CSFont.ui(13, .medium))
@@ -468,16 +483,33 @@ struct VoiceLabPanel: View {
   }
 
   private func startHelperRetranscribe(_ row: VoiceLabCorrectionRow) {
-    guard let pass = helperRetranscribePass(asrMode: model.asrModeId) else {
+    let archived = archivedAudioURL(configDir: model.configDir, rawText: row.rawText)
+    switch HelperFilePass.request(asrMode: model.asrModeId, archivedAudio: archived) {
+    case .failure(.noHelper):
+      helperText = nil
       helperCompare = "No helper in Apple-only — pick Local power or Cloud."
-      return
-    }
-    guard archivedAudioURL(configDir: model.configDir, rawText: row.rawText) != nil else {
+    case .failure(.noArchivedAudio):
+      helperText = nil
       helperCompare = "No archived audio for this row — will not fall back to last_session.wav."
-      return
+    case .success(let (pass, prefixed)):
+      helperPending = true
+      helperText = nil
+      helperCompare = "Running \(pass.visibleName) on archived audio…"
+      Task { @MainActor in
+        defer { helperPending = false }
+        do {
+          let engine = AppModel.shared.overlay.state.engine ?? ControllerDictationEngine()
+          let result = try await engine.transcribeFile(path: prefixed)
+          let next = result.text.trimmingCharacters(in: .whitespacesAndNewlines)
+          helperText = next
+          helperCompare = HelperFilePass.compare(daily: row.rawText, helper: next, pass: pass)
+        } catch {
+          helperText = nil
+          helperCompare =
+            "Helper \(pass.visibleName) failed: \(error.localizedDescription)"
+        }
+      }
     }
-    helperCompare =
-      "Helper \(pass.visibleName) is selected. File pass runs after install-app (no live Whisper in this cut)."
   }
 
   /// Play/stop toggle for one row. Playback stops on navigation and when the
