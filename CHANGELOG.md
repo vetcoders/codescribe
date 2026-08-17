@@ -7,8 +7,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.14.0] - 2026-08-17
+
+> Minor: developer Lab surface, Dictionary helper file-pass, bus word pins,
+> and a 30-minute Whisper idle. Production DMG still has no Lab menu.
+
 ### Added
 
+- **Developer Lab on keyed `make install-app`.** `CSDeveloperSurface` bakes
+  only when Sparkle + production license public keys resolve on the machine.
+  Public `git clone && make` stays Lab-off. Production DMG refuses the bit.
+- **Lab mode overlay-off.** Developer veto hides the daily HUD without
+  flipping the tray "Transcription Overlay" toggle. Leftover UserDefaults
+  cannot hide overlay on a production bundle.
+- **Dictionary helper Retranscribe.** Follows Settings `asr_mode`:
+  `local_power` → `hq:` candle file pass, `cloud` → `cloud:` file pass,
+  `apple_only` disabled. Missing archive refuses — never `last_session.wav`.
 - **Voice Lab on the website** (`/voice/lab`). Teacher + Seal Atlas as a
   Codescribe module, not a sidecar: same `teach()` triangle as
   `codescribe-teacher`, idle until Run; Atlas HTML loads only on demand.
@@ -19,6 +33,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- **Whisper idle is 30 minutes after the last finished decode**, not 60
+  seconds from load. The running process only picks this up after
+  `install-app` + relaunch.
 - **Settings matches the live STT contract.** Dictation owns the ASR mode
   picker (`apple_only` / `local_power` / `cloud`) and writes
   `CODESCRIBE_ASR_MODE` plus explicit Cloud consent. Final pass is no longer
