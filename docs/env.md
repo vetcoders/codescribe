@@ -204,7 +204,7 @@ i runtime nie może znaleźć Whispera przez cache / config:
 - `AI_MAX_TOKENS`, `AI_ASSISTIVE_MAX_TOKENS` (RESTART NEEDED)
 - `TRANSCRIPT_SEND_MODE` (RESTART NEEDED)
 - `CODESCRIBE_AI_MAX_RETRIES`, `CODESCRIBE_AI_RETRY_DELAY_MS`, `CODESCRIBE_AI_ATTEMPT_TIMEOUT_MS`, `CODESCRIBE_AI_OLLAMA_ATTEMPT_TIMEOUT_MS` (HOT RELOADED)
-- `CODESCRIBE_RESPONSES_PROBE_URL` (HOT RELOADED; default pusty = oficjalny endpoint providera) — cel sondy autoryzacyjnej przy logowaniu kontem: świeży token musi umieć pisać do Responses API **zanim** zostanie zapisany jako „połączono" (pole: 5×401 `Missing scopes: api.responses.write`, 2026-08-14). Sonda nie wydaje tokenów (puste body ⇒ 400 przy zdrowym tokenie, 401 przy okrojonym). Testy hermetyczne celują w mock; produkcja zostawia unset.
+- `CODESCRIBE_RESPONSES_PROBE_URL` (HOT RELOADED; default pusty = oficjalny endpoint providera) — opcjonalny cel sondy *zdolności* Responses (puste body ⇒ 400/401). Nie bramkuje sign-in: OAuth zapisuje tożsamość wiersza; zapis do Responses to osobny lane/klucz.
 
 ### Hotkeys
 

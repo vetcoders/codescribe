@@ -508,12 +508,10 @@ pub fn store_account_tokens(
     save_key(account, &payload).map_err(|error| AccountAuthError::Storage(error.to_string()))
 }
 
-/// Official Responses endpoint a freshly minted account token must be able to
-/// write to. `None` ⇒ no probe exists for this provider and sign-in verifies
-/// nothing extra. Scoped to OpenAI: its login above requests identity scopes
-/// only, and a token without `api.responses.write` still exchanges cleanly —
-/// the field failure this probe exists for (five raw 401s in one morning,
-/// 2026-08-14).
+/// Optional official Responses URL for a *capability* probe. `None` ⇒ this
+/// provider has no such probe. Sign-in must not call this: ChatGPT OAuth is
+/// an identity row; Responses write is a separate lane/credential. Coupling
+/// them (2026-08-14) made Codex public tokens unable to save a session.
 fn responses_probe_endpoint(provider: ProviderKind) -> Option<String> {
     match provider {
         // The env override exists for hermetic tests (and emergency ops):
@@ -534,14 +532,11 @@ fn responses_probe_endpoint(provider: ProviderKind) -> Option<String> {
 /// it at a mock; production leaves it unset (official endpoint).
 pub const RESPONSES_PROBE_URL_ENV: &str = "CODESCRIBE_RESPONSES_PROBE_URL";
 
-/// Verify a just-exchanged account token can actually use the Responses API
-/// BEFORE it is persisted as "connected".
+/// Classify whether a token can write the official Responses API.
 ///
-/// The probe spends no tokens: an empty JSON body is authorized before it is
-/// validated, so a healthy token answers 400 (validation) while a
-/// scope-starved one answers 401. Only that definitive 401 fails the login;
-/// transport errors stay fail-open — the exchange itself just proved the
-/// network, and a flaky probe must not lock out an otherwise valid sign-in.
+/// Not a sign-in gate. Persist is provider-local identity; this probe is a
+/// later row/lane Test. Empty body: 400 = authorized, 401 = no write scope.
+/// Transport errors stay fail-open.
 pub async fn verify_responses_write_access(
     provider: ProviderKind,
     access_token: &str,
@@ -801,9 +796,8 @@ mod tests {
         (EnvGuard::set_path("CODESCRIBE_DATA_DIR", dir.path()), dir)
     }
 
-    /// The 401 field failure (2026-08-14): a scope-starved token must fail the
-    /// login BEFORE persisting, while a healthy token's 400 validation answer
-    /// passes — the probe authorizes before it validates and spends nothing.
+    /// Capability probe only: 401 means no Responses write; 400 means the
+    /// token authorized. Login persist does not call this.
     #[tokio::test]
     async fn responses_probe_rejects_401_and_passes_validation_400() {
         let mut starved_server = mockito::Server::new_async().await;
@@ -816,7 +810,7 @@ mod tests {
         let starved_url = format!("{}/v1/responses", starved_server.url());
         let error = verify_responses_write_access_at(&starved_url, "starved-token")
             .await
-            .expect_err("401 must reject the sign-in");
+            .expect_err("401 classifies as no Responses write");
         assert!(error.to_string().contains("api.responses.write"));
         starved.assert_async().await;
 

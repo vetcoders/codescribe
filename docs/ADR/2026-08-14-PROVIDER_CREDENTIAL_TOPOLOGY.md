@@ -84,6 +84,9 @@ provider ref, credential KIND (key/account), model — no free endpoint field.
 - **I4**: vendor endpoints are compile-time constants; only Tier-2 rows carry
   URLs.
 - **I5**: the UI never shows a credential slot a lane cannot actually use.
+- **I6**: OAuth persist is identity for that vendor row only. It must not
+  probe another wire (official OpenAI Responses, Libraxis, a lane
+  endpoint). Capability lives on the row/lane Test, not as a login gate.
 
 ## Migration sketch
 

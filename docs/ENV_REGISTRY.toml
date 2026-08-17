@@ -596,7 +596,7 @@ default = ""
 type = "string"
 reload = "hot"
 category = "llm"
-description = "Override target for the sign-in Responses authorization probe (empty = provider's official endpoint). Hermetic tests point it at a mock; production leaves it unset."
+description = "Override target for the optional Responses capability probe (empty = provider official endpoint). Not a sign-in gate; identity persist is provider-local."
 
 [vars.STT_TAIL_PROVIDER]
 default = "inprocess"
