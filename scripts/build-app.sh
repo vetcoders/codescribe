@@ -177,8 +177,14 @@ if [ "${SKIP_XCODEBUILD:-0}" = "1" ]; then
   exit 0
 fi
 
+if [ "$PROFILE" = "release" ]; then
+  CS_DEVELOPER_SURFACE=0
+else
+  CS_DEVELOPER_SURFACE="${CODESCRIBE_DEVELOPER_SURFACE:-0}"
+fi
 echo "==> [5/7] Building app (xcodebuild, $CONFIG)"
 echo "    stamp: v${STAMP_VERSION} build ${STAMP_BUILD_NUM} commit ${STAMP_COMMIT} built ${STAMP_BUILT_AT}"
+echo "    developer surface: ${CS_DEVELOPER_SURFACE}"
 DERIVED="$REPO_ROOT/macos/build"
 # ONLY_ACTIVE_ARCH: cargo emits a single-arch libcodescribe_ffi.dylib, so a
 # universal (x86_64+arm64) Release link dies on missing Rust symbols.
@@ -196,6 +202,7 @@ xcodebuild -project macos/Codescribe.xcodeproj \
   CS_BUILD_COMMIT="$STAMP_COMMIT" \
   CS_BUILT_AT="$STAMP_BUILT_AT" \
   SPARKLE_ED_PUBLIC_KEY="${SPARKLE_ED_PUBLIC_KEY:-}" \
+  CS_DEVELOPER_SURFACE="${CS_DEVELOPER_SURFACE:-0}" \
   build
 
 APP="$DERIVED/Build/Products/$CONFIG/$SCHEME.app"

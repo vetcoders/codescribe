@@ -300,6 +300,14 @@ if [[ -n "${APP_PATH:-}" ]]; then
     else
       ok "SUPublicEDKey is non-empty${SPARKLE_ED_PUBLIC_KEY:+ and matches release input}"
     fi
+
+    DEV_SURFACE=$(/usr/libexec/PlistBuddy -c 'Print :CSDeveloperSurface' "$PLIST" 2>/dev/null || echo 0)
+    DEV_SURFACE="${DEV_SURFACE//[[:space:]]/}"
+    if [[ "$DEV_SURFACE" == "1" || "$DEV_SURFACE" == "true" || "$DEV_SURFACE" == "YES" ]]; then
+      fail "CSDeveloperSurface is set — Lab must not ship in a production DMG"
+    else
+      ok "CSDeveloperSurface is off"
+    fi
   fi
 
   # Deep codesign on the app bundle

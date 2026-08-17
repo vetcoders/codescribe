@@ -59,6 +59,8 @@ targets:
         # accepting unsigned feeds (fail-closed).
         SUFeedURL: https://codescribe.vetcoders.io/appcast.xml
         SUPublicEDKey: $(SPARKLE_ED_PUBLIC_KEY)
+        # 1 only on keyed `make install-app`. Production DMG must stay 0.
+        CSDeveloperSurface: $(CS_DEVELOPER_SURFACE)
         SUEnableAutomaticChecks: true
         LSUIElement: true
         NSMicrophoneUsageDescription: "Codescribe transcribes your speech locally with on-device Whisper."
@@ -79,6 +81,7 @@ targets:
         # then fail signature verification, which is the safe default). The
         # release pipeline overrides this via scripts/build-app.sh.
         SPARKLE_ED_PUBLIC_KEY: ""
+        CS_DEVELOPER_SURFACE: "0"
         # Stable dev identity → own TCC/keychain slot across rebuilds.
         PRODUCT_BUNDLE_IDENTIFIER: com.vetcoders.codescribe
         CODE_SIGN_STYLE: Manual
