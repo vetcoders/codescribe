@@ -71,6 +71,65 @@ pub fn stt_auth_mode(endpoint: &str) -> SttAuthMode {
     }
 }
 
+/// Map a live WebSocket STT URL onto the multipart file probe.
+///
+/// Inverse of `live_websocket_endpoint` for the sockets that mapper owns:
+/// Libraxis cloud `wss://…/v1/audio/transcribe` → `https://…/v1/audio/transcriptions`,
+/// and loopback `ws`/`wss` `…/transcribe` → `http`/`https` `…/transcriptions`.
+/// The Libraxis split (`:8446` WS worker has no file route; `:8444` does)
+/// is applied only on loopback. Already-HTTP endpoints stay unchanged.
+/// Unknown live sockets are left as-is so [`validate_remote_endpoint`] still
+/// fail-closes them.
+pub(crate) fn file_probe_endpoint(endpoint: &str) -> String {
+    let Ok(mut url) = Url::parse(endpoint) else {
+        return endpoint.to_string();
+    };
+    let host = url
+        .host_str()
+        .unwrap_or_default()
+        .trim_matches(['[', ']'])
+        .to_owned();
+    match url.scheme() {
+        "http" | "https" => return url.to_string(),
+        "ws" | "wss" => {}
+        _ => return endpoint.to_string(),
+    }
+
+    let loopback = host.eq_ignore_ascii_case("localhost")
+        || host
+            .parse::<IpAddr>()
+            .is_ok_and(|address| address.is_loopback());
+    let http_scheme = if url.scheme() == "wss" {
+        "https"
+    } else {
+        "http"
+    };
+
+    if host.eq_ignore_ascii_case("api.libraxis.cloud") {
+        if url.set_scheme("https").is_err() {
+            return endpoint.to_string();
+        }
+        url.set_path("/v1/audio/transcriptions");
+        url.set_query(None);
+        url.set_fragment(None);
+        return url.to_string();
+    }
+    if !loopback {
+        return endpoint.to_string();
+    }
+    if url.set_scheme(http_scheme).is_err() {
+        return endpoint.to_string();
+    }
+    if url.path().ends_with("/transcribe") {
+        let path = url.path().trim_end_matches("transcribe").to_string() + "transcriptions";
+        url.set_path(&path);
+    }
+    if url.port() == Some(8446) && url.set_port(Some(8444)).is_err() {
+        return endpoint.to_string();
+    }
+    url.to_string()
+}
+
 const SIDECAR_PROTOCOL_VERSION: u8 = 1;
 const SIDECAR_CONNECT_TIMEOUT: Duration = Duration::from_secs(2);
 const SIDECAR_IO_TIMEOUT: Duration = Duration::from_secs(30);
@@ -1306,6 +1365,34 @@ mod tests {
         assert_eq!(
             stt_auth_mode("https://stt.example.test/v1/audio/transcriptions"),
             SttAuthMode::ApiKey
+        );
+    }
+
+    #[test]
+    fn file_probe_endpoint_inverts_known_live_sockets() {
+        assert_eq!(
+            file_probe_endpoint("https://api.libraxis.cloud/v1/audio/transcriptions"),
+            "https://api.libraxis.cloud/v1/audio/transcriptions"
+        );
+        assert_eq!(
+            file_probe_endpoint("wss://api.libraxis.cloud/v1/audio/transcribe"),
+            "https://api.libraxis.cloud/v1/audio/transcriptions"
+        );
+        assert_eq!(
+            file_probe_endpoint("ws://127.0.0.1:8000/v1/audio/transcribe"),
+            "http://127.0.0.1:8000/v1/audio/transcriptions"
+        );
+        assert_eq!(
+            file_probe_endpoint("ws://127.0.0.1:8446/v1/audio/transcribe"),
+            "http://127.0.0.1:8444/v1/audio/transcriptions"
+        );
+        assert_eq!(
+            file_probe_endpoint("wss://localhost:8446/v1/audio/transcribe"),
+            "https://localhost:8444/v1/audio/transcriptions"
+        );
+        assert_eq!(
+            file_probe_endpoint("wss://stt.example.test/v1/audio/transcribe"),
+            "wss://stt.example.test/v1/audio/transcribe"
         );
     }
 
