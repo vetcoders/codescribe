@@ -124,6 +124,15 @@ enum OverlayActionPresentation {
   static let sendHelp = "Send transcript to the agent"
 }
 
+/// Dictionary/history helper follows Settings `asr_mode`. Apple-only has no helper.
+func helperRetranscribePass(asrMode: String) -> OverlayRetranscribePass? {
+  switch asrMode.lowercased() {
+  case "local_power": return .fullHq
+  case "cloud": return .cloud
+  default: return nil
+  }
+}
+
 enum OverlayRetranscribePass: String, CaseIterable, Identifiable {
   case fullHq = "hq"
   case cloud = "cloud"
