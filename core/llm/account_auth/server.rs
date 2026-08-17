@@ -30,7 +30,7 @@ use tiny_http::{Header, Request, Response, Server, StatusCode};
 use crate::llm::account_auth::pkce::{PkceCodes, generate_pkce};
 use crate::llm::account_auth::{
     AccountAuthError, AccountTokens, LoginFlow, ProviderOAuthConfig, TokenRequestEncoding,
-    issuer_for, provider_oauth_config, store_account_tokens, verify_responses_write_access,
+    issuer_for, provider_oauth_config, store_account_tokens,
 };
 use crate::llm::provider::ProviderKind;
 
@@ -333,18 +333,10 @@ async fn process_request(
         .await
         {
             Ok(tokens) => {
-                // A token that cannot write to the Responses API must never be
-                // shown as "connected" — the first real prompt would answer a
-                // raw 401 (field failure, 2026-08-14). Reject BEFORE persisting.
-                if let Err(error) =
-                    verify_responses_write_access(opts.provider, &tokens.access_token).await
-                {
-                    return HandledRequest::ResponseAndExit {
-                        headers: Vec::new(),
-                        body: format!("Sign-in rejected: {error}").into_bytes(),
-                        result: Err(error),
-                    };
-                }
+                // Persist identity for this vendor row only. A Responses-write
+                // probe against api.openai.com is a different provider/lane
+                // capability and must not veto ChatGPT sign-in (develop/main
+                // store here; Codex public tokens never carry api.responses.write).
                 if let Err(error) = store_account_tokens(opts.provider, &tokens) {
                     return HandledRequest::Response(
                         Response::from_string(format!("Unable to persist account tokens: {error}"))
@@ -620,20 +612,6 @@ mod tests {
         let _tokens = EnvGuard::unset(OPENAI_ACCOUNT_TOKENS_ACCOUNT);
 
         let mut issuer = mockito::Server::new_async().await;
-        // Healthy scope: the probe's empty body earns a 400 validation answer.
-        // Pinned to the mock — an unpinned probe would leak to api.openai.com.
-        let probe = issuer
-            .mock("POST", "/v1/responses")
-            .match_header("authorization", "Bearer account-access")
-            .with_status(400)
-            .with_body(r#"{"error":"invalid input"}"#)
-            .expect(1)
-            .create_async()
-            .await;
-        let _probe_url = EnvGuard::set(
-            crate::llm::account_auth::RESPONSES_PROBE_URL_ENV,
-            &format!("{}/v1/responses", issuer.url()),
-        );
         let _mock = issuer
             .mock("POST", "/oauth/token")
             .match_body(mockito::Matcher::AllOf(vec![
@@ -673,15 +651,14 @@ mod tests {
             load_account_tokens(ProviderKind::OpenAiResponses).expect("tokens were stored");
         assert_eq!(stored.access_token, "account-access");
         assert_eq!(stored.refresh_token.as_deref(), Some("account-refresh"));
-        probe.assert_async().await;
     }
 
-    /// The field failure (five raw 401s, 2026-08-14): a token that exchanges
-    /// cleanly but cannot write to the Responses API must FAIL the login and
-    /// must never be persisted as "connected".
+    /// Provider independence: ChatGPT identity stores after a clean exchange.
+    /// Official Responses write is a different row/lane; login must not probe it
+    /// (Codex public tokens never carry `api.responses.write`).
     #[tokio::test]
     #[serial]
-    async fn scope_starved_token_fails_login_and_is_not_stored() {
+    async fn chatgpt_identity_token_stores_without_responses_write() {
         let _disable = EnvGuard::set("CODESCRIBE_DISABLE_KEYCHAIN", "1");
         let _tokens = EnvGuard::unset(OPENAI_ACCOUNT_TOKENS_ACCOUNT);
 
@@ -695,16 +672,9 @@ mod tests {
             .await;
         let probe = issuer
             .mock("POST", "/v1/responses")
-            .match_header("authorization", "Bearer scope-starved")
-            .with_status(401)
-            .with_body(r#"{"error":"Missing scopes: api.responses.write"}"#)
-            .expect(1)
+            .expect(0)
             .create_async()
             .await;
-        let _probe_url = EnvGuard::set(
-            crate::llm::account_auth::RESPONSES_PROBE_URL_ENV,
-            &format!("{}/v1/responses", issuer.url()),
-        );
 
         let mut opts = openai_opts("client");
         opts.issuer = issuer.url();
@@ -716,16 +686,15 @@ mod tests {
             "http://127.0.0.1:{}/auth/callback?code=auth-code&state=starved-state",
             login.actual_port
         );
-        let _response = reqwest::get(&callback).await.expect("callback request");
-        let error = login
+        let response = reqwest::get(&callback).await.expect("callback request");
+        assert!(response.status().is_success());
+        login
             .block_until_done()
             .await
-            .expect_err("scope-starved login must fail");
-        assert!(error.to_string().contains("api.responses.write"));
-        assert!(
-            load_account_tokens(ProviderKind::OpenAiResponses).is_err(),
-            "a rejected token must not be stored"
-        );
+            .expect("identity login stores");
+        let stored =
+            load_account_tokens(ProviderKind::OpenAiResponses).expect("identity token stored");
+        assert_eq!(stored.access_token, "scope-starved");
         probe.assert_async().await;
     }
 
