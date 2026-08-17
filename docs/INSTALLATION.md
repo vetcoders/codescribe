@@ -43,6 +43,12 @@ checked-in development license verifier. Production DMGs use the distinct
 is the real 32-byte Ed25519 public key paired with the production signer. A UUID
 is not a license public key.
 
+`make install-app` bakes Lab (`CSDeveloperSurface=1`) only when both the
+Sparkle public key and the production-license public key resolve from
+`~/.vibecrafted/secrets/codescribe/` (the same files a real release uses).
+A public clone without those files still installs the daily app; Lab stays
+off. Production DMGs refuse the bit.
+
 ### Method 3: DMG Distribution (For End Users)
 
 ```bash

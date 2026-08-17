@@ -182,7 +182,11 @@ config:
 install-app:
 	@echo "Building $(CODESCRIBE_APP_NAME).app (SwiftUI, optimized local profile) via scripts/build-app.sh ..."
 	@echo "Local install uses the development license verifier; CODESCRIBE_LICENSE_PUBLIC_KEY_HEX is reserved for distribution builds."
-	@env -u CODESCRIBE_LICENSE_PUBLIC_KEY_HEX $(MAKE) --no-print-directory app PROFILE=local-release
+	@BIT=$$(./scripts/developer-surface-gate.sh); \
+	echo "Developer surface: $$BIT (1 needs legit Sparkle + license public keys on this machine)."; \
+	env -u CODESCRIBE_LICENSE_PUBLIC_KEY_HEX \
+	  CODESCRIBE_DEVELOPER_SURFACE=$$BIT \
+	  $(MAKE) --no-print-directory app PROFILE=local-release
 	@APP_SRC="macos/build/Build/Products/Release/Codescribe.app"; \
 	if [ ! -d "$$APP_SRC" ]; then \
 		echo "Build product missing: $$APP_SRC — 'make app PROFILE=local-release' did not produce the app."; \
