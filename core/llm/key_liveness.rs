@@ -162,17 +162,22 @@ pub fn probe_api_key_liveness(account: &str) -> ApiKeyLivenessResult {
 
 /// Probe the configured multipart STT slot with 100 ms of synthetic silence.
 /// The response body is never surfaced; only auth/quota/transport status is.
+/// A live WebSocket URL is remapped to the file worker first — Test is not a
+/// handshake against the Voice Lab socket.
 fn probe_stt_key(
     client: &Client,
     config: &Config,
     account: &str,
     api_key: &str,
 ) -> ApiKeyLivenessResult {
-    let endpoint = config
-        .stt_endpoint
-        .clone()
-        .filter(|value| !value.trim().is_empty())
-        .unwrap_or_else(|| "http://127.0.0.1:8000/v1/audio/transcriptions".to_string());
+    let endpoint = crate::stt::tail_provider::file_probe_endpoint(
+        config
+            .stt_endpoint
+            .as_deref()
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+            .unwrap_or("http://127.0.0.1:8000/v1/audio/transcriptions"),
+    );
     if crate::stt::tail_provider::validate_remote_endpoint(&endpoint).is_err() {
         return ApiKeyLivenessResult::new(
             account,
@@ -516,6 +521,42 @@ mod tests {
             result.message,
             "local STT endpoint accepts unauthenticated requests"
         );
+    }
+
+    /// A stored Voice Lab socket is remapped onto the file worker before POST.
+    #[test]
+    fn stt_probe_maps_live_websocket_to_multipart() {
+        let listener = TcpListener::bind("127.0.0.1:0").expect("bind STT live-socket probe server");
+        let address = listener
+            .local_addr()
+            .expect("STT live-socket probe address");
+        let live = format!("ws://{address}/v1/audio/transcribe");
+        let expected = format!("http://{address}/v1/audio/transcriptions");
+        let server = thread::spawn(move || {
+            let (mut stream, _) = listener.accept().expect("accept remapped STT probe");
+            let mut buffer = [0_u8; 8192];
+            let bytes_read = stream.read(&mut buffer).expect("read remapped STT probe");
+            stream
+                .write_all(
+                    b"HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: 11\r\nConnection: close\r\n\r\n{\"text\":\"\"}",
+                )
+                .expect("write remapped STT probe response");
+            String::from_utf8_lossy(&buffer[..bytes_read]).to_string()
+        });
+        let client = Client::builder()
+            .timeout(PROBE_TIMEOUT)
+            .connect_timeout(PROBE_TIMEOUT)
+            .build()
+            .expect("build remapped STT probe client");
+        let config = Config {
+            stt_endpoint: Some(live),
+            ..Config::default()
+        };
+        let result = probe_stt_key(&client, &config, "STT_API_KEY", "test-key");
+        assert_eq!(result.status, ApiKeyLivenessStatus::Ok);
+        assert_eq!(result.probed_endpoint.as_deref(), Some(expected.as_str()));
+        let request = server.join().expect("remapped STT probe server");
+        assert!(request.starts_with("POST /v1/audio/transcriptions HTTP/1.1"));
     }
 
     /// 2xx means the provider accepted the key and returned a usable response.

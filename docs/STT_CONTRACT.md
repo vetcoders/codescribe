@@ -66,7 +66,10 @@ STT authentication follows endpoint ownership: `api.openai.com` and
 `api.libraxis.cloud` use `Authorization: Bearer`; loopback servers require no
 API key; remaining custom endpoints retain the `x-api-key` contract. The key
 probe, live socket handshake, and explicit retranscribe path use the same
-resolver, so Settings cannot disagree with delivery.
+resolver, so Settings cannot disagree with delivery. Settings → Test is the
+multipart file probe (`/v1/audio/transcriptions`); a stored Voice Lab
+`wss`/`ws` URL is remapped first (Libraxis cloud path, loopback `:8446` →
+`:8444`). It is not a WebSocket handshake.
 
 Transport ownership is equally explicit. Normal cloud capture uses the proven
 Voice Lab WebSocket (`config` → bounded PCM `chunk` → periodic `flush` →
