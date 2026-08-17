@@ -175,6 +175,7 @@ struct VoiceLabPanel: View {
   @State private var playbackSound: NSSound?
   @State private var playbackMessage: String?
   @State private var playingRowID: String?
+  @State private var helperCompare: String?
   @State private var playbackDelegate = VoiceLabPlaybackDelegate()
 
   private var corrections: [VoiceLabCorrectionRow] {
@@ -319,6 +320,14 @@ struct VoiceLabPanel: View {
                 ? "Stop playing the original recording"
                 : "Play the original recording for this correction"
             )
+            Button("Retranscribe") {
+              startHelperRetranscribe(row)
+            }
+            .buttonStyle(.bordered)
+            .controlSize(.small)
+            .disabled(helperRetranscribePass(asrMode: model.asrModeId) == nil
+              || archivedAudioURL(configDir: model.configDir, rawText: row.rawText) == nil)
+            .accessibilityLabel("Retranscribe this take on the helper engine")
           }
           Text(row.rawText)
             .font(CSFont.ui(13, .medium))
@@ -341,6 +350,12 @@ struct VoiceLabPanel: View {
             Text(playbackMessage)
               .font(CSFont.ui(10.5))
               .foregroundStyle(CSColor.textMutedAlt)
+          }
+          if let helperCompare {
+            Text(helperCompare)
+              .font(CSFont.mono(11, .medium))
+              .foregroundStyle(CSColor.oliveLight)
+              .textSelection(.enabled)
           }
           VStack(alignment: .leading, spacing: 5) {
             Text("DELIVERED AFTER FORMATTING")
@@ -450,6 +465,19 @@ struct VoiceLabPanel: View {
     if model.finalizeVoiceLabCorrection(id: row.id, canonical: editor.canonical) {
       editor.cancel()
     }
+  }
+
+  private func startHelperRetranscribe(_ row: VoiceLabCorrectionRow) {
+    guard let pass = helperRetranscribePass(asrMode: model.asrModeId) else {
+      helperCompare = "No helper in Apple-only — pick Local power or Cloud."
+      return
+    }
+    guard archivedAudioURL(configDir: model.configDir, rawText: row.rawText) != nil else {
+      helperCompare = "No archived audio for this row — will not fall back to last_session.wav."
+      return
+    }
+    helperCompare =
+      "Helper \(pass.visibleName) is selected. File pass runs after install-app (no live Whisper in this cut)."
   }
 
   /// Play/stop toggle for one row. Playback stops on navigation and when the
