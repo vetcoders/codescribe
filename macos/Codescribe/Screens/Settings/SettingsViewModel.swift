@@ -182,6 +182,7 @@ enum SettingsPanelDestination: Equatable {
   case dictation
   case audio
   case dictionary
+  case lab
   case license
   case user
 }
@@ -210,6 +211,7 @@ enum SettingsSection: String, CaseIterable, Identifiable {
   case engine
   case audio
   case voiceLab
+  case lab
   case license
   case user
 
@@ -225,6 +227,7 @@ enum SettingsSection: String, CaseIterable, Identifiable {
     case .engine: return "Dictation"
     case .audio: return "Audio"
     case .voiceLab: return "Dictionary"
+    case .lab: return "Lab"
     case .license: return "License"
     case .user: return "User"
     }
@@ -240,6 +243,7 @@ enum SettingsSection: String, CaseIterable, Identifiable {
     case .engine: return .dictation
     case .audio: return .audio
     case .voiceLab: return .dictionary
+    case .lab: return .lab
     case .license: return .license
     case .user: return .user
     }
@@ -247,6 +251,8 @@ enum SettingsSection: String, CaseIterable, Identifiable {
 
   var availability: SettingsSectionAvailability {
     switch self {
+    case .lab:
+      return DeveloperSurface.isEnabled() ? .available : .hidden
     case .creator, .shortcuts, .keys, .agent, .prompts, .engine, .audio, .voiceLab, .license, .user:
       return .available
     }
@@ -260,7 +266,7 @@ enum SettingsSection: String, CaseIterable, Identifiable {
   var group: SettingsSectionGroup {
     switch self {
     case .creator, .shortcuts, .audio: return .setup
-    case .keys, .agent, .prompts, .engine, .voiceLab: return .intelligence
+    case .keys, .agent, .prompts, .engine, .voiceLab, .lab: return .intelligence
     case .license, .user: return .account
     }
   }
@@ -277,6 +283,7 @@ enum SettingsSection: String, CaseIterable, Identifiable {
     case .engine: return "waveform"
     case .audio: return "mic"
     case .voiceLab: return "character.book.closed"
+    case .lab: return "waveform.path.ecg"
     case .license: return "checkmark.seal"
     case .user: return "person.crop.circle"
     }
@@ -296,6 +303,7 @@ enum SettingsSection: String, CaseIterable, Identifiable {
       return ["stt", "whisper", "apple", "speech", "transcription", "asr", "cloud", "consent"]
     case .audio: return ["microphone", "mikrofon", "input", "device", "levels"]
     case .voiceLab: return ["lexicon", "dictionary", "vocabulary", "corrections", "słownik"]
+    case .lab: return ["lab", "voice lab", "three-judge", "seismograph"]
     case .license: return ["subscription", "activation", "trial", "billing"]
     case .user: return ["account", "profile", "sign in", "identity"]
     }

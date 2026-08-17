@@ -14,4 +14,10 @@ final class DeveloperSurfaceTests: XCTestCase {
     XCTAssertTrue(DeveloperSurface.parse("true"))
     XCTAssertTrue(DeveloperSurface.parse(NSNumber(value: 1)))
   }
+
+  func testLabSectionIsHiddenOnProductionBundle() {
+    XCTAssertEqual(SettingsSection.lab.availability, .hidden)
+    XCTAssertFalse(SettingsSection.matching(query: "").contains(.lab))
+    XCTAssertTrue(SettingsSection.matching(query: "").contains(.agent))
+  }
 }
