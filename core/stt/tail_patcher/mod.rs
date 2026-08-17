@@ -502,6 +502,11 @@ struct EditGroup {
 /// its casing and punctuation. Diacritics stay significant — they are
 /// content, not decoration. A token that is all punctuation falls back to its
 /// lowercased raw form so it can only match another such token.
+fn token_is_digit_run(token: &Token) -> bool {
+    let key = alignment_key(&token.text);
+    !key.is_empty() && key.chars().all(|c| c.is_ascii_digit())
+}
+
 fn alignment_key(token: &str) -> String {
     let stripped = token.trim_matches(|c: char| !c.is_alphanumeric());
     if stripped.is_empty() {
@@ -907,16 +912,45 @@ pub fn compute_tail_patch_with_context(
     // routing from the under-commit work — head-loss recovery escalates as
     // `UnderCommit`, tiny bursts ("tak" → "no tak") stay noise-skipped — and a
     // blanket floor was measured to swallow all three of those contracts.
+    //
+    // The floor is not a hole: a 0-match rewrite of a short canvas ("dwa" → "w",
+    // "Jest pierwszy" → "w oknie") is wholesale divergence even when the token
+    // count fits the budget. Live 2026-08-17 card A applied both.
+    //
+    // High-coverage modest expansion is the other measured miss: Apple fused
+    // "cztery pięć" to "2345" or dropped the tail, Whisper recovered the words,
+    // and change_ratio 0.67–0.75 discarded it. If almost every committed token
+    // is still in Whisper and Whisper only added a few words, that is repair,
+    // not a dump onto the canvas.
     let changed: usize = groups
         .iter()
         .map(|g| g.committed.len().max(g.retranscribed.len()))
         .sum();
+    let shares_anchor = !matches.is_empty();
     let small_substitution_fix = changed <= cfg.small_edit_token_floor
+        && shares_anchor
         && groups
             .iter()
             .all(|g| !g.committed.is_empty() && !g.retranscribed.is_empty());
+    let modest_extra = r_tokens.len() <= c_tokens.len().saturating_add(4)
+        && r_tokens.len() <= c_tokens.len().saturating_mul(2).max(c_tokens.len() + 1);
+    let almost_covered = shares_anchor && matches.len() >= c_tokens.len().saturating_sub(1);
+    let expansion_groups_ok = groups.iter().all(|g| {
+        if g.retranscribed.is_empty() {
+            return true;
+        }
+        if g.committed.is_empty() {
+            // Trailing fill only. Leading prepend stays on under-commit / skip
+            // so "no tak" and "po …" cannot dump onto the canvas.
+            return g.has_prev_match;
+        }
+        // The only substitution this bypass may apply is unfusing a digit run
+        // ("2345" → "cztery pięć"). Rewriting "piec" into five words is dump.
+        g.committed.len() == 1 && token_is_digit_run(&c_tokens[g.committed.start])
+    });
+    let high_coverage_expansion = almost_covered && modest_extra && expansion_groups_ok;
     let ratio = changed as f64 / c_tokens.len() as f64;
-    if ratio > cfg.max_change_ratio && !small_substitution_fix {
+    if ratio > cfg.max_change_ratio && !small_substitution_fix && !high_coverage_expansion {
         // Before the cap discards this: is the canvas starved rather than
         // wrong? The bounded diff was never an instrument for measuring lost
         // speech, and using it as one is what threw the recovered 104 s / 107 s
@@ -968,6 +1002,31 @@ pub fn compute_tail_patch_with_context(
             .join(" ");
 
         if c_empty {
+            let recovered: Vec<&Token> =
+                g.retranscribed.clone().map(|idx| &r_tokens[idx]).collect();
+            let neighbour_tokens = tokenize(neighbour_context);
+            if canvas_already_carries(&c_tokens, &recovered)
+                || canvas_already_carries(&neighbour_tokens, &recovered)
+            {
+                // Already on this canvas or the previous utterance: placing it
+                // again is the 2026-08-14 / 2026-08-17 "po" / phrase dump.
+                continue;
+            }
+            if !g.has_prev_match {
+                // Leading prepend onto a healthy canvas is obsranie. Head-loss
+                // recovery stays legal only on a 1–2 token canvas, and never
+                // for a single short function word ("po", "a", "no").
+                let short_function_preamble = recovered.len() == 1
+                    && recovered[0]
+                        .text
+                        .chars()
+                        .filter(|c| c.is_alphanumeric())
+                        .count()
+                        <= 3;
+                if c_tokens.len() > 2 || short_function_preamble {
+                    continue;
+                }
+            }
             // Insertion: anchor after the previous matched token (or at start).
             if g.has_prev_match {
                 events.push(EngineEvent::ReplaceRange {
@@ -1624,6 +1683,103 @@ mod tests {
             }
             other => panic!("wholesale divergence must not rewrite, got {other:?}"),
         }
+    }
+
+    /// Live 2026-08-17 card B: Apple fused "cztery pięć" to "2345". Whisper
+    /// recovered the words. The ratio cap used to throw that repair away.
+    #[test]
+    fn fused_digit_run_expands_to_number_words() {
+        let cfg = TailPatchConfig::default();
+        let committed = "2345 raz dwa trzy";
+        let retranscribed = "cztery pięć raz dwa trzy";
+        let outcome = compute_tail_patch(committed, retranscribed, 70, &cfg);
+        let applied = apply_all(committed, &outcome);
+        assert!(
+            matches!(outcome, TailPatchOutcome::Patches(_)),
+            "fused digits must patch, got {outcome:?}"
+        );
+        let lower = applied.to_lowercase();
+        assert!(
+            lower.contains("cztery") && lower.contains("pięć") && lower.contains("raz"),
+            "number words must land: {applied:?}"
+        );
+        assert!(
+            !lower.contains("2345"),
+            "the fused run must not survive: {applied:?}"
+        );
+    }
+
+    /// Live 2026-08-17 card B first window: Apple dropped the tail, Whisper
+    /// still had "cztery pięć". Fill the tail; do not dump a second sentence.
+    #[test]
+    fn trailing_number_words_fill_a_dropped_tail() {
+        let cfg = TailPatchConfig::default();
+        let committed = "Raz dwa trzy";
+        let retranscribed = "raz dwa trzy cztery pięć";
+        let outcome = compute_tail_patch(committed, retranscribed, 71, &cfg);
+        let applied = apply_all(committed, &outcome);
+        assert!(
+            matches!(outcome, TailPatchOutcome::Patches(_)),
+            "dropped tail must patch, got {outcome:?}"
+        );
+        let lower = applied.to_lowercase();
+        assert!(
+            lower.contains("raz")
+                && lower.contains("dwa")
+                && lower.contains("trzy")
+                && lower.contains("cztery")
+                && lower.contains("pięć"),
+            "all five number words must be present: {applied:?}"
+        );
+    }
+
+    /// Live 2026-08-17 card A: Whisper replaced "Dwa" with "w". That is not a
+    /// correction — it is a collapse. Layer 0 stands.
+    #[test]
+    fn short_collapse_dwa_to_w_does_not_replace() {
+        let cfg = TailPatchConfig::default();
+        let outcome = compute_tail_patch("Dwa.", "w", 72, &cfg);
+        assert_eq!(apply_all("Dwa.", &outcome), "Dwa.");
+        assert!(
+            !matches!(outcome, TailPatchOutcome::Patches(_)),
+            "a one-letter collapse must not patch, got {outcome:?}"
+        );
+    }
+
+    /// Live 2026-08-17 card A: "Trzy cztery" must not become "3, 4,".
+    #[test]
+    fn number_words_do_not_become_digits() {
+        let cfg = TailPatchConfig::default();
+        let committed = "Trzy cztery.";
+        let outcome = compute_tail_patch(committed, "3, 4,", 73, &cfg);
+        assert_eq!(apply_all(committed, &outcome), committed);
+    }
+
+    /// Live 2026-08-17 leftover "po" on a healthy canvas is prepend dump.
+    #[test]
+    fn leading_function_word_on_healthy_canvas_is_not_prepended() {
+        let cfg = TailPatchConfig::default();
+        let committed = "wyładowanie słownika nam coś poprawi";
+        let outcome = compute_tail_patch(
+            committed,
+            "po wyładowanie słownika nam coś poprawi",
+            74,
+            &cfg,
+        );
+        let applied = apply_all(committed, &outcome);
+        assert!(
+            !applied.to_lowercase().starts_with("po "),
+            "must not prepend 'po': {applied:?}"
+        );
+    }
+
+    /// Live 2026-08-17 card C: a 0-match rewrite of a short window stays skipped.
+    #[test]
+    fn jest_pierwszy_does_not_become_w_oknie() {
+        let cfg = TailPatchConfig::default();
+        let committed = "Jest pierwszy.";
+        let outcome = compute_tail_patch(committed, "w oknie", 75, &cfg);
+        assert_eq!(apply_all(committed, &outcome), committed);
     }
 
     /// Polish diacritics: offsets are char-based so apply never corrupts UTF-8.
