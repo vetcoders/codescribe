@@ -947,14 +947,15 @@ where
     Ok(())
 }
 
-/// Result of a successful overlay-quality commit (evidence always; learn when Correction).
+/// Result of a successful overlay-quality commit (evidence always; learn only
+/// on an explicit teach gesture, never on overlay copy/close).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct OverlayCorrectionCommit {
     /// The `corrections.jsonl` the evidence line was appended to.
     pub quality_path: PathBuf,
     /// Lexicon pairs actually upserted from this commit (0 when evidence-only or filtered).
     pub pairs_learned: u32,
-    /// True when the formatting level is not Correction — record saved, nothing taught.
+    /// True when this commit did not teach the custom lexicon.
     pub evidence_only: bool,
 }
 
@@ -969,6 +970,13 @@ impl OverlayCorrectionCommit {
             format!("Saved — {} pairs learned", self.pairs_learned)
         }
     }
+}
+
+/// Overlay copy/close/send never writes `lexicon.custom.jsonl`.
+/// Highlighted-span teach (`action=teach-span`) still does. Speech-gap
+/// teach (`teach-span-gap`) stays evidence-only.
+fn overlay_commit_teaches_lexicon(_mode: &str, action: Option<&str>) -> bool {
+    matches!(action, Some("teach-span") | Some("teach-dictionary"))
 }
 
 /// High-level: save the quality record for the overlay edit AND feed lexicon candidates.
@@ -1038,7 +1046,11 @@ pub fn commit_overlay_correction_with_confidence(
         .map(FormattingPolicy::parse)
         .transpose()?
         .map(|level| level.as_str().to_string());
-    let teaches = formatting_level.as_deref() == Some(FormattingPolicy::Correction.as_str());
+    // Overlay copy/close/send is evidence. Teaching from that diff is how
+    // 2026-08-17 learned "pisanie Żyda" → "mi się nie wydaje" and "w 3 4" →
+    // "Dwa Trzy Cztery Pięć". Lexicon grows only on an explicit teach gesture
+    // (highlighted span / Voice Lab), never from a formatting-level flag.
+    let teaches = overlay_commit_teaches_lexicon(mode, action);
     let record = QualityRecord::new_with_confidence(
         raw_text.to_string(),
         delivered_text.to_string(),
@@ -1693,7 +1705,7 @@ mod tests {
         let delivered = format!("{body}zaznaczenie koniec");
         let edited = format!("{body}selection koniec");
 
-        let commit = commit_overlay_correction(
+        let evidence = commit_overlay_correction(
             &delivered,
             &delivered,
             &edited,
@@ -1701,7 +1713,10 @@ mod tests {
             Some("whisper".into()),
             Some("copy"),
         )
-        .expect("commit long dictation fix");
+        .expect("commit long dictation evidence");
+        assert_eq!(evidence.pairs_learned, 0);
+        let commit = teach_span("zaznaczenie", "selection", "lexicon_corrected")
+            .expect("explicit teach of the one-word fix");
         assert_eq!(commit.pairs_learned, 1);
         assert_eq!(commit.acknowledgement_message(), "Saved — 1 pair learned");
 
@@ -1936,12 +1951,12 @@ mod tests {
         .expect("commit should succeed");
         let p = commit.quality_path.clone();
         assert!(p.ends_with("corrections.jsonl"));
-        assert!(
-            commit.pairs_learned >= 1,
-            "correction should teach at least one pair"
+        assert_eq!(
+            commit.pairs_learned, 0,
+            "overlay copy is evidence, not a lexicon teacher"
         );
-        assert!(!commit.evidence_only);
-        assert!(commit.acknowledgement_message().contains("learned"));
+        assert!(commit.evidence_only);
+        assert_eq!(commit.acknowledgement_message(), "Saved as evidence");
         // Proof of isolation: the quality file landed under the overridden DATA_DIR
         // (config_dir + quality_dir respect it; real ~/.codescribe untouched).
         assert!(
@@ -2140,16 +2155,6 @@ mod tests {
             Some("send"),
         )
         .expect("second correction");
-        let lexicon_path = Config::config_dir().join("lexicon.custom.jsonl");
-        let mut lexicon_file = OpenOptions::new()
-            .append(true)
-            .open(&lexicon_path)
-            .expect("open custom lexicon for legacy extras fixture");
-        writeln!(
-            lexicon_file,
-            r#"{{"term":"Vetcoders","extras":{{"mispronunciations":["wet coders"]}}}}"#
-        )
-        .expect("append legacy extras fixture");
 
         let records = recent_quality_records(1).expect("recent records");
         assert_eq!(records.len(), 1);
@@ -2162,6 +2167,21 @@ mod tests {
                 .and_then(|value| value.as_str()),
             Some("send")
         );
+
+        teach_span("raw one", "Junie", "lexicon_corrected").expect("explicit teach first pair");
+        teach_span("raw two", "Loctree map", "lexicon_corrected")
+            .expect("explicit teach second pair");
+        let lexicon_path = Config::config_dir().join("lexicon.custom.jsonl");
+        let mut lexicon_file = OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(&lexicon_path)
+            .expect("open custom lexicon for legacy extras fixture");
+        writeln!(
+            lexicon_file,
+            r#"{{"term":"Vetcoders","extras":{{"mispronunciations":["wet coders"]}}}}"#
+        )
+        .expect("append legacy extras fixture");
 
         let lexicon = custom_lexicon_entries().expect("custom lexicon entries");
         assert_eq!(
@@ -2233,10 +2253,10 @@ mod tests {
         assert_eq!(decoded.formatting_level, None);
     }
 
-    /// All levels append evidence; only Correction upserts lexicon candidates.
+    /// All overlay copy/close levels append evidence; none auto-teach lexicon.
     #[test]
     #[serial]
-    fn level_aware_commit_records_every_level_but_only_correction_teaches_lexicon() {
+    fn overlay_copy_records_every_level_and_never_teaches_lexicon() {
         let temp_dir = tempfile::tempdir().expect("temp quality root");
         let _guard = EnvRestore::capture("CODESCRIBE_DATA_DIR");
         let temp_root = temp_dir.path().canonicalize().unwrap();
@@ -2263,9 +2283,34 @@ mod tests {
         let records = recent_quality_records(10).expect("quality evidence rows");
         let candidates = custom_lexicon_entries().expect("custom lexicon candidates");
         assert_eq!(records.len(), 4, "every level appends quality evidence");
-        assert_eq!(candidates.len(), 1, "only Correction emits a candidate");
-        assert_eq!(candidates[0].variant, "korrvariant");
-        assert_eq!(candidates[0].canonical, "CorrCanonical");
+        assert!(
+            candidates.is_empty(),
+            "overlay copy must not write lexicon.custom.jsonl, got {candidates:?}"
+        );
+    }
+
+    /// Live 2026-08-17: a human C-card correction must not invent "Meksyku" rules.
+    #[test]
+    #[serial]
+    fn overlay_correction_of_garbled_take_is_evidence_only() {
+        let temp_dir = tempfile::tempdir().expect("temp quality root");
+        let _guard = EnvRestore::capture("CODESCRIBE_DATA_DIR");
+        let temp_root = temp_dir.path().canonicalize().unwrap();
+        unsafe { std::env::set_var("CODESCRIBE_DATA_DIR", &temp_root) };
+
+        let outcome = commit_overlay_correction(
+            "A to jest pierwsze w oknie nie wybu słów tylko poprawiamy lokal power Meksyku.",
+            "A to jest pierwsze w oknie nie wybu słów tylko poprawiamy lokal power Meksyku.",
+            "Apple jest pierwszy, Whisper poprawia w oknie, nie wyjebujemy słów, tylko poprawiamy. Local power, leksykon.",
+            "overlay",
+            None,
+            Some("copy"),
+        )
+        .expect("quality evidence");
+        assert_eq!(outcome.pairs_learned, 0);
+        assert!(outcome.evidence_only);
+        assert_eq!(outcome.acknowledgement_message(), "Saved as evidence");
+        assert!(custom_lexicon_entries().expect("lexicon").is_empty());
     }
 
     /// Learning keys on raw STT text, not the formatter's delivered surface.
@@ -2277,16 +2322,8 @@ mod tests {
         let temp_root = temp_dir.path().canonicalize().unwrap();
         unsafe { std::env::set_var("CODESCRIBE_DATA_DIR", &temp_root) };
 
-        let outcome = commit_overlay_correction_with_level(
-            "rawvariant",
-            "formattervariant",
-            "RawCanonical",
-            "overlay",
-            None,
-            Some("copy"),
-            Some("correction"),
-        )
-        .expect("raw-source quality commit");
+        let outcome = teach_span("rawvariant", "RawCanonical", "lexicon_corrected")
+            .expect("explicit teach from raw STT");
 
         assert_eq!(outcome.pairs_learned, 1);
         let entries = custom_lexicon_entries().expect("custom lexicon");
@@ -2363,6 +2400,7 @@ mod tests {
 
         let lexicon_path = Config::config_dir().join("lexicon.custom.jsonl");
         let mut duplicate = OpenOptions::new()
+            .create(true)
             .append(true)
             .open(&lexicon_path)
             .expect("open duplicate fixture");
