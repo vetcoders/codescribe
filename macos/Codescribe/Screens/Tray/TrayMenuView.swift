@@ -36,6 +36,13 @@ struct TrayMenuView: View {
         TrayRow(icon: .settings, title: "Settings…", shortcut: "⌘,") {
           openSettings()
         }
+        if DeveloperSurface.isEnabled() {
+          TrayRow(icon: .diagnostics, title: "Voice Lab…") {
+            if let url = URL(string: "http://127.0.0.1:8765/lab") {
+              NSWorkspace.shared.open(url)
+            }
+          }
+        }
         TrayRow(icon: .setupWizard, title: "Setup Wizard…") { viewModel.onOpenSetupWizard() }
         TrayRow(icon: .refresh, title: "Check for Updates…") {
           viewModel.onCheckForUpdates()

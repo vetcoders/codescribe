@@ -188,6 +188,8 @@ struct SettingsView: View {
           LicensePanel(model: model)
         case .creator:
           CreatorPanel(model: model)
+        case .lab:
+          LabPanel()
         }
       }
       .frame(maxWidth: .infinity, alignment: .leading)
