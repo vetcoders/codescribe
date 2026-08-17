@@ -23,8 +23,10 @@
 //! inference. The reaper therefore forces that prune right after the drop
 //! (`memory::reclaim_metal_buffer_pool`) so RSS actually falls while idle.
 //!
-//! Default TTL is one minute. Set `CODESCRIBE_WHISPER_IDLE_UNLOAD_SECS=0` to
-//! explicitly keep weights resident for the whole process life.
+//! Default TTL is thirty minutes after the last transcription *finishes*.
+//! Idle is not "the app looks quiet" and not "a long HQ pass has been running".
+//! Set `CODESCRIBE_WHISPER_IDLE_UNLOAD_SECS=0` to keep weights resident for
+//! the whole process life.
 
 // This entire module is a public API for library consumers
 
@@ -48,13 +50,13 @@ pub use crate::config::models::DEFAULT_MODEL;
 
 /// Default idle period after which Whisper **weights** are unloaded.
 ///
-/// One minute bounds the operator-measured multi-GB resident floor while the
-/// full fp16 payload keeps the next cold load free of q8 dequantization. An
-/// explicit `0` override remains available for power users who choose
-/// keep-warm.
+/// Thirty minutes is a hard wall-clock TTL from the last finished decode —
+/// Retranscribe / file HQ can run longer than a minute, and the reaper must
+/// not treat an in-flight pass as idle. An explicit `0` override remains
+/// available for power users who choose keep-warm.
 /// Metal `Device` stays process-cached (see engine module), so reloads after
 /// TTL reuse the same device.
-const DEFAULT_IDLE_UNLOAD_SECS: u64 = 60;
+const DEFAULT_IDLE_UNLOAD_SECS: u64 = 1800;
 
 /// How often the reaper wakes to check for idleness.
 const REAPER_TICK: Duration = Duration::from_secs(30);
@@ -324,12 +326,16 @@ fn with_engine<R>(f: impl FnOnce(&mut LocalWhisperEngine) -> Result<R>) -> Resul
         record_residency_load(model_load_ms);
     }
     super::timing::record_engine_acquire(lock_wait_ms, model_load_ms, cold_load);
-    guard.last_used = Instant::now();
     let engine = guard
         .engine
         .as_mut()
         .ok_or_else(|| anyhow!("Engine not initialized"))?;
-    f(engine)
+    let result = f(engine);
+    // Idle starts when the pass ends. Stamping last_used at acquire made a
+    // 90s HQ file look 90s-idle the instant the lock dropped, so the 60s
+    // reaper murdered candle before Overlay could paint the result.
+    guard.last_used = Instant::now();
+    result
 }
 
 /// Run `f` with a per-call Whisper initial prompt installed on the engine.
@@ -374,12 +380,13 @@ fn try_with_engine<R>(f: impl FnOnce(&mut LocalWhisperEngine) -> Result<R>) -> R
     }
     // try_lock never waits, so lock_wait is 0 by construction.
     super::timing::record_engine_acquire(0, model_load_ms, cold_load);
-    guard.last_used = Instant::now();
     let engine = guard
         .engine
         .as_mut()
         .ok_or_else(|| anyhow!("Engine not initialized"))?;
-    f(engine)
+    let result = f(engine);
+    guard.last_used = Instant::now();
+    result
 }
 
 /// Initialize the global engine (call once at startup).
@@ -578,18 +585,17 @@ mod tests {
         );
     }
 
-    /// Normal default is one minute: fp16 makes reload cheap enough that a
-    /// multi-GB five-minute idle floor is no longer a good product tradeoff.
+    /// Hard 30-minute wall after the last finished decode. Not "app looks idle".
     #[test]
     #[serial]
-    fn whisper_default_ttl_is_60() {
+    fn whisper_default_ttl_is_1800() {
         let _ttl = EnvRestore::capture("CODESCRIBE_WHISPER_IDLE_UNLOAD_SECS");
 
         unsafe { std::env::remove_var("CODESCRIBE_WHISPER_IDLE_UNLOAD_SECS") };
         assert_eq!(
             idle_unload_after(),
-            Some(Duration::from_secs(60)),
-            "normal Whisper residency must default to 60 seconds"
+            Some(Duration::from_secs(1800)),
+            "normal Whisper residency must default to 30 minutes"
         );
     }
 
@@ -620,7 +626,7 @@ mod tests {
         assert_eq!(
             whisper_residency_policy(),
             WhisperResidencyPolicy {
-                effective_ttl_secs: 60,
+                effective_ttl_secs: 1800,
                 keep_warm: false,
             }
         );
