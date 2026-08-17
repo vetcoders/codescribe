@@ -133,6 +133,36 @@ func helperRetranscribePass(asrMode: String) -> OverlayRetranscribePass? {
   }
 }
 
+enum HelperFilePassRefusal: Equatable, Error {
+  case noHelper
+  case noArchivedAudio
+}
+
+/// Bind a Dictionary row to an explicit file pass. Never invent `last_session.wav`.
+enum HelperFilePass {
+  static func request(asrMode: String, archivedAudio: URL?) -> Result<
+    (OverlayRetranscribePass, String), HelperFilePassRefusal
+  > {
+    guard let pass = helperRetranscribePass(asrMode: asrMode) else {
+      return .failure(.noHelper)
+    }
+    guard let archived = archivedAudio else {
+      return .failure(.noArchivedAudio)
+    }
+    return .success((pass, "\(pass.rawValue):\(archived.path)"))
+  }
+
+  static func compare(daily: String, helper: String, pass: OverlayRetranscribePass) -> String {
+    let left = daily.trimmingCharacters(in: .whitespacesAndNewlines)
+    let right = helper.trimmingCharacters(in: .whitespacesAndNewlines)
+    if left == right {
+      return "Helper \(pass.visibleName) matches daily."
+    }
+    return
+      "DAILY\n\(left)\n\nHELPER \(pass.visibleName.uppercased())\n\(right)\n\nDaily is unchanged until you save a correction."
+  }
+}
+
 enum OverlayRetranscribePass: String, CaseIterable, Identifiable {
   case fullHq = "hq"
   case cloud = "cloud"

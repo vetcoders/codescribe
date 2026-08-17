@@ -22,6 +22,11 @@ struct LabPanel: View {
       Toggle("Lab mode (overlay off)", isOn: $labMode)
         .toggleStyle(.switch)
         .font(CSFont.ui(13, .medium))
+        .onChange(of: labMode) { _, on in
+          if on {
+            AppModel.shared.overlay.hide()
+          }
+        }
 
       Button("Open Voice Lab") {
         guard let url = URL(string: "http://127.0.0.1:8765/lab") else { return }
