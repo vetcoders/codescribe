@@ -1,0 +1,40 @@
+/* codescribe identity tokens (WEBSITE_SPEC §2).
+   Shared names: this file, /voice/lab, and voice-lab/assets/lab/styles.css. */
+:root {
+  --bg: #090a0d;
+  --bg-soft: #0c0d11;
+  --bg-card: rgba(255, 255, 255, 0.02);
+  --bg-chip: rgba(255, 255, 255, 0.025);
+  --hairline: #14161b;
+  --stroke: #1d2027;
+  --stroke-2: #20242a;
+  --stroke-3: #24272f;
+
+  --terracotta: #d97757;
+  --terracotta-2: #c98a6e;
+  --terracotta-ink: #e9b79f;
+  --olive: #5f6b3e;
+  --olive-ink: #9db178;
+  --gold: #d6b24e;
+
+  --ink: #f4f2ec;
+  --ink-2: #e9e7e0;
+  --ink-3: #f0eee7;
+  --muted: #9a9d97;
+  --muted-2: #82857f;
+  --muted-3: #808379;
+  --muted-4: #7c8076;
+  --eyebrow: #7f8c5e;
+
+  --line-soft: #16181e;
+  --scroll-hint: #82857f;
+
+  --font-display: "Space Grotesk", system-ui, sans-serif;
+  --font-mono: "JetBrains Mono", ui-monospace, SFMono-Regular, Menlo, monospace;
+
+  --lab-nav-h: 48px;
+  --lab-sidebar-w: 228px;
+  --lab-toolbox-w: 268px;
+  --radius-input: 9px;
+  --radius-card: 12px;
+}

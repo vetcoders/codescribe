@@ -13,6 +13,8 @@ pub(crate) mod apple_live_session;
 pub(crate) mod correction;
 /// Buffered "typing" emission of transcript deltas.
 pub(crate) mod emitter;
+/// Coalesce ~5 Apple segments into one Layer 1 Whisper window.
+pub(crate) mod layer1_window;
 /// Assembly of the live transcript from engine events.
 pub mod live_assembly;
 /// Bounded per-session PCM retention, so a sealed utterance can be re-read for tail-patch.
