@@ -43,16 +43,11 @@ checked-in development license verifier. Production DMGs use the distinct
 is the real 32-byte Ed25519 public key paired with the production signer. A UUID
 is not a license public key.
 
-`make install-app` is the **org hot path**. It fail-closes unless this
-machine can read `vetcoders/voice-lab` (sibling checkout or `git clone`),
-runs the Monika pack so Sparkle Ed + license public keys land in
-`~/.vibecrafted/secrets/codescribe/`, then bakes `CSDeveloperSurface=1` and
-installs the Voice Lab runtime to `~/.codescribe/voice-lab`. Missing
-Codescribe `settings.json` is seeded from `examples/monika/settings.json`
-(Libraxis `wss` + `asr_mode=local_power`). A file that already has an
-endpoint — including this studio's loopback `:8446` — is left alone.
-External contributors stay on `make app`. Production DMGs still refuse
-the Lab bit.
+`make install-app` builds the local-release app and copies it to
+`/Applications`. Extra developer-console pieces are resolved from a
+private sibling checkout when present; they are not part of the public
+source path. A machine that already has `settings.json` keeps it.
+Production DMGs do not bake the developer surface.
 
 ### Method 3: DMG Distribution (For End Users)
 
