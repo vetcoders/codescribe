@@ -22,8 +22,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Fixed
 
 - **STT Test is a file probe.** Settings Test no longer POSTs to a live
-  Voice Lab WebSocket (`STT_ENDPOINT`). Known live sockets map to
-  `/v1/audio/transcriptions`; loopback `:8446` → `:8444`.
+  socket. Known live sockets map to `/v1/audio/transcriptions`.
 - **ChatGPT sign-in no longer requires Responses write.** OAuth persists
   identity after exchange. `api.responses.write` stays a lane Test, so
   Codex public tokens can sign in.
@@ -38,7 +37,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **`make release-stable`** is the everyday cut: slim sign + notarize +
   `verify-dmg`, then install that stapled Developer ID `.app` to
   `/Applications` without re-signing. `make install-app` remains the
-  local-release / Lab path.
+  local-release path.
 - **`make release-full` is fail-closed.** Whisper embed no longer falls
   back to a slim dylib when the HF snapshot is weights-only. It uses the
   composed `~/.codescribe/models` tree from `make download-model`.
@@ -51,9 +50,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
-- **Developer Lab on keyed `make install-app`.** `CSDeveloperSurface` bakes
-  only when Sparkle + production license public keys resolve on the machine.
-  Public `git clone && make` stays Lab-off. Production DMG refuses the bit.
+- **Developer Lab on a keyed local install.** A public `git clone && make`
+  stays Lab-off. Production DMG refuses the bit.
 - **Lab mode overlay-off.** Developer veto hides the daily HUD without
   flipping the tray "Transcription Overlay" toggle. Leftover UserDefaults
   cannot hide overlay on a production bundle.
