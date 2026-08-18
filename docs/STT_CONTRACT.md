@@ -214,8 +214,8 @@ file-pass belongs only to explicit retranscribe surfaces.
 | Call site             | When             | Function / transport                           | Engine rule                                              |
 | --------------------- | ---------------- | ---------------------------------------------- | -------------------------------------------------------- |
 | Live Layer 0          | during recording | Apple progressive                              | committed canvas floor                                   |
-| Live Layer 1 local    | during recording | bounded Whisper windows                        | gap/tail fill only                                       |
-| Live Layer 1 cloud    | during recording | Voice Lab WSS                                  | normalized gap/tail fill only                            |
+| Live Layer 1 local    | during recording | bounded Whisper windows                        | gap/tail fill; aligned same-utterance substitutions      |
+| Live Layer 1 cloud    | during recording | Voice Lab WSS                                  | normalized gap/tail fill; same substitution rule         |
 | Explicit Retranscribe | operator action  | local completed-file decode or cloud multipart | may replace the selected artifact, never the live canvas |
 
 **This split is the MacGyver fracture:** UI can show Whisper readiness while live is Apple-only and fails closed.

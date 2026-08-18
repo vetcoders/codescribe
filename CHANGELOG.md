@@ -9,6 +9,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- **Layer 1 applies aligned same-utterance wording.** When live Apple and
+  the Whisper window share most words, Layer 1 now substitutes those
+  spans instead of discarding the repair at the 50% change cap. Unrelated
+  dumps and pause-tail inserts still skip.
 - **Cloud STT names the programming domain.** Loopback and Libraxis file
   and live requests send `vocabulary=programming`. Official OpenAI file
   audio omits the field. The client does not classify audio to pick a

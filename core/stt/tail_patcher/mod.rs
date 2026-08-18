@@ -52,7 +52,12 @@
 //! - **Conservative by default.** If the diff distance exceeds
 //!   [`TailPatchConfig::max_change_ratio`], the whole patch is dropped
 //!   ([`TailPatchOutcome::Skipped`]) and Layer 0 output stands unchanged —
-//!   "don't patch if uncertain".
+//!   "don't patch if uncertain". Three measured same-utterance repairs
+//!   bypass that cap without lifting it: a substitution inside
+//!   [`TailPatchConfig::small_edit_token_floor`], a high-coverage digit-run
+//!   / trailing-fill expansion, and an aligned sentence rewrite (coverage
+//!   ≥ 0.60, similar length, substitutions only). Inserts stay on the
+//!   under-commit path. A 0-match rewrite is still wholesale divergence.
 //!
 //! # Scope of this cut (v1)
 //!
@@ -949,8 +954,32 @@ pub fn compute_tail_patch_with_context(
         g.committed.len() == 1 && token_is_digit_run(&c_tokens[g.committed.start])
     });
     let high_coverage_expansion = almost_covered && modest_extra && expansion_groups_ok;
+    // Same utterance, fuller wording. Operator 2026-08-18: Whisper is already
+    // fast enough to swap those sentences in the background. The 0.50 cap was
+    // treating "we still share most tokens" as a dump. Wholesale divergence
+    // (few or no anchors, or a 3× longer decode) still skips below.
+    let coverage = matches.len() as f64 / c_tokens.len() as f64;
+    let similar_length = r_tokens.len() >= c_tokens.len().saturating_sub(2)
+        && r_tokens.len() <= c_tokens.len().saturating_add(c_tokens.len() / 2 + 3);
+    let rewrite_groups_ok = groups.iter().all(|g| {
+        if g.retranscribed.is_empty() {
+            return true;
+        }
+        // Inserts stay on under-commit. This bypass only rewrites spans
+        // already on the canvas, and never turns one token into a dump.
+        !g.committed.is_empty() && g.retranscribed.len() <= g.committed.len().saturating_add(2)
+    });
+    let aligned_sentence_rewrite = shares_anchor
+        && c_tokens.len() >= 4
+        && coverage >= 0.60
+        && similar_length
+        && rewrite_groups_ok;
     let ratio = changed as f64 / c_tokens.len() as f64;
-    if ratio > cfg.max_change_ratio && !small_substitution_fix && !high_coverage_expansion {
+    if ratio > cfg.max_change_ratio
+        && !small_substitution_fix
+        && !high_coverage_expansion
+        && !aligned_sentence_rewrite
+    {
         // Before the cap discards this: is the canvas starved rather than
         // wrong? The bounded diff was never an instrument for measuring lost
         // speech, and using it as one is what threw the recovered 104 s / 107 s
@@ -1660,6 +1689,29 @@ mod tests {
         let retranscribed = "to jest zdanie które apple dobrze usłyszało";
         let outcome = compute_tail_patch(committed, retranscribed, 22, &cfg);
         assert_eq!(outcome, TailPatchOutcome::NoChange);
+    }
+
+    /// High-overlap rewrite of the same utterance applies even when more than
+    /// half the tokens move. Chopped Apple + faster Whisper is the live job.
+    #[test]
+    fn aligned_sentence_rewrite_applies_when_most_words_still_match() {
+        let cfg = TailPatchConfig::default();
+        let committed = "ala ma czarnego kota i białego psa dzisiaj w domu";
+        let retranscribed = "ala ma dużego rudego kota oraz małego psa dzisiaj u siebie domu";
+        let outcome = compute_tail_patch(committed, retranscribed, 31, &cfg);
+        let applied = apply_all(committed, &outcome);
+        assert!(
+            !matches!(outcome, TailPatchOutcome::Skipped { .. }),
+            "aligned rewrite must not hit the 0.50 cap, got {outcome:?}"
+        );
+        assert!(
+            applied.contains("dużego") || applied.contains("rudego") || applied.contains("oraz"),
+            "Whisper wording must land, got {applied:?}"
+        );
+        assert!(
+            applied.contains("ala") && applied.contains("domu"),
+            "anchors must stay, got {applied:?}"
+        );
     }
 
     /// The floor is a small-edit budget, not a hole in the divergence guard: a
