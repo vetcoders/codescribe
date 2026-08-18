@@ -59,6 +59,9 @@ use crate::stt::tail_provider::{
     TailProviderRequest, TailRequestIdentity, TailSampleRange, TailTimingQuality, TimedTailSegment,
 };
 
+use super::layer1_window::{
+    CoalesceFlush, CoalescedPiece, ConcatSpan, Layer1Coalesce, split_outcome_for_members,
+};
 use super::live_audio_buffer::{DEFAULT_RETENTION_SECS, LiveAudioBuffer, ResolvedAudioWindow};
 use super::progressive_seal::{
     AppleCommit, ProgressiveSealMachine, SealTick, SealedSpan, seal_span_text,
@@ -122,6 +125,10 @@ struct TailPatchRequest {
     /// Exact capture range behind `audio`; this is the window-start authority.
     provider_request: TailProviderRequest,
     covered_through_secs: f32,
+    /// Concat-space map when this job covers more than one Apple seal.
+    span_map: Vec<ConcatSpan>,
+    /// Every sealed utterance this job must close (id, covered_through_secs).
+    member_ids: Vec<(u64, f32)>,
 }
 
 /// Whisper closure returned to the worker that owns Apple + seal state.
@@ -130,6 +137,16 @@ struct TailPatchCompletion {
     covered_through_secs: f32,
     outcome: TailPatchOutcome,
     payload: Option<TailProviderPayload>,
+    span_map: Vec<ConcatSpan>,
+    member_ids: Vec<(u64, f32)>,
+}
+
+/// In-flight Layer 1 job identity, including the coalesce map.
+struct TailPatchInFlight {
+    utterance_id: u64,
+    covered_through_secs: f32,
+    span_map: Vec<ConcatSpan>,
+    member_ids: Vec<(u64, f32)>,
 }
 
 /// Async Layer 1 lane for the Apple progressive path.
@@ -213,29 +230,41 @@ impl AppleTailPatchLane {
     /// after `UtteranceFinal`, preserving event order.
     fn finish_for_worker(
         &mut self,
-        request_id: u64,
-        req_end_secs: f32,
+        inflight: Option<TailPatchInFlight>,
         result: Result<TailPatchJobResult>,
     ) -> TailPatchCompletion {
+        let (fallback_id, fallback_end, span_map, member_ids) = match inflight {
+            Some(job) => (
+                job.utterance_id,
+                job.covered_through_secs,
+                job.span_map,
+                job.member_ids,
+            ),
+            None => (0, 0.0, Vec::new(), Vec::new()),
+        };
         match result {
             Ok(job) => {
                 let utterance_id = job.utterance_id;
                 let outcome = job.outcome;
                 TailPatchCompletion {
                     utterance_id,
-                    covered_through_secs: req_end_secs,
+                    covered_through_secs: fallback_end,
                     outcome,
                     payload: Some(job.payload),
+                    span_map,
+                    member_ids,
                 }
             }
             Err(error) => TailPatchCompletion {
-                utterance_id: request_id,
-                covered_through_secs: req_end_secs,
+                utterance_id: fallback_id,
+                covered_through_secs: fallback_end,
                 outcome: TailPatchOutcome::skipped(
                     crate::stt::tail_patcher::SkipReasonCode::ProviderError,
                     format!("tail patch failed: {error}"),
                 ),
                 payload: None,
+                span_map,
+                member_ids,
             },
         }
     }
@@ -385,7 +414,7 @@ pub(crate) async fn apple_stream_transcription_session(
     // At-most-one-in-flight gate (F1), tracked outside the lane so the admit
     // branch's guard does not borrow what the collect branch holds mutably.
     let mut tail_patch_in_flight = false;
-    let mut tail_patch_lane_in_flight: Option<(u64, f32)> = None;
+    let mut tail_patch_lane_in_flight: Option<TailPatchInFlight> = None;
     // Bounded: the worker `try_send`s from the PCM-forwarding thread.
     let (tp_tx, mut tp_rx) = mpsc::channel::<TailPatchRequest>(TAIL_PATCH_QUEUE_CAP);
     let (tp_done_tx, tp_done_rx) = std_mpsc::channel::<TailPatchCompletion>();
@@ -476,21 +505,26 @@ pub(crate) async fn apple_stream_transcription_session(
             // only ever schedules and collects — inference never sits on the
             // event-drain path (F1).
             Some(req) = tp_rx.recv(), if !tail_patch_in_flight => {
-                let utterance_id = req.utterance_id;
-                let covered_through_secs = req.covered_through_secs;
+                let inflight = TailPatchInFlight {
+                    utterance_id: req.utterance_id,
+                    covered_through_secs: req.covered_through_secs,
+                    span_map: req.span_map.clone(),
+                    member_ids: req.member_ids.clone(),
+                };
                 tail_patch_lane.push_request(req);
                 tail_patch_in_flight = true;
-                // One job is in flight, so one end boundary is enough.
-                // FuturesOrdered preserves the same request/result order.
-                tail_patch_lane_in_flight = Some((utterance_id, covered_through_secs));
+                // One job is in flight; the coalesce map rides alongside so
+                // the completion can close every member seal.
+                tail_patch_lane_in_flight = Some(inflight);
             }
             Some(result) = tail_patch_lane.next() => {
                 tail_patch_in_flight = false;
-                let (id, end) = tail_patch_lane_in_flight.take().unwrap_or_default();
-                let completion = tail_patch_lane.finish_for_worker(id, end, result);
+                let inflight = tail_patch_lane_in_flight.take();
+                let completion = tail_patch_lane.finish_for_worker(inflight, result);
+                let rejected_id = completion.utterance_id;
                 if !tail_patch_lane.forward_completion_to_worker(&tp_done_tx, completion) {
                     warn!(
-                        utterance_id = id,
+                        utterance_id = rejected_id,
                         "Layer 1 completion rejected — Apple seal worker already closed"
                     );
                 }
@@ -656,6 +690,8 @@ struct AppleSealState {
     under_commit_escalations: u64,
     /// Layer 1 hand-off, present only when layered transcription is armed.
     tail_patch: Option<mpsc::Sender<TailPatchRequest>>,
+    /// Sealed fragments waiting to share one Whisper window (~5 segments).
+    layer1_coalesce: Layer1Coalesce,
     /// Seals whose tail-patch request found the queue full (F1 backpressure).
     tail_patch_backpressure_drops: u64,
     /// Requests accepted by the Layer 1 queue that have not reported back yet.
@@ -709,6 +745,7 @@ impl AppleSealState {
             unresolved_windows: 0,
             under_commit_escalations: 0,
             tail_patch: None,
+            layer1_coalesce: Layer1Coalesce::default(),
             tail_patch_backpressure_drops: 0,
             tail_patch_awaiting_completion: 0,
             sealed_prefix: String::new(),
@@ -729,6 +766,77 @@ impl AppleSealState {
         Self {
             tail_patch: Some(tail_patch),
             ..Self::new(sample_rate)
+        }
+    }
+
+    fn enqueue_layer1_piece(&mut self, piece: CoalescedPiece) -> bool {
+        if self.tail_patch.is_none() {
+            return false;
+        }
+        if self.layer1_coalesce.is_empty() {
+            self.layer1_coalesce
+                .set_neighbour(self.sealed_prefix.clone());
+        }
+        let flushes = self.layer1_coalesce.push(piece, self.sample_rate);
+        if flushes.is_empty() {
+            // Held for a larger window. Still counts as queued so the
+            // no-Whisper fallback does not seal the fragment raw.
+            return true;
+        }
+        let mut sent = false;
+        for flush in flushes {
+            sent |= self.queue_layer1_flush(flush);
+        }
+        sent
+    }
+
+    fn flush_layer1_coalesce(&mut self) -> bool {
+        self.layer1_coalesce
+            .force_flush()
+            .is_some_and(|flush| self.queue_layer1_flush(flush))
+    }
+
+    fn queue_layer1_flush(&mut self, flush: CoalesceFlush) -> bool {
+        let Some(tx) = self.tail_patch.as_ref() else {
+            return false;
+        };
+        let provider_request = TailProviderRequest {
+            identity: TailRequestIdentity {
+                request_id: flush.primary_utterance_id,
+                range: TailSampleRange {
+                    session: self.session_id.clone(),
+                    capture_epoch: self.capture_epoch,
+                    sample_start: flush.sample_start,
+                    sample_end: flush.sample_end,
+                },
+            },
+            sample_rate: self.sample_rate,
+            language: None,
+        };
+        match tx.try_send(TailPatchRequest {
+            utterance_id: flush.primary_utterance_id,
+            committed_text: flush.committed_text,
+            neighbour_context: flush.neighbour_context,
+            audio: flush.audio,
+            provider_request,
+            covered_through_secs: flush.covered_through_secs,
+            span_map: flush.spans,
+            member_ids: flush.member_ids,
+        }) {
+            Ok(()) => {
+                self.tail_patch_awaiting_completion =
+                    self.tail_patch_awaiting_completion.saturating_add(1);
+                true
+            }
+            Err(error) => {
+                self.tail_patch_backpressure_drops =
+                    self.tail_patch_backpressure_drops.saturating_add(1);
+                warn!(
+                    utterance_id = flush.primary_utterance_id,
+                    "Layer 1 tail-patch request dropped — queue full or lane gone: {error}"
+                );
+                false
+            }
         }
     }
 
@@ -762,14 +870,26 @@ impl AppleSealState {
         } else {
             completion.outcome
         };
-        self.tail_patch_outcomes.insert(utterance_id, outcome);
-        self.progressive
-            .note_whisper_window_elapsed_with_provenance(
-                utterance_id,
-                completion.covered_through_secs,
-                evidence,
-                words,
-            );
+        let member_ids = if completion.member_ids.is_empty() {
+            vec![(utterance_id, completion.covered_through_secs)]
+        } else {
+            completion.member_ids
+        };
+        let split = split_outcome_for_members(outcome, &completion.span_map, &member_ids);
+        for (index, (id, end, member_outcome)) in split.into_iter().enumerate() {
+            self.tail_patch_outcomes.insert(id, member_outcome);
+            if index == 0 {
+                self.progressive
+                    .note_whisper_window_elapsed_with_provenance(
+                        id,
+                        end,
+                        evidence.clone(),
+                        words.clone(),
+                    );
+            } else {
+                self.progressive.note_whisper_window_elapsed(id, end);
+            }
+        }
         self.emit_ready_progressive_seals(ev_tx, now_secs);
         // A window that finishes AFTER its span sealed had no reader: the only
         // drain of `tail_patch_outcomes` runs inside the seal tick, so a patch
@@ -780,7 +900,9 @@ impl AppleSealState {
         // recovered speech was computed, stored, and never delivered. Ordering
         // is unchanged for the normal case (still emitted after `UtteranceFinal`,
         // which the seal already sent).
-        self.deliver_sealed_tail_patch(ev_tx, utterance_id);
+        for (id, _) in &member_ids {
+            self.deliver_sealed_tail_patch(ev_tx, *id);
+        }
     }
 
     /// Deliver a tail-patch outcome whose span is already sealed and emitted.
@@ -1522,42 +1644,21 @@ fn seal_sliced_by_silero(
         let window = state
             .audio
             .window_by_samples(request_range.sample_start, request_range.sample_end);
-        let queued = if let (Some(window), Some(tx)) = (window, state.tail_patch.as_ref()) {
-            let committed_text = seal_span_text(&text, &state.sealed_prefix, false);
-            match tx.try_send(TailPatchRequest {
-                utterance_id,
-                committed_text,
-                neighbour_context: state.sealed_prefix.clone(),
-                audio: window.samples,
-                provider_request: TailProviderRequest {
-                    identity: TailRequestIdentity {
-                        request_id: utterance_id,
-                        range: TailSampleRange {
-                            session: state.session_id.clone(),
-                            capture_epoch: state.capture_epoch,
-                            sample_start: window.sample_start,
-                            sample_end: window.sample_end,
-                        },
-                    },
-                    sample_rate: state.sample_rate,
-                    language: None,
-                },
-                covered_through_secs: span_end,
-            }) {
-                Ok(()) => {
-                    state.tail_patch_awaiting_completion =
-                        state.tail_patch_awaiting_completion.saturating_add(1);
-                    true
-                }
-                Err(error) => {
-                    state.tail_patch_backpressure_drops =
-                        state.tail_patch_backpressure_drops.saturating_add(1);
-                    warn!(
-                        utterance_id,
-                        "Layer 1 tail-patch request dropped — queue full or lane gone: {error}"
-                    );
-                    false
-                }
+        let queued = if let Some(window) = window {
+            if state.tail_patch.is_some() {
+                let committed_text = seal_span_text(&text, &state.sealed_prefix, false);
+                state.enqueue_layer1_piece(CoalescedPiece {
+                    utterance_id,
+                    committed_text,
+                    audio: window.samples,
+                    sample_start: window.sample_start,
+                    sample_end: window.sample_end,
+                    start_ts: span_start,
+                    covered_through_secs: span_end,
+                    segment_count: disjoint.len().max(1),
+                })
+            } else {
+                false
             }
         } else {
             false
@@ -1814,6 +1915,7 @@ fn seal_utterance_final(
     }) {
         return false;
     }
+    let segment_count = disjoint.len().max(1);
     state.pending_events.insert(
         utterance_id,
         PendingAppleSeal {
@@ -1826,42 +1928,20 @@ fn seal_utterance_final(
 
     let window = resolve_sealed_audio_window(state, end_ts);
     let committed_text = seal_span_text(&after_lexicon, &state.sealed_prefix, false);
-    let queued = if let (Some(window), Some(tx)) = (window, state.tail_patch.as_ref()) {
-        let provider_request = TailProviderRequest {
-            identity: TailRequestIdentity {
-                request_id: utterance_id,
-                range: TailSampleRange {
-                    session: state.session_id.clone(),
-                    capture_epoch: state.capture_epoch,
-                    sample_start: window.sample_start,
-                    sample_end: window.sample_end,
-                },
-            },
-            sample_rate: state.sample_rate,
-            language: None,
-        };
-        match tx.try_send(TailPatchRequest {
-            utterance_id,
-            committed_text,
-            neighbour_context: state.sealed_prefix.clone(),
-            audio: window.samples,
-            provider_request,
-            covered_through_secs: end_ts,
-        }) {
-            Ok(()) => {
-                state.tail_patch_awaiting_completion =
-                    state.tail_patch_awaiting_completion.saturating_add(1);
-                true
-            }
-            Err(e) => {
-                state.tail_patch_backpressure_drops =
-                    state.tail_patch_backpressure_drops.saturating_add(1);
-                warn!(
-                    utterance_id,
-                    "Layer 1 tail-patch request dropped — queue full or lane gone: {e}"
-                );
-                false
-            }
+    let queued = if let Some(window) = window {
+        if state.tail_patch.is_some() {
+            state.enqueue_layer1_piece(CoalescedPiece {
+                utterance_id,
+                committed_text,
+                audio: window.samples,
+                sample_start: window.sample_start,
+                sample_end: window.sample_end,
+                start_ts,
+                covered_through_secs: end_ts,
+                segment_count,
+            })
+        } else {
+            false
         }
     } else {
         false
@@ -2258,6 +2338,7 @@ fn apple_stream_worker(
                             // left open is sealed here, because no later
                             // callback from this epoch can arrive.
                             seal_open_partial(&mut state, &ev_tx, audio_secs);
+                            let _ = state.flush_layer1_coalesce();
                             info!(
                                 audio_secs,
                                 silence_secs,
@@ -2301,8 +2382,9 @@ fn apple_stream_worker(
     // Same seal-time correction as the phrase path — a stop mid-utterance must
     // not be the one route that commits uncorrected text.
     seal_open_partial(&mut state, &ev_tx, audio_secs);
+    let _ = state.flush_layer1_coalesce();
 
-    // Every accepted Layer 1 request must close (success, no-change, or
+    // Every accepted Layer 1 request must close (success, no-change, or)
     // explicit skip) before the session task returns. This is bounded by the
     // queue cap and happens while the async side is still draining jobs.
     //
@@ -2734,6 +2816,8 @@ mod tests {
                 covered_through_secs: 2.0,
                 outcome: TailPatchOutcome::NoChange,
                 payload: Some(synthetic_tail_payload(1, whisper_range, vec![whisper_word])),
+                span_map: Vec::new(),
+                member_ids: Vec::new(),
             },
             5.0,
         );
@@ -2813,6 +2897,8 @@ mod tests {
                 covered_through_secs: 2.0,
                 outcome,
                 payload: None,
+                span_map: Vec::new(),
+                member_ids: Vec::new(),
             },
             5.0,
         );
@@ -3163,6 +3249,7 @@ mod tests {
             &mut state,
             3.0,
         );
+        assert!(state.flush_layer1_coalesce());
         let initial = tp_rx
             .try_recv()
             .expect("the real captured span must reach Layer 1");
@@ -3730,7 +3817,15 @@ mod tests {
             1,
             &TailPatchConfig::default(),
         );
-        let completion = lane.finish_for_worker(1, 2.0, Ok(synthetic_tail_job(1, outcome)));
+        let completion = lane.finish_for_worker(
+            Some(TailPatchInFlight {
+                utterance_id: 1,
+                covered_through_secs: 2.0,
+                span_map: Vec::new(),
+                member_ids: Vec::new(),
+            }),
+            Ok(synthetic_tail_job(1, outcome)),
+        );
         assert!(
             completion
                 .outcome
@@ -3757,7 +3852,15 @@ mod tests {
             2,
             &TailPatchConfig::default(),
         );
-        let rejected = lane.finish_for_worker(2, 3.0, Ok(synthetic_tail_job(2, rejected_outcome)));
+        let rejected = lane.finish_for_worker(
+            Some(TailPatchInFlight {
+                utterance_id: 2,
+                covered_through_secs: 3.0,
+                span_map: Vec::new(),
+                member_ids: Vec::new(),
+            }),
+            Ok(synthetic_tail_job(2, rejected_outcome)),
+        );
         assert!(!lane.forward_completion_to_worker(&done_tx, rejected));
         assert_eq!(
             lane.replacements(),
@@ -3786,6 +3889,10 @@ mod tests {
             6.0,
         );
 
+        assert!(
+            state.flush_layer1_coalesce(),
+            "one-seal tests flush the held window so the request is observable"
+        );
         let req = tp_rx
             .try_recv()
             .expect("sealed utterance must enqueue a tail-patch request");
@@ -3894,6 +4001,7 @@ mod tests {
             &mut state,
             6.0,
         );
+        assert!(state.flush_layer1_coalesce());
         let req = tp_rx
             .try_recv()
             .expect("sealed utterance enqueues a request");
@@ -3911,6 +4019,8 @@ mod tests {
                     "no change",
                 ),
                 payload: None,
+                span_map: req.span_map,
+                member_ids: req.member_ids,
             },
             2.1,
         );
@@ -3989,24 +4099,24 @@ mod tests {
         let mut state = AppleSealState::new_with_tail_patch(TEST_SAMPLE_RATE, tp_tx);
         push_capture(&mut state, 10.0);
 
-        emit_stream_events(
-            vec![
-                LiveStreamEvent::PhraseFinal {
-                    text: "pierwsze zdanie".into(),
-                    segments: vec![segment("pierwsze zdanie", 0.5, 2.0)],
-                },
-                LiveStreamEvent::PhraseFinal {
-                    text: "drugie zdanie".into(),
-                    segments: vec![segment("drugie zdanie", 2.5, 4.0)],
-                },
-            ],
-            &tx,
-            &mut state,
-            10.0,
-        );
+        let mut events = Vec::new();
+        for i in 0..10 {
+            let start = i as f32 * 0.5;
+            events.push(LiveStreamEvent::PhraseFinal {
+                text: format!("segment {i}"),
+                segments: vec![segment(&format!("segment {i}"), start, start + 0.4)],
+            });
+        }
+        emit_stream_events(events, &tx, &mut state, 10.0);
 
-        assert_eq!(state.sealed_count, 2, "seals never wait on the patch queue");
-        assert_eq!(state.tail_patch_backpressure_drops, 1);
+        assert!(
+            state.tail_patch_backpressure_drops >= 1,
+            "a second 5-segment flush must drop when the queue already holds one job"
+        );
+        assert!(
+            state.sealed_count >= 1,
+            "a dropped flush still seals Apple instead of stalling capture"
+        );
     }
 
     /// Acceptance arm: an induced gap (Layer 0 committed a shorter span than

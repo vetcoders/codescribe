@@ -1,44 +1,8 @@
 /* ============================================================
    codescribe — global stylesheet
-   Design tokens (WEBSITE_SPEC §2) centralized in one :root.
+   Identity tokens live in tokens.css (site + Voice Lab contract).
    ============================================================ */
-:root {
-  /* surfaces (dark) */
-  --bg: #090a0d; /* page */
-  --bg-soft: #0c0d11; /* code/prompt panels */
-  --bg-card: rgba(255, 255, 255, 0.02); /* section cards */
-  --bg-chip: rgba(255, 255, 255, 0.025); /* chips */
-  --hairline: #14161b; /* section top-borders */
-  --stroke: #1d2027; /* card borders */
-  --stroke-2: #20242a; /* image frames */
-  --stroke-3: #24272f; /* buttons/secondary */
-
-  /* brand */
-  --terracotta: #d97757; /* PRIMARY accent */
-  --terracotta-2: #c98a6e; /* selection-mode accent */
-  --terracotta-ink: #e9b79f; /* terracotta text on dark */
-  --olive: #5f6b3e; /* secondary: healthy status, formatting */
-  --olive-ink: #9db178; /* olive text/status dots on dark */
-  --gold: #d6b24e; /* agent-chat mode accent */
-
-  /* text */
-  --ink: #f4f2ec; /* headings */
-  --ink-2: #e9e7e0; /* strong body */
-  --ink-3: #f0eee7; /* emphasis on cards */
-  --muted: #9a9d97; /* body */
-  --muted-2: #82857f; /* sub-body */
-  --muted-3: #808379; /* mono meta — AA (>=4.5) on dark bg */
-  --muted-4: #7c8076; /* faint mono — AA (>=4.5) on cards */
-  --eyebrow: #7f8c5e; /* olive eyebrow labels */
-
-  /* additional shades used in the reference render */
-  --line-soft: #16181e; /* inner hairlines */
-  --scroll-hint: #82857f; /* faint hint / legal — AA on dark bg */
-
-  /* fonts */
-  --font-display: "Space Grotesk", system-ui, sans-serif;
-  --font-mono: "JetBrains Mono", ui-monospace, SFMono-Regular, Menlo, monospace;
-}
+@import "./tokens.css";
 
 * {
   box-sizing: border-box;
