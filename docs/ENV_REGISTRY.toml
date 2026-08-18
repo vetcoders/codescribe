@@ -1768,8 +1768,8 @@ category = "install"
 description = "Existing Voice Lab checkout used by make install-app instead of cloning (~/.codescribe/src/voice-lab)"
 
 [vars.VOICE_LAB_INSTALL_SETTINGS]
-default = "0"
-type = "bool"
+default = ""
+type = "string"
 reload = "rebuild"
 category = "install"
-description = "When 1, Voice Lab setup also copies examples/monika/settings.json over Application Support (opt-in)"
+description = "Voice Lab settings seed: empty=copy pack if missing and fill empty engine keys; 1=overwrite settings.json; 0=never touch Application Support"

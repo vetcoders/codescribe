@@ -47,9 +47,12 @@ is not a license public key.
 machine can read `vetcoders/voice-lab` (sibling checkout or `git clone`),
 runs the Monika pack so Sparkle Ed + license public keys land in
 `~/.vibecrafted/secrets/codescribe/`, then bakes `CSDeveloperSurface=1` and
-installs the Voice Lab runtime to `~/.codescribe/voice-lab`. External
-contributors stay on `make app` — they do not get the toolbox. Production
-DMGs still refuse the Lab bit.
+installs the Voice Lab runtime to `~/.codescribe/voice-lab`. Missing
+Codescribe `settings.json` is seeded from `examples/monika/settings.json`
+(Libraxis `wss` + `asr_mode=local_power`). A file that already has an
+endpoint — including this studio's loopback `:8446` — is left alone.
+External contributors stay on `make app`. Production DMGs still refuse
+the Lab bit.
 
 ### Method 3: DMG Distribution (For End Users)
 
