@@ -61,9 +61,9 @@ const LOCAL_INSTALL_ENV: &str = "CODESCRIBE_LOCAL_INSTALL";
 ///
 /// Each asset has its own policy, and they are not symmetrical: Silero VAD is
 /// non-negotiable and its absence panics; MiniLM, Whisper and TTS are opt-in.
-/// A requested-but-missing model degrades to a `cargo:warning`
-/// and a runtime lookup rather than failing the build — only the committed
-/// Silero file is treated as a repo invariant.
+/// MiniLM and TTS degrade to a `cargo:warning` when requested but missing.
+/// Whisper embed is fail-closed: `CODESCRIBE_EMBED_WHISPER=1` without a
+/// complete snapshot must not produce a `_full` artifact that is actually slim.
 fn main() {
     println!("cargo:rerun-if-changed=Cargo.toml");
     println!("cargo:rerun-if-env-changed=CODESCRIBE_EMBED_MODEL");
@@ -149,15 +149,15 @@ fn main() {
                 .expect("Failed to write embedded_model_data.rs");
             println!("cargo:rustc-cfg=embed_model");
         } else if embed_whisper_requested && !no_embed && !model_exists {
-            println!(
-                "cargo:warning=Whisper model not found for embedding: {}",
-                model_path.display()
+            panic!(
+                "CODESCRIBE_EMBED_WHISPER=1 but no complete Whisper snapshot at {}. \
+Need config.json + tokenizer.json + mel_filters.npz + weights/model.safetensors. \
+The HF repo {} is weights-only; compose it with `make download-model` into \
+~/.codescribe/models/{}, or set CODESCRIBE_MODEL_PATH to that directory.",
+                model_path.display(),
+                DEFAULT_WHISPER_REPO,
+                DEFAULT_MODEL_NAME
             );
-            println!(
-                "cargo:warning=Download with: hf download {}",
-                DEFAULT_WHISPER_REPO
-            );
-            println!("cargo:warning=Falling back to runtime Whisper lookup for this build");
         }
 
         // TTS model embedding (optional, via CODESCRIBE_EMBED_TTS=1)
@@ -426,32 +426,66 @@ fn resolve_embed_model_path(manifest_dir: &str, embed_model: &str) -> PathBuf {
     Path::new(manifest_dir).join("models").join(embed_model)
 }
 
+/// True when a directory can be baked into the fat SKU.
+///
+/// The default HF Whisper repo is weights-only. `make download-model` composes
+/// tokenizer + mel into `~/.codescribe/models/<name>`. Incomplete snapshots
+/// must not win over that composed tree.
+fn whisper_dir_complete(path: &Path) -> bool {
+    let weights = if path.join("weights.safetensors").exists() {
+        path.join("weights.safetensors")
+    } else {
+        path.join("model.safetensors")
+    };
+    path.join("config.json").exists()
+        && path.join("tokenizer.json").exists()
+        && path.join("mel_filters.npz").exists()
+        && weights.exists()
+}
+
 /// Locate the Whisper snapshot to embed.
 ///
-/// `CODESCRIBE_MODEL_PATH` wins when it points at a real snapshot — it is the
-/// explicit operator override. Otherwise a repo-id-shaped name is looked up in
-/// the HF cache, the default name falls back to the default repo, and anything
-/// left resolves as a plain path.
+/// `CODESCRIBE_MODEL_PATH` wins when it is a complete snapshot. The composed
+/// `~/.codescribe/models` tree is next — that is what `make download-model`
+/// writes. An HF cache hit is used only when it already has tokenizer + mel.
 fn resolve_whisper_embed_model_path(
     manifest_dir: &str,
     embed_model: &str,
     default_repo: &str,
 ) -> PathBuf {
-    // CODESCRIBE_MODEL_PATH takes priority — explicit user override
     if let Ok(model_path) = env::var("CODESCRIBE_MODEL_PATH") {
         let p = PathBuf::from(model_path.trim());
-        if p.join("config.json").exists() {
+        if whisper_dir_complete(&p) {
             return p;
+        }
+    }
+    if let Some(home) = dirs::home_dir() {
+        let composed = home.join(".codescribe").join("models").join(embed_model);
+        if whisper_dir_complete(&composed) {
+            return composed;
+        }
+        if embed_model == DEFAULT_MODEL_NAME {
+            let default_composed = home
+                .join(".codescribe")
+                .join("models")
+                .join(DEFAULT_MODEL_NAME);
+            if whisper_dir_complete(&default_composed) {
+                return default_composed;
+            }
         }
     }
     if embed_model.contains('/') {
         if let Some(snapshot) = find_hf_snapshot(embed_model) {
-            return snapshot;
+            if whisper_dir_complete(&snapshot) {
+                return snapshot;
+            }
         }
     } else if embed_model == DEFAULT_MODEL_NAME
         && let Some(snapshot) = find_hf_snapshot(default_repo)
     {
-        return snapshot;
+        if whisper_dir_complete(&snapshot) {
+            return snapshot;
+        }
     }
     resolve_embed_model_path(manifest_dir, embed_model)
 }

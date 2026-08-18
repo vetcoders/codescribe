@@ -33,6 +33,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `verify-dmg`, then install that stapled Developer ID `.app` to
   `/Applications` without re-signing. `make install-app` remains the
   local-release / Lab path.
+- **`make release-full` is fail-closed.** Whisper embed no longer falls
+  back to a slim dylib when the HF snapshot is weights-only. It uses the
+  composed `~/.codescribe/models` tree from `make download-model`.
 - `SITE_VERSION` stays `0.13.3` until a published GitHub release.
 
 ## [0.14.0] - 2026-08-17
