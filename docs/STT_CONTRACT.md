@@ -67,16 +67,17 @@ STT authentication follows endpoint ownership: `api.openai.com` and
 API key; remaining custom endpoints retain the `x-api-key` contract. The key
 probe, live socket handshake, and explicit retranscribe path use the same
 resolver, so Settings cannot disagree with delivery. Settings → Test is the
-multipart file probe (`/v1/audio/transcriptions`); a stored Voice Lab
-`wss`/`ws` URL is remapped first (Libraxis cloud path, loopback `:8446` →
-`:8444`). It is not a WebSocket handshake.
+multipart file probe (`/v1/audio/transcriptions`) for every OpenAI-compatible
+host. A stored `wss`/`ws` `…/transcribe` URL is remapped to that file path
+first; loopback Voice Lab `:8446` becomes `:8444`. It is not a WebSocket
+handshake.
 
-Transport ownership is equally explicit. Normal cloud capture uses the proven
-Voice Lab WebSocket (`config` → bounded PCM `chunk` → periodic `flush` →
-`end`) and streams its normalized events into `PresentationEmitter`. A complete
-audio-file multipart request is allowed only for an explicit retranscribe
-action (Overlay, Dictionary, or Teacher). An OpenAI multipart URL has no Voice
-Lab mapping, so it cannot silently turn a normal stop into a whole-file upload.
+Transport ownership is equally explicit. Live capture uses a stored Voice Lab
+WebSocket (`config` → bounded PCM `chunk` → periodic `flush` → `end`) and
+streams its normalized events into `PresentationEmitter`. A public HTTPS
+`/v1/audio/transcriptions` URL — OpenAI or Libraxis — is file, not a silent
+socket. A complete audio-file multipart request is allowed for Settings → Test
+and for an explicit retranscribe action (Overlay, Dictionary, or Teacher).
 
 **Dictionary helper (everyone, 2026-08-17):** Settings → Dictionary Retranscribe
 is an explicit file surface on the row's archived `<stem>_raw.{m4a,wav,flac}`.
