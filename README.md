@@ -1,6 +1,6 @@
 # ⌜ Codescribe ⌟
 
-[![Version](https://img.shields.io/badge/version-0.14.0-6a9bcc)](Cargo.toml)
+[![Version](https://img.shields.io/badge/version-0.14.1-6a9bcc)](Cargo.toml)
 [![License: FSL-1.1-ALv2](https://img.shields.io/badge/license-FSL--1.1--ALv2-d97757)](LICENSE)
 [![CI](https://github.com/vetcoders/codescribe/actions/workflows/rust.yml/badge.svg)](https://github.com/vetcoders/codescribe/actions/workflows/rust.yml)
 [![Landing](https://img.shields.io/badge/site-vetcoders.github.io%2Fcodescribe-788c5d)](https://vetcoders.github.io/codescribe/)
@@ -59,7 +59,7 @@ flowchart TB
 
 > **Current runtime truth:** live overlay preview is local Whisper. Cloud STT is configurable in Settings, but in the current build it is still a **post-capture** path rather than live cloud preview.
 
-> **Status:** current source version is `0.14.0` (see `Cargo.toml`) and ships as a native macOS tray/settings/overlay app with local live preview, tiered settings (`settings.json` + Keychain + optional `.env`), and quality-loop tooling.
+> **Status:** current source version is `0.14.1` (see `Cargo.toml`) and ships as a native macOS tray/settings/overlay app with local live preview, tiered settings (`settings.json` + Keychain + optional `.env`), and quality-loop tooling.
 
 See: [`docs/WHISPER_LIVE.md`](docs/WHISPER_LIVE.md) | [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md)
 
@@ -405,7 +405,8 @@ make format         # cargo fmt
 ```
 make app              # Debug SwiftUI app build
 make app PROFILE=local-release # Optimized local SwiftUI app build
-make install-app      # Build + install /Applications/Codescribe.app
+make install-app      # Local-release install (may re-sign; Lab only if keys resolve)
+make release-stable   # Everyday: notarize slim DMG + install that stapled .app
 make release-qube     # Build qube CLI tools
 make install          # Install qube CLI tools + repo-local hooks
 make release-dmgs     # Build both signed + notarized release DMGs

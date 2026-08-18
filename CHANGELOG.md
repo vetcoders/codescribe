@@ -7,6 +7,29 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.14.1] - 2026-08-18
+
+> Patch: everyday-stable 0.14.x. Same slim public SKU as 0.14.0, plus the two
+> Settings/auth probes that were still lying on a daily machine, and one
+> command that installs the notarized .app instead of re-signing it.
+
+### Fixed
+
+- **STT Test is a file probe.** Settings Test no longer POSTs to a live
+  Voice Lab WebSocket (`STT_ENDPOINT`). Known live sockets map to
+  `/v1/audio/transcriptions`; loopback `:8446` → `:8444`.
+- **ChatGPT sign-in no longer requires Responses write.** OAuth persists
+  identity after exchange. `api.responses.write` stays a lane Test, so
+  Codex public tokens can sign in.
+
+### Changed
+
+- **`make release-stable`** is the everyday cut: slim sign + notarize +
+  `verify-dmg`, then install that stapled Developer ID `.app` to
+  `/Applications` without re-signing. `make install-app` remains the
+  local-release / Lab path.
+- `SITE_VERSION` stays `0.13.3` until a published GitHub release.
+
 ## [0.14.0] - 2026-08-17
 
 > Minor: developer Lab surface, Dictionary helper file-pass, bus word pins,
