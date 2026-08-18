@@ -15,6 +15,10 @@ final class DeveloperSurfaceTests: XCTestCase {
     XCTAssertTrue(DeveloperSurface.parse(NSNumber(value: 1)))
   }
 
+  func testPowerModeCaptionIsTheVisibleInstallTag() {
+    XCTAssertEqual(DeveloperSurface.powerModeCaption, "You use dev power mode")
+  }
+
   func testLabSectionIsHiddenOnProductionBundle() {
     XCTAssertEqual(SettingsSection.lab.availability, .hidden)
     XCTAssertFalse(SettingsSection.matching(query: "").contains(.lab))

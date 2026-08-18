@@ -80,6 +80,7 @@ struct DictationOverlayView: View {
     // already falls outside the borderless window (never rendered), so this
     // clip costs nothing visually.
     .clipShape(RoundedRectangle(cornerRadius: CSRadius.window, style: .continuous))
+    .developerPowerCorner(padding: 10)
     .overlay(alignment: .bottom) {
       if let toast = state.toast {
         ToastPill(text: toast)
