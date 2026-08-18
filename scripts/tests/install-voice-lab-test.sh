@@ -58,6 +58,17 @@ set -e
 pack="$WORKDIR/pack"
 mkdir -p "$pack/examples/monika/keys"
 printf 'x' >"$pack/server.py"
+cat >"$pack/examples/monika/settings.json" <<'JSON'
+{
+  "schema_version": 3,
+  "speech": {
+    "engine": {
+      "cloud_transcription_endpoint": "wss://api.libraxis.cloud/v1/audio/transcribe",
+      "asr_mode": "local_power"
+    }
+  }
+}
+JSON
 cat >"$pack/setup.sh" <<EOF
 #!/bin/sh
 set -eu
@@ -75,5 +86,39 @@ out="$(CODESCRIBE_VOICE_LAB_SRC="$pack" "$INSTALL" 2>&1)"
 [[ -f "$HOME/.codescribe/voice-lab/server.py" ]] || { echo "runtime not installed" >&2; exit 1; }
 [[ -x "$HOME/.codescribe/bin/voice-lab" ]] || { echo "launcher missing" >&2; exit 1; }
 [[ "$out" == *ran-setup* ]] || { echo "setup.sh did not run: $out" >&2; exit 1; }
+[[ "$out" == *seeded\ app\ settings* ]] || { echo "expected seed on missing settings: $out" >&2; exit 1; }
+[[ "$out" == *endpoint=wss://api.libraxis.cloud/v1/audio/transcribe* ]] || {
+  echo "expected libraxis guarantee, got: $out" >&2
+  exit 1
+}
+
+# Existing loopback endpoint must not be overwritten.
+export HOME="$WORKDIR/home-keep"
+mkdir -p "$HOME/Library/Application Support/Codescribe"
+cat >"$HOME/Library/Application Support/Codescribe/settings.json" <<'JSON'
+{
+  "speech": {
+    "engine": {
+      "cloud_transcription_endpoint": "ws://127.0.0.1:8446/v1/audio/transcribe",
+      "asr_mode": "local_power"
+    }
+  }
+}
+JSON
+out="$(CODESCRIBE_VOICE_LAB_SRC="$pack" "$INSTALL" 2>&1)"
+[[ "$out" == *app\ settings\ kept* ]] || { echo "expected keep existing endpoint: $out" >&2; exit 1; }
+[[ "$out" == *endpoint=ws://127.0.0.1:8446/v1/audio/transcribe* ]] || {
+  echo "loopback must survive seed, got: $out" >&2
+  exit 1
+}
+
+# Empty engine keys get the pack values without replacing the file wholesale.
+export HOME="$WORKDIR/home-fill"
+mkdir -p "$HOME/Library/Application Support/Codescribe"
+printf '%s\n' '{"schema_version":3,"speech":{"engine":{}}}' \
+  >"$HOME/Library/Application Support/Codescribe/settings.json"
+out="$(CODESCRIBE_VOICE_LAB_SRC="$pack" "$INSTALL" 2>&1)"
+[[ "$out" == *filled\ empty\ engine\ keys* ]] || { echo "expected fill: $out" >&2; exit 1; }
+[[ "$out" == *asr_mode=local_power* ]] || { echo "expected mode fill: $out" >&2; exit 1; }
 
 echo "install-voice-lab: ok"

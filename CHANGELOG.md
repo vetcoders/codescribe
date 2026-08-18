@@ -12,6 +12,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **`make install-app` is org-only.** It fetches `vetcoders/voice-lab`
   (fail-closed if this machine cannot read that repo), installs the Voice
   Lab toolbox + Monika public Sparkle/Ed keys, then arms `CSDeveloperSurface`.
+  Missing app `settings.json` is seeded from the Monika pack (Libraxis live
+  URL + `local_power`); an existing endpoint is never overwritten.
   External contributors use `make app`. Production DMGs stay Lab-off.
 - **Dev-power corner mark.** A keyed install paints a small
   “You use dev power mode” caption in the bottom-right of overlay, Agent
