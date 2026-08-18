@@ -176,7 +176,7 @@ Tagged builds publish DMGs through GitHub Releases:
 ```bash
 make app                # Debug SwiftUI app build
 make app PROFILE=local-release # Optimized local SwiftUI app build
-make install-app        # Org-only: Voice Lab + Lab surface + /Applications
+make install-app        # Build + install macOS .app into /Applications
 make release-qube       # Build qube CLI tools
 make install            # Install qube CLI tools + repo-local git hooks
 ```
@@ -405,7 +405,7 @@ make format         # cargo fmt
 ```
 make app              # Debug SwiftUI app build
 make app PROFILE=local-release # Optimized local SwiftUI app build
-make install-app      # Org-only: fetch Voice Lab, arm Lab from Sparkle/Ed keys, install /Applications
+make install-app      # Local-release install to /Applications
 make release-stable   # Everyday: notarize slim DMG + install that stapled .app
 make release-qube     # Build qube CLI tools
 make install          # Install qube CLI tools + repo-local hooks
