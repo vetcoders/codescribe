@@ -1088,11 +1088,16 @@ impl TailProvider for RemoteTailProvider {
         let file = Part::bytes(wav)
             .file_name("tail-window.wav")
             .mime_str("audio/wav")?;
-        let form = Form::new()
+        let mut form = Form::new()
             .part("file", file)
             .text("model", model.clone())
             .text("language", language.to_string())
             .text("response_format", "verbose_json");
+        if let Some(vocabulary) =
+            crate::stt::request_vocabulary::codescribe_stt_vocabulary(&self.endpoint)
+        {
+            form = form.text("vocabulary", vocabulary.to_string());
+        }
         let http_request = Client::builder()
             .timeout(REMOTE_REQUEST_TIMEOUT)
             .connect_timeout(SIDECAR_CONNECT_TIMEOUT)
@@ -1354,6 +1359,22 @@ mod tests {
         assert_eq!(
             stt_auth_mode("https://stt.example.test/v1/audio/transcriptions"),
             SttAuthMode::ApiKey
+        );
+    }
+
+    #[test]
+    fn remote_tail_topic_follows_codescribe_product_not_audio() {
+        assert_eq!(
+            crate::stt::request_vocabulary::codescribe_stt_vocabulary(
+                "http://127.0.0.1:8444/v1/audio/transcriptions"
+            ),
+            Some("programming")
+        );
+        assert_eq!(
+            crate::stt::request_vocabulary::codescribe_stt_vocabulary(
+                "https://api.openai.com/v1/audio/transcriptions"
+            ),
+            None
         );
     }
 

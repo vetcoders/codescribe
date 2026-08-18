@@ -32,6 +32,8 @@ pub mod apple_stt;
 pub mod onnx_adapter;
 /// Whisper sentence shape onto committed Apple words — punctuation only.
 pub mod punctuation_transplant;
+/// Explicit cloud/loopback STT topic token. Client-owned; never from audio.
+pub mod request_vocabulary;
 /// Serialized STT request scheduler: live, commit, and refine lanes with
 /// supersede semantics for stale requests and thermal-pressure backoff.
 pub mod scheduler;

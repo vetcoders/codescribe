@@ -160,6 +160,8 @@ pub struct GatewaySessionConfig {
     protocol_version: u16,
     session_id: String,
     locale: Option<String>,
+    /// Codescribe domain token. The gateway must not classify audio to pick one.
+    vocabulary: &'static str,
     audio: GatewayAudioConfig,
 }
 
@@ -170,6 +172,7 @@ impl GatewaySessionConfig {
             protocol_version: 1,
             session_id: input.session_id.as_str().to_string(),
             locale: input.locale.clone(),
+            vocabulary: crate::stt::request_vocabulary::CODESCRIBE_STT_VOCABULARY,
             audio: GatewayAudioConfig {
                 encoding: "pcm_s16le",
                 sample_rate_hz: input.sample_rate,
@@ -1409,6 +1412,7 @@ mod tests {
         let start_json = serde_json::to_value(&transport.started[0]).expect("serialize start");
         assert_eq!(start_json["type"], "session.start");
         assert_eq!(start_json["protocol_version"], 1);
+        assert_eq!(start_json["vocabulary"], "programming");
         assert_eq!(start_json["audio"]["encoding"], "pcm_s16le");
         assert_eq!(start_json["audio"]["channels"], 1);
         assert!(start_json.get("provider").is_none());

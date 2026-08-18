@@ -212,11 +212,14 @@ fn probe_stt_key(
             .with_probed_endpoint(endpoint);
         }
     };
-    let form = Form::new()
+    let mut form = Form::new()
         .part("file", file)
         .text("model", "whisper-1")
         .text("language", "pl")
         .text("response_format", "json");
+    if let Some(vocabulary) = crate::stt::request_vocabulary::codescribe_stt_vocabulary(&endpoint) {
+        form = form.text("vocabulary", vocabulary.to_string());
+    }
     let request = client.post(&endpoint);
     let auth_mode = crate::stt::tail_provider::stt_auth_mode(&endpoint);
     let request = match auth_mode {
@@ -517,6 +520,11 @@ mod tests {
         assert!(!request_lower.contains("x-api-key:"));
         assert!(!request_lower.contains("authorization:"));
         assert!(request.contains("codescribe-key-probe.wav"));
+        assert!(
+            request.contains("name=\"vocabulary\""),
+            "loopback Codescribe probe must name the programming domain"
+        );
+        assert!(request.contains("programming"));
         assert_eq!(
             result.message,
             "local STT endpoint accepts unauthenticated requests"
