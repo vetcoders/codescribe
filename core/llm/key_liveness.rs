@@ -530,8 +530,11 @@ mod tests {
         let address = listener
             .local_addr()
             .expect("STT live-socket probe address");
-        let live = format!("ws://{address}/v1/audio/transcribe");
-        let expected = format!("http://{address}/v1/audio/transcriptions");
+        let live = format!("ws://127.0.0.1:{}/v1/audio/transcribe", address.port());
+        let expected = format!(
+            "http://127.0.0.1:{}/v1/audio/transcriptions",
+            address.port()
+        );
         let server = thread::spawn(move || {
             let (mut stream, _) = listener.accept().expect("accept remapped STT probe");
             let mut buffer = [0_u8; 8192];
