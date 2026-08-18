@@ -574,8 +574,6 @@ struct DictationOverlayView: View {
           state.retranscribe(pass: pass)
         }
       }
-    } primaryAction: {
-      state.retranscribe(pass: .fullHq)
     } label: {
       actionButtonLabel(
         title: state.isRetranscribing
@@ -584,6 +582,8 @@ struct DictationOverlayView: View {
         tone: .neutral,
         iconOnly: iconOnly
       )
+    } primaryAction: {
+      state.retranscribe(pass: .fullHq)
     }
     .menuStyle(.button)
     .csFocusRing(cornerRadius: 8)

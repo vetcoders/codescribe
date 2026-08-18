@@ -474,18 +474,16 @@ fn resolve_whisper_embed_model_path(
             }
         }
     }
-    if embed_model.contains('/') {
-        if let Some(snapshot) = find_hf_snapshot(embed_model) {
-            if whisper_dir_complete(&snapshot) {
-                return snapshot;
-            }
-        }
+    if embed_model.contains('/')
+        && let Some(snapshot) = find_hf_snapshot(embed_model)
+        && whisper_dir_complete(&snapshot)
+    {
+        return snapshot;
     } else if embed_model == DEFAULT_MODEL_NAME
         && let Some(snapshot) = find_hf_snapshot(default_repo)
+        && whisper_dir_complete(&snapshot)
     {
-        if whisper_dir_complete(&snapshot) {
-            return snapshot;
-        }
+        return snapshot;
     }
     resolve_embed_model_path(manifest_dir, embed_model)
 }
