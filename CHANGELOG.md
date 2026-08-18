@@ -23,6 +23,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   Codex public tokens can sign in.
 - **STT remapper test names loopback explicitly** so `make check` Semgrep
   does not treat a templated live-socket URL as an open WebSocket.
+- **Overlay copy stays evidence-only in the quality-chain test.** Isolated
+  `make verify` no longer greened that path by reading a leftover host
+  lexicon. Voice Lab finalize is still the teach gesture.
 
 ### Changed
 
