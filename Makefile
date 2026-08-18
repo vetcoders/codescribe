@@ -11,7 +11,7 @@
         test-engine test-engine-apple test-engine-candle test-teacher \
         demo demo-raw demo-assistive check verify semgrep fix clean help corpus-census test-corpus-parity \
         dist-preflight dist-preflight-signed verify-canaries smoke-canaries \
-        dmg dmg-signed release-standard release-full release-dmgs notarize verify-dmg download-model download-e5 download-embedder ensure-models \
+        dmg dmg-signed release-standard release-full release-dmgs release-stable install-app-release notarize verify-dmg download-model download-e5 download-embedder ensure-models \
         hooks
 
 SHELL := /bin/bash
@@ -260,7 +260,11 @@ bump:
 	esac; \
 	new="$$major.$$minor.$$patch"; \
 	sed -i '' "s/^version = \"$$current\"/version = \"$$new\"/" $(VERSION_FILE); \
-	echo "Bumped: v$$current -> v$$new"
+	if [ -f README.md ]; then \
+		sed -i '' "s/badge\/version-$$current-/badge\/version-$$new-/" README.md; \
+		sed -i '' "s/current source version is \`$$current\`/current source version is \`$$new\`/" README.md; \
+	fi; \
+	echo "Bumped: v$$current -> v$$new (Cargo.toml + README). Update CHANGELOG by hand. Do not bump site/src/lib/release.ts here."
 
 bump-patch:
 	@$(MAKE) bump TYPE=patch
@@ -1183,7 +1187,8 @@ help:
 	@printf '%s\n' '  make install-no-embed DEV/RECOVERY: no optional embeds (runtime paths only)'
 	@printf '%s\n' '  make release-codescribe-embedded Fat dylib with Whisper baked in (not daily)'
 	@printf '    $(HELP_C_GREEN)%-18s$(HELP_C_RESET) %s\n' 'config' 'Edit ~/.codescribe/.env'
-	@printf '    $(HELP_C_GREEN)%-18s$(HELP_C_RESET) %s\n' 'install-app' 'Install to /Applications'
+	@printf '    $(HELP_C_GREEN)%-18s$(HELP_C_RESET) %s\n' 'install-app' 'Local-release install to /Applications (may re-sign; Lab if keys resolve)'
+	@printf '    $(HELP_C_GREEN)%-18s$(HELP_C_RESET) %s\n' 'release-stable' 'Everyday: notarize slim DMG + install that stapled .app'
 	@printf '\n'
 	@printf '  $(HELP_C_YELLOW)%s$(HELP_C_RESET)\n' 'RELEASE & DISTRIBUTION'
 	@printf '    $(HELP_C_GREEN)%-18s$(HELP_C_RESET) %s\n' 'dmg' 'Build DMG (ad-hoc signed)'
@@ -1311,6 +1316,40 @@ release-standard: dist-preflight-signed
 		exit 1; \
 	fi; \
 	./scripts/verify-dmg-payload.sh "$$DMG" --variant slim --version "$$VERSION"
+
+# Install the already-built Release .app without re-signing. Re-signing with
+# Apple Development (install-app) drops the notarization ticket and gives the
+# everyday machine a different identity than the public DMG.
+install-app-release:
+	@APP_SRC="macos/build/Build/Products/Release/$(CODESCRIBE_APP_NAME).app"; \
+	DEST="/Applications/$(CODESCRIBE_APP_NAME).app"; \
+	if [ ! -d "$$APP_SRC" ]; then \
+		echo "ERROR: no Release app at $$APP_SRC — run make release-standard first."; \
+		exit 1; \
+	fi; \
+	if ! codesign --verify --deep --strict "$$APP_SRC" >/dev/null 2>&1; then \
+		echo "ERROR: Release app is not strictly signed. Refusing to install it."; \
+		exit 1; \
+	fi; \
+	echo "Stopping running $(CODESCRIBE_APP_NAME) (if any) ..."; \
+	pkill -x "$(CODESCRIBE_APP_NAME)" 2>/dev/null || true; \
+	sleep 1; \
+	echo "Installing stapled Release app to $$DEST (no re-sign) ..."; \
+	mkdir -p /Applications; \
+	rsync -a --delete "$$APP_SRC/" "$$DEST/"; \
+	echo "Installed: $$DEST"; \
+	defaults read "$$DEST/Contents/Info" CFBundleShortVersionString; \
+	defaults read "$$DEST/Contents/Info" CSBuildCommit; \
+	if stapler validate "$$DEST" >/dev/null 2>&1; then \
+		echo "staple: valid"; \
+	else \
+		echo "WARNING: staple not valid yet — run make release-standard (it notarizes) before treating this as everyday-stable."; \
+	fi
+
+# Everyday stable cut: the slim public DMG and the same stapled .app in
+# /Applications. Does not bake Lab. Does not touch SITE_VERSION / tags / GitHub.
+release-stable: release-standard install-app-release
+	@echo "Everyday stable is local (slim DMG + /Applications). Tag, push, gh release, and SITE_VERSION stay the operator button."
 
 # Optional fat SKU: bake Whisper (~1GB+) into the app. Not the daily path.
 # Ends with the fail-closed payload gate (full = Silero + Whisper embedded,

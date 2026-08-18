@@ -15,7 +15,7 @@
 #   <dmg-dir>               directory containing the release DMG(s)
 #   -o <path>               output appcast path (default: <dmg-dir>/appcast.xml)
 #   --download-url-prefix   URL prefix for enclosure links, e.g.
-#                           https://github.com/vetcoders/codescribe/releases/download/v0.14.0/
+#                           https://github.com/vetcoders/codescribe/releases/download/v0.14.1/
 #
 # Env:
 #   SPARKLE_ED_PRIVATE_KEY  REQUIRED. EdDSA private key (the base64 line printed
