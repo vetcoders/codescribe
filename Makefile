@@ -49,7 +49,7 @@ CODESCRIBE_DIST_CODESIGN_IDENTITY ?= $(if $(strip $(CODESCRIBE_DEVELOPER_ID_IDEN
 # `env -u CODESCRIBE_LICENSE_PUBLIC_KEY_HEX`, and that must keep working — a
 # plain `?=` fallback here would silently re-arm the production key in a local
 # build that deliberately wants the development verifier.
-CODESCRIBE_LICENSE_PUBLIC_KEY_FILE ?= $(HOME)/.vibecrafted/secrets/codescribe/license-public.hex
+CODESCRIBE_LICENSE_PUBLIC_KEY_FILE ?= $(firstword $(wildcard $(HOME)/.codescribe/config/dev/keys/license-public.hex $(HOME)/.vibecrafted/secrets/codescribe/license-public.hex))
 CODESCRIBE_DIST_LICENSE_KEY = $(if $(CODESCRIBE_LICENSE_PUBLIC_KEY_HEX),$(CODESCRIBE_LICENSE_PUBLIC_KEY_HEX),$(shell cat $(CODESCRIBE_LICENSE_PUBLIC_KEY_FILE) 2>/dev/null | tr -d '[:space:]'))
 # Sparkle's update-verification public key has the same missing-local-source
 # problem: release.yml supplies SPARKLE_ED_PUBLIC_KEY as a repository variable,
@@ -58,7 +58,7 @@ CODESCRIBE_DIST_LICENSE_KEY = $(if $(CODESCRIBE_LICENSE_PUBLIC_KEY_HEX),$(CODESC
 # would reject every update"). A local `make release-standard` had no way to
 # supply it, so a locally cut release failed the gate at the very last check —
 # after codesigning, notarisation and stapling had already been paid for.
-CODESCRIBE_SPARKLE_PUBLIC_KEY_FILE ?= $(HOME)/.vibecrafted/secrets/codescribe/sparkle-public.b64
+CODESCRIBE_SPARKLE_PUBLIC_KEY_FILE ?= $(firstword $(wildcard $(HOME)/.codescribe/config/dev/keys/sparkle-public.b64 $(HOME)/.vibecrafted/secrets/codescribe/sparkle-public.b64))
 CODESCRIBE_DIST_SPARKLE_KEY = $(if $(SPARKLE_ED_PUBLIC_KEY),$(SPARKLE_ED_PUBLIC_KEY),$(shell cat $(CODESCRIBE_SPARKLE_PUBLIC_KEY_FILE) 2>/dev/null | tr -d '[:space:]'))
 CODESCRIBE_APP_NAME ?= Codescribe
 CODESCRIBE_DISPLAY_NAME ?= Codescribe

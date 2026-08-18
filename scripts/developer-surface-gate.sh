@@ -10,8 +10,24 @@
 # 𝚅𝚒𝚋𝚎𝚌𝚛𝚊𝚏𝚝𝚎𝚍. with AI Agents by Vetcoders (c)2024-2026 LibraxisAI
 set -euo pipefail
 
-SPARKLE_FILE="${CODESCRIBE_SPARKLE_PUBLIC_KEY_FILE:-$HOME/.vibecrafted/secrets/codescribe/sparkle-public.b64}"
-LICENSE_FILE="${CODESCRIBE_LICENSE_PUBLIC_KEY_FILE:-$HOME/.vibecrafted/secrets/codescribe/license-public.hex}"
+DEV_PACK="${HOME}/.codescribe/config/dev/keys"
+VIBE_SECRETS="${HOME}/.vibecrafted/secrets/codescribe"
+if [[ -z "${CODESCRIBE_SPARKLE_PUBLIC_KEY_FILE:-}" ]]; then
+  if [[ -f "${DEV_PACK}/sparkle-public.b64" ]]; then
+    CODESCRIBE_SPARKLE_PUBLIC_KEY_FILE="${DEV_PACK}/sparkle-public.b64"
+  else
+    CODESCRIBE_SPARKLE_PUBLIC_KEY_FILE="${VIBE_SECRETS}/sparkle-public.b64"
+  fi
+fi
+if [[ -z "${CODESCRIBE_LICENSE_PUBLIC_KEY_FILE:-}" ]]; then
+  if [[ -f "${DEV_PACK}/license-public.hex" ]]; then
+    CODESCRIBE_LICENSE_PUBLIC_KEY_FILE="${DEV_PACK}/license-public.hex"
+  else
+    CODESCRIBE_LICENSE_PUBLIC_KEY_FILE="${VIBE_SECRETS}/license-public.hex"
+  fi
+fi
+SPARKLE_FILE="$CODESCRIBE_SPARKLE_PUBLIC_KEY_FILE"
+LICENSE_FILE="$CODESCRIBE_LICENSE_PUBLIC_KEY_FILE"
 
 read_trimmed() {
   local path="$1"

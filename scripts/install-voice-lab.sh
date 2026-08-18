@@ -99,10 +99,20 @@ run_setup() {
 verify_runtime() {
   [[ -f "${RUNTIME}/server.py" ]] || fail "runtime missing ${RUNTIME}/server.py"
   [[ -x "$LAUNCHER" ]] || fail "launcher missing ${LAUNCHER}"
-  [[ -f "${HOME}/.vibecrafted/secrets/codescribe/sparkle-public.b64" ]] \
-    || fail "Sparkle public key missing after Monika pack"
-  [[ -f "${HOME}/.vibecrafted/secrets/codescribe/license-public.hex" ]] \
-    || fail "license public key missing after Monika pack"
+  if [[ -f "${HOME}/.codescribe/config/dev/keys/sparkle-public.b64" ]]; then
+    :
+  elif [[ -f "${HOME}/.vibecrafted/secrets/codescribe/sparkle-public.b64" ]]; then
+    :
+  else
+    fail "Sparkle public key missing (~/.codescribe/config/dev/keys or Monika pack)"
+  fi
+  if [[ -f "${HOME}/.codescribe/config/dev/keys/license-public.hex" ]]; then
+    :
+  elif [[ -f "${HOME}/.vibecrafted/secrets/codescribe/license-public.hex" ]]; then
+    :
+  else
+    fail "license public key missing (~/.codescribe/config/dev/keys or Monika pack)"
+  fi
   echo "==> Voice Lab runtime ${RUNTIME}"
   echo "==> launcher ${LAUNCHER}"
 }
