@@ -142,6 +142,25 @@ final class VoiceLabTests: XCTestCase {
     XCTAssertNil(archivedAudioURL(configDir: root.path, rawText: "formatted words"))
   }
 
+  func testArchivedAudioLookupFindsTakeWhenRawTextFileIsNumbered() throws {
+    let root = FileManager.default.temporaryDirectory
+      .appendingPathComponent(UUID().uuidString, isDirectory: true)
+    let day = root.appendingPathComponent("transcriptions/2026-08-18", isDirectory: true)
+    try FileManager.default.createDirectory(at: day, withIntermediateDirectories: true)
+    defer { try? FileManager.default.removeItem(at: root) }
+
+    let transcript = day.appendingPathComponent("105438_take_raw_1.txt")
+    let audio = day.appendingPathComponent("105438_take_raw.m4a")
+    try "numbered raw".write(to: transcript, atomically: true, encoding: .utf8)
+    try Data([0, 1, 2]).write(to: audio)
+
+    XCTAssertEqual(
+      archivedAudioURL(configDir: root.path, rawText: "numbered raw")?
+        .resolvingSymlinksInPath().path,
+      audio.resolvingSymlinksInPath().path
+    )
+  }
+
   func testSuccessfulVoiceLabEditRefreshesResolvedProjection() {
     let original = CsQualityRecord(
       id: "correction-1",

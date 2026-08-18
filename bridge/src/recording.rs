@@ -338,6 +338,9 @@ async fn transcribe_file_cloud(path: String) -> Result<CsTranscription, CsError>
             msg: "Cloud pass needs STT_ENDPOINT".to_string(),
         });
     };
+    // Same invert as Settings → Test: a stored Voice Lab socket is not a
+    // multipart URL. Public HTTPS file URLs stay file.
+    let endpoint = codescribe_core::stt::tail_provider::file_probe_endpoint(&endpoint);
     if codescribe_core::stt::tail_provider::stt_auth_mode(&endpoint)
         != codescribe_core::stt::tail_provider::SttAuthMode::Unauthenticated
         && key.is_empty()
@@ -374,6 +377,22 @@ mod retranscribe_tests {
             split_retranscribe_path("cloud:/tmp/last_session.wav"),
             (RetranscribePass::Cloud, path) if path == "/tmp/last_session.wav"
         ));
+    }
+
+    #[test]
+    fn cloud_pass_inverts_voice_lab_socket_to_file() {
+        assert_eq!(
+            codescribe_core::stt::tail_provider::file_probe_endpoint(
+                "ws://127.0.0.1:8446/v1/audio/transcribe"
+            ),
+            "http://127.0.0.1:8444/v1/audio/transcriptions"
+        );
+        assert_eq!(
+            codescribe_core::stt::tail_provider::file_probe_endpoint(
+                "https://api.libraxis.cloud/v1/audio/transcriptions"
+            ),
+            "https://api.libraxis.cloud/v1/audio/transcriptions"
+        );
     }
 }
 
