@@ -4,7 +4,7 @@
 # The user-facing app is built by `make app` (xcodebuild); the Rust side no
 # longer ships a standalone `codescribe` tray binary.
 
-.PHONY: all build release release-codescribe release-codescribe-embedded release-qube app app-bindings install install-no-embed config install-app \
+.PHONY: all build release release-codescribe release-codescribe-embedded release-qube app app-bindings install install-no-embed config install-app install-voice-lab \
         start stop restart status logs logs-follow \
         bump bump-patch bump-minor bump-major version \
         lint format test test-quick test-e2e test-e2e-real test-sse test-sse-release test-responses-live test-sse-heavy test-formatting test-all \
@@ -184,13 +184,22 @@ config:
 site-dev:
 	cd site && npm run dev
 
-install-app:
+install-voice-lab:
+	@./scripts/install-voice-lab.sh
+
+install-app: install-voice-lab
 	@echo "Building $(CODESCRIBE_APP_NAME).app (SwiftUI, optimized local profile) via scripts/build-app.sh ..."
 	@echo "Local install uses the development license verifier; CODESCRIBE_LICENSE_PUBLIC_KEY_HEX is reserved for distribution builds."
 	@BIT=$$(./scripts/developer-surface-gate.sh); \
-	echo "Developer surface: $$BIT (1 needs legit Sparkle + license public keys on this machine)."; \
+	if [ "$$BIT" != "1" ]; then \
+		echo "Developer surface stayed off after the Voice Lab pack — Sparkle/Ed public keys did not resolve."; \
+		exit 1; \
+	fi; \
+	echo "Developer surface: 1 (Sparkle + license public keys from the org Voice Lab pack)."; \
+	SPARKLE=$$(tr -d '[:space:]' < "$(CODESCRIBE_SPARKLE_PUBLIC_KEY_FILE)" 2>/dev/null || true); \
 	env -u CODESCRIBE_LICENSE_PUBLIC_KEY_HEX \
-	  CODESCRIBE_DEVELOPER_SURFACE=$$BIT \
+	  CODESCRIBE_DEVELOPER_SURFACE=1 \
+	  SPARKLE_ED_PUBLIC_KEY="$$SPARKLE" \
 	  $(MAKE) --no-print-directory app PROFILE=local-release
 	@APP_SRC="macos/build/Build/Products/Release/Codescribe.app"; \
 	if [ ! -d "$$APP_SRC" ]; then \
@@ -1192,7 +1201,8 @@ help:
 	@printf '%s\n' '  make install-no-embed DEV/RECOVERY: no optional embeds (runtime paths only)'
 	@printf '%s\n' '  make release-codescribe-embedded Fat dylib with Whisper baked in (not daily)'
 	@printf '    $(HELP_C_GREEN)%-18s$(HELP_C_RESET) %s\n' 'config' 'Edit ~/.codescribe/.env'
-	@printf '    $(HELP_C_GREEN)%-18s$(HELP_C_RESET) %s\n' 'install-app' 'Local-release install to /Applications (may re-sign; Lab if keys resolve)'
+	@printf '    $(HELP_C_GREEN)%-18s$(HELP_C_RESET) %s\n' 'install-app' 'Org-only: fetch Voice Lab, arm Lab from Sparkle/Ed keys, install /Applications'
+	@printf '    $(HELP_C_GREEN)%-18s$(HELP_C_RESET) %s\n' 'install-voice-lab' 'Fail-closed clone/update of vetcoders/voice-lab → ~/.codescribe/voice-lab'
 	@printf '    $(HELP_C_GREEN)%-18s$(HELP_C_RESET) %s\n' 'site-dev' 'Astro site at site/ (http://localhost:4321) — not make site:dev'
 	@printf '    $(HELP_C_GREEN)%-18s$(HELP_C_RESET) %s\n' 'release-stable' 'Everyday: notarize slim DMG + install that stapled .app'
 	@printf '\n'
