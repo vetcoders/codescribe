@@ -21,6 +21,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **ChatGPT sign-in no longer requires Responses write.** OAuth persists
   identity after exchange. `api.responses.write` stays a lane Test, so
   Codex public tokens can sign in.
+- **STT remapper test names loopback explicitly** so `make check` Semgrep
+  does not treat a templated live-socket URL as an open WebSocket.
 
 ### Changed
 
