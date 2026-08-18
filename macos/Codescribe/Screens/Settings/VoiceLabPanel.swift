@@ -122,13 +122,30 @@ func archivedAudioURL(configDir: String, rawText: String) -> URL? {
   }
 
   for (transcriptURL, _) in matches.sorted(by: { $0.1 > $1.1 }) {
-    let stem = transcriptURL.deletingPathExtension()
-    for ext in ["m4a", "wav", "flac"] {
-      let candidate = stem.appendingPathExtension(ext)
+    for candidate in archivedAudioCandidates(from: transcriptURL) {
       if FileManager.default.fileExists(atPath: candidate.path) { return candidate }
     }
   }
   return nil
+}
+
+/// `<stem>_raw.txt` sits beside `<stem>_raw.m4a`. A colliding second text file
+/// (`_raw_1.txt`) must still find the take's audio, not disable Retranscribe.
+func archivedAudioCandidates(from transcriptURL: URL) -> [URL] {
+  let stem = transcriptURL.deletingPathExtension()
+  var stems = [stem]
+  let name = stem.lastPathComponent
+  if let digits = name.range(of: "_\\d+$", options: .regularExpression) {
+    let base = String(name[..<digits.lowerBound])
+    stems.append(stem.deletingLastPathComponent().appendingPathComponent(base))
+  }
+  var candidates: [URL] = []
+  for next in stems {
+    for ext in ["m4a", "wav", "flac"] {
+      candidates.append(next.appendingPathExtension(ext))
+    }
+  }
+  return candidates
 }
 
 /// Honest Dictionary headline.

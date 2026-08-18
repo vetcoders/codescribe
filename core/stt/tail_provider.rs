@@ -78,7 +78,7 @@ pub fn stt_auth_mode(endpoint: &str) -> SttAuthMode {
 /// scheme and path — same rewrite for every host. Loopback `:8446` (Voice Lab
 /// socket) becomes `:8444` (file worker). Other live sockets stay as-is so
 /// [`validate_remote_endpoint`] still fail-closes them.
-pub(crate) fn file_probe_endpoint(endpoint: &str) -> String {
+pub fn file_probe_endpoint(endpoint: &str) -> String {
     let Ok(mut url) = Url::parse(endpoint) else {
         return endpoint.to_string();
     };
