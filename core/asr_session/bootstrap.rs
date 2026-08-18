@@ -76,6 +76,11 @@ fn live_websocket_endpoint(endpoint: &str) -> Option<String> {
         let path = url.path().trim_end_matches("transcriptions").to_string() + "transcribe";
         url.set_path(&path);
     }
+    // Inverse of file_probe_endpoint: Voice Lab file worker :8444 is not a
+    // live socket. The live socket is :8446.
+    if url.port() == Some(8444) {
+        url.set_port(Some(8446)).ok()?;
+    }
     Some(url.to_string())
 }
 
@@ -225,6 +230,14 @@ mod tests {
         assert_eq!(
             live_websocket_endpoint("ws://127.0.0.1:8446/v1/audio/transcribe").as_deref(),
             Some("ws://127.0.0.1:8446/v1/audio/transcribe")
+        );
+        assert_eq!(
+            live_websocket_endpoint("http://127.0.0.1:8444/v1/audio/transcriptions").as_deref(),
+            Some("ws://127.0.0.1:8446/v1/audio/transcribe")
+        );
+        assert_eq!(
+            live_websocket_endpoint("http://localhost:8444/v1/audio/transcriptions").as_deref(),
+            Some("ws://localhost:8446/v1/audio/transcribe")
         );
     }
 

@@ -20,16 +20,34 @@ pub const ENGINE_CONTRACT_DOC: &str = "docs/THE_ENGINE_CONTRACT.md";
 /// Path of the HTML-surface contract, relative to the repo root.
 pub const QUALITY_HTML_CONTRACT_DOC: &str = "docs/quality-reports/CONTRACT.md";
 
+/// True when a `<meta>` tag carries both `name` and `content` on the same tag.
+/// Prose elsewhere in the document does not satisfy the handshake.
+fn meta_content_is(html: &str, name: &str, content: &str) -> bool {
+    let name_attr = format!(r#"name="{name}""#);
+    let content_attr = format!(r#"content="{content}""#);
+    let mut rest = html;
+    while let Some(name_at) = rest.find(&name_attr) {
+        let before = &rest[..name_at];
+        let tag_start = before.rfind('<').unwrap_or(0);
+        let after = &rest[name_at..];
+        let tag_end = after.find('>').unwrap_or(after.len());
+        let tag = &rest[tag_start..name_at + tag_end];
+        if tag.contains(&content_attr) {
+            return true;
+        }
+        rest = &rest[name_at + name_attr.len()..];
+    }
+    false
+}
+
 /// Failures if this string is not a Seal Atlas quality report.
 pub fn validate_quality_html(html: &str) -> Vec<String> {
     let lowered = html.to_ascii_lowercase();
     let mut failures = Vec::new();
-    if !html.contains(r#"name="engine-contract""#) || !html.contains(ENGINE_CONTRACT_ID) {
+    if !meta_content_is(html, "engine-contract", ENGINE_CONTRACT_ID) {
         failures.push("missing meta engine-contract=the-engine/v1".into());
     }
-    if !html.contains(r#"name="quality-report-surface""#)
-        || !lowered.contains("seal-atlas") && !lowered.contains("seal atlas")
-    {
+    if !meta_content_is(html, "quality-report-surface", QUALITY_REPORT_SURFACE) {
         failures.push("missing meta quality-report-surface=seal-atlas".into());
     }
     if !lowered.contains("seal atlas") && !lowered.contains("seal-atlas") {
@@ -508,6 +526,31 @@ mod tests {
 <body><h1>Codescribe Quality Report</h1><p>Avg WER 12%</p></body></html>"#;
         let failures = validate_quality_html(fake);
         assert!(failures.len() >= 3, "{failures:?}");
+    }
+
+    #[test]
+    fn handshake_rejects_prose_that_is_not_the_meta_content() {
+        let fake = r#"<html><head>
+<meta name="engine-contract" content="other/v0" />
+<meta name="quality-report-surface" content="wer-table" />
+<title>mentions the-engine/v1 and seal-atlas in prose</title>
+</head>
+<body>
+<p>the-engine/v1 seal-atlas</p>
+<div class="stat"><b>1</b><span>word-grain</span></div>
+<p>utterance-grain clock-lie SealedSpan.words whisper</p>
+</body></html>"#;
+        let failures = validate_quality_html(fake);
+        assert!(
+            failures.iter().any(|f| f.contains("engine-contract")),
+            "{failures:?}"
+        );
+        assert!(
+            failures
+                .iter()
+                .any(|f| f.contains("quality-report-surface")),
+            "{failures:?}"
+        );
     }
 
     #[test]

@@ -12,7 +12,7 @@
         demo demo-raw demo-assistive check verify semgrep fix clean help corpus-census test-corpus-parity \
         dist-preflight dist-preflight-signed verify-canaries smoke-canaries \
         dmg dmg-signed release-standard release-full release-dmgs release-stable install-app-release notarize verify-dmg download-model download-e5 download-embedder ensure-models \
-        hooks
+        hooks site-dev
 
 SHELL := /bin/bash
 VERSION_FILE := Cargo.toml
@@ -178,6 +178,11 @@ config:
 	fi
 	@$(EDITOR) ~/.codescribe/.env
 
+
+# Colon form `make site:dev` is not a target — Make treats `:` as a rule
+# separator. The website lives in site/; this is `npm run dev` from there.
+site-dev:
+	cd site && npm run dev
 
 install-app:
 	@echo "Building $(CODESCRIBE_APP_NAME).app (SwiftUI, optimized local profile) via scripts/build-app.sh ..."
@@ -1188,6 +1193,7 @@ help:
 	@printf '%s\n' '  make release-codescribe-embedded Fat dylib with Whisper baked in (not daily)'
 	@printf '    $(HELP_C_GREEN)%-18s$(HELP_C_RESET) %s\n' 'config' 'Edit ~/.codescribe/.env'
 	@printf '    $(HELP_C_GREEN)%-18s$(HELP_C_RESET) %s\n' 'install-app' 'Local-release install to /Applications (may re-sign; Lab if keys resolve)'
+	@printf '    $(HELP_C_GREEN)%-18s$(HELP_C_RESET) %s\n' 'site-dev' 'Astro site at site/ (http://localhost:4321) — not make site:dev'
 	@printf '    $(HELP_C_GREEN)%-18s$(HELP_C_RESET) %s\n' 'release-stable' 'Everyday: notarize slim DMG + install that stapled .app'
 	@printf '\n'
 	@printf '  $(HELP_C_YELLOW)%s$(HELP_C_RESET)\n' 'RELEASE & DISTRIBUTION'

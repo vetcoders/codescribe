@@ -70,7 +70,9 @@ resolver, so Settings cannot disagree with delivery. Settings → Test is the
 multipart file probe (`/v1/audio/transcriptions`) for every OpenAI-compatible
 host. A stored `wss`/`ws` `…/transcribe` URL is remapped to that file path
 first; loopback Voice Lab `:8446` becomes `:8444`. It is not a WebSocket
-handshake.
+handshake. The inverse is also explicit: a loopback file URL on `:8444`
+(`http(s)://…/v1/audio/transcriptions`) becomes the live socket on `:8446`.
+A generic loopback file URL on another port keeps that port.
 
 Transport ownership is equally explicit. Live capture uses a stored Voice Lab
 WebSocket (`config` → bounded PCM `chunk` → periodic `flush` → `end`) and
