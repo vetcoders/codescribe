@@ -73,13 +73,11 @@ pub fn stt_auth_mode(endpoint: &str) -> SttAuthMode {
 
 /// Map a live WebSocket STT URL onto the multipart file probe.
 ///
-/// Inverse of `live_websocket_endpoint` for the sockets that mapper owns:
-/// Libraxis cloud `wss://…/v1/audio/transcribe` → `https://…/v1/audio/transcriptions`,
-/// and loopback `ws`/`wss` `…/transcribe` → `http`/`https` `…/transcriptions`.
-/// The Libraxis split (`:8446` WS worker has no file route; `:8444` does)
-/// is applied only on loopback. Already-HTTP endpoints stay unchanged.
-/// Unknown live sockets are left as-is so [`validate_remote_endpoint`] still
-/// fail-closes them.
+/// Settings → Test is always OpenAI-compatible `POST /v1/audio/transcriptions`.
+/// `http`/`https` stay. `ws`/`wss` whose path ends in `/transcribe` invert
+/// scheme and path — same rewrite for every host. Loopback `:8446` (Voice Lab
+/// socket) becomes `:8444` (file worker). Other live sockets stay as-is so
+/// [`validate_remote_endpoint`] still fail-closes them.
 pub(crate) fn file_probe_endpoint(endpoint: &str) -> String {
     let Ok(mut url) = Url::parse(endpoint) else {
         return endpoint.to_string();
@@ -105,26 +103,17 @@ pub(crate) fn file_probe_endpoint(endpoint: &str) -> String {
         "http"
     };
 
-    if host.eq_ignore_ascii_case("api.libraxis.cloud") {
-        if url.set_scheme("https").is_err() {
-            return endpoint.to_string();
-        }
-        url.set_path("/v1/audio/transcriptions");
-        url.set_query(None);
-        url.set_fragment(None);
-        return url.to_string();
-    }
-    if !loopback {
+    if !url.path().ends_with("/transcribe") {
         return endpoint.to_string();
     }
     if url.set_scheme(http_scheme).is_err() {
         return endpoint.to_string();
     }
-    if url.path().ends_with("/transcribe") {
-        let path = url.path().trim_end_matches("transcribe").to_string() + "transcriptions";
-        url.set_path(&path);
-    }
-    if url.port() == Some(8446) && url.set_port(Some(8444)).is_err() {
+    let path = url.path().trim_end_matches("transcribe").to_string() + "transcriptions";
+    url.set_path(&path);
+    url.set_query(None);
+    url.set_fragment(None);
+    if loopback && url.port() == Some(8446) && url.set_port(Some(8444)).is_err() {
         return endpoint.to_string();
     }
     url.to_string()
@@ -1392,7 +1381,11 @@ mod tests {
         );
         assert_eq!(
             file_probe_endpoint("wss://stt.example.test/v1/audio/transcribe"),
-            "wss://stt.example.test/v1/audio/transcribe"
+            "https://stt.example.test/v1/audio/transcriptions"
+        );
+        assert_eq!(
+            file_probe_endpoint("wss://stt.example.test/v1/audio/live"),
+            "wss://stt.example.test/v1/audio/live"
         );
     }
 

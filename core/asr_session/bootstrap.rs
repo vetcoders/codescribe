@@ -1,9 +1,10 @@
 //! Recording-start policy that joins persisted mode truth, consent, and the
 //! canonical STT endpoint into the provider decision consumed by C1.
 //!
-//! Known Libraxis and loopback multipart endpoints map to their live Voice Lab
-//! socket. Unknown HTTP providers remain unavailable and recording continues
-//! with Apple + lexicon rather than pretending a file endpoint is streaming.
+//! An explicit `ws`/`wss` URL is the live socket. A public HTTPS file URL
+//! (`/v1/audio/transcriptions`) stays file — OpenAI and Libraxis the same —
+//! so recording continues with Apple + lexicon unless the socket is stored.
+//! Loopback file URLs still map onto the local Voice Lab worker.
 
 use std::fmt;
 
@@ -31,10 +32,9 @@ pub enum GatewaySessionAvailability {
 
 /// Resolve the live WebSocket session directly from canonical STT config.
 ///
-/// Libraxis' multipart file endpoint and its proven Voice Lab socket are two
-/// transports owned by the same provider. Normal recording uses the latter;
-/// explicit retranscribe keeps the former. A direct `ws(s)` endpoint is also
-/// accepted, while OpenAI multipart is not mislabeled as Voice Lab streaming.
+/// Stored `ws`/`wss` is the live socket (Voice Lab on this host). A public
+/// OpenAI-compatible file URL is never rewritten into a socket. Retranscribe
+/// and Settings → Test keep the file path.
 pub fn gateway_session_availability(config: &Config) -> GatewaySessionAvailability {
     let Some(endpoint) = config
         .stt_endpoint
@@ -66,16 +66,6 @@ fn live_websocket_endpoint(endpoint: &str) -> Option<String> {
         || host
             .parse::<std::net::IpAddr>()
             .is_ok_and(|address| address.is_loopback());
-    if host.eq_ignore_ascii_case("api.openai.com") {
-        return None;
-    }
-    if host.eq_ignore_ascii_case("api.libraxis.cloud") {
-        url.set_scheme("wss").ok()?;
-        url.set_path("/v1/audio/transcribe");
-        url.set_query(None);
-        url.set_fragment(None);
-        return Some(url.to_string());
-    }
     if !loopback {
         return None;
     }
@@ -211,15 +201,10 @@ mod tests {
     }
 
     #[test]
-    fn multipart_endpoint_maps_only_to_a_known_live_socket() {
+    fn public_file_url_is_not_a_live_socket() {
         assert_eq!(
-            live_websocket_endpoint("https://api.libraxis.cloud/v1/audio/transcriptions")
-                .as_deref(),
-            Some("wss://api.libraxis.cloud/v1/audio/transcribe")
-        );
-        assert_eq!(
-            live_websocket_endpoint("http://127.0.0.1:8000/v1/audio/transcriptions").as_deref(),
-            Some("ws://127.0.0.1:8000/v1/audio/transcribe")
+            live_websocket_endpoint("https://api.libraxis.cloud/v1/audio/transcriptions"),
+            None
         );
         assert_eq!(
             live_websocket_endpoint("https://api.openai.com/v1/audio/transcriptions"),
@@ -228,6 +213,18 @@ mod tests {
         assert_eq!(
             live_websocket_endpoint("https://custom.example/v1/audio/transcriptions"),
             None
+        );
+        assert_eq!(
+            live_websocket_endpoint("wss://api.libraxis.cloud/v1/audio/transcribe").as_deref(),
+            Some("wss://api.libraxis.cloud/v1/audio/transcribe")
+        );
+        assert_eq!(
+            live_websocket_endpoint("http://127.0.0.1:8000/v1/audio/transcriptions").as_deref(),
+            Some("ws://127.0.0.1:8000/v1/audio/transcribe")
+        );
+        assert_eq!(
+            live_websocket_endpoint("ws://127.0.0.1:8446/v1/audio/transcribe").as_deref(),
+            Some("ws://127.0.0.1:8446/v1/audio/transcribe")
         );
     }
 
