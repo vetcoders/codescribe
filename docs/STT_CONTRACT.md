@@ -81,6 +81,14 @@ streams its normalized events into `PresentationEmitter`. A public HTTPS
 socket. A complete audio-file multipart request is allowed for Settings → Test
 and for an explicit retranscribe action (Overlay, Dictionary, or Teacher).
 
+**Domain token (client-owned, 2026-08-18).** Codescribe names the take
+`vocabulary=programming` on loopback and Libraxis file/live requests
+(multipart field `vocabulary`; JSON alias `request_vocabulary`; live
+`session.start` / WS `config`). Official OpenAI file audio omits the field.
+Absence means no dictionary bias. The client never classifies audio to pick
+`programming` vs another domain. A quality bench that must stay unbiased
+omits the field or sends `off`.
+
 **Dictionary helper (everyone, 2026-08-17):** Settings → Dictionary Retranscribe
 is an explicit file surface on the row's archived `<stem>_raw.{m4a,wav,flac}`.
 Helper engine follows `speech.engine.asr_mode`: `local_power` → `hq:` (same

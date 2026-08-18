@@ -113,6 +113,8 @@ struct WsConfig {
     msg_type: &'static str,
     language: String,
     api_key: String,
+    /// Codescribe domain token. Hosts that do not accept it are not this path.
+    vocabulary: &'static str,
 }
 
 /// WebSocket end signal (sent after audio)
@@ -429,11 +431,12 @@ async fn transcribe_websocket(
         response.status()
     );
 
-    // 1. Send config
+    // 1. Send config. Topic is the product domain, never classified from audio.
     let config = WsConfig {
         msg_type: "config",
         language: language.to_string(),
         api_key: api_key.to_string(),
+        vocabulary: crate::stt::request_vocabulary::CODESCRIBE_STT_VOCABULARY,
     };
     ws.send(Message::Text(serde_json::to_string(&config)?.into()))
         .await
@@ -602,6 +605,7 @@ async fn transcribe_ndjson(
         "sample_rate": sample_rate,
         "encoding": "pcm16",
         "language": language,
+        "request_vocabulary": crate::stt::request_vocabulary::CODESCRIBE_STT_VOCABULARY,
         "last": true
     });
 
@@ -751,10 +755,13 @@ async fn transcribe_multipart(
         let whisper_model = std::env::var("WHISPER_MODEL")
             .unwrap_or_else(|_| "mlx-community/whisper-large-v3-mlx".to_string());
 
-        let form = Form::new()
+        let mut form = Form::new()
             .part("file", file_part)
             .text("model", whisper_model.clone())
             .text("language", language.to_string());
+        if let Some(vocabulary) = crate::stt::request_vocabulary::codescribe_stt_vocabulary(url) {
+            form = form.text("vocabulary", vocabulary.to_string());
+        }
 
         debug!(
             "[Multipart STT] attempt {}/{} for {}",
@@ -859,6 +866,20 @@ mod tests {
     /// Build a plain-WebSocket URL for loopback-policy tests without hardcoding the scheme.
     fn plain_ws_url(authority: &str) -> String {
         format!("{}{}", WS_SCHEME_PREFIX, authority)
+    }
+
+    #[test]
+    fn ws_config_names_programming_domain() {
+        let encoded = serde_json::to_value(&WsConfig {
+            msg_type: "config",
+            language: "pl".to_string(),
+            api_key: "unused".to_string(),
+            vocabulary: crate::stt::request_vocabulary::CODESCRIBE_STT_VOCABULARY,
+        })
+        .expect("serialize ws config");
+        assert_eq!(encoded["type"], "config");
+        assert_eq!(encoded["vocabulary"], "programming");
+        assert_ne!(encoded["vocabulary"], "veterinary");
     }
 
     /// Plain WebSocket only on loopback; non-loopback rejected; the secure scheme always ok.

@@ -9,6 +9,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- **Cloud STT names the programming domain.** Loopback and Libraxis file
+  and live requests send `vocabulary=programming`. Official OpenAI file
+  audio omits the field. The client does not classify audio to pick a
+  dictionary.
 - **Dev-power corner mark.** A keyed local install paints a small
   “You use dev power mode” caption in the bottom-right of overlay, Agent
   chat, and Settings. Production DMGs stay unmarked.
