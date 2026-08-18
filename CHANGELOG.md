@@ -13,6 +13,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   (fail-closed if this machine cannot read that repo), installs the Voice
   Lab toolbox + Monika public Sparkle/Ed keys, then arms `CSDeveloperSurface`.
   External contributors use `make app`. Production DMGs stay Lab-off.
+- **Dev-power corner mark.** A keyed install paints a small
+  “You use dev power mode” caption in the bottom-right of overlay, Agent
+  chat, and Settings. Production DMGs stay unmarked.
 
 ## [0.14.1] - 2026-08-18
 

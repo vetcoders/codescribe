@@ -3,6 +3,9 @@ import OSLog
 
 /// Lab extras baked only by keyed `make install-app`.
 enum DeveloperSurface {
+  /// Corner caption on overlay, chat, and Settings for an org `install-app` bake.
+  static let powerModeCaption = "You use dev power mode"
+
   static func parse(_ raw: Any?) -> Bool {
     if let flag = raw as? Bool { return flag }
     if let number = raw as? NSNumber { return number.boolValue }

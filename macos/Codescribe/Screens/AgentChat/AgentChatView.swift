@@ -49,6 +49,7 @@ struct AgentChatView: View {
     }
     .navigationSplitViewStyle(.balanced)
     .csFocusPolicy()
+    .developerPowerCorner(padding: 12)
     .background(CSColor.glassBase)
     .background(AgentWindowCapabilities(isPinned: isPinned))
     .frame(minWidth: 760, idealWidth: 960, minHeight: 560, idealHeight: 600)
