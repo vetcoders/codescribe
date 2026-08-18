@@ -79,10 +79,10 @@ impl Layer1Coalesce {
         let mut out = Vec::new();
         if let Some(last) = self.pieces.last() {
             let gap = piece.start_ts - last.covered_through_secs;
-            if gap >= Self::PAUSE_SECS {
-                if let Some(flush) = self.take_flush() {
-                    out.push(flush);
-                }
+            if gap >= Self::PAUSE_SECS
+                && let Some(flush) = self.take_flush()
+            {
+                out.push(flush);
             }
         }
         if self.pieces.is_empty() && self.neighbour_before.is_empty() {
@@ -90,10 +90,10 @@ impl Layer1Coalesce {
         }
         self.segments = self.segments.saturating_add(piece.segment_count.max(1));
         self.pieces.push(piece);
-        if self.should_flush(sample_rate) {
-            if let Some(flush) = self.take_flush() {
-                out.push(flush);
-            }
+        if self.should_flush(sample_rate)
+            && let Some(flush) = self.take_flush()
+        {
+            out.push(flush);
         }
         out
     }
