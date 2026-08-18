@@ -1752,3 +1752,24 @@ type = "usize"
 reload = "restart"
 category = "assistive"
 description = "Max characters captured from recent selection for voice chat"
+
+[vars.VOICE_LAB_REPO_URL]
+default = "git@github.com:vetcoders/voice-lab.git"
+type = "string"
+reload = "rebuild"
+category = "install"
+description = "Org-only Voice Lab git URL for make install-app. Clone fails closed if this machine cannot read the repo."
+
+[vars.CODESCRIBE_VOICE_LAB_SRC]
+default = ""
+type = "string"
+reload = "rebuild"
+category = "install"
+description = "Existing Voice Lab checkout used by make install-app instead of cloning (~/.codescribe/src/voice-lab)"
+
+[vars.VOICE_LAB_INSTALL_SETTINGS]
+default = "0"
+type = "bool"
+reload = "rebuild"
+category = "install"
+description = "When 1, Voice Lab setup also copies examples/monika/settings.json over Application Support (opt-in)"
