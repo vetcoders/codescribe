@@ -1602,7 +1602,7 @@ mod tests {
         assert_eq!(lexicon.custom_canonicals, vec!["FooBar".to_string()]);
     }
 
-    /// Overlay correction → custom lexicon → hot-reload teaches the next transcript.
+    /// Overlay copy is evidence-only. Voice Lab finalize teaches the custom lexicon.
     #[test]
     #[serial]
     fn overlay_correction_chain_teaches_custom_lexicon_for_next_transcript() {
@@ -1620,7 +1620,7 @@ mod tests {
             crate::quality::overlay_quality::extract_lexicon_candidates("uni agentka", "Junie");
         assert_eq!(candidates, vec![("uni agentka".into(), "Junie".into())]);
 
-        let quality_path = crate::quality::overlay_quality::commit_overlay_correction(
+        let commit = crate::quality::overlay_quality::commit_overlay_correction(
             "uni agentka",
             "uni agentka",
             "Junie",
@@ -1628,8 +1628,10 @@ mod tests {
             Some("whisper-test".into()),
             Some("copy"),
         )
-        .expect("commit overlay correction")
-        .quality_path;
+        .expect("commit overlay correction");
+        assert!(commit.evidence_only);
+        assert_eq!(commit.pairs_learned, 0);
+        let quality_path = commit.quality_path;
         assert!(quality_path.starts_with(&temp_root));
         assert!(quality_path.ends_with("corrections.jsonl"));
 
@@ -1647,35 +1649,9 @@ mod tests {
         );
 
         let custom_path = crate::config::Config::config_dir().join("lexicon.custom.jsonl");
-        let custom = std::fs::read_to_string(&custom_path).expect("read custom lexicon");
-        assert!(custom.contains(r#""term":"Junie""#));
-        assert!(custom.contains(r#""uni agentka""#));
-
-        let mut custom_rules = Vec::new();
-        let mut custom_canonicals = Vec::new();
-        let count = load_legacy_jsonl_with_terms(
-            &custom,
-            "custom",
-            &mut custom_rules,
-            Some(&mut custom_canonicals),
-        );
-        assert_eq!(count, 1);
-        assert_eq!(custom_canonicals, vec!["Junie".to_string()]);
-
-        let mut lexicon = Lexicon {
-            builtin_rules: Vec::new(),
-            custom_rules,
-            custom_path: custom_path.clone(),
-            custom_mtime: std::fs::metadata(&custom_path)
-                .ok()
-                .and_then(|metadata| metadata.modified().ok()),
-            protected_canonicals: Vec::new(),
-            custom_canonicals,
-        };
-        assert_eq!(lexicon.apply("uni agentka"), "Junie");
-        assert_eq!(
-            lexicon.apply("Następny transcript: uni agentka."),
-            "Następny transcript: Junie."
+        assert!(
+            !custom_path.exists(),
+            "overlay copy must not write the custom lexicon"
         );
 
         std::thread::sleep(std::time::Duration::from_millis(50));
@@ -1688,7 +1664,32 @@ mod tests {
         assert_eq!(outcome.record.revision, record.revision + 1);
         assert_eq!(outcome.record.edited_text, "Junie Prime");
 
-        lexicon.maybe_reload();
+        let custom =
+            std::fs::read_to_string(&custom_path).expect("read custom lexicon after teach");
+        assert!(custom.contains(r#""term":"Junie Prime""#));
+        assert!(custom.contains(r#""uni agentka""#));
+
+        let mut custom_rules = Vec::new();
+        let mut custom_canonicals = Vec::new();
+        let count = load_legacy_jsonl_with_terms(
+            &custom,
+            "custom",
+            &mut custom_rules,
+            Some(&mut custom_canonicals),
+        );
+        assert_eq!(count, 1);
+        assert_eq!(custom_canonicals, vec!["Junie Prime".to_string()]);
+
+        let lexicon = Lexicon {
+            builtin_rules: Vec::new(),
+            custom_rules,
+            custom_path: custom_path.clone(),
+            custom_mtime: std::fs::metadata(&custom_path)
+                .ok()
+                .and_then(|metadata| metadata.modified().ok()),
+            protected_canonicals: Vec::new(),
+            custom_canonicals,
+        };
         assert_eq!(lexicon.custom_rules.len(), 1);
         assert_eq!(lexicon.apply("uni agentka"), "Junie Prime");
         assert_eq!(
