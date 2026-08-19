@@ -1754,11 +1754,11 @@ category = "assistive"
 description = "Max characters captured from recent selection for voice chat"
 
 [vars.VOICE_LAB_REPO_URL]
-default = "git@github.com:vetcoders/voice-lab.git"
+default = ""
 type = "string"
 reload = "rebuild"
 category = "install"
-description = "Org-only Voice Lab git URL for make install-app. Clone fails closed if this machine cannot read the repo."
+description = "Optional override of the org Voice Lab git URL. Empty = probe https://github.com/vetcoders/voice-lab.git and git@github.com:vetcoders/voice-lab.git, HTTPS first when gh git_protocol is https (this laptop), SSH first when it is ssh (Monika). Only those two org URLs are accepted."
 
 [vars.CODESCRIBE_VOICE_LAB_SRC]
 default = ""

@@ -54,6 +54,103 @@ set -e
 [[ "$status" -ne 0 ]] || { echo "expected fail on non-voice-lab URL, got: $out" >&2; exit 1; }
 [[ "$out" == *"voice-lab repo"* ]] || { echo "expected repo-name check, got: $out" >&2; exit 1; }
 
+# Substring "voice-lab" is not enough — attacker-controlled fork is rejected.
+set +e
+out="$(
+  CODESCRIBE_VOICE_LAB_SRC="$ABSENT" \
+  VOICE_LAB_REPO_URL="https://github.com/octocat/voice-lab.git" \
+    "$INSTALL" 2>&1
+)"
+status=$?
+set -e
+[[ "$status" -ne 0 ]] || { echo "expected fail on non-org voice-lab URL, got: $out" >&2; exit 1; }
+[[ "$out" == *"voice-lab repo"* ]] || { echo "expected org lock, got: $out" >&2; exit 1; }
+
+# Unset URL: HTTPS first when gh git_protocol=https, then SSH.
+probe_log="$WORKDIR/probes.log"
+: >"$probe_log"
+cat >"$fake_git/gh" <<'EOF'
+#!/bin/sh
+if [ "$1" = "config" ] && [ "$2" = "get" ] && [ "$3" = "git_protocol" ]; then
+  echo https
+  exit 0
+fi
+exit 1
+EOF
+chmod +x "$fake_git/gh"
+cat >"$fake_git/git" <<EOF
+#!/bin/sh
+if [ "\$1" = "ls-remote" ]; then
+  echo "\$2" >> "$probe_log"
+  echo "Permission denied" >&2
+  exit 128
+fi
+echo "unexpected git \$*" >&2
+exit 99
+EOF
+set +e
+out="$(
+  CODESCRIBE_VOICE_LAB_SRC="$ABSENT" \
+    "$INSTALL" 2>&1
+)"
+status=$?
+set -e
+[[ "$status" -ne 0 ]] || { echo "expected fail after both probes, got: $out" >&2; exit 1; }
+[[ "$out" == *org-closed* ]] || { echo "expected org-closed after dual probe, got: $out" >&2; exit 1; }
+probe_n="$(wc -l <"$probe_log" | tr -d ' ')"
+https_probe="$(sed -n '1p' "$probe_log")"
+ssh_probe="$(sed -n '2p' "$probe_log")"
+[[ "$probe_n" == "2" ]] || { echo "expected 2 probes, got ${probe_n}: $(cat "$probe_log")" >&2; exit 1; }
+[[ "$https_probe" == "https://github.com/vetcoders/voice-lab.git" ]] || {
+  echo "https protocol must probe HTTPS first, got ${https_probe}" >&2
+  exit 1
+}
+[[ "$ssh_probe" == "git@github.com:vetcoders/voice-lab.git" ]] || {
+  echo "second probe must be SSH for Monika fallback, got ${ssh_probe}" >&2
+  exit 1
+}
+
+# Monika: gh git_protocol=ssh probes SSH first.
+: >"$probe_log"
+cat >"$fake_git/gh" <<'EOF'
+#!/bin/sh
+if [ "$1" = "config" ] && [ "$2" = "get" ] && [ "$3" = "git_protocol" ]; then
+  echo ssh
+  exit 0
+fi
+exit 1
+EOF
+set +e
+out="$(
+  CODESCRIBE_VOICE_LAB_SRC="$ABSENT" \
+    "$INSTALL" 2>&1
+)"
+status=$?
+set -e
+[[ "$status" -ne 0 ]] || { echo "expected fail after ssh-first probes, got: $out" >&2; exit 1; }
+ssh_first="$(sed -n '1p' "$probe_log")"
+https_second="$(sed -n '2p' "$probe_log")"
+[[ "$ssh_first" == "git@github.com:vetcoders/voice-lab.git" ]] || {
+  echo "ssh protocol must probe SSH first, got ${ssh_first}" >&2
+  exit 1
+}
+[[ "$https_second" == "https://github.com/vetcoders/voice-lab.git" ]] || {
+  echo "ssh protocol second probe must be HTTPS, got ${https_second}" >&2
+  exit 1
+}
+
+# Restore the fail-closed git stub used by later cases.
+cat >"$fake_git/git" <<'EOF'
+#!/bin/sh
+if [ "$1" = "ls-remote" ]; then
+  echo "Permission denied" >&2
+  exit 128
+fi
+echo "unexpected git $*" >&2
+exit 99
+EOF
+rm -f "$fake_git/gh"
+
 # Sibling-shaped checkout via CODESCRIBE_VOICE_LAB_SRC runs setup.sh.
 pack="$WORKDIR/pack"
 mkdir -p "$pack/examples/monika/keys"

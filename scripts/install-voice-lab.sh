@@ -7,7 +7,10 @@
 # CSDeveloperSurface and agent Lab extras stay armed on this hot path.
 #
 # Env:
-#   VOICE_LAB_REPO_URL            default git@github.com:vetcoders/voice-lab.git
+#   VOICE_LAB_REPO_URL            optional override. Empty = org HTTPS or SSH,
+#                                 ordered by `gh config git_protocol` (https on
+#                                 this laptop, ssh on Monika). Only vetcoders/
+#                                 voice-lab URLs are accepted.
 #   CODESCRIBE_VOICE_LAB_SRC      existing checkout (skips clone)
 #   VOICE_LAB_INSTALL_SETTINGS    unset = seed missing app settings + empty
 #                                 engine keys from examples/monika/settings.json
@@ -18,7 +21,9 @@
 # 𝚅𝚒𝚋𝚎𝚌𝚛𝚊𝚏𝚝𝚎𝚍. with AI Agents by Vetcoders (c)2024-2026 LibraxisAI
 set -euo pipefail
 
-REPO_URL="${VOICE_LAB_REPO_URL:-git@github.com:vetcoders/voice-lab.git}"
+VOICE_LAB_HTTPS="https://github.com/vetcoders/voice-lab.git"
+VOICE_LAB_SSH="git@github.com:vetcoders/voice-lab.git"
+REPO_URL="${VOICE_LAB_REPO_URL:-}"
 CACHE="${HOME}/.codescribe/src/voice-lab"
 RUNTIME="${HOME}/.codescribe/voice-lab"
 LAUNCHER="${HOME}/.codescribe/bin/voice-lab"
@@ -36,9 +41,43 @@ looks_like_voice_lab() {
   [[ -f "${root}/server.py" && -f "${root}/setup.sh" && -d "${root}/examples/monika/keys" ]]
 }
 
+normalize_repo_url() {
+  local url="${1%%/}"
+  url="${url%.git}"
+  printf '%s\n' "$url"
+}
+
+# Org lock: HTTPS (this machine) or SSH (Monika). Not "any URL with voice-lab".
 remote_is_voice_lab() {
-  local url="$1"
-  [[ "$url" == *voice-lab* ]]
+  local url
+  url="$(normalize_repo_url "$1")"
+  case "$url" in
+    https://github.com/vetcoders/voice-lab) return 0 ;;
+    git@github.com:vetcoders/voice-lab) return 0 ;;
+    ssh://git@github.com/vetcoders/voice-lab) return 0 ;;
+    *) return 1 ;;
+  esac
+}
+
+git_protocol() {
+  if command -v gh >/dev/null 2>&1; then
+    gh config get git_protocol 2>/dev/null || echo https
+  else
+    echo https
+  fi
+}
+
+# Preferred transport first, the other as fallback. Explicit override is alone.
+candidate_repo_urls() {
+  if [[ -n "${VOICE_LAB_REPO_URL:-}" ]]; then
+    printf '%s\n' "$VOICE_LAB_REPO_URL"
+    return
+  fi
+  if [[ "$(git_protocol)" == "ssh" ]]; then
+    printf '%s\n' "$VOICE_LAB_SSH" "$VOICE_LAB_HTTPS"
+  else
+    printf '%s\n' "$VOICE_LAB_HTTPS" "$VOICE_LAB_SSH"
+  fi
 }
 
 resolve_src() {
@@ -59,12 +98,14 @@ need_git() {
 
 ensure_checkout() {
   local src="$1"
-  remote_is_voice_lab "$REPO_URL" || fail "VOICE_LAB_REPO_URL must point at the org voice-lab repo (got ${REPO_URL})"
+  local cand origin probed=""
 
   if looks_like_voice_lab "$src"; then
     if [[ -d "${src}/.git" && "$src" == "$CACHE" ]]; then
       echo "==> updating ${src}"
-      git -C "$src" remote get-url origin >/dev/null 2>&1 || fail "${src} has no origin"
+      origin="$(git -C "$src" remote get-url origin 2>/dev/null || true)"
+      [[ -n "$origin" ]] || fail "${src} has no origin"
+      remote_is_voice_lab "$origin" || fail "${src} origin is not vetcoders/voice-lab (got ${origin})"
       git -C "$src" fetch --tags origin
       git -C "$src" checkout --quiet main
       git -C "$src" merge --ff-only origin/main
@@ -79,9 +120,19 @@ ensure_checkout() {
   fi
 
   need_git
-  echo "==> probing ${REPO_URL}"
-  if ! git ls-remote "$REPO_URL" HEAD >/dev/null 2>&1; then
-    fail "no access to ${REPO_URL}. Voice Lab is org-closed. Ask for vetcoders/voice-lab, or use make app without install-app."
+  REPO_URL=""
+  while IFS= read -r cand; do
+    [[ -n "$cand" ]] || continue
+    remote_is_voice_lab "$cand" || fail "VOICE_LAB_REPO_URL must point at the org voice-lab repo (got ${cand})"
+    echo "==> probing ${cand}"
+    probed="${probed}${probed:+, }${cand}"
+    if git ls-remote "$cand" HEAD >/dev/null 2>&1; then
+      REPO_URL="$cand"
+      break
+    fi
+  done < <(candidate_repo_urls)
+  if [[ -z "$REPO_URL" ]]; then
+    fail "no access to ${probed:-vetcoders/voice-lab}. Voice Lab is org-closed. Ask for vetcoders/voice-lab, or use make app without install-app."
   fi
   mkdir -p "$(dirname "$src")"
   echo "==> cloning ${REPO_URL} → ${src}"
