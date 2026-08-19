@@ -201,7 +201,7 @@ audio file ▶ `codescribe transcribe` CLI / cloud final pass
 | ------------- | ------------------------------ | ---------------------------------------------------------------------------------------------------- |
 | overlay LIVE  | LINE A/B via J2                | letters as spoken; live backspace corrections (L1); never a rewrite of committed text                |
 | overlay FINAL | LINE S→F via J7                | formatted draft + buttons (Copy / Insert / Revert / Format / To Agent); Auto Paste when guard allows |
-| paste target  | J7                             | formatted text into the frontmost app; `CopyTargetUnavailable` ⇒ clipboard fallback                  |
+| paste target  | J7                             | formatted text into the latched foreign app; refuse (`CopyTargetUnavailable` / mismatch) ⇒ Paste Here slot, user clipboard untouched |
 | thread rail   | LINE G                         | agent conversation, chained turn by turn                                                             |
 | history dir   | J6                             | `~/.codescribe/transcriptions/<date>/` — raw, formatted, m4a, truth receipts                         |
 | menu/tray     | controller state               | recording state; Audio truth section (W13-5: device, level, quality verdict)                         |

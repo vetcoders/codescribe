@@ -2379,7 +2379,7 @@ fn test_transcript_delivery_wrap_uses_config_when_enabled() {
 }
 
 #[test]
-fn deferred_insert_registration_failure_preserves_copy_fallback() {
+fn deferred_insert_registration_reports_unavailable_reasons() {
     assert_eq!(
         deferred_insert_registration(DeferredInsertShortcut::CommandOptionV, false, None,),
         DeferredInsertRegistration::Unavailable {
@@ -2402,6 +2402,25 @@ fn deferred_insert_registration_failure_preserves_copy_fallback() {
             shortcut_label: "⌘⇧V".to_string(),
         }
     );
+}
+
+/// Refused Cmd+V parks the transcript in-process. The user's pasteboard is
+/// not a fallback delivery channel.
+#[test]
+#[serial]
+fn refused_paste_parks_paste_here_without_touching_clipboard() {
+    use crate::os::clipboard::{get_clipboard, set_clipboard};
+
+    if set_clipboard("user clipboard sentinel").is_err() {
+        return;
+    }
+    assert!(super::overlay_paste::park_refused_paste(
+        "tagged refused transcript".to_string()
+    ));
+    let Ok(current) = get_clipboard() else {
+        return;
+    };
+    assert_eq!(current, "user clipboard sentinel");
 }
 
 #[test]

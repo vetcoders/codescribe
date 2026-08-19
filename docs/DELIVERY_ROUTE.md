@@ -15,6 +15,13 @@
    composer, overlay, settings) stays on the Orient canvas or goes to the
    Agent composer as a first-class message — never as a tagged paste into
    ourselves. That is how `<codescribe mode="raw">` stopped landing in chat.
+4. **A refused synthetic paste must not steal the user's clipboard.** Cmd+V
+   restore exists only because the pasteboard was borrowed for a real paste
+   into a foreign app. If the ambulance is not confirmed, park the transcript
+   on the process-local Paste Here slot (⌘⌥V when that chord is bound) and
+   leave `NSPasteboard` exactly as the user left it. Overlay canvas stays the
+   visible buffer. Explicit overlay **Copy** is the only verb that may write
+   the system pasteboard on purpose.
 
 ## Intent → route
 
