@@ -127,8 +127,14 @@ enum DictationOverlayWindow {
       defer: false
     )
     panel.delegate = panel
-    panel.onUserMove = { [weak state] in state?.userDraggedOverlay() }
-    panel.onUserResize = { [weak state] in state?.userResizedOverlay() }
+    panel.onUserMove = { [weak state] in
+      guard !OverlayController.isApplyingFrame else { return }
+      state?.userDraggedOverlay()
+    }
+    panel.onUserResize = { [weak state] in
+      guard !OverlayController.isApplyingFrame else { return }
+      state?.userResizedOverlay()
+    }
     panel.contentView = OverlayContentContainer(hosting: hosting)
 
     // User-resizable: borderless windows still honour edge-drag resize when

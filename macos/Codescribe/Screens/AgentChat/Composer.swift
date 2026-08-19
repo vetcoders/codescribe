@@ -17,6 +17,7 @@ private let attachLog = Logger(
 /// drag & drop, and ⌘V paste — all landing in `store.addAttachments`.
 struct Composer: View {
   @ObservedObject var store: AgentChatStore
+  @ObservedObject var overlay: OverlayState
   @State private var fieldFocused = false
   /// Chat text scale (⌘+/-/0) — applied to the message field + placeholder so the
   /// composer input tracks the message bodies. Chrome (chips, affordance hints,
@@ -59,6 +60,8 @@ struct Composer: View {
       if !store.pendingAttachments.isEmpty {
         attachmentChips
       }
+
+      liveAgentCapture
 
       HStack(alignment: .bottom, spacing: 10) {
         // Attach images (NSOpenPanel → staged chips → vision FFI on send).
@@ -338,9 +341,30 @@ struct Composer: View {
 
   // MARK: Voice-note mic
 
+  /// Live spoken text while Agent/assistive capture owns the mic. Overlay is
+  /// hidden on that lane, so the chat has to show the growing sentence.
+  @ViewBuilder
+  private var liveAgentCapture: some View {
+    let live = overlay.activeText.trimmingCharacters(in: .whitespacesAndNewlines)
+    if store.dictationOwnsSelectedThread,
+      (store.dictationPhase == .preparing || store.dictationPhase == .recording),
+      !live.isEmpty
+    {
+      Text(live)
+        .font(CSFont.ui(13, .regular))
+        .foregroundStyle(CSColor.textHigh)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .padding(.horizontal, 12)
+        .padding(.vertical, 8)
+        .background(CSColor.surfaceRaised(0.04))
+        .clipShape(RoundedRectangle(cornerRadius: CSRadius.card, style: .continuous))
+        .accessibilityIdentifier("agent-live-capture")
+    }
+  }
+
   /// The composer mic starts/stops the same Agent route as Right Option. The
-  /// ripple follows the shared controller lifecycle; no composer recorder or
-  /// editable transcript copy exists.
+  /// ripple follows the shared controller lifecycle; live words render above
+  /// the field from the overlay reducer (the overlay window stays closed).
   private var micButton: some View {
     Button(action: { store.toggleDictation() }) {
       micVisual

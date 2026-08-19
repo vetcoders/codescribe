@@ -201,11 +201,22 @@ final class OverlayController: ObservableObject {
   func show() {
     let panel = panel ?? panelFactory(state, textScale)
     self.panel = panel
+    if let floating = panel as? FloatingOverlayPanel {
+      floating.onUserMove = { [weak self] in
+        guard let self, !Self.isApplyingFrame, let panel = self.panel else { return }
+        OverlayPlacement.persistOrigin(panel.frame.origin)
+        self.state.userDraggedOverlay()
+      }
+    }
     // A pending fade-out must not leave a freshly shown panel invisible.
     panel.alphaValue = 1
     applyPlacement(animated: false)
     orderPanelFront(panel)
   }
+
+  /// True while we `setFrame` from prefs. AppKit still fires `windowDidMove`
+  /// for those writes; those must not count as a user drag.
+  static var isApplyingFrame = false
 
   /// Derive and apply the panel's frame from the placement prefs: free motion
   /// restores the last dragged origin, anchored derives from the anchor —
@@ -213,6 +224,8 @@ final class OverlayController: ObservableObject {
   /// size here covers programmatic sizing, which AppKit's minSize does not.
   private func applyPlacement(animated: Bool) {
     guard let panel else { return }
+    Self.isApplyingFrame = true
+    defer { Self.isApplyingFrame = false }
     let screen = NSScreen.main
     let size = DictationOverlayWindow.clamp(panel.frame.size, to: screen)
     let origin: NSPoint?

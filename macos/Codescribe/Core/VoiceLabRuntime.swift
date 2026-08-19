@@ -40,6 +40,8 @@ enum VoiceLabRuntime {
     surfaceEnabled: Bool? = nil,
     runningTests: Bool = QualityCaptureHost.isRunningTests
   ) {
+    let cs = surfaceEnabled ?? DeveloperSurface.isEnabled()
+    if cs, !runningTests { writeLoopbackPointer() }
     let server = serverScript
     lock.lock()
     let ownedRunning = child?.isRunning == true
@@ -87,6 +89,39 @@ enum VoiceLabRuntime {
     }.resume()
     _ = semaphore.wait(timeout: .now() + timeout + 0.05)
     return ok
+  }
+
+  static func writeLoopbackPointer() {
+    let html = """
+      <!doctype html>
+      <html lang="en">
+      <head>
+        <meta charset="utf-8" />
+        <title>codescribe loopback</title>
+      </head>
+      <body>
+        <h1>codescribe loopback</h1>
+        <p>Dev install pointers. Do not rewrite these URLs.</p>
+        <ul>
+          <li><a href="http://127.0.0.1:8765/lab">Voice Lab</a> — <code>http://127.0.0.1:8765/lab</code></li>
+          <li>STT file HTTP — <code>http://127.0.0.1:8444/v1/audio/transcriptions</code></li>
+          <li>STT live WebSocket — <code>ws://127.0.0.1:8446</code></li>
+        </ul>
+      </body>
+      </html>
+      """
+    do {
+      try FileManager.default.createDirectory(at: labRoot, withIntermediateDirectories: true)
+      try html.write(
+        to: labRoot.appendingPathComponent("loopback.html"),
+        atomically: true,
+        encoding: .utf8
+      )
+    } catch {
+      logger.error(
+        "loopback.html write failed: \(error.localizedDescription, privacy: .public)"
+      )
+    }
   }
 
   private static func startChild(server: URL) {
