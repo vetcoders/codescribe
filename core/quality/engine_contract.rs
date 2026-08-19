@@ -66,7 +66,7 @@ pub enum RelayLayer {
 
 /// Machine-readable lock. Quality HTML and corpus JSON must serialize this
 /// object, not a free-form paragraph an agent can paraphrase.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct EngineContract {
     pub id: &'static str,
     pub primary_key: &'static str,
