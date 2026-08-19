@@ -36,23 +36,14 @@ pub enum HoldAction {
 
 /// High-level hold intent derived from modifier state.
 ///
-/// UX split — the destination is chosen by the MODE, and only `Raw` reaches the
-/// frontmost app:
-/// - `Raw`: dictation → auto-paste (fast)
-/// - `Chat`: voice chat to AI → reply in the **agent chat window** (no auto-paste)
-/// - `Selection`: instruction applied to the selected text → reply in the
-///   **agent chat window** (no auto-paste)
+/// Destination is latched at hold-down. Live detectors start a dictation hold
+/// as `Raw` even when Shift/Command is already down; a later arm pulse emits
+/// [`HotkeyEvent::AttachSelection`] instead of promoting to `Chat`.
 ///
-/// Both agent modes previously documented "response in overlay". That has been
-/// false since the legacy AppKit overlay sink was removed: replies are
-/// broadcast to Swift over `CsAgentDeliveryListener`
-/// (`bridge/src/agent_delivery.rs`), deliberately kept off the
-/// overlay/dictation stream, and `testAgentModesNeverConstructOrOrderOverlayFront`
-/// asserts the overlay is never even constructed for them. The comment is
-/// corrected rather than deleted because the reconstruction of this contract
-/// (`reports/trigger-routing-contract-reconstruction.md`, gap G2) exists
-/// precisely to stop the routing rule being re-invented by the next reader who
-/// trusts the code's own doc over the doc.
+/// - `Raw`: dictation → overlay + auto-paste (the live hold destination)
+/// - `Chat` / `Selection`: leftover controller vocabulary for an assistive
+///   *start* that a hold arm no longer produces. Replies still go to the
+///   Agent window over `CsAgentDeliveryListener`, never the overlay.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum HoldMode {
     #[default]
@@ -70,8 +61,16 @@ pub enum HotkeyEvent {
     InsertHere,
     /// Hold gesture detected (press/release configured modifier combo)
     Hold { action: HoldAction, mode: HoldMode },
-    /// Modifier change while hold is active (e.g., add/remove Shift/Cmd).
+    /// Modifier change while hold is active (legacy mid-hold mode flip).
+    ///
+    /// Destination is latched at hold-down. Live detectors emit
+    /// [`HotkeyEvent::AttachSelection`] instead of upgrading Raw → Chat.
     HoldUpdate { mode: HoldMode },
+    /// Rising edge of the configured arm modifier during an active hold.
+    ///
+    /// Captures the current OS selection as `{selection_N}` without changing
+    /// destination, hiding the overlay, or fronting Agent.
+    AttachSelection,
     /// Normal toggle gesture (double-tap left Option)
     ToggleNormal,
     /// Raw toggle gesture (double-tap Ctrl)
@@ -333,6 +332,9 @@ pub struct HotkeyDetector {
     insert_here_v_down: bool,
     /// Edge-trigger for `arm_ignored` diagnostics (visibility only).
     wrong_arm_logged: bool,
+    /// Last sampled arm-modifier state while a hold is active, so a Shift
+    /// (or Cmd) pulse can attach another `{selection_N}` without flipping mode.
+    arm_modifier_down: bool,
 }
 
 impl Default for HotkeyDetector {
@@ -354,6 +356,7 @@ impl Default for HotkeyDetector {
             show_agent_space_down: false,
             insert_here_v_down: false,
             wrong_arm_logged: false,
+            arm_modifier_down: false,
         }
     }
 }
@@ -458,6 +461,7 @@ impl HotkeyDetector {
                 self.hold_active = false;
                 self.hold_active_ts = None;
                 self.hold_event_sent = false;
+                self.arm_modifier_down = false;
                 self.key_pressed_during_modifier = true;
                 emitted = Some(HotkeyEvent::Hold {
                     action: HoldAction::Up,
@@ -532,23 +536,31 @@ impl HotkeyDetector {
             self.wrong_arm_logged = false;
         }
 
+        let arm_now = arm_modifier_is_down(modifiers, config.hold_arm_modifier);
+
         let mut emitted = None;
         if combo_active && !self.hold_active {
             self.hold_active = true;
             self.hold_active_ts = Some(now);
             self.hold_mode = mode_now;
             self.hold_event_sent = true;
+            self.arm_modifier_down = arm_now;
             emitted = Some(HotkeyEvent::Hold {
                 action: HoldAction::Down,
                 mode: self.hold_mode,
             });
-        } else if combo_active && self.hold_active && mode_now != self.hold_mode {
-            self.hold_mode = mode_now;
-            emitted = Some(HotkeyEvent::HoldUpdate {
-                mode: self.hold_mode,
-            });
+        } else if combo_active && self.hold_active {
+            // Destination is latched at hold-down. A later Shift/Cmd pulse
+            // attaches `{selection_N}`; it must not emit HoldUpdate Chat,
+            // which fronts Agent and drops the live take.
+            let arm_rising = arm_now && !self.arm_modifier_down;
+            self.arm_modifier_down = arm_now;
+            if arm_rising {
+                emitted = Some(HotkeyEvent::AttachSelection);
+            }
         } else if !combo_active && self.hold_active {
             self.hold_active = false;
+            self.arm_modifier_down = false;
             if self.hold_event_sent {
                 emitted = Some(HotkeyEvent::Hold {
                     action: HoldAction::Up,
@@ -815,6 +827,16 @@ fn register_blocked_option_double_tap(
 /// the neighbourhood of a hold", which is what the start-delay cancel and the
 /// wrong-arm diagnostic need. Double-tap bindings have no base and return
 /// `false`.
+fn arm_modifier_is_down(
+    modifiers: HotkeyModifierSnapshot,
+    arm_modifier: crate::config::HoldArmModifier,
+) -> bool {
+    match arm_modifier {
+        crate::config::HoldArmModifier::Shift => modifiers.shift,
+        crate::config::HoldArmModifier::Cmd => modifiers.cmd,
+    }
+}
+
 fn hold_base_pressed(
     modifiers: HotkeyModifierSnapshot,
     dictation_binding: ShortcutBinding,
@@ -885,47 +907,20 @@ fn assistive_hold_binding(binding: ShortcutBinding) -> Option<ShortcutBinding> {
     }
 }
 
-/// Decide which [`HoldMode`] a live hold is in, from the arm modifiers.
+/// Hold destination at key-down. Arm modifiers no longer promote to `Chat`.
 ///
-/// `hold_exclusive` short-circuits to `Raw` — when the user has asked for
-/// exclusive holds, no modifier may promote dictation into an agent mode. Only
-/// the bindings that leave a modifier free (`HoldCtrlAlt`, `HoldFn`) can reach
-/// `Chat`; the rest already spend Shift or Cmd on the combo itself and stay
-/// `Raw`.
+/// Shift/Command during an already-started hold attach `{selection_N}`.
+/// Fn+Shift from idle stays dictation. The arguments are kept so exclusive /
+/// binding / arm Settings still flow through this seam; they must not change
+/// the latched destination.
 fn compute_hold_mode(
-    shift: bool,
-    cmd: bool,
-    dictation_binding: ShortcutBinding,
-    hold_exclusive: bool,
-    arm_modifier: crate::config::HoldArmModifier,
+    _shift: bool,
+    _cmd: bool,
+    _dictation_binding: ShortcutBinding,
+    _hold_exclusive: bool,
+    _arm_modifier: crate::config::HoldArmModifier,
 ) -> HoldMode {
-    if hold_exclusive {
-        return HoldMode::Raw;
-    }
-
-    // W10-B: only the *configured* arm modifier arms Chat. The other must stay
-    // dead so Settings copy and detector agree (default Shift; Cmd alternative).
-    let arm_active = match arm_modifier {
-        crate::config::HoldArmModifier::Shift => shift,
-        crate::config::HoldArmModifier::Cmd => cmd,
-    };
-
-    match dictation_binding {
-        ShortcutBinding::Disabled
-        | ShortcutBinding::HoldCtrl
-        | ShortcutBinding::HoldCtrlShift
-        | ShortcutBinding::HoldCtrlCmd
-        | ShortcutBinding::DoubleCtrl
-        | ShortcutBinding::DoubleLeftOption
-        | ShortcutBinding::DoubleRightOption => HoldMode::Raw,
-        ShortcutBinding::HoldCtrlAlt | ShortcutBinding::HoldFn => {
-            if arm_active {
-                HoldMode::Chat
-            } else {
-                HoldMode::Raw
-            }
-        }
-    }
+    HoldMode::Raw
 }
 
 #[cfg(test)]
@@ -1108,138 +1103,65 @@ mod tests {
     }
 
     #[test]
-    /// Hold mode follows arm modifier and optional assistive Shift without exclusive force.
+    /// Arm modifiers never upgrade hold destination — attach is a later pulse.
     fn compute_hold_mode_respects_modifiers() {
         use crate::config::HoldArmModifier;
-        // Fn base + default Shift arm: Shift arms, Cmd does not.
-        assert_eq!(
-            compute_hold_mode(
+        let cases = [
+            (
                 false,
                 false,
                 ShortcutBinding::HoldFn,
-                false,
-                HoldArmModifier::Shift
+                HoldArmModifier::Shift,
             ),
-            HoldMode::Raw
-        );
-        assert_eq!(
-            compute_hold_mode(
-                true,
-                false,
-                ShortcutBinding::HoldFn,
-                false,
-                HoldArmModifier::Shift
-            ),
-            HoldMode::Chat
-        );
-        assert_eq!(
-            compute_hold_mode(
-                false,
-                true,
-                ShortcutBinding::HoldFn,
-                false,
-                HoldArmModifier::Shift
-            ),
-            HoldMode::Raw
-        );
-
-        // Cmd-selected arm: Cmd arms, Shift does not.
-        assert_eq!(
-            compute_hold_mode(
-                false,
-                true,
-                ShortcutBinding::HoldFn,
-                false,
-                HoldArmModifier::Cmd
-            ),
-            HoldMode::Chat
-        );
-        assert_eq!(
-            compute_hold_mode(
-                true,
-                false,
-                ShortcutBinding::HoldFn,
-                false,
-                HoldArmModifier::Cmd
-            ),
-            HoldMode::Raw
-        );
-
-        // Ctrl-only ignores Shift/Cmd modifiers
-        assert_eq!(
-            compute_hold_mode(
+            (true, false, ShortcutBinding::HoldFn, HoldArmModifier::Shift),
+            (false, true, ShortcutBinding::HoldFn, HoldArmModifier::Shift),
+            (false, true, ShortcutBinding::HoldFn, HoldArmModifier::Cmd),
+            (true, false, ShortcutBinding::HoldFn, HoldArmModifier::Cmd),
+            (
                 true,
                 false,
                 ShortcutBinding::HoldCtrl,
-                false,
-                HoldArmModifier::Shift
+                HoldArmModifier::Shift,
             ),
-            HoldMode::Raw
-        );
-        assert_eq!(
-            compute_hold_mode(
-                false,
-                true,
-                ShortcutBinding::HoldCtrl,
-                false,
-                HoldArmModifier::Cmd
-            ),
-            HoldMode::Raw
-        );
-
-        // Ctrl+Option allows the configured arm
-        assert_eq!(
-            compute_hold_mode(
+            (false, true, ShortcutBinding::HoldCtrl, HoldArmModifier::Cmd),
+            (
                 true,
                 false,
                 ShortcutBinding::HoldCtrlAlt,
-                false,
-                HoldArmModifier::Shift
+                HoldArmModifier::Shift,
             ),
-            HoldMode::Chat
-        );
-        assert_eq!(
-            compute_hold_mode(
+            (
                 false,
                 true,
                 ShortcutBinding::HoldCtrlAlt,
-                false,
-                HoldArmModifier::Shift
+                HoldArmModifier::Shift,
             ),
-            HoldMode::Raw
-        );
-        assert_eq!(
-            compute_hold_mode(
+            (
                 false,
                 false,
                 ShortcutBinding::HoldCtrlAlt,
-                false,
-                HoldArmModifier::Shift
+                HoldArmModifier::Shift,
             ),
-            HoldMode::Raw
-        );
-
-        // Ctrl+Shift/Cmd are fixed to raw
-        assert_eq!(
-            compute_hold_mode(
+            (
                 true,
                 false,
                 ShortcutBinding::HoldCtrlShift,
-                false,
-                HoldArmModifier::Shift
+                HoldArmModifier::Shift,
             ),
-            HoldMode::Raw
-        );
-        assert_eq!(
-            compute_hold_mode(
+            (
                 false,
                 true,
                 ShortcutBinding::HoldCtrlCmd,
-                false,
-                HoldArmModifier::Cmd
+                HoldArmModifier::Cmd,
             ),
-            HoldMode::Raw
-        );
+        ];
+        for (shift, cmd, binding, arm) in cases {
+            assert_eq!(
+                compute_hold_mode(shift, cmd, binding, false, arm),
+                HoldMode::Raw,
+                "arm must not promote {binding:?} (shift={shift}, cmd={cmd}, arm={arm:?})"
+            );
+        }
     }
 
     #[test]
@@ -1308,6 +1230,186 @@ mod tests {
             })
         );
         assert!(!detector.is_combo_active());
+    }
+
+    #[test]
+    /// Fn then Shift attaches selection; release stays Raw dictation.
+    fn detector_fn_then_shift_attaches_selection_and_up_stays_raw() {
+        let mut detector = HotkeyDetector::default();
+        let config = test_config(
+            ShortcutBinding::HoldFn,
+            ShortcutBinding::DoubleLeftOption,
+            ShortcutBinding::DoubleRightOption,
+        );
+        let base = Instant::now();
+
+        assert_eq!(
+            detector.feed(
+                HotkeyDetectorInput::FlagsChanged {
+                    now: base,
+                    key: HotkeyPhysicalKey::Fn,
+                    modifiers: mods(false, false, false, false, true),
+                },
+                config,
+            ),
+            Some(HotkeyEvent::Hold {
+                action: HoldAction::Down,
+                mode: HoldMode::Raw,
+            })
+        );
+        assert_eq!(
+            detector.feed(
+                HotkeyDetectorInput::FlagsChanged {
+                    now: base + Duration::from_millis(10),
+                    key: HotkeyPhysicalKey::Other,
+                    modifiers: mods(false, false, true, false, true),
+                },
+                config,
+            ),
+            Some(HotkeyEvent::AttachSelection)
+        );
+        assert_eq!(
+            detector.feed(
+                HotkeyDetectorInput::FlagsChanged {
+                    now: base + Duration::from_millis(20),
+                    key: HotkeyPhysicalKey::Fn,
+                    modifiers: mods(false, false, false, false, false),
+                },
+                config,
+            ),
+            Some(HotkeyEvent::Hold {
+                action: HoldAction::Up,
+                mode: HoldMode::Raw,
+            })
+        );
+    }
+
+    #[test]
+    /// Fn+Shift from idle is dictation, not Assistive / Chat.
+    fn detector_fn_shift_from_idle_stays_dictation() {
+        let mut detector = HotkeyDetector::default();
+        let config = test_config(
+            ShortcutBinding::HoldFn,
+            ShortcutBinding::DoubleLeftOption,
+            ShortcutBinding::DoubleRightOption,
+        );
+        let base = Instant::now();
+
+        assert_eq!(
+            detector.feed(
+                HotkeyDetectorInput::FlagsChanged {
+                    now: base,
+                    key: HotkeyPhysicalKey::Fn,
+                    modifiers: mods(false, false, true, false, true),
+                },
+                config,
+            ),
+            Some(HotkeyEvent::Hold {
+                action: HoldAction::Down,
+                mode: HoldMode::Raw,
+            })
+        );
+        assert_eq!(
+            detector.feed(
+                HotkeyDetectorInput::FlagsChanged {
+                    now: base + Duration::from_millis(5),
+                    key: HotkeyPhysicalKey::Other,
+                    modifiers: mods(false, false, true, false, true),
+                },
+                config,
+            ),
+            None,
+            "arm already down at start is not a rising-edge attach"
+        );
+        assert_eq!(
+            detector.feed(
+                HotkeyDetectorInput::FlagsChanged {
+                    now: base + Duration::from_millis(15),
+                    key: HotkeyPhysicalKey::Fn,
+                    modifiers: mods(false, false, false, false, false),
+                },
+                config,
+            ),
+            Some(HotkeyEvent::Hold {
+                action: HoldAction::Up,
+                mode: HoldMode::Raw,
+            })
+        );
+    }
+
+    #[test]
+    /// Two Shift pulses during one Fn hold emit two AttachSelection events.
+    fn detector_two_shift_pulses_emit_two_attach_selection() {
+        let mut detector = HotkeyDetector::default();
+        let config = test_config(
+            ShortcutBinding::HoldFn,
+            ShortcutBinding::DoubleLeftOption,
+            ShortcutBinding::DoubleRightOption,
+        );
+        let base = Instant::now();
+
+        assert_eq!(
+            detector.feed(
+                HotkeyDetectorInput::FlagsChanged {
+                    now: base,
+                    key: HotkeyPhysicalKey::Fn,
+                    modifiers: mods(false, false, false, false, true),
+                },
+                config,
+            ),
+            Some(HotkeyEvent::Hold {
+                action: HoldAction::Down,
+                mode: HoldMode::Raw,
+            })
+        );
+        assert_eq!(
+            detector.feed(
+                HotkeyDetectorInput::FlagsChanged {
+                    now: base + Duration::from_millis(10),
+                    key: HotkeyPhysicalKey::Other,
+                    modifiers: mods(false, false, true, false, true),
+                },
+                config,
+            ),
+            Some(HotkeyEvent::AttachSelection)
+        );
+        assert_eq!(
+            detector.feed(
+                HotkeyDetectorInput::FlagsChanged {
+                    now: base + Duration::from_millis(20),
+                    key: HotkeyPhysicalKey::Other,
+                    modifiers: mods(false, false, false, false, true),
+                },
+                config,
+            ),
+            None,
+            "arm release is silent"
+        );
+        assert_eq!(
+            detector.feed(
+                HotkeyDetectorInput::FlagsChanged {
+                    now: base + Duration::from_millis(30),
+                    key: HotkeyPhysicalKey::Other,
+                    modifiers: mods(false, false, true, false, true),
+                },
+                config,
+            ),
+            Some(HotkeyEvent::AttachSelection)
+        );
+        assert_eq!(
+            detector.feed(
+                HotkeyDetectorInput::FlagsChanged {
+                    now: base + Duration::from_millis(40),
+                    key: HotkeyPhysicalKey::Fn,
+                    modifiers: mods(false, false, false, false, false),
+                },
+                config,
+            ),
+            Some(HotkeyEvent::Hold {
+                action: HoldAction::Up,
+                mode: HoldMode::Raw,
+            })
+        );
     }
 
     #[test]

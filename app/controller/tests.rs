@@ -3454,6 +3454,38 @@ fn test_toggle_stop_event_preserves_active_session_identity() {
     );
 }
 
+#[test]
+fn test_hold_press_never_applies_mode_flags() {
+    let press_chat = HotkeyInput {
+        key_type: HotkeyType::Hold,
+        action: HotkeyAction::Press,
+        assistive: true,
+        hold_mode: HoldMode::Chat,
+        force_raw: false,
+        force_ai: false,
+    };
+    let down_raw = HotkeyInput {
+        key_type: HotkeyType::Hold,
+        action: HotkeyAction::Down,
+        assistive: false,
+        hold_mode: HoldMode::Raw,
+        force_raw: true,
+        force_ai: false,
+    };
+    assert!(
+        !should_apply_incoming_mode_flags(State::RecHold, &press_chat),
+        "RecHold + Hold Press must not flip destination"
+    );
+    assert!(
+        !should_apply_incoming_mode_flags(State::Idle, &press_chat),
+        "Hold Press during the start-delay window must not upgrade to Chat"
+    );
+    assert!(
+        should_apply_incoming_mode_flags(State::Idle, &down_raw),
+        "Hold Down still latches destination"
+    );
+}
+
 #[tokio::test]
 #[serial]
 async fn test_agent_send_in_flight_blocks_nonassistive_hotkey_starts() {
@@ -4385,12 +4417,12 @@ async fn test_shift_upgrade_mid_hold_overrides_force_raw() {
     // Verify RAW mode is set
     assert!(*controller.force_raw_mode.read().await);
     assert!(!*controller.assistive_mode.read().await);
+    *controller.state.write().await = State::RecHold;
 
-    // Now: User adds Shift mid-hold (upgrade to Assistive)
-    // This comes as another event with assistive=true
+    // Leftover HoldUpdate Chat must not flip a live take to Assistive.
     let upgrade_event = HotkeyInput {
         key_type: HotkeyType::Hold,
-        action: HotkeyAction::Press, // Modifier flags changed while holding
+        action: HotkeyAction::Press,
         assistive: true,
         hold_mode: HoldMode::Chat,
         force_raw: false,
@@ -4398,14 +4430,55 @@ async fn test_shift_upgrade_mid_hold_overrides_force_raw() {
     };
     controller.handle_hotkey_event(upgrade_event).await.unwrap();
 
-    // Should upgrade to Assistive, force_raw should be cleared
     assert!(
-        *controller.assistive_mode.read().await,
-        "Shift added mid-hold should upgrade to assistive_mode=true"
+        !*controller.assistive_mode.read().await,
+        "mid-hold Press must not upgrade to assistive_mode"
     );
     assert!(
-        !*controller.force_raw_mode.read().await,
-        "Shift upgrade should clear force_raw_mode"
+        *controller.force_raw_mode.read().await,
+        "mid-hold Press must not clear force_raw_mode"
+    );
+    assert_eq!(*controller.hold_mode.read().await, HoldMode::Raw);
+    assert_eq!(controller.current_state().await, State::RecHold);
+}
+
+#[tokio::test]
+#[serial]
+async fn test_attach_hold_selection_does_not_flip_destination() {
+    let controller = RecordingController::new();
+    *controller.state.write().await = State::RecHold;
+    *controller.force_raw_mode.write().await = true;
+    *controller.assistive_mode.write().await = false;
+    *controller.hold_mode.write().await = HoldMode::Raw;
+    set_assistive_session(false);
+
+    controller
+        .context_bucket
+        .lock()
+        .await
+        .add_selection(0, "already attached".to_string())
+        .expect("seed selection")
+        .expect("non-empty seed");
+
+    controller
+        .attach_hold_selection()
+        .await
+        .expect("attach during RecHold must succeed");
+
+    assert!(
+        !*controller.assistive_mode.read().await,
+        "attach must not set assistive_mode"
+    );
+    assert_eq!(*controller.hold_mode.read().await, HoldMode::Raw);
+    assert!(*controller.force_raw_mode.read().await);
+    assert_eq!(controller.current_state().await, State::RecHold);
+    assert!(
+        !is_assistive_session(),
+        "attach must not publish BadgeMode::Assistive"
+    );
+    assert!(
+        controller.context_bucket.lock().await.has_selection_items(),
+        "attach must not wipe an existing {{selection_N}} bucket"
     );
 }
 

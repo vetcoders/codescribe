@@ -72,7 +72,7 @@ flowchart TB
     end
 
     subgraph Events["📨 HotkeyInput"]
-        HoldEvent["Hold { Down/Up, hold_mode }"]
+        HoldEvent["Hold { Down/Up, Raw } / AttachSelection"]
         ToggleEvent["ToggleNormal / ToggleAssistive"]
         ShowAgent["ShowAgent"]
     end
@@ -116,20 +116,21 @@ flowchart TB
 | `Dictation=HoldCtrlShift` | Ctrl+Shift   | Alternate hold dictation         |
 | `Dictation=HoldCtrlCmd`   | Ctrl+Command | macOS power users                |
 
-Assistive hold has one arm gesture: add Shift to the active dictation hold. The
-legacy second selection-only combo is released. Arming captures any current
-selection immediately and attaches it invisibly when the transcript is sent.
+Mid-hold Shift (or the configured arm modifier, default Shift, optional
+Command) attaches the current OS selection as `{selection_N}` into the
+`ContextBucket` and publishes a `ContextMarker` to the overlay. It does **not**
+upgrade `HoldMode` to Chat, front Agent, hide the overlay, or stop the Fn take.
+
+Fn+Shift from idle is dictation, not Assistive. Voice chat is the Assistive
+work-mode binding (default: double-tap Right Option), not Hold Fn+Shift.
 
 **Events:**
 
 ```rust
-HotkeyInput { key_type: Hold, action: Down, hold_mode: Raw }         // Fn only
-HotkeyInput { key_type: Hold, action: Down, hold_mode: Chat }        // Fn+Shift
-HotkeyInput { key_type: Hold, action: Up,   hold_mode: <current> }   // Release
+HotkeyEvent::Hold { action: Down, mode: Raw }   // Fn, or Fn+Shift from idle
+HotkeyEvent::AttachSelection                    // Shift/Command rising edge mid-hold
+HotkeyEvent::Hold { action: Up, mode: Raw }     // Release — destination stays Raw
 ```
-
-**Mode modifier (default Fn):** Shift → Agent arm while holding Fn. Command no
-longer creates a second assistive mode.
 
 **Engine and delivery parity:** Hold and toggle both start
 `StreamingRecorder::start_event_session` and fan the same `EngineEvent` stream
@@ -216,7 +217,7 @@ stateDiagram-v2
     IDLE --> CONVERSATION : Conversation Down<br/>(custom binding)
 
     REC_HOLD --> BUSY : Hold Up<br/>(Fn released)
-    REC_HOLD --> REC_HOLD : Shift pressed<br/>(upgrade to assistive)
+    REC_HOLD --> REC_HOLD : Shift pressed<br/>(attach {selection_N})
 
     REC_TOGGLE --> BUSY : Toggle again
     CONVERSATION --> IDLE : Conversation Up
@@ -444,9 +445,10 @@ const DOUBLE_TAP_INTERVAL_MS: u64 = 200;
 
 When `HOLD_EXCLUSIVE=false` (default), modifier variants work out of the box:
 
-- Fn+Shift can start voice chat (default arm modifier; configurable to Cmd in Settings)
-- Armed hold with a selection acts on the selection (same arm gesture — default Shift, optional Cmd)
-- The unconfigured arm modifier does not arm assistive (W10-B detector truth)
+- Shift or Command *during* an already-started Fn hold attaches `{selection_N}`
+  (default arm modifier Shift; configurable to Cmd in Settings)
+- Fn+Shift from idle stays dictation — it is not Assistive and does not front Agent
+- The unconfigured arm modifier does not attach (W10-B detector truth)
 
 Set `HOLD_EXCLUSIVE=true` when you need stricter isolation:
 

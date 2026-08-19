@@ -76,15 +76,15 @@ fn event_can_start_capture(event: &HotkeyEvent) -> bool {
 
 /// Agent/Assistive recording still fronts the Agent surface, but the UI callback
 /// is notification only; audio and transcript events continue to the controller.
+///
+/// Mid-hold attach (`AttachSelection`) and leftover `HoldUpdate` Chat must not
+/// front Agent — they would hide the overlay and look like the take died.
 fn event_targets_agent_ui(event: &HotkeyEvent) -> bool {
     matches!(
         event,
         HotkeyEvent::ToggleAssistive
             | HotkeyEvent::Hold {
-                mode: HoldMode::Chat | HoldMode::Selection,
-                ..
-            }
-            | HotkeyEvent::HoldUpdate {
+                action: HoldAction::Down,
                 mode: HoldMode::Chat | HoldMode::Selection,
             }
     )
@@ -981,6 +981,9 @@ async fn dispatch_recording_hotkey_event(
             };
             controller.handle_hotkey_event(input).await?;
         }
+        HotkeyEvent::AttachSelection => {
+            controller.attach_hold_selection().await?;
+        }
         HotkeyEvent::ToggleNormal => {
             let input = HotkeyInput {
                 key_type: HotkeyType::Toggle,
@@ -1199,6 +1202,49 @@ mod app_action_tests {
         );
         assert_eq!(deferred_calls.load(Ordering::SeqCst), 1);
         assert_eq!(listener.show_agent_calls.load(Ordering::SeqCst), 2);
+    }
+
+    #[test]
+    fn mid_hold_attach_does_not_target_agent_or_claim_capture() {
+        assert!(!event_can_start_capture(&HotkeyEvent::AttachSelection));
+        assert!(!event_targets_agent_ui(&HotkeyEvent::AttachSelection));
+        assert!(!event_targets_agent_ui(&HotkeyEvent::HoldUpdate {
+            mode: HoldMode::Chat,
+        }));
+        assert!(!event_targets_agent_ui(&HotkeyEvent::Hold {
+            action: HoldAction::Up,
+            mode: HoldMode::Chat,
+        }));
+
+        let listener = Arc::new(CountingAppActionListener {
+            show_agent_calls: AtomicUsize::new(0),
+        });
+        let recording_calls = Arc::new(AtomicUsize::new(0));
+        let recording_calls_for_route = Arc::clone(&recording_calls);
+        route_hotkey_event(
+            HotkeyEvent::AttachSelection,
+            Some(listener.clone()),
+            move |_| {
+                recording_calls_for_route.fetch_add(1, Ordering::SeqCst);
+            },
+            || panic!("attach must not dispatch deferred insert"),
+        );
+        assert_eq!(listener.show_agent_calls.load(Ordering::SeqCst), 0);
+        assert_eq!(recording_calls.load(Ordering::SeqCst), 1);
+
+        let recording_calls_for_route = Arc::clone(&recording_calls);
+        route_hotkey_event(
+            HotkeyEvent::HoldUpdate {
+                mode: HoldMode::Chat,
+            },
+            Some(listener.clone()),
+            move |_| {
+                recording_calls_for_route.fetch_add(1, Ordering::SeqCst);
+            },
+            || panic!("hold update must not dispatch deferred insert"),
+        );
+        assert_eq!(listener.show_agent_calls.load(Ordering::SeqCst), 0);
+        assert_eq!(recording_calls.load(Ordering::SeqCst), 2);
     }
 }
 
