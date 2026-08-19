@@ -734,11 +734,13 @@ async fn transcribe_multipart(
     filename: &str,
 ) -> Result<CloudTranscriptionVerdict> {
     let start = Instant::now();
+    let vocabulary = crate::stt::request_vocabulary::codescribe_stt_vocabulary(url);
     info!(
-        "[Multipart STT] POST {} ({} bytes, lang={})",
+        "[Multipart STT] POST {} ({} bytes, lang={}, vocabulary={})",
         url,
         audio_data.len(),
-        language
+        language,
+        vocabulary.unwrap_or("off")
     );
 
     // Retry loop
@@ -759,8 +761,10 @@ async fn transcribe_multipart(
             .part("file", file_part)
             .text("model", whisper_model.clone())
             .text("language", language.to_string());
-        if let Some(vocabulary) = crate::stt::request_vocabulary::codescribe_stt_vocabulary(url) {
-            form = form.text("vocabulary", vocabulary.to_string());
+        if let Some((field, value)) =
+            crate::stt::request_vocabulary::codescribe_stt_vocabulary_form_part(url)
+        {
+            form = form.text(field, value.to_string());
         }
 
         debug!(

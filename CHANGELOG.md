@@ -29,6 +29,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   socket opens with `hello` (`stt-ws-v1`); treating that as protocol
   dropped the lane at take start (`disconnect`, zero frames). Handshake
   and VAD control are ignored, and the start frame is Voice Lab `set`.
+- **File retranscribe names the programming domain.** Overlay/Dictionary
+  `cloud:` on `last_session.wav` (remapped loopback `:8444`) sends
+  `vocabulary=programming` — test-locked on the multipart body. Official
+  OpenAI still omits the field. Overlay Format is not HQ authority;
+  compare Whisper file vs raw, never vs Format.
 
 ### Changed
 
@@ -43,7 +48,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **Cloud STT names the programming domain.** Loopback and Libraxis file
   and live requests send `vocabulary=programming`. Official OpenAI file
   audio omits the field. The client does not classify audio to pick a
-  dictionary.
+  dictionary. Overlay Format is not that compare — HQ is Whisper file vs
+  raw.
 - **Dev-power corner mark.** A keyed local install paints a small
   “You use dev power mode” caption in the bottom-right of overlay, Agent
   chat, and Settings. Production DMGs stay unmarked.

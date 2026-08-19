@@ -52,6 +52,33 @@ async fn contract_cloud_transcribe_success() {
 
 #[tokio::test]
 #[serial]
+async fn contract_cloud_file_transcribe_sends_programming_vocabulary() {
+    let mut server = mockito::Server::new_async().await;
+    let endpoint = format!("{}/v1/audio/transcriptions", server.url());
+
+    let success = server
+        .mock("POST", "/v1/audio/transcriptions")
+        .match_body(mockito::Matcher::Regex(
+            r#"(?s)name="vocabulary".*programming"#.to_string(),
+        ))
+        .with_status(200)
+        .with_header("content-type", "application/json")
+        .with_body(r#"{"text":"Rust"}"#)
+        .expect(1)
+        .create_async()
+        .await;
+
+    let audio = write_min_valid_audio_file();
+    let verdict = codescribe::client::transcribe_cloud(audio.path(), Some("pl"), &endpoint, "")
+        .await
+        .expect("loopback file transcription should send vocabulary=programming");
+
+    success.assert_async().await;
+    assert_eq!(verdict.text, "Rust");
+}
+
+#[tokio::test]
+#[serial]
 async fn contract_cloud_transcribe_auth_failure_is_not_retried() {
     let mut server = mockito::Server::new_async().await;
     let endpoint = format!("{}/v1/audio/transcriptions", server.url());
