@@ -4,7 +4,7 @@
 # The user-facing app is built by `make app` (xcodebuild); the Rust side no
 # longer ships a standalone `codescribe` tray binary.
 
-.PHONY: all build release release-codescribe release-codescribe-embedded release-qube app app-bindings install install-no-embed config install-app install-voice-lab \
+.PHONY: all build release release-codescribe release-codescribe-embedded release-qube app app-bindings install install-no-embed config install-app install-if-idle install-voice-lab \
         start stop restart status logs logs-follow \
         bump bump-patch bump-minor bump-major version \
         lint format test test-quick test-e2e test-e2e-real test-sse test-sse-release test-responses-live test-sse-heavy test-formatting test-all \
@@ -186,6 +186,9 @@ site-dev:
 
 install-voice-lab:
 	@./scripts/install-voice-lab.sh
+
+install-if-idle:
+	@./scripts/install-if-idle.sh
 
 install-app: install-voice-lab
 	@echo "Building $(CODESCRIBE_APP_NAME).app (SwiftUI, optimized local profile) via scripts/build-app.sh ..."
