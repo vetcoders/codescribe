@@ -9,10 +9,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
-- **`make install-app` verifies Get-license CSK1 keys.** It bakes
-  `license-public.hex` from `~/.codescribe/config/dev/keys/` (or
-  `~/.vibecrafted/secrets/codescribe/`) instead of the RFC 8032
-  development verifier. Sparkle still comes from `sparkle-public.b64`.
+- **`make install-app` accepts keys from Get license.** A keyed local
+  install verifies CSK1 with the same public key the site signs. The
+  forgeable development verifier is no longer baked into that path.
 - **Refused paste does not steal the user's clipboard.** Synthetic Cmd+V
   still snapshots and restores after a confirmed paste into a foreign app.
   `CopyTargetUnavailable` / target mismatch / Accessibility deny no longer
