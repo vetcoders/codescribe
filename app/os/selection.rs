@@ -99,6 +99,30 @@ fn clear_recent_assistive_context_for_tests() {
     *guard = None;
 }
 
+/// Injected OS selection for unit tests (production capture is skipped).
+#[cfg(test)]
+fn test_captured_selection_store() -> &'static Mutex<Option<String>> {
+    static STORE: OnceLock<Mutex<Option<String>>> = OnceLock::new();
+    STORE.get_or_init(|| Mutex::new(None))
+}
+
+/// Queue a one-shot selected-text payload for the next test capture.
+#[cfg(test)]
+pub fn set_test_captured_selection(text: impl Into<String>) {
+    let mut guard = test_captured_selection_store()
+        .lock()
+        .unwrap_or_else(|e| e.into_inner());
+    *guard = Some(text.into());
+}
+
+#[cfg(test)]
+fn take_test_captured_selection() -> Option<String> {
+    test_captured_selection_store()
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .take()
+}
+
 /// Read a boolean env knob. Any value other than `0`/`false`/`no`/`off`
 /// (case-insensitive) counts as enabled; an unset key yields `default`.
 fn env_flag(key: &str, default: bool) -> bool {
@@ -153,6 +177,16 @@ pub fn capture_assistive_context_with_image_with_prior_frontmost(
     prior_frontmost_app: Option<String>,
 ) -> CapturedAssistiveContext {
     // Unit tests should not trigger osascript / clipboard / event simulation.
+    #[cfg(test)]
+    if let Some(selected_text) = take_test_captured_selection() {
+        return CapturedAssistiveContext {
+            context: AssistiveContext {
+                selected_text: Some(selected_text),
+                frontmost_app: None,
+            },
+            image_png: None,
+        };
+    }
     if cfg!(test) {
         return CapturedAssistiveContext::default();
     }

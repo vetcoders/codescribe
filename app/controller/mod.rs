@@ -1674,6 +1674,12 @@ impl RecordingController {
                 let current_state = self.current_state().await;
                 if current_state == State::Idle {
                     self.schedule_hold_start(event.assistive).await?;
+                    // Fn down with a live OS selection attaches `{selection_1}`
+                    // immediately. Mid-hold arm pulses add `{selection_2..n}`.
+                    // Destination stays dictation — do not arm Chat/Agent.
+                    if !event.assistive && matches!(event.hold_mode, HoldMode::Raw) {
+                        self.attach_hold_selection().await?;
+                    }
                 }
             }
             HotkeyAction::Up => {
