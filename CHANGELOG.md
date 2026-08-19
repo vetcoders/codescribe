@@ -18,6 +18,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   dump the transcript onto `NSPasteboard`. The text parks in the Paste Here
   slot (⌘⌥V when that chord is bound); the overlay keeps it; the user's
   previous clipboard stays put. Explicit overlay Copy is unchanged.
+- **Paste status lives in the overlay footer.** Insert that cannot reach
+  the ambulance no longer throws a capsule over the action row. A quiet
+  chip sits next to `local apple` (`⌘⌥V` / `copied` / `no ax`).
 - **Auto-paste may land in the Agent window and in Alacritty.** The overlay
   canvas is still never a Cmd+V sink (Swift caret probe). The whole
   Codescribe app is not "self": Agent is a legal ambulance, and a floating

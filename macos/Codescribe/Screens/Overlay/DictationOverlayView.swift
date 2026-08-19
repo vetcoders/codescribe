@@ -12,7 +12,8 @@ import SwiftUI
 //               All actions are neutral/grey; Close is the ONE red control.
 //   footer      ● <engine chip from serving/preference> · meta on the right
 //
-// A transient toast (no-speech / error) floats over the bottom edge.
+// Delivery/status whispers in the footer next to the engine chip — never a
+// floating pill over the action row.
 struct DictationOverlayView: View {
   @ObservedObject var state: OverlayState
 
@@ -81,13 +82,6 @@ struct DictationOverlayView: View {
     // clip costs nothing visually.
     .clipShape(RoundedRectangle(cornerRadius: CSRadius.window, style: .continuous))
     .developerPowerCorner(padding: 10)
-    .overlay(alignment: .bottom) {
-      if let toast = state.toast {
-        ToastPill(text: toast)
-          .padding(.bottom, 14)
-          .transition(.opacity.combined(with: .offset(y: 8)))
-      }
-    }
     .animation(CSMotion.floatIn, value: state.toast)
     .onHover { inside in
       state.setPointerHovering(inside)
@@ -677,6 +671,14 @@ struct DictationOverlayView: View {
         // Product truth: never hardcode "local whisper". Chip = last serving
         // engine when known, else preference (Apple live default).
         Text(state.footerEngineLabel).foregroundStyle(CSColor.textFaintAlt)
+        if let toast = state.toast, !toast.isEmpty {
+          Text("·").foregroundStyle(CSColor.textFaintAlt)
+          Text(toast)
+            .foregroundStyle(CSColor.textFaintAlt)
+            .lineLimit(1)
+            .truncationMode(.tail)
+            .accessibilityIdentifier("overlay-footer-notice")
+        }
       }
       Spacer(minLength: 0)
       Text(state.footerRight)
@@ -711,23 +713,6 @@ private struct BlinkingCaret: View {
           on = true
         }
       }
-  }
-}
-
-/// Transient notice for no-speech / recoverable engine errors.
-private struct ToastPill: View {
-  let text: String
-  var body: some View {
-    Text(text)
-      .font(CSFont.metaMono)
-      .foregroundStyle(CSColor.textBody)
-      .padding(.horizontal, 14)
-      .padding(.vertical, 8)
-      .background(CSColor.surfaceRaised(0.06))
-      .overlay(
-        Capsule().strokeBorder(CSColor.hairline(0.14), lineWidth: 1)
-      )
-      .clipShape(Capsule())
   }
 }
 

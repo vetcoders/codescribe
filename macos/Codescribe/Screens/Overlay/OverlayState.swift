@@ -1022,55 +1022,34 @@ final class OverlayState: ObservableObject {
         }
         switch result?.outcome {
         case .deferredInsertArmed:
-          let target = result?.targetAppName ?? "the target app"
           let shortcut = result?.deferredInsertShortcut ?? "⌘⌥V"
-          self.showToast(
-            "Couldn't reach \(target) — put your cursor where you want the text "
-              + "and press \(shortcut). Your clipboard is untouched."
-          )
+          self.showFooterNotice(shortcut, persists: true)
         case .copiedToClipboard:
-          self.showToast(
-            self.copiedInsertFallbackToast(
-              frontmost: result?.frontmostAppName,
-              target: result?.targetAppName,
-              failure: result?.deferredInsertFailure
-            ))
+          self.showFooterNotice("copied")
         case .accessibilityPermissionNeeded:
-          self.showToast(
-            self.copiedInsertFallbackToast(
-              frontmost: result?.frontmostAppName,
-              target: result?.targetAppName,
-              failure: result?.deferredInsertFailure
-            ))
+          self.showFooterNotice("no ax")
         case .pasted, .noop, nil:
           break
         }
       } catch {
         self.errorMessage = "Couldn't paste transcript: \(error)"
-        self.showToast("Couldn't paste transcript")
+        self.showFooterNotice("no paste")
       }
     }
   }
 
-  private func copiedInsertFallbackToast(
-    frontmost: String?,
-    target: String?,
-    failure: String?
-  ) -> String {
-    if let failure {
-      return "\(failure) — copied with tags instead. "
-        + "Clipboard replaced; press Cmd+V where you want it."
+  /// Whisper a short footer chip next to `local apple`. Never a floating pill
+  /// over the action row. `persists` keeps the chip until the overlay hides
+  /// (Paste Here chord); otherwise it fades after the usual toast window.
+  func showFooterNotice(_ message: String, persists: Bool = false) {
+    toast = message
+    toastTask?.cancel()
+    guard !persists else { return }
+    toastTask = Task { @MainActor [weak self] in
+      try? await Task.sleep(nanoseconds: 2_600_000_000)
+      guard !Task.isCancelled else { return }
+      self?.toast = nil
     }
-    if let frontmost, let target {
-      return "Copied — your cursor is in \(frontmost), not \(target). "
-        + "Clipboard replaced; press Cmd+V where you want it."
-    }
-    if let target {
-      return "Copied — focus couldn't be confirmed for \(target). "
-        + "Clipboard replaced; press Cmd+V where you want it."
-    }
-    return "Copied — the target app was lost. "
-      + "Clipboard replaced; press Cmd+V where you want it."
   }
 
   /// Persist through C02's single config seam, then immediately replace local

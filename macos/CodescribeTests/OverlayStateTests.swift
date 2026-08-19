@@ -933,11 +933,7 @@ final class OverlayStateTests: XCTestCase {
     XCTAssertEqual(engine.deferredText, "guarded transcript")
     XCTAssertNil(engine.copiedTaggedText)
     XCTAssertNil(engine.pastedText, "guard must not fall through to synthetic paste")
-    XCTAssertEqual(
-      state.toast,
-      "Couldn't reach Pensieve — put your cursor where you want the text "
-        + "and press ⌘⌥V. Your clipboard is untouched."
-    )
+    XCTAssertEqual(state.toast, "⌘⌥V")
   }
 
   func testInsertFallsBackToTaggedCopyWhenHotkeyRegistrationFails() async {
@@ -956,11 +952,7 @@ final class OverlayStateTests: XCTestCase {
     await fulfillment(of: [deferCalled], timeout: 1)
     await Task.yield()
 
-    XCTAssertEqual(
-      state.toast,
-      "Paste Here hotkey registration failed — copied with tags instead. "
-        + "Clipboard replaced; press Cmd+V where you want it."
-    )
+    XCTAssertEqual(state.toast, "copied")
   }
 
   func testInsertShowsCopiedToastWhenControllerGuardDegrades() async {
@@ -981,11 +973,7 @@ final class OverlayStateTests: XCTestCase {
     await Task.yield()
 
     XCTAssertEqual(engine.pastedText, "belt and braces transcript")
-    XCTAssertEqual(
-      state.toast,
-      "Copied — your cursor is in Alacritty, not Pensieve. "
-        + "Clipboard replaced; press Cmd+V where you want it."
-    )
+    XCTAssertEqual(state.toast, "copied")
   }
 
   func testInsertShowsAccessibilityPermissionToastWhenEventPostingDenied() async {
@@ -1006,11 +994,7 @@ final class OverlayStateTests: XCTestCase {
     await Task.yield()
 
     XCTAssertEqual(engine.pastedText, "permission transcript")
-    XCTAssertEqual(
-      state.toast,
-      "Paste Here hotkey registration failed — copied with tags instead. "
-        + "Clipboard replaced; press Cmd+V where you want it."
-    )
+    XCTAssertEqual(state.toast, "no ax")
   }
 
   func testFormatCancelsAutoHideWithoutRearming() async {
