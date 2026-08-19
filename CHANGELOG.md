@@ -38,6 +38,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   socket opens with `hello` (`stt-ws-v1`); treating that as protocol
   dropped the lane at take start (`disconnect`, zero frames). Handshake
   and VAD control are ignored, and the start frame is Voice Lab `set`.
+- **Compound Apple chops take the joined Layer 1 rewrite.** Five short
+  fragments share one Whisper window and apply the aligned sentence
+  swap. Fusion no longer rewrites only the last piece or skips the
+  joined sentence at the 50% change cap.
 - **File retranscribe names the programming domain.** Overlay/Dictionary
   `cloud:` on `last_session.wav` (remapped loopback `:8444`) sends
   `vocabulary=programming` — test-locked on the multipart body. Official
