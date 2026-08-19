@@ -40,6 +40,9 @@ private final class OverlayStateTestEngine: DictationEngine {
   var transcribedError: Error?
   var lastAudioPath: String? = "/tmp/last_session.wav"
   var onTranscribe: (() -> Void)?
+  /// When set, format/retranscribe wait here so tests can observe the in-flight
+  /// phase and fire tray/indicator ticks before the work completes.
+  var workGate: OverlayStateTestGate?
 
   func setListener(_ listener: CsTranscriptionListener) {}
   func startRecording(language: CsLanguage?) async throws {}
@@ -67,6 +70,7 @@ private final class OverlayStateTestEngine: DictationEngine {
   ) async throws -> String {
     formattedLevels.append(level)
     onFormat?(level)
+    await workGate?.wait()
     switch formattedResult {
     case .success(let text): return text
     case .failure(let error): throw error
@@ -111,6 +115,7 @@ private final class OverlayStateTestEngine: DictationEngine {
   func transcribeFile(path: String) async throws -> CsTranscription {
     transcribedPaths.append(path)
     onTranscribe?()
+    await workGate?.wait()
     if let transcribedError { throw transcribedError }
     return CsTranscription(text: transcribedResult, language: "pl")
   }
@@ -119,6 +124,36 @@ private final class OverlayStateTestEngine: DictationEngine {
 
 private final class OverlayStateTestClock {
   var now: TimeInterval = 0
+}
+
+/// Holds format/retranscribe until the test opens it. Sendable so the detached
+/// engine task and the MainActor test can share it.
+private final class OverlayStateTestGate: @unchecked Sendable {
+  private let lock = NSLock()
+  private var continuation: CheckedContinuation<Void, Never>?
+  private var opened = false
+
+  func wait() async {
+    await withCheckedContinuation { (c: CheckedContinuation<Void, Never>) in
+      lock.lock()
+      if opened {
+        lock.unlock()
+        c.resume()
+      } else {
+        continuation = c
+        lock.unlock()
+      }
+    }
+  }
+
+  func open() {
+    lock.lock()
+    opened = true
+    let pending = continuation
+    continuation = nil
+    lock.unlock()
+    pending?.resume()
+  }
 }
 
 @MainActor
@@ -133,6 +168,18 @@ final class OverlayStateTests: XCTestCase {
     state.applyFinal(utteranceId: 1, text)
     state.finishControllerRecording()
     return state
+  }
+
+  private func waitUntilOverlayIdle(
+    _ state: OverlayState,
+    file: StaticString = #filePath,
+    line: UInt = #line
+  ) async {
+    for _ in 0..<200 {
+      if !state.isFormatting, !state.isRetranscribing { return }
+      await Task.yield()
+    }
+    XCTFail("overlay format/retranscribe did not finish", file: file, line: line)
   }
 
   func testInsertActionPresentationNamesKnownTargetAndFallsBackHonestly() {
@@ -220,7 +267,7 @@ final class OverlayStateTests: XCTestCase {
 
     state.retranscribe(pass: .fullHq)
     await fulfillment(of: [called], timeout: 1)
-    await Task.yield()
+    await waitUntilOverlayIdle(state)
     XCTAssertEqual(engine.transcribedPaths, ["hq:/tmp/last_session.wav"])
     XCTAssertEqual(state.formattedText, "full hq file pass")
     XCTAssertTrue(state.canRevert)
@@ -256,7 +303,7 @@ final class OverlayStateTests: XCTestCase {
 
     state.retranscribe(pass: .fullHq)
     await fulfillment(of: [called], timeout: 1)
-    await Task.yield()
+    await waitUntilOverlayIdle(state)
     XCTAssertEqual(engine.transcribedPaths, ["hq:/tmp/last_session.wav"])
     XCTAssertEqual(state.toast, "Couldn't retranscribe — Metal device lost")
     XCTAssertEqual(
@@ -607,7 +654,7 @@ final class OverlayStateTests: XCTestCase {
 
     state.formatTranscript(level: .correction)
     await fulfillment(of: [formatCalled], timeout: 1)
-    await Task.yield()
+    await waitUntilOverlayIdle(state)
 
     XCTAssertEqual(state.formattedText, "raw source transcript")
     XCTAssertEqual(state.formatFailureStatus, "raw — formatting failed")
@@ -627,7 +674,7 @@ final class OverlayStateTests: XCTestCase {
     engine.onFormat = { _ in firstCalled.fulfill() }
     state.formatTranscript(level: .smart)
     await fulfillment(of: [firstCalled], timeout: 1)
-    await Task.yield()
+    await waitUntilOverlayIdle(state)
 
     XCTAssertTrue(state.canRevert)
     XCTAssertEqual(state.formattedText, "first formatted result")
@@ -637,7 +684,7 @@ final class OverlayStateTests: XCTestCase {
     engine.onFormat = { _ in secondCalled.fulfill() }
     state.formatTranscript(level: .max)
     await fulfillment(of: [secondCalled], timeout: 1)
-    await Task.yield()
+    await waitUntilOverlayIdle(state)
 
     XCTAssertEqual(state.formattedText, "second formatted result")
     state.revertFormat()
@@ -658,7 +705,7 @@ final class OverlayStateTests: XCTestCase {
 
       state.formatTranscript(level: .correction)
       await fulfillment(of: [called], timeout: 1)
-      await Task.yield()
+      await waitUntilOverlayIdle(state)
 
       XCTAssertEqual(state.formattedText, "source transcript")
       XCTAssertFalse(state.canRevert)
@@ -677,14 +724,14 @@ final class OverlayStateTests: XCTestCase {
     engine.onFormat = { _ in successCalled.fulfill() }
     state.formatTranscript(level: .smart)
     await fulfillment(of: [successCalled], timeout: 1)
-    await Task.yield()
+    await waitUntilOverlayIdle(state)
 
     let failureCalled = expectation(description: "failed second format")
     engine.formattedResult = .failure(NSError(domain: "OverlayStateTests", code: 2))
     engine.onFormat = { _ in failureCalled.fulfill() }
     state.formatTranscript(level: .max)
     await fulfillment(of: [failureCalled], timeout: 1)
-    await Task.yield()
+    await waitUntilOverlayIdle(state)
 
     XCTAssertEqual(state.formattedText, "formatted transcript")
     XCTAssertTrue(state.canRevert)
@@ -714,7 +761,7 @@ final class OverlayStateTests: XCTestCase {
 
       state.formatTranscript(level: level)
       await fulfillment(of: [called], timeout: 1)
-      await Task.yield()
+      await waitUntilOverlayIdle(state)
 
       XCTAssertEqual(state.formattedText, "\(level.rawValue) output")
       XCTAssertEqual(state.autoFormatLevel, .off)
@@ -980,7 +1027,7 @@ final class OverlayStateTests: XCTestCase {
     clock.now = 4
     state.formatTranscript(level: .correction)
     await fulfillment(of: [formatCalled], timeout: 1)
-    await Task.yield()
+    await waitUntilOverlayIdle(state)
     XCTAssertEqual(state.formattedText, "formatted result")
 
     clock.now = 100
@@ -1003,7 +1050,7 @@ final class OverlayStateTests: XCTestCase {
     clock.now = 4
     state.formatTranscript(level: .max)
     await fulfillment(of: [formatCalled], timeout: 1)
-    await Task.yield()
+    await waitUntilOverlayIdle(state)
     clock.now = 100
     state.revertFormat()
 
@@ -1456,6 +1503,136 @@ final class OverlayStateTests: XCTestCase {
     XCTAssertEqual(outCount, 1)
     XCTAssertEqual(controller.state.indicatorMode, .assistive)
     XCTAssertFalse(controller.state.autoPasteControlAvailable)
+  }
+
+  func testFormatDoesNotHideOverlayOrApplyAssistive() async {
+    var outCount = 0
+    var frontCount = 0
+    let state = OverlayState()
+    let engine = OverlayStateTestEngine()
+    let gate = OverlayStateTestGate()
+    engine.workGate = gate
+    engine.formattedResult = .success("formatted take")
+    state.engine = engine
+    state.formattedText = "long take"
+    state.mode = .formatted
+    var closeCount = 0
+    state.onClose = { closeCount += 1 }
+
+    let controller = OverlayController(
+      state: state,
+      engine: engine,
+      overlayEnabledProvider: { true },
+      assistiveStatusProvider: { false },
+      panelFactory: { _, _ in NSPanel() },
+      orderPanelFront: { _ in frontCount += 1 },
+      orderPanelOut: { _ in outCount += 1 }
+    )
+    controller.show()
+    XCTAssertEqual(frontCount, 1)
+
+    let started = expectation(description: "format in flight")
+    engine.onFormat = { _ in
+      XCTAssertFalse(Thread.isMainThread, "format must not pin MainActor")
+      started.fulfill()
+    }
+    state.formatTranscript(level: .correction)
+    await fulfillment(of: [started], timeout: 1)
+
+    XCTAssertTrue(state.isFormatting)
+    XCTAssertEqual(state.statusText, "formatting")
+    XCTAssertEqual(state.tagText, "FORMAT")
+    XCTAssertEqual(state.metaText, "format · one-shot")
+    XCTAssertFalse(state.statusRippling)
+    XCTAssertTrue(state.blocksAssistiveOverlayHide)
+
+    controller.handleIndicatorModeChange(.assistive)
+    XCTAssertEqual(outCount, 0, "Format must not hide the overlay")
+    XCTAssertNotEqual(state.indicatorMode, .assistive)
+    XCTAssertTrue(state.autoPasteControlAvailable)
+    XCTAssertEqual(closeCount, 0)
+
+    gate.open()
+    await waitUntilOverlayIdle(state)
+    XCTAssertEqual(outCount, 0)
+    XCTAssertEqual(closeCount, 0)
+    XCTAssertEqual(state.mode, .formatted)
+    XCTAssertEqual(state.formattedText, "formatted take")
+    XCTAssertEqual(state.statusText, "done")
+    XCTAssertEqual(state.indicatorMode, .hold)
+  }
+
+  func testRetranscribeDoesNotHideOverlayOrApplyAssistive() async {
+    var outCount = 0
+    let clock = OverlayStateTestClock()
+    let state = makeFinalizedState(clock: clock, text: "live draft")
+    let engine = OverlayStateTestEngine()
+    let gate = OverlayStateTestGate()
+    engine.workGate = gate
+    engine.transcribedResult = "hq file pass"
+    state.engine = engine
+    var closeCount = 0
+    state.onClose = { closeCount += 1 }
+
+    let controller = OverlayController(
+      state: state,
+      engine: engine,
+      overlayEnabledProvider: { true },
+      assistiveStatusProvider: { false },
+      panelFactory: { _, _ in NSPanel() },
+      orderPanelFront: { _ in },
+      orderPanelOut: { _ in outCount += 1 }
+    )
+    controller.show()
+
+    let started = expectation(description: "retranscribe in flight")
+    engine.onTranscribe = {
+      XCTAssertFalse(Thread.isMainThread, "retranscribe must not pin MainActor")
+      started.fulfill()
+    }
+    state.retranscribe(pass: .fullHq)
+    await fulfillment(of: [started], timeout: 1)
+
+    XCTAssertTrue(state.isRetranscribing)
+    XCTAssertEqual(state.statusText, "retranscribing")
+    XCTAssertEqual(state.tagText, "RETRANSCRIBE")
+    XCTAssertFalse(state.statusRippling)
+    XCTAssertTrue(state.blocksAssistiveOverlayHide)
+
+    controller.handleIndicatorModeChange(.assistive)
+    XCTAssertEqual(outCount, 0)
+    XCTAssertNotEqual(state.indicatorMode, .assistive)
+    XCTAssertEqual(closeCount, 0)
+
+    gate.open()
+    await waitUntilOverlayIdle(state)
+    XCTAssertEqual(outCount, 0)
+    XCTAssertEqual(closeCount, 0)
+    XCTAssertEqual(state.formattedText, "hq file pass")
+    XCTAssertEqual(state.mode, .formatted)
+  }
+
+  func testFormattedReviewBlocksAssistiveHideWithoutFormatInFlight() {
+    var outCount = 0
+    let state = OverlayState()
+    state.mode = .formatted
+    state.formattedText = "review take"
+    let controller = OverlayController(
+      state: state,
+      engine: nil,
+      overlayEnabledProvider: { true },
+      assistiveStatusProvider: { false },
+      panelFactory: { _, _ in NSPanel() },
+      orderPanelFront: { _ in },
+      orderPanelOut: { _ in outCount += 1 }
+    )
+    controller.show()
+    XCTAssertTrue(state.blocksAssistiveOverlayHide)
+
+    controller.handleIndicatorModeChange(.assistive)
+    XCTAssertEqual(outCount, 0)
+    XCTAssertNotEqual(state.indicatorMode, .assistive)
+    XCTAssertTrue(state.autoPasteControlAvailable)
   }
 
   func testOverlayPanelUsesNonActivatingStyle() {

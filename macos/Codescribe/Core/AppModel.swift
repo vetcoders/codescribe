@@ -254,7 +254,13 @@ final class OverlayController: ObservableObject {
 
   /// Called by the live TrayStatusStore listener. Assistive uses the shared
   /// controller but keeps the Dictation overlay closed in favor of Agent UI.
+  /// Format / Retranscribe (and the post-take review they run on) own the
+  /// panel: an Assistive tray tick must not hide it, steal focus, or arm
+  /// Agent auto-send.
   func handleIndicatorModeChange(_ mode: CsIndicatorMode) {
+    if mode == .assistive, state.blocksAssistiveOverlayHide {
+      return
+    }
     if mode == .assistive {
       sessionWasAssistive = true
       hide()
