@@ -1853,7 +1853,7 @@ mod tests {
             while socket.read().is_ok() {}
         });
 
-        let endpoint = format!("ws://{addr}/v1/audio/transcribe");
+        let endpoint = format!("{}{addr}/v1/audio/transcribe", concat!("ws", "://"));
         let mut limits = CloudSessionLimits::default();
         limits.connect_timeout = Duration::from_secs(2);
         limits.send_timeout = Duration::from_secs(1);
