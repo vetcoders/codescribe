@@ -1093,10 +1093,10 @@ impl TailProvider for RemoteTailProvider {
             .text("model", model.clone())
             .text("language", language.to_string())
             .text("response_format", "verbose_json");
-        if let Some(vocabulary) =
-            crate::stt::request_vocabulary::codescribe_stt_vocabulary(&self.endpoint)
+        if let Some((field, value)) =
+            crate::stt::request_vocabulary::codescribe_stt_vocabulary_form_part(&self.endpoint)
         {
-            form = form.text("vocabulary", vocabulary.to_string());
+            form = form.text(field, value.to_string());
         }
         let http_request = Client::builder()
             .timeout(REMOTE_REQUEST_TIMEOUT)

@@ -394,6 +394,20 @@ mod retranscribe_tests {
             "https://api.libraxis.cloud/v1/audio/transcriptions"
         );
     }
+
+    #[test]
+    fn remapped_loopback_file_url_names_programming_vocabulary() {
+        let endpoint = codescribe_core::stt::tail_provider::file_probe_endpoint(
+            "ws://127.0.0.1:8446/v1/audio/transcribe",
+        );
+        assert_eq!(endpoint, "http://127.0.0.1:8444/v1/audio/transcriptions");
+        assert_eq!(
+            codescribe_core::stt::request_vocabulary::codescribe_stt_vocabulary_form_part(
+                &endpoint
+            ),
+            Some(("vocabulary", "programming"))
+        );
+    }
 }
 
 /// Foreign callback trait — dictation events forwarded to Swift.

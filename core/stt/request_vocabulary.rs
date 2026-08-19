@@ -9,6 +9,12 @@ use reqwest::Url;
 /// Codescribe product domain for hosts that accept a topic token.
 pub const CODESCRIBE_STT_VOCABULARY: &str = "programming";
 
+/// Multipart form field the loopback/Libraxis file worker reads.
+///
+/// Overlay Retranscribe `cloud:` / `last_session.wav` / `:8444` must attach
+/// this field. Official OpenAI file audio must not.
+pub const VOCABULARY_FORM_FIELD: &str = "vocabulary";
+
 /// Topic token to send on one outbound STT URL, if that host accepts one.
 ///
 /// `None` for official OpenAI (unknown field) and unparseable URLs. Every
@@ -22,6 +28,11 @@ pub fn codescribe_stt_vocabulary(endpoint: &str) -> Option<&'static str> {
         return None;
     }
     Some(CODESCRIBE_STT_VOCABULARY)
+}
+
+/// Multipart `(field, value)` for one file STT URL, if that host accepts one.
+pub fn codescribe_stt_vocabulary_form_part(endpoint: &str) -> Option<(&'static str, &'static str)> {
+    codescribe_stt_vocabulary(endpoint).map(|value| (VOCABULARY_FORM_FIELD, value))
 }
 
 #[cfg(test)]
@@ -59,6 +70,14 @@ mod tests {
             None
         );
         assert_eq!(codescribe_stt_vocabulary("not a url"), None);
+        assert_eq!(
+            codescribe_stt_vocabulary_form_part("http://127.0.0.1:8444/v1/audio/transcriptions"),
+            Some((VOCABULARY_FORM_FIELD, "programming"))
+        );
+        assert_eq!(
+            codescribe_stt_vocabulary_form_part("https://api.openai.com/v1/audio/transcriptions"),
+            None
+        );
     }
 
     #[test]

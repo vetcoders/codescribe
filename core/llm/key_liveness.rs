@@ -217,8 +217,10 @@ fn probe_stt_key(
         .text("model", "whisper-1")
         .text("language", "pl")
         .text("response_format", "json");
-    if let Some(vocabulary) = crate::stt::request_vocabulary::codescribe_stt_vocabulary(&endpoint) {
-        form = form.text("vocabulary", vocabulary.to_string());
+    if let Some((field, value)) =
+        crate::stt::request_vocabulary::codescribe_stt_vocabulary_form_part(&endpoint)
+    {
+        form = form.text(field, value.to_string());
     }
     let request = client.post(&endpoint);
     let auth_mode = crate::stt::tail_provider::stt_auth_mode(&endpoint);

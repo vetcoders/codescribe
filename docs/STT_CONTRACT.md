@@ -87,7 +87,21 @@ and for an explicit retranscribe action (Overlay, Dictionary, or Teacher).
 `session.start` / WS `config`). Official OpenAI file audio omits the field.
 Absence means no dictionary bias. The client never classifies audio to pick
 `programming` vs another domain. A quality bench that must stay unbiased
-omits the field or sends `off`.
+sends `off` explicitly — omitting the field is not a silent product default.
+
+**File retranscribe (2026-08-19).** Overlay Retranscribe `cloud:`, Dictionary
+`cloud:`, and any `last_session.wav` upload to remapped loopback `:8444`
+(`/v1/audio/transcriptions`) are product file takes. They attach
+`vocabulary=programming` so Polish+tech speech can prefer `Rust` over
+`raz`. Overlay click-Retranscribe without the menu is Full HQ (local
+candle) and stays prompt-free — that pass is not the `:8444` worker.
+Verify without a live take: POST `~/.codescribe/last_session.wav` to
+`http://127.0.0.1:8444/v1/audio/transcriptions` with `vocabulary=programming`.
+
+**Format is not transcript authority (2026-08-19).** Overlay Format (LLM
+cleanup) may guess a language name, invent tokens, and drop the coda. HQ
+compare is Whisper file vs raw Apple, never vs Format. Format is a delivery
+style pass, not a second STT engine.
 
 **Dictionary helper (everyone, 2026-08-17):** Settings → Dictionary Retranscribe
 is an explicit file surface on the row's archived `<stem>_raw.{m4a,wav,flac}`.
