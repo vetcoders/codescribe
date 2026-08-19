@@ -88,7 +88,7 @@ struct ShortcutsPanel: View {
       }
 
       if row.mode == .assistive {
-        assistiveModeSplit(row)
+        assistiveModeSplit()
       }
     }
     .padding(.horizontal, 16)
@@ -132,19 +132,15 @@ struct ShortcutsPanel: View {
     .fixedSize()
   }
 
-  private func assistiveModeSplit(_ row: CsModeBinding) -> some View {
+  private func assistiveModeSplit() -> some View {
     VStack(alignment: .leading, spacing: 7) {
       assistiveModeVariant(
-        title: "Voice chat",
+        title: "Attach selection",
         gesture: armGestureLabel,
-        description: "Talk to the agent."
+        description:
+          "Shift or Command during an already-started Fn hold attaches {selection_N}. It does not start voice chat, hide the overlay, or stop the take. Fn+Shift from idle is dictation, not Assistive."
       )
-      assistiveModeVariant(
-        title: "Act on selection",
-        gesture: selectionAssistiveGesture(row),
-        description: "Select text, then speak an instruction."
-      )
-      // W10-B: customize arm modifier (default Shift; Cmd alternative).
+      // Arm modifier is attach-only (default Shift; Cmd alternative).
       HStack(spacing: 8) {
         Text("Arm with")
           .font(CSFont.ui(11, .medium))
@@ -201,15 +197,6 @@ struct ShortcutsPanel: View {
   /// Derived from the configured arm modifier — never hardcode Fn+Command.
   private var armGestureLabel: String {
     ArmGestureCopy.label(for: model.holdArmModifier)
-  }
-
-  private func selectionAssistiveGesture(_ row: CsModeBinding) -> String {
-    // Act-on-selection is the same arm gesture when a selection is present
-    // (W10-D lane). Copy must match the configured binding, not a dead Cmd.
-    if row.binding == .disabled {
-      return armGestureLabel
-    }
-    return "\(row.bindingLabel) or \(armGestureLabel)"
   }
 
   private var armModifierBinding: Binding<String> {
@@ -472,10 +459,10 @@ struct ShortcutsPanel: View {
   }
 }
 
-/// Single production owner for assistive-arm gesture copy in Settings.
+/// Single production owner for attach-arm gesture copy in Settings.
 enum ArmGestureCopy {
   static func label(for modifier: String) -> String {
-    modifier == "cmd" ? "Hold Fn+Command" : "Hold Fn+Shift"
+    modifier == "cmd" ? "Command during Fn hold" : "Shift during Fn hold"
   }
 }
 

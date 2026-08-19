@@ -63,7 +63,14 @@ pub(super) fn should_use_toggle_adjudicated_stop(
 ///
 /// A toggle press that *stops* an in-progress toggle recording is excluded: the
 /// stop must not retroactively change the mode the recording started in.
+///
+/// A hold *Press* (legacy mid-hold `HoldUpdate`) never flips destination.
+/// Destination is latched at hold-down; Shift/Command attach `{selection_N}`
+/// through `RecordingController::attach_hold_selection` instead.
 pub(super) fn should_apply_incoming_mode_flags(current_state: State, event: &HotkeyInput) -> bool {
+    if event.key_type == HotkeyType::Hold && event.action == HotkeyAction::Press {
+        return false;
+    }
     matches!(event.action, HotkeyAction::Down | HotkeyAction::Press)
         && !(event.key_type == HotkeyType::Toggle && current_state == State::RecToggle)
 }

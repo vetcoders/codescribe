@@ -21,6 +21,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **Overlay default stays pinned top-right.** Free motion is only the
   explicit toggle. A drag without it is ephemeral. Edge-resize always
   persists, independent of the pin.
+- **Mid-hold Shift attaches `{selection_N}`.** Shift or Command during an
+  already-started Fn hold captures the current selection into the context
+  bucket and overlay marker. It does not open Agent, hide the overlay, or
+  stop the take. Fn+Shift from idle stays dictation, not Assistive.
 
 ### Changed
 

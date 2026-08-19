@@ -750,6 +750,23 @@ impl RecordingController {
         }
     }
 
+    /// Attach the current OS selection as `{selection_N}` during an in-flight
+    /// hold. Destination, overlay visibility, and Agent UI stay unchanged.
+    pub async fn attach_hold_selection(&self) -> Result<()> {
+        let current_state = self.current_state().await;
+        let pending_hold = self.hold_start_task.lock().await.is_some();
+        if !matches!(current_state, State::RecHold | State::RecToggle) && !pending_hold {
+            debug!("attach_hold_selection ignored: no in-flight hold");
+            return Ok(());
+        }
+
+        let prior_frontmost_app = self.pre_overlay_frontmost_app.read().await.clone();
+        let _ctx = self
+            .capture_assistive_combo_context(current_state, prior_frontmost_app)
+            .await;
+        Ok(())
+    }
+
     /// Deliver the overlay's current transcript with the context captured at
     /// trigger time. Taking the context makes delivery one-shot.
     pub async fn deliver_pending_assistive_transcript(&self, transcript: String) -> Result<bool> {

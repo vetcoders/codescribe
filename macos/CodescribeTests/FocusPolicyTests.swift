@@ -106,12 +106,15 @@ final class FocusPolicyTests: XCTestCase {
 
   func testArmGestureLabelsDeriveFromHoldArmModifier() {
     // SettingsViewModel.holdArmModifier normalizes to shift|cmd; ShortcutsPanel
-    // builds labels from that value (no hardcoded-only "Hold Fn+Command" path).
+    // builds labels from that value. Mid-hold arm attaches selection — it is
+    // not "Voice chat = Hold Fn+Shift".
     let shiftLabel = ArmGestureCopy.label(for: "shift")
     let cmdLabel = ArmGestureCopy.label(for: "cmd")
-    XCTAssertEqual(shiftLabel, "Hold Fn+Shift")
-    XCTAssertEqual(cmdLabel, "Hold Fn+Command")
+    XCTAssertEqual(shiftLabel, "Shift during Fn hold")
+    XCTAssertEqual(cmdLabel, "Command during Fn hold")
     XCTAssertNotEqual(shiftLabel, cmdLabel)
+    XCTAssertFalse(shiftLabel.contains("Hold Fn+Shift"))
+    XCTAssertFalse(cmdLabel.contains("Hold Fn+Command"))
   }
 
 }
