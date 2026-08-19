@@ -18,9 +18,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   point at those URLs.
 - **Agent chat shows live capture.** Assistive/Agent hides the overlay,
   so the composer now renders the growing transcript above the field.
-- **Dragging the overlay keeps it there.** The first real move turns
-  on Free motion so the next show does not snap back to the menu
-  anchor. Programmatic placement is ignored.
+- **Overlay default stays pinned top-right.** Free motion is only the
+  explicit toggle. A drag without it is ephemeral. Edge-resize always
+  persists, independent of the pin.
 
 ### Changed
 

@@ -204,7 +204,9 @@ final class OverlayController: ObservableObject {
     if let floating = panel as? FloatingOverlayPanel {
       floating.onUserMove = { [weak self] in
         guard let self, !Self.isApplyingFrame, let panel = self.panel else { return }
-        OverlayPlacement.persistOrigin(panel.frame.origin)
+        if self.state.freeMotion {
+          OverlayPlacement.persistOrigin(panel.frame.origin)
+        }
         self.state.userDraggedOverlay()
       }
     }

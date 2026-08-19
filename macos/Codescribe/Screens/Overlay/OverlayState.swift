@@ -1115,10 +1115,9 @@ final class OverlayState: ObservableObject {
   }
 
   /// AppKit reports window motion separately from SwiftUI content events.
-  /// First real drag leaves the six-anchor menu and keeps the origin.
+  /// Position sticks only in Free motion; anchored mode snaps back on next show.
   func userDraggedOverlay() {
     restartAutoHideCountdown()
-    if !freeMotion { freeMotion = true }
   }
 
   /// A live edge-drag resize is activity and therefore receives a fresh window.
