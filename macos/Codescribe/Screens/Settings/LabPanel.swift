@@ -29,8 +29,7 @@ struct LabPanel: View {
         }
 
       Button("Open Voice Lab") {
-        guard let url = URL(string: "http://127.0.0.1:8765/lab") else { return }
-        NSWorkspace.shared.open(url)
+        VoiceLabRuntime.openConsole()
       }
       .font(CSFont.mono(11, .semibold))
       .foregroundStyle(CSColor.chromeAccent)

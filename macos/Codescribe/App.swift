@@ -470,6 +470,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     // touching the lazy handle here would construct the bridge at teardown
     // purely to stop something that was never running.
     guard !Self.isRunningTests else { return }
+    VoiceLabRuntime.stopOwnedProcess()
     hotkeys.stop()
     sleepWakeObserver?.invalidate()
     sleepWakeObserver = nil

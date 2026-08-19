@@ -38,9 +38,7 @@ struct TrayMenuView: View {
         }
         if DeveloperSurface.isEnabled() {
           TrayRow(icon: .diagnostics, title: "Voice Lab…") {
-            if let url = URL(string: "http://127.0.0.1:8765/lab") {
-              NSWorkspace.shared.open(url)
-            }
+            VoiceLabRuntime.openConsole()
           }
         }
         TrayRow(icon: .setupWizard, title: "Setup Wizard…") { viewModel.onOpenSetupWizard() }
