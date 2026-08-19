@@ -771,11 +771,18 @@ final class OverlayStateTests: XCTestCase {
   func testWindowDragReanchorsAutoHide() {
     let clock = OverlayStateTestClock()
     let state = makeFinalizedState(clock: clock)
+    let previousFreeMotion = OverlayPlacement.freeMotion
+    defer {
+      OverlayPlacement.freeMotion = previousFreeMotion
+      state.freeMotion = previousFreeMotion
+    }
     var closeCount = 0
     state.onClose = { closeCount += 1 }
 
     clock.now = 4
+    state.freeMotion = false
     state.userDraggedOverlay()
+    XCTAssertTrue(state.freeMotion)
     clock.now = 5
     state.fireAutoHideNowForTests()
     XCTAssertEqual(closeCount, 0)

@@ -14,6 +14,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   existing Voice Lab buttons ensure `:8765` before opening the
   console. Production stays inert. The child stops when the take
   ends (and on quit). Loopback STT `:8444` / `:8446` stay up.
+  `docs/loopback.html` and `~/.codescribe/voice-lab/loopback.html`
+  point at those URLs.
+- **Agent chat shows live capture.** Assistive/Agent hides the overlay,
+  so the composer now renders the growing transcript above the field.
+- **Dragging the overlay keeps it there.** The first real move turns
+  on Free motion so the next show does not snap back to the menu
+  anchor. Programmatic placement is ignored.
 
 ### Changed
 

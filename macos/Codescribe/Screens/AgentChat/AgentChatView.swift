@@ -168,7 +168,7 @@ private struct ThreadDetail: View {
         .padding(.horizontal, 20)
         .padding(.bottom, 10)
       }
-      Composer(store: store)
+      Composer(store: store, overlay: AppModel.shared.overlay.state)
     }
     .frame(maxWidth: .infinity, maxHeight: .infinity)
     .background(CSColor.glassBase)
