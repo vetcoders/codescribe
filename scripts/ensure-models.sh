@@ -1,6 +1,7 @@
 #!/bin/bash
 # Ensure required models are present in HF cache for embedding.
-# - Whisper (default: LibraxisAI/whisper-large-v3-turbo-mlx-q8)
+# - Whisper (default: mlx-community/whisper-large-v3-turbo, fp16; tokenizer.json
+#   + mel_filters.npz come from the LibraxisAI q8 companion repo)
 # - Embedder (default: sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2)
 
 set -euo pipefail
@@ -79,7 +80,8 @@ ensure_repo() {
   fi
 }
 
-WHISPER_REPO="LibraxisAI/whisper-large-v3-turbo-mlx-q8"
+WHISPER_REPO="mlx-community/whisper-large-v3-turbo"
+WHISPER_COMPANION_REPO="LibraxisAI/whisper-large-v3-turbo-mlx-q8"
 if [[ -n "${CODESCRIBE_EMBED_MODEL:-}" && "${CODESCRIBE_EMBED_MODEL}" == */* ]]; then
   WHISPER_REPO="$CODESCRIBE_EMBED_MODEL"
 fi
@@ -87,7 +89,20 @@ EMBEDDER_REPO="${CODESCRIBE_EMBEDDER_REPO:-sentence-transformers/paraphrase-mult
 
 # If CODESCRIBE_MODEL_PATH already satisfied, skip Whisper cache check
 if [[ "${WHISPER_OK:-0}" -ne 1 ]]; then
-  ensure_repo "Whisper" "$WHISPER_REPO" config.json tokenizer.json mel_filters.npz __ANY_SAFETENSORS__
+  if [[ "$WHISPER_REPO" == "mlx-community/whisper-large-v3-turbo" ]]; then
+    # The default repo ships only config + weights; tokenizer.json and
+    # mel_filters.npz live in the companion repo (quantization-independent).
+    # download-model.sh fetches both, so one ensure call covers the pair.
+    if has_snapshot_with_files "$WHISPER_REPO" config.json __ANY_SAFETENSORS__ \
+      && has_snapshot_with_files "$WHISPER_COMPANION_REPO" tokenizer.json mel_filters.npz; then
+      echo "✓ Whisper cached (${WHISPER_REPO} + companion files)"
+    else
+      echo "▶ Whisper not fully cached; downloading (${WHISPER_REPO} + companions)..."
+      "$ROOT_DIR/scripts/download-model.sh"
+    fi
+  else
+    ensure_repo "Whisper" "$WHISPER_REPO" config.json tokenizer.json mel_filters.npz __ANY_SAFETENSORS__
+  fi
 fi
 
 ensure_repo "Embedder" "$EMBEDDER_REPO" config.json tokenizer.json model.safetensors

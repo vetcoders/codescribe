@@ -480,9 +480,15 @@ fn forward_event_to_listener(payload: IpcEventPayload, listener: Arc<dyn CsTrans
                 session_id,
                 layer_summary,
             } => listener.on_session_finalised(session_id, CsLayerSummary::from(&layer_summary)),
+            // Same class split as the matching arm in recording.rs: failures
+            // reach `on_error`, quality receipts are log-only. The tray stays
+            // as it is: a degraded-quality warning is not a dead backend.
             EngineEventWire::Warning { code, message } => {
-                tray_status::update_tray_status(TrayStatus::Error);
-                listener.on_error(format!("{code}: {message}"));
+                if codescribe_core::pipeline::contracts::warning_is_user_terminal(&code) {
+                    listener.on_error(format!("{code}: {message}"));
+                } else {
+                    tracing::info!(code, message, "engine warning (receipt, not forwarded)");
+                }
             }
             EngineEventWire::Drop { .. } | EngineEventWire::Stats { .. } => {}
         },
@@ -791,6 +797,18 @@ impl CodescribeHotkeys {
             })
     }
 
+    /// Forward a macOS sleep/wake boundary to the active recorder, if any.
+    ///
+    /// Querying this surface never constructs the shared controller. The host
+    /// notification callback can therefore remain a cheap no-op while idle and
+    /// cannot surprise-load a model or start a provider.
+    pub async fn note_sleep_wake(&self) -> bool {
+        let Some(controller) = current_controller(&shared_controller()) else {
+            return false;
+        };
+        controller.note_sleep_wake().await
+    }
+
     /// True while the shared controller is in an active recording/conversation state.
     pub async fn is_recording(&self) -> bool {
         let Some(controller) = current_controller(&shared_controller()) else {
@@ -938,6 +956,15 @@ impl CodescribeHotkeys {
     /// behind provider or tool work.
     pub fn cancel_voice_turn(&self, thread_id: String) -> bool {
         codescribe::agent_delivery::cancel_agent_delivery_turn(&thread_id)
+    }
+
+    /// Publish the Agent UI's current thread selection as the voice-assistive
+    /// routing target (operator contract 2026-08-13: dictation goes to the
+    /// thread the user is looking at; a new thread only via an explicit
+    /// "+ New thread"). `None` = the selection is a not-yet-persisted thread,
+    /// so the next assistive turn mints a fresh one.
+    pub fn set_assistive_target_thread(&self, backend_id: Option<String>) {
+        codescribe::controller::set_assistive_target_thread(backend_id);
     }
 }
 
@@ -1733,11 +1760,57 @@ impl CodescribeHotkeys {
 mod mode_binding_tests {
     use super::*;
     use serial_test::serial;
+    use std::process::Command;
     use std::sync::Mutex;
 
     /// Serializes `CODESCRIBE_DATA_DIR` mutation for the persist/read-back test.
     // Serializes the CODESCRIBE_DATA_DIR-mutating test below within this module.
     static ENV_LOCK: Mutex<()> = Mutex::new(());
+
+    /// RED contract for the production-log pollution observed from this test
+    /// module. A child test process gives `init_logging` a fresh `Once`, a fake
+    /// HOME, and a distinct test data root; initialization must not create the
+    /// production-shaped `~/.codescribe/logs/codescribe.log` sink.
+    #[test]
+    #[serial]
+    fn fleet_red_test_logging_isolated() {
+        const CHILD_ENV: &str = "CODESCRIBE_FLEET_RED_LOG_CHILD";
+        if std::env::var_os(CHILD_ENV).is_some() {
+            let production_path = std::path::PathBuf::from(
+                std::env::var_os("HOME").expect("isolated child HOME must be set"),
+            )
+            .join(".codescribe")
+            .join("logs")
+            .join("codescribe.log");
+
+            codescribe::logging::init_logging();
+            assert!(
+                !production_path.exists(),
+                "test logger initialization resolved to production path: {}",
+                production_path.display()
+            );
+            return;
+        }
+
+        let fake_home = tempfile::tempdir().expect("create isolated HOME");
+        let test_data = tempfile::tempdir().expect("create isolated test data root");
+        let status = Command::new(std::env::current_exe().expect("resolve test binary"))
+            .args([
+                "--exact",
+                "hotkeys::mode_binding_tests::fleet_red_test_logging_isolated",
+                "--nocapture",
+            ])
+            .env(CHILD_ENV, "1")
+            .env("HOME", fake_home.path())
+            .env("CODESCRIBE_DATA_DIR", test_data.path())
+            .status()
+            .expect("launch isolated logging child");
+
+        assert!(
+            status.success(),
+            "isolated logger child must avoid the production log path"
+        );
+    }
 
     /// Every core work mode survives a UniFFI round-trip without loss.
     #[test]
@@ -2101,6 +2174,19 @@ mod preparing_compensation_tests {
             .lock()
             .unwrap_or_else(|e| e.into_inner()) = None;
         PREPARING_PENDING.store(false, Ordering::SeqCst);
+    }
+
+    /// A host lifecycle notification while idle must not construct the shared
+    /// controller (and therefore cannot prewarm or load an engine).
+    #[tokio::test]
+    #[serial]
+    async fn sleep_wake_without_active_controller_is_a_noop() {
+        let _guard = TEST_LOCK.lock().await;
+        teardown();
+
+        let hotkeys = CodescribeHotkeys::new();
+        assert!(!hotkeys.note_sleep_wake().await);
+        assert!(current_controller(&shared_controller()).is_none());
     }
 
     /// AudioLevel IPC payload forwards the RMS sample to the Swift listener.

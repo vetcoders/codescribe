@@ -54,7 +54,7 @@ struct TranscriptUtteranceRecord {
 /// fallback for a final that arrives empty (VAD sealed on a quiet tail), so a
 /// real utterance is not lost to a blank final.
 #[derive(Debug, Default)]
-struct SessionTranscriptState {
+pub struct TranscriptReducer {
     committed: Vec<TranscriptUtteranceRecord>,
     active_preview: String,
     last_non_empty_preview: String,
@@ -81,7 +81,7 @@ fn append_rendered_fragment(rendered: &mut String, fragment: &str) {
     rendered.push_str(&normalized);
 }
 
-impl SessionTranscriptState {
+impl TranscriptReducer {
     /// Replace the live preview tail. Previews supersede each other, so this
     /// overwrites rather than appends; a non-empty preview is also remembered as
     /// the fallback an empty final will fall back to.
@@ -166,6 +166,19 @@ impl SessionTranscriptState {
             return None;
         }
 
+        if let Some(existing) = self
+            .committed
+            .iter_mut()
+            .find(|record| record.utterance_id == utterance_id)
+        {
+            existing.text = committed_text;
+            existing.raw_text = raw_text.to_string();
+            existing.start_ts = start_ts;
+            existing.end_ts = end_ts;
+            existing.segments = segments;
+            return None;
+        }
+
         self.committed.push(TranscriptUtteranceRecord {
             utterance_id,
             text: committed_text.clone(),
@@ -189,7 +202,7 @@ impl SessionTranscriptState {
     /// preview tail. Rebuilt from state on every call, so the rendered string is
     /// always a function of the record list rather than an accumulated buffer
     /// that could drift from it.
-    fn rendered_text(&self) -> String {
+    pub fn rendered_text(&self) -> String {
         let mut rendered = String::new();
         for utterance in &self.committed {
             append_rendered_fragment(&mut rendered, &utterance.text);
@@ -214,10 +227,31 @@ impl SessionTranscriptState {
         let Some(record) = self
             .committed
             .iter_mut()
-            .find(|record| record.utterance_id == utterance_id)
+            .rfind(|record| record.utterance_id == utterance_id)
         else {
             return false;
         };
+        // Last-mile duplicate guard. A patch is computed against the canvas as
+        // it stood when Layer 1 was dispatched; by the time it arrives SFSpeech
+        // may have restated the SAME utterance at greater length, already
+        // delivering the words the patch recovers. Measured 2026-08-14: an
+        // append computed for a 15-character canvas landed on the 47-character
+        // restatement of it and duplicated the phrase ("…hard pruna I road
+        // która pozwoli nam na zrobienie hard Pru."), costing more WER than the
+        // recovery gained. Only pure insertions are checked — a substitution
+        // replaces the very span it would be compared against.
+        if let EngineEvent::ReplaceRange {
+            start, end, text, ..
+        } = event
+            && start == end
+            && codescribe_core::stt::tail_patcher::text_already_carries(&record.text, text)
+        {
+            tracing::debug!(
+                utterance_id,
+                "layered patch already carried by the canvas; dropped"
+            );
+            return false;
+        }
         match event.apply_to_committed_text(&mut record.text) {
             Ok(applied) => applied,
             Err(error) => {
@@ -236,7 +270,72 @@ impl SessionTranscriptState {
     fn committed(&self) -> &[TranscriptUtteranceRecord] {
         &self.committed
     }
+
+    /// Apply one engine event using the exact transcript algebra owned by the
+    /// shipped presentation emitter. The returned text is present only when a
+    /// new final slot was inserted; same-id revisions update that slot without
+    /// dispatching a second per-utterance callback.
+    pub fn apply_event(&mut self, event: &EngineEvent) -> Option<String> {
+        match event {
+            EngineEvent::Preview { text, .. } => self.apply_preview(text),
+            EngineEvent::Correction {
+                text,
+                previous_text,
+                ..
+            } => self.apply_correction(previous_text, text),
+            EngineEvent::UtteranceFinal {
+                utterance_id,
+                text,
+                raw_text,
+                start_ts,
+                end_ts,
+                segments,
+                ..
+            } => {
+                return self.finalize(
+                    *utterance_id,
+                    text,
+                    raw_text,
+                    *start_ts,
+                    *end_ts,
+                    segments.clone(),
+                );
+            }
+            EngineEvent::ReplaceRange { .. } | EngineEvent::InsertAnnotation { .. } => {
+                let _ = self.apply_layered_patch(event);
+            }
+            EngineEvent::NoSpeech { .. } => self.clear_live_preview(),
+            _ => {}
+        }
+        None
+    }
+
+    /// Finalized canvas only, excluding the volatile preview tail.
+    pub fn streaming_floor(&self) -> String {
+        let mut rendered = String::new();
+        for utterance in &self.committed {
+            append_rendered_fragment(&mut rendered, &utterance.text);
+        }
+        rendered
+    }
+
+    /// Number of unique finalized slots currently held by the reducer.
+    pub fn committed_count(&self) -> usize {
+        self.committed.len()
+    }
 }
+
+/// Replay an ordered event vector through the production presentation algebra.
+pub fn reduce_transcript_events(events: &[EngineEvent]) -> TranscriptReducer {
+    let mut reducer = TranscriptReducer::default();
+    for event in events {
+        let _ = reducer.apply_event(event);
+    }
+    reducer
+}
+
+#[cfg(test)]
+type SessionTranscriptState = TranscriptReducer;
 
 /// Presentation emitter — bridges `EngineEvent`s to `BufferedEmitter`.
 ///
@@ -257,9 +356,7 @@ pub struct PresentationEmitter {
     vad_end_callback: Option<Arc<dyn Fn() + Send + Sync>>,
     vad_start_emitted: std::sync::atomic::AtomicBool,
     /// Source-of-truth transcript state: committed utterances + active preview tail.
-    session_state: std::sync::Mutex<SessionTranscriptState>,
-    /// Last utterance id delivered to callback (guards duplicate boundary commits).
-    last_dispatched_utterance_id: std::sync::atomic::AtomicU64,
+    session_state: std::sync::Mutex<TranscriptReducer>,
     /// Controls what the delta sink sees: full session text or only the live preview.
     delta_render_mode: DeltaRenderMode,
 }
@@ -335,8 +432,7 @@ impl PresentationEmitter {
             vad_start_callback: None,
             vad_end_callback: None,
             vad_start_emitted: std::sync::atomic::AtomicBool::new(false),
-            session_state: std::sync::Mutex::new(SessionTranscriptState::default()),
-            last_dispatched_utterance_id: std::sync::atomic::AtomicU64::new(0),
+            session_state: std::sync::Mutex::new(TranscriptReducer::default()),
             delta_render_mode: DeltaRenderMode::SessionRendered,
         }
     }
@@ -438,10 +534,10 @@ impl EventSink for PresentationEmitter {
                     cb();
                 }
             }
-            EngineEvent::Preview { text, .. } => {
+            EngineEvent::Preview { .. } => {
                 let rendered = {
                     let mut state = self.session_state.lock().unwrap_or_else(|e| e.into_inner());
-                    state.apply_preview(text);
+                    let _ = state.apply_event(event);
                     match self.delta_render_mode {
                         DeltaRenderMode::SessionRendered => state.rendered_text(),
                         DeltaRenderMode::ActivePreviewOnly => state.active_preview.clone(),
@@ -449,14 +545,10 @@ impl EventSink for PresentationEmitter {
                 };
                 self.send_cmd(EmitterCmd::SetTargetText(rendered));
             }
-            EngineEvent::Correction {
-                text,
-                previous_text,
-                ..
-            } => {
+            EngineEvent::Correction { .. } => {
                 let rendered = {
                     let mut state = self.session_state.lock().unwrap_or_else(|e| e.into_inner());
-                    state.apply_correction(previous_text, text);
+                    let _ = state.apply_event(event);
                     match self.delta_render_mode {
                         DeltaRenderMode::SessionRendered => state.rendered_text(),
                         DeltaRenderMode::ActivePreviewOnly => state.active_preview.clone(),
@@ -464,36 +556,10 @@ impl EventSink for PresentationEmitter {
                 };
                 self.send_cmd(EmitterCmd::SetTargetText(rendered));
             }
-            EngineEvent::UtteranceFinal {
-                utterance_id,
-                text,
-                raw_text,
-                start_ts,
-                end_ts,
-                segments,
-                ..
-            } => {
-                let duplicate = self
-                    .last_dispatched_utterance_id
-                    .swap(*utterance_id, std::sync::atomic::Ordering::SeqCst)
-                    == *utterance_id;
-                if duplicate {
-                    debug!(
-                        utterance_id = *utterance_id,
-                        "Ignoring duplicate UtteranceFinal callback dispatch"
-                    );
-                    return;
-                }
+            EngineEvent::UtteranceFinal { utterance_id, .. } => {
                 let callback_payload = {
                     let mut state = self.session_state.lock().unwrap_or_else(|e| e.into_inner());
-                    state.finalize(
-                        *utterance_id,
-                        text,
-                        raw_text,
-                        *start_ts,
-                        *end_ts,
-                        segments.clone(),
-                    )
+                    state.apply_event(event)
                 };
                 if let Some(cb) = &self.utterance_callback
                     && let Some(payload) = callback_payload
@@ -524,7 +590,7 @@ impl EventSink for PresentationEmitter {
             EngineEvent::NoSpeech { reason } => {
                 let rendered = {
                     let mut state = self.session_state.lock().unwrap_or_else(|e| e.into_inner());
-                    state.clear_live_preview();
+                    let _ = state.apply_event(event);
                     state.rendered_text()
                 };
                 self.send_cmd(EmitterCmd::SetTargetText(rendered));
@@ -607,7 +673,20 @@ impl EventSink for PresentationEmitter {
                     self.send_cmd(EmitterCmd::SetTargetText(rendered));
                 }
             }
-            EngineEvent::SessionFinalised { .. } => {}
+            EngineEvent::SessionFinalised { .. } => {
+                // The Apple progressive lane closes with SessionFinalised and
+                // does not emit Stats. Persist only immutable canvas here: a
+                // cumulative final can re-state committed text as the last
+                // Preview, and ignoring the close event would deliver
+                // `committed + restatement` at stop.
+                let rendered = {
+                    let mut state = self.session_state.lock().unwrap_or_else(|e| e.into_inner());
+                    state.clear_live_preview();
+                    state.streaming_floor()
+                };
+                self.send_cmd(EmitterCmd::SetTargetText(rendered));
+                self.send_cmd(EmitterCmd::Finish);
+            }
         }
     }
 }
@@ -617,10 +696,145 @@ impl EventSink for PresentationEmitter {
 mod tests {
     use super::{DeltaRenderMode, PresentationEmitter, SessionTranscriptState};
     use codescribe_core::pipeline::contracts::{
-        AnnotationKind, EngineEvent, EventSink, LayerSource, TranscriptSegment,
+        AnnotationKind, EngineEvent, EventSink, LayerSource, LayerSummary, TranscriptSegment,
     };
     use std::sync::{Arc, Mutex as StdMutex};
     use tokio::sync::Mutex;
+
+    /// Regression for the 2026-08-14 patch/restatement race.
+    ///
+    /// Layer 1 computes a recovery against the canvas as it stood when the job
+    /// was dispatched. SFSpeech may then restate the SAME utterance at greater
+    /// length and deliver those words itself. Measured on take 144425: the
+    /// append was computed for a 15-character canvas, the final arrived at 47
+    /// characters carrying the phrase, and applying the patch duplicated it
+    /// ("…hard pruna I road która pozwoli nam na zrobienie hard Pru.") — three
+    /// repeated 4-grams, WER 0.463 → 0.610. The reducer is the last place that
+    /// sees the canvas as it actually stands, so the guard belongs here.
+    #[test]
+    fn patch_already_delivered_by_a_restatement_is_dropped() {
+        let mut reducer = SessionTranscriptState::default();
+        reducer.apply_event(&EngineEvent::UtteranceFinal {
+            utterance_id: 6,
+            text: "I road która pozwoli nam na zrobienie hard Pru.".to_string(),
+            raw_text: "i road ktora pozwoli nam na zrobienie hard pru".to_string(),
+            start_ts: 0.0,
+            end_ts: 1.0,
+            segments: Vec::new(),
+            vad_speech_pct: None,
+            avg_logprob: None,
+            compression_ratio: None,
+            quality_gate_dropped: false,
+            confidence_flags: Vec::new(),
+        });
+        let before = reducer.rendered_text();
+
+        // The patch Layer 1 computed against the earlier, shorter canvas.
+        reducer.apply_event(&EngineEvent::ReplaceRange {
+            utterance_id: 6,
+            start: 5,
+            end: 5,
+            text: " która pozwoli nam na zrobienie hard pruna".to_string(),
+            source: LayerSource::TailPatch,
+        });
+        assert_eq!(
+            reducer.rendered_text(),
+            before,
+            "a recovery the restatement already delivered must not be applied twice"
+        );
+
+        // A genuine gap fill on the same utterance still lands.
+        reducer.apply_event(&EngineEvent::ReplaceRange {
+            utterance_id: 6,
+            start: 46,
+            end: 46,
+            text: " przed wydaniem".to_string(),
+            source: LayerSource::TailPatch,
+        });
+        assert!(
+            reducer.rendered_text().contains("przed wydaniem"),
+            "novel recovered material must still reach the canvas: {:?}",
+            reducer.rendered_text()
+        );
+    }
+
+    /// Regression for the 2026-08-14 tripled-RAW incident (Monika's take:
+    /// reducer said 228 chars, the RAW pulled by `recorder.stop()` said 791).
+    /// Two writers raced on the shared buffer: the command worker snapshotted
+    /// the full target AND the tick loop appended the same suffix again, so
+    /// cumulative Apple previews multiplied the trailing sentence.
+    ///
+    /// This walks the exact runtime seam — `on_event` → reducer → command
+    /// channel → worker snapshot → tick animation → shared buffer — with the
+    /// only substituted boundary being the event source, and demands the buffer
+    /// end byte-identical to the reducer truth.
+    #[tokio::test]
+    async fn transcript_buffer_matches_reducer_truth_after_cumulative_previews() {
+        let transcript = Arc::new(Mutex::new(String::new()));
+        let mut emitter = PresentationEmitter::new(transcript.clone(), None, None);
+
+        let final_event = |id: u64, text: &str, start: f32, end: f32| EngineEvent::UtteranceFinal {
+            utterance_id: id,
+            text: text.to_string(),
+            raw_text: text.to_string(),
+            start_ts: start,
+            end_ts: end,
+            segments: Vec::new(),
+            vad_speech_pct: Some(100.0),
+            avg_logprob: None,
+            compression_ratio: None,
+            quality_gate_dropped: false,
+            confidence_flags: Vec::new(),
+        };
+
+        // The Apple-lane shape from the incident log: per-utterance previews
+        // grow until a final seals them (the restated-prefix guards upstream
+        // strip whole-session restatements before emission), and stop arrives
+        // with an open partial still on the canvas — sealed=2 + open tail.
+        let events = vec![
+            EngineEvent::Preview {
+                rev: 1,
+                text: "Pies od wczoraj".to_string(),
+            },
+            EngineEvent::Preview {
+                rev: 2,
+                text: "Pies od wczoraj wymiotuje.".to_string(),
+            },
+            final_event(1, "Pies od wczoraj wymiotuje.", 0.0, 2.0),
+            EngineEvent::Preview {
+                rev: 3,
+                text: "Nie je i nie".to_string(),
+            },
+            EngineEvent::Preview {
+                rev: 4,
+                text: "Nie je i nie pije.".to_string(),
+            },
+            final_event(2, "Nie je i nie pije.", 2.0, 4.0),
+            EngineEvent::Preview {
+                rev: 5,
+                text: "Podałam mu".to_string(),
+            },
+        ];
+
+        let mut reference = SessionTranscriptState::default();
+        for event in &events {
+            emitter.on_event(event);
+            let _ = reference.apply_event(event);
+        }
+        emitter.finish().await;
+
+        let raw = transcript.lock().await.clone();
+        assert_eq!(
+            raw,
+            reference.rendered_text(),
+            "the RAW buffer recorder.stop() reads must be byte-identical to the reducer truth"
+        );
+        assert_eq!(
+            raw.matches("wymiotuje").count(),
+            1,
+            "a sentence delivered once must appear exactly once in the RAW, got: {raw:?}"
+        );
+    }
 
     /// Live preview appends after committed text in the rendered session canvas.
     #[test]
@@ -1054,6 +1268,44 @@ mod tests {
         tokio::time::sleep(std::time::Duration::from_millis(220)).await;
         let snapshot = transcript.lock().await.clone();
         assert_eq!(snapshot, "Ala ma kota");
+    }
+
+    /// Apple progressive closes with `SessionFinalised`, not `Stats`. A fully
+    /// re-heard cumulative final can leave the committed canvas in Preview;
+    /// ignoring the closing event then persists `committed + restatement`.
+    #[tokio::test]
+    async fn session_finalised_clears_reheard_preview_without_stats() {
+        let transcript = Arc::new(Mutex::new(String::new()));
+        let mut emitter = PresentationEmitter::new(transcript.clone(), None, None);
+
+        emitter.on_event(&EngineEvent::UtteranceFinal {
+            utterance_id: 1,
+            text: "Ala ma kota".to_string(),
+            raw_text: "Ala ma kota".to_string(),
+            start_ts: 0.0,
+            end_ts: 1.0,
+            segments: Vec::new(),
+            vad_speech_pct: Some(100.0),
+            avg_logprob: None,
+            compression_ratio: None,
+            quality_gate_dropped: false,
+            confidence_flags: Vec::new(),
+        });
+        emitter.on_event(&EngineEvent::Preview {
+            rev: 2,
+            text: "Ala ma kota".to_string(),
+        });
+        emitter.on_event(&EngineEvent::SessionFinalised {
+            session_id: "session".to_string(),
+            layer_summary: LayerSummary::default(),
+        });
+        emitter.finish().await;
+
+        let snapshot = transcript.lock().await.clone();
+        assert_eq!(
+            snapshot, "Ala ma kota",
+            "SessionFinalised must persist committed canvas only"
+        );
     }
 
     /// Late correction matching penultimate commit patches it, never appends.

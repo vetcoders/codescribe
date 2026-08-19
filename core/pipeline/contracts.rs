@@ -755,6 +755,26 @@ pub enum EngineEvent {
     Warning { code: String, message: String },
 }
 
+/// Warning codes that mean the user's action actually FAILED and must surface
+/// as an error on the UI (`listener.on_error`).
+///
+/// Every other warning is a quality receipt — the engine degraded or
+/// normalized something and *kept going*. Those must never ride the error
+/// channel: the composer treats `on_error` during capture as terminal, so a
+/// routine receipt painted "Dictation stopped" over a live session, desynced
+/// the toggle parity, and the next toggle started a second, orphaned capture
+/// that held the microphone behind an Idle tray (2026-08-12 incident).
+pub const USER_TERMINAL_WARNING_CODES: &[&str] = &["transcription_failed"];
+
+/// Whether a [`EngineEvent::Warning`] code is a user-terminal failure
+/// (forward to `on_error`) rather than a quality receipt (log only).
+///
+/// W13-5 `capture_level_low` is a receipt. It must never be added here —
+/// the composer treats `on_error` during capture as "Dictation stopped".
+pub fn warning_is_user_terminal(code: &str) -> bool {
+    USER_TERMINAL_WARNING_CODES.contains(&code)
+}
+
 /// Layer that produced a bounded replacement.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]

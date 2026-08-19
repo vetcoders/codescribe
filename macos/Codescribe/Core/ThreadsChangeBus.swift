@@ -18,9 +18,9 @@ import Foundation
 /// wave. Until then, window activation (`NSWindow.didBecomeKeyNotification`,
 /// observed in `AgentChatStore`) covers discoverability on the next activation.
 enum ThreadsChangeBus {
-    static let threadsDidChange = Notification.Name("codescribe.threads.threadsDidChange")
+  static let threadsDidChange = Notification.Name("codescribe.threads.threadsDidChange")
 
-    static func postThreadsChanged() {
-        NotificationCenter.default.post(name: threadsDidChange, object: nil)
-    }
+  static func postThreadsChanged() {
+    NotificationCenter.default.post(name: threadsDidChange, object: nil)
+  }
 }

@@ -1093,6 +1093,44 @@ pub fn commit_overlay_correction_with_confidence(
     })
 }
 
+/// One-click Teach from a highlighted canvas span.
+///
+/// Lexicon-corrected spans upsert the known variant→canonical pair through
+/// the existing Correction path. Speech-gap pustki are evidence-only: there
+/// is no word to teach until a human supplies one in Voice Lab.
+pub fn teach_span(variant: &str, canonical: &str, kind: &str) -> Result<OverlayCorrectionCommit> {
+    match kind {
+        "speech_gap" => commit_overlay_correction_with_confidence(
+            variant,
+            variant,
+            if canonical.trim().is_empty() {
+                "∅"
+            } else {
+                canonical
+            },
+            "overlay-span",
+            None,
+            Some("teach-span-gap"),
+            Some(FormattingPolicy::Off.as_str()),
+            None,
+            None,
+            vec!["speech_gap".to_string()],
+        ),
+        _ => commit_overlay_correction_with_confidence(
+            variant,
+            variant,
+            canonical,
+            "overlay-span",
+            None,
+            Some("teach-span"),
+            Some(FormattingPolicy::Correction.as_str()),
+            None,
+            None,
+            vec!["lexicon_corrected".to_string()],
+        ),
+    }
+}
+
 /// Replay historical `corrections.jsonl` through the current extractor.
 /// Returns dry-run candidate rows; with `apply=true` upserts after backing up
 /// the custom lexicon to `.bak-replay-<ts>`.
@@ -1617,6 +1655,24 @@ mod tests {
             cands,
             vec![("baz".into(), "bat".into()), ("foo".into(), "fop".into()),]
         );
+    }
+
+    #[test]
+    #[serial]
+    fn teach_span_lexicon_learns_pair_and_gap_is_evidence_only() {
+        let temp_dir = tempfile::tempdir().expect("temp");
+        let _guard = EnvRestore::capture("CODESCRIBE_DATA_DIR");
+        let temp_root = temp_dir.path().canonicalize().unwrap();
+        unsafe {
+            std::env::set_var("CODESCRIBE_DATA_DIR", &temp_root);
+        }
+        let learned = super::teach_span("uni agentka", "Junie", "lexicon_corrected")
+            .expect("teach lexicon span");
+        assert_eq!(learned.pairs_learned, 1);
+        assert!(!learned.evidence_only);
+        let gap = super::teach_span("", "", "speech_gap").expect("teach gap span");
+        assert_eq!(gap.pairs_learned, 0);
+        assert!(gap.evidence_only);
     }
 
     /// E2E: long-dictation commit learns one pair and stamps correction provenance.

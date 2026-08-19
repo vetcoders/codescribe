@@ -34,7 +34,7 @@ Poniższe działają „same z siebie” — jeśli ich nie ustawisz, aplikacja 
 - `HOLD_ARM_MODIFIER` – domyślnie `shift` — `cmd` ustawia Command jako modifier armujący assistive (W10-B)
 - `HOLD_START_DELAY_MS` – domyślnie `800` (RESTART NEEDED)
 - `DOUBLE_TAP_INTERVAL_MS` – domyślnie `200` (RESTART NEEDED)
-- `TOGGLE_SILENCE_SEC` – domyślnie `5.0` (RESTART NEEDED)
+- `TOGGLE_SILENCE_SEC` – domyślnie `5.0` (HOT — next recording): cisza zamyka epokę Apple (silnik odpoczywa, Layer 1 dostaje zapieczętowany span). Nie `CODESCRIBE_VAD_*` (te nazwy nigdy nie były czytane).
 - `SHOW_TRAY_GLYPH` – domyślnie `1` (RESTART NEEDED)
 - `HOLD_INDICATOR` – domyślnie `1` (HOT — next badge show; K3 W10-E, no live redraw of visible badge)
 - `HOLD_BADGE_SIZE` – domyślnie `8` (HOT — next badge show; K3 W10-E)
@@ -155,21 +155,26 @@ i runtime nie może znaleźć Whispera przez cache / config:
 ### Audio
 
 - `AUDIO_INPUT_DEVICE` – nazwa urządzenia wejściowego (RESTART NEEDED)
+- `CODESCRIBE_CAPTURE_LEVEL_LOW_DB` (HOT RELOADED; default `-52`) — próg WARN `capture_level_low` w dBFS, liczony od **mediany RMS mowy aktywnej** (nie od mediany całego nagrania). Cyfrowe zera ciszy na macOS 27 nie mogą zaniżać progu. Receipt nigdy nie jest terminalny.
 - `AUTO_SILENCE` (RESTART NEEDED)
 
 ### Transkrypcja (local/cloud)
 
+- `CODESCRIBE_INLINE_FORMAT` (HOT RELOADED; default `0`) — uzbraja bufor formatowania chunków W13-1; timeouty `CODESCRIBE_INLINE_FORMAT_{CHUNK,FLUSH,TAIL}_TIMEOUT_MS` mają domyślne budżety odpowiednio 10000/2500/15000 ms. Default pozostaje guzikiem operatora.
 - `USE_LOCAL_STT` (RESTART NEEDED)
 - `LOCAL_MODEL`, `WHISPER_MODEL` (RESTART NEEDED)
 - `WHISPER_LANGUAGE` (HOT RELOADED; default `auto`; applies to the next capture. `auto` leaves language detection to Whisper for mixed-language dictation.)
 - `CODESCRIBE_WHISPER_INITIAL_PROMPT` (RESTART NEEDED; alias legacy: `WHISPER_INITIAL_PROMPT`; ignorowane przez ONNX)
 - `STT_ENDPOINT`, `STT_API_KEY` (RESTART NEEDED)
-- `FINAL_PASS_MODE` (HOT RELOADED; `always|smart|off`; default `smart`; alias `CODESCRIBE_FINAL_PASS_MODE`) — **tylko** routing pełnego re-passu na stopie: `always`/`on` = zawsze pełny Whisper re-pass WAV, `smart` = pomija pełny re-pass gdy streaming completeness jest Complete (incomplete może jeszcze odpalić re-pass), `off` = nigdy pełnego re-passu (nie wymusza Whisper na stopie). **Nie włącza** layered/tail-patch. Live gap-fill = osobny opt-in `CODESCRIBE_LAYERED_TRANSCRIPTION`. Słownik/lexicon **zawsze** w postprocess. Settings → Dictation → "Final pass". Legacy `CODESCRIBE_TOGGLE_FINAL_PASS`: falsey→`off`, truthy→`always`.
-- `CODESCRIBE_LAYERED_TRANSCRIPTION` (HOT RELOADED; default `off`; `phase1`..`phase4` lub bare `1`..`4`) — ortogonalny gate warstwowej transkrypcji. `phase1+` = Layer 1 Whisper tail-patch (`ReplaceRange`) na **obu** ścieżkach live: VAD/scheduler oraz domyślnym Apple progressive live (W2-A — gap-fill z zatrzymanego PCM, max jeden job w locie, nierozwiązane okno nigdy nie trafia do Whispera). Smart final-pass **nie** ustawia tej flagi.
+- `FINAL_PASS_MODE` (HOT RELOADED; `always|smart|off`; default `smart`; alias `CODESCRIBE_FINAL_PASS_MODE`) — **tylko** routing pełnego re-passu na stopie: `always`/`on` = zawsze pełny Whisper re-pass WAV, `smart` = pomija pełny re-pass gdy streaming completeness jest Complete (incomplete może jeszcze odpalić re-pass), `off` = nigdy pełnego re-passu (nie wymusza Whisper na stopie). **Nie włącza i nie wyłącza** layered/tail-patch — to osobny gate (domyślnie `phase1`). Słownik/lexicon **zawsze** w postprocess. Settings → Dictation → "Final pass". Legacy `CODESCRIBE_TOGGLE_FINAL_PASS`: falsey→`off`, truthy→`always`.
+- `CODESCRIBE_LAYERED_TRANSCRIPTION` (HOT RELOADED; default `phase1`; `phase1`..`phase4` lub bare `1`..`4`; jawne `off`/`0`/`false` rozbraja) — ortogonalny gate warstwowej transkrypcji. Unset → `phase1` od 2026-08-09. `phase1+` = Layer 1 Whisper tail-patch (`ReplaceRange`) na **obu** ścieżkach live: VAD/scheduler oraz domyślnym Apple progressive live (W2-A — gap-fill z zatrzymanego PCM, max jeden job w locie, nierozwiązane okno nigdy nie trafia do Whispera). Promoted do `settings.json`. Smart final-pass **nie** ustawia tej flagi.
+- `STT_TAIL_PROVIDER` (HOT RELOADED; default `inprocess`) — wybiera implementację kontraktu tail-patch: `inprocess`, nadzorowany lokalny `sidecar` po WebSocket albo `remote` po multipart. Awaria sidecara/remote przechodzi do in-process z typed receiptem; zmiana defaultu pozostaje guzikiem operatora.
+- `CODESCRIBE_STT_SIDECAR_BIN` (RESTART NEEDED; dev only) — jawna ścieżka do helpera; aplikacja dystrybucyjna automatycznie znajduje `codescribe-stt-sidecar` obok własnego executable.
 - `CODESCRIBE_TAIL_PATCH_MAX_CHANGE_RATIO` (HOT RELOADED; default `0.5`) — próg bezpieczeństwa Layer 1: jeśli udział zmienionych znaków wobec zatwierdzonej wypowiedzi przekracza tę wartość, cała łatka jest **odrzucana** zamiast nałożona. Dzięki temu rozbieżna re-transkrypcja nigdy nie nadpisze żywego płótna.
+- `CODESCRIBE_TAIL_PATCH_SMALL_EDIT_FLOOR` (HOT RELOADED; default `3`) — budżet małych poprawek Layer 1: łatka o kształcie substytucji dotykająca co najwyżej tylu tokenów omija próg `MAX_CHANGE_RATIO`. Sam próg względny strukturalnie głodzi krótkie wypowiedzi (każda realna poprawka 1 słowa na 1-3-tokenowym commicie to ≥50% zmiany — zmierzone 2026-08-12: 116 skipów, 0 nałożonych). Czyste insercje nigdy nie korzystają z tego budżetu.
 - `CODESCRIBE_APPLE_DICTATION_TRANSCRIBER` (RESTART NEEDED; default `0`) — uzbraja ścieżkę PoC `DictationTranscriber` (W4-A): moduł SpeechAnalyzer stojący za SYSTEMOWYM dyktowaniem, jedyny analizator Apple, którego katalog zawiera pl-PL. Domyślnie **wyłączone** — nieuzbrojony rung nie istnieje, a kolejność backendów jest bajt w bajt taka jak w wersji wydanej. Klucz czytają obie strony (proces Rust i dziedziczący go bridge), więc jeden wpis uzbraja całą ścieżkę. **To nie jest domyślna ścieżka produktu** — przełączenie jest decyzją operatora.
 - `CODESCRIBE_MODEL_PATH`, `CODESCRIBE_MODELS_DIR` (RESTART NEEDED)
-- `CODESCRIBE_WHISPER_IDLE_UNLOAD_SECS` (HOT RELOADED dla wartości progu; default `2700` = 45 min; `0` wyłącza — włączenie z `0` wymaga restartu) — po N s bezczynności silnik Whisper jest zwalniany z pamięci (GPU/host) i ładowany ponownie przy następnym użyciu. **Cena przeładowania jest realna:** zmierzone `total 6.79 s`, z czego `5.19 s` to sama dekwantyzacja q8→F32 liczona od nowa (`cargo run --release --example whisper_load_probe`). `0` kupuje zerową latencję kosztem trzymanego RSS
+- `CODESCRIBE_WHISPER_IDLE_UNLOAD_SECS` (HOT RELOADED dla wartości progu; default `300` = 5 min; `0` jest jawnym keep-warm — włączenie reaper'a z `0` wymaga restartu) — po N s bezczynności silnik Whisper jest zwalniany z pamięci (GPU/host) i ładowany ponownie przy następnym użyciu. Każdy cold-load loguje `whisper_residency_load`, a reaper `whisper_residency_reclaim`: zdarzenia INFO mają efektywny TTL, liczniki oraz czasy load/unload/reclaim, lecz nigdy audio ani treść transkrypcji. **Cena przeładowania jest realna:** zmierzone `total 6.79 s`, z czego `5.19 s` to sama dekwantyzacja q8→F32 liczona od nowa (`cargo run --release --example whisper_load_probe`). `0` kupuje zerową latencję kosztem trzymanego RSS.
 
 ### Streaming / VAD / buffer
 
@@ -199,6 +204,7 @@ i runtime nie może znaleźć Whispera przez cache / config:
 - `AI_MAX_TOKENS`, `AI_ASSISTIVE_MAX_TOKENS` (RESTART NEEDED)
 - `TRANSCRIPT_SEND_MODE` (RESTART NEEDED)
 - `CODESCRIBE_AI_MAX_RETRIES`, `CODESCRIBE_AI_RETRY_DELAY_MS`, `CODESCRIBE_AI_ATTEMPT_TIMEOUT_MS`, `CODESCRIBE_AI_OLLAMA_ATTEMPT_TIMEOUT_MS` (HOT RELOADED)
+- `CODESCRIBE_RESPONSES_PROBE_URL` (HOT RELOADED; default pusty = oficjalny endpoint providera) — cel sondy autoryzacyjnej przy logowaniu kontem: świeży token musi umieć pisać do Responses API **zanim** zostanie zapisany jako „połączono" (pole: 5×401 `Missing scopes: api.responses.write`, 2026-08-14). Sonda nie wydaje tokenów (puste body ⇒ 400 przy zdrowym tokenie, 401 przy okrojonym). Testy hermetyczne celują w mock; produkcja zostawia unset.
 
 ### Hotkeys
 
@@ -206,7 +212,7 @@ i runtime nie może znaleźć Whispera przez cache / config:
 - `HOLD_EXCLUSIVE` (RESTART NEEDED)
 - `HOLD_START_DELAY_MS` (RESTART NEEDED)
 - `DOUBLE_TAP_INTERVAL_MS` (RESTART NEEDED)
-- `TOGGLE_SILENCE_SEC` (RESTART NEEDED)
+- `TOGGLE_SILENCE_SEC` (HOT — next recording; Apple epoch lifecycle, not wav-VAD auto-send)
 
 ### UI / Overlay / Feedback
 

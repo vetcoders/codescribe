@@ -27,6 +27,7 @@ use crate::llm::account_auth::pkce::PkceCodes;
 use crate::llm::account_auth::server::exchange_code_for_tokens;
 use crate::llm::account_auth::{
     AccountAuthError, AccountTokens, issuer_for, provider_oauth_config, store_account_tokens,
+    verify_responses_write_access,
 };
 use crate::llm::provider::ProviderKind;
 
@@ -316,6 +317,7 @@ pub async fn complete_device_code_login(
     match config.provider {
         ProviderKind::XaiResponses => {
             let tokens = poll_xai_device_token(&client, config, device_code).await?;
+            verify_responses_write_access(config.provider, &tokens.access_token).await?;
             store_account_tokens(config.provider, &tokens)
         }
         _ => {
@@ -345,6 +347,7 @@ pub async fn complete_device_code_login(
                 &code_resp.authorization_code,
             )
             .await?;
+            verify_responses_write_access(config.provider, &tokens.access_token).await?;
             store_account_tokens(config.provider, &tokens)
         }
     }

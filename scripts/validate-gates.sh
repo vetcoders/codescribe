@@ -94,6 +94,72 @@ fail() {
     ERRORS=$((ERRORS + 1))
 }
 
+# The app logger is process-global (`Once`), so test isolation must exist in
+# the parent shell before the first cargo/xcodebuild child starts. Keep this
+# semantic guard here because this script already runs inside `make verify` via
+# tests/gate_registry.rs; a Make dry-run would execute recursive recipes and is
+# unsafe for several operator targets.
+make_block() {
+    local start="$1"
+    local end="$2"
+    sed -n "/^${start}$/,/^${end}$/p" "$MAKEFILE"
+}
+
+make_target_block() {
+    local target="$1"
+    sed -n "/^${target}:/,/^[a-zA-Z0-9_][a-zA-Z0-9_.-]*:/p" "$MAKEFILE"
+}
+
+test_data_setup="$(make_block 'define TEST_DATA_DIR_SETUP' 'endef')"
+test_setup="$(make_block 'define TEST_SETUP' 'endef')"
+verify_recipe="$(sed -n '/^verify:/,/^[a-zA-Z0-9_][a-zA-Z0-9_.-]*:/p' "$MAKEFILE")"
+
+if [[ "$test_data_setup" != *'mktemp -d'* ]]; then
+    fail "TEST_DATA_DIR_SETUP must create a unique directory with mktemp -d"
+fi
+if [[ "$test_data_setup" != *'export CODESCRIBE_DATA_DIR='* ]]; then
+    fail "TEST_DATA_DIR_SETUP must export CODESCRIBE_DATA_DIR to every child process"
+fi
+if [[ "$test_data_setup" != *'trap cleanup_codescribe_test_data_dir EXIT'* ||
+      "$test_data_setup" != *'rm -rf -- "$$CODESCRIBE_TEST_DATA_DIR"'* ]]; then
+    fail "TEST_DATA_DIR_SETUP must clean its exact mktemp directory on shell exit"
+fi
+if [[ "$test_setup" != *'$(TEST_DATA_DIR_SETUP)'* ]]; then
+    fail "TEST_SETUP must establish process-wide test data isolation"
+fi
+if [[ "$verify_recipe" != *'$(TEST_DATA_DIR_SETUP)'* ]]; then
+    fail "verify must establish process-wide test data isolation before cargo"
+elif [[ "${verify_recipe%%cargo test*}" != *'$(TEST_DATA_DIR_SETUP)'* ]]; then
+    fail "verify must export its isolated data directory before the first cargo test"
+fi
+if ! grep -Fq 'export CODESCRIBE_DATA_DIR="$$CODESCRIBE_TEST_DATA_DIR_GUARD"' "$MAKEFILE"; then
+    fail "ENV_LOAD must restore the harness-owned CODESCRIBE_DATA_DIR after sourcing operator dotenv"
+fi
+
+# These are the operator targets whose direct cargo children share TEST_SETUP.
+# Naming them makes removal of the setup fail closed instead of disappearing
+# from a dynamic search together with the protection it was meant to enforce.
+for target in test test-quick test-e2e test-e2e-real test-sse test-formatting \
+              test-engine-apple-channel test-engine-candle test-all; do
+    target_recipe="$(make_target_block "$target")"
+    if [[ -z "$target_recipe" ]]; then
+        fail "$target is missing while test isolation still expects it"
+    elif [[ "${target_recipe%%cargo test*}" != *'$(TEST_SETUP)'* ]]; then
+        fail "$target must invoke TEST_SETUP before its first cargo test"
+    fi
+done
+
+swift_recipe="$(make_target_block 'test-swift')"
+if [[ "$swift_recipe" != *'test-swift: $(ENGINE_BRIDGE)'* ]]; then
+    fail "test-swift must build the canonical Apple STT bridge dependency"
+fi
+if [[ "${swift_recipe%%xcodebuild test*}" != *'$(ENGINE_BRIDGE) --phrase-restart-self-test || exit $$?'* ]]; then
+    fail "test-swift must fail-fast on the phrase-restart Swift lockstep self-test before XCTest"
+fi
+if [[ "${swift_recipe%%xcodebuild test*}" != *'$(TEST_DATA_DIR_SETUP)'* ]]; then
+    fail "test-swift must export its isolated data directory before xcodebuild test"
+fi
+
 # ---------------------------------------------------------------------------
 # Collect: verification targets, ledger rows
 # ---------------------------------------------------------------------------

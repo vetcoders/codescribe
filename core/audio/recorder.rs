@@ -62,7 +62,7 @@ use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
 use cpal::{Device, Stream, StreamConfig};
 use hound::{WavSpec, WavWriter};
 use std::collections::VecDeque;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, AtomicU32, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 use tokio::sync::mpsc;
@@ -273,6 +273,10 @@ pub struct Recorder {
     diagnostics: RecorderDiagnostics,
     /// Actual sample rate used for recording (may differ from config)
     actual_sample_rate: u32,
+    /// Last resolved input device name (empty until `start`).
+    last_input_device: String,
+    /// Native channel count of the last opened stream (1 after downmix).
+    last_native_channels: u16,
     on_data: Option<AudioCallback>,
     /// Disk spill of the full streaming take (operator decision B): survives
     /// the RAM ring cap; `None` when disabled or not a streaming session.
@@ -320,6 +324,8 @@ impl Recorder {
             last_duration: 0.0,
             diagnostics: RecorderDiagnostics::default(),
             actual_sample_rate: config.sample_rate, // Will be updated in start()
+            last_input_device: String::new(),
+            last_native_channels: 1,
             on_data: None,
             on_vad_stop: None,
             recorder_vad: None,
@@ -359,6 +365,17 @@ impl Recorder {
     /// the device stream at its native rate for compatibility.
     pub fn actual_sample_rate(&self) -> u32 {
         self.actual_sample_rate
+    }
+
+    /// Device name resolved for the last `start()`, if any.
+    pub fn last_input_device(&self) -> Option<&str> {
+        let name = self.last_input_device.trim();
+        if name.is_empty() { None } else { Some(name) }
+    }
+
+    /// Native channel count of the last opened input stream.
+    pub fn last_native_channels(&self) -> u16 {
+        self.last_native_channels.max(1)
     }
 
     /// Returns true when the recorder still has an active stream/session.
@@ -439,6 +456,7 @@ impl Recorder {
             .map(|d| d.to_string())
             .unwrap_or_else(|_| "Unknown".to_string());
         info!("Using input device: {}", device_name);
+        self.last_input_device = device_name;
 
         // Get supported config
         let supported_config = device
@@ -449,6 +467,7 @@ impl Recorder {
         // (backend will handle resampling if needed)
         let native_sample_rate = supported_config.sample_rate();
         let native_channels = supported_config.channels().max(1);
+        self.last_native_channels = native_channels;
 
         // Build stream config using native sample rate/channel count. The
         // callback downmixes interleaved native channels to mono for downstream.
@@ -1056,12 +1075,58 @@ fn write_wav_file(path: &PathBuf, samples: &[i16], sample_rate: u32, channels: u
     Ok(())
 }
 
+/// Recorded length of a WAV file in seconds, read from its header.
+///
+/// Header-only: `hound` parses the `fmt `/`data` chunk sizes and reports the
+/// frame count without decoding a single sample, so this is cheap enough to sit
+/// on a latency-sensitive stop path. `duration()` counts frames per channel,
+/// which is what "seconds of audio" means for both the mono capture path here
+/// and any multi-channel file that reaches it.
+///
+/// Returns `None` on an unreadable or truncated header and on a zero sample
+/// rate. Failure is never reported as `0.0`: a caller measuring speech density
+/// must be able to tell "I could not measure this audio" apart from "this audio
+/// is empty", because the two demand opposite decisions.
+pub fn wav_duration_secs(path: &Path) -> Option<f32> {
+    let reader = hound::WavReader::open(path).ok()?;
+    let sample_rate = reader.spec().sample_rate;
+    if sample_rate == 0 {
+        return None;
+    }
+    Some(reader.duration() as f32 / sample_rate as f32)
+}
+
 /// Recorder defaults, auto-silence gating, streaming buffer cap, and downmix.
 #[cfg(test)]
 mod tests {
     use super::*;
 
     // Note: RMS tests removed - now using Silero VAD (see vad module tests)
+
+    /// The stop-path density guard divides by this number, so it must come from
+    /// the header exactly — and a file the probe cannot parse must report `None`
+    /// rather than a plausible `0.0`, which would read as total starvation.
+    #[test]
+    fn wav_duration_secs_reads_header_and_refuses_unreadable_files() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = dir.path().join("take.wav");
+        let rate = 16_000u32;
+        // 2.5 s of mono silence: duration must be frames/rate, not file size.
+        let samples = vec![0i16; rate as usize * 5 / 2];
+        write_wav_file(&path, &samples, rate, 1).expect("write wav");
+
+        let secs = wav_duration_secs(&path).expect("written header must be readable");
+        assert!((secs - 2.5).abs() < 1e-3, "expected 2.5 s, got {secs}");
+
+        let garbage = dir.path().join("not-a-wav.bin");
+        std::fs::write(&garbage, b"definitely not RIFF").expect("write garbage");
+        assert_eq!(
+            wav_duration_secs(&garbage),
+            None,
+            "an unparseable header must not report a duration"
+        );
+        assert_eq!(wav_duration_secs(&dir.path().join("missing.wav")), None);
+    }
 
     /// Operator decision B (2026-08-10): the RAM ring caps at
     /// STREAMING_BUFFER_CAP_SECONDS, so a phone-call take longer than 5 min

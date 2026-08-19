@@ -12,6 +12,10 @@ use tokio::sync::mpsc;
 use tokio::time::{Duration, Instant};
 use tracing::{debug, error, info, warn};
 
+use crate::asr_session::recorder::{Layer1Decision, RecorderLifecycleEvents};
+use crate::audio::capture_receipt::{
+    CaptureLevelAccumulator, CapturePathMeta, emit_capture_level_receipt,
+};
 use crate::audio::chunker::{SpeechEvent, SpeechSession};
 use crate::pipeline::contracts::{
     DropKind, EngineEvent, EventSink, LayerSource, LayerSummary, TranscriptSegment,
@@ -19,7 +23,14 @@ use crate::pipeline::contracts::{
 };
 use crate::stt::scheduler::{SttLane, SttScheduler, SttTaskHandle};
 use crate::stt::tail_patcher::{
-    TailPatchConfig, TailPatchOutcome, compute_tail_patch, layered_phase,
+    TailPatchConfig, TailPatchOutcome, UnderCommit, compute_tail_patch_with_context, layered_phase,
+};
+#[cfg(test)]
+use crate::stt::tail_provider::{
+    TailEvidenceSource, TailEvidenceStability, TailProviderId, TailTimingQuality, TimedTailSegment,
+};
+use crate::stt::tail_provider::{
+    TailProviderPayload, TailProviderRequest, TailRequestIdentity, TailSampleRange,
 };
 use crate::vad;
 
@@ -122,6 +133,15 @@ pub struct SessionConfig {
     pub stream_log_path: Option<std::path::PathBuf>,
     /// VAD silence threshold for utterance boundary (None = use default).
     pub utterance_silence_sec: Option<f32>,
+    /// Injected, already-authorized Layer 1 refiner decision (C1).
+    ///
+    /// The pipeline only consumes this — construction, consent, and mode
+    /// persistence belong to the settings owner. [`Layer1Decision::Disarmed`]
+    /// is the stock product: canvas + lexicon, complete, never an error.
+    pub layer1: Layer1Decision,
+    /// Per-recording host lifecycle boundaries. Present only for a live
+    /// recorder; buffered/offline helpers have no system observer owner.
+    pub lifecycle_events: Option<RecorderLifecycleEvents>,
 }
 
 /// What happened to one enqueue attempt.
@@ -226,14 +246,51 @@ fn record_semantic_gate_drop(counter: &mut u64, quality_gate_dropped: bool, is_f
 /// `UtteranceFinal.text`: the resulting `ReplaceRange` offsets are computed
 /// against it, so a differently-trimmed copy would produce patches that land at
 /// the wrong characters. The debug assertion pins that contract in test builds.
+#[derive(Debug)]
+pub(super) struct TailPatchJobResult {
+    pub utterance_id: u64,
+    pub outcome: TailPatchOutcome,
+    pub payload: TailProviderPayload,
+}
+
+impl TailPatchJobResult {
+    pub fn into_outcome(self) -> (u64, TailPatchOutcome) {
+        (self.utterance_id, self.outcome)
+    }
+}
+
 pub(super) async fn compute_tail_patch_job(
     utterance_id: u64,
     committed_text: String,
+    neighbour_context: String,
     audio: Vec<f32>,
-    sample_rate: u32,
-    language: Option<String>,
+    request: TailProviderRequest,
     config: TailPatchConfig,
-) -> Result<(u64, TailPatchOutcome)> {
+) -> Result<TailPatchJobResult> {
+    compute_tail_patch_job_with(
+        utterance_id,
+        committed_text,
+        neighbour_context,
+        audio,
+        request,
+        config,
+        crate::stt::tail_provider::transcribe_configured,
+    )
+    .await
+}
+
+async fn compute_tail_patch_job_with<F>(
+    utterance_id: u64,
+    committed_text: String,
+    neighbour_context: String,
+    audio: Vec<f32>,
+    request: TailProviderRequest,
+    config: TailPatchConfig,
+    transcribe: F,
+) -> Result<TailPatchJobResult>
+where
+    F: FnOnce(&TailProviderRequest, &[f32]) -> Result<TailProviderPayload> + Send + 'static,
+{
     debug_assert_eq!(
         committed_text.trim(),
         committed_text,
@@ -241,15 +298,52 @@ pub(super) async fn compute_tail_patch_job(
          (single trim owner: final_text at the emit site)"
     );
     tokio::task::spawn_blocking(move || {
-        let retranscribed =
-            crate::stt::whisper_tail_patch_transcribe(&audio, sample_rate, language.as_deref())?;
-        Ok((
+        let payload = transcribe(&request, &audio)?;
+        let outcome = compute_tail_patch_with_context(
+            &committed_text,
+            &payload.text,
+            &neighbour_context,
             utterance_id,
-            compute_tail_patch(&committed_text, &retranscribed.text, utterance_id, &config),
-        ))
+            &config,
+        );
+        Ok(TailPatchJobResult {
+            utterance_id,
+            outcome,
+            payload,
+        })
     })
     .await
     .map_err(|e| anyhow!("tail patch worker task failed: {e}"))?
+}
+
+/// Stable engine-event code carrying a Layer-1 under-commit outward.
+///
+/// The stop path keys on this to require residual gap fill for a session whose
+/// live canvas is known to be starved, independently of the committed-density
+/// floor that judges the same session from the audio side.
+pub const UNDER_COMMIT_WARNING_CODE: &str = "tail_patch_under_commit";
+
+/// Build the outward escalation for an under-commit that could not be placed
+/// live.
+///
+/// Counts only — the message crosses the IPC boundary and reaches the log, and
+/// the transcript is the user's speech. A `Warning` rather than a new event
+/// variant on purpose: every sink, the IPC wire and the Swift bridge already
+/// carry it, so the escalation costs no FFI surface.
+fn under_commit_warning(under: &UnderCommit) -> EngineEvent {
+    EngineEvent::Warning {
+        code: UNDER_COMMIT_WARNING_CODE.to_string(),
+        message: format!(
+            "residual gap fill required: committed_chars={} retranscribed_chars={} \
+             committed_tokens={} retranscribed_tokens={} commit_ratio={:.2} gap_appends={}",
+            under.committed_chars,
+            under.retranscribed_chars,
+            under.committed_tokens,
+            under.retranscribed_tokens,
+            under.commit_ratio,
+            under.appends.len(),
+        ),
+    }
 }
 
 /// Forward a tail-patch job's outcome to the sink and report how many
@@ -285,8 +379,47 @@ pub(super) fn emit_tail_patch_result(
             debug!(utterance_id, "Tail patch found no changes");
             0
         }
-        Ok((utterance_id, TailPatchOutcome::Skipped { reason })) => {
-            debug!(utterance_id, reason, "Tail patch skipped");
+        Ok((utterance_id, TailPatchOutcome::UnderCommit(under))) => {
+            let mut emitted = 0u64;
+            for event in &under.appends {
+                if matches!(
+                    event,
+                    EngineEvent::ReplaceRange {
+                        source: LayerSource::TailPatch,
+                        ..
+                    }
+                ) {
+                    emitted = emitted.saturating_add(1);
+                }
+                event_sink.on_event(event);
+            }
+            info!(
+                utterance_id,
+                reason = under.reason(),
+                committed_chars = under.committed_chars,
+                retranscribed_chars = under.retranscribed_chars,
+                committed_tokens = under.committed_tokens,
+                retranscribed_tokens = under.retranscribed_tokens,
+                gap_appends = emitted,
+                residual_required = under.residual_required,
+                "Layer 1 under-commit"
+            );
+            if under.residual_required {
+                event_sink.on_event(&under_commit_warning(&under));
+            }
+            emitted
+        }
+        Ok((utterance_id, TailPatchOutcome::Skipped { code, reason })) => {
+            // INFO, not debug: a skipped patch is text Whisper had in hand and
+            // the canvas never received. The counts belong to the receipt the
+            // patcher already logs; this line proves the sink saw the same
+            // verdict for this utterance.
+            info!(
+                utterance_id,
+                code = code.as_str(),
+                reason,
+                "Tail patch skipped"
+            );
             0
         }
         Err(e) => {
@@ -317,6 +450,39 @@ pub(super) fn emit_session_finalised(
             ..LayerSummary::default()
         },
     });
+}
+
+/// Per-session skip count at which a zero-application session is an alarm.
+///
+/// One or two skips with nothing applied can be honest divergence (noise, a
+/// throat-clear window). Three computed corrections all rejected is the gate
+/// eating the lane's entire output — the 2026-08-12 audit found 116 skips and
+/// 0 applied patches across the log's whole history, and not one line said so
+/// out loud.
+pub(super) const TAIL_PATCH_STARVED_MIN_SKIPS: u64 = 3;
+
+/// Whether this session's Layer 1 lane was starved: corrections were computed
+/// and every single one was rejected.
+pub(super) fn tail_patch_lane_starved(applied: u64, skipped: u64) -> bool {
+    applied == 0 && skipped >= TAIL_PATCH_STARVED_MIN_SKIPS
+}
+
+/// One session-level receipt for the Layer 1 lane, emitted at finalise.
+///
+/// The per-utterance skip receipts diagnose a single verdict; this line
+/// diagnoses the lane. A starved session — Whisper burned inference on every
+/// sealed utterance and the canvas received none of it — is a WARN, because
+/// that is the lane not doing its one job, silently.
+pub(super) fn log_tail_patch_session_receipt(applied: u64, skipped: u64) {
+    if tail_patch_lane_starved(applied, skipped) {
+        warn!(
+            applied,
+            skipped,
+            "tail_patch_lane_starved: every computed Whisper correction this session was rejected"
+        );
+    } else if applied > 0 || skipped > 0 {
+        info!(applied, skipped, "tail_patch_session_receipt");
+    }
 }
 
 // ── Unified transcription session (event-based) ─────────────────────────────
@@ -373,10 +539,25 @@ pub(crate) async fn vad_transcription_session(
         language,
         stream_log_path,
         utterance_silence_sec,
+        layer1,
+        lifecycle_events: _,
     } = config;
+
+    // C1 wires the live Layer 1 lane on the Apple progressive path only. On
+    // this canvas an armed decision is disarmed explicitly: a refiner that
+    // cannot run is a missing improvement, never an error, and never a reason
+    // to load anything heavier.
+    if layer1.is_armed() {
+        warn!(
+            "Layer 1 live lane is not wired on the VAD/scheduler path; \
+             proceeding canvas + lexicon"
+        );
+    }
+    drop(layer1);
 
     info!("Transcription session started (event-based pipeline)");
     let session_id = uuid::Uuid::new_v4().to_string();
+    let mut capture_level = CaptureLevelAccumulator::new();
 
     let mut session = if let Some(sec) = utterance_silence_sec {
         SpeechSession::new_utterance_with_silence(sample_rate, sec)
@@ -404,6 +585,7 @@ pub(crate) async fn vad_transcription_session(
     let mut filtered_empty_drops: u64 = 0;
     let mut corrections_applied: u64 = 0;
     let mut tail_patch_replacements: u64 = 0;
+    let mut tail_patch_skips: u64 = 0;
     let mut partial_telemetry = PartialPassTelemetry::default();
     let mut vad_started = false;
     let mut speech_activity_observed = false;
@@ -477,7 +659,9 @@ pub(crate) async fn vad_transcription_session(
         "Phase 1 inference pipeline configured"
     );
     let mut inference_pipeline = FuturesOrdered::new();
-    let mut tail_patch_pipeline = FuturesUnordered::new();
+    let mut tail_patch_pipeline: FuturesUnordered<
+        futures_util::future::BoxFuture<'static, Result<TailPatchJobResult>>,
+    > = FuturesUnordered::new();
 
     // Phase 2 (buffered correction) — request tracked for stale guards.
     let mut correction_in_flight: Option<SttTaskHandle> = None;
@@ -646,6 +830,7 @@ pub(crate) async fn vad_transcription_session(
             maybe_data = chunk_receiver.recv(), if !audio_closed => {
                 match maybe_data {
                     Some(data) => {
+                        capture_level.push_samples(&data);
                         for event in session.feed(&data, sample_rate) {
                             let speech_vad_samples = session.take_event_speech_vad_samples();
                             let max_speech_prob = session.segment_speech_prob();
@@ -1047,6 +1232,12 @@ pub(crate) async fn vad_transcription_session(
             // Drain the pipeline. FuturesOrdered guarantees results arrive in the order submitted.
             // This is critical for timestamp calculation and text accumulation.
             Some(result) = tail_patch_pipeline.next() => {
+                if matches!(&result, Ok(job) if matches!(job.outcome, TailPatchOutcome::Skipped { .. }))
+                    || result.is_err()
+                {
+                    tail_patch_skips = tail_patch_skips.saturating_add(1);
+                }
+                let result = result.map(TailPatchJobResult::into_outcome);
                 tail_patch_replacements = tail_patch_replacements
                     .saturating_add(emit_tail_patch_result(event_sink.as_ref(), result));
             }
@@ -1278,14 +1469,35 @@ pub(crate) async fn vad_transcription_session(
                                 if tail_patch_enabled
                                     && let Some(audio) = item.tail_patch_audio.take()
                                 {
-                                    tail_patch_pipeline.push(compute_tail_patch_job(
+                                    let sample_start = ((utterance_start_s.max(0.0) as f64)
+                                        * output_sample_rate as f64)
+                                        .round() as u64;
+                                    let sample_end = sample_start.saturating_add(audio.len() as u64);
+                                    let request = TailProviderRequest {
+                                        identity: TailRequestIdentity {
+                                            request_id: utterance_id,
+                                            range: TailSampleRange {
+                                                session: session_id.clone(),
+                                                capture_epoch: 0,
+                                                sample_start,
+                                                sample_end,
+                                            },
+                                        },
+                                        sample_rate: output_sample_rate,
+                                        language: pipeline.language.clone(),
+                                    };
+                                    tail_patch_pipeline.push(Box::pin(compute_tail_patch_job(
                                         utterance_id,
                                         final_text,
+                                        // VAD lane: no sealed-prefix accumulator on this
+                                        // path, so the anti-duplication check falls back
+                                        // to the utterance's own canvas (pre-2026-08-14
+                                        // behaviour, no regression).
+                                        String::new(),
                                         audio,
-                                        output_sample_rate,
-                                        pipeline.language.clone(),
+                                        request,
                                         tail_patch_config,
-                                    ));
+                                    )));
                                 }
                             } else {
                                 utterance_segments.clear();
@@ -1464,6 +1676,11 @@ pub(crate) async fn vad_transcription_session(
         partial_dropped_count: partial_telemetry.dropped_count,
     });
 
+    log_tail_patch_session_receipt(tail_patch_replacements, tail_patch_skips);
+    emit_capture_level_receipt(
+        event_sink.as_ref(),
+        &capture_level.finalize(CapturePathMeta::resolve(sample_rate, 1, None)),
+    );
     emit_session_finalised(event_sink.as_ref(), session_id, tail_patch_replacements);
 
     if dropped_utterances > 0 {
@@ -1637,6 +1854,10 @@ pub async fn transcribe_buffered_samples(
             language,
             stream_log_path: None,
             utterance_silence_sec: None,
+            // Offline replay harness: Layer 1 arming is a live-recording
+            // decision owned elsewhere.
+            layer1: Layer1Decision::Disarmed,
+            lifecycle_events: None,
         },
     ));
 
@@ -1665,30 +1886,55 @@ pub async fn collect_buffered_engine_events(
     sample_rate: u32,
     language: Option<String>,
 ) -> Result<Vec<EngineEvent>> {
-    if samples.is_empty() {
-        return Ok(Vec::new());
-    }
-
-    let chunk_size = ((sample_rate as f32) * 0.1).round().max(1.0) as usize;
-
-    let (tx, rx) = mpsc::channel::<Vec<f32>>(8);
-    let collector = Arc::new(SessionEventCollector::new());
-    let event_sink: Arc<dyn EventSink> = collector.clone();
-    let session = tokio::spawn(transcription_session(
-        rx,
-        event_sink,
+    collect_buffered_engine_events_with_config(
+        samples,
         SessionConfig {
             sample_rate,
             language,
             stream_log_path: None,
             utterance_silence_sec: None,
+            // Offline replay harness: Layer 1 arming is a live-recording
+            // decision owned elsewhere.
+            layer1: Layer1Decision::Disarmed,
+            lifecycle_events: None,
         },
-    ));
+    )
+    .await
+}
+
+/// Run buffered PCM through an explicitly supplied production session config.
+///
+/// Unlike [`collect_buffered_engine_events`], this seam never invents or
+/// hard-codes a Layer 1 decision. The recording owner must supply the complete
+/// [`SessionConfig`], which makes this suitable for production-owned replay
+/// witnesses while preserving the exact `transcription_session` implementation
+/// used by live capture.
+pub async fn collect_buffered_engine_events_with_config(
+    samples: &[f32],
+    config: SessionConfig,
+) -> Result<Vec<EngineEvent>> {
+    if samples.is_empty() {
+        return Ok(Vec::new());
+    }
+
+    let chunk_size = ((config.sample_rate as f32) * 0.1).round().max(1.0) as usize;
+    let (tx, rx) = mpsc::channel::<Vec<f32>>(8);
+    let collector = Arc::new(SessionEventCollector::new());
+    let event_sink: Arc<dyn EventSink> = collector.clone();
+    let session = tokio::spawn(transcription_session(rx, event_sink, config));
 
     for chunk in samples.chunks(chunk_size) {
         if tx.send(chunk.to_vec()).await.is_err() {
             return Err(anyhow!("Transcription session dropped channel"));
         }
+        // `transcription_session` consumes a live capture stream. Preserve
+        // that temporal contract for replay: flooding an entire recording in
+        // one scheduler tick advances `audio_secs` ahead of Apple's result
+        // timestamps and turns otherwise valid phrase windows into unresolved
+        // seals. A 100 ms packet therefore occupies 100 ms of wall time, just
+        // like the production callback cadence this seam replaces at its only
+        // unavoidable boundary.
+        tokio::time::sleep(Duration::from_millis(100)).await;
     }
     drop(tx);
 
@@ -1719,6 +1965,72 @@ mod session_tests {
 
         record_semantic_gate_drop(&mut drops, true, true);
         assert_eq!(drops, 1);
+    }
+
+    #[tokio::test]
+    async fn w13_provenance_survives_tail_patch_job() {
+        let range = TailSampleRange {
+            session: "w13-replay-191351".to_string(),
+            capture_epoch: 4,
+            sample_start: 48_000,
+            sample_end: 48_320,
+        };
+        let identity = TailRequestIdentity {
+            request_id: 73,
+            range: range.clone(),
+        };
+        let evidence = crate::stt::tail_provider::TailProviderEvidence {
+            source: TailEvidenceSource::Whisper,
+            revision: Some("fixture-r1".to_string()),
+            stability: TailEvidenceStability::Final,
+            timing_quality: TailTimingQuality::ExactSampleRange,
+            avg_logprob: Some(-0.21),
+        };
+        let payload = TailProviderPayload {
+            identity: identity.clone(),
+            text: "ala ma kota".to_string(),
+            segments: vec![TimedTailSegment {
+                text: "kota".to_string(),
+                range: TailSampleRange {
+                    sample_start: 48_160,
+                    sample_end: 48_300,
+                    ..range.clone()
+                },
+            }],
+            avg_logprob: Some(-0.21),
+            compression_ratio: Some(1.03),
+            quality_gate_dropped: false,
+            provider_id: TailProviderId::Fake,
+            elapsed_ms: 7,
+            evidence: evidence.clone(),
+        };
+        let request = TailProviderRequest {
+            identity,
+            sample_rate: 16_000,
+            language: Some("pl-PL".to_string()),
+        };
+
+        let job = compute_tail_patch_job_with(
+            73,
+            "ala ma kota".to_string(),
+            String::new(),
+            vec![0.0; 320],
+            request,
+            TailPatchConfig::default(),
+            move |request, pcm| {
+                request.validate_pcm(pcm)?;
+                Ok(payload)
+            },
+        )
+        .await
+        .expect("typed fake tail job");
+
+        assert!(matches!(job.outcome, TailPatchOutcome::NoChange));
+        assert_eq!(job.payload.identity.range, range);
+        assert_eq!(job.payload.segments[0].range.sample_start, 48_160);
+        assert_eq!(job.payload.segments[0].range.sample_end, 48_300);
+        assert_eq!(job.payload.evidence, evidence);
+        assert_eq!(job.payload.provider_id, TailProviderId::Fake);
     }
 
     #[test]
@@ -1752,6 +2064,95 @@ mod session_tests {
         ));
     }
 
+    /// Build an under-commit outcome with `appends` gap-appends and the given
+    /// escalation, without needing Whisper or a diff.
+    fn under_commit_fixture(appends: usize, residual_required: bool) -> UnderCommit {
+        UnderCommit {
+            appends: (0..appends)
+                .map(|idx| EngineEvent::ReplaceRange {
+                    utterance_id: 7,
+                    start: 11 + idx,
+                    end: 11 + idx,
+                    text: " odzyskane".to_string(),
+                    source: LayerSource::TailPatch,
+                })
+                .collect(),
+            residual_required,
+            committed_tokens: 3,
+            retranscribed_tokens: 12,
+            committed_chars: 21,
+            retranscribed_chars: 84,
+            commit_ratio: 0.25,
+        }
+    }
+
+    #[test]
+    /// W-C: recovered gap-appends reach the sink and are counted as Layer 1
+    /// work — the outcome the bounded cap used to discard in silence.
+    fn under_commit_gap_appends_reach_the_sink_and_count() {
+        let collector = SessionEventCollector::new();
+        let emitted = emit_tail_patch_result(
+            &collector,
+            Ok((
+                7,
+                TailPatchOutcome::UnderCommit(under_commit_fixture(1, false)),
+            )),
+        );
+
+        assert_eq!(emitted, 1, "an appended gap is Layer 1 work, not a skip");
+        let events = collector.events();
+        assert!(matches!(
+            events.as_slice(),
+            [EngineEvent::ReplaceRange {
+                start: 11,
+                end: 11,
+                source: LayerSource::TailPatch,
+                ..
+            }]
+        ));
+        assert!(
+            !events
+                .iter()
+                .any(|e| matches!(e, EngineEvent::Warning { .. })),
+            "nothing is owed to the stop path when everything landed live"
+        );
+    }
+
+    #[test]
+    /// W-C: an under-commit that could place nothing escalates outward instead
+    /// of leaving the stop path to call the starved canvas complete.
+    fn under_commit_without_safe_anchor_emits_residual_escalation() {
+        let collector = SessionEventCollector::new();
+        let emitted = emit_tail_patch_result(
+            &collector,
+            Ok((
+                7,
+                TailPatchOutcome::UnderCommit(under_commit_fixture(0, true)),
+            )),
+        );
+
+        assert_eq!(emitted, 0);
+        let events = collector.events();
+        let warning = events
+            .iter()
+            .find_map(|e| match e {
+                EngineEvent::Warning { code, message } if code == UNDER_COMMIT_WARNING_CODE => {
+                    Some(message.clone())
+                }
+                _ => None,
+            })
+            .expect("residual escalation must be emitted");
+        // Counts travel; transcript text never does.
+        assert!(warning.contains("committed_chars=21"));
+        assert!(warning.contains("retranscribed_chars=84"));
+        assert!(
+            !events
+                .iter()
+                .any(|e| matches!(e, EngineEvent::ReplaceRange { .. })),
+            "no anchor was safe, so no canvas may be touched"
+        );
+    }
+
     #[test]
     /// Trimmed final_text is the sole offset baseline for tail-patch apply.
     fn final_text_trim_contract_keeps_tail_patch_offsets_aligned() {
@@ -1763,7 +2164,7 @@ mod session_tests {
 
         // Retranscribed side mimics real Whisper output shape: leading/trailing
         // whitespace and a newline. It must never skew offsets or get skipped.
-        let outcome = compute_tail_patch(
+        let outcome = crate::stt::tail_patcher::compute_tail_patch(
             &final_text,
             " ala ma psa \n",
             1,
@@ -1802,6 +2203,25 @@ mod session_tests {
                 && layer_summary.final_bam_replacements == 0
                 && layer_summary.annotations_inserted == 0
         ));
+    }
+
+    #[test]
+    /// The starvation verdict: zero applied with the skip floor reached is the
+    /// lane not doing its job. One landed patch — even against 116 skips —
+    /// proves the lane alive; a skip or two with nothing applied is honest
+    /// divergence, not starvation.
+    fn tail_patch_starvation_fires_only_on_all_rejected_sessions() {
+        assert!(tail_patch_lane_starved(0, TAIL_PATCH_STARVED_MIN_SKIPS));
+        assert!(tail_patch_lane_starved(0, 116));
+        assert!(!tail_patch_lane_starved(1, 116), "one landed patch = alive");
+        assert!(
+            !tail_patch_lane_starved(0, TAIL_PATCH_STARVED_MIN_SKIPS - 1),
+            "a couple of honest divergences is not starvation"
+        );
+        assert!(
+            !tail_patch_lane_starved(0, 0),
+            "an idle lane is not starved"
+        );
     }
 
     #[test]

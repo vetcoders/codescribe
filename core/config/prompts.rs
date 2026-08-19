@@ -391,6 +391,36 @@ pub fn write_prompt_bytes(
     content: &[u8],
     reason: PromptWriteReason,
 ) -> std::io::Result<()> {
+    let _data_io = super::storage_reset::begin_app_data_io().map_err(std::io::Error::other)?;
+    write_prompt_bytes_unfenced(kind, content, reason)
+}
+
+/// Restore bytes captured by the reset owner after the live root has moved.
+///
+/// This is the sole write allowed through the process-lifetime reset latch.
+/// Possessing a reset guard is insufficient until the destructive phase has
+/// actually been armed, so ordinary callers cannot use this as a fence bypass.
+pub fn write_prompt_bytes_during_reset(
+    reset: &super::storage_reset::AppDataResetGuard,
+    kind: PromptKind,
+    content: &[u8],
+    reason: PromptWriteReason,
+) -> std::io::Result<()> {
+    if !reset.permits_preserved_restore() {
+        return Err(std::io::Error::other(
+            "preserved prompt restore requires a destructively latched reset",
+        ));
+    }
+    write_prompt_bytes_unfenced(kind, content, reason)
+}
+
+/// Raw prompt transaction used only after normal I/O admission or by the
+/// token-bearing reset restore path above.
+fn write_prompt_bytes_unfenced(
+    kind: PromptKind,
+    content: &[u8],
+    reason: PromptWriteReason,
+) -> std::io::Result<()> {
     write_prompt_at_with_rename(
         &prompts_dir().join(kind.filename()),
         kind,

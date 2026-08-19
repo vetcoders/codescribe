@@ -8,6 +8,7 @@
 use std::time::Duration;
 
 use reqwest::StatusCode;
+use reqwest::blocking::multipart::{Form, Part};
 use reqwest::blocking::{Client, Response};
 use serde_json::json;
 
@@ -98,14 +99,6 @@ pub fn probe_api_key_liveness(account: &str) -> ApiKeyLivenessResult {
         );
     };
 
-    if account == "STT_API_KEY" {
-        return ApiKeyLivenessResult::new(
-            account,
-            ApiKeyLivenessStatus::Unsupported,
-            "no cheap liveness probe is available for this STT key",
-        );
-    }
-
     let client = match Client::builder()
         .timeout(PROBE_TIMEOUT)
         .connect_timeout(PROBE_TIMEOUT)
@@ -120,6 +113,10 @@ pub fn probe_api_key_liveness(account: &str) -> ApiKeyLivenessResult {
             );
         }
     };
+
+    if account == "STT_API_KEY" {
+        return probe_stt_key(&client, &config, account, &api_key);
+    }
 
     if account == "GITHUB_TOKEN" {
         return probe_github_token(&client, account, &api_key);
@@ -152,6 +149,66 @@ pub fn probe_api_key_liveness(account: &str) -> ApiKeyLivenessResult {
         }
         WireFamily::AnthropicMessages => probe_anthropic_key(&client, &config, account, &api_key),
     }
+}
+
+/// Probe the configured multipart STT slot with 100 ms of synthetic silence.
+/// The response body is never surfaced; only auth/quota/transport status is.
+fn probe_stt_key(
+    client: &Client,
+    config: &Config,
+    account: &str,
+    api_key: &str,
+) -> ApiKeyLivenessResult {
+    let endpoint = config
+        .stt_endpoint
+        .clone()
+        .filter(|value| !value.trim().is_empty())
+        .unwrap_or_else(|| "http://127.0.0.1:8000/v1/audio/transcriptions".to_string());
+    if crate::stt::tail_provider::validate_remote_endpoint(&endpoint).is_err() {
+        return ApiKeyLivenessResult::new(
+            account,
+            ApiKeyLivenessStatus::Network,
+            "configured STT endpoint is invalid or insecure",
+        )
+        .with_probed_endpoint(endpoint);
+    }
+    let silence = [0.0_f32; 1_600];
+    let wav = match crate::stt::tail_provider::pcm16_wav(&silence, 16_000) {
+        Ok(wav) => wav,
+        Err(_) => {
+            return ApiKeyLivenessResult::new(
+                account,
+                ApiKeyLivenessStatus::Network,
+                "could not build the STT liveness probe",
+            )
+            .with_probed_endpoint(endpoint);
+        }
+    };
+    let file = match Part::bytes(wav)
+        .file_name("codescribe-key-probe.wav")
+        .mime_str("audio/wav")
+    {
+        Ok(file) => file,
+        Err(_) => {
+            return ApiKeyLivenessResult::new(
+                account,
+                ApiKeyLivenessStatus::Network,
+                "could not build the STT liveness probe",
+            )
+            .with_probed_endpoint(endpoint);
+        }
+    };
+    let form = Form::new()
+        .part("file", file)
+        .text("model", "whisper-1")
+        .text("language", "pl")
+        .text("response_format", "json");
+    let response = client
+        .post(&endpoint)
+        .header("x-api-key", api_key)
+        .multipart(form)
+        .send();
+    response_result(account, endpoint, response)
 }
 
 /// Classify one provider HTTP response. This is the tested contract; network
@@ -395,6 +452,46 @@ mod tests {
             server.join().expect("probe server thread"),
             "POST /v1/responses HTTP/1.1"
         );
+    }
+
+    /// The STT slot has a real multipart probe instead of the historical
+    /// Unsupported verdict, and reports the endpoint that answered.
+    #[test]
+    fn stt_probe_uses_the_multipart_endpoint() {
+        let listener = TcpListener::bind("127.0.0.1:0").expect("bind STT probe server");
+        let address = listener.local_addr().expect("STT probe address");
+        let endpoint = format!("http://{address}/v1/audio/transcriptions");
+        let expected_endpoint = endpoint.clone();
+        let server = thread::spawn(move || {
+            let (mut stream, _) = listener.accept().expect("accept STT probe request");
+            let mut buffer = [0_u8; 8192];
+            let bytes_read = stream.read(&mut buffer).expect("read STT probe request");
+            stream
+                .write_all(
+                    b"HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: 11\r\nConnection: close\r\n\r\n{\"text\":\"\"}",
+                )
+                .expect("write STT probe response");
+            String::from_utf8_lossy(&buffer[..bytes_read]).to_string()
+        });
+        let client = Client::builder()
+            .timeout(PROBE_TIMEOUT)
+            .connect_timeout(PROBE_TIMEOUT)
+            .build()
+            .expect("build STT probe client");
+        let config = Config {
+            stt_endpoint: Some(endpoint),
+            ..Config::default()
+        };
+        let result = probe_stt_key(&client, &config, "STT_API_KEY", "test-key");
+        assert_eq!(result.status, ApiKeyLivenessStatus::Ok);
+        assert_eq!(
+            result.probed_endpoint.as_deref(),
+            Some(expected_endpoint.as_str())
+        );
+        let request = server.join().expect("STT probe server");
+        assert!(request.starts_with("POST /v1/audio/transcriptions HTTP/1.1"));
+        assert!(request.to_ascii_lowercase().contains("x-api-key: test-key"));
+        assert!(request.contains("codescribe-key-probe.wav"));
     }
 
     /// 2xx means the provider accepted the key and returned a usable response.

@@ -194,6 +194,17 @@ impl DeferredInsertShortcut {
     pub fn is_enabled(self) -> bool {
         !matches!(self, Self::Disabled)
     }
+
+    /// Canonical wire identifier — the exact string [`FromStr`] round-trips,
+    /// used when persisting the chord into settings.json.
+    pub fn wire_id(self) -> &'static str {
+        match self {
+            Self::Disabled => "disabled",
+            Self::CommandOptionV => "command_option_v",
+            Self::CommandShiftV => "command_shift_v",
+            Self::CommandControlV => "command_control_v",
+        }
+    }
 }
 
 impl FromStr for DeferredInsertShortcut {

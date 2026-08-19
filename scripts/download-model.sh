@@ -17,7 +17,10 @@ set -euo pipefail
 ROOT_DIR="$(cd "$(dirname "$0")/.." && pwd)"
 
 # Configuration
-DEFAULT_REPO="LibraxisAI/whisper-large-v3-turbo-mlx-q8"
+DEFAULT_REPO="mlx-community/whisper-large-v3-turbo"
+# Companion source for tokenizer.json + mel_filters.npz, which the default
+# repo does not ship (both files are quantization-independent).
+COMPANION_REPO="LibraxisAI/whisper-large-v3-turbo-mlx-q8"
 MODEL_REPO="${CODESCRIBE_EMBED_MODEL:-$DEFAULT_REPO}"
 
 # If CODESCRIBE_EMBED_MODEL points to a local path, skip download.
@@ -81,6 +84,15 @@ echo "  This may take a few minutes..."
 echo ""
 
 "$HF_BIN" download "$MODEL_REPO"
+
+# The default repo ships only config.json + weights; pull the two
+# quantization-independent companion files from the companion repo so the
+# cache holds everything a complete model dir needs.
+if [[ "$MODEL_REPO" == "$DEFAULT_REPO" ]]; then
+    echo ""
+    echo "▶ Fetching companion files (tokenizer.json, mel_filters.npz)..."
+    "$HF_BIN" download "$COMPANION_REPO" tokenizer.json mel_filters.npz
+fi
 
 echo ""
 echo "═══════════════════════════════════════════════════════════"

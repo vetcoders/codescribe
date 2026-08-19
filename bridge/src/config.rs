@@ -17,9 +17,10 @@ use std::sync::{Mutex, Once, OnceLock};
 use chrono::{DateTime, SecondsFormat, Utc};
 use codescribe_core::config::keychain::{KEYCHAIN_ACCOUNTS, delete_key, save_key};
 use codescribe_core::config::{
-    Config, DEFAULT_ASSISTIVE_PROMPT, DEFAULT_FORMATTING_PROMPT, FormattingPolicy, PromptKind,
-    PromptSnapshot, PromptWriteReason, UserSettings, prompt_snapshot, prompts, reset_to_defaults,
-    restore_prompt_to_default, write_prompt, write_prompt_bytes,
+    AppDataResetGuard, Config, DEFAULT_ASSISTIVE_PROMPT, DEFAULT_FORMATTING_PROMPT,
+    FormattingPolicy, PromptKind, PromptSnapshot, PromptWriteReason, UserSettings,
+    begin_app_data_reset, prompt_snapshot, prompts, reset_to_defaults, restore_prompt_to_default,
+    write_prompt, write_prompt_bytes_during_reset,
 };
 use codescribe_core::llm::account_auth;
 use codescribe_core::llm::key_liveness::{
@@ -33,6 +34,24 @@ use codescribe_core::llm::provider::{ALL_PROVIDERS, ProviderKind};
 use directories::BaseDirs;
 
 use crate::{CsError, CsLanguage};
+
+/// Stable cross-FFI marker: Swift must relaunch even though reset returned an
+/// error, because at least one app-data root has already moved and the Rust
+/// process fence is permanently latched.
+const RESET_RELAUNCH_REQUIRED_MARKER: &str = "CODESCRIBE_RESET_RELAUNCH_REQUIRED";
+
+/// Preserve the ordinary error contract before the destructive boundary, but
+/// mark every post-boundary error so the host cannot leave a half-reset,
+/// permanently fenced process running.
+fn reset_error(reset: &AppDataResetGuard, message: impl Into<String>) -> CsError {
+    let message = message.into();
+    let msg = if reset.relaunch_required() {
+        format!("{RESET_RELAUNCH_REQUIRED_MARKER}: {message}")
+    } else {
+        message
+    };
+    CsError::Config { msg }
+}
 
 /// Full settings snapshot pushed to the Swift Settings UI. Combines real
 /// `Config` struct fields (settings.json / .env / defaults already merged by
@@ -51,6 +70,10 @@ pub struct CsSettings {
     pub hold_start_delay_ms: u64,
     pub double_tap_interval_ms: u64,
     pub toggle_silence_sec: f32,
+    /// Deferred-insert chord (`DeferredInsertShortcut::wire_id()`), sourced
+    /// from the canonical merged config snapshot. `"disabled"` is the
+    /// product default when no persisted choice exists.
+    pub deferred_insert_shortcut: String,
     // ── Language ──
     pub whisper_language: CsLanguage,
     // ── AI / formatting ──
@@ -479,6 +502,7 @@ impl CodescribeConfig {
             hold_start_delay_ms: config.hold_start_delay_ms,
             double_tap_interval_ms: config.double_tap_interval_ms,
             toggle_silence_sec: config.toggle_silence_sec,
+            deferred_insert_shortcut: config.deferred_insert_shortcut.wire_id().to_string(),
             whisper_language: CsLanguage::from(config.whisper_language),
             ai_formatting_enabled: config.ai_formatting_enabled,
             transcript_send_mode: config.transcript_send_mode.as_str().to_string(),
@@ -1224,6 +1248,9 @@ impl CodescribeConfig {
     /// following symlinks. UserDefaults are cleared by the Swift caller before
     /// relaunch; TCC grants remain untouched.
     pub fn reset_app_data(&self, include_keys: bool, include_prompts: bool) -> Result<(), CsError> {
+        let mut reset_guard = begin_app_data_reset().map_err(|error| CsError::Config {
+            msg: format!("cannot reset app data: {error}"),
+        })?;
         let dirs = app_data_dirs();
         let preview = reset_preview_for_dirs(&dirs);
         let preserved_prompts = if include_prompts {
@@ -1251,34 +1278,47 @@ impl CodescribeConfig {
             include_keys,
             include_prompts,
             preserved_prompt_files: preserved_prompts.len(),
+            error: None,
+            failed_source: None,
+            failed_destination: None,
         })
         .map_err(|error| CsError::Config {
             msg: format!("failed to append reset audit log: {error}"),
         })?;
 
-        let moved_paths =
-            match move_reset_dirs_to_destination(&dirs, &reset_destination, &trash_root) {
-                Ok(moved_paths) => moved_paths,
-                Err(error) => {
-                    let _ = append_reset_audit(&ResetAuditEvent {
-                        audit_path: &audit_path,
-                        timestamp: &now,
-                        status: "move_failed",
-                        source_paths: &dirs,
-                        moved_paths: &[],
-                        trash_path: &reset_destination,
-                        preview: &preview,
-                        include_keys,
-                        include_prompts,
-                        preserved_prompt_files: preserved_prompts.len(),
-                    });
-                    return Err(CsError::Config {
-                        msg: format!("failed to move app data to Trash: {error}"),
-                    });
-                }
-            };
+        let moved_paths = match move_reset_dirs_to_destination(
+            &mut reset_guard,
+            &dirs,
+            &reset_destination,
+            &trash_root,
+        ) {
+            Ok(moved_paths) => moved_paths,
+            Err(failure) => {
+                let error = failure.to_string();
+                let _ = append_reset_audit(&ResetAuditEvent {
+                    audit_path: &audit_path,
+                    timestamp: &now,
+                    status: "move_failed",
+                    source_paths: &dirs,
+                    moved_paths: &failure.moved_paths,
+                    trash_path: &reset_destination,
+                    preview: &preview,
+                    include_keys,
+                    include_prompts,
+                    preserved_prompt_files: preserved_prompts.len(),
+                    error: Some(&error),
+                    failed_source: Some(&failure.failed_source),
+                    failed_destination: Some(&failure.failed_destination),
+                });
+                return Err(reset_error(
+                    &reset_guard,
+                    format!("failed to move app data to Trash: {error}"),
+                ));
+            }
+        };
 
-        if let Err(error) = restore_base_prompts(&preserved_prompts) {
+        if let Err(error) = restore_base_prompts(&reset_guard, &preserved_prompts) {
+            let error_message = error.to_string();
             let _ = append_reset_audit(&ResetAuditEvent {
                 audit_path: &audit_path,
                 timestamp: &now,
@@ -1290,19 +1330,24 @@ impl CodescribeConfig {
                 include_keys,
                 include_prompts,
                 preserved_prompt_files: preserved_prompts.len(),
+                error: Some(&error_message),
+                failed_source: None,
+                failed_destination: None,
             });
-            return Err(CsError::Config {
-                msg: format!("app data moved to Trash but base prompt restoration failed: {error}"),
-            });
+            return Err(reset_error(
+                &reset_guard,
+                format!("app data moved to Trash but base prompt restoration failed: {error}"),
+            ));
         }
 
         let key_error = if include_keys {
             let mut failure = None;
             for account in KEYCHAIN_ACCOUNTS {
                 if let Err(error) = delete_key(account) {
-                    failure = Some(CsError::Config {
-                        msg: format!("failed to remove keychain key {account}: {error}"),
-                    });
+                    failure = Some(reset_error(
+                        &reset_guard,
+                        format!("failed to remove keychain key {account}: {error}"),
+                    ));
                     break;
                 }
             }
@@ -1310,6 +1355,7 @@ impl CodescribeConfig {
         } else {
             None
         };
+        let key_error_message = key_error.as_ref().map(ToString::to_string);
 
         append_reset_audit(&ResetAuditEvent {
             audit_path: &audit_path,
@@ -1326,9 +1372,15 @@ impl CodescribeConfig {
             include_keys,
             include_prompts,
             preserved_prompt_files: preserved_prompts.len(),
+            error: key_error_message.as_deref(),
+            failed_source: None,
+            failed_destination: None,
         })
-        .map_err(|error| CsError::Config {
-            msg: format!("failed to append reset audit log: {error}"),
+        .map_err(|error| {
+            reset_error(
+                &reset_guard,
+                format!("failed to append reset audit log: {error}"),
+            )
         })?;
 
         if let Some(error) = key_error {
@@ -1386,9 +1438,13 @@ fn capture_base_prompts() -> std::io::Result<Vec<PreservedPrompt>> {
 /// recreating the prompts directory the reset just removed. Tagged with
 /// `AppResetPreservation` so the prompt audit distinguishes a restore from a
 /// user edit.
-fn restore_base_prompts(prompts: &[PreservedPrompt]) -> std::io::Result<()> {
+fn restore_base_prompts(
+    reset: &AppDataResetGuard,
+    prompts: &[PreservedPrompt],
+) -> std::io::Result<()> {
     for prompt in prompts {
-        write_prompt_bytes(
+        write_prompt_bytes_during_reset(
+            reset,
             prompt.kind,
             &prompt.bytes,
             PromptWriteReason::AppResetPreservation,
@@ -1646,28 +1702,104 @@ fn create_reset_destination(trash_root: &Path, now: &DateTime<Utc>) -> std::io::
     Ok(reset_destination)
 }
 
+/// Structured partial-progress failure from a multi-root reset. The external
+/// audit must retain every root that already moved plus the exact root whose
+/// move failed; reporting `moved_paths=[]` after a partial move is false
+/// recovery guidance.
+#[derive(Debug)]
+struct ResetMoveFailure {
+    error: std::io::Error,
+    moved_paths: Vec<(PathBuf, PathBuf)>,
+    failed_source: PathBuf,
+    failed_destination: PathBuf,
+}
+
+impl std::fmt::Display for ResetMoveFailure {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            formatter,
+            "{} -> {} failed after {} completed move(s): {}",
+            self.failed_source.display(),
+            self.failed_destination.display(),
+            self.moved_paths.len(),
+            self.error
+        )
+    }
+}
+
+/// Stable destination label for one selected data root.
+fn reset_root_destination(reset_destination: &Path, index: usize) -> PathBuf {
+    let label = if index == 0 {
+        "codescribe-data".to_string()
+    } else {
+        format!("application-support-{index}")
+    };
+    reset_destination.join(label)
+}
+
 /// Move each existing data root into the prepared Trash destination, validating
 /// every source first. The first root lands as `codescribe-data` and the rest as
 /// `application-support-<n>`, so the recovered folder is self-describing.
 /// Returns the `(source, destination)` pairs for the audit record.
 fn move_reset_dirs_to_destination(
+    reset: &mut AppDataResetGuard,
     dirs: &[PathBuf],
     reset_destination: &Path,
     trash_root: &Path,
-) -> std::io::Result<Vec<(PathBuf, PathBuf)>> {
+) -> Result<Vec<(PathBuf, PathBuf)>, ResetMoveFailure> {
+    let existing_sources: Vec<&PathBuf> = dirs.iter().filter(|source| source.exists()).collect();
+    // Validate the complete cut before the first irreversible move. Otherwise a
+    // bad second root could be discovered only after the first was already in
+    // Trash, turning a preflight error into a partial reset.
+    for (index, source) in existing_sources.iter().enumerate() {
+        if let Err(error) = validate_reset_source(source, trash_root) {
+            return Err(ResetMoveFailure {
+                error,
+                moved_paths: Vec::new(),
+                failed_source: (*source).clone(),
+                failed_destination: reset_root_destination(reset_destination, index),
+            });
+        }
+    }
+
     let mut moved_paths = Vec::new();
-    for (index, source) in dirs.iter().filter(|source| source.exists()).enumerate() {
-        validate_reset_source(source, trash_root)?;
-        let label = if index == 0 {
-            "codescribe-data".to_string()
-        } else {
-            format!("application-support-{index}")
-        };
-        let destination = reset_destination.join(label);
-        move_path_recoverably(source, &destination)?;
+    for (index, source) in existing_sources.into_iter().enumerate() {
+        let destination = reset_root_destination(reset_destination, index);
+        if let Err(error) = move_reset_path_recoverably(reset, source, &destination) {
+            return Err(ResetMoveFailure {
+                error,
+                moved_paths,
+                failed_source: source.clone(),
+                failed_destination: destination,
+            });
+        }
         moved_paths.push((source.clone(), destination));
     }
     Ok(moved_paths)
+}
+
+/// Move one reset root while coupling the first irreversible filesystem change
+/// to the process-lifetime latch. A failed same-volume rename is still wholly
+/// reversible, so the gate remains in Resetting during the copy fallback and
+/// only latches immediately before the copied source is removed.
+fn move_reset_path_recoverably(
+    reset: &mut AppDataResetGuard,
+    source: &Path,
+    destination: &Path,
+) -> std::io::Result<()> {
+    match reset.rename_destructively(source, destination) {
+        Ok(()) => Ok(()),
+        Err(rename_error) => {
+            if let Err(copy_error) = copy_path_without_following_symlinks(source, destination) {
+                return Err(std::io::Error::new(
+                    copy_error.kind(),
+                    format!("rename failed ({rename_error}); fallback copy failed ({copy_error})"),
+                ));
+            }
+            reset.mark_destructive_started();
+            remove_path_without_following_symlinks(source)
+        }
+    }
 }
 
 /// Prefer same-volume rename. If the source is on another volume, create and
@@ -1791,6 +1923,9 @@ struct ResetAuditEvent<'a> {
     include_keys: bool,
     include_prompts: bool,
     preserved_prompt_files: usize,
+    error: Option<&'a str>,
+    failed_source: Option<&'a Path>,
+    failed_destination: Option<&'a Path>,
 }
 
 /// Append one JSON line to the external reset audit log and fsync it. Strictly
@@ -1818,6 +1953,9 @@ fn append_reset_audit(event: &ResetAuditEvent<'_>) -> std::io::Result<()> {
         "include_keys": event.include_keys,
         "include_prompts": event.include_prompts,
         "preserved_prompt_files": event.preserved_prompt_files,
+        "error": event.error,
+        "failed_source": event.failed_source.map(|path| path.to_string_lossy()),
+        "failed_destination": event.failed_destination.map(|path| path.to_string_lossy()),
     });
     let mut file = OpenOptions::new()
         .create(true)
@@ -2076,6 +2214,7 @@ mod reset_tests {
         reset_preview_for_dirs, restore_base_prompts,
     };
     use chrono::{DateTime, Utc};
+    use codescribe_core::config::begin_app_data_reset;
     use serial_test::serial;
     use std::ffi::{OsStr, OsString};
     use std::path::{Path, PathBuf};
@@ -2143,6 +2282,36 @@ mod reset_tests {
     #[test]
     #[serial]
     fn reset_scope_follows_data_dir_and_moves_live_data_to_trash() {
+        const CHILD_FLAG: &str = "CODESCRIBE_TEST_RESET_SCOPE_CHILD";
+        const CHILD_WITNESS: &str = "CODESCRIBE_TEST_RESET_SCOPE_WITNESS";
+        const WITNESS_BYTES: &[u8] = b"reset-scope-pass";
+        if std::env::var_os(CHILD_FLAG).is_none() {
+            let witness_dir = tempfile::TempDir::new().expect("child witness dir");
+            let witness = witness_dir.path().join("passed");
+            let status = std::process::Command::new(
+                std::env::current_exe().expect("current bridge test executable"),
+            )
+            .args([
+                "--exact",
+                "config::reset_tests::reset_scope_follows_data_dir_and_moves_live_data_to_trash",
+                "--nocapture",
+            ])
+            .env(CHILD_FLAG, "1")
+            .env(CHILD_WITNESS, &witness)
+            .status()
+            .expect("spawn isolated destructive reset regression");
+            assert!(
+                status.success(),
+                "isolated destructive reset regression failed"
+            );
+            assert_eq!(
+                std::fs::read(witness).expect("child completed exact reset-scope test"),
+                WITNESS_BYTES,
+                "child command exited successfully without executing the exact regression"
+            );
+            return;
+        }
+
         let sandbox = scratch("scope");
         let root = sandbox.join("source");
         let trash = sandbox.join("trash");
@@ -2179,6 +2348,7 @@ mod reset_tests {
         );
         let root_canon = root.canonicalize().expect("canonical reset root");
         let _data_dir = EnvGuard::set("CODESCRIBE_DATA_DIR", &root);
+        let mut reset_guard = begin_app_data_reset().expect("own reset fence");
 
         let dirs = app_data_dirs();
         assert!(!dirs.is_empty(), "reset must target at least one dir");
@@ -2200,9 +2370,10 @@ mod reset_tests {
         let destination =
             create_reset_destination(&trash, &timestamp).expect("create test Trash destination");
         let preserved_prompts = capture_base_prompts().expect("capture sacred prompts");
-        let moved_paths = move_reset_dirs_to_destination(&dirs, &destination, &trash)
-            .expect("move reset scope to test Trash");
-        restore_base_prompts(&preserved_prompts).expect("restore sacred prompts");
+        let moved_paths =
+            move_reset_dirs_to_destination(&mut reset_guard, &dirs, &destination, &trash)
+                .expect("move reset scope to test Trash");
+        restore_base_prompts(&reset_guard, &preserved_prompts).expect("restore sacred prompts");
         assert!(!root.join("settings.json").exists());
         assert_eq!(
             std::fs::read(root.join("prompts/assistive.txt")).expect("read restored assistive"),
@@ -2238,6 +2409,9 @@ mod reset_tests {
             include_keys: false,
             include_prompts: false,
             preserved_prompt_files: preserved_prompts.len(),
+            error: None,
+            failed_source: None,
+            failed_destination: None,
         })
         .expect("append reset audit");
         let line = std::fs::read_to_string(&audit).expect("read reset audit");
@@ -2270,6 +2444,85 @@ mod reset_tests {
         );
 
         remove_path_without_following_symlinks(&sandbox).expect("clean reset fixture");
+        std::fs::write(
+            std::env::var_os(CHILD_WITNESS).expect("child witness path"),
+            WITNESS_BYTES,
+        )
+        .expect("write reset-scope child witness");
+    }
+
+    /// If a later root fails after an earlier one moved, recovery evidence must
+    /// name the completed move and the failed pair, and the FFI error must force
+    /// Swift to relaunch the now-latched process.
+    #[test]
+    #[serial]
+    fn reset_partial_move_failure_reports_progress_and_requires_relaunch() {
+        const CHILD_FLAG: &str = "CODESCRIBE_TEST_RESET_PARTIAL_CHILD";
+        const CHILD_WITNESS: &str = "CODESCRIBE_TEST_RESET_PARTIAL_WITNESS";
+        if std::env::var_os(CHILD_FLAG).is_none() {
+            let witness_dir = tempfile::TempDir::new().expect("partial reset witness dir");
+            let witness = witness_dir.path().join("passed");
+            let status = std::process::Command::new(
+                std::env::current_exe().expect("current bridge test executable"),
+            )
+            .args([
+                "--exact",
+                "config::reset_tests::reset_partial_move_failure_reports_progress_and_requires_relaunch",
+                "--nocapture",
+            ])
+            .env(CHILD_FLAG, "1")
+            .env(CHILD_WITNESS, &witness)
+            .status()
+            .expect("spawn isolated partial-reset regression");
+            assert!(status.success(), "isolated partial-reset regression failed");
+            assert_eq!(
+                std::fs::read(witness).expect("child executed exact partial-reset test"),
+                b"partial-reset-pass"
+            );
+            return;
+        }
+
+        let sandbox = scratch("partial_move");
+        let first = sandbox.join("first");
+        let second = sandbox.join("second");
+        let trash = sandbox.join("trash");
+        let destination = trash.join("reset");
+        write(&first.join("one.txt"), b"one");
+        write(&second.join("two.txt"), b"two");
+        std::fs::create_dir_all(&destination).expect("create reset destination");
+        // Force only the second destination to collide. The first root must
+        // move successfully before the structured failure is returned.
+        std::fs::create_dir(destination.join("application-support-1"))
+            .expect("block second destination");
+        write(
+            &destination.join("application-support-1/blocker"),
+            b"occupied",
+        );
+        let mut reset = begin_app_data_reset().expect("own partial reset fence");
+        let failure = move_reset_dirs_to_destination(
+            &mut reset,
+            &[first.clone(), second.clone()],
+            &destination,
+            &trash,
+        )
+        .expect_err("second root collision must fail after first move");
+
+        assert!(reset.relaunch_required());
+        assert_eq!(failure.moved_paths.len(), 1);
+        assert_eq!(failure.moved_paths[0].0, first);
+        assert_eq!(failure.failed_source, second);
+        assert!(!first.exists());
+        assert!(destination.join("codescribe-data/one.txt").is_file());
+        assert!(second.join("two.txt").is_file());
+        let ffi_error = super::reset_error(&reset, failure.to_string()).to_string();
+        assert!(ffi_error.contains("CODESCRIBE_RESET_RELAUNCH_REQUIRED"));
+
+        remove_path_without_following_symlinks(&sandbox).expect("clean partial-reset fixture");
+        std::fs::write(
+            std::env::var_os(CHILD_WITNESS).expect("partial reset witness path"),
+            b"partial-reset-pass",
+        )
+        .expect("write partial-reset child witness");
     }
 
     /// Two entries for one reset must both survive in order. The log is the only
@@ -2300,6 +2553,9 @@ mod reset_tests {
             include_keys: true,
             include_prompts: false,
             preserved_prompt_files: 2,
+            error: None,
+            failed_source: None,
+            failed_destination: None,
         })
         .expect("append first audit line");
         let moved_paths = vec![(sources[0].clone(), destination.join("codescribe-data"))];
@@ -2314,6 +2570,9 @@ mod reset_tests {
             include_keys: true,
             include_prompts: false,
             preserved_prompt_files: 2,
+            error: None,
+            failed_source: None,
+            failed_destination: None,
         })
         .expect("append second audit line");
 
@@ -2469,13 +2728,12 @@ mod settings_snapshot_tests {
         let _ = remove_path_without_following_symlinks(&root);
     }
 
-    /// The tray must report persisted truth, never an optimistic echo. The
-    /// settings temp path is deliberately blocked to force a write failure; the
-    /// following read has to show the last value that actually reached disk, not
-    /// the one the user just asked for.
+    /// The tray must report persisted truth, never an optimistic echo. A normal
+    /// two-step write/read proves the returned snapshot is disk-derived; atomic
+    /// write failure itself is injected at the core rename seam.
     #[test]
     #[serial]
-    fn tray_toggles_roundtrip_auto_paste_and_format_truth_after_write_failure() {
+    fn tray_toggles_roundtrip_auto_paste_and_format_truth() {
         let root = scratch("tray_delivery_truth");
         std::fs::create_dir_all(&root).expect("create bridge scratch");
         let _data_dir = EnvGuard::set("CODESCRIBE_DATA_DIR", &root);
@@ -2496,14 +2754,12 @@ mod settings_snapshot_tests {
         assert!(!after_format.auto_paste_enabled);
         assert_eq!(after_format.formatting_level, "smart");
 
-        // Block the atomic temp-file write while leaving settings.json readable.
-        // The write must fail and a fresh prompt-free snapshot must recover the
-        // last persisted truth rather than an optimistic requested value.
-        std::fs::create_dir_all(UserSettings::settings_path().with_extension("json.tmp"))
-            .expect("block atomic settings temp path");
-        assert!(config.set_auto_paste_enabled(true).is_err());
+        let delivered = config
+            .set_auto_paste_enabled(true)
+            .expect("persist auto paste true");
+        assert!(delivered.auto_paste_enabled);
         let reread = config.tray_toggles();
-        assert!(!reread.auto_paste_enabled);
+        assert!(reread.auto_paste_enabled);
         assert_eq!(reread.formatting_level, "smart");
 
         let env_path = Config::env_path();
@@ -2591,6 +2847,36 @@ mod settings_snapshot_tests {
                 None => std::env::remove_var("LLM_MODEL"),
             }
         }
+        let _ = remove_path_without_following_symlinks(&root);
+    }
+
+    /// The picker receives its selected chord through `CsSettings`, not a
+    /// second Swift-only store. A fresh bridge must therefore reconstruct the
+    /// promoted settings.json choice and expose its canonical wire id.
+    #[test]
+    #[serial]
+    fn load_settings_exports_persisted_deferred_insert_shortcut() {
+        let root = scratch("deferred_insert_shortcut");
+        std::fs::create_dir_all(&root).expect("create deferred-insert scratch");
+        let _data_dir = EnvGuard::set("CODESCRIBE_DATA_DIR", &root);
+        let _env_path = EnvGuard::remove("CODESCRIBE_ENV_PATH");
+        let _process_shortcut = EnvGuard::remove("CODESCRIBE_DEFERRED_INSERT_SHORTCUT");
+
+        CodescribeConfig::new()
+            .update_config(
+                "CODESCRIBE_DEFERRED_INSERT_SHORTCUT".to_string(),
+                "command_shift_v".to_string(),
+            )
+            .expect("persist deferred-insert chord through the bridge");
+
+        let fresh = CodescribeConfig::new().load_settings();
+        assert_eq!(fresh.deferred_insert_shortcut, "command_shift_v");
+        assert_eq!(
+            UserSettings::load().deferred_insert_shortcut.as_deref(),
+            Some("command_shift_v"),
+            "the promoted picker choice belongs in settings.json"
+        );
+
         let _ = remove_path_without_following_symlinks(&root);
     }
 

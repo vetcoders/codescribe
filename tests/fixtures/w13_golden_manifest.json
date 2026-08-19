@@ -1,0 +1,63 @@
+{
+  "schema": "codescribe.w13.golden.v1",
+  "cut": "w13-0-clock-falsification",
+  "language": "pl-PL",
+  "resolution": [
+    "CODESCRIBE_DATA_ASSETS",
+    "~/.codescribe/data_assets",
+    "tests/assets/data_assets"
+  ],
+  "notes": "Operator-voice WAVs live behind the data_assets gitignore fence. This manifest is the committed identity: relative fixture paths + sha256. Tests never embed audio.",
+  "takes": [
+    {
+      "id": "171939",
+      "slug": "tak-jest-tak",
+      "role": "degraded-input A/B/C take (RMS -42.1 dB)",
+      "fixture": "w13/w13_171939_tak-jest-tak.wav",
+      "source_m4a": "~/.codescribe/transcriptions/2026-08-13/171939_tak-jest-tak_raw.m4a",
+      "source_date": "2026-08-13",
+      "wav_sha256": "70fbd8e39411c8974fc8e99bc0019c837a44c42cbbdc91c0c95f372aa7022928",
+      "sample_rate": 44100,
+      "sample_count": 5984899,
+      "duration_secs": 135.711995,
+      "mic_regions": []
+    },
+    {
+      "id": "191351",
+      "slug": "no-tutaj-kurde",
+      "role": "quiet speech + Standard to Voice Isolation mid-take A/B",
+      "fixture": "w13/w13_191351_no-tutaj-kurde.wav",
+      "source_m4a": "~/.codescribe/transcriptions/2026-08-13/191351_no-tutaj-kurde_raw.m4a",
+      "source_date": "2026-08-13",
+      "wav_sha256": "b8cb6b767381cfce760f1f0d88398e686157aebc0bc8a906fd0f49603a2533eb",
+      "sample_rate": 44100,
+      "sample_count": 14877341,
+      "duration_secs": 337.354671,
+      "mic_regions": [
+        {
+          "mode": "standard",
+          "sample_start_secs": 0.0,
+          "sample_end_secs": 35.0
+        },
+        {
+          "mode": "voice_isolation",
+          "sample_start_secs": 60.0,
+          "sample_end_secs": 330.0
+        }
+      ]
+    },
+    {
+      "id": "193523",
+      "slug": "no-words-sa",
+      "role": "vocabulary exhibit (worktrees x3 + Vibecrafted)",
+      "fixture": "w13/w13_193523_no-words-sa.wav",
+      "source_m4a": "~/.codescribe/transcriptions/2026-08-13/193523_no-words-sa_raw.m4a",
+      "source_date": "2026-08-13",
+      "wav_sha256": "bf941f6b5230c0d787bb434528df5ba3ca0c610182dcf4519035bdd2a8355ed3",
+      "sample_rate": 44100,
+      "sample_count": 1231507,
+      "duration_secs": 27.925329,
+      "mic_regions": []
+    }
+  ]
+}

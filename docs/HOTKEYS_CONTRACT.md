@@ -37,6 +37,16 @@ capture. Assistive never enters `RecordingController` and never shows the
 transcription overlay. A single process-wide capture owner makes Agent and
 overlay recording mutually exclusive; a competing start fails closed.
 
+**Thread routing (operator contract 2026-08-13).** An assistive turn always
+lands in the thread the Agent rail currently has selected — the thread the
+user is looking at. The rail publishes every selection change through
+`CodescribeHotkeys.set_assistive_target_thread`; the controller rebinds its
+runtime (rejoin + rehydrate) when the target differs from the bound thread. A
+new thread is only ever minted by an explicit "+ New thread" (published as a
+`nil` target, consumed once — one press mints one thread, not one per
+utterance). If the Agent UI never published a selection (window never
+opened), the lane continues its bound conversation as before.
+
 ```mermaid
 flowchart TB
     subgraph Input["🎹 Input Layer"]
@@ -123,8 +133,10 @@ recent committed utterance; it must never create a second delivered utterance.
 
 **Trigger:** Double-tap Option key within `DOUBLE_TAP_INTERVAL_MS` (default **200ms**, range 100–450ms)
 **Behavior:** First tap starts recording, second tap toggles send/stop
-**VAD:** ENABLED – finalized utterances append to the active draft; `TOGGLE_SILENCE_SEC` of silence
-(default 5s) sends the accumulated draft without stopping recording
+**Silence:** ENABLED – `TOGGLE_SILENCE_SEC` (default 5s) is the Apple engine lifecycle on the live
+lane (`EpochGate` in `apple_live_session.rs`): Silero watches the mic, speech opens an SFSpeech
+epoch, silence past the slider seals the span and rests the engine, the next speech edge wakes a
+fresh epoch. Recording does not stop. This is not a wav-only chunker knob and not `CODESCRIBE_VAD_*`.
 
 | Mode binding                  | Keys                         | Mode              |
 | ----------------------------- | ---------------------------- | ----------------- |
@@ -285,12 +297,12 @@ flowchart LR
 Bindings themselves are persisted in `settings.json`.
 The remaining runtime env surface only tunes detector behavior:
 
-| Variable                 | Default | Options         | Reload  |
-| ------------------------ | ------- | --------------- | ------- |
-| `HOLD_EXCLUSIVE`         | `false` | `true`, `false` | RESTART |
-| `HOLD_START_DELAY_MS`    | `800`   | 0-1000          | RESTART |
-| `DOUBLE_TAP_INTERVAL_MS` | `200`   | 100-450         | RESTART |
-| `TOGGLE_SILENCE_SEC`     | `5.0`   | 0.5-10.0        | RESTART |
+| Variable                 | Default | Options         | Reload               |
+| ------------------------ | ------- | --------------- | -------------------- |
+| `HOLD_EXCLUSIVE`         | `false` | `true`, `false` | RESTART              |
+| `HOLD_START_DELAY_MS`    | `800`   | 0-1000          | RESTART              |
+| `DOUBLE_TAP_INTERVAL_MS` | `200`   | 100-450         | RESTART              |
+| `TOGGLE_SILENCE_SEC`     | `5.0`   | 0.5-30.0        | HOT (next recording) |
 
 ### VAD Configuration
 
@@ -349,7 +361,8 @@ sequenceDiagram
     participant HotkeyDetector
     participant Controller as RecordingController
     participant VAD as Silero VAD
-    participant Whisper
+    participant Apple as SFSpeech epoch
+    participant Whisper as Layer 1 Whisper
 
     User->>CGEventTap: Double-tap Left Option
     CGEventTap->>HotkeyDetector: kCGEventFlagsChanged (x4)
@@ -358,9 +371,9 @@ sequenceDiagram
 
     rect rgb(200, 255, 200)
         Note over Controller: State: IDLE → REC_TOGGLE
-        loop Recording with VAD
-            VAD->>VAD: Monitor speech probability
-            VAD-->>Recorder: Utterance boundary on silence
+        loop Recording with EpochGate
+            VAD->>VAD: Watch speech edges (mic stays open)
+            VAD-->>Apple: Speech opens SFSpeech epoch / silence past slider closes it
         end
     end
 
@@ -368,11 +381,11 @@ sequenceDiagram
         User->>HotkeyDetector: Double-tap Option
         HotkeyDetector->>Controller: ToggleNormal
         Note over Controller: State: REC_TOGGLE → BUSY
-        Controller->>Whisper: Finalize + format
+        Controller->>Whisper: Stop-path residual + format
         Note over Controller: State: BUSY → IDLE
     else Silence > TOGGLE_SILENCE_SEC
-        VAD->>Recorder: Utterance boundary (auto-send, recording continues)
-        Note over Controller: State stays REC_TOGGLE
+        Apple->>Apple: Seal open span, rest SFSpeech (Layer 1 can patch)
+        Note over Controller: State stays REC_TOGGLE — mic + Silero keep watching
     end
 ```
 

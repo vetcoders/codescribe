@@ -185,6 +185,34 @@ pub fn init() -> Result<()> {
     with_embedder(|_| Ok(()))
 }
 
+/// Load the engine off the caller's thread, ignoring the outcome.
+///
+/// The semantic guard is the only consumer, and it runs *after* AI formatting
+/// returns — so a cold engine put its whole load on the stop path, in series
+/// behind the model call. Measured 2026-08-12: `semantic_guard took_ms=1127`,
+/// of which ~1.0s was `Embedder initialized from embedded model`, against 0.13s
+/// of actual comparison.
+///
+/// Call this when a formatting request is dispatched, not at startup. The LLM
+/// round-trip is seconds of dead time the load fits inside entirely, and by
+/// scoping the warm to lanes that are about to need the engine anyway, this
+/// buys latency without lengthening how long 471 MB of weights sit resident —
+/// the idle-unload budget stays exactly as configured.
+///
+/// Idempotent and non-blocking: concurrent callers serialize on the same slot
+/// mutex the guard itself takes, and a failed load is left for the guard to
+/// report through its normal fail-open path.
+pub fn warm() {
+    std::thread::Builder::new()
+        .name("embedder-warm".into())
+        .spawn(|| {
+            if let Err(error) = init() {
+                warn!("Embedder warm-up failed (semantic guard will retry): {error}");
+            }
+        })
+        .ok();
+}
+
 /// Initialize with custom configuration.
 ///
 /// The config is captured for (re)loads; the first config wins. Idempotent.

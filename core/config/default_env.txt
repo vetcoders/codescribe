@@ -9,14 +9,14 @@ LLM_FORMATTING_API_KEY=
 
 # === Core mode ===
 USE_LOCAL_STT=1
-LOCAL_MODEL=whisper-large-v3-turbo-mlx-q8
+LOCAL_MODEL=whisper-large-v3-turbo
 WHISPER_LANGUAGE=auto
 
 # === Hotkeys ===
 HOLD_EXCLUSIVE=1
 HOLD_START_DELAY_MS=800
 DOUBLE_TAP_INTERVAL_MS=200
-TOGGLE_SILENCE_SEC=5.0
+TOGGLE_SILENCE_SEC=5.0              # Apple epoch rest; not CODESCRIBE_VAD_*
 # Mode bindings are canonical and persisted in settings.json:
 # - dictation: hold_fn
 # - formatting: double_left_option
@@ -54,6 +54,8 @@ CODESCRIBE_STT_THERMAL_SERIOUS_MULT=2.0
 CODESCRIBE_STT_THERMAL_CRITICAL_MULT=4.0
 # Runtime lexicon initial_prompt is opt-in; default OFF.
 CODESCRIBE_STT_INITIAL_PROMPT_ENABLED=0
+# W13-6B overlay highlight layer is opt-in; default OFF.
+CODESCRIBE_OVERLAY_HIGHLIGHTS=0
 # VAD config is hardcoded in core/vad/config.rs (Silero defaults, no env knobs).
 CODESCRIBE_STREAM_SIMILARITY=0.90
 CODESCRIBE_STREAM_NOVELTY=0.20

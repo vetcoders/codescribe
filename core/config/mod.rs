@@ -17,6 +17,8 @@
 //!
 //! Note: Config is loaded via `Config::load()` and accessed via shared state in main.rs.
 
+/// Layer 1 ASR product mode, audio-egress consent, and gateway mint config.
+pub mod cloud_asr;
 /// Serde default helpers and default model/endpoint constants.
 mod defaults;
 /// Stop-path final-pass routing mode shared by controller and bridge lanes.
@@ -36,6 +38,8 @@ pub mod portable;
 pub mod prompts;
 /// GUI-managed user settings JSON (regular-user tier).
 pub mod settings;
+/// Process-wide app-data I/O fence used by destructive reset.
+pub mod storage_reset;
 /// Config enums and the main `Config` struct definitions.
 mod types;
 
@@ -50,12 +54,17 @@ pub use types::{
     ShortcutBinding, TranscriptSendMode, WorkMode,
 };
 // Language re-exported for external consumers (GUI apps)
+pub use cloud_asr::{
+    AsrProductMode, AudioEgressConsent, ConsentSource, GatewayMintError, GatewaySessionMint,
+    ModeDerivation, ResolvedAsrMode, resolve_asr_product_mode,
+};
 pub use final_pass::{FinalPassRoutingMode, final_pass_routing_mode};
 pub use portable::{
     ImportPlan, PortableProfile, export_portable, import_portable_apply, import_portable_dry_run,
     write_portable_export,
 };
 pub use settings::{FormattingPolicy, UserSettings};
+pub use storage_reset::{AppDataResetGuard, begin_app_data_reset};
 pub use types::Language;
 
 // Re-export prompts API (public API for GUI apps)
@@ -66,6 +75,7 @@ pub use prompts::{
     get_formatting_prompt_for_policy, get_formatting_prompt_path,
     get_formatting_prompt_path_for_policy, open_prompt_file, open_prompts_folder, prompt_snapshot,
     reset_to_defaults, restore_prompt_to_default, write_prompt, write_prompt_bytes,
+    write_prompt_bytes_during_reset,
 };
 
 #[cfg(test)]

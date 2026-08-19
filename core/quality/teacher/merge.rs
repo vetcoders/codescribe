@@ -1,4 +1,4 @@
-//! Merged delivery: live floor + Whisper fill at weak loci.
+//! Merged delivery: live floor + Layer 1 fill at weak loci.
 //!
 //! Product doctrine (operator 2026-07-24, 85% Apple×Whisper thesis):
 //! - **Live (Apple)** is the floor of truth where it spoke.
@@ -41,10 +41,62 @@ pub struct MergedDelivery {
     pub whisper_won_substitutes: usize,
 }
 
-/// Merge live (Apple/stream floor) with Whisper final into one delivery string.
+/// Provider-neutral decision shape used by Layer 1 adjudication.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Layer1MergeMode {
+    /// Both live and provider results were empty.
+    Empty,
+    /// Only committed live content was available.
+    LiveOnly,
+    /// Only the Layer 1 provider had content.
+    ProviderOnly,
+    /// Live floor preserved with provider gap/tail additions.
+    LiveFloorGapFill,
+}
+
+/// Provider-neutral result exposed to controller adjudication.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Layer1MergedDelivery {
+    pub text: String,
+    pub mode: Layer1MergeMode,
+    pub provider_fill_tokens: usize,
+    pub live_kept_substitutes: usize,
+    pub equal_tokens: usize,
+    pub provider_won_substitutes: usize,
+}
+
+impl From<MergedDelivery> for Layer1MergedDelivery {
+    fn from(delivery: MergedDelivery) -> Self {
+        let mode = match delivery.mode {
+            MergeMode::Empty => Layer1MergeMode::Empty,
+            MergeMode::LiveOnly => Layer1MergeMode::LiveOnly,
+            MergeMode::WhisperOnly => Layer1MergeMode::ProviderOnly,
+            MergeMode::LiveFloorWhisperFill => Layer1MergeMode::LiveFloorGapFill,
+        };
+        Self {
+            text: delivery.text,
+            mode,
+            provider_fill_tokens: delivery.whisper_fill_tokens,
+            live_kept_substitutes: delivery.live_kept_substitutes,
+            equal_tokens: delivery.equal_tokens,
+            provider_won_substitutes: delivery.whisper_won_substitutes,
+        }
+    }
+}
+
+/// Merge a live (Apple/stream) floor with a provider-neutral Layer 1 result.
 ///
-/// Pure function — unit tests and controller adjudication both call this.
-/// Legacy shape: no known-terms catalog, so substitutes always keep live.
+/// Layer 1 may add aligned gaps and tail tokens, but substitutions always keep
+/// the committed live token. Provider-specific lexicon evidence belongs in an
+/// explicit extension such as [`merge_live_whisper_with_terms`].
+pub fn merge_live_layer1(live: &str, layer1: &str) -> Layer1MergedDelivery {
+    merge_live_whisper_with_terms(live, layer1, &[]).into()
+}
+
+/// Backward-compatible local Whisper entrypoint.
+///
+/// This preserves the existing no-catalog behavior while the controller uses
+/// [`merge_live_layer1`] for provider-neutral cloud adjudication.
 pub fn merge_live_whisper(live: &str, whisper: &str) -> MergedDelivery {
     merge_live_whisper_with_terms(live, whisper, &[])
 }
@@ -230,6 +282,35 @@ pub fn merge_live_whisper_with_terms(
 }
 
 /// Doctrine guards: gap-fill, live floor, and empty-side modes.
+#[cfg(test)]
+mod layer1_contract_tests {
+    use super::{Layer1MergeMode, Layer1MergedDelivery, merge_live_layer1, merge_live_whisper};
+
+    #[test]
+    fn provider_neutral_layer1_preserves_live_substitutions_and_adds_tail() {
+        let merged = merge_live_layer1(
+            "live_token shared_token",
+            "provider_token shared_token tail_token",
+        );
+
+        assert_eq!(merged.mode, Layer1MergeMode::LiveFloorGapFill);
+        assert!(merged.text.starts_with("live_token shared_token"));
+        assert!(merged.text.ends_with("tail_token"));
+        assert_eq!(merged.provider_won_substitutes, 0);
+    }
+
+    #[test]
+    fn local_legacy_entrypoint_retains_provider_neutral_default_behavior() {
+        let live = "live_token shared_token";
+        let layer1 = "provider_token shared_token tail_token";
+
+        assert_eq!(
+            Layer1MergedDelivery::from(merge_live_whisper(live, layer1)),
+            merge_live_layer1(live, layer1)
+        );
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

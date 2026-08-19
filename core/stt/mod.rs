@@ -37,8 +37,13 @@ pub mod punctuation_transplant;
 pub mod scheduler;
 /// Layer-1 on-the-go Whisper tail-patch helpers for append-only gap fill.
 pub mod tail_patcher;
+/// Typed, time-ranged provider seam for Whisper tail-patch windows.
+pub mod tail_provider;
 /// Candle Whisper engine, singleton, and file final-pass routes.
 pub mod whisper;
+
+#[cfg(test)]
+mod fleet_red_contracts;
 
 use crate::pipeline::contracts::RawTranscript;
 use crate::pipeline::contracts::TranscriptionAdapter;
@@ -332,11 +337,7 @@ pub(crate) fn whisper_tail_patch_transcribe(
     sample_rate: u32,
     language: Option<&str>,
 ) -> anyhow::Result<RawTranscript> {
-    let (speech, _) = crate::vad::extract_speech(audio, sample_rate);
-    if speech.is_empty() {
-        return Ok(RawTranscript::default());
-    }
-    candle_transcribe_long_with_segments(&speech, sample_rate, language)
+    tail_provider::transcribe_legacy_window(audio, sample_rate, language)
 }
 
 /// First sample index of the uncommitted tail, clamped into `0..=total_samples`.
@@ -828,6 +829,29 @@ mod tests {
         let _guard = EnvGuard::set("whisper");
         preflight_apple_live_ready().expect("Whisper preference must not require Apple preflight");
         assert_eq!(preferred_engine_label(), "local_whisper");
+    }
+
+    /// Baseline guard: Apple is already the selected prewarm lane and the real
+    /// prewarm entrypoint must not cross the heavyweight Whisper initializer.
+    /// The initializer counter is compiled only for tests; no model is loaded.
+    #[test]
+    #[serial]
+    fn fleet_red_apple_prewarm_never_loads_whisper() {
+        let _guard = EnvGuard::set("apple");
+        assert_eq!(selected_engine(), SttEngine::Apple);
+
+        whisper::singleton::reset_test_init_calls();
+        let _apple_probe = prewarm_active_engine();
+        assert_eq!(
+            whisper::singleton::test_init_calls(),
+            0,
+            "Apple prewarm must never initialize Whisper"
+        );
+        assert_eq!(
+            whisper::singleton::test_load_calls(),
+            0,
+            "Apple prewarm must never attempt to load Whisper weights"
+        );
     }
 
     /// Live-only helper surfaces Apple bridge failures instead of silent swap.

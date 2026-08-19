@@ -508,6 +508,92 @@ pub fn store_account_tokens(
     save_key(account, &payload).map_err(|error| AccountAuthError::Storage(error.to_string()))
 }
 
+/// Official Responses endpoint a freshly minted account token must be able to
+/// write to. `None` ⇒ no probe exists for this provider and sign-in verifies
+/// nothing extra. Scoped to OpenAI: its login above requests identity scopes
+/// only, and a token without `api.responses.write` still exchanges cleanly —
+/// the field failure this probe exists for (five raw 401s in one morning,
+/// 2026-08-14).
+fn responses_probe_endpoint(provider: ProviderKind) -> Option<String> {
+    match provider {
+        // The env override exists for hermetic tests (and emergency ops):
+        // account tokens only ever ride to the official endpoint, so the
+        // probe defaults to the same place the runtime will send them.
+        ProviderKind::OpenAiResponses => Some(
+            std::env::var(RESPONSES_PROBE_URL_ENV)
+                .ok()
+                .map(|value| value.trim().to_string())
+                .filter(|value| !value.is_empty())
+                .unwrap_or_else(|| crate::config::DEFAULT_OPENAI_RESPONSES_ENDPOINT.to_string()),
+        ),
+        _ => None,
+    }
+}
+
+/// Env override for the sign-in Responses probe target. Hermetic tests point
+/// it at a mock; production leaves it unset (official endpoint).
+pub const RESPONSES_PROBE_URL_ENV: &str = "CODESCRIBE_RESPONSES_PROBE_URL";
+
+/// Verify a just-exchanged account token can actually use the Responses API
+/// BEFORE it is persisted as "connected".
+///
+/// The probe spends no tokens: an empty JSON body is authorized before it is
+/// validated, so a healthy token answers 400 (validation) while a
+/// scope-starved one answers 401. Only that definitive 401 fails the login;
+/// transport errors stay fail-open — the exchange itself just proved the
+/// network, and a flaky probe must not lock out an otherwise valid sign-in.
+pub async fn verify_responses_write_access(
+    provider: ProviderKind,
+    access_token: &str,
+) -> Result<(), AccountAuthError> {
+    let Some(endpoint) = responses_probe_endpoint(provider) else {
+        return Ok(());
+    };
+    verify_responses_write_access_at(&endpoint, access_token).await
+}
+
+/// Testable core of [`verify_responses_write_access`] with an explicit endpoint.
+async fn verify_responses_write_access_at(
+    endpoint: &str,
+    access_token: &str,
+) -> Result<(), AccountAuthError> {
+    let client = match reqwest::Client::builder()
+        .timeout(Duration::from_secs(15))
+        .build()
+    {
+        Ok(client) => client,
+        Err(error) => {
+            tracing::warn!("responses-write probe unavailable ({error}); keeping sign-in");
+            return Ok(());
+        }
+    };
+    let response = match client
+        .post(endpoint)
+        .header("Authorization", format!("Bearer {access_token}"))
+        .header("Content-Type", "application/json")
+        .body("{}")
+        .send()
+        .await
+    {
+        Ok(response) => response,
+        Err(error) => {
+            tracing::warn!("responses-write probe did not complete ({error}); keeping sign-in");
+            return Ok(());
+        }
+    };
+    if response.status() == reqwest::StatusCode::UNAUTHORIZED {
+        let body = response.text().await.unwrap_or_default();
+        let detail: String = body.chars().take(300).collect();
+        return Err(AccountAuthError::OAuth(format!(
+            "this account token cannot use the Responses API (HTTP 401 on the \
+             authorization probe — missing scope `api.responses.write`?). \
+             Sign-in was not saved; use an API key or an account with \
+             Responses access. Provider answer: {detail}"
+        )));
+    }
+    Ok(())
+}
+
 /// Load a provider's stored tokens, or [`AccountAuthError::NotSignedIn`].
 ///
 /// An env var named after the Keychain account is checked first: that is the
@@ -713,6 +799,39 @@ mod tests {
             .tempdir()
             .expect("create scratch settings dir");
         (EnvGuard::set_path("CODESCRIBE_DATA_DIR", dir.path()), dir)
+    }
+
+    /// The 401 field failure (2026-08-14): a scope-starved token must fail the
+    /// login BEFORE persisting, while a healthy token's 400 validation answer
+    /// passes — the probe authorizes before it validates and spends nothing.
+    #[tokio::test]
+    async fn responses_probe_rejects_401_and_passes_validation_400() {
+        let mut starved_server = mockito::Server::new_async().await;
+        let starved = starved_server
+            .mock("POST", "/v1/responses")
+            .with_status(401)
+            .with_body(r#"{"error":"Missing scopes: api.responses.write"}"#)
+            .create_async()
+            .await;
+        let starved_url = format!("{}/v1/responses", starved_server.url());
+        let error = verify_responses_write_access_at(&starved_url, "starved-token")
+            .await
+            .expect_err("401 must reject the sign-in");
+        assert!(error.to_string().contains("api.responses.write"));
+        starved.assert_async().await;
+
+        let mut healthy_server = mockito::Server::new_async().await;
+        let healthy = healthy_server
+            .mock("POST", "/v1/responses")
+            .with_status(400)
+            .with_body(r#"{"error":"invalid input"}"#)
+            .create_async()
+            .await;
+        let healthy_url = format!("{}/v1/responses", healthy_server.url());
+        verify_responses_write_access_at(&healthy_url, "healthy-token")
+            .await
+            .expect("400 validation answer proves the scope");
+        healthy.assert_async().await;
     }
 
     /// Missing client id must surface the shared registration-gate message and

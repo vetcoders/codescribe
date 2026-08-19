@@ -334,6 +334,56 @@ impl AgentRuntimeState {
             true
         }
     }
+
+    /// Rebind the assistive conversation to the UI-selected thread (operator
+    /// contract 2026-08-13: dictation routes to the thread the user is looking
+    /// at; a new thread is only ever minted by an explicit "+ New thread").
+    ///
+    /// Dropping the runtime on a change deliberately reuses the degrade→rejoin
+    /// machinery: the next `ensure_runtime` rebuilds onto the new identity and
+    /// rehydrates its persisted history. `None` clears the identity so the next
+    /// send mints a fresh thread. Same-target calls are no-ops — the live
+    /// runtime and its in-memory history stay untouched.
+    fn retarget_thread(&mut self, target: Option<String>) {
+        if self.thread_store_id == target {
+            return;
+        }
+        let previous = self.thread_store_id.clone();
+        self.runtime = None;
+        self.thread_store_id = target;
+        info!(
+            from = previous.as_deref().unwrap_or("<unassigned>"),
+            to = self.thread_store_id.as_deref().unwrap_or("<fresh>"),
+            "Assistive lane retargeted to UI-selected thread"
+        );
+    }
+}
+
+/// UI-selected assistive routing target.
+///
+/// Outer `None`: the Agent UI never published a selection (window never
+/// opened) — the lane keeps its legacy behavior of continuing the bound
+/// conversation. `Some(None)`: the UI selected a not-yet-persisted thread
+/// (explicit "+ New thread") — the next send mints a fresh thread, then the
+/// send path syncs the minted identity back here so ONE conscious new-thread
+/// press produces one thread, not one per utterance.
+static ASSISTIVE_TARGET_THREAD: std::sync::RwLock<Option<Option<String>>> =
+    std::sync::RwLock::new(None);
+
+/// Publish the Agent UI's current thread selection as the assistive routing
+/// target. Called from the bridge whenever the selection changes.
+pub fn set_assistive_target_thread(backend_id: Option<String>) {
+    *ASSISTIVE_TARGET_THREAD
+        .write()
+        .unwrap_or_else(|e| e.into_inner()) = Some(backend_id);
+}
+
+/// Snapshot the published routing target, if the UI ever published one.
+fn assistive_target_thread() -> Option<Option<String>> {
+    ASSISTIVE_TARGET_THREAD
+        .read()
+        .unwrap_or_else(|e| e.into_inner())
+        .clone()
 }
 
 /// The lazily-initialized slot holding the process-global runtime state.
@@ -449,12 +499,16 @@ fn build_agent_stream_options(
 fn compose_agent_system_prompt(use_assistive_persona: bool) -> String {
     let workspace = crate::agent::tools::workspace::workspace_prompt_section();
     let doctrine = crate::agent::tools::doctrine::review_doctrine_prompt_section();
+    // Measured Responses/streaming contract facts + the answer-first rule —
+    // rides BOTH lanes so a spoken engine question gets substance, not a
+    // clarification questionnaire (operator incident 2026-08-14).
+    let api_truth = crate::agent::tools::api_truth::responses_api_prompt_section();
     if use_assistive_persona {
         let base = crate::config::get_assistive_prompt();
-        format!("{base}\n\n{workspace}\n\n{doctrine}")
+        format!("{base}\n\n{workspace}\n\n{doctrine}\n\n{api_truth}")
     } else {
         format!(
-            "You are the Codescribe agent. Answer and act on the user's spoken request using the available tools when helpful.\n\n{workspace}\n\n{doctrine}"
+            "You are the Codescribe agent. Answer and act on the user's spoken request using the available tools when helpful.\n\n{workspace}\n\n{doctrine}\n\n{api_truth}"
         )
     }
 }
@@ -1149,7 +1203,24 @@ async fn run_agent_send_with_fallback(
     let stream_options = build_agent_stream_options(ai_assistive_max_tokens, use_assistive_persona);
     let agent_result = {
         let mut guard = runtime_state.lock().await;
-        run_agent_send_path(&mut guard, text.clone(), stream_options).await
+        // Route to the thread the user is looking at (operator contract
+        // 2026-08-13). No published selection → legacy bound conversation.
+        let fresh_mint_requested = match assistive_target_thread() {
+            Some(target) => {
+                let fresh = target.is_none();
+                guard.retarget_thread(target);
+                fresh
+            }
+            None => false,
+        };
+        let result = run_agent_send_path(&mut guard, text.clone(), stream_options).await;
+        if fresh_mint_requested {
+            // One conscious "+ New thread" = one thread: adopt the minted
+            // identity as the target so the next utterance continues it. The
+            // UI's own post-turn refresh republishes the same identity.
+            set_assistive_target_thread(guard.thread_store_id.clone());
+        }
+        result
     };
 
     match agent_result {
@@ -1253,6 +1324,18 @@ impl CompletenessCommitSource {
     }
 }
 
+/// Engine warning code raised when the Layer 1 tail patch classified an
+/// under-commit retranscription and recovered speech it could **not** place on
+/// a demonstrably safe anchor (`core::stt::tail_patcher` →
+/// `core::pipeline::streaming::session`, W-C / commit `6d7eaa7f`).
+///
+/// Mirrored as a literal rather than imported: core's canonical
+/// `UNDER_COMMIT_WARNING_CODE` is `pub` inside a `pub(crate) mod session`, so it
+/// is not nameable from this crate and widening that visibility sits outside
+/// this cut's fence. Matched EXACTLY — the sibling `tail_patch_skipped` receipt
+/// and any future neighbouring code must not force residual gap fill.
+pub(crate) const UNDER_COMMIT_WARNING_CODE: &str = "tail_patch_under_commit";
+
 /// Session telemetry captured from `EngineEvent`s.
 #[derive(Debug, Clone, Default)]
 pub(crate) struct SessionTelemetrySnapshot {
@@ -1268,6 +1351,14 @@ pub(crate) struct SessionTelemetrySnapshot {
     /// across UtteranceFinal events. Smart-mode stop transcribes only the tail
     /// after this point (append-only doctrine — committed text is immutable).
     pub committed_through_secs: Option<f32>,
+    /// Layer 1 escalated an under-commit residual it could not place on a safe
+    /// anchor ([`UNDER_COMMIT_WARNING_CODE`]). Monotonic within one session:
+    /// once a hole is known no later healthy event may un-know it, because the
+    /// speech is already missing from the canvas the stop path is about to
+    /// deliver. `Default` starts it false by construction, so
+    /// [`reset_session_telemetry`] is the only thing that clears it and a new
+    /// recording can never inherit the previous session's residual demand.
+    pub residual_required: bool,
 }
 
 /// Telemetry handle shared between the engine's event sink and the controller
@@ -1343,6 +1434,10 @@ impl EventSink for SessionTelemetrySink {
     /// overwrite a valid maximum, silently disabling Smart tail gap-fill for the
     /// rest of the session. Unmatched events are ignored rather than
     /// exhaustively listed, so new engine events cannot break the build here.
+    ///
+    /// `Warning` is the one event folded by code rather than by variant: only
+    /// [`UNDER_COMMIT_WARNING_CODE`] sets `residual_required`, and it sets it
+    /// monotonically. Every other warning falls through to the ignore arm.
     fn on_event(&self, event: &EngineEvent) {
         let mut guard = self.shared.lock().unwrap_or_else(|e| e.into_inner());
         match event {
@@ -1373,6 +1468,15 @@ impl EventSink for SessionTelemetrySink {
             EngineEvent::SessionFinalised { .. } => {
                 guard.pending_tail = false;
                 guard.last_commit_source = Some(CompletenessCommitSource::SessionFinalised);
+            }
+            // Layer 1 recovered speech it could not place. Set-only: a hole
+            // found mid-session stays known until the session is reset, because
+            // the missing speech does not come back on its own. The exact code
+            // is the whole contract — a near-miss code must leave the flag false
+            // rather than put a Whisper pass on every stop path that logs a
+            // warning.
+            EngineEvent::Warning { code, .. } if code == UNDER_COMMIT_WARNING_CODE => {
+                guard.residual_required = true;
             }
             EngineEvent::Stats {
                 hallucination_drops,
@@ -1426,6 +1530,49 @@ mod tests {
     };
     use std::collections::VecDeque;
     use std::sync::atomic::{AtomicBool, AtomicUsize};
+
+    // ── Assistive routing target (operator contract 2026-08-13) ─────────────
+
+    /// Retargeting to another persisted thread drops the runtime (so the next
+    /// send rejoins + rehydrates) and adopts the new identity; retargeting to
+    /// the SAME thread must not touch a live runtime — steady-state sends may
+    /// re-apply the target on every turn.
+    #[test]
+    fn retarget_thread_rebinds_on_change_and_noops_on_same() {
+        let mut state = AgentRuntimeState {
+            runtime: None,
+            thread_store_id: Some("thread-a".to_string()),
+            runtime_degraded: false,
+        };
+
+        state.retarget_thread(Some("thread-a".to_string()));
+        assert_eq!(state.thread_store_id.as_deref(), Some("thread-a"));
+
+        state.retarget_thread(Some("thread-b".to_string()));
+        assert_eq!(
+            state.thread_store_id.as_deref(),
+            Some("thread-b"),
+            "a changed selection must adopt the new identity"
+        );
+        assert!(
+            state.runtime.is_none(),
+            "rebind goes through the rejoin machinery (runtime dropped)"
+        );
+    }
+
+    /// A `None` target is the explicit "+ New thread": the durable identity is
+    /// cleared so the next send mints a fresh thread instead of continuing the
+    /// previous conversation.
+    #[test]
+    fn retarget_thread_none_clears_identity_for_a_fresh_mint() {
+        let mut state = AgentRuntimeState {
+            runtime: None,
+            thread_store_id: Some("thread-a".to_string()),
+            runtime_degraded: false,
+        };
+        state.retarget_thread(None);
+        assert!(state.thread_store_id.is_none());
+    }
 
     // ── Collapsible Tool Evidence: friendly tool-name mapping ───────────────
 
@@ -1898,6 +2045,87 @@ mod tests {
         );
     }
 
+    /// The stop path's residual demand is folded by warning CODE, not by
+    /// variant. Three things are pinned here because each is a different way to
+    /// break the contract: exactly `tail_patch_under_commit` sets the flag, its
+    /// neighbours must not (a loose match would put a Whisper pass on the stop
+    /// path of every session that logs a warning), and once set no later event
+    /// may clear it — the speech Layer 1 could not place does not come back on
+    /// its own, so a clean final afterwards is not evidence the hole closed.
+    #[test]
+    fn test_session_telemetry_folds_only_the_exact_under_commit_warning() {
+        let warning = |code: &str| EngineEvent::Warning {
+            code: code.to_string(),
+            message: "committed_tokens=3 retranscribed_tokens=12".to_string(),
+        };
+        let utterance_final = || EngineEvent::UtteranceFinal {
+            utterance_id: 1,
+            text: "zdanie".to_string(),
+            raw_text: "zdanie".to_string(),
+            start_ts: 0.0,
+            end_ts: 1.0,
+            segments: vec![],
+            vad_speech_pct: Some(80.0),
+            avg_logprob: None,
+            compression_ratio: None,
+            quality_gate_dropped: false,
+            confidence_flags: vec![],
+        };
+
+        // Near misses: the sibling receipt code, a truncation, an extension, a
+        // case variant, a bare substring, and the empty code.
+        for code in [
+            "tail_patch_skipped",
+            "tail_patch_under_commi",
+            "tail_patch_under_commit_residual",
+            "TAIL_PATCH_UNDER_COMMIT",
+            "under_commit",
+            "",
+        ] {
+            let shared = new_session_telemetry();
+            let sink = SessionTelemetrySink::new(Arc::clone(&shared));
+            sink.on_event(&warning(code));
+            assert!(
+                !snapshot_session_telemetry(&shared).residual_required,
+                "warning code {code:?} must not demand residual gap fill"
+            );
+        }
+
+        let shared = new_session_telemetry();
+        let sink = SessionTelemetrySink::new(Arc::clone(&shared));
+        assert!(
+            !snapshot_session_telemetry(&shared).residual_required,
+            "a fresh session starts with no residual demand"
+        );
+
+        sink.on_event(&warning(UNDER_COMMIT_WARNING_CODE));
+        assert!(
+            snapshot_session_telemetry(&shared).residual_required,
+            "the exact Layer 1 under-commit code must fold to residual_required"
+        );
+
+        // Monotonic within the session: a clean commit, an unrelated warning
+        // and the session seal all arrive after the escalation and none of them
+        // may un-know it.
+        sink.on_event(&utterance_final());
+        sink.on_event(&warning("tail_patch_skipped"));
+        sink.on_event(&EngineEvent::SessionFinalised {
+            session_id: "s1".to_string(),
+            layer_summary: Default::default(),
+        });
+        assert!(
+            snapshot_session_telemetry(&shared).residual_required,
+            "later healthy events must not clear a hole Layer 1 already found"
+        );
+
+        // Only a new session clears it.
+        reset_session_telemetry(&shared);
+        assert!(
+            !snapshot_session_telemetry(&shared).residual_required,
+            "reset clears the residual demand so a new recording never inherits it"
+        );
+    }
+
     /// Reset must clear every field, not just the obvious ones: leftover
     /// `pending_tail` or `committed_chars` would make the next session's first
     /// routing decision read the previous session's state.
@@ -1914,6 +2142,8 @@ mod tests {
             guard.pending_tail = true;
             guard.last_commit_source = Some(CompletenessCommitSource::UtteranceFinal);
             guard.committed_chars = 12;
+            guard.committed_through_secs = Some(41.0);
+            guard.residual_required = true;
         }
         reset_session_telemetry(&shared);
 
@@ -1923,6 +2153,11 @@ mod tests {
         assert!(!snapshot.pending_tail);
         assert!(snapshot.last_commit_source.is_none());
         assert_eq!(snapshot.committed_chars, 0);
+        assert!(snapshot.committed_through_secs.is_none());
+        assert!(
+            !snapshot.residual_required,
+            "a stale residual demand would force a Whisper tail pass on the next session"
+        );
     }
 
     /// The per-turn generation machinery is removed: ordinary consecutive

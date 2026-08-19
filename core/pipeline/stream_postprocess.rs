@@ -67,8 +67,23 @@ const MAX_DROPS_IN_ROW: u8 = 2;
 const FINAL_PASS_ARTIFACT_TOKENS: &[&str] = &["going", "use"];
 /// Whisper `initial_prompt` token budget; over-approximated so the decoder never truncates.
 pub const WHISPER_INITIAL_PROMPT_TOKEN_BUDGET: usize = 224;
+/// SFSpeechRecognizer accepts at most one hundred contextual strings.
+pub const STT_CONTEXTUAL_STRINGS_MAX: usize = 100;
 /// Fixed prefix for the Whisper vocabulary hint string built by `build_whisper_initial_prompt`.
 const WHISPER_INITIAL_PROMPT_PREFIX: &str = "Vocabulary:";
+/// Stable last-priority vocabulary for the W13 operator domain. These terms are
+/// useful before the first acoustic occurrence, so a context match reorders
+/// them but never determines whether they are eligible.
+const STT_DOMAIN_PROMPT_TERMS: &[&str] = &[
+    "Vibecrafted",
+    "worktree",
+    "worktrees",
+    "binarka",
+    "binarki",
+    "akapity",
+    "reports",
+    "editors",
+];
 /// Env override for Whisper initial-prompt opt-in; wins over persisted config when set.
 pub const STT_INITIAL_PROMPT_ENABLED_ENV: &str = "CODESCRIBE_STT_INITIAL_PROMPT_ENABLED";
 
@@ -170,6 +185,23 @@ static GLOBAL_LEXICON: LazyLock<RwLock<Lexicon>> = LazyLock::new(|| {
     );
     RwLock::new(lex)
 });
+
+/// Warm the global lexicon off the caller's thread.
+///
+/// The singleton compiles ~14.5k rules in seconds; when the first toucher is
+/// the Apple live-session thread, that compile sits between "audio stream
+/// started" and "recognizer ready" and the first dictation after launch arms
+/// seconds late (session a5623d55, 2026-08-12: 5.1 s). Call at startup so the
+/// first recording finds the table already built. Idempotent and non-blocking;
+/// concurrent first-touchers simply block on the same `LazyLock` as before.
+pub fn warm_lexicon() {
+    std::thread::Builder::new()
+        .name("lexicon-warm".into())
+        .spawn(|| {
+            drop(GLOBAL_LEXICON.read());
+        })
+        .ok();
+}
 
 impl Lexicon {
     /// Compile the full rule set from every source, in load order.
@@ -333,10 +365,15 @@ impl Lexicon {
 
     /// Domain-vocabulary hint for this rule set: protected terms first, then the
     /// operator's custom canonicals, trimmed to the Whisper prompt budget.
-    fn whisper_initial_prompt(&self) -> Option<String> {
-        build_whisper_initial_prompt(
+    fn whisper_initial_prompt_receipt(
+        &self,
+        window_context: Option<&str>,
+    ) -> Option<LexiconVoiceReceipt> {
+        let domain_terms = prioritized_domain_terms(window_context);
+        build_lexicon_voice_receipt(
             &self.protected_canonicals,
             &self.custom_canonicals,
+            &domain_terms,
             WHISPER_INITIAL_PROMPT_TOKEN_BUDGET,
         )
     }
@@ -384,6 +421,27 @@ pub fn build_whisper_initial_prompt(
     custom_terms: &[String],
     token_budget: usize,
 ) -> Option<String> {
+    build_lexicon_voice_receipt(protected_terms, custom_terms, &[], token_budget)
+        .map(|receipt| receipt.prompt)
+}
+
+/// Evidence emitted for every prompt-bearing recognition window.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct LexiconVoiceReceipt {
+    pub prompt: String,
+    pub terms: Vec<String>,
+    pub estimated_tokens: usize,
+}
+
+/// Deterministic three-tier selection: protected, custom, then domain terms.
+/// A term that does not fit is skipped so one long entry cannot starve later
+/// short entries in the same (or lower) priority tier.
+pub fn build_lexicon_voice_receipt(
+    protected_terms: &[String],
+    custom_terms: &[String],
+    domain_terms: &[String],
+    token_budget: usize,
+) -> Option<LexiconVoiceReceipt> {
     if token_budget == 0 {
         return None;
     }
@@ -392,7 +450,14 @@ pub fn build_whisper_initial_prompt(
     let mut selected = Vec::new();
     let mut used_tokens = 1usize; // `Vocabulary:`
 
-    for term in protected_terms.iter().chain(custom_terms.iter()) {
+    for term in protected_terms
+        .iter()
+        .chain(custom_terms.iter())
+        .chain(domain_terms.iter())
+    {
+        if selected.len() == STT_CONTEXTUAL_STRINGS_MAX {
+            break;
+        }
         let term = term.trim();
         if term.is_empty() {
             continue;
@@ -403,15 +468,36 @@ pub fn build_whisper_initial_prompt(
 
         let term_tokens = estimated_prompt_tokens(term) + 1; // term plus separator/punctuation
         if used_tokens + term_tokens > token_budget {
-            break;
+            continue;
         }
 
         used_tokens += term_tokens;
         selected.push(term.to_string());
     }
 
-    (!selected.is_empty())
-        .then(|| format!("{WHISPER_INITIAL_PROMPT_PREFIX} {}.", selected.join("; ")))
+    (!selected.is_empty()).then(|| LexiconVoiceReceipt {
+        prompt: format!("{WHISPER_INITIAL_PROMPT_PREFIX} {}.", selected.join("; ")),
+        terms: selected,
+        estimated_tokens: used_tokens,
+    })
+}
+
+fn prioritized_domain_terms(window_context: Option<&str>) -> Vec<String> {
+    let context = window_context.unwrap_or_default().to_lowercase();
+    let terms: Vec<String> = STT_DOMAIN_PROMPT_TERMS
+        .iter()
+        .map(|term| (*term).to_string())
+        .collect();
+    terms
+        .iter()
+        .filter(|term| context.contains(&term.to_lowercase()))
+        .chain(
+            terms
+                .iter()
+                .filter(|term| !context.contains(&term.to_lowercase())),
+        )
+        .cloned()
+        .collect()
 }
 
 /// Whether the vocabulary hint may be fed to the decoder.
@@ -433,6 +519,15 @@ pub fn stt_initial_prompt_enabled() -> bool {
 /// disabled or no terms are registered. Hot-reloads the custom file first so a
 /// freshly taught term can reach the very next decode.
 pub fn whisper_initial_prompt() -> Option<String> {
+    whisper_initial_prompt_for_window(None).map(|receipt| receipt.prompt)
+}
+
+/// Build and attest the vocabulary used for one Whisper tail/utterance window.
+/// No transcript content is logged; the selected vocabulary and token estimate
+/// are sufficient to reproduce the selection.
+pub fn whisper_initial_prompt_for_window(
+    window_context: Option<&str>,
+) -> Option<LexiconVoiceReceipt> {
     if !stt_initial_prompt_enabled() {
         return None;
     }
@@ -440,7 +535,35 @@ pub fn whisper_initial_prompt() -> Option<String> {
     let lexicon = GLOBAL_LEXICON
         .read()
         .expect("global lexicon read lock poisoned");
-    lexicon.whisper_initial_prompt()
+    let receipt = lexicon.whisper_initial_prompt_receipt(window_context)?;
+    info!(
+        scope = "window",
+        selected_terms = ?receipt.terms,
+        estimated_tokens = receipt.estimated_tokens,
+        "STT lexicon voice receipt"
+    );
+    Some(receipt)
+}
+
+/// Preserve the rolling acoustic context and append lexicon vocabulary only
+/// for this decode window. With the flag off, the pre-existing context passes
+/// through byte-for-byte.
+pub fn compose_whisper_window_prompt(previous_context: Option<&str>) -> Option<String> {
+    let previous = previous_context
+        .map(str::trim)
+        .filter(|value| !value.is_empty());
+    let receipt = whisper_initial_prompt_for_window(previous);
+    match (previous, receipt) {
+        (Some(context), Some(receipt)) => Some(format!("{context}\n{}", receipt.prompt)),
+        (Some(context), None) => Some(context.to_string()),
+        (None, Some(receipt)) => Some(receipt.prompt),
+        (None, None) => None,
+    }
+}
+
+/// Apple contextual strings use the same flag, ordering and budget as Whisper.
+pub fn apple_contextual_strings() -> Option<Vec<String>> {
+    whisper_initial_prompt_for_window(None).map(|receipt| receipt.terms)
 }
 
 /// Coarse token estimate for prompt budgeting: one token per whitespace-separated
@@ -1318,6 +1441,25 @@ mod tests {
             .expect("expected truncated prompt");
 
         assert_eq!(prompt, "Vocabulary: Loctree.");
+    }
+
+    /// W13-6A acceptance: selection is per-window, deterministic, receipted,
+    /// budget-aware, and preserves protected > custom > domain priority.
+    #[test]
+    fn w13_lexicon_voice_per_window_receipt() {
+        let protected = vec![
+            "Loctree".to_string(),
+            "too many words right here".to_string(),
+        ];
+        let custom = vec!["my term".to_string()];
+        let domain = vec!["Vibecrafted".to_string(), "worktree".to_string()];
+
+        let receipt =
+            build_lexicon_voice_receipt(&protected, &custom, &domain, 8).expect("window receipt");
+
+        assert_eq!(receipt.terms, vec!["Loctree", "my term", "Vibecrafted"]);
+        assert_eq!(receipt.estimated_tokens, 8);
+        assert_eq!(receipt.prompt, "Vocabulary: Loctree; my term; Vibecrafted.");
     }
 
     /// Fresh/default config must not inject an initial prompt even when terms exist.

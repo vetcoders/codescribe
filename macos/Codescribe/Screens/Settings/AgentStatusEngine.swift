@@ -12,12 +12,12 @@ import Foundation
 
 /// Read-only agent-substrate status surface the Settings screen consumes.
 protocol AgentStatusEngine {
-    /// Agentic-lane readiness (Vibecrafted + AICX + Loctree + PRView).
-    func agenticReadiness() -> CsAgenticReadiness
-    /// Basic-lane MCP config + runtime status. Missing mcp.json → neutral row.
-    func mcpStatus() -> CsMcpStatusReport
-    /// Provider-neutral capability matrix (native / enhanced / unavailable).
-    func capabilityMatrix() -> [CsCapabilityRow]
+  /// Agentic-lane readiness (Vibecrafted + AICX + Loctree + PRView).
+  func agenticReadiness() -> CsAgenticReadiness
+  /// Basic-lane MCP config + runtime status. Missing mcp.json → neutral row.
+  func mcpStatus() -> CsMcpStatusReport
+  /// Provider-neutral capability matrix (native / enhanced / unavailable).
+  func capabilityMatrix() -> [CsCapabilityRow]
 }
 
 // MARK: - Real engine (UniFFI bridge adapter)
@@ -26,86 +26,88 @@ protocol AgentStatusEngine {
 /// every call re-reads config truth so Swift always sees on-disk state. Injected
 /// by App.swift for the live app.
 final class RealAgentStatusEngine: AgentStatusEngine {
-    private let status = CodescribeAgentStatus()
+  private let status = CodescribeAgentStatus()
 
-    func agenticReadiness() -> CsAgenticReadiness { status.agenticReadiness() }
-    func mcpStatus() -> CsMcpStatusReport { status.mcpStatus() }
-    func capabilityMatrix() -> [CsCapabilityRow] { status.capabilityMatrix() }
+  func agenticReadiness() -> CsAgenticReadiness { status.agenticReadiness() }
+  func mcpStatus() -> CsMcpStatusReport { status.mcpStatus() }
+  func capabilityMatrix() -> [CsCapabilityRow] { status.capabilityMatrix() }
 }
 
 // MARK: - Mock engine (previews)
 
 /// In-memory stand-in for #Preview and standalone rendering.
 struct MockAgentStatusEngine: AgentStatusEngine {
-    var readiness: CsAgenticReadiness = .sample
-    var mcp: CsMcpStatusReport = .sample
-    var matrix: [CsCapabilityRow] = CsCapabilityRow.sampleMatrix
+  var readiness: CsAgenticReadiness = .sample
+  var mcp: CsMcpStatusReport = .sample
+  var matrix: [CsCapabilityRow] = CsCapabilityRow.sampleMatrix
 
-    func agenticReadiness() -> CsAgenticReadiness { readiness }
-    func mcpStatus() -> CsMcpStatusReport { mcp }
-    func capabilityMatrix() -> [CsCapabilityRow] { matrix }
+  func agenticReadiness() -> CsAgenticReadiness { readiness }
+  func mcpStatus() -> CsMcpStatusReport { mcp }
+  func capabilityMatrix() -> [CsCapabilityRow] { matrix }
 }
 
 // MARK: - Bridge value helpers (preview seeds)
 
 extension CsMcpStatusReport {
-    /// Sample MCP status with a mix of live / pending servers (preview seed).
-    static let sample = CsMcpStatusReport(
-        configPathDisplay: "~/.codescribe/mcp.json",
-        configured: true,
-        rows: [
-            CsMcpStatusRow(label: "loctree-mcp:", value: "9 tool(s)", tone: .good),
-            CsMcpStatusRow(label: "aicx-mcp:", value: "configured (agent not started)", tone: .warn),
-            CsMcpStatusRow(label: "vibecrafted-mcp:", value: "failed: command not found", tone: .bad)
-        ]
-    )
+  /// Sample MCP status with a mix of live / pending servers (preview seed).
+  static let sample = CsMcpStatusReport(
+    configPathDisplay: "~/.codescribe/mcp.json",
+    configured: true,
+    rows: [
+      CsMcpStatusRow(label: "loctree-mcp:", value: "9 tool(s)", tone: .good),
+      CsMcpStatusRow(label: "aicx-mcp:", value: "configured (agent not started)", tone: .warn),
+      CsMcpStatusRow(label: "vibecrafted-mcp:", value: "failed: command not found", tone: .bad),
+    ]
+  )
 }
 
 extension CsAgenticReadiness {
-    /// Sample readiness: the core capability gate passes (provider + key + native
-    /// tools), and the operator-tooling MCP rows are informational (preview seed).
-    static let sample = CsAgenticReadiness(
-        configPathDisplay: "~/.codescribe/mcp.json",
-        ready: true,
-        rows: [
-            CsMcpStatusRow(
-                label: "Agentic readiness:",
-                value: "ready — OpenAI (Responses) configured, key set, 10 native tool(s)",
-                tone: .good
-            ),
-            CsMcpStatusRow(label: "Provider:", value: "OpenAI (Responses) — key set", tone: .good),
-            CsMcpStatusRow(label: "Native tools:", value: "10 tool(s) available", tone: .good),
-            CsMcpStatusRow(label: "Vibecrafted runtime:", value: "not configured (optional)", tone: .neutral),
-            CsMcpStatusRow(label: "AICX MCP:", value: "configured — agent not started yet", tone: .warn),
-            CsMcpStatusRow(label: "Loctree MCP:", value: "ready — 9 tool(s) live", tone: .good),
-            CsMcpStatusRow(label: "PRView integration:", value: "not configured (optional)", tone: .neutral)
-        ]
-    )
+  /// Sample readiness: the core capability gate passes (provider + key + native
+  /// tools), and the operator-tooling MCP rows are informational (preview seed).
+  static let sample = CsAgenticReadiness(
+    configPathDisplay: "~/.codescribe/mcp.json",
+    ready: true,
+    rows: [
+      CsMcpStatusRow(
+        label: "Agentic readiness:",
+        value: "ready — OpenAI (Responses) configured, key set, 10 native tool(s)",
+        tone: .good
+      ),
+      CsMcpStatusRow(label: "Provider:", value: "OpenAI (Responses) — key set", tone: .good),
+      CsMcpStatusRow(label: "Native tools:", value: "10 tool(s) available", tone: .good),
+      CsMcpStatusRow(
+        label: "Vibecrafted runtime:", value: "not configured (optional)", tone: .neutral),
+      CsMcpStatusRow(label: "AICX MCP:", value: "configured — agent not started yet", tone: .warn),
+      CsMcpStatusRow(label: "Loctree MCP:", value: "ready — 9 tool(s) live", tone: .good),
+      CsMcpStatusRow(
+        label: "PRView integration:", value: "not configured (optional)", tone: .neutral),
+    ]
+  )
 }
 
 extension CsCapabilityRow {
-    /// Preview seed for Settings → Agent capability matrix.
-    static let sampleMatrix: [CsCapabilityRow] = [
-        CsCapabilityRow(
-            op: "fs.list",
-            tier: "native",
-            provider: "native",
-            nativeTool: "list_directory",
-            reason: "Native workspace-sandboxed list"
-        ),
-        CsCapabilityRow(
-            op: "fs.search",
-            tier: "enhanced",
-            provider: "loctree",
-            nativeTool: "search_files",
-            reason: "Native search + Loctree enrichment preferred when healthy"
-        ),
-        CsCapabilityRow(
-            op: "code.symbols",
-            tier: "unavailable",
-            provider: "unavailable",
-            nativeTool: "",
-            reason: "No native implementation and no healthy MCP provider"
-        ),
-    ]
+  /// Preview seed for Settings → Agent capability matrix.
+  static let sampleMatrix: [CsCapabilityRow] = [
+    CsCapabilityRow(
+      op: "fs.list",
+      tier: "native",
+      provider: "native",
+      nativeTool: "list_directory",
+      reason: "Native workspace-sandboxed list"
+    ),
+    CsCapabilityRow(
+      op: "fs.search",
+      tier: "enhanced",
+      provider: "loctree",
+      nativeTool: "search_files",
+      reason: "Native search + Loctree enrichment preferred when healthy"
+    ),
+    CsCapabilityRow(
+      op: "code.symbols",
+      tier: "unavailable",
+      provider: "unavailable",
+      nativeTool: "",
+      reason: "No native implementation and no healthy MCP provider"
+    ),
+  ]
 }

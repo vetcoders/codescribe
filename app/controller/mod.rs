@@ -33,6 +33,8 @@ mod helpers;
 mod hotkey_policy;
 /// Overlay paste dispositions and deferred-insert registration.
 mod overlay_paste;
+/// Production-owned, content-private PCM replay of the overlay engine cone.
+pub mod production_replay;
 /// Quality-gated auto-paste / clipboard delivery decisions.
 mod quality_delivery;
 /// Public serving-status surface for tray/UI consumers.
@@ -44,13 +46,12 @@ mod types;
 
 pub use helpers::{
     is_assistive_session, is_conversation_session, publish_recording_indicator,
-    set_assistive_session, set_conversation_session,
+    set_assistive_session, set_assistive_target_thread, set_conversation_session,
 };
 pub use overlay_paste::{OverlayPasteDelivery, OverlayPasteResult};
 pub use types::{HotkeyAction, HotkeyInput, HotkeyType, State, TranscriptionActionContractMode};
 
 use crate::presentation::emitter::PresentationEmitter;
-use crate::stream_postprocess::StreamPostProcessor;
 use anyhow::{Context, Result};
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -75,6 +76,7 @@ use crate::os::selection::{
     wait_for_frontmost_app,
 };
 use crate::os::shortcut_registry;
+use codescribe_core::asr_session::GatewaySessionAvailability;
 use context_bucket::ContextBucket;
 #[cfg(test)]
 pub(crate) use context_bucket::ContextMarker;
@@ -97,14 +99,20 @@ use assistive_delivery::{
 };
 pub(crate) use final_pass::{
     FinalPassAction, FinalPassRoutingMode, FinalPassStages, SmartTailGapSource, StopPathBudget,
-    StreamingCompleteness, StreamingCompletenessEvidence, append_tail_gap,
-    assess_streaming_completeness, compose_stop_path_residual_from_partials, final_pass_action,
-    final_pass_routing_mode, format_assistive_delivery_budget_line, format_final_pass_stages_line,
-    format_stop_path_budget_line, smart_tail_gap_source,
+    StreamingCompletenessEvidence, append_tail_gap, apply_committed_density_floor,
+    apply_residual_required_demotion, assess_streaming_completeness, completeness_label,
+    compose_stop_path_residual_from_partials, final_pass_action, final_pass_routing_mode,
+    format_assistive_delivery_budget_line, format_density_override_line,
+    format_final_pass_stages_line, format_residual_required_line, format_stop_path_budget_line,
+    smart_tail_gap_source,
 };
+// The stop path routes on completeness values without ever naming the type:
+// every verdict label now comes from `completeness_label`, so the only sites
+// that spell `StreamingCompleteness` out are the controller tests.
 #[cfg(test)]
 pub(crate) use final_pass::{
-    assess_streaming_completeness_fields, engine_label_from_verdict, stop_path_budget_covers_total,
+    StreamingCompleteness, assess_streaming_completeness_fields, engine_label_from_verdict,
+    stop_path_budget_covers_total,
 };
 #[cfg(test)]
 use helpers::SessionEngineStats;
@@ -134,10 +142,11 @@ use quality_delivery::{
     ClipboardDeliverySink, compose_final_status, evaluate_quality_commit_trigger,
     maybe_wrap_transcript_for_delivery, maybe_wrap_transcript_for_delivery_with_quality,
     recording_mode_label, resolve_auto_paste_policy, session_auto_format_enabled,
-    truth_recording_mode_label,
+    session_prewarms_semantic_guard, truth_recording_mode_label,
 };
 pub(crate) use truth::{
-    adjudicate_recording_truth, apply_ai_noop_signal, truth_display_status, truth_engine_label,
+    adjudicate_recording_truth, apply_ai_noop_signal, postprocess_transcript_for_delivery,
+    truth_display_status, truth_engine_label,
 };
 #[cfg(test)]
 pub(crate) use truth::{push_typed_flag, truth_review_trigger};
@@ -504,6 +513,12 @@ impl RecordingController {
                 Err(error) => warn!("Model manager unavailable during startup: {error}"),
             }
 
+            // Lexicon table (~14.5k rules, seconds to compile) warms off-thread
+            // too: its first toucher used to be the Apple live-session thread,
+            // which put the whole compile between "audio stream started" and
+            // "recognizer ready" (5.1 s arm stall, session a5623d55).
+            codescribe_core::pipeline::stream_postprocess::warm_lexicon();
+
             if !crate::whisper::is_initialized() {
                 // Best-effort BACKGROUND prewarm — never block recording readiness.
                 //
@@ -580,6 +595,19 @@ impl RecordingController {
     /// Get current state
     pub async fn current_state(&self) -> State {
         *self.state.read().await
+    }
+
+    /// Forward one host sleep/wake boundary to the active recording session.
+    ///
+    /// This never creates a recorder or starts an engine. When capture is not
+    /// active it is a normal no-op; otherwise the per-recording lifecycle
+    /// channel wakes the session loop and degrades Layer 1 fail-closed.
+    pub async fn note_sleep_wake(&self) -> bool {
+        self.recorder
+            .lock()
+            .await
+            .as_ref()
+            .is_some_and(StreamingRecorder::note_sleep_wake)
     }
 
     /// Subscribe to the controller's IPC event stream. Each subscriber gets its
@@ -754,14 +782,23 @@ impl RecordingController {
             None => match self.assistive_context.write().await.take() {
                 Some(context) => context,
                 None => {
+                    // An explicit send must never be refused for want of a
+                    // context. The trigger context dies with the session
+                    // (`reset_session_fields`), but the terminal overlay — and
+                    // its live "To Agent" button — outlives it by minutes; the
+                    // 2026-08-13 01:02 session logged six no_pending_context
+                    // refusals against a user clicking a button the UI showed
+                    // as available. Double-send protection lives in the Swift
+                    // `agentDeliveryStarted` latch, not here. Degrade to a
+                    // bare context: the click means "send this text".
                     info!(
                         "{}",
                         format_assistive_delivery_budget_line(
                             delivery_started.elapsed().as_secs_f64(),
-                            "no_pending_context",
+                            "degraded_no_context",
                         )
                     );
-                    return Ok(false);
+                    AssistiveContext::default()
                 }
             },
         };
@@ -2155,8 +2192,11 @@ impl RecordingController {
                 set_assistive_session(false);
                 return;
             }
-            // Hold-to-talk: the key-down is the source of truth. Don't auto-stop mid-hold.
+            // Hold-to-talk: the key-down is the source of truth. Don't auto-stop
+            // the session mid-hold. Silence still closes an SFSpeech epoch so
+            // Layer 1 can be fed — same knob as toggle (`TOGGLE_SILENCE_SEC`).
             rec.recorder.config.auto_silence = false;
+            rec.set_utterance_silence_sec(Some(config.toggle_silence_sec));
             rec.recorder.set_on_vad_stop(move || {
                 info!("VAD callback: setting vad_triggered flag");
                 vad_flag.store(true, Ordering::SeqCst);
@@ -2174,6 +2214,10 @@ impl RecordingController {
                 is_assistive || overlay_enabled,
                 event_broadcast.clone(),
                 Arc::clone(&session_telemetry),
+            );
+            rec.configure_layer1(
+                &UserSettings::load(),
+                GatewaySessionAvailability::Unavailable,
             );
             if !cfg!(test) {
                 let language_hint = language.whisper_hint().map(str::to_string);
@@ -2369,6 +2413,10 @@ impl RecordingController {
             is_assistive,
             self.event_broadcast.clone(),
             Arc::clone(&self.session_telemetry),
+        );
+        recorder.configure_layer1(
+            &UserSettings::load(),
+            GatewaySessionAvailability::Unavailable,
         );
 
         // Skip actual audio stream in tests (no CoreAudio device needed)
@@ -2796,6 +2844,11 @@ impl RecordingController {
 
         let routing_mode = final_pass_routing_mode();
         let prefer_apple = codescribe_core::stt::active_engine_is_apple();
+        let streaming_engine_label = if prefer_apple {
+            "live_apple"
+        } else {
+            "streaming_whisper"
+        };
         // Honest mode: Off never runs a full file re-pass (Apple or not).
         // Smart/Always decide via final_pass_action — no silent rewrite.
         let run_local_final_pass =
@@ -2810,7 +2863,57 @@ impl RecordingController {
             // commit_source come from session telemetry, never hardcoded.
             let completeness_evidence =
                 StreamingCompletenessEvidence::from_session(&streaming_text, &session_snap);
-            let completeness = assess_streaming_completeness(&completeness_evidence);
+            let structural_completeness = assess_streaming_completeness(&completeness_evidence);
+            // W-B committed-density floor. Structural coverage cannot notice
+            // that the live accumulator ate the speech it was covering, so the
+            // recorded WAV — complete on both measured eaten takes — referees
+            // the verdict. The session's own `committed_through_secs` is exactly
+            // the quantity that bug corrupts, so it cannot referee itself; a
+            // header read is the whole cost, paid before the existing typed
+            // routing matrix chooses skip, punctuation, or recovery.
+            let audio_secs = audio_path.as_ref().and_then(|path| {
+                codescribe_core::audio::recorder::wav_duration_secs(path.as_path())
+            });
+            let density_guarded = apply_committed_density_floor(
+                structural_completeness,
+                audio_secs,
+                completeness_evidence.committed_chars,
+            );
+            if density_guarded != structural_completeness {
+                info!(
+                    "{}",
+                    format_density_override_line(
+                        structural_completeness,
+                        audio_secs.unwrap_or(f32::NAN),
+                        completeness_evidence.committed_chars,
+                    )
+                );
+            } else if audio_secs.is_none() {
+                // A guard that could not measure must say so: silence here is
+                // otherwise indistinguishable from a session that passed.
+                info!(
+                    "final_pass_density_guard silent reason=audio_duration_unknown committed_chars={} has_audio_path={}",
+                    completeness_evidence.committed_chars,
+                    audio_path.is_some(),
+                );
+            }
+            // W-Cb Layer 1 under-commit consumer. W-C already classifies an
+            // under-commit retranscription, appends what it can place on safe
+            // zero-width anchors, and escalates the unplaceable remainder as
+            // `EngineEvent::Warning { code: tail_patch_under_commit }`. Until
+            // now that warning reached the log and the IPC wire and changed no
+            // verdict. Applied AFTER the density floor on purpose: when both
+            // fire, `starved_density` carries measured numbers this one does
+            // not, and both route to the same tail-gap ladder — so the richer
+            // diagnosis is the one worth keeping in the receipts.
+            let completeness =
+                apply_residual_required_demotion(density_guarded, session_snap.residual_required);
+            if session_snap.residual_required {
+                info!(
+                    "{}",
+                    format_residual_required_line(density_guarded, completeness)
+                );
+            }
             // Typed routing: Always → full file re-pass; Smart+Complete / Off →
             // skip; Smart+Incomplete → tail-gap append (committed text immutable).
             // Live-lane fence (w2-b): keeps the action matrix; residual partials
@@ -2827,13 +2930,9 @@ impl RecordingController {
 
             if matches!(action, FinalPassAction::SkipStreamingFinal) {
                 local_final_pass_attempted = true;
-                let reason = match completeness {
-                    StreamingCompleteness::Complete => "complete_streaming_transcript",
-                    // Unreachable through the Smart mapping (shape routes to
-                    // PunctuationRepass), reachable if a future mode skips on it.
-                    StreamingCompleteness::CompleteShapeDeficient => "shape_deficient",
-                    StreamingCompleteness::Incomplete { reason } => reason,
-                };
+                // One label table for every receipt naming a verdict, so the
+                // skip line and the guard lines cannot drift apart.
+                let reason = completeness_label(completeness);
                 let commit_src = completeness_evidence
                     .commit_source
                     .map(CompletenessCommitSource::as_str)
@@ -3369,12 +3468,17 @@ impl RecordingController {
             local_final_pass_verdict,
             streaming_text,
             cloud_verdict_opt.clone(),
+            Some(streaming_engine_label),
             &session_telemetry,
         );
         if transcript_source_override.is_some()
+            && truth_verdict.raw_text.is_some()
             && matches!(
                 truth_verdict.transcript_source,
-                Some(RecordingTranscriptSource::LocalFinalPass)
+                Some(
+                    RecordingTranscriptSource::LocalFinalPass
+                        | RecordingTranscriptSource::Streaming
+                )
             )
         {
             truth_verdict.transcript_source = transcript_source_override;
@@ -3677,14 +3781,9 @@ impl RecordingController {
         // optional full WAV re-pass / layered tail-patch. Every delivery path still
         // runs StreamPostProcessor before overlay, clipboard, augmentation, or dataset.
         let postproc_started = std::time::Instant::now();
-        let (clean_text, postprocess_stats) = {
-            let mut finalizer = StreamPostProcessor::new();
-            let clean_text = finalizer
-                .process(&raw_text)
-                .unwrap_or_else(|| raw_text.clone());
-            let stats = finalizer.stats();
-            (clean_text, stats)
-        };
+        let postprocessed = postprocess_transcript_for_delivery(&raw_text);
+        let clean_text = postprocessed.text;
+        let postprocess_stats = postprocessed.stats;
         let postproc_secs = postproc_started.elapsed().as_secs_f64();
         info!(
             "Post-processed transcript ({} chars, delta={}, drops={}/{}, gate_drops={}, lexicon_rewrites={})",
@@ -3741,6 +3840,30 @@ impl RecordingController {
         // - AI on selection? → Hold + Cmd (Selection)
         let mut is_ai_noop = false;
         let format_started = std::time::Instant::now();
+
+        // Start the embedder loading *alongside* the model call, not after it.
+        //
+        // The semantic guard below is the embedder's only consumer and runs once
+        // formatting returns, so a cold engine charged its full load to the stop
+        // path in series behind the LLM: `semantic_guard took_ms=1127` on
+        // 2026-08-12, ~1.0s of which was the model load and 0.13s the actual
+        // comparison. The round-trip it now overlaps with took 11.05s — the load
+        // fits inside it many times over.
+        //
+        // Deliberately scoped to lanes that are about to call the LLM: warming
+        // unconditionally (or at startup) would keep 471 MB resident for takes
+        // that never reach the guard, which is the opposite of the idle-RAM
+        // decision. `force_raw` and every no-LLM fallback stay cold.
+        if session_prewarms_semantic_guard(
+            &config,
+            assistive,
+            force_raw,
+            force_ai,
+            ai_key_available,
+        ) {
+            codescribe_core::embedder::singleton::warm();
+        }
+
         let (formatted_text, output_kind) = if assistive {
             info!(
                 "Assistive mode ({:?}): finalizing transcript before overlay delivery",
@@ -3759,11 +3882,12 @@ impl RecordingController {
                 && ai_key_available
             {
                 let lang_str = language_opt.map(String::from);
-                let result = crate::ai_formatting::format_text_with_status(
+                // W13-1: consume the inline-format buffer when armed — stop
+                // pays only for the unformatted tail; falls back to the classic
+                // full-text format when the buffer cannot prove coverage.
+                let result = codescribe_core::llm::inline_format::format_text_with_inline_buffer(
                     &clean_text,
                     lang_str.as_deref(),
-                    false,
-                    None,
                 )
                 .await;
                 is_ai_noop = result.status == crate::ai_formatting::AiFormatStatus::AiNoop;
@@ -3815,11 +3939,10 @@ impl RecordingController {
                 info!("Formatting mode (Left Option): correcting transcript via AI");
 
                 let lang_str = language_opt.map(String::from);
-                let result = crate::ai_formatting::format_text_with_status(
+                // W13-1: inline buffer first, classic full format as fallback.
+                let result = codescribe_core::llm::inline_format::format_text_with_inline_buffer(
                     &clean_text,
                     lang_str.as_deref(),
-                    false,
-                    None,
                 )
                 .await;
                 is_ai_noop = result.status == crate::ai_formatting::AiFormatStatus::AiNoop;
@@ -3862,11 +3985,10 @@ impl RecordingController {
                 info!("Formatting mode (Toggle): correcting transcript via AI");
 
                 let lang_str = language_opt.map(String::from);
-                let result = crate::ai_formatting::format_text_with_status(
+                // W13-1: inline buffer first, classic full format as fallback.
+                let result = codescribe_core::llm::inline_format::format_text_with_inline_buffer(
                     &clean_text,
                     lang_str.as_deref(),
-                    false,
-                    None,
                 )
                 .await;
                 is_ai_noop = result.status == crate::ai_formatting::AiFormatStatus::AiNoop;

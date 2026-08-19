@@ -110,6 +110,8 @@ struct BridgeRequest<'a> {
     locale: &'a str,
     #[serde(skip_serializing_if = "Option::is_none")]
     audio_path: Option<&'a str>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    contextual_strings: Option<&'a [String]>,
     allow_download: bool,
 }
 
@@ -429,6 +431,7 @@ fn transcribe_file_with_backend(
         command: "transcribe",
         locale: &locale,
         audio_path: Some(audio_path.as_str()),
+        contextual_strings: None,
         allow_download: env_bool(ENV_ALLOW_DOWNLOAD, true),
     };
     let response = run_bridge_with_timeout(&request, Some(BRIDGE_TRANSCRIBE_TIMEOUT))
@@ -491,11 +494,13 @@ fn transcribe_via_bridge_wav_live(
     let wav = TempWavFile::write(audio, sample_rate)?;
     let audio_path = wav.path().display().to_string();
     let locale = resolved_locale(language);
+    let contextual_strings = crate::pipeline::stream_postprocess::apple_contextual_strings();
     let request = BridgeRequest {
         protocol_version: 1,
         command: "transcribe_live",
         locale: &locale,
         audio_path: Some(audio_path.as_str()),
+        contextual_strings: contextual_strings.as_deref(),
         allow_download: env_bool(ENV_ALLOW_DOWNLOAD, true),
     };
     let audio_secs = audio.len() as f64 / sample_rate.max(1) as f64;
@@ -542,12 +547,17 @@ fn run_bridge_stream(
             .stdin
             .as_mut()
             .context("Apple STT bridge stdin unavailable")?;
+        // A dead bridge must surface as EPIPE, not as a fatal signal in the
+        // Swift host (see `util::pipes`).
+        crate::util::pipes::disable_sigpipe(stdin);
 
+        let contextual_strings = crate::pipeline::stream_postprocess::apple_contextual_strings();
         let request = BridgeRequest {
             protocol_version: 1,
             command: "stream",
             locale,
             audio_path: None,
+            contextual_strings: contextual_strings.as_deref(),
             allow_download: env_bool(ENV_ALLOW_DOWNLOAD, true),
         };
         let req_payload = serde_json::to_vec(&request).context("serialize stream request")?;
@@ -713,6 +723,9 @@ fn run_bridge_with_timeout(
             .stdin
             .as_mut()
             .context("Apple STT bridge stdin unavailable")?;
+        // A dead bridge must surface as EPIPE, not as a fatal signal in the
+        // Swift host (see `util::pipes`).
+        crate::util::pipes::disable_sigpipe(stdin);
         let payload = serde_json::to_vec(request).context("serialize bridge request")?;
         stdin
             .write_all(&payload)
@@ -854,6 +867,7 @@ fn probe_bridge(locale: &str, allow_download: bool) -> Result<ProbeResult> {
         command: "probe",
         locale,
         audio_path: None,
+        contextual_strings: None,
         allow_download,
     };
     let response = run_bridge_with_timeout(&request, Some(BRIDGE_PROBE_TIMEOUT))
@@ -870,6 +884,7 @@ fn request_speech_auth_bridge(locale: &str, allow_download: bool) -> Result<Brid
         command: "request_auth",
         locale,
         audio_path: None,
+        contextual_strings: None,
         allow_download,
     };
     // Dialog can wait on the user; reuse the generous probe budget.

@@ -14,6 +14,10 @@ categories = ["multimedia::audio", "multimedia::encoding"]
 [lib]
 path = "lib.rs"
 
+[[bin]]
+name = "codescribe-stt-sidecar"
+path = "bin/codescribe-stt-sidecar.rs"
+
 [features]
 default = []
 offline_eval = []

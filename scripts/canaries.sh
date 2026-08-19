@@ -86,9 +86,9 @@ echo "--------------------------------------------------------------------------
 
 # ---------------------------------------------------------------------------
 # idle-default-truth (hermetic)
-# The same number lives in three places that cannot drift silently again:
-# ENV_REGISTRY.toml [vars.*IDLE_UNLOAD_SECS].default, the DEFAULT_IDLE_UNLOAD_SECS
-# constants in both singletons, and the docs/env.md prose.
+# Each residency default has one source of truth: its ENV_REGISTRY entry, its
+# singleton constant, and its prose. Whisper and embedder may intentionally use
+# different values, so this canary compares each component with its own contract.
 # ---------------------------------------------------------------------------
 canary_idle_default_truth() {
     local reg_whisper reg_embedder code_whisper code_embedder doc_claim
@@ -96,7 +96,7 @@ canary_idle_default_truth() {
     reg_embedder="$(awk '/^\[vars\.CODESCRIBE_EMBEDDER_IDLE_UNLOAD_SECS\]/{f=1;next} f&&/^default/{gsub(/[^0-9]/,"");print;exit}' docs/ENV_REGISTRY.toml)"
     code_whisper="$(sed -nE 's/^const DEFAULT_IDLE_UNLOAD_SECS: u64 = ([0-9]+);.*/\1/p' core/stt/whisper/singleton.rs | head -1)"
     code_embedder="$(sed -nE 's/^const DEFAULT_IDLE_UNLOAD_SECS: u64 = ([0-9]+);.*/\1/p' core/embedder/singleton.rs | head -1)"
-    # docs/env.md states the default in prose; accept `2700` styled either way.
+    # docs/env.md states Whisper's default in prose; extract its numeric contract.
     doc_claim="$(sed -nE 's/.*WHISPER_IDLE_UNLOAD_SECS.*default[^0-9]*([0-9]+).*/\1/p' docs/env.md | head -1)"
 
     if [[ -z "$reg_whisper" || -z "$code_whisper" ]]; then
@@ -104,7 +104,7 @@ canary_idle_default_truth() {
         return
     fi
     if [[ "$reg_whisper" == "$code_whisper" && "$reg_embedder" == "$code_embedder" && "$doc_claim" == "$code_whisper" ]]; then
-        record "idle-default-truth" "PASS" "registry=$reg_whisper/$reg_embedder code=$code_whisper/$code_embedder docs=$doc_claim — one number everywhere"
+        record "idle-default-truth" "PASS" "whisper registry=$reg_whisper code=$code_whisper docs=$doc_claim; embedder registry=$reg_embedder code=$code_embedder — each residency default is coherent"
     else
         record "idle-default-truth" "FAIL" "registry=$reg_whisper/$reg_embedder code=$code_whisper/$code_embedder docs=${doc_claim:-none} — somebody changed one surface and not the others"
     fi

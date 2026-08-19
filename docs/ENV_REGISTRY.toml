@@ -23,6 +23,11 @@ updated = "2026-07-16"
 # ═══════════════════════════════════════════════════════════════════════════════
 # VAD internals are hardcoded in `core/vad/config.rs` based on Silero defaults.
 # No user-configurable VAD env vars.
+#
+# Dead folklore (never read; leftover .env lines, not product knobs):
+#   CODESCRIBE_VAD_SILENCE_SEC, CODESCRIBE_VAD_PRE_ROLL_MS, CODESCRIBE_VAD_SILENCE_DB
+# Product silence on the live Apple lane is TOGGLE_SILENCE_SEC → EpochGate
+# (speech opens an SFSpeech epoch, silence past the slider closes it).
 
 # ═══════════════════════════════════════════════════════════════════════════════
 # Audio / Recording
@@ -70,6 +75,13 @@ reload = "restart"
 category = "audio"
 description = "Sound volume (0.0-1.0)"
 range = "0.0-1.0"
+
+[vars.CODESCRIBE_CAPTURE_LEVEL_LOW_DB]
+default = "-52"
+type = "f32"
+reload = "hot"
+category = "audio"
+description = "W13-5 capture-level WARN floor in dBFS, keyed on active-speech median RMS (not all-audio). Corpus: golden era ≈ −38, break ≈ −44; −52 leaves headroom. Must stay a non-terminal quality receipt."
 
 # ═══════════════════════════════════════════════════════════════════════════════
 # Streaming / Buffering
@@ -390,7 +402,7 @@ category = "stt"
 description = "Use local Whisper model (vs cloud)"
 
 [vars.LOCAL_MODEL]
-default = "whisper-large-v3-turbo-mlx-q8"
+default = "whisper-large-v3-turbo"
 type = "string"
 reload = "restart"
 category = "stt"
@@ -424,12 +436,40 @@ reload = "hot"
 category = "stt"
 description = "Opt-in gate for Candle Whisper runtime-lexicon initial_prompt. Default OFF after W2-F measured a 100% WER regression with the active prompt."
 
+[vars.CODESCRIBE_OVERLAY_HIGHLIGHTS]
+default = "0"
+type = "bool"
+reload = "hot"
+category = "stt"
+description = "W13-6B span-based overlay highlight layer (lexicon-corrected words + Silero speech-gap pustki) and one-click send-span-to-Teach. Default OFF. No new permission prompts; consumes ReplaceRange/on_final/VAD data already crossing the bridge after W13-3A."
+
+[vars.CODESCRIBE_SILERO_FUSION]
+default = "0"
+type = "bool"
+reload = "restart"
+category = "stt"
+description = "W13-3B Silero-identity seal authority. Default OFF pending the operator live A/B required by the original THE_ENGINE_ROADMAP. Armed: Supervisor edges mint utterance ids at Apple PCM ingress, cumulative Apple finals are sliced by time onto those ranges, sealed spans carry silero_utterance_id, and Whisper/Apple fuse by span overlap (agreements + clear gap fills; unresolved alternatives are receipted). The session Silero still runs whenever hands-free silence arms the engine lifecycle."
+
+[vars.CODESCRIBE_SILERO_FUSION_CONTEXT]
+default = "utterance"
+type = "string"
+reload = "restart"
+category = "stt"
+description = "Bounded-context A/B for W13-3B Whisper windows: utterance (default), left_pad, or stable_prompt. Left pad never crosses a Silero-sized silence fence."
+
+[vars.CODESCRIBE_SPAN_IDEMPOTENCE]
+default = "0"
+type = "bool"
+reload = "restart"
+category = "stt"
+description = "W13-4 sealed-span replay refusal + in-span loop fence. Default OFF. When 1/true/on: live seal path refuses a replayed PCM-range / request identity (SessionIngest RejectedSealedUtterance ported onto ledger identity) and fences non-progressing timestamps or decode failure. Content-similar offers on a new identity are WARN-preserved. No default flip."
+
 [vars.CODESCRIBE_WHISPER_IDLE_UNLOAD_SECS]
-default = "2700"
+default = "300"
 type = "u64"
 reload = "hot"
 category = "stt"
-description = "Unload idle Whisper weights after this many seconds (default 2700 = 45 min). Metal Device is process-cached and retained; the Metal free-buffer pool is force-pruned on unload so RSS actually drops. 0 disables unload (weights stay resident)."
+description = "Unload idle Whisper weights after this many seconds (default 300 = 5 min). Metal Device is process-cached and retained; the Metal free-buffer pool is force-pruned on unload so RSS actually drops. 0 is the explicit keep-warm override (weights stay resident). INFO-only residency events expose the effective TTL plus load/unload/reclaim counts and durations without audio or transcript content."
 
 [vars.CANDLE_METAL_COMPUTE_PER_BUFFER]
 default = "50"
@@ -488,12 +528,96 @@ reload = "restart"
 category = "stt"
 description = "STT engine: auto (Apple on supported macOS, Candle fallback), candle, onnx, or apple"
 
+[vars.CODESCRIBE_ASR_MODE]
+default = ""
+type = "string"
+reload = "restart"
+category = "stt"
+description = "Layer 1 ASR product mode: cloud, local_power, or apple_only (empty = derive from legacy use_local_stt, else apple_only). Promoted: settings.json is the source of truth; cloud additionally requires CODESCRIBE_CLOUD_CONSENT=granted"
+
+[vars.CODESCRIBE_CLOUD_CONSENT]
+default = ""
+type = "string"
+reload = "restart"
+category = "stt"
+description = "Explicit audio-egress consent record: granted or denied (empty = never asked; anything else reads as unanswered). Without granted, cloud mode resolves to apple_only and never loads local weights. Promoted: settings.json is the source of truth"
+
+[vars.CODESCRIBE_ASR_GATEWAY_URL]
+default = ""
+type = "string"
+reload = "restart"
+category = "stt"
+description = "Libraxis gateway session-mint endpoint (https; loopback http for dev). Endpoint only — URLs with user-info or query material are refused; vendor keys never live in config. Promoted: settings.json is the source of truth"
+
 [vars.CODESCRIBE_LAYERED_TRANSCRIPTION]
 default = "phase1"
 type = "string"
 reload = "hot"
 category = "stt"
-description = "Layered incremental transcription phase gate: phase1 (DEFAULT since 2026-08-09 — operator directive: the live tail patch is a core element of the triangulation, not an opt-in; explicit off/0/false disables) or phase1..phase4 (bare 1..4 accepted). Orthogonal to FINAL_PASS_MODE/Smart — Smart never enables this. Phase ≥ 1 turns on Layer 1 Whisper tail-patch during hold on BOTH live paths: the VAD/scheduler session and the default Apple progressive live session (wired W2-A, a6b1233d). phase1 = Apple Layer 0 + Whisper ReplaceRange patches. Power-user key: not promoted to settings.json, so a stale ~/.codescribe/.env line arms it in every process that loads the core."
+description = "Layered incremental transcription phase gate: phase1 (DEFAULT since 2026-08-09 — operator directive: the live tail patch is a core element of the triangulation, not an opt-in; explicit off/0/false disables) or phase1..phase4 (bare 1..4 accepted). Orthogonal to FINAL_PASS_MODE/Smart — Smart never enables this. Phase ≥ 1 turns on Layer 1 Whisper tail-patch during hold on BOTH live paths: the VAD/scheduler session and the default Apple progressive live session (wired W2-A, a6b1233d). phase1 = Apple Layer 0 + Whisper ReplaceRange patches. Promoted 2026-08-10 to settings.json (single-brain; a stale ~/.codescribe/.env line must not lottery the live path)."
+
+[vars.CODESCRIBE_SEAL_ATLAS_DUMP]
+default = ""
+type = "string"
+reload = "hot"
+category = "stt"
+description = "Operator evidence path. When set to a non-empty filesystem path, the Apple progressive worker writes one JSON file of sealed spans (id, text, PCM-pinned words, Apple/Whisper evidence) at session end. Empty = no-op. Diagnostic only — not a product setting."
+
+[vars.CODESCRIBE_INLINE_FORMAT]
+default = "0"
+type = "bool"
+reload = "hot"
+category = "llm"
+description = "W13-1 live inline-format buffer master switch. Default OFF; a default flip is an operator decision."
+
+[vars.CODESCRIBE_INLINE_FORMAT_CHUNK_TIMEOUT_MS]
+default = "10000"
+type = "int"
+reload = "hot"
+category = "llm"
+description = "Per-chunk inline-format LLM timeout in milliseconds; timeout keeps the raw chunk."
+
+[vars.CODESCRIBE_INLINE_FORMAT_FLUSH_TIMEOUT_MS]
+default = "2500"
+type = "int"
+reload = "hot"
+category = "llm"
+description = "Stop-path budget in milliseconds for draining queued inline-format chunks."
+
+[vars.CODESCRIBE_INLINE_FORMAT_TAIL_TIMEOUT_MS]
+default = "15000"
+type = "int"
+reload = "hot"
+category = "llm"
+description = "Stop-path budget in milliseconds for the final inline-format tail request."
+
+[vars.CODESCRIBE_RESPONSES_PROBE_URL]
+default = ""
+type = "string"
+reload = "hot"
+category = "llm"
+description = "Override target for the sign-in Responses authorization probe (empty = provider's official endpoint). Hermetic tests point it at a mock; production leaves it unset."
+
+[vars.STT_TAIL_PROVIDER]
+default = "inprocess"
+type = "string"
+reload = "hot"
+category = "stt"
+description = "Tail-patch provider selector: inprocess | sidecar | remote. Sidecar and remote fall back to inprocess with typed receipts. Default remains inprocess; flipping it is an operator decision."
+
+[vars.CODESCRIBE_STT_SIDECAR_BIN]
+default = ""
+type = "path"
+reload = "restart"
+category = "stt"
+description = "Development override for the codescribe-stt-sidecar executable; packaged apps resolve the bundled sibling automatically."
+
+[vars.CODESCRIBE_STT_SIDECAR_TOKEN]
+default = ""
+type = "secret"
+reload = "restart"
+category = "internal"
+description = "Internal per-process sidecar authentication token injected only into the supervised child. Never configure or persist this value."
 
 [vars.CODESCRIBE_TAIL_PATCH_MAX_CHANGE_RATIO]
 default = "0.5"
@@ -501,6 +625,13 @@ type = "f32"
 reload = "hot"
 category = "stt"
 description = "Layer 1 safety threshold: a tail-patch whose changed-character ratio against the committed utterance exceeds this is dropped whole rather than applied, so a divergent re-transcription can never overwrite the live canvas"
+
+[vars.CODESCRIBE_TAIL_PATCH_SMALL_EDIT_FLOOR]
+default = "3"
+type = "usize"
+reload = "hot"
+category = "stt"
+description = "Layer 1 small-edit budget: a substitution-shaped tail patch touching at most this many tokens bypasses the MAX_CHANGE_RATIO cap. The ratio alone structurally starves short utterances (any 1-word fix on a 1-3-token commit is >=50% change — measured 2026-08-12: 116 skips, 0 applied). Pure insertions never use this budget"
 
 [vars.CODESCRIBE_STT_THERMAL_GOVERNOR_ENABLED]
 default = "1"
@@ -689,7 +820,7 @@ default = ""
 type = "string"
 reload = "restart"
 category = "stt"
-description = "Cloud STT API endpoint (when USE_LOCAL_STT=0)"
+description = "Multipart STT API endpoint used by cloud final pass and STT_TAIL_PROVIDER=remote; remote tail defaults to the loopback endpoint when unset"
 
 [vars.STT_API_KEY]
 default = ""
@@ -703,7 +834,7 @@ default = "smart"
 type = "string"
 reload = "restart"
 category = "stt"
-description = "Stop-path full re-pass routing only: always | smart (default) | off. Always = full WAV Whisper re-pass every stop; smart = skip full re-pass when streaming completeness is adjudicated Complete (incomplete may still re-pass); off = never full re-pass (does not force Whisper at stop). Does NOT enable CODESCRIBE_LAYERED_TRANSCRIPTION — live gap-fill via Layer 1 tail-patch is a separate opt-in. Live engine never rewrites the mode. Dictionary/lexicon always applies in postprocess regardless of mode. Seeds from Settings → Final pass. Alias: CODESCRIBE_FINAL_PASS_MODE."
+description = "Stop-path full re-pass routing only: always | smart (default) | off. Always = full WAV Whisper re-pass every stop; smart = skip full re-pass when streaming completeness is adjudicated Complete (incomplete may still re-pass); off = never full re-pass (does not force Whisper at stop). Does NOT enable or disable CODESCRIBE_LAYERED_TRANSCRIPTION — live gap-fill via Layer 1 tail-patch is a separate gate (default phase1). Live engine never rewrites the mode. Dictionary/lexicon always applies in postprocess regardless of mode. Seeds from Settings → Final pass. Alias: CODESCRIBE_FINAL_PASS_MODE."
 
 [vars.CODESCRIBE_FINAL_PASS_MODE]
 default = "smart"
@@ -1076,9 +1207,9 @@ description = "Double-tap interval for toggle detection (ms)"
 [vars.TOGGLE_SILENCE_SEC]
 default = "5.0"
 type = "f32"
-reload = "restart"
-category = "hotkeys"
-description = "Silence duration before sending a toggle utterance (seconds)"
+reload = "hot"
+category = "stt"
+description = "Hands-free silence on the live Apple lane: seconds of Silero-detected quiet that close the current SFSpeech epoch (seal + rest) and let Layer 1 Whisper patch the sealed span. Next speech edge wakes a fresh epoch with pre-roll. Next recording session. Not a wav-only chunker knob and not CODESCRIBE_VAD_*."
 
 # ═══════════════════════════════════════════════════════════════════════════════
 # UI / Overlay

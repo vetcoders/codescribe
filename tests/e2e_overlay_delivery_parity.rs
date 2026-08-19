@@ -38,6 +38,7 @@ use codescribe_core::pipeline::streaming::{
 };
 use codescribe_core::quality::{MergeMode, merge_live_whisper};
 use codescribe_core::stt;
+use sha2::{Digest, Sha256};
 
 #[path = "support/e2e_stt_matrix.rs"]
 mod e2e_stt_matrix;
@@ -347,6 +348,215 @@ fn human_reference_for_wav(wav: &Path) -> Option<String> {
         .parent()?
         .join(format!("{stem}_human_transcription.txt"));
     std::fs::read_to_string(path).ok()
+}
+
+/// Every WAV with a truth sibling, sorted for stable content-free recording IDs.
+fn truth_paired_corpus() -> Vec<PathBuf> {
+    let mut clips = std::fs::read_dir(data_assets_dir())
+        .into_iter()
+        .flatten()
+        .filter_map(Result::ok)
+        .map(|entry| entry.path())
+        .filter(|path| path.extension().and_then(|ext| ext.to_str()) == Some("wav"))
+        .filter(|path| human_reference_for_wav(path).is_some())
+        .collect::<Vec<_>>();
+    clips.sort();
+    clips
+}
+
+fn edit_distance<T: Eq>(reference: &[T], hypothesis: &[T]) -> usize {
+    let mut previous: Vec<usize> = (0..=hypothesis.len()).collect();
+    let mut current = vec![0; hypothesis.len() + 1];
+    for (i, expected) in reference.iter().enumerate() {
+        current[0] = i + 1;
+        for (j, actual) in hypothesis.iter().enumerate() {
+            current[j + 1] = if expected == actual {
+                previous[j]
+            } else {
+                1 + previous[j].min(previous[j + 1]).min(current[j])
+            };
+        }
+        std::mem::swap(&mut previous, &mut current);
+    }
+    previous[hypothesis.len()]
+}
+
+fn normalized_words(text: &str) -> Vec<String> {
+    text.split(|c: char| !c.is_alphanumeric())
+        .filter(|word| !word.is_empty())
+        .map(str::to_lowercase)
+        .collect()
+}
+
+fn word_error_rate(reference: &str, hypothesis: &str) -> f32 {
+    let reference = normalized_words(reference);
+    let hypothesis = normalized_words(hypothesis);
+    edit_distance(&reference, &hypothesis) as f32 / reference.len().max(1) as f32
+}
+
+fn character_error_rate(reference: &str, hypothesis: &str) -> f32 {
+    let reference = reference
+        .chars()
+        .filter(|character| !character.is_whitespace())
+        .flat_map(char::to_lowercase)
+        .collect::<Vec<_>>();
+    let hypothesis = hypothesis
+        .chars()
+        .filter(|character| !character.is_whitespace())
+        .flat_map(char::to_lowercase)
+        .collect::<Vec<_>>();
+    edit_distance(&reference, &hypothesis) as f32 / reference.len().max(1) as f32
+}
+
+fn normalized_characters(text: &str) -> Vec<char> {
+    text.chars()
+        .flat_map(char::to_lowercase)
+        .filter(|character| !character.is_whitespace())
+        .collect()
+}
+
+fn normalized_character_metrics(reference: &str, delivered: &str) -> (usize, f64) {
+    let reference = normalized_characters(reference);
+    let delivered = normalized_characters(delivered);
+    let distance = edit_distance(&reference, &delivered);
+    let denominator = reference.len().max(delivered.len()).max(1);
+    let parity = (1.0 - distance as f64 / denominator as f64).clamp(0.0, 1.0);
+    (distance, parity)
+}
+
+fn sha256_file(path: &Path) -> String {
+    let bytes = std::fs::read(path).expect("read acceptance input for hashing");
+    format!("{:x}", Sha256::digest(bytes))
+}
+
+const REPAIR_WAVE_ROW_FIELDS: [&str; 21] = [
+    "opaque_id",
+    "class",
+    "audio_sha256",
+    "reference_sha256",
+    "duration_seconds",
+    "normalized_reference_chars",
+    "normalized_delivered_chars",
+    "normalized_edit_distance",
+    "normalized_character_parity",
+    "live_committed_chars",
+    "committed_density_chars_per_second",
+    "density_floor_chars_per_second",
+    "density_floor_applies",
+    "repeated_final_id_count",
+    "overlapping_final_window_count",
+    "head_present",
+    "tail_present",
+    "final_pass_attempted",
+    "final_pass_skipped",
+    "final_pass_skip_reason",
+    "acceptance",
+];
+
+fn assert_repair_wave_report_contract(report: &serde_json::Value) {
+    assert_eq!(report["schema"], "codescribe.repair-wave-acceptance.v1");
+    let rows = report["recordings"]
+        .as_array()
+        .expect("acceptance recordings array");
+    for row in rows {
+        for field in REPAIR_WAVE_ROW_FIELDS {
+            assert!(row.get(field).is_some(), "acceptance row missing {field}");
+        }
+    }
+    for field in [
+        "completed_recordings",
+        "long_pass_count",
+        "short_clean_count",
+        "all_inputs_hash_verified",
+        "all_acceptance_passed",
+    ] {
+        assert!(
+            report["aggregate"].get(field).is_some(),
+            "acceptance aggregate missing {field}"
+        );
+    }
+    for forbidden in [
+        "\"transcript\":",
+        "\"reference_text\":",
+        "\"delivered_text\":",
+        "\"source_path\":",
+        "\"source_basename\":",
+        "\"patient_name\":",
+        "\"client_name\":",
+        "\"credential\":",
+    ] {
+        assert!(
+            !report.to_string().contains(forbidden),
+            "acceptance evidence contains forbidden key {forbidden}"
+        );
+    }
+    if let Some(privacy) = report.get("privacy") {
+        for field in [
+            "transcript_bodies_written",
+            "source_basenames_written",
+            "private_absolute_paths_written",
+            "patient_or_client_names_written",
+            "credentials_written",
+        ] {
+            assert_eq!(
+                privacy[field], false,
+                "privacy verdict {field} must be false"
+            );
+        }
+    }
+}
+
+#[test]
+fn repair_wave_normalization_and_parity_follow_the_manifest_formula() {
+    assert_eq!(normalized_characters(" A\nĄ\tB "), vec!['a', 'ą', 'b']);
+    assert_eq!(normalized_character_metrics("Kot", "kot"), (0, 1.0));
+    assert_eq!(normalized_character_metrics("abcd", "abxd"), (1, 0.75));
+    assert_eq!(normalized_character_metrics("", "x"), (1, 0.0));
+}
+
+#[test]
+fn repair_wave_schema_and_privacy_contract_reject_content_bearing_keys() {
+    let row = REPAIR_WAVE_ROW_FIELDS
+        .into_iter()
+        .map(|field| (field.to_string(), serde_json::Value::Null))
+        .collect::<serde_json::Map<_, _>>();
+    let report = serde_json::json!({
+        "schema": "codescribe.repair-wave-acceptance.v1",
+        "aggregate": {
+            "completed_recordings": 1,
+            "long_pass_count": 0,
+            "short_clean_count": 1,
+            "all_inputs_hash_verified": true,
+            "all_acceptance_passed": true,
+        },
+        "recordings": [row],
+    });
+    assert_repair_wave_report_contract(&report);
+}
+
+#[test]
+#[should_panic(expected = "forbidden key")]
+fn repair_wave_privacy_contract_fails_on_transcript_body() {
+    let row = REPAIR_WAVE_ROW_FIELDS
+        .into_iter()
+        .map(|field| (field.to_string(), serde_json::Value::Null))
+        .chain([(
+            "delivered_text".to_string(),
+            serde_json::Value::String("private content sentinel".to_string()),
+        )])
+        .collect::<serde_json::Map<_, _>>();
+    let report = serde_json::json!({
+        "schema": "codescribe.repair-wave-acceptance.v1",
+        "aggregate": {
+            "completed_recordings": 1,
+            "long_pass_count": 0,
+            "short_clean_count": 1,
+            "all_inputs_hash_verified": true,
+            "all_acceptance_passed": true,
+        },
+        "recordings": [row],
+    });
+    assert_repair_wave_report_contract(&report);
 }
 
 // ── Always-on contract tests (no STT / no model) ────────────────────────────
@@ -1057,6 +1267,305 @@ fn apple_reference_for_wav(wav: &Path) -> Option<String> {
         .parent()?
         .join(format!("{stem}_apple_live_reference.txt"));
     std::fs::read_to_string(path).ok()
+}
+
+/// Private-corpus quality proof through the production-owned replay cone.
+///
+/// Output is JSON containing counts and metrics only. Transcript bodies and
+/// source filenames never leave process memory.
+#[tokio::test(flavor = "multi_thread")]
+#[ignore = "private truth-paired corpus; set CODESCRIBE_PRODUCTION_CORPUS_OUT"]
+async fn e2e_production_overlay_corpus_replay() {
+    init_e2e_tracing();
+    // Capture operator intent before `UserSettings::load` or a production
+    // final-pass loader can re-seed process env from persisted settings. Each
+    // recording restores these pins so one corpus run cannot silently blend
+    // live lanes after the preceding recording's stop path.
+    let requested_stt_engine = std::env::var("CODESCRIBE_STT_ENGINE").ok();
+    let requested_layered = std::env::var("CODESCRIBE_LAYERED_TRANSCRIPTION").ok();
+    let requested_local_final = std::env::var("CODESCRIBE_LOCAL_STT_FINAL_PASS").ok();
+    let output_path = std::env::var("CODESCRIBE_PRODUCTION_CORPUS_OUT")
+        .map(PathBuf::from)
+        .expect("production corpus replay requires CODESCRIBE_PRODUCTION_CORPUS_OUT");
+    let lane = match std::env::var("CODESCRIBE_PRODUCTION_REPLAY_LANE")
+        .unwrap_or_else(|_| "apple_lexicon".to_string())
+        .as_str()
+    {
+        "apple_lexicon" => {
+            codescribe::controller::production_replay::ProductionReplayLane::AppleLexicon
+        }
+        "local_final_pass" => {
+            codescribe::controller::production_replay::ProductionReplayLane::LocalFinalPass
+        }
+        other => panic!("unknown production replay lane {other}"),
+    };
+    let commit = std::env::var("CODESCRIBE_PRODUCTION_CORPUS_COMMIT")
+        .expect("production corpus replay requires exact commit provenance");
+    let clips = truth_paired_corpus();
+    const EXPECTED_INPUTS: [(&str, &str, &str, &str); 3] = [
+        (
+            "tape-001",
+            "long",
+            "b4b395aa0f78293c5f5391eebdb76ae921084f7e02ae2fc641d8648b5a811408",
+            "1b6133d5ca0f420b64549723a5d46cd08d7b33cb760a2c5f5f81074f4a8f7eb4",
+        ),
+        (
+            "tape-002",
+            "short",
+            "2fa29b7d1797580651dfc48d4c33d2bf3a2a3072aff480af03512096acf6f360",
+            "43592f8c852c76f9da36488ba8f12786179b46bf63ce0d59c995deaf90e17656",
+        ),
+        (
+            "tape-003",
+            "long",
+            "eab63674877d0ccad08e8719119cf99ecbe9370811d8494e2156741548a48db1",
+            "7f46925778ff93dec79c86de4305301c9ab4e5f46fb3e8021636174f843a03f6",
+        ),
+    ];
+    assert_eq!(
+        clips.len(),
+        EXPECTED_INPUTS.len(),
+        "exact repair-wave corpus must contain 3 truth-paired recordings"
+    );
+
+    let settings = codescribe_core::config::UserSettings::load();
+    let resolved = settings.resolved_asr_mode();
+    let language = std::env::var("CODESCRIBE_E2E_LANG")
+        .ok()
+        .or_else(|| Some("pl".to_string()));
+    let started = std::time::Instant::now();
+    let mut rows = Vec::with_capacity(clips.len());
+    let mut all_inputs_hash_verified = true;
+
+    for (index, clip) in clips.iter().enumerate() {
+        // SAFETY: this ignored corpus test is the only selected test in its
+        // process. The pins are restored before the production session starts,
+        // before any session worker reads them.
+        unsafe {
+            if let Some(value) = requested_stt_engine.as_deref() {
+                std::env::set_var("CODESCRIBE_STT_ENGINE", value);
+            }
+            if let Some(value) = requested_layered.as_deref() {
+                std::env::set_var("CODESCRIBE_LAYERED_TRANSCRIPTION", value);
+            }
+            if let Some(value) = requested_local_final.as_deref() {
+                std::env::set_var("CODESCRIBE_LOCAL_STT_FINAL_PASS", value);
+            }
+        }
+        let (opaque_id, class, expected_audio_sha256, expected_reference_sha256) =
+            EXPECTED_INPUTS[index];
+        let reference_path = clip
+            .parent()
+            .expect("corpus recording parent")
+            .join(format!(
+                "{}_human_transcription.txt",
+                clip.file_stem()
+                    .expect("corpus recording stem")
+                    .to_string_lossy()
+            ));
+        let audio_sha256 = sha256_file(clip);
+        let reference_sha256 = sha256_file(&reference_path);
+        let input_hashes_verified =
+            audio_sha256 == expected_audio_sha256 && reference_sha256 == expected_reference_sha256;
+        all_inputs_hash_verified &= input_hashes_verified;
+        assert!(
+            input_hashes_verified,
+            "acceptance input hash mismatch for {opaque_id}"
+        );
+        let truth = std::fs::read_to_string(&reference_path).expect("read paired reference");
+        let (samples, sample_rate) = audio::load_audio_file(clip)
+            .unwrap_or_else(|error| panic!("load corpus recording {}: {error}", index + 1));
+        let audio_seconds = samples.len() as f64 / f64::from(sample_rate);
+        let run_started = std::time::Instant::now();
+        let replay = codescribe::controller::production_replay::replay_overlay_recording(
+            clip,
+            language.clone(),
+            &settings,
+            codescribe_core::asr_session::GatewaySessionAvailability::Unavailable,
+            lane,
+        )
+        .await
+        .unwrap_or_else(|error| panic!("production replay recording {}: {error:#}", index + 1));
+
+        let teacher = teacher_score(&truth, &replay.delivered_text);
+        let wer = word_error_rate(&truth, &replay.delivered_text);
+        let cer = character_error_rate(&truth, &replay.delivered_text);
+        let truth_tokens = normalized_words(&truth);
+        let delivered_tokens = normalized_words(&replay.delivered_text);
+        let head = truth_tokens
+            .iter()
+            .take(8)
+            .any(|token| delivered_tokens.contains(token));
+        let tail = truth_tokens
+            .iter()
+            .rev()
+            .take(8)
+            .any(|token| delivered_tokens.contains(token));
+        let token_ratio = delivered_tokens.len() as f64 / truth_tokens.len().max(1) as f64;
+        let normalized_reference_chars = normalized_characters(&truth).len();
+        let normalized_delivered_chars = normalized_characters(&replay.delivered_text).len();
+        let (normalized_edit_distance, normalized_character_parity) =
+            normalized_character_metrics(&truth, &replay.delivered_text);
+        let live_committed_chars = replay.live_text.chars().count();
+        let committed_density_chars_per_second = live_committed_chars as f64 / audio_seconds;
+        let density_floor_chars_per_second = 4.0_f64;
+        let density_floor_applies = audio_seconds > 10.0;
+        let sealed = replay
+            .events
+            .iter()
+            .filter(|event| matches!(event, EngineEvent::UtteranceFinal { .. }))
+            .count();
+        let previews = replay
+            .events
+            .iter()
+            .filter(|event| matches!(event, EngineEvent::Preview { .. }))
+            .count();
+        let tail_patches = measured_tail_patch_count(&replay.events);
+
+        let acceptance = if class == "long" {
+            normalized_character_parity >= 0.85
+                && head
+                && tail
+                && (committed_density_chars_per_second >= density_floor_chars_per_second
+                    || !replay.final_pass_skipped)
+        } else {
+            replay.boundary_evidence.repeated_final_id_count == 0
+                && replay.boundary_evidence.overlapping_final_window_count == 0
+                && head
+                && tail
+        };
+        let mut row = serde_json::json!({
+            "opaque_id": opaque_id,
+            "class": class,
+            "audio_sha256": audio_sha256,
+            "reference_sha256": reference_sha256,
+            "duration_seconds": audio_seconds,
+            "normalized_reference_chars": normalized_reference_chars,
+            "normalized_delivered_chars": normalized_delivered_chars,
+            "normalized_edit_distance": normalized_edit_distance,
+            "normalized_character_parity": normalized_character_parity,
+            "live_committed_chars": live_committed_chars,
+            "committed_density_chars_per_second": committed_density_chars_per_second,
+            "density_floor_chars_per_second": density_floor_chars_per_second,
+            "density_floor_applies": density_floor_applies,
+            "repeated_final_id_count": replay.boundary_evidence.repeated_final_id_count,
+            "overlapping_final_window_count": replay.boundary_evidence.overlapping_final_window_count,
+            "head_present": head,
+            "tail_present": tail,
+            "final_pass_attempted": replay.final_pass_attempted,
+            "final_pass_skipped": replay.final_pass_skipped,
+            "final_pass_skip_reason": replay.final_pass_skip_reason,
+            "acceptance": acceptance,
+            "input_hashes_verified": input_hashes_verified,
+        });
+        row.as_object_mut().expect("acceptance row object").extend(
+            serde_json::json!({
+                "sample_rate_hz": sample_rate,
+                "lane": replay.lane.as_token(),
+                "layer1_armed": replay.layer1_armed,
+                "transcript_source": replay.transcript_source,
+                "engine_label": replay.engine_label,
+                "events": replay.events.len(),
+                "previews": previews,
+                "sealed_finals": sealed,
+                "final_count": replay.boundary_evidence.final_count,
+                "unique_final_id_count": replay.boundary_evidence.unique_final_id_count,
+                "tail_patches": tail_patches,
+                "live_chars": replay.live_text.chars().count(),
+                "adjudicated_chars": replay.adjudicated_text.chars().count(),
+                "delivered_chars": replay.delivered_text.chars().count(),
+                "truth_tokens": truth_tokens.len(),
+                "delivered_tokens": delivered_tokens.len(),
+                "token_ratio": token_ratio,
+                "teacher_similarity": teacher.similarity,
+                "wer": wer,
+                "cer": cer,
+                "lexicon_rewrites": replay.postprocess_stats.lexicon_rewrites,
+                "gate_drops": replay.postprocess_stats.gate_drops,
+                "wall_seconds": run_started.elapsed().as_secs_f64(),
+            })
+            .as_object()
+            .expect("diagnostic row object")
+            .clone(),
+        );
+        rows.push(row);
+        eprintln!(
+            "production corpus {}: lane={} parity={:.3} density={:.3} final_pass_skipped={} acceptance={}",
+            opaque_id,
+            lane.as_token(),
+            normalized_character_parity,
+            committed_density_chars_per_second,
+            replay.final_pass_skipped,
+            acceptance,
+        );
+    }
+
+    let count = rows.len();
+    let long_pass_count = rows
+        .iter()
+        .filter(|row| row["class"] == "long" && row["acceptance"] == true)
+        .count();
+    let short_clean_count = rows
+        .iter()
+        .filter(|row| row["class"] == "short" && row["acceptance"] == true)
+        .count();
+    let all_acceptance_passed = rows.iter().all(|row| row["acceptance"] == true);
+    let report = serde_json::json!({
+        "schema": "codescribe.repair-wave-acceptance.v1",
+        "generated_at": chrono::Utc::now().to_rfc3339(),
+        "commit": commit,
+        "configuration": {
+            "replay_lane": lane.as_token(),
+            "resolved_asr_mode": resolved.mode.as_str(),
+            "gateway": "unavailable",
+            "language": language,
+            "stt_engine": requested_stt_engine.as_deref().unwrap_or("auto"),
+            "layered_transcription": requested_layered.as_deref().unwrap_or("unset"),
+            "local_final_pass": requested_local_final.as_deref().unwrap_or("unset"),
+            "capture_pacing_ms": 100,
+            "event_reducer": "presentation_emitter_transcript_reducer",
+            "stop_adjudication": "production",
+            "delivery_postprocess": "production",
+        },
+        "aggregate": {
+            "completed_recordings": count,
+            "long_pass_count": long_pass_count,
+            "short_clean_count": short_clean_count,
+            "all_inputs_hash_verified": all_inputs_hash_verified,
+            "all_acceptance_passed": all_acceptance_passed,
+            "wall_seconds": started.elapsed().as_secs_f64(),
+        },
+        "recordings": rows,
+        "privacy": {
+            "transcript_bodies_written": false,
+            "source_basenames_written": false,
+            "private_absolute_paths_written": false,
+            "patient_or_client_names_written": false,
+            "credentials_written": false,
+        },
+    });
+    assert_repair_wave_report_contract(&report);
+    if let Some(parent) = output_path.parent() {
+        std::fs::create_dir_all(parent).expect("create production corpus artifact directory");
+    }
+    std::fs::write(
+        &output_path,
+        serde_json::to_vec_pretty(&report).expect("serialize redacted corpus report"),
+    )
+    .expect("write redacted production corpus report");
+    assert!(
+        all_inputs_hash_verified,
+        "not all exact input hashes verified"
+    );
+    assert!(
+        all_acceptance_passed,
+        "repair-wave acceptance failed; inspect redacted metrics"
+    );
+    eprintln!(
+        "production corpus complete: lane={} recordings={} redacted_artifact_written=true",
+        lane.as_token(),
+        count
+    );
 }
 
 /// The Apple reference is a **ruler, not the truth**: it is one engine's output

@@ -742,6 +742,16 @@ impl SpeechSession {
         events
     }
 
+    /// Half-open raw-sample range of the currently open Supervisor segment.
+    ///
+    /// `None` when Silero has not opened a speech edge. Used by the W13-3B
+    /// fusion lane to mint utterance identity on the same PCM cursor the
+    /// Apple worker already owns.
+    pub(crate) fn open_segment_raw_range(&self) -> Option<(u64, u64)> {
+        let start = self.segment_start?;
+        Some((start as u64, self.raw_cursor as u64))
+    }
+
     /// Close the session and emit whatever is still open.
     ///
     /// Recording usually stops mid-segment, so an open Supervisor segment is
@@ -1088,6 +1098,16 @@ impl SpeechSession {
     /// this is the capture rate, not Silero's 16 kHz working rate.
     pub fn output_sample_rate(&self) -> u32 {
         self.output_sample_rate
+    }
+
+    /// Whether Silero actually loaded for this session.
+    ///
+    /// A missing model is not fatal here — [`Self::predict_speech_prob`] reads
+    /// every frame as non-speech — but a consumer that *gates* on speech edges
+    /// (the Apple engine lifecycle) would then never see one and would rest
+    /// forever. Such consumers must ask first and fail open.
+    pub(crate) fn vad_available(&self) -> bool {
+        self.vad.is_some()
     }
 
     /// Speech probability at the last VAD Start/End boundary.

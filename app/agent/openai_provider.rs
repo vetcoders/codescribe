@@ -197,7 +197,13 @@ impl AgentProvider for OpenAiProvider {
         let request = OpenAiResponsesRequest {
             reasoning: reasoning_summary_request(&model),
             model,
-            input: build_request_input_items(messages, previous_response_id.as_deref())?,
+            input: build_request_input(
+                &options.system_prompt,
+                messages,
+                previous_response_id.as_deref(),
+            )?,
+            // Param on the first turn only; chained turns re-carry the prompt
+            // as a developer input item (the chain does not preserve it).
             instructions: chained_instructions(
                 &options.system_prompt,
                 previous_response_id.as_deref(),
@@ -494,10 +500,16 @@ fn build_tool_payload(tools: &[ToolDefinition]) -> Vec<OpenAiToolDefinition> {
         .collect()
 }
 
-/// Instructions for a Responses request: sent on the FIRST turn of a chain
-/// only. `previous_response_id` preserves them server-side, and endpoints
-/// reject the pair with HTTP 400 ("instructions and previous_response_id
-/// together") — same contract the formatting lane already follows.
+/// Instructions for a Responses request: the `instructions` PARAM goes only
+/// on the first turn of a chain — endpoints reject the pair with
+/// `previous_response_id` (HTTP 400 "instructions and previous_response_id
+/// together").
+///
+/// But instructions are NOT preserved server-side across chained turns
+/// (OpenAI Responses contract), so a chained turn MUST re-carry the system
+/// prompt inside `input` — see [`build_request_input`]. A promptless chained
+/// turn is how the formatting lane leaked a chat-assistant reply as product
+/// output (2026-08-14, build 661); the agent shares the wire contract.
 fn chained_instructions(
     system_prompt: &Option<String>,
     previous_response_id: Option<&str>,
@@ -507,6 +519,30 @@ fn chained_instructions(
     } else {
         system_prompt.clone()
     }
+}
+
+/// Build the full `input` array for a request. On chained turns the system
+/// prompt rides as a leading `developer` message item, because the
+/// `instructions` param is absent there (see [`chained_instructions`]) and
+/// the chain does not carry it server-side. First turns carry the prompt via
+/// `instructions` only — no duplicate developer item.
+fn build_request_input(
+    system_prompt: &Option<String>,
+    messages: &[Message],
+    previous_response_id: Option<&str>,
+) -> Result<Vec<Value>> {
+    let mut items = Vec::new();
+    if previous_response_id.is_some()
+        && let Some(prompt) = system_prompt.as_deref().filter(|p| !p.trim().is_empty())
+    {
+        items.push(json!({
+            "type": "message",
+            "role": "developer",
+            "content": [{"type": "input_text", "text": prompt}]
+        }));
+    }
+    items.extend(build_request_input_items(messages, previous_response_id)?);
+    Ok(items)
 }
 
 /// Build the `input` array: select the messages to send, then encode them.
@@ -804,9 +840,9 @@ fn parse_env_bool(key: &str, default: bool) -> bool {
 #[cfg(test)]
 mod tests {
     use super::{
-        OpenAiProvider, ProviderKind, build_request_input_items, chained_instructions,
-        format_tool_output, forward_events_and_track_chain, reasoning_summary_request,
-        request_messages, to_data_uri,
+        OpenAiProvider, ProviderKind, build_request_input, build_request_input_items,
+        chained_instructions, format_tool_output, forward_events_and_track_chain,
+        reasoning_summary_request, request_messages, to_data_uri,
     };
     use std::sync::Arc;
     use std::time::Duration;
@@ -879,10 +915,11 @@ mod tests {
         assert!(selected.iter().all(|message| message.role == Role::User));
     }
 
-    /// Chained turns must NOT resend `instructions`: the Responses API keeps
-    /// them via `previous_response_id`, and endpoints reject the combination
-    /// with HTTP 400 "instructions and previous_response_id together" — which
-    /// froze the Agent UI in thinking… on every second turn (repro 2026-08-10).
+    /// Chained turns must NOT resend the `instructions` PARAM (endpoints
+    /// reject the pair with HTTP 400, which froze the Agent UI on every
+    /// second turn — repro 2026-08-10). The prompt itself still travels: as a
+    /// developer input item, because the chain does NOT preserve instructions
+    /// server-side (see `chained_turn_recarries_prompt_as_developer_item`).
     #[test]
     fn chained_turn_omits_instructions() {
         let system = Some("system prompt".to_string());
@@ -897,6 +934,38 @@ mod tests {
             "chained turn must not resend instructions"
         );
         assert_eq!(chained_instructions(&None, None), None);
+    }
+
+    /// The 2026-08-14 promptless-chain leak, agent side: a chained turn must
+    /// re-carry the system prompt as a leading developer input item (the
+    /// chain does not preserve `instructions` server-side), while the first
+    /// turn carries it via the param only — no duplicate developer item.
+    #[test]
+    fn chained_turn_recarries_prompt_as_developer_item() {
+        let system = Some("system prompt".to_string());
+        let messages = vec![Message::new(
+            Role::User,
+            vec![ContentBlock::Text("hello".to_string())],
+        )];
+
+        let chained = build_request_input(&system, &messages, Some("resp_prev"))
+            .expect("chained input should build");
+        assert_eq!(chained[0]["role"], "developer");
+        assert_eq!(chained[0]["content"][0]["text"], "system prompt");
+        assert_eq!(chained[1]["role"], "user");
+
+        let first = build_request_input(&system, &messages, None).expect("first input builds");
+        assert!(
+            first.iter().all(|item| item["role"] != "developer"),
+            "first turn must not duplicate the prompt as a developer item"
+        );
+
+        let promptless = build_request_input(&None, &messages, Some("resp_prev"))
+            .expect("promptless chained input builds");
+        assert!(
+            promptless.iter().all(|item| item["role"] != "developer"),
+            "no prompt configured ⇒ no developer item"
+        );
     }
 
     /// Resuming a chain omits prior turns already stored server-side.

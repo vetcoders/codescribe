@@ -23,12 +23,13 @@
 //! inference. The reaper therefore forces that prune right after the drop
 //! (`memory::reclaim_metal_buffer_pool`) so RSS actually falls while idle.
 //!
-//! Default TTL is 45 minutes. Set `CODESCRIBE_WHISPER_IDLE_UNLOAD_SECS=0` to
-//! keep weights resident for the whole process life.
+//! Default TTL is five minutes. Set `CODESCRIBE_WHISPER_IDLE_UNLOAD_SECS=0` to
+//! explicitly keep weights resident for the whole process life.
 
 // This entire module is a public API for library consumers
 
 use std::path::PathBuf;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Mutex, OnceLock};
 use std::time::{Duration, Instant};
 
@@ -38,7 +39,6 @@ use tracing::{info, warn};
 use crate::config::models::resolve_runtime_whisper_model_path;
 use crate::config::{Config, UserSettings};
 use crate::pipeline::contracts::{FileTranscriptionOptions, RawTranscript, TranscriptionVerdict};
-use crate::pipeline::stream_postprocess::whisper_initial_prompt;
 
 use super::engine::LocalWhisperEngine;
 use super::params::DecodingParams;
@@ -48,11 +48,11 @@ pub use crate::config::models::DEFAULT_MODEL;
 
 /// Default idle period after which Whisper **weights** are unloaded.
 ///
-/// 45 minutes balances the operator-measured ~7.5 GB resident floor against
-/// reload cost. Metal `Device` stays process-cached (see engine module), so
-/// reloads after TTL reuse the same device. Override with
-/// `CODESCRIBE_WHISPER_IDLE_UNLOAD_SECS` (`0` disables unload).
-const DEFAULT_IDLE_UNLOAD_SECS: u64 = 2700;
+/// Five minutes bounds the operator-measured multi-GB resident floor while
+/// leaving an explicit `0` override for power users who choose keep-warm.
+/// Metal `Device` stays process-cached (see engine module), so reloads after
+/// TTL reuse the same device.
+const DEFAULT_IDLE_UNLOAD_SECS: u64 = 300;
 
 /// How often the reaper wakes to check for idleness.
 const REAPER_TICK: Duration = Duration::from_secs(30);
@@ -75,6 +75,21 @@ static MODEL_PATH: OnceLock<PathBuf> = OnceLock::new();
 /// Guard so the idle reaper thread is spawned at most once.
 static REAPER_STARTED: OnceLock<()> = OnceLock::new();
 
+/// Process-lifetime residency transition counters. These deliberately record
+/// lifecycle only: no audio, transcript, or model-path content enters them.
+static RESIDENCY_LOAD_COUNT: AtomicU64 = AtomicU64::new(0);
+static RESIDENCY_UNLOAD_COUNT: AtomicU64 = AtomicU64::new(0);
+static RESIDENCY_RECLAIM_COUNT: AtomicU64 = AtomicU64::new(0);
+
+/// Test-only witness for callers that would initialize the heavyweight local
+/// engine. It lets routing tests exercise the real selected-engine seam without
+/// loading a model or inferring from source text.
+#[cfg(test)]
+static TEST_INIT_CALLS: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+
+#[cfg(test)]
+static TEST_LOAD_CALLS: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+
 /// Access the engine slot, creating it (unloaded) on first use.
 fn slot() -> &'static Mutex<WhisperSlot> {
     SLOT.get_or_init(|| {
@@ -85,13 +100,33 @@ fn slot() -> &'static Mutex<WhisperSlot> {
     })
 }
 
-/// Resolve the configured idle-unload period, or `None` when disabled (0).
-fn idle_unload_after() -> Option<Duration> {
+/// The effective residency policy at this instant.
+///
+/// `effective_ttl_secs=0` is intentionally a meaningful, explicit keep-warm
+/// value rather than an absent configuration. Every residency lifecycle log
+/// emits both fields so an operator dotenv override cannot masquerade as the
+/// shipped default.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+struct WhisperResidencyPolicy {
+    effective_ttl_secs: u64,
+    keep_warm: bool,
+}
+
+fn whisper_residency_policy() -> WhisperResidencyPolicy {
     let secs = std::env::var("CODESCRIBE_WHISPER_IDLE_UNLOAD_SECS")
         .ok()
         .and_then(|s| s.trim().parse::<u64>().ok())
         .unwrap_or(DEFAULT_IDLE_UNLOAD_SECS);
-    (secs > 0).then(|| Duration::from_secs(secs))
+    WhisperResidencyPolicy {
+        effective_ttl_secs: secs,
+        keep_warm: secs == 0,
+    }
+}
+
+/// Resolve the configured idle-unload period, or `None` for keep-warm.
+fn idle_unload_after() -> Option<Duration> {
+    let policy = whisper_residency_policy();
+    (!policy.keep_warm).then(|| Duration::from_secs(policy.effective_ttl_secs))
 }
 
 /// Resolve the model path for runtime Whisper fallback loading.
@@ -148,6 +183,9 @@ pub fn get_model_path() -> Result<&'static PathBuf> {
 
 /// Build a fresh engine, embedded-first with a runtime-path fallback.
 fn load_engine() -> Result<LocalWhisperEngine> {
+    #[cfg(test)]
+    TEST_LOAD_CALLS.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+
     // 1. Primary shipped path: embedded Whisper payload.
     if let Some(embedded) = super::embedded::get_embedded_data() {
         let engine = LocalWhisperEngine::from_embedded(&embedded)
@@ -164,17 +202,49 @@ fn load_engine() -> Result<LocalWhisperEngine> {
     Ok(engine)
 }
 
+/// Emit the load transition without leaking transcription content.
+fn record_residency_load(model_load_ms: u64) {
+    let policy = whisper_residency_policy();
+    let load_count = RESIDENCY_LOAD_COUNT.fetch_add(1, Ordering::Relaxed) + 1;
+    info!(
+        event = "whisper_residency_load",
+        load_count,
+        model_load_ms,
+        effective_ttl_secs = policy.effective_ttl_secs,
+        keep_warm = policy.keep_warm,
+        "Whisper residency load complete"
+    );
+}
+
 /// Spawn the idle reaper once (only when idle-unload is enabled).
 fn ensure_reaper() {
-    if idle_unload_after().is_none() {
+    let policy = whisper_residency_policy();
+    if policy.keep_warm {
+        info!(
+            event = "whisper_residency_policy",
+            effective_ttl_secs = policy.effective_ttl_secs,
+            keep_warm = true,
+            "Whisper residency keep-warm selected; idle reaper is disabled"
+        );
         return;
     }
     REAPER_STARTED.get_or_init(|| {
+        info!(
+            event = "whisper_residency_policy",
+            effective_ttl_secs = policy.effective_ttl_secs,
+            keep_warm = false,
+            "Whisper residency idle reaper armed"
+        );
         let spawned = std::thread::Builder::new()
             .name("whisper-idle-reaper".into())
             .spawn(reaper_loop);
         if let Err(e) = spawned {
-            warn!("Failed to spawn Whisper idle reaper: {e}");
+            warn!(
+                event = "whisper_residency_policy",
+                effective_ttl_secs = policy.effective_ttl_secs,
+                keep_warm = false,
+                "Failed to spawn Whisper idle reaper: {e}"
+            );
         }
     });
 }
@@ -190,24 +260,47 @@ fn reaper_loop() {
             Ok(g) => g,
             Err(_) => continue,
         };
-        if guard.engine.is_some() && guard.last_used.elapsed() >= threshold {
+        let idle_for = guard.last_used.elapsed();
+        let idle_ms = idle_for.as_millis().min(u128::from(u64::MAX)) as u64;
+        if guard.engine.is_some() && idle_for >= threshold {
             // Drop weights only (LocalWhisperEngine). The process-cached Metal
             // Device in engine::process_device stays alive so the next cold load
             // reuses it — no Device::new_metal churn / port leak.
+            let unload_started = Instant::now();
             guard.engine = None;
+            let unload_drop_ms = unload_started.elapsed().as_millis() as u64;
             // Dropped weight buffers only return to the MetalDevice free-buffer
             // pool; force candle's prune or the multi-GB stays resident until
             // the NEXT inference. Done under the slot lock so a concurrent
             // reload cannot interleave with the pool sweep.
-            if let Some(device) = super::engine::cached_process_device() {
-                crate::memory::reclaim_metal_buffer_pool(&device);
-            }
+            let metal_reclaim_started = Instant::now();
+            let metal_reclaim_attempted =
+                if let Some(device) = super::engine::cached_process_device() {
+                    crate::memory::reclaim_metal_buffer_pool(&device);
+                    true
+                } else {
+                    false
+                };
+            let metal_reclaim_ms = metal_reclaim_started.elapsed().as_millis() as u64;
             drop(guard);
-            info!(
-                "Whisper weights unloaded after {}s idle (Metal device retained, buffer pool pruned); releasing host heap",
-                threshold.as_secs()
-            );
+            let heap_release_started = Instant::now();
             crate::memory::release_freed_heap();
+            let heap_release_ms = heap_release_started.elapsed().as_millis() as u64;
+            let unload_count = RESIDENCY_UNLOAD_COUNT.fetch_add(1, Ordering::Relaxed) + 1;
+            let reclaim_count = RESIDENCY_RECLAIM_COUNT.fetch_add(1, Ordering::Relaxed) + 1;
+            info!(
+                event = "whisper_residency_reclaim",
+                unload_count,
+                reclaim_count,
+                effective_ttl_secs = threshold.as_secs(),
+                keep_warm = false,
+                idle_ms,
+                unload_drop_ms,
+                metal_reclaim_attempted,
+                metal_reclaim_ms,
+                heap_release_ms,
+                "Whisper residency unload and reclaim complete"
+            );
         }
     }
 }
@@ -225,8 +318,8 @@ fn with_engine<R>(f: impl FnOnce(&mut LocalWhisperEngine) -> Result<R>) -> Resul
         let load_started = Instant::now();
         guard.engine = Some(load_engine()?);
         model_load_ms = load_started.elapsed().as_millis() as u64;
-        info!("whisper_engine_cold_load model_load_ms={model_load_ms}");
         ensure_reaper();
+        record_residency_load(model_load_ms);
     }
     super::timing::record_engine_acquire(lock_wait_ms, model_load_ms, cold_load);
     guard.last_used = Instant::now();
@@ -255,12 +348,11 @@ fn with_engine_initial_prompt<R>(
     })
 }
 
-/// Initial prompt used by file transcription, or `None` when the feature is off.
-///
-/// Opt-in: the underlying builder returns `None` unless the initial-prompt env
-/// flag is set, so file transcription stays prompt-free by default.
+/// Full-file decoding is deliberately prompt-free. The live A/B measured a
+/// vocabulary prompt deleting roughly half the file; lexicon voice belongs to
+/// bounded tail/utterance windows only.
 fn file_transcription_initial_prompt() -> Option<String> {
-    whisper_initial_prompt()
+    None
 }
 
 /// Like [`with_engine`] but never blocks: if the engine is busy, return an error
@@ -275,8 +367,8 @@ fn try_with_engine<R>(f: impl FnOnce(&mut LocalWhisperEngine) -> Result<R>) -> R
         let load_started = Instant::now();
         guard.engine = Some(load_engine()?);
         model_load_ms = load_started.elapsed().as_millis() as u64;
-        info!("whisper_engine_cold_load model_load_ms={model_load_ms}");
         ensure_reaper();
+        record_residency_load(model_load_ms);
     }
     // try_lock never waits, so lock_wait is 0 by construction.
     super::timing::record_engine_acquire(0, model_load_ms, cold_load);
@@ -294,7 +386,25 @@ fn try_with_engine<R>(f: impl FnOnce(&mut LocalWhisperEngine) -> Result<R>) -> R
 /// deliberate fallback for no-embed builds and local recovery. Idempotent: a
 /// no-op if the engine is already loaded.
 pub fn init() -> Result<()> {
+    #[cfg(test)]
+    TEST_INIT_CALLS.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
     with_engine(|_| Ok(()))
+}
+
+#[cfg(test)]
+pub(crate) fn reset_test_init_calls() {
+    TEST_INIT_CALLS.store(0, std::sync::atomic::Ordering::SeqCst);
+    TEST_LOAD_CALLS.store(0, std::sync::atomic::Ordering::SeqCst);
+}
+
+#[cfg(test)]
+pub(crate) fn test_init_calls() -> usize {
+    TEST_INIT_CALLS.load(std::sync::atomic::Ordering::SeqCst)
+}
+
+#[cfg(test)]
+pub(crate) fn test_load_calls() -> usize {
+    TEST_LOAD_CALLS.load(std::sync::atomic::Ordering::SeqCst)
 }
 
 /// Check if the engine is currently loaded.
@@ -417,7 +527,7 @@ mod tests {
         }
     }
 
-    /// Initial prompt for file transcription stays off unless explicitly opted in.
+    /// File transcription stays prompt-free by contract.
     #[test]
     #[serial]
     fn file_transcription_initial_prompt_defaults_off() {
@@ -439,10 +549,10 @@ mod tests {
         assert_eq!(file_transcription_initial_prompt(), None);
     }
 
-    /// Opt-in env builds the file-transcription initial prompt (contains lexicon terms).
+    /// Window opt-in must never leak into full-file transcription.
     #[test]
     #[serial]
-    fn file_transcription_initial_prompt_is_opt_in() {
+    fn file_transcription_initial_prompt_stays_off_when_window_prompt_is_opted_in() {
         let _data_dir = EnvRestore::capture("CODESCRIBE_DATA_DIR");
         let _env_path = EnvRestore::capture("CODESCRIBE_ENV_PATH");
         let _prompt_enabled = EnvRestore::capture(
@@ -459,21 +569,67 @@ mod tests {
             );
         }
 
-        let prompt = file_transcription_initial_prompt().expect("opt-in prompt should be built");
-        assert!(prompt.contains("Loctree"));
+        assert_eq!(
+            file_transcription_initial_prompt(),
+            None,
+            "full-file prompting is forbidden even when window prompting is enabled"
+        );
     }
 
-    /// `0` disables idle unload; explicit secs win; default is 2700s weight unload.
+    /// RED: normal default is five minutes rather than the current 45 minutes.
     #[test]
-    fn idle_unload_disabled_when_zero() {
-        // SAFETY: single-threaded test mutating a process env var it owns.
-        unsafe { std::env::set_var("CODESCRIBE_WHISPER_IDLE_UNLOAD_SECS", "0") };
-        assert!(idle_unload_after().is_none());
-        unsafe { std::env::set_var("CODESCRIBE_WHISPER_IDLE_UNLOAD_SECS", "120") };
-        assert_eq!(idle_unload_after(), Some(Duration::from_secs(120)));
+    #[serial]
+    fn fleet_red_whisper_default_ttl_is_300() {
+        let _ttl = EnvRestore::capture("CODESCRIBE_WHISPER_IDLE_UNLOAD_SECS");
+
         unsafe { std::env::remove_var("CODESCRIBE_WHISPER_IDLE_UNLOAD_SECS") };
-        // Default is 45 min weight-only unload (Metal device stays process-cached).
-        assert_eq!(idle_unload_after(), Some(Duration::from_secs(2700)));
+        assert_eq!(
+            idle_unload_after(),
+            Some(Duration::from_secs(300)),
+            "normal Whisper residency must default to 300 seconds"
+        );
+    }
+
+    /// Supporting GREEN guard: runtime overrides remain effective, including
+    /// explicit zero as the power-user keep-warm setting.
+    #[test]
+    #[serial]
+    fn fleet_red_whisper_effective_ttl_overrides_include_zero_keep_warm() {
+        let _ttl = EnvRestore::capture("CODESCRIBE_WHISPER_IDLE_UNLOAD_SECS");
+
+        unsafe { std::env::set_var("CODESCRIBE_WHISPER_IDLE_UNLOAD_SECS", "17") };
+        assert_eq!(idle_unload_after(), Some(Duration::from_secs(17)));
+
+        unsafe { std::env::set_var("CODESCRIBE_WHISPER_IDLE_UNLOAD_SECS", "0") };
+        assert_eq!(
+            idle_unload_after(),
+            None,
+            "explicit zero is the power-user keep-warm override"
+        );
+    }
+
+    #[test]
+    #[serial]
+    fn whisper_residency_policy_exposes_effective_ttl_and_keep_warm() {
+        let _ttl = EnvRestore::capture("CODESCRIBE_WHISPER_IDLE_UNLOAD_SECS");
+
+        unsafe { std::env::remove_var("CODESCRIBE_WHISPER_IDLE_UNLOAD_SECS") };
+        assert_eq!(
+            whisper_residency_policy(),
+            WhisperResidencyPolicy {
+                effective_ttl_secs: 300,
+                keep_warm: false,
+            }
+        );
+
+        unsafe { std::env::set_var("CODESCRIBE_WHISPER_IDLE_UNLOAD_SECS", "0") };
+        assert_eq!(
+            whisper_residency_policy(),
+            WhisperResidencyPolicy {
+                effective_ttl_secs: 0,
+                keep_warm: true,
+            }
+        );
     }
 
     /// LOCAL_MODEL precedence: process env > UserSettings > env file on disk.

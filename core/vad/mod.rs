@@ -69,6 +69,48 @@ pub struct VadExtractStats {
     pub probabilities: Vec<f32>,
 }
 
+/// One retained slice of the original PCM timeline inside a compacted speech
+/// buffer. All bounds are half-open sample indices.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct SpeechIndexRange {
+    pub compacted_start: u64,
+    pub compacted_end: u64,
+    pub source_start: u64,
+    pub source_end: u64,
+}
+
+/// Translate a half-open range on the compacted speech buffer back to the
+/// original PCM clock. A range spanning a removed pause expands across that
+/// pause instead of pretending the compacted clock was contiguous source time.
+pub fn map_compacted_sample_range(
+    index: &[SpeechIndexRange],
+    compacted_start: u64,
+    compacted_end: u64,
+) -> Option<(u64, u64)> {
+    if compacted_end < compacted_start || index.is_empty() {
+        return None;
+    }
+    let start_range = index
+        .iter()
+        .find(|range| compacted_start < range.compacted_end)
+        .or_else(|| index.last())?;
+    let end_range = index
+        .iter()
+        .find(|range| compacted_end <= range.compacted_end)
+        .or_else(|| index.last())?;
+    let source_start = start_range.source_start.saturating_add(
+        compacted_start
+            .saturating_sub(start_range.compacted_start)
+            .min(start_range.source_end - start_range.source_start),
+    );
+    let source_end = end_range.source_start.saturating_add(
+        compacted_end
+            .saturating_sub(end_range.compacted_start)
+            .min(end_range.source_end - end_range.source_start),
+    );
+    Some((source_start, source_end.max(source_start)))
+}
+
 /// Window size for VAD analysis: 500ms of audio.
 const EXTRACT_WINDOW_MS: u32 = 500;
 
@@ -107,6 +149,16 @@ fn return_extract_vad(sample_rate: u32, vad: AccumulatingVad) {
 ///
 /// Returns an empty vector when no speech is detected or VAD is unavailable.
 pub fn extract_speech(samples: &[f32], sample_rate: u32) -> (Vec<f32>, VadExtractStats) {
+    let (speech, stats, _) = extract_speech_indexed(samples, sample_rate);
+    (speech, stats)
+}
+
+/// Extract speech and retain the exact original-sample map for every copied
+/// region. This is the timestamp-safe form used by timed STT providers.
+pub fn extract_speech_indexed(
+    samples: &[f32],
+    sample_rate: u32,
+) -> (Vec<f32>, VadExtractStats, Vec<SpeechIndexRange>) {
     if samples.is_empty() {
         return (
             Vec::new(),
@@ -118,6 +170,7 @@ pub fn extract_speech(samples: &[f32], sample_rate: u32) -> (Vec<f32>, VadExtrac
                 sparkline: String::new(),
                 probabilities: Vec::new(),
             },
+            Vec::new(),
         );
     }
     if sample_rate == 0 {
@@ -131,6 +184,7 @@ pub fn extract_speech(samples: &[f32], sample_rate: u32) -> (Vec<f32>, VadExtrac
                 sparkline: String::new(),
                 probabilities: Vec::new(),
             },
+            Vec::new(),
         );
     }
 
@@ -146,6 +200,7 @@ pub fn extract_speech(samples: &[f32], sample_rate: u32) -> (Vec<f32>, VadExtrac
                 sparkline: String::new(),
                 probabilities: Vec::new(),
             },
+            Vec::new(),
         );
     }
 
@@ -166,6 +221,7 @@ pub fn extract_speech(samples: &[f32], sample_rate: u32) -> (Vec<f32>, VadExtrac
                     sparkline: String::new(),
                     probabilities: Vec::new(),
                 },
+                Vec::new(),
             );
         }
     };
@@ -183,9 +239,11 @@ pub fn extract_speech(samples: &[f32], sample_rate: u32) -> (Vec<f32>, VadExtrac
     let mut total_windows = 0usize;
     let mut sparkline = String::new();
     let mut probabilities = Vec::new();
+    let mut index_map = Vec::new();
     let mut last_window_was_speech = false;
 
-    for window in samples.chunks(window_size) {
+    for (window_index, window) in samples.chunks(window_size).enumerate() {
+        let source_start = window_index.saturating_mul(window_size) as u64;
         if window.len() < window_size / 2 {
             // Keep very short trailing tails only when they clearly continue speech.
             if should_include_trailing_fragment(
@@ -194,7 +252,14 @@ pub fn extract_speech(samples: &[f32], sample_rate: u32) -> (Vec<f32>, VadExtrac
                 speech_windows > 0,
                 last_window_was_speech,
             ) {
+                let compacted_start = speech_samples.len() as u64;
                 speech_samples.extend_from_slice(window);
+                index_map.push(SpeechIndexRange {
+                    compacted_start,
+                    compacted_end: speech_samples.len() as u64,
+                    source_start,
+                    source_end: source_start + window.len() as u64,
+                });
             }
             break;
         }
@@ -221,7 +286,14 @@ pub fn extract_speech(samples: &[f32], sample_rate: u32) -> (Vec<f32>, VadExtrac
         });
 
         if prob >= threshold {
+            let compacted_start = speech_samples.len() as u64;
             speech_samples.extend_from_slice(window);
+            index_map.push(SpeechIndexRange {
+                compacted_start,
+                compacted_end: speech_samples.len() as u64,
+                source_start,
+                source_end: source_start + window.len() as u64,
+            });
             speech_windows += 1;
             last_window_was_speech = true;
         } else {
@@ -255,6 +327,7 @@ pub fn extract_speech(samples: &[f32], sample_rate: u32) -> (Vec<f32>, VadExtrac
             sparkline,
             probabilities,
         },
+        index_map,
     )
 }
 
@@ -488,5 +561,34 @@ mod tests {
             Some("vad_audio_too_short")
         );
         assert!(stats.probabilities.is_empty());
+    }
+
+    /// A decoded span crossing a removed interior pause expands back onto the
+    /// original PCM clock instead of keeping compacted offsets.
+    #[test]
+    fn compacted_range_maps_across_removed_pcm_gap() {
+        let index = [
+            SpeechIndexRange {
+                compacted_start: 0,
+                compacted_end: 8_000,
+                source_start: 0,
+                source_end: 8_000,
+            },
+            SpeechIndexRange {
+                compacted_start: 8_000,
+                compacted_end: 16_000,
+                source_start: 24_000,
+                source_end: 32_000,
+            },
+        ];
+
+        assert_eq!(
+            map_compacted_sample_range(&index, 4_000, 12_000),
+            Some((4_000, 28_000))
+        );
+        assert_eq!(
+            map_compacted_sample_range(&index, 8_000, 9_000),
+            Some((24_000, 25_000))
+        );
     }
 }

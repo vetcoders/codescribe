@@ -21,7 +21,7 @@ cargo run --release --example demo_full_pipeline -- <audio_file>
 cargo run --release --example demo_full_pipeline -- --assistive <audio_file>
 ```
 
-Requires a local Whisper model (default `~/.codescribe/models/whisper-large-v3-turbo-mlx-q8`, override with `--model`) and `LLM_ENDPOINT`/`LLM_MODEL` (or `LLM_FORMATTING_*` overrides) for the formatting step.
+Requires a local Whisper model (default `~/.codescribe/models/whisper-large-v3-turbo`, legacy q8 dir as fallback, override with `--model`) and `LLM_ENDPOINT`/`LLM_MODEL` (or `LLM_FORMATTING_*` overrides) for the formatting step.
 
 ### `e2e_stt.rs`
 

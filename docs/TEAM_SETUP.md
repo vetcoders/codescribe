@@ -59,7 +59,7 @@ Grant in: System Settings > Privacy & Security
 
 ## Model
 
-**Embedded-first Whisper policy**: `whisper-large-v3-turbo-mlx-q8`
+**Embedded-first Whisper policy**: `whisper-large-v3-turbo` (mlx-community fp16; legacy q8 fallback)
 **Embedded Embedder**: `paraphrase-multilingual-MiniLM-L12-v2` (for semantic gating)
 
 - `core/build.rs` embeds Whisper by default when a complete model is available at build time.

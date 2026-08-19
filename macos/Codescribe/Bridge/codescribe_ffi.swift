@@ -2632,6 +2632,15 @@ public protocol CodescribeHotkeysProtocol: AnyObject, Sendable {
     func isRecording() async  -> Bool
 
     /**
+     * Forward a macOS sleep/wake boundary to the active recorder, if any.
+     *
+     * Querying this surface never constructs the shared controller. The host
+     * notification callback can therefore remain a cheap no-op while idle and
+     * cannot surprise-load a model or start a provider.
+     */
+    func noteSleepWake() async  -> Bool
+
+    /**
      * Name of the app latched for the current overlay session, if known.
      * Read-only: the paste path keeps owning target activation and delivery.
      */
@@ -2697,6 +2706,15 @@ public protocol CodescribeHotkeysProtocol: AnyObject, Sendable {
      * Register the Swift listener for no-payload application commands.
      */
     func setAppActionListener(listener: CsAppActionListener)
+
+    /**
+     * Publish the Agent UI's current thread selection as the voice-assistive
+     * routing target (operator contract 2026-08-13: dictation goes to the
+     * thread the user is looking at; a new thread only via an explicit
+     * "+ New thread"). `None` = the selection is a not-yet-persisted thread,
+     * so the next assistive turn mints a fresh one.
+     */
+    func setAssistiveTargetThread(backendId: String?)
 
     /**
      * Register the Swift overlay listener for the shared controller event stream.
@@ -2982,6 +3000,31 @@ open func isRecording()async  -> Bool  {
 }
 
     /**
+     * Forward a macOS sleep/wake boundary to the active recorder, if any.
+     *
+     * Querying this surface never constructs the shared controller. The host
+     * notification callback can therefore remain a cheap no-op while idle and
+     * cannot surprise-load a model or start a provider.
+     */
+open func noteSleepWake()async  -> Bool  {
+    return
+        try!  await uniffiRustCallAsync(
+            rustFutureFunc: {
+                uniffi_codescribe_ffi_fn_method_codescribehotkeys_note_sleep_wake(
+                    self.uniffiCloneHandle()
+
+                )
+            },
+            pollFunc: ffi_codescribe_ffi_rust_future_poll_i8,
+            completeFunc: ffi_codescribe_ffi_rust_future_complete_i8,
+            freeFunc: ffi_codescribe_ffi_rust_future_free_i8,
+            liftFunc: FfiConverterBool.lift,
+            errorHandler: nil
+
+        )
+}
+
+    /**
      * Name of the app latched for the current overlay session, if known.
      * Read-only: the paste path keeps owning target activation and delivery.
      */
@@ -3135,6 +3178,21 @@ open func setAppActionListener(listener: CsAppActionListener)  {try! rustCall() 
     uniffi_codescribe_ffi_fn_method_codescribehotkeys_set_app_action_listener(
             self.uniffiCloneHandle(),
         FfiConverterTypeCsAppActionListener_lower(listener),$0
+    )
+}
+}
+
+    /**
+     * Publish the Agent UI's current thread selection as the voice-assistive
+     * routing target (operator contract 2026-08-13: dictation goes to the
+     * thread the user is looking at; a new thread only via an explicit
+     * "+ New thread"). `None` = the selection is a not-yet-persisted thread,
+     * so the next assistive turn mints a fresh one.
+     */
+open func setAssistiveTargetThread(backendId: String?)  {try! rustCall() {
+    uniffi_codescribe_ffi_fn_method_codescribehotkeys_set_assistive_target_thread(
+            self.uniffiCloneHandle(),
+        FfiConverterOptionString.lower(backendId),$0
     )
 }
 }
@@ -8889,6 +8947,94 @@ public func FfiConverterTypeCsModelOption_lower(_ value: CsModelOption) -> RustB
 
 
 /**
+ * Span-based canvas highlight. Sample fields are the 3A PCM identity;
+ * char offsets are the Swift adapter onto already-committed utterance text.
+ */
+public struct CsOverlayHighlight: Equatable, Hashable {
+    public var kind: CsOverlayHighlightKind
+    public var utteranceId: UInt64
+    public var charStart: UInt64
+    public var charEnd: UInt64
+    public var session: String
+    public var captureEpoch: UInt64
+    public var sampleStart: UInt64
+    public var sampleEnd: UInt64
+    public var before: String
+    public var after: String
+
+    // Default memberwise initializers are never public by default, so we
+    // declare one manually.
+    public init(kind: CsOverlayHighlightKind, utteranceId: UInt64, charStart: UInt64, charEnd: UInt64, session: String, captureEpoch: UInt64, sampleStart: UInt64, sampleEnd: UInt64, before: String, after: String) {
+        self.kind = kind
+        self.utteranceId = utteranceId
+        self.charStart = charStart
+        self.charEnd = charEnd
+        self.session = session
+        self.captureEpoch = captureEpoch
+        self.sampleStart = sampleStart
+        self.sampleEnd = sampleEnd
+        self.before = before
+        self.after = after
+    }
+
+
+}
+
+#if compiler(>=6)
+extension CsOverlayHighlight: Sendable {}
+#endif
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public struct FfiConverterTypeCsOverlayHighlight: FfiConverterRustBuffer {
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> CsOverlayHighlight {
+        return
+            try CsOverlayHighlight(
+                kind: FfiConverterTypeCsOverlayHighlightKind.read(from: &buf),
+                utteranceId: FfiConverterUInt64.read(from: &buf),
+                charStart: FfiConverterUInt64.read(from: &buf),
+                charEnd: FfiConverterUInt64.read(from: &buf),
+                session: FfiConverterString.read(from: &buf),
+                captureEpoch: FfiConverterUInt64.read(from: &buf),
+                sampleStart: FfiConverterUInt64.read(from: &buf),
+                sampleEnd: FfiConverterUInt64.read(from: &buf),
+                before: FfiConverterString.read(from: &buf),
+                after: FfiConverterString.read(from: &buf)
+        )
+    }
+
+    public static func write(_ value: CsOverlayHighlight, into buf: inout [UInt8]) {
+        FfiConverterTypeCsOverlayHighlightKind.write(value.kind, into: &buf)
+        FfiConverterUInt64.write(value.utteranceId, into: &buf)
+        FfiConverterUInt64.write(value.charStart, into: &buf)
+        FfiConverterUInt64.write(value.charEnd, into: &buf)
+        FfiConverterString.write(value.session, into: &buf)
+        FfiConverterUInt64.write(value.captureEpoch, into: &buf)
+        FfiConverterUInt64.write(value.sampleStart, into: &buf)
+        FfiConverterUInt64.write(value.sampleEnd, into: &buf)
+        FfiConverterString.write(value.before, into: &buf)
+        FfiConverterString.write(value.after, into: &buf)
+    }
+}
+
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeCsOverlayHighlight_lift(_ buf: RustBuffer) throws -> CsOverlayHighlight {
+    return try FfiConverterTypeCsOverlayHighlight.lift(buf)
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeCsOverlayHighlight_lower(_ value: CsOverlayHighlight) -> RustBuffer {
+    return FfiConverterTypeCsOverlayHighlight.lower(value)
+}
+
+
+/**
  * Full delivery truth for one overlay Insert, including the app names observed
  * at the exact delivery boundary and the Paste Here shortcut (or the reason it
  * was unavailable), so Swift can explain any degradation instead of guessing.
@@ -9499,6 +9645,12 @@ public struct CsSettings: Equatable, Hashable {
     public var holdStartDelayMs: UInt64
     public var doubleTapIntervalMs: UInt64
     public var toggleSilenceSec: Float
+    /**
+     * Deferred-insert chord (`DeferredInsertShortcut::wire_id()`), sourced
+     * from the canonical merged config snapshot. `"disabled"` is the
+     * product default when no persisted choice exists.
+     */
+    public var deferredInsertShortcut: String
     public var whisperLanguage: CsLanguage
     public var aiFormattingEnabled: Bool
     /**
@@ -9588,7 +9740,12 @@ public struct CsSettings: Equatable, Hashable {
     public init(holdExclusive: Bool,
         /**
          * Assistive-arm modifier on hold base: `"shift"` (default) or `"cmd"` (W10-B).
-         */holdArmModifier: String, holdStartDelayMs: UInt64, doubleTapIntervalMs: UInt64, toggleSilenceSec: Float, whisperLanguage: CsLanguage, aiFormattingEnabled: Bool,
+         */holdArmModifier: String, holdStartDelayMs: UInt64, doubleTapIntervalMs: UInt64, toggleSilenceSec: Float,
+        /**
+         * Deferred-insert chord (`DeferredInsertShortcut::wire_id()`), sourced
+         * from the canonical merged config snapshot. `"disabled"` is the
+         * product default when no persisted choice exists.
+         */deferredInsertShortcut: String, whisperLanguage: CsLanguage, aiFormattingEnabled: Bool,
         /**
          * `TranscriptSendMode::as_str()` — `"end_of_utterance"` / `"streaming"`.
          */transcriptSendMode: String, transcriptTaggingEnabled: Bool, transcriptTagTemplate: String, aiMaxTokens: Int32, aiAssistiveMaxTokens: Int32, showTrayGlyph: Bool, showDockIcon: Bool, transcriptionOverlayEnabled: Bool, holdIndicator: Bool, holdBadgeSize: UInt32, holdBadgeOffsetX: Int32, holdBadgeOffsetY: Int32,
@@ -9627,6 +9784,7 @@ public struct CsSettings: Equatable, Hashable {
         self.holdStartDelayMs = holdStartDelayMs
         self.doubleTapIntervalMs = doubleTapIntervalMs
         self.toggleSilenceSec = toggleSilenceSec
+        self.deferredInsertShortcut = deferredInsertShortcut
         self.whisperLanguage = whisperLanguage
         self.aiFormattingEnabled = aiFormattingEnabled
         self.transcriptSendMode = transcriptSendMode
@@ -9698,6 +9856,7 @@ public struct FfiConverterTypeCsSettings: FfiConverterRustBuffer {
                 holdStartDelayMs: FfiConverterUInt64.read(from: &buf),
                 doubleTapIntervalMs: FfiConverterUInt64.read(from: &buf),
                 toggleSilenceSec: FfiConverterFloat.read(from: &buf),
+                deferredInsertShortcut: FfiConverterString.read(from: &buf),
                 whisperLanguage: FfiConverterTypeCsLanguage.read(from: &buf),
                 aiFormattingEnabled: FfiConverterBool.read(from: &buf),
                 transcriptSendMode: FfiConverterString.read(from: &buf),
@@ -9757,6 +9916,7 @@ public struct FfiConverterTypeCsSettings: FfiConverterRustBuffer {
         FfiConverterUInt64.write(value.holdStartDelayMs, into: &buf)
         FfiConverterUInt64.write(value.doubleTapIntervalMs, into: &buf)
         FfiConverterFloat.write(value.toggleSilenceSec, into: &buf)
+        FfiConverterString.write(value.deferredInsertShortcut, into: &buf)
         FfiConverterTypeCsLanguage.write(value.whisperLanguage, into: &buf)
         FfiConverterBool.write(value.aiFormattingEnabled, into: &buf)
         FfiConverterString.write(value.transcriptSendMode, into: &buf)
@@ -11864,6 +12024,75 @@ public func FfiConverterTypeCsMcpRowTone_lower(_ value: CsMcpRowTone) -> RustBuf
 // Note that we don't yet support `indirect` for enums.
 // See https://github.com/mozilla/uniffi-rs/issues/396 for further discussion.
 /**
+ * W13-6B highlight kind. Stringly so Swift can switch without another enum
+ * reshape if a third kind appears.
+ */
+
+public enum CsOverlayHighlightKind: Equatable, Hashable {
+
+    case lexiconCorrected
+    case speechGap
+
+
+
+}
+
+#if compiler(>=6)
+extension CsOverlayHighlightKind: Sendable {}
+#endif
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public struct FfiConverterTypeCsOverlayHighlightKind: FfiConverterRustBuffer {
+    typealias SwiftType = CsOverlayHighlightKind
+
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> CsOverlayHighlightKind {
+        let variant: Int32 = try readInt(&buf)
+        switch variant {
+
+        case 1: return .lexiconCorrected
+
+        case 2: return .speechGap
+
+        default: throw UniffiInternalError.unexpectedEnumCase
+        }
+    }
+
+    public static func write(_ value: CsOverlayHighlightKind, into buf: inout [UInt8]) {
+        switch value {
+
+
+        case .lexiconCorrected:
+            writeInt(&buf, Int32(1))
+
+
+        case .speechGap:
+            writeInt(&buf, Int32(2))
+
+        }
+    }
+}
+
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeCsOverlayHighlightKind_lift(_ buf: RustBuffer) throws -> CsOverlayHighlightKind {
+    return try FfiConverterTypeCsOverlayHighlightKind.lift(buf)
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeCsOverlayHighlightKind_lower(_ value: CsOverlayHighlightKind) -> RustBuffer {
+    return FfiConverterTypeCsOverlayHighlightKind.lower(value)
+}
+
+
+// Note that we don't yet support `indirect` for enums.
+// See https://github.com/mozilla/uniffi-rs/issues/396 for further discussion.
+/**
  * Honest outcome of the overlay Insert action, mirrored to Swift so the UI
  * can tell the user when the self-paste guard degraded a paste to a tagged
  * clipboard copy.
@@ -13372,6 +13601,15 @@ public func micPermissionGranted() -> Bool  {
 })
 }
 /**
+ * W13-6B lane flag. Default OFF. Read-only; no permission prompt.
+ */
+public func overlayHighlightsEnabled() -> Bool  {
+    return try!  FfiConverterBool.lift(try! rustCall() {
+    uniffi_codescribe_ffi_fn_func_overlay_highlights_enabled($0
+    )
+})
+}
+/**
  * Finalize one correction: the revision always saves; word-level lexicon
  * pairs are derived and gated individually. `Err` means the SAVE failed.
  */
@@ -13401,6 +13639,19 @@ public func qualityRecentRecords(limit: UInt64)throws  -> [CsQualityRecord]  {
 public func qualityTeachDictionaryFromStore()throws  -> CsDictionaryTeachResult  {
     return try  FfiConverterTypeCsDictionaryTeachResult_lift(try rustCallWithError(FfiConverterTypeCsError_lift) {
     uniffi_codescribe_ffi_fn_func_quality_teach_dictionary_from_store($0
+    )
+})
+}
+/**
+ * One-click Teach from a highlighted span. Reuses the existing quality +
+ * custom-lexicon writers — no new disk root, no new permission.
+ */
+public func qualityTeachSpan(variant: String, canonical: String, kind: String)throws  -> CsQualityCommitResult  {
+    return try  FfiConverterTypeCsQualityCommitResult_lift(try rustCallWithError(FfiConverterTypeCsError_lift) {
+    uniffi_codescribe_ffi_fn_func_quality_teach_span(
+        FfiConverterString.lower(variant),
+        FfiConverterString.lower(canonical),
+        FfiConverterString.lower(kind),$0
     )
 })
 }
@@ -13467,6 +13718,9 @@ private let initializationResult: InitializationResult = {
     if (uniffi_codescribe_ffi_checksum_func_mic_permission_granted() != 26303) {
         return InitializationResult.apiChecksumMismatch
     }
+    if (uniffi_codescribe_ffi_checksum_func_overlay_highlights_enabled() != 21886) {
+        return InitializationResult.apiChecksumMismatch
+    }
     if (uniffi_codescribe_ffi_checksum_func_quality_finalize_correction() != 53355) {
         return InitializationResult.apiChecksumMismatch
     }
@@ -13474,6 +13728,9 @@ private let initializationResult: InitializationResult = {
         return InitializationResult.apiChecksumMismatch
     }
     if (uniffi_codescribe_ffi_checksum_func_quality_teach_dictionary_from_store() != 46244) {
+        return InitializationResult.apiChecksumMismatch
+    }
+    if (uniffi_codescribe_ffi_checksum_func_quality_teach_span() != 20307) {
         return InitializationResult.apiChecksumMismatch
     }
     if (uniffi_codescribe_ffi_checksum_func_request_mic_permission() != 61967) {
@@ -13704,6 +13961,9 @@ private let initializationResult: InitializationResult = {
     if (uniffi_codescribe_ffi_checksum_method_codescribehotkeys_is_recording() != 25239) {
         return InitializationResult.apiChecksumMismatch
     }
+    if (uniffi_codescribe_ffi_checksum_method_codescribehotkeys_note_sleep_wake() != 35265) {
+        return InitializationResult.apiChecksumMismatch
+    }
     if (uniffi_codescribe_ffi_checksum_method_codescribehotkeys_paste_target_app_name() != 18571) {
         return InitializationResult.apiChecksumMismatch
     }
@@ -13729,6 +13989,9 @@ private let initializationResult: InitializationResult = {
         return InitializationResult.apiChecksumMismatch
     }
     if (uniffi_codescribe_ffi_checksum_method_codescribehotkeys_set_app_action_listener() != 65409) {
+        return InitializationResult.apiChecksumMismatch
+    }
+    if (uniffi_codescribe_ffi_checksum_method_codescribehotkeys_set_assistive_target_thread() != 31256) {
         return InitializationResult.apiChecksumMismatch
     }
     if (uniffi_codescribe_ffi_checksum_method_codescribehotkeys_set_listener() != 43285) {

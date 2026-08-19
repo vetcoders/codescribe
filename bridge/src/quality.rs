@@ -8,10 +8,13 @@
 //!
 //! Privacy: local disk only.
 
+use codescribe_core::pipeline::highlight::{
+    OverlayHighlight, OverlayHighlightKind, overlay_highlights_enabled as highlights_lane_enabled,
+};
 use codescribe_core::quality::overlay_quality::{
     CustomLexiconEntry, DictionaryTeachResult, OverlayCorrectionCommit, QualityRecord,
     VoiceLabSaveOutcome, commit_overlay_correction_with_confidence, custom_lexicon_entries,
-    finalize_voice_lab_correction, recent_quality_records, teach_dictionary_from_store,
+    finalize_voice_lab_correction, recent_quality_records, teach_dictionary_from_store, teach_span,
 };
 
 use crate::CsError;
@@ -237,6 +240,77 @@ pub fn quality_teach_dictionary_from_store() -> Result<CsDictionaryTeachResult, 
         .map(Into::into)
         .map_err(|error| CsError::Quality {
             msg: format!("dictionary teach failed: {error:#}"),
+        })
+}
+
+/// W13-6B highlight kind. Stringly so Swift can switch without another enum
+/// reshape if a third kind appears.
+#[derive(uniffi::Enum, Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CsOverlayHighlightKind {
+    LexiconCorrected,
+    SpeechGap,
+}
+
+impl From<OverlayHighlightKind> for CsOverlayHighlightKind {
+    fn from(kind: OverlayHighlightKind) -> Self {
+        match kind {
+            OverlayHighlightKind::LexiconCorrected => Self::LexiconCorrected,
+            OverlayHighlightKind::SpeechGap => Self::SpeechGap,
+        }
+    }
+}
+
+/// Span-based canvas highlight. Sample fields are the 3A PCM identity;
+/// char offsets are the Swift adapter onto already-committed utterance text.
+#[derive(uniffi::Record, Debug, Clone, PartialEq, Eq)]
+pub struct CsOverlayHighlight {
+    pub kind: CsOverlayHighlightKind,
+    pub utterance_id: u64,
+    pub char_start: u64,
+    pub char_end: u64,
+    pub session: String,
+    pub capture_epoch: u64,
+    pub sample_start: u64,
+    pub sample_end: u64,
+    pub before: String,
+    pub after: String,
+}
+
+impl From<OverlayHighlight> for CsOverlayHighlight {
+    fn from(value: OverlayHighlight) -> Self {
+        Self {
+            kind: value.kind.into(),
+            utterance_id: value.utterance_id,
+            char_start: value.char_start,
+            char_end: value.char_end,
+            session: value.range.session,
+            capture_epoch: value.range.capture_epoch,
+            sample_start: value.range.sample_start,
+            sample_end: value.range.sample_end,
+            before: value.before,
+            after: value.after,
+        }
+    }
+}
+
+/// W13-6B lane flag. Default OFF. Read-only; no permission prompt.
+#[uniffi::export]
+pub fn overlay_highlights_enabled() -> bool {
+    highlights_lane_enabled()
+}
+
+/// One-click Teach from a highlighted span. Reuses the existing quality +
+/// custom-lexicon writers — no new disk root, no new permission.
+#[uniffi::export]
+pub fn quality_teach_span(
+    variant: String,
+    canonical: String,
+    kind: String,
+) -> Result<CsQualityCommitResult, CsError> {
+    teach_span(&variant, &canonical, &kind)
+        .map(Into::into)
+        .map_err(|error| CsError::Quality {
+            msg: format!("span teach failed: {error:#}"),
         })
 }
 

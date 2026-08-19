@@ -10,11 +10,12 @@
 // out of this file and curls the asset with --fail before building, so a pin
 // that runs ahead of the published release fails the whole Pages deploy rather
 // than shipping a dead button. Bump this only in the move that publishes the tag.
-export const SITE_VERSION = "0.13.0";
+export const SITE_VERSION = "0.13.3";
 
 export const DOWNLOAD_URL = `https://github.com/vetcoders/codescribe/releases/download/v${SITE_VERSION}/Codescribe.dmg`;
 
-// Decimal GB, matching how Finder and browser download managers report size.
-// The published asset is the `_full` build with embedded Whisper; a stranger on
-// a metered connection deserves to know that before clicking.
-export const DOWNLOAD_SIZE = "1.4 GB";
+// Decimal MB, matching how Finder and browser download managers report size.
+// The published asset is the standard (slim) build: Silero + embedder embedded,
+// Whisper downloads on first use — a stranger on a metered connection deserves
+// to know that before clicking.
+export const DOWNLOAD_SIZE = "530 MB";

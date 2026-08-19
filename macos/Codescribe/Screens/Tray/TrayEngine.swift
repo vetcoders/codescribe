@@ -10,167 +10,175 @@ import Foundation
 /// Navigation intents the tray emits. App.swift binds each one to the action
 /// that actually opens the relevant window / scene / panel.
 enum TrayIntent {
-    /// Bring up the Agent Chat window and activate the app (tray / menu / summon).
-    case openChat
-    /// Passive voice-delivery reveal: create/order the chat window without
-    /// stealing focus. Used at TurnStarted and as end-of-turn fallback only.
-    case revealChat
+  /// Bring up the Agent Chat window and activate the app (tray / menu / summon).
+  case openChat
+  /// Passive voice-delivery reveal: create/order the chat window without
+  /// stealing focus. Used at TurnStarted and as end-of-turn fallback only.
+  case revealChat
 }
 
 /// The legacy fast config toggles surfaced in the tray, mapped to the core's
 /// router env keys consumed by `CodescribeConfig.updateConfig(key:value:)`.
 enum TrayQuickToggle {
-    case showDockIcon
-    case transcriptionOverlay
+  case showDockIcon
+  case transcriptionOverlay
 
-    var configKey: String {
-        switch self {
-        case .showDockIcon:        return "SHOW_DOCK_ICON"
-        case .transcriptionOverlay: return "TRANSCRIPTION_OVERLAY_ENABLED"
-        }
+  var configKey: String {
+    switch self {
+    case .showDockIcon: return "SHOW_DOCK_ICON"
+    case .transcriptionOverlay: return "TRANSCRIPTION_OVERLAY_ENABLED"
     }
+  }
 }
 
 /// A recent transcript artifact surfaced in the tray's "Open history" submenu.
 /// `path` is the on-disk file (and the stable identity); `title` is a short
 /// display label (time + preview) built by the engine.
 struct TrayTranscript: Identifiable {
-    let path: String
-    let title: String
-    var id: String { path }
+  let path: String
+  let title: String
+  var id: String { path }
 }
 
 protocol TrayEngine: AnyObject {
-    /// True when the assistive LLM provider can be built (gates "Show Agent").
-    func isAgentAvailable() -> Bool
+  /// True when the assistive LLM provider can be built (gates "Show Agent").
+  func isAgentAvailable() -> Bool
 
-    /// Live dictation state. Async because the core reads it behind its mutex.
-    func isRecording() async -> Bool
-    func startRecording(assistive: Bool) async throws
-    func stopRecording() async throws
+  /// Live dictation state. Async because the core reads it behind its mutex.
+  func isRecording() async -> Bool
+  func startRecording(assistive: Bool) async throws
+  func stopRecording() async throws
 
-    /// Current values for the tray's quick toggles, read from on-disk settings.
-    /// `nil` when settings cannot be loaded.
-    func currentToggles() -> (
-        showDockIcon: Bool,
-        overlayEnabled: Bool,
-        autoPasteEnabled: Bool,
-        autoFormatLevel: FormattingPolicyOption,
-        notesMode: Bool,
-        startInAssistive: Bool,
-        holdBadgeOption: HoldBadgeOption
-    )?
-    func setQuickToggle(_ toggle: TrayQuickToggle, enabled: Bool)
-    /// Persist user-owned delivery/formatting policy. Callers always re-read
-    /// `currentToggles()` after these writes instead of assuming success.
-    func setAutoPasteEnabled(_ enabled: Bool)
-    func setAutoFormatLevel(_ level: FormattingPolicyOption)
-    func setHoldBadgeOption(_ option: HoldBadgeOption) -> Bool
-    /// Notes Mode is a two-key flag (quick-notes enabled + save-only) written as
-    /// one atomic op. Returns whether the write persisted, so the UI never fakes
-    /// success on a failed write.
-    func setNotesMode(_ enabled: Bool) -> Bool
-    func setStartInAssistive(_ enabled: Bool) -> Bool
+  /// Current values for the tray's quick toggles, read from on-disk settings.
+  /// `nil` when settings cannot be loaded.
+  func currentToggles() -> (
+    showDockIcon: Bool,
+    overlayEnabled: Bool,
+    autoPasteEnabled: Bool,
+    autoFormatLevel: FormattingPolicyOption,
+    notesMode: Bool,
+    startInAssistive: Bool,
+    holdBadgeOption: HoldBadgeOption
+  )?
+  func setQuickToggle(_ toggle: TrayQuickToggle, enabled: Bool)
+  /// Persist user-owned delivery/formatting policy. Callers always re-read
+  /// `currentToggles()` after these writes instead of assuming success.
+  func setAutoPasteEnabled(_ enabled: Bool)
+  func setAutoFormatLevel(_ level: FormattingPolicyOption)
+  func setHoldBadgeOption(_ option: HoldBadgeOption) -> Bool
+  /// Notes Mode is a two-key flag (quick-notes enabled + save-only) written as
+  /// one atomic op. Returns whether the write persisted, so the UI never fakes
+  /// success on a failed write.
+  func setNotesMode(_ enabled: Bool) -> Bool
+  func setStartInAssistive(_ enabled: Bool) -> Bool
 
-    /// Path of the most recent transcript artifact, or `nil` when none exist.
-    func latestHistoryPath() -> String?
-    /// Full text of the most recent transcript, or `nil` when unavailable.
-    func latestTranscriptText() -> String?
+  /// Path of the most recent transcript artifact, or `nil` when none exist.
+  func latestHistoryPath() -> String?
+  /// Full text of the most recent transcript, or `nil` when unavailable.
+  func latestTranscriptText() -> String?
 
-    /// Up to `limit` most-recent transcript artifacts, newest first, for the
-    /// "Open history" submenu. Empty when none exist.
-    func recentTranscripts(limit: Int) -> [TrayTranscript]
-    /// Full text of the transcript artifact at `path`, or `nil` when unreadable.
-    func transcriptText(forPath path: String) -> String?
+  /// Up to `limit` most-recent transcript artifacts, newest first, for the
+  /// "Open history" submenu. Empty when none exist.
+  func recentTranscripts(limit: Int) -> [TrayTranscript]
+  /// Full text of the transcript artifact at `path`, or `nil` when unreadable.
+  func transcriptText(forPath path: String) -> String?
 }
 
 // Standalone seed so the `#Preview` renders without the real core.
 final class MockTrayEngine: TrayEngine {
-    var recording: Bool
-    var agentAvailable: Bool
-    var showDockIcon: Bool
-    var overlayEnabled: Bool
-    var autoPasteEnabled: Bool
-    var autoFormatLevel: FormattingPolicyOption
-    var notesMode: Bool
-    var startInAssistive: Bool
-    var holdBadgeOption: HoldBadgeOption
-    var historyPath: String
-    var transcriptText: String
+  var recording: Bool
+  var agentAvailable: Bool
+  var showDockIcon: Bool
+  var overlayEnabled: Bool
+  var autoPasteEnabled: Bool
+  var autoFormatLevel: FormattingPolicyOption
+  var notesMode: Bool
+  var startInAssistive: Bool
+  var holdBadgeOption: HoldBadgeOption
+  var historyPath: String
+  var transcriptText: String
 
-    init(recording: Bool = false,
-         agentAvailable: Bool = true,
-         showDockIcon: Bool = true,
-         overlayEnabled: Bool = false,
-         autoPasteEnabled: Bool = true,
-         autoFormatLevel: FormattingPolicyOption = .correction,
-         notesMode: Bool = false,
-         startInAssistive: Bool = false,
-         holdBadgeOption: HoldBadgeOption = .twelve,
-         historyPath: String = "/tmp/codescribe/history/2026-06-28-1422.md",
-         transcriptText: String = "Sample transcript.") {
-        self.recording = recording
-        self.agentAvailable = agentAvailable
-        self.showDockIcon = showDockIcon
-        self.overlayEnabled = overlayEnabled
-        self.autoPasteEnabled = autoPasteEnabled
-        self.autoFormatLevel = autoFormatLevel
-        self.notesMode = notesMode
-        self.startInAssistive = startInAssistive
-        self.holdBadgeOption = holdBadgeOption
-        self.historyPath = historyPath
-        self.transcriptText = transcriptText
+  init(
+    recording: Bool = false,
+    agentAvailable: Bool = true,
+    showDockIcon: Bool = true,
+    overlayEnabled: Bool = false,
+    autoPasteEnabled: Bool = true,
+    autoFormatLevel: FormattingPolicyOption = .correction,
+    notesMode: Bool = false,
+    startInAssistive: Bool = false,
+    holdBadgeOption: HoldBadgeOption = .twelve,
+    historyPath: String = "/tmp/codescribe/history/2026-06-28-1422.md",
+    transcriptText: String = "Sample transcript."
+  ) {
+    self.recording = recording
+    self.agentAvailable = agentAvailable
+    self.showDockIcon = showDockIcon
+    self.overlayEnabled = overlayEnabled
+    self.autoPasteEnabled = autoPasteEnabled
+    self.autoFormatLevel = autoFormatLevel
+    self.notesMode = notesMode
+    self.startInAssistive = startInAssistive
+    self.holdBadgeOption = holdBadgeOption
+    self.historyPath = historyPath
+    self.transcriptText = transcriptText
+  }
+
+  func isAgentAvailable() -> Bool { agentAvailable }
+
+  func isRecording() async -> Bool { recording }
+  func startRecording(assistive: Bool) async throws { recording = true }
+  func stopRecording() async throws { recording = false }
+
+  func currentToggles() -> (
+    showDockIcon: Bool,
+    overlayEnabled: Bool,
+    autoPasteEnabled: Bool,
+    autoFormatLevel: FormattingPolicyOption,
+    notesMode: Bool,
+    startInAssistive: Bool,
+    holdBadgeOption: HoldBadgeOption
+  )? {
+    (
+      showDockIcon,
+      overlayEnabled,
+      autoPasteEnabled,
+      autoFormatLevel,
+      notesMode,
+      startInAssistive,
+      holdBadgeOption
+    )
+  }
+
+  func setQuickToggle(_ toggle: TrayQuickToggle, enabled: Bool) {
+    switch toggle {
+    case .showDockIcon: showDockIcon = enabled
+    case .transcriptionOverlay: overlayEnabled = enabled
     }
+  }
 
-    func isAgentAvailable() -> Bool { agentAvailable }
+  func setAutoPasteEnabled(_ enabled: Bool) { autoPasteEnabled = enabled }
+  func setAutoFormatLevel(_ level: FormattingPolicyOption) { autoFormatLevel = level }
+  func setHoldBadgeOption(_ option: HoldBadgeOption) -> Bool {
+    holdBadgeOption = option
+    return true
+  }
 
-    func isRecording() async -> Bool { recording }
-    func startRecording(assistive: Bool) async throws { recording = true }
-    func stopRecording() async throws { recording = false }
+  func setNotesMode(_ enabled: Bool) -> Bool {
+    notesMode = enabled
+    return true
+  }
+  func setStartInAssistive(_ enabled: Bool) -> Bool {
+    startInAssistive = enabled
+    return true
+  }
 
-    func currentToggles() -> (
-        showDockIcon: Bool,
-        overlayEnabled: Bool,
-        autoPasteEnabled: Bool,
-        autoFormatLevel: FormattingPolicyOption,
-        notesMode: Bool,
-        startInAssistive: Bool,
-        holdBadgeOption: HoldBadgeOption
-    )? {
-        (
-            showDockIcon,
-            overlayEnabled,
-            autoPasteEnabled,
-            autoFormatLevel,
-            notesMode,
-            startInAssistive,
-            holdBadgeOption
-        )
-    }
+  func latestHistoryPath() -> String? { historyPath }
+  func latestTranscriptText() -> String? { transcriptText }
 
-    func setQuickToggle(_ toggle: TrayQuickToggle, enabled: Bool) {
-        switch toggle {
-        case .showDockIcon:        showDockIcon = enabled
-        case .transcriptionOverlay: overlayEnabled = enabled
-        }
-    }
+  func recentTranscripts(limit: Int) -> [TrayTranscript] {
+    [TrayTranscript(path: historyPath, title: "14:22 · \(transcriptText)")]
+  }
 
-    func setAutoPasteEnabled(_ enabled: Bool) { autoPasteEnabled = enabled }
-    func setAutoFormatLevel(_ level: FormattingPolicyOption) { autoFormatLevel = level }
-    func setHoldBadgeOption(_ option: HoldBadgeOption) -> Bool {
-        holdBadgeOption = option
-        return true
-    }
-
-    func setNotesMode(_ enabled: Bool) -> Bool { notesMode = enabled; return true }
-    func setStartInAssistive(_ enabled: Bool) -> Bool { startInAssistive = enabled; return true }
-
-    func latestHistoryPath() -> String? { historyPath }
-    func latestTranscriptText() -> String? { transcriptText }
-
-    func recentTranscripts(limit: Int) -> [TrayTranscript] {
-        [TrayTranscript(path: historyPath, title: "14:22 · \(transcriptText)")]
-    }
-
-    func transcriptText(forPath path: String) -> String? { transcriptText }
+  func transcriptText(forPath path: String) -> String? { transcriptText }
 }

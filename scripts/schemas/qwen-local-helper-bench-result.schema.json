@@ -1,0 +1,100 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://vetcoders.io/schemas/codescribe.local-helper-bench.v1.json",
+  "title": "Codescribe local helper benchmark result",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema", "generated_at", "content_retained", "results"],
+  "properties": {
+    "schema": { "const": "codescribe.local-helper-bench.v1" },
+    "generated_at": { "type": "string", "format": "date-time" },
+    "content_retained": { "const": false },
+    "results": {
+      "type": "array",
+      "minItems": 2,
+      "maxItems": 2,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["model", "quality", "runs"],
+        "properties": {
+          "model": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "model_id",
+              "quantization",
+              "revision",
+              "sha256",
+              "license",
+              "bundle_size_bytes"
+            ],
+            "properties": {
+              "model_id": { "type": "string", "minLength": 1 },
+              "quantization": { "enum": ["q5", "q8"] },
+              "revision": { "type": "string", "minLength": 1 },
+              "sha256": { "type": "string", "pattern": "^[a-f0-9]{64}$" },
+              "license": { "type": "string", "minLength": 1 },
+              "bundle_size_bytes": { "type": "integer", "minimum": 1 }
+            }
+          },
+          "quality": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "pl_vet_wer",
+              "pl_vet_cer",
+              "term_recall",
+              "pl_en_code_switch_wer"
+            ],
+            "properties": {
+              "pl_vet_wer": { "type": ["number", "null"], "minimum": 0 },
+              "pl_vet_cer": { "type": ["number", "null"], "minimum": 0 },
+              "term_recall": {
+                "type": ["number", "null"],
+                "minimum": 0,
+                "maximum": 1
+              },
+              "pl_en_code_switch_wer": {
+                "type": ["number", "null"],
+                "minimum": 0
+              }
+            }
+          },
+          "runs": {
+            "type": "array",
+            "minItems": 1,
+            "items": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": [
+                "case_id",
+                "cold_load_seconds",
+                "wall_seconds",
+                "audio_seconds",
+                "rtf",
+                "peak_rss_bytes",
+                "post_exit_rss_bytes",
+                "process_exited",
+                "timestamps_present",
+                "timestamps_monotonic"
+              ],
+              "properties": {
+                "case_id": { "type": "string", "minLength": 1 },
+                "cold_load_seconds": { "type": "number", "minimum": 0 },
+                "wall_seconds": { "type": "number", "minimum": 0 },
+                "audio_seconds": { "type": "number", "exclusiveMinimum": 0 },
+                "rtf": { "type": "number", "minimum": 0 },
+                "peak_rss_bytes": { "type": "integer", "minimum": 0 },
+                "post_exit_rss_bytes": { "type": "integer", "minimum": 0 },
+                "process_exited": { "type": "boolean" },
+                "timestamps_present": { "type": "boolean" },
+                "timestamps_monotonic": { "type": "boolean" }
+              }
+            }
+          }
+        }
+      }
+    }
+  }
+}

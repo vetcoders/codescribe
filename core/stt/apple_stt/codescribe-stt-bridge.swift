@@ -28,6 +28,7 @@ struct BridgeRequest: Codable {
     let command: String
     let locale: String
     let audioPath: String?
+    let contextualStrings: [String]?
     let allowDownload: Bool
 }
 
@@ -102,6 +103,10 @@ private func dictationTranscriberEnabled() -> Bool {
     case "1", "true", "yes", "on": return true
     default: return false
     }
+}
+
+if CommandLine.arguments.contains("--phrase-restart-self-test") {
+    exit(runPhraseRestartVectorSelfTest())
 }
 
 respawnSelfResponsibleIfRequested()
@@ -219,6 +224,7 @@ private func readRequest() throws -> BridgeRequest {
             command: command,
             locale: locale,
             audioPath: nil,
+            contextualStrings: nil,
             allowDownload: false
         )
     }
@@ -290,7 +296,10 @@ private func handle(request: BridgeRequest) async throws -> BridgeResponse {
         // {"rate":48000,"channels":1}, then raw interleaved f32le frames, EOF
         // ends the stream.
         // Speech TCC: requested inside transcribeStreaming (SF-only path).
-        let payload = try await transcribeStreaming(locale: locale)
+        let payload = try await transcribeStreaming(
+            locale: locale,
+            contextualStrings: request.contextualStrings
+        )
         return BridgeResponse(
             ok: true,
             status: "ok",
@@ -308,7 +317,11 @@ private func handle(request: BridgeRequest) async throws -> BridgeResponse {
         guard let audioPath = request.audioPath, !audioPath.isEmpty else {
             throw BridgeError.missingAudioPath
         }
-        let transcription = try await transcribeLiveBuffered(audioPath: audioPath, locale: locale)
+        let transcription = try await transcribeLiveBuffered(
+            audioPath: audioPath,
+            locale: locale,
+            contextualStrings: request.contextualStrings
+        )
         return BridgeResponse(
             ok: true,
             status: "ok",
@@ -809,7 +822,11 @@ private func transcribeWithSpeechTranscriber(
 ///
 /// WAV on disk is only a *source of samples* — same as a virtual CoreAudio device
 /// would deliver. Recognition uses the buffer API Apple designs for live mic.
-private func transcribeLiveBuffered(audioPath: String, locale: Locale) async throws -> TranscriptionPayload {
+private func transcribeLiveBuffered(
+    audioPath: String,
+    locale: Locale,
+    contextualStrings: [String]?
+) async throws -> TranscriptionPayload {
     // Prefer SpeechTranscriber streaming when locale is installed; else SF buffer.
     let stSupported = await SpeechTranscriber.supportedLocales
     if let effectiveLocale = bestAvailableLocale(requested: locale, available: stSupported) {
@@ -828,12 +845,35 @@ private func transcribeLiveBuffered(audioPath: String, locale: Locale) async thr
             )
         }
     }
-    return try await transcribeWithSfSpeechAudioBuffer(audioPath: audioPath, locale: locale)
+    return try await transcribeWithSfSpeechAudioBuffer(
+        audioPath: audioPath,
+        locale: locale,
+        contextualStrings: contextualStrings
+    )
+}
+
+/// Defensive mirror of SFSpeech's 100-entry contextualStrings contract. Rust
+/// already emits a deterministic, budgeted list; this keeps direct bridge
+/// callers from smuggling empty or duplicate entries into the recognizer.
+private func sanitizedContextualStrings(_ values: [String]?) -> [String] {
+    var seen = Set<String>()
+    var result: [String] = []
+    for raw in values ?? [] {
+        let value = raw.trimmingCharacters(in: .whitespacesAndNewlines)
+        if value.isEmpty { continue }
+        let key = value.lowercased()
+        if seen.insert(key).inserted {
+            result.append(value)
+        }
+        if result.count == 100 { break }
+    }
+    return result
 }
 
 private func transcribeWithSfSpeechAudioBuffer(
     audioPath: String,
-    locale: Locale
+    locale: Locale,
+    contextualStrings: [String]?
 ) async throws -> TranscriptionPayload {
     // SFSpeech path only — Speech Recognition TCC required here (not on ST).
     try await ensureSpeechAuthorizedForSfSpeech()
@@ -879,7 +919,8 @@ private func transcribeWithSfSpeechAudioBuffer(
             recognizer: recognizer,
             startFrame: 0,
             frameCount: AVAudioFramePosition(audioFile.length),
-            timeOffset: 0
+            timeOffset: 0,
+            contextualStrings: contextualStrings
         )
     }
 
@@ -901,7 +942,8 @@ private func transcribeWithSfSpeechAudioBuffer(
             recognizer: recognizer,
             startFrame: frame,
             frameCount: windowFrames,
-            timeOffset: timeOffset
+            timeOffset: timeOffset,
+            contextualStrings: contextualStrings
         )
         let trimmed = part.text.trimmingCharacters(in: .whitespacesAndNewlines)
         if !trimmed.isEmpty {
@@ -931,7 +973,8 @@ private func recognizeSfSpeechBufferWindow(
     recognizer: SFSpeechRecognizer,
     startFrame: AVAudioFramePosition,
     frameCount: AVAudioFramePosition,
-    timeOffset: Double
+    timeOffset: Double,
+    contextualStrings: [String]?
 ) async throws -> TranscriptionPayload {
     let fileFormat = audioFile.processingFormat
     let rate = max(fileFormat.sampleRate, 1.0)
@@ -948,6 +991,7 @@ private func recognizeSfSpeechBufferWindow(
     request.requiresOnDeviceRecognition = true
     request.shouldReportPartialResults = true
     request.taskHint = .dictation
+    request.contextualStrings = sanitizedContextualStrings(contextualStrings)
     // Isolate non-Sendable Speech request behind a serial-queue handle so
     // Dispatch/AVAudio @Sendable completions never capture it bare (S-4).
     let requestHandle = SfSpeechRequestHandle(request, label: "com.vetcoders.codescribe.stt.sf-buffer")
@@ -1144,7 +1188,10 @@ private struct StreamHeader: Codable {
 /// replay. Partials become `partial` events, phrase finals become `final`
 /// events (with `SFTranscriptionSegment.confidence`), EOF ends audio and the
 /// accumulated text is returned as the summary payload.
-private func transcribeStreaming(locale: Locale) async throws -> TranscriptionPayload {
+private func transcribeStreaming(
+    locale: Locale,
+    contextualStrings: [String]?
+) async throws -> TranscriptionPayload {
     // Stream command is SFSpeechAudioBuffer only today — gate Speech TCC here.
     try await ensureSpeechAuthorizedForSfSpeech()
     guard let headerData = readRawStdinLine(),
@@ -1179,6 +1226,7 @@ private func transcribeStreaming(locale: Locale) async throws -> TranscriptionPa
     request.requiresOnDeviceRecognition = true
     request.shouldReportPartialResults = true
     request.taskHint = .dictation
+    request.contextualStrings = sanitizedContextualStrings(contextualStrings)
     // Stream PCM pump runs on a Dispatch queue (@Sendable); isolate the bare
     // request so append/endAudio never cross the Sendable boundary (L1068).
     let requestHandle = SfSpeechRequestHandle(request, label: "com.vetcoders.codescribe.stt.sf-stream")
@@ -1372,14 +1420,9 @@ final class SfSpeechPhraseAccumulator: @unchecked Sendable {
         defer { lock.unlock() }
         let t = text.trimmingCharacters(in: .whitespacesAndNewlines)
         var frozen: FrozenPhrase? = nil
-        // Detect SFSpeech phrase restart without isFinal → freeze prior.
-        //
-        // A RESTART collapses the hypothesis to a few words; a REVISION keeps
-        // most of it and only rewords the middle. Measured on the parity
-        // fixture: all 13 restarts landed at ≤12 chars (from 47…191), while a
-        // revision shrank 95 → 79 — and the old "shorter by 12+" rule froze
-        // that revision as a phrase, sealing the same span twice (the residual
-        // duplication at similarity 0.872).
+        // Retain every prior hypothesis that the next hypothesis does not
+        // contain in full. Restart thresholds classify the transition for
+        // telemetry only; they never authorize overwriting speech.
         //
         // NAMED DROP MECHANISM (w1-b, 2026-08-10 three-way live):
         // `shared_opener_restart_suppresses_freeze`. Consecutive Polish
@@ -1388,19 +1431,19 @@ final class SfSpeechPhraseAccumulator: @unchecked Sendable {
         // so a post-stressor collapse to the next sentence's short opener
         // OVERWROTE the open hypothesis without freezing it — s6/s8/s10
         // vanished from committed raw while native dictation kept them.
-        // Same-phrase rewind only suppresses freeze when the short text is a
-        // TRUE substantial prefix (>15 chars) of the prior hypothesis.
-        if !partialText.isEmpty && !t.isEmpty {
+        // A same-phrase rewind is retained too: without a second retained copy,
+        // overwriting it would still discard the rewound suffix.
+        if !partialText.isEmpty {
             let prev = partialText
-            if Self.phraseRestartShouldFreezePrior(prev: prev, next: t) {
+            if let reason = Self.phraseRetentionReason(prev: prev, next: t) {
                 finals.append(prev)
                 finalSegments.append(contentsOf: partialSegments)
                 frozen = FrozenPhrase(text: prev, segments: partialSegments)
                 let ts = ISO8601DateFormatter().string(from: Date())
                 fputs(
-                    "apple_lifecycle: freeze reason=shared_opener_restart_suppresses_freeze "
+                    "INFO apple_lifecycle: freeze "
                         + "ts=\(ts) prev_chars=\(prev.count) next_chars=\(t.count) "
-                        + "prev_head=\(String(prev.prefix(40))) next_head=\(String(t.prefix(40)))\n",
+                        + "reason=\(reason)\n",
                     stderr
                 )
             }
@@ -1413,15 +1456,19 @@ final class SfSpeechPhraseAccumulator: @unchecked Sendable {
     /// Pure freeze decision — kept in lockstep with
     /// `phrase_restart_should_freeze_prior` in `apple_live_session.rs`.
     fileprivate static func phraseRestartShouldFreezePrior(prev: String, next: String) -> Bool {
+        phraseRetentionReason(prev: prev, next: next) != nil
+    }
+
+    /// Returns a telemetry classification only when the prior hypothesis must
+    /// be retained. Text safety depends solely on forward containment.
+    private static func phraseRetentionReason(prev: String, next: String) -> String? {
         let prev = prev.trimmingCharacters(in: .whitespacesAndNewlines)
         let next = next.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !prev.isEmpty, !next.isEmpty else { return false }
+        guard !prev.isEmpty else { return nil }
+        guard !next.contains(prev) else { return nil }
+        guard !next.isEmpty else { return "empty_collapse_retained" }
         let restarted = (next.count * 3 < prev.count) || (next.count <= 15 && prev.count >= 25)
-        guard restarted else { return false }
-        // Substantial true-prefix rewind of the SAME phrase — not a 1–2 word
-        // opener every "Zdanie N" sentence shares.
-        let samePhraseRewind = prev.hasPrefix(next) && next.count > 15
-        return !samePhraseRewind
+        return restarted ? "restart_retained" : "revision_retained"
     }
 
     /// Freeze whatever hypothesis is still open (stream ended mid-phrase).
@@ -1457,6 +1504,70 @@ final class SfSpeechPhraseAccumulator: @unchecked Sendable {
             segments: normalizeSegments(segs),
             backend: .sfSpeechRecognizer
         )
+    }
+}
+
+/// Test-only command path over the same accumulator decision used in live
+/// streaming. It intentionally reads the exact TSV compiled into the Rust
+/// mirror test, so fixture drift cannot make the two languages look aligned.
+private func runPhraseRestartVectorSelfTest() -> Int32 {
+    let source = URL(fileURLWithPath: #filePath)
+    let root = source
+        .deletingLastPathComponent()
+        .deletingLastPathComponent()
+        .deletingLastPathComponent()
+        .deletingLastPathComponent()
+    let fixture = root.appendingPathComponent("tests/fixtures/phrase_restart_vectors.tsv")
+
+    do {
+        let contents = try String(contentsOf: fixture, encoding: .utf8)
+        let requiredIDs: Set<String> = [
+            "measured_restart_47_to_12",
+            "measured_revision_95_to_79",
+            "missed_collapse_40_to_20",
+            "shared_opener_sentence_restart",
+            "shared_opener_spoken_variant",
+        ]
+        var seenIDs: Set<String> = []
+        for line in contents.split(separator: "\n").map(String.init)
+            where !line.hasPrefix("#")
+        {
+            let fields = line.split(separator: "\t", omittingEmptySubsequences: false).map(String.init)
+            guard fields.count == 4, let expected = Bool(fields[1]) else {
+                fputs("phrase_restart_self_test malformed_vector=\(line)\n", stderr)
+                return 2
+            }
+            seenIDs.insert(fields[0])
+            if fields[0] == "missed_collapse_40_to_20" {
+                guard fields[2].count == 40, fields[3].count == 20 else {
+                    fputs("phrase_restart_self_test invalid_40_to_20_lengths\n", stderr)
+                    return 2
+                }
+            }
+            let actual = SfSpeechPhraseAccumulator.phraseRestartShouldFreezePrior(
+                prev: fields[2],
+                next: fields[3]
+            )
+            guard actual == expected else {
+                fputs(
+                    "phrase_restart_self_test FAIL id=\(fields[0]) expected=\(expected) "
+                        + "actual=\(actual) prev_chars=\(fields[2].count) "
+                        + "next_chars=\(fields[3].count)\n",
+                    stderr
+                )
+                return 1
+            }
+        }
+        let missingIDs = requiredIDs.subtracting(seenIDs).sorted()
+        guard missingIDs.isEmpty else {
+            fputs("phrase_restart_self_test missing=\(missingIDs.joined(separator: ","))\n", stderr)
+            return 2
+        }
+        fputs("phrase_restart_self_test PASS\n", stderr)
+        return 0
+    } catch {
+        fputs("phrase_restart_self_test fixture_error=\(error)\n", stderr)
+        return 2
     }
 }
 

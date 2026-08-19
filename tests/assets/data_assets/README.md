@@ -35,6 +35,11 @@ When no fixtures are found, fixture-driven tests SKIP with a notice — they
 never fail on a clean public checkout. The engine harness instead exits 2 and
 prints every path it checked, so a cold worker never has to hunt.
 
+W13-0 golden replay WAVs (operator voice, 2026-08-13 takes 171939 / 191351 / 193523) live in `w13/` under this same resolution order. The repo commits
+only `tests/fixtures/w13_golden_manifest.json` (relative path + sha256).
+`cargo test --test w13_clock_falsification w13_golden_fixture_manifest_loads`
+is hermetic; the histogram test measures when the WAVs are present.
+
 ## Cold worker: point a run at the corpus
 
 No copying, no committing — name the directory that holds it:

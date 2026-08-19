@@ -16,46 +16,46 @@ import Foundation
 
 /// One step of the first-run onboarding wizard.
 enum OnboardingStep: Equatable {
-    case welcome
-    /// Basic vs Agentic operating lane.
-    case mode
-    /// Privacy scopes in `PERMISSION_STEP_ORDER` (mic → … → speech → full-disk).
-    case permission(PermissionKind)
-    /// Dictation language choice.
-    case language
-    case apiKey
-    /// Hold / toggle / hybrid hotkey lane.
-    case hotkeyMode
-    /// Agentic-lane readiness verdict.
-    case agenticReadiness
-    case done
+  case welcome
+  /// Basic vs Agentic operating lane.
+  case mode
+  /// Privacy scopes in `PERMISSION_STEP_ORDER` (mic → … → speech → full-disk).
+  case permission(PermissionKind)
+  /// Dictation language choice.
+  case language
+  case apiKey
+  /// Hold / toggle / hybrid hotkey lane.
+  case hotkeyMode
+  /// Agentic-lane readiness verdict.
+  case agenticReadiness
+  case done
 
-    /// Fixed 13-step flow. Indices are the persisted resume contract — see the
-    /// file header. Permission order matches `PERMISSION_STEP_ORDER`.
-    static let flow: [OnboardingStep] = [
-        .welcome,
-        .mode,
-        .permission(.microphone),
-        .permission(.accessibility),
-        .permission(.inputMonitoring),
-        .permission(.screenRecording),
-        .permission(.speechRecognition),
-        .permission(.fullDiskAccess),
-        .language,
-        .apiKey,
-        .hotkeyMode,
-        .agenticReadiness,
-        .done,
-    ]
+  /// Fixed 13-step flow. Indices are the persisted resume contract — see the
+  /// file header. Permission order matches `PERMISSION_STEP_ORDER`.
+  static let flow: [OnboardingStep] = [
+    .welcome,
+    .mode,
+    .permission(.microphone),
+    .permission(.accessibility),
+    .permission(.inputMonitoring),
+    .permission(.screenRecording),
+    .permission(.speechRecognition),
+    .permission(.fullDiskAccess),
+    .language,
+    .apiKey,
+    .hotkeyMode,
+    .agenticReadiness,
+    .done,
+  ]
 
-    /// Total number of steps (13). Kept in sync with the Rust
-    /// `TOTAL_ONBOARDING_STEPS` clamp in app/os/onboarding.rs.
-    static var count: Int { flow.count }
+  /// Total number of steps (13). Kept in sync with the Rust
+  /// `TOTAL_ONBOARDING_STEPS` clamp in app/os/onboarding.rs.
+  static var count: Int { flow.count }
 
-    /// Step at a persisted resume index, clamped to the valid range so a stale
-    /// or out-of-range marker can never crash the wizard (falls back to Welcome).
-    static func step(at index: Int) -> OnboardingStep {
-        guard flow.indices.contains(index) else { return .welcome }
-        return flow[index]
-    }
+  /// Step at a persisted resume index, clamped to the valid range so a stale
+  /// or out-of-range marker can never crash the wizard (falls back to Welcome).
+  static func step(at index: Int) -> OnboardingStep {
+    guard flow.indices.contains(index) else { return .welcome }
+    return flow[index]
+  }
 }

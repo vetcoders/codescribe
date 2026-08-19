@@ -8,14 +8,119 @@ use tracing::{info, warn};
 use codescribe_core::pipeline::contracts::{
     FinalPassDisposition, TranscriptionConfidenceFlag, TranscriptionVerdict,
 };
+use codescribe_core::pipeline::stream_postprocess::{StreamPostProcessStats, StreamPostProcessor};
 
 use super::final_pass::engine_label_from_verdict;
 use super::helpers::SessionTelemetrySnapshot;
 use super::types::{RecordingFallbackClass, RecordingTranscriptSource};
 
+/// Unconditional final text layer immediately before formatting and delivery.
+#[derive(Debug, Clone)]
+pub struct DeliveryTextPostprocess {
+    /// Text after production lexicon, artifact cleanup, and semantic gate.
+    pub text: String,
+    /// Content-free counters proving which final layer ran.
+    pub stats: StreamPostProcessStats,
+}
+
+/// Apply the production-owned lexicon/text layer used by every delivery.
+///
+/// This is deliberately a shared symbol rather than test-side logic: the real
+/// overlay pipeline and private-corpus replay both cross it before treating a
+/// transcript as deliverable.
+pub fn postprocess_transcript_for_delivery(raw_text: &str) -> DeliveryTextPostprocess {
+    let mut finalizer = StreamPostProcessor::new();
+    let text = finalizer
+        .process(raw_text)
+        .unwrap_or_else(|| raw_text.to_string());
+    DeliveryTextPostprocess {
+        text,
+        stats: finalizer.stats(),
+    }
+}
+
 /// Collapse a whitespace-only transcript to `None` — blank is not a transcript.
 fn non_empty_transcript(text: Option<String>) -> Option<String> {
     text.filter(|text| !text.trim().is_empty())
+}
+
+/// The typed Layer 1 producer whose result is being reconciled with the live
+/// Apple/stream floor. This is deliberately independent of transport vendor.
+#[derive(Debug, Clone, Copy)]
+enum Layer1AdjudicationSource {
+    LocalWhisper,
+    CloudPrimary,
+    CloudFallback,
+}
+
+impl Layer1AdjudicationSource {
+    const fn label(self) -> &'static str {
+        match self {
+            Self::LocalWhisper => "local_whisper",
+            Self::CloudPrimary => "cloud_primary",
+            Self::CloudFallback => "cloud_fallback",
+        }
+    }
+}
+
+const fn layer1_decision_reason(mode: codescribe_core::quality::Layer1MergeMode) -> &'static str {
+    match mode {
+        codescribe_core::quality::Layer1MergeMode::Empty => "empty",
+        codescribe_core::quality::Layer1MergeMode::LiveOnly => "live_only",
+        codescribe_core::quality::Layer1MergeMode::ProviderOnly => "provider_only",
+        codescribe_core::quality::Layer1MergeMode::LiveFloorGapFill => "live_floor_gap_fill",
+    }
+}
+
+const fn cloud_layer1_engine_label(
+    mode: codescribe_core::quality::Layer1MergeMode,
+) -> &'static str {
+    match mode {
+        codescribe_core::quality::Layer1MergeMode::ProviderOnly => "cloud_stt",
+        _ => "merged_live_layer1:cloud_stt",
+    }
+}
+
+/// Reconcile one Layer 1 result against the immutable live floor and emit only
+/// content-free operational telemetry. Cloud sources never receive local
+/// known-term evidence, so they can fill aligned gaps/tails but cannot win a
+/// substitution over a committed live token.
+fn merge_layer1_with_live_floor(
+    live: Option<&str>,
+    provider_text: &str,
+    source: Layer1AdjudicationSource,
+    known_terms: &[String],
+) -> codescribe_core::quality::Layer1MergedDelivery {
+    let live = live.unwrap_or_default();
+    let merged = match source {
+        Layer1AdjudicationSource::LocalWhisper => {
+            codescribe_core::quality::merge_live_whisper_with_terms(
+                live,
+                provider_text,
+                known_terms,
+            )
+            .into()
+        }
+        Layer1AdjudicationSource::CloudPrimary | Layer1AdjudicationSource::CloudFallback => {
+            codescribe_core::quality::merge_live_layer1(live, provider_text)
+        }
+    };
+
+    info!(
+        source = source.label(),
+        live_chars = live.chars().count(),
+        provider_chars = provider_text.chars().count(),
+        merged_chars = merged.text.chars().count(),
+        decision_reason = layer1_decision_reason(merged.mode),
+        equal = merged.equal_tokens,
+        provider_fill = merged.provider_fill_tokens,
+        live_subs = merged.live_kept_substitutes,
+        provider_won_subs = merged.provider_won_substitutes,
+        known_terms = known_terms.len(),
+        "Layer 1 adjudication completed"
+    );
+
+    merged
 }
 
 /// The adjudicated outcome of one recording: what to deliver, and how much to
@@ -49,6 +154,12 @@ pub(crate) struct RecordingTruthVerdict {
     /// Disposition of the explicit file-level final pass, when one ran.
     /// None means no final pass was attempted for this verdict.
     pub(crate) final_pass_disposition: Option<FinalPassDisposition>,
+    /// Whether the stop path actually invoked the local file pass.
+    pub(crate) final_pass_attempted: bool,
+    /// Runtime verdict for the explicit skip question used by acceptance evidence.
+    pub(crate) final_pass_skipped: bool,
+    /// Typed engine/controller reason when the pass was skipped.
+    pub(crate) final_pass_skip_reason: Option<String>,
     /// Actual serving engine label for sidecar/UI (`local_apple`, `local_whisper`, …).
     /// Preference-derived labels are forbidden when a verdict is present.
     pub(crate) engine_label: Option<String>,
@@ -197,6 +308,9 @@ pub(crate) fn build_truth_verdict(
         confidence_flags,
         sparkline,
         final_pass_disposition,
+        final_pass_attempted: false,
+        final_pass_skipped: false,
+        final_pass_skip_reason: None,
         engine_label,
         commit_trigger,
         display_status,
@@ -205,11 +319,10 @@ pub(crate) fn build_truth_verdict(
 
 /// Decide what a finished recording actually delivers, and label its provenance.
 ///
-/// The live transcript is the floor of truth. When a local final pass produced
-/// text, it is **merged** into the live assembly (live kept, Whisper filling the
-/// gaps) rather than replacing it — full-replace would delete correct live
-/// tokens and is a doctrine violation. See
-/// [`codescribe_core::quality::merge_live_whisper`].
+/// The live transcript is the floor of truth. A Layer 1 result is **merged**
+/// into the live assembly (committed live kept, provider filling gaps/tail)
+/// rather than replacing it — full-replace would delete correct live tokens
+/// and is a doctrine violation. See [`codescribe_core::quality::merge_live_layer1`].
 ///
 /// Resolution order:
 /// 1. Local final pass — an explicit no-speech verdict is authoritative and
@@ -217,8 +330,8 @@ pub(crate) fn build_truth_verdict(
 /// 2. A final pass that came back *shorter* than the live assembly is rejected
 ///    as a length regression, keeping the stream and flagging provenance.
 /// 3. Session-level no-speech telemetry.
-/// 4. Cloud verdict, then the streaming floor — both always marked degraded,
-///    because neither was verified by a final pass.
+/// 4. Cloud verdict merged against the streaming floor, then the streaming
+///    floor alone. Cloud fallback remains explicitly degraded.
 /// 5. Nothing usable: an empty verdict carrying the reason.
 pub(crate) fn adjudicate_recording_truth(
     use_local_stt: bool,
@@ -226,6 +339,40 @@ pub(crate) fn adjudicate_recording_truth(
     local_final_pass_verdict: Option<TranscriptionVerdict>,
     streaming_text: String,
     cloud_verdict: Option<crate::client::CloudTranscriptionVerdict>,
+    streaming_engine_label: Option<&str>,
+    session_telemetry: &SessionTelemetrySnapshot,
+) -> RecordingTruthVerdict {
+    let typed_skip = local_final_pass_verdict
+        .as_ref()
+        .and_then(|verdict| verdict.final_pass.as_ref())
+        .filter(|final_pass| final_pass.disposition == FinalPassDisposition::Skipped);
+    let final_pass_skipped = !local_final_pass_attempted || typed_skip.is_some();
+    let final_pass_skip_reason = typed_skip
+        .and_then(|final_pass| final_pass.reason.clone())
+        .or_else(|| (!local_final_pass_attempted).then(|| "not_attempted".to_string()));
+
+    let mut verdict = adjudicate_recording_truth_inner(
+        use_local_stt,
+        local_final_pass_attempted,
+        local_final_pass_verdict,
+        streaming_text,
+        cloud_verdict,
+        streaming_engine_label,
+        session_telemetry,
+    );
+    verdict.final_pass_attempted = local_final_pass_attempted;
+    verdict.final_pass_skipped = final_pass_skipped;
+    verdict.final_pass_skip_reason = final_pass_skip_reason;
+    verdict
+}
+
+fn adjudicate_recording_truth_inner(
+    use_local_stt: bool,
+    local_final_pass_attempted: bool,
+    local_final_pass_verdict: Option<TranscriptionVerdict>,
+    streaming_text: String,
+    cloud_verdict: Option<crate::client::CloudTranscriptionVerdict>,
+    streaming_engine_label: Option<&str>,
     session_telemetry: &SessionTelemetrySnapshot,
 ) -> RecordingTruthVerdict {
     let streaming_text = non_empty_transcript(Some(streaming_text));
@@ -279,6 +426,24 @@ pub(crate) fn adjudicate_recording_truth(
             non_empty_transcript(Some(verdict.text))
         };
 
+        // `Off` produces a typed skipped verdict solely to carry the live
+        // engine identity. No final-pass engine served text, so do not route
+        // the unchanged live floor through the Whisper merge/provenance path.
+        if matches!(final_pass_disposition, Some(FinalPassDisposition::Skipped)) {
+            return build_truth_verdict(
+                streaming_text.or(raw_text),
+                Some(RecordingTranscriptSource::Streaming),
+                None,
+                None,
+                speech_pct,
+                avg_logprob,
+                confidence_flags,
+                sparkline,
+                final_pass_disposition,
+                engine_label,
+            );
+        }
+
         // Explicit no-speech from final pass remains authoritative.
         if no_speech_reason.is_some() {
             return build_truth_verdict(
@@ -329,22 +494,11 @@ pub(crate) fn adjudicate_recording_truth(
                             terms
                         })
                         .unwrap_or_default();
-                let merged = codescribe_core::quality::merge_live_whisper_with_terms(
-                    stream,
+                let merged = merge_layer1_with_live_floor(
+                    Some(stream),
                     final_text,
+                    Layer1AdjudicationSource::LocalWhisper,
                     &known_terms,
-                );
-                info!(
-                    mode = ?merged.mode,
-                    equal = merged.equal_tokens,
-                    whisper_fill = merged.whisper_fill_tokens,
-                    live_subs = merged.live_kept_substitutes,
-                    whisper_won_subs = merged.whisper_won_substitutes,
-                    known_terms = known_terms.len(),
-                    live_chars = stream.chars().count(),
-                    whisper_chars = final_text.chars().count(),
-                    merged_chars = merged.text.chars().count(),
-                    "delivery merge: live floor + whisper fill (not full-replace)"
                 );
                 // Merged path still used a final pass; keep engine label from final
                 // but text is composite live×whisper.
@@ -412,6 +566,13 @@ pub(crate) fn adjudicate_recording_truth(
         }
 
         if let Some(cloud_verdict) = cloud_verdict {
+            let merged = merge_layer1_with_live_floor(
+                streaming_text.as_deref(),
+                &cloud_verdict.text,
+                Layer1AdjudicationSource::CloudFallback,
+                &[],
+            );
+            let engine_label = cloud_layer1_engine_label(merged.mode);
             let mut fallback_flags = confidence_flags.clone();
             for flag in &cloud_verdict.confidence_flags {
                 push_typed_flag(&mut fallback_flags, *flag);
@@ -421,7 +582,7 @@ pub(crate) fn adjudicate_recording_truth(
                 TranscriptionConfidenceFlag::CloudFallbackUsed,
             );
             return build_truth_verdict(
-                Some(cloud_verdict.text),
+                Some(merged.text),
                 Some(RecordingTranscriptSource::CloudFallback),
                 Some(RecordingFallbackClass::Degraded), // cloud fallback is no longer "Acceptable" (silent), it must be explicit
                 None,
@@ -430,7 +591,7 @@ pub(crate) fn adjudicate_recording_truth(
                 fallback_flags,
                 None,
                 None,
-                Some("cloud_stt".to_string()),
+                Some(engine_label.to_string()),
             );
         }
 
@@ -447,11 +608,11 @@ pub(crate) fn adjudicate_recording_truth(
             // Regression keep-stream is still live assembly truth, not "degraded
             // because final missing" — label as streaming floor when we rejected
             // a collapsing final pass.
-            let engine = if final_pass_length_regression {
-                Some("streaming_live_floor".to_string())
-            } else {
-                Some("streaming_whisper".to_string())
-            };
+            let engine = Some(
+                streaming_engine_label
+                    .unwrap_or("streaming_unknown")
+                    .to_string(),
+            );
             return build_truth_verdict(
                 Some(text),
                 Some(RecordingTranscriptSource::StreamingFallback),
@@ -467,8 +628,15 @@ pub(crate) fn adjudicate_recording_truth(
         }
     } else {
         if let Some(cloud_verdict) = cloud_verdict {
+            let merged = merge_layer1_with_live_floor(
+                streaming_text.as_deref(),
+                &cloud_verdict.text,
+                Layer1AdjudicationSource::CloudPrimary,
+                &[],
+            );
+            let engine_label = cloud_layer1_engine_label(merged.mode);
             return build_truth_verdict(
-                Some(cloud_verdict.text),
+                Some(merged.text),
                 Some(RecordingTranscriptSource::CloudPrimary),
                 None,
                 None,
@@ -477,7 +645,7 @@ pub(crate) fn adjudicate_recording_truth(
                 cloud_verdict.confidence_flags,
                 None,
                 None,
-                Some("cloud_stt".to_string()),
+                Some(engine_label.to_string()),
             );
         }
 
@@ -505,7 +673,11 @@ pub(crate) fn adjudicate_recording_truth(
                 confidence_flags,
                 None,
                 None,
-                Some("streaming_whisper".to_string()),
+                Some(
+                    streaming_engine_label
+                        .unwrap_or("streaming_unknown")
+                        .to_string(),
+                ),
             );
         }
     }
@@ -548,7 +720,7 @@ pub(crate) fn truth_engine_label(
             "cloud_stt".to_string()
         }
         RecordingTranscriptSource::Streaming | RecordingTranscriptSource::StreamingFallback => {
-            "streaming_whisper".to_string()
+            "streaming_unknown".to_string()
         }
     })
 }

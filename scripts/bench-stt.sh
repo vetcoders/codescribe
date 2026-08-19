@@ -151,6 +151,7 @@ discover_model() {
   fi
 
   for candidate in \
+    "$home_dir/.codescribe/models/whisper-large-v3-turbo" \
     "$home_dir/.codescribe/models/whisper-large-v3-turbo-mlx-q8" \
     "$home_dir/.codescribe/models/whisper-large-v3-mlx-q8"; do
     if model_is_complete "$candidate"; then
@@ -260,7 +261,11 @@ load_env_file() {
       elif [[ "$value" == \'*\' && "$value" == *\' ]]; then
         value="${value:1:${#value}-2}"
       fi
-      export "$key=$value"
+      # Explicit harness pins win over the operator dotenv. A benchmark must
+      # not silently switch lanes because ~/.codescribe/.env was edited.
+      if [[ -z "${!key+x}" ]]; then
+        export "$key=$value"
+      fi
     done < "$env_file"
   fi
 }
@@ -443,6 +448,28 @@ fn word_error_rate(reference: &[String], hypothesis: &[String]) -> f32 {
     dist as f32 / denom
 }
 
+fn unbiased_word_error_rate(
+    reference: &[String],
+    hypothesis: &[String],
+    prompted_terms: &[String],
+) -> f32 {
+    let prompted_words: BTreeSet<String> = prompted_terms
+        .iter()
+        .flat_map(|term| normalize_for_eval(term).0)
+        .collect();
+    let unbiased_reference: Vec<String> = reference
+        .iter()
+        .filter(|token| !prompted_words.contains(*token))
+        .cloned()
+        .collect();
+    let unbiased_hypothesis: Vec<String> = hypothesis
+        .iter()
+        .filter(|token| !prompted_words.contains(*token))
+        .cloned()
+        .collect();
+    word_error_rate(&unbiased_reference, &unbiased_hypothesis)
+}
+
 fn char_error_rate(reference: &str, hypothesis: &str) -> f32 {
     let ref_chars: Vec<char> = reference.chars().collect();
     let hyp_chars: Vec<char> = hypothesis.chars().collect();
@@ -476,6 +503,47 @@ fn contains_term(norm_text: &str, term: &str) -> bool {
     let haystack = format!(" {norm_text} ");
     let needle = format!(" {term_norm} ");
     haystack.contains(&needle)
+}
+
+fn count_term(norm_text: &str, term: &str) -> usize {
+    let (_, term_norm) = normalize_for_eval(term);
+    if term_norm.is_empty() {
+        return 0;
+    }
+    let haystack = format!(" {norm_text} ");
+    let needle = format!(" {term_norm} ");
+    haystack.match_indices(&needle).count()
+}
+
+fn false_insertion_count(reference_norm: &str, hypothesis_norm: &str, terms: &[String]) -> usize {
+    terms
+        .iter()
+        .map(|term| count_term(hypothesis_norm, term).saturating_sub(count_term(reference_norm, term)))
+        .sum()
+}
+
+fn transcribe_per_window(
+    samples: &[f32],
+    sample_rate: u32,
+    language: &str,
+    prompt: Option<String>,
+) -> Result<String> {
+    const WINDOW_SECONDS: usize = 12;
+    let window_frames = (sample_rate as usize).saturating_mul(WINDOW_SECONDS).max(1);
+    let mut parts = Vec::new();
+    for window in samples.chunks(window_frames) {
+        let transcript = whisper::singleton::transcribe_with_segments_with_initial_prompt(
+            window,
+            sample_rate,
+            Some(language),
+            prompt.clone(),
+        )?;
+        let text = transcript.text.trim();
+        if !text.is_empty() {
+            parts.push(text.to_string());
+        }
+    }
+    Ok(parts.join(" "))
 }
 
 fn prompt_terms(prompt: Option<&str>) -> Vec<String> {
@@ -723,13 +791,14 @@ fn main() -> Result<()> {
         &format!("{prompt_max_regression_pp:.3}"),
     )?;
     write_kv(&term_source_out, "source_reason", source_reason)?;
+    write_kv(&term_source_out, "decode_scope", "per_window_12_seconds")?;
 
     whisper::init()?;
 
     let mut wer_out = File::create(&wer_tsv)?;
     writeln!(
         wer_out,
-        "id\taudio_path\treference_path\tsource_kind\tunprompted_raw_wer\tprompted_raw_wer\tdelta_raw_wer_pp\tunprompted_post_wer\tprompted_post_wer\tdelta_post_wer_pp\tunprompted_raw_cer\tprompted_raw_cer\tunprompted_post_cer\tprompted_post_cer\tunprompted_raw_chars\tprompted_raw_chars"
+        "id\taudio_path\treference_path\tsource_kind\tunprompted_raw_wer\tprompted_raw_wer\tdelta_raw_wer_pp\tunprompted_raw_uwer\tprompted_raw_uwer\tunprompted_raw_false_insertions\tprompted_raw_false_insertions\tunprompted_post_wer\tprompted_post_wer\tdelta_post_wer_pp\tunprompted_post_uwer\tprompted_post_uwer\tunprompted_post_false_insertions\tprompted_post_false_insertions\tunprompted_raw_cer\tprompted_raw_cer\tunprompted_post_cer\tprompted_post_cer\tunprompted_raw_chars\tprompted_raw_chars"
     )?;
     let mut hits_out = File::create(&term_hits_tsv)?;
     writeln!(
@@ -741,26 +810,37 @@ fn main() -> Result<()> {
 
     for fixture in fixtures {
         let (samples, sample_rate) = audio::load_audio_file(&fixture.audio_path)?;
-        let unprompted = whisper::transcribe_with_segments(&samples, sample_rate, Some(language))?;
-        let prompted = whisper::singleton::transcribe_with_segments_with_initial_prompt(
-            &samples,
-            sample_rate,
-            Some(language),
-            prompt.clone(),
-        )?;
-        let unprompted_post = stream_postprocess::apply_lexicon(&unprompted.text);
-        let prompted_post = stream_postprocess::apply_lexicon(&prompted.text);
+        let unprompted = transcribe_per_window(&samples, sample_rate, language, None)?;
+        let prompted = transcribe_per_window(&samples, sample_rate, language, prompt.clone())?;
+        let unprompted_post = stream_postprocess::apply_lexicon(&unprompted);
+        let prompted_post = stream_postprocess::apply_lexicon(&prompted);
 
-        let (unprompted_tokens, unprompted_norm) = normalize_for_eval(&unprompted.text);
-        let (prompted_tokens, prompted_norm) = normalize_for_eval(&prompted.text);
+        let (unprompted_tokens, unprompted_norm) = normalize_for_eval(&unprompted);
+        let (prompted_tokens, prompted_norm) = normalize_for_eval(&prompted);
         let (unprompted_post_tokens, unprompted_post_norm) = normalize_for_eval(&unprompted_post);
         let (prompted_post_tokens, prompted_post_norm) = normalize_for_eval(&prompted_post);
 
         let unprompted_raw_wer = word_error_rate(&fixture.reference_tokens, &unprompted_tokens);
         let prompted_raw_wer = word_error_rate(&fixture.reference_tokens, &prompted_tokens);
+        let unprompted_raw_uwer = unbiased_word_error_rate(
+            &fixture.reference_tokens, &unprompted_tokens, &selected_terms);
+        let prompted_raw_uwer = unbiased_word_error_rate(
+            &fixture.reference_tokens, &prompted_tokens, &selected_terms);
+        let unprompted_raw_false_insertions = false_insertion_count(
+            &fixture.reference_norm, &unprompted_norm, &selected_terms);
+        let prompted_raw_false_insertions = false_insertion_count(
+            &fixture.reference_norm, &prompted_norm, &selected_terms);
         let unprompted_post_wer =
             word_error_rate(&fixture.reference_tokens, &unprompted_post_tokens);
         let prompted_post_wer = word_error_rate(&fixture.reference_tokens, &prompted_post_tokens);
+        let unprompted_post_uwer = unbiased_word_error_rate(
+            &fixture.reference_tokens, &unprompted_post_tokens, &selected_terms);
+        let prompted_post_uwer = unbiased_word_error_rate(
+            &fixture.reference_tokens, &prompted_post_tokens, &selected_terms);
+        let unprompted_post_false_insertions = false_insertion_count(
+            &fixture.reference_norm, &unprompted_post_norm, &selected_terms);
+        let prompted_post_false_insertions = false_insertion_count(
+            &fixture.reference_norm, &prompted_post_norm, &selected_terms);
         let unprompted_raw_cer = char_error_rate(&fixture.reference_norm, &unprompted_norm);
         let prompted_raw_cer = char_error_rate(&fixture.reference_norm, &prompted_norm);
         let unprompted_post_cer = char_error_rate(&fixture.reference_norm, &unprompted_post_norm);
@@ -772,7 +852,7 @@ fn main() -> Result<()> {
 
         writeln!(
             wer_out,
-            "{}\t{}\t{}\t{}\t{:.6}\t{:.6}\t{:.3}\t{:.6}\t{:.6}\t{:.3}\t{:.6}\t{:.6}\t{:.6}\t{:.6}\t{}\t{}",
+            "{}\t{}\t{}\t{}\t{:.6}\t{:.6}\t{:.3}\t{:.6}\t{:.6}\t{}\t{}\t{:.6}\t{:.6}\t{:.3}\t{:.6}\t{:.6}\t{}\t{}\t{:.6}\t{:.6}\t{:.6}\t{:.6}\t{}\t{}",
             tsv_clean(&fixture.id),
             tsv_clean(&fixture.audio_path.display().to_string()),
             tsv_clean(&fixture.reference_path.display().to_string()),
@@ -780,15 +860,23 @@ fn main() -> Result<()> {
             unprompted_raw_wer,
             prompted_raw_wer,
             raw_delta_pp,
+            unprompted_raw_uwer,
+            prompted_raw_uwer,
+            unprompted_raw_false_insertions,
+            prompted_raw_false_insertions,
             unprompted_post_wer,
             prompted_post_wer,
             post_delta_pp,
+            unprompted_post_uwer,
+            prompted_post_uwer,
+            unprompted_post_false_insertions,
+            prompted_post_false_insertions,
             unprompted_raw_cer,
             prompted_raw_cer,
             unprompted_post_cer,
             prompted_post_cer,
-            unprompted.text.chars().count(),
-            prompted.text.chars().count()
+            unprompted.chars().count(),
+            prompted.chars().count()
         )?;
 
         for term in &selected_terms {
@@ -969,8 +1057,16 @@ wer_by_id = row_by_id(wer_rows)
 
 unprompted_raw = avg_key(wer_rows, "unprompted_raw_wer")
 prompted_raw = avg_key(wer_rows, "prompted_raw_wer")
+unprompted_raw_uwer = avg_key(wer_rows, "unprompted_raw_uwer")
+prompted_raw_uwer = avg_key(wer_rows, "prompted_raw_uwer")
 unprompted_post = avg_key(wer_rows, "unprompted_post_wer")
 prompted_post = avg_key(wer_rows, "prompted_post_wer")
+unprompted_post_uwer = avg_key(wer_rows, "unprompted_post_uwer")
+prompted_post_uwer = avg_key(wer_rows, "prompted_post_uwer")
+unprompted_raw_false_insertions = sum(int(row["unprompted_raw_false_insertions"]) for row in wer_rows)
+prompted_raw_false_insertions = sum(int(row["prompted_raw_false_insertions"]) for row in wer_rows)
+unprompted_post_false_insertions = sum(int(row["unprompted_post_false_insertions"]) for row in wer_rows)
+prompted_post_false_insertions = sum(int(row["prompted_post_false_insertions"]) for row in wer_rows)
 raw_delta_pp = None if unprompted_raw is None or prompted_raw is None else (prompted_raw - unprompted_raw) * 100.0
 post_delta_pp = None if unprompted_post is None or prompted_post is None else (prompted_post - unprompted_post) * 100.0
 
@@ -987,7 +1083,7 @@ lines.append(f"- fixtures: `{len(manifest)}`")
 lines.append(f"- fixture_source: `{fixture_source}`")
 lines.append("- legacy WER control: existing `qube-report` raw path")
 lines.append("- scheduler latency: `transcription_session` -> `SttScheduler` lanes; model load is excluded")
-lines.append("- prompted WER: explicit prompt-aware transcribe call vs unprompted control; with default OFF it passes no initial prompt")
+lines.append("- prompted WER: identical 12-second window decodes with and without the per-window vocabulary prompt")
 lines.append("")
 lines.append("## Repro Command")
 lines.append("")
@@ -1004,13 +1100,16 @@ lines.append(f"- runtime terms overlapping references: `{term_source.get('runtim
 lines.append(f"- selected source: `{term_source.get('selected_source_kind', 'n/a')}`")
 lines.append(f"- selected terms: `{term_source.get('selected_terms_count', 'n/a')}`")
 lines.append(f"- prompt chars: `{term_source.get('prompt_chars', 'n/a')}`")
+lines.append(f"- decode scope: `{term_source.get('decode_scope', 'n/a')}`")
 lines.append(f"- prompt regression guard: `{term_source.get('prompt_regression_guard_pp', 'n/a')}` pp")
 lines.append(f"- source reason: {term_source.get('source_reason', 'n/a')}")
 lines.append("")
 lines.append("## Metric Separation")
 lines.append("")
 lines.append("- Old metric: `qube-report` WER is retained as a legacy unprompted/control number.")
-lines.append("- New WER metric: the probe runs the same fixtures twice, once through the regular unprompted path and once through the prompt-aware API.")
+lines.append("- WER: ordinary word error rate over all reference words.")
+lines.append("- U-WER: word error rate after removing selected prompt-vocabulary words from both sides; it exposes collateral damage outside the biased vocabulary.")
+lines.append("- False insertions: excess exact occurrences of selected prompt terms in the hypothesis versus the reference.")
 lines.append("- New latency metric: the probe drives `transcription_session`, so Live preview and Commit final pass travel through `SttScheduler`.")
 lines.append("")
 lines.append("## Summary Metrics")
@@ -1022,9 +1121,15 @@ lines.append(f"| legacy qube post WER | {pct(summary.get('avg_post_wer'))} |")
 lines.append(f"| prompted probe unprompted raw WER | {pct(unprompted_raw)} |")
 lines.append(f"| prompted probe prompted raw WER | {pct(prompted_raw)} |")
 lines.append(f"| prompted raw delta | {pp(raw_delta_pp)} |")
+lines.append(f"| prompted probe unprompted raw U-WER | {pct(unprompted_raw_uwer)} |")
+lines.append(f"| prompted probe prompted raw U-WER | {pct(prompted_raw_uwer)} |")
+lines.append(f"| raw false insertions unprompted / prompted | {unprompted_raw_false_insertions} / {prompted_raw_false_insertions} |")
 lines.append(f"| prompted probe unprompted post WER | {pct(unprompted_post)} |")
 lines.append(f"| prompted probe prompted post WER | {pct(prompted_post)} |")
 lines.append(f"| prompted post delta | {pp(post_delta_pp)} |")
+lines.append(f"| prompted probe unprompted post U-WER | {pct(unprompted_post_uwer)} |")
+lines.append(f"| prompted probe prompted post U-WER | {pct(prompted_post_uwer)} |")
+lines.append(f"| post false insertions unprompted / prompted | {unprompted_post_false_insertions} / {prompted_post_false_insertions} |")
 lines.append(f"| raw term hit-rate unprompted | {hit_fmt(term_hit_rows, 'unprompted_raw_hit')} |")
 lines.append(f"| raw term hit-rate prompted | {hit_fmt(term_hit_rows, 'prompted_raw_hit')} |")
 lines.append(f"| post term hit-rate unprompted | {hit_fmt(term_hit_rows, 'unprompted_post_hit')} |")
@@ -1046,23 +1151,27 @@ lines.append("> Old direct-engine latency and new scheduler-lane latency are dif
 lines.append("")
 lines.append("## Per-Fixture Metrics")
 lines.append("")
-lines.append("| file | legacy raw WER | legacy post WER | unprompted raw WER | prompted raw WER | raw delta | unprompted post WER | prompted post WER | post delta | first preview ms | final ms |")
-lines.append("| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |")
+lines.append("| file | raw WER A/B | raw U-WER A/B | raw false insertions A/B | post WER A/B | post U-WER A/B | post false insertions A/B | first/final ms |")
+lines.append("| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: |")
 for entry in entries:
     row = latencies.get(entry.get("id"), {})
     wer_row = wer_by_id.get(entry.get("id"), {})
     metrics = entry.get("metrics", {})
     lines.append(
-        "| {id} | {legacy_raw} | {legacy_post} | {un_raw} | {pr_raw} | {raw_delta} | {un_post} | {pr_post} | {post_delta} | {first} | {final} |".format(
+        "| {id} | {un_raw} / {pr_raw} | {un_raw_uwer} / {pr_raw_uwer} | {un_raw_fi} / {pr_raw_fi} | {un_post} / {pr_post} | {un_post_uwer} / {pr_post_uwer} | {un_post_fi} / {pr_post_fi} | {first} / {final} |".format(
             id=entry.get("id", "unknown"),
-            legacy_raw=pct(metrics.get("raw_wer")),
-            legacy_post=pct(metrics.get("post_wer")),
             un_raw=pct(float(wer_row["unprompted_raw_wer"])) if wer_row else "n/a",
             pr_raw=pct(float(wer_row["prompted_raw_wer"])) if wer_row else "n/a",
-            raw_delta=pp(float(wer_row["delta_raw_wer_pp"])) if wer_row else "n/a",
+            un_raw_uwer=pct(float(wer_row["unprompted_raw_uwer"])) if wer_row else "n/a",
+            pr_raw_uwer=pct(float(wer_row["prompted_raw_uwer"])) if wer_row else "n/a",
+            un_raw_fi=wer_row.get("unprompted_raw_false_insertions", "n/a"),
+            pr_raw_fi=wer_row.get("prompted_raw_false_insertions", "n/a"),
             un_post=pct(float(wer_row["unprompted_post_wer"])) if wer_row else "n/a",
             pr_post=pct(float(wer_row["prompted_post_wer"])) if wer_row else "n/a",
-            post_delta=pp(float(wer_row["delta_post_wer_pp"])) if wer_row else "n/a",
+            un_post_uwer=pct(float(wer_row["unprompted_post_uwer"])) if wer_row else "n/a",
+            pr_post_uwer=pct(float(wer_row["prompted_post_uwer"])) if wer_row else "n/a",
+            un_post_fi=wer_row.get("unprompted_post_false_insertions", "n/a"),
+            pr_post_fi=wer_row.get("prompted_post_false_insertions", "n/a"),
             first=ms(row.get("first_preview_ms")),
             final=ms(row.get("final_ms")),
         )
@@ -1136,7 +1245,7 @@ if [[ "$(($(count_lines "$manifest_tsv") - 1))" -le 0 ]]; then
 fi
 
 if ! model_path="$(discover_model)"; then
-  write_honest_report "No complete Whisper model found. Checked CODESCRIBE_MODEL_PATH, ~/.codescribe/models/{whisper-large-v3-turbo-mlx-q8,whisper-large-v3-mlx-q8}, and Hugging Face cache snapshots."
+  write_honest_report "No complete Whisper model found. Checked CODESCRIBE_MODEL_PATH, ~/.codescribe/models/{whisper-large-v3-turbo,whisper-large-v3-turbo-mlx-q8,whisper-large-v3-mlx-q8}, and Hugging Face cache snapshots."
 fi
 
 export CODESCRIBE_MODEL_PATH="$model_path"

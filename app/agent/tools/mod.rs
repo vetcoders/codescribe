@@ -6,6 +6,8 @@
 //! separately nameable is what lets a test prove the substrate covers every
 //! core capability without an MCP server running.
 
+/// Prompt-layer Responses/streaming ground truth (measured API contracts).
+pub mod api_truth;
 /// Clipboard read/write tools (`read_clipboard` / `write_clipboard`).
 pub mod clipboard;
 /// Prompt-layer review-tool + connector-fallback doctrine (no executor changes).

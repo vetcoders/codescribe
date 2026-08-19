@@ -17,6 +17,12 @@
 
 use crate::pipeline::light_plus;
 use crate::pipeline::stream_postprocess;
+use crate::stt::tail_provider::{
+    TailEvidenceSource, TailEvidenceStability, TailProviderEvidence, TailRequestIdentity,
+    TailSampleRange, TailTimingQuality, TimedTailSegment,
+};
+
+use super::span_idempotence::{self, SpanIdempotenceLedger, SpanOffer};
 
 /// Seconds after an Apple utterance commit during which the engine may still
 /// rewrite the open tail. Measured operator range ~2–3 s; pin the mid point.
@@ -27,7 +33,7 @@ pub const APPLE_VOLATILE_WINDOW_SECS: f32 = 2.5;
 pub const SEAL_STARVATION_CEILING_SECS: f32 = 28.0;
 
 /// One byte-stable committed span after lexicon + (optional) Light+.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct SealedSpan {
     /// Utterance / span identity (monotonic per session).
     pub id: u64,
@@ -36,6 +42,21 @@ pub struct SealedSpan {
     pub text: String,
     /// Absolute session end of the sealed audio span, in seconds.
     pub end_secs_millis: u32,
+    /// Canonical half-open PCM range for this sealed Apple span.
+    pub range: TailSampleRange,
+    /// Apple word/segment evidence pinned to the same PCM clock.
+    pub words: Vec<TimedTailSegment>,
+    /// Typed Apple evidence recorded before any later fusion policy.
+    pub apple_evidence: TailProviderEvidence,
+    /// Typed Whisper evidence for the covering window, when Layer 1 ran.
+    pub whisper_evidence: Option<TailProviderEvidence>,
+    /// Whisper segments mapped back to the capture PCM clock.
+    pub whisper_words: Vec<TimedTailSegment>,
+    /// Silero utterance this span was bound to, when the spectrum had an edge
+    /// enclosing it. `Some` is the evidence that [`Self::range`] came from the
+    /// VAD spectrum rather than from Apple's own segment boundaries; `None`
+    /// records the fail-open case, never a dropped span.
+    pub silero_utterance_id: Option<u64>,
 }
 
 impl SealedSpan {
@@ -57,6 +78,38 @@ pub struct PendingSpan {
     pub end_secs: f32,
     /// Whisper window that fully covers this span, once known.
     pub covering_whisper_window_id: Option<u64>,
+    pub range: TailSampleRange,
+    pub words: Vec<TimedTailSegment>,
+    pub apple_evidence: TailProviderEvidence,
+    pub whisper_evidence: Option<TailProviderEvidence>,
+    pub whisper_words: Vec<TimedTailSegment>,
+    /// Silero utterance this span was bound to. Carried to [`SealedSpan`].
+    pub silero_utterance_id: Option<u64>,
+}
+
+/// One Apple commit offered to the machine, with its PCM and identity
+/// provenance. A record rather than a nine-argument call: every field is
+/// provenance for the same span, and a positional list of that length is how
+/// a range and an identity end up silently swapped.
+#[derive(Debug, Clone, PartialEq)]
+pub struct AppleCommit {
+    /// Span identity (monotonic per session; from the Silero ledger when the
+    /// fusion lane minted it, otherwise reserved from the same id space).
+    pub id: u64,
+    /// Raw engine text (or lexicon-ready canvas text) awaiting the seal pass.
+    pub raw_text: String,
+    /// Absolute end of the span in session audio seconds.
+    pub end_secs: f32,
+    /// Session time when Apple committed the utterance.
+    pub committed_at_secs: f32,
+    /// Canonical half-open PCM range for the span.
+    pub range: TailSampleRange,
+    /// Apple word/segment evidence pinned to the same PCM clock.
+    pub words: Vec<TimedTailSegment>,
+    /// Typed Apple evidence recorded before any later fusion policy.
+    pub apple_evidence: TailProviderEvidence,
+    /// Silero utterance the range was taken from, when one enclosed the span.
+    pub silero_utterance_id: Option<u64>,
 }
 
 /// One live-lane partial retained for residual stop-path fill.
@@ -82,10 +135,15 @@ pub struct ProgressiveSealMachine {
     starvation_ceiling_hits: u64,
     /// Live lane health — when false, stop path may fall back to file inference.
     live_lane_alive: bool,
+    /// Session-captured W13-4 flag. Restart-only configuration must not change
+    /// underneath an active recording.
+    span_idempotence_enabled: bool,
+    /// W13-4 range-identity ledger. Consulted only when the lane flag is ON.
+    span_idempotence: SpanIdempotenceLedger,
 }
 
 /// Outcome of one seal evaluation pass.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct SealTick {
     /// Spans that sealed on this tick (lexicon → Light+ applied).
     pub newly_sealed: Vec<SealedSpan>,
@@ -112,6 +170,7 @@ impl ProgressiveSealMachine {
     pub fn new() -> Self {
         Self {
             live_lane_alive: true,
+            span_idempotence_enabled: span_idempotence::lane_enabled(),
             ..Self::default()
         }
     }
@@ -135,9 +194,46 @@ impl ProgressiveSealMachine {
         end_secs: f32,
         committed_at_secs: f32,
     ) {
-        let raw_text = raw_text.into();
+        let end_sample = (end_secs.max(0.0) * 1_000.0).round() as u64;
+        self.note_apple_commit_timed(AppleCommit {
+            id,
+            raw_text: raw_text.into(),
+            end_secs,
+            committed_at_secs,
+            range: TailSampleRange {
+                session: "legacy_progressive".to_string(),
+                capture_epoch: 0,
+                sample_start: 0,
+                sample_end: end_sample,
+            },
+            words: Vec::new(),
+            apple_evidence: TailProviderEvidence {
+                source: TailEvidenceSource::AppleSpeech,
+                revision: None,
+                stability: TailEvidenceStability::Final,
+                timing_quality: TailTimingQuality::Synthetic,
+                avg_logprob: None,
+            },
+            silero_utterance_id: None,
+        });
+    }
+
+    /// Record an Apple commit together with canonical PCM, word and Silero
+    /// identity provenance. This is data-only: seal eligibility and text
+    /// transformation are the same as [`note_apple_commit`].
+    pub fn note_apple_commit_timed(&mut self, commit: AppleCommit) -> bool {
+        let AppleCommit {
+            id,
+            raw_text,
+            end_secs,
+            committed_at_secs,
+            range,
+            words,
+            apple_evidence,
+            silero_utterance_id,
+        } = commit;
         if raw_text.trim().is_empty() {
-            return;
+            return false;
         }
         // Idempotent on id: a re-commit of the same utterance refreshes the
         // pending text but does not invent a second pending slot.
@@ -145,11 +241,29 @@ impl ProgressiveSealMachine {
             existing.raw_text = raw_text;
             existing.end_secs = end_secs;
             existing.apple_committed_at_secs = committed_at_secs;
-            return;
+            existing.range = range;
+            existing.words = words;
+            existing.apple_evidence = apple_evidence;
+            existing.silero_utterance_id = silero_utterance_id;
+            return true;
         }
         if self.sealed.iter().any(|s| s.id == id) {
             // Already sealed — byte-stable fence: ignore re-commits.
-            return;
+            return false;
+        }
+        if self.span_idempotence_enabled {
+            let verdict = self.span_idempotence.offer(SpanOffer {
+                identity: TailRequestIdentity {
+                    request_id: id,
+                    range: range.clone(),
+                },
+                text: raw_text.clone(),
+                timestamps_progressed: true,
+                decode_ok: true,
+            });
+            if !verdict.lands_on_canvas() {
+                return false;
+            }
         }
         self.pending.push(PendingSpan {
             id,
@@ -157,11 +271,40 @@ impl ProgressiveSealMachine {
             apple_committed_at_secs: committed_at_secs,
             end_secs,
             covering_whisper_window_id: None,
+            range,
+            words,
+            apple_evidence,
+            whisper_evidence: None,
+            whisper_words: Vec::new(),
+            silero_utterance_id,
         });
+        true
+    }
+
+    /// W13-4 receipts collected while the lane flag is ON.
+    pub fn span_idempotence_receipts(&self) -> &[span_idempotence::SpanIdempotenceReceipt] {
+        self.span_idempotence.receipts()
     }
 
     /// An elapsed Whisper window now covers audio through `covered_through_secs`.
     pub fn note_whisper_window_elapsed(&mut self, window_id: u64, covered_through_secs: f32) {
+        self.note_whisper_window_elapsed_with_provenance(
+            window_id,
+            covered_through_secs,
+            None,
+            Vec::new(),
+        );
+    }
+
+    /// Record elapsed coverage plus provider provenance without changing the
+    /// existing double-close decision.
+    pub fn note_whisper_window_elapsed_with_provenance(
+        &mut self,
+        window_id: u64,
+        covered_through_secs: f32,
+        evidence: Option<TailProviderEvidence>,
+        words: Vec<TimedTailSegment>,
+    ) {
         if window_id > self.last_elapsed_whisper_window_id {
             self.last_elapsed_whisper_window_id = window_id;
         }
@@ -171,6 +314,10 @@ impl ProgressiveSealMachine {
         for pending in &mut self.pending {
             if pending.end_secs <= self.whisper_covered_through_secs + f32::EPSILON {
                 pending.covering_whisper_window_id = Some(window_id);
+                if pending.id == window_id {
+                    pending.whisper_evidence = evidence.clone();
+                    pending.whisper_words = words.clone();
+                }
             }
         }
     }
@@ -249,12 +396,19 @@ impl ProgressiveSealMachine {
                         id: span.id,
                         text: sealed,
                         end_secs_millis: (span.end_secs.max(0.0) * 1000.0).round() as u32,
+                        range: span.range,
+                        words: span.words,
+                        apple_evidence: span.apple_evidence,
+                        whisper_evidence: span.whisper_evidence,
+                        whisper_words: span.whisper_words,
+                        silero_utterance_id: span.silero_utterance_id,
                     };
                     if !left_context.is_empty() && !sealed_span.text.is_empty() {
                         left_context.push(' ');
                     }
                     left_context.push_str(&sealed_span.text);
                     newly_sealed.push(sealed_span.clone());
+                    self.span_idempotence.mark_sealed(&sealed_span.range);
                     self.sealed.push(sealed_span);
                 }
                 Some(SealBlockReason::StarvationCeiling) => {
@@ -267,12 +421,19 @@ impl ProgressiveSealMachine {
                         id: span.id,
                         text: sealed,
                         end_secs_millis: (span.end_secs.max(0.0) * 1000.0).round() as u32,
+                        range: span.range,
+                        words: span.words,
+                        apple_evidence: span.apple_evidence,
+                        whisper_evidence: span.whisper_evidence,
+                        whisper_words: span.whisper_words,
+                        silero_utterance_id: span.silero_utterance_id,
                     };
                     if !left_context.is_empty() && !sealed_span.text.is_empty() {
                         left_context.push(' ');
                     }
                     left_context.push_str(&sealed_span.text);
                     newly_sealed.push(sealed_span.clone());
+                    self.span_idempotence.mark_sealed(&sealed_span.range);
                     self.sealed.push(sealed_span);
                     tracing::info!(
                         span_id = span.id,
@@ -348,6 +509,49 @@ impl ProgressiveSealMachine {
             sealed_prefix,
             residual_tail,
         }
+    }
+
+    /// Seal every span still pending when the session itself ends.
+    ///
+    /// Both double-close gates are *vacuously* satisfied once capture is over:
+    /// no later Apple callback can revise a span, and no further Whisper window
+    /// can arrive. Holding a span past that point is not caution, it is a hang.
+    ///
+    /// # Why this exists as its own entry point
+    ///
+    /// The end-of-session caller used to reuse `try_seal(audio_secs + volatile
+    /// window + epsilon)`. That clock is derived from the PCM sample counter,
+    /// while `apple_committed_at_secs` comes from SFSpeech's own segment clock,
+    /// which can sit a few milliseconds *ahead* of it. Measured 2026-08-12:
+    /// audio clock 217.376s, last span committed at 217.378s → age 2.499s
+    /// against a 2.5s volatile window. The span missed by one millisecond, and
+    /// because the audio clock is frozen after EOF it could never age past the
+    /// gate — not even into the starvation ceiling. The worker then burned the
+    /// full 30s closure timeout waiting on a Whisper completion that would not
+    /// have unblocked it anyway (`rec_stop=36.701s` in the stop-path budget).
+    ///
+    /// Anchoring on the spans' own timestamps instead of the audio clock keeps
+    /// the volatile semantics exactly as written and removes the race.
+    pub fn seal_remaining_at_session_end(&mut self, force_raw: bool) -> SealTick {
+        let horizon = self
+            .pending
+            .iter()
+            .map(|span| span.apple_committed_at_secs.max(span.end_secs))
+            .fold(0.0_f32, f32::max);
+        // No further window is coming, so everything recorded is as covered as
+        // it will ever be — satisfy `whisper_ready` without inventing an id.
+        self.whisper_covered_through_secs = self.whisper_covered_through_secs.max(horizon);
+        let tick = self.try_seal(horizon + APPLE_VOLATILE_WINDOW_SECS + 0.001, force_raw);
+        // The partial pool is spent once the end-of-session seal has run: every
+        // word it held is either inside a sealed span or inside the open
+        // partial the worker seals *before* calling this. Spans carry SFSpeech
+        // segment-clock ends while partials carry the receipt clock, which
+        // always runs slightly later — so a surviving partial reads as "past
+        // the last seal" to `compose_stop_path_residual` and re-appends text
+        // the seal already delivered. Live 2026-08-12 21:15: "Jaki chcesz.
+        // Kos." arrived twice in an 8s take exactly this way.
+        self.session_partials.clear();
+        tick
     }
 
     /// Why a pending span is not yet sealable, or None when both engines closed it.
@@ -510,6 +714,100 @@ mod progressive_seal_tests {
         assert!(m.pending_spans().is_empty());
     }
 
+    /// The 2026-08-12 stop-path hang, reduced to its arithmetic.
+    ///
+    /// SFSpeech committed the last span at 217.378s on its own segment clock
+    /// while the PCM counter had reached 217.376s. The end-of-session seal used
+    /// the audio clock, so the span's age came out at 2.499s against a 2.5s
+    /// volatile window — short by one millisecond, and frozen there forever
+    /// because the audio clock stops advancing at EOF. The worker then sat on
+    /// its closure timeout, costing the operator 30s on a stop that owed
+    /// nothing (`rec_stop=36.701s`).
+    #[test]
+    fn session_end_seals_the_span_a_frozen_audio_clock_holds_forever() {
+        let mut m = ProgressiveSealMachine::new();
+        let audio_eof_secs = 217.376_f32;
+        let apple_commit_secs = 217.378_f32;
+        m.note_apple_commit(48, "ostatnie słowo", apple_commit_secs, apple_commit_secs);
+        // Whisper closed its side — the volatile gate is the only thing left.
+        m.note_whisper_window_elapsed(48, apple_commit_secs);
+
+        let frozen = m.try_seal(audio_eof_secs + APPLE_VOLATILE_WINDOW_SECS + 0.001, false);
+        assert!(
+            frozen.newly_sealed.is_empty(),
+            "regression guard: this clock is exactly the one that hung, it must still miss"
+        );
+        assert_eq!(
+            m.pending_spans().len(),
+            1,
+            "the span the old end-of-session clock could never release"
+        );
+
+        let at_end = m.seal_remaining_at_session_end(false);
+        assert_eq!(
+            at_end.newly_sealed.len(),
+            1,
+            "session end must seal on the span's own clock, not the audio counter"
+        );
+        assert!(
+            m.pending_spans().is_empty(),
+            "no span may outlive the session that produced it"
+        );
+    }
+
+    /// The 2026-08-12 21:15 live duplicate ("Jaki chcesz. Kos." delivered
+    /// twice): spans sealed at session end carry SFSpeech segment-clock ends,
+    /// while session partials carry the receipt clock, which always runs a
+    /// little later. The stop-path residual then saw the freshest partial as
+    /// "past the last seal" and appended text the seal already delivered.
+    /// After an end-of-session seal the partial pool must be empty — every
+    /// word it held is either in a span or in the open partial the worker
+    /// seals first.
+    #[test]
+    fn session_end_seal_leaves_no_partial_for_the_residual_to_duplicate() {
+        let mut m = ProgressiveSealMachine::new();
+        m.note_apple_commit(2, "jaki chcesz kos", 8.202, 8.202);
+        m.note_whisper_window_elapsed(2, 8.202);
+        // Receipt-clock partial restating the same tail, "later" than the seal.
+        m.note_session_partial("jaki chcesz kos", 8.4);
+
+        let tick = m.seal_remaining_at_session_end(false);
+        assert_eq!(tick.newly_sealed.len(), 1);
+
+        let residual = m.compose_stop_path_residual();
+        assert_eq!(
+            residual.residual_tail, "",
+            "a partial restating sealed text must not ride the residual back in"
+        );
+        assert_eq!(
+            residual.text.matches("chcesz").count(),
+            1,
+            "the delivered text must carry the phrase exactly once: {:?}",
+            residual.text
+        );
+    }
+
+    /// Session end also closes the Whisper gate: once capture stops, no further
+    /// window can arrive, so holding a span for one is waiting on nothing.
+    #[test]
+    fn session_end_seals_span_that_never_got_a_whisper_window() {
+        let mut m = ProgressiveSealMachine::new();
+        m.note_apple_commit(1, "bez lat ki", 10.0, 10.0);
+
+        let mid_session = m.try_seal(10.0 + APPLE_VOLATILE_WINDOW_SECS + 0.1, false);
+        assert!(
+            mid_session.newly_sealed.is_empty(),
+            "mid-session the un-elapsed Whisper window must still block"
+        );
+
+        let at_end = m.seal_remaining_at_session_end(false);
+        assert_eq!(
+            at_end.newly_sealed.len(),
+            1,
+            "at session end there is no window left to wait for"
+        );
+    }
+
     /// Ctrl-hold force_raw skips Light+ but still seals words.
     #[test]
     fn progressive_seal_force_raw_skips_light_plus_still_seals() {
@@ -602,6 +900,63 @@ mod progressive_seal_tests {
         eprintln!(
             "stop_path_residual_phase_secs={phase_secs:.6} baseline=8.458 sealed={}",
             m.sealed_spans().len()
+        );
+    }
+
+    #[test]
+    fn w13_live_seal_refuses_replayed_range_identity_when_armed() {
+        let range = TailSampleRange {
+            session: "w13-4-live".into(),
+            capture_epoch: 1,
+            sample_start: 0,
+            sample_end: 8_000,
+        };
+        let evidence = TailProviderEvidence {
+            source: TailEvidenceSource::AppleSpeech,
+            revision: None,
+            stability: TailEvidenceStability::Final,
+            timing_quality: TailTimingQuality::Synthetic,
+            avg_logprob: None,
+        };
+        let mut m = ProgressiveSealMachine::new();
+        m.span_idempotence_enabled = true;
+        assert!(m.note_apple_commit_timed(AppleCommit {
+            id: 1,
+            raw_text: "fragment odzyskany".into(),
+            end_secs: 0.5,
+            committed_at_secs: 0.5,
+            range: range.clone(),
+            words: Vec::new(),
+            apple_evidence: evidence.clone(),
+            silero_utterance_id: Some(1),
+        }));
+        m.note_whisper_window_elapsed(1, 4.0);
+        let tick = m.try_seal(APPLE_VOLATILE_WINDOW_SECS + 1.0, true);
+        assert_eq!(tick.newly_sealed.len(), 1);
+        assert_eq!(
+            tick.newly_sealed[0].silero_utterance_id,
+            Some(1),
+            "the Silero identity a span was bound to must survive the seal"
+        );
+
+        let replayed = m.note_apple_commit_timed(AppleCommit {
+            id: 2,
+            raw_text: "fragment odzyskany".into(),
+            end_secs: 0.5,
+            committed_at_secs: 0.5,
+            range,
+            words: Vec::new(),
+            apple_evidence: evidence,
+            silero_utterance_id: Some(2),
+        });
+        assert!(!replayed, "new Apple id on a sealed range must be refused");
+        assert_eq!(m.pending_spans().len(), 0);
+        assert_eq!(m.sealed_spans().len(), 1);
+        assert_eq!(m.sealed_prefix(), "fragment odzyskany");
+        assert!(
+            m.span_idempotence_receipts()
+                .iter()
+                .any(|r| r.code == "replayed_range_identity")
         );
     }
 }

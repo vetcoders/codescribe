@@ -235,6 +235,17 @@ fn duration_from_env_ms(key: &str, default_ms: u64) -> Duration {
 /// from several transports. The listed shapes are deterministic — an empty
 /// completion, a refusal, or a rejected request will reproduce identically on
 /// retry, so retrying only multiplies latency.
+/// A chain id the requesting key cannot see (`previous_response_not_found`).
+/// Measured mechanism (2026-08-12 22:31→23:02): the id was minted under the
+/// OLD key, the operator swapped Keychain keys at 22:47–22:51, and the new
+/// key's org cannot read the old org's response — three identical formatting
+/// failures, transcript delivered raw. NOT retention: the same-key chain was
+/// proven alive hours later (2026-08-14, full recall of the 10:38 take). The
+/// stored id is poison for THIS key, so drop it and go unchained.
+fn is_stale_chain_error(error: &anyhow::Error) -> bool {
+    error.to_string().contains("previous_response_not_found")
+}
+
 fn should_retry_provider_error(error: &anyhow::Error) -> bool {
     let message = error.to_string();
     !(message.contains("No text content in SSE stream")
@@ -859,6 +870,52 @@ struct ResponsesRequest {
     temperature: Option<f32>,
     #[serde(skip_serializing_if = "std::ops::Not::not")]
     stream: bool,
+}
+
+/// Instructions for a Responses request: the `instructions` PARAM goes only on
+/// the first turn of a chain — endpoints reject the pair with
+/// `previous_response_id` (HTTP 400 "instructions and previous_response_id
+/// together").
+///
+/// But instructions are NOT preserved server-side across chained turns
+/// (OpenAI Responses: "instructions … not carried over to the next response
+/// when using previous_response_id"), so a chained turn MUST re-carry the
+/// system prompt inside `input` — see [`build_responses_input`]. Dropping it
+/// entirely left the formatter promptless mid-chain and the model answered as
+/// a chat assistant instead of transforming (2026-08-14 leak: "Jasne — oto to
+/// samo, przepisane czytelnie…" delivered as the formatted transcript).
+fn chained_instructions(system_prompt: &str, previous_response_id: Option<&str>) -> Option<String> {
+    if previous_response_id.is_some() {
+        None
+    } else {
+        Some(system_prompt.to_string())
+    }
+}
+
+/// Build the `input` items for a Responses request. On chained turns the
+/// system prompt rides as a leading `developer` item, because the
+/// `instructions` param is absent there (see [`chained_instructions`]) and the
+/// chain does not carry it server-side. First turns carry the prompt via
+/// `instructions` only — no duplicate developer item.
+fn build_responses_input(
+    system_prompt: &str,
+    previous_response_id: Option<&str>,
+    user_content: Vec<InputContent>,
+) -> Vec<InputItem> {
+    let mut input = Vec::with_capacity(2);
+    if previous_response_id.is_some() {
+        input.push(InputItem {
+            role: "developer",
+            content: vec![InputContent::Text {
+                text: system_prompt.to_string(),
+            }],
+        });
+    }
+    input.push(InputItem {
+        role: "user",
+        content: user_content,
+    });
+    input
 }
 
 /// Input item for Responses API
@@ -1496,7 +1553,21 @@ async fn format_text_with_status_channels_for_policy(
         retry_policy.inter_chunk_timeout
     );
 
-    for attempt in 0..=max_retries {
+    // Mode key for the conversation chain this call rides on — needed by the
+    // stale-chain self-heal below to reset the RIGHT stream (modes have
+    // separate chains and separate key slots).
+    let ai_mode = if assistive {
+        crate::state::conversation::AiMode::Assistive
+    } else {
+        crate::state::conversation::AiMode::Formatting
+    };
+    // One-shot chain self-heal: a stale stored response_id re-runs the SAME
+    // attempt unchained instead of consuming the retry budget (the budget is
+    // often 0, and a poisoned chain would otherwise hard-fail every take
+    // until restart).
+    let mut stale_chain_retry_used = false;
+    let mut attempt = 0;
+    while attempt <= max_retries {
         info!(
             "AI formatting attempt {} (assistive={}, input_len={})",
             attempt + 1,
@@ -1601,6 +1672,14 @@ async fn format_text_with_status_channels_for_policy(
                         max_retries + 1,
                         e
                     );
+                    if !stale_chain_retry_used && is_stale_chain_error(&e) {
+                        warn!(
+                            "stale conversation chain: dropping stored response_id and retrying unchained"
+                        );
+                        crate::state::conversation::reset_conversation_for_mode(ai_mode);
+                        stale_chain_retry_used = true;
+                        continue;
+                    }
                     None
                 }
             }
@@ -1633,6 +1712,14 @@ async fn format_text_with_status_channels_for_policy(
                         max_retries + 1,
                         e
                     );
+                    if !stale_chain_retry_used && is_stale_chain_error(&e) {
+                        warn!(
+                            "stale conversation chain: dropping stored response_id and retrying unchained"
+                        );
+                        crate::state::conversation::reset_conversation_for_mode(ai_mode);
+                        stale_chain_retry_used = true;
+                        continue;
+                    }
                     None
                 }
                 Err(_) => {
@@ -1705,6 +1792,7 @@ async fn format_text_with_status_channels_for_policy(
             if should_retry {
                 if attempt < max_retries {
                     warn!("Triggering retry...");
+                    attempt += 1;
                     continue;
                 } else {
                     warn!("Max retries reached, accepting output.");
@@ -1738,6 +1826,7 @@ async fn format_text_with_status_channels_for_policy(
             warn!("Provider returned deterministic empty-content error; skipping retries");
             break;
         }
+        attempt += 1;
     }
 
     // All providers failed
@@ -1981,13 +2070,14 @@ async fn call_llm_endpoint(
     // Build Responses API request (no token limit - let API decide)
     let request = ResponsesRequest {
         model,
-        input: vec![InputItem {
-            role: "user",
-            content: build_responses_user_content(user_message),
-        }],
+        input: build_responses_input(
+            system_prompt,
+            previous_response_id.as_deref(),
+            build_responses_user_content(user_message),
+        ),
+        // Param on the first turn only; chained turns carry the prompt in input.
+        instructions: chained_instructions(system_prompt, previous_response_id.as_deref()),
         previous_response_id: previous_response_id.clone(),
-        // Only send instructions on first request - Responses API preserves them via previous_response_id
-        instructions: Some(system_prompt.to_string()),
         max_output_tokens: None,
         temperature,
         stream: false,
@@ -2028,6 +2118,96 @@ async fn call_llm_endpoint(
         responses_result.id
     );
     Ok(output)
+}
+
+/// One chained Responses request over the formatting lane, chain owned by the
+/// caller (W13-1 inline-format buffer).
+///
+/// Deliberately does NOT touch [`crate::state::conversation`]: the inline
+/// buffer keeps its own `previous_response_id` per dictation session, so chunk
+/// chaining can reset per session without disturbing the persistent
+/// formatting-mode conversation. Returns `(assistant_text, response_id)`.
+pub(crate) async fn format_inline_chunk(
+    chunk_text: &str,
+    language: Option<&str>,
+    previous_response_id: Option<String>,
+    system_prompt: &str,
+) -> Result<(String, Option<String>)> {
+    let endpoint = get_formatting_endpoint()?;
+    let model = get_formatting_model()?;
+    let api_key = get_formatting_api_key()?;
+    format_inline_chunk_resolved(
+        chunk_text,
+        language,
+        previous_response_id,
+        system_prompt,
+        &endpoint,
+        &model,
+        &api_key,
+    )
+    .await
+}
+
+/// Send one inline-chunk Responses request against explicitly supplied wire
+/// values. Resolution is split out (mirroring
+/// [`call_anthropic_messages_resolved`]) so the delivery harness can exercise
+/// the wire contract against a mock without config in play.
+pub(crate) async fn format_inline_chunk_resolved(
+    chunk_text: &str,
+    language: Option<&str>,
+    previous_response_id: Option<String>,
+    system_prompt: &str,
+    endpoint: &str,
+    model: &str,
+    api_key: &str,
+) -> Result<(String, Option<String>)> {
+    let user_message = match language {
+        Some(lang) => format!("[Language: {lang}]\n\n{chunk_text}"),
+        None => chunk_text.to_string(),
+    };
+    let request = ResponsesRequest {
+        model: model.to_string(),
+        input: build_responses_input(
+            system_prompt,
+            previous_response_id.as_deref(),
+            vec![InputContent::Text { text: user_message }],
+        ),
+        // Param on the first turn only; chained turns carry the prompt in input.
+        instructions: chained_instructions(system_prompt, previous_response_id.as_deref()),
+        previous_response_id,
+        max_output_tokens: None,
+        temperature: get_temperature(false),
+        stream: false,
+    };
+
+    let response = get_client()
+        .post(endpoint)
+        .header("Authorization", format!("Bearer {api_key}"))
+        .header("x-api-key", api_key)
+        .header("Content-Type", "application/json")
+        .json(&request)
+        .send()
+        .await
+        .context("Inline chunk request failed")?;
+
+    if !response.status().is_success() {
+        let status = response.status();
+        let body = response.text().await.unwrap_or_default();
+        anyhow::bail!("Inline chunk HTTP {} - {}", status, body);
+    }
+
+    let responses_result: ResponsesResponse = response
+        .json()
+        .await
+        .context("Failed to parse inline chunk response")?;
+    let output = extract_output_channels(&responses_result.output);
+    if output.assistant_text.is_empty() {
+        anyhow::bail!(
+            "No text content in inline chunk response (id: {})",
+            responses_result.id
+        );
+    }
+    Ok((output.assistant_text, Some(responses_result.id)))
 }
 
 /// Resolve assistive-lane auth: signed-in ChatGPT OAuth wins over a stored API key.
@@ -2107,13 +2287,14 @@ async fn call_llm_endpoint_streaming(
     // No token limit - let API decide
     let request = ResponsesRequest {
         model,
-        input: vec![InputItem {
-            role: "user",
-            content: build_responses_user_content(user_message),
-        }],
+        input: build_responses_input(
+            system_prompt,
+            previous_response_id.as_deref(),
+            build_responses_user_content(user_message),
+        ),
+        // Param on the first turn only; chained turns carry the prompt in input.
+        instructions: chained_instructions(system_prompt, previous_response_id.as_deref()),
         previous_response_id: previous_response_id.clone(),
-        // Only send instructions on first request - Responses API preserves them via previous_response_id
-        instructions: Some(system_prompt.to_string()),
         max_output_tokens: None,
         temperature,
         stream: true,
@@ -2305,6 +2486,74 @@ mod tests {
     ];
     /// Env flag set in the lane-truth child process so nested tests skip re-spawn.
     const LANE_TRUTH_TEST_CHILD: &str = "CODESCRIBE_LANE_TRUTH_TEST_CHILD";
+
+    /// The stale-chain classifier keys on the provider's error code alone:
+    /// `previous_response_not_found` (id minted under a rotated-away key) is
+    /// self-healable; everything else is not a chain problem.
+    #[test]
+    fn stale_chain_classifier_matches_only_the_not_found_code() {
+        let stale = anyhow::anyhow!(
+            "HTTP 400 Bad Request - {{\"error\":{{\"code\":\"previous_response_not_found\"}}}}"
+        );
+        assert!(is_stale_chain_error(&stale));
+        let pair = anyhow::anyhow!("HTTP 400 - instructions and previous_response_id together");
+        assert!(!is_stale_chain_error(&pair));
+        let auth = anyhow::anyhow!("HTTP 401 Unauthorized - missing scopes");
+        assert!(!is_stale_chain_error(&auth));
+    }
+
+    /// Regression for the field HTTP 400 ("instructions and
+    /// previous_response_id together", 2026-08-14): every chained Responses
+    /// request must drop the `instructions` PARAM. First turn keeps it.
+    #[test]
+    fn responses_chain_never_carries_instructions_with_previous_id() {
+        assert_eq!(chained_instructions("SYS", None).as_deref(), Some("SYS"));
+        assert_eq!(chained_instructions("SYS", Some("resp_123")), None);
+
+        // Wire proof: the chained request serializes without an
+        // `instructions` key at all (serde skips the None).
+        let request = ResponsesRequest {
+            model: "m".into(),
+            input: vec![],
+            instructions: chained_instructions("SYS", Some("resp_123")),
+            previous_response_id: Some("resp_123".into()),
+            max_output_tokens: None,
+            temperature: None,
+            stream: false,
+        };
+        let wire = serde_json::to_value(&request).expect("serialize");
+        assert!(wire.get("instructions").is_none());
+        assert_eq!(wire["previous_response_id"], "resp_123");
+    }
+
+    /// Regression for the promptless-chain leak (2026-08-14, build 661):
+    /// dropping `instructions` on a chained turn left the formatter with NO
+    /// system prompt — the chain does NOT preserve instructions server-side —
+    /// and the model replied as a chat assistant ("Jasne — oto to samo,
+    /// przepisane czytelnie…") which was delivered as the formatted
+    /// transcript. A chained turn must re-carry the prompt as a leading
+    /// developer input item; a first turn must NOT duplicate it there.
+    #[test]
+    fn chained_turn_recarries_system_prompt_as_developer_input() {
+        let user = vec![InputContent::Text { text: "RAW".into() }];
+        let chained = build_responses_input("SYS", Some("resp_123"), user);
+        assert_eq!(chained.len(), 2);
+        assert_eq!(chained[0].role, "developer");
+        match &chained[0].content[0] {
+            InputContent::Text { text } => assert_eq!(text, "SYS"),
+            other => panic!("developer item must be text, got {other:?}"),
+        }
+        assert_eq!(chained[1].role, "user");
+
+        let first =
+            build_responses_input("SYS", None, vec![InputContent::Text { text: "RAW".into() }]);
+        assert_eq!(
+            first.len(),
+            1,
+            "first turn carries the prompt via the instructions param only"
+        );
+        assert_eq!(first[0].role, "user");
+    }
 
     /// RAII holder that restores one env var to its prior value on drop.
     ///

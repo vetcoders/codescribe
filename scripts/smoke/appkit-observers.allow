@@ -30,3 +30,5 @@ macos/Codescribe/Screens/AgentChat/AgentChatStore.swift | NSWindow.didBecomeKeyN
 macos/Codescribe/Screens/AgentChat/MessageList.swift | NSScrollView.willStartLiveScrollNotification | object-scoped | bound to the chat scroll view; handler only emits .userScrollBegan
 macos/Codescribe/Screens/AgentChat/MessageList.swift | NSScrollView.didLiveScrollNotification | object-scoped | fires per scroll tick; handler is documentVisibleRect math only — keep it allocation-free
 macos/Codescribe/Screens/AgentChat/MessageList.swift | NSScrollView.didEndLiveScrollNotification | object-scoped | bound to the chat scroll view; handler is the same O(1) viewport report
+macos/Codescribe/Core/SystemSleepWakeObserver.swift | NSWorkspace.willSleepNotification | object-scoped | bound to NSWorkspace.shared on its notification center; callback only coalesces one next-main-tick bridge signal
+macos/Codescribe/Core/SystemSleepWakeObserver.swift | NSWorkspace.didWakeNotification | object-scoped | bound to NSWorkspace.shared on its notification center; callback only coalesces one next-main-tick bridge signal

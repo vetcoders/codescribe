@@ -5,9 +5,23 @@
 use super::types::{ModeBinding, ShortcutBinding, WorkMode, default_mode_bindings};
 use directories::BaseDirs;
 use serde::{Deserialize, Serialize};
-use std::fs;
-use std::path::PathBuf;
+use std::fs::{self, File, OpenOptions};
+use std::io::Write;
+use std::path::{Path, PathBuf};
+use std::sync::{Mutex, MutexGuard, OnceLock};
 use tracing::{debug, info, warn};
+use uuid::Uuid;
+
+/// Serialize settings read/migrate/write transactions. A V1 load writes a
+/// backup and a V3 replacement, so it is a writer even though the public API is
+/// named `load`; one lock keeps concurrent migrations and saves from crossing.
+fn settings_io_lock() -> MutexGuard<'static, ()> {
+    static SETTINGS_IO: OnceLock<Mutex<()>> = OnceLock::new();
+    SETTINGS_IO
+        .get_or_init(|| Mutex::new(()))
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+}
 
 /// Canonical formatting policy shared by persistence, runtime selection, and UI.
 ///
@@ -161,6 +175,19 @@ pub struct UserSettings {
     pub transcription_overlay_enabled: Option<bool>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub tray_start_assistive: Option<bool>,
+    // Promoted 2026-08-11: these lived only in `.env`, so the tray/settings
+    // writers died silently once the file became unwritable (uchg lock) and
+    // the 2026-08-08 wipe erased the user's values outright.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub hold_indicator: Option<bool>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub hold_badge_size: Option<u64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub restore_clipboard: Option<bool>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub restore_clipboard_delay_ms: Option<u64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub deferred_insert_shortcut: Option<String>,
 
     // ── Promoted from .env (settings.json is now source of truth) ──
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -225,14 +252,38 @@ pub struct UserSettings {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub final_pass_mode: Option<String>,
     /// Layered incremental transcription phase ("off" | "phase1").
-    /// Seeds `CODESCRIBE_LAYERED_TRANSCRIPTION`; anything other than
-    /// "phase1".."phase4" (or bare "1".."4") is treated as OFF by the core.
+    /// Seeds `CODESCRIBE_LAYERED_TRANSCRIPTION`. Absent matches the core
+    /// default (`unset` → phase1). Explicit "off" / "0" / "false" disarms.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub layered_transcription: Option<String>,
     /// Opt-in Whisper `initial_prompt` vocabulary hint.
     /// Seeds `CODESCRIBE_STT_INITIAL_PROMPT_ENABLED`; absent means default OFF.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub stt_initial_prompt_enabled: Option<bool>,
+
+    // ── Layer 1 ASR product mode + audio-egress consent (C2) ──
+    /// Layer 1 product mode (`cloud` | `local_power` | `apple_only`).
+    /// `None` means "not yet chosen": the resolver derives the mode from the
+    /// legacy `use_local_stt` choice (upgrades) or lands on Apple-only (fresh).
+    /// Writes are validated through [`crate::config::cloud_asr::AsrProductMode`].
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub asr_mode: Option<String>,
+    /// Audio-egress consent record (`granted` | `denied`). `None` means never
+    /// asked; anything non-canonical reads as unanswered (fail closed). Cloud
+    /// mode without a granted record resolves to Apple-only — see
+    /// [`UserSettings::resolved_asr_mode`].
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub cloud_consent: Option<String>,
+    /// RFC 3339 timestamp of the last explicit consent answer. Informational
+    /// provenance only — never an input to the resolver.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub cloud_consent_at: Option<String>,
+    /// Libraxis gateway session-mint endpoint. Endpoint only, never a vendor
+    /// key: writes are validated through
+    /// [`crate::config::cloud_asr::GatewaySessionMint`], which refuses
+    /// user-info and query material. `None` means "not configured".
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub asr_gateway_url: Option<String>,
 
     // ── Agent workspace ──
     /// Workspace root directories the agent scans (`list_projects`) to resolve a
@@ -320,6 +371,12 @@ struct InteractionV2 {
     /// dictation. Assistive and safety vetoes are enforced by the controller.
     #[serde(skip_serializing_if = "Option::is_none")]
     auto_paste_enabled: Option<bool>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    deferred_insert_shortcut: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    restore_clipboard: Option<bool>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    restore_clipboard_delay_ms: Option<u64>,
 }
 
 /// Timing of the tap-based triggers: how fast a double tap must be, and how
@@ -395,6 +452,12 @@ struct SpeechEngineV2 {
     layered_transcription: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     initial_prompt_enabled: Option<bool>,
+    // C2: Layer 1 product mode (cloud | local_power | apple_only) and the
+    // gateway session-mint endpoint it uses when cloud is armed.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    asr_mode: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    gateway_session_url: Option<String>,
 }
 
 /// LLM post-processing of the transcript: whether it runs, how aggressively,
@@ -482,6 +545,10 @@ struct UiV2 {
     transcription_overlay_enabled: Option<bool>,
     #[serde(skip_serializing_if = "Option::is_none")]
     tray_start_assistive: Option<bool>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    hold_indicator: Option<bool>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    hold_badge_size: Option<u64>,
 }
 
 /// `features` section: optional surfaces the user can switch off entirely,
@@ -527,6 +594,12 @@ struct SystemV2 {
     // xAI account-login OAuth client id (non-secret app identity).
     #[serde(skip_serializing_if = "Option::is_none")]
     xai_oauth_client_id: Option<String>,
+    // C2: audio-egress consent record — install-level privacy state, kept in
+    // `system` so engine-section rewrites can never touch it.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    cloud_audio_egress_consent: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    cloud_audio_egress_consent_at: Option<String>,
 }
 
 /// Canonical list of env keys that route to `settings.json` (not `.env`).
@@ -558,6 +631,13 @@ pub const PROMOTED_SETTINGS_KEYS: &[&str] = &[
     "SHOW_DOCK_ICON",
     "TRANSCRIPTION_OVERLAY_ENABLED",
     "TRAY_START_ASSISTIVE",
+    // Pointer indicator + delivery (promoted 2026-08-11: .env writes died
+    // silently under the uchg lock, killing the tray Pointer Indicator row)
+    "HOLD_INDICATOR",
+    "HOLD_BADGE_SIZE",
+    "RESTORE_CLIPBOARD",
+    "RESTORE_CLIPBOARD_DELAY_MS",
+    "CODESCRIBE_DEFERRED_INSERT_SHORTCUT",
     // LLM endpoints
     "LLM_ENDPOINT",
     "LLM_MODEL",
@@ -601,6 +681,11 @@ pub const PROMOTED_SETTINGS_KEYS: &[&str] = &[
     // Promoted 2026-08-10: the un-promoted toggle wrote .env only, the stale
     // process env won the UI read-back, and the Layered switch snapped OFF.
     "CODESCRIBE_LAYERED_TRANSCRIPTION",
+    // C2: Layer 1 product mode, audio-egress consent, gateway mint endpoint.
+    // settings.json is the single brain — no .env dual-write for these.
+    "CODESCRIBE_ASR_MODE",
+    "CODESCRIBE_CLOUD_CONSENT",
+    "CODESCRIBE_ASR_GATEWAY_URL",
     // Still env-seedable when unset; not full dual-brain:
     // "CODESCRIBE_STT_INITIAL_PROMPT_ENABLED",
 ];
@@ -633,6 +718,9 @@ impl UserSettings {
                 send_mode: self.transcript_send_mode.clone(),
                 agent_enter_sends: self.agent_enter_sends,
                 auto_paste_enabled: self.auto_paste_enabled,
+                deferred_insert_shortcut: self.deferred_insert_shortcut.clone(),
+                restore_clipboard: self.restore_clipboard,
+                restore_clipboard_delay_ms: self.restore_clipboard_delay_ms,
             }),
             speech: Some(SpeechV2 {
                 language: self.whisper_language.clone(),
@@ -648,6 +736,8 @@ impl UserSettings {
                     final_pass_mode: self.final_pass_mode.clone(),
                     layered_transcription: self.layered_transcription.clone(),
                     initial_prompt_enabled: self.stt_initial_prompt_enabled,
+                    asr_mode: self.asr_mode.clone(),
+                    gateway_session_url: self.asr_gateway_url.clone(),
                 }),
                 formatting: Some(FormattingV2 {
                     enabled: self.ai_formatting_enabled,
@@ -688,6 +778,8 @@ impl UserSettings {
                 show_dock_icon: self.show_dock_icon,
                 transcription_overlay_enabled: self.transcription_overlay_enabled,
                 tray_start_assistive: self.tray_start_assistive,
+                hold_indicator: self.hold_indicator,
+                hold_badge_size: self.hold_badge_size,
             }),
             features: Some(FeaturesV2 {
                 history_enabled: self.history_enabled,
@@ -703,6 +795,8 @@ impl UserSettings {
                 openai_oauth_client_id: self.openai_oauth_client_id.clone(),
                 anthropic_oauth_client_id: self.anthropic_oauth_client_id.clone(),
                 xai_oauth_client_id: self.xai_oauth_client_id.clone(),
+                cloud_audio_egress_consent: self.cloud_consent.clone(),
+                cloud_audio_egress_consent_at: self.cloud_consent_at.clone(),
             }),
             agent: match (
                 self.agent_permissions.clone(),
@@ -817,6 +911,20 @@ impl UserSettings {
                 .as_ref()
                 .and_then(|ui| ui.transcription_overlay_enabled),
             tray_start_assistive: v2.ui.as_ref().and_then(|ui| ui.tray_start_assistive),
+            hold_indicator: v2.ui.as_ref().and_then(|ui| ui.hold_indicator),
+            hold_badge_size: v2.ui.as_ref().and_then(|ui| ui.hold_badge_size),
+            deferred_insert_shortcut: v2
+                .interaction
+                .as_ref()
+                .and_then(|interaction| interaction.deferred_insert_shortcut.clone()),
+            restore_clipboard: v2
+                .interaction
+                .as_ref()
+                .and_then(|interaction| interaction.restore_clipboard),
+            restore_clipboard_delay_ms: v2
+                .interaction
+                .as_ref()
+                .and_then(|interaction| interaction.restore_clipboard_delay_ms),
             llm_formatting_endpoint: v2
                 .speech
                 .as_ref()
@@ -931,6 +1039,24 @@ impl UserSettings {
                 .as_ref()
                 .and_then(|s| s.engine.as_ref())
                 .and_then(|e| e.initial_prompt_enabled),
+            asr_mode: v2
+                .speech
+                .as_ref()
+                .and_then(|s| s.engine.as_ref())
+                .and_then(|e| e.asr_mode.clone()),
+            asr_gateway_url: v2
+                .speech
+                .as_ref()
+                .and_then(|s| s.engine.as_ref())
+                .and_then(|e| e.gateway_session_url.clone()),
+            cloud_consent: v2
+                .system
+                .as_ref()
+                .and_then(|s| s.cloud_audio_egress_consent.clone()),
+            cloud_consent_at: v2
+                .system
+                .as_ref()
+                .and_then(|s| s.cloud_audio_egress_consent_at.clone()),
             agent_permissions: v2.agent.as_ref().and_then(|a| a.permissions.clone()),
             agent_capabilities: v2.agent.as_ref().and_then(|a| a.capabilities.clone()),
         }
@@ -962,11 +1088,46 @@ impl UserSettings {
     /// Write via temp file plus rename, so a crash mid-write leaves the previous
     /// `settings.json` intact rather than a truncated one the app would treat
     /// as corrupt and silently replace with defaults.
-    fn write_json_atomic(path: &PathBuf, json: &str) -> anyhow::Result<()> {
-        let tmp = path.with_extension("json.tmp");
-        fs::write(&tmp, json)?;
-        fs::rename(&tmp, path)?;
-        Ok(())
+    fn write_json_atomic(path: &Path, json: &str) -> anyhow::Result<()> {
+        Self::write_json_atomic_with(path, json, |from, to| fs::rename(from, to))
+    }
+
+    /// Atomic settings write with the final rename injected for deterministic
+    /// failure tests. Production always passes `fs::rename`; tests never depend
+    /// on guessing the unique temp filename.
+    fn write_json_atomic_with<F>(path: &Path, json: &str, rename: F) -> anyhow::Result<()>
+    where
+        F: FnOnce(&Path, &Path) -> std::io::Result<()>,
+    {
+        let parent = path
+            .parent()
+            .ok_or_else(|| anyhow::anyhow!("settings path has no parent: {}", path.display()))?;
+        let filename = path
+            .file_name()
+            .and_then(|name| name.to_str())
+            .unwrap_or("settings.json");
+        let tmp = parent.join(format!(
+            ".{filename}.tmp.{}.{}",
+            std::process::id(),
+            Uuid::new_v4()
+        ));
+        let outcome = (|| -> anyhow::Result<()> {
+            let mut file = OpenOptions::new().create_new(true).write(true).open(&tmp)?;
+            file.write_all(json.as_bytes())?;
+            file.sync_all()?;
+            drop(file);
+            rename(&tmp, path)?;
+            // `parent` is derived only from the canonical internal settings
+            // path above; opening it read-only is the durability fsync, not a
+            // request-controlled file lookup.
+            // nosemgrep: rust.actix.path-traversal.tainted-path.tainted-path
+            File::open(parent)?.sync_all()?;
+            Ok(())
+        })();
+        if outcome.is_err() {
+            let _ = fs::remove_file(&tmp);
+        }
+        outcome
     }
 
     /// Returns the settings directory.
@@ -974,7 +1135,7 @@ impl UserSettings {
     /// Respects `CODESCRIBE_DATA_DIR` for test isolation; otherwise uses
     /// `~/Library/Application Support/Codescribe/`.
     pub fn settings_dir() -> PathBuf {
-        let dir = if let Ok(test_dir) = std::env::var("CODESCRIBE_DATA_DIR") {
+        if let Ok(test_dir) = std::env::var("CODESCRIBE_DATA_DIR") {
             PathBuf::from(test_dir)
         } else {
             BaseDirs::new()
@@ -983,14 +1144,7 @@ impl UserSettings {
                     let home = std::env::var("HOME").unwrap_or_else(|_| "/tmp".into());
                     PathBuf::from(home).join("Library/Application Support/Codescribe")
                 })
-        };
-
-        if !dir.exists()
-            && let Err(e) = fs::create_dir_all(&dir)
-        {
-            warn!("Failed to create settings dir {}: {e}", dir.display());
         }
-        dir
     }
 
     /// Returns the path to `settings.json`.
@@ -1000,6 +1154,19 @@ impl UserSettings {
 
     /// Loads settings from disk. Returns `Default` on any error.
     pub fn load() -> Self {
+        let _data_io = match super::storage_reset::begin_app_data_io() {
+            Ok(guard) => guard,
+            Err(error) => {
+                warn!(%error, "Settings load skipped while app-data reset owns the process");
+                return Self::default();
+            }
+        };
+        let _settings_io = settings_io_lock();
+        Self::load_unlocked()
+    }
+
+    /// Load while the settings transaction lock and app-data admission are held.
+    fn load_unlocked() -> Self {
         let path = Self::settings_path();
         match fs::read_to_string(&path) {
             Ok(contents) => match serde_json::from_str::<serde_json::Value>(&contents) {
@@ -1029,7 +1196,7 @@ impl UserSettings {
                                         backup_path.display()
                                     );
                                 }
-                                if let Err(e) = v1.save() {
+                                if let Err(e) = v1.save_unlocked() {
                                     warn!("Failed hard-migrating settings V1 -> V2: {e}");
                                 } else {
                                     info!(
@@ -1063,6 +1230,13 @@ impl UserSettings {
 
     /// Persists current settings to disk as pretty-printed JSON.
     pub fn save(&self) -> anyhow::Result<()> {
+        let _data_io = super::storage_reset::begin_app_data_io()?;
+        let _settings_io = settings_io_lock();
+        self.save_unlocked()
+    }
+
+    /// Persist while the settings transaction lock and app-data admission are held.
+    fn save_unlocked(&self) -> anyhow::Result<()> {
         let dir = Self::settings_dir();
         fs::create_dir_all(&dir)?;
         let path = Self::settings_path();
@@ -1210,6 +1384,17 @@ impl UserSettings {
                     return;
                 }
             },
+            "CODESCRIBE_DEFERRED_INSERT_SHORTCUT" => {
+                match value.parse::<crate::config::DeferredInsertShortcut>() {
+                    Ok(shortcut) => {
+                        self.deferred_insert_shortcut = Some(shortcut.wire_id().to_string())
+                    }
+                    Err(error) => {
+                        warn!("Rejected deferred-insert shortcut write: {error}");
+                        return;
+                    }
+                }
+            }
             "TRANSCRIPT_TAG_TEMPLATE" => self.transcript_tag_template = Some(value.to_owned()),
             "LLM_FORMATTING_ENDPOINT" => self.llm_formatting_endpoint = Some(value.to_owned()),
             "LLM_FORMATTING_MODEL" => self.llm_formatting_model = Some(value.to_owned()),
@@ -1237,6 +1422,55 @@ impl UserSettings {
             }
             "CODESCRIBE_LAYERED_TRANSCRIPTION" => {
                 self.layered_transcription = Some(value.to_owned())
+            }
+            "CODESCRIBE_ASR_MODE" => {
+                // Empty clears back to derivation (legacy choice or Apple-only).
+                let trimmed = value.trim();
+                if trimmed.is_empty() {
+                    self.asr_mode = None;
+                } else {
+                    match trimmed.parse::<crate::config::cloud_asr::AsrProductMode>() {
+                        Ok(mode) => self.asr_mode = Some(mode.as_str().to_string()),
+                        Err(error) => {
+                            warn!("Rejected ASR mode write: {error}");
+                            return;
+                        }
+                    }
+                }
+            }
+            "CODESCRIBE_CLOUD_CONSENT" => {
+                // Explicit answers only; empty clears the record back to
+                // "never asked". Every answer stamps its provenance timestamp.
+                let normalized = value.trim().to_ascii_lowercase();
+                match normalized.as_str() {
+                    "" => {
+                        self.cloud_consent = None;
+                        self.cloud_consent_at = None;
+                    }
+                    crate::config::cloud_asr::CONSENT_WIRE_GRANTED
+                    | crate::config::cloud_asr::CONSENT_WIRE_DENIED => {
+                        self.cloud_consent = Some(normalized);
+                        self.cloud_consent_at = Some(chrono::Utc::now().to_rfc3339());
+                    }
+                    _ => {
+                        warn!("Rejected cloud consent write (expected granted|denied): {value}");
+                        return;
+                    }
+                }
+            }
+            "CODESCRIBE_ASR_GATEWAY_URL" => {
+                let trimmed = value.trim();
+                if trimmed.is_empty() {
+                    self.asr_gateway_url = None;
+                } else {
+                    match crate::config::cloud_asr::GatewaySessionMint::new(trimmed) {
+                        Ok(mint) => self.asr_gateway_url = Some(mint.url().to_string()),
+                        Err(error) => {
+                            warn!("Rejected ASR gateway URL write: {error}");
+                            return;
+                        }
+                    }
+                }
             }
             "CODESCRIBE_QUBE_DONOR" => {
                 let normalized = value.trim().to_ascii_lowercase();
@@ -1267,6 +1501,20 @@ impl UserSettings {
         self.save_if_changed(&before, "set_string", key);
     }
 
+    /// Resolve the effective Layer 1 product mode from this settings snapshot.
+    ///
+    /// The one sanctioned read path: combines the persisted `asr_mode`, the
+    /// consent record, and the legacy `use_local_stt` choice through
+    /// [`crate::config::cloud_asr::resolve_asr_product_mode`]. Callers must not
+    /// re-derive policy from the raw fields.
+    pub fn resolved_asr_mode(&self) -> crate::config::cloud_asr::ResolvedAsrMode {
+        crate::config::cloud_asr::resolve_asr_product_mode(
+            self.asr_mode.as_deref(),
+            self.cloud_consent.as_deref(),
+            self.use_local_stt,
+        )
+    }
+
     /// Sets a boolean-valued setting by its .env key name and saves.
     pub fn set_bool(&mut self, key: &str, value: bool) {
         let before = self.clone();
@@ -1278,6 +1526,8 @@ impl UserSettings {
             "SHOW_DOCK_ICON" => self.show_dock_icon = Some(value),
             "TRANSCRIPTION_OVERLAY_ENABLED" => self.transcription_overlay_enabled = Some(value),
             "TRAY_START_ASSISTIVE" => self.tray_start_assistive = Some(value),
+            "HOLD_INDICATOR" => self.hold_indicator = Some(value),
+            "RESTORE_CLIPBOARD" => self.restore_clipboard = Some(value),
             "HOLD_EXCLUSIVE" => self.hold_exclusive = Some(value),
             "USE_LOCAL_STT" => self.use_local_stt = Some(value),
             "HISTORY_ENABLED" => self.history_enabled = Some(value),
@@ -1306,6 +1556,8 @@ impl UserSettings {
             "CODESCRIBE_BUFFER_DELAY_MS" => self.buffer_delay_ms = Some(value),
             "CODESCRIBE_EMIT_WORDS_MAX" => self.emit_words_max = Some(value),
             "BACKEND_MAX_UPLOAD_MB" => self.backend_max_upload_mb = Some(value),
+            "HOLD_BADGE_SIZE" => self.hold_badge_size = Some(value),
+            "RESTORE_CLIPBOARD_DELAY_MS" => self.restore_clipboard_delay_ms = Some(value),
             other => {
                 warn!("Unknown u64 setting key: {other}");
                 return;
@@ -1512,6 +1764,50 @@ mod tests {
         settings.set_string("FORMATTING_LEVEL", "aggressive");
         assert_eq!(settings.formatting_level, None);
         assert!(!UserSettings::settings_path().exists());
+    }
+
+    /// A failed final rename removes its unique temp and leaves the last
+    /// committed settings bytes untouched. This is the fault-injection seam for
+    /// atomic persistence; blocking a historical fixed temp name proves nothing
+    /// now that every transaction owns a UUID path.
+    #[test]
+    #[serial]
+    fn atomic_settings_rename_failure_preserves_committed_truth_and_cleans_temp() {
+        let _tmp = setup_isolated_data_dir();
+        let path = UserSettings::settings_path();
+        let original = UserSettings {
+            auto_paste_enabled: Some(false),
+            ..Default::default()
+        };
+        original.save().expect("seed committed settings");
+        let before = fs::read(&path).expect("read committed settings");
+
+        let replacement = UserSettings {
+            auto_paste_enabled: Some(true),
+            ..original
+        };
+        let json = serde_json::to_string_pretty(&replacement.to_v2())
+            .expect("serialize replacement settings");
+        let error = UserSettings::write_json_atomic_with(&path, &json, |_from, _to| {
+            Err(std::io::Error::other("forced settings rename failure"))
+        })
+        .expect_err("forced rename must fail");
+        assert!(error.to_string().contains("forced settings rename failure"));
+        assert_eq!(
+            fs::read(&path).expect("read settings after failed rename"),
+            before
+        );
+        let orphan_temps: Vec<_> = fs::read_dir(UserSettings::settings_dir())
+            .expect("read settings directory")
+            .filter_map(Result::ok)
+            .filter(|entry| {
+                entry
+                    .file_name()
+                    .to_string_lossy()
+                    .starts_with(".settings.json.tmp.")
+            })
+            .collect();
+        assert!(orphan_temps.is_empty(), "failed write leaked a unique temp");
     }
 
     /// A `false` written through the setter survives reload — the case a naive
@@ -2027,5 +2323,132 @@ mod tests {
             loaded.mode_binding_for(WorkMode::Assistive),
             ShortcutBinding::DoubleRightOption
         );
+    }
+
+    // ── C2: Layer 1 ASR mode + audio-egress consent ──
+
+    /// The three C2 keys are promoted: writes route to settings.json, never
+    /// to `.env`, and never to the Keychain.
+    #[test]
+    fn c2_keys_are_promoted() {
+        assert!(is_promoted_key("CODESCRIBE_ASR_MODE"));
+        assert!(is_promoted_key("CODESCRIBE_CLOUD_CONSENT"));
+        assert!(is_promoted_key("CODESCRIBE_ASR_GATEWAY_URL"));
+    }
+
+    /// Mode, consent (with timestamp), and gateway URL survive the full disk
+    /// round-trip through the V2 schema — no ghosting.
+    #[test]
+    #[serial]
+    fn c2_fields_round_trip_through_v2_schema() {
+        let _tmp = setup_isolated_data_dir();
+        let mut settings = UserSettings::default();
+        settings.set_string("CODESCRIBE_ASR_MODE", "cloud");
+        settings.set_string("CODESCRIBE_CLOUD_CONSENT", "granted");
+        settings.set_string(
+            "CODESCRIBE_ASR_GATEWAY_URL",
+            "https://gateway.libraxis.cloud/v1/asr/sessions",
+        );
+
+        let loaded = UserSettings::load();
+        assert_eq!(loaded.asr_mode.as_deref(), Some("cloud"));
+        assert_eq!(loaded.cloud_consent.as_deref(), Some("granted"));
+        assert!(
+            loaded.cloud_consent_at.is_some(),
+            "explicit consent answer must stamp its provenance timestamp"
+        );
+        assert_eq!(
+            loaded.asr_gateway_url.as_deref(),
+            Some("https://gateway.libraxis.cloud/v1/asr/sessions")
+        );
+
+        // On-disk placement: mode + gateway in speech.engine, consent in system.
+        let raw: serde_json::Value = serde_json::from_str(
+            &fs::read_to_string(UserSettings::settings_path()).expect("read settings"),
+        )
+        .expect("parse settings");
+        assert_eq!(
+            raw.pointer("/speech/engine/asr_mode")
+                .and_then(|v| v.as_str()),
+            Some("cloud")
+        );
+        assert_eq!(
+            raw.pointer("/system/cloud_audio_egress_consent")
+                .and_then(|v| v.as_str()),
+            Some("granted")
+        );
+    }
+
+    /// Invalid mode, consent, and gateway values are rejected without touching
+    /// the persisted state — a tampered write cannot arm egress.
+    #[test]
+    #[serial]
+    fn c2_setters_reject_invalid_values() {
+        let _tmp = setup_isolated_data_dir();
+        let mut settings = UserSettings::default();
+
+        settings.set_string("CODESCRIBE_ASR_MODE", "whisper_cloud");
+        assert_eq!(settings.asr_mode, None, "unknown mode must be rejected");
+
+        settings.set_string("CODESCRIBE_CLOUD_CONSENT", "yes");
+        assert_eq!(
+            settings.cloud_consent, None,
+            "non-canonical consent must be rejected"
+        );
+        assert_eq!(settings.cloud_consent_at, None);
+
+        settings.set_string(
+            "CODESCRIBE_ASR_GATEWAY_URL",
+            "https://user:sk-key@gateway.libraxis.cloud/mint",
+        );
+        assert_eq!(
+            settings.asr_gateway_url, None,
+            "credential-bearing URL must be rejected"
+        );
+
+        // Empty clears an existing consent record back to "never asked".
+        settings.set_string("CODESCRIBE_CLOUD_CONSENT", "denied");
+        assert_eq!(settings.cloud_consent.as_deref(), Some("denied"));
+        settings.set_string("CODESCRIBE_CLOUD_CONSENT", "");
+        assert_eq!(settings.cloud_consent, None);
+        assert_eq!(settings.cloud_consent_at, None);
+    }
+
+    /// Resolution truth on the settings snapshot: fresh installs land on
+    /// Apple-only, upgrades preserve the prior local/cloud choice, and cloud
+    /// without a granted record refuses egress without reaching for weights.
+    #[test]
+    fn c2_resolved_asr_mode_covers_fresh_upgrade_and_consent_paths() {
+        use crate::config::cloud_asr::{AsrProductMode, ModeDerivation};
+
+        let fresh = UserSettings::default();
+        let resolved = fresh.resolved_asr_mode();
+        assert_eq!(resolved.mode, AsrProductMode::AppleOnly);
+        assert_eq!(resolved.derivation, ModeDerivation::FreshDefault);
+
+        let legacy_local = UserSettings {
+            use_local_stt: Some(true),
+            ..UserSettings::default()
+        };
+        assert_eq!(
+            legacy_local.resolved_asr_mode().mode,
+            AsrProductMode::LocalPower
+        );
+
+        let legacy_cloud = UserSettings {
+            use_local_stt: Some(false),
+            ..UserSettings::default()
+        };
+        let resolved = legacy_cloud.resolved_asr_mode();
+        assert_eq!(resolved.mode, AsrProductMode::Cloud);
+        assert_eq!(resolved.derivation, ModeDerivation::LegacyCloudChoice);
+
+        let cloud_no_consent = UserSettings {
+            asr_mode: Some("cloud".to_string()),
+            ..UserSettings::default()
+        };
+        let resolved = cloud_no_consent.resolved_asr_mode();
+        assert_eq!(resolved.mode, AsrProductMode::AppleOnly);
+        assert_eq!(resolved.derivation, ModeDerivation::ConsentMissingFallback);
     }
 }

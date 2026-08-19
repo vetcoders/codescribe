@@ -55,6 +55,13 @@ pub(crate) struct LiveAudioBuffer {
     capacity: usize,
 }
 
+/// One resolved retained window with its canonical session-sample identity.
+pub(crate) struct ResolvedAudioWindow {
+    pub(crate) samples: Vec<f32>,
+    pub(crate) sample_start: u64,
+    pub(crate) sample_end: u64,
+}
+
 impl LiveAudioBuffer {
     /// Build a buffer for `sample_rate`, retaining at most `retention_secs`.
     pub(crate) fn new(sample_rate: u32, retention_secs: f32) -> Self {
@@ -97,7 +104,19 @@ impl LiveAudioBuffer {
     ///
     /// Refusing beats truncating: a short window looks like a success and would
     /// address the wrong audio.
+    #[cfg(test)]
     pub(crate) fn window(&self, from_secs: f32, to_secs: f32) -> Option<Vec<f32>> {
+        self.window_with_range(from_secs, to_secs)
+            .map(|window| window.samples)
+    }
+
+    /// Timestamp-safe variant of [`window`](Self::window) that keeps the exact
+    /// integer PCM bounds used to cut the returned samples.
+    pub(crate) fn window_with_range(
+        &self,
+        from_secs: f32,
+        to_secs: f32,
+    ) -> Option<ResolvedAudioWindow> {
         let from = self.index_for(from_secs)?;
         let to = self.index_for(to_secs)?;
         if to < from || from < self.start_index || from > self.end_index {
@@ -115,7 +134,11 @@ impl LiveAudioBuffer {
         };
         let lo = (from - self.start_index) as usize;
         let hi = (to - self.start_index) as usize;
-        Some(self.samples.range(lo..hi).copied().collect())
+        Some(ResolvedAudioWindow {
+            samples: self.samples.range(lo..hi).copied().collect(),
+            sample_start: from,
+            sample_end: to,
+        })
     }
 
     /// Release everything before `secs` — audio already committed downstream
@@ -150,6 +173,37 @@ impl LiveAudioBuffer {
     /// Total audio seen this session, retained or evicted.
     pub(crate) fn session_secs(&self) -> f32 {
         self.end_index as f32 / self.sample_rate as f32
+    }
+
+    /// Total capture samples seen, retained or evicted.
+    pub(crate) fn session_sample_end(&self) -> u64 {
+        self.end_index
+    }
+
+    /// Cut `[sample_start, sample_end)` on the capture PCM clock.
+    ///
+    /// `None` when the range is inverted or has already fallen off retention.
+    /// Unlike [`window_with_range`](Self::window_with_range) this never
+    /// converts through seconds.
+    pub(crate) fn window_by_samples(
+        &self,
+        sample_start: u64,
+        sample_end: u64,
+    ) -> Option<ResolvedAudioWindow> {
+        if sample_end < sample_start
+            || sample_start < self.start_index
+            || sample_start > self.end_index
+        {
+            return None;
+        }
+        let to = sample_end.min(self.end_index);
+        let lo = (sample_start - self.start_index) as usize;
+        let hi = (to - self.start_index) as usize;
+        Some(ResolvedAudioWindow {
+            samples: self.samples.range(lo..hi).copied().collect(),
+            sample_start,
+            sample_end: to,
+        })
     }
 
     /// Absolute session-sample index for a session-time second, or `None` when

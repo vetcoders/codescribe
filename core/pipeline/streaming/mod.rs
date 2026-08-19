@@ -28,6 +28,10 @@ pub mod progressive_seal;
 pub(crate) mod quality_gate;
 /// Event-based transcription session: VAD ingestion, the Whisper inference loop, final emission.
 pub(crate) mod session;
+/// W13-3B Silero identity + conservative per-word fusion (lane flag default OFF).
+pub(crate) mod silero_fusion;
+/// W13-4 sealed-span replay refusal + in-span loop fence (lane flag default OFF).
+pub(crate) mod span_idempotence;
 /// Session stream-log sink (`CODESCRIBE_STREAM_LOG*` env contract).
 pub(crate) mod stream_log;
 /// Env-tunable runtime knobs shared across these modules.
@@ -37,11 +41,15 @@ pub(crate) mod tuning;
 #[cfg(test)]
 mod tests;
 
+pub use apple_live_session::APPLE_FINAL_OVERLAP_WARNING_CODE;
 pub use emitter::{BufferedEmitter, emitter_tick_loop};
 pub use live_assembly::{LiveAssembly, assemble_live_from_events};
 #[cfg(any(test, feature = "offline_eval"))]
 pub use offline::transcribe_streaming_samples;
-pub use session::{SessionConfig, collect_buffered_engine_events, transcribe_buffered_samples};
+pub use session::{
+    SessionConfig, collect_buffered_engine_events, collect_buffered_engine_events_with_config,
+    transcribe_buffered_samples,
+};
 
 #[cfg(test)]
 pub(crate) use quality_gate::should_drop_silence_chunk;

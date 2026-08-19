@@ -31,6 +31,7 @@ pub enum LiveStreamEvent {
     Ready,
     Partial {
         text: String,
+        segments: Vec<TranscriptSegment>,
     },
     /// Phrase-level seal (`isFinal` mid-stream). Text is utterance-local.
     PhraseFinal {
@@ -119,16 +120,23 @@ impl LiveStreamSession {
             .stdin
             .take()
             .context("Apple STT bridge stdin unavailable")?;
+        // Every `write_pcm` below targets this pipe. Without this the first
+        // write after the bridge dies raises SIGPIPE, which is fatal in the
+        // Swift host and leaves no crash report — killing the bridge took the
+        // whole app down on 2026-08-12. See `util::pipes`.
+        crate::util::pipes::disable_sigpipe(&stdin);
         let stdout = child
             .stdout
             .take()
             .context("Apple STT bridge stdout unavailable")?;
 
+        let contextual_strings = crate::pipeline::stream_postprocess::apple_contextual_strings();
         let request = BridgeRequest {
             protocol_version: 1,
             command: "stream",
             locale: &locale,
             audio_path: None,
+            contextual_strings: contextual_strings.as_deref(),
             allow_download: env_bool(ENV_ALLOW_DOWNLOAD, true),
         };
         let req_payload = serde_json::to_vec(&request).context("serialize stream request")?;
@@ -333,7 +341,27 @@ pub(crate) fn parse_stream_stdout_line(line: &str) -> Option<LiveStreamEvent> {
             "ready" => Some(LiveStreamEvent::Ready),
             "partial" => {
                 let text = parsed.text.unwrap_or_default().trim().to_string();
-                Some(LiveStreamEvent::Partial { text })
+                let segments = parsed
+                    .segments
+                    .unwrap_or_default()
+                    .into_iter()
+                    .filter_map(|s| {
+                        let text = s.text.trim().to_string();
+                        if text.is_empty()
+                            || !s.start_ts.is_finite()
+                            || !s.end_ts.is_finite()
+                            || s.end_ts < s.start_ts
+                        {
+                            return None;
+                        }
+                        Some(TranscriptSegment {
+                            text,
+                            start_ts: s.start_ts,
+                            end_ts: s.end_ts,
+                        })
+                    })
+                    .collect();
+                Some(LiveStreamEvent::Partial { text, segments })
             }
             "final" => {
                 let text = parsed.text.unwrap_or_default().trim().to_string();
@@ -403,10 +431,18 @@ mod tests {
     /// Partial, phrase-final, and summary JSON lines map to the typed event enum.
     #[test]
     fn parse_partial_and_final_and_summary() {
-        let partial =
-            parse_stream_stdout_line(r#"{"event":"partial","text":"cześć"}"#).expect("partial");
+        let partial = parse_stream_stdout_line(
+            r#"{"event":"partial","text":"cześć","segments":[{"text":"cześć","start_ts":0.0,"end_ts":0.4,"confidence":0.9}]}"#,
+        )
+        .expect("partial");
         match partial {
-            LiveStreamEvent::Partial { text } => assert_eq!(text, "cześć"),
+            LiveStreamEvent::Partial { text, segments } => {
+                assert_eq!(text, "cześć");
+                assert_eq!(segments.len(), 1);
+                assert_eq!(segments[0].text, "cześć");
+                assert_eq!(segments[0].start_ts, 0.0);
+                assert_eq!(segments[0].end_ts, 0.4);
+            }
             other => panic!("expected Partial, got {other:?}"),
         }
 
