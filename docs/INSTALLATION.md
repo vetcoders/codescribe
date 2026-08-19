@@ -37,11 +37,18 @@ make install
 
 This matters because macOS TCC permissions are far more stable with a persistent code-signing identity than with ad-hoc signatures.
 
-Local source installs use Cargo's optimized `local-release` profile and the
-checked-in development license verifier. Production DMGs use the distinct
-`release` profile, which fails closed unless `CODESCRIBE_LICENSE_PUBLIC_KEY_HEX`
-is the real 32-byte Ed25519 public key paired with the production signer. A UUID
-is not a license public key.
+`make install-app` bakes the same public keys `Get license` signs against.
+Put them in `~/.codescribe/config/dev/keys/` (preferred) or
+`~/.vibecrafted/secrets/codescribe/`:
+
+- `sparkle-public.b64` — Sparkle `SUPublicEDKey` (updates)
+- `license-public.hex` — 64-hex Ed25519 (CSK1 from codescribe.vetcoders.io/license)
+
+A keyed local install without `license-public.hex` used the RFC 8032
+development verifier, so site keys failed with `license signature
+verification failed`. Production DMGs still use the `release` profile
+and fail closed unless that hex is the production signer public key. A
+UUID is not a license public key.
 
 `make install-app` builds the local-release app and copies it to
 `/Applications`. Extra developer-console pieces are resolved from a
