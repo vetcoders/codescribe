@@ -4484,6 +4484,38 @@ async fn test_attach_hold_selection_does_not_flip_destination() {
 
 #[tokio::test]
 #[serial]
+async fn test_hold_down_raw_attaches_live_selection_without_chat() {
+    let controller = RecordingController::new();
+    crate::os::selection::set_test_captured_selection("already selected");
+
+    let down_event = HotkeyInput {
+        key_type: HotkeyType::Hold,
+        action: HotkeyAction::Down,
+        assistive: false,
+        hold_mode: HoldMode::Raw,
+        force_raw: true,
+        force_ai: false,
+    };
+    controller.handle_hotkey_event(down_event).await.unwrap();
+
+    assert!(
+        !*controller.assistive_mode.read().await,
+        "Fn hold-down must not set assistive_mode"
+    );
+    assert_eq!(*controller.hold_mode.read().await, HoldMode::Raw);
+    assert!(
+        !is_assistive_session(),
+        "Fn hold-down must not publish BadgeMode::Assistive"
+    );
+    assert_eq!(
+        controller.context_bucket.lock().await.len(),
+        1,
+        "live OS selection at Fn down must become {{selection_1}}"
+    );
+}
+
+#[tokio::test]
+#[serial]
 async fn test_hold_up_preserves_mode_flags_when_idle() {
     let controller = RecordingController::new();
 

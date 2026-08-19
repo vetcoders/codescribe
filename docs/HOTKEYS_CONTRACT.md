@@ -116,10 +116,10 @@ flowchart TB
 | `Dictation=HoldCtrlShift` | Ctrl+Shift   | Alternate hold dictation         |
 | `Dictation=HoldCtrlCmd`   | Ctrl+Command | macOS power users                |
 
+Fn hold-down (Raw) captures any live OS selection once as `{selection_1}`.
 Mid-hold Shift (or the configured arm modifier, default Shift, optional
-Command) attaches the current OS selection as `{selection_N}` into the
-`ContextBucket` and publishes a `ContextMarker` to the overlay. It does **not**
-upgrade `HoldMode` to Chat, front Agent, hide the overlay, or stop the Fn take.
+Command) attaches further pulses as `{selection_2..n}`. Neither upgrade
+`HoldMode` to Chat, fronts Agent, hides the overlay, or stops the Fn take.
 
 Fn+Shift from idle is dictation, not Assistive. Voice chat is the Assistive
 work-mode binding (default: double-tap Right Option), not Hold Fn+Shift.
@@ -128,6 +128,7 @@ work-mode binding (default: double-tap Right Option), not Hold Fn+Shift.
 
 ```rust
 HotkeyEvent::Hold { action: Down, mode: Raw }   // Fn, or Fn+Shift from idle
+                                                // (controller attaches live selection)
 HotkeyEvent::AttachSelection                    // Shift/Command rising edge mid-hold
 HotkeyEvent::Hold { action: Up, mode: Raw }     // Release — destination stays Raw
 ```

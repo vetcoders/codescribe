@@ -25,6 +25,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   already-started Fn hold captures the current selection into the context
   bucket and overlay marker. It does not open Agent, hide the overlay, or
   stop the take. Fn+Shift from idle stays dictation, not Assistive.
+- **Fn hold-down attaches a live selection as `{selection_1}`.** A
+  selection already present when Fn goes down is captured immediately.
+  Later Shift pulses still add `{selection_2..n}`. Destination stays
+  dictation.
 - **Layer 1 `cloud_session` stays up on Voice Lab `:8446`.** The live
   socket opens with `hello` (`stt-ws-v1`); treating that as protocol
   dropped the lane at take start (`disconnect`, zero frames). Handshake
