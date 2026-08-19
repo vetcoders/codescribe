@@ -4,6 +4,8 @@ use std::time::Duration;
 
 use crate::config::DeferredInsertShortcut;
 
+use super::delivery_route::target_is_self_app;
+
 /// Focus restore budget after activating the overlay paste target app.
 pub(super) const OVERLAY_PASTE_FOCUS_BUDGET: Duration = Duration::from_millis(250);
 
@@ -115,7 +117,7 @@ pub(super) fn overlay_paste_disposition(
     if !can_post_events {
         return OverlayPasteDisposition::CopyAccessibilityDenied;
     }
-    if target.eq_ignore_ascii_case("codescribe") {
+    if target_is_self_app(target) {
         return OverlayPasteDisposition::Paste;
     }
     let Some(frontmost) = frontmost_app.map(str::trim).filter(|name| !name.is_empty()) else {
@@ -128,7 +130,7 @@ pub(super) fn overlay_paste_disposition(
     if frontmost.eq_ignore_ascii_case(target) {
         return OverlayPasteDisposition::Paste;
     }
-    if frontmost.eq_ignore_ascii_case("codescribe") && activation_confirmed {
+    if target_is_self_app(frontmost) && activation_confirmed {
         return OverlayPasteDisposition::Paste;
     }
     OverlayPasteDisposition::CopyTargetMismatch
@@ -145,7 +147,7 @@ pub(super) fn confirm_latched_paste_target(target_app: Option<&str>) -> bool {
     let Some(name) = target_app.map(str::trim).filter(|n| !n.is_empty()) else {
         return false;
     };
-    if name.eq_ignore_ascii_case("codescribe") {
+    if target_is_self_app(name) {
         return true;
     }
     crate::os::selection::activate_app_by_name(name)
