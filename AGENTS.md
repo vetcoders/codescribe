@@ -42,10 +42,29 @@ then update both the code and the relevant contract in the same cut.
   detail lens or explicit fallback.
 - Never revert unfamiliar dirty changes. Isolate responsibilities, verify each
   coherent cut, and stage only the files that belong to its checkpoint.
-- Local implementation turns end in a scoped commit. Never push, merge, or
-  publish a release unless the operator explicitly asks for that action.
+- Local implementation turns end in a scoped commit. Push that work to the
+  active branch. Do not merge to trunk or publish a **release** (tag, notarized
+  DMG, GitHub Release) unless the operator asked or the install cadence below
+  says Monika DMG.
 - Generated UniFFI Swift bindings must match the Rust bridge. Run
   `make app-bindings` after bridge API changes.
+
+## Install cadence (Maciej + Monika)
+
+Operator agreement 2026-08-19.
+
+- After each coherent cut that changes the app, run `make install-if-idle`
+  (or `make install-app` after a live-recording check). That is the daily
+  laptop binary. Do not wait to be asked.
+- **Refuse the install** when a Codescribe take is in flight. Authority is
+  the Transcript Bus: last session has `session_started` and no later
+  `transcript_sealed`. Never tear down `/Applications/Codescribe.app` mid-take.
+- A **notarized DMG for Monika** is not every commit. After a batch of key
+  fixes (mic/ownership, STT contract, install/Lab, shipping blockers), cut
+  `make release-standard`, `verify-dmg`, and hand her the slim notarized
+  artifact. Say so in the turn. That is a release; still not a silent merge
+  to trunk.
+- Ad-hoc `/Applications` from `install-app` is never "the Monika DMG".
 
 ## Verification
 
