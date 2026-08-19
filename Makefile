@@ -192,15 +192,21 @@ install-if-idle:
 
 install-app: install-voice-lab
 	@echo "Building $(CODESCRIBE_APP_NAME).app (SwiftUI, optimized local profile) via scripts/build-app.sh ..."
-	@echo "Local install uses the development license verifier; CODESCRIBE_LICENSE_PUBLIC_KEY_HEX is reserved for distribution builds."
 	@BIT=$$(./scripts/developer-surface-gate.sh); \
 	if [ "$$BIT" != "1" ]; then \
 		echo "Developer surface stayed off after the Voice Lab pack — Sparkle/Ed public keys did not resolve."; \
+		echo "  need: ~/.codescribe/config/dev/keys/{sparkle-public.b64,license-public.hex}"; \
+		echo "  or:   ~/.vibecrafted/secrets/codescribe/{sparkle-public.b64,license-public.hex}"; \
 		exit 1; \
 	fi; \
-	echo "Developer surface: 1 (Sparkle + license public keys from the org Voice Lab pack)."; \
+	LICENSE=$$(tr -d '[:space:]' < "$(CODESCRIBE_LICENSE_PUBLIC_KEY_FILE)" 2>/dev/null || true); \
+	if [ "$${#LICENSE}" -ne 64 ]; then \
+		echo "install-app: license-public.hex missing or not 64 hex at $(CODESCRIBE_LICENSE_PUBLIC_KEY_FILE)"; \
+		exit 1; \
+	fi; \
+	echo "Developer surface: 1. License verifier from $(CODESCRIBE_LICENSE_PUBLIC_KEY_FILE) (Get license / CSK1)."; \
 	SPARKLE=$$(tr -d '[:space:]' < "$(CODESCRIBE_SPARKLE_PUBLIC_KEY_FILE)" 2>/dev/null || true); \
-	env -u CODESCRIBE_LICENSE_PUBLIC_KEY_HEX \
+	CODESCRIBE_LICENSE_PUBLIC_KEY_HEX="$$LICENSE" \
 	  CODESCRIBE_DEVELOPER_SURFACE=1 \
 	  SPARKLE_ED_PUBLIC_KEY="$$SPARKLE" \
 	  $(MAKE) --no-print-directory app PROFILE=local-release
