@@ -191,19 +191,38 @@ DERIVED="$REPO_ROOT/macos/build"
 # LIBRARY_SEARCH_PATHS must follow the selected Cargo profile. Xcode's Debug /
 # Release configs cannot distinguish distribution `release` from the optimized
 # `local-release` Cargo profile because both intentionally use Release Swift.
-xcodebuild -project macos/Codescribe.xcodeproj \
-  -scheme "$SCHEME" -configuration "$CONFIG" \
-  -derivedDataPath "$DERIVED" \
-  ONLY_ACTIVE_ARCH=YES \
-  LIBRARY_SEARCH_PATHS="$REPO_ROOT/$TARGET_DIR" \
-  CODE_SIGNING_ALLOWED="${CODE_SIGNING_ALLOWED:-NO}" \
-  MARKETING_VERSION="$STAMP_VERSION" \
-  CURRENT_PROJECT_VERSION="$STAMP_BUILD_NUM" \
-  CS_BUILD_COMMIT="$STAMP_COMMIT" \
-  CS_BUILT_AT="$STAMP_BUILT_AT" \
-  SPARKLE_ED_PUBLIC_KEY="${SPARKLE_ED_PUBLIC_KEY:-}" \
-  CS_DEVELOPER_SURFACE="${CS_DEVELOPER_SURFACE:-0}" \
-  build
+# Xcode 27 ld rejects rustc-stripped dylibs (LINKEDIT string pool). Daily
+# local-release now ships unstripped. If the selected toolchain still
+# refuses the dylib and a stable Xcode.app exists, retry that linker.
+run_app_xcodebuild() {
+  xcodebuild -project macos/Codescribe.xcodeproj \
+    -scheme "$SCHEME" -configuration "$CONFIG" \
+    -derivedDataPath "$DERIVED" \
+    ONLY_ACTIVE_ARCH=YES \
+    LIBRARY_SEARCH_PATHS="$REPO_ROOT/$TARGET_DIR" \
+    CODE_SIGNING_ALLOWED="${CODE_SIGNING_ALLOWED:-NO}" \
+    MARKETING_VERSION="$STAMP_VERSION" \
+    CURRENT_PROJECT_VERSION="$STAMP_BUILD_NUM" \
+    CS_BUILD_COMMIT="$STAMP_COMMIT" \
+    CS_BUILT_AT="$STAMP_BUILT_AT" \
+    SPARKLE_ED_PUBLIC_KEY="${SPARKLE_ED_PUBLIC_KEY:-}" \
+    CS_DEVELOPER_SURFACE="${CS_DEVELOPER_SURFACE:-0}" \
+    build
+}
+
+XCODEBUILD_LOG="$(mktemp)"
+if ! run_app_xcodebuild > >(tee "$XCODEBUILD_LOG") 2>&1; then
+  if grep -q "mis-aligned LINKEDIT" "$XCODEBUILD_LOG" \
+    && [[ -d /Applications/Xcode.app ]] \
+    && [[ "${DEVELOPER_DIR:-}" != /Applications/Xcode.app* ]]; then
+    echo "==> beta ld rejected the Rust dylib; retrying with /Applications/Xcode.app"
+    DEVELOPER_DIR=/Applications/Xcode.app run_app_xcodebuild
+  else
+    rm -f "$XCODEBUILD_LOG"
+    exit 65
+  fi
+fi
+rm -f "$XCODEBUILD_LOG"
 
 APP="$DERIVED/Build/Products/$CONFIG/$SCHEME.app"
 echo "==> [6/7] Embedding runtime artifacts into $SCHEME.app"

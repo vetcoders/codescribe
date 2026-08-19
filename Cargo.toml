@@ -161,6 +161,11 @@ strip = true
 # artifact; scripts/build-dmg.sh and CI use the literal `release` profile.
 [profile.local-release]
 inherits = "release"
+# rustc `strip = true` leaves LC_SYMTAB.stroff unaligned. Xcode 27's ld
+# (ld-27036) then dies: "mis-aligned LINKEDIT string pool". Daily
+# `make install-app` uses this profile; keep symbols so the dylib links.
+# Dist `release` still strips — `make release-standard` is a separate cut.
+strip = false
 
 # Diagnostic / crash-reproduction profile.
 # Inherits the optimized release build but keeps full debug info (no strip) so
