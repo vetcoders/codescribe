@@ -73,9 +73,8 @@ use crate::os::clipboard;
 use crate::os::hold_badge::BadgeMode;
 use crate::os::hotkeys::{self, HoldMode};
 use crate::os::selection::{
-    AssistiveContext, activate_app_by_name, capture_assistive_context,
+    AssistiveContext, capture_assistive_context,
     capture_assistive_context_with_image_with_prior_frontmost, capture_frontmost_app_only,
-    wait_for_frontmost_app,
 };
 use crate::os::shortcut_registry;
 use codescribe_core::asr_session::gateway_session_availability;
@@ -101,7 +100,7 @@ use assistive_delivery::{
 };
 use delivery_route::{
     DeliveryFacts, DeliveryIntent, DeliveryRoute, delivery_intent_from_session,
-    format_delivery_route_line, overlay_insert_facts, resolve_delivery_route, target_is_self_app,
+    format_delivery_route_line, overlay_insert_facts, resolve_delivery_route,
 };
 #[cfg(test)]
 pub(crate) use final_pass::FinalPassRoutingMode;
@@ -140,7 +139,7 @@ use hotkey_policy::{
 #[cfg(test)]
 use hotkey_policy::{is_assistive_start_event, toggle_stop_adjudicate_timeout};
 use overlay_paste::{
-    DeferredInsertRegistration, OVERLAY_PASTE_FOCUS_BUDGET, OverlayPasteDisposition,
+    DeferredInsertRegistration, OverlayPasteDisposition, confirm_latched_paste_target,
     deferred_insert_registration, overlay_paste_disposition, park_refused_paste,
 };
 #[cfg(test)]
@@ -944,23 +943,16 @@ impl RecordingController {
     /// Paste user-edited overlay text through the delivery throne, then restore
     /// the latched target and synthesize Cmd+V via clipboard.
     ///
-    /// `resolve_delivery_route(OverlayInsert)` picks the destination. Codescribe
-    /// as the latched target arms Paste Here instead of pasting into ourselves.
-    /// Otherwise delivery is fail-closed: Cmd+V is posted only when the runtime
-    /// frontmost app exactly matches the latched target and Accessibility
-    /// permits event posting. Every unconfirmed case parks Paste Here and
-    /// leaves the user's clipboard alone.
+    /// `resolve_delivery_route(OverlayInsert)` picks the destination. Overlay
+    /// **caret** (Swift `defer_text_from_overlay`) arms Paste Here. Agent
+    /// window, Alacritty, and every other latched caret get Cmd+V. Unconfirmed
+    /// ambulances park Paste Here and leave the user's clipboard alone.
     pub async fn paste_text_from_overlay(&self, text: String) -> Result<OverlayPasteResult> {
         let trimmed = text.trim();
         let target_app = self.pre_overlay_frontmost_app.read().await.clone();
         let intent = DeliveryIntent::OverlayInsert;
-        let decision = resolve_delivery_route(
-            intent,
-            overlay_insert_facts(
-                !trimmed.is_empty(),
-                target_app.as_deref().is_some_and(target_is_self_app),
-            ),
-        );
+        let decision =
+            resolve_delivery_route(intent, overlay_insert_facts(!trimmed.is_empty(), false));
         info!(
             "{}",
             format_delivery_route_line(intent, decision, target_app.as_deref())
@@ -980,15 +972,12 @@ impl RecordingController {
                 .await;
         }
 
-        if let Some(app_name) = target_app.as_deref() {
-            let activated = activate_app_by_name(app_name);
-            let focus_confirmed =
-                activated && wait_for_frontmost_app(app_name, OVERLAY_PASTE_FOCUS_BUDGET);
-            debug!(
-                app_name,
-                activated, focus_confirmed, "Overlay paste target activation"
-            );
-        }
+        let focus_confirmed = confirm_latched_paste_target(target_app.as_deref());
+        debug!(
+            target = ?target_app,
+            focus_confirmed,
+            "Overlay paste target activation"
+        );
 
         let config = self.config.read().await.clone();
         let paste_text = maybe_wrap_transcript_for_delivery(trimmed, &config, "dictation");
@@ -998,6 +987,7 @@ impl RecordingController {
             target_app.as_deref(),
             frontmost.as_deref(),
             preflight.can_post_events(),
+            focus_confirmed,
         );
 
         let mut deferred_insert_shortcut = None;
@@ -4363,7 +4353,7 @@ impl RecordingController {
                 overlay_enabled: config.transcription_overlay_enabled,
                 live_stream_session,
                 commit_required: commit_trigger.is_some(),
-                latched_target_is_self: latched_target.as_deref().is_some_and(target_is_self_app),
+                latched_target_is_self: false,
             },
         );
         info!(
@@ -4430,24 +4420,22 @@ impl RecordingController {
                 &mode_label,
                 Some(&truth_metadata),
             );
-            // Restore the *latched* target before Cmd+V. Frontmost-at-stop is
-            // not the destination — that is how tagged raw landed in the Agent
-            // composer (operator: walka o tron, delivery axis).
-            if let Some(app_name) = latched_target.as_deref() {
-                let activated = activate_app_by_name(app_name);
-                let focus_confirmed =
-                    activated && wait_for_frontmost_app(app_name, OVERLAY_PASTE_FOCUS_BUDGET);
-                debug!(
-                    app_name,
-                    activated, focus_confirmed, "Stop-path paste target activation"
-                );
-            }
+            // Restore the *latched* ambulance before Cmd+V. Overlay canvas is
+            // not a sink; Agent window and Alacritty are. Frontmost-at-stop is
+            // not the destination.
+            let focus_confirmed = confirm_latched_paste_target(latched_target.as_deref());
+            debug!(
+                target = ?latched_target,
+                focus_confirmed,
+                "Stop-path paste target activation"
+            );
             let frontmost = crate::os::selection::current_frontmost_app_name();
             let preflight = clipboard::synthetic_paste_preflight();
             let disposition = overlay_paste_disposition(
                 latched_target.as_deref(),
                 frontmost.as_deref(),
                 preflight.can_post_events(),
+                focus_confirmed,
             );
             if disposition == OverlayPasteDisposition::Paste {
                 if self

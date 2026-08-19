@@ -11,17 +11,16 @@
 2. **`resolve_delivery_route` is the only function that picks a destination.**
    Auto-paste, overlay Insert, and To Agent consult it. They do not invent a
    second king.
-3. **Codescribe is never a legal Cmd+V target.** A latched self-app (Agent
-   composer, overlay, settings) stays on the Orient canvas or goes to the
-   Agent composer as a first-class message — never as a tagged paste into
-   ourselves. That is how `<codescribe mode="raw">` stopped landing in chat.
-4. **A refused synthetic paste must not steal the user's clipboard.** Cmd+V
-   restore exists only because the pasteboard was borrowed for a real paste
-   into a foreign app. If the ambulance is not confirmed, park the transcript
-   on the process-local Paste Here slot (⌘⌥V when that chord is bound) and
-   leave `NSPasteboard` exactly as the user left it. Overlay canvas stays the
-   visible buffer. Explicit overlay **Copy** is the only verb that may write
-   the system pasteboard on purpose.
+3. **The overlay canvas is never a legal Cmd+V target.** Caret in our panel
+   → park Paste Here. The Agent window, Alacritty/Zellij (vc-terminal),
+   Notes, and every other caret **are** legal ambulances. Assistive still
+   delivers as a first-class Agent message — that is a different intent,
+   not a ban on pasting into the Agent window.
+4. **Clipboard is borrowed, never stolen.** We may overwrite `NSPasteboard`
+   for a real Cmd+V. We must restore what the user had. If auto-paste cannot
+   land, we lose neither: restore the system clipboard, park the transcript
+   in our buffer (⌘⌥V). Explicit overlay **Copy** is the only verb that
+   writes the pasteboard on purpose and leaves it.
 
 ## Intent → route
 
@@ -29,17 +28,17 @@
 | ----------------- | ------------------------------------ | ---------------------------------------------------------------------------------------------------------------------------- |
 | `AgentVoice`      | Double Right Option / assistive hold | `AgentComposer`                                                                                                              |
 | `OverlayToAgent`  | overlay **To Agent**                 | `AgentComposer`                                                                                                              |
-| `OrientDictation` | Hold Fn / Globe                      | `ClipboardPaste` if auto-paste + latched foreign app; else `OrientCanvas`                                                    |
+| `OrientDictation` | Hold Fn / Globe                      | `ClipboardPaste` if auto-paste; `OrientCanvas` if overlay caret / no auto-paste                                              |
 | `OrientFormat`    | Double Left Option                   | same as dictation                                                                                                            |
-| `OverlayInsert`   | overlay Insert / defer               | `ClipboardPaste` if the latched target is a foreign app; `DeferredInsert` if the latched target (or the caret) is Codescribe |
+| `OverlayInsert`   | overlay Insert / defer               | `ClipboardPaste` into the latched caret (Agent, Alacritty, …); `DeferredInsert` only when the overlay canvas holds the caret |
 | `NotesOnly`       | save-only notes                      | `ArchiveOnly`                                                                                                                |
 
 Vetoes that keep Orient off the paste gun: empty / no-speech, live-stream
-session, quality-commit pending, latched target is Codescribe.
+session, quality-commit pending, overlay canvas holds the caret.
 
 Explicit overlay clicks do **not** inherit the live-stream or quality-commit
-vetoes. The user asked to insert now. Codescribe as the latched target still
-refuses Cmd+V into ourselves and arms Paste Here instead.
+vetoes. The user asked to insert now. Overlay caret still refuses Cmd+V into
+the canvas and arms Paste Here instead. Agent / Alacritty still get Cmd+V.
 
 `paste_text_from_overlay` and `defer_text_from_overlay` consult
 `resolve_delivery_route`. They do not pick a destination on their own.

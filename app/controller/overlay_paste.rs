@@ -95,33 +95,61 @@ pub(super) enum OverlayPasteDisposition {
 
 /// Decide whether to paste or refuse the synthetic Cmd+V.
 ///
-/// Pasting requires that focus actually returned to the recorded target: both app
-/// names must be present, the frontmost app must not be Codescribe itself, and it
-/// must match the target. Only then does missing Accessibility permission become
-/// the deciding factor. Any mismatch parks Paste Here (⌘⌥V) and leaves the
-/// user's pasteboard alone — it does not fire Cmd+V at whatever window is in
-/// front, and it does not overwrite the clipboard the user already had.
+/// The overlay **canvas** is never a Cmd+V sink — that guard lives in Swift
+/// (`insertCaretInCodescribeProbe` → `defer_text_from_overlay`). This function
+/// decides among legal ambulances:
+/// - Agent window (localized name `Codescribe`) is a legal sink.
+/// - Alacritty / Zellij / Notes / … must match, or activation must have
+///   confirmed the latched target (the floating overlay can leave
+///   `NSWorkspace` still reporting Codescribe).
+/// - A third app in front without activation → mismatch, park Paste Here.
 pub(super) fn overlay_paste_disposition(
     target_app: Option<&str>,
     frontmost_app: Option<&str>,
     can_post_events: bool,
+    activation_confirmed: bool,
 ) -> OverlayPasteDisposition {
     let Some(target) = target_app.map(str::trim).filter(|name| !name.is_empty()) else {
         return OverlayPasteDisposition::CopyTargetUnavailable;
     };
-    let Some(frontmost) = frontmost_app.map(str::trim).filter(|name| !name.is_empty()) else {
-        return OverlayPasteDisposition::CopyFrontmostUnavailable;
-    };
-    if frontmost.eq_ignore_ascii_case("codescribe") {
-        return OverlayPasteDisposition::CopyTargetMismatch;
-    }
-    if !frontmost.eq_ignore_ascii_case(target) {
-        return OverlayPasteDisposition::CopyTargetMismatch;
-    }
     if !can_post_events {
         return OverlayPasteDisposition::CopyAccessibilityDenied;
     }
-    OverlayPasteDisposition::Paste
+    if target.eq_ignore_ascii_case("codescribe") {
+        return OverlayPasteDisposition::Paste;
+    }
+    let Some(frontmost) = frontmost_app.map(str::trim).filter(|name| !name.is_empty()) else {
+        return if activation_confirmed {
+            OverlayPasteDisposition::Paste
+        } else {
+            OverlayPasteDisposition::CopyFrontmostUnavailable
+        };
+    };
+    if frontmost.eq_ignore_ascii_case(target) {
+        return OverlayPasteDisposition::Paste;
+    }
+    if frontmost.eq_ignore_ascii_case("codescribe") && activation_confirmed {
+        return OverlayPasteDisposition::Paste;
+    }
+    OverlayPasteDisposition::CopyTargetMismatch
+}
+
+/// Activate the latched ambulance and confirm it owns focus.
+///
+/// Codescribe (Agent window) is already this process — no activate. A foreign
+/// app must both activate and match `NSWorkspace` within the budget. The
+/// floating overlay can leave workspace still naming Codescribe; callers pass
+/// this bit into [`overlay_paste_disposition`] so a confirmed Alacritty is
+/// not vetoed as "frontmost is Codescribe".
+pub(super) fn confirm_latched_paste_target(target_app: Option<&str>) -> bool {
+    let Some(name) = target_app.map(str::trim).filter(|n| !n.is_empty()) else {
+        return false;
+    };
+    if name.eq_ignore_ascii_case("codescribe") {
+        return true;
+    }
+    crate::os::selection::activate_app_by_name(name)
+        && crate::os::selection::wait_for_frontmost_app(name, OVERLAY_PASTE_FOCUS_BUDGET)
 }
 
 /// Park a refused synthetic paste in the process-local Paste Here slot.

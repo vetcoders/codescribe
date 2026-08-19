@@ -10,9 +10,10 @@
 //! - `resolve_delivery_route` is the only function allowed to pick a
 //!   [`DeliveryRoute`]. Auto-paste, overlay Insert, and To Agent consult it;
 //!   they do not invent a second destination.
-//! - Codescribe is never a legal Cmd+V target. A latched self-app (Agent
-//!   composer / overlay / settings) routes to the Orient canvas or the Agent
-//!   composer as a first-class message — never as a tagged paste into ourselves.
+//! - The overlay canvas is never a legal Cmd+V target (caret in our panel).
+//!   The Agent window, Alacritty/Zellij, Notes, and every other caret are
+//!   legal ambulances. Assistive still delivers as a first-class Agent
+//!   message — that is a different intent, not a paste ban.
 
 /// Where a finished transcript is allowed to land.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -90,7 +91,9 @@ pub struct DeliveryFacts {
     pub overlay_enabled: bool,
     pub live_stream_session: bool,
     pub commit_required: bool,
-    /// Latched pre-overlay target is Codescribe itself (Agent / overlay / settings).
+    /// True only when the overlay canvas holds the caret. The Codescribe
+    /// **app** (Agent window, Settings) is not this flag — those are legal
+    /// Cmd+V sinks. Swift `defer_text_from_overlay` is the constructor.
     pub latched_target_is_self: bool,
 }
 
@@ -119,16 +122,19 @@ pub fn delivery_intent_from_session(
     }
 }
 
-/// Codescribe (any chrome) is never a legal synthetic-paste target.
+/// Localized name of **this process**. Used to skip `NSRunningApplication`
+/// activate (we are already running). Not a paste veto — the Agent window
+/// is a legal Cmd+V sink. Overlay-canvas veto is the Swift caret probe.
 pub fn target_is_self_app(name: &str) -> bool {
     name.trim().eq_ignore_ascii_case("codescribe")
 }
 
 /// Facts an overlay Insert / defer click may feed the throne.
 ///
-/// Focus-at-click is not an input. `latched_target_is_self` is true when the
-/// recorded target is Codescribe, or when Swift already knows the caret is
-/// still inside our chrome (`defer_text_from_overlay`).
+/// Focus-at-click is not an input. `latched_target_is_self` is true only when
+/// Swift already knows the overlay canvas holds the caret
+/// (`defer_text_from_overlay`). A latched Codescribe **app** name is the
+/// Agent window, not this flag.
 pub fn overlay_insert_facts(has_text: bool, latched_target_is_self: bool) -> DeliveryFacts {
     DeliveryFacts {
         has_text,
@@ -170,8 +176,9 @@ pub fn resolve_delivery_route(intent: DeliveryIntent, facts: DeliveryFacts) -> D
 }
 
 /// Explicit overlay click. Orient vetoes (live stream, quality commit) do not
-/// apply — the user asked to insert *now*. Codescribe as the latched target
-/// still refuses Cmd+V into ourselves.
+/// apply — the user asked to insert *now*. Overlay **caret** still refuses
+/// Cmd+V into the canvas (`latched_target_is_self` from Swift). A latched
+/// Codescribe **app** name is the Agent window, not the canvas.
 fn overlay_insert_route(facts: DeliveryFacts) -> DeliveryDecision {
     if facts.latched_target_is_self {
         return DeliveryDecision {
@@ -299,7 +306,20 @@ mod tests {
     }
 
     #[test]
-    fn hold_fn_with_agent_focused_stays_on_canvas() {
+    fn hold_fn_with_agent_window_latched_auto_pastes() {
+        let decision = resolve_delivery_route(
+            DeliveryIntent::OrientDictation,
+            facts(|f| {
+                f.auto_paste_enabled = true;
+            }),
+        );
+        assert_eq!(decision.route, DeliveryRoute::ClipboardPaste);
+        assert_eq!(decision.reason, "auto_paste_to_latched_target");
+        assert!(decision.route.posts_synthetic_paste());
+    }
+
+    #[test]
+    fn hold_fn_with_overlay_caret_stays_on_canvas() {
         let decision = resolve_delivery_route(
             DeliveryIntent::OrientDictation,
             facts(|f| {
