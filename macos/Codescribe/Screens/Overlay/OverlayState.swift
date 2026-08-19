@@ -414,6 +414,8 @@ final class OverlayState: ObservableObject {
   // MARK: Derived display (one source of truth for the view)
 
   var statusText: String {
+    if isFormatting { return "formatting" }
+    if isRetranscribing { return "retranscribing" }
     if mode == .error { return "failed" }
     if mode == .formatted { return "done" }
     if mode == .noSpeech { return "no speech" }
@@ -424,6 +426,7 @@ final class OverlayState: ObservableObject {
     return hasMeasuredAudioLevel ? "recording" : "recording · ambient"
   }
   var statusColor: Color {
+    if isFormatting || isRetranscribing { return CSColor.modeProcessing }
     switch mode {
     case .listening: return CSColor.terracotta
     case .formatted: return CSColor.oliveLight
@@ -445,14 +448,22 @@ final class OverlayState: ObservableObject {
     guard showsLowConfidenceBadge else { return nil }
     return "low confidence"
   }
-  /// Only the live-capture pill ripples. During `transcribing` / `final pass` we swap
-  /// to the static pill so its repeatForever animation tears down — a second visual
-  /// cue that capture has ended and post-processing is in flight.
+  /// Only the live-capture pill ripples. During `transcribing` / `final pass` /
+  /// one-shot format / retranscribe we swap to the static pill so its
+  /// repeatForever animation tears down — a second visual cue that capture
+  /// has ended and post-processing is in flight, not a waveform grind.
   var statusRippling: Bool {
-    mode == .listening && !transcribing && !isFinalPass && (audioReady || vadActive)
+    mode == .listening
+      && !transcribing
+      && !isFinalPass
+      && !isFormatting
+      && !isRetranscribing
+      && (audioReady || vadActive)
   }
 
   var tagText: String {
+    if isFormatting { return "FORMAT" }
+    if isRetranscribing { return "RETRANSCRIBE" }
     if isFinalPass || transcribing { return "PROCESSING" }
     switch mode {
     case .listening:
@@ -463,7 +474,9 @@ final class OverlayState: ObservableObject {
     }
   }
   var tagColor: Color {
-    if isFinalPass || transcribing { return CSColor.modeProcessing }
+    if isFormatting || isRetranscribing || isFinalPass || transcribing {
+      return CSColor.modeProcessing
+    }
     switch mode {
     case .listening:
       return indicatorMode == .assistive ? CSColor.modeAgent : CSColor.modeRecording
@@ -474,6 +487,8 @@ final class OverlayState: ObservableObject {
   }
 
   var metaText: String {
+    if isFormatting { return "format · one-shot" }
+    if isRetranscribing { return "retranscribe · file pass" }
     if isFinalPass { return "final pass · formatting" }
     switch mode {
     case .listening:
@@ -492,6 +507,7 @@ final class OverlayState: ObservableObject {
   }
   var footerRight: String {
     if isFormatting { return "formatting" }
+    if isRetranscribing { return "retranscribing" }
     if isFinalPass { return "final pass" }
     if mode == .noSpeech { return "no speech" }
     if mode == .error { return "error" }
@@ -663,6 +679,13 @@ final class OverlayState: ObservableObject {
     preFormatText != nil && !isFormatting && !isRetranscribing
   }
 
+  /// Post-take review owns the floating panel. Format / Retranscribe (and the
+  /// formatted / no-speech surface they run on) must not yield to an Assistive
+  /// tray tick — that path calls `hide()` and arms Agent auto-send.
+  var blocksAssistiveOverlayHide: Bool {
+    isFormatting || isRetranscribing || mode == .formatted || mode == .noSpeech
+  }
+
   var insertActionPresentation: OverlayInsertActionPresentation {
     OverlayInsertActionPresentation(targetAppName: pasteTargetAppName)
   }
@@ -793,17 +816,31 @@ final class OverlayState: ObservableObject {
     let source = formattedText
     let sourceLevel = qualityFormattingLevel
     isFormatting = true
+    agentAutoSendCancelled = true
     // Format deliberately suspends passive dismissal. Its result stays until
     // another user activity explicitly starts a fresh countdown.
     cancelAutoHide()
-    Task { @MainActor in
-      defer { self.isFormatting = false }
+    Task { [weak self] in
+      let outcome: Result<String, Error>
       do {
-        let formatted = try await engine.formatText(
-          text: source,
-          language: nil,
-          level: level
-        )
+        // UniFFI format is a long LLM round-trip. Pinning it to MainActor
+        // freezes the panel (operator: overlay "zaczął mielić") for ~17s on
+        // an 8k-char take. Detach so Close / Copy / resize stay hittable.
+        let formatted = try await Task.detached(priority: .userInitiated) {
+          try await engine.formatText(
+            text: source,
+            language: nil,
+            level: level
+          )
+        }.value
+        outcome = .success(formatted)
+      } catch {
+        outcome = .failure(error)
+      }
+      guard let self else { return }
+      defer { self.isFormatting = false }
+      switch outcome {
+      case .success(let formatted):
         let isUsableChange =
           !formatted
           .trimmingCharacters(in: .whitespacesAndNewlines)
@@ -817,7 +854,7 @@ final class OverlayState: ObservableObject {
         self.formatFailureStatus = nil
         self.mode = .formatted
         self.cancelAutoHide()  // User acted (Format); do not auto-hide the result.
-      } catch {
+      case .failure(let error):
         self.formattedText = source
         self.formatFailureStatus = "raw — formatting failed"
         self.mode = .formatted
@@ -860,12 +897,23 @@ final class OverlayState: ObservableObject {
     }
     let source = activeText
     isRetranscribing = true
+    agentAutoSendCancelled = true
     cancelAutoHide()
-    Task { @MainActor in
-      defer { self.isRetranscribing = false }
+    Task { [weak self] in
+      let outcome: Result<CsTranscription, Error>
       do {
         let prefixed = "\(pass.rawValue):\(audioPath)"
-        let result = try await engine.transcribeFile(path: prefixed)
+        let result = try await Task.detached(priority: .userInitiated) {
+          try await engine.transcribeFile(path: prefixed)
+        }.value
+        outcome = .success(result)
+      } catch {
+        outcome = .failure(error)
+      }
+      guard let self else { return }
+      defer { self.isRetranscribing = false }
+      switch outcome {
+      case .success(let result):
         let next = result.text.trimmingCharacters(in: .whitespacesAndNewlines)
         if next.isEmpty {
           self.formatFailureStatus = "retranscribe — empty"
@@ -877,7 +925,7 @@ final class OverlayState: ObservableObject {
         self.formatFailureStatus = nil
         self.mode = .formatted
         self.cancelAutoHide()
-      } catch {
+      case .failure(let error):
         let reason = error.localizedDescription
         self.formatFailureStatus = "retranscribe — \(pass.visibleName) failed: \(reason)"
         self.showToast("Couldn't retranscribe — \(reason)")
@@ -1266,6 +1314,7 @@ final class OverlayState: ObservableObject {
       resetTranscript()
       formattedText = ""
       isFormatting = false
+      isRetranscribing = false
       errorMessage = nil
       beginCaptureClock()
     }
@@ -1291,6 +1340,7 @@ final class OverlayState: ObservableObject {
       }
       formattedText = ""
       isFormatting = false
+      isRetranscribing = false
       formatFailureStatus = nil
       errorMessage = nil
       beginCaptureClock()

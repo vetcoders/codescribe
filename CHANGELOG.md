@@ -21,6 +21,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **Overlay default stays pinned top-right.** Free motion is only the
   explicit toggle. A drag without it is ephemeral. Edge-resize always
   persists, independent of the pin.
+- **Format/Retranscribe keep the overlay hittable.** One-shot Format
+  and file retranscribe no longer hide the panel (including when the
+  tray ticks Assistive), steal focus, or pin MainActor for the LLM /
+  Whisper round-trip. The status pill is a static `formatting` /
+  `retranscribing` phase, not a waveform grind.
 - **Mid-hold Shift attaches `{selection_N}`.** Shift or Command during an
   already-started Fn hold captures the current selection into the context
   bucket and overlay marker. It does not open Agent, hide the overlay, or
