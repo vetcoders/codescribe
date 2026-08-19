@@ -12,7 +12,9 @@ pub(super) const OVERLAY_PASTE_FOCUS_BUDGET: Duration = Duration::from_millis(25
 pub enum OverlayPasteDelivery {
     /// Synthetic Cmd+V was posted at the restored target's caret.
     Pasted,
-    /// Focus never left Codescribe; tagged text was copied instead of pasted.
+    /// Explicit Copy (or a leftover UniFFI outcome). Automatic refuse of
+    /// Cmd+V must not take this branch — that path parks Paste Here and
+    /// leaves the user's pasteboard alone.
     CopiedToClipboard,
     /// Synthetic event posting is not trusted; tagged text was copied instead.
     AccessibilityPermissionNeeded,
@@ -91,13 +93,14 @@ pub(super) enum OverlayPasteDisposition {
     CopyAccessibilityDenied,
 }
 
-/// Decide whether to paste or fall back to the clipboard.
+/// Decide whether to paste or refuse the synthetic Cmd+V.
 ///
 /// Pasting requires that focus actually returned to the recorded target: both app
 /// names must be present, the frontmost app must not be Codescribe itself, and it
 /// must match the target. Only then does missing Accessibility permission become
-/// the deciding factor. Any mismatch degrades to a copy rather than firing Cmd+V
-/// at whatever window happens to be in front.
+/// the deciding factor. Any mismatch parks Paste Here (⌘⌥V) and leaves the
+/// user's pasteboard alone — it does not fire Cmd+V at whatever window is in
+/// front, and it does not overwrite the clipboard the user already had.
 pub(super) fn overlay_paste_disposition(
     target_app: Option<&str>,
     frontmost_app: Option<&str>,
@@ -119,4 +122,12 @@ pub(super) fn overlay_paste_disposition(
         return OverlayPasteDisposition::CopyAccessibilityDenied;
     }
     OverlayPasteDisposition::Paste
+}
+
+/// Park a refused synthetic paste in the process-local Paste Here slot.
+///
+/// Never writes `NSPasteboard`. The user's existing clipboard stays put until
+/// they press the Paste Here chord, which then does snapshot → Cmd+V → restore.
+pub(super) fn park_refused_paste(payload: String) -> bool {
+    crate::os::clipboard::arm_deferred_insert(payload)
 }

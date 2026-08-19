@@ -141,7 +141,7 @@ use hotkey_policy::{
 use hotkey_policy::{is_assistive_start_event, toggle_stop_adjudicate_timeout};
 use overlay_paste::{
     DeferredInsertRegistration, OVERLAY_PASTE_FOCUS_BUDGET, OverlayPasteDisposition,
-    deferred_insert_registration, overlay_paste_disposition,
+    deferred_insert_registration, overlay_paste_disposition, park_refused_paste,
 };
 #[cfg(test)]
 use quality_delivery::AutomaticDeliverySink;
@@ -948,7 +948,8 @@ impl RecordingController {
     /// as the latched target arms Paste Here instead of pasting into ourselves.
     /// Otherwise delivery is fail-closed: Cmd+V is posted only when the runtime
     /// frontmost app exactly matches the latched target and Accessibility
-    /// permits event posting. Every unconfirmed case becomes a tagged copy.
+    /// permits event posting. Every unconfirmed case parks Paste Here and
+    /// leaves the user's clipboard alone.
     pub async fn paste_text_from_overlay(&self, text: String) -> Result<OverlayPasteResult> {
         let trimmed = text.trim();
         let target_app = self.pre_overlay_frontmost_app.read().await.clone();
@@ -1046,12 +1047,12 @@ impl RecordingController {
         })
     }
 
-    /// Degrade path when a synthetic paste is not safe to post: arm the payload
-    /// behind the "Paste Here" shortcut, or fall back to a plain clipboard copy
-    /// when that shortcut cannot be registered.
+    /// Degrade path when a synthetic paste is not safe to post: park the payload
+    /// in the process-local Paste Here slot. Never writes the system pasteboard.
     ///
     /// The out-params carry back what the UI must tell the user — which
-    /// shortcut is now armed, or why arming failed.
+    /// shortcut is now armed, or why the chord is not bound. The transcript
+    /// still sits in-process either way; the user's clipboard stays put.
     fn arm_or_copy_deferred_payload(
         &self,
         payload: String,
@@ -1059,6 +1060,9 @@ impl RecordingController {
         shortcut_label: &mut Option<String>,
         registration_failure: &mut Option<String>,
     ) -> Result<OverlayPasteDelivery> {
+        if !park_refused_paste(payload) {
+            return Ok(OverlayPasteDelivery::Noop);
+        }
         let collision =
             shortcut_registry::deferred_insert_shortcut_conflict(config.deferred_insert_shortcut);
         match deferred_insert_registration(
@@ -1069,24 +1073,20 @@ impl RecordingController {
             DeferredInsertRegistration::Available {
                 shortcut_label: label,
             } => {
-                if !clipboard::arm_deferred_insert(payload) {
-                    return Ok(OverlayPasteDelivery::Noop);
-                }
                 *shortcut_label = Some(label);
                 Ok(OverlayPasteDelivery::DeferredInsertArmed)
             }
             DeferredInsertRegistration::Unavailable { reason } => {
-                clipboard::set_clipboard(&payload)
-                    .context("Failed to copy overlay text after Paste Here registration failure")?;
                 *registration_failure = Some(reason);
-                Ok(OverlayPasteDelivery::CopiedToClipboard)
+                // Slot is armed. The chord is not bound, so the overlay stays
+                // the visible buffer. Do not steal the user's clipboard.
+                Ok(OverlayPasteDelivery::DeferredInsertArmed)
             }
         }
     }
 
-    /// Arm tagged overlay text for Paste Here (or copy if that shortcut cannot
-    /// register). Shared by the throne's `DeferredInsert` verdict and by the
-    /// explicit defer click.
+    /// Arm tagged overlay text for Paste Here. Shared by the throne's
+    /// `DeferredInsert` verdict and by the explicit defer click.
     async fn arm_overlay_text(
         &self,
         trimmed: &str,
@@ -1139,10 +1139,9 @@ impl RecordingController {
             .await
     }
 
-    /// Copy the tagged transcript to the clipboard without any synthetic paste.
-    /// Degrade path for the overlay Insert action when the caret already sits
-    /// inside Codescribe (e.g. the overlay's editable FINAL), where a synthetic
-    /// Cmd+V would paste the transcript back into the overlay itself.
+    /// Explicit overlay Copy: write the tagged transcript to the system
+    /// pasteboard. This is the only automatic-adjacent verb allowed to replace
+    /// the user's clipboard. Insert / stop-path refuse must not call this.
     pub async fn copy_text_from_overlay(&self, text: String) -> Result<()> {
         let trimmed = text.trim();
         if trimmed.is_empty() {
@@ -4461,13 +4460,22 @@ impl RecordingController {
                     info!("Automatic delivery skipped: recording timestamp already delivered");
                 }
             } else {
-                clipboard::set_clipboard(&paste_text)
-                    .context("Failed to copy transcript after paste target was not confirmed")?;
+                let mut deferred_insert_shortcut = None;
+                let mut deferred_insert_failure = None;
+                let delivery = self.arm_or_copy_deferred_payload(
+                    paste_text,
+                    &config,
+                    &mut deferred_insert_shortcut,
+                    &mut deferred_insert_failure,
+                )?;
                 info!(
                     ?disposition,
+                    ?delivery,
+                    shortcut = ?deferred_insert_shortcut,
+                    failure = ?deferred_insert_failure,
                     target = ?latched_target,
                     frontmost = ?frontmost,
-                    "delivery_route: synthetic paste refused; clipboard copy only"
+                    "delivery_route: synthetic paste refused; paste-here parked, user clipboard untouched"
                 );
             }
         } else {

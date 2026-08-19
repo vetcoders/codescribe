@@ -472,7 +472,7 @@ fn simulate_right_arrow() -> Result<()> {
 /// Hand the clipboard back on a background thread once the paste has settled.
 ///
 /// The restore is conditional on `paste_epoch` still being current. Any
-/// clipboard write in the meantime — a "degrade to copy" fallback, a second
+/// clipboard write in the meantime — an explicit overlay Copy, a second
 /// dictation — bumps the epoch, and this thread then exits without writing, so
 /// a delayed restore can never clobber newer content the user is waiting on.
 ///

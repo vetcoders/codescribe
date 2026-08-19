@@ -9,6 +9,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **Refused paste does not steal the user's clipboard.** Synthetic Cmd+V
+  still snapshots and restores after a confirmed paste into a foreign app.
+  `CopyTargetUnavailable` / target mismatch / Accessibility deny no longer
+  dump the transcript onto `NSPasteboard`. The text parks in the Paste Here
+  slot (⌘⌥V when that chord is bound); the overlay keeps it; the user's
+  previous clipboard stays put. Explicit overlay Copy is unchanged.
 - **CS Voice Lab starts with the take.** A keyed `install-app` bake
   spawns `~/.codescribe/voice-lab` when recording prepares, and the
   existing Voice Lab buttons ensure `:8765` before opening the
