@@ -12,8 +12,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **CS Voice Lab starts with the take.** A keyed `install-app` bake
   spawns `~/.codescribe/voice-lab` when recording prepares, and the
   existing Voice Lab buttons ensure `:8765` before opening the
-  console. Production stays inert. Quit stops the child Codescribe
-  started.
+  console. Production stays inert. The child stops when the take
+  ends (and on quit). Loopback STT `:8444` / `:8446` stay up.
 
 ### Changed
 

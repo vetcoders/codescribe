@@ -150,6 +150,7 @@ final class OverlayController: ObservableObject {
       // Unconditional: releases the composer phase, the blocked flag and the
       // thread-ownership latch in one beat, whatever the lane turned out to be.
       AppModel.shared.chat.endDictationSession()
+      VoiceLabRuntime.stopOwnedProcess()
     }
     state.onSuccessfulDictation = {
       Task { @MainActor in
