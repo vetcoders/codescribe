@@ -865,7 +865,13 @@ impl AppleSealState {
         let (evidence, words) = completion.payload.map_or((None, Vec::new()), |payload| {
             (Some(payload.evidence), payload.segments)
         });
-        let outcome = if self.fusion.is_some() {
+        // Coalesced jobs already ran the concat tail-patch. Fusion looks up
+        // the last piece on the session clock vs concat-PCM Whisper times and
+        // would return NoChange, dropping the joined rewrite (live 2026-08-19).
+        let coalesced_window = completion.span_map.len() > 1 || completion.member_ids.len() > 1;
+        let outcome = if coalesced_window {
+            completion.outcome
+        } else if self.fusion.is_some() {
             apply_conservative_fusion(self, ev_tx, utterance_id, &words, completion.outcome)
         } else {
             completion.outcome
@@ -3912,6 +3918,97 @@ mod tests {
         assert_eq!(
             state.tail_patch_awaiting_completion, 1,
             "an accepted request is what the end-of-session closure loop owes a wait to"
+        );
+    }
+
+    /// Five Apple phrase-restarts of one compound sentence must share one
+    /// Whisper window and take the aligned rewrite, not die at the 0.50 cap.
+    /// Live 2026-08-19: each chop was its own job (`change_ratio` 0.50–3.00)
+    /// or fusion rewrote the last fragment and dropped the concat repair.
+    #[test]
+    fn five_epoch_apple_chop_rewrites_joined_sentence_not_skip() {
+        let (tx, mut rx) = mpsc::unbounded_channel();
+        let (tp_tx, mut tp_rx) = mpsc::channel::<TailPatchRequest>(TAIL_PATCH_QUEUE_CAP);
+        let mut state = AppleSealState::new_with_tail_patch(TEST_SAMPLE_RATE, tp_tx);
+        // Live Apple+Layer1 tonight: Silero is loaded for hands-free, so
+        // `complete_whisper_window` used to run fusion on the last fragment
+        // and drop the concat repair (`NoChange`).
+        state.fusion = Some(SileroIngress::new(
+            TEST_SAMPLE_RATE,
+            state.session_id.clone(),
+            0,
+        ));
+        push_capture(&mut state, 8.0);
+
+        let chops = [
+            ("ala ma", 0.0, 0.5),
+            ("czarnego kota", 0.5, 1.1),
+            ("i białego", 1.1, 1.7),
+            ("psa dzisiaj", 1.7, 2.3),
+            ("w domu", 2.3, 2.9),
+        ];
+        let events: Vec<_> = chops
+            .iter()
+            .map(|(text, start, end)| LiveStreamEvent::PhraseFinal {
+                text: (*text).into(),
+                segments: vec![segment(text, *start, *end)],
+            })
+            .collect();
+        emit_stream_events(events, &tx, &mut state, 3.0);
+
+        let req = tp_rx
+            .try_recv()
+            .expect("five close chops must flush one coalesced Layer 1 job");
+        assert!(
+            tp_rx.try_recv().is_err(),
+            "one window, not a job per Apple epoch"
+        );
+        assert_eq!(req.member_ids.len(), 5, "coalesce must keep all five chops");
+        assert_eq!(req.span_map.len(), 5);
+
+        let whisper = "ala ma dużego rudego kota oraz małego psa dzisiaj u siebie domu";
+        let outcome = compute_tail_patch(
+            &req.committed_text,
+            whisper,
+            req.utterance_id,
+            &TailPatchConfig::default(),
+        );
+        assert!(
+            !matches!(outcome, TailPatchOutcome::Skipped { .. }),
+            "joined window must rewrite, not hit the 0.50 cap, got {outcome:?}"
+        );
+        assert!(
+            !outcome.events().is_empty(),
+            "Whisper wording must produce patches, got {outcome:?}"
+        );
+
+        while rx.try_recv().is_ok() {}
+        state.complete_whisper_window(
+            &tx,
+            TailPatchCompletion {
+                utterance_id: req.utterance_id,
+                covered_through_secs: req.covered_through_secs,
+                outcome,
+                payload: None,
+                span_map: req.span_map,
+                member_ids: req.member_ids,
+            },
+            6.0,
+        );
+
+        let mut after = Vec::new();
+        while let Ok(event) = rx.try_recv() {
+            after.push(event);
+        }
+        assert!(
+            after.iter().any(|event| matches!(
+                event,
+                EngineEvent::ReplaceRange {
+                    source: LayerSource::TailPatch,
+                    ..
+                }
+            )),
+            "coalesced rewrite must reach the canvas, got {after:?}"
         );
     }
 
