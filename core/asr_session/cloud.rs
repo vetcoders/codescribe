@@ -267,9 +267,14 @@ impl VoiceLabReceiveState {
             .and_then(serde_json::Value::as_str)
             .ok_or(AsrErrorKind::Protocol)?;
         match message_type {
-            "ack" | "ready" => Ok(None),
+            // Voice Lab `stt-ws-v1` opens with `hello` and then control/VAD
+            // frames. Those are not transcript events; treating them as a
+            // protocol fault used to drop Layer 1 at take start.
+            "ack" | "ready" | "hello" | "vad.sample" | "speech.start" | "speech.end" => Ok(None),
             "transcript.partial" | "transcript" => {
-                let text = voice_lab_text(&value)?;
+                let Some(text) = voice_lab_text(&value) else {
+                    return Ok(None);
+                };
                 self.revision = self.revision.checked_add(1).ok_or(AsrErrorKind::Protocol)?;
                 let event_id = self.event_id()?;
                 Ok(Some(GatewayEvent::Partial {
@@ -283,7 +288,9 @@ impl VoiceLabReceiveState {
                 }))
             }
             "transcript.final" => {
-                let text = voice_lab_text(&value)?;
+                let Some(text) = voice_lab_text(&value) else {
+                    return Ok(None);
+                };
                 self.revision = self.revision.checked_add(1).ok_or(AsrErrorKind::Protocol)?;
                 let event_id = self.event_id()?;
                 let event = GatewayEvent::Final {
@@ -319,22 +326,34 @@ impl VoiceLabReceiveState {
                     code,
                 }))
             }
-            "end" | "session.ended" => Ok(Some(GatewayEvent::SessionEnded {
+            "end" | "session.ended" | "stream.closed" => Ok(Some(GatewayEvent::SessionEnded {
                 session_id: self.session_id.clone(),
             })),
-            _ => Err(AsrErrorKind::Protocol),
+            _ => Ok(None),
         }
     }
 }
 
-fn voice_lab_text(value: &serde_json::Value) -> Result<String, AsrErrorKind> {
+fn voice_lab_text(value: &serde_json::Value) -> Option<String> {
     value
         .get("text")
         .and_then(serde_json::Value::as_str)
         .map(str::trim)
         .filter(|text| !text.is_empty())
         .map(str::to_string)
-        .ok_or(AsrErrorKind::Protocol)
+}
+
+/// Voice Lab live start frame. The engine's frozen inbound types are
+/// `set` / `chunk` / `flush` / `end` — `config` is rejected as unknown.
+fn voice_lab_set_message(config: &GatewaySessionConfig) -> String {
+    serde_json::json!({
+        "type": "set",
+        "language": config.locale.as_deref().unwrap_or("pl"),
+        "sample_rate": config.sample_rate_hz(),
+        "encoding": "pcm16",
+        "vocabulary": config.vocabulary,
+    })
+    .to_string()
 }
 
 impl fmt::Debug for GatewayPcmFrame {
@@ -694,15 +713,10 @@ async fn run_gateway_socket(
     let (mut socket, _) = connected;
 
     // Proven Voice Lab wire: credentials stay in the WebSocket handshake,
-    // never in the JSON body.
-    let start = serde_json::json!({
-        "type": "config",
-        "language": config.locale.as_deref().unwrap_or("pl"),
-    })
-    .to_string();
+    // never in the JSON body. The engine start type is `set`, not `config`.
     send_socket_message(
         &mut socket,
-        Message::Text(start.into()),
+        Message::Text(voice_lab_set_message(&config).into()),
         limits.send_timeout,
     )
     .await?;
@@ -1525,6 +1539,63 @@ mod tests {
     }
 
     #[test]
+    fn voice_lab_hello_and_control_frames_do_not_fault() {
+        let mut state = VoiceLabReceiveState::new(session_id().to_string());
+        assert_eq!(
+            state.adapt(r#"{"type":"hello","protocol":"stt-ws-v1"}"#),
+            Ok(None)
+        );
+        assert_eq!(
+            state.adapt(r#"{"type":"speech.start","energy":0.4}"#),
+            Ok(None)
+        );
+        assert_eq!(
+            state.adapt(r#"{"type":"speech.end","energy":0.1}"#),
+            Ok(None)
+        );
+        assert_eq!(
+            state.adapt(r#"{"type":"vad.sample","energy":0.2,"is_speech":true}"#),
+            Ok(None)
+        );
+        assert_eq!(
+            state.adapt(r#"{"type":"transcript.final","text":""}"#),
+            Ok(None)
+        );
+        assert_eq!(state.adapt(r#"{"type":"future.control"}"#), Ok(None));
+        assert!(matches!(
+            state.adapt(r#"{"type":"stream.closed"}"#).expect("closed"),
+            Some(GatewayEvent::SessionEnded { .. })
+        ));
+        assert!(matches!(
+            state
+                .adapt(r#"{"type":"transcript.final","text":"zostaje"}"#)
+                .expect("final after hello")
+                .expect("text"),
+            GatewayEvent::Final {
+                utterance_id: 1,
+                revision: 1,
+                ref text,
+                ..
+            } if text == "zostaje"
+        ));
+    }
+
+    #[test]
+    fn voice_lab_start_is_set_with_vocabulary_and_no_secret() {
+        let payload: serde_json::Value = serde_json::from_str(&voice_lab_set_message(
+            &GatewaySessionConfig::from_input(&input()),
+        ))
+        .expect("set json");
+        assert_eq!(payload["type"], "set");
+        assert_eq!(payload["language"], "pl-PL");
+        assert_eq!(payload["sample_rate"], 16_000);
+        assert_eq!(payload["encoding"], "pcm16");
+        assert_eq!(payload["vocabulary"], "programming");
+        assert!(payload.get("api_key").is_none());
+        assert!(payload.get("type").and_then(|value| value.as_str()) != Some("config"));
+    }
+
+    #[test]
     fn local_sequence_is_global_across_reordered_utterances_and_duplicates() {
         let duplicate = partial("u2-r1", 2, 1, "drugi");
         let script = [
@@ -1754,5 +1825,65 @@ mod tests {
             GatewayConnection::new(format!("{plain_websocket}127.0.0.1:9000/live"), "").is_ok(),
             "loopback live STT must not require a key"
         );
+    }
+
+    #[test]
+    fn voice_lab_loopback_hello_keeps_the_session_open() {
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").expect("bind loopback");
+        let addr = listener.local_addr().expect("local addr");
+        let (first_tx, first_rx) = std::sync::mpsc::channel::<String>();
+        std::thread::spawn(move || {
+            let Ok((stream, _)) = listener.accept() else {
+                return;
+            };
+            let Ok(mut socket) = tokio_tungstenite::tungstenite::accept(stream) else {
+                return;
+            };
+            let hello = Message::Text(r#"{"type":"hello","protocol":"stt-ws-v1"}"#.into());
+            if socket.send(hello).is_err() {
+                return;
+            }
+            if let Ok(Message::Text(text)) = socket.read() {
+                let _ = first_tx.send(text.to_string());
+                let _ = socket.send(Message::Text(r#"{"type":"ack"}"#.into()));
+                let _ = socket.send(Message::Text(
+                    r#"{"type":"speech.start","energy":0.5}"#.into(),
+                ));
+            }
+            while socket.read().is_ok() {}
+        });
+
+        let endpoint = format!("ws://{addr}/v1/audio/transcribe");
+        let mut limits = CloudSessionLimits::default();
+        limits.connect_timeout = Duration::from_secs(2);
+        limits.send_timeout = Duration::from_secs(1);
+        limits.close_timeout = Duration::from_millis(200);
+        let connection = GatewayConnection::new(endpoint, "").expect("loopback connection");
+        let transport = GatewayWebSocketTransport::new(connection, limits).expect("transport");
+        let mut session =
+            LiveCloudAsrSession::new(transport, limits, authorization()).expect("session");
+        session.open(&input()).expect("open");
+
+        let first = first_rx
+            .recv_timeout(Duration::from_secs(2))
+            .expect("Voice Lab start frame");
+        let start: serde_json::Value = serde_json::from_str(&first).expect("start json");
+        assert_eq!(start["type"], "set");
+        assert_ne!(start["type"], "config");
+
+        for _ in 0..20 {
+            let events = session.drain();
+            assert!(
+                events
+                    .iter()
+                    .all(|event| !matches!(event, AsrSessionEvent::Error(_))),
+                "hello/control must not degrade the live lane: {events:?}"
+            );
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        session
+            .push_audio(&[0.0; 4])
+            .expect("PCM after hello stays accepted");
+        let _ = session.close();
     }
 }
