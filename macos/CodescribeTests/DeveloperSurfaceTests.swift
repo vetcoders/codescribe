@@ -51,6 +51,49 @@ final class DeveloperSurfaceTests: XCTestCase {
     )
   }
 
+  func testVoiceLabSpawnIsCSOnlyAndIdleWhenAlreadyUp() {
+    XCTAssertTrue(
+      VoiceLabRuntime.shouldSpawn(
+        surfaceEnabled: true,
+        runningTests: false,
+        alreadyListening: false,
+        serverExists: true
+      )
+    )
+    XCTAssertFalse(
+      VoiceLabRuntime.shouldSpawn(
+        surfaceEnabled: false,
+        runningTests: false,
+        alreadyListening: false,
+        serverExists: true
+      )
+    )
+    XCTAssertFalse(
+      VoiceLabRuntime.shouldSpawn(
+        surfaceEnabled: true,
+        runningTests: true,
+        alreadyListening: false,
+        serverExists: true
+      )
+    )
+    XCTAssertFalse(
+      VoiceLabRuntime.shouldSpawn(
+        surfaceEnabled: true,
+        runningTests: false,
+        alreadyListening: true,
+        serverExists: true
+      )
+    )
+    XCTAssertFalse(
+      VoiceLabRuntime.shouldSpawn(
+        surfaceEnabled: true,
+        runningTests: false,
+        alreadyListening: false,
+        serverExists: false
+      )
+    )
+  }
+
   func testTrayOffHidesOverlayEvenWhenLabModeIsOff() {
     let defaults = UserDefaults(suiteName: UUID().uuidString)!
     XCTAssertFalse(

@@ -128,6 +128,9 @@ final class OverlayController: ObservableObject {
       AppModel.shared.tray.isStartingDictation = true
       // Block the composer mic while the shared recorder owns the microphone.
       AppModel.shared.chat.dictationBlocked = true
+      Task.detached(priority: .utility) {
+        VoiceLabRuntime.ensureListening()
+      }
     }
     state.onRecordingStarted = { [weak self] in
       guard let self else { return }
