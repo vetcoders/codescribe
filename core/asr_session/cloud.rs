@@ -1854,10 +1854,12 @@ mod tests {
         });
 
         let endpoint = format!("{}{addr}/v1/audio/transcribe", concat!("ws", "://"));
-        let mut limits = CloudSessionLimits::default();
-        limits.connect_timeout = Duration::from_secs(2);
-        limits.send_timeout = Duration::from_secs(1);
-        limits.close_timeout = Duration::from_millis(200);
+        let limits = CloudSessionLimits {
+            connect_timeout: Duration::from_secs(2),
+            send_timeout: Duration::from_secs(1),
+            close_timeout: Duration::from_millis(200),
+            ..CloudSessionLimits::default()
+        };
         let connection = GatewayConnection::new(endpoint, "").expect("loopback connection");
         let transport = GatewayWebSocketTransport::new(connection, limits).expect("transport");
         let mut session =
