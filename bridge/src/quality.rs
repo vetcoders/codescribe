@@ -24,7 +24,8 @@ use crate::CsError;
 pub struct CsQualityCommitResult {
     /// Lexicon pairs actually upserted (0 when evidence-only or filtered out).
     pub pairs_learned: u32,
-    /// True when the formatting level is not Correction.
+    /// True when no custom-lexicon pair was learned: non-teach evidence,
+    /// filtered edits, or an explicit teach still below its N-correction gate.
     pub evidence_only: bool,
     /// Ready-to-show overlay toast text ("Saved — N pair(s) learned" / "Saved as evidence").
     pub acknowledgement: String,
@@ -145,12 +146,14 @@ pub struct CsTokenConfidence {
 }
 
 /// Persist one overlay correction: the quality record always lands, while lexicon
-/// learning is gated by `formatting_level`.
+/// learning is gated by explicit teach action plus the N-correction threshold.
 ///
-/// Only the Correction level teaches word pairs; higher levels are recorded as
-/// evidence with `pairs_learned = 0`, because a creative rewrite is not a
-/// transcription fix and would poison the lexicon. An unrecognised
-/// `formatting_level` is rejected before anything is written.
+/// Only explicit Correction-level teach gestures can contribute word pairs;
+/// higher levels are recorded as evidence with `pairs_learned = 0`, because a
+/// creative rewrite is not a transcription fix and would poison the lexicon.
+/// A qualifying teach remains evidence until its identical pair reaches the
+/// configured threshold. An unrecognised `formatting_level` is rejected before
+/// anything is written.
 ///
 /// The confidence fields (`avg_logprob`, `speech_pct`, `confidence_flags`) are
 /// stored alongside the text so later analysis can correlate corrections with how

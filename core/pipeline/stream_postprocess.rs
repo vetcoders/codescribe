@@ -1608,12 +1608,16 @@ mod tests {
     fn overlay_correction_chain_teaches_custom_lexicon_for_next_transcript() {
         let temp_dir = tempfile::tempdir().expect("temp data dir for quality chain");
         let _data_dir = EnvRestore::capture("CODESCRIBE_DATA_DIR");
+        let _min_corrections = EnvRestore::capture("CODESCRIBE_LEXICON_MIN_CORRECTIONS");
         let temp_root = temp_dir
             .path()
             .canonicalize()
             .unwrap_or_else(|_| temp_dir.path().to_path_buf());
         unsafe {
             std::env::set_var("CODESCRIBE_DATA_DIR", &temp_root);
+            // This consumer-chain fixture proves stored rules are consumed by
+            // StreamPostProcessor; threshold behavior lives in overlay_quality.
+            std::env::set_var("CODESCRIBE_LEXICON_MIN_CORRECTIONS", "1");
         }
 
         let candidates =
