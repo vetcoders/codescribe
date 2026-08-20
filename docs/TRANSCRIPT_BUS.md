@@ -59,3 +59,12 @@ tail -F "$HOME/.codescribe/transcript-events.jsonl"
 That command is the non-XDG default. With `XDG_STATE_HOME` set, follow
 `$XDG_STATE_HOME/codescribe/transcript-events.jsonl`; an explicit bus-path
 override wins over both.
+
+Named external agents (same file, not a second microphone):
+
+```bash
+python3 scripts/bus-demux.py --become --follow
+python3 scripts/bus-demux.py --name james --follow
+```
+
+Unnamed agents do not pass. The demux never opens audio.
