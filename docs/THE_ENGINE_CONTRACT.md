@@ -122,3 +122,36 @@ private HTML under:
 A report that fails this handshake is invisible in the lab, whatever its WER.
 The gold take 01 HTML already satisfies it. Qube `Codescribe Quality Report`
 does not — that title is the thing we are retiring.
+
+## Supervisor findings
+
+Source of truth: `core/quality/supervisor.rs`.
+Schema: `codescribe-supervisor-findings/v1`.
+
+Voice Lab three-judge emits a `supervisor` object next to the WER footnote.
+Daily is the session document. Candle HQ and cloud `:8444` stay
+`HumanTriggeredProposal`. WER is agreement with a proposal, not accuracy.
+
+A finding is only a finding when it names:
+
+- `kind` from the engine catalog
+- `claim` that can be false
+- `falsifier` — what would disprove it
+- `action` — engine cut, lexicon tune, lab-judge hygiene, or operator review
+
+Judge hygiene kinds the lab used to commit (these are P0/P1 when they fire):
+
+- `hq_treated_as_document`
+- `cloud_treated_as_document`
+- `wer_promoted_to_document_score`
+- `omitted_programming_vocabulary`
+- `last_session_paired_with_live_overlay`
+- `leftover_websocket_polarity`
+- `proposal_agreement_misread_as_accuracy`
+
+The catalog also names every engine-side class already in the tree (contract
+forbiddens, clock-lie, speech_gap, Teacher attention, confidence flags,
+delivery gates, Whisper silence residue). Missing evidence does not invent a
+hit. Relative-zero FP starts here: do not crown HQ, do not omit
+`vocabulary=programming` on `:8444`, do not pair a live overlay with the
+previous `last_session.wav`.

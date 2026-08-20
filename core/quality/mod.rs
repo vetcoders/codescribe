@@ -1,9 +1,11 @@
 //! Quality surfaces — where transcription truth is measured, corrected, and learned from.
 //!
-//! Five independent loops share this facade:
+//! Six independent loops share this facade:
 //!
 //! - `engine_contract` — locked THE ENGINE bars / relay / forbidden ops that
 //!   every quality HTML and `codescribe-corpus` v3 report must carry.
+//! - `supervisor` — catalog of every transcript-quality issue kind plus the
+//!   take classifier Voice Lab embeds as supervisor findings.
 //! - `overlay_quality` — captures human edits of the overlay FINAL transcript and
 //!   distils them into custom lexicon rules (the live, per-user loop).
 //! - `qube_report` — batch WAV evaluation: transcribe, format, score, emit artifacts.
@@ -12,8 +14,8 @@
 //! - `teacher` — the offline learning triangle (Apple live × Whisper × human reference)
 //!   that produces merged deliveries and attention spans.
 //!
-//! Only `teacher` and `engine_contract` are re-exported here; the others are
-//! reached through their own module paths.
+//! `teacher`, `engine_contract`, and `supervisor` are re-exported here; the
+//! others are reached through their own module paths.
 
 /// Locked THE ENGINE contract for quality-report HTML and corpus JSON.
 pub mod engine_contract;
@@ -24,6 +26,8 @@ pub mod qube_daemon;
 pub mod qube_report;
 /// Seal Atlas HTML renderer — the quality-report surface corpus writes.
 pub mod seal_atlas_html;
+/// Supervisor findings: catalog + take classifier for Voice Lab.
+pub mod supervisor;
 /// Teacher loop: attention flags, lexicon feedback, polygon token helpers.
 pub mod teacher;
 
@@ -32,6 +36,10 @@ pub use engine_contract::{
     render_engine_contract_html, validate_quality_html,
 };
 pub use seal_atlas_html::{SealAtlasPage, SealAtlasStats, render_seal_atlas_html};
+pub use supervisor::{
+    SUPERVISOR_FINDINGS_SCHEMA, TakeQualityEvidence, classify_take_findings, quality_issue_catalog,
+    quality_issue_kind_ids,
+};
 pub use teacher::{
     Layer1MergeMode, Layer1MergedDelivery, MergeMode, MergedDelivery, TeacherInput, TeacherReport,
     merge_live_layer1, merge_live_whisper, merge_live_whisper_with_terms, report_to_html, teach,
