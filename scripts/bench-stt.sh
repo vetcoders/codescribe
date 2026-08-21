@@ -32,6 +32,7 @@ else
   repo_root="$(cd -- "$script_dir/.." && pwd)"
 fi
 home_dir="${HOME:-}"
+model_validator="$repo_root/scripts/validate-whisper-model.sh"
 
 fixture_mode="${BENCH_STT_FIXTURES:-repo}"
 fixture_limit="${BENCH_STT_LIMIT:-10}"
@@ -136,11 +137,7 @@ sha256_file() {
 
 model_is_complete() {
   local dir="$1"
-  [[ -d "$dir" ]] || return 1
-  [[ -f "$dir/config.json" ]] || return 1
-  [[ -f "$dir/tokenizer.json" ]] || return 1
-  [[ -f "$dir/mel_filters.npz" ]] || return 1
-  [[ -f "$dir/weights.safetensors" || -f "$dir/model.safetensors" ]] || return 1
+  [[ -d "$dir" ]] && "$model_validator" "$dir" >/dev/null 2>&1
 }
 
 discover_model() {
