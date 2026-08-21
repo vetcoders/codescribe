@@ -292,9 +292,12 @@ fn hf_snapshot_for_model(model_ref: &str) -> Option<PathBuf> {
     } else {
         return None;
     };
-    let snapshot =
-        hf_cache::find_snapshot_with_any(repo, &REQUIRED_MODEL_FILES, &REQUIRED_MODEL_WEIGHTS)?;
-    is_complete_whisper_model_dir(&snapshot).then_some(snapshot)
+    hf_cache::find_snapshot_with_any_matching(
+        repo,
+        &REQUIRED_MODEL_FILES,
+        &REQUIRED_MODEL_WEIGHTS,
+        is_complete_whisper_model_dir,
+    )
 }
 
 /// Owner of the resolved runtime models directory.
