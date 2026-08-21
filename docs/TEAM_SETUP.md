@@ -73,6 +73,8 @@ Grant in: System Settings > Privacy & Security
 - `make install-app` / `scripts/ensure-models.sh` are the easiest way to warm the expected cache paths.
   Release/setup preflight calls the same runtime-owned bundle validator before it skips a download;
   a directory with merely the expected filenames is repaired or rejected rather than embedded.
+  The fat-build selector shares the safetensors validator and embeds the first valid supported
+  weights filename, so a stale invalid primary cannot shadow a valid alternative.
   An explicit local `CODESCRIBE_EMBED_MODEL` must exist and pass that validator; it is never
   reinterpreted as a Hugging Face repository id.
 
