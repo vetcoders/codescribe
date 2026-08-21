@@ -11,19 +11,29 @@ pub const SUPPORTED_NAMES: [&str; 2] = ["weights.safetensors", "model.safetensor
 /// SHA-256 of the pinned official OpenAI mel filterbank.
 pub const MEL_FILTERS_SHA256: &str =
     "7450ae70723a5ef9d341e3cee628c7cb0177f36ce42c44b7ed2bf3325f0f6d4c";
+const REQUIRED_TOKENIZER_TOKENS: [&str; 2] = ["<|startoftranscript|>", "<|endoftext|>"];
 
 /// Validate every artifact required by runtime and embedded Whisper loaders.
 pub fn validate_whisper_model_bundle(path: &Path) -> Result<()> {
     validate_whisper_config(&path.join("config.json"))?;
-    let tokenizer_path = path.join("tokenizer.json");
-    tokenizers::Tokenizer::from_file(&tokenizer_path).map_err(|err| {
-        anyhow!(
-            "invalid Whisper tokenizer {}: {err}",
-            tokenizer_path.display()
-        )
-    })?;
+    validate_whisper_tokenizer(&path.join("tokenizer.json"))?;
     verify_mel_filters(&path.join("mel_filters.npz"))?;
     resolve_valid_whisper_weights_path(path).map(|_| ())
+}
+
+/// Parse the tokenizer and require the control tokens used by every decode.
+pub(crate) fn validate_whisper_tokenizer(path: &Path) -> Result<()> {
+    let tokenizer = tokenizers::Tokenizer::from_file(path)
+        .map_err(|err| anyhow!("invalid Whisper tokenizer {}: {err}", path.display()))?;
+    for token in REQUIRED_TOKENIZER_TOKENS {
+        if tokenizer.token_to_id(token).is_none() {
+            return Err(anyhow!(
+                "Whisper tokenizer {} is missing required token {token}",
+                path.display()
+            ));
+        }
+    }
+    Ok(())
 }
 
 /// Validate the config schema and reject every declared quantization mode.

@@ -67,8 +67,8 @@ Grant in: System Settings > Privacy & Security
 - Runtime fallback resolves Whisper from exactly one shared contract in `core/config/models.rs`:
   `CODESCRIBE_MODEL_PATH` → configured local model path/alias → configured HF repo snapshot →
   default local turbo model → default HF cache snapshot.
-- A model is ready only after config/tokenizer parsing, pinned mel checksum, and
-  full safetensors structural/dtype validation. Downloads compose and validate the
+- A model is ready only after config parsing, tokenizer parsing plus required Whisper control
+  tokens, the pinned mel checksum, and full safetensors structural/dtype validation. Downloads compose and validate the
   complete replacement in staging before any artifact is promoted over an installed model.
 - `make install-app` / `scripts/ensure-models.sh` are the easiest way to warm the expected cache paths.
   Release/setup preflight calls the same runtime-owned bundle validator before it skips a download;

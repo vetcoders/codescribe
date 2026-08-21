@@ -614,9 +614,7 @@ fn replace_file(partial: &Path, dest: &Path) -> Result<()> {
 fn validate_model_file(filename: &str, path: &Path) -> Result<()> {
     match filename {
         "config.json" => crate::whisper_weights::validate_whisper_config(path),
-        "tokenizer.json" => tokenizers::Tokenizer::from_file(path)
-            .map(|_| ())
-            .map_err(|err| anyhow!("invalid tokenizer {}: {err}", path.display())),
+        "tokenizer.json" => crate::whisper_weights::validate_whisper_tokenizer(path),
         "mel_filters.npz" => crate::whisper_weights::verify_mel_filters(path),
         "weights.safetensors" | "model.safetensors" => validate_safetensors_file(path),
         _ => Err(anyhow!("unsupported Whisper model artifact: {filename}")),
@@ -672,9 +670,12 @@ mod tests {
     fn create_complete_whisper_model(path: &Path) {
         fs::create_dir_all(path).unwrap();
         fs::write(path.join("config.json"), "{}").unwrap();
-        tokenizers::Tokenizer::new(tokenizers::models::bpe::BPE::default())
-            .save(path.join("tokenizer.json"), false)
-            .unwrap();
+        let mut tokenizer = tokenizers::Tokenizer::new(tokenizers::models::bpe::BPE::default());
+        tokenizer.add_special_tokens(&[
+            tokenizers::AddedToken::from("<|startoftranscript|>", true),
+            tokenizers::AddedToken::from("<|endoftext|>", true),
+        ]);
+        tokenizer.save(path.join("tokenizer.json"), false).unwrap();
         fs::write(
             path.join("mel_filters.npz"),
             decode_hex(include_str!(
@@ -976,6 +977,25 @@ mod tests {
         fs::write(model.join("mel_filters.npz"), b"corrupt").unwrap();
 
         assert!(!is_complete_whisper_model_dir(&model));
+    }
+
+    /// Parseable non-Whisper tokenizers must not be advertised as ready.
+    #[test]
+    fn model_manager_rejects_tokenizer_without_control_tokens() {
+        let temp_dir = TempDir::new().unwrap();
+        let model = temp_dir.path().join("model");
+        create_complete_whisper_model(&model);
+        tokenizers::Tokenizer::new(tokenizers::models::bpe::BPE::default())
+            .save(model.join("tokenizer.json"), false)
+            .unwrap();
+
+        assert!(!is_complete_whisper_model_dir(&model));
+        assert!(
+            validate_whisper_model_bundle(&model)
+                .unwrap_err()
+                .to_string()
+                .contains("missing required token")
+        );
     }
 
     /// A valid existing mel asset is reused without contacting the network.
