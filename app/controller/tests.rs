@@ -2386,19 +2386,12 @@ fn test_overlay_paste_disposition_decision_table() {
 
 #[test]
 fn overlay_float_confirms_activation_when_workspace_still_names_codescribe() {
-    assert!(overlay_float_still_confirms_activation(
-        true,
-        Some("Alacritty")
-    ));
-    assert!(overlay_float_still_confirms_activation(
-        false,
-        Some("Codescribe")
-    ));
-    assert!(!overlay_float_still_confirms_activation(
-        false,
-        Some("Safari")
-    ));
-    assert!(!overlay_float_still_confirms_activation(false, None));
+    assert!(super::overlay_paste::overlay_float_still_confirms_activation(true, Some("Alacritty")));
+    assert!(
+        super::overlay_paste::overlay_float_still_confirms_activation(false, Some("Codescribe"))
+    );
+    assert!(!super::overlay_paste::overlay_float_still_confirms_activation(false, Some("Safari")));
+    assert!(!super::overlay_paste::overlay_float_still_confirms_activation(false, None));
 }
 
 #[test]

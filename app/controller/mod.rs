@@ -141,8 +141,7 @@ use hotkey_policy::{
 use hotkey_policy::{is_assistive_start_event, toggle_stop_adjudicate_timeout};
 use overlay_paste::{
     DeferredInsertRegistration, OverlayPasteDisposition, confirm_latched_paste_target,
-    deferred_insert_registration, overlay_float_still_confirms_activation,
-    overlay_paste_disposition, park_refused_paste,
+    deferred_insert_registration, overlay_paste_disposition, park_refused_paste,
 };
 #[cfg(test)]
 use quality_delivery::AutomaticDeliverySink;
