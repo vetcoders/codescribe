@@ -180,8 +180,10 @@ if [[ "$MODEL_REPO" == "$DEFAULT_REPO" ]]; then
     atomic_copy "$MODEL_STAGE/mel_filters.npz" "$MODEL_DEST/mel_filters.npz"
     if [[ -f "$MODEL_STAGE/weights.safetensors" ]]; then
         atomic_copy "$MODEL_STAGE/weights.safetensors" "$MODEL_DEST/weights.safetensors"
+        rm -f "$MODEL_DEST/model.safetensors"
     else
         atomic_copy "$MODEL_STAGE/model.safetensors" "$MODEL_DEST/model.safetensors"
+        rm -f "$MODEL_DEST/weights.safetensors"
     fi
     echo "  Runtime directory: $MODEL_DEST"
     "$WHISPER_VALIDATOR" "$MODEL_DEST"
