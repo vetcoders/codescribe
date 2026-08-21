@@ -147,7 +147,11 @@ discover_model() {
     return 0
   fi
 
-  candidate="$home_dir/.codescribe/models/whisper-large-v3-turbo"
+  local models_root="$home_dir/.codescribe/models"
+  if [[ -n "${CODESCRIBE_MODELS_DIR:-}" ]] && [[ -d "$CODESCRIBE_MODELS_DIR" ]]; then
+    models_root="$CODESCRIBE_MODELS_DIR"
+  fi
+  candidate="$models_root/whisper-large-v3-turbo"
   if model_is_complete "$candidate"; then
     printf '%s\n' "$candidate"
     return 0

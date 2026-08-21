@@ -17,7 +17,7 @@ pub const WHISPER_FP16_MODEL: &str = "whisper-large-v3-turbo";
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ModelSource {
     EnvOverride,
-    UserFp16,
+    ModelsDir,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -85,12 +85,27 @@ pub fn discover_local_whisper_model() -> Option<ModelDiscovery> {
     let env_override = std::env::var("CODESCRIBE_MODEL_PATH")
         .ok()
         .map(PathBuf::from);
-    discover_local_whisper_model_for(&home_dir, env_override.as_deref())
+    let models_root = std::env::var("CODESCRIBE_MODELS_DIR")
+        .ok()
+        .map(PathBuf::from);
+    discover_local_whisper_model_for_with_root(
+        &home_dir,
+        env_override.as_deref(),
+        models_root.as_deref(),
+    )
 }
 
 pub fn discover_local_whisper_model_for(
     home_dir: &Path,
     env_override: Option<&Path>,
+) -> Option<ModelDiscovery> {
+    discover_local_whisper_model_for_with_root(home_dir, env_override, None)
+}
+
+pub fn discover_local_whisper_model_for_with_root(
+    home_dir: &Path,
+    env_override: Option<&Path>,
+    models_root: Option<&Path>,
 ) -> Option<ModelDiscovery> {
     if let Some(path) = env_override
         && whisper_model_is_complete(path)
@@ -101,10 +116,14 @@ pub fn discover_local_whisper_model_for(
         });
     }
 
-    let user_fp16 = home_dir.join(".codescribe/models").join(WHISPER_FP16_MODEL);
+    let default_root = home_dir.join(".codescribe/models");
+    let models_root = models_root
+        .filter(|path| path.exists())
+        .unwrap_or(&default_root);
+    let user_fp16 = models_root.join(WHISPER_FP16_MODEL);
     if whisper_model_is_complete(&user_fp16) {
         return Some(ModelDiscovery {
-            source: ModelSource::UserFp16,
+            source: ModelSource::ModelsDir,
             path: user_fp16,
         });
     }
@@ -113,9 +132,15 @@ pub fn discover_local_whisper_model_for(
 }
 
 pub fn model_discovery_hint(home_dir: &Path) -> String {
+    let default_root = home_dir.join(".codescribe/models");
+    let models_root = std::env::var("CODESCRIBE_MODELS_DIR")
+        .ok()
+        .map(PathBuf::from)
+        .filter(|path| path.exists())
+        .unwrap_or(default_root);
     format!(
-        "Looked for a valid fp16 Whisper model in CODESCRIBE_MODEL_PATH and {home}/.codescribe/models/{fp16}. The bundle must have parseable config and tokenizer files, the pinned mel_filters.npz checksum, structurally valid F16/F32 safetensors, and no quantization declaration.",
-        home = home_dir.display(),
+        "Looked for a valid fp16 Whisper model in CODESCRIBE_MODEL_PATH and {root}/{fp16}. The bundle must have parseable config and tokenizer files, the pinned mel_filters.npz checksum, structurally valid F16/F32 safetensors, and no quantization declaration.",
+        root = models_root.display(),
         fp16 = WHISPER_FP16_MODEL
     )
 }

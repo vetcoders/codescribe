@@ -18,8 +18,9 @@ mod e2e_stt_matrix;
 
 use e2e_stt_matrix::{
     ModelDiscovery, ModelSource, STT_OPT_IN_ENV, WHISPER_FP16_MODEL, discover_local_whisper_model,
-    discover_local_whisper_model_for, model_discovery_hint, parse_opt_in, skip_unless_opt_in,
-    test_audio_path, whisper_model_missing_parts,
+    discover_local_whisper_model_for, discover_local_whisper_model_for_with_root,
+    model_discovery_hint, parse_opt_in, skip_unless_opt_in, test_audio_path,
+    whisper_model_missing_parts,
 };
 
 fn home_dir() -> PathBuf {
@@ -297,8 +298,50 @@ fn deterministic_model_discovery_skips_invalid_env_override() {
     let found = discover_local_whisper_model_for(&home, Some(&env_model))
         .expect("expected valid standard fp16 model to be discovered");
 
-    assert_eq!(found.source, ModelSource::UserFp16);
+    assert_eq!(found.source, ModelSource::ModelsDir);
     assert_eq!(found.path, fp16);
+}
+
+#[test]
+fn deterministic_model_discovery_honors_existing_custom_models_root() {
+    let (_tmp, home) = temp_home();
+    let custom_root = home.join("custom-models");
+    let fp16 = custom_root.join(WHISPER_FP16_MODEL);
+    create_complete_model(&fp16);
+
+    let found = discover_local_whisper_model_for_with_root(&home, None, Some(&custom_root))
+        .expect("expected model under CODESCRIBE_MODELS_DIR");
+
+    assert_eq!(found.source, ModelSource::ModelsDir);
+    assert_eq!(found.path, fp16);
+}
+
+#[test]
+fn deterministic_existing_empty_models_root_shadows_home_fallback() {
+    let (_tmp, home) = temp_home();
+    let home_fp16 = home.join(".codescribe/models").join(WHISPER_FP16_MODEL);
+    create_complete_model(&home_fp16);
+    let custom_root = home.join("empty-custom-models");
+    std::fs::create_dir_all(&custom_root).unwrap();
+
+    assert!(
+        discover_local_whisper_model_for_with_root(&home, None, Some(&custom_root)).is_none(),
+        "an existing explicit models root must own discovery even when empty"
+    );
+}
+
+#[test]
+fn deterministic_missing_models_root_falls_back_to_home() {
+    let (_tmp, home) = temp_home();
+    let home_fp16 = home.join(".codescribe/models").join(WHISPER_FP16_MODEL);
+    create_complete_model(&home_fp16);
+    let missing_root = home.join("missing-custom-models");
+
+    let found = discover_local_whisper_model_for_with_root(&home, None, Some(&missing_root))
+        .expect("missing override root should preserve runtime home fallback");
+
+    assert_eq!(found.source, ModelSource::ModelsDir);
+    assert_eq!(found.path, home_fp16);
 }
 
 #[test]
