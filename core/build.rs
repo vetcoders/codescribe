@@ -414,7 +414,7 @@ fn decode_license_public_key(value: &str) -> [u8; 32] {
 /// resolved against the manifest dir, and a bare name is looked up under
 /// `<manifest>/models/`.
 fn resolve_embed_model_path(manifest_dir: &str, embed_model: &str) -> PathBuf {
-    let candidate = PathBuf::from(embed_model);
+    let candidate = expand_tilde_path(embed_model);
     if candidate.is_absolute() {
         return candidate;
     }
@@ -424,6 +424,16 @@ fn resolve_embed_model_path(manifest_dir: &str, embed_model: &str) -> PathBuf {
     }
 
     Path::new(manifest_dir).join("models").join(embed_model)
+}
+
+/// Expand a literal `~/` path because Cargo passes env values without shell expansion.
+fn expand_tilde_path(value: &str) -> PathBuf {
+    if let Some(relative) = value.strip_prefix("~/")
+        && let Some(home) = dirs::home_dir()
+    {
+        return home.join(relative);
+    }
+    PathBuf::from(value)
 }
 
 /// True when a directory can be baked into the fat SKU.
@@ -449,7 +459,7 @@ fn resolve_whisper_embed_model_path(
     default_repo: &str,
 ) -> PathBuf {
     if let Ok(model_path) = env::var("CODESCRIBE_MODEL_PATH") {
-        let p = PathBuf::from(model_path.trim());
+        let p = expand_tilde_path(model_path.trim());
         if whisper_dir_complete(&p) {
             return p;
         }
