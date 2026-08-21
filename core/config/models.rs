@@ -227,6 +227,9 @@ fn validate_safetensors_file(path: &Path) -> Result<()> {
                 .checked_mul(dim)
                 .ok_or_else(|| anyhow!("tensor {name} shape overflows"))
         })?;
+        if element_count == 0 {
+            return Err(anyhow!("tensor {name} has an empty shape"));
+        }
         let expected_bytes = element_count
             .checked_mul(bytes_per_element)
             .ok_or_else(|| anyhow!("tensor {name} byte size overflows"))?;
@@ -1126,6 +1129,20 @@ mod tests {
         let mut safetensors = (header.len() as u64).to_le_bytes().to_vec();
         safetensors.extend_from_slice(header);
         safetensors.extend_from_slice(&[0, 0]);
+        fs::write(model.join("model.safetensors"), safetensors).unwrap();
+
+        assert!(!is_complete_whisper_model_dir(&model));
+    }
+
+    /// Structurally empty tensors cannot represent a loadable Whisper model.
+    #[test]
+    fn model_manager_rejects_zero_element_tensor() {
+        let temp_dir = TempDir::new().unwrap();
+        let model = temp_dir.path().join("model");
+        create_complete_whisper_model(&model);
+        let header = br#"{"model.weight":{"dtype":"F16","shape":[0],"data_offsets":[0,0]}}"#;
+        let mut safetensors = (header.len() as u64).to_le_bytes().to_vec();
+        safetensors.extend_from_slice(header);
         fs::write(model.join("model.safetensors"), safetensors).unwrap();
 
         assert!(!is_complete_whisper_model_dir(&model));
