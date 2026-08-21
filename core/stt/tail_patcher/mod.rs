@@ -25,22 +25,17 @@
 //! gap-fill), but Phase 1 remains fail-closed until PCM/span identity, the
 //! single rewrite fence, and structural idempotence cover the mutation path.
 //!
-//! # Where Layer 1 is wired today
+//! # Where Layer 1 may mutate today
 //!
-//! Both live paths are wired; gate is [`layered_phase`] ≥ 1 on each.
+//! Only the Apple progressive path owns the required pending-span fence. Its
+//! in-process, sidecar, and remote tail providers all return the same exact
+//! request/range identity. Outcomes are applied to the byte-identical baseline
+//! before `UtteranceFinal`; the event itself already contains the corrected
+//! text. Replays and completions after seal are typed refusals.
 //!
-//! - **VAD/scheduler:** `core/pipeline/streaming/session.rs` →
-//!   `vad_transcription_session` (Whisper engine, or Apple with
-//!   `CODESCRIBE_APPLE_STT_LIVE_MODE=wav`). Attaches FINAL audio per work item,
-//!   spawns Whisper re-transcribe + [`compute_tail_patch`], emits
-//!   `ReplaceRange { source: TailPatch }`, counts in `SessionFinalised.layer_summary`.
-//! - **Apple progressive live:** `core/pipeline/streaming/apple_live_session.rs`
-//!   → `apple_stream_transcription_session` (W2-A). Each sealed `UtteranceFinal`
-//!   resolves to its retained PCM window and is handed to the async Layer 1
-//!   lane, at most one job in flight so Whisper never sits on the event-drain
-//!   loop. A boundary that cannot address retained audio is never patched; a
-//!   full queue drops the request rather than stalling capture; the bounded
-//!   backlog left when capture stops is settled before `SessionFinalised`.
+//! The legacy VAD/scheduler path has no pending-span owner. Explicit Phase 1
+//! therefore fails closed there with `tail_patch_route_unbound`; it may not
+//! revive the old post-final `ReplaceRange` channel.
 //!
 //! # Invariants (from the ADR "Hard invariants")
 //!

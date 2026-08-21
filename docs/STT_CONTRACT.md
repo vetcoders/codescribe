@@ -7,12 +7,15 @@
 > Whisper transcribing **partials on the go** to fill canvas gaps — NOT final-pass-only.
 > Lexicon substitution is the FINAL automated layer, after Whisper.
 >
-> **Status (2026-08-21):** on-the-go gap-fill exists on both live paths but is
-> fail-closed. `CODESCRIBE_LAYERED_TRANSCRIPTION` unset → `off`; explicit
-> `phase1` is an experimental operator opt-in. It must not return as the stock
-> path until PCM/span identity, one rewrite fence, structural idempotence, and
-> bounded-drain evidence cover every accepted mutation. Legacy
-> `FINAL_PASS_MODE` no longer owns any normal-stop inference.
+> **Status (2026-08-21):** the Apple progressive path now enforces exact
+> request/span PCM identity, one pre-final rewrite fence, structural replay
+> idempotence, and a bounded stop drain with typed degradation. In-process,
+> sidecar, and remote tail providers share that seam. The legacy VAD/scheduler
+> path and full-session WSS candidates have no equivalent per-word identity, so
+> they fail closed instead of mutating emitted finals. The stock default stays
+> `off`; explicit `phase1` remains an operator experiment until corpus/runtime
+> validation earns promotion. Legacy `FINAL_PASS_MODE` no longer owns any
+> normal-stop inference.
 > Planning report: internal plan `stt-apple-must-have` (operator artifact store, 2026-07-24).
 
 ---
@@ -228,12 +231,22 @@ file-pass belongs only to explicit retranscribe surfaces.
 
 ### 3.4 STT engine dispatch (the nit)
 
-| Call site             | When             | Function / transport                           | Engine rule                                              |
-| --------------------- | ---------------- | ---------------------------------------------- | -------------------------------------------------------- |
-| Live Layer 0          | during recording | Apple progressive                              | committed canvas floor                                   |
-| Live Layer 1 local    | during recording | Whisper on ~5 Apple segments                   | aligned sentence swap on the joined window               |
-| Live Layer 1 cloud    | during recording | Voice Lab WSS                                  | normalized gap/tail fill; same substitution rule         |
-| Explicit Retranscribe | operator action  | local completed-file decode or cloud multipart | may replace the selected artifact, never the live canvas |
+| Call site             | When             | Function / transport                                             | Engine rule                                              |
+| --------------------- | ---------------- | ---------------------------------------------------------------- | -------------------------------------------------------- |
+| Live Layer 0          | during recording | Apple progressive                                                | committed canvas floor                                   |
+| Live Layer 1 typed    | during recording | in-process / sidecar / remote tail provider on ~5 Apple segments | exact-PCM outcome rewrites pending baseline before final |
+| Live Layer 1 unbound  | after recording  | full-session Voice Lab WSS candidate                             | evidence only; typed refusal if it proposes mutation     |
+| Legacy VAD tail patch | during recording | VAD/scheduler route                                              | typed refusal; no pending-span fence exists              |
+| Explicit Retranscribe | operator action  | local completed-file decode or cloud multipart                   | may replace the selected artifact, never the live canvas |
+
+Layer 1 mutation identity is `(session, capture_epoch, sample_start, sample_end, request_id, target_utterance_id, event_ordinal)`. The request range
+must contain the target span and any provider payload must echo the admitted
+identity. Patch offsets are applied only to the byte-identical baseline handed
+to the patcher. The accepted text crosses
+`ProgressiveSealMachine::try_rewrite` once; `UtteranceFinal` is the first and
+last outward committed form. Replays, invalid ranges, missing identities, and
+late completions emit content-free typed warnings and preserve Apple text.
+Identical words in disjoint PCM ranges are distinct applications and survive.
 
 **This split is the MacGyver fracture:** UI can show Whisper readiness while live is Apple-only and fails closed.
 

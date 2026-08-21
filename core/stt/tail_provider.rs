@@ -193,7 +193,7 @@ impl TailSampleRange {
             })
     }
 
-    fn contains(&self, other: &Self) -> bool {
+    pub(crate) fn contains(&self, other: &Self) -> bool {
         self.session == other.session
             && self.capture_epoch == other.capture_epoch
             && self.sample_start <= other.sample_start

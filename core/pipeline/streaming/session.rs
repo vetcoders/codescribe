@@ -324,6 +324,10 @@ where
 /// floor that judges the same session from the audio side.
 pub const UNDER_COMMIT_WARNING_CODE: &str = "tail_patch_under_commit";
 
+/// The legacy VAD/scheduler route has no pending-span rewrite fence. Explicit
+/// Layer 1 requests fail closed here instead of mutating an emitted final.
+pub const TAIL_PATCH_ROUTE_UNBOUND_WARNING_CODE: &str = "tail_patch_route_unbound";
+
 /// Build the outward escalation for an under-commit that could not be placed
 /// live.
 ///
@@ -575,14 +579,22 @@ pub(crate) async fn vad_transcription_session(
     };
     let output_sample_rate = session.output_sample_rate();
     let stt_scheduler = SttScheduler::new();
-    // Layer 1 only — not FINAL_PASS_MODE. Smart does not flip this on.
-    let tail_patch_enabled = tail_patch_enabled();
+    // This route emits its final before async tail work can complete and owns
+    // no pending-span fence. Until it adopts the progressive seal owner, an
+    // explicit Layer 1 request is evidence only — never post-final mutation.
+    let tail_patch_requested = tail_patch_enabled();
+    let tail_patch_enabled = false;
     let tail_patch_config = TailPatchConfig::from_env();
-    if tail_patch_enabled {
-        info!(
+    if tail_patch_requested {
+        warn!(
             phase = layered_phase().unwrap_or(0),
-            "Layered transcription Layer 1 (Whisper tail-patch) enabled on VAD session path"
+            "Layered transcription refused on VAD session path without a pending-span fence"
         );
+        event_sink.on_event(&EngineEvent::Warning {
+            code: TAIL_PATCH_ROUTE_UNBOUND_WARNING_CODE.to_string(),
+            message: "VAD/scheduler Layer 1 has no exact pending-span rewrite fence; primary text preserved"
+                .to_string(),
+        });
     }
 
     let mut pipeline = TranscriptionPipeline::new(language);

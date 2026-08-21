@@ -285,16 +285,18 @@ Four phases. Each ships as an independent machete cut behind a feature flag
 - Wire Apple as default engine when available; Whisper-as-primary remains the fallback.
 - New `core/stt/tail_patcher/` module + `EngineEvent::ReplaceRange { source: TailPatch }`.
 - Overlay gains `ReplaceRange` render path (visible "cursor walks back, patch lands").
-- **Wiring status (2026-08-08, W2-A `a6b1233d`):** Layer 1 is live on **both** live paths
-  when phase ≥ 1 — the **VAD/scheduler** session (`vad_transcription_session`) and the
-  default Apple **progressive** live session (`apple_stream_transcription_session`).
-  On the Apple path every sealed `UtteranceFinal` resolves to its retained PCM window
+- **Wiring status (revised 2026-08-21):** Layer 1 may mutate only on the default Apple
+  **progressive** live session (`apple_stream_transcription_session`). The VAD/scheduler
+  route has no pending-span owner and now fails closed with
+  `tail_patch_route_unbound` instead of emitting a post-final mutation.
+  On the Apple path every pending final resolves to its retained PCM window
   (W1-B bounded retention) and is handed to an async Layer 1 lane together with the exact
   committed string the `ReplaceRange` offsets are computed against. Bounded queue with
   counted drops (capture is never blocked), at most one job in flight, inference on
-  `spawn_blocking`, and every queued engine event flushed before the patch is emitted so a
-  `ReplaceRange` can never overtake the `UtteranceFinal` it patches. A boundary that cannot
-  address retained audio stays counted as unresolved and is never handed to Whisper.
+  `spawn_blocking`, exact request/payload identity, structural replay keys, and one
+  `ProgressiveSealMachine::try_rewrite` fence. The corrected text is carried by
+  `UtteranceFinal`; no TailPatch mutation is emitted after it. A boundary that cannot address
+  retained audio stays counted as unresolved and is never handed to Whisper.
   The `CODESCRIBE_APPLE_STT_LIVE_MODE=wav` escape hatch remains, but it is no longer needed
   to reach Layer 1.
 - Acceptance test: operator's bench audio reproduces — Layer 0 shows Polish live; Layer 1 fills
@@ -327,16 +329,18 @@ What this ADR proposed vs. what the runtime actually executes today.
 
 **Default revised after field falsification (2026-08-21).**
 `CODESCRIBE_LAYERED_TRANSCRIPTION` unset → `off`. Explicit `phase1` remains an
-experimental operator path. The lane may become stock only after request/span
-identity reaches one rewrite fence, gap appends are structurally idempotent,
-intentional repetition survives, and stop reports every abandoned patch.
+experimental operator path. The Apple progressive implementation now carries
+request/span identity through one rewrite fence, rejects structural replays,
+preserves intentional repetition in disjoint PCM ranges, and reports abandoned
+stop work. Promotion to stock remains gated on field/corpus validation, not on
+the removed post-final patch architecture.
 
 The 2026-08-08 table below is inventory, not the default. Read the
 "Delivered?" column with that amendment.
 
 | Phase                                 | Proposed module                          | Delivered?                               | Where it actually lives                                                                                                                                                                                                                                                               |
 | ------------------------------------- | ---------------------------------------- | ---------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| **1 — Layer 1 tail patch**            | `core/stt/tail_patcher/`                 | ⚠️ delivered, default **off**            | Wired into both live paths, but explicit `phase1` is experimental until the identity/rewrite-fence closing bar above is met. Unset preserves Apple live + lexicon.                                                                                                                    |
+| **1 — Layer 1 tail patch**            | `core/stt/tail_patcher/`                 | ⚠️ delivered, default **off**            | Apple progressive only: exact PCM identity → byte-identical baseline → one pre-final rewrite fence. In-process, sidecar, and remote tail providers share the seam. VAD/scheduler and unbound full-session candidates fail closed. Explicit `phase1` awaits field promotion.           |
 | **1 — overlay `ReplaceRange` render** | `app/ui/overlay/mod.rs`                  | ✅ delivered, moved                      | `OverlayState.applyReplaceRange` → `OverlayTranscriptSegment.replaceRange` (Swift)                                                                                                                                                                                                    |
 | **1 — orchestrator**                  | `app/controller/layered_orchestrator.rs` | ❌ **not built — and not needed so far** | Both live paths call the shared `tail_patch_enabled` / `compute_tail_patch_job` / `emit_tail_patch_result` primitives directly. One gate, one `LayerSummary` shape, no separate state machine. Revisit only when Layers 2–4 need a single audio cursor (see Consequences)             |
 | **2 — Lexicon**                       | `core/lexicon/`                          | ⚠️ **partial, different shape**          | No `core/lexicon/` module. Lexicon substitution lives in `core/pipeline/stream_postprocess.rs::apply_lexicon` and runs **at seal time** on the Apple progressive path (W1-A `d180add9`) — as the doctrine's final automated layer, not as a debounced Layer 2 sub-pass                |
