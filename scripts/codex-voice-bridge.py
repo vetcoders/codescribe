@@ -44,6 +44,7 @@ APPROVAL_METHODS = {
     "applyPatchApproval",
     "execCommandApproval",
 }
+TERMINAL_TURN_STATUSES = {"completed", "interrupted", "failed"}
 
 
 def log(message: str) -> None:
@@ -363,6 +364,50 @@ class VoiceBridge:
         self.interrupted_turns: set[str] = set()
         self.terminal_turns = 0
 
+    def _stored_turns(self) -> list[dict[str, Any]]:
+        result = self.codex.request(
+            "thread/read",
+            {"threadId": self.args.thread_id, "includeTurns": True},
+        )
+        thread = result.get("thread") or {}
+        turns = thread.get("turns") or []
+        return [turn for turn in turns if isinstance(turn, dict)]
+
+    def _wait_for_current_turn_handoff(self) -> None:
+        baseline_turns = self._stored_turns()
+        baseline_statuses = {
+            str(turn.get("id")): str(turn.get("status") or "")
+            for turn in baseline_turns
+            if turn.get("id")
+        }
+        deadline = time.monotonic() + self.args.handoff_timeout_seconds
+        log(
+            "handoff waiting for the current Desktop turn to become terminal "
+            f"thread={self.args.thread_id} stored_turns={len(baseline_statuses)}"
+        )
+        while time.monotonic() < deadline:
+            time.sleep(self.args.handoff_poll_seconds)
+            for turn in self._stored_turns():
+                turn_id = str(turn.get("id") or "")
+                status = str(turn.get("status") or "")
+                if (
+                    turn_id
+                    and status in TERMINAL_TURN_STATUSES
+                    and (
+                        turn_id not in baseline_statuses
+                        or baseline_statuses[turn_id] not in TERMINAL_TURN_STATUSES
+                    )
+                ):
+                    log(
+                        "handoff observed terminal Desktop turn "
+                        f"turn={turn_id} status={status}"
+                    )
+                    return
+        raise AppServerError(
+            "handoff timed out before a new terminal Desktop turn appeared; "
+            "start this mode from the active task while its final response is still running"
+        )
+
     def initialize(self) -> None:
         self.codex.request(
             "initialize",
@@ -379,7 +424,7 @@ class VoiceBridge:
             },
         )
         self.codex.notify("initialized")
-        common = {
+        isolated_thread_settings = {
             "cwd": str(self.args.cwd),
             "approvalPolicy": "never",
             "sandbox": self.args.sandbox,
@@ -391,9 +436,17 @@ class VoiceBridge:
             ),
         }
         if self.args.thread_id:
+            if self.args.handoff_after_current_turn:
+                self._wait_for_current_turn_handoff()
+                resume_params = {"threadId": self.args.thread_id}
+            else:
+                resume_params = {
+                    "threadId": self.args.thread_id,
+                    **isolated_thread_settings,
+                }
             result = self.codex.request(
                 "thread/resume",
-                {"threadId": self.args.thread_id, **common},
+                resume_params,
             )
             thread = result.get("thread") or {}
             status = (thread.get("status") or {}).get("type")
@@ -405,7 +458,7 @@ class VoiceBridge:
             result = self.codex.request(
                 "thread/start",
                 {
-                    **common,
+                    **isolated_thread_settings,
                     "ephemeral": self.args.ephemeral,
                     "serviceName": "codescribe-voice",
                     "threadSource": "codescribeVoice",
@@ -607,7 +660,30 @@ def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--name", required=True, help="named mailbox stem, e.g. james")
     parser.add_argument("--cwd", type=Path, default=Path.cwd(), help="Codex workspace root")
-    parser.add_argument("--thread-id", help="resume one idle Codex thread; active threads fail closed")
+    parser.add_argument(
+        "--thread-id",
+        help="resume one Codex thread; use handoff mode for the current Desktop task",
+    )
+    parser.add_argument(
+        "--handoff-after-current-turn",
+        action="store_true",
+        help=(
+            "from an active Desktop task, wait for the launching turn to finish "
+            "before resuming its exact thread"
+        ),
+    )
+    parser.add_argument(
+        "--handoff-timeout-seconds",
+        type=float,
+        default=180.0,
+        help="maximum wait for the launching Desktop turn (default: 180)",
+    )
+    parser.add_argument(
+        "--handoff-poll-seconds",
+        type=float,
+        default=0.25,
+        help=argparse.SUPPRESS,
+    )
     parser.add_argument("--bus", type=Path, default=default_bus_path())
     parser.add_argument("--demux", type=Path, default=repo_root / "scripts" / "bus-demux.py")
     parser.add_argument("--codex-bin", type=Path, default=Path("codex"))
@@ -635,6 +711,14 @@ def parse_args() -> argparse.Namespace:
         parser.error(f"bus demux does not exist: {args.demux}")
     if args.tts_max_chars < 100:
         parser.error("--tts-max-chars must be at least 100")
+    if args.handoff_after_current_turn and not args.thread_id:
+        parser.error("--handoff-after-current-turn requires --thread-id")
+    if args.handoff_after_current_turn and args.ephemeral:
+        parser.error("--handoff-after-current-turn cannot be combined with --ephemeral")
+    if args.handoff_timeout_seconds <= 0:
+        parser.error("--handoff-timeout-seconds must be greater than zero")
+    if args.handoff_poll_seconds <= 0:
+        parser.error("--handoff-poll-seconds must be greater than zero")
     return args
 
 

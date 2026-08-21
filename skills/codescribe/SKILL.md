@@ -75,10 +75,14 @@ This is not a product installer, not Voice Lab, not a fourth WorkMode.
 - Downstream: ordinary repo skills (`vc-justdo`, `vc-implement`, …) after attach.
 - Not a ship-cycle stage.
 
-For an explicit full voice loop with a dedicated Codex coding task, continue
-with `python3 scripts/codex-voice-bridge.py --name <stem> --cwd <repo>`. That
-bridge reuses the same demux, accepts only sealed input, interrupts on addressed
-live speech, and speaks final replies locally. See `docs/CODEX_VOICE_BRIDGE.md`.
+For an explicit full voice loop, continue with
+`python3 scripts/codex-voice-bridge.py --name <stem> --cwd <repo>`. The default
+is a dedicated Codex task. To hand off the exact ChatGPT.app task that launches
+the bridge, also pass its `--thread-id` and `--handoff-after-current-turn`.
+Handoff waits for the launching response to become terminal before it starts
+Bus Demux, because Desktop and the bridge must not write the task concurrently.
+The bridge accepts only sealed input, interrupts on addressed live speech, and
+speaks final replies locally. See `docs/CODEX_VOICE_BRIDGE.md`.
 
 ## Dependencies
 

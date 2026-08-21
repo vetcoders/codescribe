@@ -116,3 +116,48 @@ fi
 rg -q "refusing active thread" "$WORKDIR/active-err.txt"
 
 echo "codex-voice-bridge active-thread refusal: ok"
+
+# Current-task handoff must observe a newly persisted terminal Desktop turn
+# before it resumes the exact thread. Resume must not replace stored settings.
+HANDOFF_LOG="$WORKDIR/handoff-rpc.jsonl"
+: >"$HANDOFF_LOG"
+MOCK_CODEX_LOG="$HANDOFF_LOG" MOCK_HANDOFF_AFTER_READS=2 \
+  python3 "$ROOT/scripts/codex-voice-bridge.py" \
+    --name james \
+    --cwd "$ROOT" \
+    --bus "$BUS" \
+    --thread-id "01999999-0000-7000-8000-000000000099" \
+    --handoff-after-current-turn \
+    --handoff-poll-seconds 0.01 \
+    --codex-bin "$ROOT/tests/fixtures/mock_codex_app_server.py" \
+    --no-tts \
+    --exit-after-turns 1 \
+    >"$WORKDIR/handoff-out.txt" 2>"$WORKDIR/handoff-err.txt" &
+BRIDGE_PID=$!
+
+wait_for 'handoff observed terminal Desktop turn' "$WORKDIR/handoff-err.txt"
+wait_for 'ready name=james' "$WORKDIR/handoff-err.txt"
+seal "session-handoff" "transcript_sealed" "James, answer in this task"
+wait "$BRIDGE_PID"
+BRIDGE_PID=""
+
+python3 - "$HANDOFF_LOG" <<'PY'
+import json, pathlib, sys
+rpc = [json.loads(line) for line in pathlib.Path(sys.argv[1]).read_text().splitlines()]
+methods = [item.get("method") for item in rpc]
+first_read = methods.index("thread/read")
+second_read = methods.index("thread/read", first_read + 1)
+resume = methods.index("thread/resume")
+turn = methods.index("turn/start")
+assert first_read < second_read < resume < turn, methods
+reads = [item for item in rpc if item.get("method") == "thread/read"]
+assert all(item["params"].get("includeTurns") is True for item in reads)
+resume_rpc = rpc[resume]
+assert resume_rpc["params"] == {
+    "threadId": "01999999-0000-7000-8000-000000000099"
+}, resume_rpc
+turn_rpc = rpc[turn]
+assert turn_rpc["params"]["threadId"] == resume_rpc["params"]["threadId"]
+PY
+
+echo "codex-voice-bridge current-task handoff: ok"

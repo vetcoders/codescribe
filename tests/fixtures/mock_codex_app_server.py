@@ -13,6 +13,7 @@ LOG = Path(os.environ["MOCK_CODEX_LOG"])
 THREAD_ID = "01999999-0000-7000-8000-000000000001"
 active_turn: str | None = None
 turn_counter = 0
+thread_read_counter = 0
 
 
 def emit(message: dict) -> None:
@@ -85,6 +86,26 @@ for raw in sys.stdin:
                         "status": {"type": "idle"},
                     },
                     "cwd": message["params"]["cwd"],
+                },
+            }
+        )
+    elif method == "thread/read":
+        thread_read_counter += 1
+        turns = [{"id": "stored-turn-1", "status": "completed", "items": []}]
+        handoff_after = int(os.environ.get("MOCK_HANDOFF_AFTER_READS", "0"))
+        if handoff_after and thread_read_counter >= handoff_after:
+            turns.append(
+                {"id": "desktop-turn-2", "status": "completed", "items": []}
+            )
+        emit(
+            {
+                "id": request_id,
+                "result": {
+                    "thread": {
+                        "id": message["params"]["threadId"],
+                        "status": {"type": "notLoaded"},
+                        "turns": turns,
+                    }
                 },
             }
         )

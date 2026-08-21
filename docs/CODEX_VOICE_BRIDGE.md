@@ -20,11 +20,17 @@ re-transcribe audio, start Voice Lab, or expose a network listener.
   `turn/completed`, then starts a new turn.
 - TTS speaks only the completed user-facing agent message. Code fences, raw URLs,
   and Markdown chrome are omitted from speech; the complete answer remains text.
-- The bridge always uses `approvalPolicy=never`. Voice cannot approve sandbox
-  escapes, network access, credentials, destructive work, push, merge, or release.
-- `danger-full-access` is not an accepted CLI option.
-- A new bridge starts and owns a dedicated persistent Codex thread. `--thread-id`
-  can resume an **idle** thread; an active thread fails closed to avoid two writers.
+- A dedicated bridge thread always uses `approvalPolicy=never`. Voice cannot
+  approve sandbox escapes, network access, credentials, destructive work, push,
+  merge, or release. `danger-full-access` is not an accepted CLI option.
+- A new bridge starts and owns a dedicated persistent Codex thread by default.
+- `--handoff-after-current-turn --thread-id <id>` is the explicit current-task
+  path. It snapshots stored turns, waits for the launching Desktop turn to become
+  terminal, and only then resumes that exact task. It preserves the task's stored
+  settings instead of silently replacing its working directory or tool profile.
+- Handoff grants no new approval channel: interactive App Server approval requests
+  are still declined. It also does not weaken an authority profile already stored
+  on the task, so use this mode only on the task you intentionally selected.
 
 Interrupt is not rollback. Work completed before the interrupt remains, and a
 background process may outlive the interrupted turn. The bridge reports the turn
@@ -67,6 +73,12 @@ python3 scripts/codex-voice-bridge.py --name james --cwd . --voice Zosia
 # resume an idle task explicitly
 python3 scripts/codex-voice-bridge.py --name james --cwd . --thread-id <thread-id>
 
+# attach after the response that launched the bridge finishes, preserving this task
+python3 scripts/codex-voice-bridge.py \
+  --name james \
+  --thread-id <current-chatgpt-task-id> \
+  --handoff-after-current-turn
+
 # read-only Codex tools
 python3 scripts/codex-voice-bridge.py --name james --cwd . --sandbox read-only
 ```
@@ -95,6 +107,25 @@ route and is not consumed by the bridge.
   loudly. It does not silently paste into the focused app.
 - The bridge starts at the end of the bus; old transcripts are not replayed.
 
+## Current ChatGPT.app task handoff
+
+Handoff is deliberately launched *from* the task it will attach to. A separate
+App Server process can read the persisted task while ChatGPT.app is answering,
+but its `notLoaded` status is process-local and is not a Desktop ownership lock.
+The bridge therefore does not trust that status. It records the current stored
+turn ids and waits until one new terminal turn appears before calling
+`thread/resume`.
+
+After the `ready` line, voice owns new input for that task until the bridge is
+stopped. Do not submit a typed message in the same task at the same time. Ctrl-C
+returns ownership to normal ChatGPT.app input.
+
+Same-task history and live Desktop visibility are separate facts. The protocol
+test proves that the exact `threadId` is resumed and receives `turn/start`; the
+manual acceptance below must additionally prove that ChatGPT.app refreshes the
+visible task and renders the voice turn. Until that succeeds on the installed app
+build, this path is experimental rather than a product readiness claim.
+
 ## Verification
 
 Hermetic protocol and interrupt test:
@@ -106,13 +137,16 @@ bash scripts/tests/codex-voice-bridge-test.sh
 
 Manual acceptance:
 
-1. Start in `--sandbox read-only --no-tts` mode on a disposable workspace.
-2. Send one named Fn take and confirm exactly one user message in the printed
-   task id.
-3. Start a longer safe request, then make a second named Fn take. Confirm the
+1. From the visible ChatGPT.app task, launch handoff with its exact `threadId`
+   while the launching response is still running.
+2. Confirm `handoff observed terminal Desktop turn` precedes `ready`; then send
+   one named Fn take and confirm exactly one user message appears in that same
+   visible task, without a fork or duplicate task.
+3. Confirm the answer appears as text in ChatGPT.app and is spoken locally.
+4. Start a longer safe request, then make a second named Fn take. Confirm the
    first turn reports `interrupted` before the second turn starts.
-4. Enable TTS and verify an addressed draft silences playback immediately.
-5. Repeat once with AirPods and once with the MacBook speakers; reject the
+5. Verify an addressed draft silences playback immediately.
+6. Repeat once with AirPods and once with the MacBook speakers; reject the
    speaker route if TTS is self-transcribed.
 
 ## Deliberate limits of v1
@@ -120,6 +154,7 @@ Manual acceptance:
 - This is a command-line bridge, not a menu-bar control surface.
 - It speaks complete final answers, not low-latency sentence streaming.
 - It does not approve privileged actions by voice.
-- It does not attach to an already active Desktop task.
+- Current-task handoff is explicit and single-writer; it is not transparent
+  multi-client editing of an in-progress Desktop turn.
 - It uses local macOS TTS. ElevenLabs TTS is a future backend, not a hidden
   dependency.
