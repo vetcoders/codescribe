@@ -242,6 +242,15 @@ fn deterministic_gate_parser_requires_explicit_opt_in_values() {
 }
 
 #[test]
+fn deterministic_model_discovery_hint_names_the_validation_contract() {
+    let hint = model_discovery_hint(Path::new("/tmp/test-home"));
+    assert!(hint.contains("parseable config and tokenizer"));
+    assert!(hint.contains("pinned mel_filters.npz checksum"));
+    assert!(hint.contains("structurally valid F16/F32 safetensors"));
+    assert!(hint.contains("no quantization declaration"));
+}
+
+#[test]
 fn deterministic_model_discovery_prefers_complete_env_override() {
     let (_tmp, home) = temp_home();
     let models_root = home.join(".codescribe/models");

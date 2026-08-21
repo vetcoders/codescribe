@@ -114,7 +114,7 @@ pub fn discover_local_whisper_model_for(
 
 pub fn model_discovery_hint(home_dir: &Path) -> String {
     format!(
-        "Looked for complete fp16 Whisper model in CODESCRIBE_MODEL_PATH and {home}/.codescribe/models/{fp16}. Required files: config.json, tokenizer.json, mel_filters.npz, weights.safetensors or model.safetensors.",
+        "Looked for a valid fp16 Whisper model in CODESCRIBE_MODEL_PATH and {home}/.codescribe/models/{fp16}. The bundle must have parseable config and tokenizer files, the pinned mel_filters.npz checksum, structurally valid F16/F32 safetensors, and no quantization declaration.",
         home = home_dir.display(),
         fp16 = WHISPER_FP16_MODEL
     )
