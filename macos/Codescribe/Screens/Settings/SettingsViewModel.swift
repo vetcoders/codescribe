@@ -90,10 +90,16 @@ func resolveLocalWhisperRuntimeState(
     return modelAvailable ? .directEngineReady : .directEngineNotReady
   }
 
-  guard modelAvailable else { return .livePatchingNotReady }
-  guard layeredValue?.lowercased() == localWhisperLivePatchingRuntimeValue else {
+  // Runtime product policy treats an absent promoted key as ArmedDefault.
+  // Only an explicit phase1 token or absence can claim configured truth;
+  // explicit `off` and every unknown token are named configuration drift.
+  let normalizedLayeredValue = layeredValue?.lowercased()
+  guard
+    normalizedLayeredValue == nil || normalizedLayeredValue == localWhisperLivePatchingRuntimeValue
+  else {
     return .livePatchingConfigurationMismatch
   }
+  guard modelAvailable else { return .livePatchingNotReady }
   return .livePatchingConfigured
 }
 

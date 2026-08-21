@@ -424,7 +424,8 @@ final class SettingsTruthTests: XCTestCase {
         layeredValue: nil,
         modelAvailable: true
       ),
-      .livePatchingConfigurationMismatch
+      .livePatchingConfigured,
+      "unset is the runtime's armed product default"
     )
     XCTAssertEqual(
       resolveLocalWhisperRuntimeState(
@@ -433,8 +434,8 @@ final class SettingsTruthTests: XCTestCase {
         layeredValue: "off",
         modelAvailable: false
       ),
-      .livePatchingNotReady,
-      "missing or invalid weights must never render as configured"
+      .livePatchingConfigurationMismatch,
+      "explicit off is disarmed even when the model is also unavailable"
     )
     XCTAssertEqual(
       resolveLocalWhisperRuntimeState(
@@ -444,6 +445,26 @@ final class SettingsTruthTests: XCTestCase {
         modelAvailable: true
       ),
       .livePatchingConfigured
+    )
+    XCTAssertEqual(
+      resolveLocalWhisperRuntimeState(
+        asrModeId: "local_power",
+        sttEngineId: "auto",
+        layeredValue: "phase2",
+        modelAvailable: true
+      ),
+      .livePatchingConfigurationMismatch,
+      "unknown legacy phases cannot masquerade as the armed phase1 contract"
+    )
+    XCTAssertEqual(
+      resolveLocalWhisperRuntimeState(
+        asrModeId: "local_power",
+        sttEngineId: "auto",
+        layeredValue: nil,
+        modelAvailable: false
+      ),
+      .livePatchingNotReady,
+      "armed-by-default still needs a validated FP16 bundle"
     )
     XCTAssertEqual(
       resolveLocalWhisperRuntimeState(
