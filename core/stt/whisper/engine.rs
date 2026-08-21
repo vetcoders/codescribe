@@ -535,31 +535,9 @@ impl LocalWhisperEngine {
             read_secs = read_started.elapsed().as_secs_f64();
 
             let plain_started = std::time::Instant::now();
-            let mut tensor_map = HashMap::new();
-
-            // The payload gate above makes every tensor in this pass unquantized.
-            for (name, tensor) in raw_tensors.iter() {
-                let mapped_name = map_tensor_name(name);
-                let mut t = tensor.clone();
-                if t.dtype() != DType::F32 {
-                    t = t.to_dtype(DType::F32)?;
-                }
-
-                // Fix shape for conv weights (MLX [out, kernel, in] -> Candle [out, in, kernel])
-                if mapped_name.ends_with("conv1.weight") || mapped_name.ends_with("conv2.weight") {
-                    let dims = t.dims();
-                    if dims.len() == 3 && dims[1] == 3 {
-                        t = t.permute((0, 2, 1))?.contiguous()?;
-                    }
-                }
-
-                let t = t.to_device(&device)?;
-                tensor_map.insert(mapped_name, t);
-            }
-
+            let vb = build_varbuilder_from_tensors(raw_tensors, &device)?;
             plain_secs = plain_started.elapsed().as_secs_f64();
-
-            candle_nn::VarBuilder::from_tensors(tensor_map, DType::F32, &device)
+            vb
         };
 
         let build_started = std::time::Instant::now();
@@ -1951,8 +1929,12 @@ fn build_varbuilder_from_tensors(
     }
     let mut tensor_map = HashMap::new();
 
-    // The payload gate above makes every tensor in this pass unquantized.
+    // alignment_heads is integer metadata used by upstream timestamp tooling,
+    // not a model weight consumed by Candle's Whisper loader.
     for (name, tensor) in raw_tensors.iter() {
+        if name == "alignment_heads" {
+            continue;
+        }
         let mapped_name = map_tensor_name(name);
         let mut t = tensor.clone();
         if t.dtype() != DType::F32 {
@@ -2037,6 +2019,33 @@ mod model_payload_tests {
             .err()
             .expect("U32 must be refused by the builder gate");
         assert!(format!("{err:#}").contains("refused"));
+    }
+
+    #[test]
+    fn tensor_builder_excludes_i64_alignment_metadata() {
+        let mut tensors = HashMap::new();
+        tensors.insert(
+            "encoder.weight".to_string(),
+            Tensor::from_vec(vec![1.0_f32], 1, &Device::Cpu).unwrap(),
+        );
+        tensors.insert(
+            "alignment_heads".to_string(),
+            Tensor::from_vec(
+                vec![2_i64, 4, 2, 11, 3, 3, 3, 6, 3, 11, 3, 14],
+                (6, 2),
+                &Device::Cpu,
+            )
+            .unwrap(),
+        );
+
+        let vb = build_varbuilder_from_tensors(tensors, &Device::Cpu).unwrap();
+
+        assert!(vb.contains_tensor("model.encoder.weight"));
+        assert_eq!(
+            vb.get_unchecked("model.encoder.weight").unwrap().dtype(),
+            DType::F32
+        );
+        assert!(!vb.contains_tensor("model.alignment_heads"));
     }
 
     #[test]
