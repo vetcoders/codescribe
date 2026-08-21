@@ -74,8 +74,7 @@ fn validate_whisper_model_bundle(path: &Path) -> Result<()> {
     let mel_path = path.join("mel_filters.npz");
     verify_sha256(&mel_path, MEL_FILTERS_SHA256)?;
 
-    let weights_path = resolve_weights_path(path)?;
-    validate_safetensors_file(&weights_path)
+    resolve_valid_whisper_weights_path(path).map(|_| ())
 }
 
 /// Reject unsupported or malformed weights before the expensive engine load.
@@ -83,9 +82,7 @@ fn validate_whisper_model_bundle(path: &Path) -> Result<()> {
 /// tokenizer and mel errors retain their own loader diagnostics.
 pub(crate) fn is_unquantized_whisper_model_dir(path: &Path) -> bool {
     validate_whisper_config(&path.join("config.json")).is_ok()
-        && resolve_weights_path(path)
-            .and_then(|weights| validate_safetensors_file(&weights))
-            .is_ok()
+        && resolve_valid_whisper_weights_path(path).is_ok()
 }
 
 fn validate_whisper_config(path: &Path) -> Result<()> {
@@ -112,12 +109,36 @@ fn validate_whisper_config(path: &Path) -> Result<()> {
     Ok(())
 }
 
-fn resolve_weights_path(path: &Path) -> Result<PathBuf> {
-    REQUIRED_MODEL_WEIGHTS
-        .iter()
-        .map(|name| path.join(name))
-        .find(|candidate| candidate.is_file())
-        .ok_or_else(|| anyhow!("Whisper weights are missing from {}", path.display()))
+/// Resolve the first structurally valid supported weight file.
+///
+/// Upstream snapshots may contain either filename, and stale composition can
+/// leave both behind. Preserve the documented filename priority, but never let
+/// an invalid primary shadow a valid alternative that the runtime can load.
+pub(crate) fn resolve_valid_whisper_weights_path(path: &Path) -> Result<PathBuf> {
+    let mut failures = Vec::new();
+    for name in REQUIRED_MODEL_WEIGHTS {
+        let candidate = path.join(name);
+        if !candidate.is_file() {
+            continue;
+        }
+        match validate_safetensors_file(&candidate) {
+            Ok(()) => return Ok(candidate),
+            Err(err) => failures.push(format!("{name}: {err:#}")),
+        }
+    }
+
+    if failures.is_empty() {
+        Err(anyhow!(
+            "Whisper weights are missing from {}",
+            path.display()
+        ))
+    } else {
+        Err(anyhow!(
+            "no valid Whisper weights in {} ({})",
+            path.display(),
+            failures.join("; ")
+        ))
+    }
 }
 
 /// Validate the complete safetensors structure without loading the tensor data.
@@ -1011,6 +1032,57 @@ mod tests {
         safetensors.extend_from_slice(&[0; 4]);
         fs::write(model.join("model.safetensors"), safetensors).unwrap();
 
+        assert!(!is_complete_whisper_model_dir(&model));
+    }
+
+    /// A stale invalid primary filename must not shadow a valid alternative.
+    #[test]
+    fn model_manager_uses_valid_alternative_weights() {
+        let temp_dir = TempDir::new().unwrap();
+        let model = temp_dir.path().join("model");
+        create_complete_whisper_model(&model);
+        fs::write(model.join("weights.safetensors"), b"stale invalid weights").unwrap();
+
+        let resolved = resolve_valid_whisper_weights_path(&model).unwrap();
+        assert_eq!(
+            resolved.file_name().and_then(|name| name.to_str()),
+            Some("model.safetensors")
+        );
+        assert!(is_complete_whisper_model_dir(&model));
+    }
+
+    /// Filename priority remains deterministic when both alternatives validate.
+    #[test]
+    fn model_manager_prefers_valid_primary_weights() {
+        let temp_dir = TempDir::new().unwrap();
+        let model = temp_dir.path().join("model");
+        create_complete_whisper_model(&model);
+        fs::copy(
+            model.join("model.safetensors"),
+            model.join("weights.safetensors"),
+        )
+        .unwrap();
+
+        let resolved = resolve_valid_whisper_weights_path(&model).unwrap();
+        assert_eq!(
+            resolved.file_name().and_then(|name| name.to_str()),
+            Some("weights.safetensors")
+        );
+    }
+
+    /// Existing alternatives do not count when neither payload is valid.
+    #[test]
+    fn model_manager_rejects_all_invalid_weight_alternatives() {
+        let temp_dir = TempDir::new().unwrap();
+        let model = temp_dir.path().join("model");
+        create_complete_whisper_model(&model);
+        fs::write(model.join("weights.safetensors"), b"bad primary").unwrap();
+        fs::write(model.join("model.safetensors"), b"bad alternative").unwrap();
+
+        let err = resolve_valid_whisper_weights_path(&model).unwrap_err();
+        let message = format!("{err:#}");
+        assert!(message.contains("weights.safetensors"));
+        assert!(message.contains("model.safetensors"));
         assert!(!is_complete_whisper_model_dir(&model));
     }
 
