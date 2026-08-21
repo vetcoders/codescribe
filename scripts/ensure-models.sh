@@ -7,6 +7,11 @@ set -euo pipefail
 
 ROOT_DIR="$(cd "$(dirname "$0")/.." && pwd)"
 WHISPER_VALIDATOR="$ROOT_DIR/scripts/validate-whisper-model.sh"
+TILDE_PREFIX="$(printf '\176/')"
+EMBED_MODEL_VALUE="${CODESCRIBE_EMBED_MODEL:-}"
+if [[ "$EMBED_MODEL_VALUE" == "$TILDE_PREFIX"* ]]; then
+  EMBED_MODEL_VALUE="$HOME/${EMBED_MODEL_VALUE:2}"
+fi
 
 valid_whisper_bundle() {
   "$WHISPER_VALIDATOR" "$1"
@@ -17,7 +22,7 @@ is_hf_repo_id() {
 }
 
 looks_like_local_path() {
-  [[ "$1" == /* || "$1" == ./* || "$1" == ../* || "$1" == ~/* ]]
+  [[ "$1" == /* || "$1" == ./* || "$1" == ../* ]]
 }
 
 # Prefer explicit path override for Whisper
@@ -31,17 +36,17 @@ if [[ -n "${CODESCRIBE_MODEL_PATH:-}" ]]; then
 fi
 
 # If embed model points to a local directory, treat as satisfied.
-if [[ -z "${WHISPER_OK:-}" && -n "${CODESCRIBE_EMBED_MODEL:-}" ]]; then
-  if [[ -d "${CODESCRIBE_EMBED_MODEL}" ]]; then
-    if valid_whisper_bundle "$CODESCRIBE_EMBED_MODEL"; then
-      echo "✓ Whisper model found via CODESCRIBE_EMBED_MODEL (${CODESCRIBE_EMBED_MODEL})"
+if [[ -z "${WHISPER_OK:-}" && -n "$EMBED_MODEL_VALUE" ]]; then
+  if [[ -d "$EMBED_MODEL_VALUE" ]]; then
+    if valid_whisper_bundle "$EMBED_MODEL_VALUE"; then
+      echo "✓ Whisper model found via CODESCRIBE_EMBED_MODEL ($EMBED_MODEL_VALUE)"
       WHISPER_OK=1
     else
-      echo "ERROR: CODESCRIBE_EMBED_MODEL is not a valid Whisper bundle: ${CODESCRIBE_EMBED_MODEL}" >&2
+      echo "ERROR: CODESCRIBE_EMBED_MODEL is not a valid Whisper bundle: $EMBED_MODEL_VALUE" >&2
       exit 1
     fi
-  elif looks_like_local_path "$CODESCRIBE_EMBED_MODEL"; then
-    echo "ERROR: CODESCRIBE_EMBED_MODEL local path does not exist: ${CODESCRIBE_EMBED_MODEL}" >&2
+  elif looks_like_local_path "$EMBED_MODEL_VALUE"; then
+    echo "ERROR: CODESCRIBE_EMBED_MODEL local path does not exist: $EMBED_MODEL_VALUE" >&2
     exit 1
   fi
 fi
@@ -123,8 +128,8 @@ ensure_repo() {
 }
 
 WHISPER_REPO="mlx-community/whisper-large-v3-turbo"
-if [[ -n "${CODESCRIBE_EMBED_MODEL:-}" ]] && is_hf_repo_id "$CODESCRIBE_EMBED_MODEL"; then
-  WHISPER_REPO="$CODESCRIBE_EMBED_MODEL"
+if [[ -n "$EMBED_MODEL_VALUE" ]] && is_hf_repo_id "$EMBED_MODEL_VALUE"; then
+  WHISPER_REPO="$EMBED_MODEL_VALUE"
 fi
 EMBEDDER_REPO="${CODESCRIBE_EMBEDDER_REPO:-sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2}"
 

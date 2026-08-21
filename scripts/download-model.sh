@@ -16,13 +16,18 @@ set -euo pipefail
 
 ROOT_DIR="$(cd "$(dirname "$0")/.." && pwd)"
 WHISPER_VALIDATOR="$ROOT_DIR/scripts/validate-whisper-model.sh"
+TILDE_PREFIX="$(printf '\176/')"
+EMBED_MODEL_VALUE="${CODESCRIBE_EMBED_MODEL:-}"
+if [[ "$EMBED_MODEL_VALUE" == "$TILDE_PREFIX"* ]]; then
+    EMBED_MODEL_VALUE="$HOME/${EMBED_MODEL_VALUE:2}"
+fi
 
 is_hf_repo_id() {
     [[ "$1" =~ ^[A-Za-z0-9._-]+/[A-Za-z0-9._-]+$ ]]
 }
 
 looks_like_local_path() {
-    [[ "$1" == /* || "$1" == ./* || "$1" == ../* || "$1" == ~/* ]]
+    [[ "$1" == /* || "$1" == ./* || "$1" == ../* ]]
 }
 
 sha256_file() {
@@ -49,20 +54,20 @@ DEFAULT_REPO="mlx-community/whisper-large-v3-turbo"
 TOKENIZER_REPO="openai/whisper-large-v3-turbo"
 MEL_FILTERS_URL="https://raw.githubusercontent.com/openai/whisper/5f86d1d86363843179951550570367b37c5d6f78/whisper/assets/mel_filters.npz"
 MEL_FILTERS_SHA256="7450ae70723a5ef9d341e3cee628c7cb0177f36ce42c44b7ed2bf3325f0f6d4c"
-MODEL_REPO="${CODESCRIBE_EMBED_MODEL:-$DEFAULT_REPO}"
+MODEL_REPO="${EMBED_MODEL_VALUE:-$DEFAULT_REPO}"
 
 # If CODESCRIBE_EMBED_MODEL points to a local path, skip download.
-if [[ -n "${CODESCRIBE_EMBED_MODEL:-}" ]] && [[ -d "${CODESCRIBE_EMBED_MODEL}" ]]; then
-    if "$WHISPER_VALIDATOR" "$CODESCRIBE_EMBED_MODEL"; then
-        echo "✓ Whisper model found at ${CODESCRIBE_EMBED_MODEL} (local path). Skipping download."
+if [[ -n "$EMBED_MODEL_VALUE" ]] && [[ -d "$EMBED_MODEL_VALUE" ]]; then
+    if "$WHISPER_VALIDATOR" "$EMBED_MODEL_VALUE"; then
+        echo "✓ Whisper model found at $EMBED_MODEL_VALUE (local path). Skipping download."
         exit 0
     fi
-    echo "ERROR: CODESCRIBE_EMBED_MODEL is not a valid Whisper bundle: ${CODESCRIBE_EMBED_MODEL}" >&2
+    echo "ERROR: CODESCRIBE_EMBED_MODEL is not a valid Whisper bundle: $EMBED_MODEL_VALUE" >&2
     exit 1
 fi
 
 # An explicit path must never be passed to `hf download` as a repository id.
-if [[ -n "${CODESCRIBE_EMBED_MODEL:-}" ]] && looks_like_local_path "$MODEL_REPO"; then
+if [[ -n "$EMBED_MODEL_VALUE" ]] && looks_like_local_path "$MODEL_REPO"; then
     echo "ERROR: CODESCRIBE_EMBED_MODEL local path does not exist: $MODEL_REPO" >&2
     exit 1
 fi
