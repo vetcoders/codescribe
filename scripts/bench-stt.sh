@@ -148,8 +148,14 @@ discover_model() {
   fi
 
   local models_root="$home_dir/.codescribe/models"
-  if [[ -n "${CODESCRIBE_MODELS_DIR:-}" ]] && [[ -d "$CODESCRIBE_MODELS_DIR" ]]; then
-    models_root="$CODESCRIBE_MODELS_DIR"
+  local configured_models_root="${CODESCRIBE_MODELS_DIR:-}"
+  local tilde_prefix
+  printf -v tilde_prefix '%s/' '~'
+  if [[ "$configured_models_root" == "$tilde_prefix"* ]]; then
+    configured_models_root="$home_dir/${configured_models_root:2}"
+  fi
+  if [[ -n "$configured_models_root" ]] && [[ -d "$configured_models_root" ]]; then
+    models_root="$configured_models_root"
   fi
   candidate="$models_root/whisper-large-v3-turbo"
   if model_is_complete "$candidate"; then

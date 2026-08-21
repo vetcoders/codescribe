@@ -51,17 +51,18 @@ ORIGINAL_HOME="$HOME"
 export CARGO_HOME="${CARGO_HOME:-$ORIGINAL_HOME/.cargo}"
 export RUSTUP_HOME="${RUSTUP_HOME:-$ORIGINAL_HOME/.rustup}"
 export HOME="$TEST_ROOT/home"
-export CODESCRIBE_MODELS_DIR="$TEST_ROOT/models"
+printf -v TILDE_PREFIX '%s/' '~'
+export CODESCRIBE_MODELS_DIR="${TILDE_PREFIX}models"
 export FAKE_TOKENIZER="$ROOT_DIR/core/models/whisper-large-v3-turbo-mlx-q8/tokenizer.json"
 export FAKE_MEL_FILTERS="$TEST_ROOT/mel_filters.npz"
-mkdir -p "$HOME" "$CODESCRIBE_MODELS_DIR"
+mkdir -p "$HOME/models"
 xxd -r -p "$ROOT_DIR/tests/fixtures/whisper_mel_filters.npz.hex" > "$FAKE_MEL_FILTERS"
 
 run_promotion_case() {
   local selected_name="$1"
   local stale_name="$2"
   local snapshot="$TEST_ROOT/snapshot-$selected_name"
-  local destination="$CODESCRIBE_MODELS_DIR/whisper-large-v3-turbo"
+  local destination="$HOME/models/whisper-large-v3-turbo"
 
   mkdir -p "$snapshot" "$destination"
   printf '{}\n' > "$snapshot/config.json"

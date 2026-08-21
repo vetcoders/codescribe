@@ -50,6 +50,16 @@ fn canonicalize_or_self(path: PathBuf) -> PathBuf {
     }
 }
 
+/// Expand a leading `~/` in operator-provided model paths.
+fn expand_home_path(value: &str) -> PathBuf {
+    if let Some(relative) = value.strip_prefix("~/")
+        && let Some(home) = std::env::var_os("HOME")
+    {
+        return PathBuf::from(home).join(relative);
+    }
+    PathBuf::from(value)
+}
+
 /// Whether `path` holds a fully usable, structurally valid Whisper model.
 fn is_complete_whisper_model_dir(path: &Path) -> bool {
     validate_whisper_model_bundle(path).is_ok()
@@ -151,7 +161,7 @@ impl ModelManager {
     fn resolve_models_dir() -> Result<PathBuf> {
         // Environment override
         if let Ok(path) = std::env::var("CODESCRIBE_MODELS_DIR") {
-            let p = PathBuf::from(&path);
+            let p = expand_home_path(path.trim());
             if p.exists() {
                 return Ok(p);
             }
@@ -689,6 +699,14 @@ mod tests {
             Self { key, prev }
         }
 
+        /// Set `key` to a literal string, including shell-like path syntax.
+        fn set_str(key: &'static str, value: &str) -> Self {
+            let prev = std::env::var(key).ok();
+            // SAFETY: these tests run under `serial` and restore the prior env.
+            unsafe { std::env::set_var(key, value) };
+            Self { key, prev }
+        }
+
         /// Unset `key`, remembering the previous value for `Drop`.
         fn unset(key: &'static str) -> Self {
             let prev = std::env::var(key).ok();
@@ -818,6 +836,23 @@ mod tests {
             assert!(models.contains(&name.to_string()));
             assert!(manager.check_model_exists(name));
         }
+    }
+
+    /// A leading `~/` in the supported models-root override resolves via HOME.
+    #[test]
+    #[serial]
+    fn model_manager_expands_tilde_models_root() {
+        let temp_dir = TempDir::new().unwrap();
+        let home = temp_dir.path().join("home");
+        let models_dir = home.join("custom-models");
+        create_complete_whisper_model(&models_dir.join(DEFAULT_MODEL));
+
+        let _home = EnvGuard::set("HOME", &home);
+        let _models_dir = EnvGuard::set_str("CODESCRIBE_MODELS_DIR", "~/custom-models");
+
+        let manager = ModelManager::new().unwrap();
+        assert_eq!(manager.models_dir(), models_dir.as_path());
+        assert!(manager.check_model_exists(DEFAULT_MODEL));
     }
 
     /// Incomplete Whisper dirs are neither listed nor treated as existing.

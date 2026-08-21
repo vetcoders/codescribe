@@ -21,6 +21,10 @@ EMBED_MODEL_VALUE="${CODESCRIBE_EMBED_MODEL:-}"
 if [[ "$EMBED_MODEL_VALUE" == "$TILDE_PREFIX"* ]]; then
     EMBED_MODEL_VALUE="$HOME/${EMBED_MODEL_VALUE:2}"
 fi
+MODELS_DIR_VALUE="${CODESCRIBE_MODELS_DIR:-$HOME/.codescribe/models}"
+if [[ "$MODELS_DIR_VALUE" == "$TILDE_PREFIX"* ]]; then
+    MODELS_DIR_VALUE="$HOME/${MODELS_DIR_VALUE:2}"
+fi
 
 is_hf_repo_id() {
     [[ "$1" =~ ^[A-Za-z0-9._-]+/[A-Za-z0-9._-]+$ ]]
@@ -138,7 +142,7 @@ if [[ "$MODEL_REPO" == "$DEFAULT_REPO" ]]; then
     echo ""
     echo "▶ Composing verified fp16 runtime directory..."
     TOKENIZER_PATH=$("$HF_BIN" download "$TOKENIZER_REPO" tokenizer.json --quiet)
-    MODEL_DEST="${CODESCRIBE_MODELS_DIR:-$HOME/.codescribe/models}/whisper-large-v3-turbo"
+    MODEL_DEST="$MODELS_DIR_VALUE/whisper-large-v3-turbo"
     MODEL_STAGE=$(mktemp -d "${TMPDIR:-/tmp}/codescribe-whisper-model.XXXXXX")
     cleanup_model_stage() {
         rm -f \

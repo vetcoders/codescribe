@@ -85,9 +85,11 @@ pub fn discover_local_whisper_model() -> Option<ModelDiscovery> {
     let env_override = std::env::var("CODESCRIBE_MODEL_PATH")
         .ok()
         .map(PathBuf::from);
-    let models_root = std::env::var("CODESCRIBE_MODELS_DIR")
-        .ok()
-        .map(PathBuf::from);
+    let models_root = std::env::var("CODESCRIBE_MODELS_DIR").ok().map(|value| {
+        value
+            .strip_prefix("~/")
+            .map_or_else(|| PathBuf::from(&value), |relative| home_dir.join(relative))
+    });
     discover_local_whisper_model_for_with_root(
         &home_dir,
         env_override.as_deref(),
