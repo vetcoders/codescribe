@@ -229,8 +229,7 @@ fn deterministic_model_discovery_prefers_complete_env_override() {
     create_complete_model(&fp16);
     create_complete_model(&env_model);
 
-    let hf_bases = Vec::<PathBuf>::new();
-    let found = discover_local_whisper_model_for(&home, Some(&env_model), &hf_bases)
+    let found = discover_local_whisper_model_for(&home, Some(&env_model))
         .expect("expected env override to be discovered");
 
     assert_eq!(
@@ -252,9 +251,8 @@ fn deterministic_model_discovery_refuses_incomplete_fp16_without_legacy_fallback
 
     create_incomplete_model(&fp16);
 
-    let hf_bases = Vec::<PathBuf>::new();
     assert!(
-        discover_local_whisper_model_for(&home, None, &hf_bases).is_none(),
+        discover_local_whisper_model_for(&home, None).is_none(),
         "an incomplete fp16 model must not fall back to a quantized model"
     );
 

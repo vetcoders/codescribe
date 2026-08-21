@@ -83,28 +83,6 @@ pub fn whisper_model_missing_parts(path: &Path) -> Vec<&'static str> {
     missing
 }
 
-pub fn default_hf_cache_bases(home_dir: &Path) -> Vec<PathBuf> {
-    let mut out = Vec::new();
-
-    if let Ok(path) = std::env::var("CODESCRIBE_HF_CACHE") {
-        out.push(PathBuf::from(path));
-    }
-    if let Ok(path) = std::env::var("HUGGINGFACE_HUB_CACHE") {
-        out.push(PathBuf::from(path));
-    }
-    if let Ok(path) = std::env::var("HF_HUB_CACHE") {
-        out.push(PathBuf::from(path));
-    }
-    if let Ok(path) = std::env::var("HF_HOME") {
-        out.push(PathBuf::from(path).join("hub"));
-    }
-
-    out.push(home_dir.join(".cache/huggingface/hub"));
-    out.sort();
-    out.dedup();
-    out
-}
-
 pub fn discover_local_whisper_model() -> Option<ModelDiscovery> {
     let home_dir = std::env::var("HOME")
         .map(PathBuf::from)
@@ -112,14 +90,12 @@ pub fn discover_local_whisper_model() -> Option<ModelDiscovery> {
     let env_override = std::env::var("CODESCRIBE_MODEL_PATH")
         .ok()
         .map(PathBuf::from);
-    let hf_bases = default_hf_cache_bases(&home_dir);
-    discover_local_whisper_model_for(&home_dir, env_override.as_deref(), &hf_bases)
+    discover_local_whisper_model_for(&home_dir, env_override.as_deref())
 }
 
 pub fn discover_local_whisper_model_for(
     home_dir: &Path,
     env_override: Option<&Path>,
-    hf_cache_bases: &[PathBuf],
 ) -> Option<ModelDiscovery> {
     if let Some(path) = env_override
         && whisper_model_is_complete(path)
@@ -137,8 +113,6 @@ pub fn discover_local_whisper_model_for(
             path: user_fp16,
         });
     }
-
-    let _ = hf_cache_bases;
 
     None
 }
