@@ -54,12 +54,7 @@ pub fn test_audio_path() -> PathBuf {
 }
 
 pub fn whisper_model_is_complete(path: &Path) -> bool {
-    let has_weights =
-        path.join("weights.safetensors").exists() || path.join("model.safetensors").exists();
-    path.join("config.json").exists()
-        && path.join("tokenizer.json").exists()
-        && path.join("mel_filters.npz").exists()
-        && has_weights
+    codescribe_core::config::models::validate_whisper_model_bundle(path).is_ok()
 }
 
 pub fn whisper_model_missing_parts(path: &Path) -> Vec<&'static str> {
