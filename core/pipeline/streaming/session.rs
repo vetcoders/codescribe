@@ -474,15 +474,22 @@ pub(super) fn tail_patch_lane_starved(applied: u64, skipped: u64) -> bool {
 /// diagnoses the lane. A starved session — Whisper burned inference on every
 /// sealed utterance and the canvas received none of it — is a WARN, because
 /// that is the lane not doing its one job, silently.
-pub(super) fn log_tail_patch_session_receipt(applied: u64, skipped: u64) {
-    if tail_patch_lane_starved(applied, skipped) {
+pub(super) fn log_tail_patch_session_receipt(applied: u64, skipped: u64, abandoned: u64) {
+    if abandoned > 0 {
+        warn!(
+            applied,
+            skipped,
+            abandoned,
+            "tail_patch_session_degraded: accepted work missed the bounded stop drain"
+        );
+    } else if tail_patch_lane_starved(applied, skipped) {
         warn!(
             applied,
             skipped,
             "tail_patch_lane_starved: every computed Whisper correction this session was rejected"
         );
     } else if applied > 0 || skipped > 0 {
-        info!(applied, skipped, "tail_patch_session_receipt");
+        info!(applied, skipped, abandoned, "tail_patch_session_receipt");
     }
 }
 
@@ -1678,7 +1685,7 @@ pub(crate) async fn vad_transcription_session(
         partial_dropped_count: partial_telemetry.dropped_count,
     });
 
-    log_tail_patch_session_receipt(tail_patch_replacements, tail_patch_skips);
+    log_tail_patch_session_receipt(tail_patch_replacements, tail_patch_skips, 0);
     emit_capture_level_receipt(
         event_sink.as_ref(),
         &capture_level.finalize(CapturePathMeta::resolve(sample_rate, 1, None)),

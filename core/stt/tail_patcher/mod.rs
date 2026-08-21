@@ -13,7 +13,7 @@
 //! | Control | Env | Default | What it does |
 //! | --- | --- | --- | --- |
 //! | Final pass | `FINAL_PASS_MODE` | `smart` | Stop-path only: whether to run a full WAV Whisper re-pass after release |
-//! | Layered / Layer 1 | `CODESCRIBE_LAYERED_TRANSCRIPTION` | **phase1** | During-hold gap-fill: Whisper tail patches on sealed utterances. Unset → phase1; explicit `off`/`0`/`false` disarms. |
+//! | Layered / Layer 1 | `CODESCRIBE_LAYERED_TRANSCRIPTION` | **off** | Experimental during-hold gap-fill: explicit `phase1` arms Whisper tail patches on sealed utterances. |
 //!
 //! - **Smart** = skip full stop re-pass when streaming completeness is
 //!   adjudicated Complete. It does **not** enable layered transcription.
@@ -21,9 +21,9 @@
 //! - Layered phase ≥ 1 may run under any final-pass mode when the live session
 //!   path actually wires Layer 1 (see below).
 //!
-//! Product intent: Smart *works with* layered (completeness skip + live
-//! gap-fill). Phase 1 is the stock live default; W13 fusion / idempotence /
-//! highlight flags remain the operator-flip surface, not this gate.
+//! Product intent: Smart may *work with* layered (completeness skip + live
+//! gap-fill), but Phase 1 remains fail-closed until PCM/span identity, the
+//! single rewrite fence, and structural idempotence cover the mutation path.
 //!
 //! # Where Layer 1 is wired today
 //!
@@ -100,19 +100,15 @@ use crate::pipeline::contracts::{EngineEvent, LayerSource};
 
 /// Env flag gating the layered transcription pipeline.
 ///
-/// `CODESCRIBE_LAYERED_TRANSCRIPTION=phase{1,2,3,4}` — **defaults to phase1**.
-/// The live tail patch is a core element of the triangulation, not an opt-in
-/// (operator directive 2026-08-09: "korekcje na żywo to live tail patch, który
-/// MUSI być podstawowym elementem"). Explicit `off`/`0`/`false` disables;
-/// explicit `phaseN` selects a phase.
+/// `CODESCRIBE_LAYERED_TRANSCRIPTION=phase{1,2,3,4}` — **defaults to off**.
+/// Explicit `phaseN` selects an experimental phase. The default is deliberately
+/// fail-closed: the current patch path has exact PCM at provider ingress but
+/// does not yet carry that identity through one rewrite fence to presentation.
 ///
 /// **Not** `FINAL_PASS_MODE`: Smart final-pass never writes this flag. Kept
 /// here (not in the config hub) so this cut stays isolated; the orchestrator
 /// can promote it to a typed config field when it lands.
 pub const LAYERED_TRANSCRIPTION_ENV: &str = "CODESCRIBE_LAYERED_TRANSCRIPTION";
-
-/// Phase served when the flag is unset — Layer 1 live tail patch on.
-const LAYERED_DEFAULT_PHASE: u8 = 1;
 
 /// Env override for [`TailPatchConfig::max_change_ratio`].
 pub const TAIL_PATCH_MAX_CHANGE_RATIO_ENV: &str = "CODESCRIBE_TAIL_PATCH_MAX_CHANGE_RATIO";
@@ -221,9 +217,8 @@ pub fn parse_layered_phase_value(raw: &str) -> Option<u8> {
     }
 }
 
-/// Active layered-transcription phase. Unset → the default phase (live tail
-/// patch on); an explicit `off`/`0`/`false` — or unparseable garbage — is the
-/// only way to `None`.
+/// Active layered-transcription phase. Unset, explicit `off`/`0`/`false`, and
+/// unparseable garbage all fail closed to `None`.
 ///
 /// Independent of `FINAL_PASS_MODE` / Smart completeness skip.
 pub fn layered_phase() -> Option<u8> {
@@ -232,10 +227,9 @@ pub fn layered_phase() -> Option<u8> {
 }
 
 /// Resolve the layered phase from an optional raw override without touching
-/// process-global environment state. `None` carries the production default.
+/// process-global environment state. `None` carries the production default OFF.
 pub fn layered_phase_from_raw(raw: Option<&str>) -> Option<u8> {
-    raw.map(parse_layered_phase_value)
-        .unwrap_or(Some(LAYERED_DEFAULT_PHASE))
+    raw.and_then(parse_layered_phase_value)
 }
 
 /// Env override for [`TailPatchConfig::small_edit_token_floor`].
@@ -1861,7 +1855,7 @@ mod tests {
     #[test]
     fn layered_phase_parses_phase_prefix() {
         // Pure parse — no process env (suite stays deterministic under parallel exec).
-        assert_eq!(layered_phase_from_raw(None), Some(LAYERED_DEFAULT_PHASE));
+        assert_eq!(layered_phase_from_raw(None), None);
         assert_eq!(layered_phase_from_raw(Some("off")), None);
         assert_eq!(parse_layered_phase_value("phase1"), Some(1));
         assert_eq!(parse_layered_phase_value("phase2"), Some(2));

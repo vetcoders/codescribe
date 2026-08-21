@@ -129,6 +129,7 @@ final class SettingsTruthTests: XCTestCase {
       (.engine, "engine", "Dictation", .dictation),
       (.audio, "audio", "Audio", .audio),
       (.voiceLab, "voiceLab", "Dictionary", .dictionary),
+      (.lab, "lab", "Lab", .lab),
       (.license, "license", "License", .license),
       (.user, "user", "User", .user),
     ]
@@ -417,6 +418,14 @@ final class SettingsTruthTests: XCTestCase {
       [
         "whisper", "phase1", "off", "3.5", "1038", "10.6", "5", "8.0",
       ])
+  }
+
+  func testLayeredTranscriptionFailsClosedWhenSettingIsAbsent() {
+    var settings = CsSettings.sample
+    settings.layeredTranscription = nil
+    let model = SettingsViewModel(engine: MockSettingsEngine(settings: settings))
+
+    XCTAssertFalse(model.layeredTranscriptionEnabled)
   }
 
   func testSmoothPresetValuesMatchOperatorDefaultExactly() throws {

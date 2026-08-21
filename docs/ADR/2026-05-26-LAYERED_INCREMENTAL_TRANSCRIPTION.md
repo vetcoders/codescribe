@@ -325,19 +325,18 @@ Four phases. Each ships as an independent machete cut behind a feature flag
 
 What this ADR proposed vs. what the runtime actually executes today.
 
-**Superseded on the Layer 1 default (2026-08-09 / polarized 2026-08-14).**
-`CODESCRIBE_LAYERED_TRANSCRIPTION` unset → `phase1` (`LAYERED_DEFAULT_PHASE = 1`).
-Explicit `off`/`0`/`false` is the only disarm. The 2026-08-08 sentence
-"`phase1` is still off by default" is historical. Everything **above**
-phase1 (Layers 2–4 in this table, plus W13 fusion / idempotence /
-highlights) is still off by default.
+**Default revised after field falsification (2026-08-21).**
+`CODESCRIBE_LAYERED_TRANSCRIPTION` unset → `off`. Explicit `phase1` remains an
+experimental operator path. The lane may become stock only after request/span
+identity reaches one rewrite fence, gap appends are structurally idempotent,
+intentional repetition survives, and stop reports every abandoned patch.
 
 The 2026-08-08 table below is inventory, not the default. Read the
 "Delivered?" column with that amendment.
 
 | Phase                                 | Proposed module                          | Delivered?                               | Where it actually lives                                                                                                                                                                                                                                                               |
 | ------------------------------------- | ---------------------------------------- | ---------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| **1 — Layer 1 tail patch**            | `core/stt/tail_patcher/`                 | ✅ **delivered, default phase1**         | `core/stt/tail_patcher/` exists as proposed; wired into `core/pipeline/streaming/session.rs` (VAD/scheduler) and `core/pipeline/streaming/apple_live_session.rs` (Apple progressive, W2-A `a6b1233d`). Unset env → phase1 since 2026-08-09.                                           |
+| **1 — Layer 1 tail patch**            | `core/stt/tail_patcher/`                 | ⚠️ delivered, default **off**            | Wired into both live paths, but explicit `phase1` is experimental until the identity/rewrite-fence closing bar above is met. Unset preserves Apple live + lexicon.                                                                                                                    |
 | **1 — overlay `ReplaceRange` render** | `app/ui/overlay/mod.rs`                  | ✅ delivered, moved                      | `OverlayState.applyReplaceRange` → `OverlayTranscriptSegment.replaceRange` (Swift)                                                                                                                                                                                                    |
 | **1 — orchestrator**                  | `app/controller/layered_orchestrator.rs` | ❌ **not built — and not needed so far** | Both live paths call the shared `tail_patch_enabled` / `compute_tail_patch_job` / `emit_tail_patch_result` primitives directly. One gate, one `LayerSummary` shape, no separate state machine. Revisit only when Layers 2–4 need a single audio cursor (see Consequences)             |
 | **2 — Lexicon**                       | `core/lexicon/`                          | ⚠️ **partial, different shape**          | No `core/lexicon/` module. Lexicon substitution lives in `core/pipeline/stream_postprocess.rs::apply_lexicon` and runs **at seal time** on the Apple progressive path (W1-A `d180add9`) — as the doctrine's final automated layer, not as a debounced Layer 2 sub-pass                |

@@ -550,11 +550,11 @@ category = "stt"
 description = "Libraxis gateway session-mint endpoint (https; loopback http for dev). Endpoint only — URLs with user-info or query material are refused; vendor keys never live in config. Promoted: settings.json is the source of truth"
 
 [vars.CODESCRIBE_LAYERED_TRANSCRIPTION]
-default = "phase1"
+default = "off"
 type = "string"
 reload = "hot"
 category = "stt"
-description = "Layered incremental transcription phase gate: phase1 (DEFAULT since 2026-08-09 — operator directive: the live tail patch is a core element of the triangulation, not an opt-in; explicit off/0/false disables) or phase1..phase4 (bare 1..4 accepted). Orthogonal to FINAL_PASS_MODE/Smart — Smart never enables this. Phase ≥ 1 turns on Layer 1 Whisper tail-patch during hold on BOTH live paths: the VAD/scheduler session and the default Apple progressive live session (wired W2-A, a6b1233d). phase1 = Apple Layer 0 + Whisper ReplaceRange patches. Promoted 2026-08-10 to settings.json (single-brain; a stale ~/.codescribe/.env line must not lottery the live path)."
+description = "Experimental layered incremental transcription phase gate. Default OFF: unset/off/0/false preserves Apple live + lexicon without Layer 1 text mutation. Explicit phase1 (or bare 1) arms Whisper tail-patch during hold on both live paths; phases 2..4 remain reserved. Keep OFF until PCM/span identity, one rewrite fence, structural idempotence, and bounded-drain evidence cover every accepted patch. Orthogonal to FINAL_PASS_MODE/Smart. Promoted to settings.json (single-brain; stale ~/.codescribe/.env must not lottery the live path)."
 
 [vars.CODESCRIBE_SEAL_ATLAS_DUMP]
 default = ""

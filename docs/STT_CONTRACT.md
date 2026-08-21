@@ -7,12 +7,12 @@
 > Whisper transcribing **partials on the go** to fill canvas gaps — NOT final-pass-only.
 > Lexicon substitution is the FINAL automated layer, after Whisper.
 >
-> **Status (2026-08-14):** on-the-go gap-fill **exists and is the stock live
-> default** as Layer 1 tail-patch on both live paths (`a6b1233d`, default
-> flip 2026-08-09). `CODESCRIBE_LAYERED_TRANSCRIPTION` unset → `phase1`;
-> explicit `off`/`0`/`false` disarms. Legacy `FINAL_PASS_MODE` no longer owns
-> any normal-stop inference. W13 fusion /
-> idempotence / highlights stay OFF until an operator flip.
+> **Status (2026-08-21):** on-the-go gap-fill exists on both live paths but is
+> fail-closed. `CODESCRIBE_LAYERED_TRANSCRIPTION` unset → `off`; explicit
+> `phase1` is an experimental operator opt-in. It must not return as the stock
+> path until PCM/span identity, one rewrite fence, structural idempotence, and
+> bounded-drain evidence cover every accepted mutation. Legacy
+> `FINAL_PASS_MODE` no longer owns any normal-stop inference.
 > Planning report: internal plan `stt-apple-must-have` (operator artifact store, 2026-07-24).
 
 ---
@@ -37,7 +37,7 @@ Recording stopped before a transcript was available.
 
 | Layer                 | Rule                                                                                                     |
 | --------------------- | -------------------------------------------------------------------------------------------------------- |
-| Empty `speech.engine` | Load pins **`stt_engine=apple`**; persist **`final_pass_mode=off`** explicitly on current installs     |
+| Empty `speech.engine` | Load pins **`stt_engine=apple`**; persist **`final_pass_mode=off`** explicitly on current installs       |
 | Settings UI write     | **Promoted** to `settings.json` + reconciles process env **and** `.env` (single brain)                   |
 | Record start          | **`preflight_apple_live_ready()`** when engine is Apple — refuse before REC if Speech/bridge not ready   |
 | Live vs final         | Cloud/Apple-only live fails closed without local weights; explicit HQ/local Retranscribe may use Whisper |
@@ -179,10 +179,10 @@ Still env-seedable when unset (not dual writers): `CODESCRIBE_LAYERED_TRANSCRIPT
 
 **Final pass vs layered (orthogonal):**
 
-| Setting    | Env                                | Default  | Role                                                                                                                 |
-| ---------- | ---------------------------------- | -------- | -------------------------------------------------------------------------------------------------------------------- |
-| Final pass | `FINAL_PASS_MODE`                  | legacy   | No effect on normal stop; retained only for settings migration while explicit Retranscribe owns whole-file inference |
-| Layered    | `CODESCRIBE_LAYERED_TRANSCRIPTION` | `phase1` | During-hold Layer 1 tail-patch on **both** live paths — local Whisper or live cloud WSS, selected by product mode    |
+| Setting    | Env                                | Default | Role                                                                                                                 |
+| ---------- | ---------------------------------- | ------- | -------------------------------------------------------------------------------------------------------------------- |
+| Final pass | `FINAL_PASS_MODE`                  | legacy  | No effect on normal stop; retained only for settings migration while explicit Retranscribe owns whole-file inference |
+| Layered    | `CODESCRIBE_LAYERED_TRANSCRIPTION` | `off`   | Explicit `phase1` opts into experimental during-hold Layer 1 on both live paths; unset keeps Apple + lexicon only    |
 
 Normal capture ignores legacy final-pass routing and never decodes/uploads the
 completed WAV. Layered phase tokens (`phase1`…) select live refinement;

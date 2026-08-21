@@ -99,6 +99,10 @@ const TAIL_PATCH_QUEUE_CAP: usize = 8;
 /// because the loop was waiting on the wrong condition.
 const TAIL_PATCH_CLOSURE_TIMEOUT: Duration = Duration::from_secs(5);
 
+/// Stable outward receipt when accepted Layer 1 work cannot land before the
+/// Apple seal worker closes. The Apple canvas remains authoritative.
+pub const TAIL_PATCH_DRAIN_TIMEOUT_WARNING_CODE: &str = "tail_patch_drain_timeout";
+
 /// Content-free marker emitted when an Apple final callback contained segment
 /// time already committed by an earlier callback. The overlapping portion is
 /// removed before a new utterance id can be allocated.
@@ -338,6 +342,19 @@ fn emit_layer1_degrade_warning(event_sink: &dyn EventSink, reason: Layer1Degrade
     });
 }
 
+/// Report abandoned local tail-patch work exactly once, before session finality.
+fn report_tail_patch_drain_degrade(event_sink: &dyn EventSink, abandoned: u64) {
+    if abandoned == 0 {
+        return;
+    }
+    event_sink.on_event(&EngineEvent::Warning {
+        code: TAIL_PATCH_DRAIN_TIMEOUT_WARNING_CODE.to_string(),
+        message: format!(
+            "{abandoned} accepted Layer 1 tail-patch job(s) missed the bounded stop drain; Apple live text was preserved"
+        ),
+    });
+}
+
 /// Drive one progressive Apple stream session until the audio channel closes.
 pub(crate) async fn apple_stream_transcription_session(
     mut chunk_receiver: mpsc::Receiver<Vec<f32>>,
@@ -568,6 +585,7 @@ pub(crate) async fn apple_stream_transcription_session(
             "Layer 1 tail-patch work abandoned after Apple seal worker closed"
         );
     }
+    report_tail_patch_drain_degrade(event_sink.as_ref(), abandoned_tail_patch_jobs);
 
     // C1 stop-drain: close the Layer 1 lane with its bounded drain. Whatever
     // happened inside (clean close, disconnect, incomplete drain), the method
@@ -624,7 +642,11 @@ pub(crate) async fn apple_stream_transcription_session(
         }
     }
 
-    log_tail_patch_session_receipt(tail_patch_lane.replacements(), tail_patch_lane.skipped());
+    log_tail_patch_session_receipt(
+        tail_patch_lane.replacements(),
+        tail_patch_lane.skipped(),
+        abandoned_tail_patch_jobs,
+    );
     let mut live_cloud_patches = 0u64;
     if let Some(candidate) = layer1_candidate {
         for event in plan_live_layer1_gap_patches(&sealed_spans, &candidate) {
@@ -3796,6 +3818,27 @@ mod tests {
         }
     }
 
+    /// A bounded stop that abandons accepted refinement must be observable on
+    /// the ordered event surface; zero abandoned work stays quiet.
+    #[test]
+    fn tail_patch_drain_degrade_is_typed_once_and_zero_is_silent() {
+        let sink = RecordingSink::default();
+        report_tail_patch_drain_degrade(&sink, 0);
+        assert!(sink.events().is_empty());
+
+        report_tail_patch_drain_degrade(&sink, 2);
+        emit_session_finalised(&sink, "test-session".to_string(), 0);
+        let events = sink.events();
+        assert_eq!(events.len(), 2);
+        let EngineEvent::Warning { code, message } = &events[0] else {
+            panic!("expected typed Warning, got {:?}", events[0]);
+        };
+        assert_eq!(code, TAIL_PATCH_DRAIN_TIMEOUT_WARNING_CODE);
+        assert!(message.contains('2'));
+        assert!(message.contains("Apple live text was preserved"));
+        assert!(matches!(events[1], EngineEvent::SessionFinalised { .. }));
+    }
+
     fn synthetic_tail_job(utterance_id: u64, outcome: TailPatchOutcome) -> TailPatchJobResult {
         let range = TailSampleRange {
             session: "test-session".to_string(),
@@ -4300,14 +4343,13 @@ mod tests {
         );
     }
 
-    /// The env gate is the only control: default (unset) arms the lane — the
-    /// live tail patch is a core element of the triangulation, not an opt-in
-    /// (operator directive 2026-08-09). Explicit `off` is the one way out.
+    /// The stock product fails closed. Explicit `phase1` is the only way to arm
+    /// the experimental mutation lane until its identity/fence contract lands.
     #[test]
-    fn apple_tail_patch_lane_is_wired_by_default_and_off_disarms() {
+    fn apple_tail_patch_lane_is_off_by_default_and_phase1_arms() {
         assert!(
-            layered_phase_from_raw(None).is_some_and(|phase| phase >= 1),
-            "the unset production default must arm the live tail patch"
+            layered_phase_from_raw(None).is_none(),
+            "the unset production default must preserve Apple-only canvas truth"
         );
         assert!(
             parse_layered_phase_value("off").is_none(),

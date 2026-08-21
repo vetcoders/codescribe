@@ -2058,10 +2058,10 @@ final class SettingsViewModel: ObservableObject {
     persist("CODESCRIBE_ASR_GATEWAY_URL", value.trimmingCharacters(in: .whitespaces))
   }
 
-  /// ON for any phase value ("phase1".."phase4" or bare "1".."4"); explicit
-  /// "off" disarms. Absent matches the core default (`unset` → phase1).
+  /// ON for any phase value ("phase1".."phase4" or bare "1".."4"). Absent
+  /// matches the fail-closed core default (`unset` → off).
   var layeredTranscriptionEnabled: Bool {
-    let value = settings.layeredTranscription ?? "phase1"
+    let value = settings.layeredTranscription ?? "off"
     return value.hasPrefix("phase") || Int(value) != nil
   }
 

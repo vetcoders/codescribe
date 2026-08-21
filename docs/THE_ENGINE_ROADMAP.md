@@ -73,10 +73,11 @@ after settlement — do not re-open those cuts as unstarted work.
 | W13-5 | Capture-level receipt + Audio menu truth (level, device, quality)                                                                         | landed — WARN is non-terminal                                |
 | W13-6 | Lexicon gets a voice (Whisper `initial_prompt`, Apple `contextualStrings`) + word/gap highlighting feeding Teach                          | landed OFF — 6A voice + 6B `CODESCRIBE_OVERLAY_HIGHLIGHTS=0` |
 
-**Current truth (2026-08-14, polarize):** the live product already runs
-Apple canvas + Layer 1 Whisper tail-patch by default (`unset` →
-`phase1`, `core/stt/tail_patcher/mod.rs::LAYERED_DEFAULT_PHASE`). W13
-fusion / idempotence / highlights stay OFF until an operator flip.
+**Current truth (2026-08-21, field-falsified):** the stock live product runs
+Apple canvas + lexicon. Layer 1 Whisper tail-patch is wired but fail-closed
+(`unset` → `off`; explicit `phase1` is experimental) until the request/span
+identity and single rewrite-fence closing bar is complete. W13 fusion /
+idempotence / highlights stay OFF until an operator flip.
 `lbrx-stt-engine` file-mode is a **bench**, not a replacement engine.
 Single-writer emitter landed in `75c89f56`. Next field cut is take-614
 fusion A/B. Closing bar: layered-ON ≥ lbrx file-mode on U-WER vs human,
@@ -501,8 +502,8 @@ classes this roadmap names: vocabulary, code-switching, tail integrity.
 
 ### Diagnosis (holistic)
 
-The gap is **not model capability** — we embed the same Whisper family,
-and Layer 1 is already the stock live default (`phase1`). The gap is the
+The gap is **not model capability** — we embed the same Whisper family.
+Layer 1 is wired but no longer the stock live default. The gap is the
 live lane: window feeding, patch authority, and (until this morning)
 buffer integrity. Field evidence, same morning (Monika, 2026-08-14): 42%
 of Layer-1 tail patches rejected (80 applied / 59 rejected across 10
@@ -516,11 +517,11 @@ That dual-writer cut **landed** in `75c89f56`:
 loop animates the `DeltaSink` only. Do not re-open it as "field P0".
 
 The W13 close-the-gap machinery **already landed** in the settlement
-(`13b1eed8`). "All defaults OFF" names the **W13 flip flags**
+(`13b1eed8`). Its mutation lanes are fail-closed: Layer 1 itself and the
+**W13 flip flags**
 (`CODESCRIBE_SILERO_FUSION`, `CODESCRIBE_SPAN_IDEMPOTENCE`,
-`CODESCRIBE_OVERLAY_HIGHLIGHTS`, `CODESCRIBE_INLINE_FORMAT`) — it does
-**not** describe Layer 1, which has been `phase1` since the 2026-08-09
-operator directive. Silero-boundary fusion (3B, synthetic starvation
+`CODESCRIBE_OVERLAY_HIGHLIGHTS`, `CODESCRIBE_INLINE_FORMAT`) require explicit
+arming. Silero-boundary fusion (3B, synthetic starvation
 −67%), span idempotence (4), typed tail providers (2A/2B), and lexicon
 voice (6A) sit behind those OFF flags. "Catching up" is therefore not
 new architecture — it is measurement and the operator's flip matrix, in

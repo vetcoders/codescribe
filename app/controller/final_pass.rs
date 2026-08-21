@@ -11,7 +11,7 @@
 //!   adopted onto the committed words (`punctuation_transplant`; word sequence
 //!   invariant at THIS stage
 //!   because shape is the deficit here — live word corrections belong to the
-//!   Layer 1 tail patch, which is a core element, on by default). When
+//!   explicit, fail-closed Layer 1 tail-patch experiment). When
 //!   incomplete, only the uncommitted audio tail (from the last committed
 //!   utterance end) is transcribed and **appended** to the committed streaming
 //!   text. The doctrine behind all of this forbids TRUNCATING overlay text and
