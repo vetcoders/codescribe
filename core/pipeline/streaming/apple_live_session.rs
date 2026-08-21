@@ -69,8 +69,9 @@ use super::progressive_seal::{
     AppleCommit, ProgressiveSealMachine, SealTick, SealedSpan, seal_span_text,
 };
 use super::session::{
-    SessionConfig, TailPatchJobResult, UNDER_COMMIT_WARNING_CODE, compute_tail_patch_job,
-    emit_session_finalised, log_tail_patch_session_receipt, tail_patch_enabled,
+    SessionConfig, TailPatchDrainDisposition, TailPatchJobResult, TailPatchSessionReceipt,
+    UNDER_COMMIT_WARNING_CODE, compute_tail_patch_job, emit_session_finalised,
+    log_tail_patch_session_receipt,
 };
 use super::silero_fusion::{
     FusionContextMode, FusionWord, SileroIngress, bound_context_range, conservative_fuse,
@@ -102,6 +103,9 @@ const TAIL_PATCH_CLOSURE_TIMEOUT: Duration = Duration::from_secs(5);
 /// Stable outward receipt when accepted Layer 1 work cannot land before the
 /// Apple seal worker closes. The Apple canvas remains authoritative.
 pub const TAIL_PATCH_DRAIN_TIMEOUT_WARNING_CODE: &str = "tail_patch_drain_timeout";
+
+/// Local power was selected but its required live patcher could not arm.
+pub const LOCAL_TAIL_PATCH_DEGRADED_WARNING_CODE: &str = "local_tail_patch_degraded";
 
 /// The provider result did not prove that it describes the PCM range owned by
 /// the pending span. No transcript text is included in this receipt.
@@ -182,10 +186,6 @@ struct AppleTailPatchLane {
     jobs: FuturesOrdered<BoxFuture<'static, Result<TailPatchJobResult>>>,
     language: Option<String>,
     config: TailPatchConfig,
-    /// Jobs whose entire output was rejected (Skipped or failed). Feeds the
-    /// session-level starvation receipt — the 116-skips/0-applied class of
-    /// silent lane death must be one WARN, not a grep across log history.
-    skipped: u64,
 }
 
 impl AppleTailPatchLane {
@@ -198,7 +198,6 @@ impl AppleTailPatchLane {
             language,
             // F2: thresholds stay exactly where the shared primitive puts them.
             config: TailPatchConfig::from_env(),
-            skipped: 0,
         }
     }
 
@@ -286,20 +285,10 @@ impl AppleTailPatchLane {
         tx: &std_mpsc::Sender<TailPatchCompletion>,
         completion: TailPatchCompletion,
     ) -> bool {
-        let skipped = u64::from(matches!(
-            &completion.outcome,
-            TailPatchOutcome::Skipped { .. }
-        ));
         if tx.send(completion).is_err() {
             return false;
         }
-        self.skipped = self.skipped.saturating_add(skipped);
         true
-    }
-
-    /// How many jobs put nothing on the canvas (skipped or failed).
-    fn skipped(&self) -> u64 {
-        self.skipped
     }
 }
 
@@ -344,6 +333,39 @@ fn report_tail_patch_drain_degrade(event_sink: &dyn EventSink, abandoned: u64) {
     });
 }
 
+/// Reconcile job-level terminal buckets after the worker's bounded closure
+/// loop. No-change, provider skip, and rewrite-fence refusal all land in
+/// `skipped`; `applied` means a completed job whose bounded mutation survived.
+fn tail_patch_receipt_after_stop(
+    armed: bool,
+    submitted: u64,
+    applied_jobs: u64,
+    skipped_jobs: u64,
+    timeout_residue: u64,
+) -> TailPatchSessionReceipt {
+    let applied = applied_jobs.min(submitted);
+    let skipped = skipped_jobs.min(submitted.saturating_sub(applied));
+    let timed_out = timeout_residue.min(submitted.saturating_sub(applied + skipped));
+    let abandoned = submitted.saturating_sub(applied + skipped + timed_out);
+    TailPatchSessionReceipt::new(
+        armed,
+        submitted,
+        applied,
+        skipped,
+        timed_out,
+        abandoned,
+        if !armed {
+            TailPatchDrainDisposition::NotArmed
+        } else if timed_out > 0 {
+            TailPatchDrainDisposition::TimedOut
+        } else if abandoned > 0 {
+            TailPatchDrainDisposition::Abandoned
+        } else {
+            TailPatchDrainDisposition::Completed
+        },
+    )
+}
+
 /// Drive one progressive Apple stream session until the audio channel closes.
 pub(crate) async fn apple_stream_transcription_session(
     mut chunk_receiver: mpsc::Receiver<Vec<f32>>,
@@ -384,17 +406,16 @@ pub(crate) async fn apple_stream_transcription_session(
     // blocking seal worker only ever enqueues sealed chunks.
     crate::llm::inline_format::begin_session(language.as_deref());
 
-    // C1: open the injected Layer 1 lane at recording start. `Disarmed` is the
-    // stock product (canvas + lexicon); an armed provider only ever arrives
-    // here already authorized — construction and consent live with the
-    // settings owner, not in this pipeline. Every lane failure from here on
-    // degrades back to exactly the disarmed behavior.
+    // C1: split the one recording-start decision into its explicit local
+    // exact-span disposition and (when Cloud is selected) the injected generic
+    // provider. Construction and consent live with the settings owner.
     let lane_input = Layer1SessionInput {
         session_id: Layer1SessionId::new(session_id.clone())
             .expect("uuid session ids are never blank"),
         locale: language.clone(),
         sample_rate,
     };
+    let local_tail_patch = layer1.local_tail_patch_disposition();
     let mut layer1_lane = RecorderLayer1Lane::open(layer1, &lane_input);
     if let Some(reason) = layer1_lane.take_degrade_notice() {
         emit_layer1_degrade_warning(event_sink.as_ref(), reason);
@@ -407,20 +428,33 @@ pub(crate) async fn apple_stream_transcription_session(
     // Worker → async events.
     let (ev_tx, mut ev_rx) = mpsc::unbounded_channel::<EngineEvent>();
 
-    // Layer 1 (Whisper tail-patch) lane — off unless
-    // `CODESCRIBE_LAYERED_TRANSCRIPTION=phase1+`. Read once here so the whole
-    // session agrees on one answer even if the env flips mid-hold.
-    let tail_patch_on = tail_patch_enabled();
+    // The local Whisper decision is resolved once from product mode + the
+    // compatibility phase token before capture starts. Never re-read env here:
+    // Settings, replay, logging, and runtime must all observe one decision.
+    let tail_patch_on = local_tail_patch.is_some_and(|decision| decision.is_armed());
     if tail_patch_on {
         info!(
-            "Layered transcription Layer 1 (Whisper tail-patch) enabled on Apple progressive path"
+            disposition = local_tail_patch
+                .map(|decision| decision.as_token())
+                .unwrap_or("not_applicable"),
+            "Local Whisper tail-patch armed on Apple progressive path"
         );
+    } else if let Some(disposition) = local_tail_patch {
+        warn!(
+            disposition = disposition.as_token(),
+            "Local power degraded: required Whisper tail-patch is not armed"
+        );
+        event_sink.on_event(&EngineEvent::Warning {
+            code: LOCAL_TAIL_PATCH_DEGRADED_WARNING_CODE.to_string(),
+            message: disposition.as_token().to_string(),
+        });
     }
     let mut tail_patch_lane = AppleTailPatchLane::new(sample_rate, language.clone());
     // At-most-one-in-flight gate (F1), tracked outside the lane so the admit
     // branch's guard does not borrow what the collect branch holds mutably.
     let mut tail_patch_in_flight = false;
     let mut tail_patch_lane_in_flight: Option<TailPatchInFlight> = None;
+    let mut tail_patch_submitted = 0u64;
     // Bounded: the worker `try_send`s from the PCM-forwarding thread.
     let (tp_tx, mut tp_rx) = mpsc::channel::<TailPatchRequest>(TAIL_PATCH_QUEUE_CAP);
     let (tp_done_tx, tp_done_rx) = std_mpsc::channel::<TailPatchCompletion>();
@@ -511,6 +545,7 @@ pub(crate) async fn apple_stream_transcription_session(
             // only ever schedules and collects — inference never sits on the
             // event-drain path (F1).
             Some(req) = tp_rx.recv(), if !tail_patch_in_flight => {
+                tail_patch_submitted = tail_patch_submitted.saturating_add(1);
                 let inflight = TailPatchInFlight {
                     utterance_id: req.utterance_id,
                     covered_through_secs: req.covered_through_secs,
@@ -567,6 +602,7 @@ pub(crate) async fn apple_stream_transcription_session(
     // abandon the orphaned refinement work explicitly.
     let mut abandoned_tail_patch_jobs = u64::from(tail_patch_in_flight);
     while tp_rx.try_recv().is_ok() {
+        tail_patch_submitted = tail_patch_submitted.saturating_add(1);
         abandoned_tail_patch_jobs = abandoned_tail_patch_jobs.saturating_add(1);
     }
     if abandoned_tail_patch_jobs > 0 {
@@ -575,8 +611,6 @@ pub(crate) async fn apple_stream_transcription_session(
             "Layer 1 tail-patch work abandoned after Apple seal worker closed"
         );
     }
-    report_tail_patch_drain_degrade(event_sink.as_ref(), abandoned_tail_patch_jobs);
-
     // C1 stop-drain: close the Layer 1 lane with its bounded drain. Whatever
     // happened inside (clean close, disconnect, incomplete drain), the method
     // returns and the recording finishes on Apple + lexicon. The outcome's
@@ -608,7 +642,9 @@ pub(crate) async fn apple_stream_transcription_session(
 
     let mut sealed_spans = Vec::new();
     let mut accepted_tail_patch_replacements = 0u64;
-    let mut tail_patch_refusals = 0u64;
+    let mut tail_patch_jobs_applied = 0u64;
+    let mut tail_patch_jobs_skipped = 0u64;
+    let mut tail_patch_timeout_residue = 0u64;
     match worker.join() {
         Ok(Ok(outcome)) => {
             info!(
@@ -621,7 +657,9 @@ pub(crate) async fn apple_stream_transcription_session(
                 "Apple progressive live session finished"
             );
             accepted_tail_patch_replacements = outcome.tail_patch_replacements;
-            tail_patch_refusals = outcome.tail_patch_refusals;
+            tail_patch_jobs_applied = outcome.tail_patch_jobs_applied;
+            tail_patch_jobs_skipped = outcome.tail_patch_jobs_skipped;
+            tail_patch_timeout_residue = outcome.tail_patch_timeout_residue;
             sealed_spans = outcome.sealed_spans;
         }
         Ok(Err(e)) => {
@@ -638,13 +676,19 @@ pub(crate) async fn apple_stream_transcription_session(
         }
     }
 
-    log_tail_patch_session_receipt(
-        accepted_tail_patch_replacements,
-        tail_patch_lane
-            .skipped()
-            .saturating_add(tail_patch_refusals),
-        abandoned_tail_patch_jobs,
+    let receipt = tail_patch_receipt_after_stop(
+        tail_patch_on,
+        tail_patch_submitted,
+        tail_patch_jobs_applied,
+        tail_patch_jobs_skipped,
+        tail_patch_timeout_residue,
     );
+    log_tail_patch_session_receipt(receipt);
+    report_tail_patch_drain_degrade(
+        event_sink.as_ref(),
+        receipt.timed_out.saturating_add(receipt.abandoned),
+    );
+    event_sink.on_event(&receipt.as_event());
     if let Some(candidate) = layer1_candidate {
         let unbound_mutations = plan_live_layer1_gap_patches(&sealed_spans, &candidate).len();
         if unbound_mutations > 0 {
@@ -747,6 +791,11 @@ struct AppleSealState {
     tail_patch_applications: HashSet<TailPatchApplicationKey>,
     /// Bounded patch events that actually rewrote a pending span this session.
     tail_patch_replacements: u64,
+    /// Completed provider jobs whose mutation crossed the rewrite fence.
+    tail_patch_jobs_applied: u64,
+    /// Completed provider jobs that produced no accepted mutation (no-change,
+    /// provider skip, identity/range refusal, or sealed-fence refusal).
+    tail_patch_jobs_skipped: u64,
     /// Identity, replay, sealed-fence, or invalid-range refusals.
     tail_patch_refusals: u64,
     /// The session's single Silero: Supervisor VAD + utterance ledger. `None`
@@ -794,6 +843,8 @@ impl AppleSealState {
             pending_events: BTreeMap::new(),
             tail_patch_applications: HashSet::new(),
             tail_patch_replacements: 0,
+            tail_patch_jobs_applied: 0,
+            tail_patch_jobs_skipped: 0,
             tail_patch_refusals: 0,
             fusion: None,
             fusion_seal_armed: false,
@@ -903,6 +954,7 @@ impl AppleSealState {
         completion: TailPatchCompletion,
         now_secs: f32,
     ) {
+        let replacements_before = self.tail_patch_replacements;
         let utterance_id = completion.utterance_id;
         self.tail_patch_awaiting_completion = self.tail_patch_awaiting_completion.saturating_sub(1);
         let request_identity = completion.request_identity;
@@ -953,6 +1005,11 @@ impl AppleSealState {
             } else {
                 self.progressive.note_whisper_window_elapsed(id, end);
             }
+        }
+        if self.tail_patch_replacements > replacements_before {
+            self.tail_patch_jobs_applied = self.tail_patch_jobs_applied.saturating_add(1);
+        } else {
+            self.tail_patch_jobs_skipped = self.tail_patch_jobs_skipped.saturating_add(1);
         }
         self.emit_ready_progressive_seals(ev_tx, now_secs);
     }
@@ -1190,6 +1247,12 @@ struct AppleStreamOutcome {
     tail_patch_replacements: u64,
     /// Completions refused by identity, replay, range, or sealed-fence checks.
     tail_patch_refusals: u64,
+    /// Job-level outcome after the single rewrite fence adjudicated it.
+    tail_patch_jobs_applied: u64,
+    /// Completed jobs with no accepted mutation, including no-change.
+    tail_patch_jobs_skipped: u64,
+    /// Jobs still outstanding when the bounded closure wait expired.
+    tail_patch_timeout_residue: u64,
     sealed_spans: Vec<SealedSpan>,
 }
 
@@ -2669,6 +2732,9 @@ fn apple_stream_worker(
         under_commit_escalations: state.under_commit_escalations,
         tail_patch_replacements: state.tail_patch_replacements,
         tail_patch_refusals: state.tail_patch_refusals,
+        tail_patch_jobs_applied: state.tail_patch_jobs_applied,
+        tail_patch_jobs_skipped: state.tail_patch_jobs_skipped,
+        tail_patch_timeout_residue: state.tail_patch_awaiting_completion,
         sealed_spans: state.progressive.sealed_spans().to_vec(),
     })
 }
@@ -4214,6 +4280,30 @@ mod tests {
         assert!(matches!(events[1], EngineEvent::SessionFinalised { .. }));
     }
 
+    #[test]
+    fn tail_patch_receipt_uses_worker_adjudicated_job_buckets() {
+        let receipt = tail_patch_receipt_after_stop(true, 3, 1, 1, 1);
+        assert_eq!(receipt.applied, 1);
+        assert_eq!(receipt.skipped, 1);
+        assert_eq!(receipt.timed_out, 1);
+        assert_eq!(receipt.abandoned, 0);
+        assert!(receipt.is_reconciled());
+
+        let worker_failed = tail_patch_receipt_after_stop(true, 2, 0, 0, 0);
+        assert_eq!(worker_failed.abandoned, 2);
+        assert_eq!(worker_failed.drain, TailPatchDrainDisposition::Abandoned);
+        assert!(worker_failed.is_reconciled());
+
+        let mixed = tail_patch_receipt_after_stop(true, 4, 0, 0, 2);
+        assert_eq!(mixed.timed_out, 2);
+        assert_eq!(mixed.abandoned, 2);
+        assert_eq!(
+            mixed.drain,
+            TailPatchDrainDisposition::TimedOut,
+            "timeout takes precedence while both terminal counters remain explicit"
+        );
+    }
+
     fn synthetic_tail_job(utterance_id: u64, outcome: TailPatchOutcome) -> TailPatchJobResult {
         let range = TailSampleRange {
             session: "test-session".to_string(),
@@ -4566,6 +4656,11 @@ mod tests {
             state.tail_patch_awaiting_completion, 0,
             "every job reported back — the stop path owes no further wait"
         );
+        assert_eq!(state.tail_patch_jobs_applied, 0);
+        assert_eq!(
+            state.tail_patch_jobs_skipped, 1,
+            "NoChange/provider skip is a completed skipped job, never missing arithmetic"
+        );
         assert!(
             !state.progressive.pending_spans().is_empty(),
             "yet a span is still pending: waiting on this queue would hang on nothing"
@@ -4656,13 +4751,13 @@ mod tests {
         );
     }
 
-    /// The stock product fails closed. Explicit `phase1` is the only way to arm
-    /// the fenced mutation lane until field/corpus validation earns promotion.
+    /// Compatibility parser semantics remain strict. Product-mode defaults are
+    /// resolved at recording bootstrap, not by this parser alone.
     #[test]
-    fn apple_tail_patch_lane_is_off_by_default_and_phase1_arms() {
+    fn layered_phase_compatibility_parser_accepts_phase1_and_off() {
         assert!(
             layered_phase_from_raw(None).is_none(),
-            "the unset production default must preserve Apple-only canvas truth"
+            "unset means no explicit compatibility override"
         );
         assert!(
             parse_layered_phase_value("off").is_none(),

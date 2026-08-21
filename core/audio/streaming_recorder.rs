@@ -20,8 +20,8 @@ use crate::audio::recorder::{Recorder, RecorderConfig};
 use crate::config::UserSettings;
 use crate::pipeline::contracts::{EngineEvent, EventSink};
 use crate::pipeline::streaming::{
-    SessionConfig, collect_buffered_engine_events_with_config, stream_log_path,
-    transcription_session,
+    SessionConfig, TailPatchSessionReceipt, collect_buffered_engine_events_with_config,
+    stream_log_path, transcription_session,
 };
 use anyhow::{Context, Result, anyhow};
 use std::sync::Arc;
@@ -46,6 +46,9 @@ pub struct ProductionSessionReplay {
     pub layer1_armed: bool,
     /// Engine that actually owned the live canvas for this replay session.
     pub streaming_engine_label: String,
+    /// Typed local tail-patch arming and bounded-drain evidence emitted by the
+    /// production session, when that session reached finality.
+    pub tail_patch_receipt: Option<TailPatchSessionReceipt>,
 }
 
 /// Resolve the production Layer 1 decision for one recording.
@@ -110,10 +113,12 @@ pub async fn replay_production_session(
         None,
     );
     let events = collect_buffered_engine_events_with_config(samples, config).await?;
+    let tail_patch_receipt = TailPatchSessionReceipt::from_events(&events);
     Ok(ProductionSessionReplay {
         events,
         layer1_armed,
         streaming_engine_label,
+        tail_patch_receipt,
     })
 }
 

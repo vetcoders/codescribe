@@ -76,6 +76,7 @@ mod tests;
 
 pub use bootstrap::{
     GatewaySessionAvailability, gateway_session_availability, layer1_decision_for_recording,
+    layer1_decision_for_recording_with_layered_raw,
 };
 pub use cloud::{
     CloudGatewayTransport, CloudSessionLimits, CloudSessionTelemetry, GatewayConnection,
@@ -98,7 +99,7 @@ pub use local_helper::{
 pub use provider::{AsrSessionProvider, CanvasEngine, LayerSelection, RefinerMode, SessionInput};
 pub use recorder::{
     FanOutVerdict, LAYER1_DEGRADED_WARNING_CODE, Layer1Decision, Layer1DegradeReason,
-    Layer1LaneState, Layer1LaneTelemetry, Layer1SessionOutcome, RecorderLayer1Lane,
-    RecorderLifecycleEvent, RecorderLifecycleEvents, RecorderLifecycleHandle,
+    Layer1LaneState, Layer1LaneTelemetry, Layer1SessionOutcome, LocalTailPatchDisposition,
+    RecorderLayer1Lane, RecorderLifecycleEvent, RecorderLifecycleEvents, RecorderLifecycleHandle,
     apply_recorder_lifecycle_event, recorder_lifecycle_channel,
 };

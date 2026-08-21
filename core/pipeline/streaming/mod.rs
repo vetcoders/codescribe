@@ -49,8 +49,9 @@ pub use live_assembly::{LiveAssembly, assemble_live_from_events};
 #[cfg(any(test, feature = "offline_eval"))]
 pub use offline::transcribe_streaming_samples;
 pub use session::{
-    SessionConfig, collect_buffered_engine_events, collect_buffered_engine_events_with_config,
-    transcribe_buffered_samples,
+    SessionConfig, TAIL_PATCH_SESSION_RECEIPT_WARNING_CODE, TailPatchDrainDisposition,
+    TailPatchSessionReceipt, collect_buffered_engine_events,
+    collect_buffered_engine_events_with_config, transcribe_buffered_samples,
 };
 
 #[cfg(test)]

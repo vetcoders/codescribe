@@ -14,8 +14,9 @@ use super::cloud::{
     CloudSessionLimits, GatewayConnection, GatewayWebSocketTransport, LiveCloudAsrSession,
 };
 use super::consent::authorize_cloud_egress;
-use super::recorder::Layer1Decision;
+use super::recorder::{Layer1Decision, LocalTailPatchDisposition};
 use crate::config::{AsrProductMode, Config, UserSettings};
+use crate::stt::tail_patcher::{LAYERED_TRANSCRIPTION_ENV, layered_phase_from_raw};
 
 /// Availability of one validated live session at recording start.
 ///
@@ -105,9 +106,28 @@ pub fn layer1_decision_for_recording(
     settings: &UserSettings,
     gateway: GatewaySessionAvailability,
 ) -> Layer1Decision {
+    let layered_raw = std::env::var(LAYERED_TRANSCRIPTION_ENV).ok();
+    layer1_decision_for_recording_with_layered_raw(settings, gateway, layered_raw.as_deref())
+}
+
+/// Pure override seam for the recording-start refinement decision.
+///
+/// `LocalPower` means Apple-first plus local Whisper patching even when the
+/// compatibility env key is absent. Explicit `phase1`..`phase4` remains an
+/// armed token. Explicit hard-off and malformed values are named degraded
+/// states, so Local power can never masquerade as healthy Apple-only.
+pub fn layer1_decision_for_recording_with_layered_raw(
+    settings: &UserSettings,
+    gateway: GatewaySessionAvailability,
+    layered_raw: Option<&str>,
+) -> Layer1Decision {
     let resolved = settings.resolved_asr_mode();
-    if resolved.mode != AsrProductMode::Cloud {
-        return Layer1Decision::Disarmed;
+    match resolved.mode {
+        AsrProductMode::LocalPower => {
+            return Layer1Decision::LocalTailPatch(local_tail_patch_disposition(layered_raw));
+        }
+        AsrProductMode::AppleOnly => return Layer1Decision::Disarmed,
+        AsrProductMode::Cloud => {}
     }
 
     let Ok(authorization) = authorize_cloud_egress(&resolved.consent) else {
@@ -130,6 +150,23 @@ pub fn layer1_decision_for_recording(
         return Layer1Decision::Disarmed;
     };
     Layer1Decision::Armed(Box::new(session))
+}
+
+fn local_tail_patch_disposition(raw: Option<&str>) -> LocalTailPatchDisposition {
+    match raw {
+        None => LocalTailPatchDisposition::ArmedDefault,
+        Some(value) => match layered_phase_from_raw(Some(value)) {
+            Some(phase) => LocalTailPatchDisposition::ArmedPhase(phase),
+            None if matches!(
+                value.trim().to_ascii_lowercase().as_str(),
+                "" | "off" | "0" | "false" | "no"
+            ) =>
+            {
+                LocalTailPatchDisposition::DegradedExplicitOff
+            }
+            None => LocalTailPatchDisposition::DegradedInvalidOverride,
+        },
+    }
 }
 
 #[cfg(test)]
@@ -178,7 +215,7 @@ mod tests {
     }
 
     #[test]
-    fn cloud_failure_and_explicit_local_mode_never_load_an_in_process_model() {
+    fn local_power_arms_tail_patch_with_final_pass_off_without_loading_during_policy_resolution() {
         let probe = || {
             crate::stt::whisper::singleton::test_init_calls()
                 + crate::stt::whisper::singleton::test_load_calls()
@@ -192,17 +229,62 @@ mod tests {
         let local_power = layer1_decision_for_recording(
             &UserSettings {
                 asr_mode: Some("local_power".to_string()),
+                final_pass_mode: Some("off".to_string()),
                 ..UserSettings::default()
             },
             ready(),
         );
 
         assert!(!offline.is_armed());
-        assert!(
-            !local_power.is_armed(),
-            "L0 owns the explicit helper provider"
+        assert!(local_power.is_armed());
+        assert_eq!(
+            local_power.local_tail_patch_disposition(),
+            Some(LocalTailPatchDisposition::ArmedDefault)
         );
         assert_eq!(probe().saturating_sub(before), 0);
+    }
+
+    #[test]
+    fn local_power_explicit_phase_arms_and_hard_off_is_degraded() {
+        let settings = UserSettings {
+            asr_mode: Some("local_power".to_string()),
+            ..UserSettings::default()
+        };
+        let phase = layer1_decision_for_recording_with_layered_raw(
+            &settings,
+            GatewaySessionAvailability::Unavailable,
+            Some("phase1"),
+        );
+        assert_eq!(
+            phase.local_tail_patch_disposition(),
+            Some(LocalTailPatchDisposition::ArmedPhase(1))
+        );
+
+        let off = layer1_decision_for_recording_with_layered_raw(
+            &settings,
+            GatewaySessionAvailability::Unavailable,
+            Some("off"),
+        );
+        assert!(!off.is_armed());
+        assert_eq!(
+            off.local_tail_patch_disposition(),
+            Some(LocalTailPatchDisposition::DegradedExplicitOff)
+        );
+    }
+
+    #[test]
+    fn apple_only_never_arms_local_tail_patch() {
+        let settings = UserSettings {
+            asr_mode: Some("apple_only".to_string()),
+            ..UserSettings::default()
+        };
+        let decision = layer1_decision_for_recording_with_layered_raw(
+            &settings,
+            GatewaySessionAvailability::Unavailable,
+            Some("phase1"),
+        );
+        assert!(!decision.is_armed());
+        assert_eq!(decision.local_tail_patch_disposition(), None);
     }
 
     #[test]
