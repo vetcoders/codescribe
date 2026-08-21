@@ -68,3 +68,7 @@ python3 scripts/bus-demux.py --name james --follow
 ```
 
 Unnamed agents do not pass. The demux never opens audio.
+
+The Codex voice bridge composes that named mailbox with a local Codex App
+Server client and cancellable macOS TTS. It submits only seals and uses live
+addressed drafts only for barge-in. See [`CODEX_VOICE_BRIDGE.md`](CODEX_VOICE_BRIDGE.md).

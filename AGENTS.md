@@ -28,6 +28,7 @@ a second workflow, dispatch plane, or worktree policy.
 
 - `docs/STT_CONTRACT.md` — engine and adjudication truth.
 - `docs/TRANSCRIPT_BUS.md` — clean event schema, privacy, and path resolution.
+- `docs/CODEX_VOICE_BRIDGE.md` — named external Codex attach, interrupt, and local TTS.
 - `docs/HOTKEYS_CONTRACT.md` — gesture, ownership, and mode routing.
 - `docs/DELIVERY_ROUTE.md` — destination selection when present on the active
   stack.

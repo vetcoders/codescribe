@@ -20,11 +20,11 @@ dogfooding: "required for repo-impacting work"
 > See [Foundation skills](../DELEGATION_MATRIX.md#foundation-no-core-vibecrafted-name-agent-worker-of-their-own)
 > when this copy lives under vibecrafted-core.
 >
-> | Path | Literal |
-> | --- | --- |
-> | Worker CLI | **none** — do not invent `vibecrafted codescribe <agent>` |
-> | Interactive | `/codescribe` · "wpięcie w bus" · "Hej James" |
-> | Operator | load this skill in-session; the human holds Fn |
+> | Path        | Literal                                                   |
+> | ----------- | --------------------------------------------------------- |
+> | Worker CLI  | **none** — do not invent `vibecrafted codescribe <agent>` |
+> | Interactive | `/codescribe` · "wpięcie w bus" · "Hej James"             |
+> | Operator    | load this skill in-session; the human holds Fn            |
 >
 > No worker CLI. Codescribe checkout runtime law: `AGENTS.md`.
 
@@ -75,6 +75,11 @@ This is not a product installer, not Voice Lab, not a fourth WorkMode.
 - Downstream: ordinary repo skills (`vc-justdo`, `vc-implement`, …) after attach.
 - Not a ship-cycle stage.
 
+For an explicit full voice loop with a dedicated Codex coding task, continue
+with `python3 scripts/codex-voice-bridge.py --name <stem> --cwd <repo>`. That
+bridge reuses the same demux, accepts only sealed input, interrupts on addressed
+live speech, and speaks final replies locally. See `docs/CODEX_VOICE_BRIDGE.md`.
+
 ## Dependencies
 
 - `scripts/bus-demux.py` in the **Codescribe checkout** (kielbasa filter). Do
@@ -86,8 +91,8 @@ This is not a product installer, not Voice Lab, not a fourth WorkMode.
 ## Quick Start
 
 1. Confirm Codescribe.app is running and `~/.codescribe/transcript-events.jsonl`
-   exists. If not, tell the human: *Stary, odpal apkę i licencję. Inaczej nie
-   zadziała.* Wait. Retry. Still missing → **fail loud**. Do not pretend to hear.
+   exists. If not, tell the human: _Stary, odpal apkę i licencję. Inaczej nie
+   zadziała._ Wait. Retry. Still missing → **fail loud**. Do not pretend to hear.
 2. Attach the follower from the Codescribe checkout:
 
 ```bash
@@ -150,6 +155,8 @@ The attach run is **done** when:
 - Treating overlay as the chat
 - Pasting ERi / `vc-workflow` rails into this skill
 - Assigning yourself Darek
+- Treating a voice phrase as approval for privileged, destructive, push, merge,
+  or release work
 
 ## Examples
 
