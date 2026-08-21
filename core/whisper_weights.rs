@@ -28,6 +28,7 @@ pub fn validate_whisper_model_bundle(path: &Path) -> Result<()> {
 
 /// Validate the config schema and reject every declared quantization mode.
 pub(crate) fn validate_whisper_config(path: &Path) -> Result<()> {
+    // nosemgrep: rust.actix.path-traversal.tainted-path.tainted-path -- Read-only model inspection. `path` is an operator-selected local model config or an internally resolved bundle/cache child; no network/request path component reaches it.
     let raw = fs::read_to_string(path)
         .with_context(|| format!("read Whisper config {}", path.display()))?;
     let config: serde_json::Value = serde_json::from_str(&raw)
