@@ -5,7 +5,9 @@
 //! model from here instead of re-implementing its own precedence rules.
 
 use anyhow::{Context, Result, anyhow};
+use sha2::{Digest, Sha256};
 use std::fs;
+use std::io::{Read, Seek, SeekFrom};
 use std::path::{Path, PathBuf};
 
 use crate::hf_cache;
@@ -16,17 +18,13 @@ pub const DEFAULT_MODEL: &str = "whisper-large-v3-turbo";
 /// the Settings → Dictation download. fp16 weights: no q8→F32 dequantization
 /// on load, at the cost of a larger download than the q8 repo.
 pub const DEFAULT_WHISPER_REPO: &str = "mlx-community/whisper-large-v3-turbo";
-/// Previous default (q8). Kept as a resolution fallback so installs that
-/// already carry it keep transcribing without a re-download.
-pub const LEGACY_MODEL: &str = "whisper-large-v3-turbo-mlx-q8";
-/// Repo behind [`LEGACY_MODEL`]. Also the companion source for
-/// [`COMPANION_MODEL_FILES`], which [`DEFAULT_WHISPER_REPO`] does not ship.
-pub const LEGACY_WHISPER_REPO: &str = "LibraxisAI/whisper-large-v3-turbo-mlx-q8";
-/// Files the mlx-community repo does not ship. Both are quantization-independent
-/// (same tokenizer and mel filterbank across q8/fp16), so composing them from
-/// the legacy repo yields a correct model directory.
-const COMPANION_MODEL_FILES: [&str; 2] = ["tokenizer.json", "mel_filters.npz"];
-
+/// Official Transformers tokenizer paired with Whisper large-v3-turbo.
+pub const TOKENIZER_WHISPER_REPO: &str = "openai/whisper-large-v3-turbo";
+/// Pinned OpenAI Whisper asset. The checksum is asserted by the installer.
+pub const MEL_FILTERS_URL: &str = "https://raw.githubusercontent.com/openai/whisper/5f86d1d86363843179951550570367b37c5d6f78/whisper/assets/mel_filters.npz";
+/// SHA-256 of [`MEL_FILTERS_URL`].
+pub const MEL_FILTERS_SHA256: &str =
+    "7450ae70723a5ef9d341e3cee628c7cb0177f36ce42c44b7ed2bf3325f0f6d4c";
 /// Files that must all be present for a directory to count as a usable model.
 const REQUIRED_MODEL_FILES: [&str; 3] = ["config.json", "tokenizer.json", "mel_filters.npz"];
 /// Weight file names, of which **any one** satisfies the completeness check —
@@ -57,12 +55,74 @@ fn canonicalize_or_self(path: PathBuf) -> PathBuf {
 /// [`REQUIRED_MODEL_WEIGHTS`]. This is the gate that keeps half-downloaded
 /// directories from being advertised or resolved as loadable models.
 fn is_complete_whisper_model_dir(path: &Path) -> bool {
-    REQUIRED_MODEL_FILES
+    let files_present = REQUIRED_MODEL_FILES
         .iter()
         .all(|name| path.join(name).exists())
         && REQUIRED_MODEL_WEIGHTS
             .iter()
-            .any(|name| path.join(name).exists())
+            .any(|name| path.join(name).exists());
+    files_present && is_unquantized_whisper_model_dir(path)
+}
+
+/// Reject quantized or malformed weights before they can reach the expensive
+/// engine loader. The config check catches normal MLX q8 exports; the
+/// safetensors header check also catches a q8 payload hidden behind a renamed
+/// directory or a config with its `quantization` field removed.
+pub(crate) fn is_unquantized_whisper_model_dir(path: &Path) -> bool {
+    let config = match fs::read_to_string(path.join("config.json"))
+        .ok()
+        .and_then(|raw| serde_json::from_str::<serde_json::Value>(&raw).ok())
+    {
+        Some(config) => config,
+        None => return false,
+    };
+    if config
+        .get("quantization")
+        .is_some_and(|value| !value.is_null())
+        || config
+            .get("quantization_config")
+            .is_some_and(|value| !value.is_null())
+    {
+        return false;
+    }
+
+    let Some(weights_path) = REQUIRED_MODEL_WEIGHTS
+        .iter()
+        .map(|name| path.join(name))
+        .find(|candidate| candidate.exists())
+    else {
+        return false;
+    };
+    safetensors_header_is_unquantized(&weights_path).unwrap_or(false)
+}
+
+/// Inspect only the bounded JSON header; model tensor data is never read.
+fn safetensors_header_is_unquantized(path: &Path) -> Result<bool> {
+    const MAX_HEADER_BYTES: u64 = 16 * 1024 * 1024;
+    // nosemgrep: rust.actix.path-traversal.tainted-path.tainted-path -- Read-only model inspection. `path` is an operator-selected local model file or an internally resolved bundle/cache child; no network/request path component reaches it.
+    let mut file = fs::File::open(path).with_context(|| format!("open {}", path.display()))?;
+    let mut len_bytes = [0_u8; 8];
+    file.read_exact(&mut len_bytes)
+        .with_context(|| format!("read safetensors header length from {}", path.display()))?;
+    let header_len = u64::from_le_bytes(len_bytes);
+    if header_len == 0 || header_len > MAX_HEADER_BYTES {
+        return Ok(false);
+    }
+    let mut header = vec![0_u8; header_len as usize];
+    file.seek(SeekFrom::Start(8))?;
+    file.read_exact(&mut header)
+        .with_context(|| format!("read safetensors header from {}", path.display()))?;
+    let metadata: serde_json::Value = serde_json::from_slice(&header)
+        .with_context(|| format!("parse safetensors header from {}", path.display()))?;
+    let Some(tensors) = metadata.as_object() else {
+        return Ok(false);
+    };
+    Ok(tensors.iter().all(|(name, tensor)| {
+        name == "__metadata__"
+            || (!name.ends_with(".scales")
+                && !name.ends_with(".biases")
+                && tensor.get("dtype").and_then(|value| value.as_str()) != Some("U32"))
+    }))
 }
 
 /// Whether a candidate models root owns at least one complete Whisper model.
@@ -70,7 +130,7 @@ fn is_complete_whisper_model_dir(path: &Path) -> bool {
 /// A bundled `Resources/models` directory may contain only another model
 /// family (for example the semantic embedder). Treating mere directory
 /// existence as Whisper ownership shadows the user-installed fp16 model and
-/// incorrectly drops runtime resolution to the legacy q8 cache.
+/// could incorrectly select a quantized cache instead.
 fn models_root_contains_complete_whisper_model(path: &Path) -> bool {
     fs::read_dir(path).is_ok_and(|entries| {
         entries
@@ -90,31 +150,16 @@ fn hf_snapshot_for_model(model_ref: &str) -> Option<PathBuf> {
         return None;
     }
 
-    if trimmed.contains('/') {
-        return hf_cache::find_snapshot_with_any(
-            trimmed,
-            &REQUIRED_MODEL_FILES,
-            &REQUIRED_MODEL_WEIGHTS,
-        );
-    }
-
-    if trimmed == DEFAULT_MODEL {
-        return hf_cache::find_snapshot_with_any(
-            DEFAULT_WHISPER_REPO,
-            &REQUIRED_MODEL_FILES,
-            &REQUIRED_MODEL_WEIGHTS,
-        );
-    }
-
-    if trimmed == LEGACY_MODEL {
-        return hf_cache::find_snapshot_with_any(
-            LEGACY_WHISPER_REPO,
-            &REQUIRED_MODEL_FILES,
-            &REQUIRED_MODEL_WEIGHTS,
-        );
-    }
-
-    None
+    let repo = if trimmed.contains('/') {
+        trimmed
+    } else if trimmed == DEFAULT_MODEL {
+        DEFAULT_WHISPER_REPO
+    } else {
+        return None;
+    };
+    let snapshot =
+        hf_cache::find_snapshot_with_any(repo, &REQUIRED_MODEL_FILES, &REQUIRED_MODEL_WEIGHTS)?;
+    is_complete_whisper_model_dir(&snapshot).then_some(snapshot)
 }
 
 /// Owner of the resolved runtime models directory.
@@ -270,8 +315,6 @@ impl ModelManager {
 /// 3. Configured Hugging Face repo snapshot
 /// 4. Default models-dir alias (`whisper-large-v3-turbo`)
 /// 5. Default Hugging Face snapshot (`mlx-community/whisper-large-v3-turbo`)
-/// 6. Legacy models-dir alias (`whisper-large-v3-turbo-mlx-q8`)
-/// 7. Legacy Hugging Face snapshot (`LibraxisAI/whisper-large-v3-turbo-mlx-q8`)
 pub fn resolve_runtime_whisper_model_path(configured_model: Option<&str>) -> Result<PathBuf> {
     if let Ok(path) = std::env::var("CODESCRIBE_MODEL_PATH") {
         let candidate = PathBuf::from(path.trim());
@@ -305,22 +348,13 @@ pub fn resolve_runtime_whisper_model_path(configured_model: Option<&str>) -> Res
         return Ok(snapshot);
     }
 
-    let legacy_local = manager.get_model_path(LEGACY_MODEL);
-    if is_complete_whisper_model_dir(&legacy_local) {
-        return Ok(canonicalize_or_self(legacy_local));
-    }
-
-    if let Some(snapshot) = hf_snapshot_for_model(LEGACY_MODEL) {
-        return Ok(snapshot);
-    }
-
     Err(anyhow!(
-        "Whisper runtime fallback model not available.\n\
+        "Unquantized Whisper runtime model not available.\n\
          Public builds do not embed Whisper; install it from Settings → Dictation,\n\
          set CODESCRIBE_MODEL_PATH, configure LOCAL_MODEL, or warm the Hugging Face cache.\n\n\
-         Download with: hf download {}\n\
+         Quantized q8 models are intentionally refused.\n\n\
+         Download with: make download-model\n\
          Or: Settings → Dictation → Download Whisper",
-        DEFAULT_WHISPER_REPO
     ))
 }
 
@@ -372,22 +406,18 @@ where
         return Ok(canonicalize_or_self(dest));
     }
 
-    // Compose from warm local sources first, so Settings "Download" is a no-op
-    // when the pieces are already on disk. The primary repo ships only
-    // config.json + weights; tokenizer.json and mel_filters.npz come from the
-    // legacy q8 sources. config.json and weights must stay paired to the
-    // primary repo — legacy weights under the new alias would mislabel q8 as
-    // fp16, so legacy sources only ever contribute the companion files.
+    // Compose from warm official sources first, so Settings "Download" is a
+    // no-op when the pieces are already on disk. Config and weights come from
+    // mlx-community's fp16 conversion; tokenizer comes from OpenAI's matching
+    // Transformers repository. The pinned mel filterbank is fetched below.
     if let Some(snapshot) = hf_cache::find_snapshot(DEFAULT_WHISPER_REPO, &["config.json"])
         && snapshot != dest
     {
         copy_model_files(&snapshot, &dest, &["config.json"])?;
         copy_model_files(&snapshot, &dest, &REQUIRED_MODEL_WEIGHTS)?;
     }
-    let legacy_local = manager.get_model_path(LEGACY_MODEL);
-    copy_model_files(&legacy_local, &dest, &COMPANION_MODEL_FILES)?;
-    if let Some(snapshot) = hf_snapshot_for_model(LEGACY_MODEL) {
-        copy_model_files(&snapshot, &dest, &COMPANION_MODEL_FILES)?;
+    if let Some(snapshot) = hf_cache::find_snapshot(TOKENIZER_WHISPER_REPO, &["tokenizer.json"]) {
+        copy_model_files(&snapshot, &dest, &["tokenizer.json"])?;
     }
     if is_complete_whisper_model_dir(&dest) {
         return Ok(canonicalize_or_self(dest));
@@ -402,8 +432,6 @@ where
         .context("build HTTP client for Whisper download")?;
 
     // Small files first so a failed auth fails fast before multi-GB weights.
-    // config.json describes the primary weights, so it has no fallback source;
-    // the companion files fall back to the legacy repo when the primary 404s.
     download_hf_file(
         &client,
         DEFAULT_WHISPER_REPO,
@@ -411,29 +439,21 @@ where
         &dest.join("config.json"),
         &mut on_progress,
     )?;
-    for name in COMPANION_MODEL_FILES {
-        let target = dest.join(name);
-        if let Err(err) = download_hf_file(
-            &client,
-            DEFAULT_WHISPER_REPO,
-            name,
-            &target,
-            &mut on_progress,
-        ) {
-            tracing::warn!(
-                error = %err,
-                file = name,
-                "primary repo does not ship this file; falling back to legacy repo"
-            );
-            download_hf_file(
-                &client,
-                LEGACY_WHISPER_REPO,
-                name,
-                &target,
-                &mut on_progress,
-            )?;
-        }
-    }
+    download_hf_file(
+        &client,
+        TOKENIZER_WHISPER_REPO,
+        "tokenizer.json",
+        &dest.join("tokenizer.json"),
+        &mut on_progress,
+    )?;
+    download_url_file(
+        &client,
+        MEL_FILTERS_URL,
+        "mel_filters.npz",
+        &dest.join("mel_filters.npz"),
+        &mut on_progress,
+    )?;
+    verify_sha256(&dest.join("mel_filters.npz"), MEL_FILTERS_SHA256)?;
 
     let weights_dest = dest.join("weights.safetensors");
     let weights_alt = dest.join("model.safetensors");
@@ -476,7 +496,7 @@ where
 /// Copy selected model files from a local source into the user models directory.
 ///
 /// Lets Settings → Download complete without network traffic when the pieces are
-/// already on disk (warm HF cache, legacy q8 install). A missing source is a
+/// already on disk (warm official caches). A missing source is a
 /// clean no-op and existing destination files are left alone, so an interrupted
 /// composition resumes rather than restarting.
 fn copy_model_files(src: &Path, dest: &Path, names: &[&str]) -> Result<()> {
@@ -488,7 +508,7 @@ fn copy_model_files(src: &Path, dest: &Path, names: &[&str]) -> Result<()> {
         let from = src.join(name);
         let to = dest.join(name);
         if from.exists() && !to.exists() {
-            // nosemgrep: rust.actix.path-traversal.tainted-path.tainted-path -- Both ends are internal: `name` comes from the REQUIRED_MODEL_* / COMPANION_MODEL_FILES compile-time constants, and callers pass HF cache snapshot dirs or ModelManager::get_model_path outputs. No caller-supplied path component reaches here.
+            // nosemgrep: rust.actix.path-traversal.tainted-path.tainted-path -- Both ends are internal: `name` comes from compile-time model file constants, and callers pass HF cache snapshot dirs or ModelManager::get_model_path outputs. No caller-supplied path component reaches here.
             fs::copy(&from, &to)
                 .with_context(|| format!("copy {} → {}", from.display(), to.display()))?;
         }
@@ -522,8 +542,35 @@ where
     }
 
     let url = format!("https://huggingface.co/{repo}/resolve/main/{filename}");
-    let mut request = client.get(&url);
-    if let Ok(token) = std::env::var("HF_TOKEN") {
+    download_url_file_authenticated(client, &url, filename, dest, on_progress, true)
+}
+
+fn download_url_file<F>(
+    client: &reqwest::blocking::Client,
+    url: &str,
+    filename: &str,
+    dest: &Path,
+    on_progress: &mut F,
+) -> Result<()>
+where
+    F: FnMut(&str, u64, Option<u64>),
+{
+    download_url_file_authenticated(client, url, filename, dest, on_progress, false)
+}
+
+fn download_url_file_authenticated<F>(
+    client: &reqwest::blocking::Client,
+    url: &str,
+    filename: &str,
+    dest: &Path,
+    on_progress: &mut F,
+    use_hf_token: bool,
+) -> Result<()>
+where
+    F: FnMut(&str, u64, Option<u64>),
+{
+    let mut request = client.get(url);
+    if use_hf_token && let Ok(token) = std::env::var("HF_TOKEN") {
         let token = token.trim();
         if !token.is_empty() {
             request = request.bearer_auth(token);
@@ -572,6 +619,21 @@ where
     fs::rename(&partial, dest)
         .with_context(|| format!("rename {} → {}", partial.display(), dest.display()))?;
     on_progress(filename, done, total.or(Some(done)));
+    Ok(())
+}
+
+fn verify_sha256(path: &Path, expected: &str) -> Result<()> {
+    // nosemgrep: rust.actix.path-traversal.tainted-path.tainted-path -- Read-only checksum of the fixed mel_filters.npz destination assembled under the internally resolved model directory.
+    let bytes = fs::read(path).with_context(|| format!("read {} for checksum", path.display()))?;
+    let actual = format!("{:x}", Sha256::digest(bytes));
+    if actual != expected {
+        return Err(anyhow!(
+            "SHA-256 mismatch for {}: expected {}, got {}",
+            path.display(),
+            expected,
+            actual
+        ));
+    }
     Ok(())
 }
 
@@ -626,7 +688,20 @@ mod tests {
         fs::write(path.join("config.json"), "{}").unwrap();
         fs::write(path.join("tokenizer.json"), "{}").unwrap();
         fs::write(path.join("mel_filters.npz"), "npz").unwrap();
-        fs::write(path.join("model.safetensors"), "weights").unwrap();
+        let header = br#"{"model.weight":{"dtype":"F16","shape":[1],"data_offsets":[0,2]}}"#;
+        let mut safetensors = (header.len() as u64).to_le_bytes().to_vec();
+        safetensors.extend_from_slice(header);
+        safetensors.extend_from_slice(&[0, 0]);
+        fs::write(path.join("model.safetensors"), safetensors).unwrap();
+    }
+
+    fn create_q8_whisper_model(path: &Path) {
+        create_complete_whisper_model(path);
+        fs::write(
+            path.join("config.json"),
+            r#"{"quantization":{"group_size":32,"bits":8}}"#,
+        )
+        .unwrap();
     }
 
     /// A bundle containing only the semantic embedder must not claim ownership
@@ -639,7 +714,7 @@ mod tests {
         fs::create_dir_all(&embedder).unwrap();
         fs::write(embedder.join("config.json"), "{}").unwrap();
         fs::write(embedder.join("tokenizer.json"), "{}").unwrap();
-        fs::write(embedder.join("model.safetensors"), "weights").unwrap();
+        fs::write(embedder.join("model.safetensors"), "not-a-safetensors-file").unwrap();
 
         assert!(!models_root_contains_complete_whisper_model(&models_dir));
 
@@ -675,11 +750,7 @@ mod tests {
         let models_dir = temp_dir.path().join("../../models");
         fs::create_dir_all(&models_dir).unwrap();
 
-        let model_names = [
-            "whisper-base-mlx-q8",
-            "whisper-medium-mlx-q8",
-            "whisper-large-v3-turbo-mlx-q8",
-        ];
+        let model_names = ["whisper-base-fp16", "whisper-medium-fp16", DEFAULT_MODEL];
 
         for name in &model_names {
             let model_path = models_dir.join(name);
@@ -716,6 +787,36 @@ mod tests {
         assert!(manager.check_model_exists("complete-whisper"));
         assert!(!manager.check_model_exists("incomplete-whisper"));
         assert_eq!(manager.list_models().unwrap(), vec!["complete-whisper"]);
+    }
+
+    /// Q8 is refused even when every expected file exists.
+    #[test]
+    #[serial]
+    fn model_manager_rejects_complete_q8_model() {
+        let temp_dir = TempDir::new().unwrap();
+        let models_dir = temp_dir.path().join("models");
+        let q8 = models_dir.join("renamed-as-fp16");
+        create_q8_whisper_model(&q8);
+
+        let _models_dir = EnvGuard::set("CODESCRIBE_MODELS_DIR", &models_dir);
+        let manager = ModelManager::new().unwrap();
+        assert!(!manager.check_model_exists("renamed-as-fp16"));
+        assert!(manager.list_models().unwrap().is_empty());
+    }
+
+    /// Header-level detection catches packed q8 even if config metadata lies.
+    #[test]
+    fn model_manager_rejects_q8_tensor_header_without_quantization_config() {
+        let temp_dir = TempDir::new().unwrap();
+        let model = temp_dir.path().join("model");
+        create_complete_whisper_model(&model);
+        let header = br#"{"encoder.weight":{"dtype":"U32","shape":[1],"data_offsets":[0,4]},"encoder.scales":{"dtype":"F16","shape":[1],"data_offsets":[4,6]}}"#;
+        let mut safetensors = (header.len() as u64).to_le_bytes().to_vec();
+        safetensors.extend_from_slice(header);
+        safetensors.extend_from_slice(&[0; 6]);
+        fs::write(model.join("model.safetensors"), safetensors).unwrap();
+
+        assert!(!is_complete_whisper_model_dir(&model));
     }
 
     /// Complete `CODESCRIBE_MODEL_PATH` wins over the bundled default tier.
@@ -810,7 +911,7 @@ mod tests {
         );
     }
 
-    /// All-empty fallback chain returns guidance mentioning env and `hf download`.
+    /// All-empty fallback chain returns guidance mentioning env and the composer.
     #[test]
     #[serial]
     fn resolve_runtime_whisper_model_path_errors_with_guidance_when_all_tiers_empty() {
@@ -830,8 +931,8 @@ mod tests {
             "error must mention the env override knob, got: {message}"
         );
         assert!(
-            message.contains("hf download"),
-            "error must hint at HF cache warm-up, got: {message}"
+            message.contains("make download-model"),
+            "error must point to the complete-model composer, got: {message}"
         );
     }
 

@@ -17,9 +17,9 @@ use tempfile::TempDir;
 mod e2e_stt_matrix;
 
 use e2e_stt_matrix::{
-    ModelDiscovery, ModelSource, STT_OPT_IN_ENV, WHISPER_LARGE_MODEL, WHISPER_TURBO_MODEL,
-    discover_local_whisper_model, discover_local_whisper_model_for, model_discovery_hint,
-    parse_opt_in, skip_unless_opt_in, test_audio_path, whisper_model_missing_parts,
+    ModelDiscovery, ModelSource, STT_OPT_IN_ENV, WHISPER_FP16_MODEL, discover_local_whisper_model,
+    discover_local_whisper_model_for, model_discovery_hint, parse_opt_in, skip_unless_opt_in,
+    test_audio_path, whisper_model_missing_parts,
 };
 
 fn home_dir() -> PathBuf {
@@ -223,10 +223,10 @@ fn deterministic_gate_parser_requires_explicit_opt_in_values() {
 fn deterministic_model_discovery_prefers_complete_env_override() {
     let (_tmp, home) = temp_home();
     let models_root = home.join(".codescribe/models");
-    let turbo = models_root.join(WHISPER_TURBO_MODEL);
+    let fp16 = models_root.join(WHISPER_FP16_MODEL);
     let env_model = home.join("custom/whisper-model");
 
-    create_complete_model(&turbo);
+    create_complete_model(&fp16);
     create_complete_model(&env_model);
 
     let hf_bases = Vec::<PathBuf>::new();
@@ -245,30 +245,20 @@ fn deterministic_model_discovery_prefers_complete_env_override() {
 }
 
 #[test]
-fn deterministic_model_discovery_skips_incomplete_turbo_and_falls_back_to_large() {
+fn deterministic_model_discovery_refuses_incomplete_fp16_without_legacy_fallback() {
     let (_tmp, home) = temp_home();
     let models_root = home.join(".codescribe/models");
-    let turbo = models_root.join(WHISPER_TURBO_MODEL);
-    let large = models_root.join(WHISPER_LARGE_MODEL);
+    let fp16 = models_root.join(WHISPER_FP16_MODEL);
 
-    create_incomplete_model(&turbo);
-    create_complete_model(&large);
+    create_incomplete_model(&fp16);
 
     let hf_bases = Vec::<PathBuf>::new();
-    let found = discover_local_whisper_model_for(&home, None, &hf_bases)
-        .expect("expected fallback to large model");
-
-    assert_eq!(
-        found.source,
-        ModelSource::UserLarge,
-        "incomplete turbo model must not block fallback to complete large model"
-    );
-    assert_eq!(
-        found.path, large,
-        "expected large model path to be selected"
+    assert!(
+        discover_local_whisper_model_for(&home, None, &hf_bases).is_none(),
+        "an incomplete fp16 model must not fall back to a quantized model"
     );
 
-    let missing = whisper_model_missing_parts(&turbo);
+    let missing = whisper_model_missing_parts(&fp16);
     assert!(
         missing.contains(&"config.json"),
         "incomplete turbo should report missing artifacts for easier diagnosis"

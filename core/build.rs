@@ -37,8 +37,7 @@ use license_key_contract::{
 const DEFAULT_MODEL_NAME: &str = "whisper-large-v3-turbo";
 /// Hugging Face repo id for the default Whisper snapshot (HF cache + download hints).
 /// The repo ships only config + fp16 weights; `make download-model` composes
-/// tokenizer.json + mel_filters.npz from the legacy q8 repo, and runtime keeps
-/// a legacy fallback (see core/config/models.rs).
+/// the official OpenAI tokenizer and pinned mel filters into the runtime dir.
 const DEFAULT_WHISPER_REPO: &str = "mlx-community/whisper-large-v3-turbo";
 
 /// Default TTS model to embed

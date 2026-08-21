@@ -1,6 +1,6 @@
 //! ONNX Whisper adapter — speech-to-text via ort (ONNX Runtime).
 //!
-//! **STATUS: EXPERIMENTAL** — Candle q8 (MLX) remains the production default.
+//! **STATUS: EXPERIMENTAL** — Candle fp16 (MLX) is the production local path.
 //! Benchmark (2026-02-11, 10 Polish files) showed ONNX +3.6–3.9pp WER vs Candle.
 //! Enable via `CODESCRIBE_STT_ENGINE=onnx` for testing only.
 //!

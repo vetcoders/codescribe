@@ -100,39 +100,9 @@ fn find_model_path() -> Option<PathBuf> {
 
     let home = std::env::var("HOME").unwrap_or_else(|_| ".".to_string());
 
-    let direct = [
-        PathBuf::from(&home).join(".codescribe/models/whisper-large-v3-turbo-mlx-q8"),
-        PathBuf::from(&home).join(".codescribe/models/whisper-large-v3-mlx-q8"),
-    ];
-    if let Some(p) = direct.iter().find(|p| p.join("tokenizer.json").exists()) {
-        return Some(p.clone());
-    }
-
-    let hf_cache = PathBuf::from(&home).join(".cache/huggingface/hub");
-    let hf_repos = [
-        "models--LibraxisAI--whisper-large-v3-turbo-mlx-q8",
-        "models--libraxisai--whisper-large-v3-mlx-q8",
-    ];
-    for repo_dir in &hf_repos {
-        let snapshots = hf_cache.join(repo_dir).join("snapshots");
-        if let Ok(entries) = std::fs::read_dir(&snapshots) {
-            let mut best: Option<(std::time::SystemTime, PathBuf)> = None;
-            for entry in entries.flatten() {
-                let path = entry.path();
-                if path.is_dir() && path.join("tokenizer.json").exists() {
-                    let mtime = entry
-                        .metadata()
-                        .and_then(|m| m.modified())
-                        .unwrap_or(std::time::SystemTime::UNIX_EPOCH);
-                    if best.as_ref().is_none_or(|(t, _)| mtime > *t) {
-                        best = Some((mtime, path));
-                    }
-                }
-            }
-            if let Some((_, path)) = best {
-                return Some(path);
-            }
-        }
+    let fp16 = PathBuf::from(&home).join(".codescribe/models/whisper-large-v3-turbo");
+    if fp16.join("tokenizer.json").exists() {
+        return Some(fp16);
     }
 
     None

@@ -429,13 +429,18 @@ impl LocalWhisperEngine {
     /// Load a model from a directory (development / external models).
     ///
     /// Expects `config.json` plus `weights.safetensors` or `model.safetensors`.
-    /// MLX-style quantized weights are dequantized during load — see
-    /// [`dequantize_q8`] for the cost this implies.
+    /// Quantized MLX weights are refused. Runtime Whisper is fp16/fp32 only;
+    /// this keeps q8 dequantization off every product path.
     ///
     /// # Errors
-    /// Missing config or weights, an unreadable tokenizer, or tensor shapes the
-    /// dequantizer cannot reconcile.
+    /// Missing config or weights, an unreadable tokenizer, a quantized payload,
+    /// or tensor shapes the fp16 loader cannot reconcile.
     pub fn new(model_path: &Path) -> Result<Self> {
+        if !crate::config::models::is_unquantized_whisper_model_dir(model_path) {
+            anyhow::bail!(
+                "Quantized or malformed Whisper payload refused before tensor load; install the complete fp16 model"
+            );
+        }
         let device = process_device();
         tracing::debug!("LocalWhisperEngine using device: {:?}", device);
 
@@ -459,6 +464,17 @@ impl LocalWhisperEngine {
         // Parse MLX config and map to Candle Config
         let mlx_config: serde_json::Value =
             serde_json::from_str(&config_str).context("Failed to parse MLX config json")?;
+        if mlx_config
+            .get("quantization")
+            .is_some_and(|value| !value.is_null())
+            || mlx_config
+                .get("quantization_config")
+                .is_some_and(|value| !value.is_null())
+        {
+            anyhow::bail!(
+                "Quantized Whisper weights are not supported; install the complete fp16 model"
+            );
+        }
 
         let n_mels = mlx_config["n_mels"].as_u64().unwrap_or(80);
         let new_config_json = serde_json::json!({
@@ -507,6 +523,15 @@ impl LocalWhisperEngine {
             for (name, view) in tensors.tensors() {
                 let loaded = view.load(&Device::Cpu)?;
                 raw_tensors.insert(name.to_string(), loaded);
+            }
+            if raw_tensors.iter().any(|(name, tensor)| {
+                tensor.dtype() == DType::U32
+                    || name.ends_with(".scales")
+                    || name.ends_with(".biases")
+            }) {
+                anyhow::bail!(
+                    "Quantized Whisper tensor payload refused; install the complete fp16 model"
+                );
             }
             read_secs = read_started.elapsed().as_secs_f64();
 
@@ -642,6 +667,15 @@ impl LocalWhisperEngine {
             .context("Invalid UTF-8 in embedded config.json")?;
         let mlx_config: serde_json::Value =
             serde_json::from_str(config_str).context("Failed to parse embedded config json")?;
+        if mlx_config
+            .get("quantization")
+            .is_some_and(|value| !value.is_null())
+            || mlx_config
+                .get("quantization_config")
+                .is_some_and(|value| !value.is_null())
+        {
+            anyhow::bail!("Embedded quantized Whisper payload refused; build with fp16 weights");
+        }
 
         let n_mels = mlx_config["n_mels"].as_u64().unwrap_or(80);
         let new_config_json = serde_json::json!({
@@ -2014,6 +2048,11 @@ fn build_varbuilder_from_tensors(
     raw_tensors: HashMap<String, Tensor>,
     device: &Device,
 ) -> Result<candle_nn::VarBuilder<'static>> {
+    if raw_tensors.iter().any(|(name, tensor)| {
+        tensor.dtype() == DType::U32 || name.ends_with(".scales") || name.ends_with(".biases")
+    }) {
+        anyhow::bail!("Quantized Whisper tensor payload refused; fp16 weights are required");
+    }
     let mut tensor_map = HashMap::new();
     let mut quantized_weights: Vec<String> = Vec::new();
 
