@@ -53,6 +53,7 @@ export RUSTUP_HOME="${RUSTUP_HOME:-$ORIGINAL_HOME/.rustup}"
 export HOME="$TEST_ROOT/home"
 printf -v TILDE_PREFIX '%s/' '~'
 export CODESCRIBE_MODELS_DIR="${TILDE_PREFIX}models"
+export FAKE_CONFIG="$ROOT_DIR/tests/fixtures/whisper_config.json"
 export FAKE_TOKENIZER="$ROOT_DIR/tests/fixtures/whisper_tokenizer.json"
 export FAKE_MEL_FILTERS="$TEST_ROOT/mel_filters.npz"
 mkdir -p "$HOME/models"
@@ -65,7 +66,7 @@ run_promotion_case() {
   local destination="$HOME/models/whisper-large-v3-turbo"
 
   mkdir -p "$snapshot" "$destination"
-  printf '{}\n' > "$snapshot/config.json"
+  cp "$FAKE_CONFIG" "$snapshot/config.json"
   make_tiny_weights "$snapshot/$selected_name"
   make_tiny_weights "$destination/$stale_name"
   export FAKE_MODEL_SNAPSHOT="$snapshot"

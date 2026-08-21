@@ -42,6 +42,21 @@ use crate::safe_path;
 use super::embedded::EmbeddedModel;
 use super::params::DecodingParams;
 
+fn candle_config(architecture: crate::whisper_weights::WhisperArchitecture) -> Config {
+    Config {
+        num_mel_bins: architecture.n_mels,
+        max_source_positions: architecture.n_audio_ctx,
+        d_model: architecture.n_audio_state,
+        encoder_attention_heads: architecture.n_audio_head,
+        encoder_layers: architecture.n_audio_layer,
+        vocab_size: architecture.n_vocab,
+        max_target_positions: architecture.n_text_ctx,
+        decoder_attention_heads: architecture.n_text_head,
+        decoder_layers: architecture.n_text_layer,
+        suppress_tokens: Vec::new(),
+    }
+}
+
 /// Callback for streaming chunk results (called after each chunk is transcribed)
 pub type ChunkCallback<'a> = &'a dyn Fn(&str);
 
@@ -462,46 +477,11 @@ impl LocalWhisperEngine {
 
         let config_str = safe_path::safe_read_to_string(&config_path)?;
 
-        // Parse MLX config and map to Candle Config
-        let mlx_config: serde_json::Value =
-            serde_json::from_str(&config_str).context("Failed to parse MLX config json")?;
-        if mlx_config
-            .get("quantization")
-            .is_some_and(|value| !value.is_null())
-            || mlx_config
-                .get("quantization_config")
-                .is_some_and(|value| !value.is_null())
-        {
-            anyhow::bail!(
-                "Quantized Whisper weights are not supported; install the complete fp16 model"
-            );
-        }
-
-        let n_mels = mlx_config["n_mels"].as_u64().unwrap_or(80);
-        let new_config_json = serde_json::json!({
-            "num_mel_bins": n_mels,
-            "max_source_positions": mlx_config["n_audio_ctx"].as_u64().unwrap_or(1500),
-            "d_model": mlx_config["n_audio_state"].as_u64().unwrap_or(512),
-            "encoder_attention_heads": mlx_config["n_audio_head"].as_u64().unwrap_or(8),
-            "encoder_layers": mlx_config["n_audio_layer"].as_u64().unwrap_or(6),
-            "vocab_size": mlx_config["n_vocab"].as_u64().unwrap_or(51865),
-            "decoder_attention_heads": mlx_config["n_text_head"].as_u64().unwrap_or(8),
-            "decoder_layers": mlx_config["n_text_layer"].as_u64().unwrap_or(6),
-            "max_target_positions": mlx_config["n_text_ctx"].as_u64().unwrap_or(448),
-            "activation_function": "gelu",
-            // defaults
-            "dropout": 0.0,
-            "attention_dropout": 0.0,
-            "activation_dropout": 0.0,
-            "init_std": 0.02,
-            "encoder_layerdrop": 0.0,
-            "decoder_layerdrop": 0.0,
-            "use_cache": true,
-            "scale_embedding": false
-        });
-
-        let config: Config = serde_json::from_value(new_config_json)
-            .context("Failed to build Config from MLX values")?;
+        let architecture = crate::whisper_weights::parse_whisper_config(
+            &config_str,
+            &config_path.display().to_string(),
+        )?;
+        let config = candle_config(architecture);
 
         // Phase timings for the cold load. "Preloaded, zero latency" is the
         // product's claim, and the operator's logs show 56 cold loads costing a
@@ -601,42 +581,9 @@ impl LocalWhisperEngine {
         // Parse config from bytes
         let config_str = std::str::from_utf8(embedded.config)
             .context("Invalid UTF-8 in embedded config.json")?;
-        let mlx_config: serde_json::Value =
-            serde_json::from_str(config_str).context("Failed to parse embedded config json")?;
-        if mlx_config
-            .get("quantization")
-            .is_some_and(|value| !value.is_null())
-            || mlx_config
-                .get("quantization_config")
-                .is_some_and(|value| !value.is_null())
-        {
-            anyhow::bail!("Embedded quantized Whisper payload refused; build with fp16 weights");
-        }
-
-        let n_mels = mlx_config["n_mels"].as_u64().unwrap_or(80);
-        let new_config_json = serde_json::json!({
-            "num_mel_bins": n_mels,
-            "max_source_positions": mlx_config["n_audio_ctx"].as_u64().unwrap_or(1500),
-            "d_model": mlx_config["n_audio_state"].as_u64().unwrap_or(512),
-            "encoder_attention_heads": mlx_config["n_audio_head"].as_u64().unwrap_or(8),
-            "encoder_layers": mlx_config["n_audio_layer"].as_u64().unwrap_or(6),
-            "vocab_size": mlx_config["n_vocab"].as_u64().unwrap_or(51865),
-            "decoder_attention_heads": mlx_config["n_text_head"].as_u64().unwrap_or(8),
-            "decoder_layers": mlx_config["n_text_layer"].as_u64().unwrap_or(6),
-            "max_target_positions": mlx_config["n_text_ctx"].as_u64().unwrap_or(448),
-            "activation_function": "gelu",
-            "dropout": 0.0,
-            "attention_dropout": 0.0,
-            "activation_dropout": 0.0,
-            "init_std": 0.02,
-            "encoder_layerdrop": 0.0,
-            "decoder_layerdrop": 0.0,
-            "use_cache": true,
-            "scale_embedding": false
-        });
-
-        let config: Config = serde_json::from_value(new_config_json)
-            .context("Failed to build Config from embedded MLX values")?;
+        let architecture =
+            crate::whisper_weights::parse_whisper_config(config_str, "embedded config.json")?;
+        let config = candle_config(architecture);
 
         // Load weights directly from bytes - NO DISK I/O!
         let raw_tensors = candle_core::safetensors::load_buffer(embedded.weights, &Device::Cpu)
@@ -650,7 +597,7 @@ impl LocalWhisperEngine {
             .map_err(|e| anyhow!("Failed to load embedded tokenizer: {}", e))?;
 
         // Load mel filters from bytes
-        let mel_filters = load_mel_filters_from_bytes(embedded.mel_filters, n_mels as usize)
+        let mel_filters = load_mel_filters_from_bytes(embedded.mel_filters, config.num_mel_bins)
             .context("Failed to load embedded mel filters")?;
 
         tracing::info!("Embedded Whisper model loaded successfully");
@@ -1968,7 +1915,11 @@ mod model_payload_tests {
 
     fn write_tiny_model(path: &Path, name: &str, dtype: &str, payload_bytes: usize) {
         fs::create_dir_all(path).unwrap();
-        fs::write(path.join("config.json"), "{}").unwrap();
+        fs::write(
+            path.join("config.json"),
+            include_str!("../../../tests/fixtures/whisper_config.json"),
+        )
+        .unwrap();
         fs::write(path.join("tokenizer.json"), "{}").unwrap();
         fs::write(path.join("mel_filters.npz"), b"placeholder").unwrap();
         let header = serde_json::json!({

@@ -12,6 +12,20 @@ pub const SUPPORTED_NAMES: [&str; 2] = ["weights.safetensors", "model.safetensor
 pub const MEL_FILTERS_SHA256: &str =
     "7450ae70723a5ef9d341e3cee628c7cb0177f36ce42c44b7ed2bf3325f0f6d4c";
 const REQUIRED_TOKENIZER_TOKENS: [&str; 2] = ["<|startoftranscript|>", "<|endoftext|>"];
+/// MLX Whisper architecture shared by validation, disk loading, and embedding.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct WhisperArchitecture {
+    pub n_mels: usize,
+    pub n_audio_ctx: usize,
+    pub n_audio_state: usize,
+    pub n_audio_head: usize,
+    pub n_audio_layer: usize,
+    pub n_vocab: usize,
+    pub n_text_ctx: usize,
+    pub n_text_state: usize,
+    pub n_text_head: usize,
+    pub n_text_layer: usize,
+}
 
 /// Validate every artifact required by runtime and embedded Whisper loaders.
 pub fn validate_whisper_model_bundle(path: &Path) -> Result<()> {
@@ -41,13 +55,15 @@ pub(crate) fn validate_whisper_config(path: &Path) -> Result<()> {
     // nosemgrep: rust.actix.path-traversal.tainted-path.tainted-path -- Read-only model inspection. `path` is an operator-selected local model config or an internally resolved bundle/cache child; no network/request path component reaches it.
     let raw = fs::read_to_string(path)
         .with_context(|| format!("read Whisper config {}", path.display()))?;
-    let config: serde_json::Value = serde_json::from_str(&raw)
-        .with_context(|| format!("parse Whisper config {}", path.display()))?;
+    parse_whisper_config(&raw, &path.display().to_string()).map(|_| ())
+}
+
+/// Parse and validate the MLX architecture consumed by Candle's Whisper loader.
+pub(crate) fn parse_whisper_config(raw: &str, source: &str) -> Result<WhisperArchitecture> {
+    let config: serde_json::Value =
+        serde_json::from_str(raw).with_context(|| format!("parse Whisper config {source}"))?;
     if !config.is_object() {
-        return Err(anyhow!(
-            "Whisper config must be a JSON object: {}",
-            path.display()
-        ));
+        return Err(anyhow!("Whisper config must be a JSON object: {source}"));
     }
     if config
         .get("quantization")
@@ -58,7 +74,64 @@ pub(crate) fn validate_whisper_config(path: &Path) -> Result<()> {
     {
         return Err(anyhow!("quantized Whisper config is unsupported"));
     }
-    Ok(())
+    let dimension = |name: &str| -> Result<usize> {
+        let value = config
+            .get(name)
+            .and_then(serde_json::Value::as_u64)
+            .and_then(|value| usize::try_from(value).ok())
+            .filter(|value| *value > 0)
+            .ok_or_else(|| anyhow!("Whisper config {source} requires a positive integer {name}"))?;
+        Ok(value)
+    };
+    let architecture = WhisperArchitecture {
+        n_mels: dimension("n_mels")?,
+        n_audio_ctx: dimension("n_audio_ctx")?,
+        n_audio_state: dimension("n_audio_state")?,
+        n_audio_head: dimension("n_audio_head")?,
+        n_audio_layer: dimension("n_audio_layer")?,
+        n_vocab: dimension("n_vocab")?,
+        n_text_ctx: dimension("n_text_ctx")?,
+        n_text_state: dimension("n_text_state")?,
+        n_text_head: dimension("n_text_head")?,
+        n_text_layer: dimension("n_text_layer")?,
+    };
+    if !matches!(architecture.n_mels, 80 | 128) {
+        return Err(anyhow!(
+            "Whisper config {source} requires n_mels to be 80 or 128"
+        ));
+    }
+    if architecture.n_audio_ctx > u32::MAX as usize {
+        return Err(anyhow!(
+            "Whisper config {source} requires n_audio_ctx to fit in u32"
+        ));
+    }
+    if architecture.n_audio_state != architecture.n_text_state {
+        return Err(anyhow!(
+            "Whisper config {source} requires n_audio_state to equal n_text_state"
+        ));
+    }
+    if architecture.n_audio_state < 4 || !architecture.n_audio_state.is_multiple_of(2) {
+        return Err(anyhow!(
+            "Whisper config {source} requires an even n_audio_state of at least 4"
+        ));
+    }
+    if !architecture
+        .n_audio_state
+        .is_multiple_of(architecture.n_audio_head)
+    {
+        return Err(anyhow!(
+            "Whisper config {source} requires n_audio_state divisible by n_audio_head"
+        ));
+    }
+    if !architecture
+        .n_text_state
+        .is_multiple_of(architecture.n_text_head)
+    {
+        return Err(anyhow!(
+            "Whisper config {source} requires n_text_state divisible by n_text_head"
+        ));
+    }
+    Ok(architecture)
 }
 
 /// Verify the pinned mel filterbank used by Whisper.
@@ -238,4 +311,85 @@ pub(crate) fn validate_safetensors_file(path: &Path) -> Result<()> {
         ));
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn valid_config() -> serde_json::Value {
+        serde_json::from_str(include_str!("../tests/fixtures/whisper_config.json")).unwrap()
+    }
+
+    #[test]
+    fn official_whisper_architecture_is_accepted() {
+        let raw = include_str!("../tests/fixtures/whisper_config.json");
+        let architecture = parse_whisper_config(raw, "fixture").unwrap();
+        assert_eq!(architecture.n_mels, 128);
+        assert_eq!(architecture.n_audio_state, 1280);
+        assert_eq!(architecture.n_text_state, 1280);
+    }
+
+    #[test]
+    fn every_loader_dimension_is_required() {
+        let fields = [
+            "n_mels",
+            "n_audio_ctx",
+            "n_audio_state",
+            "n_audio_head",
+            "n_audio_layer",
+            "n_vocab",
+            "n_text_ctx",
+            "n_text_state",
+            "n_text_head",
+            "n_text_layer",
+        ];
+        for field in fields {
+            let mut config = valid_config();
+            config.as_object_mut().unwrap().remove(field);
+            let err = parse_whisper_config(&config.to_string(), "fixture").unwrap_err();
+            assert!(err.to_string().contains(field), "{field}: {err:#}");
+        }
+    }
+
+    #[test]
+    fn non_positive_or_non_integer_dimensions_are_rejected() {
+        for value in [
+            serde_json::Value::Null,
+            serde_json::json!("128"),
+            serde_json::json!(-1),
+            serde_json::json!(0),
+            serde_json::json!(80.5),
+        ] {
+            let mut config = valid_config();
+            config["n_mels"] = value;
+            assert!(parse_whisper_config(&config.to_string(), "fixture").is_err());
+        }
+    }
+
+    #[test]
+    fn incompatible_architecture_relationships_are_rejected() {
+        for (field, value, expected) in [
+            ("n_mels", 81, "n_mels"),
+            ("n_text_state", 640, "equal"),
+            ("n_audio_head", 3, "n_audio_head"),
+            ("n_text_head", 3, "n_text_head"),
+            ("n_audio_state", 3, "equal"),
+        ] {
+            let mut config = valid_config();
+            config[field] = serde_json::json!(value);
+            let err = parse_whisper_config(&config.to_string(), "fixture").unwrap_err();
+            assert!(err.to_string().contains(expected), "{field}: {err:#}");
+        }
+
+        let mut odd_state = valid_config();
+        odd_state["n_audio_state"] = serde_json::json!(3);
+        odd_state["n_text_state"] = serde_json::json!(3);
+        assert!(
+            parse_whisper_config(&odd_state.to_string(), "fixture")
+                .unwrap_err()
+                .to_string()
+                .contains("even")
+        );
+    }
 }

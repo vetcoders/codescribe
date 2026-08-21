@@ -175,7 +175,11 @@ fn e2e_stt_model_init_stable() {
 
 fn create_complete_model(path: &Path) {
     std::fs::create_dir_all(path).expect("create model dir");
-    std::fs::write(path.join("config.json"), "{}").expect("write config");
+    std::fs::write(
+        path.join("config.json"),
+        include_str!("fixtures/whisper_config.json"),
+    )
+    .expect("write config");
     let mut tokenizer = tokenizers::Tokenizer::new(tokenizers::models::bpe::BPE::default());
     tokenizer.add_special_tokens(&[
         tokenizers::AddedToken::from("<|startoftranscript|>", true),

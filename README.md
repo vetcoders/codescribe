@@ -353,7 +353,11 @@ mel SHA-256, and validates the complete safetensors tensor table, dtype
 allowlist, offsets, and file length. Downloads and warm-cache copies are written
 to `.partial` files and promoted only after per-file validation; an invalid
 destination is repaired on the next Download action instead of being accepted
-as complete.
+as complete. Config validation requires the complete MLX Whisper architecture
+used by the loader (including matching audio/text state widths and compatible
+attention heads); missing dimensions are never replaced with runtime defaults.
+Warm-cache repair checks older snapshots when the newest config, weights, or
+tokenizer is invalid, preserving offline recovery from an earlier valid revision.
 
 `CODESCRIBE_EMBED_EMBEDDER=1` is an explicit fat/debug path that compiles MiniLM into Rust artifacts. Normal builds resolve MiniLM from the signed app resource or HF cache. `CODESCRIBE_NO_EMBED=1` disables every optional binary embed; Silero remains embedded.
 
