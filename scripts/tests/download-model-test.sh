@@ -53,7 +53,7 @@ export RUSTUP_HOME="${RUSTUP_HOME:-$ORIGINAL_HOME/.rustup}"
 export HOME="$TEST_ROOT/home"
 printf -v TILDE_PREFIX '%s/' '~'
 export CODESCRIBE_MODELS_DIR="${TILDE_PREFIX}models"
-export FAKE_TOKENIZER="$ROOT_DIR/core/models/whisper-large-v3-turbo-mlx-q8/tokenizer.json"
+export FAKE_TOKENIZER="$ROOT_DIR/tests/fixtures/whisper_tokenizer.json"
 export FAKE_MEL_FILTERS="$TEST_ROOT/mel_filters.npz"
 mkdir -p "$HOME/models"
 xxd -r -p "$ROOT_DIR/tests/fixtures/whisper_mel_filters.npz.hex" > "$FAKE_MEL_FILTERS"
