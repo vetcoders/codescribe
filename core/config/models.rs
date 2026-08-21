@@ -49,33 +49,57 @@ fn canonicalize_or_self(path: PathBuf) -> PathBuf {
     }
 }
 
-/// Whether `path` holds a fully usable Whisper model.
-///
-/// Requires every [`REQUIRED_MODEL_FILES`] entry plus at least one of
-/// [`REQUIRED_MODEL_WEIGHTS`]. This is the gate that keeps half-downloaded
-/// directories from being advertised or resolved as loadable models.
+/// Whether `path` holds a fully usable, structurally valid Whisper model.
 fn is_complete_whisper_model_dir(path: &Path) -> bool {
-    let files_present = REQUIRED_MODEL_FILES
-        .iter()
-        .all(|name| path.join(name).exists())
-        && REQUIRED_MODEL_WEIGHTS
-            .iter()
-            .any(|name| path.join(name).exists());
-    files_present && is_unquantized_whisper_model_dir(path)
+    validate_whisper_model_bundle(path).is_ok()
 }
 
-/// Reject quantized or malformed weights before they can reach the expensive
-/// engine loader. The config check catches normal MLX q8 exports; the
-/// safetensors header check also catches a q8 payload hidden behind a renamed
-/// directory or a config with its `quantization` field removed.
+/// Validate every artifact required by the runtime loader.
+///
+/// Safetensors validation is structural rather than cryptographic: the format
+/// has no payload checksum. The validator checks the complete tensor table,
+/// dtype allowlist, byte sizes, contiguous offsets, and final file length.
+fn validate_whisper_model_bundle(path: &Path) -> Result<()> {
+    let config_path = path.join("config.json");
+    validate_whisper_config(&config_path)?;
+
+    let tokenizer_path = path.join("tokenizer.json");
+    tokenizers::Tokenizer::from_file(&tokenizer_path).map_err(|err| {
+        anyhow!(
+            "invalid Whisper tokenizer {}: {err}",
+            tokenizer_path.display()
+        )
+    })?;
+
+    let mel_path = path.join("mel_filters.npz");
+    verify_sha256(&mel_path, MEL_FILTERS_SHA256)?;
+
+    let weights_path = resolve_weights_path(path)?;
+    validate_safetensors_file(&weights_path)
+}
+
+/// Reject unsupported or malformed weights before the expensive engine load.
+/// This narrower payload gate is also used by `LocalWhisperEngine::new`, where
+/// tokenizer and mel errors retain their own loader diagnostics.
 pub(crate) fn is_unquantized_whisper_model_dir(path: &Path) -> bool {
-    let config = match fs::read_to_string(path.join("config.json"))
-        .ok()
-        .and_then(|raw| serde_json::from_str::<serde_json::Value>(&raw).ok())
-    {
-        Some(config) => config,
-        None => return false,
-    };
+    validate_whisper_config(&path.join("config.json")).is_ok()
+        && resolve_weights_path(path)
+            .and_then(|weights| validate_safetensors_file(&weights))
+            .is_ok()
+}
+
+fn validate_whisper_config(path: &Path) -> Result<()> {
+    // nosemgrep: rust.actix.path-traversal.tainted-path.tainted-path -- Read-only model inspection. `path` is an operator-selected local model config or an internally resolved bundle/cache child; no network/request path component reaches it.
+    let raw = fs::read_to_string(path)
+        .with_context(|| format!("read Whisper config {}", path.display()))?;
+    let config: serde_json::Value = serde_json::from_str(&raw)
+        .with_context(|| format!("parse Whisper config {}", path.display()))?;
+    if !config.is_object() {
+        return Err(anyhow!(
+            "Whisper config must be a JSON object: {}",
+            path.display()
+        ));
+    }
     if config
         .get("quantization")
         .is_some_and(|value| !value.is_null())
@@ -83,21 +107,21 @@ pub(crate) fn is_unquantized_whisper_model_dir(path: &Path) -> bool {
             .get("quantization_config")
             .is_some_and(|value| !value.is_null())
     {
-        return false;
+        return Err(anyhow!("quantized Whisper config is unsupported"));
     }
-
-    let Some(weights_path) = REQUIRED_MODEL_WEIGHTS
-        .iter()
-        .map(|name| path.join(name))
-        .find(|candidate| candidate.exists())
-    else {
-        return false;
-    };
-    safetensors_header_is_unquantized(&weights_path).unwrap_or(false)
+    Ok(())
 }
 
-/// Inspect only the bounded JSON header; model tensor data is never read.
-fn safetensors_header_is_unquantized(path: &Path) -> Result<bool> {
+fn resolve_weights_path(path: &Path) -> Result<PathBuf> {
+    REQUIRED_MODEL_WEIGHTS
+        .iter()
+        .map(|name| path.join(name))
+        .find(|candidate| candidate.is_file())
+        .ok_or_else(|| anyhow!("Whisper weights are missing from {}", path.display()))
+}
+
+/// Validate the complete safetensors structure without loading the tensor data.
+fn validate_safetensors_file(path: &Path) -> Result<()> {
     const MAX_HEADER_BYTES: u64 = 16 * 1024 * 1024;
     // nosemgrep: rust.actix.path-traversal.tainted-path.tainted-path -- Read-only model inspection. `path` is an operator-selected local model file or an internally resolved bundle/cache child; no network/request path component reaches it.
     let mut file = fs::File::open(path).with_context(|| format!("open {}", path.display()))?;
@@ -106,7 +130,10 @@ fn safetensors_header_is_unquantized(path: &Path) -> Result<bool> {
         .with_context(|| format!("read safetensors header length from {}", path.display()))?;
     let header_len = u64::from_le_bytes(len_bytes);
     if header_len == 0 || header_len > MAX_HEADER_BYTES {
-        return Ok(false);
+        return Err(anyhow!(
+            "invalid safetensors header length in {}",
+            path.display()
+        ));
     }
     let mut header = vec![0_u8; header_len as usize];
     file.seek(SeekFrom::Start(8))?;
@@ -115,14 +142,101 @@ fn safetensors_header_is_unquantized(path: &Path) -> Result<bool> {
     let metadata: serde_json::Value = serde_json::from_slice(&header)
         .with_context(|| format!("parse safetensors header from {}", path.display()))?;
     let Some(tensors) = metadata.as_object() else {
-        return Ok(false);
+        return Err(anyhow!(
+            "safetensors header is not an object: {}",
+            path.display()
+        ));
     };
-    Ok(tensors.iter().all(|(name, tensor)| {
-        name == "__metadata__"
-            || (!name.ends_with(".scales")
-                && !name.ends_with(".biases")
-                && tensor.get("dtype").and_then(|value| value.as_str()) != Some("U32"))
-    }))
+
+    let file_len = file.metadata()?.len();
+    let data_start = 8_u64
+        .checked_add(header_len)
+        .ok_or_else(|| anyhow!("safetensors header offset overflow"))?;
+    let data_len = file_len
+        .checked_sub(data_start)
+        .ok_or_else(|| anyhow!("truncated safetensors file: {}", path.display()))?;
+    let mut ranges = Vec::new();
+
+    for (name, tensor) in tensors.iter().filter(|(name, _)| *name != "__metadata__") {
+        let tensor = tensor
+            .as_object()
+            .ok_or_else(|| anyhow!("invalid tensor entry {name}"))?;
+        let dtype = tensor
+            .get("dtype")
+            .and_then(serde_json::Value::as_str)
+            .ok_or_else(|| anyhow!("tensor {name} has no dtype"))?;
+        let bytes_per_element = match (name.as_str(), dtype) {
+            (_, "F16") => 2_u64,
+            (_, "F32") => 4_u64,
+            ("alignment_heads", "I64") => 8_u64,
+            _ => {
+                return Err(anyhow!(
+                    "unsupported Whisper tensor dtype {dtype} for {name}"
+                ));
+            }
+        };
+        if name.ends_with(".scales") || name.ends_with(".biases") {
+            return Err(anyhow!(
+                "quantized Whisper companion tensor refused: {name}"
+            ));
+        }
+
+        let shape = tensor
+            .get("shape")
+            .and_then(serde_json::Value::as_array)
+            .ok_or_else(|| anyhow!("tensor {name} has no shape"))?;
+        let element_count = shape.iter().try_fold(1_u64, |count, dim| {
+            let dim = dim
+                .as_u64()
+                .ok_or_else(|| anyhow!("tensor {name} has an invalid shape"))?;
+            count
+                .checked_mul(dim)
+                .ok_or_else(|| anyhow!("tensor {name} shape overflows"))
+        })?;
+        let expected_bytes = element_count
+            .checked_mul(bytes_per_element)
+            .ok_or_else(|| anyhow!("tensor {name} byte size overflows"))?;
+
+        let offsets = tensor
+            .get("data_offsets")
+            .and_then(serde_json::Value::as_array)
+            .filter(|offsets| offsets.len() == 2)
+            .ok_or_else(|| anyhow!("tensor {name} has invalid data_offsets"))?;
+        let start = offsets[0]
+            .as_u64()
+            .ok_or_else(|| anyhow!("tensor {name} has invalid start offset"))?;
+        let end = offsets[1]
+            .as_u64()
+            .ok_or_else(|| anyhow!("tensor {name} has invalid end offset"))?;
+        if end.checked_sub(start) != Some(expected_bytes) {
+            return Err(anyhow!(
+                "tensor {name} byte range does not match its shape/dtype"
+            ));
+        }
+        ranges.push((start, end, name));
+    }
+
+    if ranges.is_empty() {
+        return Err(anyhow!(
+            "safetensors file contains no tensors: {}",
+            path.display()
+        ));
+    }
+    ranges.sort_by_key(|(start, _, _)| *start);
+    let mut cursor = 0_u64;
+    for (start, end, name) in ranges {
+        if start != cursor {
+            return Err(anyhow!("tensor {name} has a non-contiguous data offset"));
+        }
+        cursor = end;
+    }
+    if cursor != data_len {
+        return Err(anyhow!(
+            "safetensors data length mismatch in {}: header covers {cursor}, file has {data_len}",
+            path.display()
+        ));
+    }
+    Ok(())
 }
 
 /// Whether a candidate models root owns at least one complete Whisper model.
@@ -426,7 +540,10 @@ where
     fs::create_dir_all(&dest).with_context(|| format!("create {}", dest.display()))?;
 
     let client = reqwest::blocking::Client::builder()
-        .user_agent("codescribe-whisper-download/0.13")
+        .user_agent(format!(
+            "codescribe-whisper-download/{}",
+            env!("CARGO_PKG_VERSION")
+        ))
         .timeout(std::time::Duration::from_secs(60 * 30))
         .build()
         .context("build HTTP client for Whisper download")?;
@@ -453,11 +570,11 @@ where
         &dest.join("mel_filters.npz"),
         &mut on_progress,
     )?;
-    verify_sha256(&dest.join("mel_filters.npz"), MEL_FILTERS_SHA256)?;
-
     let weights_dest = dest.join("weights.safetensors");
     let weights_alt = dest.join("model.safetensors");
-    if !weights_dest.exists() && !weights_alt.exists() {
+    if validate_model_file("weights.safetensors", &weights_dest).is_err()
+        && validate_model_file("model.safetensors", &weights_alt).is_err()
+    {
         // mlx-community ships weights.safetensors; fall back to model.safetensors if 404.
         match download_hf_file(
             &client,
@@ -483,12 +600,12 @@ where
         }
     }
 
-    if !is_complete_whisper_model_dir(&dest) {
-        return Err(anyhow!(
-            "Whisper download finished but model dir is incomplete: {}",
+    validate_whisper_model_bundle(&dest).with_context(|| {
+        format!(
+            "Whisper download finished but bundle validation failed: {}",
             dest.display()
-        ));
-    }
+        )
+    })?;
 
     Ok(canonicalize_or_self(dest))
 }
@@ -496,9 +613,9 @@ where
 /// Copy selected model files from a local source into the user models directory.
 ///
 /// Lets Settings → Download complete without network traffic when the pieces are
-/// already on disk (warm official caches). A missing source is a
-/// clean no-op and existing destination files are left alone, so an interrupted
-/// composition resumes rather than restarting.
+/// already on disk (warm official caches). Every copied file is validated in a
+/// sibling `.partial` path before atomic promotion. Invalid destinations are
+/// replaced; valid ones are preserved.
 fn copy_model_files(src: &Path, dest: &Path, names: &[&str]) -> Result<()> {
     if !src.is_dir() {
         return Ok(());
@@ -507,11 +624,22 @@ fn copy_model_files(src: &Path, dest: &Path, names: &[&str]) -> Result<()> {
     for name in names {
         let from = src.join(name);
         let to = dest.join(name);
-        if from.exists() && !to.exists() {
-            // nosemgrep: rust.actix.path-traversal.tainted-path.tainted-path -- Both ends are internal: `name` comes from compile-time model file constants, and callers pass HF cache snapshot dirs or ModelManager::get_model_path outputs. No caller-supplied path component reaches here.
-            fs::copy(&from, &to)
-                .with_context(|| format!("copy {} → {}", from.display(), to.display()))?;
+        if !from.is_file() || validate_model_file(name, &to).is_ok() {
+            continue;
         }
+        if let Err(err) = validate_model_file(name, &from) {
+            tracing::warn!(source = %from.display(), error = %err, "ignoring invalid cached model artifact");
+            continue;
+        }
+        let partial = partial_path(&to);
+        // nosemgrep: rust.actix.path-traversal.tainted-path.tainted-path -- Both ends are internal: `name` comes from compile-time model file constants, and callers pass HF cache snapshot dirs or ModelManager::get_model_path outputs. No caller-supplied path component reaches here.
+        fs::copy(&from, &partial)
+            .with_context(|| format!("copy {} → {}", from.display(), partial.display()))?;
+        if let Err(err) = validate_model_file(name, &partial) {
+            let _ = fs::remove_file(&partial);
+            return Err(err).with_context(|| format!("validate copied {}", name));
+        }
+        replace_file(&partial, &to)?;
     }
     Ok(())
 }
@@ -519,9 +647,9 @@ fn copy_model_files(src: &Path, dest: &Path, names: &[&str]) -> Result<()> {
 /// Fetch one file from the Hugging Face resolve endpoint into `dest`.
 ///
 /// Downloads to a sibling `.partial` file and renames on success, so an aborted
-/// transfer can never leave a truncated file that passes the completeness check.
-/// A non-empty `dest` is treated as already done. `HF_TOKEN` is sent as bearer
-/// auth when set, for gated repos.
+/// transfer can never leave a truncated file that passes bundle validation.
+/// A valid `dest` is preserved; an invalid one is replaced. `HF_TOKEN` is sent
+/// as bearer auth when set, for gated repos.
 fn download_hf_file<F>(
     client: &reqwest::blocking::Client,
     repo: &str,
@@ -532,15 +660,6 @@ fn download_hf_file<F>(
 where
     F: FnMut(&str, u64, Option<u64>),
 {
-    if dest.exists() && dest.metadata().map(|m| m.len() > 0).unwrap_or(false) {
-        on_progress(
-            filename,
-            dest.metadata().map(|m| m.len()).unwrap_or(0),
-            None,
-        );
-        return Ok(());
-    }
-
     let url = format!("https://huggingface.co/{repo}/resolve/main/{filename}");
     download_url_file_authenticated(client, &url, filename, dest, on_progress, true)
 }
@@ -569,6 +688,19 @@ fn download_url_file_authenticated<F>(
 where
     F: FnMut(&str, u64, Option<u64>),
 {
+    if validate_model_file(filename, dest).is_ok() {
+        on_progress(
+            filename,
+            dest.metadata().map(|metadata| metadata.len()).unwrap_or(0),
+            None,
+        );
+        return Ok(());
+    }
+    if dest.exists() {
+        fs::remove_file(dest)
+            .with_context(|| format!("remove invalid model artifact {}", dest.display()))?;
+    }
+
     let mut request = client.get(url);
     if use_hf_token && let Ok(token) = std::env::var("HF_TOKEN") {
         let token = token.trim();
@@ -584,12 +716,7 @@ where
         .with_context(|| format!("HTTP error for {url}"))?;
 
     let total = response.content_length();
-    let partial = dest.with_file_name(format!(
-        "{}.partial",
-        dest.file_name()
-            .and_then(|n| n.to_str())
-            .unwrap_or("download")
-    ));
+    let partial = partial_path(dest);
 
     if let Some(parent) = partial.parent() {
         fs::create_dir_all(parent)?;
@@ -616,10 +743,43 @@ where
     file.flush()?;
     drop(file);
 
-    fs::rename(&partial, dest)
-        .with_context(|| format!("rename {} → {}", partial.display(), dest.display()))?;
+    if let Err(err) = validate_model_file(filename, &partial) {
+        let _ = fs::remove_file(&partial);
+        return Err(err).with_context(|| format!("validate downloaded {filename}"));
+    }
+    replace_file(&partial, dest)?;
     on_progress(filename, done, total.or(Some(done)));
     Ok(())
+}
+
+fn partial_path(dest: &Path) -> PathBuf {
+    dest.with_file_name(format!(
+        "{}.partial",
+        dest.file_name()
+            .and_then(|name| name.to_str())
+            .unwrap_or("download")
+    ))
+}
+
+fn replace_file(partial: &Path, dest: &Path) -> Result<()> {
+    if dest.exists() {
+        fs::remove_file(dest)
+            .with_context(|| format!("remove invalid model artifact {}", dest.display()))?;
+    }
+    fs::rename(partial, dest)
+        .with_context(|| format!("rename {} → {}", partial.display(), dest.display()))
+}
+
+fn validate_model_file(filename: &str, path: &Path) -> Result<()> {
+    match filename {
+        "config.json" => validate_whisper_config(path),
+        "tokenizer.json" => tokenizers::Tokenizer::from_file(path)
+            .map(|_| ())
+            .map_err(|err| anyhow!("invalid tokenizer {}: {err}", path.display())),
+        "mel_filters.npz" => verify_sha256(path, MEL_FILTERS_SHA256),
+        "weights.safetensors" | "model.safetensors" => validate_safetensors_file(path),
+        _ => Err(anyhow!("unsupported Whisper model artifact: {filename}")),
+    }
 }
 
 fn verify_sha256(path: &Path, expected: &str) -> Result<()> {
@@ -686,13 +846,33 @@ mod tests {
     fn create_complete_whisper_model(path: &Path) {
         fs::create_dir_all(path).unwrap();
         fs::write(path.join("config.json"), "{}").unwrap();
-        fs::write(path.join("tokenizer.json"), "{}").unwrap();
-        fs::write(path.join("mel_filters.npz"), "npz").unwrap();
+        tokenizers::Tokenizer::new(tokenizers::models::bpe::BPE::default())
+            .save(path.join("tokenizer.json"), false)
+            .unwrap();
+        fs::write(
+            path.join("mel_filters.npz"),
+            decode_hex(include_str!(
+                "../../tests/fixtures/whisper_mel_filters.npz.hex"
+            )),
+        )
+        .unwrap();
         let header = br#"{"model.weight":{"dtype":"F16","shape":[1],"data_offsets":[0,2]}}"#;
         let mut safetensors = (header.len() as u64).to_le_bytes().to_vec();
         safetensors.extend_from_slice(header);
         safetensors.extend_from_slice(&[0, 0]);
         fs::write(path.join("model.safetensors"), safetensors).unwrap();
+    }
+
+    fn decode_hex(raw: &str) -> Vec<u8> {
+        let digits: String = raw.chars().filter(|ch| !ch.is_whitespace()).collect();
+        assert!(digits.len().is_multiple_of(2));
+        digits
+            .as_bytes()
+            .as_chunks::<2>()
+            .0
+            .iter()
+            .map(|pair| u8::from_str_radix(std::str::from_utf8(pair).unwrap(), 16).unwrap())
+            .collect()
     }
 
     fn create_q8_whisper_model(path: &Path) {
@@ -817,6 +997,148 @@ mod tests {
         fs::write(model.join("model.safetensors"), safetensors).unwrap();
 
         assert!(!is_complete_whisper_model_dir(&model));
+    }
+
+    /// A non-Q8 integer tensor is still outside the fp16/fp32 runtime contract.
+    #[test]
+    fn model_manager_rejects_non_allowlisted_integer_tensor() {
+        let temp_dir = TempDir::new().unwrap();
+        let model = temp_dir.path().join("model");
+        create_complete_whisper_model(&model);
+        let header = br#"{"encoder.weight":{"dtype":"I32","shape":[1],"data_offsets":[0,4]}}"#;
+        let mut safetensors = (header.len() as u64).to_le_bytes().to_vec();
+        safetensors.extend_from_slice(header);
+        safetensors.extend_from_slice(&[0; 4]);
+        fs::write(model.join("model.safetensors"), safetensors).unwrap();
+
+        assert!(!is_complete_whisper_model_dir(&model));
+    }
+
+    /// Metadata alone is not a model and must not satisfy discovery.
+    #[test]
+    fn model_manager_rejects_safetensors_without_tensor_entries() {
+        let temp_dir = TempDir::new().unwrap();
+        let model = temp_dir.path().join("model");
+        create_complete_whisper_model(&model);
+        let header = br#"{"__metadata__":{"format":"mlx"}}"#;
+        let mut safetensors = (header.len() as u64).to_le_bytes().to_vec();
+        safetensors.extend_from_slice(header);
+        fs::write(model.join("model.safetensors"), safetensors).unwrap();
+
+        assert!(!is_complete_whisper_model_dir(&model));
+    }
+
+    /// Header offsets must describe the actual payload, not a truncated file.
+    #[test]
+    fn model_manager_rejects_truncated_safetensors_payload() {
+        let temp_dir = TempDir::new().unwrap();
+        let model = temp_dir.path().join("model");
+        create_complete_whisper_model(&model);
+        let weights = model.join("model.safetensors");
+        let len = fs::metadata(&weights).unwrap().len();
+        fs::OpenOptions::new()
+            .write(true)
+            .open(&weights)
+            .unwrap()
+            .set_len(len - 1)
+            .unwrap();
+
+        assert!(!is_complete_whisper_model_dir(&model));
+    }
+
+    /// A checksum mismatch cannot leave a directory advertised as complete.
+    #[test]
+    fn model_manager_rejects_corrupt_mel_filters() {
+        let temp_dir = TempDir::new().unwrap();
+        let model = temp_dir.path().join("model");
+        create_complete_whisper_model(&model);
+        fs::write(model.join("mel_filters.npz"), b"corrupt").unwrap();
+
+        assert!(!is_complete_whisper_model_dir(&model));
+    }
+
+    /// A valid existing mel asset is reused without contacting the network.
+    #[test]
+    fn valid_existing_mel_skips_download() {
+        let temp_dir = TempDir::new().unwrap();
+        let mel = temp_dir.path().join("mel_filters.npz");
+        fs::write(
+            &mel,
+            decode_hex(include_str!(
+                "../../tests/fixtures/whisper_mel_filters.npz.hex"
+            )),
+        )
+        .unwrap();
+        let client = reqwest::blocking::Client::new();
+        let mut progress = |_name: &str, _done: u64, _total: Option<u64>| {};
+
+        download_url_file(
+            &client,
+            "http://127.0.0.1:0/must-not-be-called",
+            "mel_filters.npz",
+            &mel,
+            &mut progress,
+        )
+        .unwrap();
+    }
+
+    /// Invalid warm destinations are replaced from validated cache artifacts.
+    #[test]
+    fn cached_composition_repairs_invalid_destination_files() {
+        let temp_dir = TempDir::new().unwrap();
+        let source = temp_dir.path().join("source");
+        let destination = temp_dir.path().join("destination");
+        create_complete_whisper_model(&source);
+        create_complete_whisper_model(&destination);
+        fs::write(destination.join("config.json"), b"not json").unwrap();
+        fs::write(destination.join("tokenizer.json"), b"not json").unwrap();
+        fs::write(destination.join("mel_filters.npz"), b"bad mel").unwrap();
+        fs::write(destination.join("model.safetensors"), b"bad weights").unwrap();
+
+        copy_model_files(&source, &destination, &REQUIRED_MODEL_FILES).unwrap();
+        copy_model_files(&source, &destination, &REQUIRED_MODEL_WEIGHTS).unwrap();
+
+        validate_whisper_model_bundle(&destination).unwrap();
+        assert!(!destination.join("config.json.partial").exists());
+        assert!(!destination.join("model.safetensors.partial").exists());
+    }
+
+    /// A downloaded checksum mismatch is never promoted to the final mel path.
+    #[test]
+    fn corrupt_download_is_removed_before_promotion() {
+        use std::io::{Read as _, Write as _};
+        use std::net::TcpListener;
+
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let address = listener.local_addr().unwrap();
+        let server = std::thread::spawn(move || {
+            let (mut stream, _) = listener.accept().unwrap();
+            let mut request = [0_u8; 1024];
+            let _ = stream.read(&mut request);
+            stream
+                .write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 7\r\n\r\ncorrupt")
+                .unwrap();
+        });
+
+        let temp_dir = TempDir::new().unwrap();
+        let mel = temp_dir.path().join("mel_filters.npz");
+        let client = reqwest::blocking::Client::new();
+        let mut progress = |_name: &str, _done: u64, _total: Option<u64>| {};
+        let result = download_url_file(
+            &client,
+            &format!("http://{address}/mel_filters.npz"),
+            "mel_filters.npz",
+            &mel,
+            &mut progress,
+        );
+        server.join().unwrap();
+
+        assert!(result.is_err());
+        assert!(!mel.exists(), "corrupt download must not be promoted");
+        assert!(
+            !partial_path(&mel).exists(),
+            "failed partial must be removed"
+        );
     }
 
     /// Complete `CODESCRIBE_MODEL_PATH` wins over the bundled default tier.

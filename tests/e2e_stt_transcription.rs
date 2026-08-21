@@ -261,6 +261,6 @@ fn deterministic_model_discovery_refuses_incomplete_fp16_without_legacy_fallback
     let missing = whisper_model_missing_parts(&fp16);
     assert!(
         missing.contains(&"config.json"),
-        "incomplete turbo should report missing artifacts for easier diagnosis"
+        "incomplete fp16 should report missing artifacts for easier diagnosis"
     );
 }

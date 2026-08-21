@@ -348,6 +348,12 @@ The mlx-community repo ships only `config.json` + `weights.safetensors`;
 the download paths compose `tokenizer.json` from the matching official OpenAI
 Transformers repo and `mel_filters.npz` from a checksum-pinned OpenAI Whisper
 asset. The resulting directory is validated as unquantized before resolution.
+The shared bundle validator parses the config and tokenizer, verifies the pinned
+mel SHA-256, and validates the complete safetensors tensor table, dtype
+allowlist, offsets, and file length. Downloads and warm-cache copies are written
+to `.partial` files and promoted only after per-file validation; an invalid
+destination is repaired on the next Download action instead of being accepted
+as complete.
 
 `CODESCRIBE_EMBED_EMBEDDER=1` is an explicit fat/debug path that compiles MiniLM into Rust artifacts. Normal builds resolve MiniLM from the signed app resource or HF cache. `CODESCRIBE_NO_EMBED=1` disables every optional binary embed; Silero remains embedded.
 

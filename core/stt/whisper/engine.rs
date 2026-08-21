@@ -525,13 +525,12 @@ impl LocalWhisperEngine {
                 let loaded = view.load(&Device::Cpu)?;
                 raw_tensors.insert(name.to_string(), loaded);
             }
-            if raw_tensors.iter().any(|(name, tensor)| {
-                tensor.dtype() == DType::U32
-                    || name.ends_with(".scales")
-                    || name.ends_with(".biases")
-            }) {
+            if raw_tensors
+                .iter()
+                .any(|(name, tensor)| !is_supported_runtime_tensor(name, tensor))
+            {
                 anyhow::bail!(
-                    "Quantized Whisper tensor payload refused; install the complete fp16 model"
+                    "Unsupported Whisper tensor payload refused; install the complete fp16 model"
                 );
             }
             read_secs = read_started.elapsed().as_secs_f64();
@@ -1933,14 +1932,23 @@ fn should_drop_for_quality_gate(
 }
 
 /// Build a VarBuilder from verified unquantized tensors.
+fn is_supported_runtime_tensor(name: &str, tensor: &Tensor) -> bool {
+    if name.ends_with(".scales") || name.ends_with(".biases") {
+        return false;
+    }
+    matches!(tensor.dtype(), DType::F16 | DType::F32)
+        || name == "alignment_heads" && tensor.dtype() == DType::I64
+}
+
 fn build_varbuilder_from_tensors(
     raw_tensors: HashMap<String, Tensor>,
     device: &Device,
 ) -> Result<candle_nn::VarBuilder<'static>> {
-    if raw_tensors.iter().any(|(name, tensor)| {
-        tensor.dtype() == DType::U32 || name.ends_with(".scales") || name.ends_with(".biases")
-    }) {
-        anyhow::bail!("Quantized Whisper tensor payload refused; fp16 weights are required");
+    if raw_tensors
+        .iter()
+        .any(|(name, tensor)| !is_supported_runtime_tensor(name, tensor))
+    {
+        anyhow::bail!("Unsupported Whisper tensor payload refused; fp16 weights are required");
     }
     let mut tensor_map = HashMap::new();
 
@@ -1969,6 +1977,68 @@ fn build_varbuilder_from_tensors(
         DType::F32,
         device,
     ))
+}
+
+#[cfg(test)]
+mod model_payload_tests {
+    use super::*;
+    use std::fs;
+    use tempfile::TempDir;
+
+    fn write_tiny_model(path: &Path, name: &str, dtype: &str, payload_bytes: usize) {
+        fs::create_dir_all(path).unwrap();
+        fs::write(path.join("config.json"), "{}").unwrap();
+        fs::write(path.join("tokenizer.json"), "{}").unwrap();
+        fs::write(path.join("mel_filters.npz"), b"placeholder").unwrap();
+        let header = serde_json::json!({
+            name: {
+                "dtype": dtype,
+                "shape": [1],
+                "data_offsets": [0, payload_bytes]
+            }
+        });
+        let header = serde_json::to_vec(&header).unwrap();
+        let mut file = (header.len() as u64).to_le_bytes().to_vec();
+        file.extend_from_slice(&header);
+        file.resize(file.len() + payload_bytes, 0);
+        fs::write(path.join("weights.safetensors"), file).unwrap();
+    }
+
+    #[test]
+    fn local_loader_refuses_tiny_u32_safetensors() {
+        let temp = TempDir::new().unwrap();
+        write_tiny_model(temp.path(), "encoder.weight", "U32", 4);
+
+        let err = LocalWhisperEngine::new(temp.path())
+            .err()
+            .expect("U32 must be refused");
+        assert!(format!("{err:#}").contains("refused"));
+    }
+
+    #[test]
+    fn local_loader_refuses_non_allowlisted_integer_safetensors() {
+        let temp = TempDir::new().unwrap();
+        write_tiny_model(temp.path(), "encoder.weight", "I32", 4);
+
+        let err = LocalWhisperEngine::new(temp.path())
+            .err()
+            .expect("I32 must be refused");
+        assert!(format!("{err:#}").contains("refused"));
+    }
+
+    #[test]
+    fn tensor_builder_refuses_u32_before_mapping() {
+        let mut tensors = HashMap::new();
+        tensors.insert(
+            "encoder.weight".to_string(),
+            Tensor::from_vec(vec![0_u32], 1, &Device::Cpu).unwrap(),
+        );
+
+        let err = build_varbuilder_from_tensors(tensors, &Device::Cpu)
+            .err()
+            .expect("U32 must be refused by the builder gate");
+        assert!(format!("{err:#}").contains("refused"));
+    }
 }
 
 // ═══════════════════════════════════════════════════════════════════════════════
