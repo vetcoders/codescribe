@@ -139,7 +139,7 @@ Codescribe can load custom MCP servers from `~/.codescribe/mcp.json`. That keeps
 
 - **macOS 14+** (Sonoma or later)
 - **Apple Silicon** (M1, M2, M3, or later)
-- **Rust Toolchain** (1.85+ with edition 2024 support)
+- **Rust Toolchain** (1.88+; the workspace declares this MSRV)
 
 ### Install from Source
 
