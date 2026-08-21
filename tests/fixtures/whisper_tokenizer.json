@@ -12,7 +12,8 @@
     "vocab": {
       "<unk>": 0,
       "<|startoftranscript|>": 1,
-      "<|endoftext|>": 2
+      "<|endoftext|>": 2,
+      "<|pl|>": 3
     },
     "unk_token": "<unk>"
   }

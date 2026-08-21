@@ -74,13 +74,6 @@ pub fn validate_whisper_model_bundle(path: &Path) -> Result<()> {
     crate::whisper_weights::validate_whisper_model_bundle(path)
 }
 
-/// Reject unsupported or malformed weights before the expensive engine load.
-/// This narrower payload gate is also used by `LocalWhisperEngine::new`, where
-/// tokenizer and mel errors retain their own loader diagnostics.
-pub(crate) fn is_unquantized_whisper_model_dir(path: &Path) -> bool {
-    crate::whisper_weights::validate_whisper_model_pair(path).is_ok()
-}
-
 #[cfg(test)]
 use crate::whisper_weights::resolve_valid_whisper_weights_path;
 /// Resolve the first structurally valid supported weight file.
@@ -143,12 +136,20 @@ fn find_cached_default_model_pair() -> Option<PathBuf> {
 }
 
 /// Find a warm OpenAI snapshot containing a parseable Whisper tokenizer.
-fn find_cached_whisper_tokenizer() -> Option<PathBuf> {
+fn find_cached_whisper_tokenizer(
+    architecture: crate::whisper_weights::WhisperArchitecture,
+) -> Option<PathBuf> {
     hf_cache::find_snapshot_with_any_matching(
         TOKENIZER_WHISPER_REPO,
         &["tokenizer.json"],
         &[],
-        |snapshot| validate_model_file("tokenizer.json", &snapshot.join("tokenizer.json")).is_ok(),
+        |snapshot| {
+            crate::whisper_weights::validate_whisper_tokenizer_for_architecture(
+                &snapshot.join("tokenizer.json"),
+                architecture,
+            )
+            .is_ok()
+        },
     )
 }
 
@@ -406,7 +407,10 @@ where
     {
         paired_default_model = copy_default_model_pair(&snapshot, &dest)?;
     }
-    if let Some(snapshot) = find_cached_whisper_tokenizer() {
+    if let Ok(architecture) =
+        crate::whisper_weights::load_whisper_architecture(&dest.join("config.json"))
+        && let Some(snapshot) = find_cached_whisper_tokenizer(architecture)
+    {
         copy_model_files(&snapshot, &dest, &["tokenizer.json"], true)?;
     }
     if paired_default_model && is_complete_whisper_model_dir(&dest) {
@@ -766,6 +770,7 @@ mod tests {
             tokenizers::AddedToken::from("<|startoftranscript|>", true),
             tokenizers::AddedToken::from("<|endoftext|>", true),
             tokenizers::AddedToken::from("<|transcribe|>", true),
+            tokenizers::AddedToken::from("<|pl|>", true),
         ]);
         tokenizer.save(path.join("tokenizer.json"), false).unwrap();
         fs::write(
@@ -1269,16 +1274,30 @@ mod tests {
         fs::write(newer_model.join("model.safetensors"), b"corrupt").unwrap();
         set_modified(&older_model, 10);
         set_modified(&newer_model, 20);
-        assert_eq!(find_cached_default_model_pair(), Some(older_model));
+        assert_eq!(find_cached_default_model_pair(), Some(older_model.clone()));
 
         let older_tokenizer = snapshot(TOKENIZER_WHISPER_REPO, "older");
         let newer_tokenizer = snapshot(TOKENIZER_WHISPER_REPO, "newer");
         create_complete_whisper_model(&older_tokenizer);
         create_complete_whisper_model(&newer_tokenizer);
-        fs::write(newer_tokenizer.join("tokenizer.json"), "{}").unwrap();
+        let mut incomplete_tokenizer =
+            tokenizers::Tokenizer::new(tokenizers::models::bpe::BPE::default());
+        incomplete_tokenizer.add_special_tokens(&[
+            tokenizers::AddedToken::from("<|startoftranscript|>", true),
+            tokenizers::AddedToken::from("<|endoftext|>", true),
+        ]);
+        incomplete_tokenizer
+            .save(newer_tokenizer.join("tokenizer.json"), false)
+            .unwrap();
         set_modified(&older_tokenizer, 10);
         set_modified(&newer_tokenizer, 20);
-        assert_eq!(find_cached_whisper_tokenizer(), Some(older_tokenizer));
+        let architecture =
+            crate::whisper_weights::load_whisper_architecture(&older_model.join("config.json"))
+                .unwrap();
+        assert_eq!(
+            find_cached_whisper_tokenizer(architecture),
+            Some(older_tokenizer)
+        );
     }
 
     /// A downloaded checksum mismatch is never promoted to the final mel path.

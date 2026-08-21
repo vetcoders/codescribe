@@ -2,7 +2,7 @@
 
 use anyhow::{Context, Result, anyhow};
 use sha2::{Digest, Sha256};
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, HashSet};
 use std::fs;
 use std::io::{Read, Seek, SeekFrom};
 use std::path::{Path, PathBuf};
@@ -51,27 +51,45 @@ pub(crate) fn validate_whisper_tokenizer(path: &Path) -> Result<()> {
     Ok(())
 }
 
-fn validate_whisper_tokenizer_for_architecture(
+pub(crate) fn validate_whisper_tokenizer_for_architecture(
     path: &Path,
     architecture: WhisperArchitecture,
 ) -> Result<()> {
     validate_whisper_tokenizer(path)?;
     let tokenizer = tokenizers::Tokenizer::from_file(path)
         .map_err(|err| anyhow!("invalid Whisper tokenizer {}: {err}", path.display()))?;
-    let mut covered = vec![false; architecture.n_vocab];
-    for id in tokenizer.get_vocab(true).into_values() {
-        if let Some(slot) = covered.get_mut(id as usize) {
-            *slot = true;
-        }
-    }
-    if covered.iter().any(|present| !present) {
+    let vocab = tokenizer.get_vocab(true);
+    let covered: HashSet<u32> = vocab
+        .values()
+        .copied()
+        .filter(|id| (*id as usize) < architecture.n_vocab)
+        .collect();
+    if covered.len() != architecture.n_vocab {
         return Err(anyhow!(
             "Whisper tokenizer {} does not cover configured vocabulary 0..{}",
             path.display(),
             architecture.n_vocab
         ));
     }
+    if !vocab
+        .iter()
+        .any(|(token, id)| (*id as usize) < architecture.n_vocab && is_language_token(token))
+    {
+        return Err(anyhow!(
+            "Whisper tokenizer {} has no language token required for automatic detection",
+            path.display()
+        ));
+    }
     Ok(())
+}
+
+fn is_language_token(token: &str) -> bool {
+    token
+        .strip_prefix("<|")
+        .and_then(|inner| inner.strip_suffix("|>"))
+        .is_some_and(|inner| {
+            (2..=3).contains(&inner.len()) && inner.chars().all(|ch| ch.is_ascii_alphabetic())
+        })
 }
 
 /// Validate the config schema and reject every declared quantization mode.
@@ -79,7 +97,7 @@ pub(crate) fn validate_whisper_config(path: &Path) -> Result<()> {
     load_whisper_architecture(path).map(|_| ())
 }
 
-fn load_whisper_architecture(path: &Path) -> Result<WhisperArchitecture> {
+pub(crate) fn load_whisper_architecture(path: &Path) -> Result<WhisperArchitecture> {
     // nosemgrep: rust.actix.path-traversal.tainted-path.tainted-path -- Read-only model inspection. `path` is an operator-selected local model config or an internally resolved bundle/cache child; no network/request path component reaches it.
     let raw = fs::read_to_string(path)
         .with_context(|| format!("read Whisper config {}", path.display()))?;
@@ -556,6 +574,7 @@ pub(crate) fn write_test_whisper_weights(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use tempfile::TempDir;
 
     fn valid_config() -> serde_json::Value {
         serde_json::from_str(include_str!("../tests/fixtures/whisper_config.json")).unwrap()
@@ -631,5 +650,47 @@ mod tests {
                 .to_string()
                 .contains("even")
         );
+    }
+
+    #[test]
+    fn tokenizer_without_language_tokens_is_rejected() {
+        let temp = TempDir::new().unwrap();
+        let path = temp.path().join("tokenizer.json");
+        let mut tokenizer = tokenizers::Tokenizer::new(tokenizers::models::bpe::BPE::default());
+        tokenizer.add_special_tokens(&[
+            tokenizers::AddedToken::from("<|startoftranscript|>", true),
+            tokenizers::AddedToken::from("<|endoftext|>", true),
+            tokenizers::AddedToken::from("<|transcribe|>", true),
+            tokenizers::AddedToken::from("<|notimestamps|>", true),
+        ]);
+        tokenizer.save(&path, false).unwrap();
+        let architecture = parse_whisper_config(
+            include_str!("../tests/fixtures/whisper_test_config.json"),
+            "test fixture",
+        )
+        .unwrap();
+
+        let err = validate_whisper_tokenizer_for_architecture(&path, architecture).unwrap_err();
+        assert!(format!("{err:#}").contains("no language token"));
+    }
+
+    #[test]
+    fn sparse_tokenizer_rejects_extreme_vocab_without_dense_allocation() {
+        let temp = TempDir::new().unwrap();
+        let path = temp.path().join("tokenizer.json");
+        let tokenizer = tokenizers::Tokenizer::from_file(
+            Path::new(env!("CARGO_MANIFEST_DIR")).join("../tests/fixtures/whisper_tokenizer.json"),
+        )
+        .unwrap();
+        tokenizer.save(&path, false).unwrap();
+        let mut architecture = parse_whisper_config(
+            include_str!("../tests/fixtures/whisper_test_config.json"),
+            "test fixture",
+        )
+        .unwrap();
+        architecture.n_vocab = u32::MAX as usize;
+
+        let err = validate_whisper_tokenizer_for_architecture(&path, architecture).unwrap_err();
+        assert!(format!("{err:#}").contains("does not cover configured vocabulary"));
     }
 }

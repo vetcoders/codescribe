@@ -465,11 +465,8 @@ impl LocalWhisperEngine {
         }
         let tokenizer_path = model_path.join("tokenizer.json");
         let mel_filters_path = model_path.join("mel_filters.npz");
-        if !crate::config::models::is_unquantized_whisper_model_dir(model_path) {
-            anyhow::bail!(
-                "Quantized or malformed Whisper payload refused before tensor load; install the complete fp16 model"
-            );
-        }
+        crate::whisper_weights::validate_whisper_model_pair(model_path)
+            .context("validate Whisper config and architecture-compatible weights")?;
         let architecture = crate::whisper_weights::parse_whisper_config(
             &safe_path::safe_read_to_string(&config_path)?,
             &config_path.display().to_string(),
@@ -1945,7 +1942,7 @@ mod model_payload_tests {
         let err = LocalWhisperEngine::new(temp.path())
             .err()
             .expect("U32 must be refused");
-        assert!(format!("{err:#}").contains("refused"));
+        assert!(format!("{err:#}").contains("unsupported Whisper tensor dtype U32"));
     }
 
     #[test]
@@ -1956,7 +1953,7 @@ mod model_payload_tests {
         let err = LocalWhisperEngine::new(temp.path())
             .err()
             .expect("I32 must be refused");
-        assert!(format!("{err:#}").contains("refused"));
+        assert!(format!("{err:#}").contains("unsupported Whisper tensor dtype I32"));
     }
 
     #[test]

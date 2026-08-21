@@ -70,8 +70,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - **Local Whisper is an explicitly validated FP16/F32 bundle.** Runtime,
   Settings download, release scripts, E2E discovery, and the optional fat build
-  share the same architecture, tokenizer-vocabulary, pinned-mel, and required
-  tensor-name/shape contract. Quantized payloads and the legacy Q8 fallback are
+  share the same architecture, tokenizer-vocabulary/language, pinned-mel, and
+  required tensor-name/shape contract. Quantized payloads and the legacy Q8 fallback are
   refused; the old public Q8 identifiers remain deprecated source-compatibility
   constants only. Building from source now declares Rust 1.88 as the minimum
   supported toolchain.

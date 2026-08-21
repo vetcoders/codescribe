@@ -350,7 +350,8 @@ Transformers repo and `mel_filters.npz` from a checksum-pinned OpenAI Whisper
 asset. The resulting directory is validated as loader-compatible fp16/fp32
 before resolution.
 The shared bundle validator parses the config, requires the tokenizer to cover
-the configured vocabulary, verifies the pinned mel SHA-256, and validates every
+the configured vocabulary and provide automatic-language tokens, verifies the
+pinned mel SHA-256, and validates every
 required Whisper tensor name and shape plus the complete safetensors tensor
 table, dtype allowlist, offsets, and file length. Downloads and warm-cache
 copies are written to `.partial` files and promoted only after per-file

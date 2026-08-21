@@ -185,6 +185,7 @@ fn create_complete_model(path: &Path) {
         tokenizers::AddedToken::from("<|startoftranscript|>", true),
         tokenizers::AddedToken::from("<|endoftext|>", true),
         tokenizers::AddedToken::from("<|transcribe|>", true),
+        tokenizers::AddedToken::from("<|pl|>", true),
     ]);
     tokenizer
         .save(path.join("tokenizer.json"), false)
@@ -210,7 +211,7 @@ fn write_tiny_complete_weights(path: &Path) {
     add("encoder.conv2.bias".into(), &[D]);
     add("encoder.ln_post.weight".into(), &[D]);
     add("encoder.ln_post.bias".into(), &[D]);
-    add("decoder.token_embedding.weight".into(), &[3, D]);
+    add("decoder.token_embedding.weight".into(), &[4, D]);
     add("decoder.positional_embedding".into(), &[2, D]);
     add("decoder.ln.weight".into(), &[D]);
     add("decoder.ln.bias".into(), &[D]);
