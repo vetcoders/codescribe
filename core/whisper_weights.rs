@@ -1,12 +1,70 @@
 //! Shared Whisper safetensors validation for runtime and fat-build selection.
 
 use anyhow::{Context, Result, anyhow};
+use sha2::{Digest, Sha256};
 use std::fs;
 use std::io::{Read, Seek, SeekFrom};
 use std::path::{Path, PathBuf};
 
 /// Supported weight filenames in deterministic preference order.
 pub const SUPPORTED_NAMES: [&str; 2] = ["weights.safetensors", "model.safetensors"];
+/// SHA-256 of the pinned official OpenAI mel filterbank.
+pub const MEL_FILTERS_SHA256: &str =
+    "7450ae70723a5ef9d341e3cee628c7cb0177f36ce42c44b7ed2bf3325f0f6d4c";
+
+/// Validate every artifact required by runtime and embedded Whisper loaders.
+pub fn validate_whisper_model_bundle(path: &Path) -> Result<()> {
+    validate_whisper_config(&path.join("config.json"))?;
+    let tokenizer_path = path.join("tokenizer.json");
+    tokenizers::Tokenizer::from_file(&tokenizer_path).map_err(|err| {
+        anyhow!(
+            "invalid Whisper tokenizer {}: {err}",
+            tokenizer_path.display()
+        )
+    })?;
+    verify_mel_filters(&path.join("mel_filters.npz"))?;
+    resolve_valid_whisper_weights_path(path).map(|_| ())
+}
+
+/// Validate the config schema and reject every declared quantization mode.
+pub(crate) fn validate_whisper_config(path: &Path) -> Result<()> {
+    let raw = fs::read_to_string(path)
+        .with_context(|| format!("read Whisper config {}", path.display()))?;
+    let config: serde_json::Value = serde_json::from_str(&raw)
+        .with_context(|| format!("parse Whisper config {}", path.display()))?;
+    if !config.is_object() {
+        return Err(anyhow!(
+            "Whisper config must be a JSON object: {}",
+            path.display()
+        ));
+    }
+    if config
+        .get("quantization")
+        .is_some_and(|value| !value.is_null())
+        || config
+            .get("quantization_config")
+            .is_some_and(|value| !value.is_null())
+    {
+        return Err(anyhow!("quantized Whisper config is unsupported"));
+    }
+    Ok(())
+}
+
+/// Verify the pinned mel filterbank used by Whisper.
+pub(crate) fn verify_mel_filters(path: &Path) -> Result<()> {
+    // nosemgrep: rust.actix.path-traversal.tainted-path.tainted-path -- Read-only checksum of an operator-selected local model artifact or internally resolved download destination.
+    let bytes = fs::read(path).with_context(|| format!("read {} for checksum", path.display()))?;
+    let actual = format!("{:x}", Sha256::digest(bytes));
+    if actual != MEL_FILTERS_SHA256 {
+        return Err(anyhow!(
+            "SHA-256 mismatch for {}: expected {}, got {}",
+            path.display(),
+            MEL_FILTERS_SHA256,
+            actual
+        ));
+    }
+    Ok(())
+}
 
 /// Resolve the first structurally valid supported weight file.
 pub fn resolve_valid_whisper_weights_path(path: &Path) -> Result<PathBuf> {

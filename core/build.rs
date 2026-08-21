@@ -97,11 +97,10 @@ fn main() {
             .unwrap_or_else(|| DEFAULT_MODEL_NAME.to_string());
         let model_path =
             resolve_whisper_embed_model_path(&manifest_dir, &embed_model, DEFAULT_WHISPER_REPO);
-        let weights_path = whisper_weights::resolve_valid_whisper_weights_path(&model_path).ok();
-        let model_exists = model_path.join("config.json").exists()
-            && model_path.join("tokenizer.json").exists()
-            && model_path.join("mel_filters.npz").exists()
-            && weights_path.is_some();
+        let model_exists = whisper_weights::validate_whisper_model_bundle(&model_path).is_ok();
+        let weights_path = model_exists
+            .then(|| whisper_weights::resolve_valid_whisper_weights_path(&model_path).ok())
+            .flatten();
         if model_exists {
             let weights_path = weights_path.as_ref().expect("validated Whisper weights");
             println!(
@@ -442,10 +441,7 @@ fn expand_tilde_path(value: &str) -> PathBuf {
 /// tokenizer + mel into `~/.codescribe/models/<name>`. Incomplete snapshots
 /// must not win over that composed tree.
 fn whisper_dir_complete(path: &Path) -> bool {
-    path.join("config.json").exists()
-        && path.join("tokenizer.json").exists()
-        && path.join("mel_filters.npz").exists()
-        && whisper_weights::resolve_valid_whisper_weights_path(path).is_ok()
+    whisper_weights::validate_whisper_model_bundle(path).is_ok()
 }
 
 /// Locate the Whisper snapshot to embed.

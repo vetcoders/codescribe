@@ -5,7 +5,6 @@
 //! model from here instead of re-implementing its own precedence rules.
 
 use anyhow::{Context, Result, anyhow};
-use sha2::{Digest, Sha256};
 use std::fs;
 use std::path::{Path, PathBuf};
 
@@ -22,8 +21,7 @@ pub const TOKENIZER_WHISPER_REPO: &str = "openai/whisper-large-v3-turbo";
 /// Pinned OpenAI Whisper asset. The checksum is asserted by the installer.
 pub const MEL_FILTERS_URL: &str = "https://raw.githubusercontent.com/openai/whisper/5f86d1d86363843179951550570367b37c5d6f78/whisper/assets/mel_filters.npz";
 /// SHA-256 of [`MEL_FILTERS_URL`].
-pub const MEL_FILTERS_SHA256: &str =
-    "7450ae70723a5ef9d341e3cee628c7cb0177f36ce42c44b7ed2bf3325f0f6d4c";
+pub const MEL_FILTERS_SHA256: &str = crate::whisper_weights::MEL_FILTERS_SHA256;
 /// Files that must all be present for a directory to count as a usable model.
 const REQUIRED_MODEL_FILES: [&str; 3] = ["config.json", "tokenizer.json", "mel_filters.npz"];
 /// Weight file names, of which **any one** satisfies the completeness check —
@@ -59,53 +57,15 @@ fn is_complete_whisper_model_dir(path: &Path) -> bool {
 /// has no payload checksum. The validator checks the complete tensor table,
 /// dtype allowlist, byte sizes, contiguous offsets, and final file length.
 pub fn validate_whisper_model_bundle(path: &Path) -> Result<()> {
-    let config_path = path.join("config.json");
-    validate_whisper_config(&config_path)?;
-
-    let tokenizer_path = path.join("tokenizer.json");
-    tokenizers::Tokenizer::from_file(&tokenizer_path).map_err(|err| {
-        anyhow!(
-            "invalid Whisper tokenizer {}: {err}",
-            tokenizer_path.display()
-        )
-    })?;
-
-    let mel_path = path.join("mel_filters.npz");
-    verify_sha256(&mel_path, MEL_FILTERS_SHA256)?;
-
-    resolve_valid_whisper_weights_path(path).map(|_| ())
+    crate::whisper_weights::validate_whisper_model_bundle(path)
 }
 
 /// Reject unsupported or malformed weights before the expensive engine load.
 /// This narrower payload gate is also used by `LocalWhisperEngine::new`, where
 /// tokenizer and mel errors retain their own loader diagnostics.
 pub(crate) fn is_unquantized_whisper_model_dir(path: &Path) -> bool {
-    validate_whisper_config(&path.join("config.json")).is_ok()
+    crate::whisper_weights::validate_whisper_config(&path.join("config.json")).is_ok()
         && resolve_valid_whisper_weights_path(path).is_ok()
-}
-
-fn validate_whisper_config(path: &Path) -> Result<()> {
-    // nosemgrep: rust.actix.path-traversal.tainted-path.tainted-path -- Read-only model inspection. `path` is an operator-selected local model config or an internally resolved bundle/cache child; no network/request path component reaches it.
-    let raw = fs::read_to_string(path)
-        .with_context(|| format!("read Whisper config {}", path.display()))?;
-    let config: serde_json::Value = serde_json::from_str(&raw)
-        .with_context(|| format!("parse Whisper config {}", path.display()))?;
-    if !config.is_object() {
-        return Err(anyhow!(
-            "Whisper config must be a JSON object: {}",
-            path.display()
-        ));
-    }
-    if config
-        .get("quantization")
-        .is_some_and(|value| !value.is_null())
-        || config
-            .get("quantization_config")
-            .is_some_and(|value| !value.is_null())
-    {
-        return Err(anyhow!("quantized Whisper config is unsupported"));
-    }
-    Ok(())
 }
 
 /// Resolve the first structurally valid supported weight file.
@@ -653,29 +613,14 @@ fn replace_file(partial: &Path, dest: &Path) -> Result<()> {
 
 fn validate_model_file(filename: &str, path: &Path) -> Result<()> {
     match filename {
-        "config.json" => validate_whisper_config(path),
+        "config.json" => crate::whisper_weights::validate_whisper_config(path),
         "tokenizer.json" => tokenizers::Tokenizer::from_file(path)
             .map(|_| ())
             .map_err(|err| anyhow!("invalid tokenizer {}: {err}", path.display())),
-        "mel_filters.npz" => verify_sha256(path, MEL_FILTERS_SHA256),
+        "mel_filters.npz" => crate::whisper_weights::verify_mel_filters(path),
         "weights.safetensors" | "model.safetensors" => validate_safetensors_file(path),
         _ => Err(anyhow!("unsupported Whisper model artifact: {filename}")),
     }
-}
-
-fn verify_sha256(path: &Path, expected: &str) -> Result<()> {
-    // nosemgrep: rust.actix.path-traversal.tainted-path.tainted-path -- Read-only checksum of the fixed mel_filters.npz destination assembled under the internally resolved model directory.
-    let bytes = fs::read(path).with_context(|| format!("read {} for checksum", path.display()))?;
-    let actual = format!("{:x}", Sha256::digest(bytes));
-    if actual != expected {
-        return Err(anyhow!(
-            "SHA-256 mismatch for {}: expected {}, got {}",
-            path.display(),
-            expected,
-            actual
-        ));
-    }
-    Ok(())
 }
 
 /// ModelManager resolution, completeness gates, and env-override isolation tests.
