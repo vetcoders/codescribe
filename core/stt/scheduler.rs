@@ -221,10 +221,20 @@ pub(crate) struct SttScheduler {
 }
 
 impl SttScheduler {
-    /// Spawn a scheduler wired to the real Whisper backend and the real VAD
-    /// prefilter, governed by the environment.
-    pub(crate) fn new() -> Self {
-        Self::with_runtime_fns(Arc::new(default_infer), Arc::new(default_commit_prefilter))
+    /// Spawn a scheduler wired to the real STT router and VAD prefilter.
+    /// `local_whisper_allowed` is the session's product-mode boundary; the
+    /// router refuses local engines before initialization when it is false.
+    pub(crate) fn new(local_whisper_allowed: bool) -> Self {
+        let infer = Arc::new(move |samples, sample_rate, language, initial_prompt| {
+            default_infer(
+                samples,
+                sample_rate,
+                language,
+                initial_prompt,
+                local_whisper_allowed,
+            )
+        });
+        Self::with_runtime_fns(infer, Arc::new(default_commit_prefilter))
     }
 
     /// Queue a request that belongs to no particular utterance.
@@ -455,12 +465,14 @@ fn default_infer(
     sample_rate: u32,
     language: Option<String>,
     initial_prompt: Option<String>,
+    local_whisper_allowed: bool,
 ) -> Result<RawTranscript> {
-    crate::stt::transcribe_long_with_segments_with_initial_prompt(
+    crate::stt::transcribe_long_with_segments_with_initial_prompt_policy(
         &samples,
         sample_rate,
         language.as_deref(),
         initial_prompt,
+        local_whisper_allowed,
     )
 }
 

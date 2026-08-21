@@ -7,12 +7,18 @@
 > Whisper transcribing **partials on the go** to fill canvas gaps — NOT final-pass-only.
 > Lexicon substitution is the FINAL automated layer, after Whisper.
 >
-> **Status (2026-08-14):** on-the-go gap-fill **exists and is the stock live
-> default** as Layer 1 tail-patch on both live paths (`a6b1233d`, default
-> flip 2026-08-09). `CODESCRIBE_LAYERED_TRANSCRIPTION` unset → `phase1`;
-> explicit `off`/`0`/`false` disarms. Legacy `FINAL_PASS_MODE` no longer owns
-> any normal-stop inference. W13 fusion /
+> **Status (2026-08-21):** normal recording has a product-mode boundary that
+> no engine preference or legacy env can widen. `cloud` uses Apple as Layer 0
+> plus the authorized live gateway lane and loads **zero local Whisper/ONNX
+> weights**. `apple_only` also loads zero local weights. Only an explicit
+> `local_power` choice may run the legacy in-process Layer 1 tail-patch;
+> `CODESCRIBE_LAYERED_TRANSCRIPTION` controls that local lane only. Explicit HQ
+> / local Retranscribe remains a separate operator action. Legacy
+> `FINAL_PASS_MODE` no longer owns any normal-stop inference. W13 fusion /
 > idempotence / highlights stay OFF until an operator flip.
+> The same boundary owns startup/Swift prewarm and live canvas routing: a stale
+> `CODESCRIBE_STT_ENGINE=candle|onnx` is ignored in cloud/Apple-only instead of
+> loading local weights or diverting the take away from Apple.
 > Planning report: internal plan `stt-apple-must-have` (operator artifact store, 2026-07-24).
 
 ---
@@ -35,12 +41,12 @@ Recording stopped before a transcript was available.
 
 ### Fixed product contract (2026-07-24 ship cut)
 
-| Layer                 | Rule                                                                                                   |
-| --------------------- | ------------------------------------------------------------------------------------------------------ |
-| Empty `speech.engine` | Load defaults to **`stt_engine=apple`**, **`final_pass_mode=smart`**                                   |
-| Settings UI write     | **Promoted** to `settings.json` + reconciles process env **and** `.env` (single brain)                 |
-| Record start          | **`preflight_apple_live_ready()`** when engine is Apple — refuse before REC if Speech/bridge not ready |
-| Live vs final         | Live = Apple only; file final = Whisper; recovery path separate from mid-stream swap                   |
+| Layer                 | Rule                                                                                                     |
+| --------------------- | -------------------------------------------------------------------------------------------------------- |
+| Empty `speech.engine` | Load defaults to **`stt_engine=apple`**, **`final_pass_mode=smart`**                                     |
+| Settings UI write     | **Promoted** to `settings.json` + reconciles process env **and** `.env` (single brain)                   |
+| Record start          | **`preflight_apple_live_ready()`** when engine is Apple — refuse before REC if Speech/bridge not ready   |
+| Live vs final         | Cloud/Apple-only live fails closed without local weights; explicit HQ/local Retranscribe may use Whisper |
 
 ---
 
@@ -143,7 +149,10 @@ button.
 
 If you keep `.env = auto` and only fill `settings.json`, **settings do not win** for engine selection at runtime.
 
-Empty recordings with Apple selected are a **reliability cut** (preflight + typed Whisper _recovery_ with audio), not a reason to abandon Apple as primary.
+Empty recordings with Apple selected are a **reliability cut**. In cloud and
+Apple-only modes the path reports/degrades without loading local Whisper;
+automatic Apple → Candle recovery exists only when `local_power` explicitly
+authorizes local weights.
 
 ---
 
@@ -162,24 +171,22 @@ Code: `core/config/loader.rs` · `core/stt/mod.rs::selected_engine()` · `reconc
 **Single brain (W2-A):**
 `CODESCRIBE_STT_ENGINE` and `FINAL_PASS_MODE` are **promoted** settings. UI write updates `settings.json`, process env, and `.env` together. No silent dual brain.
 
-Still env-seedable when unset (not dual writers): `CODESCRIBE_LAYERED_TRANSCRIPTION`, `CODESCRIBE_STT_INITIAL_PROMPT_ENABLED`.
+Still env-seedable when unset (not dual writers): `CODESCRIBE_STT_INITIAL_PROMPT_ENABLED`.
 
-> **Power-user hazard (measured 2026-08-08).** Because `CODESCRIBE_LAYERED_TRANSCRIPTION` is
-> **not** promoted to `settings.json`, `Config::inject_file_env_for_runtime` copies it out of
-> `~/.codescribe/.env` into the process env on the first `Config::load()` — in _every_ process
-> that loads the core, tests and harnesses included. A stale `.env` line therefore arms Layer 1
-> silently. This was observed live: the same `make test-engine-parity` binary scored 0.931 with
-> the lane off and 0.833 with the operator's dotenv arming `phase1`, and the low score was the
-> _more accurate_ transcript. The parity target now pins the lane explicitly (`Makefile`), but
-> the general hazard stands for any tool that loads the core. Promoting the key the way
-> `CODESCRIBE_STT_ENGINE` was promoted is an open operator decision.
+> **Legacy env containment (fixed 2026-08-21).** A stale
+> `CODESCRIBE_LAYERED_TRANSCRIPTION=phase1` can no longer arm local inference in
+> cloud or Apple-only sessions. The runtime gate requires both this phase token
+> and the typed `local_whisper_allowed` policy derived from resolved
+> `asr_mode=local_power`. The key is promoted to `settings.json`; env remains a
+> compatibility seed, not an authority that can widen product mode.
 
 **Final pass vs layered (orthogonal):**
 
-| Setting    | Env                                | Default  | Role                                                                                                                 |
-| ---------- | ---------------------------------- | -------- | -------------------------------------------------------------------------------------------------------------------- |
-| Final pass | `FINAL_PASS_MODE`                  | legacy   | No effect on normal stop; retained only for settings migration while explicit Retranscribe owns whole-file inference |
-| Layered    | `CODESCRIBE_LAYERED_TRANSCRIPTION` | `phase1` | During-hold Layer 1 tail-patch on **both** live paths — local Whisper or live cloud WSS, selected by product mode    |
+| Setting       | Env                                | Default                     | Role                                                                                                                                  |
+| ------------- | ---------------------------------- | --------------------------- | ------------------------------------------------------------------------------------------------------------------------------------- |
+| Final pass    | `FINAL_PASS_MODE`                  | legacy                      | No effect on normal stop; retained only for settings migration while explicit Retranscribe owns whole-file inference                  |
+| Product mode  | `CODESCRIBE_ASR_MODE`              | Apple-only on fresh install | `cloud` = Apple + authorized live WSS, zero local weights; `local_power` = local weights allowed; `apple_only` = Apple + lexicon only |
+| Local layered | `CODESCRIBE_LAYERED_TRANSCRIPTION` | `phase1`                    | Enables the legacy in-process tail-patch only when resolved product mode is `local_power`; cannot widen cloud/Apple-only              |
 
 Normal capture ignores legacy final-pass routing and never decodes/uploads the
 completed WAV. Layered phase tokens (`phase1`…) select live refinement;
@@ -225,20 +232,23 @@ file-pass belongs only to explicit retranscribe surfaces.
 
 ### 3.4 STT engine dispatch (the nit)
 
-| Call site             | When             | Function / transport                           | Engine rule                                              |
-| --------------------- | ---------------- | ---------------------------------------------- | -------------------------------------------------------- |
-| Live Layer 0          | during recording | Apple progressive                              | committed canvas floor                                   |
-| Live Layer 1 local    | during recording | Whisper on ~5 Apple segments                   | aligned sentence swap on the joined window               |
-| Live Layer 1 cloud    | during recording | Voice Lab WSS                                  | normalized gap/tail fill; same substitution rule         |
-| Explicit Retranscribe | operator action  | local completed-file decode or cloud multipart | may replace the selected artifact, never the live canvas |
+| Call site             | When             | Function / transport                           | Engine rule                                                    |
+| --------------------- | ---------------- | ---------------------------------------------- | -------------------------------------------------------------- |
+| Live Layer 0          | during recording | Apple progressive                              | committed canvas floor                                         |
+| Live Layer 1 local    | during recording | Whisper on ~5 Apple segments                   | only `local_power`; aligned sentence swap on the joined window |
+| Live Layer 1 cloud    | during recording | authorized gateway WSS                         | only `cloud`; normalized gap/tail fill; zero local weights     |
+| Explicit Retranscribe | operator action  | local completed-file decode or cloud multipart | may replace the selected artifact, never the live canvas       |
 
-**This split is the MacGyver fracture:** UI can show Whisper readiness while live is Apple-only and fails closed.
+Whisper readiness is not authority to load it during a normal take. Resolved
+product mode is the authority; the UI may still show readiness for explicit HQ
+or local Retranscribe.
 
 ```text
-selected_engine()
-  ├── Onnx   → onnx_adapter
-  ├── Apple  → LIVE: run_apple_live_only  |  ADAPTER: run_apple_or_whisper
-  └── Candle → whisper singleton (label: local_whisper)
+recording policy
+  ├── cloud      → Apple canvas + authorized gateway; local engines refused
+  ├── apple_only → Apple canvas + lexicon; local engines refused
+  └── local_power
+        └── selected_engine(): Apple (local recovery) | Candle | ONNX
 ```
 
 `auto` = Apple if `apple_stt::is_runtime_available() && is_bridge_resolvable()` else Candle.

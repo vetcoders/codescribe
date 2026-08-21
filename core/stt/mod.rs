@@ -562,6 +562,15 @@ pub fn active_engine_is_apple() -> bool {
     matches!(selected_engine(), SttEngine::Apple)
 }
 
+/// Whether a normal recording must use the Apple canvas.
+///
+/// Cloud and Apple-only product modes carry `local_whisper_allowed=false`, so
+/// a stale engine env cannot route their session through Candle/ONNX. Local
+/// power retains the explicit engine router.
+pub(crate) fn recording_engine_is_apple(local_whisper_allowed: bool) -> bool {
+    !local_whisper_allowed || active_engine_is_apple()
+}
+
 /// Sample rate of the synthetic warmup buffer.
 const WARMUP_SAMPLE_RATE: u32 = 16_000;
 
@@ -626,6 +635,31 @@ pub fn prewarm_active_engine() -> anyhow::Result<()> {
             Ok(())
         }
     }
+}
+
+/// Prewarm the engine that a normal recording is authorized to use.
+///
+/// Cloud and Apple-only always warm Apple, regardless of a stale engine env.
+/// Only Local power may delegate to the active router and initialize local
+/// Candle/ONNX weights.
+pub fn prewarm_recording_engine(local_whisper_allowed: bool) -> anyhow::Result<()> {
+    if local_whisper_allowed {
+        return prewarm_active_engine();
+    }
+
+    let warmup = synthetic_warmup_audio();
+    apple_stt::init().map_err(|err| {
+        anyhow::anyhow!("Apple STT prewarm init failed (local weights forbidden): {err:#}")
+    })?;
+    match apple_stt::transcribe_long_with_segments(&warmup, WARMUP_SAMPLE_RATE, Some("en")) {
+        Ok(_) => tracing::info!(
+            "STT recording warmup complete (apple; product mode forbids local weights)"
+        ),
+        Err(error) => tracing::warn!(
+            "STT Apple recording warmup failed (non-fatal; local weights stay forbidden): {error:#}"
+        ),
+    }
+    Ok(())
 }
 
 /// One second of very low-amplitude tone at 16 kHz. Non-silent (so the full
@@ -729,6 +763,36 @@ pub(crate) fn transcribe_long_with_segments_with_initial_prompt(
             initial_prompt,
         ),
     }
+}
+
+/// Session-scoped live transcription with a hard local-weights boundary.
+///
+/// Cloud and Apple-only recording modes pass `local_whisper_allowed=false`.
+/// In that state Apple serves regardless of a stale Candle/ONNX engine override,
+/// and Apple failure returns an error instead of initializing a local model.
+/// Explicit Local power retains the existing router and emergency recovery behavior.
+pub(crate) fn transcribe_long_with_segments_with_initial_prompt_policy(
+    audio: &[f32],
+    sample_rate: u32,
+    language: Option<&str>,
+    initial_prompt: Option<String>,
+    local_whisper_allowed: bool,
+) -> anyhow::Result<RawTranscript> {
+    if local_whisper_allowed {
+        return transcribe_long_with_segments_with_initial_prompt(
+            audio,
+            sample_rate,
+            language,
+            initial_prompt,
+        );
+    }
+
+    if initial_prompt.is_some() {
+        warn_initial_prompt_unsupported("Apple SpeechAnalyzer");
+    }
+    run_apple_live_only("local-weights-forbidden live transcription", || {
+        apple_stt::transcribe_long_with_segments(audio, sample_rate, language)
+    })
 }
 
 /// Transcribe long audio (try_lock) with segment-level timestamps.
@@ -854,6 +918,50 @@ mod tests {
             0,
             "Apple prewarm must never attempt to load Whisper weights"
         );
+    }
+
+    /// Cloud/Apple-only session policy must refuse a non-Apple engine override
+    /// before the heavyweight singleton is initialized or its weights load.
+    #[test]
+    #[serial]
+    fn recording_policy_ignores_local_engine_without_loading_weights() {
+        let _guard = EnvGuard::set("candle");
+        whisper::singleton::reset_test_init_calls();
+
+        let _apple_result = transcribe_long_with_segments_with_initial_prompt_policy(
+            &[0.1; 160],
+            16_000,
+            Some("pl"),
+            None,
+            false,
+        );
+        assert!(
+            recording_engine_is_apple(false),
+            "cloud/Apple-only must force the Apple canvas over a stale Candle env"
+        );
+        assert_eq!(
+            whisper::singleton::test_init_calls(),
+            0,
+            "recording policy must bypass Whisper initialization"
+        );
+        assert_eq!(
+            whisper::singleton::test_load_calls(),
+            0,
+            "recording policy must bypass Whisper weight loading"
+        );
+    }
+
+    /// Startup prewarm obeys the same product-mode boundary as the session.
+    #[test]
+    #[serial]
+    fn recording_prewarm_ignores_local_engine_when_product_mode_forbids_weights() {
+        let _guard = EnvGuard::set("candle");
+        whisper::singleton::reset_test_init_calls();
+
+        let _apple_probe = prewarm_recording_engine(false);
+
+        assert_eq!(whisper::singleton::test_init_calls(), 0);
+        assert_eq!(whisper::singleton::test_load_calls(), 0);
     }
 
     /// Live-only helper surfaces Apple bridge failures instead of silent swap.

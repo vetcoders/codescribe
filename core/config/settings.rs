@@ -254,6 +254,8 @@ pub struct UserSettings {
     /// Layered incremental transcription phase ("off" | "phase1").
     /// Seeds `CODESCRIBE_LAYERED_TRANSCRIPTION`. Absent matches the core
     /// default (`unset` → phase1). Explicit "off" / "0" / "false" disarms.
+    /// This legacy local lane is effective only in resolved `local_power`;
+    /// cloud and Apple-only never allow this field to load local weights.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub layered_transcription: Option<String>,
     /// Opt-in Whisper `initial_prompt` vocabulary hint.

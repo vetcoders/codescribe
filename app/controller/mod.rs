@@ -557,15 +557,19 @@ impl RecordingController {
                 // engine later and the next call reloads it — pinning it here would
                 // undo that GPU/host-memory reclaim.
                 //
-                // Warm the ACTIVE router engine (Apple SpeechAnalyzer on macOS 26+,
-                // Candle on fallback/older macOS) AND run a synthetic warmup
-                // inference, so the first dictation pays neither model-load nor
-                // Metal kernel-compilation latency — matching the old always-instant
-                // behaviour where the long-lived daemon was warm before first use.
+                // Warm the engine AUTHORIZED for normal recording and run a
+                // synthetic inference. Cloud/Apple-only always warm Apple even
+                // when a stale engine env names Candle; only Local power may
+                // pay local model-load / Metal kernel-compilation here.
+                let local_whisper_allowed =
+                    codescribe_core::audio::streaming_recorder::production_local_whisper_allowed(
+                        &UserSettings::load(),
+                    );
                 std::thread::Builder::new()
                     .name("stt-prewarm".into())
-                    .spawn(|| {
-                        if let Err(e) = crate::stt::prewarm_active_engine() {
+                    .spawn(move || {
+                        if let Err(e) = crate::stt::prewarm_recording_engine(local_whisper_allowed)
+                        {
                             warn!(
                                 "STT background prewarm failed (will lazy-load on first use): {}",
                                 e

@@ -613,20 +613,24 @@ impl CodescribeHotkeys {
     /// dictation does not sit in the overlay's `starting` state for seconds.
     pub async fn prewarm_recording(&self) -> Result<(), CsError> {
         let _ = ensure_controller(&shared_controller(), tokio::runtime::Handle::current());
-        // Warm the ACTIVE engine the router will actually use (Apple SpeechAnalyzer
-        // on macOS 26+, Candle on fallback/older macOS) — not a hardcoded Candle
-        // singleton. `prewarm_active_engine` also runs a synthetic warmup inference,
-        // so the first user dictation pays neither model-load nor Metal
-        // kernel-compilation latency. Idempotent; safe to race the controller's own
-        // background prewarm.
-        tokio::task::spawn_blocking(codescribe::stt::prewarm_active_engine)
-            .await
-            .map_err(|error| CsError::Recording {
-                msg: format!("STT prewarm task failed: {error}"),
-            })?
-            .map_err(|error| CsError::Recording {
-                msg: format!("STT prewarm failed: {error}"),
-            })?;
+        // Warm the engine authorized for normal recording. Cloud/Apple-only
+        // always warm Apple; only Local power may initialize Candle/ONNX.
+        // The policy-aware prewarm runs a synthetic inference and is idempotent,
+        // so it is safe to race the controller's own background prewarm.
+        let local_whisper_allowed =
+            codescribe_core::audio::streaming_recorder::production_local_whisper_allowed(
+                &UserSettings::load(),
+            );
+        tokio::task::spawn_blocking(move || {
+            codescribe::stt::prewarm_recording_engine(local_whisper_allowed)
+        })
+        .await
+        .map_err(|error| CsError::Recording {
+            msg: format!("STT prewarm task failed: {error}"),
+        })?
+        .map_err(|error| CsError::Recording {
+            msg: format!("STT prewarm failed: {error}"),
+        })?;
         Ok(())
     }
 

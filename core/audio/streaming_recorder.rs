@@ -3,8 +3,9 @@
 //! [`StreamingRecorder`] owns a [`Recorder`] and forwards every captured block
 //! down a bounded channel to `transcription_session`, which emits `EngineEvent`s
 //! to a caller-supplied sink. The channel is deliberately deep
-//! (`AUDIO_BACKLOG_CHUNKS`): a cold Whisper load happens *behind* it, so the
-//! user's first words queue up instead of being dropped while the model loads.
+//! (`AUDIO_BACKLOG_CHUNKS`): an explicitly selected Local power session may
+//! cold-load Whisper *behind* it, so the user's first words queue up instead of
+//! being dropped while the model loads.
 //!
 //! Shutdown is ordered and matters. Stopping capture is not enough — the session
 //! task has to drain, and the presentation layer ticks on its own task, so both
@@ -18,6 +19,7 @@ use crate::asr_session::recorder::{
 };
 use crate::audio::recorder::{Recorder, RecorderConfig};
 use crate::config::UserSettings;
+use crate::config::cloud_asr::AsrProductMode;
 use crate::pipeline::contracts::{EngineEvent, EventSink};
 use crate::pipeline::streaming::{
     SessionConfig, collect_buffered_engine_events_with_config, stream_log_path,
@@ -31,9 +33,9 @@ use tokio::sync::{Mutex, mpsc};
 use tokio::task::JoinHandle;
 use tracing::{debug, info, warn};
 
-// Keep enough raw audio queued to survive a cold Whisper load without dropping
-// the user's first words. The STT session drains this backlog once the model is ready.
-/// Channel depth for cold Whisper load: first words queue instead of drop.
+// Keep enough raw audio queued to survive an allowed Local power cold load
+// without dropping the user's first words. Cloud and Apple-only never load it.
+/// Channel depth for an explicit Local power cold load.
 const AUDIO_BACKLOG_CHUNKS: usize = 2048;
 
 /// Content-free witness returned by the production PCM replay seam.
@@ -60,6 +62,18 @@ pub fn production_layer1_decision(
     layer1_decision_for_recording(settings, gateway)
 }
 
+/// Whether this recording may initialize any in-process Whisper/ONNX weights.
+///
+/// The product mode is the authority: cloud and Apple-only fail closed to the
+/// Apple canvas, while only an explicit Local power choice permits local
+/// inference. Engine preference and legacy layered flags cannot widen this.
+pub fn production_local_whisper_allowed(settings: &UserSettings) -> bool {
+    matches!(
+        settings.resolved_asr_mode().mode,
+        AsrProductMode::LocalPower
+    )
+}
+
 /// Build the exact engine session configuration consumed by live capture.
 fn recording_session_config(
     sample_rate: u32,
@@ -67,6 +81,7 @@ fn recording_session_config(
     stream_log_path: Option<std::path::PathBuf>,
     utterance_silence_sec: Option<f32>,
     layer1: Layer1Decision,
+    local_whisper_allowed: bool,
     lifecycle_events: Option<RecorderLifecycleEvents>,
 ) -> SessionConfig {
     SessionConfig {
@@ -75,6 +90,7 @@ fn recording_session_config(
         stream_log_path,
         utterance_silence_sec,
         layer1,
+        local_whisper_allowed,
         lifecycle_events,
     }
 }
@@ -94,7 +110,8 @@ pub async fn replay_production_session(
 ) -> Result<ProductionSessionReplay> {
     let layer1 = production_layer1_decision(settings, gateway);
     let layer1_armed = layer1.is_armed();
-    let streaming_engine_label = if crate::stt::active_engine_is_apple() {
+    let local_whisper_allowed = production_local_whisper_allowed(settings);
+    let streaming_engine_label = if crate::stt::recording_engine_is_apple(local_whisper_allowed) {
         "live_apple"
     } else {
         "streaming_whisper"
@@ -107,6 +124,7 @@ pub async fn replay_production_session(
         None,
         utterance_silence_sec,
         layer1,
+        local_whisper_allowed,
         None,
     );
     let events = collect_buffered_engine_events_with_config(samples, config).await?;
@@ -139,6 +157,9 @@ pub struct StreamingRecorder {
     level_callback: Option<Arc<dyn Fn(f32) + Send + Sync>>,
     /// Single-use Layer 1 decision consumed when the next session starts.
     layer1_decision: StdMutex<Layer1Decision>,
+    /// Product-mode guard for every legacy/local inference path in the next
+    /// recording. False for cloud and Apple-only; true only for Local power.
+    local_whisper_allowed: bool,
     /// O(1) host lifecycle signal for the currently active session.
     lifecycle_handle: Option<RecorderLifecycleHandle>,
 }
@@ -163,6 +184,7 @@ impl StreamingRecorder {
             event_sink: None,
             level_callback: None,
             layer1_decision: StdMutex::new(Layer1Decision::Disarmed),
+            local_whisper_allowed: false,
             lifecycle_handle: None,
         })
     }
@@ -186,6 +208,7 @@ impl StreamingRecorder {
             event_sink: None,
             level_callback: None,
             layer1_decision: StdMutex::new(Layer1Decision::Disarmed),
+            local_whisper_allowed: false,
             lifecycle_handle: None,
         })
     }
@@ -197,6 +220,7 @@ impl StreamingRecorder {
         settings: &UserSettings,
         gateway: GatewaySessionAvailability,
     ) {
+        self.local_whisper_allowed = production_local_whisper_allowed(settings);
         *self
             .layer1_decision
             .get_mut()
@@ -322,6 +346,7 @@ impl StreamingRecorder {
                 .get_mut()
                 .unwrap_or_else(std::sync::PoisonError::into_inner),
         );
+        let local_whisper_allowed = self.local_whisper_allowed;
         let (lifecycle_handle, lifecycle_events) = recorder_lifecycle_channel();
         self.lifecycle_handle = Some(lifecycle_handle);
         self.transcription_handle = Some(tokio::spawn(async move {
@@ -334,6 +359,7 @@ impl StreamingRecorder {
                     log_path,
                     utterance_silence_sec,
                     layer1,
+                    local_whisper_allowed,
                     Some(lifecycle_events),
                 ),
             )
@@ -482,6 +508,29 @@ mod tests {
     use std::fs;
     use std::path::{Path, PathBuf};
     use tokio::time::Duration;
+
+    /// Product mode, not engine/env preference, is the sole authority that may
+    /// let a normal recording initialize local Whisper weights.
+    #[test]
+    fn normal_recording_allows_local_weights_only_in_local_power_mode() {
+        let cloud = UserSettings {
+            asr_mode: Some("cloud".to_string()),
+            cloud_consent: Some("granted".to_string()),
+            ..UserSettings::default()
+        };
+        let apple_only = UserSettings {
+            asr_mode: Some("apple_only".to_string()),
+            ..UserSettings::default()
+        };
+        let local_power = UserSettings {
+            asr_mode: Some("local_power".to_string()),
+            ..UserSettings::default()
+        };
+
+        assert!(!production_local_whisper_allowed(&cloud));
+        assert!(!production_local_whisper_allowed(&apple_only));
+        assert!(production_local_whisper_allowed(&local_power));
+    }
 
     /// The replay seam must consume the same recording-start decision as the
     /// microphone path; a test-only `Disarmed` shortcut would make corpus

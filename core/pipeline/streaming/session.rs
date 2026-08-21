@@ -140,6 +140,9 @@ pub struct SessionConfig {
     /// persistence belong to the settings owner. [`Layer1Decision::Disarmed`]
     /// is the stock product: canvas + lexicon, complete, never an error.
     pub layer1: Layer1Decision,
+    /// Hard product-mode boundary for local model initialization. Cloud and
+    /// Apple-only sessions set false; only explicit Local power sets true.
+    pub local_whisper_allowed: bool,
     /// Per-recording host lifecycle boundaries. Present only for a live
     /// recorder; buffered/offline helpers have no system observer owner.
     pub lifecycle_events: Option<RecorderLifecycleEvents>,
@@ -219,14 +222,16 @@ pub(crate) fn enqueue_pending_utterance(
 
 /// Layer 1 (Whisper tail-patch) gate.
 ///
-/// Driven solely by `CODESCRIBE_LAYERED_TRANSCRIPTION` ([`layered_phase`]).
-/// **Orthogonal to** `FINAL_PASS_MODE` / Smart: Smart never enables this, and
-/// enabling layered never changes stop-path full re-pass routing.
+/// Requires both explicit Local power product mode and
+/// `CODESCRIBE_LAYERED_TRANSCRIPTION` ([`layered_phase`]). Cloud and Apple-only
+/// cannot be widened by a stale legacy env value. **Orthogonal to**
+/// `FINAL_PASS_MODE` / Smart: Smart never enables this, and enabling layered
+/// never changes stop-path full re-pass routing.
 ///
 /// Shared with the Apple progressive path (`super::apple_live_session`) so both
 /// live sessions read one gate — a second copy would be a second truth.
-pub(super) fn tail_patch_enabled() -> bool {
-    layered_phase().is_some_and(|phase| phase >= 1)
+pub(super) fn tail_patch_enabled(local_whisper_allowed: bool) -> bool {
+    local_whisper_allowed && layered_phase().is_some_and(|phase| phase >= 1)
 }
 
 /// Count a semantic-gate drop, but only for finals.
@@ -500,11 +505,10 @@ pub(super) fn log_tail_patch_session_receipt(applied: u64, skipped: u64) {
 /// phrase-level `isFinal` events become multi-seal `UtteranceFinal`s. That is
 /// the CORE ENGINE freezed+append contract — not a Whisper hybrid mid-live.
 ///
-/// Layer 1 tail-patch (`CODESCRIBE_LAYERED_TRANSCRIPTION=phase1+`) is wired on
-/// **both** live paths: the VAD/scheduler path below, and the Apple progressive
-/// path (W2-A), which gap-fills sealed utterances mid-hold from retained PCM.
-/// Smart final-pass stays orthogonal — it only skips/allows the stop-path full
-/// re-pass.
+/// The legacy local Layer 1 tail-patch is wired on **both** live paths, but it
+/// requires `local_whisper_allowed` (resolved Local power) in addition to
+/// `CODESCRIBE_LAYERED_TRANSCRIPTION=phase1+`. Cloud/Apple-only cannot be
+/// widened by env. Smart final-pass stays orthogonal.
 pub(crate) async fn transcription_session(
     chunk_receiver: mpsc::Receiver<Vec<f32>>,
     event_sink: Arc<dyn EventSink>,
@@ -512,7 +516,9 @@ pub(crate) async fn transcription_session(
 ) {
     // Apple progressive stream branch — must run before the VAD/scheduler path
     // consumes the receiver.
-    if crate::stt::active_engine_is_apple() && crate::stt::apple_stt::progressive_live_enabled() {
+    if crate::stt::recording_engine_is_apple(config.local_whisper_allowed)
+        && crate::stt::apple_stt::progressive_live_enabled()
+    {
         super::apple_live_session::apple_stream_transcription_session(
             chunk_receiver,
             event_sink,
@@ -541,6 +547,7 @@ pub(crate) async fn vad_transcription_session(
         stream_log_path,
         utterance_silence_sec,
         layer1,
+        local_whisper_allowed,
         lifecycle_events: _,
     } = config;
 
@@ -567,9 +574,9 @@ pub(crate) async fn vad_transcription_session(
         SpeechSession::new_utterance(sample_rate)
     };
     let output_sample_rate = session.output_sample_rate();
-    let stt_scheduler = SttScheduler::new();
+    let stt_scheduler = SttScheduler::new(local_whisper_allowed);
     // Layer 1 only — not FINAL_PASS_MODE. Smart does not flip this on.
-    let tail_patch_enabled = tail_patch_enabled();
+    let tail_patch_enabled = tail_patch_enabled(local_whisper_allowed);
     let tail_patch_config = TailPatchConfig::from_env();
     if tail_patch_enabled {
         info!(
@@ -1859,6 +1866,7 @@ pub async fn transcribe_buffered_samples(
             // Offline replay harness: Layer 1 arming is a live-recording
             // decision owned elsewhere.
             layer1: Layer1Decision::Disarmed,
+            local_whisper_allowed: true,
             lifecycle_events: None,
         },
     ));
@@ -1898,6 +1906,7 @@ pub async fn collect_buffered_engine_events(
             // Offline replay harness: Layer 1 arming is a live-recording
             // decision owned elsewhere.
             layer1: Layer1Decision::Disarmed,
+            local_whisper_allowed: true,
             lifecycle_events: None,
         },
     )

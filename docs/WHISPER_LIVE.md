@@ -12,15 +12,17 @@ Live first-pass text in the overlay comes from **Layer 0 — Apple Speech Recogn
 (`CODESCRIBE_STT_ENGINE=apple`); Whisper runs on the same audio tail in the background, diffs
 against Layer 0's committed buffer, and emits `EngineEvent::ReplaceRange { source: TailPatch }`
 events that visibly patch tokens Apple missed — mixed-language inserts, rare terminology, proper
-nouns. The legacy "Whisper-as-primary" path stays as automatic fallback when Apple Speech
-is unavailable (no permission, no macOS Speech framework).
+nouns. The legacy "Whisper-as-primary" path and automatic Apple recovery are
+available during normal recording only when the user explicitly selects
+`asr_mode=local_power`.
 
-> **Delivery status (2026-08-14).** Layer 1 is wired on **both** live paths — VAD/scheduler and
-> the default Apple progressive live (`a6b1233d`) — and is **on by default**:
-> `CODESCRIBE_LAYERED_TRANSCRIPTION` unset → `phase1` (operator directive
-> 2026-08-09). Explicit `off`/`0`/`false` disarms. Whisper also still earns
-> its keep at **stop time** (`FINAL_PASS_MODE`, Smart by default) as the
-> residual file pass, never as a live full-replace. W13 fusion /
+> **Delivery status (2026-08-21).** The local Layer 1 tail-patch is wired on
+> both live paths, but normal recording may execute it only in
+> `asr_mode=local_power`. The legacy phase gate defaults to `phase1`; explicit
+> `off`/`0`/`false` disarms it. Cloud uses its authorized gateway lane and both
+> cloud and Apple-only carry a hard zero-local-weights boundary. Whisper still
+> serves explicit HQ/local Retranscribe actions. Normal stop does not infer from
+> the completed WAV. W13 fusion /
 > idempotence / highlights stay OFF. Layer 2's inline LLM, Layer 3 and
 > Layer 4 have no producer at all — see the ADR's
 > [Phase delivery status](./ADR/2026-05-26-LAYERED_INCREMENTAL_TRANSCRIPTION.md#phase-delivery-status-2026-08-08).

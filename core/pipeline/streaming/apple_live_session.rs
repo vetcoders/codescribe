@@ -350,6 +350,7 @@ pub(crate) async fn apple_stream_transcription_session(
         stream_log_path,
         utterance_silence_sec,
         layer1,
+        local_whisper_allowed,
         mut lifecycle_events,
     } = config;
     let mut capture_level = CaptureLevelAccumulator::new();
@@ -401,10 +402,10 @@ pub(crate) async fn apple_stream_transcription_session(
     // Worker → async events.
     let (ev_tx, mut ev_rx) = mpsc::unbounded_channel::<EngineEvent>();
 
-    // Layer 1 (Whisper tail-patch) lane — off unless
-    // `CODESCRIBE_LAYERED_TRANSCRIPTION=phase1+`. Read once here so the whole
-    // session agrees on one answer even if the env flips mid-hold.
-    let tail_patch_on = tail_patch_enabled();
+    // Legacy local Layer 1 lane — requires both resolved Local power permission
+    // and `CODESCRIBE_LAYERED_TRANSCRIPTION=phase1+`. Read once here so the
+    // whole session agrees even if the compatibility env flips mid-hold.
+    let tail_patch_on = tail_patch_enabled(local_whisper_allowed);
     if tail_patch_on {
         info!(
             "Layered transcription Layer 1 (Whisper tail-patch) enabled on Apple progressive path"

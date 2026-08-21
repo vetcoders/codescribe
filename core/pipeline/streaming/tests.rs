@@ -5,6 +5,7 @@ use std::path::PathBuf;
 use std::sync::{Arc, Condvar, Mutex as StdMutex};
 
 use anyhow::Result;
+use serial_test::serial;
 use tokio::sync::{Mutex, mpsc};
 use tokio::time::{Duration, Instant};
 
@@ -19,6 +20,41 @@ use super::emitter::*;
 use super::pipeline::*;
 use super::quality_gate::*;
 use super::session::*;
+
+/// Restore the legacy layered-transcription env after policy tests.
+struct LayeredEnvGuard {
+    previous: Option<String>,
+}
+
+impl LayeredEnvGuard {
+    fn set(value: &str) -> Self {
+        const KEY: &str = "CODESCRIBE_LAYERED_TRANSCRIPTION";
+        let previous = std::env::var(KEY).ok();
+        unsafe { std::env::set_var(KEY, value) };
+        Self { previous }
+    }
+}
+
+impl Drop for LayeredEnvGuard {
+    fn drop(&mut self) {
+        const KEY: &str = "CODESCRIBE_LAYERED_TRANSCRIPTION";
+        match self.previous.as_deref() {
+            Some(value) => unsafe { std::env::set_var(KEY, value) },
+            None => unsafe { std::env::remove_var(KEY) },
+        }
+    }
+}
+
+/// A stale phase1 env may refine Local power, but must never smuggle Whisper
+/// into cloud or Apple-only recording sessions.
+#[test]
+#[serial]
+fn tail_patch_requires_local_power_policy_even_when_legacy_env_is_armed() {
+    let _guard = LayeredEnvGuard::set("phase1");
+
+    assert!(!tail_patch_enabled(false));
+    assert!(tail_patch_enabled(true));
+}
 
 fn pending_item(is_final: bool) -> PendingUtteranceWorkItem {
     pending_item_with_marker(is_final, if is_final { 1.0 } else { 0.1 })
@@ -1444,6 +1480,7 @@ async fn transcription_session_emits_no_speech_and_stats_for_empty_input() {
             stream_log_path: None,
             utterance_silence_sec: None,
             layer1: Layer1Decision::Disarmed,
+            local_whisper_allowed: true,
             lifecycle_events: None,
         },
     )
@@ -1680,6 +1717,7 @@ async fn bench_stt_scheduler_latency_probe_from_env() -> Result<()> {
                 stream_log_path: None,
                 utterance_silence_sec: None,
                 layer1: Layer1Decision::Disarmed,
+                local_whisper_allowed: true,
                 lifecycle_events: None,
             },
         ));
@@ -1761,6 +1799,7 @@ async fn transcription_session_silent_callbacks_keep_no_speech_stats_coherent() 
             stream_log_path: None,
             utterance_silence_sec: None,
             layer1: Layer1Decision::Disarmed,
+            local_whisper_allowed: true,
             lifecycle_events: None,
         },
     )
