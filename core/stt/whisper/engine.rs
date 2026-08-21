@@ -429,17 +429,17 @@ impl LocalWhisperEngine {
     /// Load a model from a directory (development / external models).
     ///
     /// Expects `config.json` plus `weights.safetensors` or `model.safetensors`.
-    /// MLX-style quantized weights are dequantized during load — see
-    /// [`dequantize_q8`] for the cost this implies.
+    /// Quantized MLX weights are refused. Runtime Whisper is fp16/fp32 only;
+    /// this keeps q8 dequantization off every product path.
     ///
     /// # Errors
-    /// Missing config or weights, an unreadable tokenizer, or tensor shapes the
-    /// dequantizer cannot reconcile.
+    /// Missing config or weights, an unreadable tokenizer, a quantized payload,
+    /// or tensor shapes the fp16 loader cannot reconcile.
     pub fn new(model_path: &Path) -> Result<Self> {
-        let device = process_device();
-        tracing::debug!("LocalWhisperEngine using device: {:?}", device);
-
         let config_path = model_path.join("config.json");
+        if !config_path.is_file() {
+            anyhow::bail!("Whisper config not found at {}", config_path.display());
+        }
         let weights_path = if model_path.join("weights.safetensors").exists() {
             model_path.join("weights.safetensors")
         } else {
@@ -453,12 +453,30 @@ impl LocalWhisperEngine {
         }
         let tokenizer_path = model_path.join("tokenizer.json");
         let mel_filters_path = model_path.join("mel_filters.npz");
+        if !crate::config::models::is_unquantized_whisper_model_dir(model_path) {
+            anyhow::bail!(
+                "Quantized or malformed Whisper payload refused before tensor load; install the complete fp16 model"
+            );
+        }
+        let device = process_device();
+        tracing::debug!("LocalWhisperEngine using device: {:?}", device);
 
         let config_str = safe_path::safe_read_to_string(&config_path)?;
 
         // Parse MLX config and map to Candle Config
         let mlx_config: serde_json::Value =
             serde_json::from_str(&config_str).context("Failed to parse MLX config json")?;
+        if mlx_config
+            .get("quantization")
+            .is_some_and(|value| !value.is_null())
+            || mlx_config
+                .get("quantization_config")
+                .is_some_and(|value| !value.is_null())
+        {
+            anyhow::bail!(
+                "Quantized Whisper weights are not supported; install the complete fp16 model"
+            );
+        }
 
         let n_mels = mlx_config["n_mels"].as_u64().unwrap_or(80);
         let new_config_json = serde_json::json!({
@@ -496,35 +514,33 @@ impl LocalWhisperEngine {
         let load_started = std::time::Instant::now();
         let read_secs;
         let plain_secs;
-        let dequant_secs;
 
         let vb = unsafe {
             let tensors = candle_core::safetensors::MmapedSafetensors::new(&weights_path)?;
             let mut raw_tensors: HashMap<String, Tensor> = HashMap::new();
 
-            // Load everything on CPU first so we can dequantize packed weights.
+            // Load the verified unquantized tensors on CPU before device transfer.
             let read_started = std::time::Instant::now();
             for (name, view) in tensors.tensors() {
                 let loaded = view.load(&Device::Cpu)?;
                 raw_tensors.insert(name.to_string(), loaded);
             }
+            if raw_tensors.iter().any(|(name, tensor)| {
+                tensor.dtype() == DType::U32
+                    || name.ends_with(".scales")
+                    || name.ends_with(".biases")
+            }) {
+                anyhow::bail!(
+                    "Quantized Whisper tensor payload refused; install the complete fp16 model"
+                );
+            }
             read_secs = read_started.elapsed().as_secs_f64();
 
             let plain_started = std::time::Instant::now();
             let mut tensor_map = HashMap::new();
-            let mut quantized_weights: Vec<String> = Vec::new();
 
-            // First pass: handle non-quantized tensors and collect quantized weight names.
+            // The payload gate above makes every tensor in this pass unquantized.
             for (name, tensor) in raw_tensors.iter() {
-                if name.ends_with(".weight") && tensor.dtype() == DType::U32 {
-                    quantized_weights.push(name.clone());
-                    continue;
-                }
-
-                if name.ends_with(".scales") || name.ends_with(".biases") {
-                    continue;
-                }
-
                 let mapped_name = map_tensor_name(name);
                 let mut t = tensor.clone();
                 if t.dtype() != DType::F32 {
@@ -545,47 +561,16 @@ impl LocalWhisperEngine {
 
             plain_secs = plain_started.elapsed().as_secs_f64();
 
-            // Second pass: dequantize packed q8 weights.
-            let dequant_started = std::time::Instant::now();
-            for weight_name in quantized_weights {
-                let base = weight_name.trim_end_matches(".weight");
-                let packed = raw_tensors
-                    .get(&weight_name)
-                    .context(format!("Missing packed tensor for {}", weight_name))?;
-                let scales_key = format!("{}.scales", base);
-                let biases_key = format!("{}.biases", base);
-                let scales = raw_tensors
-                    .get(&scales_key)
-                    .context(format!("Missing scales tensor for {}", weight_name))?;
-                let biases = raw_tensors
-                    .get(&biases_key)
-                    .context(format!("Missing biases tensor for {}", weight_name))?;
-
-                let mut dequant = dequantize_q8(packed, scales, biases, &device)?;
-                let mapped_name = map_tensor_name(&weight_name);
-
-                if mapped_name.ends_with("conv1.weight") || mapped_name.ends_with("conv2.weight") {
-                    let dims = dequant.dims();
-                    if dims.len() == 3 && dims[1] == 3 {
-                        dequant = dequant.permute((0, 2, 1))?.contiguous()?;
-                    }
-                }
-
-                tensor_map.insert(mapped_name, dequant);
-            }
-            dequant_secs = dequant_started.elapsed().as_secs_f64();
-
             candle_nn::VarBuilder::from_tensors(tensor_map, DType::F32, &device)
         };
 
         let build_started = std::time::Instant::now();
         let model = Model::load(&vb, config.clone()).context("Failed to create Whisper Model")?;
         tracing::info!(
-            "whisper_cold_load_phases total={:.2}s read={:.2}s plain_tensors={:.2}s dequantize_q8={:.2}s build_model={:.2}s",
+            "whisper_cold_load_phases total={:.2}s read={:.2}s plain_tensors={:.2}s build_model={:.2}s",
             load_started.elapsed().as_secs_f64(),
             read_secs,
             plain_secs,
-            dequant_secs,
             build_started.elapsed().as_secs_f64()
         );
 
@@ -642,6 +627,15 @@ impl LocalWhisperEngine {
             .context("Invalid UTF-8 in embedded config.json")?;
         let mlx_config: serde_json::Value =
             serde_json::from_str(config_str).context("Failed to parse embedded config json")?;
+        if mlx_config
+            .get("quantization")
+            .is_some_and(|value| !value.is_null())
+            || mlx_config
+                .get("quantization_config")
+                .is_some_and(|value| !value.is_null())
+        {
+            anyhow::bail!("Embedded quantized Whisper payload refused; build with fp16 weights");
+        }
 
         let n_mels = mlx_config["n_mels"].as_u64().unwrap_or(80);
         let new_config_json = serde_json::json!({
@@ -1938,96 +1932,20 @@ fn should_drop_for_quality_gate(
     low_logprob && high_compression
 }
 
-/// Expand MLX-style q8 weights into `F32`.
-///
-/// `packed` holds four uint8 weights per `u32`; each is scaled and offset by
-/// the `scales` / `biases` entry for its 32-element group, producing an
-/// `out_dim × in_dim` tensor.
-///
-/// Cost note: this runs on every cold load and dominates it — measured at
-/// roughly three quarters of Whisper cold-start time (commit `e9d8e5d9`).
-/// Keeping weights resident is what avoids paying it again.
-///
-/// # Errors
-/// Non-`u32` packed input, non-2D tensors, or scale/bias dimensions that do not
-/// match the packed shape.
-fn dequantize_q8(
-    packed: &Tensor,
-    scales: &Tensor,
-    biases: &Tensor,
-    device: &Device,
-) -> Result<Tensor> {
-    ensure!(packed.dtype() == DType::U32, "Packed tensor must be u32");
-
-    let packed_dims = packed.dims();
-    ensure!(packed_dims.len() == 2, "Packed weight must be 2D");
-    let out_dim = packed_dims[0];
-    let packed_in = packed_dims[1];
-    let in_dim = packed_in * 4;
-
-    let scales_dims = scales.dims();
-    let biases_dims = biases.dims();
-    ensure!(
-        scales_dims.len() == 2 && biases_dims.len() == 2,
-        "Scales and biases must be 2D"
-    );
-    ensure!(
-        scales_dims[0] == out_dim && biases_dims[0] == out_dim,
-        "Scales/biases out dimension mismatch"
-    );
-
-    let group_size = 32usize;
-    let expected_groups = in_dim / group_size;
-    ensure!(
-        scales_dims[1] == expected_groups && biases_dims[1] == expected_groups,
-        "Scales/biases group dimension mismatch"
-    );
-
-    let packed_data = packed.to_vec2::<u32>()?;
-    let scales_data = scales.to_dtype(DType::F32)?.to_vec2::<f32>()?;
-    let biases_data = biases.to_dtype(DType::F32)?.to_vec2::<f32>()?;
-
-    let mut output: Vec<f32> = Vec::with_capacity(out_dim * in_dim);
-
-    for (o, packed_row) in packed_data.iter().enumerate() {
-        for (p, &val) in packed_row.iter().enumerate() {
-            for b in 0..4 {
-                let idx = p * 4 + b;
-                let group = idx / group_size;
-                // Treat as uint8
-                let w = ((val >> (8 * b)) & 0xff) as u8;
-                let scale = scales_data[o][group];
-                let bias = biases_data[o][group];
-                output.push((w as f32) * scale + bias);
-            }
-        }
-    }
-
-    Ok(Tensor::from_vec(output, (out_dim, in_dim), device)?)
-}
-
-/// Build VarBuilder from raw tensors with Q8 dequantization
-///
-/// Handles MLX quantized weights (packed U32 + scales + biases)
-/// and converts tensor names to Candle format.
+/// Build a VarBuilder from verified unquantized tensors.
 fn build_varbuilder_from_tensors(
     raw_tensors: HashMap<String, Tensor>,
     device: &Device,
 ) -> Result<candle_nn::VarBuilder<'static>> {
+    if raw_tensors.iter().any(|(name, tensor)| {
+        tensor.dtype() == DType::U32 || name.ends_with(".scales") || name.ends_with(".biases")
+    }) {
+        anyhow::bail!("Quantized Whisper tensor payload refused; fp16 weights are required");
+    }
     let mut tensor_map = HashMap::new();
-    let mut quantized_weights: Vec<String> = Vec::new();
 
-    // First pass: handle non-quantized tensors and collect quantized weight names
+    // The payload gate above makes every tensor in this pass unquantized.
     for (name, tensor) in raw_tensors.iter() {
-        if name.ends_with(".weight") && tensor.dtype() == DType::U32 {
-            quantized_weights.push(name.clone());
-            continue;
-        }
-
-        if name.ends_with(".scales") || name.ends_with(".biases") {
-            continue;
-        }
-
         let mapped_name = map_tensor_name(name);
         let mut t = tensor.clone();
         if t.dtype() != DType::F32 {
@@ -2044,34 +1962,6 @@ fn build_varbuilder_from_tensors(
 
         let t = t.to_device(device)?;
         tensor_map.insert(mapped_name, t);
-    }
-
-    // Second pass: dequantize packed Q8 weights
-    for weight_name in quantized_weights {
-        let base = weight_name.trim_end_matches(".weight");
-        let packed = raw_tensors
-            .get(&weight_name)
-            .context(format!("Missing packed tensor for {}", weight_name))?;
-        let scales_key = format!("{}.scales", base);
-        let biases_key = format!("{}.biases", base);
-        let scales = raw_tensors
-            .get(&scales_key)
-            .context(format!("Missing scales tensor for {}", weight_name))?;
-        let biases = raw_tensors
-            .get(&biases_key)
-            .context(format!("Missing biases tensor for {}", weight_name))?;
-
-        let mut dequant = dequantize_q8(packed, scales, biases, device)?;
-        let mapped_name = map_tensor_name(&weight_name);
-
-        if mapped_name.ends_with("conv1.weight") || mapped_name.ends_with("conv2.weight") {
-            let dims = dequant.dims();
-            if dims.len() == 3 && dims[1] == 3 {
-                dequant = dequant.permute((0, 2, 1))?.contiguous()?;
-            }
-        }
-
-        tensor_map.insert(mapped_name, dequant);
     }
 
     Ok(candle_nn::VarBuilder::from_tensors(

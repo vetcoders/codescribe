@@ -1,6 +1,6 @@
 #!/bin/bash
 # Codescribe Model Download Script
-# Downloads whisper-large-v3-turbo-mlx-q8 from HuggingFace
+# Composes a complete, runtime-verified Whisper large-v3-turbo fp16 directory.
 #
 # Prerequisites:
 #   - HF_TOKEN environment variable (for gated models)
@@ -18,9 +18,9 @@ ROOT_DIR="$(cd "$(dirname "$0")/.." && pwd)"
 
 # Configuration
 DEFAULT_REPO="mlx-community/whisper-large-v3-turbo"
-# Companion source for tokenizer.json + mel_filters.npz, which the default
-# repo does not ship (both files are quantization-independent).
-COMPANION_REPO="LibraxisAI/whisper-large-v3-turbo-mlx-q8"
+TOKENIZER_REPO="openai/whisper-large-v3-turbo"
+MEL_FILTERS_URL="https://raw.githubusercontent.com/openai/whisper/5f86d1d86363843179951550570367b37c5d6f78/whisper/assets/mel_filters.npz"
+MEL_FILTERS_SHA256="7450ae70723a5ef9d341e3cee628c7cb0177f36ce42c44b7ed2bf3325f0f6d4c"
 MODEL_REPO="${CODESCRIBE_EMBED_MODEL:-$DEFAULT_REPO}"
 
 # If CODESCRIBE_EMBED_MODEL points to a local path, skip download.
@@ -83,22 +83,43 @@ echo "▶ Downloading model (HF cache)..."
 echo "  This may take a few minutes..."
 echo ""
 
-"$HF_BIN" download "$MODEL_REPO"
+MODEL_SNAPSHOT=$("$HF_BIN" download "$MODEL_REPO" --quiet)
 
-# The default repo ships only config.json + weights; pull the two
-# quantization-independent companion files from the companion repo so the
-# cache holds everything a complete model dir needs.
+# The default conversion ships only config + fp16 weights. Compose one
+# self-contained product directory using the matching official OpenAI
+# tokenizer and the pinned OpenAI mel filterbank. Q8 is not a fallback or an
+# asset source anywhere in this path.
 if [[ "$MODEL_REPO" == "$DEFAULT_REPO" ]]; then
     echo ""
-    echo "▶ Fetching companion files (tokenizer.json, mel_filters.npz)..."
-    "$HF_BIN" download "$COMPANION_REPO" tokenizer.json mel_filters.npz
+    echo "▶ Composing verified fp16 runtime directory..."
+    TOKENIZER_PATH=$("$HF_BIN" download "$TOKENIZER_REPO" tokenizer.json --quiet)
+    MODEL_DEST="${CODESCRIBE_MODELS_DIR:-$HOME/.codescribe/models}/whisper-large-v3-turbo"
+    mkdir -p "$MODEL_DEST"
+    cp -fL "$MODEL_SNAPSHOT/config.json" "$MODEL_DEST/config.json"
+    if [[ -f "$MODEL_SNAPSHOT/weights.safetensors" ]]; then
+        cp -fL "$MODEL_SNAPSHOT/weights.safetensors" "$MODEL_DEST/weights.safetensors"
+    elif [[ -f "$MODEL_SNAPSHOT/model.safetensors" ]]; then
+        cp -fL "$MODEL_SNAPSHOT/model.safetensors" "$MODEL_DEST/model.safetensors"
+    else
+        echo "ERROR: fp16 snapshot has no safetensors weights: $MODEL_SNAPSHOT" >&2
+        exit 1
+    fi
+    cp -fL "$TOKENIZER_PATH" "$MODEL_DEST/tokenizer.json"
+    curl -fsSL "$MEL_FILTERS_URL" -o "$MODEL_DEST/mel_filters.npz.partial"
+    ACTUAL_MEL_SHA=$(shasum -a 256 "$MODEL_DEST/mel_filters.npz.partial" | awk '{print $1}')
+    if [[ "$ACTUAL_MEL_SHA" != "$MEL_FILTERS_SHA256" ]]; then
+        echo "ERROR: mel_filters.npz checksum mismatch" >&2
+        exit 1
+    fi
+    mv "$MODEL_DEST/mel_filters.npz.partial" "$MODEL_DEST/mel_filters.npz"
+    echo "  Runtime directory: $MODEL_DEST"
 fi
 
 echo ""
 echo "═══════════════════════════════════════════════════════════"
 echo "  Download Complete!"
 echo "═══════════════════════════════════════════════════════════"
-echo "  Location: HF cache (use: hf cache ls)"
+echo "  Source cache: $MODEL_SNAPSHOT"
 echo ""
 echo "  Model ready for use with Codescribe."
 echo "───────────────────────────────────────────────────────────"

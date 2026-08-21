@@ -150,38 +150,11 @@ discover_model() {
     return 0
   fi
 
-  for candidate in \
-    "$home_dir/.codescribe/models/whisper-large-v3-turbo" \
-    "$home_dir/.codescribe/models/whisper-large-v3-turbo-mlx-q8" \
-    "$home_dir/.codescribe/models/whisper-large-v3-mlx-q8"; do
-    if model_is_complete "$candidate"; then
-      printf '%s\n' "$candidate"
-      return 0
-    fi
-  done
-
-  local hf_base repo snapshot
-  for hf_base in \
-    "${CODESCRIBE_HF_CACHE:-}" \
-    "${HUGGINGFACE_HUB_CACHE:-}" \
-    "${HF_HUB_CACHE:-}" \
-    "${HF_HOME:+$HF_HOME/hub}" \
-    "$home_dir/.cache/huggingface/hub"; do
-    [[ -n "$hf_base" ]] || continue
-    for repo in \
-      models--LibraxisAI--whisper-large-v3-turbo-mlx-q8 \
-      models--libraxisai--whisper-large-v3-turbo-mlx-q8 \
-      models--LibraxisAI--whisper-large-v3-mlx-q8 \
-      models--libraxisai--whisper-large-v3-mlx-q8; do
-      for snapshot in "$hf_base/$repo/snapshots"/*; do
-        [[ -d "$snapshot" ]] || continue
-        if model_is_complete "$snapshot"; then
-          printf '%s\n' "$snapshot"
-          return 0
-        fi
-      done
-    done
-  done
+  candidate="$home_dir/.codescribe/models/whisper-large-v3-turbo"
+  if model_is_complete "$candidate"; then
+    printf '%s\n' "$candidate"
+    return 0
+  fi
 
   return 1
 }
@@ -1245,7 +1218,7 @@ if [[ "$(($(count_lines "$manifest_tsv") - 1))" -le 0 ]]; then
 fi
 
 if ! model_path="$(discover_model)"; then
-  write_honest_report "No complete Whisper model found. Checked CODESCRIBE_MODEL_PATH, ~/.codescribe/models/{whisper-large-v3-turbo,whisper-large-v3-turbo-mlx-q8,whisper-large-v3-mlx-q8}, and Hugging Face cache snapshots."
+  write_honest_report "No complete fp16 Whisper model found. Checked CODESCRIBE_MODEL_PATH and ~/.codescribe/models/whisper-large-v3-turbo."
 fi
 
 export CODESCRIBE_MODEL_PATH="$model_path"

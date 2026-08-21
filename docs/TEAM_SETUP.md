@@ -59,7 +59,7 @@ Grant in: System Settings > Privacy & Security
 
 ## Model
 
-**Runtime Whisper policy**: `whisper-large-v3-turbo` (mlx-community fp16; legacy q8 fallback)
+**Runtime Whisper policy**: `whisper-large-v3-turbo` (mlx-community fp16 only; q8 refused)
 **Runtime Embedder**: `paraphrase-multilingual-MiniLM-L12-v2` (signed app resource or HF cache, for semantic gating)
 
 - `core/build.rs` keeps Whisper and MiniLM out of normal Cargo artifacts; explicit

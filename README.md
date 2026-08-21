@@ -327,8 +327,8 @@ qube-daemon --help
 Codescribe uses **whisper-large-v3-turbo** (mlx-community, fp16):
 
 - 4-layer turbo architecture (vs 32 layers in full model)
-- fp16 weights (~1.6 GB): loads without q8→F32 dequantization, roughly
-  halving cold start; the legacy q8 model stays supported as a fallback
+- fp16 weights (~1.6 GB): load without q8→F32 dequantization; quantized Whisper
+  payloads are rejected before engine load
 - ~10x faster than whisper-large-v3
 - Metal GPU acceleration
 
@@ -342,13 +342,12 @@ Runtime resolution when Whisper is not embedded:
 
 1. `CODESCRIBE_MODEL_PATH` environment variable
 2. `~/.codescribe/models/whisper-large-v3-turbo/` (fp16 default)
-3. Hugging Face cache snapshots for `mlx-community/whisper-large-v3-turbo`
-4. Legacy fallback: `~/.codescribe/models/whisper-large-v3-turbo-mlx-q8/` or
-   `LibraxisAI/whisper-large-v3-turbo-mlx-q8` snapshots
+3. A complete Hugging Face snapshot explicitly configured by repo id
 
 The mlx-community repo ships only `config.json` + `weights.safetensors`;
-the download paths compose `tokenizer.json` + `mel_filters.npz` from the
-legacy repo (both files are quantization-independent).
+the download paths compose `tokenizer.json` from the matching official OpenAI
+Transformers repo and `mel_filters.npz` from a checksum-pinned OpenAI Whisper
+asset. The resulting directory is validated as unquantized before resolution.
 
 `CODESCRIBE_EMBED_EMBEDDER=1` is an explicit fat/debug path that compiles MiniLM into Rust artifacts. Normal builds resolve MiniLM from the signed app resource or HF cache. `CODESCRIBE_NO_EMBED=1` disables every optional binary embed; Silero remains embedded.
 
