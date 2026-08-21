@@ -69,7 +69,8 @@ Grant in: System Settings > Privacy & Security
   default local turbo model → default HF cache snapshot.
 - A model is ready only after config parsing, tokenizer parsing plus required Whisper control
   tokens, the pinned mel checksum, and full safetensors structural/dtype validation. Downloads compose and validate the
-  complete replacement in staging before any artifact is promoted over an installed model.
+  complete replacement before promotion; repairing the default model replaces config and weights
+  as a paired generation instead of preserving independently valid artifacts from another architecture.
 - `make install-app` / `scripts/ensure-models.sh` are the easiest way to warm the expected cache paths.
   Release/setup preflight calls the same runtime-owned bundle validator before it skips a download;
   a directory with merely the expected filenames is repaired or rejected rather than embedded.

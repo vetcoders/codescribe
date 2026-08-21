@@ -365,16 +365,16 @@ where
     // no-op when the pieces are already on disk. Config and weights come from
     // mlx-community's fp16 conversion; tokenizer comes from OpenAI's matching
     // Transformers repository. The pinned mel filterbank is fetched below.
+    let mut paired_default_model = false;
     if let Some(snapshot) = hf_cache::find_snapshot(DEFAULT_WHISPER_REPO, &["config.json"])
         && snapshot != dest
     {
-        copy_model_files(&snapshot, &dest, &["config.json"])?;
-        copy_model_files(&snapshot, &dest, &REQUIRED_MODEL_WEIGHTS)?;
+        paired_default_model = copy_default_model_pair(&snapshot, &dest)?;
     }
     if let Some(snapshot) = hf_cache::find_snapshot(TOKENIZER_WHISPER_REPO, &["tokenizer.json"]) {
-        copy_model_files(&snapshot, &dest, &["tokenizer.json"])?;
+        copy_model_files(&snapshot, &dest, &["tokenizer.json"], true)?;
     }
-    if is_complete_whisper_model_dir(&dest) {
+    if paired_default_model && is_complete_whisper_model_dir(&dest) {
         return Ok(canonicalize_or_self(dest));
     }
 
@@ -396,6 +396,7 @@ where
         "config.json",
         &dest.join("config.json"),
         &mut on_progress,
+        true,
     )?;
     download_hf_file(
         &client,
@@ -403,6 +404,7 @@ where
         "tokenizer.json",
         &dest.join("tokenizer.json"),
         &mut on_progress,
+        true,
     )?;
     download_url_file(
         &client,
@@ -413,31 +415,33 @@ where
     )?;
     let weights_dest = dest.join("weights.safetensors");
     let weights_alt = dest.join("model.safetensors");
-    if validate_model_file("weights.safetensors", &weights_dest).is_err()
-        && validate_model_file("model.safetensors", &weights_alt).is_err()
-    {
-        // mlx-community ships weights.safetensors; fall back to model.safetensors if 404.
-        match download_hf_file(
-            &client,
-            DEFAULT_WHISPER_REPO,
-            "weights.safetensors",
-            &weights_dest,
-            &mut on_progress,
-        ) {
-            Ok(()) => {}
-            Err(err) => {
-                tracing::warn!(
-                    error = %err,
-                    "weights.safetensors missing; trying model.safetensors"
-                );
-                download_hf_file(
-                    &client,
-                    DEFAULT_WHISPER_REPO,
-                    "model.safetensors",
-                    &weights_alt,
-                    &mut on_progress,
-                )?;
-            }
+    // An incomplete default bundle is repaired as one model generation. Even
+    // structurally valid installed weights may belong to another architecture,
+    // so pair them with the freshly selected default config instead of reusing
+    // them independently.
+    match download_hf_file(
+        &client,
+        DEFAULT_WHISPER_REPO,
+        "weights.safetensors",
+        &weights_dest,
+        &mut on_progress,
+        true,
+    ) {
+        Ok(()) => remove_other_weight_file(&dest, "weights.safetensors")?,
+        Err(err) => {
+            tracing::warn!(
+                error = %err,
+                "weights.safetensors missing; trying model.safetensors"
+            );
+            download_hf_file(
+                &client,
+                DEFAULT_WHISPER_REPO,
+                "model.safetensors",
+                &weights_alt,
+                &mut on_progress,
+                true,
+            )?;
+            remove_other_weight_file(&dest, "model.safetensors")?;
         }
     }
 
@@ -455,9 +459,9 @@ where
 ///
 /// Lets Settings → Download complete without network traffic when the pieces are
 /// already on disk (warm official caches). Every copied file is validated in a
-/// sibling `.partial` path before atomic promotion. Invalid destinations are
-/// replaced; valid ones are preserved.
-fn copy_model_files(src: &Path, dest: &Path, names: &[&str]) -> Result<()> {
+/// sibling `.partial` path before atomic promotion. Callers may preserve valid
+/// destinations or deliberately replace a config/weights generation as a pair.
+fn copy_model_files(src: &Path, dest: &Path, names: &[&str], replace_valid: bool) -> Result<()> {
     if !src.is_dir() {
         return Ok(());
     }
@@ -465,7 +469,7 @@ fn copy_model_files(src: &Path, dest: &Path, names: &[&str]) -> Result<()> {
     for name in names {
         let from = src.join(name);
         let to = dest.join(name);
-        if !from.is_file() || validate_model_file(name, &to).is_ok() {
+        if !from.is_file() || (!replace_valid && validate_model_file(name, &to).is_ok()) {
             continue;
         }
         if let Err(err) = validate_model_file(name, &from) {
@@ -485,24 +489,65 @@ fn copy_model_files(src: &Path, dest: &Path, names: &[&str]) -> Result<()> {
     Ok(())
 }
 
+/// Replace config and weights only when both come from one valid default snapshot.
+fn copy_default_model_pair(src: &Path, dest: &Path) -> Result<bool> {
+    if validate_model_file("config.json", &src.join("config.json")).is_err() {
+        return Ok(false);
+    }
+    let Ok(weights) = resolve_valid_whisper_weights_path(src) else {
+        return Ok(false);
+    };
+    let Some(weight_name) = weights.file_name().and_then(|name| name.to_str()) else {
+        return Ok(false);
+    };
+
+    copy_model_files(src, dest, &["config.json"], true)?;
+    copy_model_files(src, dest, &[weight_name], true)?;
+    remove_other_weight_file(dest, weight_name)?;
+    Ok(true)
+}
+
+fn remove_other_weight_file(dest: &Path, selected: &str) -> Result<()> {
+    for name in REQUIRED_MODEL_WEIGHTS {
+        if name == selected {
+            continue;
+        }
+        let stale = dest.join(name);
+        if stale.exists() {
+            fs::remove_file(&stale)
+                .with_context(|| format!("remove stale Whisper weights {}", stale.display()))?;
+        }
+    }
+    Ok(())
+}
+
 /// Fetch one file from the Hugging Face resolve endpoint into `dest`.
 ///
 /// Downloads to a sibling `.partial` file and renames on success, so an aborted
 /// transfer can never leave a truncated file that passes bundle validation.
-/// A valid `dest` is preserved; an invalid one is replaced. `HF_TOKEN` is sent
-/// as bearer auth when set, for gated repos.
+/// A valid `dest` is preserved unless the caller is repairing a paired default
+/// model generation. `HF_TOKEN` is sent as bearer auth when set, for gated repos.
 fn download_hf_file<F>(
     client: &reqwest::blocking::Client,
     repo: &str,
     filename: &str,
     dest: &Path,
     on_progress: &mut F,
+    replace_valid: bool,
 ) -> Result<()>
 where
     F: FnMut(&str, u64, Option<u64>),
 {
     let url = format!("https://huggingface.co/{repo}/resolve/main/{filename}");
-    download_url_file_authenticated(client, &url, filename, dest, on_progress, true)
+    download_url_file_authenticated(
+        client,
+        &url,
+        filename,
+        dest,
+        on_progress,
+        true,
+        replace_valid,
+    )
 }
 
 fn download_url_file<F>(
@@ -515,7 +560,7 @@ fn download_url_file<F>(
 where
     F: FnMut(&str, u64, Option<u64>),
 {
-    download_url_file_authenticated(client, url, filename, dest, on_progress, false)
+    download_url_file_authenticated(client, url, filename, dest, on_progress, false, false)
 }
 
 fn download_url_file_authenticated<F>(
@@ -525,11 +570,12 @@ fn download_url_file_authenticated<F>(
     dest: &Path,
     on_progress: &mut F,
     use_hf_token: bool,
+    replace_valid: bool,
 ) -> Result<()>
 where
     F: FnMut(&str, u64, Option<u64>),
 {
-    if validate_model_file(filename, dest).is_ok() {
+    if !replace_valid && validate_model_file(filename, dest).is_ok() {
         on_progress(
             filename,
             dest.metadata().map(|metadata| metadata.len()).unwrap_or(0),
@@ -537,11 +583,6 @@ where
         );
         return Ok(());
     }
-    if dest.exists() {
-        fs::remove_file(dest)
-            .with_context(|| format!("remove invalid model artifact {}", dest.display()))?;
-    }
-
     let mut request = client.get(url);
     if use_hf_token && let Ok(token) = std::env::var("HF_TOKEN") {
         let token = token.trim();
@@ -1036,12 +1077,35 @@ mod tests {
         fs::write(destination.join("mel_filters.npz"), b"bad mel").unwrap();
         fs::write(destination.join("model.safetensors"), b"bad weights").unwrap();
 
-        copy_model_files(&source, &destination, &REQUIRED_MODEL_FILES).unwrap();
-        copy_model_files(&source, &destination, &REQUIRED_MODEL_WEIGHTS).unwrap();
+        copy_model_files(&source, &destination, &REQUIRED_MODEL_FILES, false).unwrap();
+        copy_model_files(&source, &destination, &REQUIRED_MODEL_WEIGHTS, false).unwrap();
 
         validate_whisper_model_bundle(&destination).unwrap();
         assert!(!destination.join("config.json.partial").exists());
         assert!(!destination.join("model.safetensors.partial").exists());
+    }
+
+    /// Default repair replaces individually valid weights from another bundle.
+    #[test]
+    fn cached_default_pair_replaces_stale_valid_weights() {
+        let temp_dir = TempDir::new().unwrap();
+        let source = temp_dir.path().join("source");
+        let destination = temp_dir.path().join("destination");
+        create_complete_whisper_model(&source);
+        create_complete_whisper_model(&destination);
+        fs::rename(
+            destination.join("model.safetensors"),
+            destination.join("weights.safetensors"),
+        )
+        .unwrap();
+
+        assert!(copy_default_model_pair(&source, &destination).unwrap());
+        assert_eq!(
+            fs::read(destination.join("model.safetensors")).unwrap(),
+            fs::read(source.join("model.safetensors")).unwrap()
+        );
+        assert!(!destination.join("weights.safetensors").exists());
+        validate_whisper_model_bundle(&destination).unwrap();
     }
 
     /// A downloaded checksum mismatch is never promoted to the final mel path.
