@@ -98,7 +98,9 @@ has_valid_whisper_snapshot() {
     [[ -d "$dir" ]] || continue
     for snap in "$dir"/*; do
       [[ -d "$snap" ]] || continue
-      if valid_whisper_bundle "$snap"; then
+      # Cache probing is intentionally quiet: invalid snapshots are expected
+      # candidates, and ensure_repo prints the actionable aggregate status.
+      if valid_whisper_bundle "$snap" >/dev/null 2>&1; then
         return 0
       fi
     done
