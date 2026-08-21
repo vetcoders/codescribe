@@ -174,8 +174,8 @@ fn production_replay_threads_the_typed_layer1_stop_receipt() {
 fn apple_stop_emits_layer1_receipt_before_session_finalised() {
     let source = read_workspace_source("core/pipeline/streaming/apple_live_session.rs");
     let receipt = source
-        .rfind("TAIL_PATCH_SESSION_RECEIPT_WARNING_CODE")
-        .expect("Apple stop must emit the stable typed Layer 1 receipt");
+        .rfind("event_sink.on_event(&receipt.as_event())")
+        .expect("Apple stop must emit the typed Layer 1 receipt into the ordered event stream");
     let finalised = source
         .rfind("emit_session_finalised(")
         .expect("Apple stop must emit SessionFinalised");
