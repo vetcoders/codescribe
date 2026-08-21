@@ -169,6 +169,19 @@ fn validate_safetensors_file(path: &Path) -> Result<()> {
         ));
     };
 
+    if let Some(metadata) = tensors.get("__metadata__") {
+        let valid = metadata.is_null()
+            || metadata
+                .as_object()
+                .is_some_and(|entries| entries.values().all(serde_json::Value::is_string));
+        if !valid {
+            return Err(anyhow!(
+                "invalid safetensors __metadata__ in {}",
+                path.display()
+            ));
+        }
+    }
+
     let file_len = file.metadata()?.len();
     let data_start = 8_u64
         .checked_add(header_len)
@@ -1101,6 +1114,36 @@ mod tests {
         fs::write(model.join("model.safetensors"), safetensors).unwrap();
 
         assert!(!is_complete_whisper_model_dir(&model));
+    }
+
+    /// Discovery must enforce the metadata schema used by the runtime loader.
+    #[test]
+    fn model_manager_rejects_malformed_safetensors_metadata() {
+        let temp_dir = TempDir::new().unwrap();
+        let model = temp_dir.path().join("model");
+        create_complete_whisper_model(&model);
+        let header = br#"{"__metadata__":{"format":1},"model.weight":{"dtype":"F16","shape":[1],"data_offsets":[0,2]}}"#;
+        let mut safetensors = (header.len() as u64).to_le_bytes().to_vec();
+        safetensors.extend_from_slice(header);
+        safetensors.extend_from_slice(&[0, 0]);
+        fs::write(model.join("model.safetensors"), safetensors).unwrap();
+
+        assert!(!is_complete_whisper_model_dir(&model));
+    }
+
+    /// String-valued safetensors metadata is compatible with the runtime loader.
+    #[test]
+    fn model_manager_accepts_string_safetensors_metadata() {
+        let temp_dir = TempDir::new().unwrap();
+        let model = temp_dir.path().join("model");
+        create_complete_whisper_model(&model);
+        let header = br#"{"__metadata__":{"format":"mlx"},"model.weight":{"dtype":"F16","shape":[1],"data_offsets":[0,2]}}"#;
+        let mut safetensors = (header.len() as u64).to_le_bytes().to_vec();
+        safetensors.extend_from_slice(header);
+        safetensors.extend_from_slice(&[0, 0]);
+        fs::write(model.join("model.safetensors"), safetensors).unwrap();
+
+        assert!(is_complete_whisper_model_dir(&model));
     }
 
     /// Header offsets must describe the actual payload, not a truncated file.
