@@ -80,14 +80,14 @@ mic ▶ recorder ▶ [J1] ▶ Silero VAD chunker ▶ utterance boundaries
         ↑ Refine lane: correction.rs partial passes (VAD-aligned windows)
 ```
 
-| #   | station       | code                                                 | what happens                                                                                                                                                     | since         |
-| --- | ------------- | ---------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------- |
-| B1  | VAD filter    | `core/audio/chunker.rs` (Silero, embedded, zero-I/O) | detects WORDS, not noise; silence edges close utterances — “fundament stabilności”                                                                               | doctrine §3.5 |
-| B2  | scheduling    | `core/stt/scheduler.rs :: SttScheduler`              | Fast lane = utterance decode; Refine lane = correction re-decodes; per-lane `initial_prompt_for_lane` (⚑ OFF, W13-6A)                                            | —             |
-| B3  | decode        | `core/stt/whisper/singleton.rs`                      | in-process Whisper (turbo fp16 only; official OpenAI tokenizer + pinned mel asset); TTL reaper unloads 30 min after last finished decode (`whisper_residency_reclaim`) | fp16 only |
-| B4  | corrections   | `streaming/correction.rs`                            | Phase-2 Refine: partial passes triggered by finals/speech-ms, **VAD-aligned windows** (`plan_vad_aligned_windows_with_config`) so windows never begin mid-phrase | W1-A          |
-| B5  | postprocess   | `core/pipeline/stream_postprocess.rs`                | lexicon rewrite table (compiled-in seed/programming/operator/protected), hallucination + SemanticGate + empty-drop gates                                         | —             |
-| B6  | canvas + user | **[J2]** → overlay                                   | same reducer/emitter contract as LINE A                                                                                                                          | —             |
+| #   | station       | code                                                 | what happens                                                                                                                                                           | since         |
+| --- | ------------- | ---------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------- |
+| B1  | VAD filter    | `core/audio/chunker.rs` (Silero, embedded, zero-I/O) | detects WORDS, not noise; silence edges close utterances — “fundament stabilności”                                                                                     | doctrine §3.5 |
+| B2  | scheduling    | `core/stt/scheduler.rs :: SttScheduler`              | Fast lane = utterance decode; Refine lane = correction re-decodes; per-lane `initial_prompt_for_lane` (⚑ OFF, W13-6A)                                                  | —             |
+| B3  | decode        | `core/stt/whisper/singleton.rs`                      | in-process Whisper (turbo fp16 only; official OpenAI tokenizer + pinned mel asset); TTL reaper unloads 30 min after last finished decode (`whisper_residency_reclaim`) | fp16 only     |
+| B4  | corrections   | `streaming/correction.rs`                            | Phase-2 Refine: partial passes triggered by finals/speech-ms, **VAD-aligned windows** (`plan_vad_aligned_windows_with_config`) so windows never begin mid-phrase       | W1-A          |
+| B5  | postprocess   | `core/pipeline/stream_postprocess.rs`                | lexicon rewrite table (compiled-in seed/programming/operator/protected), hallucination + SemanticGate + empty-drop gates                                               | —             |
+| B6  | canvas + user | **[J2]** → overlay                                   | same reducer/emitter contract as LINE A                                                                                                                                | —             |
 
 ## 3. LINE L1 — Layer 1 tail-patch (rides on top of A **and** B)
 
@@ -197,15 +197,15 @@ audio file ▶ `codescribe transcribe` CLI / cloud final pass
 
 ## 10. What the user sees, surface by surface
 
-| surface       | fed by                         | truth it shows                                                                                       |
-| ------------- | ------------------------------ | ---------------------------------------------------------------------------------------------------- |
-| overlay LIVE  | LINE A/B via J2                | letters as spoken; live backspace corrections (L1); never a rewrite of committed text                |
-| overlay FINAL | LINE S→F via J7                | formatted draft + buttons (Copy / Insert / Revert / Format / To Agent); Auto Paste when guard allows |
+| surface       | fed by                         | truth it shows                                                                                                                       |
+| ------------- | ------------------------------ | ------------------------------------------------------------------------------------------------------------------------------------ |
+| overlay LIVE  | LINE A/B via J2                | letters as spoken; live backspace corrections (L1); never a rewrite of committed text                                                |
+| overlay FINAL | LINE S→F via J7                | formatted draft + buttons (Copy / Insert / Revert / Format / To Agent); Auto Paste when guard allows                                 |
 | paste target  | J7                             | formatted text into the latched foreign app; refuse (`CopyTargetUnavailable` / mismatch) ⇒ Paste Here slot, user clipboard untouched |
-| thread rail   | LINE G                         | agent conversation, chained turn by turn                                                             |
-| history dir   | J6                             | `~/.codescribe/transcriptions/<date>/` — raw, formatted, m4a, truth receipts                         |
-| menu/tray     | controller state               | recording state; Audio truth section (W13-5: device, level, quality verdict)                         |
-| warnings      | `contracts.rs` warning classes | ONLY `transcription_failed` is terminal/UI; receipts (capture level, tail patch, seal) are log-only  |
+| thread rail   | LINE G                         | agent conversation, chained turn by turn                                                                                             |
+| history dir   | J6                             | `~/.codescribe/transcriptions/<date>/` — raw, formatted, m4a, truth receipts                                                         |
+| menu/tray     | controller state               | recording state; Audio truth section (W13-5: device, level, quality verdict)                                                         |
+| warnings      | `contracts.rs` warning classes | ONLY `transcription_failed` is terminal/UI; receipts (capture level, tail patch, seal) are log-only                                  |
 
 ---
 

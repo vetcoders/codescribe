@@ -37,7 +37,7 @@ Recording stopped before a transcript was available.
 
 | Layer                 | Rule                                                                                                     |
 | --------------------- | -------------------------------------------------------------------------------------------------------- |
-| Empty `speech.engine` | Load pins **`stt_engine=apple`**; persist **`final_pass_mode=off`** explicitly on current installs     |
+| Empty `speech.engine` | Load pins **`stt_engine=apple`**; persist **`final_pass_mode=off`** explicitly on current installs       |
 | Settings UI write     | **Promoted** to `settings.json` + reconciles process env **and** `.env` (single brain)                   |
 | Record start          | **`preflight_apple_live_ready()`** when engine is Apple — refuse before REC if Speech/bridge not ready   |
 | Live vs final         | Cloud/Apple-only live fails closed without local weights; explicit HQ/local Retranscribe may use Whisper |
