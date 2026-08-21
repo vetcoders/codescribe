@@ -6,7 +6,7 @@
 
 > **Status:** PROPOSED → ACCEPTED (operator-authored vision, 2026-05-26)
 > **Replaces:** Whisper-as-primary live STT model (see `WHISPER_LIVE.md`, `OVERLAY_STREAMING.md`)
-> **Owns invariant:** **NEVER REWRITE FROM ZERO.** All layers act incrementally on what was already shown to the user.
+> **Owns invariant:** **NEVER REWRITE FROM ZERO.** A later layer may repair text only inside the same PCM-identified span and before its final event.
 > **Trigger:** operator's bench session 2026-05-26 — Apple Dictation latency/UX baseline vs Whisper recall depth.
 
 ## Context
@@ -49,8 +49,9 @@ What is missing is **orchestration glue** and one new contract event.
 ## Decision
 
 Adopt a **five-layer incremental transcription pipeline**, with Apple as the live primary engine and
-Whisper + lexicon + LLM as background supplements that never overwrite what the user already saw —
-they extend, patch in place, and annotate.
+Whisper + lexicon + LLM as background supplements. They may extend or patch in
+place only when span identity and the single rewrite fence prove authority;
+they never rebuild the transcript from zero.
 
 ```mermaid
 flowchart TB
@@ -272,12 +273,14 @@ they simply show Layer 0 output.
 
 ## Migration plan
 
-Four phases. Each ships as an independent machete cut behind a feature flag
-(`CODESCRIBE_LAYERED_TRANSCRIPTION=phase{1,2,3,4}`), defaulting to OFF until phase 4 lands.
+Four phases were proposed as independent machete cuts behind compatibility
+tokens (`CODESCRIBE_LAYERED_TRANSCRIPTION=phase{1,2,3,4}`). Runtime promotion
+on 2026-08-21 made Phase 1 mandatory for Local Power + Apple/Auto; phases 2–4
+remain reserved rather than controlling the Phase-1 product default.
 
 > **Orthogonality (operator 2026-08-05):** `FINAL_PASS_MODE` / Smart is **stop-path
-> full re-pass routing only**. It does not enable this flag. Live gap-fill is Layer 1
-> behind `CODESCRIBE_LAYERED_TRANSCRIPTION`. Smart + layered can compose; neither
+> full re-pass routing only**. It does not enable or disable live Layer 1.
+> Local Power owns live arming; the compatibility key may explicitly degrade it. Neither
 > silently rewrites the other. Off final-pass never forces Whisper at stop.
 
 **Phase 1 — Layer 0 + Layer 1 (Apple primary + Whisper tail patch).**

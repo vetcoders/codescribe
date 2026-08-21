@@ -8,22 +8,21 @@
 //!
 //! # Relationship to Smart final-pass (`FINAL_PASS_MODE`)
 //!
-//! **Orthogonal toggles — no silent coupling.**
+//! **Orthogonal lifecycle controls — no silent coupling.**
 //!
 //! | Control | Env | Default | What it does |
 //! | --- | --- | --- | --- |
-//! | Final pass | `FINAL_PASS_MODE` | `smart` | Stop-path only: whether to run a full WAV Whisper re-pass after release |
-//! | Layered / Layer 1 | `CODESCRIBE_LAYERED_TRANSCRIPTION` | **off** | Experimental during-hold gap-fill: explicit `phase1` arms Whisper tail patches on sealed utterances. |
+//! | Final pass | `FINAL_PASS_MODE` | legacy | Normal stop does not run a full WAV pass; Retranscribe is explicit. |
+//! | Layered / Layer 1 | product mode + compatibility override | Local Power armed | During-hold, exact-span Whisper repair on the Apple progressive path. |
 //!
 //! - **Smart** = skip full stop re-pass when streaming completeness is
 //!   adjudicated Complete. It does **not** enable layered transcription.
 //! - **Off** = never full stop re-pass. It does **not** force Whisper at stop.
-//! - Layered phase ≥ 1 may run under any final-pass mode when the live session
-//!   path actually wires Layer 1 (see below).
+//! - Local Power arms Layer 1 independently of final-pass state. `phase1`
+//!   remains a persisted compatibility token; explicit `off` is degraded.
 //!
-//! Product intent: Smart may *work with* layered (completeness skip + live
-//! gap-fill), but Phase 1 remains fail-closed until PCM/span identity, the
-//! single rewrite fence, and structural idempotence cover the mutation path.
+//! Product intent and runtime now agree on the Apple path: live patching is a
+//! required part of Local Power, while unfenced routes fail closed.
 //!
 //! # Where Layer 1 may mutate today
 //!
@@ -93,16 +92,14 @@ use tracing::info;
 
 use crate::pipeline::contracts::{EngineEvent, LayerSource};
 
-/// Env flag gating the layered transcription pipeline.
+/// Compatibility override for the layered transcription pipeline.
 ///
-/// `CODESCRIBE_LAYERED_TRANSCRIPTION=phase{1,2,3,4}` — **defaults to off**.
-/// Explicit `phaseN` selects an experimental phase. The default is deliberately
-/// fail-closed: the current patch path has exact PCM at provider ingress but
-/// does not yet carry that identity through one rewrite fence to presentation.
+/// `CODESCRIBE_LAYERED_TRANSCRIPTION=phase{1,2,3,4}` preserves older phase
+/// selection. Product-mode bootstrap owns the default: Local Power + unset is
+/// armed; explicit off or malformed input is a named degraded disposition.
 ///
 /// **Not** `FINAL_PASS_MODE`: Smart final-pass never writes this flag. Kept
-/// here (not in the config hub) so this cut stays isolated; the orchestrator
-/// can promote it to a typed config field when it lands.
+/// here as the parser/constant owner; the key is promoted through settings.json.
 pub const LAYERED_TRANSCRIPTION_ENV: &str = "CODESCRIBE_LAYERED_TRANSCRIPTION";
 
 /// Env override for [`TailPatchConfig::max_change_ratio`].
@@ -222,7 +219,8 @@ pub fn layered_phase() -> Option<u8> {
 }
 
 /// Resolve the layered phase from an optional raw override without touching
-/// process-global environment state. `None` carries the production default OFF.
+/// process-global environment state. `None` means no compatibility override;
+/// recording bootstrap resolves the product-mode default.
 pub fn layered_phase_from_raw(raw: Option<&str>) -> Option<u8> {
     raw.and_then(parse_layered_phase_value)
 }

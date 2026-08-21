@@ -12,10 +12,10 @@
 > idempotence, and a bounded stop drain with typed degradation. In-process,
 > sidecar, and remote tail providers share that seam. The legacy VAD/scheduler
 > path and full-session WSS candidates have no equivalent per-word identity, so
-> they fail closed instead of mutating emitted finals. The stock default stays
-> `off`; explicit `phase1` remains an operator experiment until corpus/runtime
-> validation earns promotion. Legacy `FINAL_PASS_MODE` no longer owns any
-> normal-stop inference.
+> they fail closed instead of mutating emitted finals. Local Power + Apple/Auto
+> now arms live local Whisper by default; `phase1` remains a compatibility
+> token, while explicit `off` or invalid input is degraded. Legacy
+> `FINAL_PASS_MODE` no longer owns any normal-stop inference.
 > Planning report: internal plan `stt-apple-must-have` (operator artifact store, 2026-07-24).
 
 ---
@@ -168,24 +168,25 @@ Code: `core/config/loader.rs` · `core/stt/mod.rs::selected_engine()` · `reconc
 **Single brain (W2-A):**
 `CODESCRIBE_STT_ENGINE` and `FINAL_PASS_MODE` are **promoted** settings. UI write updates `settings.json`, process env, and `.env` together. No silent dual brain.
 
-Still env-seedable when unset (not dual writers): `CODESCRIBE_LAYERED_TRANSCRIPTION`, `CODESCRIBE_STT_INITIAL_PROMPT_ENABLED`.
+`CODESCRIBE_LAYERED_TRANSCRIPTION` is promoted single-brain configuration;
+`CODESCRIBE_STT_INITIAL_PROMPT_ENABLED` remains env-seedable when unset.
 
-> **Power-user hazard (measured 2026-08-08).** Because `CODESCRIBE_LAYERED_TRANSCRIPTION` is
-> **not** promoted to `settings.json`, `Config::inject_file_env_for_runtime` copies it out of
+> **Historical power-user hazard (measured 2026-08-08, now closed).** Before promotion,
+> `Config::inject_file_env_for_runtime` copied `CODESCRIBE_LAYERED_TRANSCRIPTION` out of
 > `~/.codescribe/.env` into the process env on the first `Config::load()` — in _every_ process
 > that loads the core, tests and harnesses included. A stale `.env` line therefore arms Layer 1
 > silently. This was observed live: the same `make test-engine-parity` binary scored 0.931 with
 > the lane off and 0.833 with the operator's dotenv arming `phase1`, and the low score was the
 > _more accurate_ transcript. The parity target now pins the lane explicitly (`Makefile`), but
-> the general hazard stands for any tool that loads the core. Promoting the key the way
-> `CODESCRIBE_STT_ENGINE` was promoted is an open operator decision.
+> the general hazard affected any tool loading the core. The key is now
+> promoted to settings.json; parity harnesses still pin their requested lane.
 
 **Final pass vs layered (orthogonal):**
 
-| Setting    | Env                                | Default | Role                                                                                                                 |
-| ---------- | ---------------------------------- | ------- | -------------------------------------------------------------------------------------------------------------------- |
-| Final pass | `FINAL_PASS_MODE`                  | legacy  | No effect on normal stop; retained only for settings migration while explicit Retranscribe owns whole-file inference |
-| Layered    | `CODESCRIBE_LAYERED_TRANSCRIPTION` | `off`   | Explicit `phase1` opts into experimental during-hold Layer 1 on both live paths; unset keeps Apple + lexicon only    |
+| Setting               | Env                                | Default    | Role                                                                                                                                 |
+| --------------------- | ---------------------------------- | ---------- | ------------------------------------------------------------------------------------------------------------------------------------ |
+| Final pass            | `FINAL_PASS_MODE`                  | legacy     | No effect on normal stop; retained only for settings migration while explicit Retranscribe owns whole-file inference                 |
+| Layered compatibility | `CODESCRIBE_LAYERED_TRANSCRIPTION` | mode-owned | Local Power + Apple/Auto: unset or `phase1` arms; explicit off/invalid degrades. VAD/direct Whisper refuses a second unbound patcher |
 
 Normal capture ignores legacy final-pass routing and never decodes/uploads the
 completed WAV. Layered phase tokens (`phase1`…) select live refinement;
@@ -248,7 +249,8 @@ last outward committed form. Replays, invalid ranges, missing identities, and
 late completions emit content-free typed warnings and preserve Apple text.
 Identical words in disjoint PCM ranges are distinct applications and survive.
 
-**This split is the MacGyver fracture:** UI can show Whisper readiness while live is Apple-only and fails closed.
+**Runtime proof:** Settings may show configured readiness, but a take counts as
+exercised only when its typed receipt says `armed=true` and `submitted>0`.
 
 ```text
 selected_engine()

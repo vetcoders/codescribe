@@ -4,7 +4,7 @@
 crosses → what the user sees.** Anchors are `file :: symbol` (symbols survive
 the Living Tree better than line numbers). Originally mapped against
 `fix/the-tail-patches` HEAD `16e0b9c3`; corrected against
-`fix/p0-p2-before-release` HEAD `361ece40`, 2026-08-21.
+`fix/p0-p2-before-release` integrated runtime cut `ad1052d1`, 2026-08-21.
 
 This file is the execution map. Product invariants live in
 `THE_ENGINE_CONTRACT.md`. Where an older row below calls Apple text a floor,
@@ -104,13 +104,13 @@ mic ▶ recorder ▶ [J1] ▶ Silero VAD chunker ▶ utterance boundaries
   ▶ ReplaceRange on [J2 canvas]   (gap-fill, never full-replace)
 ```
 
-| #    | station       | code                                                                                            | what happens                                                                                                                                                                                                                                                     | since                                   |
-| ---- | ------------- | ----------------------------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | --------------------------------------- |
-| L1.1 | gate          | `CODESCRIBE_LAYERED_TRANSCRIPTION` (current default **off**)                                    | temporary fail-closed deployment gate, not the product destination; explicit `phase1` arms the current local mutation lane                                                                                                                                       | current runtime 2026-08-21              |
-| L1.2 | window        | Apple: `apple_live_session.rs`; VAD: `session.rs`                                               | Apple progressive carries exact request/span identity through its mutation fence; current VAD/scheduler path explicitly refuses mutation because it lacks the same pending-span fence                                                                            | split truth on `361ece40`               |
-| L1.3 | provider seam | `core/stt/tail_provider.rs :: TailProvider`                                                     | typed payload with **integer sample identity** `(session, capture_epoch, sample_start, sample_end)` + evidence + receipts; `STT_TAIL_PROVIDER=inprocess` is the default; `sidecar`/`remote` ⚑ built (W13-2B `4a9fc3fd`), falling back to inprocess with receipts | W13-2A `16ffe025`                       |
-| L1.4 | diff + apply  | `core/stt/tail_patcher/`                                                                        | current implementation uses word-aligned LCS and a change-ratio guard; target authority comes from PCM/span identity, never textual similarity alone; accepted corrections apply through one pre-final `ReplaceRange` fence                                      | corrected doctrine 2026-08-21           |
-| L1.5 | receipts      | `tail_patch_session_receipt applied=/skipped=/abandoned=` + per-request `tail_provider_receipt` | starvation and bounded-stop abandonment are explicit; a missed drain emits `tail_patch_drain_timeout` before finality                                                                                                                                            | `c3933f42` + 2026-08-21 fail-closed cut |
+| #    | station       | code                                                               | what happens                                                                                                                                                                                                                                                     | since                         |
+| ---- | ------------- | ------------------------------------------------------------------ | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ----------------------------- |
+| L1.1 | arming        | `layer1_decision_for_recording` + `LocalTailPatchDisposition`      | Local Power + Apple/Auto arms local Whisper by default; `phase1` is compatible explicit arming; explicit `off` or malformed override is named degradation; Apple-only does not arm                                                                               | `6b9a6475`                    |
+| L1.2 | window        | Apple: `apple_live_session.rs`; VAD: `session.rs`                  | Apple progressive carries exact request/span identity through its mutation fence; VAD/scheduler already uses Whisper as its primary engine and explicitly refuses a second unbound mutation lane                                                                 | `6b9a6475`                    |
+| L1.3 | provider seam | `core/stt/tail_provider.rs :: TailProvider`                        | typed payload with **integer sample identity** `(session, capture_epoch, sample_start, sample_end)` + evidence + receipts; `STT_TAIL_PROVIDER=inprocess` is the default; `sidecar`/`remote` ⚑ built (W13-2B `4a9fc3fd`), falling back to inprocess with receipts | W13-2A `16ffe025`             |
+| L1.4 | diff + apply  | `core/stt/tail_patcher/`                                           | current implementation uses word-aligned LCS and a change-ratio guard; target authority comes from PCM/span identity, never textual similarity alone; accepted corrections apply through one pre-final `ReplaceRange` fence                                      | corrected doctrine 2026-08-21 |
+| L1.5 | receipts      | `tail_patch_session_receipt` + per-request `tail_provider_receipt` | `armed/submitted/applied/skipped/timed_out/abandoned/drain` reconcile at job grain; receipt enters the ordered event stream before `SessionFinalised`; zero submitted while armed fails acceptance                                                               | `6b9a6475` + `ad1052d1`       |
 
 Field truth, 2026-08-14: ~42% of patches were rejected in Monika's sessions —
 the number the ⚑ Silero-fusion flip (§8) exists to fix.
@@ -267,7 +267,7 @@ tests, reports, or commits.
 ### 11.4 Layer 1 deployment truth
 
 - The product destination is Apple-first with continuous Whisper refinement.
-- `Layered off` is a temporary deployment state, not the vision.
+- Local Power arms live refinement by product default.
 - `phase1` is not allowed to mean a decorative UI toggle.
 - Settings ON requires an armed runtime lane.
 - Settings ON with zero submitted windows is a product failure.
@@ -278,26 +278,28 @@ tests, reports, or commits.
 - Provider differences may affect transport and latency only.
 - Provider choice may not change canvas authority.
 
-### 11.5 Current implementation split
+### 11.5 Current implementation truth
 
-- Apple progressive has request identity and span maps on HEAD `361ece40`.
+- Apple progressive has request identity and span maps on the integrated cut.
 - Apple progressive has one pre-final rewrite fence.
 - Apple progressive tracks structural replay identity.
-- Apple progressive exposes applied/skipped/abandoned receipts.
+- Apple progressive exposes reconciled job-grain arming and drain receipts.
 - VAD/scheduler does not have the same pending-span rewrite fence.
 - VAD/scheduler therefore preserves primary text and emits degradation.
-- The old claim “L1 rides both paths identically” is false on this HEAD.
-- The old claim “both paths are production-equivalent” is false on this HEAD.
-- Default-off remains justified only for uncovered mutation paths.
-- Default-off is not justification for disabling the safe covered path silently.
+- The old claim “L1 rides both paths identically” remains false: direct Whisper
+  is the primary engine on VAD/scheduler, not an Apple repair lane.
+- Settings no longer exposes an independent optimistic Layered toggle.
+- Model invalidity and explicit-off configuration are named degraded states.
+- Runtime receipt, not Settings copy, proves that a take submitted patch jobs.
 
 ### 11.6 Stop semantics
 
 - Releasing Fn closes capture.
 - It does not authorize a whole-file rewrite.
 - Admitted patch work receives a bounded drain opportunity.
-- Work that cannot land before finality is counted as abandoned.
-- Abandonment emits a named degradation receipt.
+- Work still outstanding after the bounded drain is counted as timed out.
+- Non-timeout discard is counted separately as abandoned.
+- Both outcomes emit named degradation evidence.
 - The live result survives provider failure.
 - Explicit Retranscribe reads the saved audio as a new user action.
 - Retranscribe produces a proposal/result outside normal-stop authority.

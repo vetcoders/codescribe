@@ -8,20 +8,18 @@
 //!
 //! Every seal runs the shared `StreamPostProcessor::process_utterance` pass
 //! (lexicon + cleanup, no semantic gate) BEFORE the text becomes committed
-//! canvas — the daily-driver path must satisfy AGENTS.md item 3 ("lexicon
-//! corrections applied on the fly"). Correcting after commit would be a
-//! post-commit rewrite, which the append-only doctrine forbids.
+//! canvas. Local Whisper may improve that pending text only through the same
+//! PCM-identified rewrite fence before `UtteranceFinal` is emitted.
 //!
-//! Whisper is never the live engine here. Under
-//! `CODESCRIBE_LAYERED_TRANSCRIPTION=phase1+` it runs as Layer 1 gap-fill
-//! (W2-A): each sealed utterance resolves to its retained PCM window and is
+//! Whisper is never the primary live engine here. Local Power arms it as the
+//! required Layer 1 repair lane: each sealed utterance resolves to its retained PCM window and is
 //! re-transcribed off this path. Bounded TailPatch mutations are applied to the
 //! exact pending baseline behind one rewrite fence; the resulting
 //! `UtteranceFinal` already contains them. No patch event may follow finality —
 //! AGENTS.md (THE ONE RULE): filling canvas gaps on the go, never a stop-time
 //! full-text authority.
-//! Outside that flag Whisper stays the file final-pass / emergency fill
-//! (controller stop path). Escape hatch:
+//! Apple-only deliberately omits this lane; explicit off/invalid overrides in
+//! Local Power produce a typed degraded state. Escape hatch:
 //! `CODESCRIBE_APPLE_STT_LIVE_MODE=wav` restores the legacy VAD+scheduler path.
 //!
 //! The bridge global lock + child process live on a **dedicated OS thread**
@@ -810,8 +808,8 @@ struct AppleSealState {
 }
 
 impl AppleSealState {
-    /// Fresh seal state with Layer 1 disabled (`tail_patch: None`) — the default
-    /// shape when `CODESCRIBE_LAYERED_TRANSCRIPTION` is unset.
+    /// Fresh isolated seal state with Layer 1 disabled (`tail_patch: None`).
+    /// Product-mode arming is injected by the session owner, not this test helper.
     #[cfg(test)]
     fn new(sample_rate: u32) -> Self {
         Self::new_for_session(sample_rate, uuid::Uuid::new_v4().to_string())

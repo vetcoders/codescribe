@@ -83,11 +83,10 @@ fn measured_tail_patch_count(events: &[EngineEvent]) -> usize {
 /// Fail-closed contract between the target that asked for a lane and the lane
 /// the run actually exercised.
 ///
-/// `CODESCRIBE_LAYERED_TRANSCRIPTION` is a power-user key, NOT a promoted
-/// settings.json key (`config::settings::is_promoted_key`), so
-/// `Config::inject_file_env_for_runtime` copies it out of `~/.codescribe/.env`
-/// into the process environment. An operator who switched their daily dictation
-/// to `phase1` therefore armed Layer 1 inside a target whose entire purpose is
+/// Before the key was promoted to settings.json,
+/// `Config::inject_file_env_for_runtime` copied it out of `~/.codescribe/.env`.
+/// An operator who switched daily dictation to `phase1` therefore armed Layer 1
+/// inside a target whose entire purpose is
 /// to score Layer 0 against an Apple-fidelity reference — and Layer 1 is
 /// *supposed* to diverge from Apple, so the bar went red for doing its job.
 ///
@@ -110,9 +109,8 @@ fn measured_lane_matches_request(
         (None, leaked) => Err(format!(
             "this target scores Layer 0 against the Apple-fidelity reference, but the run \
              measured Layer 1: {leaked} ReplaceRange{{TailPatch}} event(s) reached the \
-             assembly. `CODESCRIBE_LAYERED_TRANSCRIPTION` is a power-user key, so \
-             ~/.codescribe/.env is injected into the process environment and can arm the \
-             layer underneath a Layer-0 bar. Pin the lane on the target \
+             assembly. An unpinned compatibility override can arm the layer underneath a \
+             Layer-0 bar. Pin the lane on the target \
              (`CODESCRIBE_LAYERED_TRANSCRIPTION=off`) and re-run — the similarity number \
              from this run says nothing about Layer 0."
         )),

@@ -243,7 +243,7 @@ Target semantics are identical.
 - Current VAD/scheduler mutation parity is incomplete.
 - Missing rewrite-fence parity must emit a named refusal.
 
-## Current HEAD truth — `361ece40`
+## Current HEAD truth — integrated runtime cut `ad1052d1`
 
 The contract above is the product destination.
 
@@ -253,27 +253,31 @@ Current implementation evidence is narrower:
 - Apple progressive carries a span map.
 - Apple progressive has one pre-final rewrite fence.
 - Apple progressive tests structural replay rejection.
-- Apple progressive counts applied, refused, and abandoned work.
+- Apple progressive counts submitted jobs into exactly one terminal bucket:
+  applied, skipped, timed out, or abandoned.
 - VAD/scheduler lacks the same pending-span rewrite fence.
 - VAD/scheduler preserves primary text instead of mutating blindly.
-- Layered defaults to off when its setting is absent.
-- The UI can show a Layered boolean sourced from persisted/env state.
-- A shown ON state does not by itself prove runtime arming.
-- The generic provider Layer 1 currently arms only for Cloud mode.
-- The local tail patcher is a separate mechanism.
-- Naming both mechanisms Layer 1 hides this split.
+- Local Power + Apple/Auto arms the local tail patcher when the compatibility
+  setting is absent or `phase1`.
+- Explicit `off` and malformed overrides are named degraded states.
+- Settings exposes configured/not-ready/degraded truth, not an independent ON
+  boolean; only the ordered runtime receipt proves per-take exercise.
+- Cloud still uses the generic consent-gated provider lane; local exact-span
+  patching is a distinct typed decision because its mutation fence is local.
+- The receipt is emitted before `SessionFinalised` and reconciles every
+  submitted job.
 - Normal product stop has no hidden whole-file pass.
 - Historical `smart` may remain in persisted configuration.
 - Explicit Retranscribe can load the verified local FP16 model.
 
-These are known contract gaps:
+These are remaining contract gaps:
 
-- UI truth and recorder arming are not one typed state.
-- Local and cloud Layer 1 do not share one implementation seam.
-- VAD/scheduler cannot yet accept the same bounded corrections.
-- Admitted tail work can still be abandoned after worker closure.
-- Default-off text remains in docs because coverage is incomplete.
-- Default-off must not be mistaken for the desired final product.
+- Cloud generic Layer 1 and local exact-span patching do not share one
+  mutation implementation; transport parity must not imply authority parity.
+- VAD/scheduler intentionally refuses a second patcher until it owns an
+  equivalent pending-span fence; direct Whisper remains its primary engine.
+- Settings can validate the FP16 bundle only as available/unavailable; it
+  cannot yet name the corrupt component through the bridge.
 - Textual LCS/change-ratio logic still participates in acceptance.
 - Full word-grain identity is not guaranteed for every Apple span.
 - Clock-lie remains a real input class.

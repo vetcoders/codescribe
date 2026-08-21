@@ -550,11 +550,11 @@ category = "stt"
 description = "Libraxis gateway session-mint endpoint (https; loopback http for dev). Endpoint only — URLs with user-info or query material are refused; vendor keys never live in config. Promoted: settings.json is the source of truth"
 
 [vars.CODESCRIBE_LAYERED_TRANSCRIPTION]
-default = "off"
+default = ""
 type = "string"
 reload = "hot"
 category = "stt"
-description = "Experimental layered incremental transcription phase gate. Default OFF: unset/off/0/false preserves Apple live + lexicon without Layer 1 text mutation. Explicit phase1 (or bare 1) arms Whisper tail-patch during hold on both live paths; phases 2..4 remain reserved. Keep OFF until PCM/span identity, one rewrite fence, structural idempotence, and bounded-drain evidence cover every accepted patch. Orthogonal to FINAL_PASS_MODE/Smart. Promoted to settings.json (single-brain; stale ~/.codescribe/.env must not lottery the live path)."
+description = "Promoted compatibility override for live local Whisper refinement. Product mode owns the default: Local Power with Apple/Auto arms the exact-span Apple progressive patcher when unset or phase1; explicit off/0/false/no and malformed values produce a named degraded disposition. Apple-only does not arm it. Direct Whisper on the VAD/scheduler path is already the primary engine and refuses a second unbound mutation lane. Phases 2..4 remain reserved. Orthogonal to FINAL_PASS_MODE; normal stop performs no whole-file pass. Runtime truth is the per-session tail_patch_session_receipt, not UI state."
 
 [vars.CODESCRIBE_SEAL_ATLAS_DUMP]
 default = ""

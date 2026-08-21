@@ -5,7 +5,7 @@
 [![CI](https://github.com/vetcoders/codescribe/actions/workflows/rust.yml/badge.svg)](https://github.com/vetcoders/codescribe/actions/workflows/rust.yml)
 [![Landing](https://img.shields.io/badge/site-vetcoders.github.io%2Fcodescribe-788c5d)](https://vetcoders.github.io/codescribe/)
 
-**Native macOS tray dictation and assistive voice overlay: instant Apple-neural live canvas, Whisper filling the gaps on the go, lexicon correction last — append-only, never rewritten — plus quality tooling.**
+**Native macOS tray dictation and assistive voice overlay: instant Apple-neural live canvas, Whisper repairing the same PCM-bound spans on the go, lexicon correction last — plus quality tooling.**
 
 ## Overview
 
@@ -13,9 +13,9 @@ Codescribe is a native macOS menu-bar application that captures audio through gl
 transcription while you speak, and pastes or routes the final result into the focused application. The shipped product
 in this repo is a tray app whose SwiftUI front-end has two explicit surfaces: settings and overlays.
 
-The transcription shape is layered and append-only (see `AGENTS.md`, the one rule): Apple Speech is the instant
-letter-level live canvas; local Whisper transcribes partials on the go to fill the canvas gaps — it is not the live
-engine and not a stop-time authority; lexicon correction by dictionary substitution is the final automated layer, and
+The transcription shape is layered and span-bound (see `docs/THE_ENGINE_CONTRACT.md`): Apple Speech is the instant
+letter-level live canvas; in Local Power mode, local Whisper transcribes partials on the go to repair weaker wording
+inside the same proven audio spans — it is not a stop-time authority; lexicon correction by dictionary substitution is the final automated layer, and
 human corrections feed the lexicon. Cloud STT is optional and used as a post-capture transcript backend, not as live
 cloud preview. AI formatting and assistive mode use OpenAI Responses API (`/v1/responses`) by default, configured in
 Settings or `~/.codescribe/.env`.

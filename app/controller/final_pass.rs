@@ -11,14 +11,14 @@
 //!   adopted onto the committed words (`punctuation_transplant`; word sequence
 //!   invariant at THIS stage
 //!   because shape is the deficit here — live word corrections belong to the
-//!   explicit, fail-closed Layer 1 tail-patch experiment). When
+//!   Local Power's exact-span Layer 1 tail-patch lane). When
 //!   incomplete, only the uncommitted audio tail (from the last committed
 //!   utterance end) is transcribed and **appended** to the committed streaming
 //!   text. The doctrine behind all of this forbids TRUNCATING overlay text and
 //!   DROPPING transcripts the user already saw (the pre-0.8.0 full-replace
 //!   failure) — it does not forbid live correction of committed words.
-//!   Pair with `CODESCRIBE_LAYERED_TRANSCRIPTION` (orthogonal toggle) for live
-//!   Whisper tail-patches during hold — Smart does not force layered on.
+//!   Local Power arms live Whisper tail-patches independently of this stop
+//!   policy; the compatibility override is not a final-pass switch.
 //! - **Off**: hard off at stop — zero Whisper invocation on the stop path;
 //!   streaming (+ post-process) is final.
 //!
