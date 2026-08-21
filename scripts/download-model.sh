@@ -16,6 +16,25 @@ set -euo pipefail
 
 ROOT_DIR="$(cd "$(dirname "$0")/.." && pwd)"
 
+sha256_file() {
+    if command -v shasum >/dev/null 2>&1; then
+        shasum -a 256 "$1" | awk '{print $1}'
+    elif command -v sha256sum >/dev/null 2>&1; then
+        sha256sum "$1" | awk '{print $1}'
+    else
+        echo "ERROR: need shasum or sha256sum to verify model assets" >&2
+        return 1
+    fi
+}
+
+atomic_copy() {
+    local source="$1"
+    local destination="$2"
+    local partial="${destination}.partial"
+    cp -fL "$source" "$partial"
+    mv -f "$partial" "$destination"
+}
+
 # Configuration
 DEFAULT_REPO="mlx-community/whisper-large-v3-turbo"
 TOKENIZER_REPO="openai/whisper-large-v3-turbo"
@@ -95,19 +114,20 @@ if [[ "$MODEL_REPO" == "$DEFAULT_REPO" ]]; then
     TOKENIZER_PATH=$("$HF_BIN" download "$TOKENIZER_REPO" tokenizer.json --quiet)
     MODEL_DEST="${CODESCRIBE_MODELS_DIR:-$HOME/.codescribe/models}/whisper-large-v3-turbo"
     mkdir -p "$MODEL_DEST"
-    cp -fL "$MODEL_SNAPSHOT/config.json" "$MODEL_DEST/config.json"
+    atomic_copy "$MODEL_SNAPSHOT/config.json" "$MODEL_DEST/config.json"
     if [[ -f "$MODEL_SNAPSHOT/weights.safetensors" ]]; then
-        cp -fL "$MODEL_SNAPSHOT/weights.safetensors" "$MODEL_DEST/weights.safetensors"
+        atomic_copy "$MODEL_SNAPSHOT/weights.safetensors" "$MODEL_DEST/weights.safetensors"
     elif [[ -f "$MODEL_SNAPSHOT/model.safetensors" ]]; then
-        cp -fL "$MODEL_SNAPSHOT/model.safetensors" "$MODEL_DEST/model.safetensors"
+        atomic_copy "$MODEL_SNAPSHOT/model.safetensors" "$MODEL_DEST/model.safetensors"
     else
         echo "ERROR: fp16 snapshot has no safetensors weights: $MODEL_SNAPSHOT" >&2
         exit 1
     fi
-    cp -fL "$TOKENIZER_PATH" "$MODEL_DEST/tokenizer.json"
+    atomic_copy "$TOKENIZER_PATH" "$MODEL_DEST/tokenizer.json"
     curl -fsSL "$MEL_FILTERS_URL" -o "$MODEL_DEST/mel_filters.npz.partial"
-    ACTUAL_MEL_SHA=$(shasum -a 256 "$MODEL_DEST/mel_filters.npz.partial" | awk '{print $1}')
+    ACTUAL_MEL_SHA=$(sha256_file "$MODEL_DEST/mel_filters.npz.partial")
     if [[ "$ACTUAL_MEL_SHA" != "$MEL_FILTERS_SHA256" ]]; then
+        rm -f "$MODEL_DEST/mel_filters.npz.partial"
         echo "ERROR: mel_filters.npz checksum mismatch" >&2
         exit 1
     fi
