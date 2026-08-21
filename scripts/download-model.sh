@@ -139,27 +139,54 @@ if [[ "$MODEL_REPO" == "$DEFAULT_REPO" ]]; then
     echo "▶ Composing verified fp16 runtime directory..."
     TOKENIZER_PATH=$("$HF_BIN" download "$TOKENIZER_REPO" tokenizer.json --quiet)
     MODEL_DEST="${CODESCRIBE_MODELS_DIR:-$HOME/.codescribe/models}/whisper-large-v3-turbo"
-    mkdir -p "$MODEL_DEST"
-    atomic_copy "$MODEL_SNAPSHOT/config.json" "$MODEL_DEST/config.json"
+    MODEL_STAGE=$(mktemp -d "${TMPDIR:-/tmp}/codescribe-whisper-model.XXXXXX")
+    cleanup_model_stage() {
+        rm -f \
+            "$MODEL_STAGE/config.json" \
+            "$MODEL_STAGE/tokenizer.json" \
+            "$MODEL_STAGE/mel_filters.npz" \
+            "$MODEL_STAGE/mel_filters.npz.partial" \
+            "$MODEL_STAGE/weights.safetensors" \
+            "$MODEL_STAGE/model.safetensors"
+        rmdir "$MODEL_STAGE" 2>/dev/null || true
+    }
+    trap cleanup_model_stage EXIT
+
+    atomic_copy "$MODEL_SNAPSHOT/config.json" "$MODEL_STAGE/config.json"
     if [[ -f "$MODEL_SNAPSHOT/weights.safetensors" ]]; then
-        atomic_copy "$MODEL_SNAPSHOT/weights.safetensors" "$MODEL_DEST/weights.safetensors"
+        atomic_copy "$MODEL_SNAPSHOT/weights.safetensors" "$MODEL_STAGE/weights.safetensors"
     elif [[ -f "$MODEL_SNAPSHOT/model.safetensors" ]]; then
-        atomic_copy "$MODEL_SNAPSHOT/model.safetensors" "$MODEL_DEST/model.safetensors"
+        atomic_copy "$MODEL_SNAPSHOT/model.safetensors" "$MODEL_STAGE/model.safetensors"
     else
         echo "ERROR: fp16 snapshot has no safetensors weights: $MODEL_SNAPSHOT" >&2
         exit 1
     fi
-    atomic_copy "$TOKENIZER_PATH" "$MODEL_DEST/tokenizer.json"
-    curl -fsSL "$MEL_FILTERS_URL" -o "$MODEL_DEST/mel_filters.npz.partial"
-    ACTUAL_MEL_SHA=$(sha256_file "$MODEL_DEST/mel_filters.npz.partial")
+    atomic_copy "$TOKENIZER_PATH" "$MODEL_STAGE/tokenizer.json"
+    curl -fsSL "$MEL_FILTERS_URL" -o "$MODEL_STAGE/mel_filters.npz.partial"
+    ACTUAL_MEL_SHA=$(sha256_file "$MODEL_STAGE/mel_filters.npz.partial")
     if [[ "$ACTUAL_MEL_SHA" != "$MEL_FILTERS_SHA256" ]]; then
-        rm -f "$MODEL_DEST/mel_filters.npz.partial"
         echo "ERROR: mel_filters.npz checksum mismatch" >&2
         exit 1
     fi
-    mv "$MODEL_DEST/mel_filters.npz.partial" "$MODEL_DEST/mel_filters.npz"
+    mv "$MODEL_STAGE/mel_filters.npz.partial" "$MODEL_STAGE/mel_filters.npz"
+
+    # Do not touch a working installation until every cached/downloaded
+    # replacement passes the exact runtime-owned bundle contract.
+    "$WHISPER_VALIDATOR" "$MODEL_STAGE"
+
+    mkdir -p "$MODEL_DEST"
+    atomic_copy "$MODEL_STAGE/config.json" "$MODEL_DEST/config.json"
+    atomic_copy "$MODEL_STAGE/tokenizer.json" "$MODEL_DEST/tokenizer.json"
+    atomic_copy "$MODEL_STAGE/mel_filters.npz" "$MODEL_DEST/mel_filters.npz"
+    if [[ -f "$MODEL_STAGE/weights.safetensors" ]]; then
+        atomic_copy "$MODEL_STAGE/weights.safetensors" "$MODEL_DEST/weights.safetensors"
+    else
+        atomic_copy "$MODEL_STAGE/model.safetensors" "$MODEL_DEST/model.safetensors"
+    fi
     echo "  Runtime directory: $MODEL_DEST"
     "$WHISPER_VALIDATOR" "$MODEL_DEST"
+    cleanup_model_stage
+    trap - EXIT
 else
     "$WHISPER_VALIDATOR" "$MODEL_SNAPSHOT"
 fi
