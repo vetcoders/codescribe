@@ -42,9 +42,9 @@ enum DictationOverlayGate {
 
   static func shouldShowOverlay(
     trayEnabled: Bool,
-    defaults: UserDefaults = .standard,
-    surfaceEnabled: Bool? = nil
+    defaults _: UserDefaults = .standard,
+    surfaceEnabled _: Bool? = nil
   ) -> Bool {
-    trayEnabled && !isLabModeOn(defaults: defaults, surfaceEnabled: surfaceEnabled)
+    trayEnabled
   }
 }

@@ -25,11 +25,11 @@ final class DeveloperSurfaceTests: XCTestCase {
     XCTAssertTrue(SettingsSection.matching(query: "").contains(.agent))
   }
 
-  func testLabModeOnDeveloperSurfaceHidesOverlayWithoutTouchingTray() {
+  func testLabModeDoesNotHideOverlayWhenTrayWantsIt() {
     let defaults = UserDefaults(suiteName: UUID().uuidString)!
     defaults.set(true, forKey: DictationOverlayGate.labModeDefaultsKey)
     XCTAssertTrue(DictationOverlayGate.isLabModeOn(defaults: defaults, surfaceEnabled: true))
-    XCTAssertFalse(
+    XCTAssertTrue(
       DictationOverlayGate.shouldShowOverlay(
         trayEnabled: true,
         defaults: defaults,

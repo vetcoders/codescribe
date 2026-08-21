@@ -187,11 +187,7 @@ final class OverlayController: ObservableObject {
       return
     }
     guard overlayEnabledProvider() else {
-      if DictationOverlayGate.isLabModeOn() {
-        DictationOverlayGate.logger.info("overlay suppressed: lab_mode")
-      } else {
-        DictationOverlayGate.logger.info("overlay suppressed: tray toggle off")
-      }
+      DictationOverlayGate.logger.info("overlay suppressed: tray toggle off")
       if panel != nil { hide() }
       return
     }
