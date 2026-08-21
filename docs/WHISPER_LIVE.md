@@ -36,7 +36,7 @@ See the ADR for the full contract.
 
 Codescribe’s Whisper layer power-ups:
 
-1. **Embedded-first Whisper model** (`whisper-large-v3-turbo`, mlx-community fp16, by default; legacy q8 as fallback)
+1. **FP16-only Whisper model** (`whisper-large-v3-turbo`, mlx-community weights; q8 is rejected before load)
    - build policy embeds Whisper whenever the model is available at build time
    - runtime lookup from `CODESCRIBE_MODEL_PATH`, configured model dirs, bundled app resources, or the Hugging Face cache is a fallback path for `CODESCRIBE_NO_EMBED=1` builds or recovery
 2. **Live (streaming) transcription** while the user is recording

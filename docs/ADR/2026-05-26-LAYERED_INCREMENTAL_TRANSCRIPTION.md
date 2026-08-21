@@ -1,5 +1,9 @@
 # ADR 2026-05-26 — Layered Incremental Transcription Pipeline
 
+> **Historical model reference:** the original ADR named a Q8 Whisper artifact.
+> Current runtime policy is FP16-only; resolver, filesystem, direct-engine and
+> embedded paths reject quantized Whisper payloads before tensor load.
+
 > **Status:** PROPOSED → ACCEPTED (operator-authored vision, 2026-05-26)
 > **Replaces:** Whisper-as-primary live STT model (see `WHISPER_LIVE.md`, `OVERLAY_STREAMING.md`)
 > **Owns invariant:** **NEVER REWRITE FROM ZERO.** All layers act incrementally on what was already shown to the user.

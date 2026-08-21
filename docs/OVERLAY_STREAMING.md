@@ -68,7 +68,7 @@ flowchart TD
     SPEECH[SpeechSession\ncore/audio/chunker.rs\nSupervisor mode]
     CHUNK[SpeechEvent::Utterance / UtteranceFinal\nclean speech audio segments]
     WORKER[transcription_session\ncore/pipeline/streaming/session.rs\nunified pipeline]
-    WHISPER[Whisper Engine\ncore/stt/whisper/engine.rs\nMetal GPU · large-v3-turbo-q8]
+    WHISPER[Whisper Engine\ncore/stt/whisper/engine.rs\nMetal GPU · large-v3-turbo fp16]
     POSTPROC[StreamPostProcessor\ncore/pipeline/stream_postprocess.rs\nlexicon + semantic gate]
     EVENT[EngineEvent\ncore/pipeline/contracts.rs]
     SINK{EventSink / DeltaSink}

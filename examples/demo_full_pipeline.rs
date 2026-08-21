@@ -50,12 +50,7 @@ async fn main() -> Result<()> {
     // Parse args
     // Model path: ~/.codescribe/models/ (unified standard)
     let home = std::env::var("HOME").unwrap_or_else(|_| ".".to_string());
-    // fp16 default first, legacy q8 as fallback — mirrors runtime precedence.
-    let mut model = ["whisper-large-v3-turbo", "whisper-large-v3-turbo-mlx-q8"]
-        .iter()
-        .map(|name| PathBuf::from(&home).join(".codescribe/models").join(name))
-        .find(|p| p.join("config.json").exists())
-        .unwrap_or_else(|| PathBuf::from(&home).join(".codescribe/models/whisper-large-v3-turbo"));
+    let mut model = PathBuf::from(&home).join(".codescribe/models/whisper-large-v3-turbo");
     let mut assistive = false;
     let mut raw_only = false;
     let mut audio_file: Option<PathBuf> = None;

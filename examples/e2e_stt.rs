@@ -22,12 +22,7 @@ async fn main() -> Result<()> {
 
     // Model path: ~/.codescribe/models/ (unified standard)
     let home = std::env::var("HOME").unwrap_or_else(|_| ".".to_string());
-    // fp16 default first, legacy q8 as fallback — mirrors runtime precedence.
-    let model_path = ["whisper-large-v3-turbo", "whisper-large-v3-turbo-mlx-q8"]
-        .iter()
-        .map(|name| PathBuf::from(&home).join(".codescribe/models").join(name))
-        .find(|p| p.join("config.json").exists())
-        .unwrap_or_else(|| PathBuf::from(&home).join(".codescribe/models/whisper-large-v3-turbo"));
+    let model_path = PathBuf::from(&home).join(".codescribe/models/whisper-large-v3-turbo");
     // Supply your own sample files via env vars (or edit the placeholder paths below).
     let audio_medium = PathBuf::from(
         std::env::var("CODESCRIBE_E2E_AUDIO_MEDIUM")

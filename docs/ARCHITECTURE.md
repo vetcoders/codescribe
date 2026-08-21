@@ -108,7 +108,7 @@ flowchart TB
     BRIDGE --> APP
     APP --> CORE
 
-    WH --> MODEL[Whisper Model\nlarge-v3-turbo\nmlx-q8\nembedded or runtime-loaded]
+    WH --> MODEL[Whisper Model\nlarge-v3-turbo\nfp16 only\nembedded or runtime-loaded]
 
     subgraph TOOLS[Quality & CLI Tools]
         TEACH[bin/codescribe-teacher]
@@ -314,9 +314,11 @@ may still opt into binary embedding:
 
 1. `CODESCRIBE_MODEL_PATH` environment variable
 2. `~/.codescribe/models/whisper-large-v3-turbo/` (fp16 default)
-3. Hugging Face cache snapshots for `mlx-community/whisper-large-v3-turbo`
-4. Legacy fallback: `whisper-large-v3-turbo-mlx-q8` dir or
-   `LibraxisAI/whisper-large-v3-turbo-mlx-q8` snapshots
+3. A complete explicitly configured Hugging Face snapshot
+
+Every candidate must contain config, tokenizer, mel filters and safetensors
+weights, and must pass config plus safetensors-header checks proving that it is
+not quantized. Q8 has no runtime fallback path.
 
 MiniLM resolution: `CODESCRIBE_EMBEDDER_PATH`, then
 `Codescribe.app/Contents/Resources/models/embedder`, then the configured/default
