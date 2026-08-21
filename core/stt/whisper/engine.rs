@@ -440,12 +440,9 @@ impl LocalWhisperEngine {
         if !config_path.is_file() {
             anyhow::bail!("Whisper config not found at {}", config_path.display());
         }
-        let weights_path = if model_path.join("weights.safetensors").exists() {
-            model_path.join("weights.safetensors")
-        } else {
-            model_path.join("model.safetensors")
-        };
-        if !weights_path.exists() {
+        if !model_path.join("weights.safetensors").is_file()
+            && !model_path.join("model.safetensors").is_file()
+        {
             anyhow::bail!(
                 "Whisper weights not found (expected weights.safetensors or model.safetensors) in {}",
                 model_path.display()
@@ -458,6 +455,8 @@ impl LocalWhisperEngine {
                 "Quantized or malformed Whisper payload refused before tensor load; install the complete fp16 model"
             );
         }
+        let weights_path = crate::config::models::resolve_valid_whisper_weights_path(model_path)
+            .context("resolve validated Whisper weights")?;
         let device = process_device();
         tracing::debug!("LocalWhisperEngine using device: {:?}", device);
 
@@ -2038,6 +2037,28 @@ mod model_payload_tests {
             .err()
             .expect("U32 must be refused by the builder gate");
         assert!(format!("{err:#}").contains("refused"));
+    }
+
+    #[test]
+    fn local_loader_uses_valid_alternative_after_invalid_primary() {
+        let temp = TempDir::new().unwrap();
+        write_tiny_model(temp.path(), "encoder.weight", "F16", 2);
+        fs::rename(
+            temp.path().join("weights.safetensors"),
+            temp.path().join("model.safetensors"),
+        )
+        .unwrap();
+        write_tiny_model(temp.path(), "encoder.weight", "U32", 4);
+
+        let err = LocalWhisperEngine::new(temp.path())
+            .err()
+            .expect("tiny valid alternative should reach model construction");
+        let message = format!("{err:#}");
+        assert!(!message.contains("payload refused"), "{message}");
+        assert!(
+            message.contains("Failed to create Whisper Model"),
+            "{message}"
+        );
     }
 }
 

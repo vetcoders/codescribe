@@ -67,10 +67,18 @@ Grant in: System Settings > Privacy & Security
 - Runtime fallback resolves Whisper from exactly one shared contract in `core/config/models.rs`:
   `CODESCRIBE_MODEL_PATH` → configured local model path/alias → configured HF repo snapshot →
   default local turbo model → default HF cache snapshot.
-- A model is ready only after config/tokenizer parsing, pinned mel checksum, and
-  full safetensors structural/dtype validation. Invalid cached files are replaced
-  through validated `.partial` artifacts on the next download.
+- A model is ready only after config parsing, tokenizer parsing plus required Whisper control
+  tokens, the pinned mel checksum, and full safetensors structural/dtype validation. Downloads compose and validate the
+  complete replacement before promotion; repairing the default model replaces config and weights
+  as a paired generation instead of preserving independently valid artifacts from another architecture.
 - `make install-app` / `scripts/ensure-models.sh` are the easiest way to warm the expected cache paths.
+  Release/setup preflight calls the same runtime-owned bundle validator before it skips a download;
+  a directory with merely the expected filenames is repaired or rejected rather than embedded.
+  The fat-build selector shares the complete runtime bundle validator and embeds the first valid
+  supported weights filename, so malformed config/tokenizer/mel assets or a stale invalid primary
+  cannot shadow a valid alternative.
+  An explicit local `CODESCRIBE_EMBED_MODEL` must exist and pass that validator; it is never
+  reinterpreted as a Hugging Face repository id.
 
 **Developer note:**
 If runtime lookup cannot find the model, point `CODESCRIBE_MODEL_PATH` at a valid Whisper directory.

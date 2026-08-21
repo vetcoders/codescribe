@@ -24,6 +24,9 @@ use std::path::{Path, PathBuf};
 
 use sha2::{Digest, Sha256};
 
+#[path = "whisper_weights.rs"]
+mod whisper_weights;
+
 /// The license key contract, included by path so the build script and the
 /// crate it builds share one definition of the dev key and its fingerprint
 /// instead of two copies that can drift apart.
@@ -94,16 +97,12 @@ fn main() {
             .unwrap_or_else(|| DEFAULT_MODEL_NAME.to_string());
         let model_path =
             resolve_whisper_embed_model_path(&manifest_dir, &embed_model, DEFAULT_WHISPER_REPO);
-        let weights_path = if model_path.join("weights.safetensors").exists() {
-            model_path.join("weights.safetensors")
-        } else {
-            model_path.join("model.safetensors")
-        };
-        let model_exists = model_path.join("config.json").exists()
-            && model_path.join("tokenizer.json").exists()
-            && model_path.join("mel_filters.npz").exists()
-            && weights_path.exists();
+        let model_exists = whisper_weights::validate_whisper_model_bundle(&model_path).is_ok();
+        let weights_path = model_exists
+            .then(|| whisper_weights::resolve_valid_whisper_weights_path(&model_path).ok())
+            .flatten();
         if model_exists {
+            let weights_path = weights_path.as_ref().expect("validated Whisper weights");
             println!(
                 "cargo:rerun-if-changed={}",
                 model_path.join("config.json").display()
@@ -124,6 +123,7 @@ fn main() {
         let whisper_dest_path = Path::new(&out_dir).join("embedded_model_data.rs");
         let whisper_embedded = embed_whisper_requested && !no_embed && model_exists;
         if whisper_embedded {
+            let weights_path = weights_path.as_ref().expect("validated Whisper weights");
             println!(
                 "cargo:warning=Embedding Whisper model from: {}",
                 model_path.display()
@@ -413,7 +413,7 @@ fn decode_license_public_key(value: &str) -> [u8; 32] {
 /// resolved against the manifest dir, and a bare name is looked up under
 /// `<manifest>/models/`.
 fn resolve_embed_model_path(manifest_dir: &str, embed_model: &str) -> PathBuf {
-    let candidate = PathBuf::from(embed_model);
+    let candidate = expand_tilde_path(embed_model);
     if candidate.is_absolute() {
         return candidate;
     }
@@ -425,21 +425,23 @@ fn resolve_embed_model_path(manifest_dir: &str, embed_model: &str) -> PathBuf {
     Path::new(manifest_dir).join("models").join(embed_model)
 }
 
+/// Expand a literal `~/` path because Cargo passes env values without shell expansion.
+fn expand_tilde_path(value: &str) -> PathBuf {
+    if let Some(relative) = value.strip_prefix("~/")
+        && let Some(home) = dirs::home_dir()
+    {
+        return home.join(relative);
+    }
+    PathBuf::from(value)
+}
+
 /// True when a directory can be baked into the fat SKU.
 ///
 /// The default HF Whisper repo is weights-only. `make download-model` composes
 /// tokenizer + mel into `~/.codescribe/models/<name>`. Incomplete snapshots
 /// must not win over that composed tree.
 fn whisper_dir_complete(path: &Path) -> bool {
-    let weights = if path.join("weights.safetensors").exists() {
-        path.join("weights.safetensors")
-    } else {
-        path.join("model.safetensors")
-    };
-    path.join("config.json").exists()
-        && path.join("tokenizer.json").exists()
-        && path.join("mel_filters.npz").exists()
-        && weights.exists()
+    whisper_weights::validate_whisper_model_bundle(path).is_ok()
 }
 
 /// Locate the Whisper snapshot to embed.
@@ -453,7 +455,7 @@ fn resolve_whisper_embed_model_path(
     default_repo: &str,
 ) -> PathBuf {
     if let Ok(model_path) = env::var("CODESCRIBE_MODEL_PATH") {
-        let p = PathBuf::from(model_path.trim());
+        let p = expand_tilde_path(model_path.trim());
         if whisper_dir_complete(&p) {
             return p;
         }

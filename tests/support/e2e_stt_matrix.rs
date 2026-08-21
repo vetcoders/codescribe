@@ -54,12 +54,7 @@ pub fn test_audio_path() -> PathBuf {
 }
 
 pub fn whisper_model_is_complete(path: &Path) -> bool {
-    let has_weights =
-        path.join("weights.safetensors").exists() || path.join("model.safetensors").exists();
-    path.join("config.json").exists()
-        && path.join("tokenizer.json").exists()
-        && path.join("mel_filters.npz").exists()
-        && has_weights
+    codescribe_core::config::models::validate_whisper_model_bundle(path).is_ok()
 }
 
 pub fn whisper_model_missing_parts(path: &Path) -> Vec<&'static str> {
@@ -83,28 +78,6 @@ pub fn whisper_model_missing_parts(path: &Path) -> Vec<&'static str> {
     missing
 }
 
-pub fn default_hf_cache_bases(home_dir: &Path) -> Vec<PathBuf> {
-    let mut out = Vec::new();
-
-    if let Ok(path) = std::env::var("CODESCRIBE_HF_CACHE") {
-        out.push(PathBuf::from(path));
-    }
-    if let Ok(path) = std::env::var("HUGGINGFACE_HUB_CACHE") {
-        out.push(PathBuf::from(path));
-    }
-    if let Ok(path) = std::env::var("HF_HUB_CACHE") {
-        out.push(PathBuf::from(path));
-    }
-    if let Ok(path) = std::env::var("HF_HOME") {
-        out.push(PathBuf::from(path).join("hub"));
-    }
-
-    out.push(home_dir.join(".cache/huggingface/hub"));
-    out.sort();
-    out.dedup();
-    out
-}
-
 pub fn discover_local_whisper_model() -> Option<ModelDiscovery> {
     let home_dir = std::env::var("HOME")
         .map(PathBuf::from)
@@ -112,14 +85,12 @@ pub fn discover_local_whisper_model() -> Option<ModelDiscovery> {
     let env_override = std::env::var("CODESCRIBE_MODEL_PATH")
         .ok()
         .map(PathBuf::from);
-    let hf_bases = default_hf_cache_bases(&home_dir);
-    discover_local_whisper_model_for(&home_dir, env_override.as_deref(), &hf_bases)
+    discover_local_whisper_model_for(&home_dir, env_override.as_deref())
 }
 
 pub fn discover_local_whisper_model_for(
     home_dir: &Path,
     env_override: Option<&Path>,
-    hf_cache_bases: &[PathBuf],
 ) -> Option<ModelDiscovery> {
     if let Some(path) = env_override
         && whisper_model_is_complete(path)
@@ -138,14 +109,12 @@ pub fn discover_local_whisper_model_for(
         });
     }
 
-    let _ = hf_cache_bases;
-
     None
 }
 
 pub fn model_discovery_hint(home_dir: &Path) -> String {
     format!(
-        "Looked for complete fp16 Whisper model in CODESCRIBE_MODEL_PATH and {home}/.codescribe/models/{fp16}. Required files: config.json, tokenizer.json, mel_filters.npz, weights.safetensors or model.safetensors.",
+        "Looked for a valid fp16 Whisper model in CODESCRIBE_MODEL_PATH and {home}/.codescribe/models/{fp16}. The bundle must have parseable config and tokenizer files, the pinned mel_filters.npz checksum, structurally valid F16/F32 safetensors, and no quantization declaration.",
         home = home_dir.display(),
         fp16 = WHISPER_FP16_MODEL
     )

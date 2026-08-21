@@ -175,9 +175,36 @@ fn e2e_stt_model_init_stable() {
 fn create_complete_model(path: &Path) {
     std::fs::create_dir_all(path).expect("create model dir");
     std::fs::write(path.join("config.json"), "{}").expect("write config");
-    std::fs::write(path.join("tokenizer.json"), "{}").expect("write tokenizer");
-    std::fs::write(path.join("mel_filters.npz"), []).expect("write mel filters");
-    std::fs::write(path.join("weights.safetensors"), []).expect("write weights");
+    let mut tokenizer = tokenizers::Tokenizer::new(tokenizers::models::bpe::BPE::default());
+    tokenizer.add_special_tokens(&[
+        tokenizers::AddedToken::from("<|startoftranscript|>", true),
+        tokenizers::AddedToken::from("<|endoftext|>", true),
+    ]);
+    tokenizer
+        .save(path.join("tokenizer.json"), false)
+        .expect("write tokenizer");
+    std::fs::write(
+        path.join("mel_filters.npz"),
+        decode_hex(include_str!("fixtures/whisper_mel_filters.npz.hex")),
+    )
+    .expect("write mel filters");
+    let header = br#"{"model.weight":{"dtype":"F16","shape":[1],"data_offsets":[0,2]}}"#;
+    let mut safetensors = (header.len() as u64).to_le_bytes().to_vec();
+    safetensors.extend_from_slice(header);
+    safetensors.extend_from_slice(&[0, 0]);
+    std::fs::write(path.join("weights.safetensors"), safetensors).expect("write weights");
+}
+
+fn decode_hex(raw: &str) -> Vec<u8> {
+    let digits: String = raw.chars().filter(|ch| !ch.is_whitespace()).collect();
+    assert!(digits.len().is_multiple_of(2));
+    digits
+        .as_bytes()
+        .as_chunks::<2>()
+        .0
+        .iter()
+        .map(|pair| u8::from_str_radix(std::str::from_utf8(pair).unwrap(), 16).unwrap())
+        .collect()
 }
 
 fn create_incomplete_model(path: &Path) {
@@ -220,6 +247,15 @@ fn deterministic_gate_parser_requires_explicit_opt_in_values() {
 }
 
 #[test]
+fn deterministic_model_discovery_hint_names_the_validation_contract() {
+    let hint = model_discovery_hint(Path::new("/tmp/test-home"));
+    assert!(hint.contains("parseable config and tokenizer"));
+    assert!(hint.contains("pinned mel_filters.npz checksum"));
+    assert!(hint.contains("structurally valid F16/F32 safetensors"));
+    assert!(hint.contains("no quantization declaration"));
+}
+
+#[test]
 fn deterministic_model_discovery_prefers_complete_env_override() {
     let (_tmp, home) = temp_home();
     let models_root = home.join(".codescribe/models");
@@ -229,8 +265,7 @@ fn deterministic_model_discovery_prefers_complete_env_override() {
     create_complete_model(&fp16);
     create_complete_model(&env_model);
 
-    let hf_bases = Vec::<PathBuf>::new();
-    let found = discover_local_whisper_model_for(&home, Some(&env_model), &hf_bases)
+    let found = discover_local_whisper_model_for(&home, Some(&env_model))
         .expect("expected env override to be discovered");
 
     assert_eq!(
@@ -245,6 +280,28 @@ fn deterministic_model_discovery_prefers_complete_env_override() {
 }
 
 #[test]
+fn deterministic_model_discovery_skips_invalid_env_override() {
+    let (_tmp, home) = temp_home();
+    let models_root = home.join(".codescribe/models");
+    let fp16 = models_root.join(WHISPER_FP16_MODEL);
+    let env_model = home.join("custom/quantized-whisper-model");
+
+    create_complete_model(&fp16);
+    create_complete_model(&env_model);
+    std::fs::write(
+        env_model.join("config.json"),
+        r#"{"quantization":{"bits":8}}"#,
+    )
+    .expect("mark env override as quantized");
+
+    let found = discover_local_whisper_model_for(&home, Some(&env_model))
+        .expect("expected valid standard fp16 model to be discovered");
+
+    assert_eq!(found.source, ModelSource::UserFp16);
+    assert_eq!(found.path, fp16);
+}
+
+#[test]
 fn deterministic_model_discovery_refuses_incomplete_fp16_without_legacy_fallback() {
     let (_tmp, home) = temp_home();
     let models_root = home.join(".codescribe/models");
@@ -252,9 +309,8 @@ fn deterministic_model_discovery_refuses_incomplete_fp16_without_legacy_fallback
 
     create_incomplete_model(&fp16);
 
-    let hf_bases = Vec::<PathBuf>::new();
     assert!(
-        discover_local_whisper_model_for(&home, None, &hf_bases).is_none(),
+        discover_local_whisper_model_for(&home, None).is_none(),
         "an incomplete fp16 model must not fall back to a quantized model"
     );
 

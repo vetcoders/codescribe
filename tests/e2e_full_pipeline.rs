@@ -91,21 +91,7 @@ const TEST_CASES: &[TestCase] = &[
 ];
 
 fn find_model_path() -> Option<PathBuf> {
-    if let Ok(p) = std::env::var("CODESCRIBE_MODEL_PATH") {
-        let path = PathBuf::from(&p);
-        if path.join("tokenizer.json").exists() {
-            return Some(path);
-        }
-    }
-
-    let home = std::env::var("HOME").unwrap_or_else(|_| ".".to_string());
-
-    let fp16 = PathBuf::from(&home).join(".codescribe/models/whisper-large-v3-turbo");
-    if fp16.join("tokenizer.json").exists() {
-        return Some(fp16);
-    }
-
-    None
+    codescribe_core::config::models::resolve_runtime_whisper_model_path(None).ok()
 }
 
 fn is_e2e_stt_enabled() -> bool {

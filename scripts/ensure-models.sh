@@ -6,20 +6,48 @@
 set -euo pipefail
 
 ROOT_DIR="$(cd "$(dirname "$0")/.." && pwd)"
+WHISPER_VALIDATOR="$ROOT_DIR/scripts/validate-whisper-model.sh"
+TILDE_PREFIX="$(printf '\176/')"
+EMBED_MODEL_VALUE="${CODESCRIBE_EMBED_MODEL:-}"
+if [[ "$EMBED_MODEL_VALUE" == "$TILDE_PREFIX"* ]]; then
+  EMBED_MODEL_VALUE="$HOME/${EMBED_MODEL_VALUE:2}"
+fi
+
+valid_whisper_bundle() {
+  "$WHISPER_VALIDATOR" "$1"
+}
+
+is_hf_repo_id() {
+  [[ "$1" =~ ^[A-Za-z0-9._-]+/[A-Za-z0-9._-]+$ ]]
+}
+
+looks_like_local_path() {
+  [[ "$1" == /* || "$1" == ./* || "$1" == ../* ]]
+}
 
 # Prefer explicit path override for Whisper
 if [[ -n "${CODESCRIBE_MODEL_PATH:-}" ]]; then
-  if [[ -f "${CODESCRIBE_MODEL_PATH}/config.json" ]]; then
+  if valid_whisper_bundle "$CODESCRIBE_MODEL_PATH"; then
     echo "✓ Whisper model found via CODESCRIBE_MODEL_PATH (${CODESCRIBE_MODEL_PATH})"
     WHISPER_OK=1
+  else
+    echo "⚠ CODESCRIBE_MODEL_PATH is not a valid Whisper bundle; continuing with product model" >&2
   fi
 fi
 
 # If embed model points to a local directory, treat as satisfied.
-if [[ -z "${WHISPER_OK:-}" && -n "${CODESCRIBE_EMBED_MODEL:-}" ]]; then
-  if [[ -d "${CODESCRIBE_EMBED_MODEL}" && -f "${CODESCRIBE_EMBED_MODEL}/config.json" ]]; then
-    echo "✓ Whisper model found via CODESCRIBE_EMBED_MODEL (${CODESCRIBE_EMBED_MODEL})"
-    WHISPER_OK=1
+if [[ -z "${WHISPER_OK:-}" && -n "$EMBED_MODEL_VALUE" ]]; then
+  if [[ -d "$EMBED_MODEL_VALUE" ]]; then
+    if valid_whisper_bundle "$EMBED_MODEL_VALUE"; then
+      echo "✓ Whisper model found via CODESCRIBE_EMBED_MODEL ($EMBED_MODEL_VALUE)"
+      WHISPER_OK=1
+    else
+      echo "ERROR: CODESCRIBE_EMBED_MODEL is not a valid Whisper bundle: $EMBED_MODEL_VALUE" >&2
+      exit 1
+    fi
+  elif looks_like_local_path "$EMBED_MODEL_VALUE"; then
+    echo "ERROR: CODESCRIBE_EMBED_MODEL local path does not exist: $EMBED_MODEL_VALUE" >&2
+    exit 1
   fi
 fi
 
@@ -62,12 +90,33 @@ has_snapshot_with_files() {
   return 1
 }
 
+has_valid_whisper_snapshot() {
+  local repo="$1"
+  for base in "${CACHE_DIRS[@]}"; do
+    local dir
+    dir="$base/$(repo_dir "$repo")/snapshots"
+    [[ -d "$dir" ]] || continue
+    for snap in "$dir"/*; do
+      [[ -d "$snap" ]] || continue
+      # Cache probing is intentionally quiet: invalid snapshots are expected
+      # candidates, and ensure_repo prints the actionable aggregate status.
+      if valid_whisper_bundle "$snap" >/dev/null 2>&1; then
+        return 0
+      fi
+    done
+  done
+  return 1
+}
+
 ensure_repo() {
   local name="$1"; shift
   local repo="$1"; shift
   local required=("$@")
 
-  if has_snapshot_with_files "$repo" "${required[@]}"; then
+  if [[ "$name" == "Whisper" ]] && has_valid_whisper_snapshot "$repo"; then
+    echo "✓ ${name} cached (${repo})"
+    return 0
+  elif [[ "$name" != "Whisper" ]] && has_snapshot_with_files "$repo" "${required[@]}"; then
     echo "✓ ${name} cached (${repo})"
     return 0
   fi
@@ -81,8 +130,8 @@ ensure_repo() {
 }
 
 WHISPER_REPO="mlx-community/whisper-large-v3-turbo"
-if [[ -n "${CODESCRIBE_EMBED_MODEL:-}" && "${CODESCRIBE_EMBED_MODEL}" == */* ]]; then
-  WHISPER_REPO="$CODESCRIBE_EMBED_MODEL"
+if [[ -n "$EMBED_MODEL_VALUE" ]] && is_hf_repo_id "$EMBED_MODEL_VALUE"; then
+  WHISPER_REPO="$EMBED_MODEL_VALUE"
 fi
 EMBEDDER_REPO="${CODESCRIBE_EMBEDDER_REPO:-sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2}"
 
@@ -90,14 +139,12 @@ EMBEDDER_REPO="${CODESCRIBE_EMBEDDER_REPO:-sentence-transformers/paraphrase-mult
 if [[ "${WHISPER_OK:-0}" -ne 1 ]]; then
   if [[ "$WHISPER_REPO" == "mlx-community/whisper-large-v3-turbo" ]]; then
     COMPOSED_MODEL="${CODESCRIBE_MODELS_DIR:-$HOME/.codescribe/models}/whisper-large-v3-turbo"
-    if [[ -f "$COMPOSED_MODEL/config.json" \
-      && -f "$COMPOSED_MODEL/tokenizer.json" \
-      && -f "$COMPOSED_MODEL/mel_filters.npz" \
-      && ( -f "$COMPOSED_MODEL/weights.safetensors" || -f "$COMPOSED_MODEL/model.safetensors" ) ]]; then
+    if valid_whisper_bundle "$COMPOSED_MODEL"; then
       echo "✓ Whisper fp16 composed ($COMPOSED_MODEL)"
     else
-      echo "▶ Whisper fp16 runtime directory incomplete; composing it..."
+      echo "▶ Whisper fp16 runtime directory missing or invalid; composing it..."
       "$ROOT_DIR/scripts/download-model.sh"
+      valid_whisper_bundle "$COMPOSED_MODEL"
     fi
   else
     ensure_repo "Whisper" "$WHISPER_REPO" config.json tokenizer.json mel_filters.npz __ANY_SAFETENSORS__
