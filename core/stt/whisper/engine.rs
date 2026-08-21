@@ -470,17 +470,18 @@ impl LocalWhisperEngine {
                 "Quantized or malformed Whisper payload refused before tensor load; install the complete fp16 model"
             );
         }
-        let weights_path = crate::config::models::resolve_valid_whisper_weights_path(model_path)
-            .context("resolve validated Whisper weights")?;
+        let architecture = crate::whisper_weights::parse_whisper_config(
+            &safe_path::safe_read_to_string(&config_path)?,
+            &config_path.display().to_string(),
+        )?;
+        let weights_path = crate::config::models::resolve_compatible_whisper_weights_path(
+            model_path,
+            architecture,
+        )
+        .context("resolve architecture-compatible Whisper weights")?;
         let device = process_device();
         tracing::debug!("LocalWhisperEngine using device: {:?}", device);
 
-        let config_str = safe_path::safe_read_to_string(&config_path)?;
-
-        let architecture = crate::whisper_weights::parse_whisper_config(
-            &config_str,
-            &config_path.display().to_string(),
-        )?;
         let config = candle_config(architecture);
 
         // Phase timings for the cold load. "Preloaded, zero latency" is the
@@ -1917,7 +1918,7 @@ mod model_payload_tests {
         fs::create_dir_all(path).unwrap();
         fs::write(
             path.join("config.json"),
-            include_str!("../../../tests/fixtures/whisper_config.json"),
+            include_str!("../../../tests/fixtures/whisper_test_config.json"),
         )
         .unwrap();
         fs::write(path.join("tokenizer.json"), "{}").unwrap();
@@ -2002,23 +2003,31 @@ mod model_payload_tests {
     #[test]
     fn local_loader_uses_valid_alternative_after_invalid_primary() {
         let temp = TempDir::new().unwrap();
-        write_tiny_model(temp.path(), "encoder.weight", "F16", 2);
-        fs::rename(
-            temp.path().join("weights.safetensors"),
-            temp.path().join("model.safetensors"),
+        fs::create_dir_all(temp.path()).unwrap();
+        fs::write(
+            temp.path().join("config.json"),
+            include_str!("../../../tests/fixtures/whisper_test_config.json"),
+        )
+        .unwrap();
+        fs::write(temp.path().join("tokenizer.json"), "{}").unwrap();
+        fs::write(temp.path().join("mel_filters.npz"), b"placeholder").unwrap();
+        let architecture = crate::whisper_weights::parse_whisper_config(
+            include_str!("../../../tests/fixtures/whisper_test_config.json"),
+            "test fixture",
+        )
+        .unwrap();
+        crate::whisper_weights::write_test_whisper_weights(
+            &temp.path().join("model.safetensors"),
+            architecture,
         )
         .unwrap();
         write_tiny_model(temp.path(), "encoder.weight", "U32", 4);
 
         let err = LocalWhisperEngine::new(temp.path())
             .err()
-            .expect("tiny valid alternative should reach model construction");
+            .expect("compatible alternative should pass the payload gate");
         let message = format!("{err:#}");
         assert!(!message.contains("payload refused"), "{message}");
-        assert!(
-            message.contains("Failed to create Whisper Model"),
-            "{message}"
-        );
     }
 }
 

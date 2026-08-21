@@ -78,17 +78,18 @@ pub fn validate_whisper_model_bundle(path: &Path) -> Result<()> {
 /// This narrower payload gate is also used by `LocalWhisperEngine::new`, where
 /// tokenizer and mel errors retain their own loader diagnostics.
 pub(crate) fn is_unquantized_whisper_model_dir(path: &Path) -> bool {
-    crate::whisper_weights::validate_whisper_config(&path.join("config.json")).is_ok()
-        && resolve_valid_whisper_weights_path(path).is_ok()
+    crate::whisper_weights::validate_whisper_model_pair(path).is_ok()
 }
 
+#[cfg(test)]
+use crate::whisper_weights::resolve_valid_whisper_weights_path;
 /// Resolve the first structurally valid supported weight file.
 ///
 /// Upstream snapshots may contain either filename, and stale composition can
 /// leave both behind. Preserve the documented filename priority, but never let
 /// an invalid primary shadow a valid alternative that the runtime can load.
 pub(crate) use crate::whisper_weights::{
-    resolve_valid_whisper_weights_path, validate_safetensors_file,
+    resolve_compatible_whisper_weights_path, validate_safetensors_file,
 };
 
 /// Whether a candidate models root owns at least one complete Whisper model.
@@ -137,10 +138,7 @@ fn find_cached_default_model_pair() -> Option<PathBuf> {
         DEFAULT_WHISPER_REPO,
         &["config.json"],
         &REQUIRED_MODEL_WEIGHTS,
-        |snapshot| {
-            validate_model_file("config.json", &snapshot.join("config.json")).is_ok()
-                && resolve_valid_whisper_weights_path(snapshot).is_ok()
-        },
+        |snapshot| crate::whisper_weights::validate_whisper_model_pair(snapshot).is_ok(),
     )
 }
 
@@ -528,12 +526,15 @@ fn copy_model_files(src: &Path, dest: &Path, names: &[&str], replace_valid: bool
 
 /// Replace config and weights only when both come from one valid default snapshot.
 fn copy_default_model_pair(src: &Path, dest: &Path) -> Result<bool> {
-    if validate_model_file("config.json", &src.join("config.json")).is_err() {
+    if crate::whisper_weights::validate_whisper_model_pair(src).is_err() {
         return Ok(false);
     }
-    let Ok(weights) = resolve_valid_whisper_weights_path(src) else {
-        return Ok(false);
-    };
+    let architecture = crate::whisper_weights::parse_whisper_config(
+        // nosemgrep: rust.actix.path-traversal.tainted-path.tainted-path -- `src` is a resolved child of an internal HF cache root selected by repository id; no request path component reaches this repair path.
+        &fs::read_to_string(src.join("config.json"))?,
+        &src.join("config.json").display().to_string(),
+    )?;
+    let weights = resolve_compatible_whisper_weights_path(src, architecture)?;
     let Some(weight_name) = weights.file_name().and_then(|name| name.to_str()) else {
         return Ok(false);
     };
@@ -757,13 +758,14 @@ mod tests {
         fs::create_dir_all(path).unwrap();
         fs::write(
             path.join("config.json"),
-            include_str!("../../tests/fixtures/whisper_config.json"),
+            include_str!("../../tests/fixtures/whisper_test_config.json"),
         )
         .unwrap();
         let mut tokenizer = tokenizers::Tokenizer::new(tokenizers::models::bpe::BPE::default());
         tokenizer.add_special_tokens(&[
             tokenizers::AddedToken::from("<|startoftranscript|>", true),
             tokenizers::AddedToken::from("<|endoftext|>", true),
+            tokenizers::AddedToken::from("<|transcribe|>", true),
         ]);
         tokenizer.save(path.join("tokenizer.json"), false).unwrap();
         fs::write(
@@ -773,11 +775,16 @@ mod tests {
             )),
         )
         .unwrap();
-        let header = br#"{"model.weight":{"dtype":"F16","shape":[1],"data_offsets":[0,2]}}"#;
-        let mut safetensors = (header.len() as u64).to_le_bytes().to_vec();
-        safetensors.extend_from_slice(header);
-        safetensors.extend_from_slice(&[0, 0]);
-        fs::write(path.join("model.safetensors"), safetensors).unwrap();
+        let architecture = crate::whisper_weights::parse_whisper_config(
+            include_str!("../../tests/fixtures/whisper_test_config.json"),
+            "test fixture",
+        )
+        .unwrap();
+        crate::whisper_weights::write_test_whisper_weights(
+            &path.join("model.safetensors"),
+            architecture,
+        )
+        .unwrap();
     }
 
     fn decode_hex(raw: &str) -> Vec<u8> {
@@ -931,6 +938,40 @@ mod tests {
         assert!(!is_complete_whisper_model_dir(&model));
     }
 
+    /// A syntactically valid tokenizer must cover every configured vocabulary id.
+    #[test]
+    fn model_manager_rejects_tokenizer_smaller_than_configured_vocabulary() {
+        let temp_dir = TempDir::new().unwrap();
+        let model = temp_dir.path().join("model");
+        create_complete_whisper_model(&model);
+        fs::write(
+            model.join("config.json"),
+            include_str!("../../tests/fixtures/whisper_config.json"),
+        )
+        .unwrap();
+
+        let err = validate_whisper_model_bundle(&model).unwrap_err();
+        assert!(format!("{err:#}").contains("does not cover configured vocabulary"));
+        assert!(!is_complete_whisper_model_dir(&model));
+    }
+
+    /// A structurally valid safetensors file is not a Whisper model without its required tensors.
+    #[test]
+    fn model_manager_rejects_weights_missing_required_whisper_tensors() {
+        let temp_dir = TempDir::new().unwrap();
+        let model = temp_dir.path().join("model");
+        create_complete_whisper_model(&model);
+        let header = br#"{"model.weight":{"dtype":"F16","shape":[1],"data_offsets":[0,2]}}"#;
+        let mut safetensors = (header.len() as u64).to_le_bytes().to_vec();
+        safetensors.extend_from_slice(header);
+        safetensors.extend_from_slice(&[0, 0]);
+        fs::write(model.join("model.safetensors"), safetensors).unwrap();
+
+        let err = validate_whisper_model_bundle(&model).unwrap_err();
+        assert!(format!("{err:#}").contains("missing tensor"));
+        assert!(!is_complete_whisper_model_dir(&model));
+    }
+
     /// Header-level detection catches packed q8 even if config metadata lies.
     #[test]
     fn model_manager_rejects_q8_tensor_header_without_quantization_config() {
@@ -1067,7 +1108,7 @@ mod tests {
         safetensors.extend_from_slice(&[0, 0]);
         fs::write(model.join("model.safetensors"), safetensors).unwrap();
 
-        assert!(is_complete_whisper_model_dir(&model));
+        assert!(validate_safetensors_file(&model.join("model.safetensors")).is_ok());
     }
 
     /// Header offsets must describe the actual payload, not a truncated file.

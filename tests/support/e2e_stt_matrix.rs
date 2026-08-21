@@ -85,16 +85,20 @@ pub fn discover_local_whisper_model() -> Option<ModelDiscovery> {
     let env_override = std::env::var("CODESCRIBE_MODEL_PATH")
         .ok()
         .map(PathBuf::from);
-    let models_root = std::env::var("CODESCRIBE_MODELS_DIR").ok().map(|value| {
-        value
-            .strip_prefix("~/")
-            .map_or_else(|| PathBuf::from(&value), |relative| home_dir.join(relative))
-    });
+    let models_root = std::env::var("CODESCRIBE_MODELS_DIR")
+        .ok()
+        .map(|value| expand_models_root(&home_dir, &value));
     discover_local_whisper_model_for_with_root(
         &home_dir,
         env_override.as_deref(),
         models_root.as_deref(),
     )
+}
+
+pub fn expand_models_root(home_dir: &Path, value: &str) -> PathBuf {
+    value
+        .strip_prefix("~/")
+        .map_or_else(|| PathBuf::from(value), |relative| home_dir.join(relative))
 }
 
 pub fn discover_local_whisper_model_for(
@@ -137,7 +141,7 @@ pub fn model_discovery_hint(home_dir: &Path) -> String {
     let default_root = home_dir.join(".codescribe/models");
     let models_root = std::env::var("CODESCRIBE_MODELS_DIR")
         .ok()
-        .map(PathBuf::from)
+        .map(|value| expand_models_root(home_dir, &value))
         .filter(|path| path.exists())
         .unwrap_or(default_root);
     format!(

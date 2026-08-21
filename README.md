@@ -347,13 +347,16 @@ Runtime resolution when Whisper is not embedded:
 The mlx-community repo ships only `config.json` + `weights.safetensors`;
 the download paths compose `tokenizer.json` from the matching official OpenAI
 Transformers repo and `mel_filters.npz` from a checksum-pinned OpenAI Whisper
-asset. The resulting directory is validated as unquantized before resolution.
-The shared bundle validator parses the config and tokenizer, verifies the pinned
-mel SHA-256, and validates the complete safetensors tensor table, dtype
-allowlist, offsets, and file length. Downloads and warm-cache copies are written
-to `.partial` files and promoted only after per-file validation; an invalid
-destination is repaired on the next Download action instead of being accepted
-as complete. Config validation requires the complete MLX Whisper architecture
+asset. The resulting directory is validated as loader-compatible fp16/fp32
+before resolution.
+The shared bundle validator parses the config, requires the tokenizer to cover
+the configured vocabulary, verifies the pinned mel SHA-256, and validates every
+required Whisper tensor name and shape plus the complete safetensors tensor
+table, dtype allowlist, offsets, and file length. Downloads and warm-cache
+copies are written to `.partial` files and promoted only after per-file
+validation; an invalid destination is repaired on the next Download action
+instead of being accepted as complete. Config validation requires the complete
+MLX Whisper architecture
 used by the loader (including matching audio/text state widths and compatible
 attention heads); missing dimensions are never replaced with runtime defaults.
 Warm-cache repair checks older snapshots when the newest config, weights, or

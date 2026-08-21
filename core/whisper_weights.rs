@@ -2,6 +2,7 @@
 
 use anyhow::{Context, Result, anyhow};
 use sha2::{Digest, Sha256};
+use std::collections::BTreeMap;
 use std::fs;
 use std::io::{Read, Seek, SeekFrom};
 use std::path::{Path, PathBuf};
@@ -29,10 +30,10 @@ pub(crate) struct WhisperArchitecture {
 
 /// Validate every artifact required by runtime and embedded Whisper loaders.
 pub fn validate_whisper_model_bundle(path: &Path) -> Result<()> {
-    validate_whisper_config(&path.join("config.json"))?;
-    validate_whisper_tokenizer(&path.join("tokenizer.json"))?;
+    let architecture = load_whisper_architecture(&path.join("config.json"))?;
+    validate_whisper_tokenizer_for_architecture(&path.join("tokenizer.json"), architecture)?;
     verify_mel_filters(&path.join("mel_filters.npz"))?;
-    resolve_valid_whisper_weights_path(path).map(|_| ())
+    resolve_compatible_whisper_weights_path(path, architecture).map(|_| ())
 }
 
 /// Parse the tokenizer and require the control tokens used by every decode.
@@ -50,12 +51,39 @@ pub(crate) fn validate_whisper_tokenizer(path: &Path) -> Result<()> {
     Ok(())
 }
 
+fn validate_whisper_tokenizer_for_architecture(
+    path: &Path,
+    architecture: WhisperArchitecture,
+) -> Result<()> {
+    validate_whisper_tokenizer(path)?;
+    let tokenizer = tokenizers::Tokenizer::from_file(path)
+        .map_err(|err| anyhow!("invalid Whisper tokenizer {}: {err}", path.display()))?;
+    let mut covered = vec![false; architecture.n_vocab];
+    for id in tokenizer.get_vocab(true).into_values() {
+        if let Some(slot) = covered.get_mut(id as usize) {
+            *slot = true;
+        }
+    }
+    if covered.iter().any(|present| !present) {
+        return Err(anyhow!(
+            "Whisper tokenizer {} does not cover configured vocabulary 0..{}",
+            path.display(),
+            architecture.n_vocab
+        ));
+    }
+    Ok(())
+}
+
 /// Validate the config schema and reject every declared quantization mode.
 pub(crate) fn validate_whisper_config(path: &Path) -> Result<()> {
+    load_whisper_architecture(path).map(|_| ())
+}
+
+fn load_whisper_architecture(path: &Path) -> Result<WhisperArchitecture> {
     // nosemgrep: rust.actix.path-traversal.tainted-path.tainted-path -- Read-only model inspection. `path` is an operator-selected local model config or an internally resolved bundle/cache child; no network/request path component reaches it.
     let raw = fs::read_to_string(path)
         .with_context(|| format!("read Whisper config {}", path.display()))?;
-    parse_whisper_config(&raw, &path.display().to_string()).map(|_| ())
+    parse_whisper_config(&raw, &path.display().to_string())
 }
 
 /// Parse and validate the MLX architecture consumed by Candle's Whisper loader.
@@ -95,6 +123,11 @@ pub(crate) fn parse_whisper_config(raw: &str, source: &str) -> Result<WhisperArc
         n_text_head: dimension("n_text_head")?,
         n_text_layer: dimension("n_text_layer")?,
     };
+    if architecture.n_vocab > u32::MAX as usize {
+        return Err(anyhow!(
+            "Whisper config {source} requires n_vocab to fit tokenizer u32 IDs"
+        ));
+    }
     if !matches!(architecture.n_mels, 80 | 128) {
         return Err(anyhow!(
             "Whisper config {source} requires n_mels to be 80 or 128"
@@ -151,6 +184,7 @@ pub(crate) fn verify_mel_filters(path: &Path) -> Result<()> {
 }
 
 /// Resolve the first structurally valid supported weight file.
+#[cfg(test)]
 pub fn resolve_valid_whisper_weights_path(path: &Path) -> Result<PathBuf> {
     let mut failures = Vec::new();
     for name in SUPPORTED_NAMES {
@@ -178,8 +212,48 @@ pub fn resolve_valid_whisper_weights_path(path: &Path) -> Result<PathBuf> {
     }
 }
 
+/// Resolve the first supported weight file matching the configured architecture.
+pub(crate) fn resolve_compatible_whisper_weights_path(
+    path: &Path,
+    architecture: WhisperArchitecture,
+) -> Result<PathBuf> {
+    let mut failures = Vec::new();
+    for name in SUPPORTED_NAMES {
+        let candidate = path.join(name);
+        if !candidate.is_file() {
+            continue;
+        }
+        match validate_whisper_weights_for_architecture(&candidate, architecture) {
+            Ok(()) => return Ok(candidate),
+            Err(err) => failures.push(format!("{name}: {err:#}")),
+        }
+    }
+    if failures.is_empty() {
+        Err(anyhow!(
+            "Whisper weights are missing from {}",
+            path.display()
+        ))
+    } else {
+        Err(anyhow!(
+            "no architecture-compatible Whisper weights in {} ({})",
+            path.display(),
+            failures.join("; ")
+        ))
+    }
+}
+
+/// Validate the config/weights generation used by warm-cache composition.
+pub(crate) fn validate_whisper_model_pair(path: &Path) -> Result<()> {
+    let architecture = load_whisper_architecture(&path.join("config.json"))?;
+    resolve_compatible_whisper_weights_path(path, architecture).map(|_| ())
+}
+
 /// Validate the complete safetensors structure without loading tensor data.
 pub(crate) fn validate_safetensors_file(path: &Path) -> Result<()> {
+    read_validated_tensor_shapes(path).map(|_| ())
+}
+
+fn read_validated_tensor_shapes(path: &Path) -> Result<BTreeMap<String, Vec<usize>>> {
     const MAX_HEADER_BYTES: u64 = 16 * 1024 * 1024;
     // nosemgrep: rust.actix.path-traversal.tainted-path.tainted-path -- Read-only model inspection. `path` is an operator-selected local model file or an internally resolved bundle/cache child; no network/request path component reaches it.
     let mut file = fs::File::open(path).with_context(|| format!("open {}", path.display()))?;
@@ -227,6 +301,7 @@ pub(crate) fn validate_safetensors_file(path: &Path) -> Result<()> {
         .checked_sub(data_start)
         .ok_or_else(|| anyhow!("truncated safetensors file: {}", path.display()))?;
     let mut ranges = Vec::new();
+    let mut tensor_shapes = BTreeMap::new();
 
     for (name, tensor) in tensors.iter().filter(|(name, _)| *name != "__metadata__") {
         let tensor = tensor
@@ -256,12 +331,17 @@ pub(crate) fn validate_safetensors_file(path: &Path) -> Result<()> {
             .get("shape")
             .and_then(serde_json::Value::as_array)
             .ok_or_else(|| anyhow!("tensor {name} has no shape"))?;
-        let element_count = shape.iter().try_fold(1_u64, |count, dim| {
-            let dim = dim
-                .as_u64()
-                .ok_or_else(|| anyhow!("tensor {name} has an invalid shape"))?;
+        let dimensions = shape
+            .iter()
+            .map(|dim| {
+                dim.as_u64()
+                    .and_then(|value| usize::try_from(value).ok())
+                    .ok_or_else(|| anyhow!("tensor {name} has an invalid shape"))
+            })
+            .collect::<Result<Vec<_>>>()?;
+        let element_count = dimensions.iter().try_fold(1_u64, |count, dim| {
             count
-                .checked_mul(dim)
+                .checked_mul(*dim as u64)
                 .ok_or_else(|| anyhow!("tensor {name} shape overflows"))
         })?;
         if element_count == 0 {
@@ -288,6 +368,7 @@ pub(crate) fn validate_safetensors_file(path: &Path) -> Result<()> {
             ));
         }
         ranges.push((start, end, name));
+        tensor_shapes.insert(name.clone(), dimensions);
     }
 
     if ranges.is_empty() {
@@ -310,6 +391,165 @@ pub(crate) fn validate_safetensors_file(path: &Path) -> Result<()> {
             path.display()
         ));
     }
+    Ok(tensor_shapes)
+}
+
+fn validate_whisper_weights_for_architecture(
+    path: &Path,
+    architecture: WhisperArchitecture,
+) -> Result<()> {
+    let tensors = read_validated_tensor_shapes(path)?;
+    for (name, expected) in expected_whisper_tensor_shapes(architecture)? {
+        let actual = tensors.get(&name).ok_or_else(|| {
+            anyhow!(
+                "Whisper weights {} are missing tensor {name}",
+                path.display()
+            )
+        })?;
+        if actual != &expected {
+            return Err(anyhow!(
+                "Whisper tensor {name} in {} has shape {:?}, expected {:?}",
+                path.display(),
+                actual,
+                expected
+            ));
+        }
+    }
+    Ok(())
+}
+
+fn expected_whisper_tensor_shapes(
+    architecture: WhisperArchitecture,
+) -> Result<BTreeMap<String, Vec<usize>>> {
+    fn add(out: &mut BTreeMap<String, Vec<usize>>, name: String, shape: &[usize]) {
+        out.insert(name, shape.to_vec());
+    }
+
+    fn add_attention(out: &mut BTreeMap<String, Vec<usize>>, prefix: &str, model_width: usize) {
+        add(
+            out,
+            format!("{prefix}.key.weight"),
+            &[model_width, model_width],
+        );
+        add(
+            out,
+            format!("{prefix}.query.weight"),
+            &[model_width, model_width],
+        );
+        add(out, format!("{prefix}.query.bias"), &[model_width]);
+        add(
+            out,
+            format!("{prefix}.value.weight"),
+            &[model_width, model_width],
+        );
+        add(out, format!("{prefix}.value.bias"), &[model_width]);
+        add(
+            out,
+            format!("{prefix}.out.weight"),
+            &[model_width, model_width],
+        );
+        add(out, format!("{prefix}.out.bias"), &[model_width]);
+    }
+
+    fn add_block_tail(
+        out: &mut BTreeMap<String, Vec<usize>>,
+        prefix: &str,
+        model_width: usize,
+        feed_forward_width: usize,
+    ) {
+        add(out, format!("{prefix}.attn_ln.weight"), &[model_width]);
+        add(out, format!("{prefix}.attn_ln.bias"), &[model_width]);
+        add(
+            out,
+            format!("{prefix}.mlp1.weight"),
+            &[feed_forward_width, model_width],
+        );
+        add(out, format!("{prefix}.mlp1.bias"), &[feed_forward_width]);
+        add(
+            out,
+            format!("{prefix}.mlp2.weight"),
+            &[model_width, feed_forward_width],
+        );
+        add(out, format!("{prefix}.mlp2.bias"), &[model_width]);
+        add(out, format!("{prefix}.mlp_ln.weight"), &[model_width]);
+        add(out, format!("{prefix}.mlp_ln.bias"), &[model_width]);
+    }
+
+    let mut out = BTreeMap::new();
+    let d = architecture.n_audio_state;
+    let ff = d
+        .checked_mul(4)
+        .ok_or_else(|| anyhow!("Whisper feed-forward width overflows"))?;
+    add(
+        &mut out,
+        "encoder.conv1.weight".into(),
+        &[d, 3, architecture.n_mels],
+    );
+    add(&mut out, "encoder.conv1.bias".into(), &[d]);
+    add(&mut out, "encoder.conv2.weight".into(), &[d, 3, d]);
+    add(&mut out, "encoder.conv2.bias".into(), &[d]);
+    add(&mut out, "encoder.ln_post.weight".into(), &[d]);
+    add(&mut out, "encoder.ln_post.bias".into(), &[d]);
+    add(
+        &mut out,
+        "decoder.token_embedding.weight".into(),
+        &[architecture.n_vocab, d],
+    );
+    add(
+        &mut out,
+        "decoder.positional_embedding".into(),
+        &[architecture.n_text_ctx, d],
+    );
+    add(&mut out, "decoder.ln.weight".into(), &[d]);
+    add(&mut out, "decoder.ln.bias".into(), &[d]);
+
+    for layer in 0..architecture.n_audio_layer {
+        let prefix = format!("encoder.blocks.{layer}");
+        add_attention(&mut out, &format!("{prefix}.attn"), d);
+        add_block_tail(&mut out, &prefix, d, ff);
+    }
+    for layer in 0..architecture.n_text_layer {
+        let prefix = format!("decoder.blocks.{layer}");
+        add_attention(&mut out, &format!("{prefix}.attn"), d);
+        add_attention(&mut out, &format!("{prefix}.cross_attn"), d);
+        add(&mut out, format!("{prefix}.cross_attn_ln.weight"), &[d]);
+        add(&mut out, format!("{prefix}.cross_attn_ln.bias"), &[d]);
+        add_block_tail(&mut out, &prefix, d, ff);
+    }
+    Ok(out)
+}
+
+#[cfg(test)]
+pub(crate) fn write_test_whisper_weights(
+    path: &Path,
+    architecture: WhisperArchitecture,
+) -> Result<()> {
+    let mut offset = 0_u64;
+    let mut header = serde_json::Map::new();
+    for (name, shape) in expected_whisper_tensor_shapes(architecture)? {
+        let elements = shape.iter().try_fold(1_u64, |count, dim| {
+            count
+                .checked_mul(*dim as u64)
+                .ok_or_else(|| anyhow!("test tensor shape overflows"))
+        })?;
+        let end = offset
+            .checked_add(elements * 2)
+            .ok_or_else(|| anyhow!("test tensor payload overflows"))?;
+        header.insert(
+            name,
+            serde_json::json!({
+                "dtype": "F16",
+                "shape": shape,
+                "data_offsets": [offset, end]
+            }),
+        );
+        offset = end;
+    }
+    let header = serde_json::to_vec(&header)?;
+    let mut bytes = (header.len() as u64).to_le_bytes().to_vec();
+    bytes.extend_from_slice(&header);
+    bytes.resize(bytes.len() + offset as usize, 0);
+    fs::write(path, bytes)?;
     Ok(())
 }
 

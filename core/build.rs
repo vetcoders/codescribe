@@ -25,6 +25,7 @@ use std::path::{Path, PathBuf};
 use sha2::{Digest, Sha256};
 
 #[path = "whisper_weights.rs"]
+#[allow(dead_code)]
 mod whisper_weights;
 
 /// The license key contract, included by path so the build script and the
@@ -100,7 +101,16 @@ fn main() {
             resolve_whisper_embed_model_path(&manifest_dir, &embed_model, DEFAULT_WHISPER_REPO);
         let model_exists = whisper_weights::validate_whisper_model_bundle(&model_path).is_ok();
         let weights_path = model_exists
-            .then(|| whisper_weights::resolve_valid_whisper_weights_path(&model_path).ok())
+            .then(|| {
+                let config = std::fs::read_to_string(model_path.join("config.json")).ok()?;
+                let architecture = whisper_weights::parse_whisper_config(
+                    &config,
+                    &model_path.join("config.json").display().to_string(),
+                )
+                .ok()?;
+                whisper_weights::resolve_compatible_whisper_weights_path(&model_path, architecture)
+                    .ok()
+            })
             .flatten();
         if model_exists {
             let weights_path = weights_path.as_ref().expect("validated Whisper weights");

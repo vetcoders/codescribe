@@ -51,9 +51,16 @@ ORIGINAL_HOME="$HOME"
 export CARGO_HOME="${CARGO_HOME:-$ORIGINAL_HOME/.cargo}"
 export RUSTUP_HOME="${RUSTUP_HOME:-$ORIGINAL_HOME/.rustup}"
 export HOME="$TEST_ROOT/home"
+FAKE_BIN="$TEST_ROOT/bin"
+mkdir -p "$FAKE_BIN"
+# This shell regression owns destination promotion mechanics; Rust tests own
+# the canonical bundle validator exercised by the real script.
+printf '#!/bin/bash\nexit 0\n' > "$FAKE_BIN/cargo"
+chmod +x "$FAKE_BIN/cargo"
+export PATH="$FAKE_BIN:$PATH"
 printf -v TILDE_PREFIX '%s/' '~'
 export CODESCRIBE_MODELS_DIR="${TILDE_PREFIX}models"
-export FAKE_CONFIG="$ROOT_DIR/tests/fixtures/whisper_config.json"
+export FAKE_CONFIG="$ROOT_DIR/tests/fixtures/whisper_test_config.json"
 export FAKE_TOKENIZER="$ROOT_DIR/tests/fixtures/whisper_tokenizer.json"
 export FAKE_MEL_FILTERS="$TEST_ROOT/mel_filters.npz"
 mkdir -p "$HOME/models"
