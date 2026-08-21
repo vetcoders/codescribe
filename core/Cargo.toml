@@ -18,6 +18,10 @@ path = "lib.rs"
 name = "codescribe-stt-sidecar"
 path = "bin/codescribe-stt-sidecar.rs"
 
+[[bin]]
+name = "codescribe-whisper-validate"
+path = "bin/codescribe-whisper-validate.rs"
+
 [features]
 default = []
 offline_eval = []

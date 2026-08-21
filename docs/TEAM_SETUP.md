@@ -71,6 +71,8 @@ Grant in: System Settings > Privacy & Security
   full safetensors structural/dtype validation. Invalid cached files are replaced
   through validated `.partial` artifacts on the next download.
 - `make install-app` / `scripts/ensure-models.sh` are the easiest way to warm the expected cache paths.
+  Release/setup preflight calls the same runtime-owned bundle validator before it skips a download;
+  a directory with merely the expected filenames is repaired or rejected rather than embedded.
 
 **Developer note:**
 If runtime lookup cannot find the model, point `CODESCRIBE_MODEL_PATH` at a valid Whisper directory.

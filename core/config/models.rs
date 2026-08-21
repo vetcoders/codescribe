@@ -59,7 +59,7 @@ fn is_complete_whisper_model_dir(path: &Path) -> bool {
 /// Safetensors validation is structural rather than cryptographic: the format
 /// has no payload checksum. The validator checks the complete tensor table,
 /// dtype allowlist, byte sizes, contiguous offsets, and final file length.
-fn validate_whisper_model_bundle(path: &Path) -> Result<()> {
+pub fn validate_whisper_model_bundle(path: &Path) -> Result<()> {
     let config_path = path.join("config.json");
     validate_whisper_config(&config_path)?;
 
