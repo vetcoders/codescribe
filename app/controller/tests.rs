@@ -2385,6 +2385,23 @@ fn test_overlay_paste_disposition_decision_table() {
 }
 
 #[test]
+fn overlay_float_confirms_activation_when_workspace_still_names_codescribe() {
+    assert!(overlay_float_still_confirms_activation(
+        true,
+        Some("Alacritty")
+    ));
+    assert!(overlay_float_still_confirms_activation(
+        false,
+        Some("Codescribe")
+    ));
+    assert!(!overlay_float_still_confirms_activation(
+        false,
+        Some("Safari")
+    ));
+    assert!(!overlay_float_still_confirms_activation(false, None));
+}
+
+#[test]
 fn test_transcript_delivery_wrap_is_default_off() {
     let config = Config::default();
 

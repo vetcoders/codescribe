@@ -256,7 +256,10 @@ pub fn capture_frontmost_app_only_with_prior_frontmost(
     prior_frontmost_app: Option<String>,
 ) -> AssistiveContext {
     if cfg!(test) {
-        return AssistiveContext::default();
+        return AssistiveContext {
+            frontmost_app: paste_latch_from_frontmost(None, prior_frontmost_app),
+            selected_text: None,
+        };
     }
 
     if !env_flag("ASSISTIVE_CONTEXT_ENABLED", true) {
@@ -265,17 +268,53 @@ pub fn capture_frontmost_app_only_with_prior_frontmost(
 
     let include_app = env_flag("ASSISTIVE_CONTEXT_INCLUDE_APP", true);
     let current_frontmost_app = if include_app {
-        frontmost_app_name()
+        current_frontmost_app_name().or_else(frontmost_app_name)
     } else {
         None
     };
-    let (frontmost_app, _) =
-        resolve_effective_frontmost_app(current_frontmost_app, prior_frontmost_app);
-
+    remember_foreign_frontmost(current_frontmost_app.as_deref());
+    let prior = prior_frontmost_app
+        .filter(|name| !is_codescribe_app(name))
+        .or_else(last_foreign_frontmost);
     AssistiveContext {
-        frontmost_app,
+        frontmost_app: paste_latch_from_frontmost(current_frontmost_app, prior),
         selected_text: None,
     }
+}
+
+/// Ambulance for auto-paste: never Codescribe. Overlay / osascript-none must
+/// not wipe a prior latch and must not store ourselves as the caret.
+pub(crate) fn paste_latch_from_frontmost(
+    current: Option<String>,
+    prior: Option<String>,
+) -> Option<String> {
+    let (app, _) = resolve_effective_frontmost_app(current, prior);
+    app.filter(|name| !is_codescribe_app(name))
+}
+
+fn last_foreign_frontmost_store() -> &'static Mutex<Option<String>> {
+    static STORE: OnceLock<Mutex<Option<String>>> = OnceLock::new();
+    STORE.get_or_init(|| Mutex::new(None))
+}
+
+fn remember_foreign_frontmost(name: Option<&str>) {
+    let Some(name) = name
+        .map(str::trim)
+        .filter(|s| !s.is_empty() && !is_codescribe_app(s))
+    else {
+        return;
+    };
+    let mut guard = last_foreign_frontmost_store()
+        .lock()
+        .unwrap_or_else(|e| e.into_inner());
+    *guard = Some(name.to_string());
+}
+
+fn last_foreign_frontmost() -> Option<String> {
+    last_foreign_frontmost_store()
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .clone()
 }
 
 /// Activate a running app by localized name without sending Apple Events.
@@ -1058,6 +1097,27 @@ fn selected_content_from_frontmost(
 mod tests {
     use super::*;
     use serial_test::serial;
+
+    /// Overlay / ourselves must never become the auto-paste ambulance.
+    #[test]
+    fn paste_latch_never_stores_codescribe() {
+        assert_eq!(
+            paste_latch_from_frontmost(Some("Codescribe".to_string()), None),
+            None
+        );
+        assert_eq!(
+            paste_latch_from_frontmost(
+                Some("Codescribe".to_string()),
+                Some("Alacritty".to_string())
+            )
+            .as_deref(),
+            Some("Alacritty")
+        );
+        assert_eq!(
+            paste_latch_from_frontmost(Some("Alacritty".to_string()), None).as_deref(),
+            Some("Alacritty")
+        );
+    }
 
     /// When Codescribe is current, prior frontmost app is preferred and restore flagged.
     #[test]

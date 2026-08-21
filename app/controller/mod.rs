@@ -74,7 +74,8 @@ use crate::os::hold_badge::BadgeMode;
 use crate::os::hotkeys::{self, HoldMode};
 use crate::os::selection::{
     AssistiveContext, capture_assistive_context,
-    capture_assistive_context_with_image_with_prior_frontmost, capture_frontmost_app_only,
+    capture_assistive_context_with_image_with_prior_frontmost,
+    capture_frontmost_app_only_with_prior_frontmost,
 };
 use crate::os::shortcut_registry;
 use codescribe_core::asr_session::gateway_session_availability;
@@ -140,7 +141,8 @@ use hotkey_policy::{
 use hotkey_policy::{is_assistive_start_event, toggle_stop_adjudicate_timeout};
 use overlay_paste::{
     DeferredInsertRegistration, OverlayPasteDisposition, confirm_latched_paste_target,
-    deferred_insert_registration, overlay_paste_disposition, park_refused_paste,
+    deferred_insert_registration, overlay_float_still_confirms_activation,
+    overlay_paste_disposition, park_refused_paste,
 };
 #[cfg(test)]
 use quality_delivery::AutomaticDeliverySink;
@@ -994,7 +996,8 @@ impl RecordingController {
         let mut deferred_insert_failure = None;
         let delivery = match disposition {
             OverlayPasteDisposition::Paste => {
-                clipboard::paste_text(&paste_text).context("Failed to paste overlay text")?;
+                clipboard::paste_and_restore(&paste_text)
+                    .context("Failed to paste overlay text")?;
                 OverlayPasteDelivery::Pasted
             }
             OverlayPasteDisposition::CopyAccessibilityDenied => {
@@ -2168,9 +2171,12 @@ impl RecordingController {
                 .clone()
                 .unwrap_or_default()
         } else {
-            tokio::task::spawn_blocking(capture_frontmost_app_only)
-                .await
-                .unwrap_or_default()
+            let prior = self.pre_overlay_frontmost_app.read().await.clone();
+            tokio::task::spawn_blocking(move || {
+                capture_frontmost_app_only_with_prior_frontmost(prior)
+            })
+            .await
+            .unwrap_or_default()
         };
         *self.pre_overlay_frontmost_app.write().await = trigger_context.frontmost_app.clone();
         *self.assistive_context.write().await = Some(trigger_context);
@@ -2434,9 +2440,12 @@ impl RecordingController {
                 .await
                 .unwrap_or_default()
         } else {
-            tokio::task::spawn_blocking(capture_frontmost_app_only)
-                .await
-                .unwrap_or_default()
+            let prior = self.pre_overlay_frontmost_app.read().await.clone();
+            tokio::task::spawn_blocking(move || {
+                capture_frontmost_app_only_with_prior_frontmost(prior)
+            })
+            .await
+            .unwrap_or_default()
         };
         *self.pre_overlay_frontmost_app.write().await = trigger_context.frontmost_app.clone();
         *self.assistive_context.write().await = Some(trigger_context);
