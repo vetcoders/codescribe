@@ -508,7 +508,7 @@ impl LocalWhisperEngine {
         // median of 9.2 s (p90 21.9 s, worst 34.9 s, 805 s in total) because the
         // idle reaper drops the weights every 45 minutes and this function then
         // rebuilds them from scratch. A single aggregate number cannot say
-        // whether to attack the read, the dequantisation, or the GPU upload, so
+        // whether to attack the read, tensor conversion/mapping, or GPU upload, so
         // each phase reports its own cost.
         let load_started = std::time::Instant::now();
         let read_secs;

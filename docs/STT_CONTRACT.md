@@ -131,9 +131,7 @@ button.
   "engine": {
     "stt_engine": "apple",
     "whisper_model": "whisper-large-v3-turbo",
-    "final_pass_mode": "off",
-    "layered_transcription": "off",
-    "asr_mode": "cloud"
+    "final_pass_mode": "smart"
   },
   "formatting": { "enabled": true, "level": "smart" }
 }
@@ -273,9 +271,7 @@ Valid engine labels on verdict: `local_apple`, `local_whisper`, `streaming_whisp
    "engine": {
      "stt_engine": "apple",
      "whisper_model": "whisper-large-v3-turbo",
-     "final_pass_mode": "off",
-     "layered_transcription": "off",
-     "asr_mode": "cloud"
+     "final_pass_mode": "smart"
    }
    ```
 2. Full quit + relaunch.

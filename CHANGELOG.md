@@ -68,6 +68,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- **Local Whisper is an explicitly validated FP16/F32 bundle.** Runtime,
+  Settings download, release scripts, E2E discovery, and the optional fat build
+  share the same config/tokenizer/mel/safetensors contract. Quantized payloads
+  and the legacy Q8 fallback are refused; the old public Q8 identifiers remain
+  deprecated source-compatibility constants only. Building from source now
+  declares Rust 1.88 as the minimum supported toolchain.
+
 - **Supervisor findings own transcript-quality categories.** Engine catalog
   `codescribe-supervisor-findings/v1` (`core/quality/supervisor.rs`) names
   every issue class the tree already had — contract forbiddens, clock-lie,
@@ -76,7 +83,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `vocabulary=programming`, live overlay paired with last_session.wav).
   Voice Lab three-judge emits those findings. WER stays a footnote of
   proposal agreement, not accuracy.
-
 
 - **Layer 1 applies aligned same-utterance wording.** When live Apple and
   the Whisper window share most words, Layer 1 now substitutes those

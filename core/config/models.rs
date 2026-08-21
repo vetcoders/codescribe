@@ -16,12 +16,16 @@ pub const DEFAULT_MODEL: &str = "whisper-large-v3-turbo";
 /// the Settings → Dictation download. fp16 weights: no q8→F32 dequantization
 /// on load, at the cost of a larger download than the q8 repo.
 pub const DEFAULT_WHISPER_REPO: &str = "mlx-community/whisper-large-v3-turbo";
+/// Former quantized model alias retained only for source compatibility.
+#[deprecated(note = "quantized Whisper is unsupported; no runtime fallback uses this alias")]
+pub const LEGACY_MODEL: &str = "whisper-large-v3-turbo-mlx-q8";
+/// Former quantized model repository retained only for source compatibility.
+#[deprecated(note = "quantized Whisper is unsupported; no runtime fallback uses this repository")]
+pub const LEGACY_WHISPER_REPO: &str = "LibraxisAI/whisper-large-v3-turbo-mlx-q8";
 /// Official Transformers tokenizer paired with Whisper large-v3-turbo.
-pub const TOKENIZER_WHISPER_REPO: &str = "openai/whisper-large-v3-turbo";
+pub(crate) const TOKENIZER_WHISPER_REPO: &str = "openai/whisper-large-v3-turbo";
 /// Pinned OpenAI Whisper asset. The checksum is asserted by the installer.
-pub const MEL_FILTERS_URL: &str = "https://raw.githubusercontent.com/openai/whisper/5f86d1d86363843179951550570367b37c5d6f78/whisper/assets/mel_filters.npz";
-/// SHA-256 of [`MEL_FILTERS_URL`].
-pub const MEL_FILTERS_SHA256: &str = crate::whisper_weights::MEL_FILTERS_SHA256;
+pub(crate) const MEL_FILTERS_URL: &str = "https://raw.githubusercontent.com/openai/whisper/5f86d1d86363843179951550570367b37c5d6f78/whisper/assets/mel_filters.npz";
 /// Files that must all be present for a directory to count as a usable model.
 const REQUIRED_MODEL_FILES: [&str; 3] = ["config.json", "tokenizer.json", "mel_filters.npz"];
 /// Weight file names, of which **any one** satisfies the completeness check —
