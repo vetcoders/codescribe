@@ -2,8 +2,14 @@
 
 **One line per path: where it starts → what it passes through → what it
 crosses → what the user sees.** Anchors are `file :: symbol` (symbols survive
-the Living Tree better than line numbers). Verified against
-`fix/the-tail-patches` HEAD `16e0b9c3`, 2026-08-14.
+the Living Tree better than line numbers). Originally mapped against
+`fix/the-tail-patches` HEAD `16e0b9c3`; corrected against
+`fix/p0-p2-before-release` HEAD `361ece40`, 2026-08-21.
+
+This file is the execution map. Product invariants live in
+`THE_ENGINE_CONTRACT.md`. Where an older row below calls Apple text a floor,
+immutable, append-only, or protected, the engine contract supersedes that
+wording: **audio time and span identity are stable; text hypotheses are not**.
 
 How to read:
 
@@ -31,8 +37,9 @@ MIC ▶ recorder ▶ [J1 PCM ring+spill]
    └──▶ [J2 CANVAS: reducer+emitter] ◀────┘
               ▲            │
    LINE L1 ───┘            ▼
-   (tail-patch,      OVERLAY live text ▶ ...user watches letters land
-    rides A and B)
+   (local tail-patch       OVERLAY live text ▶ ...user watches letters land
+    currently rides A;
+    provider L1 is separate)
                            │ stop
                            ▼
         LINE S: [J3 truth adjudication] ▶ [J4 postprocess+lexicon]
@@ -69,7 +76,7 @@ mic ▶ recorder ▶ [J1] ▶ apple_stream_worker PCM ingress ▶ SFSpeech bridg
 | A6  | sealing       | `progressive_seal.rs :: ProgressiveSealMachine`                                                           | finals seal utterances; the SFSpeech span clock maps onto the PCM clock (2 ms divergence measured); `may_rewrite`/`try_rewrite` is the future time-fence                            | wired W2-B (`8d65f610`/`d64c3876`) |
 | A7  | guards        | `apple_live_session.rs` (`phrase final adjudicated`, `novel final suffix rescued`, `freeze open partial`) | cumulative finals are adjudicated against sealed state; novel suffixes are rescued with synthesized windows; restart-retained partials are frozen — the anti-duplication front line | W1-B/W2-A                          |
 | A8  | canvas        | **[J2]** `emitter.rs :: TranscriptReducer`                                                                | committed utterances + one active preview; **single writer** `store_transcript_snapshot` (the tick loop only animates)                                                              | `75c89f56`                         |
-| A9  | user          | overlay live view                                                                                         | letters land as spoken; corrections arrive live as backspace magic (append + gap-fill only — full-replace is a doctrine violation)                                                  | pre-0.8 → doctrine                 |
+| A9  | user          | overlay live view                                                                                         | letters land as spoken; later observations may append, fill gaps, or replace weaker text inside the same proven PCM span; rewriting the session from zero remains forbidden         | corrected doctrine 2026-08-21      |
 
 ## 2. LINE B — VAD/scheduler live (Whisper-first lane)
 
@@ -89,7 +96,7 @@ mic ▶ recorder ▶ [J1] ▶ Silero VAD chunker ▶ utterance boundaries
 | B5  | postprocess   | `core/pipeline/stream_postprocess.rs`                | lexicon rewrite table (compiled-in seed/programming/operator/protected), hallucination + SemanticGate + empty-drop gates                                               | —             |
 | B6  | canvas + user | **[J2]** → overlay                                   | same reducer/emitter contract as LINE A                                                                                                                                | —             |
 
-## 3. LINE L1 — Layer 1 tail-patch (rides on top of A **and** B)
+## 3. LINE L1 — Layer 1 tail-patch
 
 ```
 [J1 stopped PCM window] ▶ compute_tail_patch_job ▶ TailProvider
@@ -99,10 +106,10 @@ mic ▶ recorder ▶ [J1] ▶ Silero VAD chunker ▶ utterance boundaries
 
 | #    | station       | code                                                                                            | what happens                                                                                                                                                                                                                                                     | since                                   |
 | ---- | ------------- | ----------------------------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | --------------------------------------- |
-| L1.1 | gate          | `CODESCRIBE_LAYERED_TRANSCRIPTION` (default **off**)                                            | fail-closed and orthogonal to engine choice; explicit `phase1` arms the experimental mutation lane                                                                                                                                                               | default returned to `off` 2026-08-21    |
-| L1.2 | window        | `session.rs :: compute_tail_patch_job` (called from BOTH live sessions)                         | takes settled PCM behind the live head; max one job in flight; unresolved windows never reach Whisper                                                                                                                                                            | W2-A                                    |
+| L1.1 | gate          | `CODESCRIBE_LAYERED_TRANSCRIPTION` (current default **off**)                                    | temporary fail-closed deployment gate, not the product destination; explicit `phase1` arms the current local mutation lane                                                                                                                                       | current runtime 2026-08-21              |
+| L1.2 | window        | Apple: `apple_live_session.rs`; VAD: `session.rs`                                               | Apple progressive carries exact request/span identity through its mutation fence; current VAD/scheduler path explicitly refuses mutation because it lacks the same pending-span fence                                                                            | split truth on `361ece40`               |
 | L1.3 | provider seam | `core/stt/tail_provider.rs :: TailProvider`                                                     | typed payload with **integer sample identity** `(session, capture_epoch, sample_start, sample_end)` + evidence + receipts; `STT_TAIL_PROVIDER=inprocess` is the default; `sidecar`/`remote` ⚑ built (W13-2B `4a9fc3fd`), falling back to inprocess with receipts | W13-2A `16ffe025`                       |
-| L1.4 | diff + apply  | `core/stt/tail_patcher/`                                                                        | word-aligned LCS (`alignment_key`), `MAX_CHANGE_RATIO=0.5` safety (small-edit floor exempts short commits), applies as `ReplaceRange` events on the canvas                                                                                                       | `f224effd` + `0e77a1e4`                 |
+| L1.4 | diff + apply  | `core/stt/tail_patcher/`                                                                        | current implementation uses word-aligned LCS and a change-ratio guard; target authority comes from PCM/span identity, never textual similarity alone; accepted corrections apply through one pre-final `ReplaceRange` fence                                      | corrected doctrine 2026-08-21           |
 | L1.5 | receipts      | `tail_patch_session_receipt applied=/skipped=/abandoned=` + per-request `tail_provider_receipt` | starvation and bounded-stop abandonment are explicit; a missed drain emits `tail_patch_drain_timeout` before finality                                                                                                                                            | `c3933f42` + 2026-08-21 fail-closed cut |
 
 Field truth, 2026-08-14: ~42% of patches were rejected in Monika's sessions —
@@ -116,13 +123,13 @@ stop ▶ recorder.stop (drain + WAV) ▶ [J3 truth adjudication]
   ▶ LINE F (format) or LINE G (agent) ▶ [J6 history] + [J7 delivery]
 ```
 
-| #   | station     | code                                                                 | what happens                                                                                                                                                           | since                     |
-| --- | ----------- | -------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------- |
-| S1  | drain       | `stop_toggle_inner` PHASE 0–4 (`app/controller/mod.rs`)              | serialized stop; `stop_path_budget` log line prices every phase — the budget is sacred (doctrine §3.4)                                                                 | —                         |
-| S2  | truth       | **[J3]** `app/controller/truth.rs :: adjudicate_recording_truth`     | `merge_live_whisper`: live canvas is the FLOOR, provider fills gaps, never full-replace; length-regression guard                                                       | doctrine                  |
-| S3  | residual    | `app/controller/final_pass.rs` + `final_pass_residual_from_partials` | `FINAL_PASS_MODE=smart` (default): full-file re-pass only when streaming is incomplete; residual composed from partials, `seal_source=live_session`, no file re-decode | live-first, stop-residual |
-| S4  | postprocess | **[J4]** same `stream_postprocess` gates + lexicon                   | applied to the ADJUDICATED text (`Post-processed transcript … lexicon_rewrites=n`)                                                                                     | —                         |
-| S5  | fork        | mode decision (hotkey held)                                          | raw → LINE F (formatting) and/or LINE G (assistive); AUTO format may fire on the overlay                                                                               | —                         |
+| #   | station     | code                                                                 | what happens                                                                                                                                                                | since              |
+| --- | ----------- | -------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------ |
+| S1  | drain       | `stop_toggle_inner` PHASE 0–4 (`app/controller/mod.rs`)              | serialized stop; `stop_path_budget` log line prices every phase — the budget is sacred (doctrine §3.4)                                                                      | —                  |
+| S2  | truth       | **[J3]** `app/controller/truth.rs :: adjudicate_recording_truth`     | ordered audio-span ledger is authority; Apple and provider observations are adjudicated per proven span; no whole-session rebuild                                           | corrected doctrine |
+| S3  | residual    | `app/controller/final_pass.rs` + `final_pass_residual_from_partials` | normal product stop performs no hidden whole-file Whisper pass; historical `smart` remains a migration/runtime token; explicit Retranscribe alone owns whole-file inference | 2026-08-21         |
+| S4  | postprocess | **[J4]** same `stream_postprocess` gates + lexicon                   | applied to the ADJUDICATED text (`Post-processed transcript … lexicon_rewrites=n`)                                                                                          | —                  |
+| S5  | fork        | mode decision (hotkey held)                                          | raw → LINE F (formatting) and/or LINE G (assistive); AUTO format may fire on the overlay                                                                                    | —                  |
 
 ## 5. LINE F — Formatting LLM lane
 
@@ -188,8 +195,8 @@ audio file ▶ `codescribe transcribe` CLI / cloud final pass
 | J   | place                                                                            | who meets whom                                                       | contract                                                                                                                     |
 | --- | -------------------------------------------------------------------------------- | -------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------- |
 | J1  | PCM ring + spill (`recorder`/`live_audio_buffer`)                                | mic capture × Apple ingress × L1 windows × stop WAV × crash recovery | the sample counter minted here is the ONE session clock                                                                      |
-| J2  | canvas (`TranscriptReducer` + `BufferedEmitter` + `app/presentation/emitter.rs`) | Apple finals × L1 `ReplaceRange` × gap-appends × preview             | append + gap-fill only; ONE writer (`store_transcript_snapshot`); tick loop animates, never writes                           |
-| J3  | truth adjudication (`truth.rs`)                                                  | live canvas × Whisper residual                                       | live floor + gap fill, never full-replace                                                                                    |
+| J2  | canvas (`TranscriptReducer` + `BufferedEmitter` + `app/presentation/emitter.rs`) | Apple finals × L1 `ReplaceRange` × gap-appends × preview             | ONE writer; order and PCM identity are stable, while text inside an authorized unsealed span may be corrected                |
+| J3  | truth adjudication (`truth.rs`)                                                  | live canvas × Whisper residual                                       | preserve the ordered span ledger; accept only evidence bound to its PCM range; never rebuild the session from zero           |
 | J4  | postprocess (`stream_postprocess`)                                               | every text × lexicon × gates                                         | lexicon is the FINAL automated layer; the human layer stays on top                                                           |
 | J5  | Responses chain (`state/conversation.rs`)                                        | formatting turns × assistive turns (separate streams)                | per-mode ids; first-turn `instructions`, chained developer item; chain = recoverable session memory                          |
 | J6  | history (`core/state/history.rs`)                                                | every take                                                           | `_raw.txt` + `_formatted.txt` (or `formatting-failed`) + `.m4a` + `.truth.json` — content is never destroyed (doctrine §3.7) |
@@ -199,7 +206,7 @@ audio file ▶ `codescribe transcribe` CLI / cloud final pass
 
 | surface       | fed by                         | truth it shows                                                                                                                       |
 | ------------- | ------------------------------ | ------------------------------------------------------------------------------------------------------------------------------------ |
-| overlay LIVE  | LINE A/B via J2                | letters as spoken; live backspace corrections (L1); never a rewrite of committed text                                                |
+| overlay LIVE  | LINE A/B via J2                | letters as spoken; live backspace corrections may replace weaker text inside the same proven span; session-wide rewrite is forbidden |
 | overlay FINAL | LINE S→F via J7                | formatted draft + buttons (Copy / Insert / Revert / Format / To Agent); Auto Paste when guard allows                                 |
 | paste target  | J7                             | formatted text into the latched foreign app; refuse (`CopyTargetUnavailable` / mismatch) ⇒ Paste Here slot, user clipboard untouched |
 | thread rail   | LINE G                         | agent conversation, chained turn by turn                                                                                             |
@@ -209,8 +216,145 @@ audio file ▶ `codescribe transcribe` CLI / cloud final pass
 
 ---
 
-_Provenance: distilled from `docs/THE_ENGINE_ROADMAP.md` (§3 doctrine, §5 gap
-map, §12 verdict, §13 bench), the W13 settlement ledger (`13b1eed8`), and
-symbol-level verification on HEAD `16e0b9c3`, 2026-08-14._
+## 11. Superseding lane laws — 2026-08-21
+
+These laws are normative. They replace stale `immutable floor`, `never delete`,
+and `append-only text` interpretations wherever those appear in old comments,
+tests, reports, or commits.
+
+### 11.1 Authority
+
+- PCM samples and their monotonic capture clock are primary evidence.
+- A transcript token is an observation, not evidence by itself.
+- Apple is the first low-latency observer.
+- Whisper is a slower contextual observer.
+- Lexicon is deterministic domain evidence.
+- Formatting is a presentation transform, not speech evidence.
+- Human edits have final authority after session seal.
+- No model owns the document.
+- No earlier model owns a word merely because it emitted first.
+- No later model may mutate a span it cannot identify.
+
+### 11.2 Canvas geometry
+
+- Every accepted observation names a session.
+- Every accepted observation names a capture epoch.
+- Every accepted observation names `[sample_start, sample_end)`.
+- Replayed delivery of the same identity is idempotent.
+- Identical words on different spans are intentional until proven otherwise.
+- Span order follows PCM time and cannot be reordered.
+- Text inside an authorized span may evolve before `transcript_sealed`.
+- A correction may replace inflection, morphology, spelling, or a whole phrase.
+- A correction may remove a hallucinated word from its own span.
+- A correction may add speech missing from the current canvas.
+- A correction may not steal words from a neighboring span.
+- A correction may not erase an uncovered region of speech.
+- A correction may not build the entire session from zero.
+
+### 11.3 Window cadence
+
+- The target Whisper observation cadence is about four seconds.
+- Adjacent windows overlap by about one second.
+- Window edges must respect available speech-boundary evidence.
+- Overlap exists to recover context, not to duplicate text.
+- Overlap replay is resolved by request/span identity.
+- Text similarity may help alignment after identity is established.
+- Text similarity may never mint identity.
+- VAD edges are evidence about speech activity, not transcript authority.
+- Apple commit timing is evidence, not a perfect word boundary.
+- Clock-lie or unresolved windows fail closed and emit receipts.
+
+### 11.4 Layer 1 deployment truth
+
+- The product destination is Apple-first with continuous Whisper refinement.
+- `Layered off` is a temporary deployment state, not the vision.
+- `phase1` is not allowed to mean a decorative UI toggle.
+- Settings ON requires an armed runtime lane.
+- Settings ON with zero submitted windows is a product failure.
+- Settings OFF may never be inferred from model unavailability silently.
+- Missing FP16 produces named degradation.
+- Q8 is never a fallback.
+- Cloud and local providers must implement the same observation semantics.
+- Provider differences may affect transport and latency only.
+- Provider choice may not change canvas authority.
+
+### 11.5 Current implementation split
+
+- Apple progressive has request identity and span maps on HEAD `361ece40`.
+- Apple progressive has one pre-final rewrite fence.
+- Apple progressive tracks structural replay identity.
+- Apple progressive exposes applied/skipped/abandoned receipts.
+- VAD/scheduler does not have the same pending-span rewrite fence.
+- VAD/scheduler therefore preserves primary text and emits degradation.
+- The old claim “L1 rides both paths identically” is false on this HEAD.
+- The old claim “both paths are production-equivalent” is false on this HEAD.
+- Default-off remains justified only for uncovered mutation paths.
+- Default-off is not justification for disabling the safe covered path silently.
+
+### 11.6 Stop semantics
+
+- Releasing Fn closes capture.
+- It does not authorize a whole-file rewrite.
+- Admitted patch work receives a bounded drain opportunity.
+- Work that cannot land before finality is counted as abandoned.
+- Abandonment emits a named degradation receipt.
+- The live result survives provider failure.
+- Explicit Retranscribe reads the saved audio as a new user action.
+- Retranscribe produces a proposal/result outside normal-stop authority.
+- Final BAM, when built, operates on the ledger and bounded spans.
+- Final BAM is not hated Full Final Pass under a new name.
+
+### 11.7 Receipt minimum
+
+- session id
+- capture epoch
+- sample range
+- provider request identity
+- provider kind
+- source transcript hypothesis
+- candidate transcript hypothesis
+- alignment evidence
+- accepted operation type
+- accepted character/token range
+- affected span identities
+- rejection or degradation reason
+- queue admission time
+- inference completion time
+- fence application time
+- final disposition: applied, skipped, replayed, abandoned, or timed out
+
+### 11.8 Release falsifiers
+
+- A take where Apple loses a meaningful phrase must be repaired before Delivery.
+- The canonical phrase `Whisper musi łatać partiale` must survive the live path.
+- Manual Retranscribe recovering meaning that Delivery lost is a failed live run.
+- Layered ON with `tail_patch_replacements=0`, `refusals=0`, and no submitted window is a failed arming test.
+- A first token such as `IWO` lost before seal is an onset/pre-roll failure.
+- Five intentional repetitions on distinct spans must remain five repetitions.
+- Replaying the same span identity must not create a duplicate.
+- An invalid/Q8 model must be refused before tensor load.
+- A corrupt model artifact must not become permanently complete.
+- A valid alternate weights file must not be shadowed by an invalid preferred name.
+- A valid older HF snapshot must not be shadowed by an invalid newer snapshot.
+- Malformed safetensors metadata must fail discovery before engine load.
+
+## 12. Documentation authority and drift control
+
+- `THE_ENGINE_CONTRACT.md` defines product invariants.
+- This file defines the executable lane map.
+- `STT_CONTRACT.md` defines engine/configuration behavior.
+- `ENV_REGISTRY.toml` defines supported environment keys.
+- Runtime logs and Transcript Bus receipts prove actual execution.
+- Historical reports are evidence, never silent authority.
+- A comment marked `operator law` requires a direct operator decision reference.
+- Agent interpretations may not be attributed to Maciej or Monika.
+- Superseded rules remain searchable but must be labeled superseded.
+- Tests for superseded behavior must be rewritten or deleted.
+- Green tests for the wrong contract are regressions, not reassurance.
+- Every contract-changing patch updates code, tests, settings, UI, and docs together.
+
+_Provenance: distilled from `docs/THE_ENGINE_ROADMAP.md`, the W13 settlement
+ledger, `/Users/maciejgad/Downloads/Kora_codescribe.md`, and structural/runtime
+verification on `fix/p0-p2-before-release@361ece40`, 2026-08-21._
 
 𝚅𝚒𝚋𝚎𝚌𝚛𝚊𝚏𝚝𝚎𝚍. with AI Agents by VetCoders (c)2024-2026 LibraxisAI
