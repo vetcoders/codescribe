@@ -73,6 +73,8 @@ Grant in: System Settings > Privacy & Security
 - `make install-app` / `scripts/ensure-models.sh` are the easiest way to warm the expected cache paths.
   Release/setup preflight calls the same runtime-owned bundle validator before it skips a download;
   a directory with merely the expected filenames is repaired or rejected rather than embedded.
+  An explicit local `CODESCRIBE_EMBED_MODEL` must exist and pass that validator; it is never
+  reinterpreted as a Hugging Face repository id.
 
 **Developer note:**
 If runtime lookup cannot find the model, point `CODESCRIBE_MODEL_PATH` at a valid Whisper directory.

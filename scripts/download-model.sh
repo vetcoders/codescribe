@@ -15,6 +15,15 @@
 set -euo pipefail
 
 ROOT_DIR="$(cd "$(dirname "$0")/.." && pwd)"
+WHISPER_VALIDATOR="$ROOT_DIR/scripts/validate-whisper-model.sh"
+
+is_hf_repo_id() {
+    [[ "$1" =~ ^[A-Za-z0-9._-]+/[A-Za-z0-9._-]+$ ]]
+}
+
+looks_like_local_path() {
+    [[ "$1" == /* || "$1" == ./* || "$1" == ../* || "$1" == ~/* ]]
+}
 
 sha256_file() {
     if command -v shasum >/dev/null 2>&1; then
@@ -44,14 +53,22 @@ MODEL_REPO="${CODESCRIBE_EMBED_MODEL:-$DEFAULT_REPO}"
 
 # If CODESCRIBE_EMBED_MODEL points to a local path, skip download.
 if [[ -n "${CODESCRIBE_EMBED_MODEL:-}" ]] && [[ -d "${CODESCRIBE_EMBED_MODEL}" ]]; then
-    if [[ -f "${CODESCRIBE_EMBED_MODEL}/config.json" ]]; then
+    if "$WHISPER_VALIDATOR" "$CODESCRIBE_EMBED_MODEL"; then
         echo "✓ Whisper model found at ${CODESCRIBE_EMBED_MODEL} (local path). Skipping download."
         exit 0
     fi
+    echo "ERROR: CODESCRIBE_EMBED_MODEL is not a valid Whisper bundle: ${CODESCRIBE_EMBED_MODEL}" >&2
+    exit 1
 fi
 
-# If override isn't an HF repo, fall back to default repo.
-if [[ "$MODEL_REPO" != */* ]]; then
+# An explicit path must never be passed to `hf download` as a repository id.
+if [[ -n "${CODESCRIBE_EMBED_MODEL:-}" ]] && looks_like_local_path "$MODEL_REPO"; then
+    echo "ERROR: CODESCRIBE_EMBED_MODEL local path does not exist: $MODEL_REPO" >&2
+    exit 1
+fi
+
+# A plain model alias keeps the historical default; only owner/repo selects HF.
+if ! is_hf_repo_id "$MODEL_REPO"; then
     MODEL_REPO="$DEFAULT_REPO"
 fi
 
@@ -103,6 +120,10 @@ echo "  This may take a few minutes..."
 echo ""
 
 MODEL_SNAPSHOT=$("$HF_BIN" download "$MODEL_REPO" --quiet)
+if [[ -z "$MODEL_SNAPSHOT" || "$MODEL_SNAPSHOT" == *$'\n'* || ! -d "$MODEL_SNAPSHOT" ]]; then
+    echo "ERROR: hf download did not return one snapshot directory for $MODEL_REPO" >&2
+    exit 1
+fi
 
 # The default conversion ships only config + fp16 weights. Compose one
 # self-contained product directory using the matching official OpenAI
@@ -133,6 +154,9 @@ if [[ "$MODEL_REPO" == "$DEFAULT_REPO" ]]; then
     fi
     mv "$MODEL_DEST/mel_filters.npz.partial" "$MODEL_DEST/mel_filters.npz"
     echo "  Runtime directory: $MODEL_DEST"
+    "$WHISPER_VALIDATOR" "$MODEL_DEST"
+else
+    "$WHISPER_VALIDATOR" "$MODEL_SNAPSHOT"
 fi
 
 echo ""

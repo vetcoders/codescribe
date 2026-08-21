@@ -12,6 +12,14 @@ valid_whisper_bundle() {
   "$WHISPER_VALIDATOR" "$1"
 }
 
+is_hf_repo_id() {
+  [[ "$1" =~ ^[A-Za-z0-9._-]+/[A-Za-z0-9._-]+$ ]]
+}
+
+looks_like_local_path() {
+  [[ "$1" == /* || "$1" == ./* || "$1" == ../* || "$1" == ~/* ]]
+}
+
 # Prefer explicit path override for Whisper
 if [[ -n "${CODESCRIBE_MODEL_PATH:-}" ]]; then
   if valid_whisper_bundle "$CODESCRIBE_MODEL_PATH"; then
@@ -32,6 +40,9 @@ if [[ -z "${WHISPER_OK:-}" && -n "${CODESCRIBE_EMBED_MODEL:-}" ]]; then
       echo "ERROR: CODESCRIBE_EMBED_MODEL is not a valid Whisper bundle: ${CODESCRIBE_EMBED_MODEL}" >&2
       exit 1
     fi
+  elif looks_like_local_path "$CODESCRIBE_EMBED_MODEL"; then
+    echo "ERROR: CODESCRIBE_EMBED_MODEL local path does not exist: ${CODESCRIBE_EMBED_MODEL}" >&2
+    exit 1
   fi
 fi
 
@@ -74,12 +85,31 @@ has_snapshot_with_files() {
   return 1
 }
 
+has_valid_whisper_snapshot() {
+  local repo="$1"
+  for base in "${CACHE_DIRS[@]}"; do
+    local dir
+    dir="$base/$(repo_dir "$repo")/snapshots"
+    [[ -d "$dir" ]] || continue
+    for snap in "$dir"/*; do
+      [[ -d "$snap" ]] || continue
+      if valid_whisper_bundle "$snap"; then
+        return 0
+      fi
+    done
+  done
+  return 1
+}
+
 ensure_repo() {
   local name="$1"; shift
   local repo="$1"; shift
   local required=("$@")
 
-  if has_snapshot_with_files "$repo" "${required[@]}"; then
+  if [[ "$name" == "Whisper" ]] && has_valid_whisper_snapshot "$repo"; then
+    echo "✓ ${name} cached (${repo})"
+    return 0
+  elif [[ "$name" != "Whisper" ]] && has_snapshot_with_files "$repo" "${required[@]}"; then
     echo "✓ ${name} cached (${repo})"
     return 0
   fi
@@ -93,7 +123,7 @@ ensure_repo() {
 }
 
 WHISPER_REPO="mlx-community/whisper-large-v3-turbo"
-if [[ -n "${CODESCRIBE_EMBED_MODEL:-}" && "${CODESCRIBE_EMBED_MODEL}" == */* ]]; then
+if [[ -n "${CODESCRIBE_EMBED_MODEL:-}" ]] && is_hf_repo_id "$CODESCRIBE_EMBED_MODEL"; then
   WHISPER_REPO="$CODESCRIBE_EMBED_MODEL"
 fi
 EMBEDDER_REPO="${CODESCRIBE_EMBEDDER_REPO:-sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2}"
