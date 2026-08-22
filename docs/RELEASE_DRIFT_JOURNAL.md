@@ -335,3 +335,16 @@ executable checks remain authoritative.
 - **Purpose:** Complete the deletion as a repository-wide contract migration,
   while preserving the operator-owned private fixture ignore entries in the
   working tree and outside this commit.
+
+## 2026-08-22 — generated UniFFI binding closure
+
+- **What:** Regenerate and commit the tracked Swift UniFFI binding after the
+  release build exposed a changed bridge checksum and updated quality-contract
+  documentation.
+- **Where:** `macos/Codescribe/Bridge/codescribe_ffi.swift`, generated from the
+  Rust bridge API by `make app-bindings`.
+- **Why:** The first notarized build correctly regenerated checksum `20526`,
+  while the committed binding still expected `33612`. Leaving that drift would
+  make a fresh checkout disagree with the bundle produced from it.
+- **Purpose:** Make the repository, generated interface, and signed artifact
+  reproduce the same ABI contract from one final commit.
