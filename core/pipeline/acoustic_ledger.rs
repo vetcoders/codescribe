@@ -587,6 +587,49 @@ impl CumulativeFinalAdmission {
         }
     }
 
+    /// Authority for a *cumulative* producer, whose text restates more audio
+    /// than the window it declares.
+    ///
+    /// The Apple live lane emits segment-less finals that restate the whole
+    /// phrase while the window they carry covers only the newest audio. Such a
+    /// window cannot bound the alignment, because the producer under-declares
+    /// by construction — believing it would mark the whole restatement as new
+    /// audio and commit every occurrence twice.
+    ///
+    /// What does bound the alignment is the finality bar. A live callback may
+    /// realign occurrences the live lane still holds open, and has no authority
+    /// over anything already past `transcript_sealed`. `open_occurrences` is
+    /// that set, each paired with the number of canvas words it contributed.
+    pub fn for_cumulative_restatement(open_occurrences: &[(OccurrenceIdentity, usize)]) -> Self {
+        let words: usize = open_occurrences.iter().map(|(_, words)| words).sum();
+        if words == 0 {
+            return Self::NoAnchor {
+                reason: NoAuthorityReason::NoRange,
+            };
+        }
+        Self::AlignInside {
+            canvas_words_under_authority: words,
+        }
+    }
+
+    /// Slice the canvas down to the region the decision authorises.
+    ///
+    /// Alignment runs *after* authority is established and only inside the
+    /// authorised span; a textual match outside it is a coincidence, not
+    /// identity, and must not be reachable by the matcher at all.
+    pub fn authorized_canvas<'c>(&self, canvas: &'c [&'c str]) -> &'c [&'c str] {
+        match self {
+            Self::WhollyNovel => &[],
+            Self::AlignInside {
+                canvas_words_under_authority,
+            } => {
+                let take = (*canvas_words_under_authority).min(canvas.len());
+                &canvas[canvas.len() - take..]
+            }
+            Self::NoAnchor { .. } => canvas,
+        }
+    }
+
     /// Clamp a text matcher's answer to what acoustic evidence permits.
     ///
     /// This is where `revision_tolerant_known_prefix` and
@@ -976,6 +1019,72 @@ mod tests {
                 canvas_words_under_authority: 2,
             },
             "only the anchored overlap contributes authority"
+        );
+    }
+
+    /// A cumulative producer under-declares its window, so the finality bar —
+    /// not the window — bounds how much it may claim to restate.
+    #[test]
+    fn a_cumulative_restatement_is_bounded_by_the_open_occurrences() {
+        let open = vec![
+            (occ(0, 16_000), 1),
+            (occ(16_000, 32_000), 1),
+            (occ(32_000, 48_000), 1),
+            (occ(48_000, 64_000), 1),
+        ];
+        let decision = CumulativeFinalAdmission::for_cumulative_restatement(&open);
+        assert_eq!(
+            decision,
+            CumulativeFinalAdmission::AlignInside {
+                canvas_words_under_authority: 4,
+            }
+        );
+        assert_eq!(
+            decision.clamp_known_prefix(5),
+            4,
+            "four open occurrences cannot account for a fifth token"
+        );
+    }
+
+    /// With nothing open, a cumulative final restates nothing and the legacy
+    /// text lane is left exactly as it was.
+    #[test]
+    fn a_cumulative_restatement_with_nothing_open_has_no_anchor() {
+        let decision = CumulativeFinalAdmission::for_cumulative_restatement(&[]);
+        assert_eq!(
+            decision,
+            CumulativeFinalAdmission::NoAnchor {
+                reason: NoAuthorityReason::NoRange,
+            }
+        );
+        assert_eq!(decision.clamp_known_prefix(3), 3);
+    }
+
+    /// The authorised slice is what keeps a match in an unrelated part of the
+    /// transcript out of the matcher's reach.
+    #[test]
+    fn the_authorized_canvas_hides_text_outside_the_authorized_span() {
+        let canvas = vec![
+            "zupelnie", "co", "innego", "iwo", "iwo", "iwo", "iwo", "iwo", "dalszy", "ciag",
+        ];
+        let decision = CumulativeFinalAdmission::AlignInside {
+            canvas_words_under_authority: 2,
+        };
+        assert_eq!(decision.authorized_canvas(&canvas), &["dalszy", "ciag"]);
+
+        assert!(
+            CumulativeFinalAdmission::WhollyNovel
+                .authorized_canvas(&canvas)
+                .is_empty(),
+            "new audio has no canvas to align against"
+        );
+        assert_eq!(
+            CumulativeFinalAdmission::NoAnchor {
+                reason: NoAuthorityReason::NoRange
+            }
+            .authorized_canvas(&canvas),
+            canvas.as_slice(),
+            "with no anchor the legacy matcher keeps the whole canvas"
         );
     }
 

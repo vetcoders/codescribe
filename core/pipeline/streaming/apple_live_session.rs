@@ -48,6 +48,7 @@ use crate::audio::capture_receipt::{
     CaptureLevelAccumulator, CapturePathMeta, begin_session_energy_clock,
     emit_capture_level_receipt,
 };
+use crate::pipeline::acoustic_ledger::{CumulativeFinalAdmission, OccurrenceIdentity};
 use crate::pipeline::contracts::{
     DropKind, EngineEvent, EventSink, LayerSource, TranscriptSegment,
 };
@@ -1685,6 +1686,56 @@ fn revision_tolerant_known_prefix(probe: &[String], canvas: &[&str]) -> (usize, 
     (best_k, best_edits)
 }
 
+/// Committed occurrences a cumulative restatement may claim, newest first,
+/// paired with the canvas words each contributed.
+///
+/// Two rules shape the set, and both are the utterance-grain rule from the
+/// acoustic ledger applied to the canvas side:
+///
+/// * whole spans only — a span is the occurrence unit, so a restatement claims
+///   all of one or none of it, never an invented slice through the middle;
+/// * no more canvas words than the callback itself carries — a restatement
+///   cannot be shorter than what it restates, so `max_words` (the callback's
+///   own word count) is how far back it may reach.
+///
+/// Together they keep the matcher from reaching into transcript history that
+/// has no temporal relationship to the callback. Before the cut it scanned
+/// every start position within `2n + 16` canvas words and took the longest
+/// match anywhere in that band.
+fn restatable_occurrences(
+    state: &AppleSealState,
+    max_words: usize,
+) -> Vec<(OccurrenceIdentity, usize)> {
+    let sealed = state.progressive.sealed_spans().iter().map(|span| {
+        let words = normalize_for_containment(&span.text)
+            .split_whitespace()
+            .count();
+        (OccurrenceIdentity::from(&span.range), words)
+    });
+    let pending = state.progressive.pending_spans().iter().map(|span| {
+        let words = normalize_for_containment(&span.raw_text)
+            .split_whitespace()
+            .count();
+        (OccurrenceIdentity::from(&span.range), words)
+    });
+    let canvas_order: Vec<(OccurrenceIdentity, usize)> = sealed
+        .chain(pending)
+        .filter(|(_, words)| *words > 0)
+        .collect();
+
+    let mut claimed = Vec::new();
+    let mut budget = max_words;
+    for entry in canvas_order.into_iter().rev() {
+        if entry.1 > budget {
+            break;
+        }
+        budget -= entry.1;
+        claimed.push(entry);
+    }
+    claimed.reverse();
+    claimed
+}
+
 /// Case- and punctuation-insensitive projection for canvas containment checks
 /// (the sealed canvas carries Light+ casing and sentence terminals, raw
 /// callbacks carry neither).
@@ -2054,8 +2105,34 @@ fn seal_utterance_final(
             .map(|word| normalize_for_containment(&seal_span_text(word, "", true)))
             .collect();
         let canvas_words: Vec<&str> = canvas.split_whitespace().collect();
-        let (known_prefix_words, revised_words) =
-            revision_tolerant_known_prefix(&probe_words, &canvas_words);
+        // Text alignment runs only AFTER acoustic authority is established, and
+        // only inside the span that authority covers. A cumulative callback
+        // under-declares its own window by construction — its text restates the
+        // whole phrase while the window carries only the newest audio — so the
+        // window cannot bound the match. The finality bar can: the live lane may
+        // realign the occurrences it still holds open and has no authority over
+        // anything past `transcript_sealed`.
+        let open_occurrences = restatable_occurrences(state, probe_words.len());
+        let admission = CumulativeFinalAdmission::for_cumulative_restatement(&open_occurrences);
+        let authorized_canvas = admission.authorized_canvas(&canvas_words);
+        let (matcher_known_words, revised_words) =
+            revision_tolerant_known_prefix(&probe_words, authorized_canvas);
+        // The clamp is the conservation guard. `revision_tolerant_known_prefix`
+        // has an edit budget, so a probe of five occurrences can align against a
+        // canvas of four by charging the surplus as one interior insertion —
+        // text cannot tell "the engine inserted a word" apart from "the operator
+        // said it again". Only the open occurrence count can, and a restatement
+        // may never claim more occurrences than the canvas actually holds.
+        let known_prefix_words = admission.clamp_known_prefix(matcher_known_words);
+        if known_prefix_words < matcher_known_words {
+            info!(
+                matcher_known_words,
+                known_prefix_words,
+                open_occurrences = open_occurrences.len(),
+                admission = admission.as_str(),
+                "apple_lifecycle: text match clamped to committed acoustic occurrences"
+            );
+        }
         if revised_words > 0 {
             info!(
                 known_prefix_words,
@@ -2116,7 +2193,15 @@ fn seal_utterance_final(
     // cumulative callback must not resurrect audio the product already judged.
     state.last_apple_segment_end = end_ts;
 
-    let Some(corrected) = state.postprocessor.process_utterance(&raw_text) else {
+    // The seal path knows exactly how many acoustic spans this text covers, so
+    // the repetition cleanup is told rather than left to guess. A run of
+    // identical words with one span per copy is speech; only a run longer than
+    // the audio can account for is a decoder loop.
+    let acoustic_occurrences = disjoint.len();
+    let Some(corrected) = state
+        .postprocessor
+        .process_utterance_with_acoustic_occurrences(&raw_text, acoustic_occurrences)
+    else {
         state.filtered_empty_drops = state.filtered_empty_drops.saturating_add(1);
         warn!(
             raw_chars = raw_text.chars().count(),
@@ -3853,6 +3938,59 @@ mod tests {
         );
     }
 
+    /// End to end through `seal_utterance_final`: four sealed occurrences of one
+    /// name, then a cumulative final restating five. Exactly one new occurrence
+    /// may reach the canvas.
+    #[test]
+    fn five_spoken_occurrences_survive_a_cumulative_restatement_end_to_end() {
+        let (tx, mut rx) = mpsc::unbounded_channel();
+        let mut state = AppleSealState::new(TEST_SAMPLE_RATE);
+        push_capture(&mut state, 5.0);
+
+        emit_stream_events(
+            vec![
+                LiveStreamEvent::PhraseFinal {
+                    text: "Iwo Iwo Iwo Iwo".into(),
+                    segments: vec![
+                        segment("Iwo", 0.0, 1.0),
+                        segment("Iwo", 1.0, 2.0),
+                        segment("Iwo", 2.0, 3.0),
+                        segment("Iwo", 3.0, 4.0),
+                    ],
+                },
+                // Cumulative restatement: same audio re-stated, plus one more
+                // occurrence. The segment is fully behind the cursor, so this
+                // takes the segment-less path.
+                LiveStreamEvent::PhraseFinal {
+                    text: "Iwo Iwo Iwo Iwo Iwo".into(),
+                    segments: vec![segment("Iwo Iwo Iwo Iwo Iwo", 0.0, 4.0)],
+                },
+            ],
+            &tx,
+            &mut state,
+            5.0,
+        );
+
+        let events = std::iter::from_fn(|| rx.try_recv().ok()).collect::<Vec<_>>();
+        let finals: Vec<String> = events
+            .iter()
+            .filter_map(|event| match event {
+                EngineEvent::UtteranceFinal { text, .. } => Some(text.clone()),
+                _ => None,
+            })
+            .collect();
+        let spoken = finals
+            .iter()
+            .map(|text| normalize_for_containment(text))
+            .collect::<Vec<_>>()
+            .join(" ");
+        let occurrences = spoken.split_whitespace().filter(|w| *w == "iwo").count();
+        assert_eq!(
+            occurrences, 5,
+            "five acoustic occurrences, five tokens — got {finals:?}"
+        );
+    }
+
     /// Regression guard for the prefix probe: the canvas-known prefix must be
     /// recognised even when the lexicon rewrites words inside it.
     ///
@@ -5521,24 +5659,60 @@ mod conservation_falsifiers {
             .collect()
     }
 
+    /// The production decision, exercised the way `seal_utterance_final` runs
+    /// it: establish authority, slice the canvas to it, align inside, clamp.
+    fn known_prefix_under_authority(
+        callback: &str,
+        canvas: &str,
+        open_occurrences: &[(OccurrenceIdentity, usize)],
+    ) -> usize {
+        let canvas = normalize_for_containment(canvas);
+        let canvas_words: Vec<&str> = canvas.split_whitespace().collect();
+        let probe = probe_words(callback);
+        let admission = CumulativeFinalAdmission::for_cumulative_restatement(open_occurrences);
+        let authorized = admission.authorized_canvas(&canvas_words);
+        let (matcher_known, _revised) = revision_tolerant_known_prefix(&probe, authorized);
+        admission.clamp_known_prefix(matcher_known)
+    }
+
+    fn open(index: u64, words: usize) -> (OccurrenceIdentity, usize) {
+        let start = index * 16_000;
+        (
+            OccurrenceIdentity::new("apple_live", 1, start, start + 16_000),
+            words,
+        )
+    }
+
     /// `deduplicate_intentional_repetition_by_content`.
     ///
     /// Four acoustic occurrences are on the canvas; the cumulative final
     /// restates five. `revision_tolerant_known_prefix` has an edit budget of
-    /// `max(n / 5, 1)`, so the extra occurrence is absorbed as one edit, the
-    /// whole final reads as "already known", and the fifth `Iwo` is deleted
-    /// with no acoustic authority. Measured 2026-08-22: `known_prefix = 5`.
+    /// `max(n / 5, 1)`, so on its own it absorbs the extra occurrence as one
+    /// interior insertion, reads the whole final as "already known", and
+    /// deletes the fifth `Iwo` with no acoustic authority. Measured 2026-08-22
+    /// before the cut: `known_prefix = 5`.
+    ///
+    /// Text cannot distinguish "the engine inserted a word" from "the operator
+    /// said it again" — the two are the same edit. The open occurrence count
+    /// can, and it is what now bounds the claim.
     #[test]
-    #[ignore = "acoustic identity cut step 6: repetition must be decided on ranges, not text"]
     fn cumulative_final_may_not_absorb_an_extra_repetition() {
-        let canvas = normalize_for_containment("Iwo Iwo Iwo Iwo");
-        let canvas_words: Vec<&str> = canvas.split_whitespace().collect();
-        let callback = "Iwo Iwo Iwo Iwo Iwo";
-        let probe = probe_words(callback);
-        let (known, _revised) = revision_tolerant_known_prefix(&probe, &canvas_words);
+        let open = [open(0, 1), open(1, 1), open(2, 1), open(3, 1)];
+        let known = known_prefix_under_authority("Iwo Iwo Iwo Iwo Iwo", "Iwo Iwo Iwo Iwo", &open);
         assert_eq!(
             known, 4,
             "canvas carries four occurrences; the fifth must survive as novel text"
+        );
+
+        // The demoted matcher still gives the old answer — it simply no longer
+        // decides. Pinning that keeps the demotion visible rather than implied.
+        let canvas = normalize_for_containment("Iwo Iwo Iwo Iwo");
+        let canvas_words: Vec<&str> = canvas.split_whitespace().collect();
+        let (matcher_known, _) =
+            revision_tolerant_known_prefix(&probe_words("Iwo Iwo Iwo Iwo Iwo"), &canvas_words);
+        assert_eq!(
+            matcher_known, 5,
+            "the text matcher is unchanged; it has lost authority, not behaviour"
         );
     }
 
@@ -5546,19 +5720,35 @@ mod conservation_falsifiers {
     ///
     /// The matcher scans every start position in the canvas tail, so a probe
     /// matches a canvas region with no temporal relationship to it. Identity
-    /// must come from the PCM range; text alignment is only legal after
-    /// authority is established inside one range.
+    /// must come from the PCM range; text alignment is legal only after
+    /// authority is established and only inside the authorised span, so the
+    /// unrelated region is not reachable by the matcher at all.
     #[test]
-    #[ignore = "acoustic identity cut step 6: a far-away textual match is not identity"]
     fn a_textual_match_elsewhere_in_the_canvas_is_not_identity() {
-        let canvas =
-            normalize_for_containment("zupełnie co innego Iwo Iwo Iwo Iwo Iwo dalszy ciąg");
-        let canvas_words: Vec<&str> = canvas.split_whitespace().collect();
-        let probe = probe_words("Iwo Iwo Iwo Iwo Iwo");
-        let (known, _) = revision_tolerant_known_prefix(&probe, &canvas_words);
+        let canvas = "zupełnie co innego Iwo Iwo Iwo Iwo Iwo dalszy ciąg";
+        let open = [open(9, 2)];
+        let known = known_prefix_under_authority("Iwo Iwo Iwo Iwo Iwo", canvas, &open);
         assert_eq!(
             known, 0,
             "a match embedded in unrelated canvas text may not consume the final"
         );
+
+        let normalized = normalize_for_containment(canvas);
+        let canvas_words: Vec<&str> = normalized.split_whitespace().collect();
+        let (matcher_known, _) =
+            revision_tolerant_known_prefix(&probe_words("Iwo Iwo Iwo Iwo Iwo"), &canvas_words);
+        assert_eq!(
+            matcher_known, 5,
+            "unclamped, the matcher still consumes the whole final from unrelated history"
+        );
+    }
+
+    /// With nothing open, the live lane has no acoustic authority to apply and
+    /// the legacy matcher keeps its answer. The cut demotes the matcher where
+    /// evidence exists; it does not fabricate a verdict where none does.
+    #[test]
+    fn with_nothing_open_the_legacy_matcher_answer_stands() {
+        let known = known_prefix_under_authority("alpha beta", "alpha beta", &[]);
+        assert_eq!(known, 2);
     }
 }

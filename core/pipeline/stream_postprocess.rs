@@ -1101,13 +1101,31 @@ impl StreamPostProcessor {
 
     /// Process a streaming chunk — applies lexicon, cleanup, and semantic gate.
     pub fn process(&mut self, text: &str) -> Option<String> {
-        self.process_internal(text, true)
+        self.process_internal(text, true, RepetitionAuthority::Unknown)
     }
 
     /// Process a complete utterance — applies lexicon and cleanup, no semantic gate.
     /// Use this for VAD-segmented utterances where each segment is naturally distinct.
+    ///
+    /// The repetition cleanup runs with no acoustic evidence, so it treats every
+    /// run of identical words as decoder noise. Callers that know how many
+    /// distinct acoustic spans the text covers must use
+    /// [`Self::process_utterance_with_acoustic_occurrences`] instead.
     pub fn process_utterance(&mut self, text: &str) -> Option<String> {
-        self.process_internal(text, false)
+        self.process_internal(text, false, RepetitionAuthority::Unknown)
+    }
+
+    /// Process a complete utterance whose acoustic span count is known.
+    ///
+    /// `occurrences` is the number of distinct PCM spans the text covers. A
+    /// repetition that has one span per copy is speech and survives; only a run
+    /// longer than the audio can account for is collapsed as a decoder loop.
+    pub fn process_utterance_with_acoustic_occurrences(
+        &mut self,
+        text: &str,
+        occurrences: usize,
+    ) -> Option<String> {
+        self.process_internal(text, false, RepetitionAuthority::Occurrences(occurrences))
     }
 
     /// Shared body of [`Self::process`] and [`Self::process_utterance`].
@@ -1118,7 +1136,12 @@ impl StreamPostProcessor {
     /// AND the text already looks suspicious, so ordinary speech never reaches the
     /// embedder. Every branch that returns `None` also increments a counter, so a
     /// vanished transcript is always attributable.
-    fn process_internal(&mut self, text: &str, apply_gate: bool) -> Option<String> {
+    fn process_internal(
+        &mut self,
+        text: &str,
+        apply_gate: bool,
+        repetition_authority: RepetitionAuthority,
+    ) -> Option<String> {
         self.stats.input_chunks += 1;
         maybe_reload_global_lexicon();
 
@@ -1132,7 +1155,7 @@ impl StreamPostProcessor {
             self.stats.lexicon_rewrites += 1;
         }
 
-        let cleaned_after_cleanup = cleanup_artifacts(&cleaned);
+        let cleaned_after_cleanup = cleanup_artifacts(&cleaned, repetition_authority);
         if cleaned_after_cleanup != cleaned {
             self.stats.repetition_cleanups += 1;
         }
@@ -1281,9 +1304,62 @@ fn env_flag(name: &str, default: bool) -> bool {
     }
 }
 
+/// What the caller knows about the audio behind the text.
+///
+/// A decoder repetition loop and an operator saying a word five times produce
+/// the SAME string. The only thing that separates them is how many distinct PCM
+/// spans the audio holds, and this enum is how a caller that knows says so.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RepetitionAuthority {
+    /// Nothing is known about the audio. A repetition run is assumed to be
+    /// decoder noise — the legacy behaviour, kept for callers that genuinely
+    /// have no span information.
+    Unknown,
+    /// The text covers this many distinct acoustic spans.
+    Occurrences(usize),
+}
+
+impl RepetitionAuthority {
+    /// Whether a run of `run_len` identical consecutive words may be collapsed.
+    ///
+    /// With one span per copy the repetition is speech and must survive intact;
+    /// the conservation law forbids deleting an occurrence the audio carries.
+    /// Only a run the audio cannot account for is decoder noise.
+    fn may_collapse_run(self, run_len: usize) -> bool {
+        match self {
+            Self::Unknown => true,
+            Self::Occurrences(spans) => run_len > spans,
+        }
+    }
+}
+
+/// Longest run of identical consecutive words, compared case-insensitively.
+fn longest_repeat_run(text: &str) -> usize {
+    let words: Vec<&str> = text.split_whitespace().collect();
+    let mut longest = 0usize;
+    let mut run = 0usize;
+    let mut previous: Option<String> = None;
+    for word in words {
+        let lowered = word.to_lowercase();
+        run = if previous.as_deref() == Some(lowered.as_str()) {
+            run + 1
+        } else {
+            1
+        };
+        longest = longest.max(run);
+        previous = Some(lowered);
+    }
+    longest
+}
+
 /// Strip known ASR artifacts: trailing `:D` emoticon bursts (on by default, and
 /// only at the end of an utterance) and decoder repetition loops.
-fn cleanup_artifacts(text: &str) -> String {
+///
+/// The repetition arm is gated on `repetition_authority`. Before the gate this
+/// pass collapsed any run of three or more identical words to a single copy,
+/// unconditionally and by content alone — so "Iwo Iwo Iwo Iwo Iwo" became "Iwo"
+/// whether the operator said it five times or the decoder looped.
+fn cleanup_artifacts(text: &str, repetition_authority: RepetitionAuthority) -> String {
     // Default ON: treat trailing ":D" bursts as ASR artifacts.
     let mut out = if env_flag("CODESCRIBE_STRIP_TRAILING_SMILEY_D", true) {
         TRAILING_SMILEY_D_RE.replace(text, "").to_string()
@@ -1291,7 +1367,9 @@ fn cleanup_artifacts(text: &str) -> String {
         text.to_string()
     };
 
-    if crate::ai_formatting::has_repetition_loop(&out) {
+    if crate::ai_formatting::has_repetition_loop(&out)
+        && repetition_authority.may_collapse_run(longest_repeat_run(&out))
+    {
         out = crate::ai_formatting::remove_simple_repetitions(&out);
     }
     out
