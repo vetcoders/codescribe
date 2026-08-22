@@ -19,6 +19,7 @@ const OPTIONAL_PROMPT_TOKENS: [&str; 3] = ["<|transcribe|>", "<|notimestamps|>",
 const MAX_WHISPER_LAYERS: usize = 64;
 const MAX_WHISPER_AUDIO_CONTEXT: usize = 1_500;
 const MAX_WHISPER_TEXT_CONTEXT: usize = 448;
+const MAX_WHISPER_STATE_WIDTH: usize = 1_280;
 const WHISPER_TIMESTAMP_STEPS: u32 = 1_500;
 const LANG_TOKEN_START: u32 = 50_259;
 const LANG_TOKEN_END: u32 = 50_358;
@@ -289,6 +290,11 @@ pub(crate) fn parse_whisper_config(raw: &str, source: &str) -> Result<WhisperArc
     if architecture.n_audio_state != architecture.n_text_state {
         return Err(anyhow!(
             "Whisper config {source} requires n_audio_state to equal n_text_state"
+        ));
+    }
+    if architecture.n_audio_state > MAX_WHISPER_STATE_WIDTH {
+        return Err(anyhow!(
+            "Whisper config {source} exceeds the supported Whisper state width of {MAX_WHISPER_STATE_WIDTH}"
         ));
     }
     if architecture.n_audio_state < 4 || !architecture.n_audio_state.is_multiple_of(2) {
@@ -929,6 +935,22 @@ mod tests {
             let err = parse_whisper_config(&rejected_context.to_string(), "fixture").unwrap_err();
             assert!(format!("{err:#}").contains("30-second"), "{value}: {err:#}");
         }
+
+        for value in [MAX_WHISPER_STATE_WIDTH + 1, 100_000] {
+            let mut rejected_state = valid_config();
+            rejected_state["n_audio_state"] = serde_json::json!(value);
+            rejected_state["n_text_state"] = serde_json::json!(value);
+            let err = parse_whisper_config(&rejected_state.to_string(), "fixture").unwrap_err();
+            assert!(
+                format!("{err:#}").contains("state width of 1280"),
+                "{value}: {err:#}"
+            );
+        }
+
+        let mut maximum_state = valid_config();
+        maximum_state["n_audio_state"] = serde_json::json!(MAX_WHISPER_STATE_WIDTH);
+        maximum_state["n_text_state"] = serde_json::json!(MAX_WHISPER_STATE_WIDTH);
+        parse_whisper_config(&maximum_state.to_string(), "fixture").unwrap();
     }
 
     #[test]

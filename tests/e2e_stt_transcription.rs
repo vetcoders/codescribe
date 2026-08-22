@@ -11,6 +11,7 @@ use std::path::{Path, PathBuf};
 
 use codescribe::whisper::LocalWhisperEngine;
 use codescribe_core::pipeline::contracts::FileTranscriptionOptions;
+use serial_test::serial;
 use tempfile::TempDir;
 
 #[path = "support/e2e_stt_matrix.rs"]
@@ -27,6 +28,40 @@ fn home_dir() -> PathBuf {
     std::env::var("HOME")
         .map(PathBuf::from)
         .unwrap_or_else(|_| PathBuf::from("."))
+}
+
+/// Restores one process environment variable after a serialized test.
+struct EnvGuard {
+    key: &'static str,
+    previous: Option<String>,
+}
+
+impl EnvGuard {
+    fn set(key: &'static str, value: &Path) -> Self {
+        let previous = std::env::var(key).ok();
+        // SAFETY: callers use #[serial] and the guard restores the prior value.
+        unsafe { std::env::set_var(key, value) };
+        Self { key, previous }
+    }
+
+    fn unset(key: &'static str) -> Self {
+        let previous = std::env::var(key).ok();
+        // SAFETY: callers use #[serial] and the guard restores the prior value.
+        unsafe { std::env::remove_var(key) };
+        Self { key, previous }
+    }
+}
+
+impl Drop for EnvGuard {
+    fn drop(&mut self) {
+        if let Some(previous) = &self.previous {
+            // SAFETY: callers use #[serial] and the guard restores the prior value.
+            unsafe { std::env::set_var(self.key, previous) };
+        } else {
+            // SAFETY: callers use #[serial] and the guard restores the prior value.
+            unsafe { std::env::remove_var(self.key) };
+        }
+    }
 }
 
 fn resolve_model_or_skip(suite: &str) -> Option<ModelDiscovery> {
@@ -321,6 +356,36 @@ fn deterministic_model_discovery_hint_names_the_validation_contract() {
     assert!(hint.contains("pinned mel_filters.npz checksum"));
     assert!(hint.contains("structurally valid F16/F32 safetensors"));
     assert!(hint.contains("no quantization declaration"));
+    assert!(hint.contains("Hugging Face cache snapshot"));
+}
+
+#[test]
+#[serial]
+fn live_model_discovery_uses_validated_default_hf_snapshot() {
+    let (_tmp, home) = temp_home();
+    let models_root = home.join("empty-models");
+    let hf_home = home.join("hf-home");
+    let hf_cache = hf_home.join("hub");
+    let snapshot = hf_cache
+        .join("models--mlx-community--whisper-large-v3-turbo")
+        .join("snapshots")
+        .join("revision");
+    std::fs::create_dir_all(&models_root).unwrap();
+    create_complete_model(&snapshot);
+
+    let _home = EnvGuard::set("HOME", &home);
+    let _models_root = EnvGuard::set("CODESCRIBE_MODELS_DIR", &models_root);
+    let _model_path = EnvGuard::unset("CODESCRIBE_MODEL_PATH");
+    let _codescribe_hf = EnvGuard::set("CODESCRIBE_HF_CACHE", &hf_cache);
+    let _huggingface_hub = EnvGuard::set("HUGGINGFACE_HUB_CACHE", &hf_cache);
+    let _hf_hub = EnvGuard::set("HF_HUB_CACHE", &hf_cache);
+    let _hf_home = EnvGuard::set("HF_HOME", &hf_home);
+
+    let found = discover_local_whisper_model()
+        .expect("production E2E discovery should reuse the validated HF fallback");
+
+    assert_eq!(found.source, ModelSource::RuntimeResolver);
+    assert_eq!(found.path, snapshot);
 }
 
 #[test]

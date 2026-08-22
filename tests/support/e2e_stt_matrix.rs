@@ -18,6 +18,7 @@ pub const WHISPER_FP16_MODEL: &str = "whisper-large-v3-turbo";
 pub enum ModelSource {
     EnvOverride,
     ModelsDir,
+    RuntimeResolver,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -79,20 +80,12 @@ pub fn whisper_model_missing_parts(path: &Path) -> Vec<&'static str> {
 }
 
 pub fn discover_local_whisper_model() -> Option<ModelDiscovery> {
-    let home_dir = std::env::var("HOME")
-        .map(PathBuf::from)
-        .unwrap_or_else(|_| PathBuf::from("."));
-    let env_override = std::env::var("CODESCRIBE_MODEL_PATH")
+    codescribe_core::config::models::resolve_runtime_whisper_model_path(None)
         .ok()
-        .map(PathBuf::from);
-    let models_root = std::env::var("CODESCRIBE_MODELS_DIR")
-        .ok()
-        .map(|value| expand_models_root(&home_dir, &value));
-    discover_local_whisper_model_for_with_root(
-        &home_dir,
-        env_override.as_deref(),
-        models_root.as_deref(),
-    )
+        .map(|path| ModelDiscovery {
+            source: ModelSource::RuntimeResolver,
+            path,
+        })
 }
 
 pub fn expand_models_root(home_dir: &Path, value: &str) -> PathBuf {
@@ -145,7 +138,7 @@ pub fn model_discovery_hint(home_dir: &Path) -> String {
         .filter(|path| path.exists())
         .unwrap_or(default_root);
     format!(
-        "Looked for a valid fp16 Whisper model in CODESCRIBE_MODEL_PATH and {root}/{fp16}. The bundle must have parseable config and tokenizer files, the pinned mel_filters.npz checksum, structurally valid F16/F32 safetensors, and no quantization declaration.",
+        "The production resolver found no valid fp16 Whisper model in CODESCRIBE_MODEL_PATH, {root}/{fp16}, or a supported Hugging Face cache snapshot. The bundle must have parseable config and tokenizer files, the pinned mel_filters.npz checksum, structurally valid F16/F32 safetensors, and no quantization declaration.",
         root = models_root.display(),
         fp16 = WHISPER_FP16_MODEL
     )

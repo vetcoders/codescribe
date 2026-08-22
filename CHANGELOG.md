@@ -76,7 +76,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   candidates, layer/context resource bounds, and mapped tensor-name collisions
   are validated by the same runtime-owned helpers. Tokenizers cannot emit IDs
   without embedding rows; audio context must match the supported 30-second
-  window; decoder context is capped at the supported 448 positions; timestamp
+  window; matching state widths are capped at the official Whisper maximum of
+  1280; decoder context is capped at the supported 448 positions; timestamp
   token ranges are validated end to end; mel verification is size-bounded before
   hashing; and surplus tensors are refused before allocation. Quantized payloads and the
   legacy Q8 fallback are refused; the old public Q8 identifiers remain

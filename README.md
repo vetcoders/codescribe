@@ -342,7 +342,8 @@ Runtime resolution when Whisper is not embedded:
 
 1. `CODESCRIBE_MODEL_PATH` environment variable
 2. `~/.codescribe/models/whisper-large-v3-turbo/` (fp16 default)
-3. A complete Hugging Face snapshot explicitly configured by repo id
+3. A complete Hugging Face snapshot configured by repo id, followed by the
+   default `mlx-community/whisper-large-v3-turbo` snapshot
 
 The mlx-community repo ships only `config.json` + `weights.safetensors`;
 the download paths compose `tokenizer.json` from the matching official OpenAI
@@ -364,7 +365,8 @@ instead of being accepted as complete. Config validation requires the complete
 MLX Whisper architecture
 used by the loader (including matching audio/text state widths and compatible
 attention heads, a decode context that leaves room for output, and broad layer
-count safety fences). Decoder context is bounded to the supported `5..=448`
+count safety fences). Matching audio/text state widths are bounded to the
+official Whisper range `4..=1280` before quadratic model allocations. Decoder context is bounded to the supported `5..=448`
 range before its quadratic causal mask is allocated. Audio context must equal the 1500 positions consumed by
 the supported 30-second Whisper window; shorter contexts would silently truncate
 audio. The pinned mel filterbank is size-checked and hashed through a bounded
