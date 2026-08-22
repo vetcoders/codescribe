@@ -307,6 +307,29 @@ impl Lexicon {
         if current_mtime == self.custom_mtime {
             return;
         }
+        self.reload_custom_rules(current_mtime);
+    }
+
+    /// Move the custom-rule source to a new canonical data directory.
+    ///
+    /// The application normally keeps one data directory for its lifetime, but
+    /// tests and explicit runtime reconfiguration may change `CODESCRIBE_DATA_DIR`.
+    /// Path identity must therefore participate in hot reload: comparing only
+    /// mtimes leaves the process-global singleton pinned to whichever directory
+    /// initialized it first.
+    fn rebind_custom_path(&mut self, custom_path: PathBuf) {
+        if self.custom_path == custom_path {
+            return;
+        }
+        self.custom_path = custom_path;
+        let current_mtime = fs::metadata(&self.custom_path)
+            .ok()
+            .and_then(|m| m.modified().ok());
+        self.reload_custom_rules(current_mtime);
+    }
+
+    /// Replace only the custom half of the table, preserving compiled builtins.
+    fn reload_custom_rules(&mut self, current_mtime: Option<SystemTime>) {
         self.custom_rules.clear();
         self.custom_canonicals.clear();
         let custom_count = fs::read_to_string(&self.custom_path)
@@ -386,6 +409,7 @@ fn maybe_reload_global_lexicon() {
     let mut lexicon = GLOBAL_LEXICON
         .write()
         .expect("global lexicon write lock poisoned");
+    lexicon.rebind_custom_path(Config::config_dir().join("lexicon.custom.jsonl"));
     lexicon.maybe_reload();
 }
 
@@ -1552,6 +1576,41 @@ mod tests {
         let candidate = "Uzywam Docker do GitHub";
 
         assert_eq!(final_pass_guardrail_reason(raw, candidate), None);
+    }
+
+    /// The process-global lexicon follows the active data directory, not the
+    /// directory that happened to initialize the singleton first.
+    #[test]
+    #[serial]
+    fn global_lexicon_rebinds_when_data_dir_changes() {
+        let _data_dir = EnvRestore::capture("CODESCRIBE_DATA_DIR");
+        let first = tempfile::tempdir().expect("first data dir");
+        let second = tempfile::tempdir().expect("second data dir");
+
+        std::fs::write(
+            first.path().join("lexicon.custom.jsonl"),
+            r#"{"term":"RebindFirst","mispronunciations":["zxq rebind first"]}"#,
+        )
+        .expect("first custom lexicon");
+        std::fs::write(
+            second.path().join("lexicon.custom.jsonl"),
+            r#"{"term":"RebindSecond","mispronunciations":["zxq rebind second"]}"#,
+        )
+        .expect("second custom lexicon");
+
+        unsafe { std::env::set_var("CODESCRIBE_DATA_DIR", first.path()) };
+        assert_eq!(apply_lexicon("mówię zxq rebind first"), "mówię RebindFirst");
+
+        unsafe { std::env::set_var("CODESCRIBE_DATA_DIR", second.path()) };
+        assert_eq!(
+            apply_lexicon("mówię zxq rebind second"),
+            "mówię RebindSecond"
+        );
+        assert_eq!(
+            apply_lexicon("mówię zxq rebind first"),
+            "mówię zxq rebind first",
+            "rules from the previous data directory must be discarded"
+        );
     }
 
     /// Custom lexicon mtime change reloads rules without recompiling builtins.
