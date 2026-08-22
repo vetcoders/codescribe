@@ -376,3 +376,17 @@ executable checks remain authoritative.
   payload verification, and the DMG checksum already prove the artifact.
 - **Purpose:** Preserve reproducible public release evidence without publishing
   account-scoped operational metadata that belongs in the local handoff.
+
+## 2026-08-22 — literal PR #82 review closure
+
+- **What:** Expand the remaining grouped part-one review ranges into one
+  explicit disposition row per finding and carry each deferred item into the
+  post-release action list.
+- **Where:**
+  `docs/releases/2026-08-22-v0.14.1-release-readiness.md`.
+- **Why:** The two review inputs contain 69 unique `P0`–`P3` identifiers, while
+  the release ledger named only 53 literally because `P2-02..04`, `P2-05..06`,
+  and `P3-01..15` were compressed into ranges. The grouped prose was readable
+  but could not prove complete finding-by-finding disposition.
+- **Purpose:** Make review closure mechanically auditable without pretending
+  that accepted or deferred low-risk debt was fixed in this candidate.
