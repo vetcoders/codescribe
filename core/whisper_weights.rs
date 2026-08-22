@@ -14,12 +14,15 @@ pub const MEL_FILTERS_SHA256: &str =
     "7450ae70723a5ef9d341e3cee628c7cb0177f36ce42c44b7ed2bf3325f0f6d4c";
 /// Byte length of the pinned official OpenAI mel filterbank.
 pub const MEL_FILTERS_SIZE_BYTES: u64 = 4_271;
+pub(crate) const MAX_WHISPER_CONFIG_BYTES: u64 = 1024 * 1024;
+pub(crate) const MAX_WHISPER_TOKENIZER_BYTES: u64 = 16 * 1024 * 1024;
 const REQUIRED_TOKENIZER_TOKENS: [&str; 2] = ["<|startoftranscript|>", "<|endoftext|>"];
 const OPTIONAL_PROMPT_TOKENS: [&str; 3] = ["<|transcribe|>", "<|notimestamps|>", "<|startofprev|>"];
 const MAX_WHISPER_LAYERS: usize = 64;
 const MAX_WHISPER_AUDIO_CONTEXT: usize = 1_500;
 const MAX_WHISPER_TEXT_CONTEXT: usize = 448;
 const MAX_WHISPER_STATE_WIDTH: usize = 1_280;
+const MAX_WHISPER_VOCAB: usize = 51_866;
 const WHISPER_TIMESTAMP_STEPS: u32 = 1_500;
 const LANG_TOKEN_START: u32 = 50_259;
 const LANG_TOKEN_END: u32 = 50_358;
@@ -51,8 +54,7 @@ pub fn validate_whisper_model_bundle(path: &Path) -> Result<()> {
 
 /// Parse the tokenizer and require the control tokens used by every decode.
 pub(crate) fn validate_whisper_tokenizer(path: &Path) -> Result<()> {
-    let tokenizer = tokenizers::Tokenizer::from_file(path)
-        .map_err(|err| anyhow!("invalid Whisper tokenizer {}: {err}", path.display()))?;
+    let tokenizer = load_bounded_whisper_tokenizer(path)?;
     for token in REQUIRED_TOKENIZER_TOKENS {
         if tokenizer.token_to_id(token).is_none() {
             return Err(anyhow!(
@@ -68,8 +70,14 @@ pub(crate) fn validate_whisper_tokenizer_for_architecture(
     path: &Path,
     architecture: WhisperArchitecture,
 ) -> Result<()> {
-    let tokenizer = tokenizers::Tokenizer::from_file(path)
-        .map_err(|err| anyhow!("invalid Whisper tokenizer {}: {err}", path.display()))?;
+    load_validated_whisper_tokenizer_for_architecture(path, architecture).map(|_| ())
+}
+
+pub(crate) fn load_validated_whisper_tokenizer_for_architecture(
+    path: &Path,
+    architecture: WhisperArchitecture,
+) -> Result<tokenizers::Tokenizer> {
+    let tokenizer = load_bounded_whisper_tokenizer(path)?;
     validated_timestamp_token_range(&tokenizer, architecture.n_vocab)
         .with_context(|| format!("validate Whisper timestamp tokens in {}", path.display()))?;
     for token in REQUIRED_TOKENIZER_TOKENS {
@@ -136,7 +144,13 @@ pub(crate) fn validate_whisper_tokenizer_for_architecture(
             path.display()
         ));
     }
-    Ok(())
+    Ok(tokenizer)
+}
+
+fn load_bounded_whisper_tokenizer(path: &Path) -> Result<tokenizers::Tokenizer> {
+    let bytes = read_bounded_metadata_file(path, MAX_WHISPER_TOKENIZER_BYTES, "tokenizer")?;
+    tokenizers::Tokenizer::from_bytes(bytes)
+        .map_err(|err| anyhow!("invalid Whisper tokenizer {}: {err}", path.display()))
 }
 
 /// Resolve and validate the optional 20 ms timestamp-token block.
@@ -217,10 +231,47 @@ pub(crate) fn validate_whisper_config(path: &Path) -> Result<()> {
 }
 
 pub(crate) fn load_whisper_architecture(path: &Path) -> Result<WhisperArchitecture> {
-    // nosemgrep: rust.actix.path-traversal.tainted-path.tainted-path -- Read-only model inspection. `path` is an operator-selected local model config or an internally resolved bundle/cache child; no network/request path component reaches it.
-    let raw = fs::read_to_string(path)
-        .with_context(|| format!("read Whisper config {}", path.display()))?;
-    parse_whisper_config(&raw, &path.display().to_string())
+    let bytes = read_bounded_metadata_file(path, MAX_WHISPER_CONFIG_BYTES, "config")?;
+    let raw = std::str::from_utf8(&bytes)
+        .with_context(|| format!("Whisper config {} is not UTF-8", path.display()))?;
+    parse_whisper_config(raw, &path.display().to_string())
+}
+
+fn read_bounded_metadata_file(path: &Path, max_bytes: u64, label: &str) -> Result<Vec<u8>> {
+    let mut file = {
+        // nosemgrep: rust.actix.path-traversal.tainted-path.tainted-path -- Read-only validation of an operator-selected local model artifact or internally resolved cache child.
+        fs::File::open(path)
+    }
+    .with_context(|| format!("open Whisper {label} {}", path.display()))?;
+    let metadata = file
+        .metadata()
+        .with_context(|| format!("inspect Whisper {label} {}", path.display()))?;
+    if !metadata.is_file() {
+        return Err(anyhow!(
+            "Whisper {label} {} is not a regular file",
+            path.display()
+        ));
+    }
+    if metadata.len() > max_bytes {
+        return Err(anyhow!(
+            "Whisper {label} {} size {} exceeds the {max_bytes}-byte limit",
+            path.display(),
+            metadata.len()
+        ));
+    }
+
+    let mut bytes = Vec::with_capacity(metadata.len() as usize);
+    (&mut file)
+        .take(max_bytes + 1)
+        .read_to_end(&mut bytes)
+        .with_context(|| format!("read Whisper {label} {}", path.display()))?;
+    if bytes.len() as u64 > max_bytes {
+        return Err(anyhow!(
+            "Whisper {label} {} grew beyond the {max_bytes}-byte limit while reading",
+            path.display()
+        ));
+    }
+    Ok(bytes)
 }
 
 /// Parse and validate the MLX architecture consumed by Candle's Whisper loader.
@@ -263,6 +314,11 @@ pub(crate) fn parse_whisper_config(raw: &str, source: &str) -> Result<WhisperArc
     if architecture.n_vocab > u32::MAX as usize {
         return Err(anyhow!(
             "Whisper config {source} requires n_vocab to fit tokenizer u32 IDs"
+        ));
+    }
+    if architecture.n_vocab > MAX_WHISPER_VOCAB {
+        return Err(anyhow!(
+            "Whisper config {source} exceeds the supported Whisper vocabulary of {MAX_WHISPER_VOCAB} tokens"
         ));
     }
     if architecture.n_audio_layer > MAX_WHISPER_LAYERS
@@ -951,6 +1007,11 @@ mod tests {
         maximum_state["n_audio_state"] = serde_json::json!(MAX_WHISPER_STATE_WIDTH);
         maximum_state["n_text_state"] = serde_json::json!(MAX_WHISPER_STATE_WIDTH);
         parse_whisper_config(&maximum_state.to_string(), "fixture").unwrap();
+
+        let mut oversized_vocab = valid_config();
+        oversized_vocab["n_vocab"] = serde_json::json!(MAX_WHISPER_VOCAB + 1);
+        let err = parse_whisper_config(&oversized_vocab.to_string(), "fixture").unwrap_err();
+        assert!(format!("{err:#}").contains("vocabulary of 51866"));
     }
 
     #[test]
@@ -1060,6 +1121,26 @@ mod tests {
             assert!(message.contains("4271"), "{message}");
             assert!(message.contains(&size.to_string()), "{message}");
         }
+    }
+
+    #[test]
+    fn config_and_tokenizer_are_bounded_before_json_parsing() {
+        let temp = TempDir::new().unwrap();
+        let config = temp.path().join("config.json");
+        let tokenizer = temp.path().join("tokenizer.json");
+        fs::File::create(&config)
+            .unwrap()
+            .set_len(MAX_WHISPER_CONFIG_BYTES + 1)
+            .unwrap();
+        fs::File::create(&tokenizer)
+            .unwrap()
+            .set_len(MAX_WHISPER_TOKENIZER_BYTES + 1)
+            .unwrap();
+
+        let config_err = load_whisper_architecture(&config).unwrap_err();
+        let tokenizer_err = validate_whisper_tokenizer(&tokenizer).unwrap_err();
+        assert!(format!("{config_err:#}").contains("1048576-byte limit"));
+        assert!(format!("{tokenizer_err:#}").contains("16777216-byte limit"));
     }
 
     #[test]

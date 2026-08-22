@@ -155,7 +155,8 @@ fn find_cached_whisper_tokenizer(
 
 /// Compose every available official warm-cache artifact and report final truth.
 fn complete_default_model_from_warm_cache(dest: &Path) -> Result<bool> {
-    if let Some(snapshot) = find_cached_default_model_pair()
+    if crate::whisper_weights::validate_whisper_model_pair(dest).is_err()
+        && let Some(snapshot) = find_cached_default_model_pair()
         && snapshot != dest
     {
         copy_default_model_pair(&snapshot, dest)?;
@@ -1304,16 +1305,24 @@ mod tests {
         );
     }
 
-    /// A cached tokenizer can complete an installed pair without a model download.
+    /// Cached tokenizer repair preserves an already-valid installed model pair.
     #[test]
     #[serial]
-    fn cached_tokenizer_completion_returns_final_bundle_truth() {
+    fn cached_tokenizer_completion_preserves_valid_installed_pair() {
+        use std::os::unix::fs::MetadataExt as _;
+
         let temp_dir = TempDir::new().unwrap();
         let cache = temp_dir.path().join("cache");
         let home = temp_dir.path().join("home");
         let destination = temp_dir.path().join("destination");
         create_complete_whisper_model(&destination);
         fs::remove_file(destination.join("tokenizer.json")).unwrap();
+
+        let model_snapshot = cache
+            .join("models--mlx-community--whisper-large-v3-turbo")
+            .join("snapshots")
+            .join("model-pair");
+        create_complete_whisper_model(&model_snapshot);
 
         let tokenizer_snapshot = cache
             .join("models--openai--whisper-large-v3-turbo")
@@ -1332,9 +1341,37 @@ mod tests {
         let _hf_hub = EnvGuard::unset("HF_HUB_CACHE");
         let _huggingface_hub = EnvGuard::unset("HUGGINGFACE_HUB_CACHE");
 
-        assert!(find_cached_default_model_pair().is_none());
+        let config_before = fs::read(destination.join("config.json")).unwrap();
+        let weights_before = fs::read(destination.join("model.safetensors")).unwrap();
+        let config_inode = fs::metadata(destination.join("config.json")).unwrap().ino();
+        let weights_inode = fs::metadata(destination.join("model.safetensors"))
+            .unwrap()
+            .ino();
+        let weight_partial_sentinel = destination.join("model.safetensors.partial");
+        fs::create_dir(&weight_partial_sentinel).unwrap();
+
+        assert_eq!(find_cached_default_model_pair(), Some(model_snapshot));
         assert!(complete_default_model_from_warm_cache(&destination).unwrap());
         validate_whisper_model_bundle(&destination).unwrap();
+        assert_eq!(
+            fs::read(destination.join("config.json")).unwrap(),
+            config_before
+        );
+        assert_eq!(
+            fs::read(destination.join("model.safetensors")).unwrap(),
+            weights_before
+        );
+        assert_eq!(
+            fs::metadata(destination.join("config.json")).unwrap().ino(),
+            config_inode
+        );
+        assert_eq!(
+            fs::metadata(destination.join("model.safetensors"))
+                .unwrap()
+                .ino(),
+            weights_inode
+        );
+        assert!(weight_partial_sentinel.is_dir());
     }
 
     /// A downloaded checksum mismatch is never promoted to the final mel path.

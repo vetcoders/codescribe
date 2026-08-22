@@ -358,6 +358,8 @@ required Whisper tensor name and shape plus the complete safetensors tensor
 table, exact consumed tensor set, bounded alignment metadata, dtype allowlist,
 mapped-name uniqueness, offsets, and file length. The
 disk loader applies this complete gate before mmap or model construction.
+Config and tokenizer JSON are size-bounded before parsing, and vocabulary size
+is capped at the largest supported official Whisper vocabulary.
 Downloads and warm-cache
 copies are written to `.partial` files and promoted only after per-file
 validation; an invalid destination is repaired on the next Download action
@@ -374,7 +376,8 @@ stream before use; missing dimensions are never replaced
 with runtime defaults.
 Warm-cache repair checks older snapshots when the newest config, weights, or
 tokenizer is invalid, and returns as soon as the composed destination validates,
-preserving offline recovery without redundant model downloads. Optional timestamp
+preserving an already-valid installed model pair when only a smaller artifact
+needs repair and avoiding a weights-sized temporary copy. Optional timestamp
 tokens are accepted only as a complete contiguous 20 ms range from 0.00 to 30.00 seconds.
 
 `CODESCRIBE_EMBED_EMBEDDER=1` is an explicit fat/debug path that compiles MiniLM into Rust artifacts. Normal builds resolve MiniLM from the signed app resource or HF cache. `CODESCRIBE_NO_EMBED=1` disables every optional binary embed; Silero remains embedded.

@@ -476,9 +476,10 @@ impl LocalWhisperEngine {
         let mel_filters_path = model_path.join("mel_filters.npz");
         crate::whisper_weights::validate_whisper_model_bundle(model_path)
             .context("validate complete Whisper model bundle")?;
-        let architecture = crate::whisper_weights::parse_whisper_config(
-            &safe_path::safe_read_to_string(&config_path)?,
-            &config_path.display().to_string(),
+        let architecture = crate::whisper_weights::load_whisper_architecture(&config_path)?;
+        let tokenizer = crate::whisper_weights::load_validated_whisper_tokenizer_for_architecture(
+            &tokenizer_path,
+            architecture,
         )?;
         let weights_path = crate::config::models::resolve_compatible_whisper_weights_path(
             model_path,
@@ -531,14 +532,6 @@ impl LocalWhisperEngine {
             plain_secs,
             build_started.elapsed().as_secs_f64()
         );
-
-        let tokenizer = Tokenizer::from_file(&tokenizer_path).map_err(|e| {
-            anyhow!(
-                "Failed to load tokenizer from {}: {}",
-                tokenizer_path.display(),
-                e
-            )
-        })?;
 
         // Load mel filters
         if !mel_filters_path.exists() {
@@ -1992,6 +1985,36 @@ mod model_payload_tests {
             .expect("invalid tokenizer must be rejected");
         let message = format!("{err:#}");
         assert!(message.contains("tokenizer"), "{message}");
+        assert!(
+            !message.contains("Failed to create Whisper Model"),
+            "{message}"
+        );
+    }
+
+    #[test]
+    fn local_loader_rejects_oversized_tokenizer_before_model_load() {
+        let temp = TempDir::new().unwrap();
+        write_valid_bundle_artifacts(temp.path());
+        let architecture = crate::whisper_weights::parse_whisper_config(
+            include_str!("../../../tests/fixtures/whisper_test_config.json"),
+            "test fixture",
+        )
+        .unwrap();
+        crate::whisper_weights::write_test_whisper_weights(
+            &temp.path().join("weights.safetensors"),
+            architecture,
+        )
+        .unwrap();
+        fs::File::create(temp.path().join("tokenizer.json"))
+            .unwrap()
+            .set_len(crate::whisper_weights::MAX_WHISPER_TOKENIZER_BYTES + 1)
+            .unwrap();
+
+        let err = LocalWhisperEngine::new(temp.path())
+            .err()
+            .expect("oversized tokenizer must be rejected");
+        let message = format!("{err:#}");
+        assert!(message.contains("16777216-byte limit"), "{message}");
         assert!(
             !message.contains("Failed to create Whisper Model"),
             "{message}"
