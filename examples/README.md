@@ -21,7 +21,7 @@ cargo run --release --example demo_full_pipeline -- <audio_file>
 cargo run --release --example demo_full_pipeline -- --assistive <audio_file>
 ```
 
-Requires a local Whisper model (default `~/.codescribe/models/whisper-large-v3-turbo`, legacy q8 dir as fallback, override with `--model`) and `LLM_ENDPOINT`/`LLM_MODEL` (or `LLM_FORMATTING_*` overrides) for the formatting step.
+Requires the complete fp16 Whisper model at `~/.codescribe/models/whisper-large-v3-turbo` (override with `--model`) and `LLM_ENDPOINT`/`LLM_MODEL` (or `LLM_FORMATTING_*` overrides) for the formatting step. Quantized Whisper payloads are refused.
 
 ### `e2e_stt.rs`
 
@@ -88,7 +88,7 @@ VAD internals are hardcoded in `core/vad/config.rs` (Silero defaults).
 
 - macOS (uses CoreAudio via cpal)
 - Microphone access permissions
-- Rust 1.85+ (edition 2024) with tokio runtime
+- Rust 1.88+ (the workspace MSRV) with tokio runtime
 
 ---
 

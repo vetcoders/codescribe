@@ -1,6 +1,6 @@
 //! ONNX Whisper adapter — speech-to-text via ort (ONNX Runtime).
 //!
-//! **STATUS: EXPERIMENTAL** — Candle q8 (MLX) remains the production default.
+//! **STATUS: EXPERIMENTAL** — Candle fp16 (MLX) is the production local path.
 //! Benchmark (2026-02-11, 10 Polish files) showed ONNX +3.6–3.9pp WER vs Candle.
 //! Enable via `CODESCRIBE_STT_ENGINE=onnx` for testing only.
 //!
@@ -283,7 +283,8 @@ impl OnnxEngine {
 
         // Resolve special token IDs from tokenizer
         let tokens = ResolvedTokens::from_tokenizer(&tokenizer)?;
-        let ts_range = TimestampRange::from_tokenizer(&tokenizer);
+        let tokenizer_vocab_size = tokenizer.get_vocab_size(true);
+        let ts_range = TimestampRange::from_tokenizer(&tokenizer, tokenizer_vocab_size)?;
         let decoding_params = DecodingParams::default();
 
         // Load mel filters from mel_filters.npz if available, otherwise compute

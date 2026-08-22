@@ -90,6 +90,7 @@ pub mod tts;
 pub mod util;
 /// Silero neural voice-activity detection.
 pub mod vad;
+pub(crate) mod whisper_weights;
 pub use stt::whisper;
 
 // ═══════════════════════════════════════════════════════════

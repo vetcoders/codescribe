@@ -16,22 +16,21 @@ pub const DEFAULT_MODEL: &str = "whisper-large-v3-turbo";
 /// the Settings → Dictation download. fp16 weights: no q8→F32 dequantization
 /// on load, at the cost of a larger download than the q8 repo.
 pub const DEFAULT_WHISPER_REPO: &str = "mlx-community/whisper-large-v3-turbo";
-/// Previous default (q8). Kept as a resolution fallback so installs that
-/// already carry it keep transcribing without a re-download.
+/// Former quantized model alias retained only for source compatibility.
+#[deprecated(note = "quantized Whisper is unsupported; no runtime fallback uses this alias")]
 pub const LEGACY_MODEL: &str = "whisper-large-v3-turbo-mlx-q8";
-/// Repo behind [`LEGACY_MODEL`]. Also the companion source for
-/// [`COMPANION_MODEL_FILES`], which [`DEFAULT_WHISPER_REPO`] does not ship.
+/// Former quantized model repository retained only for source compatibility.
+#[deprecated(note = "quantized Whisper is unsupported; no runtime fallback uses this repository")]
 pub const LEGACY_WHISPER_REPO: &str = "LibraxisAI/whisper-large-v3-turbo-mlx-q8";
-/// Files the mlx-community repo does not ship. Both are quantization-independent
-/// (same tokenizer and mel filterbank across q8/fp16), so composing them from
-/// the legacy repo yields a correct model directory.
-const COMPANION_MODEL_FILES: [&str; 2] = ["tokenizer.json", "mel_filters.npz"];
-
+/// Official Transformers tokenizer paired with Whisper large-v3-turbo.
+pub(crate) const TOKENIZER_WHISPER_REPO: &str = "openai/whisper-large-v3-turbo";
+/// Pinned OpenAI Whisper asset. The checksum is asserted by the installer.
+pub(crate) const MEL_FILTERS_URL: &str = "https://raw.githubusercontent.com/openai/whisper/5f86d1d86363843179951550570367b37c5d6f78/whisper/assets/mel_filters.npz";
 /// Files that must all be present for a directory to count as a usable model.
 const REQUIRED_MODEL_FILES: [&str; 3] = ["config.json", "tokenizer.json", "mel_filters.npz"];
 /// Weight file names, of which **any one** satisfies the completeness check —
 /// upstream repos ship either `model.safetensors` or `weights.safetensors`.
-const REQUIRED_MODEL_WEIGHTS: [&str; 2] = ["weights.safetensors", "model.safetensors"];
+const REQUIRED_MODEL_WEIGHTS: [&str; 2] = crate::whisper_weights::SUPPORTED_NAMES;
 
 /// Canonicalize a path, falling back to the original on failure.
 ///
@@ -51,26 +50,47 @@ fn canonicalize_or_self(path: PathBuf) -> PathBuf {
     }
 }
 
-/// Whether `path` holds a fully usable Whisper model.
-///
-/// Requires every [`REQUIRED_MODEL_FILES`] entry plus at least one of
-/// [`REQUIRED_MODEL_WEIGHTS`]. This is the gate that keeps half-downloaded
-/// directories from being advertised or resolved as loadable models.
-fn is_complete_whisper_model_dir(path: &Path) -> bool {
-    REQUIRED_MODEL_FILES
-        .iter()
-        .all(|name| path.join(name).exists())
-        && REQUIRED_MODEL_WEIGHTS
-            .iter()
-            .any(|name| path.join(name).exists())
+/// Expand a leading `~/` in operator-provided model paths.
+fn expand_home_path(value: &str) -> PathBuf {
+    if let Some(relative) = value.strip_prefix("~/")
+        && let Some(home) = std::env::var_os("HOME")
+    {
+        return PathBuf::from(home).join(relative);
+    }
+    PathBuf::from(value)
 }
+
+/// Whether `path` holds a fully usable, structurally valid Whisper model.
+fn is_complete_whisper_model_dir(path: &Path) -> bool {
+    validate_whisper_model_bundle(path).is_ok()
+}
+
+/// Validate every artifact required by the runtime loader.
+///
+/// Safetensors validation is structural rather than cryptographic: the format
+/// has no payload checksum. The validator checks the complete tensor table,
+/// dtype allowlist, byte sizes, contiguous offsets, and final file length.
+pub fn validate_whisper_model_bundle(path: &Path) -> Result<()> {
+    crate::whisper_weights::validate_whisper_model_bundle(path)
+}
+
+#[cfg(test)]
+use crate::whisper_weights::resolve_valid_whisper_weights_path;
+/// Resolve the first structurally valid supported weight file.
+///
+/// Upstream snapshots may contain either filename, and stale composition can
+/// leave both behind. Preserve the documented filename priority, but never let
+/// an invalid primary shadow a valid alternative that the runtime can load.
+pub(crate) use crate::whisper_weights::{
+    resolve_compatible_whisper_weights_path, validate_safetensors_file,
+};
 
 /// Whether a candidate models root owns at least one complete Whisper model.
 ///
 /// A bundled `Resources/models` directory may contain only another model
 /// family (for example the semantic embedder). Treating mere directory
 /// existence as Whisper ownership shadows the user-installed fp16 model and
-/// incorrectly drops runtime resolution to the legacy q8 cache.
+/// could incorrectly select a quantized cache instead.
 fn models_root_contains_complete_whisper_model(path: &Path) -> bool {
     fs::read_dir(path).is_ok_and(|entries| {
         entries
@@ -90,31 +110,64 @@ fn hf_snapshot_for_model(model_ref: &str) -> Option<PathBuf> {
         return None;
     }
 
-    if trimmed.contains('/') {
-        return hf_cache::find_snapshot_with_any(
-            trimmed,
-            &REQUIRED_MODEL_FILES,
-            &REQUIRED_MODEL_WEIGHTS,
-        );
-    }
+    let repo = if trimmed.contains('/') {
+        trimmed
+    } else if trimmed == DEFAULT_MODEL {
+        DEFAULT_WHISPER_REPO
+    } else {
+        return None;
+    };
+    hf_cache::find_snapshot_with_any_matching(
+        repo,
+        &REQUIRED_MODEL_FILES,
+        &REQUIRED_MODEL_WEIGHTS,
+        is_complete_whisper_model_dir,
+    )
+}
 
-    if trimmed == DEFAULT_MODEL {
-        return hf_cache::find_snapshot_with_any(
-            DEFAULT_WHISPER_REPO,
-            &REQUIRED_MODEL_FILES,
-            &REQUIRED_MODEL_WEIGHTS,
-        );
-    }
+/// Find a warm default-repo snapshot containing one valid config/weights pair.
+fn find_cached_default_model_pair() -> Option<PathBuf> {
+    hf_cache::find_snapshot_with_any_matching(
+        DEFAULT_WHISPER_REPO,
+        &["config.json"],
+        &REQUIRED_MODEL_WEIGHTS,
+        |snapshot| crate::whisper_weights::validate_whisper_model_pair(snapshot).is_ok(),
+    )
+}
 
-    if trimmed == LEGACY_MODEL {
-        return hf_cache::find_snapshot_with_any(
-            LEGACY_WHISPER_REPO,
-            &REQUIRED_MODEL_FILES,
-            &REQUIRED_MODEL_WEIGHTS,
-        );
-    }
+/// Find a warm OpenAI snapshot containing a parseable Whisper tokenizer.
+fn find_cached_whisper_tokenizer(
+    architecture: crate::whisper_weights::WhisperArchitecture,
+) -> Option<PathBuf> {
+    hf_cache::find_snapshot_with_any_matching(
+        TOKENIZER_WHISPER_REPO,
+        &["tokenizer.json"],
+        &[],
+        |snapshot| {
+            crate::whisper_weights::validate_whisper_tokenizer_for_architecture(
+                &snapshot.join("tokenizer.json"),
+                architecture,
+            )
+            .is_ok()
+        },
+    )
+}
 
-    None
+/// Compose every available official warm-cache artifact and report final truth.
+fn complete_default_model_from_warm_cache(dest: &Path) -> Result<bool> {
+    if crate::whisper_weights::validate_whisper_model_pair(dest).is_err()
+        && let Some(snapshot) = find_cached_default_model_pair()
+        && snapshot != dest
+    {
+        copy_default_model_pair(&snapshot, dest)?;
+    }
+    if let Ok(architecture) =
+        crate::whisper_weights::load_whisper_architecture(&dest.join("config.json"))
+        && let Some(snapshot) = find_cached_whisper_tokenizer(architecture)
+    {
+        copy_model_files(&snapshot, dest, &["tokenizer.json"], true)?;
+    }
+    Ok(is_complete_whisper_model_dir(dest))
 }
 
 /// Owner of the resolved runtime models directory.
@@ -147,7 +200,7 @@ impl ModelManager {
     fn resolve_models_dir() -> Result<PathBuf> {
         // Environment override
         if let Ok(path) = std::env::var("CODESCRIBE_MODELS_DIR") {
-            let p = PathBuf::from(&path);
+            let p = expand_home_path(path.trim());
             if p.exists() {
                 return Ok(p);
             }
@@ -270,8 +323,6 @@ impl ModelManager {
 /// 3. Configured Hugging Face repo snapshot
 /// 4. Default models-dir alias (`whisper-large-v3-turbo`)
 /// 5. Default Hugging Face snapshot (`mlx-community/whisper-large-v3-turbo`)
-/// 6. Legacy models-dir alias (`whisper-large-v3-turbo-mlx-q8`)
-/// 7. Legacy Hugging Face snapshot (`LibraxisAI/whisper-large-v3-turbo-mlx-q8`)
 pub fn resolve_runtime_whisper_model_path(configured_model: Option<&str>) -> Result<PathBuf> {
     if let Ok(path) = std::env::var("CODESCRIBE_MODEL_PATH") {
         let candidate = PathBuf::from(path.trim());
@@ -305,22 +356,13 @@ pub fn resolve_runtime_whisper_model_path(configured_model: Option<&str>) -> Res
         return Ok(snapshot);
     }
 
-    let legacy_local = manager.get_model_path(LEGACY_MODEL);
-    if is_complete_whisper_model_dir(&legacy_local) {
-        return Ok(canonicalize_or_self(legacy_local));
-    }
-
-    if let Some(snapshot) = hf_snapshot_for_model(LEGACY_MODEL) {
-        return Ok(snapshot);
-    }
-
     Err(anyhow!(
-        "Whisper runtime fallback model not available.\n\
+        "Unquantized Whisper runtime model not available.\n\
          Public builds do not embed Whisper; install it from Settings → Dictation,\n\
          set CODESCRIBE_MODEL_PATH, configure LOCAL_MODEL, or warm the Hugging Face cache.\n\n\
-         Download with: hf download {}\n\
+         Quantized q8 models are intentionally refused.\n\n\
+         Download with: make download-model\n\
          Or: Settings → Dictation → Download Whisper",
-        DEFAULT_WHISPER_REPO
     ))
 }
 
@@ -372,103 +414,87 @@ where
         return Ok(canonicalize_or_self(dest));
     }
 
-    // Compose from warm local sources first, so Settings "Download" is a no-op
-    // when the pieces are already on disk. The primary repo ships only
-    // config.json + weights; tokenizer.json and mel_filters.npz come from the
-    // legacy q8 sources. config.json and weights must stay paired to the
-    // primary repo — legacy weights under the new alias would mislabel q8 as
-    // fp16, so legacy sources only ever contribute the companion files.
-    if let Some(snapshot) = hf_cache::find_snapshot(DEFAULT_WHISPER_REPO, &["config.json"])
-        && snapshot != dest
-    {
-        copy_model_files(&snapshot, &dest, &["config.json"])?;
-        copy_model_files(&snapshot, &dest, &REQUIRED_MODEL_WEIGHTS)?;
-    }
-    let legacy_local = manager.get_model_path(LEGACY_MODEL);
-    copy_model_files(&legacy_local, &dest, &COMPANION_MODEL_FILES)?;
-    if let Some(snapshot) = hf_snapshot_for_model(LEGACY_MODEL) {
-        copy_model_files(&snapshot, &dest, &COMPANION_MODEL_FILES)?;
-    }
-    if is_complete_whisper_model_dir(&dest) {
+    // Compose from warm official sources first, so Settings "Download" is a
+    // no-op when the pieces are already on disk. Config and weights come from
+    // mlx-community's fp16 conversion; tokenizer comes from OpenAI's matching
+    // Transformers repository. The pinned mel filterbank is fetched below.
+    if complete_default_model_from_warm_cache(&dest)? {
         return Ok(canonicalize_or_self(dest));
     }
 
     fs::create_dir_all(&dest).with_context(|| format!("create {}", dest.display()))?;
 
     let client = reqwest::blocking::Client::builder()
-        .user_agent("codescribe-whisper-download/0.13")
+        .user_agent(format!(
+            "codescribe-whisper-download/{}",
+            env!("CARGO_PKG_VERSION")
+        ))
         .timeout(std::time::Duration::from_secs(60 * 30))
         .build()
         .context("build HTTP client for Whisper download")?;
 
     // Small files first so a failed auth fails fast before multi-GB weights.
-    // config.json describes the primary weights, so it has no fallback source;
-    // the companion files fall back to the legacy repo when the primary 404s.
     download_hf_file(
         &client,
         DEFAULT_WHISPER_REPO,
         "config.json",
         &dest.join("config.json"),
         &mut on_progress,
+        true,
     )?;
-    for name in COMPANION_MODEL_FILES {
-        let target = dest.join(name);
-        if let Err(err) = download_hf_file(
-            &client,
-            DEFAULT_WHISPER_REPO,
-            name,
-            &target,
-            &mut on_progress,
-        ) {
+    download_hf_file(
+        &client,
+        TOKENIZER_WHISPER_REPO,
+        "tokenizer.json",
+        &dest.join("tokenizer.json"),
+        &mut on_progress,
+        true,
+    )?;
+    download_url_file(
+        &client,
+        MEL_FILTERS_URL,
+        "mel_filters.npz",
+        &dest.join("mel_filters.npz"),
+        &mut on_progress,
+    )?;
+    let weights_dest = dest.join("weights.safetensors");
+    let weights_alt = dest.join("model.safetensors");
+    // An incomplete default bundle is repaired as one model generation. Even
+    // structurally valid installed weights may belong to another architecture,
+    // so pair them with the freshly selected default config instead of reusing
+    // them independently.
+    match download_hf_file(
+        &client,
+        DEFAULT_WHISPER_REPO,
+        "weights.safetensors",
+        &weights_dest,
+        &mut on_progress,
+        true,
+    ) {
+        Ok(()) => remove_other_weight_file(&dest, "weights.safetensors")?,
+        Err(err) => {
             tracing::warn!(
                 error = %err,
-                file = name,
-                "primary repo does not ship this file; falling back to legacy repo"
+                "weights.safetensors missing; trying model.safetensors"
             );
             download_hf_file(
                 &client,
-                LEGACY_WHISPER_REPO,
-                name,
-                &target,
+                DEFAULT_WHISPER_REPO,
+                "model.safetensors",
+                &weights_alt,
                 &mut on_progress,
+                true,
             )?;
+            remove_other_weight_file(&dest, "model.safetensors")?;
         }
     }
 
-    let weights_dest = dest.join("weights.safetensors");
-    let weights_alt = dest.join("model.safetensors");
-    if !weights_dest.exists() && !weights_alt.exists() {
-        // mlx-community ships weights.safetensors; fall back to model.safetensors if 404.
-        match download_hf_file(
-            &client,
-            DEFAULT_WHISPER_REPO,
-            "weights.safetensors",
-            &weights_dest,
-            &mut on_progress,
-        ) {
-            Ok(()) => {}
-            Err(err) => {
-                tracing::warn!(
-                    error = %err,
-                    "weights.safetensors missing; trying model.safetensors"
-                );
-                download_hf_file(
-                    &client,
-                    DEFAULT_WHISPER_REPO,
-                    "model.safetensors",
-                    &weights_alt,
-                    &mut on_progress,
-                )?;
-            }
-        }
-    }
-
-    if !is_complete_whisper_model_dir(&dest) {
-        return Err(anyhow!(
-            "Whisper download finished but model dir is incomplete: {}",
+    validate_whisper_model_bundle(&dest).with_context(|| {
+        format!(
+            "Whisper download finished but bundle validation failed: {}",
             dest.display()
-        ));
-    }
+        )
+    })?;
 
     Ok(canonicalize_or_self(dest))
 }
@@ -476,10 +502,10 @@ where
 /// Copy selected model files from a local source into the user models directory.
 ///
 /// Lets Settings → Download complete without network traffic when the pieces are
-/// already on disk (warm HF cache, legacy q8 install). A missing source is a
-/// clean no-op and existing destination files are left alone, so an interrupted
-/// composition resumes rather than restarting.
-fn copy_model_files(src: &Path, dest: &Path, names: &[&str]) -> Result<()> {
+/// already on disk (warm official caches). Every copied file is validated in a
+/// sibling `.partial` path before atomic promotion. Callers may preserve valid
+/// destinations or deliberately replace a config/weights generation as a pair.
+fn copy_model_files(src: &Path, dest: &Path, names: &[&str], replace_valid: bool) -> Result<()> {
     if !src.is_dir() {
         return Ok(());
     }
@@ -487,10 +513,56 @@ fn copy_model_files(src: &Path, dest: &Path, names: &[&str]) -> Result<()> {
     for name in names {
         let from = src.join(name);
         let to = dest.join(name);
-        if from.exists() && !to.exists() {
-            // nosemgrep: rust.actix.path-traversal.tainted-path.tainted-path -- Both ends are internal: `name` comes from the REQUIRED_MODEL_* / COMPANION_MODEL_FILES compile-time constants, and callers pass HF cache snapshot dirs or ModelManager::get_model_path outputs. No caller-supplied path component reaches here.
-            fs::copy(&from, &to)
-                .with_context(|| format!("copy {} → {}", from.display(), to.display()))?;
+        if !from.is_file() || (!replace_valid && validate_model_file(name, &to).is_ok()) {
+            continue;
+        }
+        if let Err(err) = validate_model_file(name, &from) {
+            tracing::warn!(source = %from.display(), error = %err, "ignoring invalid cached model artifact");
+            continue;
+        }
+        let partial = partial_path(&to);
+        // nosemgrep: rust.actix.path-traversal.tainted-path.tainted-path -- Both ends are internal: `name` comes from compile-time model file constants, and callers pass HF cache snapshot dirs or ModelManager::get_model_path outputs. No caller-supplied path component reaches here.
+        fs::copy(&from, &partial)
+            .with_context(|| format!("copy {} → {}", from.display(), partial.display()))?;
+        if let Err(err) = validate_model_file(name, &partial) {
+            let _ = fs::remove_file(&partial);
+            return Err(err).with_context(|| format!("validate copied {}", name));
+        }
+        replace_file(&partial, &to)?;
+    }
+    Ok(())
+}
+
+/// Replace config and weights only when both come from one valid default snapshot.
+fn copy_default_model_pair(src: &Path, dest: &Path) -> Result<bool> {
+    if crate::whisper_weights::validate_whisper_model_pair(src).is_err() {
+        return Ok(false);
+    }
+    let architecture = crate::whisper_weights::parse_whisper_config(
+        // nosemgrep: rust.actix.path-traversal.tainted-path.tainted-path -- `src` is a resolved child of an internal HF cache root selected by repository id; no request path component reaches this repair path.
+        &fs::read_to_string(src.join("config.json"))?,
+        &src.join("config.json").display().to_string(),
+    )?;
+    let weights = resolve_compatible_whisper_weights_path(src, architecture)?;
+    let Some(weight_name) = weights.file_name().and_then(|name| name.to_str()) else {
+        return Ok(false);
+    };
+
+    copy_model_files(src, dest, &["config.json"], true)?;
+    copy_model_files(src, dest, &[weight_name], true)?;
+    remove_other_weight_file(dest, weight_name)?;
+    Ok(true)
+}
+
+fn remove_other_weight_file(dest: &Path, selected: &str) -> Result<()> {
+    for name in REQUIRED_MODEL_WEIGHTS {
+        if name == selected {
+            continue;
+        }
+        let stale = dest.join(name);
+        if stale.exists() {
+            fs::remove_file(&stale)
+                .with_context(|| format!("remove stale Whisper weights {}", stale.display()))?;
         }
     }
     Ok(())
@@ -499,12 +571,35 @@ fn copy_model_files(src: &Path, dest: &Path, names: &[&str]) -> Result<()> {
 /// Fetch one file from the Hugging Face resolve endpoint into `dest`.
 ///
 /// Downloads to a sibling `.partial` file and renames on success, so an aborted
-/// transfer can never leave a truncated file that passes the completeness check.
-/// A non-empty `dest` is treated as already done. `HF_TOKEN` is sent as bearer
-/// auth when set, for gated repos.
+/// transfer can never leave a truncated file that passes bundle validation.
+/// A valid `dest` is preserved unless the caller is repairing a paired default
+/// model generation. `HF_TOKEN` is sent as bearer auth when set, for gated repos.
 fn download_hf_file<F>(
     client: &reqwest::blocking::Client,
     repo: &str,
+    filename: &str,
+    dest: &Path,
+    on_progress: &mut F,
+    replace_valid: bool,
+) -> Result<()>
+where
+    F: FnMut(&str, u64, Option<u64>),
+{
+    let url = format!("https://huggingface.co/{repo}/resolve/main/{filename}");
+    download_url_file_authenticated(
+        client,
+        &url,
+        filename,
+        dest,
+        on_progress,
+        true,
+        replace_valid,
+    )
+}
+
+fn download_url_file<F>(
+    client: &reqwest::blocking::Client,
+    url: &str,
     filename: &str,
     dest: &Path,
     on_progress: &mut F,
@@ -512,18 +607,31 @@ fn download_hf_file<F>(
 where
     F: FnMut(&str, u64, Option<u64>),
 {
-    if dest.exists() && dest.metadata().map(|m| m.len() > 0).unwrap_or(false) {
+    download_url_file_authenticated(client, url, filename, dest, on_progress, false, false)
+}
+
+fn download_url_file_authenticated<F>(
+    client: &reqwest::blocking::Client,
+    url: &str,
+    filename: &str,
+    dest: &Path,
+    on_progress: &mut F,
+    use_hf_token: bool,
+    replace_valid: bool,
+) -> Result<()>
+where
+    F: FnMut(&str, u64, Option<u64>),
+{
+    if !replace_valid && validate_model_file(filename, dest).is_ok() {
         on_progress(
             filename,
-            dest.metadata().map(|m| m.len()).unwrap_or(0),
+            dest.metadata().map(|metadata| metadata.len()).unwrap_or(0),
             None,
         );
         return Ok(());
     }
-
-    let url = format!("https://huggingface.co/{repo}/resolve/main/{filename}");
-    let mut request = client.get(&url);
-    if let Ok(token) = std::env::var("HF_TOKEN") {
+    let mut request = client.get(url);
+    if use_hf_token && let Ok(token) = std::env::var("HF_TOKEN") {
         let token = token.trim();
         if !token.is_empty() {
             request = request.bearer_auth(token);
@@ -537,12 +645,7 @@ where
         .with_context(|| format!("HTTP error for {url}"))?;
 
     let total = response.content_length();
-    let partial = dest.with_file_name(format!(
-        "{}.partial",
-        dest.file_name()
-            .and_then(|n| n.to_str())
-            .unwrap_or("download")
-    ));
+    let partial = partial_path(dest);
 
     if let Some(parent) = partial.parent() {
         fs::create_dir_all(parent)?;
@@ -569,10 +672,41 @@ where
     file.flush()?;
     drop(file);
 
-    fs::rename(&partial, dest)
-        .with_context(|| format!("rename {} → {}", partial.display(), dest.display()))?;
+    if let Err(err) = validate_model_file(filename, &partial) {
+        let _ = fs::remove_file(&partial);
+        return Err(err).with_context(|| format!("validate downloaded {filename}"));
+    }
+    replace_file(&partial, dest)?;
     on_progress(filename, done, total.or(Some(done)));
     Ok(())
+}
+
+fn partial_path(dest: &Path) -> PathBuf {
+    dest.with_file_name(format!(
+        "{}.partial",
+        dest.file_name()
+            .and_then(|name| name.to_str())
+            .unwrap_or("download")
+    ))
+}
+
+fn replace_file(partial: &Path, dest: &Path) -> Result<()> {
+    if dest.exists() {
+        fs::remove_file(dest)
+            .with_context(|| format!("remove invalid model artifact {}", dest.display()))?;
+    }
+    fs::rename(partial, dest)
+        .with_context(|| format!("rename {} → {}", partial.display(), dest.display()))
+}
+
+fn validate_model_file(filename: &str, path: &Path) -> Result<()> {
+    match filename {
+        "config.json" => crate::whisper_weights::validate_whisper_config(path),
+        "tokenizer.json" => crate::whisper_weights::validate_whisper_tokenizer(path),
+        "mel_filters.npz" => crate::whisper_weights::verify_mel_filters(path),
+        "weights.safetensors" | "model.safetensors" => validate_safetensors_file(path),
+        _ => Err(anyhow!("unsupported Whisper model artifact: {filename}")),
+    }
 }
 
 /// ModelManager resolution, completeness gates, and env-override isolation tests.
@@ -592,6 +726,14 @@ mod tests {
     impl EnvGuard {
         /// Set `key` to `value`, remembering the previous value for `Drop`.
         fn set(key: &'static str, value: &Path) -> Self {
+            let prev = std::env::var(key).ok();
+            // SAFETY: these tests run under `serial` and restore the prior env.
+            unsafe { std::env::set_var(key, value) };
+            Self { key, prev }
+        }
+
+        /// Set `key` to a literal string, including shell-like path syntax.
+        fn set_str(key: &'static str, value: &str) -> Self {
             let prev = std::env::var(key).ok();
             // SAFETY: these tests run under `serial` and restore the prior env.
             unsafe { std::env::set_var(key, value) };
@@ -623,10 +765,57 @@ mod tests {
     /// Create a directory that passes `is_complete_whisper_model_dir`.
     fn create_complete_whisper_model(path: &Path) {
         fs::create_dir_all(path).unwrap();
-        fs::write(path.join("config.json"), "{}").unwrap();
-        fs::write(path.join("tokenizer.json"), "{}").unwrap();
-        fs::write(path.join("mel_filters.npz"), "npz").unwrap();
-        fs::write(path.join("model.safetensors"), "weights").unwrap();
+        fs::write(
+            path.join("config.json"),
+            include_str!("../../tests/fixtures/whisper_test_config.json"),
+        )
+        .unwrap();
+        let mut tokenizer = tokenizers::Tokenizer::new(tokenizers::models::bpe::BPE::default());
+        tokenizer.add_special_tokens(&[
+            tokenizers::AddedToken::from("<|startoftranscript|>", true),
+            tokenizers::AddedToken::from("<|endoftext|>", true),
+            tokenizers::AddedToken::from("<|transcribe|>", true),
+            tokenizers::AddedToken::from("<|pl|>", true),
+        ]);
+        tokenizer.save(path.join("tokenizer.json"), false).unwrap();
+        fs::write(
+            path.join("mel_filters.npz"),
+            decode_hex(include_str!(
+                "../../tests/fixtures/whisper_mel_filters.npz.hex"
+            )),
+        )
+        .unwrap();
+        let architecture = crate::whisper_weights::parse_whisper_config(
+            include_str!("../../tests/fixtures/whisper_test_config.json"),
+            "test fixture",
+        )
+        .unwrap();
+        crate::whisper_weights::write_test_whisper_weights(
+            &path.join("model.safetensors"),
+            architecture,
+        )
+        .unwrap();
+    }
+
+    fn decode_hex(raw: &str) -> Vec<u8> {
+        let digits: String = raw.chars().filter(|ch| !ch.is_whitespace()).collect();
+        assert!(digits.len().is_multiple_of(2));
+        digits
+            .as_bytes()
+            .as_chunks::<2>()
+            .0
+            .iter()
+            .map(|pair| u8::from_str_radix(std::str::from_utf8(pair).unwrap(), 16).unwrap())
+            .collect()
+    }
+
+    fn create_q8_whisper_model(path: &Path) {
+        create_complete_whisper_model(path);
+        fs::write(
+            path.join("config.json"),
+            r#"{"quantization":{"group_size":32,"bits":8}}"#,
+        )
+        .unwrap();
     }
 
     /// A bundle containing only the semantic embedder must not claim ownership
@@ -639,7 +828,7 @@ mod tests {
         fs::create_dir_all(&embedder).unwrap();
         fs::write(embedder.join("config.json"), "{}").unwrap();
         fs::write(embedder.join("tokenizer.json"), "{}").unwrap();
-        fs::write(embedder.join("model.safetensors"), "weights").unwrap();
+        fs::write(embedder.join("model.safetensors"), "not-a-safetensors-file").unwrap();
 
         assert!(!models_root_contains_complete_whisper_model(&models_dir));
 
@@ -675,11 +864,7 @@ mod tests {
         let models_dir = temp_dir.path().join("../../models");
         fs::create_dir_all(&models_dir).unwrap();
 
-        let model_names = [
-            "whisper-base-mlx-q8",
-            "whisper-medium-mlx-q8",
-            "whisper-large-v3-turbo-mlx-q8",
-        ];
+        let model_names = ["whisper-base-fp16", "whisper-medium-fp16", DEFAULT_MODEL];
 
         for name in &model_names {
             let model_path = models_dir.join(name);
@@ -695,6 +880,23 @@ mod tests {
             assert!(models.contains(&name.to_string()));
             assert!(manager.check_model_exists(name));
         }
+    }
+
+    /// A leading `~/` in the supported models-root override resolves via HOME.
+    #[test]
+    #[serial]
+    fn model_manager_expands_tilde_models_root() {
+        let temp_dir = TempDir::new().unwrap();
+        let home = temp_dir.path().join("home");
+        let models_dir = home.join("custom-models");
+        create_complete_whisper_model(&models_dir.join(DEFAULT_MODEL));
+
+        let _home = EnvGuard::set("HOME", &home);
+        let _models_dir = EnvGuard::set_str("CODESCRIBE_MODELS_DIR", "~/custom-models");
+
+        let manager = ModelManager::new().unwrap();
+        assert_eq!(manager.models_dir(), models_dir.as_path());
+        assert!(manager.check_model_exists(DEFAULT_MODEL));
     }
 
     /// Incomplete Whisper dirs are neither listed nor treated as existing.
@@ -716,6 +918,498 @@ mod tests {
         assert!(manager.check_model_exists("complete-whisper"));
         assert!(!manager.check_model_exists("incomplete-whisper"));
         assert_eq!(manager.list_models().unwrap(), vec!["complete-whisper"]);
+    }
+
+    /// Q8 is refused even when every expected file exists.
+    #[test]
+    #[serial]
+    fn model_manager_rejects_complete_q8_model() {
+        let temp_dir = TempDir::new().unwrap();
+        let models_dir = temp_dir.path().join("models");
+        let q8 = models_dir.join("renamed-as-fp16");
+        create_q8_whisper_model(&q8);
+
+        let _models_dir = EnvGuard::set("CODESCRIBE_MODELS_DIR", &models_dir);
+        let manager = ModelManager::new().unwrap();
+        assert!(!manager.check_model_exists("renamed-as-fp16"));
+        assert!(manager.list_models().unwrap().is_empty());
+    }
+
+    /// Presence alone is insufficient when the loader architecture is absent.
+    #[test]
+    fn model_manager_rejects_config_without_required_dimensions() {
+        let temp_dir = TempDir::new().unwrap();
+        let model = temp_dir.path().join("model");
+        create_complete_whisper_model(&model);
+        fs::write(model.join("config.json"), "{}").unwrap();
+
+        let err = validate_whisper_model_bundle(&model).unwrap_err();
+        assert!(format!("{err:#}").contains("n_mels"));
+        assert!(!is_complete_whisper_model_dir(&model));
+    }
+
+    /// A syntactically valid tokenizer must cover every configured vocabulary id.
+    #[test]
+    fn model_manager_rejects_tokenizer_smaller_than_configured_vocabulary() {
+        let temp_dir = TempDir::new().unwrap();
+        let model = temp_dir.path().join("model");
+        create_complete_whisper_model(&model);
+        fs::write(
+            model.join("config.json"),
+            include_str!("../../tests/fixtures/whisper_config.json"),
+        )
+        .unwrap();
+
+        let err = validate_whisper_model_bundle(&model).unwrap_err();
+        assert!(format!("{err:#}").contains("does not cover configured vocabulary"));
+        assert!(!is_complete_whisper_model_dir(&model));
+    }
+
+    /// A structurally valid safetensors file is not a Whisper model without its required tensors.
+    #[test]
+    fn model_manager_rejects_weights_missing_required_whisper_tensors() {
+        let temp_dir = TempDir::new().unwrap();
+        let model = temp_dir.path().join("model");
+        create_complete_whisper_model(&model);
+        let header = br#"{"model.weight":{"dtype":"F16","shape":[1],"data_offsets":[0,2]}}"#;
+        let mut safetensors = (header.len() as u64).to_le_bytes().to_vec();
+        safetensors.extend_from_slice(header);
+        safetensors.extend_from_slice(&[0, 0]);
+        fs::write(model.join("model.safetensors"), safetensors).unwrap();
+
+        let err = validate_whisper_model_bundle(&model).unwrap_err();
+        assert!(format!("{err:#}").contains("missing tensor"));
+        assert!(!is_complete_whisper_model_dir(&model));
+    }
+
+    /// Header-level detection catches packed q8 even if config metadata lies.
+    #[test]
+    fn model_manager_rejects_q8_tensor_header_without_quantization_config() {
+        let temp_dir = TempDir::new().unwrap();
+        let model = temp_dir.path().join("model");
+        create_complete_whisper_model(&model);
+        let header = br#"{"encoder.weight":{"dtype":"U32","shape":[1],"data_offsets":[0,4]},"encoder.scales":{"dtype":"F16","shape":[1],"data_offsets":[4,6]}}"#;
+        let mut safetensors = (header.len() as u64).to_le_bytes().to_vec();
+        safetensors.extend_from_slice(header);
+        safetensors.extend_from_slice(&[0; 6]);
+        fs::write(model.join("model.safetensors"), safetensors).unwrap();
+
+        assert!(!is_complete_whisper_model_dir(&model));
+    }
+
+    /// A non-Q8 integer tensor is still outside the fp16/fp32 runtime contract.
+    #[test]
+    fn model_manager_rejects_non_allowlisted_integer_tensor() {
+        let temp_dir = TempDir::new().unwrap();
+        let model = temp_dir.path().join("model");
+        create_complete_whisper_model(&model);
+        let header = br#"{"encoder.weight":{"dtype":"I32","shape":[1],"data_offsets":[0,4]}}"#;
+        let mut safetensors = (header.len() as u64).to_le_bytes().to_vec();
+        safetensors.extend_from_slice(header);
+        safetensors.extend_from_slice(&[0; 4]);
+        fs::write(model.join("model.safetensors"), safetensors).unwrap();
+
+        assert!(!is_complete_whisper_model_dir(&model));
+    }
+
+    /// A stale invalid primary filename must not shadow a valid alternative.
+    #[test]
+    fn model_manager_uses_valid_alternative_weights() {
+        let temp_dir = TempDir::new().unwrap();
+        let model = temp_dir.path().join("model");
+        create_complete_whisper_model(&model);
+        fs::write(model.join("weights.safetensors"), b"stale invalid weights").unwrap();
+
+        let resolved = resolve_valid_whisper_weights_path(&model).unwrap();
+        assert_eq!(
+            resolved.file_name().and_then(|name| name.to_str()),
+            Some("model.safetensors")
+        );
+        assert!(is_complete_whisper_model_dir(&model));
+    }
+
+    /// Filename priority remains deterministic when both alternatives validate.
+    #[test]
+    fn model_manager_prefers_valid_primary_weights() {
+        let temp_dir = TempDir::new().unwrap();
+        let model = temp_dir.path().join("model");
+        create_complete_whisper_model(&model);
+        fs::copy(
+            model.join("model.safetensors"),
+            model.join("weights.safetensors"),
+        )
+        .unwrap();
+
+        let resolved = resolve_valid_whisper_weights_path(&model).unwrap();
+        assert_eq!(
+            resolved.file_name().and_then(|name| name.to_str()),
+            Some("weights.safetensors")
+        );
+    }
+
+    /// Existing alternatives do not count when neither payload is valid.
+    #[test]
+    fn model_manager_rejects_all_invalid_weight_alternatives() {
+        let temp_dir = TempDir::new().unwrap();
+        let model = temp_dir.path().join("model");
+        create_complete_whisper_model(&model);
+        fs::write(model.join("weights.safetensors"), b"bad primary").unwrap();
+        fs::write(model.join("model.safetensors"), b"bad alternative").unwrap();
+
+        let err = resolve_valid_whisper_weights_path(&model).unwrap_err();
+        let message = format!("{err:#}");
+        assert!(message.contains("weights.safetensors"));
+        assert!(message.contains("model.safetensors"));
+        assert!(!is_complete_whisper_model_dir(&model));
+    }
+
+    /// Metadata alone is not a model and must not satisfy discovery.
+    #[test]
+    fn model_manager_rejects_safetensors_without_tensor_entries() {
+        let temp_dir = TempDir::new().unwrap();
+        let model = temp_dir.path().join("model");
+        create_complete_whisper_model(&model);
+        let header = br#"{"__metadata__":{"format":"mlx"}}"#;
+        let mut safetensors = (header.len() as u64).to_le_bytes().to_vec();
+        safetensors.extend_from_slice(header);
+        fs::write(model.join("model.safetensors"), safetensors).unwrap();
+
+        assert!(!is_complete_whisper_model_dir(&model));
+    }
+
+    /// Discovery must enforce the metadata schema used by the runtime loader.
+    #[test]
+    fn model_manager_rejects_malformed_safetensors_metadata() {
+        let temp_dir = TempDir::new().unwrap();
+        let model = temp_dir.path().join("model");
+        create_complete_whisper_model(&model);
+        let header = br#"{"__metadata__":{"format":1},"model.weight":{"dtype":"F16","shape":[1],"data_offsets":[0,2]}}"#;
+        let mut safetensors = (header.len() as u64).to_le_bytes().to_vec();
+        safetensors.extend_from_slice(header);
+        safetensors.extend_from_slice(&[0, 0]);
+        fs::write(model.join("model.safetensors"), safetensors).unwrap();
+
+        assert!(!is_complete_whisper_model_dir(&model));
+    }
+
+    /// Structurally empty tensors cannot represent a loadable Whisper model.
+    #[test]
+    fn model_manager_rejects_zero_element_tensor() {
+        let temp_dir = TempDir::new().unwrap();
+        let model = temp_dir.path().join("model");
+        create_complete_whisper_model(&model);
+        let header = br#"{"model.weight":{"dtype":"F16","shape":[0],"data_offsets":[0,0]}}"#;
+        let mut safetensors = (header.len() as u64).to_le_bytes().to_vec();
+        safetensors.extend_from_slice(header);
+        fs::write(model.join("model.safetensors"), safetensors).unwrap();
+
+        assert!(!is_complete_whisper_model_dir(&model));
+    }
+
+    /// String-valued safetensors metadata is compatible with the runtime loader.
+    #[test]
+    fn model_manager_accepts_string_safetensors_metadata() {
+        let temp_dir = TempDir::new().unwrap();
+        let model = temp_dir.path().join("model");
+        create_complete_whisper_model(&model);
+        let header = br#"{"__metadata__":{"format":"mlx"},"model.weight":{"dtype":"F16","shape":[1],"data_offsets":[0,2]}}"#;
+        let mut safetensors = (header.len() as u64).to_le_bytes().to_vec();
+        safetensors.extend_from_slice(header);
+        safetensors.extend_from_slice(&[0, 0]);
+        fs::write(model.join("model.safetensors"), safetensors).unwrap();
+
+        assert!(validate_safetensors_file(&model.join("model.safetensors")).is_ok());
+    }
+
+    /// Header offsets must describe the actual payload, not a truncated file.
+    #[test]
+    fn model_manager_rejects_truncated_safetensors_payload() {
+        let temp_dir = TempDir::new().unwrap();
+        let model = temp_dir.path().join("model");
+        create_complete_whisper_model(&model);
+        let weights = model.join("model.safetensors");
+        let len = fs::metadata(&weights).unwrap().len();
+        fs::OpenOptions::new()
+            .write(true)
+            .open(&weights)
+            .unwrap()
+            .set_len(len - 1)
+            .unwrap();
+
+        assert!(!is_complete_whisper_model_dir(&model));
+    }
+
+    /// A checksum mismatch cannot leave a directory advertised as complete.
+    #[test]
+    fn model_manager_rejects_corrupt_mel_filters() {
+        let temp_dir = TempDir::new().unwrap();
+        let model = temp_dir.path().join("model");
+        create_complete_whisper_model(&model);
+        fs::write(model.join("mel_filters.npz"), b"corrupt").unwrap();
+
+        assert!(!is_complete_whisper_model_dir(&model));
+    }
+
+    /// Parseable non-Whisper tokenizers must not be advertised as ready.
+    #[test]
+    fn model_manager_rejects_tokenizer_without_control_tokens() {
+        let temp_dir = TempDir::new().unwrap();
+        let model = temp_dir.path().join("model");
+        create_complete_whisper_model(&model);
+        tokenizers::Tokenizer::new(tokenizers::models::bpe::BPE::default())
+            .save(model.join("tokenizer.json"), false)
+            .unwrap();
+
+        assert!(!is_complete_whisper_model_dir(&model));
+        assert!(
+            validate_whisper_model_bundle(&model)
+                .unwrap_err()
+                .to_string()
+                .contains("missing required token")
+        );
+    }
+
+    /// A valid existing mel asset is reused without contacting the network.
+    #[test]
+    fn valid_existing_mel_skips_download() {
+        let temp_dir = TempDir::new().unwrap();
+        let mel = temp_dir.path().join("mel_filters.npz");
+        fs::write(
+            &mel,
+            decode_hex(include_str!(
+                "../../tests/fixtures/whisper_mel_filters.npz.hex"
+            )),
+        )
+        .unwrap();
+        let client = reqwest::blocking::Client::new();
+        let mut progress = |_name: &str, _done: u64, _total: Option<u64>| {};
+
+        download_url_file(
+            &client,
+            "http://127.0.0.1:0/must-not-be-called",
+            "mel_filters.npz",
+            &mel,
+            &mut progress,
+        )
+        .unwrap();
+    }
+
+    /// Invalid warm destinations are replaced from validated cache artifacts.
+    #[test]
+    fn cached_composition_repairs_invalid_destination_files() {
+        let temp_dir = TempDir::new().unwrap();
+        let source = temp_dir.path().join("source");
+        let destination = temp_dir.path().join("destination");
+        create_complete_whisper_model(&source);
+        create_complete_whisper_model(&destination);
+        fs::write(destination.join("config.json"), b"not json").unwrap();
+        fs::write(destination.join("tokenizer.json"), b"not json").unwrap();
+        fs::write(destination.join("mel_filters.npz"), b"bad mel").unwrap();
+        fs::write(destination.join("model.safetensors"), b"bad weights").unwrap();
+
+        copy_model_files(&source, &destination, &REQUIRED_MODEL_FILES, false).unwrap();
+        copy_model_files(&source, &destination, &REQUIRED_MODEL_WEIGHTS, false).unwrap();
+
+        validate_whisper_model_bundle(&destination).unwrap();
+        assert!(!destination.join("config.json.partial").exists());
+        assert!(!destination.join("model.safetensors.partial").exists());
+    }
+
+    /// Default repair replaces individually valid weights from another bundle.
+    #[test]
+    fn cached_default_pair_replaces_stale_valid_weights() {
+        let temp_dir = TempDir::new().unwrap();
+        let source = temp_dir.path().join("source");
+        let destination = temp_dir.path().join("destination");
+        create_complete_whisper_model(&source);
+        create_complete_whisper_model(&destination);
+        fs::rename(
+            destination.join("model.safetensors"),
+            destination.join("weights.safetensors"),
+        )
+        .unwrap();
+
+        assert!(copy_default_model_pair(&source, &destination).unwrap());
+        assert_eq!(
+            fs::read(destination.join("model.safetensors")).unwrap(),
+            fs::read(source.join("model.safetensors")).unwrap()
+        );
+        assert!(!destination.join("weights.safetensors").exists());
+        validate_whisper_model_bundle(&destination).unwrap();
+    }
+
+    /// Offline repair skips invalid newest cache entries for both model pieces.
+    #[test]
+    #[serial]
+    fn cached_repair_falls_back_to_older_valid_snapshots() {
+        use std::fs::FileTimes;
+        use std::time::{Duration, SystemTime};
+
+        let temp_dir = TempDir::new().unwrap();
+        let cache = temp_dir.path().join("cache");
+        let home = temp_dir.path().join("home");
+        fs::create_dir_all(&home).unwrap();
+
+        let _home = EnvGuard::set("HOME", &home);
+        let _cache = EnvGuard::set("CODESCRIBE_HF_CACHE", &cache);
+        let _hf_home = EnvGuard::unset("HF_HOME");
+        let _hf_hub = EnvGuard::unset("HF_HUB_CACHE");
+        let _huggingface_hub = EnvGuard::unset("HUGGINGFACE_HUB_CACHE");
+
+        let snapshot = |repo: &str, revision: &str| {
+            cache
+                .join(format!("models--{}", repo.replace('/', "--")))
+                .join("snapshots")
+                .join(revision)
+        };
+        let set_modified = |path: &Path, seconds: u64| {
+            fs::File::open(path)
+                .unwrap()
+                .set_times(
+                    FileTimes::new()
+                        .set_modified(SystemTime::UNIX_EPOCH + Duration::from_secs(seconds)),
+                )
+                .unwrap();
+        };
+
+        let older_model = snapshot(DEFAULT_WHISPER_REPO, "older");
+        let newer_model = snapshot(DEFAULT_WHISPER_REPO, "newer");
+        create_complete_whisper_model(&older_model);
+        create_complete_whisper_model(&newer_model);
+        fs::write(newer_model.join("model.safetensors"), b"corrupt").unwrap();
+        set_modified(&older_model, 10);
+        set_modified(&newer_model, 20);
+        assert_eq!(find_cached_default_model_pair(), Some(older_model.clone()));
+
+        let older_tokenizer = snapshot(TOKENIZER_WHISPER_REPO, "older");
+        let newer_tokenizer = snapshot(TOKENIZER_WHISPER_REPO, "newer");
+        create_complete_whisper_model(&older_tokenizer);
+        create_complete_whisper_model(&newer_tokenizer);
+        let mut incomplete_tokenizer =
+            tokenizers::Tokenizer::new(tokenizers::models::bpe::BPE::default());
+        incomplete_tokenizer.add_special_tokens(&[
+            tokenizers::AddedToken::from("<|startoftranscript|>", true),
+            tokenizers::AddedToken::from("<|endoftext|>", true),
+        ]);
+        incomplete_tokenizer
+            .save(newer_tokenizer.join("tokenizer.json"), false)
+            .unwrap();
+        set_modified(&older_tokenizer, 10);
+        set_modified(&newer_tokenizer, 20);
+        let architecture =
+            crate::whisper_weights::load_whisper_architecture(&older_model.join("config.json"))
+                .unwrap();
+        assert_eq!(
+            find_cached_whisper_tokenizer(architecture),
+            Some(older_tokenizer)
+        );
+    }
+
+    /// Cached tokenizer repair preserves an already-valid installed model pair.
+    #[test]
+    #[serial]
+    fn cached_tokenizer_completion_preserves_valid_installed_pair() {
+        use std::os::unix::fs::MetadataExt as _;
+
+        let temp_dir = TempDir::new().unwrap();
+        let cache = temp_dir.path().join("cache");
+        let home = temp_dir.path().join("home");
+        let destination = temp_dir.path().join("destination");
+        create_complete_whisper_model(&destination);
+        fs::remove_file(destination.join("tokenizer.json")).unwrap();
+
+        let model_snapshot = cache
+            .join("models--mlx-community--whisper-large-v3-turbo")
+            .join("snapshots")
+            .join("model-pair");
+        create_complete_whisper_model(&model_snapshot);
+
+        let tokenizer_snapshot = cache
+            .join("models--openai--whisper-large-v3-turbo")
+            .join("snapshots")
+            .join("tokenizer-only");
+        fs::create_dir_all(&tokenizer_snapshot).unwrap();
+        fs::write(
+            tokenizer_snapshot.join("tokenizer.json"),
+            include_bytes!("../../tests/fixtures/whisper_tokenizer.json"),
+        )
+        .unwrap();
+
+        let _home = EnvGuard::set("HOME", &home);
+        let _cache = EnvGuard::set("CODESCRIBE_HF_CACHE", &cache);
+        let _hf_home = EnvGuard::unset("HF_HOME");
+        let _hf_hub = EnvGuard::unset("HF_HUB_CACHE");
+        let _huggingface_hub = EnvGuard::unset("HUGGINGFACE_HUB_CACHE");
+
+        let config_before = fs::read(destination.join("config.json")).unwrap();
+        let weights_before = fs::read(destination.join("model.safetensors")).unwrap();
+        let config_inode = fs::metadata(destination.join("config.json")).unwrap().ino();
+        let weights_inode = fs::metadata(destination.join("model.safetensors"))
+            .unwrap()
+            .ino();
+        let weight_partial_sentinel = destination.join("model.safetensors.partial");
+        fs::create_dir(&weight_partial_sentinel).unwrap();
+
+        assert_eq!(find_cached_default_model_pair(), Some(model_snapshot));
+        assert!(complete_default_model_from_warm_cache(&destination).unwrap());
+        validate_whisper_model_bundle(&destination).unwrap();
+        assert_eq!(
+            fs::read(destination.join("config.json")).unwrap(),
+            config_before
+        );
+        assert_eq!(
+            fs::read(destination.join("model.safetensors")).unwrap(),
+            weights_before
+        );
+        assert_eq!(
+            fs::metadata(destination.join("config.json")).unwrap().ino(),
+            config_inode
+        );
+        assert_eq!(
+            fs::metadata(destination.join("model.safetensors"))
+                .unwrap()
+                .ino(),
+            weights_inode
+        );
+        assert!(weight_partial_sentinel.is_dir());
+    }
+
+    /// A downloaded checksum mismatch is never promoted to the final mel path.
+    #[test]
+    fn corrupt_download_is_removed_before_promotion() {
+        use std::io::{Read as _, Write as _};
+        use std::net::TcpListener;
+
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let address = listener.local_addr().unwrap();
+        let server = std::thread::spawn(move || {
+            let (mut stream, _) = listener.accept().unwrap();
+            let mut request = [0_u8; 1024];
+            let _ = stream.read(&mut request);
+            stream
+                .write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 7\r\n\r\ncorrupt")
+                .unwrap();
+        });
+
+        let temp_dir = TempDir::new().unwrap();
+        let mel = temp_dir.path().join("mel_filters.npz");
+        let client = reqwest::blocking::Client::new();
+        let mut progress = |_name: &str, _done: u64, _total: Option<u64>| {};
+        let result = download_url_file(
+            &client,
+            &format!("http://{address}/mel_filters.npz"),
+            "mel_filters.npz",
+            &mel,
+            &mut progress,
+        );
+        server.join().unwrap();
+
+        assert!(result.is_err());
+        assert!(!mel.exists(), "corrupt download must not be promoted");
+        assert!(
+            !partial_path(&mel).exists(),
+            "failed partial must be removed"
+        );
     }
 
     /// Complete `CODESCRIBE_MODEL_PATH` wins over the bundled default tier.
@@ -810,7 +1504,7 @@ mod tests {
         );
     }
 
-    /// All-empty fallback chain returns guidance mentioning env and `hf download`.
+    /// All-empty fallback chain returns guidance mentioning env and the composer.
     #[test]
     #[serial]
     fn resolve_runtime_whisper_model_path_errors_with_guidance_when_all_tiers_empty() {
@@ -830,8 +1524,8 @@ mod tests {
             "error must mention the env override knob, got: {message}"
         );
         assert!(
-            message.contains("hf download"),
-            "error must hint at HF cache warm-up, got: {message}"
+            message.contains("make download-model"),
+            "error must point to the complete-model composer, got: {message}"
         );
     }
 

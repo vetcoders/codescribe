@@ -18,6 +18,8 @@ Environment:
                        trim active runtime prompt to first N deterministic terms (unset = full prompt)
   CODESCRIBE_BENCH_PROMPT_MAX_WER_DELTA_PP
                        fail active-prompt probe above this WER regression threshold (default: 5.0)
+  Whisper model discovery follows the production resolver, including supported
+  Hugging Face cache snapshots.
 EOF
 }
 
@@ -32,6 +34,7 @@ else
   repo_root="$(cd -- "$script_dir/.." && pwd)"
 fi
 home_dir="${HOME:-}"
+model_validator="$repo_root/scripts/validate-whisper-model.sh"
 
 fixture_mode="${BENCH_STT_FIXTURES:-repo}"
 fixture_limit="${BENCH_STT_LIMIT:-10}"
@@ -134,56 +137,8 @@ sha256_file() {
   fi
 }
 
-model_is_complete() {
-  local dir="$1"
-  [[ -d "$dir" ]] || return 1
-  [[ -f "$dir/config.json" ]] || return 1
-  [[ -f "$dir/tokenizer.json" ]] || return 1
-  [[ -f "$dir/mel_filters.npz" ]] || return 1
-  [[ -f "$dir/weights.safetensors" || -f "$dir/model.safetensors" ]] || return 1
-}
-
 discover_model() {
-  local candidate
-  if [[ -n "${CODESCRIBE_MODEL_PATH:-}" ]] && model_is_complete "$CODESCRIBE_MODEL_PATH"; then
-    printf '%s\n' "$CODESCRIBE_MODEL_PATH"
-    return 0
-  fi
-
-  for candidate in \
-    "$home_dir/.codescribe/models/whisper-large-v3-turbo" \
-    "$home_dir/.codescribe/models/whisper-large-v3-turbo-mlx-q8" \
-    "$home_dir/.codescribe/models/whisper-large-v3-mlx-q8"; do
-    if model_is_complete "$candidate"; then
-      printf '%s\n' "$candidate"
-      return 0
-    fi
-  done
-
-  local hf_base repo snapshot
-  for hf_base in \
-    "${CODESCRIBE_HF_CACHE:-}" \
-    "${HUGGINGFACE_HUB_CACHE:-}" \
-    "${HF_HUB_CACHE:-}" \
-    "${HF_HOME:+$HF_HOME/hub}" \
-    "$home_dir/.cache/huggingface/hub"; do
-    [[ -n "$hf_base" ]] || continue
-    for repo in \
-      models--LibraxisAI--whisper-large-v3-turbo-mlx-q8 \
-      models--libraxisai--whisper-large-v3-turbo-mlx-q8 \
-      models--LibraxisAI--whisper-large-v3-mlx-q8 \
-      models--libraxisai--whisper-large-v3-mlx-q8; do
-      for snapshot in "$hf_base/$repo/snapshots"/*; do
-        [[ -d "$snapshot" ]] || continue
-        if model_is_complete "$snapshot"; then
-          printf '%s\n' "$snapshot"
-          return 0
-        fi
-      done
-    done
-  done
-
-  return 1
+  "$model_validator" --resolve
 }
 
 fixture_source_label() {
@@ -1245,7 +1200,7 @@ if [[ "$(($(count_lines "$manifest_tsv") - 1))" -le 0 ]]; then
 fi
 
 if ! model_path="$(discover_model)"; then
-  write_honest_report "No complete Whisper model found. Checked CODESCRIBE_MODEL_PATH, ~/.codescribe/models/{whisper-large-v3-turbo,whisper-large-v3-turbo-mlx-q8,whisper-large-v3-mlx-q8}, and Hugging Face cache snapshots."
+  write_honest_report "No complete fp16 Whisper model found by the production resolver, including supported Hugging Face cache snapshots."
 fi
 
 export CODESCRIBE_MODEL_PATH="$model_path"
