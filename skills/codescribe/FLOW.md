@@ -25,10 +25,10 @@ flowchart TD
 
 ## Routes
 
-| Entry | Args | Produces | Exit |
-| --- | --- | --- | --- |
-| `/codescribe` | none | agent attached, named, listening | in-session |
-| Worker CLI | **none** | — | do not invent |
+| Entry         | Args     | Produces                         | Exit          |
+| ------------- | -------- | -------------------------------- | ------------- |
+| `/codescribe` | none     | agent attached, named, listening | in-session    |
+| Worker CLI    | **none** | —                                | do not invent |
 
 ### Escalation edges
 

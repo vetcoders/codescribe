@@ -77,7 +77,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   Voice Lab three-judge emits those findings. WER stays a footnote of
   proposal agreement, not accuracy.
 
-
 - **Layer 1 applies aligned same-utterance wording.** When live Apple and
   the Whisper window share most words, Layer 1 now substitutes those
   spans instead of discarding the repair at the 50% change cap. Unrelated

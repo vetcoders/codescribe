@@ -20,11 +20,11 @@ dogfooding: "required for repo-impacting work"
 > See [Foundation skills](../DELEGATION_MATRIX.md#foundation-no-core-vibecrafted-name-agent-worker-of-their-own)
 > when this copy lives under vibecrafted-core.
 >
-> | Path | Literal |
-> | --- | --- |
-> | Worker CLI | **none** — do not invent `vibecrafted codescribe <agent>` |
-> | Interactive | `/codescribe` · "wpięcie w bus" · "Hej James" |
-> | Operator | load this skill in-session; the human holds Fn |
+> | Path        | Literal                                                   |
+> | ----------- | --------------------------------------------------------- |
+> | Worker CLI  | **none** — do not invent `vibecrafted codescribe <agent>` |
+> | Interactive | `/codescribe` · "wpięcie w bus" · "Hej James"             |
+> | Operator    | load this skill in-session; the human holds Fn            |
 >
 > No worker CLI. Codescribe checkout runtime law: `AGENTS.md`.
 
@@ -86,8 +86,8 @@ This is not a product installer, not Voice Lab, not a fourth WorkMode.
 ## Quick Start
 
 1. Confirm Codescribe.app is running and `~/.codescribe/transcript-events.jsonl`
-   exists. If not, tell the human: *Stary, odpal apkę i licencję. Inaczej nie
-   zadziała.* Wait. Retry. Still missing → **fail loud**. Do not pretend to hear.
+   exists. If not, tell the human: _Stary, odpal apkę i licencję. Inaczej nie
+   zadziała._ Wait. Retry. Still missing → **fail loud**. Do not pretend to hear.
 2. Attach the follower from the Codescribe checkout:
 
 ```bash
