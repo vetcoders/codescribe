@@ -21,6 +21,10 @@ EMBED_MODEL_VALUE="${CODESCRIBE_EMBED_MODEL:-}"
 if [[ "$EMBED_MODEL_VALUE" == "$TILDE_PREFIX"* ]]; then
     EMBED_MODEL_VALUE="$HOME/${EMBED_MODEL_VALUE:2}"
 fi
+MODELS_DIR_VALUE="${CODESCRIBE_MODELS_DIR:-$HOME/.codescribe/models}"
+if [[ "$MODELS_DIR_VALUE" == "$TILDE_PREFIX"* ]]; then
+    MODELS_DIR_VALUE="$HOME/${MODELS_DIR_VALUE:2}"
+fi
 
 is_hf_repo_id() {
     [[ "$1" =~ ^[A-Za-z0-9._-]+/[A-Za-z0-9._-]+$ ]]
@@ -45,8 +49,14 @@ atomic_copy() {
     local source="$1"
     local destination="$2"
     local partial="${destination}.partial"
-    cp -fL "$source" "$partial"
-    mv -f "$partial" "$destination"
+    if ! cp -fL "$source" "$partial"; then
+        rm -f "$partial"
+        return 1
+    fi
+    if ! mv -f "$partial" "$destination"; then
+        rm -f "$partial"
+        return 1
+    fi
 }
 
 # Configuration
@@ -138,16 +148,24 @@ if [[ "$MODEL_REPO" == "$DEFAULT_REPO" ]]; then
     echo ""
     echo "▶ Composing verified fp16 runtime directory..."
     TOKENIZER_PATH=$("$HF_BIN" download "$TOKENIZER_REPO" tokenizer.json --quiet)
-    MODEL_DEST="${CODESCRIBE_MODELS_DIR:-$HOME/.codescribe/models}/whisper-large-v3-turbo"
+    if [[ -z "$TOKENIZER_PATH" || "$TOKENIZER_PATH" == *$'\n'* || ! -f "$TOKENIZER_PATH" ]]; then
+        echo "ERROR: hf download did not return one tokenizer file for $TOKENIZER_REPO" >&2
+        exit 1
+    fi
+    MODEL_DEST="$MODELS_DIR_VALUE/whisper-large-v3-turbo"
     MODEL_STAGE=$(mktemp -d "${TMPDIR:-/tmp}/codescribe-whisper-model.XXXXXX")
     cleanup_model_stage() {
         rm -f \
             "$MODEL_STAGE/config.json" \
+            "$MODEL_STAGE/config.json.partial" \
             "$MODEL_STAGE/tokenizer.json" \
+            "$MODEL_STAGE/tokenizer.json.partial" \
             "$MODEL_STAGE/mel_filters.npz" \
             "$MODEL_STAGE/mel_filters.npz.partial" \
             "$MODEL_STAGE/weights.safetensors" \
-            "$MODEL_STAGE/model.safetensors"
+            "$MODEL_STAGE/weights.safetensors.partial" \
+            "$MODEL_STAGE/model.safetensors" \
+            "$MODEL_STAGE/model.safetensors.partial"
         rmdir "$MODEL_STAGE" 2>/dev/null || true
     }
     trap cleanup_model_stage EXIT
@@ -180,8 +198,10 @@ if [[ "$MODEL_REPO" == "$DEFAULT_REPO" ]]; then
     atomic_copy "$MODEL_STAGE/mel_filters.npz" "$MODEL_DEST/mel_filters.npz"
     if [[ -f "$MODEL_STAGE/weights.safetensors" ]]; then
         atomic_copy "$MODEL_STAGE/weights.safetensors" "$MODEL_DEST/weights.safetensors"
+        rm -f "$MODEL_DEST/model.safetensors"
     else
         atomic_copy "$MODEL_STAGE/model.safetensors" "$MODEL_DEST/model.safetensors"
+        rm -f "$MODEL_DEST/weights.safetensors"
     fi
     echo "  Runtime directory: $MODEL_DEST"
     "$WHISPER_VALIDATOR" "$MODEL_DEST"

@@ -42,7 +42,8 @@ describing for weeks:
 
 - `core/stt/apple_stt/mod.rs` — 522 LOC `AppleSpeechAnalyzerAdapter` implementing
   `TranscriptionAdapter`, defaulted through `CODESCRIBE_STT_ENGINE=auto`, with graceful fallback to Candle.
-- `core/stt/whisper/*` — production Whisper path (embedded turbo-mlx-q8 + Silero VAD).
+- At decision time, `core/stt/whisper/*` was the production Whisper path
+  (embedded turbo-mlx-q8 + Silero VAD).
 - `core/audio/streaming_recorder.rs` — chunker emits utterance events **and** the recorder
   always tees a full WAV to disk (`wav_path: PathBuf`, `recorder.rs:203/678`). Full audio is never
   lost, even when the chunker hands out short utterances.

@@ -5,6 +5,7 @@ members = [".", "core", "bridge"]
 [workspace.package]
 version = "0.14.1"
 edition = "2024"
+rust-version = "1.88"
 authors = ["Vetcoders <hello@vetcoders.io>"]
 
 [workspace.dependencies]
@@ -20,6 +21,7 @@ tracing = "0.1"
 name = "codescribe"
 version = "0.14.1"
 edition = "2024"
+rust-version.workspace = true
 description = "Speech-to-text for macOS — SwiftUI front-end over a Rust engine (UniFFI bridge)"
 authors = ["Vetcoders <hello@vetcoders.io>"]
 license = "FSL-1.1-ALv2"

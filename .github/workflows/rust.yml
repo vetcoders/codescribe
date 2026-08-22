@@ -34,6 +34,20 @@ env:
   CARGO_TERM_COLOR: always
 
 jobs:
+  msrv:
+    name: Rust 1.88 MSRV
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+
+      - name: Ensure MSRV toolchain on PATH
+        run: |
+          rustup toolchain install 1.88.0 --profile minimal --no-self-update
+          dirname "$(rustup which --toolchain 1.88.0 rustc)" >> "$GITHUB_PATH"
+
+      - name: cargo check at MSRV
+        run: cargo check --workspace --all-targets
+
   format:
     name: Format Check
     runs-on: macos-latest

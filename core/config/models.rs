@@ -16,12 +16,16 @@ pub const DEFAULT_MODEL: &str = "whisper-large-v3-turbo";
 /// the Settings → Dictation download. fp16 weights: no q8→F32 dequantization
 /// on load, at the cost of a larger download than the q8 repo.
 pub const DEFAULT_WHISPER_REPO: &str = "mlx-community/whisper-large-v3-turbo";
+/// Former quantized model alias retained only for source compatibility.
+#[deprecated(note = "quantized Whisper is unsupported; no runtime fallback uses this alias")]
+pub const LEGACY_MODEL: &str = "whisper-large-v3-turbo-mlx-q8";
+/// Former quantized model repository retained only for source compatibility.
+#[deprecated(note = "quantized Whisper is unsupported; no runtime fallback uses this repository")]
+pub const LEGACY_WHISPER_REPO: &str = "LibraxisAI/whisper-large-v3-turbo-mlx-q8";
 /// Official Transformers tokenizer paired with Whisper large-v3-turbo.
-pub const TOKENIZER_WHISPER_REPO: &str = "openai/whisper-large-v3-turbo";
+pub(crate) const TOKENIZER_WHISPER_REPO: &str = "openai/whisper-large-v3-turbo";
 /// Pinned OpenAI Whisper asset. The checksum is asserted by the installer.
-pub const MEL_FILTERS_URL: &str = "https://raw.githubusercontent.com/openai/whisper/5f86d1d86363843179951550570367b37c5d6f78/whisper/assets/mel_filters.npz";
-/// SHA-256 of [`MEL_FILTERS_URL`].
-pub const MEL_FILTERS_SHA256: &str = crate::whisper_weights::MEL_FILTERS_SHA256;
+pub(crate) const MEL_FILTERS_URL: &str = "https://raw.githubusercontent.com/openai/whisper/5f86d1d86363843179951550570367b37c5d6f78/whisper/assets/mel_filters.npz";
 /// Files that must all be present for a directory to count as a usable model.
 const REQUIRED_MODEL_FILES: [&str; 3] = ["config.json", "tokenizer.json", "mel_filters.npz"];
 /// Weight file names, of which **any one** satisfies the completeness check —
@@ -46,6 +50,16 @@ fn canonicalize_or_self(path: PathBuf) -> PathBuf {
     }
 }
 
+/// Expand a leading `~/` in operator-provided model paths.
+fn expand_home_path(value: &str) -> PathBuf {
+    if let Some(relative) = value.strip_prefix("~/")
+        && let Some(home) = std::env::var_os("HOME")
+    {
+        return PathBuf::from(home).join(relative);
+    }
+    PathBuf::from(value)
+}
+
 /// Whether `path` holds a fully usable, structurally valid Whisper model.
 fn is_complete_whisper_model_dir(path: &Path) -> bool {
     validate_whisper_model_bundle(path).is_ok()
@@ -60,21 +74,15 @@ pub fn validate_whisper_model_bundle(path: &Path) -> Result<()> {
     crate::whisper_weights::validate_whisper_model_bundle(path)
 }
 
-/// Reject unsupported or malformed weights before the expensive engine load.
-/// This narrower payload gate is also used by `LocalWhisperEngine::new`, where
-/// tokenizer and mel errors retain their own loader diagnostics.
-pub(crate) fn is_unquantized_whisper_model_dir(path: &Path) -> bool {
-    crate::whisper_weights::validate_whisper_config(&path.join("config.json")).is_ok()
-        && resolve_valid_whisper_weights_path(path).is_ok()
-}
-
+#[cfg(test)]
+use crate::whisper_weights::resolve_valid_whisper_weights_path;
 /// Resolve the first structurally valid supported weight file.
 ///
 /// Upstream snapshots may contain either filename, and stale composition can
 /// leave both behind. Preserve the documented filename priority, but never let
 /// an invalid primary shadow a valid alternative that the runtime can load.
 pub(crate) use crate::whisper_weights::{
-    resolve_valid_whisper_weights_path, validate_safetensors_file,
+    resolve_compatible_whisper_weights_path, validate_safetensors_file,
 };
 
 /// Whether a candidate models root owns at least one complete Whisper model.
@@ -117,6 +125,51 @@ fn hf_snapshot_for_model(model_ref: &str) -> Option<PathBuf> {
     )
 }
 
+/// Find a warm default-repo snapshot containing one valid config/weights pair.
+fn find_cached_default_model_pair() -> Option<PathBuf> {
+    hf_cache::find_snapshot_with_any_matching(
+        DEFAULT_WHISPER_REPO,
+        &["config.json"],
+        &REQUIRED_MODEL_WEIGHTS,
+        |snapshot| crate::whisper_weights::validate_whisper_model_pair(snapshot).is_ok(),
+    )
+}
+
+/// Find a warm OpenAI snapshot containing a parseable Whisper tokenizer.
+fn find_cached_whisper_tokenizer(
+    architecture: crate::whisper_weights::WhisperArchitecture,
+) -> Option<PathBuf> {
+    hf_cache::find_snapshot_with_any_matching(
+        TOKENIZER_WHISPER_REPO,
+        &["tokenizer.json"],
+        &[],
+        |snapshot| {
+            crate::whisper_weights::validate_whisper_tokenizer_for_architecture(
+                &snapshot.join("tokenizer.json"),
+                architecture,
+            )
+            .is_ok()
+        },
+    )
+}
+
+/// Compose every available official warm-cache artifact and report final truth.
+fn complete_default_model_from_warm_cache(dest: &Path) -> Result<bool> {
+    if crate::whisper_weights::validate_whisper_model_pair(dest).is_err()
+        && let Some(snapshot) = find_cached_default_model_pair()
+        && snapshot != dest
+    {
+        copy_default_model_pair(&snapshot, dest)?;
+    }
+    if let Ok(architecture) =
+        crate::whisper_weights::load_whisper_architecture(&dest.join("config.json"))
+        && let Some(snapshot) = find_cached_whisper_tokenizer(architecture)
+    {
+        copy_model_files(&snapshot, dest, &["tokenizer.json"], true)?;
+    }
+    Ok(is_complete_whisper_model_dir(dest))
+}
+
 /// Owner of the resolved runtime models directory.
 ///
 /// Scope is deliberately narrow: it locates and inspects model directories on
@@ -147,7 +200,7 @@ impl ModelManager {
     fn resolve_models_dir() -> Result<PathBuf> {
         // Environment override
         if let Ok(path) = std::env::var("CODESCRIBE_MODELS_DIR") {
-            let p = PathBuf::from(&path);
+            let p = expand_home_path(path.trim());
             if p.exists() {
                 return Ok(p);
             }
@@ -365,16 +418,7 @@ where
     // no-op when the pieces are already on disk. Config and weights come from
     // mlx-community's fp16 conversion; tokenizer comes from OpenAI's matching
     // Transformers repository. The pinned mel filterbank is fetched below.
-    let mut paired_default_model = false;
-    if let Some(snapshot) = hf_cache::find_snapshot(DEFAULT_WHISPER_REPO, &["config.json"])
-        && snapshot != dest
-    {
-        paired_default_model = copy_default_model_pair(&snapshot, &dest)?;
-    }
-    if let Some(snapshot) = hf_cache::find_snapshot(TOKENIZER_WHISPER_REPO, &["tokenizer.json"]) {
-        copy_model_files(&snapshot, &dest, &["tokenizer.json"], true)?;
-    }
-    if paired_default_model && is_complete_whisper_model_dir(&dest) {
+    if complete_default_model_from_warm_cache(&dest)? {
         return Ok(canonicalize_or_self(dest));
     }
 
@@ -491,12 +535,15 @@ fn copy_model_files(src: &Path, dest: &Path, names: &[&str], replace_valid: bool
 
 /// Replace config and weights only when both come from one valid default snapshot.
 fn copy_default_model_pair(src: &Path, dest: &Path) -> Result<bool> {
-    if validate_model_file("config.json", &src.join("config.json")).is_err() {
+    if crate::whisper_weights::validate_whisper_model_pair(src).is_err() {
         return Ok(false);
     }
-    let Ok(weights) = resolve_valid_whisper_weights_path(src) else {
-        return Ok(false);
-    };
+    let architecture = crate::whisper_weights::parse_whisper_config(
+        // nosemgrep: rust.actix.path-traversal.tainted-path.tainted-path -- `src` is a resolved child of an internal HF cache root selected by repository id; no request path component reaches this repair path.
+        &fs::read_to_string(src.join("config.json"))?,
+        &src.join("config.json").display().to_string(),
+    )?;
+    let weights = resolve_compatible_whisper_weights_path(src, architecture)?;
     let Some(weight_name) = weights.file_name().and_then(|name| name.to_str()) else {
         return Ok(false);
     };
@@ -685,6 +732,14 @@ mod tests {
             Self { key, prev }
         }
 
+        /// Set `key` to a literal string, including shell-like path syntax.
+        fn set_str(key: &'static str, value: &str) -> Self {
+            let prev = std::env::var(key).ok();
+            // SAFETY: these tests run under `serial` and restore the prior env.
+            unsafe { std::env::set_var(key, value) };
+            Self { key, prev }
+        }
+
         /// Unset `key`, remembering the previous value for `Drop`.
         fn unset(key: &'static str) -> Self {
             let prev = std::env::var(key).ok();
@@ -710,11 +765,17 @@ mod tests {
     /// Create a directory that passes `is_complete_whisper_model_dir`.
     fn create_complete_whisper_model(path: &Path) {
         fs::create_dir_all(path).unwrap();
-        fs::write(path.join("config.json"), "{}").unwrap();
+        fs::write(
+            path.join("config.json"),
+            include_str!("../../tests/fixtures/whisper_test_config.json"),
+        )
+        .unwrap();
         let mut tokenizer = tokenizers::Tokenizer::new(tokenizers::models::bpe::BPE::default());
         tokenizer.add_special_tokens(&[
             tokenizers::AddedToken::from("<|startoftranscript|>", true),
             tokenizers::AddedToken::from("<|endoftext|>", true),
+            tokenizers::AddedToken::from("<|transcribe|>", true),
+            tokenizers::AddedToken::from("<|pl|>", true),
         ]);
         tokenizer.save(path.join("tokenizer.json"), false).unwrap();
         fs::write(
@@ -724,11 +785,16 @@ mod tests {
             )),
         )
         .unwrap();
-        let header = br#"{"model.weight":{"dtype":"F16","shape":[1],"data_offsets":[0,2]}}"#;
-        let mut safetensors = (header.len() as u64).to_le_bytes().to_vec();
-        safetensors.extend_from_slice(header);
-        safetensors.extend_from_slice(&[0, 0]);
-        fs::write(path.join("model.safetensors"), safetensors).unwrap();
+        let architecture = crate::whisper_weights::parse_whisper_config(
+            include_str!("../../tests/fixtures/whisper_test_config.json"),
+            "test fixture",
+        )
+        .unwrap();
+        crate::whisper_weights::write_test_whisper_weights(
+            &path.join("model.safetensors"),
+            architecture,
+        )
+        .unwrap();
     }
 
     fn decode_hex(raw: &str) -> Vec<u8> {
@@ -816,6 +882,23 @@ mod tests {
         }
     }
 
+    /// A leading `~/` in the supported models-root override resolves via HOME.
+    #[test]
+    #[serial]
+    fn model_manager_expands_tilde_models_root() {
+        let temp_dir = TempDir::new().unwrap();
+        let home = temp_dir.path().join("home");
+        let models_dir = home.join("custom-models");
+        create_complete_whisper_model(&models_dir.join(DEFAULT_MODEL));
+
+        let _home = EnvGuard::set("HOME", &home);
+        let _models_dir = EnvGuard::set_str("CODESCRIBE_MODELS_DIR", "~/custom-models");
+
+        let manager = ModelManager::new().unwrap();
+        assert_eq!(manager.models_dir(), models_dir.as_path());
+        assert!(manager.check_model_exists(DEFAULT_MODEL));
+    }
+
     /// Incomplete Whisper dirs are neither listed nor treated as existing.
     #[test]
     #[serial]
@@ -850,6 +933,53 @@ mod tests {
         let manager = ModelManager::new().unwrap();
         assert!(!manager.check_model_exists("renamed-as-fp16"));
         assert!(manager.list_models().unwrap().is_empty());
+    }
+
+    /// Presence alone is insufficient when the loader architecture is absent.
+    #[test]
+    fn model_manager_rejects_config_without_required_dimensions() {
+        let temp_dir = TempDir::new().unwrap();
+        let model = temp_dir.path().join("model");
+        create_complete_whisper_model(&model);
+        fs::write(model.join("config.json"), "{}").unwrap();
+
+        let err = validate_whisper_model_bundle(&model).unwrap_err();
+        assert!(format!("{err:#}").contains("n_mels"));
+        assert!(!is_complete_whisper_model_dir(&model));
+    }
+
+    /// A syntactically valid tokenizer must cover every configured vocabulary id.
+    #[test]
+    fn model_manager_rejects_tokenizer_smaller_than_configured_vocabulary() {
+        let temp_dir = TempDir::new().unwrap();
+        let model = temp_dir.path().join("model");
+        create_complete_whisper_model(&model);
+        fs::write(
+            model.join("config.json"),
+            include_str!("../../tests/fixtures/whisper_config.json"),
+        )
+        .unwrap();
+
+        let err = validate_whisper_model_bundle(&model).unwrap_err();
+        assert!(format!("{err:#}").contains("does not cover configured vocabulary"));
+        assert!(!is_complete_whisper_model_dir(&model));
+    }
+
+    /// A structurally valid safetensors file is not a Whisper model without its required tensors.
+    #[test]
+    fn model_manager_rejects_weights_missing_required_whisper_tensors() {
+        let temp_dir = TempDir::new().unwrap();
+        let model = temp_dir.path().join("model");
+        create_complete_whisper_model(&model);
+        let header = br#"{"model.weight":{"dtype":"F16","shape":[1],"data_offsets":[0,2]}}"#;
+        let mut safetensors = (header.len() as u64).to_le_bytes().to_vec();
+        safetensors.extend_from_slice(header);
+        safetensors.extend_from_slice(&[0, 0]);
+        fs::write(model.join("model.safetensors"), safetensors).unwrap();
+
+        let err = validate_whisper_model_bundle(&model).unwrap_err();
+        assert!(format!("{err:#}").contains("missing tensor"));
+        assert!(!is_complete_whisper_model_dir(&model));
     }
 
     /// Header-level detection catches packed q8 even if config metadata lies.
@@ -988,7 +1118,7 @@ mod tests {
         safetensors.extend_from_slice(&[0, 0]);
         fs::write(model.join("model.safetensors"), safetensors).unwrap();
 
-        assert!(is_complete_whisper_model_dir(&model));
+        assert!(validate_safetensors_file(&model.join("model.safetensors")).is_ok());
     }
 
     /// Header offsets must describe the actual payload, not a truncated file.
@@ -1106,6 +1236,142 @@ mod tests {
         );
         assert!(!destination.join("weights.safetensors").exists());
         validate_whisper_model_bundle(&destination).unwrap();
+    }
+
+    /// Offline repair skips invalid newest cache entries for both model pieces.
+    #[test]
+    #[serial]
+    fn cached_repair_falls_back_to_older_valid_snapshots() {
+        use std::fs::FileTimes;
+        use std::time::{Duration, SystemTime};
+
+        let temp_dir = TempDir::new().unwrap();
+        let cache = temp_dir.path().join("cache");
+        let home = temp_dir.path().join("home");
+        fs::create_dir_all(&home).unwrap();
+
+        let _home = EnvGuard::set("HOME", &home);
+        let _cache = EnvGuard::set("CODESCRIBE_HF_CACHE", &cache);
+        let _hf_home = EnvGuard::unset("HF_HOME");
+        let _hf_hub = EnvGuard::unset("HF_HUB_CACHE");
+        let _huggingface_hub = EnvGuard::unset("HUGGINGFACE_HUB_CACHE");
+
+        let snapshot = |repo: &str, revision: &str| {
+            cache
+                .join(format!("models--{}", repo.replace('/', "--")))
+                .join("snapshots")
+                .join(revision)
+        };
+        let set_modified = |path: &Path, seconds: u64| {
+            fs::File::open(path)
+                .unwrap()
+                .set_times(
+                    FileTimes::new()
+                        .set_modified(SystemTime::UNIX_EPOCH + Duration::from_secs(seconds)),
+                )
+                .unwrap();
+        };
+
+        let older_model = snapshot(DEFAULT_WHISPER_REPO, "older");
+        let newer_model = snapshot(DEFAULT_WHISPER_REPO, "newer");
+        create_complete_whisper_model(&older_model);
+        create_complete_whisper_model(&newer_model);
+        fs::write(newer_model.join("model.safetensors"), b"corrupt").unwrap();
+        set_modified(&older_model, 10);
+        set_modified(&newer_model, 20);
+        assert_eq!(find_cached_default_model_pair(), Some(older_model.clone()));
+
+        let older_tokenizer = snapshot(TOKENIZER_WHISPER_REPO, "older");
+        let newer_tokenizer = snapshot(TOKENIZER_WHISPER_REPO, "newer");
+        create_complete_whisper_model(&older_tokenizer);
+        create_complete_whisper_model(&newer_tokenizer);
+        let mut incomplete_tokenizer =
+            tokenizers::Tokenizer::new(tokenizers::models::bpe::BPE::default());
+        incomplete_tokenizer.add_special_tokens(&[
+            tokenizers::AddedToken::from("<|startoftranscript|>", true),
+            tokenizers::AddedToken::from("<|endoftext|>", true),
+        ]);
+        incomplete_tokenizer
+            .save(newer_tokenizer.join("tokenizer.json"), false)
+            .unwrap();
+        set_modified(&older_tokenizer, 10);
+        set_modified(&newer_tokenizer, 20);
+        let architecture =
+            crate::whisper_weights::load_whisper_architecture(&older_model.join("config.json"))
+                .unwrap();
+        assert_eq!(
+            find_cached_whisper_tokenizer(architecture),
+            Some(older_tokenizer)
+        );
+    }
+
+    /// Cached tokenizer repair preserves an already-valid installed model pair.
+    #[test]
+    #[serial]
+    fn cached_tokenizer_completion_preserves_valid_installed_pair() {
+        use std::os::unix::fs::MetadataExt as _;
+
+        let temp_dir = TempDir::new().unwrap();
+        let cache = temp_dir.path().join("cache");
+        let home = temp_dir.path().join("home");
+        let destination = temp_dir.path().join("destination");
+        create_complete_whisper_model(&destination);
+        fs::remove_file(destination.join("tokenizer.json")).unwrap();
+
+        let model_snapshot = cache
+            .join("models--mlx-community--whisper-large-v3-turbo")
+            .join("snapshots")
+            .join("model-pair");
+        create_complete_whisper_model(&model_snapshot);
+
+        let tokenizer_snapshot = cache
+            .join("models--openai--whisper-large-v3-turbo")
+            .join("snapshots")
+            .join("tokenizer-only");
+        fs::create_dir_all(&tokenizer_snapshot).unwrap();
+        fs::write(
+            tokenizer_snapshot.join("tokenizer.json"),
+            include_bytes!("../../tests/fixtures/whisper_tokenizer.json"),
+        )
+        .unwrap();
+
+        let _home = EnvGuard::set("HOME", &home);
+        let _cache = EnvGuard::set("CODESCRIBE_HF_CACHE", &cache);
+        let _hf_home = EnvGuard::unset("HF_HOME");
+        let _hf_hub = EnvGuard::unset("HF_HUB_CACHE");
+        let _huggingface_hub = EnvGuard::unset("HUGGINGFACE_HUB_CACHE");
+
+        let config_before = fs::read(destination.join("config.json")).unwrap();
+        let weights_before = fs::read(destination.join("model.safetensors")).unwrap();
+        let config_inode = fs::metadata(destination.join("config.json")).unwrap().ino();
+        let weights_inode = fs::metadata(destination.join("model.safetensors"))
+            .unwrap()
+            .ino();
+        let weight_partial_sentinel = destination.join("model.safetensors.partial");
+        fs::create_dir(&weight_partial_sentinel).unwrap();
+
+        assert_eq!(find_cached_default_model_pair(), Some(model_snapshot));
+        assert!(complete_default_model_from_warm_cache(&destination).unwrap());
+        validate_whisper_model_bundle(&destination).unwrap();
+        assert_eq!(
+            fs::read(destination.join("config.json")).unwrap(),
+            config_before
+        );
+        assert_eq!(
+            fs::read(destination.join("model.safetensors")).unwrap(),
+            weights_before
+        );
+        assert_eq!(
+            fs::metadata(destination.join("config.json")).unwrap().ino(),
+            config_inode
+        );
+        assert_eq!(
+            fs::metadata(destination.join("model.safetensors"))
+                .unwrap()
+                .ino(),
+            weights_inode
+        );
+        assert!(weight_partial_sentinel.is_dir());
     }
 
     /// A downloaded checksum mismatch is never promoted to the final mel path.

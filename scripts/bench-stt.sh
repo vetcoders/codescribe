@@ -18,6 +18,8 @@ Environment:
                        trim active runtime prompt to first N deterministic terms (unset = full prompt)
   CODESCRIBE_BENCH_PROMPT_MAX_WER_DELTA_PP
                        fail active-prompt probe above this WER regression threshold (default: 5.0)
+  Whisper model discovery follows the production resolver, including supported
+  Hugging Face cache snapshots.
 EOF
 }
 
@@ -135,25 +137,8 @@ sha256_file() {
   fi
 }
 
-model_is_complete() {
-  local dir="$1"
-  [[ -d "$dir" ]] && "$model_validator" "$dir" >/dev/null 2>&1
-}
-
 discover_model() {
-  local candidate
-  if [[ -n "${CODESCRIBE_MODEL_PATH:-}" ]] && model_is_complete "$CODESCRIBE_MODEL_PATH"; then
-    printf '%s\n' "$CODESCRIBE_MODEL_PATH"
-    return 0
-  fi
-
-  candidate="$home_dir/.codescribe/models/whisper-large-v3-turbo"
-  if model_is_complete "$candidate"; then
-    printf '%s\n' "$candidate"
-    return 0
-  fi
-
-  return 1
+  "$model_validator" --resolve
 }
 
 fixture_source_label() {
@@ -1215,7 +1200,7 @@ if [[ "$(($(count_lines "$manifest_tsv") - 1))" -le 0 ]]; then
 fi
 
 if ! model_path="$(discover_model)"; then
-  write_honest_report "No complete fp16 Whisper model found. Checked CODESCRIBE_MODEL_PATH and ~/.codescribe/models/whisper-large-v3-turbo."
+  write_honest_report "No complete fp16 Whisper model found by the production resolver, including supported Hugging Face cache snapshots."
 fi
 
 export CODESCRIBE_MODEL_PATH="$model_path"

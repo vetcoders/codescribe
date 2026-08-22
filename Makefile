@@ -339,7 +339,7 @@ bump-major:
 # gate: check class=static ci=no -- cargo fmt, prettier, clippy, semgrep, validate-envs, validate-gates; executes ZERO tests
 # gate: lint class=static ci=no -- cargo fmt --check + clippy on the workspace + verify-swift-format; no tests
 # gate: semgrep class=static ci=no -- semgrep scan --config auto (semgrep.yml runs semgrep directly, not this target)
-# gate: verify class=hermetic ci=yes -- the workspace test set + doctests + env registry + this ledger; the command rust.yml runs
+# gate: verify class=hermetic ci=yes -- workspace tests, doctests, model-promotion regression, env registry + this ledger; rust.yml runs it
 # gate: verify-canaries class=hermetic ci=no -- claim-vs-execution canaries that read repo files only (scripts/canaries.sh); each row is born from a named incident
 # gate: verify-swift-format class=static ci=no -- swift-format lint --strict over macos/Codescribe + macos/CodescribeTests; skips the generated UniFFI binding; no Swift tests (that is test-swift)
 # gate: smoke-canaries class=operator ci=no -- verify-canaries + host rows: dist inputs, appcast feed, live-store purity, Sparkle key parity, keychain domain cleanliness (scripts/canaries.sh --host)
@@ -1118,6 +1118,8 @@ verify:
 	echo "=== Verify (hermetic: doctests) ==="; \
 	CODESCRIBE_NO_EMBED=1 CODESCRIBE_DISABLE_KEYCHAIN=1 \
 	  cargo test --workspace --doc; \
+	echo "=== Verify (Whisper model promotion) ==="; \
+	bash scripts/tests/download-model-test.sh; \
 	echo "=== Verify (env registry) ==="; \
 	bash scripts/validate-envs.sh; \
 	echo "=== Verify (gate ledger) ==="; \

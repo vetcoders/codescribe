@@ -283,7 +283,8 @@ impl OnnxEngine {
 
         // Resolve special token IDs from tokenizer
         let tokens = ResolvedTokens::from_tokenizer(&tokenizer)?;
-        let ts_range = TimestampRange::from_tokenizer(&tokenizer);
+        let tokenizer_vocab_size = tokenizer.get_vocab_size(true);
+        let ts_range = TimestampRange::from_tokenizer(&tokenizer, tokenizer_vocab_size)?;
         let decoding_params = DecodingParams::default();
 
         // Load mel filters from mel_filters.npz if available, otherwise compute

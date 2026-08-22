@@ -12,6 +12,10 @@ EMBED_MODEL_VALUE="${CODESCRIBE_EMBED_MODEL:-}"
 if [[ "$EMBED_MODEL_VALUE" == "$TILDE_PREFIX"* ]]; then
   EMBED_MODEL_VALUE="$HOME/${EMBED_MODEL_VALUE:2}"
 fi
+MODELS_DIR_VALUE="${CODESCRIBE_MODELS_DIR:-$HOME/.codescribe/models}"
+if [[ "$MODELS_DIR_VALUE" == "$TILDE_PREFIX"* ]]; then
+  MODELS_DIR_VALUE="$HOME/${MODELS_DIR_VALUE:2}"
+fi
 
 valid_whisper_bundle() {
   "$WHISPER_VALIDATOR" "$1"
@@ -138,7 +142,7 @@ EMBEDDER_REPO="${CODESCRIBE_EMBEDDER_REPO:-sentence-transformers/paraphrase-mult
 # If CODESCRIBE_MODEL_PATH already satisfied, skip Whisper cache check
 if [[ "${WHISPER_OK:-0}" -ne 1 ]]; then
   if [[ "$WHISPER_REPO" == "mlx-community/whisper-large-v3-turbo" ]]; then
-    COMPOSED_MODEL="${CODESCRIBE_MODELS_DIR:-$HOME/.codescribe/models}/whisper-large-v3-turbo"
+    COMPOSED_MODEL="$MODELS_DIR_VALUE/whisper-large-v3-turbo"
     if valid_whisper_bundle "$COMPOSED_MODEL"; then
       echo "✓ Whisper fp16 composed ($COMPOSED_MODEL)"
     else

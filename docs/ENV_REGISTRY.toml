@@ -517,7 +517,7 @@ default = ""
 type = "string"
 reload = "restart"
 category = "stt"
-description = "Directory containing all models"
+description = "Directory containing all models; a leading ~/ expands to the user home directory"
 
 [vars.CODESCRIBE_EMBED_MODEL]
 default = ""

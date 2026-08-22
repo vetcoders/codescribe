@@ -139,7 +139,7 @@ Codescribe can load custom MCP servers from `~/.codescribe/mcp.json`. That keeps
 
 - **macOS 14+** (Sonoma or later)
 - **Apple Silicon** (M1, M2, M3, or later)
-- **Rust Toolchain** (1.85+ with edition 2024 support)
+- **Rust Toolchain** (1.88+; the workspace declares this MSRV)
 
 ### Install from Source
 
@@ -342,18 +342,43 @@ Runtime resolution when Whisper is not embedded:
 
 1. `CODESCRIBE_MODEL_PATH` environment variable
 2. `~/.codescribe/models/whisper-large-v3-turbo/` (fp16 default)
-3. A complete Hugging Face snapshot explicitly configured by repo id
+3. A complete Hugging Face snapshot configured by repo id, followed by the
+   default `mlx-community/whisper-large-v3-turbo` snapshot
 
 The mlx-community repo ships only `config.json` + `weights.safetensors`;
 the download paths compose `tokenizer.json` from the matching official OpenAI
 Transformers repo and `mel_filters.npz` from a checksum-pinned OpenAI Whisper
-asset. The resulting directory is validated as unquantized before resolution.
-The shared bundle validator parses the config and tokenizer, verifies the pinned
-mel SHA-256, and validates the complete safetensors tensor table, dtype
-allowlist, offsets, and file length. Downloads and warm-cache copies are written
-to `.partial` files and promoted only after per-file validation; an invalid
-destination is repaired on the next Download action instead of being accepted
-as complete.
+asset. The resulting directory is validated as loader-compatible fp16/fp32
+before resolution.
+The shared bundle validator parses the config, applies bounded architecture
+resource limits, requires every runtime prompt/control token to fit the
+configured vocabulary, and uses the same automatic-language candidate logic as
+the decoder. It verifies the pinned mel SHA-256 and validates every
+required Whisper tensor name and shape plus the complete safetensors tensor
+table, exact consumed tensor set, bounded alignment metadata, dtype allowlist,
+mapped-name uniqueness, offsets, and file length. The
+disk loader applies this complete gate before mmap or model construction.
+Config and tokenizer JSON are size-bounded before parsing, and vocabulary size
+is capped at the largest supported official Whisper vocabulary.
+Downloads and warm-cache
+copies are written to `.partial` files and promoted only after per-file
+validation; an invalid destination is repaired on the next Download action
+instead of being accepted as complete. Config validation requires the complete
+MLX Whisper architecture
+used by the loader (including matching audio/text state widths and compatible
+attention heads, a decode context that leaves room for output, and broad layer
+count safety fences). Matching audio/text state widths are bounded to the
+official Whisper range `4..=1280` before quadratic model allocations. Decoder context is bounded to the supported `5..=448`
+range before its quadratic causal mask is allocated. Audio context must equal the 1500 positions consumed by
+the supported 30-second Whisper window; shorter contexts would silently truncate
+audio. The pinned mel filterbank is size-checked and hashed through a bounded
+stream before use; missing dimensions are never replaced
+with runtime defaults.
+Warm-cache repair checks older snapshots when the newest config, weights, or
+tokenizer is invalid, and returns as soon as the composed destination validates,
+preserving an already-valid installed model pair when only a smaller artifact
+needs repair and avoiding a weights-sized temporary copy. Optional timestamp
+tokens are accepted only as a complete contiguous 20 ms range from 0.00 to 30.00 seconds.
 
 `CODESCRIBE_EMBED_EMBEDDER=1` is an explicit fat/debug path that compiles MiniLM into Rust artifacts. Normal builds resolve MiniLM from the signed app resource or HF cache. `CODESCRIBE_NO_EMBED=1` disables every optional binary embed; Silero remains embedded.
 

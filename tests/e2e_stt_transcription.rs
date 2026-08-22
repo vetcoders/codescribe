@@ -11,6 +11,7 @@ use std::path::{Path, PathBuf};
 
 use codescribe::whisper::LocalWhisperEngine;
 use codescribe_core::pipeline::contracts::FileTranscriptionOptions;
+use serial_test::serial;
 use tempfile::TempDir;
 
 #[path = "support/e2e_stt_matrix.rs"]
@@ -18,14 +19,49 @@ mod e2e_stt_matrix;
 
 use e2e_stt_matrix::{
     ModelDiscovery, ModelSource, STT_OPT_IN_ENV, WHISPER_FP16_MODEL, discover_local_whisper_model,
-    discover_local_whisper_model_for, model_discovery_hint, parse_opt_in, skip_unless_opt_in,
-    test_audio_path, whisper_model_missing_parts,
+    discover_local_whisper_model_for, discover_local_whisper_model_for_with_root,
+    expand_models_root, model_discovery_hint, parse_opt_in, skip_unless_opt_in, test_audio_path,
+    whisper_model_missing_parts,
 };
 
 fn home_dir() -> PathBuf {
     std::env::var("HOME")
         .map(PathBuf::from)
         .unwrap_or_else(|_| PathBuf::from("."))
+}
+
+/// Restores one process environment variable after a serialized test.
+struct EnvGuard {
+    key: &'static str,
+    previous: Option<String>,
+}
+
+impl EnvGuard {
+    fn set(key: &'static str, value: &Path) -> Self {
+        let previous = std::env::var(key).ok();
+        // SAFETY: callers use #[serial] and the guard restores the prior value.
+        unsafe { std::env::set_var(key, value) };
+        Self { key, previous }
+    }
+
+    fn unset(key: &'static str) -> Self {
+        let previous = std::env::var(key).ok();
+        // SAFETY: callers use #[serial] and the guard restores the prior value.
+        unsafe { std::env::remove_var(key) };
+        Self { key, previous }
+    }
+}
+
+impl Drop for EnvGuard {
+    fn drop(&mut self) {
+        if let Some(previous) = &self.previous {
+            // SAFETY: callers use #[serial] and the guard restores the prior value.
+            unsafe { std::env::set_var(self.key, previous) };
+        } else {
+            // SAFETY: callers use #[serial] and the guard restores the prior value.
+            unsafe { std::env::remove_var(self.key) };
+        }
+    }
 }
 
 fn resolve_model_or_skip(suite: &str) -> Option<ModelDiscovery> {
@@ -174,11 +210,17 @@ fn e2e_stt_model_init_stable() {
 
 fn create_complete_model(path: &Path) {
     std::fs::create_dir_all(path).expect("create model dir");
-    std::fs::write(path.join("config.json"), "{}").expect("write config");
+    std::fs::write(
+        path.join("config.json"),
+        include_str!("fixtures/whisper_test_config.json"),
+    )
+    .expect("write config");
     let mut tokenizer = tokenizers::Tokenizer::new(tokenizers::models::bpe::BPE::default());
     tokenizer.add_special_tokens(&[
         tokenizers::AddedToken::from("<|startoftranscript|>", true),
         tokenizers::AddedToken::from("<|endoftext|>", true),
+        tokenizers::AddedToken::from("<|transcribe|>", true),
+        tokenizers::AddedToken::from("<|pl|>", true),
     ]);
     tokenizer
         .save(path.join("tokenizer.json"), false)
@@ -188,11 +230,72 @@ fn create_complete_model(path: &Path) {
         decode_hex(include_str!("fixtures/whisper_mel_filters.npz.hex")),
     )
     .expect("write mel filters");
-    let header = br#"{"model.weight":{"dtype":"F16","shape":[1],"data_offsets":[0,2]}}"#;
+    write_tiny_complete_weights(&path.join("weights.safetensors"));
+}
+
+fn write_tiny_complete_weights(path: &Path) {
+    const D: usize = 4;
+    const FF: usize = 16;
+    let mut shapes = std::collections::BTreeMap::new();
+    let mut add = |name: String, shape: &[usize]| {
+        shapes.insert(name, shape.to_vec());
+    };
+    add("encoder.conv1.weight".into(), &[D, 3, 80]);
+    add("encoder.conv1.bias".into(), &[D]);
+    add("encoder.conv2.weight".into(), &[D, 3, D]);
+    add("encoder.conv2.bias".into(), &[D]);
+    add("encoder.ln_post.weight".into(), &[D]);
+    add("encoder.ln_post.bias".into(), &[D]);
+    add("decoder.token_embedding.weight".into(), &[4, D]);
+    add("decoder.positional_embedding".into(), &[5, D]);
+    add("decoder.ln.weight".into(), &[D]);
+    add("decoder.ln.bias".into(), &[D]);
+    for prefix in [
+        "encoder.blocks.0.attn",
+        "decoder.blocks.0.attn",
+        "decoder.blocks.0.cross_attn",
+    ] {
+        add(format!("{prefix}.key.weight"), &[D, D]);
+        add(format!("{prefix}.query.weight"), &[D, D]);
+        add(format!("{prefix}.query.bias"), &[D]);
+        add(format!("{prefix}.value.weight"), &[D, D]);
+        add(format!("{prefix}.value.bias"), &[D]);
+        add(format!("{prefix}.out.weight"), &[D, D]);
+        add(format!("{prefix}.out.bias"), &[D]);
+    }
+    for prefix in ["encoder.blocks.0", "decoder.blocks.0"] {
+        add(format!("{prefix}.attn_ln.weight"), &[D]);
+        add(format!("{prefix}.attn_ln.bias"), &[D]);
+        add(format!("{prefix}.mlp1.weight"), &[FF, D]);
+        add(format!("{prefix}.mlp1.bias"), &[FF]);
+        add(format!("{prefix}.mlp2.weight"), &[D, FF]);
+        add(format!("{prefix}.mlp2.bias"), &[D]);
+        add(format!("{prefix}.mlp_ln.weight"), &[D]);
+        add(format!("{prefix}.mlp_ln.bias"), &[D]);
+    }
+    add("decoder.blocks.0.cross_attn_ln.weight".into(), &[D]);
+    add("decoder.blocks.0.cross_attn_ln.bias".into(), &[D]);
+
+    let mut offset = 0_u64;
+    let mut header = serde_json::Map::new();
+    for (name, shape) in shapes {
+        let elements = shape.iter().product::<usize>() as u64;
+        let end = offset + elements * 2;
+        header.insert(
+            name,
+            serde_json::json!({
+                "dtype": "F16",
+                "shape": shape,
+                "data_offsets": [offset, end]
+            }),
+        );
+        offset = end;
+    }
+    let header = serde_json::to_vec(&header).expect("serialize weights header");
     let mut safetensors = (header.len() as u64).to_le_bytes().to_vec();
-    safetensors.extend_from_slice(header);
-    safetensors.extend_from_slice(&[0, 0]);
-    std::fs::write(path.join("weights.safetensors"), safetensors).expect("write weights");
+    safetensors.extend_from_slice(&header);
+    safetensors.resize(safetensors.len() + offset as usize, 0);
+    std::fs::write(path, safetensors).expect("write weights");
 }
 
 fn decode_hex(raw: &str) -> Vec<u8> {
@@ -253,6 +356,48 @@ fn deterministic_model_discovery_hint_names_the_validation_contract() {
     assert!(hint.contains("pinned mel_filters.npz checksum"));
     assert!(hint.contains("structurally valid F16/F32 safetensors"));
     assert!(hint.contains("no quantization declaration"));
+    assert!(hint.contains("Hugging Face cache snapshot"));
+}
+
+#[test]
+#[serial]
+fn live_model_discovery_uses_validated_default_hf_snapshot() {
+    let (_tmp, home) = temp_home();
+    let models_root = home.join("empty-models");
+    let hf_home = home.join("hf-home");
+    let hf_cache = hf_home.join("hub");
+    let snapshot = hf_cache
+        .join("models--mlx-community--whisper-large-v3-turbo")
+        .join("snapshots")
+        .join("revision");
+    std::fs::create_dir_all(&models_root).unwrap();
+    create_complete_model(&snapshot);
+
+    let _home = EnvGuard::set("HOME", &home);
+    let _models_root = EnvGuard::set("CODESCRIBE_MODELS_DIR", &models_root);
+    let _model_path = EnvGuard::unset("CODESCRIBE_MODEL_PATH");
+    let _codescribe_hf = EnvGuard::set("CODESCRIBE_HF_CACHE", &hf_cache);
+    let _huggingface_hub = EnvGuard::set("HUGGINGFACE_HUB_CACHE", &hf_cache);
+    let _hf_hub = EnvGuard::set("HF_HUB_CACHE", &hf_cache);
+    let _hf_home = EnvGuard::set("HF_HOME", &hf_home);
+
+    let found = discover_local_whisper_model()
+        .expect("production E2E discovery should reuse the validated HF fallback");
+
+    assert_eq!(found.source, ModelSource::RuntimeResolver);
+    assert_eq!(found.path, snapshot);
+}
+
+#[test]
+fn deterministic_models_root_expands_home_relative_override() {
+    assert_eq!(
+        expand_models_root(Path::new("/tmp/test-home"), "~/models"),
+        PathBuf::from("/tmp/test-home/models")
+    );
+    assert_eq!(
+        expand_models_root(Path::new("/tmp/test-home"), "/opt/models"),
+        PathBuf::from("/opt/models")
+    );
 }
 
 #[test]
@@ -297,8 +442,50 @@ fn deterministic_model_discovery_skips_invalid_env_override() {
     let found = discover_local_whisper_model_for(&home, Some(&env_model))
         .expect("expected valid standard fp16 model to be discovered");
 
-    assert_eq!(found.source, ModelSource::UserFp16);
+    assert_eq!(found.source, ModelSource::ModelsDir);
     assert_eq!(found.path, fp16);
+}
+
+#[test]
+fn deterministic_model_discovery_honors_existing_custom_models_root() {
+    let (_tmp, home) = temp_home();
+    let custom_root = home.join("custom-models");
+    let fp16 = custom_root.join(WHISPER_FP16_MODEL);
+    create_complete_model(&fp16);
+
+    let found = discover_local_whisper_model_for_with_root(&home, None, Some(&custom_root))
+        .expect("expected model under CODESCRIBE_MODELS_DIR");
+
+    assert_eq!(found.source, ModelSource::ModelsDir);
+    assert_eq!(found.path, fp16);
+}
+
+#[test]
+fn deterministic_existing_empty_models_root_shadows_home_fallback() {
+    let (_tmp, home) = temp_home();
+    let home_fp16 = home.join(".codescribe/models").join(WHISPER_FP16_MODEL);
+    create_complete_model(&home_fp16);
+    let custom_root = home.join("empty-custom-models");
+    std::fs::create_dir_all(&custom_root).unwrap();
+
+    assert!(
+        discover_local_whisper_model_for_with_root(&home, None, Some(&custom_root)).is_none(),
+        "an existing explicit models root must own discovery even when empty"
+    );
+}
+
+#[test]
+fn deterministic_missing_models_root_falls_back_to_home() {
+    let (_tmp, home) = temp_home();
+    let home_fp16 = home.join(".codescribe/models").join(WHISPER_FP16_MODEL);
+    create_complete_model(&home_fp16);
+    let missing_root = home.join("missing-custom-models");
+
+    let found = discover_local_whisper_model_for_with_root(&home, None, Some(&missing_root))
+        .expect("missing override root should preserve runtime home fallback");
+
+    assert_eq!(found.source, ModelSource::ModelsDir);
+    assert_eq!(found.path, home_fp16);
 }
 
 #[test]

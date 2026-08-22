@@ -2,6 +2,7 @@
 name = "codescribe-core"
 version.workspace = true
 edition.workspace = true
+rust-version.workspace = true
 authors = ["Vetcoders <hello@vetcoders.io>"]
 license = "FSL-1.1-ALv2"
 description = "Core library for Codescribe (audio, STT, quality pipeline)"

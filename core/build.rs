@@ -25,6 +25,7 @@ use std::path::{Path, PathBuf};
 use sha2::{Digest, Sha256};
 
 #[path = "whisper_weights.rs"]
+#[allow(dead_code)]
 mod whisper_weights;
 
 /// The license key contract, included by path so the build script and the
@@ -70,6 +71,7 @@ fn main() {
     println!("cargo:rerun-if-changed=Cargo.toml");
     println!("cargo:rerun-if-env-changed=CODESCRIBE_EMBED_MODEL");
     println!("cargo:rerun-if-env-changed=CODESCRIBE_MODEL_PATH");
+    println!("cargo:rerun-if-env-changed=CODESCRIBE_MODELS_DIR");
     println!("cargo:rerun-if-env-changed=CODESCRIBE_NO_EMBED");
     println!("cargo:rerun-if-env-changed=CODESCRIBE_EMBED_WHISPER");
     println!("cargo:rerun-if-env-changed=CODESCRIBE_EMBED_EMBEDDER");
@@ -99,7 +101,16 @@ fn main() {
             resolve_whisper_embed_model_path(&manifest_dir, &embed_model, DEFAULT_WHISPER_REPO);
         let model_exists = whisper_weights::validate_whisper_model_bundle(&model_path).is_ok();
         let weights_path = model_exists
-            .then(|| whisper_weights::resolve_valid_whisper_weights_path(&model_path).ok())
+            .then(|| {
+                let config = std::fs::read_to_string(model_path.join("config.json")).ok()?;
+                let architecture = whisper_weights::parse_whisper_config(
+                    &config,
+                    &model_path.join("config.json").display().to_string(),
+                )
+                .ok()?;
+                whisper_weights::resolve_compatible_whisper_weights_path(&model_path, architecture)
+                    .ok()
+            })
             .flatten();
         if model_exists {
             let weights_path = weights_path.as_ref().expect("validated Whisper weights");
@@ -447,8 +458,9 @@ fn whisper_dir_complete(path: &Path) -> bool {
 /// Locate the Whisper snapshot to embed.
 ///
 /// `CODESCRIBE_MODEL_PATH` wins when it is a complete snapshot. The composed
-/// `~/.codescribe/models` tree is next — that is what `make download-model`
-/// writes. An HF cache hit is used only when it already has tokenizer + mel.
+/// `CODESCRIBE_MODELS_DIR` or `~/.codescribe/models` tree is next — that is
+/// what `make download-model` writes. An HF cache hit is used only when its
+/// complete bundle passes the same validator used by runtime.
 fn resolve_whisper_embed_model_path(
     manifest_dir: &str,
     embed_model: &str,
@@ -460,8 +472,22 @@ fn resolve_whisper_embed_model_path(
             return p;
         }
     }
+    let composed_name = if embed_model == default_repo || embed_model == DEFAULT_MODEL_NAME {
+        DEFAULT_MODEL_NAME
+    } else {
+        embed_model
+    };
+    if let Ok(models_dir) = env::var("CODESCRIBE_MODELS_DIR") {
+        let models_dir = expand_tilde_path(models_dir.trim());
+        if models_dir.exists() {
+            let composed = models_dir.join(composed_name);
+            if whisper_dir_complete(&composed) {
+                return composed;
+            }
+        }
+    }
     if let Some(home) = dirs::home_dir() {
-        let composed = home.join(".codescribe").join("models").join(embed_model);
+        let composed = home.join(".codescribe").join("models").join(composed_name);
         if whisper_dir_complete(&composed) {
             return composed;
         }
@@ -475,14 +501,12 @@ fn resolve_whisper_embed_model_path(
             }
         }
     }
-    if embed_model.contains('/')
-        && let Some(snapshot) = find_hf_snapshot(embed_model)
-        && whisper_dir_complete(&snapshot)
-    {
-        return snapshot;
+    if embed_model.contains('/') {
+        if let Some(snapshot) = find_hf_snapshot_matching(embed_model, whisper_dir_complete) {
+            return snapshot;
+        }
     } else if embed_model == DEFAULT_MODEL_NAME
-        && let Some(snapshot) = find_hf_snapshot(default_repo)
-        && whisper_dir_complete(&snapshot)
+        && let Some(snapshot) = find_hf_snapshot_matching(default_repo, whisper_dir_complete)
     {
         return snapshot;
     }
@@ -552,21 +576,36 @@ fn hf_cache_bases() -> Vec<PathBuf> {
 
 /// First snapshot of `repo` found across the candidate cache bases.
 fn find_hf_snapshot(repo: &str) -> Option<PathBuf> {
+    find_hf_snapshot_matching(repo, |_| true)
+}
+
+/// First cache snapshot accepted by `predicate`, preserving cache-root order.
+fn find_hf_snapshot_matching<F>(repo: &str, predicate: F) -> Option<PathBuf>
+where
+    F: Fn(&Path) -> bool,
+{
     for base in hf_cache_bases() {
-        if let Some(snapshot) = find_hf_snapshot_in_base(&base, repo) {
+        if let Some(snapshot) = find_hf_snapshot_in_base_matching(&base, repo, &predicate) {
             return Some(snapshot);
         }
     }
     None
 }
 
-/// Newest snapshot of `repo` under one cache base.
+/// Newest accepted snapshot of `repo` under one cache base.
 ///
 /// The `models--owner--name` directory is tried first; failing that, the base
 /// is scanned case-insensitively, because HF repo ids differ in case between
 /// what a caller writes and what the cache recorded. Among the snapshots, the
-/// most recently modified wins — that is the one a `hf download` just wrote.
-fn find_hf_snapshot_in_base(base: &PathBuf, repo: &str) -> Option<PathBuf> {
+/// Newest snapshot under one cache base that satisfies `predicate`.
+fn find_hf_snapshot_in_base_matching<F>(
+    base: &PathBuf,
+    repo: &str,
+    predicate: &F,
+) -> Option<PathBuf>
+where
+    F: Fn(&Path) -> bool,
+{
     let repo_dir = base.join(format!("models--{}", repo.replace('/', "--")));
     let snapshots_dir = repo_dir.join("snapshots");
 
@@ -601,7 +640,7 @@ fn find_hf_snapshot_in_base(base: &PathBuf, repo: &str) -> Option<PathBuf> {
 
     for entry in entries.flatten() {
         let path = entry.path();
-        if !path.is_dir() {
+        if !path.is_dir() || !predicate(&path) {
             continue;
         }
         let modified = entry
