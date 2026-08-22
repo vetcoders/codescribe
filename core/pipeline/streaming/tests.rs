@@ -1536,6 +1536,7 @@ fn transcription_events_keep_monotonic_previews_before_final() {
         compression_ratio: None,
         quality_gate_dropped: false,
         confidence_flags: Vec::new(),
+        acoustic: None,
     });
 
     let events = sink.events();

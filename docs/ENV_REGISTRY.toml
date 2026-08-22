@@ -470,11 +470,11 @@ category = "stt"
 description = "Bounded-context A/B for W13-3B Whisper windows: utterance (default), left_pad, or stable_prompt. Left pad never crosses a Silero-sized silence fence."
 
 [vars.CODESCRIBE_SPAN_IDEMPOTENCE]
-default = "0"
+default = "1"
 type = "bool"
 reload = "restart"
 category = "stt"
-description = "W13-4 sealed-span replay refusal + in-span loop fence. Default OFF. When 1/true/on: live seal path refuses a replayed PCM-range / request identity (SessionIngest RejectedSealedUtterance ported onto ledger identity) and fences non-progressing timestamps or decode failure. Content-similar offers on a new identity are WARN-preserved. No default flip."
+description = "Sealed-span replay refusal + in-span loop fence. Default ON: the live seal path refuses a replayed PCM-range / request identity and fences non-progressing timestamps or decode failure. Content-similar offers on a new identity are WARN-preserved. Set 0/false/off only as a diagnostic escape hatch."
 
 [vars.CODESCRIBE_WHISPER_IDLE_UNLOAD_SECS]
 default = "1800"
@@ -1123,6 +1123,13 @@ type = "u64"
 reload = "hot"
 category = "llm"
 description = "Max idle time between SSE chunks before attempt is failed (ms)"
+
+[vars.CODESCRIBE_AGENT_BRIDGE_HOME]
+default = ""
+type = "string"
+reload = "hot"
+category = "storage"
+description = "Optional absolute override for the agent bridge home used by active-name leases and bus demultiplexing; unset resolves the normal user data path"
 
 [vars.CODESCRIBE_AGENT_USE_PREVIOUS_RESPONSE_ID]
 default = "1"

@@ -10,7 +10,8 @@
 //! failure. Anything else is kept; a content-similar offer against a *new*
 //! identity emits a WARN receipt and still lands on the canvas.
 //!
-//! Lane flag [`SPAN_IDEMPOTENCE_ENV`] is **default OFF**.
+//! Replay refusal is default ON; an explicit false value remains a diagnostic
+//! escape hatch, never the product default.
 
 use std::collections::BTreeSet;
 
@@ -20,17 +21,17 @@ use crate::stt::tail_provider::{TailRequestIdentity, TailSampleRange};
 /// `no` keep the pre-W13-4 seal path bit-identical.
 pub const SPAN_IDEMPOTENCE_ENV: &str = "CODESCRIBE_SPAN_IDEMPOTENCE";
 
-/// Whether the W13-4 idempotence lane is armed. Default OFF.
+/// Whether the W13-4 idempotence lane is armed. Default ON.
 pub fn lane_enabled() -> bool {
     let raw = std::env::var(SPAN_IDEMPOTENCE_ENV).ok();
     lane_enabled_from_raw(raw.as_deref())
 }
 
 fn lane_enabled_from_raw(raw: Option<&str>) -> bool {
-    raw.is_some_and(|raw| {
+    !raw.is_some_and(|raw| {
         matches!(
             raw.trim().to_ascii_lowercase().as_str(),
-            "1" | "true" | "yes" | "on"
+            "0" | "false" | "no" | "off"
         )
     })
 }
@@ -146,13 +147,14 @@ impl SpanIdempotenceLedger {
     pub fn offer(&mut self, offer: SpanOffer) -> SpanOfferVerdict {
         let range = &offer.identity.range;
         let request_id = offer.identity.request_id;
+        let acoustically_anchored = range.sample_end > range.sample_start;
 
         if !offer.decode_ok {
             return self.fence(NonContentEvidence::DecodeFailure, request_id, range.clone());
         }
 
         // Sealed identity is immutable — SessionIngest rule 5, keyed by range.
-        if self.sealed_ranges.contains(&RangeKey::from_range(range)) {
+        if acoustically_anchored && self.sealed_ranges.contains(&RangeKey::from_range(range)) {
             return self.reject_replay(
                 NonContentEvidence::ReplayedRangeIdentity,
                 request_id,
@@ -210,7 +212,12 @@ impl SpanIdempotenceLedger {
     /// Record that a range has sealed (immutable). Later exact-identity
     /// offers are `RejectedSealedReplay` even if the Apple id is new.
     pub fn mark_sealed(&mut self, range: &TailSampleRange) {
-        self.sealed_ranges.insert(RangeKey::from_range(range));
+        // A zero-length fallback is explicitly unanchored. Treating every
+        // `[eof, eof)` text suffix as the same acoustic identity would erase
+        // later words even though no PCM evidence exists to prove a replay.
+        if range.sample_end > range.sample_start {
+            self.sealed_ranges.insert(RangeKey::from_range(range));
+        }
     }
 
     pub fn receipts(&self) -> &[SpanIdempotenceReceipt] {
@@ -333,8 +340,8 @@ mod tests {
     }
 
     #[test]
-    fn lane_defaults_off() {
-        assert!(!lane_enabled_from_raw(None));
+    fn lane_defaults_on_with_explicit_diagnostic_off() {
+        assert!(lane_enabled_from_raw(None));
         assert!(!lane_enabled_from_raw(Some("off")));
         assert!(lane_enabled_from_raw(Some("on")));
     }
@@ -351,6 +358,22 @@ mod tests {
         );
         assert!(ledger.canvas().is_empty());
         assert_eq!(ledger.receipts()[0].code, "decode_failure");
+    }
+
+    #[test]
+    fn zero_length_ranges_never_alias_distinct_unanchored_text() {
+        let mut ledger = SpanIdempotenceLedger::default();
+        assert_eq!(
+            ledger.offer(offer(1, 48_000, 48_000, "gamma", true, true)),
+            SpanOfferVerdict::Accepted
+        );
+        ledger.mark_sealed(&range(48_000, 48_000));
+        assert_eq!(
+            ledger.offer(offer(2, 48_000, 48_000, "delta", true, true)),
+            SpanOfferVerdict::Accepted
+        );
+        assert_eq!(ledger.canvas_texts(), ["gamma", "delta"]);
+        assert_eq!(ledger.suppressed_count(), 0);
     }
 
     #[test]

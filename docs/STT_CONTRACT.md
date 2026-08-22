@@ -243,10 +243,29 @@ Layer 1 mutation identity is `(session, capture_epoch, sample_start, sample_end,
 must contain the target span and any provider payload must echo the admitted
 identity. Patch offsets are applied only to the byte-identical baseline handed
 to the patcher. The accepted text crosses
-`ProgressiveSealMachine::try_rewrite` once; `UtteranceFinal` is the first and
+`ProgressiveSealMachine::try_rewrite_anchored` once, and only when the evidence
+range overlaps the target on the same session/epoch clock; `UtteranceFinal` is the first and
 last outward committed form. Replays, invalid ranges, missing identities, and
 late completions emit content-free typed warnings and preserve Apple text.
 Identical words in disjoint PCM ranges are distinct applications and survive.
+
+`UtteranceFinal.acoustic` carries the committed phrase identity through the
+presentation reducer into the Transcript Bus. Phrase timing remains `phrase`;
+the system never divides provider segment time evenly into invented word pins.
+The L3 ledger orders `(capture_epoch, sample_start, sample_end)`
+lexicographically and rejects loss, addition, or reorder before delivery.
+
+Active W2-04 Agent leases are read directly as a bounded 120-second snapshot.
+Their names are placed first in the existing Whisper context budget and
+canonicalized only by exact whole-word matching in Lexicon/Light+. Stale,
+malformed, unknown, or colliding leases fail open. There is no phonetic/fuzzy
+rewrite: active `Iwo` does not rewrite Polish `piwo`.
+
+Ordinary overlay TextEditor edits carry `edit_provenance=manual_human`
+separately from delivery `action`. The latch is consumed by one quality commit;
+three distinct correction IDs for the same normalized lexical pair expose
+`1/3`, `2/3`, `3/3` and promote exactly once. Formatter, retranscribe, replay,
+bulk, speech-gap, and delivery actions without that latch cast no vote.
 
 **Runtime proof:** Settings may show configured readiness, but a take counts as
 exercised only when its typed receipt says `armed=true` and `submitted>0`.

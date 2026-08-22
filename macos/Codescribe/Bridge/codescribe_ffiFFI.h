@@ -1579,7 +1579,7 @@ RustBuffer uniffi_codescribe_ffi_fn_func_audio_input_snapshot(RustCallStatus *_N
 #endif
 #ifndef UNIFFI_FFIDEF_UNIFFI_CODESCRIBE_FFI_FN_FUNC_COMMIT_OVERLAY_QUALITY_RECORD
 #define UNIFFI_FFIDEF_UNIFFI_CODESCRIBE_FFI_FN_FUNC_COMMIT_OVERLAY_QUALITY_RECORD
-RustBuffer uniffi_codescribe_ffi_fn_func_commit_overlay_quality_record(RustBuffer raw_text, RustBuffer delivered_text, RustBuffer edited_text, RustBuffer action, RustBuffer formatting_level, RustBuffer avg_logprob, RustBuffer speech_pct, RustBuffer confidence_flags, RustCallStatus *_Nonnull out_status
+RustBuffer uniffi_codescribe_ffi_fn_func_commit_overlay_quality_record(RustBuffer raw_text, RustBuffer delivered_text, RustBuffer edited_text, RustBuffer action, RustBuffer formatting_level, RustBuffer edit_provenance, RustBuffer avg_logprob, RustBuffer speech_pct, RustBuffer confidence_flags, RustCallStatus *_Nonnull out_status
 );
 #endif
 #ifndef UNIFFI_FFIDEF_UNIFFI_CODESCRIBE_FFI_FN_FUNC_CURRENT_SERVING_VERDICT

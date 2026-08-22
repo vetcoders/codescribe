@@ -162,6 +162,7 @@ fn sealed_final(utterance_id: u64, text: &str) -> EngineEvent {
         compression_ratio: None,
         quality_gate_dropped: false,
         confidence_flags: vec![],
+        acoustic: None,
     }
 }
 
@@ -347,6 +348,7 @@ fn single_final_short_tail_fails_engine_bar() {
         compression_ratio: None,
         quality_gate_dropped: false,
         confidence_flags: vec![],
+        acoustic: None,
     }];
     let assembly = assemble_live_from_events(&events);
     assert_eq!(assembly.sealed_count(), 1);
@@ -655,6 +657,7 @@ fn overlay_assembly_freezes_finals_and_appends_preview_tail() {
             compression_ratio: None,
             quality_gate_dropped: false,
             confidence_flags: vec![],
+            acoustic: None,
         },
         EngineEvent::Preview {
             rev: 2,
@@ -702,6 +705,7 @@ fn parity_assembly_reads_layer1_tail_patches() {
         compression_ratio: None,
         quality_gate_dropped: false,
         confidence_flags: vec![],
+        acoustic: None,
     };
 
     // Layer 0 under-generated "Toolchain" as "Tulczajn"; Layer 1 re-transcribed

@@ -13,7 +13,9 @@ use std::sync::Mutex;
 
 use chrono::{SecondsFormat, Utc};
 use codescribe_core::audio::capture_receipt::session_energy_db;
-use codescribe_core::pipeline::contracts::TranscriptSegment;
+use codescribe_core::pipeline::contracts::{
+    AcousticSpanGrain, AcousticTranscriptIdentity, TranscriptSegment,
+};
 use serde::{Deserialize, Serialize};
 
 /// Explicit path override for the clean transcript bus.
@@ -48,6 +50,7 @@ pub struct TranscriptDraft {
     pub start_seconds: f32,
     pub end_seconds: f32,
     pub segments: Vec<TranscriptSegment>,
+    pub acoustic: Option<AcousticTranscriptIdentity>,
 }
 
 /// Typed draft transition. Product truth is never represented by this enum;
@@ -74,6 +77,7 @@ impl TranscriptDraftStatus {
 pub enum TranscriptWordGrain {
     #[default]
     Word,
+    Phrase,
     Utterance,
 }
 
@@ -85,12 +89,22 @@ fn is_word_grain(grain: &TranscriptWordGrain) -> bool {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct TranscriptWordSpan {
     pub text: String,
+    pub session_id: String,
+    pub capture_epoch: u64,
     pub sample_start: u64,
     pub sample_end: u64,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub energy_db: Option<f32>,
     #[serde(default, skip_serializing_if = "is_word_grain")]
     pub grain: TranscriptWordGrain,
+}
+
+/// Falsifiable coverage result for one transcript event. Failed receipts keep
+/// the clean reducer bytes visible while refusing to pretend they are anchored.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct TranscriptCoverageReceipt {
+    pub passed: bool,
+    pub code: String,
 }
 
 /// Append-only public event contract. `text` is always clean reducer truth;
@@ -105,6 +119,7 @@ pub struct CleanTranscriptEvent {
     pub emitted_at: String,
     pub status: String,
     pub sample_rate_hz: Option<u32>,
+    pub capture_epoch: Option<u64>,
     pub sample_start: Option<u64>,
     pub sample_end: Option<u64>,
     pub audio_start_seconds: Option<f32>,
@@ -114,6 +129,8 @@ pub struct CleanTranscriptEvent {
     pub segments: Vec<TranscriptSegment>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub words: Vec<TranscriptWordSpan>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub coverage: Option<TranscriptCoverageReceipt>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub pipeline_session_id: Option<String>,
 }
@@ -126,6 +143,7 @@ pub struct TranscriptBus {
     path: PathBuf,
     writer: Mutex<TranscriptBusWriter>,
     sample_rate_override: Option<u32>,
+    energy_lookup: fn(u64, u64) -> Option<f32>,
 }
 
 /// One lock owns lifecycle and bytes together. This makes the sequence stored
@@ -160,6 +178,15 @@ impl TranscriptBus {
         path: PathBuf,
         sample_rate_override: Option<u32>,
     ) -> io::Result<Self> {
+        Self::open_at_with_energy(session, path, sample_rate_override, session_energy_db)
+    }
+
+    fn open_at_with_energy(
+        session: TranscriptSession,
+        path: PathBuf,
+        sample_rate_override: Option<u32>,
+        energy_lookup: fn(u64, u64) -> Option<f32>,
+    ) -> io::Result<Self> {
         if let Some(parent) = path.parent() {
             std::fs::create_dir_all(parent)?;
         }
@@ -189,6 +216,7 @@ impl TranscriptBus {
                 drafts: BTreeMap::new(),
             }),
             sample_rate_override,
+            energy_lookup,
         };
         Ok(bus)
     }
@@ -214,7 +242,8 @@ impl TranscriptBus {
     pub fn publish_draft(&self, status: TranscriptDraftStatus, utterance: TranscriptDraft) {
         let status = status.as_str();
         let sample_rate = self.sample_rate();
-        let words = word_spans_from_draft(&utterance, sample_rate);
+        let (words, coverage) = word_spans_from_draft(&utterance, self.energy_lookup);
+        let identity = utterance.acoustic.as_ref().map(|value| &value.range);
         let event = CleanTranscriptEvent {
             schema: "codescribe.transcript.v1".to_string(),
             sequence: 0,
@@ -224,13 +253,17 @@ impl TranscriptBus {
             emitted_at: String::new(),
             status: status.to_string(),
             sample_rate_hz: sample_rate,
-            sample_start: sample_rate.map(|rate| seconds_to_sample(utterance.start_seconds, rate)),
-            sample_end: sample_rate.map(|rate| seconds_to_sample(utterance.end_seconds, rate)),
-            audio_start_seconds: Some(utterance.start_seconds),
-            audio_end_seconds: Some(utterance.end_seconds),
+            capture_epoch: identity.map(|range| range.capture_epoch),
+            sample_start: identity.map(|range| range.sample_start),
+            sample_end: identity.map(|range| range.sample_end),
+            audio_start_seconds: identity
+                .and_then(|range| samples_to_seconds(range.sample_start, sample_rate)),
+            audio_end_seconds: identity
+                .and_then(|range| samples_to_seconds(range.sample_end, sample_rate)),
             text: utterance.text.clone(),
             segments: utterance.segments.clone(),
             words,
+            coverage: Some(coverage),
             pipeline_session_id: None,
         };
 
@@ -263,7 +296,8 @@ impl TranscriptBus {
             return;
         }
         let sample_rate = self.sample_rate();
-        let clock = aggregate_seal_clock(&writer.drafts, sample_rate);
+        let mut clock = aggregate_seal_clock(&writer.drafts, sample_rate, self.energy_lookup);
+        reconcile_sealed_text(&text, &mut clock);
         let event = CleanTranscriptEvent {
             schema: "codescribe.transcript.v1".to_string(),
             sequence: 0,
@@ -273,6 +307,7 @@ impl TranscriptBus {
             emitted_at: String::new(),
             status: "transcript_sealed".to_string(),
             sample_rate_hz: sample_rate,
+            capture_epoch: clock.capture_epoch,
             sample_start: clock.sample_start,
             sample_end: clock.sample_end,
             audio_start_seconds: clock.audio_start_seconds,
@@ -280,6 +315,7 @@ impl TranscriptBus {
             text,
             segments: clock.segments,
             words: clock.words,
+            coverage: Some(clock.coverage),
             pipeline_session_id,
         };
         match self
@@ -319,6 +355,7 @@ impl TranscriptBus {
                 emitted_at: String::new(),
                 status: "session_started".to_string(),
                 sample_rate_hz: None,
+                capture_epoch: None,
                 sample_start: None,
                 sample_end: None,
                 audio_start_seconds: None,
@@ -326,6 +363,7 @@ impl TranscriptBus {
                 text: String::new(),
                 segments: Vec::new(),
                 words: Vec::new(),
+                coverage: None,
                 pipeline_session_id: None,
             },
         )?;
@@ -357,6 +395,35 @@ impl TranscriptBus {
     }
 }
 
+fn lexical_signature(text: &str) -> Vec<String> {
+    text.split(|character: char| !character.is_alphanumeric())
+        .filter(|token| !token.is_empty())
+        .map(str::to_lowercase)
+        .collect()
+}
+
+fn reconcile_sealed_text(text: &str, clock: &mut SealClock) {
+    if !clock.coverage.passed {
+        return;
+    }
+    let anchored = clock
+        .words
+        .iter()
+        .map(|span| span.text.as_str())
+        .collect::<Vec<_>>()
+        .join(" ");
+    if lexical_signature(&anchored) != lexical_signature(text) {
+        clock.words.clear();
+        clock.coverage = failed_coverage("sealed_text_not_covered_by_acoustic_spans");
+        return;
+    }
+    if clock.words.len() == 1 {
+        // L3 may change punctuation/casing, but a one-phrase receipt keeps the
+        // exact reducer/Bus bytes on the original PCM identity.
+        clock.words[0].text = text.to_string();
+    }
+}
+
 /// Path precedence: explicit contract, XDG state, then Codescribe's existing
 /// project/data override (`CODESCRIBE_DATA_DIR`) via `Config::config_dir()`.
 pub fn transcript_bus_path() -> PathBuf {
@@ -377,112 +444,159 @@ pub fn transcript_bus_path() -> PathBuf {
     codescribe_core::config::Config::config_dir().join(TRANSCRIPT_BUS_FILENAME)
 }
 
-fn seconds_to_sample(seconds: f32, sample_rate: u32) -> u64 {
-    if !seconds.is_finite() || seconds <= 0.0 {
-        return 0;
-    }
-    (f64::from(seconds) * f64::from(sample_rate)).round() as u64
+fn samples_to_seconds(sample: u64, sample_rate: Option<u32>) -> Option<f32> {
+    sample_rate
+        .filter(|rate| *rate > 0)
+        .map(|rate| sample as f32 / rate as f32)
 }
 
-fn finite_audio_window(start: f32, end: f32) -> Option<(f32, f32)> {
-    if start.is_finite() && end.is_finite() && end > start {
-        Some((start, end))
-    } else {
-        None
+fn bus_grain(grain: AcousticSpanGrain) -> TranscriptWordGrain {
+    match grain {
+        AcousticSpanGrain::Word => TranscriptWordGrain::Word,
+        AcousticSpanGrain::Phrase => TranscriptWordGrain::Phrase,
+        AcousticSpanGrain::Utterance => TranscriptWordGrain::Utterance,
     }
 }
 
-fn word_span_from_seconds(
-    text: String,
-    start: f32,
-    end: f32,
-    sample_rate: Option<u32>,
-    grain: TranscriptWordGrain,
-) -> Option<TranscriptWordSpan> {
-    let (start, end) = finite_audio_window(start, end)?;
-    if text.trim().is_empty() {
-        return None;
+fn failed_coverage(code: &str) -> TranscriptCoverageReceipt {
+    TranscriptCoverageReceipt {
+        passed: false,
+        code: code.to_string(),
     }
-    let rate = sample_rate.filter(|rate| *rate > 0)?;
-    let sample_start = seconds_to_sample(start, rate);
-    let sample_end = seconds_to_sample(end, rate).max(sample_start.saturating_add(1));
-    Some(TranscriptWordSpan {
-        text,
-        sample_start,
-        sample_end,
-        energy_db: session_energy_db(sample_start, sample_end),
-        grain,
-    })
 }
 
 fn word_spans_from_draft(
     utterance: &TranscriptDraft,
-    sample_rate: Option<u32>,
-) -> Vec<TranscriptWordSpan> {
-    if !utterance.segments.is_empty() {
-        return utterance
-            .segments
-            .iter()
-            .filter_map(|segment| {
-                word_span_from_seconds(
-                    segment.text.clone(),
-                    segment.start_ts,
-                    segment.end_ts,
-                    sample_rate,
-                    TranscriptWordGrain::Word,
-                )
-            })
-            .collect();
+    energy_lookup: fn(u64, u64) -> Option<f32>,
+) -> (Vec<TranscriptWordSpan>, TranscriptCoverageReceipt) {
+    let Some(acoustic) = &utterance.acoustic else {
+        return (Vec::new(), failed_coverage("missing_pcm_identity"));
+    };
+    if acoustic.range.session.trim().is_empty()
+        || acoustic.range.sample_end <= acoustic.range.sample_start
+    {
+        return (Vec::new(), failed_coverage("invalid_utterance_identity"));
     }
-    word_span_from_seconds(
-        utterance.text.clone(),
-        utterance.start_seconds,
-        utterance.end_seconds,
-        sample_rate,
-        TranscriptWordGrain::Utterance,
-    )
-    .into_iter()
-    .collect()
+    if acoustic.spans.is_empty() && !utterance.text.trim().is_empty() {
+        return (Vec::new(), failed_coverage("missing_lexical_coverage"));
+    }
+
+    let mut previous_end = acoustic.range.sample_start;
+    let mut spans = Vec::with_capacity(acoustic.spans.len());
+    let mut missing_energy = false;
+    for span in &acoustic.spans {
+        let range = &span.range;
+        if span.text.trim().is_empty()
+            || range.session != acoustic.range.session
+            || range.capture_epoch != acoustic.range.capture_epoch
+            || range.sample_start < acoustic.range.sample_start
+            || range.sample_end > acoustic.range.sample_end
+            || range.sample_end <= range.sample_start
+            || range.sample_start < previous_end
+        {
+            return (
+                Vec::new(),
+                failed_coverage("invalid_or_unordered_lexical_span"),
+            );
+        }
+        let energy_db = energy_lookup(range.sample_start, range.sample_end);
+        missing_energy |= energy_db.is_none();
+        spans.push(TranscriptWordSpan {
+            text: span.text.clone(),
+            session_id: range.session.clone(),
+            capture_epoch: range.capture_epoch,
+            sample_start: range.sample_start,
+            sample_end: range.sample_end,
+            energy_db,
+            grain: bus_grain(span.grain),
+        });
+        previous_end = range.sample_end;
+    }
+
+    let coverage = if missing_energy {
+        spans.clear();
+        failed_coverage("lexical_span_without_voiced_energy")
+    } else {
+        TranscriptCoverageReceipt {
+            passed: true,
+            code: "anchored_voiced_coverage".to_string(),
+        }
+    };
+    (spans, coverage)
 }
 
 struct SealClock {
+    capture_epoch: Option<u64>,
     sample_start: Option<u64>,
     sample_end: Option<u64>,
     audio_start_seconds: Option<f32>,
     audio_end_seconds: Option<f32>,
     segments: Vec<TranscriptSegment>,
     words: Vec<TranscriptWordSpan>,
+    coverage: TranscriptCoverageReceipt,
 }
 
 fn aggregate_seal_clock(
     drafts: &BTreeMap<u64, TranscriptDraft>,
     sample_rate: Option<u32>,
+    energy_lookup: fn(u64, u64) -> Option<f32>,
 ) -> SealClock {
-    let mut audio_start = None;
-    let mut audio_end = None;
+    let mut sample_start = None;
+    let mut sample_end = None;
+    let mut capture_epoch = None;
+    let mut mixed_epochs = false;
     let mut segments = Vec::new();
     let mut words = Vec::new();
+    let mut coverage = TranscriptCoverageReceipt {
+        passed: true,
+        code: "anchored_voiced_coverage".to_string(),
+    };
     for draft in drafts.values() {
-        if let Some((start, end)) = finite_audio_window(draft.start_seconds, draft.end_seconds) {
-            audio_start = Some(audio_start.map_or(start, |seen: f32| seen.min(start)));
-            audio_end = Some(audio_end.map_or(end, |seen: f32| seen.max(end)));
+        if let Some(acoustic) = &draft.acoustic {
+            if !mixed_epochs {
+                match capture_epoch {
+                    None => capture_epoch = Some(acoustic.range.capture_epoch),
+                    Some(epoch) if epoch != acoustic.range.capture_epoch => {
+                        mixed_epochs = true;
+                        capture_epoch = None;
+                        sample_start = None;
+                        sample_end = None;
+                        coverage = failed_coverage("multiple_capture_epochs");
+                    }
+                    Some(_) => {}
+                }
+            }
+            if !mixed_epochs && capture_epoch.is_some() {
+                sample_start = Some(
+                    sample_start.map_or(acoustic.range.sample_start, |seen: u64| {
+                        seen.min(acoustic.range.sample_start)
+                    }),
+                );
+                sample_end = Some(sample_end.map_or(acoustic.range.sample_end, |seen: u64| {
+                    seen.max(acoustic.range.sample_end)
+                }));
+            }
         }
         segments.extend(draft.segments.iter().cloned());
-        words.extend(word_spans_from_draft(draft, sample_rate));
+        let (draft_words, draft_coverage) = word_spans_from_draft(draft, energy_lookup);
+        words.extend(draft_words);
+        if !draft_coverage.passed && coverage.passed {
+            coverage = draft_coverage;
+        }
+    }
+    if drafts.is_empty() {
+        coverage = failed_coverage("missing_pcm_identity");
     }
     SealClock {
-        sample_start: match (sample_rate, audio_start) {
-            (Some(rate), Some(start)) => Some(seconds_to_sample(start, rate)),
-            _ => None,
-        },
-        sample_end: match (sample_rate, audio_end) {
-            (Some(rate), Some(end)) => Some(seconds_to_sample(end, rate)),
-            _ => None,
-        },
-        audio_start_seconds: audio_start,
-        audio_end_seconds: audio_end,
+        capture_epoch,
+        sample_start,
+        sample_end,
+        audio_start_seconds: sample_start
+            .and_then(|sample| samples_to_seconds(sample, sample_rate)),
+        audio_end_seconds: sample_end.and_then(|sample| samples_to_seconds(sample, sample_rate)),
         segments,
         words,
+        coverage,
     }
 }
 
@@ -504,17 +618,59 @@ fn expand_tilde(path: &str) -> PathBuf {
 mod tests {
     use super::*;
 
+    fn voiced_energy(_start: u64, _end: u64) -> Option<f32> {
+        Some(-24.0)
+    }
+
+    fn silence(_start: u64, _end: u64) -> Option<f32> {
+        None
+    }
+
+    fn acoustic(
+        session: &str,
+        epoch: u64,
+        start: u64,
+        end: u64,
+        spans: Vec<(&str, u64, u64, AcousticSpanGrain)>,
+    ) -> AcousticTranscriptIdentity {
+        let range = codescribe_core::stt::tail_provider::TailSampleRange {
+            session: session.to_string(),
+            capture_epoch: epoch,
+            sample_start: start,
+            sample_end: end,
+        };
+        AcousticTranscriptIdentity {
+            range,
+            spans: spans
+                .into_iter()
+                .map(|(text, sample_start, sample_end, grain)| {
+                    codescribe_core::pipeline::contracts::AcousticTranscriptSpan {
+                        text: text.to_string(),
+                        range: codescribe_core::stt::tail_provider::TailSampleRange {
+                            session: session.to_string(),
+                            capture_epoch: epoch,
+                            sample_start,
+                            sample_end,
+                        },
+                        grain,
+                    }
+                })
+                .collect(),
+        }
+    }
+
     #[test]
     fn bus_flushes_start_draft_and_seal_as_private_ndjson() {
         let temp = tempfile::tempdir().unwrap();
         let path = temp.path().join("events.jsonl");
-        let bus = TranscriptBus::open_at(
+        let bus = TranscriptBus::open_at_with_energy(
             TranscriptSession {
                 session_id: "session-agent".to_string(),
                 mode: TranscriptMode::Agent,
             },
             path.clone(),
             Some(48_000),
+            voiced_energy,
         )
         .unwrap();
         bus.publish_draft(
@@ -525,6 +681,13 @@ mod tests {
                 start_seconds: 0.25,
                 end_seconds: 1.5,
                 segments: Vec::new(),
+                acoustic: Some(acoustic(
+                    "pipeline-session",
+                    4,
+                    12_000,
+                    72_000,
+                    vec![("clean final", 12_000, 72_000, AcousticSpanGrain::Utterance)],
+                )),
             },
         );
         bus.publish_sealed(
@@ -539,6 +702,7 @@ mod tests {
                 start_seconds: 0.25,
                 end_seconds: 1.5,
                 segments: Vec::new(),
+                acoustic: None,
             },
         );
         bus.publish_sealed("duplicate final".to_string(), None);
@@ -563,6 +727,8 @@ mod tests {
         assert_eq!(lines[2].words[0].sample_start, 12_000);
         assert_eq!(lines[2].words[0].sample_end, 72_000);
         assert_eq!(lines[2].words[0].grain, TranscriptWordGrain::Utterance);
+        assert_eq!(lines[2].words[0].capture_epoch, 4);
+        assert_eq!(lines[2].words[0].session_id, "pipeline-session");
         assert_eq!(
             lines.iter().map(|event| event.sequence).collect::<Vec<_>>(),
             vec![1, 2, 3]
@@ -582,13 +748,14 @@ mod tests {
     fn seal_publishes_word_spans_on_the_pcm_clock() {
         let temp = tempfile::tempdir().unwrap();
         let path = temp.path().join("words.jsonl");
-        let bus = TranscriptBus::open_at(
+        let bus = TranscriptBus::open_at_with_energy(
             TranscriptSession {
                 session_id: "session-words".to_string(),
                 mode: TranscriptMode::Dictation,
             },
             path.clone(),
             Some(16_000),
+            voiced_energy,
         )
         .unwrap();
         bus.publish_draft(
@@ -610,6 +777,16 @@ mod tests {
                         end_ts: 2.0,
                     },
                 ],
+                acoustic: Some(acoustic(
+                    "pipeline-words",
+                    9,
+                    16_000,
+                    32_000,
+                    vec![
+                        ("dwa", 16_000, 22_400, AcousticSpanGrain::Word),
+                        ("slowa", 22_400, 32_000, AcousticSpanGrain::Word),
+                    ],
+                )),
             },
         );
         bus.publish_sealed("dwa slowa".to_string(), None);
@@ -634,5 +811,91 @@ mod tests {
         assert_eq!(seal.words[1].text, "slowa");
         assert_eq!(seal.words[1].sample_start, 22_400);
         assert_eq!(seal.words[1].sample_end, 32_000);
+        assert_eq!(seal.coverage.as_ref().map(|value| value.passed), Some(true));
+    }
+
+    #[test]
+    fn silence_and_missing_identity_cannot_gain_published_lexical_spans() {
+        let draft = TranscriptDraft {
+            utterance_id: 1,
+            text: "modelki trzy".to_string(),
+            start_seconds: 0.0,
+            end_seconds: 1.0,
+            segments: Vec::new(),
+            acoustic: Some(acoustic(
+                "silence",
+                1,
+                0,
+                16_000,
+                vec![("modelki trzy", 0, 16_000, AcousticSpanGrain::Phrase)],
+            )),
+        };
+        let (words, receipt) = word_spans_from_draft(&draft, silence);
+        assert!(words.is_empty(), "energy absence cannot mint lexical spans");
+        assert!(!receipt.passed);
+        assert_eq!(receipt.code, "lexical_span_without_voiced_energy");
+
+        let mut missing = draft;
+        missing.acoustic = None;
+        let (words, receipt) = word_spans_from_draft(&missing, voiced_energy);
+        assert!(words.is_empty());
+        assert_eq!(receipt.code, "missing_pcm_identity");
+    }
+
+    #[test]
+    fn w2_05_synthetic_receipts_reject_omission_and_unanchored_insertion() {
+        let local_start = 48_000;
+        let local_end = 96_000;
+        let forbidden = "synthetic unspoken phrase";
+        let local_draft = TranscriptDraft {
+            utterance_id: 1,
+            text: forbidden.to_string(),
+            start_seconds: 0.0,
+            end_seconds: 0.0,
+            segments: Vec::new(),
+            acoustic: Some(acoustic(
+                "synthetic-local-session",
+                1,
+                local_start,
+                local_end,
+                Vec::new(),
+            )),
+        };
+        let (words, receipt) = word_spans_from_draft(&local_draft, voiced_energy);
+        assert!(words.is_empty());
+        assert_eq!(receipt.code, "missing_lexical_coverage");
+
+        let reference = "Iwo tests FlashVAD and G.A.D.".to_string();
+        let dragon_draft = TranscriptDraft {
+            utterance_id: 1,
+            text: reference.clone(),
+            start_seconds: 0.0,
+            end_seconds: 0.0,
+            segments: Vec::new(),
+            acoustic: Some(acoustic(
+                "synthetic-dragon-session",
+                1,
+                96_672,
+                3_548_352,
+                vec![(&reference, 96_672, 3_548_352, AcousticSpanGrain::Phrase)],
+            )),
+        };
+        let drafts = BTreeMap::from([(1, dragon_draft)]);
+        let mut exact = aggregate_seal_clock(&drafts, Some(48_000), voiced_energy);
+        reconcile_sealed_text(&reference, &mut exact);
+        assert!(exact.coverage.passed);
+        assert_eq!(exact.words[0].text, reference);
+        for required in ["Iwo", "FlashVAD", "G.A.D."] {
+            assert!(exact.words[0].text.contains(required));
+        }
+
+        let broken_delivery = "Iwo tests FlashVAD and an unspoken tail.";
+        let mut broken = aggregate_seal_clock(&drafts, Some(48_000), voiced_energy);
+        reconcile_sealed_text(broken_delivery, &mut broken);
+        assert!(broken.words.is_empty());
+        assert_eq!(
+            broken.coverage.code,
+            "sealed_text_not_covered_by_acoustic_spans"
+        );
     }
 }

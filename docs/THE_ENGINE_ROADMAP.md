@@ -69,7 +69,7 @@ after settlement — do not re-open those cuts as unstarted work.
 | W13-1 | Inline-format buffer: sealed chunks stream to the formatting LLM during dictation (`previous_response_id` chain); stop pays only the tail | `[~]` in progress — `CODESCRIBE_INLINE_FORMAT` default OFF   |
 | W13-2 | Tail-patch behind a provider seam: local ws sidecar (default target), remote opt-in, in-process fallback                                  | landed OFF — 2A contract + 2B sidecar slot                   |
 | W13-3 | **Keystone**: time-pinned canvas — Silero-bounded utterances, words pinned to seconds, sealed ledger                                      | landed OFF — 3A provenance + 3B `CODESCRIBE_SILERO_FUSION=0` |
-| W13-4 | Gap-append dedup by time-span (shrinks to a corollary of W13-3) + in-span hallucination fence                                             | landed OFF — `CODESCRIBE_SPAN_IDEMPOTENCE=0`                 |
+| W13-4 | Gap-append dedup by time-span (shrinks to a corollary of W13-3) + in-span hallucination fence                                             | landed ON — PCM identity law; `=0` is diagnostic only        |
 | W13-5 | Capture-level receipt + Audio menu truth (level, device, quality)                                                                         | landed — WARN is non-terminal                                |
 | W13-6 | Lexicon gets a voice (Whisper `initial_prompt`, Apple `contextualStrings`) + word/gap highlighting feeding Teach                          | landed OFF — 6A voice + 6B `CODESCRIBE_OVERLAY_HIGHLIGHTS=0` |
 

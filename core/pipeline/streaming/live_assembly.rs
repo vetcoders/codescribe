@@ -57,6 +57,7 @@ pub fn assemble_live_from_events(events: &[EngineEvent]) -> LiveAssembly {
     // patches address utterances by id, so the replay has to remember which
     // slot belongs to whom.
     let mut freezed_ids: Vec<u64> = Vec::new();
+    let mut freezed_acoustic: Vec<bool> = Vec::new();
     let mut preview = String::new();
 
     for event in events {
@@ -66,15 +67,20 @@ pub fn assemble_live_from_events(events: &[EngineEvent]) -> LiveAssembly {
                 preview = text.trim().to_string();
             }
             EngineEvent::UtteranceFinal {
-                utterance_id, text, ..
+                utterance_id,
+                text,
+                acoustic,
+                ..
             } => {
                 let trimmed = text.trim();
                 if !trimmed.is_empty() {
                     if let Some(index) = freezed_ids.iter().rposition(|id| id == utterance_id) {
                         freezed[index] = trimmed.to_string();
+                        freezed_acoustic[index] = acoustic.is_some();
                     } else {
                         freezed.push(trimmed.to_string());
                         freezed_ids.push(*utterance_id);
+                        freezed_acoustic.push(acoustic.is_some());
                     }
                 }
                 preview.clear();
@@ -90,6 +96,9 @@ pub fn assemble_live_from_events(events: &[EngineEvent]) -> LiveAssembly {
             // unique slot as the production presentation reducer.
             EngineEvent::ReplaceRange { utterance_id, .. } => {
                 if let Some(index) = freezed_ids.iter().rposition(|id| id == utterance_id) {
+                    if freezed_acoustic[index] {
+                        continue;
+                    }
                     // Out-of-range windows are dropped, not clamped: a patch
                     // that does not fit the text it claims to target is a
                     // desync, and half-applying it would corrupt the floor.
@@ -131,6 +140,7 @@ mod tests {
             compression_ratio: None,
             quality_gate_dropped: false,
             confidence_flags: vec![],
+            acoustic: None,
         }
     }
 

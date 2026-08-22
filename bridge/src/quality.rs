@@ -13,7 +13,7 @@ use codescribe_core::pipeline::highlight::{
 };
 use codescribe_core::quality::overlay_quality::{
     CustomLexiconEntry, DictionaryTeachResult, OverlayCorrectionCommit, QualityRecord,
-    VoiceLabSaveOutcome, commit_overlay_correction_with_confidence, custom_lexicon_entries,
+    VoiceLabSaveOutcome, commit_overlay_correction_with_provenance, custom_lexicon_entries,
     finalize_voice_lab_correction, recent_quality_records, teach_dictionary_from_store, teach_span,
 };
 
@@ -29,15 +29,21 @@ pub struct CsQualityCommitResult {
     pub evidence_only: bool,
     /// Ready-to-show overlay toast text ("Saved — N pair(s) learned" / "Saved as evidence").
     pub acknowledgement: String,
+    /// Structured progress for one normalized lexical pair.
+    pub teach_seen: Option<u64>,
+    pub teach_required: Option<u64>,
 }
 
 impl From<OverlayCorrectionCommit> for CsQualityCommitResult {
     /// Core commit → toast payload (pairs, evidence flag, ready acknowledgement).
     fn from(commit: OverlayCorrectionCommit) -> Self {
+        let progress = commit.confirmation_progress();
         Self {
             pairs_learned: commit.pairs_learned,
             evidence_only: commit.evidence_only,
             acknowledgement: commit.acknowledgement_message(),
+            teach_seen: progress.map(|value| value.0),
+            teach_required: progress.map(|value| value.1),
         }
     }
 }
@@ -51,6 +57,7 @@ pub struct CsQualityRecord {
     pub variant: String,
     pub edited_text: String,
     pub action: String,
+    pub edit_provenance: Option<String>,
     pub timestamp_ms: u64,
     pub avg_logprob: Option<f32>,
     pub speech_pct: Option<f32>,
@@ -66,6 +73,11 @@ impl From<QualityRecord> for CsQualityRecord {
             .and_then(serde_json::Value::as_str)
             .unwrap_or("unknown")
             .to_string();
+        let edit_provenance = record
+            .meta
+            .get("edit_provenance")
+            .and_then(serde_json::Value::as_str)
+            .map(str::to_string);
         Self {
             id: record.logical_id(),
             revision: record.revision,
@@ -73,6 +85,7 @@ impl From<QualityRecord> for CsQualityRecord {
             variant: record.delivered_text,
             edited_text: record.edited_text,
             action,
+            edit_provenance,
             timestamp_ms: record.timestamp_ms,
             avg_logprob: record.avg_logprob,
             speech_pct: record.speech_pct,
@@ -166,13 +179,14 @@ pub fn commit_overlay_quality_record(
     edited_text: String,
     action: String,
     formatting_level: String,
+    edit_provenance: Option<String>,
     avg_logprob: Option<f32>,
     speech_pct: Option<f32>,
     confidence_flags: Vec<String>,
 ) -> Result<CsQualityCommitResult, CsError> {
     // Delegate to core. Model/mode are best-effort for MVP (overlay always).
     // action carried for meta (over-correct for P2-03: "captureQualityIfEdited gubi action").
-    commit_overlay_correction_with_confidence(
+    commit_overlay_correction_with_provenance(
         &raw_text,
         &delivered_text,
         &edited_text,
@@ -180,6 +194,7 @@ pub fn commit_overlay_quality_record(
         None,
         Some(&action),
         Some(&formatting_level),
+        edit_provenance.as_deref(),
         avg_logprob,
         speech_pct,
         confidence_flags,
@@ -339,7 +354,10 @@ mod tests {
             avg_logprob: Some(-0.5),
             speech_pct: Some(0.8),
             confidence_flags: vec!["low_logprob".into()],
-            meta: serde_json::json!({ "action": "copy" }),
+            meta: serde_json::json!({
+                "action": "copy",
+                "edit_provenance": "manual_human"
+            }),
         };
 
         assert_eq!(
@@ -351,6 +369,7 @@ mod tests {
                 variant: "delivered".into(),
                 edited_text: "edited".into(),
                 action: "copy".into(),
+                edit_provenance: Some("manual_human".into()),
                 timestamp_ms: 42,
                 avg_logprob: Some(-0.5),
                 speech_pct: Some(0.8),
@@ -386,6 +405,7 @@ mod tests {
             "synthetic canonical".into(),
             "copy".into(),
             "creative".into(),
+            None,
             Some(-1.2),
             Some(0.75),
             vec!["test_flag".into()],
@@ -425,6 +445,7 @@ mod tests {
             "canonical".into(),
             "close".into(),
             "mystery".into(),
+            None,
             None,
             None,
             vec![],

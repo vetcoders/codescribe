@@ -243,6 +243,7 @@ mod tests {
             compression_ratio: None,
             quality_gate_dropped: false,
             confidence_flags: Vec::new(),
+            acoustic: None,
         }
     }
 

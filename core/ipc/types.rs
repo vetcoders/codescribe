@@ -104,6 +104,8 @@ pub enum EngineEventWire {
         compression_ratio: Option<f32>,
         quality_gate_dropped: bool,
         confidence_flags: Vec<TranscriptionConfidenceFlag>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        acoustic: Option<crate::pipeline::contracts::AcousticTranscriptIdentity>,
     },
     ReplaceRange {
         utterance_id: u64,
@@ -190,6 +192,7 @@ impl From<&EngineEvent> for EngineEventWire {
                 compression_ratio,
                 quality_gate_dropped,
                 confidence_flags,
+                acoustic,
                 ..
             } => Self::UtteranceFinal {
                 utterance_id: *utterance_id,
@@ -202,6 +205,7 @@ impl From<&EngineEvent> for EngineEventWire {
                 compression_ratio: *compression_ratio,
                 quality_gate_dropped: *quality_gate_dropped,
                 confidence_flags: confidence_flags.clone(),
+                acoustic: acoustic.clone(),
             },
             EngineEvent::Drop { kind, text, reason } => Self::Drop {
                 kind: drop_kind_to_wire(kind).to_string(),
@@ -293,7 +297,10 @@ fn drop_kind_to_wire(kind: &DropKind) -> &'static str {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::pipeline::contracts::{NonSpeechEvidence, SidebandEvidenceKind, SidebandProvenance};
+    use crate::pipeline::contracts::{
+        AcousticSpanGrain, AcousticTranscriptIdentity, AcousticTranscriptSpan, NonSpeechEvidence,
+        SidebandEvidenceKind, SidebandProvenance,
+    };
     use crate::stt::tail_provider::TailSampleRange;
     use serde_json::Value;
 
@@ -321,6 +328,24 @@ mod tests {
             compression_ratio: Some(1.1),
             quality_gate_dropped: false,
             confidence_flags: vec![TranscriptionConfidenceFlag::VeryLowSpeech],
+            acoustic: Some(AcousticTranscriptIdentity {
+                range: TailSampleRange {
+                    session: "ipc-session".into(),
+                    capture_epoch: 8,
+                    sample_start: 48_000,
+                    sample_end: 120_000,
+                },
+                spans: vec![AcousticTranscriptSpan {
+                    text: "hello world".into(),
+                    range: TailSampleRange {
+                        session: "ipc-session".into(),
+                        capture_epoch: 8,
+                        sample_start: 48_000,
+                        sample_end: 120_000,
+                    },
+                    grain: AcousticSpanGrain::Phrase,
+                }],
+            }),
         };
 
         let wire = EngineEventWire::from(&event);
@@ -337,6 +362,14 @@ mod tests {
         );
         assert_eq!(obj.get("text").and_then(Value::as_str), Some("hello world"));
         assert!(obj.get("segments").is_some(), "segments must be present");
+        assert_eq!(
+            obj.get("acoustic")
+                .and_then(|value| value.get("range"))
+                .and_then(|value| value.get("capture_epoch"))
+                .and_then(Value::as_u64),
+            Some(8),
+            "PCM identity must survive IPC while raw text stays private"
+        );
         assert_eq!(
             obj.get("vad_speech_pct")
                 .and_then(Value::as_f64)

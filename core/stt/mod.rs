@@ -24,6 +24,8 @@
 //! commit boundary must resolve to a skip rather than a whole-file re-pass
 //! appended onto text the user already sees.
 
+/// Bounded read-only view of active W2-04 Agent session-name leases.
+pub mod active_names;
 /// Candle Whisper singleton adapter implementing `TranscriptionAdapter`.
 pub mod adapter;
 /// Apple SpeechAnalyzer live STT bridge (letter-level canvas; live lane only).

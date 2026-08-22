@@ -1963,6 +1963,7 @@ mod tests {
             compression_ratio: None,
             quality_gate_dropped: false,
             confidence_flags: vec![],
+            acoustic: None,
         });
         let sealed = snapshot_session_telemetry(&shared);
         assert!(!sealed.pending_tail);
@@ -2022,6 +2023,7 @@ mod tests {
                 compression_ratio: None,
                 quality_gate_dropped: false,
                 confidence_flags: vec![],
+                acoustic: None,
             };
 
         sink.on_event(&utterance_final(1, 0.0, 3.2));
@@ -2076,6 +2078,7 @@ mod tests {
                 compression_ratio: None,
                 quality_gate_dropped: false,
                 confidence_flags: vec![],
+                acoustic: None,
             };
 
         sink.on_event(&utterance_final(1, 0.0, 3.2));
@@ -2133,6 +2136,7 @@ mod tests {
             compression_ratio: None,
             quality_gate_dropped: false,
             confidence_flags: vec![],
+            acoustic: None,
         };
 
         // Near misses: the sibling receipt code, a truncation, an extension, a

@@ -712,6 +712,24 @@ pub fn upsert_correction_in_custom_lexicon(variant: &str, canonical: &str) -> Re
     upsert_correction_in_custom_lexicon_unlocked(variant, canonical)
 }
 
+/// Insert a promoted lexical pair once, even when detached overlay quality
+/// tasks reach the third-confirmation boundary concurrently.
+fn insert_promoted_correction_once(variant: &str, canonical: &str) -> Result<bool> {
+    let _write_guard = CUSTOM_LEXICON_WRITE_LOCK
+        .get_or_init(|| Mutex::new(()))
+        .lock()
+        .map_err(|_| anyhow::anyhow!("custom lexicon write lock was poisoned"))?;
+    let already_present = custom_lexicon_entries()?.iter().any(|entry| {
+        normalized_variant(&entry.variant) == normalized_variant(variant)
+            && entry.canonical.trim() == canonical.trim()
+    });
+    if already_present {
+        return Ok(false);
+    }
+    upsert_correction_in_custom_lexicon_unlocked(variant, canonical)?;
+    Ok(true)
+}
+
 /// Single-pair upsert body. Caller must already hold [`CUSTOM_LEXICON_WRITE_LOCK`].
 fn upsert_correction_in_custom_lexicon_unlocked(variant: &str, canonical: &str) -> Result<()> {
     upsert_corrections_unlocked(std::slice::from_ref(&(variant, canonical)))
@@ -829,6 +847,15 @@ fn lexicon_min_corrections() -> u64 {
 /// evidence or explicit operator promotion respectively; none become history
 /// for the automatic N-correction gate.
 fn record_is_human_lexicon_teach(record: &QualityRecord) -> bool {
+    if record
+        .meta
+        .get("edit_provenance")
+        .and_then(serde_json::Value::as_str)
+        .map(str::trim)
+        == Some("manual_human")
+    {
+        return true;
+    }
     let action = record
         .meta
         .get("action")
@@ -869,7 +896,9 @@ fn identical_human_teach_count(records: &[QualityRecord], variant: &str, canonic
                         && seen_canonical.trim() == target_canonical
                 })
         })
-        .count() as u64
+        .map(QualityRecord::logical_id)
+        .collect::<HashSet<_>>()
+        .len() as u64
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -881,7 +910,7 @@ struct PendingLexiconTeach {
 #[derive(Debug, Default)]
 struct LexiconTeachPromotion {
     promoted: Vec<(String, String)>,
-    pending: Vec<PendingLexiconTeach>,
+    progress: Vec<PendingLexiconTeach>,
 }
 
 /// Classify candidates after their quality record has been saved. The third
@@ -892,6 +921,7 @@ fn classify_human_lexicon_teaches(
     candidates: &[(String, String)],
 ) -> Result<LexiconTeachPromotion> {
     let records = all_quality_records()?;
+    let existing = custom_lexicon_entries()?;
     let required = lexicon_min_corrections();
     let mut seen_pairs = HashSet::new();
     let mut result = LexiconTeachPromotion::default();
@@ -906,13 +936,19 @@ fn classify_human_lexicon_teaches(
         }
 
         let seen = identical_human_teach_count(&records, variant, canonical);
-        if seen >= required {
+        let already_promoted = existing.iter().any(|entry| {
+            normalized_variant(&entry.variant) == normalized_variant(variant)
+                && entry.canonical.trim() == canonical.trim()
+        });
+        if seen >= required && !already_promoted {
             result
                 .promoted
                 .push((variant.trim().to_string(), canonical.trim().to_string()));
-        } else {
-            result.pending.push(PendingLexiconTeach { seen, required });
         }
+        result.progress.push(PendingLexiconTeach {
+            seen: seen.min(required),
+            required,
+        });
     }
 
     Ok(result)
@@ -1071,36 +1107,44 @@ pub struct OverlayCorrectionCommit {
     pub pairs_learned: u32,
     /// True when this commit left no custom-lexicon rule written.
     pub evidence_only: bool,
-    /// Pending explicit teaches, retained for the acknowledgement toast only.
+    /// Manual confirmation progress, retained for the acknowledgement toast.
     /// Each tuple is `(identical_teaches_seen, required_teaches)`.
-    pending_lexicon_teaches: Vec<PendingLexiconTeach>,
+    lexicon_teach_progress: Vec<PendingLexiconTeach>,
 }
 
 impl OverlayCorrectionCommit {
+    /// Structured single-pair progress for bridge/UI consumers.
+    pub fn confirmation_progress(&self) -> Option<(u64, u64)> {
+        (self.lexicon_teach_progress.len() == 1).then(|| {
+            let progress = &self.lexicon_teach_progress[0];
+            (progress.seen, progress.required)
+        })
+    }
+
     /// Honest post-edit acknowledgement for the overlay toast (operator UX, LL-E).
     pub fn acknowledgement_message(&self) -> String {
-        if !self.pending_lexicon_teaches.is_empty() {
+        if !self.lexicon_teach_progress.is_empty() {
             let learned = match self.pairs_learned {
                 0 => "Saved as evidence".to_string(),
                 1 => "Saved — 1 pair learned".to_string(),
                 count => format!("Saved — {count} pairs learned"),
             };
-            if self.pending_lexicon_teaches.len() == 1 {
-                let pending = &self.pending_lexicon_teaches[0];
+            if self.lexicon_teach_progress.len() == 1 {
+                let progress = &self.lexicon_teach_progress[0];
                 return format!(
-                    "{learned} — {}/{} teaches toward learning",
-                    pending.seen, pending.required
+                    "{learned} — {}/{} manual confirmations",
+                    progress.seen, progress.required
                 );
             }
             let progress = self
-                .pending_lexicon_teaches
+                .lexicon_teach_progress
                 .iter()
                 .map(|pending| format!("{}/{}", pending.seen, pending.required))
                 .collect::<Vec<_>>()
                 .join(", ");
             return format!(
                 "{learned} — {} pairs pending ({progress})",
-                self.pending_lexicon_teaches.len()
+                self.lexicon_teach_progress.len()
             );
         }
 
@@ -1119,6 +1163,10 @@ impl OverlayCorrectionCommit {
 /// teach (`teach-span-gap`) stays evidence-only.
 fn overlay_commit_teaches_lexicon(_mode: &str, action: Option<&str>) -> bool {
     matches!(action, Some("teach-span") | Some("teach-dictionary"))
+}
+
+fn edit_provenance_is_manual(edit_provenance: Option<&str>) -> bool {
+    edit_provenance.map(str::trim) == Some("manual_human")
 }
 
 /// High-level: save the quality record for the overlay edit AND feed lexicon candidates.
@@ -1184,6 +1232,37 @@ pub fn commit_overlay_correction_with_confidence(
     speech_pct: Option<f32>,
     confidence_flags: Vec<String>,
 ) -> Result<OverlayCorrectionCommit> {
+    commit_overlay_correction_with_provenance(
+        raw_text,
+        delivered_text,
+        edited_text,
+        mode,
+        model,
+        action,
+        formatting_level,
+        None,
+        avg_logprob,
+        speech_pct,
+        confidence_flags,
+    )
+}
+
+/// Persist one overlay receipt while keeping delivery action separate from the
+/// explicit editor provenance that alone may vote in the three-confirmation gate.
+#[allow(clippy::too_many_arguments)]
+pub fn commit_overlay_correction_with_provenance(
+    raw_text: &str,
+    delivered_text: &str,
+    edited_text: &str,
+    mode: &str,
+    model: Option<String>,
+    action: Option<&str>,
+    formatting_level: Option<&str>,
+    edit_provenance: Option<&str>,
+    avg_logprob: Option<f32>,
+    speech_pct: Option<f32>,
+    confidence_flags: Vec<String>,
+) -> Result<OverlayCorrectionCommit> {
     let formatting_level = formatting_level
         .map(FormattingPolicy::parse)
         .transpose()?
@@ -1192,8 +1271,9 @@ pub fn commit_overlay_correction_with_confidence(
     // 2026-08-17 learned "pisanie Żyda" → "mi się nie wydaje" and "w 3 4" →
     // "Dwa Trzy Cztery Pięć". Lexicon grows only on an explicit teach gesture
     // (highlighted span / Voice Lab), never from a formatting-level flag.
-    let teaches = overlay_commit_teaches_lexicon(mode, action);
-    let record = QualityRecord::new_with_confidence(
+    let teaches =
+        overlay_commit_teaches_lexicon(mode, action) || edit_provenance_is_manual(edit_provenance);
+    let mut record = QualityRecord::new_with_confidence(
         raw_text.to_string(),
         delivered_text.to_string(),
         edited_text.to_string(),
@@ -1205,10 +1285,20 @@ pub fn commit_overlay_correction_with_confidence(
         speech_pct,
         confidence_flags,
     );
+    if let Some(provenance) = edit_provenance
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        && let Some(meta) = record.meta.as_object_mut()
+    {
+        meta.insert(
+            "edit_provenance".to_string(),
+            serde_json::Value::String(provenance.to_string()),
+        );
+    }
     let qpath = save_quality_record(&record)?;
 
     let mut pairs_learned = 0u32;
-    let mut pending_lexicon_teaches = Vec::new();
+    let mut lexicon_teach_progress = Vec::new();
     if teaches {
         // Learn what the recognizer actually heard, not punctuation/casing or
         // rewrites introduced by the formatter/parser between STT and overlay.
@@ -1224,10 +1314,10 @@ pub fn commit_overlay_correction_with_confidence(
             edited_text,
         )) {
             Ok(promotion) => {
-                pending_lexicon_teaches = promotion.pending;
+                lexicon_teach_progress = promotion.progress;
                 for (variant, canonical) in promotion.promoted {
-                    match upsert_correction_in_custom_lexicon(&variant, &canonical) {
-                        Ok(()) => {
+                    match insert_promoted_correction_once(&variant, &canonical) {
+                        Ok(true) => {
                             pairs_learned = pairs_learned.saturating_add(1);
                             tracing::info!(
                                 "quality: added lexicon candidate {} -> {}",
@@ -1235,6 +1325,7 @@ pub fn commit_overlay_correction_with_confidence(
                                 canonical
                             );
                         }
+                        Ok(false) => {}
                         Err(e) => {
                             tracing::warn!(
                                 "quality: failed to append lexicon candidate {} -> {}: {}",
@@ -1255,7 +1346,7 @@ pub fn commit_overlay_correction_with_confidence(
         quality_path: qpath,
         pairs_learned,
         evidence_only: !teaches || pairs_learned == 0,
-        pending_lexicon_teaches,
+        lexicon_teach_progress,
     })
 }
 
@@ -1849,7 +1940,7 @@ mod tests {
         assert!(first.evidence_only);
         assert_eq!(
             first.acknowledgement_message(),
-            "Saved as evidence — 1/3 teaches toward learning"
+            "Saved as evidence — 1/3 manual confirmations"
         );
         assert_eq!(
             audit_line_count(),
@@ -1868,7 +1959,7 @@ mod tests {
         assert!(second.evidence_only);
         assert_eq!(
             second.acknowledgement_message(),
-            "Saved as evidence — 2/3 teaches toward learning"
+            "Saved as evidence — 2/3 manual confirmations"
         );
         assert!(
             !lexicon_path.exists(),
@@ -1879,7 +1970,10 @@ mod tests {
             .expect("third teach lexicon span");
         assert_eq!(learned.pairs_learned, 1);
         assert!(!learned.evidence_only);
-        assert_eq!(learned.acknowledgement_message(), "Saved — 1 pair learned");
+        assert_eq!(
+            learned.acknowledgement_message(),
+            "Saved — 1 pair learned — 3/3 manual confirmations"
+        );
         let entries = custom_lexicon_entries().expect("learned custom lexicon");
         assert!(entries.iter().any(|entry| {
             entry.variant == "uni agentka"
@@ -1892,8 +1986,12 @@ mod tests {
             "the third teach must rewrite a later word-boundary transcript"
         );
         let refreshed = super::teach_span("UNI AGENTKA", "Junie", "lexicon_corrected")
-            .expect("later identical teach refreshes the rule");
-        assert_eq!(refreshed.pairs_learned, 1);
+            .expect("later identical teach leaves the promoted rule alone");
+        assert_eq!(refreshed.pairs_learned, 0, "promotion occurs exactly once");
+        assert_eq!(
+            refreshed.acknowledgement_message(),
+            "Saved as evidence — 3/3 manual confirmations"
+        );
         assert_eq!(
             custom_lexicon_entries()
                 .unwrap()
@@ -1901,7 +1999,7 @@ mod tests {
                 .filter(|entry| normalized_variant(&entry.variant) == "uni agentka")
                 .count(),
             1,
-            "re-teaching after promotion must refresh, not stack duplicate rows"
+            "re-teaching after promotion must not stack or rewrite duplicate rows"
         );
 
         for _ in 0..3 {
@@ -1917,6 +2015,122 @@ mod tests {
                 .any(|entry| entry.variant == "brak"),
             "speech-gap records never vote toward a lexicon rule"
         );
+    }
+
+    #[test]
+    #[serial]
+    fn ordinary_manual_overlay_edits_vote_three_times_and_promote_once() {
+        let temp_dir = tempfile::tempdir().expect("temp");
+        let _guard = EnvRestore::capture("CODESCRIBE_DATA_DIR");
+        let temp_root = temp_dir.path().canonicalize().unwrap();
+        unsafe { std::env::set_var("CODESCRIBE_DATA_DIR", &temp_root) };
+
+        let commit = |action: &str, provenance: Option<&str>| {
+            commit_overlay_correction_with_provenance(
+                "ajwo",
+                "ajwo",
+                "Iwo",
+                "overlay",
+                None,
+                Some(action),
+                Some("correction"),
+                provenance,
+                None,
+                None,
+                Vec::new(),
+            )
+            .unwrap()
+        };
+
+        let first = commit("copy", Some("manual_human"));
+        assert_eq!(first.confirmation_progress(), Some((1, 3)));
+        assert_eq!(first.pairs_learned, 0);
+        let second = commit("paste", Some("manual_human"));
+        assert_eq!(second.confirmation_progress(), Some((2, 3)));
+        assert_eq!(second.pairs_learned, 0);
+        let third = commit("close", Some("manual_human"));
+        assert_eq!(third.confirmation_progress(), Some((3, 3)));
+        assert_eq!(third.pairs_learned, 1);
+
+        let delivery_only = commit("copy", None);
+        assert_eq!(delivery_only.confirmation_progress(), None);
+        assert_eq!(delivery_only.pairs_learned, 0);
+        assert_eq!(
+            custom_lexicon_entries()
+                .unwrap()
+                .iter()
+                .filter(|entry| normalized_variant(&entry.variant) == "ajwo")
+                .count(),
+            1,
+            "the third distinct manual act promotes once; delivery actions do not vote"
+        );
+
+        let records = all_quality_records().unwrap();
+        assert_eq!(
+            records[0]
+                .meta
+                .get("action")
+                .and_then(serde_json::Value::as_str),
+            Some("copy")
+        );
+        assert_eq!(
+            records[0]
+                .meta
+                .get("edit_provenance")
+                .and_then(serde_json::Value::as_str),
+            Some("manual_human")
+        );
+    }
+
+    #[test]
+    fn repeated_revision_of_one_correction_id_is_one_vote() {
+        let mut first = QualityRecord::new(
+            "ajwo".into(),
+            "ajwo".into(),
+            "Iwo".into(),
+            "overlay",
+            None,
+            Some("correction".into()),
+            Some("copy"),
+        );
+        first
+            .meta
+            .as_object_mut()
+            .unwrap()
+            .insert("edit_provenance".into(), "manual_human".into());
+        let mut revision = first.clone();
+        revision.revision = 2;
+        assert_eq!(
+            identical_human_teach_count(&[first, revision], "ajwo", "Iwo"),
+            1
+        );
+    }
+
+    #[test]
+    #[serial]
+    fn concurrent_promotion_insert_reports_exactly_one_new_rule() {
+        let temp_dir = tempfile::tempdir().expect("temp");
+        let _guard = EnvRestore::capture("CODESCRIBE_DATA_DIR");
+        let temp_root = temp_dir.path().canonicalize().unwrap();
+        unsafe { std::env::set_var("CODESCRIBE_DATA_DIR", &temp_root) };
+
+        let barrier = std::sync::Arc::new(std::sync::Barrier::new(2));
+        let handles = (0..2)
+            .map(|_| {
+                let barrier = barrier.clone();
+                std::thread::spawn(move || {
+                    barrier.wait();
+                    insert_promoted_correction_once("ajwo", "Iwo").unwrap()
+                })
+            })
+            .collect::<Vec<_>>();
+        let inserted = handles
+            .into_iter()
+            .map(|handle| handle.join().unwrap())
+            .filter(|inserted| *inserted)
+            .count();
+        assert_eq!(inserted, 1);
+        assert_eq!(custom_lexicon_entries().unwrap().len(), 1);
     }
 
     /// E2E: long-dictation commit learns one pair and stamps correction provenance.
@@ -1956,7 +2170,10 @@ mod tests {
         let commit = teach_span("zaznaczenie", "selection", "lexicon_corrected")
             .expect("third explicit teach of the one-word fix");
         assert_eq!(commit.pairs_learned, 1);
-        assert_eq!(commit.acknowledgement_message(), "Saved — 1 pair learned");
+        assert_eq!(
+            commit.acknowledgement_message(),
+            "Saved — 1 pair learned — 3/3 manual confirmations"
+        );
 
         let entries = custom_lexicon_entries().expect("lexicon");
         assert!(

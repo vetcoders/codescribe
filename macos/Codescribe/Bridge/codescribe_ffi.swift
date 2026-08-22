@@ -9186,6 +9186,11 @@ public struct CsQualityCommitResult: Equatable, Hashable {
      * Ready-to-show overlay toast text ("Saved — N pair(s) learned" / "Saved as evidence").
      */
     public var acknowledgement: String
+    /**
+     * Structured progress for one normalized lexical pair.
+     */
+    public var teachSeen: UInt64?
+    public var teachRequired: UInt64?
 
     // Default memberwise initializers are never public by default, so we
     // declare one manually.
@@ -9199,10 +9204,15 @@ public struct CsQualityCommitResult: Equatable, Hashable {
          */evidenceOnly: Bool,
         /**
          * Ready-to-show overlay toast text ("Saved — N pair(s) learned" / "Saved as evidence").
-         */acknowledgement: String) {
+         */acknowledgement: String,
+        /**
+         * Structured progress for one normalized lexical pair.
+         */teachSeen: UInt64?, teachRequired: UInt64?) {
         self.pairsLearned = pairsLearned
         self.evidenceOnly = evidenceOnly
         self.acknowledgement = acknowledgement
+        self.teachSeen = teachSeen
+        self.teachRequired = teachRequired
     }
 
 
@@ -9221,7 +9231,9 @@ public struct FfiConverterTypeCsQualityCommitResult: FfiConverterRustBuffer {
             try CsQualityCommitResult(
                 pairsLearned: FfiConverterUInt32.read(from: &buf),
                 evidenceOnly: FfiConverterBool.read(from: &buf),
-                acknowledgement: FfiConverterString.read(from: &buf)
+                acknowledgement: FfiConverterString.read(from: &buf),
+                teachSeen: FfiConverterOptionUInt64.read(from: &buf),
+                teachRequired: FfiConverterOptionUInt64.read(from: &buf)
         )
     }
 
@@ -9229,6 +9241,8 @@ public struct FfiConverterTypeCsQualityCommitResult: FfiConverterRustBuffer {
         FfiConverterUInt32.write(value.pairsLearned, into: &buf)
         FfiConverterBool.write(value.evidenceOnly, into: &buf)
         FfiConverterString.write(value.acknowledgement, into: &buf)
+        FfiConverterOptionUInt64.write(value.teachSeen, into: &buf)
+        FfiConverterOptionUInt64.write(value.teachRequired, into: &buf)
     }
 }
 
@@ -9258,6 +9272,7 @@ public struct CsQualityRecord: Equatable, Hashable {
     public var variant: String
     public var editedText: String
     public var action: String
+    public var editProvenance: String?
     public var timestampMs: UInt64
     public var avgLogprob: Float?
     public var speechPct: Float?
@@ -9265,13 +9280,14 @@ public struct CsQualityRecord: Equatable, Hashable {
 
     // Default memberwise initializers are never public by default, so we
     // declare one manually.
-    public init(id: String, revision: UInt64, rawText: String, variant: String, editedText: String, action: String, timestampMs: UInt64, avgLogprob: Float?, speechPct: Float?, confidenceFlags: [String]) {
+    public init(id: String, revision: UInt64, rawText: String, variant: String, editedText: String, action: String, editProvenance: String?, timestampMs: UInt64, avgLogprob: Float?, speechPct: Float?, confidenceFlags: [String]) {
         self.id = id
         self.revision = revision
         self.rawText = rawText
         self.variant = variant
         self.editedText = editedText
         self.action = action
+        self.editProvenance = editProvenance
         self.timestampMs = timestampMs
         self.avgLogprob = avgLogprob
         self.speechPct = speechPct
@@ -9298,6 +9314,7 @@ public struct FfiConverterTypeCsQualityRecord: FfiConverterRustBuffer {
                 variant: FfiConverterString.read(from: &buf),
                 editedText: FfiConverterString.read(from: &buf),
                 action: FfiConverterString.read(from: &buf),
+                editProvenance: FfiConverterOptionString.read(from: &buf),
                 timestampMs: FfiConverterUInt64.read(from: &buf),
                 avgLogprob: FfiConverterOptionFloat.read(from: &buf),
                 speechPct: FfiConverterOptionFloat.read(from: &buf),
@@ -9312,6 +9329,7 @@ public struct FfiConverterTypeCsQualityRecord: FfiConverterRustBuffer {
         FfiConverterString.write(value.variant, into: &buf)
         FfiConverterString.write(value.editedText, into: &buf)
         FfiConverterString.write(value.action, into: &buf)
+        FfiConverterOptionString.write(value.editProvenance, into: &buf)
         FfiConverterUInt64.write(value.timestampMs, into: &buf)
         FfiConverterOptionFloat.write(value.avgLogprob, into: &buf)
         FfiConverterOptionFloat.write(value.speechPct, into: &buf)
@@ -13260,7 +13278,7 @@ public func audioInputSnapshot()throws  -> CsAudioInputSnapshot  {
  * stored alongside the text so later analysis can correlate corrections with how
  * unsure the engine was.
  */
-public func commitOverlayQualityRecord(rawText: String, deliveredText: String, editedText: String, action: String, formattingLevel: String, avgLogprob: Float?, speechPct: Float?, confidenceFlags: [String])throws  -> CsQualityCommitResult  {
+public func commitOverlayQualityRecord(rawText: String, deliveredText: String, editedText: String, action: String, formattingLevel: String, editProvenance: String?, avgLogprob: Float?, speechPct: Float?, confidenceFlags: [String])throws  -> CsQualityCommitResult  {
     return try  FfiConverterTypeCsQualityCommitResult_lift(try rustCallWithError(FfiConverterTypeCsError_lift) {
     uniffi_codescribe_ffi_fn_func_commit_overlay_quality_record(
         FfiConverterString.lower(rawText),
@@ -13268,6 +13286,7 @@ public func commitOverlayQualityRecord(rawText: String, deliveredText: String, e
         FfiConverterString.lower(editedText),
         FfiConverterString.lower(action),
         FfiConverterString.lower(formattingLevel),
+        FfiConverterOptionString.lower(editProvenance),
         FfiConverterOptionFloat.lower(avgLogprob),
         FfiConverterOptionFloat.lower(speechPct),
         FfiConverterSequenceString.lower(confidenceFlags),$0
@@ -13471,7 +13490,7 @@ private let initializationResult: InitializationResult = {
     if (uniffi_codescribe_ffi_checksum_func_audio_input_snapshot() != 64324) {
         return InitializationResult.apiChecksumMismatch
     }
-    if (uniffi_codescribe_ffi_checksum_func_commit_overlay_quality_record() != 47820) {
+    if (uniffi_codescribe_ffi_checksum_func_commit_overlay_quality_record() != 33612) {
         return InitializationResult.apiChecksumMismatch
     }
     if (uniffi_codescribe_ffi_checksum_func_current_serving_verdict() != 14135) {

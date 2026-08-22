@@ -815,6 +815,31 @@ final class OverlayStateTests: XCTestCase {
     XCTAssertEqual(closeCount, 1)
   }
 
+  func testManualEditProvenanceIsConsumedOnceAndRearmsOnlyOnAnotherEdit() {
+    let state = makeFinalizedState(clock: OverlayStateTestClock())
+    state.userEditedTranscript("first human correction")
+
+    XCTAssertEqual(
+      state.consumeManualEditProvenanceForQuality(isEdited: true),
+      "manual_human"
+    )
+    XCTAssertNil(state.consumeManualEditProvenanceForQuality(isEdited: true))
+
+    state.userEditedTranscript("second human correction")
+    XCTAssertEqual(
+      state.consumeManualEditProvenanceForQuality(isEdited: true),
+      "manual_human"
+    )
+    XCTAssertNil(state.consumeManualEditProvenanceForQuality(isEdited: false))
+
+    state.userEditedTranscript("manual before formatter")
+    state.replaceFormattedTranscriptProgrammatically("formatter output")
+    XCTAssertNil(
+      state.consumeManualEditProvenanceForQuality(isEdited: true),
+      "formatter and retranscribe assignments must cast zero votes"
+    )
+  }
+
   func testWindowDragReanchorsAutoHide() {
     let clock = OverlayStateTestClock()
     let state = makeFinalizedState(clock: clock)

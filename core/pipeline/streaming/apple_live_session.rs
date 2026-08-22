@@ -1139,7 +1139,11 @@ impl AppleSealState {
                 return false;
             }
         }
-        if !outcome.events().is_empty() && !self.progressive.try_rewrite(utterance_id, rewritten) {
+        if !outcome.events().is_empty()
+            && !self
+                .progressive
+                .try_rewrite_anchored(utterance_id, &identity.range, rewritten)
+        {
             self.refuse_tail_patch(
                 ev_tx,
                 TAIL_PATCH_SEALED_FENCE_WARNING_CODE,
@@ -1232,6 +1236,7 @@ impl AppleSealState {
             } else {
                 timed_words_to_segments(&sealed.words, self.sample_rate)
             };
+            let acoustic = codescribe_core_acoustic_identity(&sealed);
             let _ = ev_tx.send(EngineEvent::UtteranceFinal {
                 utterance_id: sealed.id,
                 text: sealed.text,
@@ -1244,9 +1249,35 @@ impl AppleSealState {
                 compression_ratio: None,
                 quality_gate_dropped: false,
                 confidence_flags: Vec::new(),
+                acoustic,
             });
         }
     }
+}
+
+fn codescribe_core_acoustic_identity(
+    sealed: &SealedSpan,
+) -> Option<crate::pipeline::contracts::AcousticTranscriptIdentity> {
+    use crate::pipeline::contracts::{
+        AcousticSpanGrain, AcousticTranscriptIdentity, AcousticTranscriptSpan,
+    };
+
+    // The final L2 spelling is pinned to the whole measured phrase. Apple and
+    // Whisper may provide narrower evidence, but fusion does not yet retain a
+    // lossless token-to-provider attribution. Claiming word precision here
+    // would therefore be fabricated; phrase grain is the honest contract.
+    if sealed.range.sample_end <= sealed.range.sample_start {
+        return None;
+    }
+
+    Some(AcousticTranscriptIdentity {
+        range: sealed.range.clone(),
+        spans: vec![AcousticTranscriptSpan {
+            text: sealed.text.clone(),
+            range: sealed.range.clone(),
+            grain: AcousticSpanGrain::Phrase,
+        }],
+    })
 }
 
 /// What the worker sealed, and what seal-time postprocess filtered away.
@@ -1712,7 +1743,20 @@ fn apply_conservative_fusion(
         });
         return fallback;
     }
-    if !state.progressive.try_rewrite(utterance_id, &decision.text) {
+    let evidence_range = whisper_words
+        .first()
+        .zip(whisper_words.last())
+        .map(|(first, last)| TailSampleRange {
+            session: first.range.session.clone(),
+            capture_epoch: first.range.capture_epoch,
+            sample_start: first.range.sample_start,
+            sample_end: last.range.sample_end,
+        });
+    if evidence_range.as_ref().is_none_or(|range| {
+        !state
+            .progressive
+            .try_rewrite_anchored(utterance_id, range, &decision.text)
+    }) {
         // The span sealed before fusion could rewrite it. That is a refusal of
         // THIS route, not a verdict on the recovery: Layer 1 already computed
         // bounded, append-only patches for the same audio, and they remain
@@ -1838,7 +1882,9 @@ fn seal_sliced_by_silero(
             .iter()
             .any(|p| p.id == utterance_id)
         {
-            let _ = state.progressive.try_rewrite(utterance_id, &text);
+            let _ = state
+                .progressive
+                .try_rewrite_anchored(utterance_id, &silero.range, &text);
         } else {
             if !state.progressive.note_apple_commit_timed(AppleCommit {
                 id: utterance_id,
@@ -2135,6 +2181,11 @@ fn seal_utterance_final(
         Some(utterance) => (utterance.range.clone(), Some(utterance.id)),
         None => (apple_range, None),
     };
+    let timing_quality = if span_range.sample_end > span_range.sample_start {
+        TailTimingQuality::ExactSampleRange
+    } else {
+        TailTimingQuality::Synthetic
+    };
     // One id space. While the seal path can mint span ids FROM the ledger, the
     // fallback must burn its id there too, or Silero would later mint the same
     // id for a real utterance — `note_apple_commit_timed` is idempotent on id,
@@ -2157,7 +2208,7 @@ fn seal_utterance_final(
             source: TailEvidenceSource::AppleSpeech,
             revision: None,
             stability: TailEvidenceStability::Final,
-            timing_quality: TailTimingQuality::ExactSampleRange,
+            timing_quality,
             avg_logprob: None,
         },
         silero_utterance_id,
@@ -3432,6 +3483,7 @@ mod tests {
     fn emit_maps_partial_and_two_phrase_finals() {
         let (tx, mut rx) = mpsc::unbounded_channel();
         let mut state = AppleSealState::new(TEST_SAMPLE_RATE);
+        push_capture(&mut state, 2.0);
         emit_stream_events(
             vec![
                 LiveStreamEvent::Partial {
@@ -4046,7 +4098,7 @@ mod tests {
     /// must be counted and surfaced, never silently truncated into a window.
     #[test]
     fn seal_window_beyond_captured_audio_is_counted_unresolved() {
-        let (tx, _rx) = mpsc::unbounded_channel();
+        let (tx, mut rx) = mpsc::unbounded_channel();
         let mut state = AppleSealState::new(TEST_SAMPLE_RATE);
         push_capture(&mut state, 2.0);
 
@@ -4061,6 +4113,16 @@ mod tests {
         );
 
         assert_eq!(state.sealed_count, 1, "the text still seals");
+        let final_event = std::iter::from_fn(|| rx.try_recv().ok())
+            .find_map(|event| match event {
+                EngineEvent::UtteranceFinal { acoustic, .. } => Some(acoustic),
+                _ => None,
+            })
+            .expect("unresolved Apple text still emits a final");
+        assert!(
+            final_event.is_none(),
+            "an unresolved Apple window must not fabricate acoustic identity"
+        );
         assert_eq!(state.unresolved_windows, 1);
         assert_eq!(
             state.last_sealed_end, 0.0,
@@ -4920,6 +4982,7 @@ mod tests {
     fn utterance_drop_emit_seals_prior_on_shared_opener_partial_restart() {
         let (tx, mut rx) = mpsc::unbounded_channel();
         let mut state = AppleSealState::new(TEST_SAMPLE_RATE);
+        push_capture(&mut state, 30.0);
         let s5 = "Zdanie piąte, szybko bez pauz. Teraz mówię bardzo szybko, bez żadnej przerwy, \
                   żeby sprawdzić czy silnik nadąża za tempem, którego normalnie unika w \
                   codziennym dyktowaniu.";

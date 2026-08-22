@@ -385,21 +385,6 @@ impl Lexicon {
     fn rule_count(&self) -> usize {
         self.builtin_rules.len() + self.custom_rules.len()
     }
-
-    /// Domain-vocabulary hint for this rule set: protected terms first, then the
-    /// operator's custom canonicals, trimmed to the Whisper prompt budget.
-    fn whisper_initial_prompt_receipt(
-        &self,
-        window_context: Option<&str>,
-    ) -> Option<LexiconVoiceReceipt> {
-        let domain_terms = prioritized_domain_terms(window_context);
-        build_lexicon_voice_receipt(
-            &self.protected_canonicals,
-            &self.custom_canonicals,
-            &domain_terms,
-            WHISPER_INITIAL_PROMPT_TOKEN_BUDGET,
-        )
-    }
 }
 
 /// Take the write lock and hot-reload the singleton's custom rules if the file
@@ -432,7 +417,20 @@ fn apply_global_lexicon(text: &str) -> String {
 /// (e.g. "Loctree" -> "Luxury").
 pub fn apply_lexicon(text: &str) -> String {
     maybe_reload_global_lexicon();
-    apply_global_lexicon(text)
+    apply_active_names(
+        &apply_global_lexicon(text),
+        &crate::stt::active_names::active_names(),
+    )
+}
+
+fn apply_active_names(text: &str, active_names: &[String]) -> String {
+    let mut corrected = text.to_string();
+    for name in active_names {
+        if let Some(pattern) = build_word_regex(name) {
+            corrected = pattern.replace_all(&corrected, name.as_str()).into_owned();
+        }
+    }
+    corrected
 }
 
 /// Build the domain-vocabulary hint fed into Whisper's `initial_prompt`.
@@ -552,14 +550,30 @@ pub fn whisper_initial_prompt() -> Option<String> {
 pub fn whisper_initial_prompt_for_window(
     window_context: Option<&str>,
 ) -> Option<LexiconVoiceReceipt> {
-    if !stt_initial_prompt_enabled() {
+    let active_names = crate::stt::active_names::active_names();
+    let lexicon_enabled = stt_initial_prompt_enabled();
+    if !lexicon_enabled && active_names.is_empty() {
         return None;
     }
-    maybe_reload_global_lexicon();
-    let lexicon = GLOBAL_LEXICON
-        .read()
-        .expect("global lexicon read lock poisoned");
-    let receipt = lexicon.whisper_initial_prompt_receipt(window_context)?;
+    let receipt = if lexicon_enabled {
+        maybe_reload_global_lexicon();
+        let lexicon = GLOBAL_LEXICON
+            .read()
+            .expect("global lexicon read lock poisoned");
+        let protected = active_names
+            .iter()
+            .chain(lexicon.protected_canonicals.iter())
+            .cloned()
+            .collect::<Vec<_>>();
+        build_lexicon_voice_receipt(
+            &protected,
+            &lexicon.custom_canonicals,
+            &prioritized_domain_terms(window_context),
+            WHISPER_INITIAL_PROMPT_TOKEN_BUDGET,
+        )?
+    } else {
+        build_lexicon_voice_receipt(&active_names, &[], &[], WHISPER_INITIAL_PROMPT_TOKEN_BUDGET)?
+    };
     info!(
         scope = "window",
         selected_terms = ?receipt.terms,
@@ -1364,6 +1378,18 @@ fn truncate_for_embedding(text: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn active_name_canonicalization_is_exact_not_fuzzy() {
+        let names = vec!["Iwo".to_string()];
+        assert_eq!(apply_active_names("cześć iwo", &names), "cześć Iwo");
+        assert_eq!(apply_active_names("lubię piwo", &names), "lubię piwo");
+        assert_eq!(
+            apply_active_names("nieznane imię", &[]),
+            "nieznane imię",
+            "unknown or stale names fail open byte-for-byte"
+        );
+    }
     use serial_test::serial;
     use std::ffi::OsString;
 
@@ -1391,6 +1417,40 @@ mod tests {
                 None => unsafe { std::env::remove_var(self.key) },
             }
         }
+    }
+
+    #[test]
+    #[serial]
+    fn active_lease_reaches_whisper_context_even_when_static_prompt_is_off() {
+        let temp = tempfile::tempdir().unwrap();
+        let lease_dir = temp.path().join("leases");
+        std::fs::create_dir_all(&lease_dir).unwrap();
+        let heartbeat = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_secs_f64();
+        std::fs::write(
+            lease_dir.join("iwo.json"),
+            serde_json::to_vec(&serde_json::json!({
+                "schema": "codescribe.agent-bridge.lease.v1",
+                "name": "iwo",
+                "active": true,
+                "heartbeat_unix": heartbeat,
+            }))
+            .unwrap(),
+        )
+        .unwrap();
+        let _bridge = EnvRestore::capture("CODESCRIBE_AGENT_BRIDGE_HOME");
+        let _prompt = EnvRestore::capture(STT_INITIAL_PROMPT_ENABLED_ENV);
+        unsafe {
+            std::env::set_var("CODESCRIBE_AGENT_BRIDGE_HOME", temp.path());
+            std::env::set_var(STT_INITIAL_PROMPT_ENABLED_ENV, "0");
+        }
+
+        let receipt = whisper_initial_prompt_for_window(None).expect("active name prompt");
+        assert_eq!(receipt.terms, ["Iwo"]);
+        assert!(receipt.prompt.contains("Iwo"));
+        assert_eq!(apply_lexicon("Iwo, lubię piwo"), "Iwo, lubię piwo");
     }
 
     /// Builtin programming lexicon rewrites Whisper mis-hears (e.g. `doker` → `Docker`).

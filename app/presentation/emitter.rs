@@ -9,7 +9,9 @@
 
 use std::sync::Arc;
 
-use codescribe_core::pipeline::contracts::{DeltaSink, EngineEvent, EventSink, TranscriptSegment};
+use codescribe_core::pipeline::contracts::{
+    AcousticTranscriptIdentity, DeltaSink, EngineEvent, EventSink, TranscriptSegment,
+};
 use codescribe_core::pipeline::streaming::BufferedEmitter;
 use tokio::sync::Mutex;
 use tracing::{debug, info};
@@ -45,6 +47,7 @@ struct TranscriptUtteranceRecord {
     start_ts: f32,
     end_ts: f32,
     segments: Vec<TranscriptSegment>,
+    acoustic: Option<AcousticTranscriptIdentity>,
 }
 
 impl TranscriptUtteranceRecord {
@@ -57,6 +60,7 @@ impl TranscriptUtteranceRecord {
             start_seconds: self.start_ts,
             end_seconds: self.end_ts,
             segments: self.segments.clone(),
+            acoustic: self.acoustic.clone(),
         }
     }
 }
@@ -129,6 +133,13 @@ impl TranscriptReducer {
             // Fast path + P3-03: search from tail (last first). Collapsed if for clippy.
             for (index, rec) in self.committed.iter_mut().enumerate().rev() {
                 if normalize_transcript_fragment(&rec.text) == previous {
+                    if rec.acoustic.is_some() {
+                        tracing::warn!(
+                            utterance_id = rec.utterance_id,
+                            "unanchored late correction refused for PCM-anchored utterance"
+                        );
+                        return None;
+                    }
                     rec.text = corrected;
                     return Some(index);
                 }
@@ -163,10 +174,11 @@ impl TranscriptReducer {
         utterance_id: u64,
         text: &str,
         raw_text: &str,
-        start_ts: f32,
-        end_ts: f32,
+        timing: (f32, f32),
         segments: Vec<TranscriptSegment>,
+        acoustic: Option<AcousticTranscriptIdentity>,
     ) -> Option<String> {
+        let (start_ts, end_ts) = timing;
         let committed_text = {
             let normalized = normalize_transcript_fragment(text);
             if normalized.is_empty() {
@@ -193,6 +205,7 @@ impl TranscriptReducer {
             existing.start_ts = start_ts;
             existing.end_ts = end_ts;
             existing.segments = segments;
+            existing.acoustic = acoustic;
             return None;
         }
 
@@ -203,6 +216,7 @@ impl TranscriptReducer {
             start_ts,
             end_ts,
             segments,
+            acoustic,
         });
         Some(committed_text)
     }
@@ -248,6 +262,13 @@ impl TranscriptReducer {
         else {
             return false;
         };
+        if record.acoustic.is_some() {
+            tracing::warn!(
+                utterance_id,
+                "unanchored post-commit patch refused for PCM-anchored utterance"
+            );
+            return false;
+        }
         // Last-mile duplicate guard. A patch is computed against the canvas as
         // it stood when Layer 1 was dispatched; by the time it arrives SFSpeech
         // may have restated the SAME utterance at greater length, already
@@ -309,15 +330,16 @@ impl TranscriptReducer {
                 start_ts,
                 end_ts,
                 segments,
+                acoustic,
                 ..
             } => {
                 return self.finalize(
                     *utterance_id,
                     text,
                     raw_text,
-                    *start_ts,
-                    *end_ts,
+                    (*start_ts, *end_ts),
                     segments.clone(),
+                    acoustic.clone(),
                 );
             }
             EngineEvent::ReplaceRange { .. } | EngineEvent::InsertAnnotation { .. } => {
@@ -788,8 +810,9 @@ impl EventSink for PresentationEmitter {
 mod tests {
     use super::{DeltaRenderMode, PresentationEmitter, SessionTranscriptState};
     use codescribe_core::pipeline::contracts::{
-        AnnotationKind, EngineEvent, EventSink, LayerSource, LayerSummary, NonSpeechEvidence,
-        SidebandEvidence, SidebandEvidenceKind, SidebandProvenance, TranscriptSegment,
+        AcousticTranscriptIdentity, AnnotationKind, EngineEvent, EventSink, LayerSource,
+        LayerSummary, NonSpeechEvidence, SidebandEvidence, SidebandEvidenceKind,
+        SidebandProvenance, TranscriptSegment,
     };
     use codescribe_core::stt::tail_provider::TailSampleRange;
     use std::sync::{Arc, Mutex as StdMutex};
@@ -820,6 +843,7 @@ mod tests {
             compression_ratio: None,
             quality_gate_dropped: false,
             confidence_flags: Vec::new(),
+            acoustic: None,
         });
         let before = reducer.rendered_text();
 
@@ -867,6 +891,7 @@ mod tests {
             compression_ratio: None,
             quality_gate_dropped: false,
             confidence_flags: Vec::new(),
+            acoustic: None,
         });
         let before = reducer.rendered_text();
 
@@ -919,6 +944,7 @@ mod tests {
             compression_ratio: None,
             quality_gate_dropped: false,
             confidence_flags: Vec::new(),
+            acoustic: None,
         };
 
         // The Apple-lane shape from the incident log: per-utterance previews
@@ -978,9 +1004,9 @@ mod tests {
             1,
             "Pierwszy fragment",
             "Pierwszy fragment",
-            0.0,
-            1.0,
+            (0.0, 1.0),
             Vec::new(),
+            None,
         );
         assert_eq!(committed.as_deref(), Some("Pierwszy fragment"));
 
@@ -995,7 +1021,14 @@ mod tests {
         // A phase-1 ReplaceRange fixing "wrold"→"world" must land in the
         // committed (paste/history) buffer, not just the overlay.
         let mut state = SessionTranscriptState::default();
-        state.finalize(1, "hello wrold", "hello wrold", 0.0, 1.0, Vec::new());
+        state.finalize(
+            1,
+            "hello wrold",
+            "hello wrold",
+            (0.0, 1.0),
+            Vec::new(),
+            None,
+        );
         let event = EngineEvent::ReplaceRange {
             utterance_id: 1,
             start: 6,
@@ -1007,11 +1040,48 @@ mod tests {
         assert_eq!(state.rendered_text(), "hello world");
     }
 
+    #[test]
+    fn anchored_utterance_refuses_unanchored_post_commit_patch() {
+        let mut state = SessionTranscriptState::default();
+        let range = codescribe_core::stt::tail_provider::TailSampleRange {
+            session: "anchored".into(),
+            capture_epoch: 3,
+            sample_start: 0,
+            sample_end: 16_000,
+        };
+        state.finalize(
+            1,
+            "Iwo",
+            "iwo",
+            (0.0, 1.0),
+            Vec::new(),
+            Some(AcousticTranscriptIdentity {
+                range: range.clone(),
+                spans: vec![
+                    codescribe_core::pipeline::contracts::AcousticTranscriptSpan {
+                        text: "Iwo".into(),
+                        range,
+                        grain: codescribe_core::pipeline::contracts::AcousticSpanGrain::Phrase,
+                    },
+                ],
+            }),
+        );
+        let patch = EngineEvent::ReplaceRange {
+            utterance_id: 1,
+            start: 0,
+            end: 3,
+            text: "piwo".into(),
+            source: LayerSource::TailPatch,
+        };
+        assert!(!state.apply_layered_patch(&patch));
+        assert_eq!(state.rendered_text(), "Iwo");
+    }
+
     /// InsertAnnotation appends annotation text into the committed utterance.
     #[test]
     fn insert_annotation_lands_in_committed_utterance() {
         let mut state = SessionTranscriptState::default();
-        state.finalize(2, "yes", "yes", 0.0, 1.0, Vec::new());
+        state.finalize(2, "yes", "yes", (0.0, 1.0), Vec::new(), None);
         let event = EngineEvent::InsertAnnotation {
             utterance_id: 2,
             position: 3,
@@ -1028,7 +1098,7 @@ mod tests {
         // Offsets reference an utterance the authoritative buffer has not
         // committed yet — drop the patch instead of corrupting another one.
         let mut state = SessionTranscriptState::default();
-        state.finalize(1, "hello", "hello", 0.0, 1.0, Vec::new());
+        state.finalize(1, "hello", "hello", (0.0, 1.0), Vec::new(), None);
         let event = EngineEvent::ReplaceRange {
             utterance_id: 99,
             start: 0,
@@ -1048,9 +1118,9 @@ mod tests {
             1,
             "Pierwszy fragment",
             "Pierwszy fragment",
-            0.0,
-            1.0,
+            (0.0, 1.0),
             Vec::new(),
+            None,
         );
         state.apply_preview("drugi parcjal");
         state.apply_correction("drugi parcjal", "drugi partial");
@@ -1066,9 +1136,9 @@ mod tests {
             1,
             "Pierwszy fragment",
             "Pierwszy fragment",
-            0.0,
-            1.0,
+            (0.0, 1.0),
             Vec::new(),
+            None,
         );
         state.apply_preview("drugi partial");
         state.backspace_active_preview(3);
@@ -1097,9 +1167,9 @@ mod tests {
             7,
             "Pierwszy fragment",
             "Pierwszy fragment",
-            12.0,
-            13.0,
+            (12.0, 13.0),
             segments.clone(),
+            None,
         );
 
         assert_eq!(payload.as_deref(), Some("Pierwszy fragment"));
@@ -1125,7 +1195,7 @@ mod tests {
         let mut state = SessionTranscriptState::default();
         state.apply_preview("raw words");
         assert_eq!(
-            state.finalize(1, "raw words", "raw words", 0.0, 1.0, Vec::new()),
+            state.finalize(1, "raw words", "raw words", (0.0, 1.0), Vec::new(), None,),
             Some("raw words".to_string())
         );
 
@@ -1159,6 +1229,7 @@ mod tests {
             compression_ratio: None,
             quality_gate_dropped: false,
             confidence_flags: Vec::new(),
+            acoustic: None,
         });
         emitter.on_event(&EngineEvent::Correction {
             rev: 2,
@@ -1194,6 +1265,7 @@ mod tests {
             compression_ratio: None,
             quality_gate_dropped: false,
             confidence_flags: Vec::new(),
+            acoustic: None,
         });
         emitter.on_event(&EngineEvent::Preview {
             rev: 2,
@@ -1241,6 +1313,7 @@ mod tests {
             compression_ratio: None,
             quality_gate_dropped: false,
             confidence_flags: Vec::new(),
+            acoustic: None,
         };
 
         emitter.on_event(&EngineEvent::Preview {
@@ -1298,6 +1371,7 @@ mod tests {
             compression_ratio: None,
             quality_gate_dropped: false,
             confidence_flags: Vec::new(),
+            acoustic: None,
         });
         emitter.on_event(&EngineEvent::UtteranceFinal {
             utterance_id: 7,
@@ -1311,6 +1385,7 @@ mod tests {
             compression_ratio: None,
             quality_gate_dropped: false,
             confidence_flags: Vec::new(),
+            acoustic: None,
         });
 
         let delivered = delivered.lock().unwrap_or_else(|e| e.into_inner()).clone();
@@ -1346,6 +1421,7 @@ mod tests {
             compression_ratio: None,
             quality_gate_dropped: false,
             confidence_flags: Vec::new(),
+            acoustic: None,
         });
         emitter.on_event(&EngineEvent::Preview {
             rev: 2,
@@ -1378,6 +1454,7 @@ mod tests {
             compression_ratio: None,
             quality_gate_dropped: false,
             confidence_flags: Vec::new(),
+            acoustic: None,
         });
         emitter.on_event(&EngineEvent::Preview {
             rev: 2,
@@ -1424,6 +1501,7 @@ mod tests {
             compression_ratio: None,
             quality_gate_dropped: false,
             confidence_flags: Vec::new(),
+            acoustic: None,
         });
         emitter.on_event(&EngineEvent::Preview {
             rev: 2,
@@ -1465,6 +1543,7 @@ mod tests {
             compression_ratio: None,
             quality_gate_dropped: false,
             confidence_flags: Vec::new(),
+            acoustic: None,
         });
         emitter.on_event(&EngineEvent::UtteranceFinal {
             utterance_id: 2,
@@ -1478,6 +1557,7 @@ mod tests {
             compression_ratio: None,
             quality_gate_dropped: false,
             confidence_flags: Vec::new(),
+            acoustic: None,
         });
 
         // Late correction targets the *first* (penultimate at arrival) utterance.
@@ -1554,6 +1634,7 @@ mod tests {
                 compression_ratio: None,
                 quality_gate_dropped: false,
                 confidence_flags: Vec::new(),
+                acoustic: None,
             });
             emitter.on_event(&EngineEvent::SessionFinalised {
                 session_id: format!("pipeline-{session_id}"),

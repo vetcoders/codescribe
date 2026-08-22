@@ -26,19 +26,26 @@ reader; no host, date, room, or control-plane path is embedded in Codescribe.
 Each line is one JSON object with:
 
 - `sequence`, `session_id`, `mode`, `utterance_id`, `emitted_at`, `status`
-- `sample_rate_hz`, `sample_start`, `sample_end`
+- `sample_rate_hz`, `capture_epoch`, `sample_start`, `sample_end`
 - `audio_start_seconds`, `audio_end_seconds`
 - clean draft or sealed `text`, structured `segments`, optional
   `pipeline_session_id`
-- `words`: PCM-pinned spans (`text`, `sample_start`, `sample_end`, optional
-  `energy_db`, `grain`). `grain` is `word` when the engine supplied pins and
-  `utterance` when the span is the commit-to-commit window. Intensity is the
-  overlap-weighted capture RMS in dBFS for that sample range. Overlay live
-  text is not a word source.
+- `words`: PCM-pinned spans (`text`, `session_id`, `capture_epoch`,
+  `sample_start`, `sample_end`, `energy_db`, `grain`). `grain` is `word`,
+  `phrase`, or `utterance` according to what the backend actually measured.
+  Segment seconds are never re-labelled as word timing. Intensity is the
+  overlap-weighted capture RMS in dBFS for that exact sample range. Overlay
+  live text is not a span source.
+- `coverage`: a falsifiable pass/fail receipt. Missing PCM identity, absent
+  voiced-energy evidence, unordered/out-of-range spans, omitted anchored text,
+  or an unanchored insertion leaves reducer `text` visible but publishes no
+  misleading lexical spans and records the failure code.
 
-`transcript_sealed` inherits the draft ledger's sample range, segments, and
-words. A controller seal with no prior drafts stays honest: times and words
-are omitted.
+`transcript_sealed` inherits the draft ledger's PCM identities. Its lexical
+signature must match the reducer bytes; L3 punctuation/casing may update the
+text of a single phrase span without changing its range. An omission or added
+tail clears the spans and fails coverage. A controller seal with no prior
+drafts stays honest: times and words are omitted and coverage fails explicitly.
 
 Statuses are `session_started`, `utterance_draft`, `utterance_revised`, and
 `transcript_sealed`. A revision keeps the original utterance identity.

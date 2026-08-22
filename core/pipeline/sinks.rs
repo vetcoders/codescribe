@@ -410,6 +410,7 @@ mod tests {
             compression_ratio: None,
             quality_gate_dropped: false,
             confidence_flags: Vec::new(),
+            acoustic: None,
         });
 
         // After final, next utterance must append with a word separator.
@@ -449,6 +450,7 @@ mod tests {
             compression_ratio: None,
             quality_gate_dropped: false,
             confidence_flags: Vec::new(),
+            acoustic: None,
         });
         adapter.on_event(&EngineEvent::Correction {
             rev: 2,
@@ -554,6 +556,7 @@ mod tests {
             compression_ratio: None,
             quality_gate_dropped: false,
             confidence_flags: Vec::new(),
+            acoustic: None,
         });
 
         assert_eq!(sink.events().len(), 3);

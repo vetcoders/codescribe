@@ -195,13 +195,16 @@ audio file ▶ `codescribe transcribe` CLI / cloud final pass
   by sample ranges, never by its reported seconds.
 - `streaming/offline.rs` is **tests/offline_eval only** — not a runtime lane.
 
+PCM-range idempotence is a default-ON identity law. A repeated
+`(session, capture_epoch, sample_start, sample_end)` cannot land twice;
+`CODESCRIBE_SPAN_IDEMPOTENCE=0` exists only for diagnostic comparison.
+
 ## 8. Dashed lines — built, verifier-green, ⚑ default-OFF (operator buttons)
 
 | flag                                    | line it arms                                                                                                                                                    | code                                                    | evidence                                                          |
 | --------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------- | ----------------------------------------------------------------- |
 | `CODESCRIBE_INLINE_FORMAT`              | L3 scheduling: stable L2 spans stream through the existing Formatting lane DURING dictation (`previous_response_id` chain per span), so stop pays only the tail | `core/llm/inline_format.rs`                             | W2-01 verifier-green; default OFF pending integrated live take    |
 | `CODESCRIBE_SILERO_FUSION`              | Silero boundary identity + conservative fusion feeding L1 windows; default OFF                                                                                  | `streaming/silero_fusion.rs`                            | synthetic starvation skips 18→6 (−67%); take-614 A/B still owed   |
-| `CODESCRIBE_SPAN_IDEMPOTENCE`           | ledger-keyed replay rejection — a sealed span cannot be delivered twice (kills gap-append “×4” dupes; NEVER content similarity)                                 | `streaming/span_idempotence.rs`                         | named repetition tests green; real-session receipts pending       |
 | `CODESCRIBE_OVERLAY_HIGHLIGHTS`         | lexicon-corrected words + VAD-speech-no-words gaps marked on canvas; highlighted span → Teach                                                                   | W13-6B (bridge + Swift)                                 | Rust+Swift tests green                                            |
 | `CODESCRIBE_STT_INITIAL_PROMPT_ENABLED` | lexicon VOICE: `Vocabulary:` prompt to Whisper per window                                                                                                       | `stream_postprocess.rs :: build_whisper_initial_prompt` | A/B: U-WER −1.5 pp but false inserts 1→7 — flip not justified yet |
 | `STT_TAIL_PROVIDER=sidecar\|remote`     | tail decode out of process / off host                                                                                                                           | `tail_provider.rs` + `codescribe-stt-sidecar`           | fake-provider receipt 22 ms; production supervision unmeasured    |

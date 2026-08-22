@@ -19,8 +19,8 @@ use crate::audio::capture_receipt::{
 };
 use crate::audio::chunker::{SpeechEvent, SpeechSession};
 use crate::pipeline::contracts::{
-    DropKind, EngineEvent, EventSink, LayerSource, LayerSummary, TranscriptSegment,
-    collect_confidence_flags,
+    AcousticSpanGrain, AcousticTranscriptIdentity, AcousticTranscriptSpan, DropKind, EngineEvent,
+    EventSink, LayerSource, LayerSummary, TranscriptSegment, collect_confidence_flags,
 };
 use crate::stt::scheduler::{SttLane, SttScheduler, SttTaskHandle};
 use crate::stt::tail_patcher::{
@@ -43,6 +43,32 @@ use super::correction::{
     schedule_partial_pass,
 };
 use super::pipeline::{PostprocessDrop, TranscriptionPipeline};
+
+fn phrase_acoustic_identity(
+    session: &str,
+    capture_epoch: u64,
+    sample_start: u64,
+    sample_end: u64,
+    text: &str,
+) -> Option<AcousticTranscriptIdentity> {
+    if session.trim().is_empty() || text.trim().is_empty() || sample_end <= sample_start {
+        return None;
+    }
+    let range = TailSampleRange {
+        session: session.to_string(),
+        capture_epoch,
+        sample_start,
+        sample_end,
+    };
+    Some(AcousticTranscriptIdentity {
+        range: range.clone(),
+        spans: vec![AcousticTranscriptSpan {
+            text: text.to_string(),
+            range,
+            grain: AcousticSpanGrain::Phrase,
+        }],
+    })
+}
 use super::quality_gate::{
     MAX_WORDS_PER_SEC, MIN_SPEECH_RATIO_FOR_INFERENCE, emit_vad_warning,
     should_drop_short_utterance, should_drop_silence_chunk, text_words_per_second,
@@ -1661,6 +1687,11 @@ pub(crate) async fn vad_transcription_session(
                                     avg_logprob,
                                     quality_gate_dropped,
                                 );
+                                let sample_start = ((utterance_start_s.max(0.0) as f64)
+                                    * output_sample_rate as f64)
+                                    .round() as u64;
+                                let sample_end = sample_start
+                                    .saturating_add(utterance_audio_samples as u64);
                                 event_sink.on_event(&EngineEvent::UtteranceFinal {
                                     utterance_id,
                                     text: final_text.clone(),
@@ -1673,13 +1704,17 @@ pub(crate) async fn vad_transcription_session(
                                     compression_ratio,
                                     quality_gate_dropped,
                                     confidence_flags,
+                                    acoustic: phrase_acoustic_identity(
+                                        &session_id,
+                                        0,
+                                        sample_start,
+                                        sample_end,
+                                        &final_text,
+                                    ),
                                 });
                                 if tail_patch_enabled
                                     && let Some(audio) = item.tail_patch_audio.take()
                                 {
-                                    let sample_start = ((utterance_start_s.max(0.0) as f64)
-                                        * output_sample_rate as f64)
-                                        .round() as u64;
                                     let sample_end = sample_start.saturating_add(audio.len() as u64);
                                     let request = TailProviderRequest {
                                         identity: TailRequestIdentity {
@@ -1830,6 +1865,11 @@ pub(crate) async fn vad_transcription_session(
             utterance_avg_logprob,
             utterance_quality_gate_dropped,
         );
+        let sample_start =
+            ((utterance_start_s.max(0.0) as f64) * output_sample_rate as f64).round() as u64;
+        let sample_end = sample_start.saturating_add(utterance_audio_samples as u64);
+        let acoustic =
+            phrase_acoustic_identity(&session_id, 0, sample_start, sample_end, &remaining);
         event_sink.on_event(&EngineEvent::UtteranceFinal {
             utterance_id,
             text: remaining,
@@ -1842,6 +1882,7 @@ pub(crate) async fn vad_transcription_session(
             compression_ratio: utterance_compression_ratio,
             quality_gate_dropped: utterance_quality_gate_dropped,
             confidence_flags,
+            acoustic,
         });
     }
 

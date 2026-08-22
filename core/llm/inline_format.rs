@@ -332,8 +332,9 @@ fn register_stable_span(
             .last()
             .and_then(|id| s.chunks.get(id))
             .map(|previous| {
-                previous.identity.sample_end <= span.sample_start
-                    && previous.identity.capture_epoch <= span.capture_epoch
+                previous.identity.capture_epoch < span.capture_epoch
+                    || (previous.identity.capture_epoch == span.capture_epoch
+                        && previous.identity.sample_end <= span.sample_start)
             })
             .unwrap_or(true);
     let status = if !identity_valid {
@@ -779,7 +780,7 @@ pub(crate) fn validate_ledger_against_text(
     let mut spans_validated = 0usize;
     let mut formatted_validated = 0usize;
     let mut prefix_parts: Vec<String> = Vec::new();
-    let mut previous_end = None;
+    let mut previous_identity = None;
     let expected_session = chunks
         .first()
         .map(|chunk| chunk.identity.session_id.as_str());
@@ -787,7 +788,10 @@ pub(crate) fn validate_ledger_against_text(
     for chunk in chunks {
         let identity_is_ordered = chunk.identity.sample_start < chunk.identity.sample_end
             && chunk.identity.session_id.as_str() == expected_session.unwrap_or_default()
-            && previous_end.is_none_or(|end| end <= chunk.identity.sample_start);
+            && previous_identity.is_none_or(|(epoch, end)| {
+                epoch < chunk.identity.capture_epoch
+                    || (epoch == chunk.identity.capture_epoch && end <= chunk.identity.sample_start)
+            });
         if !identity_is_ordered {
             return LedgerValidation {
                 formatted_prefix: prefix_parts.join(" "),
@@ -797,7 +801,7 @@ pub(crate) fn validate_ledger_against_text(
                 complete: false,
             };
         }
-        previous_end = Some(chunk.identity.sample_end);
+        previous_identity = Some((chunk.identity.capture_epoch, chunk.identity.sample_end));
         let chunk_words = normalized_words(&chunk.raw);
         if chunk_words.is_empty() {
             spans_validated += 1;
@@ -1319,6 +1323,31 @@ mod tests {
             validate_ledger_against_text(&[first, second], "pierwsze zdanie drugie zdanie");
         assert!(!validation.complete);
         assert_eq!(validation.tail_start_byte, 0);
+    }
+
+    #[test]
+    fn ledger_orders_epoch_before_sample_clock_and_allows_epoch_reset() {
+        let mut first = record(1, "pierwsze zdanie", Some("Pierwsze zdanie."));
+        first.identity.capture_epoch = 4;
+        first.identity.sample_start = 80_000;
+        first.identity.sample_end = 96_000;
+        let mut second = record(2, "drugie zdanie", Some("Drugie zdanie."));
+        second.identity.capture_epoch = 5;
+        second.identity.sample_start = 0;
+        second.identity.sample_end = 16_000;
+        assert!(
+            validate_ledger_against_text(
+                &[first.clone(), second.clone()],
+                "pierwsze zdanie drugie zdanie"
+            )
+            .complete
+        );
+
+        second.identity.capture_epoch = 3;
+        assert!(
+            !validate_ledger_against_text(&[first, second], "pierwsze zdanie drugie zdanie")
+                .complete
+        );
     }
 
     /// Delivery-verifier seam harness: a private worker + mock Responses
