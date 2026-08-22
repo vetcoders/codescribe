@@ -15,6 +15,7 @@ pub const MEL_FILTERS_SHA256: &str =
 const REQUIRED_TOKENIZER_TOKENS: [&str; 2] = ["<|startoftranscript|>", "<|endoftext|>"];
 const OPTIONAL_PROMPT_TOKENS: [&str; 3] = ["<|transcribe|>", "<|notimestamps|>", "<|startofprev|>"];
 const MAX_WHISPER_LAYERS: usize = 64;
+const MAX_WHISPER_AUDIO_CONTEXT: usize = 1_500;
 const LANG_TOKEN_START: u32 = 50_259;
 const LANG_TOKEN_END: u32 = 50_358;
 const FALLBACK_LANGUAGES: [&str; 12] = [
@@ -96,6 +97,16 @@ pub(crate) fn validate_whisper_tokenizer_for_architecture(
     }) {
         return Err(anyhow!(
             "Whisper tokenizer {} language token {token} has id {id} outside configured vocabulary 0..{}",
+            path.display(),
+            architecture.n_vocab
+        ));
+    }
+    if let Some((token, id)) = vocab
+        .iter()
+        .find(|(_, id)| (**id as usize) >= architecture.n_vocab)
+    {
+        return Err(anyhow!(
+            "Whisper tokenizer {} token {token} has id {id} outside configured vocabulary 0..{}",
             path.display(),
             architecture.n_vocab
         ));
@@ -227,9 +238,9 @@ pub(crate) fn parse_whisper_config(raw: &str, source: &str) -> Result<WhisperArc
             "Whisper config {source} requires n_mels to be 80 or 128"
         ));
     }
-    if architecture.n_audio_ctx > u32::MAX as usize {
+    if architecture.n_audio_ctx > MAX_WHISPER_AUDIO_CONTEXT {
         return Err(anyhow!(
-            "Whisper config {source} requires n_audio_ctx to fit in u32"
+            "Whisper config {source} exceeds the resource limit of {MAX_WHISPER_AUDIO_CONTEXT} audio context positions"
         ));
     }
     if architecture.n_audio_state != architecture.n_text_state {
@@ -499,21 +510,44 @@ fn validate_whisper_weights_for_architecture(
 ) -> Result<()> {
     let tensors = read_validated_tensor_shapes(path)?;
     validate_mapped_tensor_name_uniqueness(tensors.keys().map(String::as_str))?;
-    for (name, expected) in expected_whisper_tensor_shapes(architecture)? {
-        let actual = tensors.get(&name).ok_or_else(|| {
-            anyhow!(
-                "Whisper weights {} are missing tensor {name}",
-                path.display()
-            )
-        })?;
-        if actual != &expected {
+    validate_whisper_tensor_shapes(&tensors, architecture)
+        .with_context(|| format!("validate Whisper tensor schema in {}", path.display()))
+}
+
+fn validate_whisper_tensor_shapes(
+    tensors: &BTreeMap<String, Vec<usize>>,
+    architecture: WhisperArchitecture,
+) -> Result<()> {
+    let expected_shapes = expected_whisper_tensor_shapes(architecture)?;
+    if let Some(shape) = tensors.get("alignment_heads") {
+        let maximum = architecture
+            .n_text_layer
+            .checked_mul(architecture.n_text_head)
+            .ok_or_else(|| anyhow!("Whisper alignment-head bound overflows"))?;
+        if shape.len() != 2 || shape[0] == 0 || shape[0] > maximum || shape[1] != 2 {
             return Err(anyhow!(
-                "Whisper tensor {name} in {} has shape {:?}, expected {:?}",
-                path.display(),
+                "Whisper alignment_heads has shape {:?}, expected [N, 2] with 1 <= N <= {maximum}",
+                shape
+            ));
+        }
+    }
+    for (name, expected) in &expected_shapes {
+        let actual = tensors
+            .get(name)
+            .ok_or_else(|| anyhow!("Whisper weights are missing tensor {name}"))?;
+        if actual != expected {
+            return Err(anyhow!(
+                "Whisper tensor {name} has shape {:?}, expected {:?}",
                 actual,
                 expected
             ));
         }
+    }
+    if let Some(unexpected) = tensors
+        .keys()
+        .find(|name| name.as_str() != "alignment_heads" && !expected_shapes.contains_key(*name))
+    {
+        return Err(anyhow!("unexpected Whisper tensor {unexpected}"));
     }
     Ok(())
 }
@@ -802,6 +836,15 @@ mod tests {
                 "{field}: {err:#}"
             );
         }
+
+        let mut accepted_context = valid_config();
+        accepted_context["n_audio_ctx"] = serde_json::json!(MAX_WHISPER_AUDIO_CONTEXT);
+        parse_whisper_config(&accepted_context.to_string(), "fixture").unwrap();
+
+        let mut rejected_context = valid_config();
+        rejected_context["n_audio_ctx"] = serde_json::json!(MAX_WHISPER_AUDIO_CONTEXT + 1);
+        let err = parse_whisper_config(&rejected_context.to_string(), "fixture").unwrap_err();
+        assert!(format!("{err:#}").contains("audio context"), "{err:#}");
     }
 
     #[test]
@@ -925,6 +968,31 @@ mod tests {
     }
 
     #[test]
+    fn tokenizer_cannot_encode_any_id_without_an_embedding_row() {
+        let temp = TempDir::new().unwrap();
+        let path = temp.path().join("tokenizer.json");
+        write_wordlevel_tokenizer(
+            &path,
+            &[
+                ("<unk>", 0),
+                ("<|startoftranscript|>", 1),
+                ("<|endoftext|>", 2),
+                ("<|pl|>", 3),
+                ("surplus", 4),
+            ],
+        );
+        let architecture = parse_whisper_config(
+            include_str!("../tests/fixtures/whisper_test_config.json"),
+            "test fixture",
+        )
+        .unwrap();
+        let err = validate_whisper_tokenizer_for_architecture(&path, architecture).unwrap_err();
+        let message = format!("{err:#}");
+        assert!(message.contains("surplus"), "{message}");
+        assert!(message.contains("id 4"), "{message}");
+    }
+
+    #[test]
     fn mapped_tensor_aliases_are_rejected_deterministically() {
         let err = validate_mapped_tensor_name_uniqueness([
             "decoder.layer_norm.weight",
@@ -938,5 +1006,26 @@ mod tests {
             message.contains("model.decoder.layer_norm.weight"),
             "{message}"
         );
+    }
+
+    #[test]
+    fn tensor_schema_rejects_surplus_but_allows_bounded_alignment_metadata() {
+        let architecture = parse_whisper_config(
+            include_str!("../tests/fixtures/whisper_test_config.json"),
+            "test fixture",
+        )
+        .unwrap();
+        let mut tensors = expected_whisper_tensor_shapes(architecture).unwrap();
+        tensors.insert("surplus.weight".to_string(), vec![1]);
+        let err = validate_whisper_tensor_shapes(&tensors, architecture).unwrap_err();
+        assert!(format!("{err:#}").contains("unexpected Whisper tensor surplus.weight"));
+
+        tensors.remove("surplus.weight");
+        tensors.insert("alignment_heads".to_string(), vec![1, 2]);
+        validate_whisper_tensor_shapes(&tensors, architecture).unwrap();
+
+        tensors.insert("alignment_heads".to_string(), vec![2, 2]);
+        let err = validate_whisper_tensor_shapes(&tensors, architecture).unwrap_err();
+        assert!(format!("{err:#}").contains("alignment_heads"));
     }
 }

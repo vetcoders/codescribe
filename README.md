@@ -354,7 +354,8 @@ resource limits, requires every runtime prompt/control token to fit the
 configured vocabulary, and uses the same automatic-language candidate logic as
 the decoder. It verifies the pinned mel SHA-256 and validates every
 required Whisper tensor name and shape plus the complete safetensors tensor
-table, dtype allowlist, mapped-name uniqueness, offsets, and file length. The
+table, exact consumed tensor set, bounded alignment metadata, dtype allowlist,
+mapped-name uniqueness, offsets, and file length. The
 disk loader applies this complete gate before mmap or model construction.
 Downloads and warm-cache
 copies are written to `.partial` files and promoted only after per-file
@@ -363,8 +364,9 @@ instead of being accepted as complete. Config validation requires the complete
 MLX Whisper architecture
 used by the loader (including matching audio/text state widths and compatible
 attention heads, a decode context that leaves room for output, and broad layer
-count safety fences); missing dimensions are never replaced with runtime
-defaults.
+count safety fences). Audio context is capped at the 1500 positions consumed by
+the supported 30-second Whisper window; missing dimensions are never replaced
+with runtime defaults.
 Warm-cache repair checks older snapshots when the newest config, weights, or
 tokenizer is invalid, preserving offline recovery from an earlier valid revision.
 

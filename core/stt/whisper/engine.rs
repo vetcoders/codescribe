@@ -155,6 +155,10 @@ fn prepend_initial_prompt_tokens(
     keep
 }
 
+fn prompt_token_ids_fit_vocab(tokens: &[u32], vocab_size: usize) -> bool {
+    tokens.iter().all(|token| (*token as usize) < vocab_size)
+}
+
 /// Record that a requested final pass was skipped, with the reason.
 ///
 /// `None` when no final pass was requested — the caller must not fabricate a
@@ -504,16 +508,11 @@ impl LocalWhisperEngine {
             // Load the verified unquantized tensors on CPU before device transfer.
             let read_started = std::time::Instant::now();
             for (name, view) in tensors.tensors() {
+                if name == "alignment_heads" {
+                    continue;
+                }
                 let loaded = view.load(&Device::Cpu)?;
                 raw_tensors.insert(name.to_string(), loaded);
-            }
-            if raw_tensors
-                .iter()
-                .any(|(name, tensor)| !is_supported_runtime_tensor(name, tensor))
-            {
-                anyhow::bail!(
-                    "Unsupported Whisper tensor payload refused; install the complete fp16 model"
-                );
             }
             read_secs = read_started.elapsed().as_secs_f64();
 
@@ -1194,15 +1193,17 @@ impl LocalWhisperEngine {
         if let Some(ref prompt) = self.decoding_params.initial_prompt
             && let Ok(encoding) = self.tokenizer.encode(prompt.as_str(), false)
         {
-            let prompt_tokens: Vec<u32> = encoding.get_ids().to_vec();
-            if !prompt_tokens.is_empty() {
+            let prompt_tokens = encoding.get_ids();
+            if !prompt_token_ids_fit_vocab(prompt_tokens, self.config.vocab_size) {
+                tracing::warn!("Ignoring Whisper initial prompt containing out-of-vocabulary IDs");
+            } else if !prompt_tokens.is_empty() {
                 if let Some(start_of_previous_token) = start_of_previous_token
                     && (start_of_previous_token as usize) < self.config.vocab_size
                 {
                     let used = prepend_initial_prompt_tokens(
                         &mut tokens,
                         start_of_previous_token,
-                        &prompt_tokens,
+                        prompt_tokens,
                         self.config.max_target_positions,
                     );
                     tracing::debug!("Initial prompt: {} ({} tokens)", prompt, used);
@@ -2329,6 +2330,13 @@ mod dedup_tests {
         assert_eq!(used, 2);
         assert_eq!(short_context, vec![99, 10, 11, 1, 2, 3, 4]);
         assert_eq!(8 - short_context.len(), 1);
+    }
+
+    #[test]
+    fn initial_prompt_rejects_any_out_of_vocabulary_id() {
+        assert!(prompt_token_ids_fit_vocab(&[0, 1, 3], 4));
+        assert!(!prompt_token_ids_fit_vocab(&[0, 4], 4));
+        assert!(!prompt_token_ids_fit_vocab(&[5], 4));
     }
 
     /// Incremental n-gram blocker matches full-scan blocks across sizes and edges.
