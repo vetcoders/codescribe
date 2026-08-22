@@ -212,7 +212,7 @@ fn write_tiny_complete_weights(path: &Path) {
     add("encoder.ln_post.weight".into(), &[D]);
     add("encoder.ln_post.bias".into(), &[D]);
     add("decoder.token_embedding.weight".into(), &[4, D]);
-    add("decoder.positional_embedding".into(), &[2, D]);
+    add("decoder.positional_embedding".into(), &[5, D]);
     add("decoder.ln.weight".into(), &[D]);
     add("decoder.ln.bias".into(), &[D]);
     for prefix in [

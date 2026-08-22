@@ -136,8 +136,13 @@ fn prepend_initial_prompt_tokens(
     tokens: &mut Vec<u32>,
     start_of_previous_token: u32,
     prompt_tokens: &[u32],
+    max_target_positions: usize,
 ) -> usize {
-    let keep = prompt_tokens.len().min(WHISPER_INITIAL_PROMPT_TOKEN_BUDGET);
+    let available = max_target_positions.saturating_sub(tokens.len() + 2);
+    let keep = prompt_tokens
+        .len()
+        .min(WHISPER_INITIAL_PROMPT_TOKEN_BUDGET)
+        .min(available);
     if keep == 0 {
         return 0;
     }
@@ -465,8 +470,8 @@ impl LocalWhisperEngine {
         }
         let tokenizer_path = model_path.join("tokenizer.json");
         let mel_filters_path = model_path.join("mel_filters.npz");
-        crate::whisper_weights::validate_whisper_model_pair(model_path)
-            .context("validate Whisper config and architecture-compatible weights")?;
+        crate::whisper_weights::validate_whisper_model_bundle(model_path)
+            .context("validate complete Whisper model bundle")?;
         let architecture = crate::whisper_weights::parse_whisper_config(
             &safe_path::safe_read_to_string(&config_path)?,
             &config_path.display().to_string(),
@@ -1077,7 +1082,8 @@ impl LocalWhisperEngine {
         let last_logits = logits.i((.., seq_len - 1, ..))?.squeeze(0)?;
         let logits_vec = last_logits.to_vec1::<f32>()?;
 
-        let candidates = self.language_token_candidates(logits_vec.len());
+        let candidates =
+            crate::whisper_weights::language_token_candidates(&self.tokenizer, logits_vec.len());
         ensure!(
             !candidates.is_empty(),
             "No language token candidates available in tokenizer"
@@ -1098,50 +1104,6 @@ impl LocalWhisperEngine {
         }
 
         Ok(best_lang)
-    }
-
-    /// Enumerate `(token_id, language_code)` pairs to score during detection.
-    ///
-    /// Sweeps the conventional language-token range and keeps the ids this
-    /// tokenizer actually defines, bounded by `vocab_size`. Falls back to a
-    /// small common-language set when the sweep finds nothing, so detection
-    /// still works on a tokenizer that numbers its tokens differently.
-    fn language_token_candidates(&self, vocab_size: usize) -> Vec<(u32, String)> {
-        // Whisper language tokens are typically in this range.
-        /// First id of the conventional Whisper language-token block.
-        const LANG_TOKEN_START: u32 = 50_259;
-        /// Last id of that block (inclusive).
-        const LANG_TOKEN_END: u32 = 50_358;
-
-        let mut out = Vec::new();
-        for id in LANG_TOKEN_START..=LANG_TOKEN_END {
-            if (id as usize) >= vocab_size {
-                break;
-            }
-            if let Some(tok) = self.tokenizer.id_to_token(id)
-                && let Some(lang) = parse_language_token(&tok)
-            {
-                out.push((id, lang.to_string()));
-            }
-        }
-
-        if !out.is_empty() {
-            return out;
-        }
-
-        // Fallback: common languages only.
-        let fallback = [
-            "en", "pl", "de", "fr", "es", "it", "pt", "nl", "ru", "uk", "cs", "sk",
-        ];
-        for lang in fallback {
-            let tok = format!("<|{}|>", lang);
-            if let Some(id) = self.tokenizer.token_to_id(&tok)
-                && (id as usize) < vocab_size
-            {
-                out.push((id, lang.to_string()));
-            }
-        }
-        out
     }
 
     /// Text-only wrapper over [`Self::transcribe_samples_16k_raw`].
@@ -1208,15 +1170,22 @@ impl LocalWhisperEngine {
         let mut tokens = vec![start_token];
         if let Some(lang) = language {
             let lang_tok = format!("<|{}|>", lang.to_lowercase());
-            if let Some(t) = self.tokenizer.token_to_id(&lang_tok) {
+            if let Some(t) = self.tokenizer.token_to_id(&lang_tok)
+                && (t as usize) < self.config.vocab_size
+            {
                 tokens.push(t);
             }
         }
-        if let Some(t) = self.tokenizer.token_to_id("<|transcribe|>") {
+        if let Some(t) = self.tokenizer.token_to_id("<|transcribe|>")
+            && (t as usize) < self.config.vocab_size
+        {
             tokens.push(t);
         }
         let timestamps_enabled = self.decoding_params.emit_timestamps && self.ts_range.is_some();
-        if !timestamps_enabled && let Some(t) = self.tokenizer.token_to_id("<|notimestamps|>") {
+        if !timestamps_enabled
+            && let Some(t) = self.tokenizer.token_to_id("<|notimestamps|>")
+            && (t as usize) < self.config.vocab_size
+        {
             tokens.push(t);
         }
 
@@ -1227,11 +1196,14 @@ impl LocalWhisperEngine {
         {
             let prompt_tokens: Vec<u32> = encoding.get_ids().to_vec();
             if !prompt_tokens.is_empty() {
-                if let Some(start_of_previous_token) = start_of_previous_token {
+                if let Some(start_of_previous_token) = start_of_previous_token
+                    && (start_of_previous_token as usize) < self.config.vocab_size
+                {
                     let used = prepend_initial_prompt_tokens(
                         &mut tokens,
                         start_of_previous_token,
                         &prompt_tokens,
+                        self.config.max_target_positions,
                     );
                     tracing::debug!("Initial prompt: {} ({} tokens)", prompt, used);
                 } else {
@@ -1523,26 +1495,6 @@ impl LocalWhisperEngine {
     }
 }
 
-/// Extract the language code from a `<|xx|>` token, or `None` when the token is
-/// not a language marker.
-///
-/// Accepts only 2–3 ASCII letters between the delimiters, which is what
-/// separates `<|pl|>` from control tokens like `<|notimestamps|>`.
-fn parse_language_token(token: &str) -> Option<&str> {
-    if !token.starts_with("<|") || !token.ends_with("|>") {
-        return None;
-    }
-    let inner = &token[2..token.len() - 2];
-    if inner.len() < 2 || inner.len() > 3 {
-        return None;
-    }
-    if inner.chars().all(|c| c.is_ascii_alphabetic()) {
-        Some(inner)
-    } else {
-        None
-    }
-}
-
 /// Normalize a word for overlap comparison: lowercase, alphanumerics only.
 ///
 /// Falls back to the lowercased original when stripping would leave nothing, so
@@ -1707,53 +1659,6 @@ fn load_mel_filters_from_reader<R: Read + std::io::Seek>(
     Ok(data)
 }
 
-/// Rewrite an MLX/OpenAI Whisper tensor name into the Candle naming scheme.
-///
-/// Order is load-bearing and must not be "simplified": cross-attention names
-/// are rewritten before the generic attention rules, otherwise `cross_attn`
-/// would be mangled by the `attn` replacements and the weight would silently
-/// land under the wrong module.
-fn map_tensor_name(name: &str) -> String {
-    let mut new_name = name.to_string();
-
-    new_name = new_name.replace("blocks", "layers");
-    new_name = new_name.replace("mlp1", "fc1");
-    new_name = new_name.replace("mlp2", "fc2");
-    new_name = new_name.replace("decoder.ln", "decoder.layer_norm");
-    // Replace cross-attn layer norms before generic attn replacement to avoid mangling
-    new_name = new_name.replace("cross_attn_ln", "encoder_attn_layer_norm");
-    new_name = new_name.replace("attn_ln", "self_attn_layer_norm");
-    new_name = new_name.replace("mlp_ln", "final_layer_norm");
-    new_name = new_name.replace("ln_post", "layer_norm");
-
-    // Important: handle cross_attn BEFORE attn
-    new_name = new_name.replace("cross_attn", "encoder_attn");
-
-    // Replace ".attn." segment with ".self_attn."
-    new_name = new_name.replace(".attn.", ".self_attn.");
-
-    // Projections
-    new_name = new_name.replace("query", "q_proj");
-    new_name = new_name.replace("key", "k_proj");
-    new_name = new_name.replace("value", "v_proj");
-    new_name = new_name.replace(".out.", ".out_proj.");
-
-    // Embedding aliases
-    new_name = new_name.replace("decoder.token_embedding", "decoder.embed_tokens");
-
-    // Prefix
-    if !new_name.starts_with("model.") {
-        new_name = format!("model.{}", new_name);
-    }
-
-    // Positional embedding key from MLX
-    if new_name == "model.decoder.positional_embedding" {
-        new_name = "model.decoder.embed_positions.weight".to_string();
-    }
-    new_name = new_name.replace(".biases", ".bias");
-    new_name
-}
-
 /// Incremental no-repeat n-gram blocker.
 ///
 /// Replaces the per-step O(n) full scan of `all_tokens` (which made the decode
@@ -1855,11 +1760,13 @@ fn should_drop_for_quality_gate(
 
 /// Build a VarBuilder from verified unquantized tensors.
 fn is_supported_runtime_tensor(name: &str, tensor: &Tensor) -> bool {
+    if name == "alignment_heads" {
+        return tensor.dtype() == DType::I64;
+    }
     if name.ends_with(".scales") || name.ends_with(".biases") {
         return false;
     }
     matches!(tensor.dtype(), DType::F16 | DType::F32)
-        || name == "alignment_heads" && tensor.dtype() == DType::I64
 }
 
 fn build_varbuilder_from_tensors(
@@ -1872,6 +1779,9 @@ fn build_varbuilder_from_tensors(
     {
         anyhow::bail!("Unsupported Whisper tensor payload refused; fp16 weights are required");
     }
+    crate::whisper_weights::validate_mapped_tensor_name_uniqueness(
+        raw_tensors.keys().map(String::as_str),
+    )?;
     let mut tensor_map = HashMap::new();
 
     // alignment_heads is integer metadata used by upstream timestamp tooling,
@@ -1880,7 +1790,7 @@ fn build_varbuilder_from_tensors(
         if name == "alignment_heads" {
             continue;
         }
-        let mapped_name = map_tensor_name(name);
+        let mapped_name = crate::whisper_weights::map_whisper_tensor_name(name);
         let mut t = tensor.clone();
         if t.dtype() != DType::F32 {
             t = t.to_dtype(DType::F32)?;
@@ -1911,15 +1821,41 @@ mod model_payload_tests {
     use std::fs;
     use tempfile::TempDir;
 
-    fn write_tiny_model(path: &Path, name: &str, dtype: &str, payload_bytes: usize) {
+    fn decode_hex(raw: &str) -> Vec<u8> {
+        let digits: String = raw.chars().filter(|ch| !ch.is_whitespace()).collect();
+        assert!(digits.len().is_multiple_of(2));
+        digits
+            .as_bytes()
+            .as_chunks::<2>()
+            .0
+            .iter()
+            .map(|pair| u8::from_str_radix(std::str::from_utf8(pair).unwrap(), 16).unwrap())
+            .collect()
+    }
+
+    fn write_valid_bundle_artifacts(path: &Path) {
         fs::create_dir_all(path).unwrap();
         fs::write(
             path.join("config.json"),
             include_str!("../../../tests/fixtures/whisper_test_config.json"),
         )
         .unwrap();
-        fs::write(path.join("tokenizer.json"), "{}").unwrap();
-        fs::write(path.join("mel_filters.npz"), b"placeholder").unwrap();
+        fs::write(
+            path.join("tokenizer.json"),
+            include_str!("../../../tests/fixtures/whisper_tokenizer.json"),
+        )
+        .unwrap();
+        fs::write(
+            path.join("mel_filters.npz"),
+            decode_hex(include_str!(
+                "../../../tests/fixtures/whisper_mel_filters.npz.hex"
+            )),
+        )
+        .unwrap();
+    }
+
+    fn write_tiny_model(path: &Path, name: &str, dtype: &str, payload_bytes: usize) {
+        write_valid_bundle_artifacts(path);
         let header = serde_json::json!({
             name: {
                 "dtype": dtype,
@@ -1998,6 +1934,97 @@ mod model_payload_tests {
     }
 
     #[test]
+    fn tensor_builder_rejects_mapped_name_collisions() {
+        let mut tensors = HashMap::new();
+        tensors.insert(
+            "decoder.ln.weight".to_string(),
+            Tensor::from_vec(vec![1.0_f32], 1, &Device::Cpu).unwrap(),
+        );
+        tensors.insert(
+            "decoder.layer_norm.weight".to_string(),
+            Tensor::from_vec(vec![2.0_f32], 1, &Device::Cpu).unwrap(),
+        );
+
+        let err = build_varbuilder_from_tensors(tensors, &Device::Cpu)
+            .err()
+            .expect("mapped collision must be rejected");
+        let message = format!("{err:#}");
+        assert!(message.contains("decoder.ln.weight"), "{message}");
+        assert!(message.contains("decoder.layer_norm.weight"), "{message}");
+        assert!(
+            message.contains("model.decoder.layer_norm.weight"),
+            "{message}"
+        );
+    }
+
+    #[test]
+    fn tensor_builder_rejects_float_alignment_metadata() {
+        let mut tensors = HashMap::new();
+        tensors.insert(
+            "alignment_heads".to_string(),
+            Tensor::from_vec(vec![1.0_f32], 1, &Device::Cpu).unwrap(),
+        );
+        let err = build_varbuilder_from_tensors(tensors, &Device::Cpu)
+            .err()
+            .expect("float alignment metadata must be rejected");
+        assert!(format!("{err:#}").contains("refused"));
+    }
+
+    #[test]
+    fn local_loader_rejects_invalid_tokenizer_before_model_load() {
+        let temp = TempDir::new().unwrap();
+        write_valid_bundle_artifacts(temp.path());
+        let architecture = crate::whisper_weights::parse_whisper_config(
+            include_str!("../../../tests/fixtures/whisper_test_config.json"),
+            "test fixture",
+        )
+        .unwrap();
+        crate::whisper_weights::write_test_whisper_weights(
+            &temp.path().join("weights.safetensors"),
+            architecture,
+        )
+        .unwrap();
+        fs::write(temp.path().join("tokenizer.json"), "{}").unwrap();
+
+        let err = LocalWhisperEngine::new(temp.path())
+            .err()
+            .expect("invalid tokenizer must be rejected");
+        let message = format!("{err:#}");
+        assert!(message.contains("tokenizer"), "{message}");
+        assert!(
+            !message.contains("Failed to create Whisper Model"),
+            "{message}"
+        );
+    }
+
+    #[test]
+    fn local_loader_rejects_unpinned_mel_before_model_load() {
+        let temp = TempDir::new().unwrap();
+        write_valid_bundle_artifacts(temp.path());
+        let architecture = crate::whisper_weights::parse_whisper_config(
+            include_str!("../../../tests/fixtures/whisper_test_config.json"),
+            "test fixture",
+        )
+        .unwrap();
+        crate::whisper_weights::write_test_whisper_weights(
+            &temp.path().join("weights.safetensors"),
+            architecture,
+        )
+        .unwrap();
+        fs::write(temp.path().join("mel_filters.npz"), b"wrong").unwrap();
+
+        let err = LocalWhisperEngine::new(temp.path())
+            .err()
+            .expect("unpinned mel must be rejected");
+        let message = format!("{err:#}");
+        assert!(message.contains("SHA-256 mismatch"), "{message}");
+        assert!(
+            !message.contains("Failed to create Whisper Model"),
+            "{message}"
+        );
+    }
+
+    #[test]
     fn local_loader_uses_valid_alternative_after_invalid_primary() {
         let temp = TempDir::new().unwrap();
         fs::create_dir_all(temp.path()).unwrap();
@@ -2006,8 +2033,7 @@ mod model_payload_tests {
             include_str!("../../../tests/fixtures/whisper_test_config.json"),
         )
         .unwrap();
-        fs::write(temp.path().join("tokenizer.json"), "{}").unwrap();
-        fs::write(temp.path().join("mel_filters.npz"), b"placeholder").unwrap();
+        write_valid_bundle_artifacts(temp.path());
         let architecture = crate::whisper_weights::parse_whisper_config(
             include_str!("../../../tests/fixtures/whisper_test_config.json"),
             "test fixture",
@@ -2020,11 +2046,10 @@ mod model_payload_tests {
         .unwrap();
         write_tiny_model(temp.path(), "encoder.weight", "U32", 4);
 
-        let err = LocalWhisperEngine::new(temp.path())
-            .err()
-            .expect("compatible alternative should pass the payload gate");
-        let message = format!("{err:#}");
-        assert!(!message.contains("payload refused"), "{message}");
+        assert!(
+            LocalWhisperEngine::new(temp.path()).is_ok(),
+            "compatible alternative should load after invalid primary"
+        );
     }
 }
 
@@ -2259,7 +2284,7 @@ mod dedup_tests {
         let without_prompt = vec![1_u32, 2, 3];
         let mut with_prompt = without_prompt.clone();
 
-        let used = prepend_initial_prompt_tokens(&mut with_prompt, 99, &[10, 11, 12]);
+        let used = prepend_initial_prompt_tokens(&mut with_prompt, 99, &[10, 11, 12], 448);
 
         assert_eq!(used, 3);
         assert_ne!(with_prompt, without_prompt);
@@ -2274,7 +2299,7 @@ mod dedup_tests {
         let prompt_tokens: Vec<u32> =
             (0..(WHISPER_INITIAL_PROMPT_TOKEN_BUDGET as u32 + 10)).collect();
 
-        let used = prepend_initial_prompt_tokens(&mut tokens, 99, &prompt_tokens);
+        let used = prepend_initial_prompt_tokens(&mut tokens, 99, &prompt_tokens, 448);
 
         assert_eq!(used, WHISPER_INITIAL_PROMPT_TOKEN_BUDGET);
         assert_eq!(tokens.len(), 4 + WHISPER_INITIAL_PROMPT_TOKEN_BUDGET);
@@ -2287,6 +2312,23 @@ mod dedup_tests {
             &tokens[(WHISPER_INITIAL_PROMPT_TOKEN_BUDGET + 1)..],
             &[1, 2, 3]
         );
+    }
+
+    #[test]
+    fn initial_prompt_reserves_one_decode_position() {
+        let prompt = [10_u32, 11, 12, 13];
+
+        let mut minimum_context = vec![1_u32, 2, 3, 4];
+        let used = prepend_initial_prompt_tokens(&mut minimum_context, 99, &prompt, 5);
+        assert_eq!(used, 0);
+        assert_eq!(minimum_context, vec![1, 2, 3, 4]);
+        assert!(minimum_context.len() < 5);
+
+        let mut short_context = vec![1_u32, 2, 3, 4];
+        let used = prepend_initial_prompt_tokens(&mut short_context, 99, &prompt, 8);
+        assert_eq!(used, 2);
+        assert_eq!(short_context, vec![99, 10, 11, 1, 2, 3, 4]);
+        assert_eq!(8 - short_context.len(), 1);
     }
 
     /// Incremental n-gram blocker matches full-scan blocks across sizes and edges.

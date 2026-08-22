@@ -5,7 +5,7 @@
   "n_audio_head": 1,
   "n_audio_layer": 1,
   "n_vocab": 4,
-  "n_text_ctx": 2,
+  "n_text_ctx": 5,
   "n_text_state": 4,
   "n_text_head": 1,
   "n_text_layer": 1

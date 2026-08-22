@@ -13,6 +13,13 @@ pub const SUPPORTED_NAMES: [&str; 2] = ["weights.safetensors", "model.safetensor
 pub const MEL_FILTERS_SHA256: &str =
     "7450ae70723a5ef9d341e3cee628c7cb0177f36ce42c44b7ed2bf3325f0f6d4c";
 const REQUIRED_TOKENIZER_TOKENS: [&str; 2] = ["<|startoftranscript|>", "<|endoftext|>"];
+const OPTIONAL_PROMPT_TOKENS: [&str; 3] = ["<|transcribe|>", "<|notimestamps|>", "<|startofprev|>"];
+const MAX_WHISPER_LAYERS: usize = 64;
+const LANG_TOKEN_START: u32 = 50_259;
+const LANG_TOKEN_END: u32 = 50_358;
+const FALLBACK_LANGUAGES: [&str; 12] = [
+    "en", "pl", "de", "fr", "es", "it", "pt", "nl", "ru", "uk", "cs", "sk",
+];
 /// MLX Whisper architecture shared by validation, disk loading, and embedding.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) struct WhisperArchitecture {
@@ -55,10 +62,44 @@ pub(crate) fn validate_whisper_tokenizer_for_architecture(
     path: &Path,
     architecture: WhisperArchitecture,
 ) -> Result<()> {
-    validate_whisper_tokenizer(path)?;
     let tokenizer = tokenizers::Tokenizer::from_file(path)
         .map_err(|err| anyhow!("invalid Whisper tokenizer {}: {err}", path.display()))?;
+    for token in REQUIRED_TOKENIZER_TOKENS {
+        let id = tokenizer.token_to_id(token).ok_or_else(|| {
+            anyhow!(
+                "Whisper tokenizer {} is missing required token {token}",
+                path.display()
+            )
+        })?;
+        if id as usize >= architecture.n_vocab {
+            return Err(anyhow!(
+                "Whisper tokenizer {} required token {token} has id {id} outside configured vocabulary 0..{}",
+                path.display(),
+                architecture.n_vocab
+            ));
+        }
+    }
+    for token in OPTIONAL_PROMPT_TOKENS {
+        if let Some(id) = tokenizer.token_to_id(token)
+            && id as usize >= architecture.n_vocab
+        {
+            return Err(anyhow!(
+                "Whisper tokenizer {} prompt token {token} has id {id} outside configured vocabulary 0..{}",
+                path.display(),
+                architecture.n_vocab
+            ));
+        }
+    }
     let vocab = tokenizer.get_vocab(true);
+    if let Some((token, id)) = vocab.iter().find(|(token, id)| {
+        parse_language_token(token).is_some() && (**id as usize) >= architecture.n_vocab
+    }) {
+        return Err(anyhow!(
+            "Whisper tokenizer {} language token {token} has id {id} outside configured vocabulary 0..{}",
+            path.display(),
+            architecture.n_vocab
+        ));
+    }
     let covered: HashSet<u32> = vocab
         .values()
         .copied()
@@ -71,25 +112,48 @@ pub(crate) fn validate_whisper_tokenizer_for_architecture(
             architecture.n_vocab
         ));
     }
-    if !vocab
-        .iter()
-        .any(|(token, id)| (*id as usize) < architecture.n_vocab && is_language_token(token))
-    {
+    if language_token_candidates(&tokenizer, architecture.n_vocab).is_empty() {
         return Err(anyhow!(
-            "Whisper tokenizer {} has no language token required for automatic detection",
+            "Whisper tokenizer {} has no runtime-discoverable language token required for automatic detection",
             path.display()
         ));
     }
     Ok(())
 }
 
-fn is_language_token(token: &str) -> bool {
-    token
-        .strip_prefix("<|")
-        .and_then(|inner| inner.strip_suffix("|>"))
-        .is_some_and(|inner| {
-            (2..=3).contains(&inner.len()) && inner.chars().all(|ch| ch.is_ascii_alphabetic())
-        })
+pub(crate) fn language_token_candidates(
+    tokenizer: &tokenizers::Tokenizer,
+    vocab_size: usize,
+) -> Vec<(u32, String)> {
+    let mut out = Vec::new();
+    for id in LANG_TOKEN_START..=LANG_TOKEN_END {
+        if id as usize >= vocab_size {
+            break;
+        }
+        if let Some(token) = tokenizer.id_to_token(id)
+            && let Some(language) = parse_language_token(&token)
+        {
+            out.push((id, language.to_string()));
+        }
+    }
+    if !out.is_empty() {
+        return out;
+    }
+    for language in FALLBACK_LANGUAGES {
+        let token = format!("<|{language}|>");
+        if let Some(id) = tokenizer.token_to_id(&token)
+            && (id as usize) < vocab_size
+        {
+            out.push((id, language.to_string()));
+        }
+    }
+    out
+}
+
+fn parse_language_token(token: &str) -> Option<&str> {
+    let inner = token.strip_prefix("<|")?.strip_suffix("|>")?;
+    ((2..=3).contains(&inner.len()) && inner.chars().all(|ch| ch.is_ascii_alphabetic()))
+        .then_some(inner)
 }
 
 /// Validate the config schema and reject every declared quantization mode.
@@ -144,6 +208,18 @@ pub(crate) fn parse_whisper_config(raw: &str, source: &str) -> Result<WhisperArc
     if architecture.n_vocab > u32::MAX as usize {
         return Err(anyhow!(
             "Whisper config {source} requires n_vocab to fit tokenizer u32 IDs"
+        ));
+    }
+    if architecture.n_audio_layer > MAX_WHISPER_LAYERS
+        || architecture.n_text_layer > MAX_WHISPER_LAYERS
+    {
+        return Err(anyhow!(
+            "Whisper config {source} exceeds the resource limit of {MAX_WHISPER_LAYERS} encoder or decoder layers"
+        ));
+    }
+    if architecture.n_text_ctx < 5 {
+        return Err(anyhow!(
+            "Whisper config {source} requires n_text_ctx of at least 5 for the decode prefix and one output token"
         ));
     }
     if !matches!(architecture.n_mels, 80 | 128) {
@@ -330,9 +406,14 @@ fn read_validated_tensor_shapes(path: &Path) -> Result<BTreeMap<String, Vec<usiz
             .and_then(serde_json::Value::as_str)
             .ok_or_else(|| anyhow!("tensor {name} has no dtype"))?;
         let bytes_per_element = match (name.as_str(), dtype) {
+            ("alignment_heads", "I64") => 8_u64,
+            ("alignment_heads", _) => {
+                return Err(anyhow!(
+                    "unsupported Whisper tensor dtype {dtype} for {name}"
+                ));
+            }
             (_, "F16") => 2_u64,
             (_, "F32") => 4_u64,
-            ("alignment_heads", "I64") => 8_u64,
             _ => {
                 return Err(anyhow!(
                     "unsupported Whisper tensor dtype {dtype} for {name}"
@@ -417,6 +498,7 @@ fn validate_whisper_weights_for_architecture(
     architecture: WhisperArchitecture,
 ) -> Result<()> {
     let tensors = read_validated_tensor_shapes(path)?;
+    validate_mapped_tensor_name_uniqueness(tensors.keys().map(String::as_str))?;
     for (name, expected) in expected_whisper_tensor_shapes(architecture)? {
         let actual = tensors.get(&name).ok_or_else(|| {
             anyhow!(
@@ -434,6 +516,59 @@ fn validate_whisper_weights_for_architecture(
         }
     }
     Ok(())
+}
+
+pub(crate) fn validate_mapped_tensor_name_uniqueness<'a>(
+    names: impl IntoIterator<Item = &'a str>,
+) -> Result<()> {
+    let mut mapped_sources = BTreeMap::<String, String>::new();
+    for name in names {
+        if name == "alignment_heads" {
+            continue;
+        }
+        let mapped = map_whisper_tensor_name(name);
+        if let Some(previous) = mapped_sources.insert(mapped.clone(), name.to_string()) {
+            let mut sources = [previous, name.to_string()];
+            sources.sort();
+            return Err(anyhow!(
+                "Whisper tensors {} and {} collide after runtime mapping to {mapped}",
+                sources[0],
+                sources[1]
+            ));
+        }
+    }
+    Ok(())
+}
+
+/// Rewrite an MLX/OpenAI tensor name into Candle's Whisper namespace.
+///
+/// Replacement order is load-bearing: cross-attention names must be handled
+/// before the generic attention rules so aliases map exactly as the loader sees
+/// them and the shared collision gate can reject ambiguous payloads.
+pub(crate) fn map_whisper_tensor_name(name: &str) -> String {
+    let mut mapped = name.to_string();
+    mapped = mapped.replace("blocks", "layers");
+    mapped = mapped.replace("mlp1", "fc1");
+    mapped = mapped.replace("mlp2", "fc2");
+    mapped = mapped.replace("decoder.ln", "decoder.layer_norm");
+    mapped = mapped.replace("cross_attn_ln", "encoder_attn_layer_norm");
+    mapped = mapped.replace("attn_ln", "self_attn_layer_norm");
+    mapped = mapped.replace("mlp_ln", "final_layer_norm");
+    mapped = mapped.replace("ln_post", "layer_norm");
+    mapped = mapped.replace("cross_attn", "encoder_attn");
+    mapped = mapped.replace(".attn.", ".self_attn.");
+    mapped = mapped.replace("query", "q_proj");
+    mapped = mapped.replace("key", "k_proj");
+    mapped = mapped.replace("value", "v_proj");
+    mapped = mapped.replace(".out.", ".out_proj.");
+    mapped = mapped.replace("decoder.token_embedding", "decoder.embed_tokens");
+    if !mapped.starts_with("model.") {
+        mapped = format!("model.{mapped}");
+    }
+    if mapped == "model.decoder.positional_embedding" {
+        mapped = "model.decoder.embed_positions.weight".to_string();
+    }
+    mapped.replace(".biases", ".bias")
 }
 
 fn expected_whisper_tensor_shapes(
@@ -653,6 +788,39 @@ mod tests {
     }
 
     #[test]
+    fn architecture_resource_limits_are_enforced_before_schema_expansion() {
+        for field in ["n_audio_layer", "n_text_layer"] {
+            let mut accepted = valid_config();
+            accepted[field] = serde_json::json!(MAX_WHISPER_LAYERS);
+            parse_whisper_config(&accepted.to_string(), "fixture").unwrap();
+
+            let mut rejected = valid_config();
+            rejected[field] = serde_json::json!(MAX_WHISPER_LAYERS + 1);
+            let err = parse_whisper_config(&rejected.to_string(), "fixture").unwrap_err();
+            assert!(
+                format!("{err:#}").contains("resource limit"),
+                "{field}: {err:#}"
+            );
+        }
+    }
+
+    #[test]
+    fn text_context_reserves_decode_output() {
+        for value in 1..5 {
+            let mut config = valid_config();
+            config["n_text_ctx"] = serde_json::json!(value);
+            let err = parse_whisper_config(&config.to_string(), "fixture").unwrap_err();
+            assert!(
+                format!("{err:#}").contains("at least 5"),
+                "{value}: {err:#}"
+            );
+        }
+        let mut config = valid_config();
+        config["n_text_ctx"] = serde_json::json!(5);
+        parse_whisper_config(&config.to_string(), "fixture").unwrap();
+    }
+
+    #[test]
     fn tokenizer_without_language_tokens_is_rejected() {
         let temp = TempDir::new().unwrap();
         let path = temp.path().join("tokenizer.json");
@@ -671,7 +839,7 @@ mod tests {
         .unwrap();
 
         let err = validate_whisper_tokenizer_for_architecture(&path, architecture).unwrap_err();
-        assert!(format!("{err:#}").contains("no language token"));
+        assert!(format!("{err:#}").contains("runtime-discoverable"));
     }
 
     #[test]
@@ -692,5 +860,83 @@ mod tests {
 
         let err = validate_whisper_tokenizer_for_architecture(&path, architecture).unwrap_err();
         assert!(format!("{err:#}").contains("does not cover configured vocabulary"));
+    }
+
+    fn write_wordlevel_tokenizer(path: &Path, vocab: &[(&str, u32)]) {
+        let mut tokenizer: serde_json::Value =
+            serde_json::from_str(include_str!("../tests/fixtures/whisper_tokenizer.json")).unwrap();
+        tokenizer["model"]["vocab"] = serde_json::Value::Object(
+            vocab
+                .iter()
+                .map(|(token, id)| ((*token).to_string(), serde_json::json!(id)))
+                .collect(),
+        );
+        fs::write(path, serde_json::to_vec(&tokenizer).unwrap()).unwrap();
+    }
+
+    #[test]
+    fn tokenizer_language_gate_matches_runtime_candidates() {
+        let temp = TempDir::new().unwrap();
+        let path = temp.path().join("tokenizer.json");
+        write_wordlevel_tokenizer(
+            &path,
+            &[
+                ("<unk>", 0),
+                ("<|startoftranscript|>", 1),
+                ("<|endoftext|>", 2),
+                ("<|ja|>", 3),
+            ],
+        );
+        let architecture = parse_whisper_config(
+            include_str!("../tests/fixtures/whisper_test_config.json"),
+            "test fixture",
+        )
+        .unwrap();
+        let tokenizer = tokenizers::Tokenizer::from_file(&path).unwrap();
+        assert!(language_token_candidates(&tokenizer, architecture.n_vocab).is_empty());
+        let err = validate_whisper_tokenizer_for_architecture(&path, architecture).unwrap_err();
+        assert!(format!("{err:#}").contains("runtime-discoverable"));
+    }
+
+    #[test]
+    fn tokenizer_control_tokens_must_fit_model_vocabulary() {
+        let temp = TempDir::new().unwrap();
+        let path = temp.path().join("tokenizer.json");
+        write_wordlevel_tokenizer(
+            &path,
+            &[
+                ("<unk>", 0),
+                ("ordinary", 1),
+                ("other", 2),
+                ("<|pl|>", 3),
+                ("<|startoftranscript|>", 4),
+                ("<|endoftext|>", 5),
+            ],
+        );
+        let architecture = parse_whisper_config(
+            include_str!("../tests/fixtures/whisper_test_config.json"),
+            "test fixture",
+        )
+        .unwrap();
+        let err = validate_whisper_tokenizer_for_architecture(&path, architecture).unwrap_err();
+        let message = format!("{err:#}");
+        assert!(message.contains("<|startoftranscript|>"), "{message}");
+        assert!(message.contains("id 4"), "{message}");
+    }
+
+    #[test]
+    fn mapped_tensor_aliases_are_rejected_deterministically() {
+        let err = validate_mapped_tensor_name_uniqueness([
+            "decoder.layer_norm.weight",
+            "decoder.ln.weight",
+        ])
+        .unwrap_err();
+        let message = format!("{err:#}");
+        assert!(message.contains("decoder.layer_norm.weight"), "{message}");
+        assert!(message.contains("decoder.ln.weight"), "{message}");
+        assert!(
+            message.contains("model.decoder.layer_norm.weight"),
+            "{message}"
+        );
     }
 }
