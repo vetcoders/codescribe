@@ -94,9 +94,15 @@ pub fn assemble_live_from_events(events: &[EngineEvent]) -> LiveAssembly {
             // `rposition` mirrors `lastIndex(where:)` in both Swift replays.
             // Finals are upserted by id above, so this always resolves the same
             // unique slot as the production presentation reducer.
-            EngineEvent::ReplaceRange { utterance_id, .. } => {
+            EngineEvent::ReplaceRange {
+                utterance_id,
+                source,
+                ..
+            } => {
                 if let Some(index) = freezed_ids.iter().rposition(|id| id == utterance_id) {
-                    if freezed_acoustic[index] {
+                    if freezed_acoustic[index]
+                        && *source == crate::pipeline::contracts::LayerSource::TailPatch
+                    {
                         continue;
                     }
                     // Out-of-range windows are dropped, not clamped: a patch
@@ -124,7 +130,8 @@ pub fn assemble_live_from_events(events: &[EngineEvent]) -> LiveAssembly {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::pipeline::contracts::{EngineEvent, LayerSource};
+    use crate::pipeline::contracts::{AcousticTranscriptIdentity, EngineEvent, LayerSource};
+    use crate::stt::tail_provider::TailSampleRange;
 
     /// Minimal sealed final: no VAD, confidence, or segment detail.
     fn final_ev(id: u64, text: &str) -> EngineEvent {
@@ -142,6 +149,23 @@ mod tests {
             confidence_flags: vec![],
             acoustic: None,
         }
+    }
+
+    fn acoustic_final_ev(id: u64, text: &str) -> EngineEvent {
+        let mut event = final_ev(id, text);
+        let EngineEvent::UtteranceFinal { acoustic, .. } = &mut event else {
+            unreachable!("fixture is a final")
+        };
+        *acoustic = Some(AcousticTranscriptIdentity {
+            range: TailSampleRange {
+                session: "assembly".into(),
+                capture_epoch: 1,
+                sample_start: 0,
+                sample_end: 16_000,
+            },
+            spans: Vec::new(),
+        });
+        event
     }
 
     /// Re-sealing one utterance id revises its existing slot. This mirrors the
@@ -256,6 +280,31 @@ mod tests {
         );
         assert_eq!(assembly.full_text(), "pierwsze zdanie trzecie zdanie");
         assert_eq!(assembly.streaming_floor(), "pierwsze zdanie trzecie zdanie");
+    }
+
+    /// Acoustic finality vetoes a later TailPatch replay, not every typed
+    /// producer that can prove a bounded mutation.
+    #[test]
+    fn acoustic_final_rewrite_veto_is_scoped_to_tail_patch_source() {
+        let events = vec![
+            acoustic_final_ev(1, "iwo"),
+            EngineEvent::ReplaceRange {
+                utterance_id: 1,
+                start: 0,
+                end: 3,
+                text: "Ivo".into(),
+                source: LayerSource::TailPatch,
+            },
+            EngineEvent::ReplaceRange {
+                utterance_id: 1,
+                start: 0,
+                end: 3,
+                text: "Iwo".into(),
+                source: LayerSource::Lexicon,
+            },
+        ];
+        let assembly = assemble_live_from_events(&events);
+        assert_eq!(assembly.freezed, vec!["Iwo".to_string()]);
     }
 
     /// Offsets are char offsets (`EngineEvent::apply_to_committed_text`), not

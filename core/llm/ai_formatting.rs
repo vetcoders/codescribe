@@ -2163,16 +2163,34 @@ impl InlineFormattingLane {
     }
 }
 
+fn ensure_inline_responses_wire(endpoint: &str, provider: ProviderKind) -> Result<()> {
+    let format = detect_format(endpoint, provider);
+    if format != EndpointFormat::ResponsesApi {
+        anyhow::bail!(
+            "Inline formatting requires a Responses API lane; configured {} resolves to {:?}",
+            provider.display_name(),
+            format
+        );
+    }
+    Ok(())
+}
+
 /// Resolve the existing Formatting lane once for an inline dictation session.
 /// This is not a second provider/client/model namespace; it uses the same
 /// endpoint, model, credential slot and shared HTTP client as one-shot Format.
+/// The chained implementation speaks Responses JSON, so other wire families
+/// fail closed here and remain available through the one-shot formatter.
 pub(crate) fn resolve_inline_formatting_lane() -> Result<InlineFormattingLane> {
     let policy = Config::formatting_policy()?;
     let system_prompt = formatting_provider_system_prompt(false, policy)
         .context("Inline formatting requires an enabled Formatting policy prompt")?;
+    let config = Config::load();
+    let endpoint = lane_truth::endpoint(LlmMode::Formatting, &config);
+    let (provider, model) = lane_truth::formatting_identity(&config);
+    ensure_inline_responses_wire(&endpoint, provider)?;
     Ok(InlineFormattingLane {
-        endpoint: get_formatting_endpoint()?,
-        model: get_formatting_model()?,
+        endpoint,
+        model,
         api_key: get_formatting_api_key()?,
         system_prompt,
     })
@@ -2542,6 +2560,33 @@ mod tests {
     ];
     /// Env flag set in the lane-truth child process so nested tests skip re-spawn.
     const LANE_TRUTH_TEST_CHILD: &str = "CODESCRIBE_LANE_TRUTH_TEST_CHILD";
+
+    /// Inline L3 carries a Responses chain id, so it must not send that wire
+    /// shape to Ollama native chat or Anthropic Messages.
+    #[test]
+    fn inline_formatter_fails_closed_for_non_responses_wires() {
+        assert!(
+            ensure_inline_responses_wire(
+                "https://api.openai.com/v1/responses",
+                ProviderKind::OpenAiResponses,
+            )
+            .is_ok()
+        );
+        assert!(
+            ensure_inline_responses_wire(
+                "http://127.0.0.1:11434/api/chat",
+                ProviderKind::OpenAiResponses,
+            )
+            .is_err()
+        );
+        assert!(
+            ensure_inline_responses_wire(
+                "https://api.anthropic.com/v1/messages",
+                ProviderKind::AnthropicMessages,
+            )
+            .is_err()
+        );
+    }
 
     /// The stale-chain classifier keys on the provider's error code alone:
     /// `previous_response_not_found` (id minted under a rotated-away key) is

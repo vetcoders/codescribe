@@ -54,6 +54,30 @@ printf 'tampered\n' >>"$PAYLOAD/bin/bus-demux.py"
 SECOND_MANIFEST="$(shasum -a 256 "$PAYLOAD/manifest.json" | awk '{print $1}')"
 test "$FIRST_MANIFEST" = "$SECOND_MANIFEST"
 
+# Destructive destinations are proven against a disposable fake checkout. If
+# the guard regresses, only the temp tree can be replaced — never this repo.
+FAKE_ROOT="$WORKDIR/unsafe-repo"
+mkdir -p "$FAKE_ROOT/scripts" "$FAKE_ROOT/skills/codescribe"
+cp "$ROOT/scripts/build-app.sh" "$FAKE_ROOT/scripts/build-app.sh"
+cp "$ROOT/scripts/bus-demux.py" "$FAKE_ROOT/scripts/bus-demux.py"
+cp "$ROOT/skills/codescribe/SKILL.md" "$FAKE_ROOT/skills/codescribe/SKILL.md"
+if "$FAKE_ROOT/scripts/build-app.sh" --stage-agent-bridge "$FAKE_ROOT" 9.8.7 \
+  >"$WORKDIR/unsafe-root.out" 2>"$WORKDIR/unsafe-root.err"; then
+  echo "repo-root staging destination was not refused" >&2
+  exit 1
+fi
+grep -q "refusing unsafe agent bridge destination" "$WORKDIR/unsafe-root.err"
+test -f "$FAKE_ROOT/skills/codescribe/SKILL.md"
+
+ln -s "$FAKE_ROOT/scripts/bus-demux.py" "$FAKE_ROOT/skills/codescribe/linked-helper.py"
+if "$FAKE_ROOT/scripts/build-app.sh" \
+  --stage-agent-bridge "$WORKDIR/symlink-payload" 9.8.7 \
+  >"$WORKDIR/symlink.out" 2>"$WORKDIR/symlink.err"; then
+  echo "symlinked bridge source was not refused" >&2
+  exit 1
+fi
+grep -q "source may not contain symlinks" "$WORKDIR/symlink.err"
+
 # The packaged helper runs after leaving the checkout: its runtime path has no
 # dependency on repository-relative imports or files.
 BUS="$WORKDIR/transcript-events.jsonl"

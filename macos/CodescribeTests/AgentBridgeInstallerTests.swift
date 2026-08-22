@@ -23,7 +23,16 @@ final class AgentBridgeInstallerTests: XCTestCase {
   func testInstallIsExplicitAtomicIdempotentAndSupportsIndependentClients() throws {
     let payload = try makePayload()
     let home = scratch.appendingPathComponent("home", isDirectory: true)
-    let installer = RealAgentBridgeInstaller(resourceRoot: payload, homeDirectory: home)
+    let bundledHelper = payload.appendingPathComponent("bin/bus-demux.py")
+    try FileManager.default.setAttributes(
+      [.posixPermissions: 0o600],
+      ofItemAtPath: bundledHelper.path
+    )
+    let installer = RealAgentBridgeInstaller(
+      resourceRoot: payload,
+      homeDirectory: home,
+      environment: [:]
+    )
 
     XCTAssertThrowsError(try installer.install(selectedClients: []))
     XCTAssertFalse(
@@ -73,7 +82,11 @@ final class AgentBridgeInstallerTests: XCTestCase {
     try FileManager.default.createDirectory(at: destination, withIntermediateDirectories: true)
     let foreign = destination.appendingPathComponent("FOREIGN.txt")
     try Data("owned by operator\n".utf8).write(to: foreign)
-    let installer = RealAgentBridgeInstaller(resourceRoot: payload, homeDirectory: home)
+    let installer = RealAgentBridgeInstaller(
+      resourceRoot: payload,
+      homeDirectory: home,
+      environment: [:]
+    )
 
     XCTAssertThrowsError(try installer.install(selectedClients: [.codex])) { error in
       XCTAssertTrue(
@@ -92,7 +105,11 @@ final class AgentBridgeInstallerTests: XCTestCase {
   func testDeselectionRefusesFolderWhoseManagedMarkerWasReplaced() throws {
     let payload = try makePayload()
     let home = scratch.appendingPathComponent("marker-home", isDirectory: true)
-    let installer = RealAgentBridgeInstaller(resourceRoot: payload, homeDirectory: home)
+    let installer = RealAgentBridgeInstaller(
+      resourceRoot: payload,
+      homeDirectory: home,
+      environment: [:]
+    )
     _ = try installer.install(selectedClients: [.codex, .claudeCode])
     let codexSkill = home.appendingPathComponent(".codex/skills/codescribe", isDirectory: true)
     let marker = codexSkill.appendingPathComponent(".codescribe-managed.json")
@@ -112,12 +129,43 @@ final class AgentBridgeInstallerTests: XCTestCase {
     let helper = payload.appendingPathComponent("bin/bus-demux.py")
     try Data("tamper\n".utf8).append(to: helper)
     let home = scratch.appendingPathComponent("tamper-home", isDirectory: true)
-    let installer = RealAgentBridgeInstaller(resourceRoot: payload, homeDirectory: home)
+    let installer = RealAgentBridgeInstaller(
+      resourceRoot: payload,
+      homeDirectory: home,
+      environment: [:]
+    )
 
     XCTAssertThrowsError(try installer.install(selectedClients: [.codex])) { error in
       XCTAssertTrue(error.localizedDescription.contains("checksum"), error.localizedDescription)
     }
     XCTAssertFalse(FileManager.default.fileExists(atPath: home.path))
+  }
+
+  func testBridgeHomeOverrideMatchesTheInstalledFollowerResolver() throws {
+    let payload = try makePayload()
+    let home = scratch.appendingPathComponent("override-home", isDirectory: true)
+    let override = scratch.appendingPathComponent("custom-agent-bridge", isDirectory: true)
+    let installer = RealAgentBridgeInstaller(
+      resourceRoot: payload,
+      homeDirectory: home,
+      environment: ["CODESCRIBE_AGENT_BRIDGE_HOME": override.path]
+    )
+
+    _ = try installer.install(selectedClients: [.codex])
+
+    XCTAssertTrue(
+      FileManager.default.fileExists(atPath: override.appendingPathComponent("receipt.json").path)
+    )
+    XCTAssertTrue(
+      FileManager.default.fileExists(
+        atPath: override.appendingPathComponent("runtime/bin/bus-demux.py").path
+      )
+    )
+    XCTAssertFalse(
+      FileManager.default.fileExists(
+        atPath: home.appendingPathComponent(".codescribe/agent-bridge/receipt.json").path
+      )
+    )
   }
 
   func testOnboardingUsesPolishCopyAndNeverInstallsUntilSelectionAndClick() {

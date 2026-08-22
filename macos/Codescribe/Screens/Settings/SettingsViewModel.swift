@@ -78,6 +78,13 @@ enum LocalWhisperRuntimeState: Equatable {
 
 let localWhisperLivePatchingRuntimeValue = "phase1"
 
+func wholeSessionFinalPassSubtitle(asrModeId: String) -> String {
+  if asrModeId == "local_power" {
+    return "Off. This controls only a full-file decode after Stop; live Whisper refinement continues during the take."
+  }
+  return "Off. No full-file decode runs after Stop. Apple live remains the only transcription lane for this mode."
+}
+
 func resolveLocalWhisperRuntimeState(
   asrModeId: String,
   sttEngineId: String,

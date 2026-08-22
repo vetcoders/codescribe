@@ -1790,7 +1790,7 @@ final class OverlayState: ObservableObject {
     if mode == .formatted {
       let base = usableAuthoritativeFinalText ?? rawLiveText
       let rendered = insertingContextMarkers(into: base)
-      if formattedText != rendered { formattedText = rendered }
+      if formattedText != rendered { replaceFormattedTranscriptProgrammatically(rendered) }
     }
   }
 
@@ -1854,12 +1854,12 @@ final class OverlayState: ObservableObject {
     formatFailureStatus = nil
     let rendered = insertingContextMarkers(into: text)
     if mode == .formatted, formattedText != rendered {
-      formattedText = rendered
+      replaceFormattedTranscriptProgrammatically(rendered)
       armAutoFormatRevertSlot(shown: rendered)
     } else if mode == .noSpeech {
       // Real text arrived after we finalised to no-speech (empty at the
       // time): recover it as the normal FINAL rather than losing it.
-      formattedText = rendered
+      replaceFormattedTranscriptProgrammatically(rendered)
       mode = .formatted
       restartAutoHideCountdown()
     }
@@ -1906,11 +1906,11 @@ final class OverlayState: ObservableObject {
       // When `on_no_speech` did not fire (empty final without an explicit
       // event) we treat the empty finalize as no-speech — an honest
       // approximation, since the user has nothing to act on either way.
-      if formattedText != "" { formattedText = "" }
+      if formattedText != "" { replaceFormattedTranscriptProgrammatically("") }
       noSpeechNotice = pendingNoSpeechMessage ?? OverlayState.defaultNoSpeechNotice
       mode = .noSpeech
     } else {
-      if formattedText != resolved { formattedText = resolved }
+      if formattedText != resolved { replaceFormattedTranscriptProgrammatically(resolved) }
       if deliveredText.isEmpty { deliveredText = resolved }
       qualityFormattingLevel = autoFormatLevel
       armAutoFormatRevertSlot(shown: resolved)
@@ -1985,6 +1985,7 @@ final class OverlayState: ObservableObject {
   }
 
   private func markTranscriptActivity() {
+    manualHumanEditPending = false
     cancelWarmupWatchdog()
     warmingUp = false
     audioReady = true
@@ -2044,7 +2045,7 @@ final class OverlayState: ObservableObject {
         usableAuthoritativeFinalText
         .map { insertingContextMarkers(into: $0) }
         ?? liveText
-      if formattedText != resolved { formattedText = resolved }
+      if formattedText != resolved { replaceFormattedTranscriptProgrammatically(resolved) }
     }
   }
 

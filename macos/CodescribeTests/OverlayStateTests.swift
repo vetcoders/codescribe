@@ -840,6 +840,54 @@ final class OverlayStateTests: XCTestCase {
     )
   }
 
+  func testEveryMachineTranscriptReducerPathClearsManualEditProvenance() {
+    let lateFinal = OverlayState()
+    lateFinal.handleRecordingPreparing()
+    lateFinal.handleRecordingStarted()
+    lateFinal.applyFinal(utteranceId: 1, "streaming final")
+    lateFinal.finishControllerRecording()
+    lateFinal.userEditedTranscript("manual text before late product seal")
+    lateFinal.applyFinalTranscript("authoritative product seal")
+    XCTAssertNil(
+      lateFinal.consumeManualEditProvenanceForQuality(isEdited: true),
+      "a late authoritative final is machine provenance"
+    )
+
+    let contextMarker = OverlayState()
+    contextMarker.handleRecordingPreparing()
+    contextMarker.handleRecordingStarted()
+    contextMarker.applyPreview("alpha beta")
+    contextMarker.mode = .formatted
+    contextMarker.userEditedTranscript("manual text before context marker")
+    contextMarker.applyContextMarker(position: 5, marker: "{selection_1}")
+    XCTAssertNil(
+      contextMarker.consumeManualEditProvenanceForQuality(isEdited: true),
+      "context-marker rendering is machine provenance"
+    )
+
+    let finalizer = OverlayState()
+    finalizer.handleRecordingPreparing()
+    finalizer.handleRecordingStarted()
+    finalizer.applyPreview("captured words")
+    finalizer.userEditedTranscript("manual text before finalization")
+    finalizer.finishControllerRecording()
+    XCTAssertNil(
+      finalizer.consumeManualEditProvenanceForQuality(isEdited: true),
+      "controller finalization is machine provenance"
+    )
+
+    let liveRefresh = OverlayState()
+    liveRefresh.handleRecordingPreparing()
+    liveRefresh.handleRecordingStarted()
+    liveRefresh.mode = .formatted
+    liveRefresh.userEditedTranscript("manual text before live refresh")
+    liveRefresh.applyPreview("fresh machine preview")
+    XCTAssertNil(
+      liveRefresh.consumeManualEditProvenanceForQuality(isEdited: true),
+      "live reducer refresh is machine provenance"
+    )
+  }
+
   func testWindowDragReanchorsAutoHide() {
     let clock = OverlayStateTestClock()
     let state = makeFinalizedState(clock: clock)

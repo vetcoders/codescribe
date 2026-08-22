@@ -17,6 +17,8 @@
 //! ranges depending on which consumer was asked. [`SileroIngress::observe`] is
 //! the single decision point that derives both from one observation.
 
+use std::collections::VecDeque;
+
 use crate::audio::chunker::{SpeechEvent, SpeechSession, VadBoundaryEvidence, VadBoundaryKind};
 use crate::pipeline::contracts::{
     NonSpeechEvidence, SidebandEvidence, SidebandEvidenceKind, SidebandProvenance,
@@ -37,6 +39,11 @@ pub const LONG_SILENCE_FENCE_SECS: f32 = 0.55;
 
 /// Default left-audio pad when [`FusionContextMode::LeftAudioPad`] is armed.
 pub const DEFAULT_LEFT_PAD_SECS: f32 = 0.40;
+
+/// Maximum sideband facts retained for later span attachment. Live consumers
+/// receive every freshly emitted fact; only the retrospective lookup window is
+/// bounded.
+const MAX_RETAINED_SIDEBAND_EVIDENCE: usize = 512;
 
 /// Whether the W13-3B fusion lane is armed. Default OFF pending the operator's
 /// live A/B decision required by the original engine roadmap.
@@ -185,7 +192,7 @@ pub struct SileroIngress {
     ledger: UtteranceLedger,
     next_sideband_sequence: u64,
     last_speech_end: Option<u64>,
-    sideband: Vec<SidebandEvidence>,
+    sideband: VecDeque<SidebandEvidence>,
 }
 
 impl SileroIngress {
@@ -198,7 +205,7 @@ impl SileroIngress {
             ledger: UtteranceLedger::new(),
             next_sideband_sequence: 0,
             last_speech_end: None,
-            sideband: Vec::new(),
+            sideband: VecDeque::new(),
         }
     }
 
@@ -310,6 +317,9 @@ impl SileroIngress {
             }
         }
         self.sideband.extend(emitted.iter().cloned());
+        while self.sideband.len() > MAX_RETAINED_SIDEBAND_EVIDENCE {
+            self.sideband.pop_front();
+        }
         emitted
     }
 
@@ -884,6 +894,32 @@ mod tests {
         });
         assert_eq!(attached, vec![resumed[0].clone()]);
         assert_eq!(attached[0].provenance, SidebandProvenance::SileroVad);
+    }
+
+    /// Long hands-free takes cannot retain one sideband row per speech edge
+    /// forever; sequence identity remains global while lookup memory is
+    /// capped to the newest evidence.
+    #[test]
+    fn retained_sideband_evidence_is_bounded_without_reusing_sequence_ids() {
+        let mut ingress = SileroIngress::new(16_000, "long", 1);
+        for index in 0..(MAX_RETAINED_SIDEBAND_EVIDENCE + 20) {
+            let emitted = ingress.observe_boundaries(&[VadBoundaryEvidence {
+                kind: VadBoundaryKind::SpeechEnd,
+                sample: index as u64,
+                speech_probability: 0.1,
+            }]);
+            assert_eq!(emitted.len(), 1);
+        }
+
+        assert_eq!(ingress.sideband.len(), MAX_RETAINED_SIDEBAND_EVIDENCE);
+        assert_eq!(
+            ingress.sideband.front().expect("retained first").sequence,
+            21
+        );
+        assert_eq!(
+            ingress.sideband.back().expect("retained last").sequence,
+            (MAX_RETAINED_SIDEBAND_EVIDENCE + 20) as u64
+        );
     }
 
     /// Enclosure, not overlap: a span may only adopt a Silero range that

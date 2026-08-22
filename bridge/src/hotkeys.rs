@@ -4,8 +4,10 @@
 //! `CGEventTap` listener used by the legacy daemon and dispatches emitted
 //! `HotkeyEvent`s into the existing `RecordingController` state machine.
 
+use std::future::Future;
 use std::sync::atomic::{AtomicBool, AtomicU8, Ordering};
 use std::sync::{Arc, Mutex, OnceLock, RwLock};
+use std::time::Duration;
 
 use codescribe::controller::{HotkeyAction, HotkeyInput, HotkeyType, RecordingController, State};
 use codescribe::os::hold_badge::BadgeMode;
@@ -56,6 +58,10 @@ const CAPTURE_OWNER_CONTROLLER: u8 = 1;
 /// Process-wide start gate. Every Dictation/Agent/Assistive gesture enters the
 /// same controller, so this protects one capture rather than mediating lanes.
 static CAPTURE_OWNER: AtomicU8 = AtomicU8::new(CAPTURE_OWNER_NONE);
+/// A quit request must not wait forever for provider/network work hidden in the
+/// recording stop path. The controller still owns best-effort cleanup after
+/// this bounded application-level wait expires.
+const RECORDING_SHUTDOWN_TIMEOUT: Duration = Duration::from_secs(10);
 
 /// Whether this event would begin a NEW controller capture session, and therefore
 /// has to claim capture ownership first. Deliberately narrow: only the two
@@ -207,6 +213,20 @@ fn release_capture_ownership_for_shutdown() {
     CAPTURE_OWNER.store(CAPTURE_OWNER_NONE, Ordering::SeqCst);
 }
 
+async fn await_recording_shutdown<F>(future: F, timeout: Duration) -> Result<(), CsError>
+where
+    F: Future<Output = Result<(), CsError>>,
+{
+    tokio::time::timeout(timeout, future)
+        .await
+        .map_err(|_| CsError::Recording {
+            msg: format!(
+                "application shutdown timed out after {:.1}s while stopping recording",
+                timeout.as_secs_f64()
+            ),
+        })?
+}
+
 /// Stop accepting gestures, finish an active microphone take on the app-owned
 /// runtime, and drop the process-global controller slot before worker teardown.
 pub(crate) fn shutdown_application_controller() -> Result<(), CsError> {
@@ -216,20 +236,23 @@ pub(crate) fn shutdown_application_controller() -> Result<(), CsError> {
         .unwrap_or_else(|e| e.into_inner())
         .take();
     let stop_result = match controller {
-        Some(controller) => application_runtime::block_on(async move {
-            if matches!(
-                controller.current_state().await,
-                State::RecHold | State::RecToggle | State::Conversation
-            ) {
-                controller
-                    .stop_recording_from_external_surface()
-                    .await
-                    .map_err(|error| CsError::Recording {
-                        msg: format!("application shutdown could not stop recording: {error}"),
-                    })?;
-            }
-            Ok(())
-        })
+        Some(controller) => application_runtime::block_on(await_recording_shutdown(
+            async move {
+                if matches!(
+                    controller.current_state().await,
+                    State::RecHold | State::RecToggle | State::Conversation
+                ) {
+                    controller
+                        .stop_recording_from_external_surface()
+                        .await
+                        .map_err(|error| CsError::Recording {
+                            msg: format!("application shutdown could not stop recording: {error}"),
+                        })?;
+                }
+                Ok(())
+            },
+            RECORDING_SHUTDOWN_TIMEOUT,
+        ))
         .and_then(|result| result),
         None => Ok(()),
     };
@@ -589,6 +612,32 @@ impl CodescribeHotkeys {
             spawn_delivery_forwarder(handle.clone());
             let controller_store = shared_controller();
 
+            // One consumer owns recording gesture order. Spawning one task per
+            // event lets a quick HoldUp observe Idle before HoldDown has armed
+            // the controller, then leaves the later Down without its release.
+            // The unbounded sender is appropriate here: the native hotkey
+            // channel is already unbounded and this queue holds tiny enums,
+            // while the single consumer gives Down/Up FIFO semantics.
+            let (recording_tx, mut recording_rx) =
+                tokio::sync::mpsc::unbounded_channel::<HotkeyEvent>();
+            let recording_controller_store = Arc::clone(&controller_store);
+            let recording_controller_handle = handle.clone();
+            handle.spawn(async move {
+                while let Some(recording_event) = recording_rx.recv().await {
+                    let controller = ensure_controller(
+                        &recording_controller_store,
+                        recording_controller_handle.clone(),
+                    );
+                    let dispatch =
+                        dispatch_recording_with_capture_gate(recording_event, controller).await;
+                    if let Err(error) = dispatch {
+                        tray_status::update_tray_status(TrayStatus::Error);
+                        notifications::notify("Codescribe", &error.to_string());
+                        tracing::error!(%error, "Hotkey event dispatch failed");
+                    }
+                }
+            });
+
             // Spawn the event-dispatch thread BEFORE bringing up the tap. It drains
             // `rx` for the lifetime of the retained sender, so it stays ready whether
             // the CGEventTap comes up now (permissions already granted) or later via
@@ -598,27 +647,18 @@ impl CodescribeHotkeys {
             // would build a live tap whose events pile up in the channel undispatched.
             std::thread::spawn(move || {
                 for event in rx {
-                    let spawn_handle = handle.clone();
-                    let controller_handle = handle.clone();
-                    let controller_store = Arc::clone(&controller_store);
+                    let recording_tx = recording_tx.clone();
                     route_hotkey_event(
                         event,
                         current_app_action_listener(),
                         move |recording_event| {
-                            spawn_handle.spawn(async move {
-                                let controller =
-                                    ensure_controller(&controller_store, controller_handle);
-                                let dispatch = dispatch_recording_with_capture_gate(
-                                    recording_event,
-                                    Arc::clone(&controller),
-                                )
-                                .await;
-                                if let Err(error) = dispatch {
-                                    tray_status::update_tray_status(TrayStatus::Error);
-                                    notifications::notify("Codescribe", &error.to_string());
-                                    eprintln!("Hotkey event error: {error}");
-                                }
-                            });
+                            if recording_tx.send(recording_event).is_err() {
+                                tray_status::update_tray_status(TrayStatus::Error);
+                                notifications::notify(
+                                    "Codescribe",
+                                    "Hotkey recording dispatcher stopped",
+                                );
+                            }
                         },
                         deliver_deferred_insert_and_notify,
                     );
@@ -1169,6 +1209,20 @@ mod application_shutdown_tests {
             CAPTURE_OWNER_NONE,
             "application shutdown must never leave microphone ownership latched"
         );
+    }
+
+    #[tokio::test]
+    async fn shutdown_recording_wait_is_bounded() {
+        let error = await_recording_shutdown(
+            std::future::pending::<Result<(), CsError>>(),
+            Duration::from_millis(5),
+        )
+        .await
+        .expect_err("pending stop must time out");
+        let CsError::Recording { msg } = error else {
+            panic!("shutdown timeout must be a recording error");
+        };
+        assert!(msg.contains("timed out"), "{msg}");
     }
 }
 

@@ -391,7 +391,12 @@ impl TranscriptBus {
     }
 
     fn log_write_error(&self, error: io::Error) {
-        tracing::warn!(%error, path = %self.path.display(), "clean transcript event write failed");
+        let file = self
+            .path
+            .file_name()
+            .and_then(|name| name.to_str())
+            .unwrap_or("transcript-events.jsonl");
+        tracing::warn!(%error, file, "clean transcript event write failed");
     }
 }
 
@@ -561,6 +566,7 @@ fn aggregate_seal_clock(
                         capture_epoch = None;
                         sample_start = None;
                         sample_end = None;
+                        words.clear();
                         coverage = failed_coverage("multiple_capture_epochs");
                     }
                     Some(_) => {}
@@ -579,9 +585,17 @@ fn aggregate_seal_clock(
         }
         segments.extend(draft.segments.iter().cloned());
         let (draft_words, draft_coverage) = word_spans_from_draft(draft, energy_lookup);
-        words.extend(draft_words);
-        if !draft_coverage.passed && coverage.passed {
-            coverage = draft_coverage;
+        if coverage.passed {
+            if draft_coverage.passed {
+                words.extend(draft_words);
+            } else {
+                // Coverage is aggregate authority: one failed draft invalidates
+                // every accumulated lexical anchor for the seal. Keeping the
+                // earlier words beside a failed receipt would publish a
+                // plausible-looking but incomplete transcript clock.
+                words.clear();
+                coverage = draft_coverage;
+            }
         }
     }
     if drafts.is_empty() {
@@ -724,6 +738,42 @@ mod tests {
         assert!(
             spans.is_empty(),
             "all or nothing: a half-verified anchor set is worse than none"
+        );
+    }
+
+    #[test]
+    fn one_failed_draft_clears_all_aggregate_word_spans() {
+        let covered = TranscriptDraft {
+            utterance_id: 1,
+            text: "pierwszy fragment".to_string(),
+            start_seconds: 0.0,
+            end_seconds: 1.0,
+            segments: Vec::new(),
+            acoustic: Some(acoustic(
+                "s",
+                1,
+                0,
+                16_000,
+                vec![("pierwszy fragment", 0, 16_000, AcousticSpanGrain::Phrase)],
+            )),
+        };
+        let uncovered = TranscriptDraft {
+            utterance_id: 2,
+            text: "drugi fragment".to_string(),
+            start_seconds: 1.0,
+            end_seconds: 2.0,
+            segments: Vec::new(),
+            acoustic: Some(acoustic("s", 1, 16_000, 32_000, Vec::new())),
+        };
+        let drafts = BTreeMap::from([(1, covered), (2, uncovered)]);
+
+        let seal = aggregate_seal_clock(&drafts, Some(16_000), voiced_energy);
+
+        assert!(!seal.coverage.passed);
+        assert_eq!(seal.coverage.code, "missing_lexical_coverage");
+        assert!(
+            seal.words.is_empty(),
+            "a failed aggregate receipt cannot leave earlier words publishable"
         );
     }
 

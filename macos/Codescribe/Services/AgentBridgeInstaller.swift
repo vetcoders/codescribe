@@ -1,5 +1,6 @@
 import CryptoKit
 import Foundation
+import OSLog
 
 /// Agent clients that can consume the installed Codescribe foundation skill.
 /// The raw values are receipt/API tokens and must remain stable.
@@ -139,6 +140,10 @@ final class RealAgentBridgeInstaller: AgentBridgeInstalling {
   static let bundleSchema = "codescribe.agent-bridge.bundle.v1"
   static let receiptSchema = "codescribe.agent-bridge.receipt.v1"
   static let markerSchema = "codescribe.agent-bridge.managed.v1"
+  private static let logger = Logger(
+    subsystem: Bundle.main.bundleIdentifier ?? "codescribe",
+    category: "agent-bridge-installer"
+  )
 
   private let resourceRoot: URL?
   private let homeDirectory: URL
@@ -151,14 +156,25 @@ final class RealAgentBridgeInstaller: AgentBridgeInstalling {
     resourceRoot: URL? = Bundle.main.resourceURL?
       .appendingPathComponent("agent-bridge", isDirectory: true),
     homeDirectory: URL = FileManager.default.homeDirectoryForCurrentUser,
-    fileManager: FileManager = .default
+    fileManager: FileManager = .default,
+    environment: [String: String] = ProcessInfo.processInfo.environment
   ) {
     self.resourceRoot = resourceRoot
     self.homeDirectory = homeDirectory
     self.fileManager = fileManager
+    let override = environment["CODESCRIBE_AGENT_BRIDGE_HOME"]?
+      .trimmingCharacters(in: .whitespacesAndNewlines)
     self.bridgeRoot =
-      homeDirectory
-      .appendingPathComponent(".codescribe/agent-bridge", isDirectory: true)
+      override.flatMap { value in
+        value.isEmpty
+          ? nil
+          : URL(
+            fileURLWithPath: (value as NSString).expandingTildeInPath,
+            isDirectory: true
+          ).standardizedFileURL
+      }
+      ?? homeDirectory
+        .appendingPathComponent(".codescribe/agent-bridge", isDirectory: true)
     self.runtimeDirectory = bridgeRoot.appendingPathComponent("runtime", isDirectory: true)
     self.receiptURL = bridgeRoot.appendingPathComponent("receipt.json")
   }
@@ -168,6 +184,9 @@ final class RealAgentBridgeInstaller: AgentBridgeInstalling {
     do {
       manifest = try verifiedManifest()
     } catch {
+      Self.logger.error(
+        "Agent bridge payload verification failed; installation status is unavailable (error type: \(String(describing: type(of: error)), privacy: .public))"
+      )
       return .unavailable
     }
 
@@ -252,6 +271,7 @@ final class RealAgentBridgeInstaller: AgentBridgeInstalling {
 
     do {
       try fileManager.copyItem(at: resourceRoot, to: runtimeStage)
+      try applyManifestModes(manifest.files, root: runtimeStage)
       let stagedSkill = runtimeStage.appendingPathComponent(manifest.skill, isDirectory: true)
       for client in selected {
         let destination = client.skillDirectory(home: homeDirectory)
@@ -262,6 +282,11 @@ final class RealAgentBridgeInstaller: AgentBridgeInstalling {
           isDirectory: true
         )
         try fileManager.copyItem(at: stagedSkill, to: stage)
+        try applyManifestModes(
+          manifest.files,
+          root: stage,
+          strippingPrefix: manifest.skill + "/"
+        )
         let marker = AgentBridgeManagedMarker(
           schema: Self.markerSchema,
           managedID: managedID,
@@ -356,6 +381,9 @@ final class RealAgentBridgeInstaller: AgentBridgeInstalling {
       guard isSafeRelativePath(entry.path), listed.insert(entry.path).inserted else {
         throw AgentBridgeInstallationError.invalidManifest("unsafe or duplicate path \(entry.path)")
       }
+      guard let mode = UInt16(entry.mode, radix: 8), mode <= 0o777 else {
+        throw AgentBridgeInstallationError.invalidManifest("invalid mode for \(entry.path)")
+      }
       let file = resourceRoot.appendingPathComponent(entry.path)
       var isDirectory: ObjCBool = false
       guard fileManager.fileExists(atPath: file.path, isDirectory: &isDirectory),
@@ -439,6 +467,29 @@ final class RealAgentBridgeInstaller: AgentBridgeInstalling {
       throw AgentBridgeInstallationError.conflict(
         path: destination.path,
         reason: "the Codescribe-managed marker is missing or does not match the receipt"
+      )
+    }
+  }
+
+  private func applyManifestModes(
+    _ files: [AgentBridgeManifestFile],
+    root: URL,
+    strippingPrefix prefix: String? = nil
+  ) throws {
+    for entry in files {
+      let relative: String
+      if let prefix {
+        guard entry.path.hasPrefix(prefix) else { continue }
+        relative = String(entry.path.dropFirst(prefix.count))
+      } else {
+        relative = entry.path
+      }
+      guard !relative.isEmpty, let mode = UInt16(entry.mode, radix: 8), mode <= 0o777 else {
+        throw AgentBridgeInstallationError.invalidManifest("invalid mode for \(entry.path)")
+      }
+      try fileManager.setAttributes(
+        [.posixPermissions: NSNumber(value: mode)],
+        ofItemAtPath: root.appendingPathComponent(relative).path
       )
     }
   }

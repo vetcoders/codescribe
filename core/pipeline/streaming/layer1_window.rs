@@ -220,10 +220,10 @@ fn build_flush(pieces: Vec<CoalescedPiece>, neighbour_context: String) -> Coales
 
 /// Map concat-space `ReplaceRange` events onto utterance-local offsets.
 ///
-/// A patch that stays inside one span is remapped 1:1. A patch that crosses
-/// a join lands on the first overlapped utterance from the local start to
-/// that utterance's end — later fragments in the same cross are left intact
-/// so we never wipe a committed span we cannot address cleanly.
+/// A patch that stays inside one span is remapped 1:1. A patch that crosses a
+/// join is refused: one provider string cannot be split safely across two
+/// independently owned utterances, and pouring all of it into the remainder
+/// of the first utterance invents text at the wrong acoustic identity.
 pub fn remap_concat_events(events: Vec<EngineEvent>, spans: &[ConcatSpan]) -> Vec<EngineEvent> {
     if spans.is_empty() {
         return events;
@@ -283,12 +283,11 @@ fn remap_range(
     let first = span_owning(start, spans)?;
     let last_pos = end.saturating_sub(1).max(start);
     let last = span_owning(last_pos, spans).unwrap_or(first);
+    if first.utterance_id != last.utterance_id {
+        return None;
+    }
     let local_start = start.saturating_sub(first.start);
-    let local_end = if first.utterance_id == last.utterance_id {
-        end.saturating_sub(first.start).min(first.end - first.start)
-    } else {
-        first.end - first.start
-    };
+    let local_end = end.saturating_sub(first.start).min(first.end - first.start);
     Some(EngineEvent::ReplaceRange {
         utterance_id: first.utterance_id,
         start: local_start,
@@ -519,7 +518,7 @@ mod tests {
     }
 
     #[test]
-    fn crossing_patch_lands_on_the_first_span() {
+    fn crossing_patch_is_refused_instead_of_rewritten_into_the_first_span() {
         let spans = vec![
             ConcatSpan {
                 utterance_id: 1,
@@ -540,21 +539,10 @@ mod tests {
             source: LayerSource::TailPatch,
         }];
         let remapped = remap_concat_events(events, &spans);
-        match &remapped[0] {
-            EngineEvent::ReplaceRange {
-                utterance_id,
-                start,
-                end,
-                text,
-                ..
-            } => {
-                assert_eq!(*utterance_id, 1);
-                assert_eq!(*start, 2);
-                assert_eq!(*end, 4);
-                assert_eq!(text, "pełne zdanie");
-            }
-            other => panic!("expected first-span landing, got {other:?}"),
-        }
+        assert!(
+            remapped.is_empty(),
+            "a cross-owner rewrite has no safe local landing: {remapped:?}"
+        );
     }
 }
 

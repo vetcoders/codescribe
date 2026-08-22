@@ -100,16 +100,25 @@ python3 ~/.codescribe/agent-bridge/runtime/bin/bus-demux.py \
 ```
 
 Preserve the running tool handle. The first JSON line is an attach receipt;
-retain its `lease_id` with the provider session. 3. In **this chat**, ask the human what they want to call you. The name is
-yours to want; they have the respect to ask. Darek is not a costume.
-Bus stem is enough (`james`). Long id: `james.codescribe`. 4. Greet once: you hear them; you have that name. 5. Bind the same provider session:
+retain its `lease_id` with the provider session.
+
+3. In **this chat**, ask the human what they want to call you. The name is
+   yours to want; they have the respect to ask. Darek is not a costume.
+   Bus stem is enough (`james`). Long id: `james.codescribe`.
+4. Greet once: you hear them; you have that name.
+5. Stop the greeting follower and wait for its process/tool handle to close.
+   Then bind the same provider session (and optionally the attach receipt's
+   explicit `--lease <lease-id>`). This is a reattach from its durable cursor,
+   not a second follower:
 
 ```bash
 python3 ~/.codescribe/agent-bridge/runtime/bin/bus-demux.py \
-  --provider codex --session <provider-session-id> --name <stem> --drafts --follow
+  --provider codex --session <provider-session-id> --lease <lease-id> \
+  --name <stem> --drafts --follow
 ```
 
-Unnamed agents do not pass (exit 2).
+The old handle must be closed before this command; the lease lock correctly
+refuses two live followers. Unnamed agents do not pass (exit 2).
 
 ## Workflow
 

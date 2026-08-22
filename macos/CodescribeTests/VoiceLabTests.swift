@@ -306,7 +306,7 @@ final class VoiceLabTests: XCTestCase {
         taughtFromCorrections: 0,
         totalEntries: 0
       ),
-      "10 corrections on disk · dictionary empty — press Teach to mine rules from the store."
+      "10 corrections on disk · dictionary empty — Teach explicitly promotes eligible store pairs now."
     )
     XCTAssertFalse(
       dictionaryHeadline(correctionsRecorded: 1, rulesLearned: 0)

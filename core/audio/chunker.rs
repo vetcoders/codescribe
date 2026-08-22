@@ -168,6 +168,11 @@ pub(crate) enum VadBoundaryKind {
     SpeechEnd,
 }
 
+/// Hard memory bound for sideband observations when a caller does not drain
+/// them (the legacy VAD/scheduler path). Fusion drains every callback, so this
+/// cap is a safety net rather than normal backpressure.
+const MAX_PENDING_VAD_BOUNDARIES: usize = 512;
+
 // ═══════════════════════════════════════════════════════════
 // SpeechSession
 // ═══════════════════════════════════════════════════════════
@@ -613,7 +618,7 @@ impl SpeechSession {
 
             if let Some(start_sample) = start_event {
                 let raw_boundary = self.vad_to_raw_index(start_sample);
-                self.vad_boundaries.push_back(VadBoundaryEvidence {
+                self.record_vad_boundary(VadBoundaryEvidence {
                     kind: VadBoundaryKind::SpeechStart,
                     sample: raw_boundary as u64,
                     speech_probability: speech_prob,
@@ -627,7 +632,7 @@ impl SpeechSession {
 
             if let Some(end_sample) = end_event {
                 let raw_boundary = self.vad_to_raw_index(end_sample);
-                self.vad_boundaries.push_back(VadBoundaryEvidence {
+                self.record_vad_boundary(VadBoundaryEvidence {
                     kind: VadBoundaryKind::SpeechEnd,
                     sample: raw_boundary as u64,
                     speech_probability: speech_prob,
@@ -781,6 +786,13 @@ impl SpeechSession {
     pub(crate) fn open_segment_raw_range(&self) -> Option<(u64, u64)> {
         let start = self.segment_start?;
         Some((start as u64, self.raw_cursor as u64))
+    }
+
+    fn record_vad_boundary(&mut self, boundary: VadBoundaryEvidence) {
+        if self.vad_boundaries.len() >= MAX_PENDING_VAD_BOUNDARIES {
+            self.vad_boundaries.pop_front();
+        }
+        self.vad_boundaries.push_back(boundary);
     }
 
     /// Drain exact Silero start/end observations in production order.
@@ -1693,6 +1705,22 @@ mod tests {
         assert_eq!(drained[1].kind, VadBoundaryKind::SpeechEnd);
         assert_eq!(drained[1].sample, 16_384);
         assert!(session.take_vad_boundaries().is_empty());
+    }
+
+    #[test]
+    fn vad_boundary_evidence_is_memory_bounded_without_a_consumer() {
+        let mut session = SpeechSession::new_utterance(16_000);
+        for sample in 0..(MAX_PENDING_VAD_BOUNDARIES as u64 + 37) {
+            session.record_vad_boundary(VadBoundaryEvidence {
+                kind: VadBoundaryKind::SpeechStart,
+                sample,
+                speech_probability: 0.9,
+            });
+        }
+
+        let drained = session.take_vad_boundaries();
+        assert_eq!(drained.len(), MAX_PENDING_VAD_BOUNDARIES);
+        assert_eq!(drained.first().map(|edge| edge.sample), Some(37));
     }
 
     /// RAII guard that restores an env var on drop.

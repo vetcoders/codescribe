@@ -950,11 +950,12 @@ async fn compose_and_close_with(
         ));
     };
     if ordered.is_empty() {
-        return Some(raw_l2_result(
-            full_text,
-            "no_stable_spans",
-            snapshot.generation,
-        ));
+        info!(
+            generation = snapshot.generation,
+            session_id = snapshot.session_id,
+            "inline_format_fallback reason=empty_or_stale_session"
+        );
+        return None;
     }
     let validated = validate_ledger_against_text(&ordered, full_text);
     if !validated.complete {
@@ -966,6 +967,14 @@ async fn compose_and_close_with(
             flush_wait_ms,
             "inline_format_fallback reason=ledger_mismatch"
         );
+        if validated.spans_validated == 0 {
+            // The public stop seam does not carry a session id. Zero acoustic
+            // overlap is therefore the only safe proof that this process-global
+            // ledger belongs to an older/foreign capture. Consume it and yield
+            // to the normal one-shot formatter instead of returning raw L2 for
+            // an unrelated session.
+            return None;
+        }
         return Some(raw_l2_result(
             full_text,
             "ledger_mismatch",
@@ -1878,7 +1887,7 @@ mod tests {
         /// classic whole-document formatter on the stop path.
         #[tokio::test]
         #[serial_test::serial]
-        async fn active_ledger_mismatch_returns_complete_l2_without_full_request() {
+        async fn active_ledger_with_zero_overlap_yields_to_one_shot() {
             let shared = private_store("pl", "http://127.0.0.1:1");
             assert!(register_stable_span(
                 &shared,
@@ -1894,14 +1903,46 @@ mod tests {
             let (tx, rx) = mpsc::channel(1);
             let worker = tokio::spawn(worker_loop(rx, Arc::clone(&shared)));
             let l2 = "kontroler ma inny kompletny tekst warstwy drugiej";
-            let result = compose_and_close_with(&tx, &shared, l2, Some("pl"))
-                .await
-                .expect("active session always returns a fail-open result");
+            let result = compose_and_close_with(&tx, &shared, l2, Some("pl")).await;
             drop(tx);
             worker.await.expect("worker exits cleanly");
 
-            assert_eq!(result.text, l2);
-            assert_eq!(result.status, AiFormatStatus::Failed);
+            assert!(
+                result.is_none(),
+                "zero overlap proves this ledger belongs to a foreign capture"
+            );
+        }
+
+        #[tokio::test]
+        #[serial_test::serial]
+        async fn real_global_store_yields_for_empty_and_foreign_sessions() {
+            let _enabled = EnvGuard::set(INLINE_FORMAT_ENV, "1");
+
+            begin_session("empty-stale-session", Some("pl"));
+            let tx = SENDER.get().expect("global worker initialized").clone();
+            assert!(
+                compose_and_close_with(&tx, store(), "fresh one-shot text", Some("pl"))
+                    .await
+                    .is_none(),
+                "an empty stale session must not capture the next one-shot request"
+            );
+
+            begin_session("foreign-stale-session", Some("pl"));
+            let generation = GENERATION.load(Ordering::SeqCst);
+            let mut foreign = span(1, "words from a different capture");
+            foreign.session_id = "foreign-stale-session".to_string();
+            let _ = register_stable_span(store(), generation, foreign);
+            assert!(
+                compose_and_close_with(
+                    &tx,
+                    store(),
+                    "completely unrelated fresh document",
+                    Some("pl")
+                )
+                .await
+                .is_none(),
+                "zero acoustic/text overlap proves the global ledger is foreign"
+            );
         }
     }
 }

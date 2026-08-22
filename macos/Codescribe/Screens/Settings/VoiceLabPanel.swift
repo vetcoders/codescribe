@@ -167,10 +167,10 @@ func dictionarySubtitle(
   }
   if correctionsRecorded > 0 {
     return
-      "\(correctionsRecorded) corrections on disk · dictionary empty — press Teach to mine rules from the store."
+      "\(correctionsRecorded) corrections on disk · dictionary empty — Teach explicitly promotes eligible store pairs now."
   }
   return
-    "Correction history and custom dictionary. Teach promotes corrections + proposed → live lexicon."
+    "Correction history and custom dictionary. Teach is explicit bulk promotion; automatic learning still needs 3 matching human corrections."
 }
 
 /// NSSound plays independently of the view that started it — playback used to

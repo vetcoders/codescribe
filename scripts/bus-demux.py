@@ -116,7 +116,7 @@ def parse_line(raw: str) -> dict[str, Any] | None:
         return None
     if not isinstance(event, dict):
         return None
-    if event.get("schema") not in (None, "codescribe.transcript.v1"):
+    if event.get("schema") != "codescribe.transcript.v1":
         return None
     return event
 
@@ -167,7 +167,10 @@ def iter_new_lines(path: Path, offset: int) -> tuple[list[tuple[str, int]], int]
     except FileNotFoundError:
         return [], offset
     if size < offset:
-        offset = 0
+        # Rotation/truncation is an authority boundary. Replaying the new file
+        # from byte zero could disclose sealed commands that predate this
+        # provider lease, so resume at the new EOF and wait for fresh events.
+        return [], size
     entries: list[tuple[str, int]] = []
     with path.open("rb") as handle:
         handle.seek(offset)
@@ -483,13 +486,9 @@ def run(args: argparse.Namespace) -> int:
     def handle(raw: str, next_cursor: int | None = None) -> None:
         nonlocal name, hear_all
         event = parse_line(raw)
-        if lease and next_cursor is not None:
-            lease.persist(
-                active=True,
-                cursor=next_cursor,
-                sequence=event.get("sequence") if event else None,
-            )
         if event is None:
+            if lease and next_cursor is not None:
+                lease.persist(active=True, cursor=next_cursor)
             return
         payload = consider(
             event,
@@ -499,6 +498,12 @@ def run(args: argparse.Namespace) -> int:
             debug=args.debug,
         )
         if payload is None:
+            if lease and next_cursor is not None:
+                lease.persist(
+                    active=True,
+                    cursor=next_cursor,
+                    sequence=event.get("sequence"),
+                )
             return
         if args.become and payload.get("kind") == "name_assignment" and not name:
             name = str(payload["name"])
@@ -509,6 +514,15 @@ def run(args: argparse.Namespace) -> int:
         if lease:
             lease.enrich(payload)
         emit(payload)
+        # At-least-once delivery: advance the durable cursor only after stdout
+        # accepted and flushed the command. A crash or broken pipe may replay a
+        # command, but it can no longer erase one unseen by the provider.
+        if lease and next_cursor is not None:
+            lease.persist(
+                active=True,
+                cursor=next_cursor,
+                sequence=event.get("sequence"),
+            )
 
     try:
         if args.once:
@@ -549,9 +563,12 @@ def run(args: argparse.Namespace) -> int:
         )
         last_heartbeat = time.monotonic()
         while True:
+            previous_offset = offset
             entries, offset = iter_new_lines(path, offset)
             for raw, next_cursor in entries:
                 handle(raw, next_cursor)
+            if lease and not entries and offset != previous_offset:
+                lease.persist(active=True, cursor=offset)
             if not args.follow:
                 return 0
             if lease and time.monotonic() - last_heartbeat >= 1.0:

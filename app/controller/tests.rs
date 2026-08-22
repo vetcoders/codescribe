@@ -2324,7 +2324,7 @@ fn test_overlay_paste_disposition_decision_table() {
             true,
             true,
             OverlayPasteDisposition::Paste,
-            "overlay float may leave NSWorkspace on Codescribe after Alacritty activate",
+            "confirmed Alacritty activation may leave the overlay process frontmost briefly",
         ),
         (
             Some("Alacritty"),
@@ -2386,10 +2386,10 @@ fn test_overlay_paste_disposition_decision_table() {
 }
 
 #[test]
-fn overlay_float_confirms_activation_when_workspace_still_names_codescribe() {
+fn overlay_float_requires_positive_foreign_focus_confirmation() {
     assert!(super::overlay_paste::overlay_float_still_confirms_activation(true, Some("Alacritty")));
     assert!(
-        super::overlay_paste::overlay_float_still_confirms_activation(false, Some("Codescribe"))
+        !super::overlay_paste::overlay_float_still_confirms_activation(false, Some("Codescribe"))
     );
     assert!(!super::overlay_paste::overlay_float_still_confirms_activation(false, Some("Safari")));
     assert!(!super::overlay_paste::overlay_float_still_confirms_activation(false, None));
@@ -4871,10 +4871,10 @@ fn test_action_quality_probe_is_independent_from_action_routing() {
 #[test]
 fn test_quality_gate_exempts_shape_only_transplant_delta() {
     let stats = crate::stream_postprocess::StreamPostProcessStats::default();
-    let raw = "dzień dobry mam na imię maciej mieszkam w kielcach a kibicuję chelsea \
-               dziś o osiemnastej mam spotkanie z moniką która przyjedzie z warszawy";
-    let shaped = "Dzień dobry, mam na imię Maciej, mieszkam w Kielcach, a kibicuję Chelsea. \
-                  Dziś o osiemnastej mam spotkanie z Moniką, która przyjedzie z Warszawy.";
+    let raw = "dzień dobry mam na imię marek mieszkam w kielcach a kibicuję chelsea \
+               dziś o osiemnastej mam spotkanie z natalią która przyjedzie z warszawy";
+    let shaped = "Dzień dobry, mam na imię Marek, mieszkam w Kielcach, a kibicuję Chelsea. \
+                  Dziś o osiemnastej mam spotkanie z Natalią, która przyjedzie z Warszawy.";
     let probe = ActionQualityProbe::from_transcripts(raw, shaped, &stats);
     assert!(
         probe.shape_only,
@@ -4887,8 +4887,8 @@ fn test_quality_gate_exempts_shape_only_transplant_delta() {
     );
 
     // A delta that changes even one word keeps the full gate.
-    let reworded = "Dzień dobry, mam na imię Maciej, mieszkam w Krakowie, a kibicuję Chelsea. \
-                    Dziś o osiemnastej mam spotkanie z Moniką, która przyjedzie z Warszawy.";
+    let reworded = "Dzień dobry, mam na imię Marek, mieszkam w Krakowie, a kibicuję Chelsea. \
+                    Dziś o osiemnastej mam spotkanie z Natalią, która przyjedzie z Warszawy.";
     let reworded_probe = ActionQualityProbe::from_transcripts(raw, reworded, &stats);
     assert!(
         !reworded_probe.shape_only,
@@ -5141,6 +5141,7 @@ async fn test_repeated_hold_cancel_near_delay_never_starts_stale_session() {
 }
 
 #[tokio::test]
+#[serial]
 async fn test_reset_session_after_start_failure_clears_transient_state() {
     let controller = RecordingController::new();
     *controller.state.write().await = State::RecToggle;

@@ -257,8 +257,7 @@ struct EnginePanel: View {
       }
       SettingsControlRow(
         title: "Whole-session final pass",
-        subtitle:
-          "Off. This controls only a full-file decode after Stop; live Whisper refinement continues during the take."
+        subtitle: wholeSessionFinalPassSubtitle(asrModeId: model.asrModeId)
       ) {
         Text("Off")
           .font(CSFont.mono(11, .medium))

@@ -287,10 +287,10 @@ mod tests {
     /// shape is lowercase (operator dictation 2026-08-10: "Dzień dobry, Mam").
     #[test]
     fn lowercases_apple_boundary_capital_mid_sentence() {
-        let committed = "dzień dobry Mam na imię Maciej";
-        let punctuated = "Dzień dobry, mam na imię Maciej.";
+        let committed = "dzień dobry Mam na imię Marek";
+        let punctuated = "Dzień dobry, mam na imię Marek.";
         let outcome = transplant_punctuation(committed, punctuated).unwrap();
-        assert_eq!(outcome.text, "Dzień dobry, mam na imię Maciej.");
+        assert_eq!(outcome.text, "Dzień dobry, mam na imię Marek.");
     }
 
     /// A capital right after an adopted sentence terminal is legitimate and

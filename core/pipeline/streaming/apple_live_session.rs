@@ -319,6 +319,25 @@ fn emit_layer1_degrade_warning(event_sink: &dyn EventSink, reason: Layer1Degrade
     });
 }
 
+fn emit_local_tail_patch_degraded_warning(event_sink: &dyn EventSink, disposition: &str) {
+    event_sink.on_event(&EngineEvent::Warning {
+        code: LOCAL_TAIL_PATCH_DEGRADED_WARNING_CODE.to_string(),
+        message: disposition.to_string(),
+    });
+}
+
+fn report_unbound_layer1_candidate(event_sink: &dyn EventSink, unbound_mutations: usize) {
+    if unbound_mutations == 0 {
+        return;
+    }
+    event_sink.on_event(&EngineEvent::Warning {
+        code: LAYER1_CANDIDATE_UNBOUND_WARNING_CODE.to_string(),
+        message: format!(
+            "full-session Layer 1 candidate proposed {unbound_mutations} mutations without per-word PCM identity after seal; Apple text preserved"
+        ),
+    });
+}
+
 /// Report abandoned local tail-patch work exactly once, before session finality.
 fn report_tail_patch_drain_degrade(event_sink: &dyn EventSink, abandoned: u64) {
     if abandoned == 0 {
@@ -341,23 +360,20 @@ fn tail_patch_receipt_after_stop(
     applied_jobs: u64,
     skipped_jobs: u64,
     timeout_residue: u64,
+    abandoned_jobs: u64,
 ) -> TailPatchSessionReceipt {
-    let applied = applied_jobs.min(submitted);
-    let skipped = skipped_jobs.min(submitted.saturating_sub(applied));
-    let timed_out = timeout_residue.min(submitted.saturating_sub(applied + skipped));
-    let abandoned = submitted.saturating_sub(applied + skipped + timed_out);
     TailPatchSessionReceipt::new(
         armed,
         submitted,
-        applied,
-        skipped,
-        timed_out,
-        abandoned,
+        applied_jobs,
+        skipped_jobs,
+        timeout_residue,
+        abandoned_jobs,
         if !armed {
             TailPatchDrainDisposition::NotArmed
-        } else if timed_out > 0 {
+        } else if timeout_residue > 0 {
             TailPatchDrainDisposition::TimedOut
-        } else if abandoned > 0 {
+        } else if abandoned_jobs > 0 {
             TailPatchDrainDisposition::Abandoned
         } else {
             TailPatchDrainDisposition::Completed
@@ -443,10 +459,7 @@ pub(crate) async fn apple_stream_transcription_session(
             disposition = disposition.as_token(),
             "Local power degraded: required Whisper tail-patch is not armed"
         );
-        event_sink.on_event(&EngineEvent::Warning {
-            code: LOCAL_TAIL_PATCH_DEGRADED_WARNING_CODE.to_string(),
-            message: disposition.as_token().to_string(),
-        });
+        emit_local_tail_patch_degraded_warning(event_sink.as_ref(), disposition.as_token());
     }
     let mut tail_patch_lane = AppleTailPatchLane::new(sample_rate, language.clone());
     // At-most-one-in-flight gate (F1), tracked outside the lane so the admit
@@ -681,6 +694,7 @@ pub(crate) async fn apple_stream_transcription_session(
         tail_patch_jobs_applied,
         tail_patch_jobs_skipped,
         tail_patch_timeout_residue,
+        abandoned_tail_patch_jobs,
     );
     log_tail_patch_session_receipt(receipt);
     report_tail_patch_drain_degrade(
@@ -690,14 +704,7 @@ pub(crate) async fn apple_stream_transcription_session(
     event_sink.on_event(&receipt.as_event());
     if let Some(candidate) = layer1_candidate {
         let unbound_mutations = plan_live_layer1_gap_patches(&sealed_spans, &candidate).len();
-        if unbound_mutations > 0 {
-            event_sink.on_event(&EngineEvent::Warning {
-                code: LAYER1_CANDIDATE_UNBOUND_WARNING_CODE.to_string(),
-                message: format!(
-                    "full-session Layer 1 candidate proposed {unbound_mutations} mutations without per-word PCM identity after seal; Apple text preserved"
-                ),
-            });
-        }
+        report_unbound_layer1_candidate(event_sink.as_ref(), unbound_mutations);
         info!(
             provider_chars = candidate.chars().count(),
             unbound_mutations,
@@ -4507,21 +4514,47 @@ mod tests {
         assert!(matches!(events[1], EngineEvent::SessionFinalised { .. }));
     }
 
+    /// Settings/runtime degradation and post-seal unbound evidence retain
+    /// stable, separately actionable warning codes.
+    #[test]
+    fn local_tail_and_unbound_candidate_warnings_are_typed_events() {
+        let sink = RecordingSink::default();
+        emit_local_tail_patch_degraded_warning(&sink, "degraded_invalid_override");
+        report_unbound_layer1_candidate(&sink, 0);
+        report_unbound_layer1_candidate(&sink, 2);
+
+        let events = sink.events();
+        assert_eq!(events.len(), 2);
+        assert!(matches!(
+            &events[0],
+            EngineEvent::Warning { code, message }
+                if code == LOCAL_TAIL_PATCH_DEGRADED_WARNING_CODE
+                    && message == "degraded_invalid_override"
+        ));
+        assert!(matches!(
+            &events[1],
+            EngineEvent::Warning { code, message }
+                if code == LAYER1_CANDIDATE_UNBOUND_WARNING_CODE
+                    && message.contains('2')
+                    && message.contains("Apple text preserved")
+        ));
+    }
+
     #[test]
     fn tail_patch_receipt_uses_worker_adjudicated_job_buckets() {
-        let receipt = tail_patch_receipt_after_stop(true, 3, 1, 1, 1);
+        let receipt = tail_patch_receipt_after_stop(true, 3, 1, 1, 1, 0);
         assert_eq!(receipt.applied, 1);
         assert_eq!(receipt.skipped, 1);
         assert_eq!(receipt.timed_out, 1);
         assert_eq!(receipt.abandoned, 0);
         assert!(receipt.is_reconciled());
 
-        let worker_failed = tail_patch_receipt_after_stop(true, 2, 0, 0, 0);
+        let worker_failed = tail_patch_receipt_after_stop(true, 2, 0, 0, 0, 2);
         assert_eq!(worker_failed.abandoned, 2);
         assert_eq!(worker_failed.drain, TailPatchDrainDisposition::Abandoned);
         assert!(worker_failed.is_reconciled());
 
-        let mixed = tail_patch_receipt_after_stop(true, 4, 0, 0, 2);
+        let mixed = tail_patch_receipt_after_stop(true, 4, 0, 0, 2, 2);
         assert_eq!(mixed.timed_out, 2);
         assert_eq!(mixed.abandoned, 2);
         assert_eq!(
@@ -4529,6 +4562,12 @@ mod tests {
             TailPatchDrainDisposition::TimedOut,
             "timeout takes precedence while both terminal counters remain explicit"
         );
+    }
+
+    #[test]
+    #[should_panic(expected = "tail-patch terminal buckets must reconcile exactly")]
+    fn tail_patch_receipt_rejects_missing_independent_terminal_evidence() {
+        let _ = tail_patch_receipt_after_stop(true, 3, 1, 1, 0, 0);
     }
 
     fn synthetic_tail_job(utterance_id: u64, outcome: TailPatchOutcome) -> TailPatchJobResult {

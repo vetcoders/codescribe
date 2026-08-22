@@ -917,7 +917,7 @@ mod tests {
         assert_eq!(reducer.rendered_text().as_bytes(), before.as_bytes());
     }
 
-    /// Regression for the 2026-08-14 tripled-RAW incident (Monika's take:
+    /// Regression for the 2026-08-14 tripled-RAW field incident:
     /// reducer said 228 chars, the RAW pulled by `recorder.stop()` said 791).
     /// Two writers raced on the shared buffer: the command worker snapshotted
     /// the full target AND the tick loop appended the same suffix again, so

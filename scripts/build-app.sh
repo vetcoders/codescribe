@@ -48,8 +48,20 @@ skill_source = repo / "skills" / "codescribe"
 helper_source = repo / "scripts" / "bus-demux.py"
 if not (skill_source / "SKILL.md").is_file() or not helper_source.is_file():
     raise SystemExit("agent bridge source is incomplete")
-if destination == destination.parent or destination == Path.home():
+if (
+    destination == destination.parent
+    or destination == Path.home()
+    or destination == repo
+    or repo.is_relative_to(destination)
+):
     raise SystemExit(f"refusing unsafe agent bridge destination: {destination}")
+source_paths = [skill_source, helper_source, *skill_source.rglob("*")]
+source_symlinks = [path for path in source_paths if path.is_symlink()]
+if source_symlinks:
+    raise SystemExit(
+        "agent bridge source may not contain symlinks: "
+        + ", ".join(str(path) for path in source_symlinks)
+    )
 
 stage = destination.parent / f".{destination.name}.stage-{os.getpid()}"
 backup = destination.parent / f".{destination.name}.backup-{os.getpid()}"
@@ -57,7 +69,7 @@ for scratch in (stage, backup):
     if scratch.exists():
         shutil.rmtree(scratch)
 stage.mkdir(parents=True, mode=0o755)
-shutil.copytree(skill_source, stage / "skills" / "codescribe")
+shutil.copytree(skill_source, stage / "skills" / "codescribe", symlinks=True)
 (stage / "bin").mkdir(mode=0o755)
 shutil.copy2(helper_source, stage / "bin" / "bus-demux.py")
 (stage / "bin" / "bus-demux.py").chmod(0o755)

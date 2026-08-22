@@ -136,25 +136,21 @@ pub(super) fn overlay_paste_disposition(
     OverlayPasteDisposition::CopyTargetMismatch
 }
 
-/// Whether a successful `activate` still counts when `NSWorkspace` has not
-/// flipped yet. The overlay panel can keep the process named Codescribe after
-/// Alacritty/Chrome actually took the key window — requiring a name match here
-/// parks every auto-paste as ⌘⌥V.
+/// Whether the target was positively observed as frontmost after activation.
+/// An accepted activation request is not proof that focus moved; Codescribe
+/// remaining frontmost must fail closed into Paste Here.
 pub(super) fn overlay_float_still_confirms_activation(
     wait_confirmed: bool,
-    frontmost_after_activate: Option<&str>,
+    _frontmost_after_activate: Option<&str>,
 ) -> bool {
     wait_confirmed
-        || frontmost_after_activate
-            .map(str::trim)
-            .is_some_and(|name| !name.is_empty() && target_is_self_app(name))
 }
 
 /// Activate the latched ambulance and confirm it owns focus.
 ///
-/// Codescribe (Agent window) is already this process — no activate. A foreign
-/// app must activate. Matching `NSWorkspace` within the budget is sufficient
-/// but not required when the overlay still names this process.
+/// Codescribe is already this process — no activate, and upstream latch policy
+/// normally refuses it. A foreign app must activate and match `NSWorkspace`
+/// within the bounded wait.
 pub(super) fn confirm_latched_paste_target(target_app: Option<&str>) -> bool {
     let Some(name) = target_app.map(str::trim).filter(|n| !n.is_empty()) else {
         return false;

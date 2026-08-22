@@ -171,7 +171,8 @@ pub enum LocalTailPatchDisposition {
     NotApplicable,
     /// Local power's product default: Apple live plus local Whisper patches.
     ArmedDefault,
-    /// Explicit `phase1`..`phase4` compatibility token armed the same lane.
+    /// Explicit `phase1` compatibility token armed the same lane. Reserved
+    /// later phases are degraded until they acquire their own runtime owner.
     ArmedPhase(u8),
     /// Local power was selected but an explicit hard-off token disabled its
     /// required patcher. This is degraded, never a healthy Apple-only state.

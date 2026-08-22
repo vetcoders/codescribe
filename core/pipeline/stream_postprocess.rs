@@ -423,12 +423,41 @@ pub fn apply_lexicon(text: &str) -> String {
     )
 }
 
+#[derive(Default)]
+struct ActiveNamePatternCache {
+    names: Vec<String>,
+    patterns: Vec<(String, Regex)>,
+}
+
+static ACTIVE_NAME_PATTERNS: LazyLock<RwLock<ActiveNamePatternCache>> =
+    LazyLock::new(|| RwLock::new(ActiveNamePatternCache::default()));
+
+fn active_name_patterns(active_names: &[String]) -> Vec<(String, Regex)> {
+    {
+        let cache = ACTIVE_NAME_PATTERNS
+            .read()
+            .expect("active-name regex cache read lock poisoned");
+        if cache.names == active_names {
+            return cache.patterns.clone();
+        }
+    }
+
+    let patterns = active_names
+        .iter()
+        .filter_map(|name| build_word_regex(name).map(|pattern| (name.clone(), pattern)))
+        .collect::<Vec<_>>();
+    let mut cache = ACTIVE_NAME_PATTERNS
+        .write()
+        .expect("active-name regex cache write lock poisoned");
+    cache.names = active_names.to_vec();
+    cache.patterns.clone_from(&patterns);
+    patterns
+}
+
 fn apply_active_names(text: &str, active_names: &[String]) -> String {
     let mut corrected = text.to_string();
-    for name in active_names {
-        if let Some(pattern) = build_word_regex(name) {
-            corrected = pattern.replace_all(&corrected, name.as_str()).into_owned();
-        }
+    for (name, pattern) in active_name_patterns(active_names) {
+        corrected = pattern.replace_all(&corrected, name.as_str()).into_owned();
     }
     corrected
 }

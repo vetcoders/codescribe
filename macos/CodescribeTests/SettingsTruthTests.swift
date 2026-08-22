@@ -478,6 +478,15 @@ final class SettingsTruthTests: XCTestCase {
     )
   }
 
+  func testWholeSessionFinalPassCopyDoesNotInventWhisperOnAppleOnly() {
+    XCTAssertTrue(
+      wholeSessionFinalPassSubtitle(asrModeId: "local_power").contains("live Whisper")
+    )
+    let appleOnly = wholeSessionFinalPassSubtitle(asrModeId: "apple_only")
+    XCTAssertFalse(appleOnly.contains("Whisper refinement continues"))
+    XCTAssertTrue(appleOnly.contains("Apple live"))
+  }
+
   func testDirectWhisperIsLocalEngineNotAppleFirstPatching() {
     XCTAssertEqual(
       resolveLocalWhisperRuntimeState(

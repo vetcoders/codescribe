@@ -178,6 +178,77 @@ assert recovered.resumed is True, recovered.attach_receipt()
 assert recovered.lease_id == greeting_id, recovered.attach_receipt()
 assert recovered.name == "james", recovered.attach_receipt()
 recovered.close()
+
+# Transcript envelopes without the canonical schema are not bus authority.
+assert module.parse_line('{"status":"transcript_sealed","text":"James, stale"}') is None
+
+# A truncated/replaced bus is a new authority epoch: resume at its current EOF,
+# never replay byte zero under an old provider lease.
+rotated = Path(sys.argv[3]) / "rotated.jsonl"
+rotated.write_text('{"schema":"codescribe.transcript.v1"}\n', encoding="utf-8")
+entries, cursor = module.iter_new_lines(rotated, 999)
+assert entries == [], entries
+assert cursor == rotated.stat().st_size, cursor
+PY
+
+# A provider disconnect after attach but before command delivery must leave the
+# cursor before that command. Recovery is allowed to replay; loss is forbidden.
+python3 - "$DEMUX" "$BUS" "$BRIDGE_HOME" <<'PY'
+import argparse, importlib.util, json, sys
+from pathlib import Path
+
+spec = importlib.util.spec_from_file_location("bus_demux_broken_pipe", sys.argv[1])
+module = importlib.util.module_from_spec(spec)
+assert spec.loader is not None
+spec.loader.exec_module(module)
+
+bus = Path(sys.argv[2])
+bridge_home = Path(sys.argv[3]) / "broken-pipe"
+bus.write_text(json.dumps({
+    "schema": "codescribe.transcript.v1",
+    "sequence": 91,
+    "session_id": "broken-pipe-session",
+    "mode": "raw",
+    "utterance_id": "utterance-91",
+    "emitted_at": "2026-08-22T00:00:00Z",
+    "status": "transcript_sealed",
+    "text": "James, command must survive disconnect.",
+}) + "\n", encoding="utf-8")
+
+class FailSecondWrite:
+    def __init__(self):
+        self.writes = 0
+    def write(self, value):
+        self.writes += 1
+        if self.writes == 2:
+            raise BrokenPipeError("provider disconnected")
+        return len(value)
+    def flush(self):
+        return None
+
+args = argparse.Namespace(
+    bus=bus, name="james", all=False, become=False, follow=False, once=False,
+    from_start=True, drafts=False, provider="codex", session="pipe-session",
+    lease=None, bridge_home=bridge_home, lease_ttl=120.0, debug=False,
+    interval=0.0,
+)
+original = sys.stdout
+sys.stdout = FailSecondWrite()
+try:
+    try:
+        module.run(args)
+    except BrokenPipeError:
+        pass
+    else:
+        raise AssertionError("command emit should observe the broken pipe")
+finally:
+    sys.stdout = original
+
+leases = list((bridge_home / "leases").glob("*.json"))
+assert len(leases) == 1, leases
+receipt = json.loads(leases[0].read_text(encoding="utf-8"))
+assert receipt["cursor"] == 0, receipt
+assert receipt["last_sequence"] is None, receipt
 PY
 
 # The provider/session identity is protected by a stable advisory lock. A

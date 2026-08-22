@@ -1065,7 +1065,12 @@ pub(crate) async fn vad_transcription_session(
                 match maybe_data {
                     Some(data) => {
                         capture_level.push_samples(&data);
-                        for event in session.feed(&data, sample_rate) {
+                        let speech_events = session.feed(&data, sample_rate);
+                        // This legacy session has no Silero sideband consumer.
+                        // Drain observations on every callback so a long take
+                        // cannot retain one VecDeque entry per VAD edge.
+                        drop(session.take_vad_boundaries());
+                        for event in speech_events {
                             let speech_vad_samples = session.take_event_speech_vad_samples();
                             let max_speech_prob = session.segment_speech_prob();
                             match event {

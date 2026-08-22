@@ -113,9 +113,9 @@ pub fn layer1_decision_for_recording(
 /// Pure override seam for the recording-start refinement decision.
 ///
 /// `LocalPower` means Apple-first plus local Whisper patching even when the
-/// compatibility env key is absent. Explicit `phase1`..`phase4` remains an
-/// armed token. Explicit hard-off and malformed values are named degraded
-/// states, so Local power can never masquerade as healthy Apple-only.
+/// compatibility env key is absent. Explicit `phase1` remains armed; reserved
+/// `phase2`..`phase4`, hard-off, and malformed values are named degraded states,
+/// so Local power can never masquerade as healthy Apple-only.
 pub fn layer1_decision_for_recording_with_layered_raw(
     settings: &UserSettings,
     gateway: GatewaySessionAvailability,
@@ -156,7 +156,8 @@ fn local_tail_patch_disposition(raw: Option<&str>) -> LocalTailPatchDisposition 
     match raw {
         None => LocalTailPatchDisposition::ArmedDefault,
         Some(value) => match layered_phase_from_raw(Some(value)) {
-            Some(phase) => LocalTailPatchDisposition::ArmedPhase(phase),
+            Some(1) => LocalTailPatchDisposition::ArmedPhase(1),
+            Some(_) => LocalTailPatchDisposition::DegradedInvalidOverride,
             None if matches!(
                 value.trim().to_ascii_lowercase().as_str(),
                 "" | "off" | "0" | "false" | "no"
@@ -258,6 +259,17 @@ mod tests {
         assert_eq!(
             phase.local_tail_patch_disposition(),
             Some(LocalTailPatchDisposition::ArmedPhase(1))
+        );
+
+        let reserved = layer1_decision_for_recording_with_layered_raw(
+            &settings,
+            GatewaySessionAvailability::Unavailable,
+            Some("phase2"),
+        );
+        assert!(!reserved.is_armed());
+        assert_eq!(
+            reserved.local_tail_patch_disposition(),
+            Some(LocalTailPatchDisposition::DegradedInvalidOverride)
         );
 
         let off = layer1_decision_for_recording_with_layered_raw(
