@@ -552,7 +552,7 @@ impl LocalWhisperEngine {
         let mel_filters =
             load_mel_filters(&mel_filters_path, n_mels).context("Failed to load mel filters")?;
 
-        let ts_range = TimestampRange::from_tokenizer(&tokenizer);
+        let ts_range = TimestampRange::from_tokenizer(&tokenizer, config.vocab_size)?;
 
         Ok(Self {
             model,
@@ -604,7 +604,7 @@ impl LocalWhisperEngine {
 
         tracing::info!("Embedded Whisper model loaded successfully");
 
-        let ts_range = TimestampRange::from_tokenizer(&tokenizer);
+        let ts_range = TimestampRange::from_tokenizer(&tokenizer, config.vocab_size)?;
 
         Ok(Self {
             model,

@@ -76,11 +76,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   candidates, layer/context resource bounds, and mapped tensor-name collisions
   are validated by the same runtime-owned helpers. Tokenizers cannot emit IDs
   without embedding rows; audio context must match the supported 30-second
-  window; mel verification is size-bounded before hashing; and surplus tensors
-  are refused before allocation. Quantized payloads and the
+  window; decoder context is capped at the supported 448 positions; timestamp
+  token ranges are validated end to end; mel verification is size-bounded before
+  hashing; and surplus tensors are refused before allocation. Quantized payloads and the
   legacy Q8 fallback are refused; the old public Q8 identifiers remain
   deprecated source-compatibility constants only. Building from source now
   declares Rust 1.88 as the minimum supported toolchain.
+  Warm-cache tokenizer repair now returns immediately when it completes the
+  installed bundle instead of falling through to redundant network downloads.
 
 - **Supervisor findings own transcript-quality categories.** Engine catalog
   `codescribe-supervisor-findings/v1` (`core/quality/supervisor.rs`) names

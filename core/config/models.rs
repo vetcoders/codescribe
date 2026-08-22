@@ -153,6 +153,22 @@ fn find_cached_whisper_tokenizer(
     )
 }
 
+/// Compose every available official warm-cache artifact and report final truth.
+fn complete_default_model_from_warm_cache(dest: &Path) -> Result<bool> {
+    if let Some(snapshot) = find_cached_default_model_pair()
+        && snapshot != dest
+    {
+        copy_default_model_pair(&snapshot, dest)?;
+    }
+    if let Ok(architecture) =
+        crate::whisper_weights::load_whisper_architecture(&dest.join("config.json"))
+        && let Some(snapshot) = find_cached_whisper_tokenizer(architecture)
+    {
+        copy_model_files(&snapshot, dest, &["tokenizer.json"], true)?;
+    }
+    Ok(is_complete_whisper_model_dir(dest))
+}
+
 /// Owner of the resolved runtime models directory.
 ///
 /// Scope is deliberately narrow: it locates and inspects model directories on
@@ -401,19 +417,7 @@ where
     // no-op when the pieces are already on disk. Config and weights come from
     // mlx-community's fp16 conversion; tokenizer comes from OpenAI's matching
     // Transformers repository. The pinned mel filterbank is fetched below.
-    let mut paired_default_model = false;
-    if let Some(snapshot) = find_cached_default_model_pair()
-        && snapshot != dest
-    {
-        paired_default_model = copy_default_model_pair(&snapshot, &dest)?;
-    }
-    if let Ok(architecture) =
-        crate::whisper_weights::load_whisper_architecture(&dest.join("config.json"))
-        && let Some(snapshot) = find_cached_whisper_tokenizer(architecture)
-    {
-        copy_model_files(&snapshot, &dest, &["tokenizer.json"], true)?;
-    }
-    if paired_default_model && is_complete_whisper_model_dir(&dest) {
+    if complete_default_model_from_warm_cache(&dest)? {
         return Ok(canonicalize_or_self(dest));
     }
 
@@ -1298,6 +1302,39 @@ mod tests {
             find_cached_whisper_tokenizer(architecture),
             Some(older_tokenizer)
         );
+    }
+
+    /// A cached tokenizer can complete an installed pair without a model download.
+    #[test]
+    #[serial]
+    fn cached_tokenizer_completion_returns_final_bundle_truth() {
+        let temp_dir = TempDir::new().unwrap();
+        let cache = temp_dir.path().join("cache");
+        let home = temp_dir.path().join("home");
+        let destination = temp_dir.path().join("destination");
+        create_complete_whisper_model(&destination);
+        fs::remove_file(destination.join("tokenizer.json")).unwrap();
+
+        let tokenizer_snapshot = cache
+            .join("models--openai--whisper-large-v3-turbo")
+            .join("snapshots")
+            .join("tokenizer-only");
+        fs::create_dir_all(&tokenizer_snapshot).unwrap();
+        fs::write(
+            tokenizer_snapshot.join("tokenizer.json"),
+            include_bytes!("../../tests/fixtures/whisper_tokenizer.json"),
+        )
+        .unwrap();
+
+        let _home = EnvGuard::set("HOME", &home);
+        let _cache = EnvGuard::set("CODESCRIBE_HF_CACHE", &cache);
+        let _hf_home = EnvGuard::unset("HF_HOME");
+        let _hf_hub = EnvGuard::unset("HF_HUB_CACHE");
+        let _huggingface_hub = EnvGuard::unset("HUGGINGFACE_HUB_CACHE");
+
+        assert!(find_cached_default_model_pair().is_none());
+        assert!(complete_default_model_from_warm_cache(&destination).unwrap());
+        validate_whisper_model_bundle(&destination).unwrap();
     }
 
     /// A downloaded checksum mismatch is never promoted to the final mel path.

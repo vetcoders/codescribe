@@ -18,6 +18,8 @@ const REQUIRED_TOKENIZER_TOKENS: [&str; 2] = ["<|startoftranscript|>", "<|endoft
 const OPTIONAL_PROMPT_TOKENS: [&str; 3] = ["<|transcribe|>", "<|notimestamps|>", "<|startofprev|>"];
 const MAX_WHISPER_LAYERS: usize = 64;
 const MAX_WHISPER_AUDIO_CONTEXT: usize = 1_500;
+const MAX_WHISPER_TEXT_CONTEXT: usize = 448;
+const WHISPER_TIMESTAMP_STEPS: u32 = 1_500;
 const LANG_TOKEN_START: u32 = 50_259;
 const LANG_TOKEN_END: u32 = 50_358;
 const FALLBACK_LANGUAGES: [&str; 12] = [
@@ -67,6 +69,8 @@ pub(crate) fn validate_whisper_tokenizer_for_architecture(
 ) -> Result<()> {
     let tokenizer = tokenizers::Tokenizer::from_file(path)
         .map_err(|err| anyhow!("invalid Whisper tokenizer {}: {err}", path.display()))?;
+    validated_timestamp_token_range(&tokenizer, architecture.n_vocab)
+        .with_context(|| format!("validate Whisper timestamp tokens in {}", path.display()))?;
     for token in REQUIRED_TOKENIZER_TOKENS {
         let id = tokenizer.token_to_id(token).ok_or_else(|| {
             anyhow!(
@@ -132,6 +136,43 @@ pub(crate) fn validate_whisper_tokenizer_for_architecture(
         ));
     }
     Ok(())
+}
+
+/// Resolve and validate the optional 20 ms timestamp-token block.
+pub(crate) fn validated_timestamp_token_range(
+    tokenizer: &tokenizers::Tokenizer,
+    n_vocab: usize,
+) -> Result<Option<(u32, u32)>> {
+    let begin = tokenizer.token_to_id("<|0.00|>");
+    let end = tokenizer.token_to_id("<|30.00|>");
+    let (begin, end) = match (begin, end) {
+        (None, None) => return Ok(None),
+        (Some(_), None) | (None, Some(_)) => {
+            return Err(anyhow!("incomplete Whisper timestamp token range"));
+        }
+        (Some(begin), Some(end)) => (begin, end),
+    };
+    if begin.checked_add(WHISPER_TIMESTAMP_STEPS) != Some(end) {
+        return Err(anyhow!(
+            "invalid Whisper timestamp token span: begin={begin}, end={end}, expected delta={WHISPER_TIMESTAMP_STEPS}"
+        ));
+    }
+    if end as usize >= n_vocab {
+        return Err(anyhow!(
+            "Whisper timestamp endpoint id {end} is outside configured vocabulary 0..{n_vocab}"
+        ));
+    }
+    for step in 0..=WHISPER_TIMESTAMP_STEPS {
+        let hundredths = step * 2;
+        let expected = format!("<|{}.{:02}|>", hundredths / 100, hundredths % 100);
+        let id = begin + step;
+        if tokenizer.id_to_token(id).as_deref() != Some(expected.as_str()) {
+            return Err(anyhow!(
+                "Whisper timestamp token id {id} must be {expected}"
+            ));
+        }
+    }
+    Ok(Some((begin, end)))
 }
 
 pub(crate) fn language_token_candidates(
@@ -230,9 +271,9 @@ pub(crate) fn parse_whisper_config(raw: &str, source: &str) -> Result<WhisperArc
             "Whisper config {source} exceeds the resource limit of {MAX_WHISPER_LAYERS} encoder or decoder layers"
         ));
     }
-    if architecture.n_text_ctx < 5 {
+    if !(5..=MAX_WHISPER_TEXT_CONTEXT).contains(&architecture.n_text_ctx) {
         return Err(anyhow!(
-            "Whisper config {source} requires n_text_ctx of at least 5 for the decode prefix and one output token"
+            "Whisper config {source} requires n_text_ctx in 5..={MAX_WHISPER_TEXT_CONTEXT} for the supported decoder context"
         ));
     }
     if !matches!(architecture.n_mels, 80 | 128) {
@@ -896,14 +937,66 @@ mod tests {
             let mut config = valid_config();
             config["n_text_ctx"] = serde_json::json!(value);
             let err = parse_whisper_config(&config.to_string(), "fixture").unwrap_err();
-            assert!(
-                format!("{err:#}").contains("at least 5"),
-                "{value}: {err:#}"
-            );
+            assert!(format!("{err:#}").contains("5..=448"), "{value}: {err:#}");
         }
-        let mut config = valid_config();
-        config["n_text_ctx"] = serde_json::json!(5);
-        parse_whisper_config(&config.to_string(), "fixture").unwrap();
+        for value in [5, MAX_WHISPER_TEXT_CONTEXT] {
+            let mut config = valid_config();
+            config["n_text_ctx"] = serde_json::json!(value);
+            parse_whisper_config(&config.to_string(), "fixture").unwrap();
+        }
+        for value in [MAX_WHISPER_TEXT_CONTEXT + 1, 100_000] {
+            let mut config = valid_config();
+            config["n_text_ctx"] = serde_json::json!(value);
+            let err = parse_whisper_config(&config.to_string(), "fixture").unwrap_err();
+            assert!(format!("{err:#}").contains("5..=448"), "{value}: {err:#}");
+        }
+    }
+
+    fn timestamp_tokenizer(begin: u32, malformed_step: Option<u32>) -> tokenizers::Tokenizer {
+        let mut vocab = BTreeMap::from([
+            ("<unk>".to_string(), 0_u32),
+            ("<|startoftranscript|>".to_string(), 1_u32),
+            ("<|endoftext|>".to_string(), 2_u32),
+            ("<|pl|>".to_string(), 3_u32),
+        ]);
+        for step in 0..=WHISPER_TIMESTAMP_STEPS {
+            let hundredths = step * 2;
+            let token = if malformed_step == Some(step) {
+                "lexical-collision".to_string()
+            } else {
+                format!("<|{}.{:02}|>", hundredths / 100, hundredths % 100)
+            };
+            vocab.insert(token, begin + step);
+        }
+        let model = tokenizers::models::wordlevel::WordLevel::builder()
+            .vocab(vocab.into_iter().collect())
+            .unk_token("<unk>".to_string())
+            .build()
+            .unwrap();
+        tokenizers::Tokenizer::new(model)
+    }
+
+    #[test]
+    fn timestamp_token_range_matches_runtime_semantics() {
+        let tokenizer = timestamp_tokenizer(100, None);
+        assert_eq!(
+            validated_timestamp_token_range(&tokenizer, 1_601).unwrap(),
+            Some((100, 1_600))
+        );
+
+        let malformed = timestamp_tokenizer(100, Some(1));
+        let err = validated_timestamp_token_range(&malformed, 1_601).unwrap_err();
+        assert!(format!("{err:#}").contains("must be <|0.02|>"));
+
+        let err = validated_timestamp_token_range(&tokenizer, 1_600).unwrap_err();
+        assert!(format!("{err:#}").contains("outside configured vocabulary"));
+
+        let no_timestamps =
+            tokenizers::Tokenizer::new(tokenizers::models::wordlevel::WordLevel::default());
+        assert_eq!(
+            validated_timestamp_token_range(&no_timestamps, 1).unwrap(),
+            None
+        );
     }
 
     #[test]
