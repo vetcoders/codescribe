@@ -468,7 +468,7 @@ mod tests {
             "/Applications/Codescribe.app/Contents/MacOS/codescribe"
         )));
         assert!(!executable_is_app_bundle(std::path::Path::new(
-            "/Users/someone/.cargo/bin/codescribe"
+            "/Users/tester/.cargo/bin/codescribe"
         )));
     }
 }

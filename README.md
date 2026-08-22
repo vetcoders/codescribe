@@ -34,7 +34,7 @@ flowchart TB
         direction TB
         REC[Streaming Recorder]
         POST[Stream Postprocess]
-        STT[Apple Live Canvas + Whisper Gap Fill + Lexicon]
+        STT[Apple Live + PCM-bound Whisper + Lexicon]
         LLM[Responses API Formatting / Assistive]
         QL[Quality Loop]
     end
@@ -57,9 +57,17 @@ flowchart TB
     CORE -.-> TOOLS
 ```
 
-> **Current runtime truth:** live overlay preview is local Whisper. Cloud STT is configurable in Settings, but in the current build it is still a **post-capture** path rather than live cloud preview.
+> **Current runtime truth:** Apple Speech paints the instant live overlay.
+> Local Power arms Whisper as a background observer of bounded windows from the
+> same PCM clock; accepted wording can change only the proven target span.
+> Cloud mode may arm its configured live provider after explicit consent.
+> Full-file local/cloud Retranscribe is a separate operator action and is never
+> the automatic stop authority.
 
-> **Status:** current source version is `0.14.1` (see `Cargo.toml`) and ships as a native macOS tray/settings/overlay app with local live preview, tiered settings (`settings.json` + Keychain + optional `.env`), and quality-loop tooling.
+> **Release status:** current source version is `0.14.1` (see `Cargo.toml`),
+> while the latest published GitHub Release is `v0.13.3`. No `v0.14.0` or
+> `v0.14.1` tag/Release exists yet. Source builds are candidates, not published
+> distribution artifacts.
 
 See: [`docs/WHISPER_LIVE.md`](docs/WHISPER_LIVE.md) | [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md)
 
@@ -169,7 +177,11 @@ Tagged builds publish DMGs through GitHub Releases:
 2. Download `Codescribe_<version>-<builddate>-<sha>.dmg` for the standard build, or the `_full` variant for the larger build with embedded Whisper.
 3. Drag `Codescribe.app` into `Applications`
 
-> **Current truth:** `v0.13.0` is the latest version published on GitHub Releases, as a Developer ID signed, notarized and stapled DMG (`releases/latest/download/Codescribe.dmg`, ~1.4 GB — the `_full` build with embedded Whisper); source install remains the freshest path for unreleased work on this branch. The release workflow is wired to fail if the required Apple signing/notary secrets are missing.
+> **Current truth:** `v0.13.3` is the latest version published on GitHub
+> Releases. The repository is at `0.14.1`, but those newer milestones have not
+> been tagged or published. A production artifact must be Developer ID signed,
+> notarized, stapled, and pass `verify-dmg`; a source install or ad-hoc `.app` is
+> not a public release.
 
 ### Build Options
 
@@ -220,7 +232,7 @@ flowchart TD
     B -->|Hold Fn| C[Start Recording]
     B -->|Double Option| C
     C --> D[Recording]
-    D -->|live chunks| E["Whisper STT (streaming)"]
+    D -->|live chunks| E["Apple L0 + bounded Whisper L1"]
     D -->|Release / Toggle| F[Stop]
     F --> G[Finalize last chunk]
     G --> H{AI Enabled?}
@@ -235,17 +247,21 @@ flowchart TD
 
 ### Transcription Pipeline
 
-Live transcription is now modeled as:
+Live transcription is a four-layer relay on one PCM timeline:
 
-- committed utterances already safe to keep
-- one active preview tail for the current utterance
-- corrections that rewrite only that active tail
+1. **L0 Apple** paints fast, revisable hypotheses.
+2. **L1 Whisper** observes bounded overlapping PCM windows and may repair only
+   the matching occurrence behind the rewrite fence.
+3. **L2 Lexicon + Light+** performs deterministic, occurrence-preserving
+   shaping.
+4. **L3 Responses formatter** can polish stable spans through the configured
+   formatting lane; it is the existing formatter, not a hidden small model.
 
-That means streaming partials are appended session-wide, but partial-pass fixes
-only backspace inside the current tail instead of overwriting earlier committed
-text. Final utterances keep their timestamp/segment metadata through the event
-pipeline, while overlays/chat bubbles still receive only backspace-encoded
-`TranscriptDelta` payloads.
+Silero supplies speech probability, boundaries, and pause/time evidence; it is
+not a text layer. The presentation reducer is the only transcript authority.
+The overlay, delivery, history, Agent, and Transcript Bus consume committed
+reducer events. A full-file retranscription remains an explicit proposal, not a
+replacement pass users must wait for after every take.
 
 ### Recording Modes
 

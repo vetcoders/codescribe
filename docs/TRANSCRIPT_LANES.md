@@ -128,7 +128,7 @@ mic ▶ recorder ▶ [J1] ▶ Silero VAD chunker ▶ utterance boundaries
 | L1.4 | diff + apply  | `core/stt/tail_patcher/`                                           | current implementation uses word-aligned LCS and a change-ratio guard; target authority comes from PCM/span identity, never textual similarity alone; accepted corrections apply through one pre-final `ReplaceRange` fence                                      | corrected doctrine 2026-08-21 |
 | L1.5 | receipts      | `tail_patch_session_receipt` + per-request `tail_provider_receipt` | `armed/submitted/applied/skipped/timed_out/abandoned/drain` reconcile at job grain; receipt enters the ordered event stream before `SessionFinalised`; zero submitted while armed fails acceptance                                                               | `6b9a6475` + `ad1052d1`       |
 
-Field truth, 2026-08-14: ~42% of patches were rejected in Monika's sessions —
+Field truth, 2026-08-14: ~42% of patches were rejected in sampled sessions —
 the number the ⚑ Silero-fusion flip (§8) exists to fix.
 
 ## 4. LINE S — Stop path (every live line terminates here)
@@ -201,13 +201,13 @@ PCM-range idempotence is a default-ON identity law. A repeated
 
 ## 8. Dashed lines — built, verifier-green, ⚑ default-OFF (operator buttons)
 
-| flag                                    | line it arms                                                                                                                                                    | code                                                    | evidence                                                          |
-| --------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------- | ----------------------------------------------------------------- |
-| `CODESCRIBE_INLINE_FORMAT`              | L3 scheduling: stable L2 spans stream through the existing Formatting lane DURING dictation (`previous_response_id` chain per span), so stop pays only the tail | `core/llm/inline_format.rs`                             | W2-01 verifier-green; default OFF pending integrated live take    |
-| `CODESCRIBE_SILERO_FUSION`              | Silero boundary identity + conservative fusion feeding L1 windows; default OFF                                                                                  | `streaming/silero_fusion.rs`                            | synthetic starvation skips 18→6 (−67%); take-614 A/B still owed   |
-| `CODESCRIBE_OVERLAY_HIGHLIGHTS`         | lexicon-corrected words + VAD-speech-no-words gaps marked on canvas; highlighted span → Teach                                                                   | W13-6B (bridge + Swift)                                 | Rust+Swift tests green                                            |
-| `CODESCRIBE_STT_INITIAL_PROMPT_ENABLED` | lexicon VOICE: `Vocabulary:` prompt to Whisper per window                                                                                                       | `stream_postprocess.rs :: build_whisper_initial_prompt` | A/B: U-WER −1.5 pp but false inserts 1→7 — flip not justified yet |
-| `STT_TAIL_PROVIDER=sidecar\|remote`     | tail decode out of process / off host                                                                                                                           | `tail_provider.rs` + `codescribe-stt-sidecar`           | fake-provider receipt 22 ms; production supervision unmeasured    |
+| flag                                    | line it arms                                                                                                                                                    | code                                                    | evidence                                                                |
+| --------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------- | ----------------------------------------------------------------------- |
+| `CODESCRIBE_INLINE_FORMAT`              | L3 scheduling: stable L2 spans stream through the existing Formatting lane DURING dictation (`previous_response_id` chain per span), so stop pays only the tail | `core/llm/inline_format.rs`                             | W2-01 verifier-green; default OFF pending integrated live take          |
+| `CODESCRIBE_SILERO_FUSION`              | diagnostic Silero boundary identity + fusion; production default OFF while widened-pending vs request-range ownership is unresolved                             | `streaming/silero_fusion.rs`                            | synthetic starvation skips 18→6 (−67%); enclosing-range + live A/B owed |
+| `CODESCRIBE_OVERLAY_HIGHLIGHTS`         | lexicon-corrected words + VAD-speech-no-words gaps marked on canvas; highlighted span → Teach                                                                   | W13-6B (bridge + Swift)                                 | Rust+Swift tests green                                                  |
+| `CODESCRIBE_STT_INITIAL_PROMPT_ENABLED` | lexicon VOICE: `Vocabulary:` prompt to Whisper per window                                                                                                       | `stream_postprocess.rs :: build_whisper_initial_prompt` | A/B: U-WER −1.5 pp but false inserts 1→7 — flip not justified yet       |
+| `STT_TAIL_PROVIDER=sidecar\|remote`     | tail decode out of process / off host                                                                                                                           | `tail_provider.rs` + `codescribe-stt-sidecar`           | fake-provider receipt 22 ms; production supervision unmeasured          |
 
 ## 9. Junctions — where lines cross
 
@@ -371,14 +371,14 @@ tests, reports, or commits.
 - Runtime logs and Transcript Bus receipts prove actual execution.
 - Historical reports are evidence, never silent authority.
 - A comment marked `operator law` requires a direct operator decision reference.
-- Agent interpretations may not be attributed to Maciej or Monika.
+- Agent interpretations may not be attributed to named operators.
 - Superseded rules remain searchable but must be labeled superseded.
 - Tests for superseded behavior must be rewritten or deleted.
 - Green tests for the wrong contract are regressions, not reassurance.
 - Every contract-changing patch updates code, tests, settings, UI, and docs together.
 
 _Provenance: distilled from `docs/THE_ENGINE_ROADMAP.md`, the W13 settlement
-ledger, `/Users/maciejgad/Downloads/Kora_codescribe.md`, and structural/runtime
-verification on `fix/p0-p2-before-release@361ece40`, 2026-08-21._
+ledger, a private field-review transcript, and structural/runtime verification
+on `fix/p0-p2-before-release@361ece40`, 2026-08-21._
 
 𝚅𝚒𝚋𝚎𝚌𝚛𝚊𝚏𝚝𝚎𝚍. with AI Agents by VetCoders (c)2024-2026 LibraxisAI

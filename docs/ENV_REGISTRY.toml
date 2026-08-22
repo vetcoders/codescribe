@@ -1784,7 +1784,7 @@ default = ""
 type = "string"
 reload = "rebuild"
 category = "install"
-description = "Optional override of the org Voice Lab git URL. Empty = probe https://github.com/vetcoders/voice-lab.git and git@github.com:vetcoders/voice-lab.git, HTTPS first when gh git_protocol is https (this laptop), SSH first when it is ssh (Monika). Only those two org URLs are accepted."
+description = "Optional override of the org Voice Lab git URL. Empty = probe https://github.com/vetcoders/voice-lab.git and git@github.com:vetcoders/voice-lab.git, with the gh git_protocol transport first. Only those two org URLs are accepted."
 
 [vars.CODESCRIBE_VOICE_LAB_SRC]
 default = ""

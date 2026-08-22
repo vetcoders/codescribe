@@ -94,7 +94,6 @@ tests/assets/data_assets/*
 # Negations must come AFTER the wildcard (last match wins).
 /*.md
 !/AGENTS.md
-!/AGENT_BUS.md
 !/CHANGELOG.md
 !/CLAUDE.md
 !/CODE_OF_CONDUCT.md

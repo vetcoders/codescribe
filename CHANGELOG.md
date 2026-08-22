@@ -5,9 +5,41 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## Release reality
+
+| Version  | Repository milestone | Public distribution status                                                                         |
+| -------- | -------------------- | -------------------------------------------------------------------------------------------------- |
+| `0.13.3` | 2026-08-13           | **Latest published GitHub Release** (`v0.13.3`), signed, notarized, and stapled.                   |
+| `0.14.0` | 2026-08-17           | Source/daily-build milestone only; no Git tag or GitHub Release was published.                     |
+| `0.14.1` | 2026-08-18 onward    | Current source version and release candidate; no Git tag or GitHub Release has been published yet. |
+
+The sections below distinguish code milestones from public releases. A version
+number in `Cargo.toml` is not evidence that a DMG, tag, appcast, or GitHub
+Release exists.
+
 ## [Unreleased]
 
+> The `0.14.1` stabilization fight: retire Q8 completely, compose and validate
+> one loader-compatible FP16/F32 Whisper bundle, make Apple and Whisper observe
+> the same PCM clock, stop text-only deduplication from deleting intentional
+> repetitions, and make every admitted correction and stop outcome auditable.
+> This work is in source; it is not yet a public `v0.14.1` release.
+
 ### Added
+
+- **Acoustic occurrence, observation, and mutation receipts.** The live path
+  separates what was spoken on the PCM clock from what Apple/Whisper observed
+  and from the mutation that changed the canvas. Replays are keyed by
+  structural observation identity; two identical spoken words on disjoint PCM
+  spans remain two occurrences.
+- **One process-owned four-worker async runtime.** UniFFI exports enter a single
+  application-owned Tokio runtime instead of implicitly creating independent
+  worker pools per feature. Startup, task ownership, cancellation, worker
+  names, and bounded teardown are visible through a content-free snapshot.
+- **Exactly four machine layers.** L0 Apple live, L1 Whisper observation, L2
+  Lexicon + Light+, and L3 the existing Responses formatter. Silero remains the
+  VAD/time-evidence plane; `SessionFinalised` is lifecycle, not a hidden Final
+  BAM producer.
 
 - **The signed app can install the live named-agent bridge.** Agentic Readiness
   keeps the 13-step Setup Wizard intact while letting the operator explicitly
@@ -18,6 +50,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   provider-session lease/cursor plus active names across provider recovery.
 
 ### Fixed
+
+- **Repeated speech is no longer deleted by string equality.** Light+ stopped
+  collapsing every immediately repeated word, and decoder-loop cleanup now
+  consults the number of acoustic spans before removing a run. Saying a name
+  five times must preserve five occurrences; cleanup may remove only copies
+  that outnumber the audio evidence.
+- **Layer 1 stop receipts use independent terminal counters.** Applied,
+  skipped, timed-out, and abandoned jobs must sum to submitted jobs from their
+  real producers; `abandoned` is no longer invented as the arithmetic remainder
+  that made reconciliation impossible to falsify.
+- **Application runtime startup and shutdown fail honestly.** A failed named
+  worker start rolls the runtime back so retry cannot report a false `running`
+  state. Quit gives recording finalization a bounded wait, releases microphone
+  ownership, and then tears down the runtime.
+- **RUSTSEC-2026-0258 is removed from the HTTP/2 stack.** `h2` is updated from
+  `0.4.15` to `0.4.16`, which contains the empty-DATA-frame resource-exhaustion
+  fix. `cargo audit` remains a release gate, not a one-time claim.
 
 - **`make install-app` accepts keys from Get license.** A keyed local
   install verifies CSK1 with the same public key the site signs. The
@@ -31,12 +80,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **Paste status lives in the overlay footer.** Insert that cannot reach
   the ambulance no longer throws a capsule over the action row. A quiet
   chip sits next to `local apple` (`⌘⌥V` / `copied` / `no ax`).
-- **Auto-paste may land in the Agent window and in Alacritty.** The overlay
-  canvas is still never a Cmd+V sink (Swift caret probe). The whole
-  Codescribe app is not "self": Agent is a legal ambulance, and a floating
-  overlay that leaves `NSWorkspace` naming Codescribe no longer vetoes a
-  confirmed Alacritty/Zellij activate. Failures still restore the user
-  clipboard and park our buffer.
+- **Auto-paste lands only in a latched foreign application.** The Codescribe
+  overlay and Agent window are not Cmd+V targets; Agent delivery uses the
+  explicit Agent route. A foreign target must be observed as frontmost after
+  activation; Codescribe remaining frontmost is a refusal, not a guessed
+  success. Closed, expired, or unconfirmed targets fail into Paste Here without
+  relaunching another application or replacing the user's clipboard.
 - **CS Voice Lab starts with the take.** A keyed `install-app` bake
   spawns `~/.codescribe/voice-lab` when recording prepares, and the
   existing Voice Lab buttons ensure `:8765` before opening the
@@ -77,6 +126,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   compare Whisper file vs raw, never vs Format.
 
 ### Changed
+
+- **Span idempotence is enabled by default.**
+  `CODESCRIBE_SPAN_IDEMPOTENCE` changed from `0` to `1`. The gate deduplicates
+  structural replays of the same observation identity; it must never dedupe
+  intentional repetitions by text.
+- **Layer 1 is mode-owned.** With no explicit global phase token, Local Power
+  arms the Apple-first local Whisper observer by default; Apple-only does not.
+  `CODESCRIBE_LAYERED_TRANSCRIPTION=off` is an explicit degraded override,
+  while legacy `phase1` remains a compatibility token. “Unset globally” and
+  “armed in Local Power” are therefore not contradictory.
 
 - **Local Whisper is an explicitly validated FP16/F32 bundle.** Runtime,
   Settings download, release scripts, E2E discovery, and the optional fat build
@@ -126,11 +185,36 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   “You use dev power mode” caption in the bottom-right of overlay, Agent
   chat, and Settings. Production DMGs stay unmarked.
 
+### Next steps before public `v0.14.1`
+
+- Keep the competing PR #82 acoustic ledger out of this release candidate.
+  After release, port its occurrence/observation/receipt model only through a
+  dedicated cut with the five-`Iwo` conservation fixture and left-, right-,
+  and multi-owner overlap falsifiers. Shared contract ancestry is not runtime
+  integration.
+- Run the full local gates (`make check`, `make verify`, `make test-swift`),
+  `cargo audit`, and current-branch corpus/acceptance fixtures. The PR #82 CI
+  run did execute and failed on a cancellation-accounting race; the active
+  branch contains the targeted fix but still needs the full rerun.
+- Close or explicitly retain the small deferred set: two missing
+  `TAIL_PATCH_APPLY_REFUSED` branch tests, a host probe for Swift-to-Rust task
+  cancellation, a user-visible hotkey/TCC recovery notice, and an Agent Bridge
+  manifest cache only if measured Settings latency justifies it. Silero fusion
+  stays diagnostic and OFF until its enclosing-range semantics pass live A/B.
+- Finish the public-tree and tracked-history privacy scan. Keep the functional
+  OAuth client registration as a reviewed public identifier unless it is
+  replaced atomically; never treat it as a leaked session token and silently
+  break sign-in.
+- Cut and verify one standard signed/notarized/stapled DMG from a clean commit,
+  install that exact stapled `.app`, then publish the tag/appcast/GitHub Release
+  as a separate operator-approved step. Until then `v0.13.3` remains Latest.
+
 ## [0.14.1] - 2026-08-18
 
 > Patch: everyday-stable 0.14.x. Same slim public SKU as 0.14.0, plus the two
 > Settings/auth probes that were still lying on a daily machine, and one
-> command that installs the notarized .app instead of re-signing it.
+> command that installs the notarized .app instead of re-signing it. This was a
+> source/daily-build milestone, not a published GitHub Release.
 
 ### Fixed
 
@@ -159,9 +243,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [0.14.0] - 2026-08-17
 
 > Minor: developer Lab surface, Dictionary helper file-pass, bus word pins,
-> and a 30-minute Whisper idle. Production DMG still has no Lab menu.
+> and a 30-minute Whisper idle. Production DMG still has no Lab menu. This was
+> a source/daily-build milestone; no `v0.14.0` tag or GitHub Release exists.
 
 ### Added
+
+- **One Transcript Bus and one delivery throne.** The presentation reducer
+  became transcript authority for overlay, paste, history, Agent capture, and
+  diagnostic followers. Delivery follows explicit operator intent rather than
+  whichever application happens to own OS focus.
+- **PCM-clock word pins and energy evidence.** Transcript spans carry their
+  capture clock and energy so later observers can prove which audio they are
+  talking about instead of matching only strings.
 
 - **Developer Lab on a keyed local install.** A public `git clone && make`
   stays Lab-off. Production DMG refuses the bit.
@@ -180,6 +273,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   glass drinks the desktop; the panel stays non-key until you click FINAL.
 
 ### Changed
+
+- **Release signing preserves the user's Keychain domain.** The release lane
+  snapshots/restores the exact search list and default keychain, never borrows
+  a temporary build keychain as the user's lasting default, and diagnoses
+  stale/deleted keychain paths before signing.
+- **Cloud and local live observations are explicit lanes.** Apple remains the
+  instant canvas; local or provider Layer 1 can contribute bounded evidence,
+  while file Retranscribe remains a separate operator action.
 
 - **Whisper idle is 30 minutes after the last finished decode**, not 60
   seconds from load. The running process only picks this up after

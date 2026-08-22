@@ -9,7 +9,7 @@
 //! Issuance (seed supplied at runtime, never as an argument):
 //! ```bash
 //! CODESCRIBE_LICENSE_SIGNER_SEED_HEX=<64-hex> \
-//!   cargo run -p codescribe-core --example license_signer -- sign monika@vetcoders.io
+//!   cargo run -p codescribe-core --example license_signer -- sign user@example.com
 //! ```
 //!
 //! The dev seed (RFC 8032 test vector) is publicly known; this tool refuses to

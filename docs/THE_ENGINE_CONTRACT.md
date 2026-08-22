@@ -108,6 +108,12 @@ hands-free epoch lifecycle needs speech edges). There is no second VAD and no
 new sideband flag. If Silero cannot load, `EpochGate` disarms and Apple runs as
 one continuous stream with no sideband events.
 
+`CODESCRIBE_SILERO_FUSION` remains a diagnostic default-OFF lane for this
+release. Fusion can widen a pending Apple range beyond the narrower Layer 1
+request identity, while admission currently requires the request to contain
+the pending range. Until a live A/B and an enclosing-range falsifier converge
+that ownership, enabling fusion is not a supported production configuration.
+
 Final BAM is superseded and has no automatic content producer. Normal stop
 drains already admitted work and assembles the ordered span ledger; it does not
 start a fifth rewrite. SessionFinalised is lifecycle-only and may not mutate
@@ -734,7 +740,7 @@ The zero-work receipt is diagnostic:
 ## Anti-drift rules
 
 - Never turn a heuristic into an operator law.
-- Never cite Maciej or Monika for an agent inference.
+- Never attribute an agent inference to a named operator.
 - Never preserve a known-wrong rule for compatibility without labeling it.
 - Never let a green test sanctify superseded behavior.
 - Never let an old report outrank current runtime.
@@ -976,54 +982,54 @@ The model shipped is a three-way split, not the single `AcousticSpanIdentity`
 step 1 sketched. The correction is the point: `order` on the physical identity
 would let a replay mint a new occurrence by arriving late.
 
-* `OccurrenceIdentity` — session, capture epoch, sample range. Nothing else.
+- `OccurrenceIdentity` — session, capture epoch, sample range. Nothing else.
   No text, no producer, no order.
-* `ObservationIdentity` — producer, request/window, generation, occurrence.
+- `ObservationIdentity` — producer, request/window, generation, occurrence.
   `order` lives here.
-* `MutationReceipt` — `preserve` / `correct` / `insert` /
+- `MutationReceipt` — `preserve` / `correct` / `insert` /
   `keep_visible_unanchored` / `refuse`, one per offered observation, in input
   order. Conservation is auditable because the receipt count always equals the
   observation count.
 
 Landed with it:
 
-* **Step 3.** A coalesced Layer 1 window splits at every PCM gap instead of
+- **Step 3.** A coalesced Layer 1 window splits at every PCM gap instead of
   declaring `[first.start, last.end)` over audio it dropped. One flush per
   contiguous run, each declaring exactly what it carries.
-* **Step 6.** `revision_tolerant_known_prefix` keeps its behaviour and loses
+- **Step 6.** `revision_tolerant_known_prefix` keeps its behaviour and loses
   its authority. Its answer is an alignment hint, clamped to the committed
   occurrences the callback may claim: whole spans only, and no more canvas
   words than the callback itself carries. Where nothing is anchored the legacy
   answer stands rather than a fabricated verdict.
-* **Step 4, partially.** Layer 1 already fenced on PCM identity and already
+- **Step 4, partially.** Layer 1 already fenced on PCM identity and already
   validated segment containment, ordering and non-overlap. The gap was that the
   spans did not protect the text; the surviving span count now reaches the
-  repetition cleanup. Identity-first ranking *inside* an authorised span is not
+  repetition cleanup. Identity-first ranking _inside_ an authorised span is not
   done — LCS still ranks across the whole payload text.
 
 Two defects found while cutting, neither in the original 12:
 
-* **Light+ deleted every immediately repeated word.** `collapse_tokens` turned
+- **Light+ deleted every immediately repeated word.** `collapse_tokens` turned
   five spoken occurrences of a name into one, on string equality alone. Removed.
   Hesitations and punctuation runs still collapse — a hesitation is a
   non-lexical sound and punctuation is characters, neither is an occurrence.
-* **The decoder-loop remover ran on any run of three identical words**, with no
+- **The decoder-loop remover ran on any run of three identical words**, with no
   acoustic evidence, on every processed chunk. It is now gated on the span
   count: a run with one span per copy is speech; only a run longer than the
   audio can account for is collapsed.
 
 Known open, stated rather than implied:
 
-* A cumulative Apple final under-declares its window by construction — its text
+- A cumulative Apple final under-declares its window by construction — its text
   restates the whole phrase while the window carries only the newest audio. No
   range rule can bound its alignment, so the finality bar does: whole committed
   spans, bounded by the callback's own length. A textual match further back than
-  that bound is out of reach, but a match *inside* it is still decided by text.
-* `note_apple_commit` still fabricates `session: "legacy_progressive"`,
+  that bound is out of reach, but a match _inside_ it is still decided by text.
+- `note_apple_commit` still fabricates `session: "legacy_progressive"`,
   `capture_epoch: 0`, `0..end_millis` for every span, so every legacy span
   contains every earlier one. Left alone deliberately: `TailSampleRange::contains`
   has consumers that would change behaviour, and that is its own cut.
-* Steps 2, 5, 7, 8, 9, 10 unstarted.
+- Steps 2, 5, 7, 8, 9, 10 unstarted.
 
 ## How a quality HTML must behave
 

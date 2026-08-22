@@ -4,8 +4,8 @@
 # Accepted first lines:
 #   [claude/vc-workflow] fix: example
 #   [codex/vc-ownership] release: example
-#   [maciej/vc-manual] docs: example
-#   [monika/vc-manual] chore: example
+#   [operator/vc-manual] docs: example
+#   [reviewer/vc-manual] chore: example
 #   [ok-commit] fix: example
 #   Merge branch 'feature' into develop
 #   Squashed commit of the following:
@@ -27,7 +27,7 @@ first_line=$(
   ' "$MSG_FILE"
 )
 
-agent_pattern='(claude|codex|gemini|grok|maciej|monika)'
+agent_pattern='(claude|codex|gemini|grok|operator|reviewer)'
 workflow_pattern='vc-[a-z0-9][a-z0-9-]*'
 agent_commit_pattern="^\\[${agent_pattern}/${workflow_pattern}\\] .+"
 human_commit_pattern='^\[ok-commit\] .+'
@@ -42,13 +42,13 @@ echo "✋ Commit blocked: add provenance tag to the commit message." >&2
 echo "" >&2
 echo "  Agent telemetry:  [claude/vc-marbles] fix: overlay crash" >&2
 echo "  Agent telemetry:  [codex/vc-ownership] release: embed models by default" >&2
-echo "  Human commit:     [monika/vc-manual] chore: normalize docs" >&2
+echo "  Human commit:     [reviewer/vc-manual] chore: normalize docs" >&2
 echo "  Human quick:      [ok-commit] fix: overlay crash" >&2
 echo "  Merge commit:     Merge branch 'feature' into develop" >&2
 echo "  Squash commit:    Squashed commit of the following:" >&2
 echo "" >&2
 echo "  Format: [<agent>/vc-<workflow>] <description>" >&2
-echo "  Agents: claude, codex, gemini, grok, maciej, monika" >&2
+echo "  Authors: claude, codex, gemini, grok, operator, reviewer" >&2
 echo "  Workflows: any vc-* workflow, e.g. vc-marbles, vc-justdo, vc-workflow, vc-ownership, vc-manual" >&2
 echo "" >&2
 echo "  Current first line: ${first_line:-<empty>}" >&2

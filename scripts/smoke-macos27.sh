@@ -19,7 +19,7 @@
 # ---------------------
 # Post synthetic events, raise a TCC dialog, read pasteboard content, or touch
 # operator state. Rows that need any of those are operator-gated by design —
-# see AGENT_BUS.md § OPERATOR_AWAY.
+# see the install cadence and safety boundaries in AGENTS.md.
 #
 # USAGE
 #   scripts/smoke-macos27.sh [--out FILE] [--with-inference] [--clipboard-content]

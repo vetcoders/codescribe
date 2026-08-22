@@ -929,7 +929,7 @@ mod tests {
 
         // 3. Stored tokens with an id_token email ⇒ signed in as <email>.
         let claims = base64::engine::general_purpose::URL_SAFE_NO_PAD
-            .encode(r#"{"email":"maciej@example.com"}"#);
+            .encode(r#"{"email":"user@example.com"}"#);
         let tokens = AccountTokens::new(
             ProviderKind::OpenAiResponses,
             "access".to_string(),
@@ -942,7 +942,7 @@ mod tests {
         let status = account_status(ProviderKind::OpenAiResponses);
         assert!(status.client_id_configured);
         assert!(status.signed_in);
-        assert_eq!(status.message, "signed in as maciej@example.com");
+        assert_eq!(status.message, "signed in as user@example.com");
     }
 
     /// Identity for the Keys panel comes from the id_token email claim when present.
@@ -950,7 +950,7 @@ mod tests {
     fn signed_in_status_carries_the_id_token_email_when_present() {
         use base64::Engine;
         let claims = base64::engine::general_purpose::URL_SAFE_NO_PAD
-            .encode(r#"{"email":"maciej@example.com","sub":"user-123"}"#);
+            .encode(r#"{"email":"user@example.com","sub":"user-123"}"#);
         let tokens = AccountTokens {
             provider: ProviderKind::OpenAiResponses.as_str().to_string(),
             access_token: "access".to_string(),
@@ -961,7 +961,7 @@ mod tests {
         };
         assert_eq!(
             id_token_identity(&tokens).as_deref(),
-            Some("maciej@example.com")
+            Some("user@example.com")
         );
 
         let no_id_token = AccountTokens {

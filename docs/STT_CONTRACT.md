@@ -231,13 +231,13 @@ file-pass belongs only to explicit retranscribe surfaces.
 
 ### 3.4 STT engine dispatch (the nit)
 
-| Call site             | When             | Function / transport                                             | Engine rule                                              |
-| --------------------- | ---------------- | ---------------------------------------------------------------- | -------------------------------------------------------- |
-| Live Layer 0          | during recording | Apple progressive                                                | committed canvas floor                                   |
-| Live Layer 1 typed    | during recording | in-process / sidecar / remote tail provider on ~5 Apple segments | exact-PCM outcome rewrites pending baseline before final |
-| Live Layer 1 unbound  | after recording  | full-session Voice Lab WSS candidate                             | evidence only; typed refusal if it proposes mutation     |
-| Legacy VAD tail patch | during recording | VAD/scheduler route                                              | typed refusal; no pending-span fence exists              |
-| Explicit Retranscribe | operator action  | local completed-file decode or cloud multipart                   | may replace the selected artifact, never the live canvas |
+| Call site             | When             | Function / transport                                             | Engine rule                                                           |
+| --------------------- | ---------------- | ---------------------------------------------------------------- | --------------------------------------------------------------------- |
+| Live Layer 0          | during recording | Apple progressive                                                | first PCM-pinned observation; text is revisable by same-span evidence |
+| Live Layer 1 typed    | during recording | in-process / sidecar / remote tail provider on ~5 Apple segments | exact-PCM outcome rewrites pending baseline before final              |
+| Live Layer 1 unbound  | after recording  | full-session Voice Lab WSS candidate                             | evidence only; typed refusal if it proposes mutation                  |
+| Legacy VAD tail patch | during recording | VAD/scheduler route                                              | typed refusal; no pending-span fence exists                           |
+| Explicit Retranscribe | operator action  | local completed-file decode or cloud multipart                   | may replace the selected artifact, never the live canvas              |
 
 Layer 1 mutation identity is `(session, capture_epoch, sample_start, sample_end, request_id, target_utterance_id, event_ordinal)`. The request range
 must contain the target span and any provider payload must echo the admitted
@@ -266,6 +266,11 @@ separately from delivery `action`. The latch is consumed by one quality commit;
 three distinct correction IDs for the same normalized lexical pair expose
 `1/3`, `2/3`, `3/3` and promote exactly once. Formatter, retranscribe, replay,
 bulk, speech-gap, and delivery actions without that latch cast no vote.
+
+Dictionary **Teach** is a separate, explicit bulk-promotion command: it mines
+eligible correction-store and proposed rows immediately and therefore bypasses
+the automatic three-human-correction threshold. The UI must say that plainly;
+running Teach is operator authorization, not passive learning.
 
 **Runtime proof:** Settings may show configured readiness, but a take counts as
 exercised only when its typed receipt says `armed=true` and `submitted>0`.
@@ -306,12 +311,15 @@ Valid engine labels on verdict: `local_apple`, `local_whisper`, `streaming_whisp
    "engine": {
      "stt_engine": "apple",
      "whisper_model": "whisper-large-v3-turbo",
-     "final_pass_mode": "smart"
+     "final_pass_mode": "off"
    }
    ```
 2. Full quit + relaunch.
 3. Footer / Active STT after a take: **`local_apple`** on happy path.
-4. Empty death mid-take = **code cut** (preflight + Whisper recovery when audio exists) — see planning report Wave 1. Settings alone cannot fix `run_apple_live_only`.
+4. Local Power arms bounded Whisper Layer 1 by mode when the model is ready;
+   Apple-only does not. An explicit global `off` is a degraded override.
+5. Empty death mid-take = **code cut** (preflight + recovery when audio exists).
+   Settings alone cannot repair a broken live session.
 
 ### Want Whisper-only (power user / offline — not product default)
 

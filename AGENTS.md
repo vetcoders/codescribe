@@ -15,6 +15,15 @@ a second workflow, dispatch plane, or worktree policy.
 - `PresentationEmitter` is the transcript reducer of record. The clean
   Transcript Bus observes committed reducer events; UI previews, raw engine
   text, and a second transcription pass are not transcript authority.
+- Apple is the first observer, not immutable text authority. A later observer
+  may repair wording only when session, capture epoch, and PCM span identity
+  prove that it owns the same occurrence.
+- Intentional repetition is never duplicate text. Deduplication may reject a
+  replayed observation identity; it must not collapse equal words merely
+  because their strings match.
+- The engine has four machine layers: Apple, Whisper, Lexicon + Light+, and the
+  existing Responses formatter. Silero is VAD/time evidence, and
+  `SessionFinalised` is lifecycle rather than a Final BAM producer.
 - Delivery follows explicit operator intent. OS focus is not a substitute for
   an Agent, canvas, clipboard, or paste route.
 - Swift recording state is derived from controller lifecycle. A terminal event
@@ -49,7 +58,7 @@ then update both the code and the relevant contract in the same cut.
 - Generated UniFFI Swift bindings must match the Rust bridge. Run
   `make app-bindings` after bridge API changes.
 
-## Install cadence (Maciej + Monika)
+## Daily install cadence
 
 Operator agreement 2026-08-19.
 
@@ -59,14 +68,16 @@ Operator agreement 2026-08-19.
 - **Refuse the install** when a Codescribe take is in flight. Authority is
   the Transcript Bus: last session has `session_started` and no later
   `transcript_sealed`. Never tear down `/Applications/Codescribe.app` mid-take.
-- A **notarized slim DMG for Monika is once per calendar day**, not every
+- A **notarized slim DMG for the secondary release operator is once per
+  calendar day**, not every
   commit and not "after a batch of key fixes". When the bus is idle, cut
   `make release-standard` (sign + notarize + `verify-dmg`). One artifact
   per day is enough; do not recut for later same-day commits unless the
   operator asks. Say the path and staple result in the turn. That is a
   local release artifact; still not a silent merge to trunk, tag, or
   GitHub Release.
-- Ad-hoc `/Applications` from `install-app` is never "the Monika DMG".
+- An ad-hoc `/Applications` build from `install-app` is never the distribution
+  DMG.
 
 ## Verification
 

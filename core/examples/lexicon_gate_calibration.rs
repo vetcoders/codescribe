@@ -1,7 +1,7 @@
 //! Calibrate the semantic gate for lexicon candidates against real data.
 //!
 //! The lexical gate (`is_sensible_lexicon_candidate`) admits any pair within 20
-//! edit operations, which is how "Monika → weszły" and "myjnię poza → maina
+//! edit operations, which is how "pakiet → weszły" and "myjnię poza → maina
 //! tylko wylądowały" became rules on the operator's machine: unrelated words
 //! that happen to sit close enough in edit distance. The fix is the reason
 //! MiniLM was embedded in the first place — a MEANING check the string
@@ -16,7 +16,7 @@
 //!
 //! Usage:
 //!   cargo run -p codescribe-core --example lexicon_gate_calibration -- \
-//!     "Monika=weszły" "myjnię poza=maina tylko wylądowały" "wylądował=wylądowało"
+//!     "pakiet=weszły" "myjnię poza=maina tylko wylądowały" "wylądował=wylądowało"
 
 use std::collections::BTreeMap;
 

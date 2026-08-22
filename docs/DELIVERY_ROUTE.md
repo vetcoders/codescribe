@@ -11,35 +11,36 @@
 2. **`resolve_delivery_route` is the only function that picks a destination.**
    Auto-paste, overlay Insert, and To Agent consult it. They do not invent a
    second king.
-3. **The overlay canvas is never a legal Cmd+V target.** Caret in our panel
-   → park Paste Here. The Agent window, Alacritty/Zellij (vc-terminal),
-   Notes, and every other caret **are** legal ambulances. Assistive still
-   delivers as a first-class Agent message — that is a different intent,
-   not a ban on pasting into the Agent window.
+3. **Codescribe is never a legal Cmd+V target.** Caret in our overlay or Agent
+   window → park Paste Here or use the explicit Agent route. Alacritty/Zellij
+   (vc-terminal), Notes, and other positively latched foreign carets are legal
+   paste targets. Assistive delivers as a first-class Agent message; it does
+   not synthesize a paste back into our own process.
 4. **Clipboard is borrowed, never stolen.** On release we snapshot the user's
    pasteboard, Cmd+V into the latched caret, then restore. The overlay must
-   resign key first — if `NSWorkspace` still names Codescribe after activate,
-   that is not a veto. If Cmd+V cannot land, park ⌘⌥V and leave the user's
-   pasteboard alone. Explicit overlay **Copy** is the only verb that writes
-   the pasteboard on purpose and leaves it.
+   resign key first. The foreign target must then be observed as frontmost;
+   Codescribe remaining frontmost is a veto. If Cmd+V cannot land, park ⌘⌥V
+   and leave the user's pasteboard alone. Explicit overlay **Copy** is the only
+   verb that writes the pasteboard on purpose and leaves it.
 
 ## Intent → route
 
-| Intent            | Typical gesture                      | Route                                                                                                                        |
-| ----------------- | ------------------------------------ | ---------------------------------------------------------------------------------------------------------------------------- |
-| `AgentVoice`      | Double Right Option / assistive hold | `AgentComposer`                                                                                                              |
-| `OverlayToAgent`  | overlay **To Agent**                 | `AgentComposer`                                                                                                              |
-| `OrientDictation` | Hold Fn / Globe                      | `ClipboardPaste` if auto-paste; `OrientCanvas` if overlay caret / no auto-paste                                              |
-| `OrientFormat`    | Double Left Option                   | same as dictation                                                                                                            |
-| `OverlayInsert`   | overlay Insert / defer               | `ClipboardPaste` into the latched caret (Agent, Alacritty, …); `DeferredInsert` only when the overlay canvas holds the caret |
-| `NotesOnly`       | save-only notes                      | `ArchiveOnly`                                                                                                                |
+| Intent            | Typical gesture                      | Route                                                                                                                |
+| ----------------- | ------------------------------------ | -------------------------------------------------------------------------------------------------------------------- |
+| `AgentVoice`      | Double Right Option / assistive hold | `AgentComposer`                                                                                                      |
+| `OverlayToAgent`  | overlay **To Agent**                 | `AgentComposer`                                                                                                      |
+| `OrientDictation` | Hold Fn / Globe                      | `ClipboardPaste` if auto-paste; `OrientCanvas` if overlay caret / no auto-paste                                      |
+| `OrientFormat`    | Double Left Option                   | same as dictation                                                                                                    |
+| `OverlayInsert`   | overlay Insert / defer               | `ClipboardPaste` into a latched foreign caret (Alacritty, Notes, …); `DeferredInsert` when Codescribe owns the caret |
+| `NotesOnly`       | save-only notes                      | `ArchiveOnly`                                                                                                        |
 
 Vetoes that keep Orient off the paste gun: empty / no-speech, live-stream
 session, quality-commit pending, overlay canvas holds the caret.
 
 Explicit overlay clicks do **not** inherit the live-stream or quality-commit
-vetoes. The user asked to insert now. Overlay caret still refuses Cmd+V into
-the canvas and arms Paste Here instead. Agent / Alacritty still get Cmd+V.
+vetoes. The user asked to insert now. Any Codescribe caret still refuses Cmd+V
+and arms Paste Here instead. Alacritty and other confirmed foreign targets get
+Cmd+V; Agent requires the explicit Agent route.
 
 `paste_text_from_overlay` and `defer_text_from_overlay` consult
 `resolve_delivery_route`. They do not pick a destination on their own.
@@ -52,8 +53,9 @@ One INFO line per stop / To Agent / overlay Insert / defer:
 delivery_route: intent=orient_dictation route=clipboard_paste reason=auto_paste_to_latched_target target=Ghostty
 ```
 
-`reason=refuse_paste_into_self` is the smoking gun for "I was looking at the
-Agent and Hold Fn dumped raw into the composer".
+`reason=refuse_paste_into_self` is the smoking gun for "Codescribe owned focus,
+so the transcript was parked instead of being pasted into an unknown internal
+caret".
 
 ## What this cut does not do
 

@@ -505,7 +505,7 @@ classes this roadmap names: vocabulary, code-switching, tail integrity.
 The gap is **not model capability** — we embed the same Whisper family.
 Layer 1 is wired but no longer the stock live default. The gap is the
 live lane: window feeding, patch authority, and (until this morning)
-buffer integrity. Field evidence, same morning (Monika, 2026-08-14): 42%
+buffer integrity. Field evidence from 2026-08-14: 42%
 of Layer-1 tail patches rejected (80 applied / 59 rejected across 10
 sessions), and a dual-writer `transcript_buffer` split-brain (reducer 228
 chars, final Apple partial 264, RAW 791 ≈ 3×264 — the same sentence

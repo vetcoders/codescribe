@@ -3,17 +3,17 @@
 #
 # Org-only: the operator must be able to read vetcoders/voice-lab (sibling
 # checkout or git clone). External contributors cannot walk this path.
-# Public Sparkle Ed + license verify keys come from the Monika pack so
+# Public Sparkle Ed + license verify keys come from the operator settings pack so
 # CSDeveloperSurface and agent Lab extras stay armed on this hot path.
 #
 # Env:
 #   VOICE_LAB_REPO_URL            optional override. Empty = org HTTPS or SSH,
 #                                 ordered by `gh config git_protocol` (https on
-#                                 this laptop, ssh on Monika). Only vetcoders/
+#                                 the current host). Only vetcoders/
 #                                 voice-lab URLs are accepted.
 #   CODESCRIBE_VOICE_LAB_SRC      existing checkout (skips clone)
 #   VOICE_LAB_INSTALL_SETTINGS    unset = seed missing app settings + empty
-#                                 engine keys from examples/monika/settings.json
+#                                 engine keys from the checkout's operator pack
 #                                 1 = overwrite settings (setup.sh backup)
 #                                 0 = never touch Application Support settings
 #   HOME                          runtime dest ~/.codescribe/voice-lab
@@ -38,7 +38,20 @@ fail() {
 
 looks_like_voice_lab() {
   local root="$1"
-  [[ -f "${root}/server.py" && -f "${root}/setup.sh" && -d "${root}/examples/monika/keys" ]]
+  [[ -f "${root}/server.py" && -f "${root}/setup.sh" ]] &&
+    operator_pack_dir "$root" >/dev/null
+}
+
+operator_pack_dir() {
+  local root="$1"
+  local candidate
+  for candidate in "${root}"/examples/*; do
+    if [[ -d "${candidate}/keys" && -f "${candidate}/settings.json" ]]; then
+      printf '%s\n' "$candidate"
+      return 0
+    fi
+  done
+  return 1
 }
 
 normalize_repo_url() {
@@ -47,7 +60,7 @@ normalize_repo_url() {
   printf '%s\n' "$url"
 }
 
-# Org lock: HTTPS (this machine) or SSH (Monika). Not "any URL with voice-lab".
+# Org lock: HTTPS or SSH according to the current host. Not "any URL with voice-lab".
 remote_is_voice_lab() {
   local url
   url="$(normalize_repo_url "$1")"
@@ -137,20 +150,22 @@ ensure_checkout() {
   mkdir -p "$(dirname "$src")"
   echo "==> cloning ${REPO_URL} → ${src}"
   git clone --branch main --single-branch "$REPO_URL" "$src"
-  looks_like_voice_lab "$src" || fail "clone succeeded but ${src} is missing server.py / Monika pack"
+  looks_like_voice_lab "$src" || fail "clone succeeded but ${src} is missing server.py / operator settings pack"
 }
 
 app_settings_path() {
   echo "${HOME}/Library/Application Support/Codescribe/settings.json"
 }
 
-# Codescribe does not invent the org cloud URL on first launch. The Monika
+# Codescribe does not invent the org cloud URL on first launch. The operator
 # pack in voice-lab does. Seed it on this hot path: missing file → copy;
 # existing file → fill empty asr_mode / cloud_transcription_endpoint only.
 # A host that already pointed STT at loopback or Libraxis is left alone.
 seed_app_settings() {
   local src="$1"
-  local pack="${src}/examples/monika/settings.json"
+  local pack_dir pack
+  pack_dir="$(operator_pack_dir "$src")" || fail "operator settings pack missing under ${src}/examples"
+  pack="${pack_dir}/settings.json"
   local dest
   dest="$(app_settings_path)"
   local mode="${VOICE_LAB_INSTALL_SETTINGS:-auto}"
@@ -159,7 +174,7 @@ seed_app_settings() {
     echo "==> app settings skipped (VOICE_LAB_INSTALL_SETTINGS=0)"
     return
   fi
-  [[ -f "$pack" ]] || fail "Monika settings pack missing: ${pack}"
+  [[ -f "$pack" ]] || fail "operator settings pack missing: ${pack}"
 
   if [[ "$mode" == "1" ]]; then
     return
@@ -181,7 +196,7 @@ want_mode = (engine.get("asr_mode") or "").strip()
 if not dest.is_file():
     dest.parent.mkdir(parents=True, exist_ok=True)
     dest.write_text(pack.read_text())
-    print(f"==> seeded app settings from Monika pack → {dest}")
+    print(f"==> seeded app settings from operator pack → {dest}")
     raise SystemExit(0)
 
 data = json.loads(dest.read_text())
@@ -244,14 +259,14 @@ verify_runtime() {
   elif [[ -f "${HOME}/.vibecrafted/secrets/codescribe/sparkle-public.b64" ]]; then
     :
   else
-    fail "Sparkle public key missing (~/.codescribe/config/dev/keys or Monika pack)"
+    fail "Sparkle public key missing (~/.codescribe/config/dev/keys or operator pack)"
   fi
   if [[ -f "${HOME}/.codescribe/config/dev/keys/license-public.hex" ]]; then
     :
   elif [[ -f "${HOME}/.vibecrafted/secrets/codescribe/license-public.hex" ]]; then
     :
   else
-    fail "license public key missing (~/.codescribe/config/dev/keys or Monika pack)"
+    fail "license public key missing (~/.codescribe/config/dev/keys or operator pack)"
   fi
   echo "==> Voice Lab runtime ${RUNTIME}"
   echo "==> launcher ${LAUNCHER}"
