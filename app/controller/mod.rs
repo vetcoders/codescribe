@@ -3977,8 +3977,8 @@ impl RecordingController {
             {
                 let lang_str = language_opt.map(String::from);
                 // W13-1: consume the inline-format buffer when armed — stop
-                // pays only for the unformatted tail; falls back to the classic
-                // full-text format when the buffer cannot prove coverage.
+                // closes only the unformatted tail. An active ledger mismatch
+                // fails open to complete L2 text, never a hidden full-text call.
                 let result = codescribe_core::llm::inline_format::format_text_with_inline_buffer(
                     &clean_text,
                     lang_str.as_deref(),
@@ -4033,7 +4033,7 @@ impl RecordingController {
                 info!("Formatting mode (Left Option): correcting transcript via AI");
 
                 let lang_str = language_opt.map(String::from);
-                // W13-1: inline buffer first, classic full format as fallback.
+                // W13-1: span-keyed inline close; active failure keeps full L2.
                 let result = codescribe_core::llm::inline_format::format_text_with_inline_buffer(
                     &clean_text,
                     lang_str.as_deref(),
@@ -4079,7 +4079,7 @@ impl RecordingController {
                 info!("Formatting mode (Toggle): correcting transcript via AI");
 
                 let lang_str = language_opt.map(String::from);
-                // W13-1: inline buffer first, classic full format as fallback.
+                // W13-1: span-keyed inline close; active failure keeps full L2.
                 let result = codescribe_core::llm::inline_format::format_text_with_inline_buffer(
                     &clean_text,
                     lang_str.as_deref(),

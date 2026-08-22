@@ -402,7 +402,7 @@ pub(crate) async fn apple_stream_transcription_session(
     // W13-1 inline-format buffer: arm a fresh chunk/chain session (no-op when
     // `CODESCRIBE_INLINE_FORMAT` is off). Must happen on the async side — the
     // blocking seal worker only ever enqueues sealed chunks.
-    crate::llm::inline_format::begin_session(language.as_deref());
+    crate::llm::inline_format::begin_session(&session_id, language.as_deref());
 
     // C1: split the one recording-start decision into its explicit local
     // exact-span disposition and (when Cloud is selected) the injected generic
@@ -1211,7 +1211,16 @@ impl AppleSealState {
             // Seal = "format now" signal (W13-1): a sealed span is byte-stable,
             // so the inline-format buffer may chunk-format it while dictation
             // continues. Sync + non-blocking; no-op unless the flag is armed.
-            crate::llm::inline_format::on_chunk_sealed(sealed.id, &sealed.text);
+            crate::llm::inline_format::on_span_sealed(
+                crate::llm::inline_format::StableFormatSpan {
+                    session_id: sealed.range.session.clone(),
+                    capture_epoch: sealed.range.capture_epoch,
+                    span_id: sealed.id,
+                    sample_start: sealed.range.sample_start,
+                    sample_end: sealed.range.sample_end,
+                    text: sealed.text.clone(),
+                },
+            );
             let segments = if sealed.words.is_empty() {
                 pending.segments
             } else {
