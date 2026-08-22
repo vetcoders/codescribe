@@ -659,6 +659,99 @@ mod tests {
         }
     }
 
+    /// Conservation at the delivery seam: one published span per drafted span,
+    /// in order, or none at all with a receipt naming why.
+    ///
+    /// Five acoustic occurrences of one name are byte-identical, so nothing
+    /// downstream of this point can tell them apart again. The bus is where the
+    /// count is still checkable, and it must not be the layer that loses one.
+    #[test]
+    fn every_drafted_acoustic_span_is_published_exactly_once() {
+        let drafted: Vec<(&str, u64, u64, AcousticSpanGrain)> = (0..5)
+            .map(|i| {
+                (
+                    "Iwo",
+                    i * 16_000,
+                    i * 16_000 + 8_000,
+                    AcousticSpanGrain::Word,
+                )
+            })
+            .collect();
+        let draft = TranscriptDraft {
+            utterance_id: 1,
+            text: "Iwo Iwo Iwo Iwo Iwo".to_string(),
+            start_seconds: 0.0,
+            end_seconds: 5.0,
+            segments: Vec::new(),
+            acoustic: Some(acoustic("s", 1, 0, 80_000, drafted)),
+        };
+        let (spans, coverage) = word_spans_from_draft(&draft, voiced_energy);
+        assert!(coverage.passed, "coverage receipt: {coverage:?}");
+        assert_eq!(spans.len(), 5, "five drafted spans, five published");
+        let starts: Vec<u64> = spans.iter().map(|span| span.sample_start).collect();
+        assert_eq!(starts, vec![0, 16_000, 32_000, 48_000, 64_000]);
+        assert!(
+            spans.iter().all(|span| span.text == "Iwo"),
+            "identical text is not a reason to drop a span"
+        );
+    }
+
+    /// Missing voiced energy is missing evidence, not evidence of absence. The
+    /// anchors are withheld with a receipt; the text stays visible and no span
+    /// is silently published as though it had been verified.
+    #[test]
+    fn a_span_without_voiced_energy_is_withheld_whole_not_partially_published() {
+        let draft = TranscriptDraft {
+            utterance_id: 1,
+            text: "Iwo Iwo".to_string(),
+            start_seconds: 0.0,
+            end_seconds: 2.0,
+            segments: Vec::new(),
+            acoustic: Some(acoustic(
+                "s",
+                1,
+                0,
+                32_000,
+                vec![
+                    ("Iwo", 0, 8_000, AcousticSpanGrain::Word),
+                    ("Iwo", 16_000, 24_000, AcousticSpanGrain::Word),
+                ],
+            )),
+        };
+        let (spans, coverage) = word_spans_from_draft(&draft, silence);
+        assert!(!coverage.passed);
+        assert_eq!(coverage.code, "lexical_span_without_voiced_energy");
+        assert!(
+            spans.is_empty(),
+            "all or nothing: a half-verified anchor set is worse than none"
+        );
+    }
+
+    /// Utterance grain travels as utterance grain. Presenting one span for a
+    /// whole utterance as word grain would invent per-word PCM identities the
+    /// payload never carried.
+    #[test]
+    fn utterance_grain_is_not_republished_as_word_grain() {
+        let draft = TranscriptDraft {
+            utterance_id: 1,
+            text: "całe zdanie".to_string(),
+            start_seconds: 0.0,
+            end_seconds: 2.0,
+            segments: Vec::new(),
+            acoustic: Some(acoustic(
+                "s",
+                1,
+                0,
+                32_000,
+                vec![("całe zdanie", 0, 32_000, AcousticSpanGrain::Utterance)],
+            )),
+        };
+        let (spans, coverage) = word_spans_from_draft(&draft, voiced_energy);
+        assert!(coverage.passed);
+        assert_eq!(spans.len(), 1);
+        assert_eq!(spans[0].grain, TranscriptWordGrain::Utterance);
+    }
+
     #[test]
     fn bus_flushes_start_draft_and_seal_as_private_ndjson() {
         let temp = tempfile::tempdir().unwrap();

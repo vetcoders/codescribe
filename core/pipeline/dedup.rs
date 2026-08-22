@@ -203,6 +203,20 @@ pub fn strip_segment_overlap(
     last_emitted_end_ts: Option<f32>,
     segments: &[TranscriptSegment],
 ) -> Option<(String, Option<f32>)> {
+    strip_segment_overlap_counted(last_emitted_end_ts, segments)
+        .map(|(text, newest_end_ts, _)| (text, newest_end_ts))
+}
+
+/// [`strip_segment_overlap`], plus how many segments survived the cutoff.
+///
+/// The surviving count is the number of distinct acoustic spans the stripped
+/// text covers, and downstream cleanup needs it: a run of identical words with
+/// one span per copy is speech, and collapsing it as a decoder loop deletes
+/// occurrences the audio carries.
+pub fn strip_segment_overlap_counted(
+    last_emitted_end_ts: Option<f32>,
+    segments: &[TranscriptSegment],
+) -> Option<(String, Option<f32>, usize)> {
     if segments.is_empty() {
         return None;
     }
@@ -210,6 +224,7 @@ pub fn strip_segment_overlap(
     let overlap_cutoff = last_emitted_end_ts.map(|ts| ts + TIMESTAMP_OVERLAP_EPSILON_SEC);
     let mut out = String::new();
     let mut newest_end_ts: Option<f32> = None;
+    let mut survivors = 0usize;
 
     for segment in segments {
         let segment_text = segment.text.trim();
@@ -227,6 +242,7 @@ pub fn strip_segment_overlap(
             out.push(' ');
         }
         out.push_str(segment_text);
+        survivors += 1;
         newest_end_ts = Some(
             newest_end_ts
                 .map(|current| current.max(segment.end_ts))
@@ -234,7 +250,7 @@ pub fn strip_segment_overlap(
         );
     }
 
-    Some((out, newest_end_ts))
+    Some((out, newest_end_ts, survivors))
 }
 
 /// Append `segment` to `out`, deduplicating overlapping word sequences at the boundary.

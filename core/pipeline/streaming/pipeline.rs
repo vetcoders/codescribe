@@ -2,7 +2,7 @@
 //! dedup (text and timestamp based), and emitted-suffix tracking.
 
 use crate::pipeline::contracts::TranscriptSegment;
-use crate::pipeline::dedup::{strip_segment_overlap, strip_suffix_overlap_live};
+use crate::pipeline::dedup::{strip_segment_overlap_counted, strip_suffix_overlap_live};
 use crate::pipeline::stream_postprocess::StreamPostProcessor;
 
 use super::quality_gate::is_hallucination_with_quality;
@@ -61,19 +61,25 @@ impl TranscriptionPipeline {
     /// Prefer timestamp-based dedup when segments carry usable end times, else
     /// fall back to [`Self::strip_overlap`].
     ///
-    /// Returns the stripped text and the newest segment end timestamp, when the
-    /// timestamp path was the one that applied.
+    /// The text fallback runs only when there are no segments at all. That is
+    /// the demotion the conservation law asks for: `strip_suffix_overlap_live`
+    /// keys on content, so on an anchored span it cannot tell a re-heard suffix
+    /// from a repeated one, and where ranges exist the ranges decide.
+    ///
+    /// Returns the stripped text, the newest segment end timestamp when the
+    /// timestamp path applied, and how many acoustic spans the stripped text
+    /// covers (`None` when nothing anchored it).
     fn strip_overlap_with_segments(
         &self,
         text: &str,
         segments: &[TranscriptSegment],
-    ) -> (String, Option<f32>) {
-        if let Some((stripped, newest_end_ts)) =
-            strip_segment_overlap(self.last_segment_end_ts, segments)
+    ) -> (String, Option<f32>, Option<usize>) {
+        if let Some((stripped, newest_end_ts, survivors)) =
+            strip_segment_overlap_counted(self.last_segment_end_ts, segments)
         {
-            return (stripped, newest_end_ts);
+            return (stripped, newest_end_ts, Some(survivors));
         }
-        (self.strip_overlap(text), None)
+        (self.strip_overlap(text), None, None)
     }
 
     /// Postprocess an utterance and return the drop reason on failure.
@@ -106,13 +112,23 @@ impl TranscriptionPipeline {
             return Err(PostprocessDrop::Hallucination);
         }
 
-        let (stripped, newest_segment_end_ts) = self.strip_overlap_with_segments(text, segments);
+        let (stripped, newest_segment_end_ts, acoustic_occurrences) =
+            self.strip_overlap_with_segments(text, segments);
         if stripped.is_empty() {
             self.overlap_strips += 1;
             return Err(PostprocessDrop::OverlapEmpty);
         }
 
-        match self.postprocessor.process_utterance(&stripped) {
+        // Where the segments anchored the text, the repetition cleanup is told
+        // how many spans it covers instead of assuming every repeated run is a
+        // decoder loop.
+        let processed = match acoustic_occurrences {
+            Some(occurrences) => self
+                .postprocessor
+                .process_utterance_with_acoustic_occurrences(&stripped, occurrences),
+            None => self.postprocessor.process_utterance(&stripped),
+        };
+        match processed {
             Some(processed) => {
                 self.update_suffix(&processed);
                 if let Some(end_ts) = newest_segment_end_ts {
@@ -141,5 +157,80 @@ impl TranscriptionPipeline {
             }
         }
         self.last_suffix = processed.get(start..).unwrap_or("").to_string();
+    }
+}
+
+#[cfg(test)]
+mod acoustic_conservation_tests {
+    use super::*;
+
+    fn segment(text: &str, start_ts: f32, end_ts: f32) -> TranscriptSegment {
+        TranscriptSegment {
+            text: text.to_string(),
+            start_ts,
+            end_ts,
+        }
+    }
+
+    /// Five acoustic spans, one word each, all the same word. The repetition
+    /// cleanup used to see a decoder loop and collapse them to one; with the
+    /// spans in hand it sees speech.
+    #[test]
+    fn repeated_words_with_one_span_each_survive_the_cleanup() {
+        let mut pipeline = TranscriptionPipeline::new(Some("pl".to_string()));
+        let segments: Vec<TranscriptSegment> = (0..5)
+            .map(|i| segment("Iwo", i as f32, i as f32 + 0.5))
+            .collect();
+        let out = pipeline
+            .postprocess_with_reason_and_segments("Iwo Iwo Iwo Iwo Iwo", &segments)
+            .expect("anchored repetition must survive");
+        let occurrences = out
+            .to_lowercase()
+            .split_whitespace()
+            .filter(|word| word.trim_matches('.') == "iwo")
+            .count();
+        assert_eq!(occurrences, 5, "five spans, five tokens — got {out:?}");
+    }
+
+    /// A run the audio cannot account for is still collapsed: two spans cannot
+    /// carry five copies, so the surplus is decoder noise.
+    #[test]
+    fn a_run_longer_than_its_audio_is_still_treated_as_decoder_noise() {
+        let mut pipeline = TranscriptionPipeline::new(Some("pl".to_string()));
+        let segments = vec![segment("Iwo", 0.0, 0.5), segment("Iwo", 0.5, 1.0)];
+        let out = pipeline
+            .postprocess_with_reason_and_segments("Iwo Iwo Iwo Iwo Iwo", &segments)
+            .expect("cleanup must not empty the chunk");
+        let occurrences = out
+            .to_lowercase()
+            .split_whitespace()
+            .filter(|word| word.trim_matches('.') == "iwo")
+            .count();
+        assert!(
+            occurrences < 5,
+            "five copies over two spans is a loop — got {out:?}"
+        );
+    }
+
+    /// The demotion, pinned: the content-keyed suffix strip is reachable only
+    /// when nothing anchored the text. With segments present the ranges decide.
+    #[test]
+    fn the_text_suffix_strip_is_unreachable_once_segments_anchor_the_text() {
+        let pipeline = TranscriptionPipeline::new(None);
+        let (_, newest, occurrences) =
+            pipeline.strip_overlap_with_segments("cokolwiek", &[segment("cokolwiek", 0.0, 1.0)]);
+        assert_eq!(newest, Some(1.0));
+        assert_eq!(
+            occurrences,
+            Some(1),
+            "an anchored chunk reports its span count"
+        );
+
+        let (_, newest, occurrences) = pipeline.strip_overlap_with_segments("cokolwiek", &[]);
+        assert_eq!(newest, None);
+        assert_eq!(
+            occurrences, None,
+            "with no segments there is no acoustic authority to report"
+        );
     }
 }

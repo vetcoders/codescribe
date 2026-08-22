@@ -886,12 +886,13 @@ impl AppleSealState {
     fn flush_layer1_coalesce(&mut self) -> bool {
         // A held window can drain as several requests when its pieces are not
         // adjacent; every contiguous run is queued on its own.
-        self.layer1_coalesce
-            .force_flush()
-            .into_iter()
-            .fold(false, |queued, flush| {
-                self.queue_layer1_flush(flush) || queued
-            })
+        // Not `any`: it short-circuits, and a run that fails to queue must not
+        // stop the runs after it from being offered.
+        let mut queued = false;
+        for flush in self.layer1_coalesce.force_flush() {
+            queued |= self.queue_layer1_flush(flush);
+        }
+        queued
     }
 
     fn queue_layer1_flush(&mut self, flush: CoalesceFlush) -> bool {
