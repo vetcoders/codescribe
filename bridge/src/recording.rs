@@ -7,7 +7,7 @@ use std::sync::Arc;
 use codescribe_core::pipeline::contracts::{AnnotationKind, LayerSource, LayerSummary};
 use cpal::traits::{DeviceTrait, HostTrait};
 
-use crate::CsError;
+use crate::{CsError, application_runtime};
 
 /// Result of a one-shot file transcription.
 #[derive(uniffi::Record)]
@@ -78,33 +78,37 @@ pub fn whisper_model_status() -> CsWhisperModelStatus {
 }
 
 /// Download the default Whisper model (idempotent if already complete).
-#[uniffi::export(async_runtime = "tokio")]
+#[uniffi::export]
 pub async fn download_whisper_model(
     listener: Option<Arc<dyn CsWhisperDownloadListener>>,
 ) -> Result<CsWhisperModelStatus, CsError> {
-    tokio::task::spawn_blocking(move || {
-        let path =
-            codescribe_core::config::models::download_default_whisper_model(|file, done, total| {
-                if let Some(ref listener) = listener {
-                    listener.on_progress(
-                        file.to_string(),
-                        done,
-                        total.map(|t| t as i64).unwrap_or(-1),
-                    );
-                }
-            })
+    application_runtime::run(async move {
+        tokio::task::spawn_blocking(move || {
+            let path = codescribe_core::config::models::download_default_whisper_model(
+                |file, done, total| {
+                    if let Some(ref listener) = listener {
+                        listener.on_progress(
+                            file.to_string(),
+                            done,
+                            total.map(|t| t as i64).unwrap_or(-1),
+                        );
+                    }
+                },
+            )
             .map_err(|e| CsError::Recording { msg: e.to_string() })?;
-        if let Some(ref listener) = listener {
-            listener.on_complete(path.display().to_string());
-        }
-        Ok(CsWhisperModelStatus::from(
-            codescribe_core::config::models::whisper_model_status(),
-        ))
+            if let Some(ref listener) = listener {
+                listener.on_complete(path.display().to_string());
+            }
+            Ok(CsWhisperModelStatus::from(
+                codescribe_core::config::models::whisper_model_status(),
+            ))
+        })
+        .await
+        .map_err(|e| CsError::Recording {
+            msg: format!("download_whisper_model join error: {e}"),
+        })?
     })
-    .await
-    .map_err(|e| CsError::Recording {
-        msg: format!("download_whisper_model join error: {e}"),
-    })?
+    .await?
 }
 
 /// Trim a device name and collapse blank/whitespace-only values to `None`, so an

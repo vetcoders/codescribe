@@ -37,6 +37,9 @@ HOLD_BADGE_OFFSET_Y=-10
 # CODESCRIBE_TRANSCRIPT_BUS_PATH=
 
 # Unified runtime pipeline (event-based) is always active.
+# The Swift host starts one named Tokio runtime before constructing async bridge
+# surfaces. This value is read once; changing it requires an app restart.
+CODESCRIBE_APP_RUNTIME_WORKERS=4
 # Golden low-latency / high-fidelity defaults for live preview:
 CODESCRIBE_STREAM_CHUNK_SEC=3.0
 CODESCRIBE_STREAM_OVERLAP_RATIO=0.2

@@ -16,7 +16,7 @@ use codescribe_core::llm::lane_truth::assistive_identity;
 use codescribe_core::llm::provider::provider_supports_vision;
 use tokio::task::AbortHandle;
 
-use crate::CsError;
+use crate::{CsError, application_runtime};
 
 /// Maximum number of image attachments the composer may forward in one message.
 /// Matches the live app controller's `MAX_AGENT_VISION_IMAGES` so both send paths
@@ -98,7 +98,7 @@ pub trait CsAgentListener: Send + Sync {
 }
 
 /// Thin handle to the codescribe agent engine.
-#[derive(uniffi::Object, Default)]
+#[derive(uniffi::Object, Default, Clone)]
 pub struct CodescribeAgent {
     /// In-flight turns keyed by thread id, so `cancel_turn` can abort them.
     /// Shared (`Arc`) because each turn's RAII guard must be able to deregister
@@ -109,7 +109,7 @@ pub struct CodescribeAgent {
     approvals: Arc<ApprovalBroker>,
 }
 
-#[uniffi::export(async_runtime = "tokio")]
+#[uniffi::export]
 impl CodescribeAgent {
     /// Construct the FFI handle. Only initialises logging — provider, tools and
     /// config are resolved lazily per send, so building the Swift app model
@@ -153,7 +153,10 @@ impl CodescribeAgent {
     /// formatting lane. The core call has its own 8-second timeout and never
     /// participates in the assistive or formatting response chains.
     pub async fn generate_thread_title(&self, text: String) -> Result<Option<String>, CsError> {
-        Ok(codescribe_core::llm::ai_formatting::generate_thread_title(&text).await?)
+        application_runtime::run(async move {
+            Ok(codescribe_core::llm::ai_formatting::generate_thread_title(&text).await?)
+        })
+        .await?
     }
 
     /// Stream one agent reply for `text` on the conversation identified by
@@ -176,7 +179,13 @@ impl CodescribeAgent {
         thread_id: String,
         listener: Arc<dyn CsAgentListener>,
     ) -> Result<String, CsError> {
-        self.run_stream(text, thread_id, Vec::new(), listener).await
+        let agent = self.clone();
+        application_runtime::run(async move {
+            agent
+                .run_stream(text, thread_id, Vec::new(), listener)
+                .await
+        })
+        .await?
     }
 
     /// Stream one agent reply for `text` with `attachments` forwarded as real
@@ -197,8 +206,12 @@ impl CodescribeAgent {
         attachments: Vec<CsAttachment>,
         listener: Arc<dyn CsAgentListener>,
     ) -> Result<String, CsError> {
-        let images = validate_composer_attachments(&attachments)?;
-        self.run_stream(text, thread_id, images, listener).await
+        let agent = self.clone();
+        application_runtime::run(async move {
+            let images = validate_composer_attachments(&attachments)?;
+            agent.run_stream(text, thread_id, images, listener).await
+        })
+        .await?
     }
 
     /// Abort the in-flight turn(s) for `thread_id`. Returns `true` when an

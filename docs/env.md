@@ -152,6 +152,10 @@ i runtime nie może znaleźć Whispera przez cache / config:
 
 ## D) Pełny podział działowy (wszystkie zmienne)
 
+### Runtime aplikacji
+
+- `CODESCRIBE_APP_RUNTIME_WORKERS` (RESTART NEEDED; default `4`; clamp `1..16`) — liczba nazwanych workerów jedynego runtime'u Tokio należącego do Codescribe.app. Eksporty async UniFFI są natychmiast przenoszone na ten executor; wartość jest odczytywana wyłącznie przy pierwszym starcie runtime'u.
+
 ### Audio
 
 - `AUDIO_INPUT_DEVICE` – nazwa urządzenia wejściowego (RESTART NEEDED)

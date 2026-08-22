@@ -16,7 +16,19 @@
 
 [meta]
 version = "1.2.0"
-updated = "2026-08-15"
+updated = "2026-08-22"
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# Application async runtime
+# ═══════════════════════════════════════════════════════════════════════════════
+
+[vars.CODESCRIBE_APP_RUNTIME_WORKERS]
+default = "4"
+type = "u64"
+reload = "restart"
+category = "runtime"
+description = "Named Tokio async workers owned by Codescribe.app (clamped to 1-16; invalid values fall back to 4)"
+range = "1-16"
 
 # ═══════════════════════════════════════════════════════════════════════════════
 # VAD (Voice Activity Detection) - Silero Neural Network

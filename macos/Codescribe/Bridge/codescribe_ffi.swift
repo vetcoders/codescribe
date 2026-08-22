@@ -6996,6 +6996,103 @@ public func FfiConverterTypeCsApiKeyProbeResult_lower(_ value: CsApiKeyProbeResu
 
 
 /**
+ * Observable, content-free runtime lifecycle evidence for Swift and probes.
+ */
+public struct CsApplicationRuntimeSnapshot: Equatable, Hashable {
+    /**
+     * `not_started`, `running`, or `stopped`.
+     */
+    public var state: String
+    /**
+     * Configured async worker count for this process.
+     */
+    public var workerCount: UInt32
+    /**
+     * Named async workers observed entering the runtime.
+     */
+    public var workerNames: [String]
+    /**
+     * Named async workers observed leaving the runtime.
+     */
+    public var stoppedWorkerNames: [String]
+    /**
+     * Root bridge tasks currently owned by the runtime adapter.
+     */
+    public var activeTasks: UInt64
+
+    // Default memberwise initializers are never public by default, so we
+    // declare one manually.
+    public init(
+        /**
+         * `not_started`, `running`, or `stopped`.
+         */state: String,
+        /**
+         * Configured async worker count for this process.
+         */workerCount: UInt32,
+        /**
+         * Named async workers observed entering the runtime.
+         */workerNames: [String],
+        /**
+         * Named async workers observed leaving the runtime.
+         */stoppedWorkerNames: [String],
+        /**
+         * Root bridge tasks currently owned by the runtime adapter.
+         */activeTasks: UInt64) {
+        self.state = state
+        self.workerCount = workerCount
+        self.workerNames = workerNames
+        self.stoppedWorkerNames = stoppedWorkerNames
+        self.activeTasks = activeTasks
+    }
+
+
+}
+
+#if compiler(>=6)
+extension CsApplicationRuntimeSnapshot: Sendable {}
+#endif
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public struct FfiConverterTypeCsApplicationRuntimeSnapshot: FfiConverterRustBuffer {
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> CsApplicationRuntimeSnapshot {
+        return
+            try CsApplicationRuntimeSnapshot(
+                state: FfiConverterString.read(from: &buf),
+                workerCount: FfiConverterUInt32.read(from: &buf),
+                workerNames: FfiConverterSequenceString.read(from: &buf),
+                stoppedWorkerNames: FfiConverterSequenceString.read(from: &buf),
+                activeTasks: FfiConverterUInt64.read(from: &buf)
+        )
+    }
+
+    public static func write(_ value: CsApplicationRuntimeSnapshot, into buf: inout [UInt8]) {
+        FfiConverterString.write(value.state, into: &buf)
+        FfiConverterUInt32.write(value.workerCount, into: &buf)
+        FfiConverterSequenceString.write(value.workerNames, into: &buf)
+        FfiConverterSequenceString.write(value.stoppedWorkerNames, into: &buf)
+        FfiConverterUInt64.write(value.activeTasks, into: &buf)
+    }
+}
+
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeCsApplicationRuntimeSnapshot_lift(_ buf: RustBuffer) throws -> CsApplicationRuntimeSnapshot {
+    return try FfiConverterTypeCsApplicationRuntimeSnapshot.lift(buf)
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeCsApplicationRuntimeSnapshot_lower(_ value: CsApplicationRuntimeSnapshot) -> RustBuffer {
+    return FfiConverterTypeCsApplicationRuntimeSnapshot.lower(value)
+}
+
+
+/**
  * One outgoing composer attachment. Path-based on purpose: the bridge reads and
  * validates the file on the Rust side (via `load_image_for_vision`), which is
  * cheaper than marshalling raw image bytes across FFI and reuses core's single
@@ -11046,6 +11143,8 @@ public enum CsError: Swift.Error, Equatable, Hashable, Foundation.LocalizedError
     )
     case Quality(msg: String
     )
+    case Runtime(msg: String
+    )
 
 
 
@@ -11088,6 +11187,9 @@ public struct FfiConverterTypeCsError: FfiConverterRustBuffer {
         case 5: return .Quality(
             msg: try FfiConverterString.read(from: &buf)
             )
+        case 6: return .Runtime(
+            msg: try FfiConverterString.read(from: &buf)
+            )
 
          default: throw UniffiInternalError.unexpectedEnumCase
         }
@@ -11122,6 +11224,11 @@ public struct FfiConverterTypeCsError: FfiConverterRustBuffer {
 
         case let .Quality(msg):
             writeInt(&buf, Int32(5))
+            FfiConverterString.write(msg, into: &buf)
+
+
+        case let .Runtime(msg):
+            writeInt(&buf, Int32(6))
             FfiConverterString.write(msg, into: &buf)
 
         }
@@ -13119,6 +13226,15 @@ fileprivate func uniffiFutureContinuationCallback(handle: UInt64, pollResult: In
     }
 }
 /**
+ * Content-free lifecycle snapshot used by diagnostics and delivery probes.
+ */
+public func applicationRuntimeSnapshot()throws  -> CsApplicationRuntimeSnapshot  {
+    return try  FfiConverterTypeCsApplicationRuntimeSnapshot_lift(try rustCallWithError(FfiConverterTypeCsError_lift) {
+    uniffi_codescribe_ffi_fn_func_application_runtime_snapshot($0
+    )
+})
+}
+/**
  * Enumerate live input hardware and resolve the effective recorder device.
  * Failures cross the bridge as one `CsError::Recording` concern; no device
  * names are persisted here.
@@ -13306,6 +13422,25 @@ public func requestMicPermission() -> Bool  {
 })
 }
 /**
+ * Stop controller/account activity first, then tear down every runtime worker.
+ */
+public func shutdownApplicationRuntime()throws  -> CsApplicationRuntimeSnapshot  {
+    return try  FfiConverterTypeCsApplicationRuntimeSnapshot_lift(try rustCallWithError(FfiConverterTypeCsError_lift) {
+    uniffi_codescribe_ffi_fn_func_shutdown_application_runtime($0
+    )
+})
+}
+/**
+ * Start the one process-owned async runtime. Idempotent while running; once
+ * shut down it cannot be restarted in the same process.
+ */
+public func startApplicationRuntime()throws  -> CsApplicationRuntimeSnapshot  {
+    return try  FfiConverterTypeCsApplicationRuntimeSnapshot_lift(try rustCallWithError(FfiConverterTypeCsError_lift) {
+    uniffi_codescribe_ffi_fn_func_start_application_runtime($0
+    )
+})
+}
+/**
  * Snapshot Whisper availability without constructing a dictation session.
  */
 public func whisperModelStatus() -> CsWhisperModelStatus  {
@@ -13329,6 +13464,9 @@ private let initializationResult: InitializationResult = {
     let scaffolding_contract_version = ffi_codescribe_ffi_uniffi_contract_version()
     if bindings_contract_version != scaffolding_contract_version {
         return InitializationResult.contractVersionMismatch
+    }
+    if (uniffi_codescribe_ffi_checksum_func_application_runtime_snapshot() != 28624) {
+        return InitializationResult.apiChecksumMismatch
     }
     if (uniffi_codescribe_ffi_checksum_func_audio_input_snapshot() != 64324) {
         return InitializationResult.apiChecksumMismatch
@@ -13373,6 +13511,12 @@ private let initializationResult: InitializationResult = {
         return InitializationResult.apiChecksumMismatch
     }
     if (uniffi_codescribe_ffi_checksum_func_request_mic_permission() != 61967) {
+        return InitializationResult.apiChecksumMismatch
+    }
+    if (uniffi_codescribe_ffi_checksum_func_shutdown_application_runtime() != 56989) {
+        return InitializationResult.apiChecksumMismatch
+    }
+    if (uniffi_codescribe_ffi_checksum_func_start_application_runtime() != 55152) {
         return InitializationResult.apiChecksumMismatch
     }
     if (uniffi_codescribe_ffi_checksum_func_whisper_model_status() != 33505) {

@@ -33,7 +33,7 @@ use codescribe_core::llm::model_discovery::{
 use codescribe_core::llm::provider::{ALL_PROVIDERS, ProviderKind};
 use directories::BaseDirs;
 
-use crate::{CsError, CsLanguage};
+use crate::{CsError, CsLanguage, application_runtime};
 
 /// Stable cross-FFI marker: Swift must relaunch even though reset returned an
 /// error, because at least one app-data root has already moved and the Rust
@@ -897,9 +897,11 @@ impl CodescribeConfig {
                 let mut config = account_auth::DeviceAuthConfig::new(provider, client_id);
                 // Await will re-clamp; start uses the full default budget.
                 config.max_wait = std::time::Duration::from_secs(15 * 60);
-                let device = account_auth_runtime()?
-                    .block_on(account_auth::request_device_code(&config))
-                    .map_err(account_auth_to_cs)?;
+                let request_config = config.clone();
+                let device = application_runtime::block_on(async move {
+                    account_auth::request_device_code(&request_config).await
+                })?
+                .map_err(account_auth_to_cs)?;
                 let auth_url = device.verification_url.clone();
                 let user_code = device.user_code.clone();
                 let mut guard = active_account_login().lock().map_err(|_| CsError::Config {
@@ -920,8 +922,7 @@ impl CodescribeConfig {
             account_auth::LoginFlow::Loopback => {
                 let opts = account_auth::ServerOptions::new(provider, client_id)
                     .map_err(account_auth_to_cs)?;
-                let login = account_auth_runtime()?
-                    .block_on(account_auth::run_login_server(opts))
+                let login = application_runtime::block_on(account_auth::run_login_server(opts))?
                     .map_err(account_auth_to_cs)?;
                 let auth_url = login.auth_url.clone();
                 let mut guard = active_account_login().lock().map_err(|_| CsError::Config {
@@ -980,9 +981,9 @@ impl CodescribeConfig {
         match login {
             PendingAccountLogin::Loopback(login) => {
                 let cancel = login.cancel_handle();
-                let outcome = account_auth_runtime()?.block_on(async move {
+                let outcome = application_runtime::block_on(async move {
                     tokio::time::timeout(timeout, login.block_until_done()).await
-                });
+                })?;
                 match outcome {
                     Ok(Ok(())) => {
                         let message = account_auth::account_status(provider).message;
@@ -1002,13 +1003,13 @@ impl CodescribeConfig {
             }
             PendingAccountLogin::Device { mut config, device } => {
                 config.max_wait = timeout;
-                let outcome = account_auth_runtime()?.block_on(async move {
+                let outcome = application_runtime::block_on(async move {
                     tokio::time::timeout(
                         timeout,
                         account_auth::complete_device_code_login(&config, &device),
                     )
                     .await
-                });
+                })?;
                 match outcome {
                     Ok(Ok(())) => {
                         let message = account_auth::account_status(provider).message;
@@ -2303,27 +2304,6 @@ fn key_present(account: &str) -> bool {
     lane_truth::secret(account).is_some()
 }
 
-/// Process-wide tokio runtime dedicated to the OAuth login server. This bridge
-/// slice is otherwise sync, so the runtime is built lazily and kept alive for
-/// the process: `start_account_login` and `await_account_login` are separate FFI
-/// calls that must share one reactor for the pending callback server to survive
-/// between them. A build failure is cached and returned as a config error rather
-/// than retried per call.
-fn account_auth_runtime() -> Result<&'static tokio::runtime::Runtime, CsError> {
-    /// Process-wide OAuth login reactor; build errors are cached as strings.
-    static RUNTIME: OnceLock<Result<tokio::runtime::Runtime, String>> = OnceLock::new();
-    match RUNTIME.get_or_init(|| {
-        tokio::runtime::Builder::new_multi_thread()
-            .enable_all()
-            .thread_name("codescribe-account-auth")
-            .build()
-            .map_err(|error| format!("account auth runtime initialization failed: {error}"))
-    }) {
-        Ok(runtime) => Ok(runtime),
-        Err(msg) => Err(CsError::Config { msg: msg.clone() }),
-    }
-}
-
 /// One in-flight account login — either a loopback callback server (OpenAI)
 /// or an RFC 8628 device-code poll handle (xAI SuperGrok / OpenCode path).
 enum PendingAccountLogin {
@@ -2351,6 +2331,18 @@ fn active_account_login() -> &'static Mutex<Option<PendingAccountLogin>> {
     /// At most one in-flight login; a new start cancels the previous.
     static ACTIVE: OnceLock<Mutex<Option<PendingAccountLogin>>> = OnceLock::new();
     ACTIVE.get_or_init(|| Mutex::new(None))
+}
+
+/// Cancel the content-free OAuth/device-code lifecycle before application
+/// runtime shutdown. The shared app runtime then owns the only reactor teardown.
+pub(crate) fn cancel_pending_account_login_for_shutdown() {
+    let pending = active_account_login()
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .take();
+    if let Some(pending) = pending {
+        pending.cancel();
+    }
 }
 
 /// Flatten an account-auth error into the bridge's config error. The core error
