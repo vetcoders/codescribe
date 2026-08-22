@@ -79,10 +79,8 @@ impl Layer1Coalesce {
         let mut out = Vec::new();
         if let Some(last) = self.pieces.last() {
             let gap = piece.start_ts - last.covered_through_secs;
-            if gap >= Self::PAUSE_SECS
-                && let Some(flush) = self.take_flush()
-            {
-                out.push(flush);
+            if gap >= Self::PAUSE_SECS {
+                out.extend(self.take_flushes());
             }
         }
         if self.pieces.is_empty() && self.neighbour_before.is_empty() {
@@ -90,17 +88,19 @@ impl Layer1Coalesce {
         }
         self.segments = self.segments.saturating_add(piece.segment_count.max(1));
         self.pieces.push(piece);
-        if self.should_flush(sample_rate)
-            && let Some(flush) = self.take_flush()
-        {
-            out.push(flush);
+        if self.should_flush(sample_rate) {
+            out.extend(self.take_flushes());
         }
         out
     }
 
     /// Drain whatever is held — session end, epoch sleep, or test.
-    pub fn force_flush(&mut self) -> Option<CoalesceFlush> {
-        self.take_flush()
+    ///
+    /// Returns one flush per contiguous PCM run, so a held window with a gap in
+    /// it drains as several admissible requests rather than one that lies about
+    /// its range.
+    pub fn force_flush(&mut self) -> Vec<CoalesceFlush> {
+        self.take_flushes()
     }
 
     fn should_flush(&self, sample_rate: u32) -> bool {
@@ -119,15 +119,59 @@ impl Layer1Coalesce {
         (samples as f32 / rate) >= Self::MAX_AUDIO_SECS
     }
 
-    fn take_flush(&mut self) -> Option<CoalesceFlush> {
+    fn take_flushes(&mut self) -> Vec<CoalesceFlush> {
         if self.pieces.is_empty() {
-            return None;
+            return Vec::new();
         }
         let pieces = std::mem::take(&mut self.pieces);
         self.segments = 0;
         let neighbour_context = std::mem::take(&mut self.neighbour_before);
-        Some(build_flush(pieces, neighbour_context))
+        build_flushes(pieces, neighbour_context)
     }
+}
+
+/// Split a held window into one flush per contiguous PCM run.
+///
+/// A window used to declare `[first.sample_start, last.sample_end)` while
+/// carrying only the concatenated PCM of its pieces. Whenever the pieces were
+/// not adjacent — which is the normal case, since the pauses between utterances
+/// are not speech and never enter the buffer — the two disagreed, and
+/// `TailProviderRequest::validate_pcm` refused the job at the provider seam.
+/// Layer 1 then reported a generic provider error for a window that never
+/// reached inference. Measured on this module's own five-piece geometry: 70 400
+/// samples declared against 31 999 carried.
+///
+/// Concatenating across the gap would be worse: the joined audio would carry
+/// timestamps that mean nothing on the capture clock, and every segment mapped
+/// back from it would name samples the operator never spoke. Splitting keeps
+/// every request honest — each declares exactly the samples it holds.
+fn build_flushes(pieces: Vec<CoalescedPiece>, neighbour_context: String) -> Vec<CoalesceFlush> {
+    let mut runs: Vec<Vec<CoalescedPiece>> = Vec::new();
+    for piece in pieces {
+        match runs.last_mut() {
+            Some(run)
+                if run
+                    .last()
+                    .is_some_and(|previous| previous.sample_end == piece.sample_start) =>
+            {
+                run.push(piece);
+            }
+            _ => runs.push(vec![piece]),
+        }
+    }
+    runs.into_iter()
+        .enumerate()
+        .map(|(index, run)| {
+            // Only the first run inherits the left neighbour; the runs after it
+            // are preceded by their own predecessor inside this window.
+            let context = if index == 0 {
+                neighbour_context.clone()
+            } else {
+                String::new()
+            };
+            build_flush(run, context)
+        })
+        .collect()
 }
 
 fn build_flush(pieces: Vec<CoalescedPiece>, neighbour_context: String) -> CoalesceFlush {
@@ -154,6 +198,11 @@ fn build_flush(pieces: Vec<CoalescedPiece>, neighbour_context: String) -> Coales
             end: offset,
         });
         member_ids.push((piece.utterance_id, piece.covered_through_secs));
+        debug_assert_eq!(
+            piece.audio.len() as u64,
+            piece.sample_end.saturating_sub(piece.sample_start),
+            "a piece must carry the PCM range it declares before it can be coalesced"
+        );
         audio.extend_from_slice(&piece.audio);
     }
     CoalesceFlush {
@@ -352,7 +401,14 @@ mod tests {
         CoalescedPiece {
             utterance_id: id,
             committed_text: text.to_string(),
-            audio: vec![0.0; ((end_ts - start_ts) * rate as f32) as usize],
+            // Production builds a piece from a resolved audio window, so the
+            // carried PCM always equals the declared range. Deriving the length
+            // from the range keeps the fixture honest about that relationship
+            // instead of re-rounding the seconds a second time.
+            audio: vec![
+                0.0;
+                ((end_ts * rate as f32) as u64 - (start_ts * rate as f32) as u64) as usize
+            ],
             sample_start: (start_ts * rate as f32) as u64,
             sample_end: (end_ts * rate as f32) as u64,
             start_ts,
@@ -366,14 +422,48 @@ mod tests {
         let mut buf = Layer1Coalesce::default();
         buf.set_neighbour("already sealed");
         let mut flushes = Vec::new();
+        // Adjacent pieces: one window, one contiguous PCM run.
         for i in 0..5 {
-            flushes.extend(buf.push(piece(i + 1, "słowo", i as f32, i as f32 + 0.4, 1), 16_000));
+            flushes.extend(buf.push(
+                piece(i + 1, "słowo", i as f32 * 0.4, (i + 1) as f32 * 0.4, 1),
+                16_000,
+            ));
         }
         assert_eq!(flushes.len(), 1);
         assert_eq!(flushes[0].spans.len(), 5);
         assert_eq!(flushes[0].committed_text, "słowo słowo słowo słowo słowo");
         assert_eq!(flushes[0].neighbour_context, "already sealed");
         assert_eq!(flushes[0].primary_utterance_id, 5);
+        assert!(buf.is_empty());
+    }
+
+    /// Non-adjacent pieces drain as one flush per contiguous run.
+    ///
+    /// Coalescing five gapped utterances into a single request meant declaring
+    /// `[first.start, last.end)` over audio the window never held — the pauses
+    /// between utterances are not speech and never enter the buffer. Each run
+    /// now declares exactly the samples it carries.
+    #[test]
+    fn a_gap_between_pieces_splits_the_window_instead_of_faking_its_range() {
+        let mut buf = Layer1Coalesce::default();
+        buf.set_neighbour("already sealed");
+        let mut flushes = Vec::new();
+        for i in 0..5 {
+            flushes.extend(buf.push(piece(i + 1, "słowo", i as f32, i as f32 + 0.4, 1), 16_000));
+        }
+        assert_eq!(flushes.len(), 5, "one flush per contiguous PCM run");
+        for flush in &flushes {
+            assert_eq!(
+                flush.sample_end - flush.sample_start,
+                flush.audio.len() as u64,
+                "a window may not promise audio it dropped"
+            );
+        }
+        assert_eq!(
+            flushes[0].neighbour_context, "already sealed",
+            "only the first run inherits the left neighbour"
+        );
+        assert_eq!(flushes[1].neighbour_context, "");
         assert!(buf.is_empty());
     }
 
@@ -485,7 +575,14 @@ mod conservation_falsifiers {
         CoalescedPiece {
             utterance_id: id,
             committed_text: text.to_string(),
-            audio: vec![0.0; ((end_ts - start_ts) * rate as f32) as usize],
+            // Production builds a piece from a resolved audio window, so the
+            // carried PCM always equals the declared range. Deriving the length
+            // from the range keeps the fixture honest about that relationship
+            // instead of re-rounding the seconds a second time.
+            audio: vec![
+                0.0;
+                ((end_ts * rate as f32) as u64 - (start_ts * rate as f32) as u64) as usize
+            ],
             sample_start: (start_ts * rate as f32) as u64,
             sample_end: (end_ts * rate as f32) as u64,
             start_ts,
@@ -503,7 +600,6 @@ mod conservation_falsifiers {
     /// reached inference. Measured on this module's own five-piece geometry:
     /// 70 400 samples declared against 31 999 carried.
     #[test]
-    #[ignore = "acoustic identity cut step 3: window must carry the range it declares"]
     fn coalesced_window_carries_the_pcm_range_it_declares() {
         let mut buf = Layer1Coalesce::default();
         buf.set_neighbour("already sealed");
