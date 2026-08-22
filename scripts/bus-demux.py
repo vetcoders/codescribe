@@ -1,17 +1,25 @@
 #!/usr/bin/env python3
-"""Kielbasa demux for the clean transcript bus.
+"""Named, session-aware follower for the clean Codescribe Transcript Bus.
 
-Does not open a microphone. Reads `codescribe.transcript.v1` NDJSON.
-Unnamed agents do not pass. Name filter is a whole-word stem plus Polish cases.
+The helper never opens audio. It reads ``codescribe.transcript.v1`` NDJSON and
+emits small agent-bridge envelopes. Product installs run it from the stable
+path below, not from a source checkout::
 
-  python3 scripts/bus-demux.py --become --follow
-  python3 scripts/bus-demux.py --name james --follow
-  python3 scripts/bus-demux.py --name james --once --bus /tmp/bus.jsonl
+  python3 ~/.codescribe/agent-bridge/runtime/bin/bus-demux.py \
+    --provider codex --session <provider-session-id> --name james --drafts --follow
+
+``--provider`` plus ``--session`` enables a collision-safe lease, heartbeat,
+and byte cursor. Re-running the same command resumes after the last consumed
+bus line, including lines appended while the provider session was recovering.
+Drafts are useful for live replies; only a ``transcript_sealed`` envelope sets
+``state_change_allowed`` to true.
 """
 
 from __future__ import annotations
 
 import argparse
+import fcntl
+import hashlib
 import json
 import os
 import re
@@ -22,10 +30,17 @@ from typing import Any, Iterator
 
 BUS_FILENAME = "transcript-events.jsonl"
 SEALED = "transcript_sealed"
+LIVE_STATUSES = ("utterance_draft", "utterance_revised")
+LEASE_SCHEMA = "codescribe.agent-bridge.lease.v1"
+ATTACH_SCHEMA = "codescribe.agent-bridge.attach.v1"
+EVENT_SCHEMA = "codescribe.agent-bridge.event.v1"
+ACTIVE_NAMES_SCHEMA = "codescribe.agent-bridge.active-names.v1"
+DEFAULT_LEASE_TTL_SECONDS = 120.0
 ASSIGN_RE = re.compile(
     r"(?i)(?:będziesz(?:\s+od)?\s+teraz|nazywam\s+cię|nazywasz\s+się|"
     r"you(?:['’]re|\s+are)|cześć|hello)\s+([A-Za-zĄĆĘŁŃÓŚŹŻąćęłńóśźż]{2,32})"
 )
+SAFE_LEASE_RE = re.compile(r"^[a-zA-Z0-9_-]{8,80}$")
 
 
 def bus_path() -> Path:
@@ -37,6 +52,13 @@ def bus_path() -> Path:
     if xdg:
         return Path(os.path.expanduser(xdg)) / "codescribe" / BUS_FILENAME
     return Path.home() / ".codescribe" / BUS_FILENAME
+
+
+def bridge_home() -> Path:
+    override = os.environ.get("CODESCRIBE_AGENT_BRIDGE_HOME", "").strip()
+    if override:
+        return Path(os.path.expanduser(override))
+    return Path.home() / ".codescribe" / "agent-bridge"
 
 
 def name_pat(name: str) -> re.Pattern[str]:
@@ -57,15 +79,30 @@ def addressed_to(text: str, name: str) -> bool:
     return name_pat(name).search(text or "") is not None
 
 
-def slim(event: dict[str, Any], audience: str, kind: str = "seal") -> dict[str, Any]:
+def event_kind(status: Any) -> str:
     return {
+        "utterance_draft": "draft",
+        "utterance_revised": "revised",
+        SEALED: "seal",
+    }.get(str(status), "event")
+
+
+def slim(
+    event: dict[str, Any], audience: str, kind: str | None = None
+) -> dict[str, Any]:
+    status = event.get("status")
+    return {
+        "schema": EVENT_SCHEMA,
         "audience": audience,
-        "kind": kind,
-        "status": event.get("status"),
+        "kind": kind or event_kind(status),
+        "status": status,
+        "sequence": event.get("sequence"),
         "session_id": event.get("session_id"),
+        "utterance_id": event.get("utterance_id"),
         "emitted_at": event.get("emitted_at"),
         "mode": event.get("mode"),
         "text": event.get("text") or "",
+        "state_change_allowed": status == SEALED,
     }
 
 
@@ -85,7 +122,7 @@ def parse_line(raw: str) -> dict[str, Any] | None:
 
 
 def emit(payload: dict[str, Any]) -> None:
-    sys.stdout.write(json.dumps(payload, ensure_ascii=False) + "\n")
+    sys.stdout.write(json.dumps(payload, ensure_ascii=False, sort_keys=True) + "\n")
     sys.stdout.flush()
 
 
@@ -98,14 +135,18 @@ def consider(
     debug: bool,
 ) -> dict[str, Any] | None:
     status = event.get("status")
-    if status != SEALED and not (drafts and status in ("utterance_draft", "utterance_revised")):
+    if status != SEALED and not (drafts and status in LIVE_STATUSES):
         return None
     text = event.get("text") or ""
     claimed = assigned_name(text)
     if claimed:
         payload = slim(event, claimed, kind="name_assignment")
         payload["name"] = claimed
-        if hear_all or (name and claimed == name.casefold()) or addressed_to(text, name or ""):
+        if (
+            hear_all
+            or (name and claimed == name.casefold())
+            or addressed_to(text, name or "")
+        ):
             return payload
         if debug:
             sys.stderr.write(f"bus-demux: drop assignment name={claimed}\n")
@@ -119,26 +160,25 @@ def consider(
     return None
 
 
-def iter_new_lines(path: Path, offset: int) -> tuple[list[str], int]:
+def iter_new_lines(path: Path, offset: int) -> tuple[list[tuple[str, int]], int]:
+    """Return complete UTF-8 lines paired with their exclusive byte cursors."""
     try:
         size = path.stat().st_size
     except FileNotFoundError:
         return [], offset
     if size < offset:
         offset = 0
+    entries: list[tuple[str, int]] = []
     with path.open("rb") as handle:
         handle.seek(offset)
-        chunk = handle.read()
-    offset += len(chunk)
-    text = chunk.decode("utf-8", errors="replace")
-    if not text:
-        return [], offset
-    lines = text.splitlines()
-    if not text.endswith("\n"):
-        # incomplete last line: rewind to its start
-        incomplete = lines.pop().encode("utf-8")
-        offset -= len(incomplete)
-    return lines, offset
+        while True:
+            raw = handle.readline()
+            if not raw:
+                break
+            if not raw.endswith(b"\n"):
+                break
+            entries.append((raw.decode("utf-8", errors="replace"), handle.tell()))
+    return entries, entries[-1][1] if entries else offset
 
 
 def replay(path: Path) -> Iterator[str]:
@@ -146,9 +186,267 @@ def replay(path: Path) -> Iterator[str]:
         raw = path.read_text(encoding="utf-8", errors="replace")
     except FileNotFoundError:
         return
-        yield from ()  # pragma: no cover — keeps the generator type
+        yield from ()  # pragma: no cover - keeps the generator type
     for line in raw.splitlines():
         yield line
+
+
+def utc_now() -> str:
+    return time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
+
+
+def atomic_json(path: Path, payload: dict[str, Any]) -> None:
+    path.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
+    try:
+        path.parent.chmod(0o700)
+    except OSError:
+        pass
+    temporary = path.with_name(f".{path.name}.{os.getpid()}.{time.time_ns()}.tmp")
+    encoded = (json.dumps(payload, ensure_ascii=False, sort_keys=True) + "\n").encode(
+        "utf-8"
+    )
+    descriptor = os.open(temporary, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+    try:
+        with os.fdopen(descriptor, "wb") as handle:
+            handle.write(encoded)
+            handle.flush()
+            os.fsync(handle.fileno())
+        os.replace(temporary, path)
+        path.chmod(0o600)
+    finally:
+        try:
+            temporary.unlink()
+        except FileNotFoundError:
+            pass
+
+
+def read_json(path: Path) -> dict[str, Any] | None:
+    try:
+        value = json.loads(path.read_text(encoding="utf-8"))
+    except (FileNotFoundError, json.JSONDecodeError, OSError):
+        return None
+    return value if isinstance(value, dict) else None
+
+
+def lease_identifier(provider: str, provider_session_id: str) -> str:
+    # The provider session owns the cursor. Name is mutable during --become and
+    # therefore cannot participate in the key: binding a name must not fork the
+    # greeting follower onto a fresh cursor.
+    identity = "\0".join((provider.casefold(), provider_session_id))
+    return hashlib.sha256(identity.encode("utf-8")).hexdigest()[:32]
+
+
+def process_is_alive(pid: Any) -> bool:
+    if not isinstance(pid, int) or pid <= 0:
+        return False
+    try:
+        os.kill(pid, 0)
+    except ProcessLookupError:
+        return False
+    except PermissionError:
+        return True
+    return True
+
+
+def active_leases(
+    root: Path, ttl_seconds: float, *, clean: bool = True
+) -> list[dict[str, Any]]:
+    leases: list[dict[str, Any]] = []
+    now = time.time()
+    lease_dir = root / "leases"
+    try:
+        candidates = list(lease_dir.glob("*.json"))
+    except OSError:
+        return []
+    for path in candidates:
+        value = read_json(path)
+        heartbeat = value.get("heartbeat_unix") if value else None
+        fresh = (
+            isinstance(heartbeat, (int, float))
+            and now - float(heartbeat) <= ttl_seconds
+        )
+        if not value or value.get("schema") != LEASE_SCHEMA or not fresh:
+            if clean:
+                try:
+                    path.unlink()
+                except OSError:
+                    pass
+            continue
+        if value.get("active") is True:
+            leases.append(value)
+    return leases
+
+
+class SessionLease:
+    """One provider-session cursor and active-name heartbeat."""
+
+    def __init__(
+        self,
+        *,
+        root: Path,
+        provider: str,
+        provider_session_id: str,
+        name: str | None,
+        bus: Path,
+        requested_id: str | None,
+        ttl_seconds: float,
+        follow_from_end: bool,
+    ) -> None:
+        self.root = root
+        self.provider = provider.casefold()
+        self.provider_session_id = provider_session_id
+        self.name = name.casefold() if name else None
+        self.bus = str(bus.expanduser().resolve(strict=False))
+        self.ttl_seconds = ttl_seconds
+        self.lease_id = requested_id or lease_identifier(provider, provider_session_id)
+        if not SAFE_LEASE_RE.fullmatch(self.lease_id):
+            raise ValueError("lease id must be 8-80 letters, digits, '_' or '-'")
+        self.path = root / "leases" / f"{self.lease_id}.json"
+        self.lock_path = root / "leases" / f"{self.lease_id}.lock"
+        self.lock_descriptor: int | None = None
+        self._acquire_lock()
+        try:
+            previous = read_json(self.path)
+            if previous and not self._matches(previous):
+                raise ValueError(
+                    f"lease {self.lease_id} belongs to a different provider session or bus"
+                )
+            self.resumed = False
+            self.cursor = 0
+            self.last_sequence: Any = None
+            if previous and self._matches(previous):
+                heartbeat = previous.get("heartbeat_unix")
+                fresh = (
+                    isinstance(heartbeat, (int, float))
+                    and time.time() - float(heartbeat) <= ttl_seconds
+                )
+                other_pid = previous.get("pid")
+                if (
+                    fresh
+                    and previous.get("active") is True
+                    and other_pid != os.getpid()
+                    and process_is_alive(other_pid)
+                ):
+                    raise RuntimeError(
+                        f"lease {self.lease_id} is active in pid={other_pid}; "
+                        "poll that follower handle"
+                    )
+                self.cursor = max(0, int(previous.get("cursor", 0)))
+                self.last_sequence = previous.get("last_sequence")
+                self.name = previous.get("name") or self.name
+                self.resumed = True
+            elif follow_from_end:
+                try:
+                    self.cursor = bus.stat().st_size
+                except FileNotFoundError:
+                    self.cursor = 0
+            self.persist(active=True)
+            active_leases(root, ttl_seconds, clean=True)
+        except BaseException:
+            self._release_lock()
+            raise
+
+    def _acquire_lock(self) -> None:
+        self.lock_path.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
+        descriptor = os.open(self.lock_path, os.O_RDWR | os.O_CREAT, 0o600)
+        try:
+            fcntl.flock(descriptor, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except BlockingIOError as error:
+            os.close(descriptor)
+            raise RuntimeError(
+                f"lease {self.lease_id} already has an active follower; poll that handle"
+            ) from error
+        self.lock_descriptor = descriptor
+
+    def _release_lock(self) -> None:
+        if self.lock_descriptor is None:
+            return
+        try:
+            fcntl.flock(self.lock_descriptor, fcntl.LOCK_UN)
+        finally:
+            os.close(self.lock_descriptor)
+            self.lock_descriptor = None
+
+    def _matches(self, value: dict[str, Any]) -> bool:
+        return (
+            value.get("schema") == LEASE_SCHEMA
+            and value.get("lease_id") == self.lease_id
+            and value.get("provider") == self.provider
+            and value.get("provider_session_id") == self.provider_session_id
+            and value.get("bus") == self.bus
+        )
+
+    def persist(
+        self,
+        *,
+        active: bool,
+        cursor: int | None = None,
+        sequence: Any = None,
+    ) -> None:
+        if cursor is not None:
+            self.cursor = cursor
+        if sequence is not None:
+            self.last_sequence = sequence
+        atomic_json(
+            self.path,
+            {
+                "schema": LEASE_SCHEMA,
+                "lease_id": self.lease_id,
+                "provider": self.provider,
+                "provider_session_id": self.provider_session_id,
+                "name": self.name,
+                "bus": self.bus,
+                "cursor": self.cursor,
+                "last_sequence": self.last_sequence,
+                "active": active,
+                "pid": os.getpid(),
+                "heartbeat_unix": time.time(),
+                "updated_at": utc_now(),
+            },
+        )
+
+    def bind_name(self, name: str) -> None:
+        self.name = name.casefold()
+        self.persist(active=True)
+
+    def enrich(self, payload: dict[str, Any]) -> None:
+        payload["lease_id"] = self.lease_id
+        payload["provider"] = self.provider
+        payload["provider_session_id"] = self.provider_session_id
+        identity = "\0".join(
+            str(payload.get(key) or "")
+            for key in ("session_id", "utterance_id", "sequence", "status", "audience")
+        )
+        payload["delivery_id"] = hashlib.sha256(identity.encode("utf-8")).hexdigest()[
+            :24
+        ]
+
+    def attach_receipt(self) -> dict[str, Any]:
+        names = sorted(
+            {
+                str(item["name"])
+                for item in active_leases(self.root, self.ttl_seconds)
+                if item.get("name")
+            }
+        )
+        return {
+            "schema": ATTACH_SCHEMA,
+            "kind": "attach",
+            "lease_id": self.lease_id,
+            "provider": self.provider,
+            "provider_session_id": self.provider_session_id,
+            "name": self.name,
+            "bus": self.bus,
+            "cursor": self.cursor,
+            "resumed": self.resumed,
+            "active_names": names,
+        }
+
+    def close(self) -> None:
+        try:
+            self.persist(active=False)
+        finally:
+            self._release_lock()
 
 
 def run(args: argparse.Namespace) -> int:
@@ -156,12 +454,41 @@ def run(args: argparse.Namespace) -> int:
     name: str | None = args.name.casefold() if args.name else None
     hear_all = bool(args.all or args.become)
     if not name and not hear_all:
-        sys.stderr.write("bus-demux: unnamed agent does not pass; pass --name or --become/--all\n")
+        sys.stderr.write(
+            "bus-demux: unnamed agent does not pass; pass --name or --become/--all\n"
+        )
         return 2
 
-    def handle(raw: str) -> None:
+    lease: SessionLease | None = None
+    if args.provider:
+        try:
+            lease = SessionLease(
+                root=args.bridge_home,
+                provider=args.provider,
+                provider_session_id=args.session,
+                name=name,
+                bus=path,
+                requested_id=args.lease,
+                ttl_seconds=args.lease_ttl,
+                follow_from_end=bool(args.follow and not args.from_start),
+            )
+        except (OSError, RuntimeError, ValueError) as error:
+            sys.stderr.write(f"bus-demux: session lease refused: {error}\n")
+            return 3
+        if lease.name and not name:
+            name = lease.name
+            hear_all = False
+        emit(lease.attach_receipt())
+
+    def handle(raw: str, next_cursor: int | None = None) -> None:
         nonlocal name, hear_all
         event = parse_line(raw)
+        if lease and next_cursor is not None:
+            lease.persist(
+                active=True,
+                cursor=next_cursor,
+                sequence=event.get("sequence") if event else None,
+            )
         if event is None:
             return
         payload = consider(
@@ -176,55 +503,74 @@ def run(args: argparse.Namespace) -> int:
         if args.become and payload.get("kind") == "name_assignment" and not name:
             name = str(payload["name"])
             hear_all = False
+            if lease:
+                lease.bind_name(name)
             sys.stderr.write(f"bus-demux: bound name={name}\n")
+        if lease:
+            lease.enrich(payload)
         emit(payload)
 
-    if args.once:
-        last = None
-        for raw in replay(path):
-            event = parse_line(raw)
-            if event is None:
-                continue
-            payload = consider(
-                event,
-                name=name,
-                hear_all=hear_all,
-                drafts=args.drafts,
-                debug=False,
-            )
-            if payload is not None:
-                last = payload
-        if last is None:
-            return 1
-        emit(last)
-        return 0
-
-    offset = 0
-    if args.follow and not args.from_start:
-        try:
-            offset = path.stat().st_size
-        except FileNotFoundError:
-            offset = 0
-    elif args.from_start:
-        for raw in replay(path):
-            handle(raw)
-
-    sys.stderr.write(
-        f"bus-demux: bus={path} name={name or '*'} follow={int(args.follow)}\n"
-    )
-    while True:
-        lines, offset = iter_new_lines(path, offset)
-        for raw in lines:
-            handle(raw)
-        if not args.follow:
+    try:
+        if args.once:
+            last = None
+            for raw in replay(path):
+                event = parse_line(raw)
+                if event is None:
+                    continue
+                payload = consider(
+                    event,
+                    name=name,
+                    hear_all=hear_all,
+                    drafts=args.drafts,
+                    debug=False,
+                )
+                if payload is not None:
+                    last = payload
+            if last is None:
+                return 1
+            if lease:
+                lease.enrich(last)
+            emit(last)
             return 0
-        time.sleep(args.interval)
+
+        if lease:
+            offset = lease.cursor
+        elif args.follow and not args.from_start:
+            try:
+                offset = path.stat().st_size
+            except FileNotFoundError:
+                offset = 0
+        else:
+            offset = 0
+
+        sys.stderr.write(
+            f"bus-demux: bus={path} name={name or '*'} follow={int(args.follow)}"
+            f" lease={lease.lease_id if lease else '-'}\n"
+        )
+        last_heartbeat = time.monotonic()
+        while True:
+            entries, offset = iter_new_lines(path, offset)
+            for raw, next_cursor in entries:
+                handle(raw, next_cursor)
+            if not args.follow:
+                return 0
+            if lease and time.monotonic() - last_heartbeat >= 1.0:
+                lease.persist(active=True, cursor=offset)
+                last_heartbeat = time.monotonic()
+            time.sleep(args.interval)
+    except KeyboardInterrupt:
+        return 130
+    finally:
+        if lease:
+            lease.close()
 
 
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--bus", type=Path, default=None, help="override bus path")
-    parser.add_argument("--name", default=None, help="bound agent name (kielbasa filter)")
+    parser.add_argument(
+        "--name", default=None, help="bound agent name (kielbasa filter)"
+    )
     parser.add_argument("--all", action="store_true", help="promiscuous: every seal")
     parser.add_argument(
         "--become",
@@ -232,14 +578,65 @@ def main() -> int:
         help="hear all until a name assignment, then filter",
     )
     parser.add_argument("--follow", action="store_true", help="tail the bus")
-    parser.add_argument("--once", action="store_true", help="print last matching seal and exit")
-    parser.add_argument("--from-start", action="store_true", help="replay existing lines first")
-    parser.add_argument("--drafts", action="store_true", help="also emit draft/revised (noisy)")
+    parser.add_argument(
+        "--once", action="store_true", help="print last matching event and exit"
+    )
+    parser.add_argument(
+        "--from-start", action="store_true", help="replay existing lines first"
+    )
+    parser.add_argument(
+        "--drafts", action="store_true", help="also emit draft/revised envelopes"
+    )
+    parser.add_argument(
+        "--provider", help="client id, for example codex or claude-code"
+    )
+    parser.add_argument(
+        "--session", help="stable provider-session id used for cursor recovery"
+    )
+    parser.add_argument("--lease", help="reattach to an explicit lease id")
+    parser.add_argument(
+        "--bridge-home", type=Path, default=None, help="override lease/receipt root"
+    )
+    parser.add_argument("--lease-ttl", type=float, default=DEFAULT_LEASE_TTL_SECONDS)
+    parser.add_argument(
+        "--active-names",
+        action="store_true",
+        help="print non-stale active session names and exit",
+    )
     parser.add_argument("--debug", action="store_true")
     parser.add_argument("--interval", type=float, default=0.15)
     args = parser.parse_args()
     if args.bus is None:
         args.bus = bus_path()
+    if args.bridge_home is None:
+        args.bridge_home = bridge_home()
+    if bool(args.provider) != bool(args.session):
+        parser.error("--provider and --session must be supplied together")
+    if args.lease and not args.provider:
+        parser.error("--lease requires --provider and --session")
+    if args.lease_ttl <= 0:
+        parser.error("--lease-ttl must be positive")
+    if args.active_names:
+        leases = active_leases(args.bridge_home, args.lease_ttl, clean=True)
+        emit(
+            {
+                "schema": ACTIVE_NAMES_SCHEMA,
+                "kind": "active_names",
+                "names": sorted(
+                    {str(item["name"]) for item in leases if item.get("name")}
+                ),
+                "leases": [
+                    {
+                        "lease_id": item.get("lease_id"),
+                        "provider": item.get("provider"),
+                        "provider_session_id": item.get("provider_session_id"),
+                        "name": item.get("name"),
+                    }
+                    for item in leases
+                ],
+            }
+        )
+        return 0
     if args.once and args.follow:
         parser.error("--once and --follow cannot combine")
     if not args.once and not args.follow and not args.from_start:

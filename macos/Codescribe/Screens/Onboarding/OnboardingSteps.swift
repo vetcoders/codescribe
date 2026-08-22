@@ -1,3 +1,4 @@
+import Foundation
 import SwiftUI
 
 // Individual step bodies for the first-run wizard. Welcome, Permission (reused
@@ -237,7 +238,7 @@ struct HotkeyModeStepView: View {
   }
 }
 
-// MARK: - Agentic readiness (agentic lane only — informational)
+// MARK: - Agentic readiness (agentic lane only)
 
 struct AgenticReadinessStepView: View {
   @ObservedObject var model: OnboardingViewModel
@@ -254,8 +255,8 @@ struct AgenticReadinessStepView: View {
         OnboardingStepHeader(
           eyebrow: "Agentic readiness",
           title: "Your agentic substrate.",
-          blurb: "A read-only check of what the agent lane needs: an AI "
-            + "provider + key, native tools, and any MCP servers you've wired.")
+          blurb: "Check what the agent lane needs, then optionally install the "
+            + "named live-session bridge for your agent client.")
         Spacer(minLength: 0)
       }
 
@@ -263,6 +264,8 @@ struct AgenticReadinessStepView: View {
         readinessPill(ready: readiness.ready)
         statusCard(rows: readiness.rows)
       }
+
+      agentBridgeSetup
 
       if let mcp = model.mcpStatus, mcp.configured {
         Text("MCP servers")
@@ -282,8 +285,85 @@ struct AgenticReadinessStepView: View {
       .padding(.top, 2)
 
       OnboardingStepNote(
-        text: "Informational — press Continue whether or not everything is green.")
+        text:
+          "Bridge install is explicit and optional — Continue whether or not everything is green.")
     }
+  }
+
+  /// Product install for the external named-session bridge. The checkboxes are
+  /// deliberately empty on first run; visiting this step performs no writes.
+  /// Reopening Setup seeds clients from the managed receipt for an explicit
+  /// reinstall/update or a safe deselection.
+  private var agentBridgeSetup: some View {
+    VStack(alignment: .leading, spacing: 10) {
+      Text("LIVE AGENT BRIDGE")
+        .font(CSFont.mono(10, .semibold))
+        .tracking(0.4)
+        .foregroundStyle(CSColor.textFaint)
+      Text(model.agentBridgeTitle)
+        .font(CSFont.ui(15, .bold))
+        .foregroundStyle(CSColor.textHigh)
+      Text(model.agentBridgeExplanation)
+        .font(CSFont.ui(12.5))
+        .lineSpacing(3)
+        .foregroundStyle(CSColor.textMutedAlt)
+        .fixedSize(horizontal: false, vertical: true)
+
+      VStack(spacing: 8) {
+        ForEach(AgentBridgeClient.allCases) { client in
+          OnboardingChoiceCard(
+            title: client.displayName,
+            subtitle: client == .codex
+              ? "~/.codex/skills/codescribe"
+              : "~/.claude/skills/codescribe",
+            isSelected: model.selectedAgentClients.contains(client)
+          ) { model.toggleAgentClient(client) }
+        }
+      }
+
+      HStack(spacing: 10) {
+        OnboardingButton(title: model.agentBridgeButtonTitle, kind: .primary) {
+          model.installAgentBridge()
+        }
+        .disabled(
+          model.selectedAgentClients.isEmpty || !model.agentBridgeStatus.payloadAvailable
+        )
+        Text(model.agentBridgeStatus.detail)
+          .font(CSFont.mono(10.5, .medium))
+          .foregroundStyle(CSColor.textFaint)
+          .fixedSize(horizontal: false, vertical: true)
+      }
+
+      if !model.agentBridgeStatus.installedPaths.isEmpty {
+        VStack(alignment: .leading, spacing: 3) {
+          ForEach(model.agentBridgeStatus.installedPaths, id: \.self) { path in
+            Text(path.replacingOccurrences(of: NSHomeDirectory(), with: "~"))
+              .font(CSFont.mono(9.5, .medium))
+              .foregroundStyle(CSColor.oliveLight)
+              .textSelection(.enabled)
+          }
+        }
+      }
+      if let error = model.agentBridgeError {
+        Text(error)
+          .font(CSFont.mono(10.5, .medium))
+          .foregroundStyle(CSColor.terracottaLight)
+          .fixedSize(horizontal: false, vertical: true)
+      }
+      Text("Stable helper: ~/.codescribe/agent-bridge/runtime/bin/bus-demux.py")
+        .font(CSFont.mono(9.5, .medium))
+        .foregroundStyle(CSColor.textFaint)
+        .textSelection(.enabled)
+    }
+    .padding(14)
+    .frame(maxWidth: .infinity, alignment: .leading)
+    .background(
+      RoundedRectangle(cornerRadius: 12, style: .continuous)
+        .fill(CSColor.surfaceRaised(0.02))
+    )
+    .overlay(
+      RoundedRectangle(cornerRadius: 12, style: .continuous)
+        .strokeBorder(CSColor.hairline(0.07), lineWidth: 1))
   }
 
   /// Shown on the readiness step when no MCP server is configured yet: a short,

@@ -5,23 +5,27 @@ No Vibecrafted worker. The human holds Fn. The agent listens on jsonl.
 
 ## Quick reference
 
-| Field            | Value                                           |
-| ---------------- | ----------------------------------------------- |
-| Name             | `codescribe`                                    |
-| Version          | `0.1.0`                                         |
-| Operator command | **none** — not `vibecrafted codescribe <agent>` |
-| Interactive      | `/codescribe`                                   |
-| Canonical doc    | [`SKILL.md`](SKILL.md)                          |
-| Follower         | Codescribe checkout `scripts/bus-demux.py`      |
+| Field            | Value                                                 |
+| ---------------- | ----------------------------------------------------- |
+| Name             | `codescribe`                                          |
+| Version          | `0.2.0`                                               |
+| Operator command | **none** — not `vibecrafted codescribe <agent>`       |
+| Interactive      | `/codescribe`                                         |
+| Canonical doc    | [`SKILL.md`](SKILL.md)                                |
+| Follower         | `~/.codescribe/agent-bridge/runtime/bin/bus-demux.py` |
 
 ## Homes
 
-| Tree                | Path                                  |
-| ------------------- | ------------------------------------- |
-| Codescribe checkout | `skills/codescribe/`                  |
-| Fleet               | `vibecrafted_core/skills/codescribe/` |
+| Tree                | Path                                                 |
+| ------------------- | ---------------------------------------------------- |
+| Codescribe checkout | `skills/codescribe/`                                 |
+| Signed app payload  | `Contents/Resources/agent-bridge/skills/codescribe/` |
+| Product install     | Codex or Claude skill home + managed receipt/marker  |
+| Fleet               | `vibecrafted_core/skills/codescribe/`                |
 
-Keep both copies in lockstep. Parser stays in the Codescribe repo.
+Keep authoring copies in lockstep. The signed app packages the complete tree and
+the Setup Wizard installs it explicitly. Runtime commands use the stable product
+helper under `~/.codescribe/agent-bridge/runtime/`, never the checkout.
 
 ## Authoring checklist
 

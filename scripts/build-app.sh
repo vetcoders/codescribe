@@ -18,6 +18,7 @@
 #
 # Usage:
 #   scripts/build-app.sh [debug|local-release|release]
+#   scripts/build-app.sh --stage-agent-bridge <destination> [bundle-version]
 #
 # Env toggles:
 #   SKIP_XCODEBUILD=1   stop after xcodegen (verifies stages 1-4 without Xcode)
@@ -27,6 +28,95 @@ set -euo pipefail
 
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$REPO_ROOT"
+
+stage_agent_bridge() {
+  local destination="$1"
+  local bundle_version="$2"
+  python3 - "$REPO_ROOT" "$destination" "$bundle_version" <<'PY'
+import hashlib
+import json
+import os
+import shutil
+import stat
+import sys
+from pathlib import Path, PurePosixPath
+
+repo = Path(sys.argv[1]).resolve()
+destination = Path(sys.argv[2]).resolve()
+bundle_version = sys.argv[3]
+skill_source = repo / "skills" / "codescribe"
+helper_source = repo / "scripts" / "bus-demux.py"
+if not (skill_source / "SKILL.md").is_file() or not helper_source.is_file():
+    raise SystemExit("agent bridge source is incomplete")
+if destination == destination.parent or destination == Path.home():
+    raise SystemExit(f"refusing unsafe agent bridge destination: {destination}")
+
+stage = destination.parent / f".{destination.name}.stage-{os.getpid()}"
+backup = destination.parent / f".{destination.name}.backup-{os.getpid()}"
+for scratch in (stage, backup):
+    if scratch.exists():
+        shutil.rmtree(scratch)
+stage.mkdir(parents=True, mode=0o755)
+shutil.copytree(skill_source, stage / "skills" / "codescribe")
+(stage / "bin").mkdir(mode=0o755)
+shutil.copy2(helper_source, stage / "bin" / "bus-demux.py")
+(stage / "bin" / "bus-demux.py").chmod(0o755)
+
+files = []
+for path in sorted(candidate for candidate in stage.rglob("*") if candidate.is_file()):
+    if path.is_symlink():
+        raise SystemExit(f"agent bridge payload may not contain symlinks: {path}")
+    relative = PurePosixPath(path.relative_to(stage).as_posix())
+    digest = hashlib.sha256(path.read_bytes()).hexdigest()
+    mode = stat.S_IMODE(path.stat().st_mode)
+    files.append({
+        "path": str(relative),
+        "sha256": digest,
+        "bytes": path.stat().st_size,
+        "mode": f"{mode:04o}",
+    })
+
+manifest = {
+    "schema": "codescribe.agent-bridge.bundle.v1",
+    "bundle_version": bundle_version,
+    "helper": "bin/bus-demux.py",
+    "skill": "skills/codescribe",
+    "files": files,
+}
+(stage / "manifest.json").write_text(
+    json.dumps(manifest, ensure_ascii=False, indent=2, sort_keys=True) + "\n",
+    encoding="utf-8",
+)
+(stage / "manifest.json").chmod(0o644)
+
+try:
+    if destination.exists():
+        os.replace(destination, backup)
+    os.replace(stage, destination)
+    if backup.exists():
+        shutil.rmtree(backup)
+except BaseException:
+    if destination.exists() and backup.exists():
+        shutil.rmtree(destination)
+    if backup.exists():
+        os.replace(backup, destination)
+    raise
+finally:
+    if stage.exists():
+        shutil.rmtree(stage)
+PY
+}
+
+if [[ "${1:-}" == "--stage-agent-bridge" ]]; then
+  if [[ -z "${2:-}" ]]; then
+    echo "usage: $0 --stage-agent-bridge <destination> [bundle-version]" >&2
+    exit 2
+  fi
+  BRIDGE_STAGE_VERSION="${3:-$(sed -n 's/^version = "\(.*\)"/\1/p' "$REPO_ROOT/Cargo.toml" | head -1)}"
+  stage_agent_bridge "$2" "$BRIDGE_STAGE_VERSION"
+  echo "==> Agent bridge staged: $2 (v$BRIDGE_STAGE_VERSION)"
+  exit 0
+fi
 
 PROFILE="${1:-debug}"
 case "$PROFILE" in
@@ -243,6 +333,9 @@ if [[ -n "$EMBEDDER_RUNTIME_SOURCE" ]]; then
 else
   echo "    MiniLM is compiled into the binary by explicit CODESCRIBE_EMBED_EMBEDDER=1."
 fi
+AGENT_BRIDGE_BUNDLE_DIR="$APP/Contents/Resources/agent-bridge"
+stage_agent_bridge "$AGENT_BRIDGE_BUNDLE_DIR" "$STAMP_VERSION"
+echo "    Agent bridge skill tree + session helper bundled at Contents/Resources/agent-bridge."
 STT_BRIDGE_BUNDLED=0
 # Same host-triple pin as Makefile ENGINE_BRIDGE_TARGET (W0-B / S-1): avoid
 # inheriting the builder's macosxN.0 so bundled bridges match CI/dev hosts.

@@ -63,8 +63,27 @@ override wins over both.
 Named external agents (same file, not a second microphone):
 
 ```bash
-python3 scripts/bus-demux.py --become --follow
-python3 scripts/bus-demux.py --name james --follow
+python3 ~/.codescribe/agent-bridge/runtime/bin/bus-demux.py \
+  --provider codex --session <provider-session-id> --become --drafts --follow
+python3 ~/.codescribe/agent-bridge/runtime/bin/bus-demux.py \
+  --provider codex --session <provider-session-id> --name james --drafts --follow
 ```
 
-Unnamed agents do not pass. The demux never opens audio.
+The Setup Wizard installs that stable helper only after the operator selects
+Codex, Claude Code, or both. The signed app payload is checksum-verified before
+installation; runtime commands never depend on a source checkout.
+
+Unnamed agents do not pass. The first emitted line is an attach receipt with a
+provider/session lease and cursor. Preserve and poll the follower handle. When a
+provider session recovers after compaction, the same provider/session/name
+resumes from that cursor, including events appended during recovery, without
+replaying the old command. Duplicate names in different provider sessions own
+different leases. Non-stale names are exposed without touching audio:
+
+```bash
+python3 ~/.codescribe/agent-bridge/runtime/bin/bus-demux.py --active-names
+```
+
+Draft/revised envelopes explicitly carry `state_change_allowed: false`; only a
+`transcript_sealed` envelope carries `state_change_allowed: true`. The demux
+never opens audio or changes transcript text.
