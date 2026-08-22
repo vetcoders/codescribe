@@ -103,14 +103,14 @@ mic ▶ recorder ▶ [J1] ▶ Silero VAD chunker ▶ utterance boundaries
         ↑ Refine lane: correction.rs partial passes (VAD-aligned windows)
 ```
 
-| #   | station           | code                                                 | what happens                                                                                                                                                           | since         |
-| --- | ----------------- | ---------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------- |
-| B1  | VAD/time evidence | `core/audio/chunker.rs` (Silero, embedded, zero-I/O) | reports speech probability and boundary/silence timing; it does not identify words, laughter, or named noise classes                                                   | doctrine §3.5 |
-| B2  | scheduling        | `core/stt/scheduler.rs :: SttScheduler`              | Fast lane = utterance decode; Refine lane = correction re-decodes; per-lane `initial_prompt_for_lane` (⚑ OFF, W13-6A)                                                  | —             |
-| B3  | decode            | `core/stt/whisper/singleton.rs`                      | in-process Whisper (turbo fp16 only; official OpenAI tokenizer + pinned mel asset); TTL reaper unloads 30 min after last finished decode (`whisper_residency_reclaim`) | fp16 only     |
-| B4  | corrections       | `streaming/correction.rs`                            | Phase-2 Refine: partial passes triggered by finals/speech-ms, **VAD-aligned windows** (`plan_vad_aligned_windows_with_config`) so windows never begin mid-phrase       | W1-A          |
-| B5  | postprocess       | `core/pipeline/stream_postprocess.rs`                | lexicon rewrite table (compiled-in seed/programming/operator/protected), hallucination + SemanticGate + empty-drop gates                                               | —             |
-| B6  | canvas + user     | **[J2]** → overlay                                   | same reducer/emitter contract as LINE A                                                                                                                                | —             |
+| #   | station           | code                                                   | what happens                                                                                                                                                           | since     |
+| --- | ----------------- | ------------------------------------------------------ | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------- | --------- |
+| B1  | VAD/time evidence | `core/audio/chunker.rs` + `streaming/silero_fusion.rs` | emits ordered `SidebandEvidence` with exact PCM edges and pause=`unknown_non_speech`; it does not identify words, laughter, or named noise classes                     | W2-02     |
+| B2  | scheduling        | `core/stt/scheduler.rs :: SttScheduler`                | Fast lane = utterance decode; Refine lane = correction re-decodes; per-lane `initial_prompt_for_lane` (⚑ OFF, W13-6A)                                                  | —         |
+| B3  | decode            | `core/stt/whisper/singleton.rs`                        | in-process Whisper (turbo fp16 only; official OpenAI tokenizer + pinned mel asset); TTL reaper unloads 30 min after last finished decode (`whisper_residency_reclaim`) | fp16 only |
+| B4  | corrections       | `streaming/correction.rs`                              | Phase-2 Refine: partial passes triggered by finals/speech-ms, **VAD-aligned windows** (`plan_vad_aligned_windows_with_config`) so windows never begin mid-phrase       | W1-A      |
+| B5  | postprocess       | `core/pipeline/stream_postprocess.rs`                  | lexicon rewrite table (compiled-in seed/programming/operator/protected), hallucination + SemanticGate + empty-drop gates                                               | —         |
+| B6  | canvas + user     | **[J2]** → overlay                                     | same reducer/emitter contract as LINE A                                                                                                                                | —         |
 
 ## 3. LINE L1 — Layer 1 tail-patch
 

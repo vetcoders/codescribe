@@ -17,7 +17,10 @@
 //! ranges depending on which consumer was asked. [`SileroIngress::observe`] is
 //! the single decision point that derives both from one observation.
 
-use crate::audio::chunker::{SpeechEvent, SpeechSession};
+use crate::audio::chunker::{SpeechEvent, SpeechSession, VadBoundaryEvidence, VadBoundaryKind};
+use crate::pipeline::contracts::{
+    NonSpeechEvidence, SidebandEvidence, SidebandEvidenceKind, SidebandProvenance,
+};
 use crate::stt::tail_patcher::SkipReasonCode;
 use crate::stt::tail_provider::{TailSampleRange, TimedTailSegment};
 
@@ -156,7 +159,7 @@ impl UtteranceLedger {
 
 /// What one observed capture chunk means to every consumer of the session's
 /// single spectrum.
-#[derive(Debug, Clone, Default, PartialEq, Eq)]
+#[derive(Debug, Clone, Default, PartialEq)]
 pub struct SileroIngest {
     /// Utterance identities the Supervisor closed inside this chunk.
     pub closed: Vec<u64>,
@@ -169,14 +172,20 @@ pub struct SileroIngest {
     /// from, in the same call, so wake/sleep and utterance identity cannot
     /// disagree about where speech was.
     pub speech_live: bool,
+    /// Newly measured content-free evidence, in PCM/sequence order.
+    pub sideband: Vec<SidebandEvidence>,
 }
 
 /// Supervisor-mode Silero at the Apple PCM ingress. The session's only VAD.
 pub struct SileroIngress {
     session: String,
     capture_epoch: u64,
+    sample_rate: u32,
     vad: SpeechSession,
     ledger: UtteranceLedger,
+    next_sideband_sequence: u64,
+    last_speech_end: Option<u64>,
+    sideband: Vec<SidebandEvidence>,
 }
 
 impl SileroIngress {
@@ -184,8 +193,12 @@ impl SileroIngress {
         Self {
             session: session.into(),
             capture_epoch,
+            sample_rate,
             vad: SpeechSession::new_utterance(sample_rate),
             ledger: UtteranceLedger::new(),
+            next_sideband_sequence: 0,
+            last_speech_end: None,
+            sideband: Vec::new(),
         }
     }
 
@@ -212,11 +225,14 @@ impl SileroIngress {
             return SileroIngest::default();
         }
         let events = self.vad.feed(samples, 0);
+        let boundaries = self.vad.take_vad_boundaries();
         let closed_here = events
             .iter()
             .any(|event| matches!(event, SpeechEvent::UtteranceFinal(_)));
         let open_range = self.vad.open_segment_raw_range();
-        self.observe(open_range, closed_here, samples_seen)
+        let mut out = self.observe(open_range, closed_here, samples_seen);
+        out.sideband = self.observe_boundaries(&boundaries);
+        out
     }
 
     /// The whole decision, separated from the VAD read so it is testable on
@@ -247,6 +263,96 @@ impl SileroIngress {
             }
         }
         out
+    }
+
+    /// Convert the chunker's exact Silero boundaries into ordered pipeline
+    /// evidence. This is intentionally separate from [`Self::observe`]: the
+    /// fusion ledger retains its padded STT window semantics, while sideband
+    /// evidence names the unpadded threshold crossings exactly.
+    pub(crate) fn observe_boundaries(
+        &mut self,
+        boundaries: &[VadBoundaryEvidence],
+    ) -> Vec<SidebandEvidence> {
+        let mut emitted = Vec::new();
+        for boundary in boundaries {
+            match boundary.kind {
+                VadBoundaryKind::SpeechStart => {
+                    if let Some(pause_start) = self.last_speech_end.take()
+                        && pause_start < boundary.sample
+                    {
+                        emitted.push(self.push_sideband(
+                            pause_start,
+                            boundary.sample,
+                            SidebandEvidenceKind::Pause {
+                                duration_samples: boundary.sample - pause_start,
+                                non_speech: NonSpeechEvidence::UnknownNonSpeech,
+                            },
+                        ));
+                    }
+                    emitted.push(self.push_sideband(
+                        boundary.sample,
+                        boundary.sample,
+                        SidebandEvidenceKind::SpeechStart {
+                            speech_probability: boundary.speech_probability,
+                        },
+                    ));
+                }
+                VadBoundaryKind::SpeechEnd => {
+                    emitted.push(self.push_sideband(
+                        boundary.sample,
+                        boundary.sample,
+                        SidebandEvidenceKind::SpeechEnd {
+                            speech_probability: boundary.speech_probability,
+                        },
+                    ));
+                    self.last_speech_end = Some(boundary.sample);
+                }
+            }
+        }
+        self.sideband.extend(emitted.iter().cloned());
+        emitted
+    }
+
+    /// Pause evidence associated with a stable span for optional L3
+    /// punctuation/paragraphing context.
+    ///
+    /// A pause immediately before the raw Silero start overlaps the span's
+    /// pre-roll, so matching is by the pause end landing inside the canonical
+    /// span range. Speech edges and unknown sound semantics are not forwarded
+    /// to the formatter.
+    pub fn pause_evidence_for_range(&self, range: &TailSampleRange) -> Vec<SidebandEvidence> {
+        self.sideband
+            .iter()
+            .filter(|evidence| {
+                evidence.range.session == range.session
+                    && evidence.range.capture_epoch == range.capture_epoch
+                    && range.sample_start <= evidence.range.sample_end
+                    && evidence.range.sample_end <= range.sample_end
+                    && matches!(evidence.evidence, SidebandEvidenceKind::Pause { .. })
+            })
+            .cloned()
+            .collect()
+    }
+
+    fn push_sideband(
+        &mut self,
+        sample_start: u64,
+        sample_end: u64,
+        evidence: SidebandEvidenceKind,
+    ) -> SidebandEvidence {
+        self.next_sideband_sequence = self.next_sideband_sequence.saturating_add(1);
+        SidebandEvidence {
+            sequence: self.next_sideband_sequence,
+            range: TailSampleRange {
+                session: self.session.clone(),
+                capture_epoch: self.capture_epoch,
+                sample_start,
+                sample_end: sample_end.max(sample_start),
+            },
+            sample_rate_hz: self.sample_rate,
+            provenance: SidebandProvenance::SileroVad,
+            evidence,
+        }
     }
 
     /// Seal any still-open Supervisor segment at capture EOF.
@@ -717,6 +823,67 @@ mod tests {
                 >= fence,
             "fixture must actually clear the long-silence fence"
         );
+    }
+
+    /// Sideband claims stop exactly where Silero's evidence stops: threshold
+    /// edges plus an unknown non-speech pause between them.
+    #[test]
+    fn sideband_edges_and_pause_keep_exact_pcm_ranges_and_order() {
+        let mut ingress = SileroIngress::new(16_000, "s", 4);
+        let first = ingress.observe_boundaries(&[
+            VadBoundaryEvidence {
+                kind: VadBoundaryKind::SpeechStart,
+                sample: 8_000,
+                speech_probability: 0.81,
+            },
+            VadBoundaryEvidence {
+                kind: VadBoundaryKind::SpeechEnd,
+                sample: 24_000,
+                speech_probability: 0.12,
+            },
+        ]);
+        assert_eq!(first.len(), 2);
+        assert_eq!(first[0].sequence, 1);
+        assert_eq!(first[0].range.sample_start, 8_000);
+        assert_eq!(first[0].range.sample_end, 8_000);
+        assert!(matches!(
+            first[0].evidence,
+            SidebandEvidenceKind::SpeechStart { .. }
+        ));
+        assert_eq!(first[1].sequence, 2);
+        assert_eq!(first[1].range.sample_start, 24_000);
+        assert_eq!(first[1].range.sample_end, 24_000);
+
+        let resumed = ingress.observe_boundaries(&[VadBoundaryEvidence {
+            kind: VadBoundaryKind::SpeechStart,
+            sample: 40_000,
+            speech_probability: 0.76,
+        }]);
+        assert_eq!(resumed.len(), 2, "pause then the resuming speech edge");
+        assert_eq!(resumed[0].sequence, 3);
+        assert_eq!(resumed[0].range.sample_start, 24_000);
+        assert_eq!(resumed[0].range.sample_end, 40_000);
+        assert!(matches!(
+            resumed[0].evidence,
+            SidebandEvidenceKind::Pause {
+                duration_samples: 16_000,
+                non_speech: NonSpeechEvidence::UnknownNonSpeech,
+            }
+        ));
+        assert_eq!(resumed[1].sequence, 4);
+        assert!(matches!(
+            resumed[1].evidence,
+            SidebandEvidenceKind::SpeechStart { .. }
+        ));
+
+        let attached = ingress.pause_evidence_for_range(&TailSampleRange {
+            session: "s".into(),
+            capture_epoch: 4,
+            sample_start: 36_000,
+            sample_end: 48_000,
+        });
+        assert_eq!(attached, vec![resumed[0].clone()]);
+        assert_eq!(attached[0].provenance, SidebandProvenance::SileroVad);
     }
 
     /// Enclosure, not overlap: a span may only adopt a Silero range that

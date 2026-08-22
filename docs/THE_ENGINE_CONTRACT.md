@@ -57,6 +57,57 @@ boundaries, silence duration, pause evidence, and pre-roll; richer paralingual
 labels are optional and require a measured provider beyond plain Silero VAD.
 Silero does not occupy a numbered text layer.
 
+### Sideband evidence contract
+
+`EngineEvent::SidebandEvidence` carries content-free observations on the same
+PCM axis as the ordered span ledger:
+
+- identity is `(session, capture_epoch, sample_start, sample_end, sequence)`
+  plus `sample_rate_hz`;
+- provenance is typed as `silero_vad`;
+- supported claims are `speech_start`, `speech_end`, and a measured pause
+  duration whose only non-speech classification is `unknown_non_speech`;
+- plain Silero does **not** support laughter, cough, music, speaker, language,
+  or named noise labels. Those require a separate measured provider;
+- an edge is a zero-width range at the exact threshold-crossing sample; a pause
+  is the exact half-open gap from a measured speech end to the next measured
+  speech start;
+- the event is never `InsertAnnotation`, never mutates committed text, and its
+  absence never blocks audio, sealing, delivery, or transcript assembly;
+- L3 may consume only measured pause duration, and only as context for
+  punctuation or paragraph boundaries. It may not turn the evidence into words
+  or sound annotations.
+
+Example pause event (JSON field names match the serialized contract):
+
+```json
+{
+  "type": "sideband_evidence",
+  "evidence": {
+    "sequence": 3,
+    "range": {
+      "session": "session-abc",
+      "capture_epoch": 2,
+      "sample_start": 16000,
+      "sample_end": 24000
+    },
+    "sample_rate_hz": 16000,
+    "provenance": "silero_vad",
+    "evidence": {
+      "kind": "pause",
+      "duration_samples": 8000,
+      "non_speech": "unknown_non_speech"
+    }
+  }
+}
+```
+
+The Apple lane emits this evidence whenever its existing single
+`SileroIngress` is present (`CODESCRIBE_SILERO_FUSION=1` or the configured
+hands-free epoch lifecycle needs speech edges). There is no second VAD and no
+new sideband flag. If Silero cannot load, `EpochGate` disarms and Apple runs as
+one continuous stream with no sideband events.
+
 Final BAM is superseded and has no automatic content producer. Normal stop
 drains already admitted work and assembles the ordered span ledger; it does not
 start a fifth rewrite. SessionFinalised is lifecycle-only and may not mutate
@@ -110,6 +161,7 @@ A first-wins final string is not enough. The real document is the ordered span l
 - `treat_whole_text_mutable_until_session_seal`
 - `treat_apple_text_as_immutable_floor`
 - `infer_span_identity_from_text_similarity`
+- `infer_named_sound_from_silero`
 - `deduplicate_intentional_repetition_by_content`
 - `claim_layered_on_when_no_windows_reach_the_provider`
 

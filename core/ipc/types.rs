@@ -11,8 +11,8 @@
 use serde::{Deserialize, Serialize};
 
 use crate::pipeline::contracts::{
-    AnnotationKind, DropKind, EngineEvent, LayerSource, LayerSummary, TranscriptSegment,
-    TranscriptionConfidenceFlag,
+    AnnotationKind, DropKind, EngineEvent, LayerSource, LayerSummary, SidebandEvidence,
+    TranscriptSegment, TranscriptionConfidenceFlag,
 };
 
 /// One timestamped envelope on the IPC stream. The payload is flattened, so a
@@ -77,6 +77,9 @@ pub enum EngineEventWire {
     VadEnd {
         speech_prob: f32,
         ts_ms: u64,
+    },
+    SidebandEvidence {
+        evidence: SidebandEvidence,
     },
     NoSpeech {
         reason: String,
@@ -156,6 +159,9 @@ impl From<&EngineEvent> for EngineEventWire {
             EngineEvent::VadEnd { speech_prob, ts_ms } => Self::VadEnd {
                 speech_prob: *speech_prob,
                 ts_ms: *ts_ms,
+            },
+            EngineEvent::SidebandEvidence { evidence } => Self::SidebandEvidence {
+                evidence: evidence.clone(),
             },
             EngineEvent::NoSpeech { reason } => Self::NoSpeech {
                 reason: reason.clone(),
@@ -287,6 +293,8 @@ fn drop_kind_to_wire(kind: &DropKind) -> &'static str {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::pipeline::contracts::{NonSpeechEvidence, SidebandEvidenceKind, SidebandProvenance};
+    use crate::stt::tail_provider::TailSampleRange;
     use serde_json::Value;
 
     /// Test helper: force a JSON value into an object map or panic with context.
@@ -445,6 +453,54 @@ mod tests {
         assert_eq!(
             obj.get("partial_dropped_count").and_then(Value::as_u64),
             Some(13)
+        );
+    }
+
+    /// Sideband evidence keeps exact PCM identity and typed provenance on the
+    /// process wire without becoming transcript text.
+    #[test]
+    fn sideband_event_serializes_typed_wire_payload() {
+        let event = EngineEvent::SidebandEvidence {
+            evidence: SidebandEvidence {
+                sequence: 7,
+                range: TailSampleRange {
+                    session: "session-1".to_string(),
+                    capture_epoch: 3,
+                    sample_start: 32_000,
+                    sample_end: 48_000,
+                },
+                sample_rate_hz: 16_000,
+                provenance: SidebandProvenance::SileroVad,
+                evidence: SidebandEvidenceKind::Pause {
+                    duration_samples: 16_000,
+                    non_speech: NonSpeechEvidence::UnknownNonSpeech,
+                },
+            },
+        };
+
+        let wire = EngineEventWire::from(&event);
+        let json = serde_json::to_value(&wire).expect("serialize sideband wire");
+        let obj = must_object(json);
+        assert_eq!(
+            obj.get("type").and_then(Value::as_str),
+            Some("sideband_evidence")
+        );
+        let evidence = obj
+            .get("evidence")
+            .and_then(Value::as_object)
+            .expect("sideband payload");
+        assert_eq!(evidence.get("sequence").and_then(Value::as_u64), Some(7));
+        assert_eq!(
+            evidence.get("provenance").and_then(Value::as_str),
+            Some("silero_vad")
+        );
+        assert_eq!(
+            evidence
+                .get("evidence")
+                .and_then(Value::as_object)
+                .and_then(|kind| kind.get("non_speech"))
+                .and_then(Value::as_str),
+            Some("unknown_non_speech")
         );
     }
 

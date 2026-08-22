@@ -154,6 +154,9 @@ pub struct EngineContract {
     pub full_file_pass: &'static str,
     pub inline_format_role: &'static str,
     pub silero_role: &'static str,
+    pub sideband_role: &'static str,
+    pub sideband_labels: &'static [&'static str],
+    pub sideband_absence: &'static str,
     pub final_bam_status: &'static str,
     pub session_finalised_role: &'static str,
     pub product_goal: &'static str,
@@ -185,6 +188,7 @@ pub const ENGINE_CONTRACT: EngineContract = EngineContract {
         "treat_committed_as_document",
         "treat_whole_text_mutable_until_session_seal",
         "small_inline_llm",
+        "infer_named_sound_from_silero",
         "final_bam_automatic_producer",
         "session_finalised_content_mutation",
     ],
@@ -192,6 +196,9 @@ pub const ENGINE_CONTRACT: EngineContract = EngineContract {
     full_file_pass: "button_only_proposal",
     inline_format_role: "schedule_existing_responses_formatter",
     silero_role: "orthogonal_vad_and_pcm_time_evidence",
+    sideband_role: "content_free_exact_pcm_evidence_never_text_authority",
+    sideband_labels: &["speech_start", "speech_end", "pause_unknown_non_speech"],
+    sideband_absence: "fail_open_continuous_apple",
     final_bam_status: "superseded_no_automatic_producer",
     session_finalised_role: "lifecycle_only",
     product_goal: "energy × time → the true sentence, live in the buffer, ~10ms to paste",
@@ -317,7 +324,7 @@ pub fn render_engine_contract_html() -> String {
 <p class="engine-contract-kicker">THE ENGINE · quality-report contract · {id}</p>
 <h2>Place on the canvas is given by energy in time — not by tokens.</h2>
 <p class="engine-contract-goal">{goal}</p>
-<p class="engine-contract-relay">Four machine layers: L0 Apple → L1 Whisper → L2 lexicon / Light+ → L3 existing Responses formatter; then human. “Inline” is scheduling, not a separate model. Silero is orthogonal VAD and PCM-time evidence. Final BAM is superseded and SessionFinalised is lifecycle-only.</p>
+<p class="engine-contract-relay">Four machine layers: L0 Apple → L1 Whisper → L2 lexicon / Light+ → L3 existing Responses formatter; then human. “Inline” is scheduling, not a separate model. Silero is orthogonal VAD and PCM-time evidence: exact speech edges plus pause=unknown_non_speech, never named-sound or text authority. Sideband absence fails open to continuous Apple. Final BAM is superseded and SessionFinalised is lifecycle-only.</p>
 <table class="engine-contract-bars">
 <thead><tr><th>Bar</th><th>Means</th></tr></thead>
 <tbody>
@@ -504,6 +511,11 @@ mod tests {
             "L3 — Responses formatter",
             "Inline describes scheduling",
             "Silero is orthogonal",
+            "Sideband evidence contract",
+            "unknown_non_speech",
+            "infer_named_sound_from_silero",
+            "L3 may consume only measured pause duration",
+            "one continuous stream with no sideband events",
             "Final BAM is superseded",
             "SessionFinalised is lifecycle-only",
             "seal-atlas",

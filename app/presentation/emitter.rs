@@ -323,6 +323,9 @@ impl TranscriptReducer {
             EngineEvent::ReplaceRange { .. } | EngineEvent::InsertAnnotation { .. } => {
                 let _ = self.apply_layered_patch(event);
             }
+            EngineEvent::SidebandEvidence { .. } => {
+                // Timing evidence is not transcript authority.
+            }
             EngineEvent::NoSpeech { .. } => self.clear_live_preview(),
             _ => {}
         }
@@ -567,6 +570,14 @@ impl EventSink for PresentationEmitter {
                     cb();
                 }
             }
+            EngineEvent::SidebandEvidence { evidence } => {
+                debug!(
+                    sequence = evidence.sequence,
+                    sample_start = evidence.range.sample_start,
+                    sample_end = evidence.range.sample_end,
+                    "PresentationEmitter observed sideband evidence without mutating text"
+                );
+            }
             EngineEvent::Preview { .. } => {
                 let rendered = {
                     let mut state = self.session_state.lock().unwrap_or_else(|e| e.into_inner());
@@ -777,8 +788,10 @@ impl EventSink for PresentationEmitter {
 mod tests {
     use super::{DeltaRenderMode, PresentationEmitter, SessionTranscriptState};
     use codescribe_core::pipeline::contracts::{
-        AnnotationKind, EngineEvent, EventSink, LayerSource, LayerSummary, TranscriptSegment,
+        AnnotationKind, EngineEvent, EventSink, LayerSource, LayerSummary, NonSpeechEvidence,
+        SidebandEvidence, SidebandEvidenceKind, SidebandProvenance, TranscriptSegment,
     };
+    use codescribe_core::stt::tail_provider::TailSampleRange;
     use std::sync::{Arc, Mutex as StdMutex};
     use tokio::sync::Mutex;
 
@@ -837,6 +850,46 @@ mod tests {
             "novel recovered material must still reach the canvas: {:?}",
             reducer.rendered_text()
         );
+    }
+
+    #[test]
+    fn sideband_evidence_is_byte_stable_in_the_transcript_reducer() {
+        let mut reducer = SessionTranscriptState::default();
+        reducer.apply_event(&EngineEvent::UtteranceFinal {
+            utterance_id: 11,
+            text: "Zażółć gęślą jaźń.".to_string(),
+            raw_text: "Zażółć gęślą jaźń.".to_string(),
+            start_ts: 0.0,
+            end_ts: 1.0,
+            segments: Vec::new(),
+            vad_speech_pct: None,
+            avg_logprob: None,
+            compression_ratio: None,
+            quality_gate_dropped: false,
+            confidence_flags: Vec::new(),
+        });
+        let before = reducer.rendered_text();
+
+        let callback = reducer.apply_event(&EngineEvent::SidebandEvidence {
+            evidence: SidebandEvidence {
+                sequence: 3,
+                range: TailSampleRange {
+                    session: "s".to_string(),
+                    capture_epoch: 0,
+                    sample_start: 16_000,
+                    sample_end: 24_000,
+                },
+                sample_rate_hz: 16_000,
+                provenance: SidebandProvenance::SileroVad,
+                evidence: SidebandEvidenceKind::Pause {
+                    duration_samples: 8_000,
+                    non_speech: NonSpeechEvidence::UnknownNonSpeech,
+                },
+            },
+        });
+
+        assert!(callback.is_none());
+        assert_eq!(reducer.rendered_text().as_bytes(), before.as_bytes());
     }
 
     /// Regression for the 2026-08-14 tripled-RAW incident (Monika's take:

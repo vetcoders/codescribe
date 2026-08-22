@@ -369,6 +369,22 @@ fn forward_event_to_listener(payload: IpcEventPayload, listener: Arc<dyn CsTrans
         IpcEventPayload::Engine(event) => match event {
             EngineEventWire::VadStart { .. } => listener.on_vad_active(true),
             EngineEventWire::VadEnd { .. } => listener.on_vad_active(false),
+            EngineEventWire::SidebandEvidence { evidence } => {
+                // Content-free timing evidence reaches the app boundary for
+                // diagnostics, but there is deliberately no UI decoration or
+                // transcript callback in W2-02. L3 already consumes the
+                // permitted pause-only subset inside core.
+                tracing::debug!(
+                    sequence = evidence.sequence,
+                    session = %evidence.range.session,
+                    capture_epoch = evidence.range.capture_epoch,
+                    sample_start = evidence.range.sample_start,
+                    sample_end = evidence.range.sample_end,
+                    provenance = ?evidence.provenance,
+                    kind = ?evidence.evidence,
+                    "Silero sideband evidence (non-text)"
+                );
+            }
             EngineEventWire::NoSpeech { reason } => listener.on_no_speech(reason),
             EngineEventWire::Preview { text, .. } => listener.on_preview(text),
             EngineEventWire::Correction {

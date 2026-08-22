@@ -174,17 +174,21 @@ A 64ms circular buffer (~1024 samples at 16kHz) captures audio **before** speech
 | `Iter`       | State machine with min_speech/min_silence/max_utterance | 16kHz (VAD rate)   |
 | `Supervisor` | Same as Iter but preserves raw sample rate              | Original (48kHz)   |
 
-### Two Silero instances
+### Single Silero ingress
 
-The application runs **two independent Silero VAD paths**:
-
-1. **Inline in SpeechSession** (`SileroVad` struct) — synchronous, called directly in the audio processing loop. This is the gate that filters audio before Whisper. Zero latency, blocking.
-
-2. **Singleton worker** (`vad::speech_probability()`) — async fire-and-forget via bounded channel (capacity=4). Used by the auto-stop monitor in `main.rs` to detect when the user stops speaking during toggle recording. Returns last computed probability (eventual consistency).
+The Apple progressive session owns **one** `SileroIngress` / `SpeechSession`.
+The same observation feeds both the utterance ledger and `EpochGate`; a second
+VAD over the same PCM is forbidden because it could disagree on sample
+boundaries. Exact threshold crossings are drained as
+`EngineEvent::SidebandEvidence`. The existing fusion flag decides whether
+Silero identity may reach the seal; it does not create another VAD.
 
 ### Flush fallback
 
-When recording stops but VAD never fired `Start` (e.g. speech was too quiet or short for the threshold), `SpeechSession::flush()` checks `max_speech_prob`. If it exceeds `FALLBACK_PROB` (0.25) and at least 0.5s of audio is available, the raw buffer is emitted as a degraded fallback. The engine reports this as `EngineEvent::VadFallback`.
+When Silero is unavailable on the Apple lane, sideband evidence is absent and
+`EpochGate` is disarmed. PCM continues through one uninterrupted Apple stream;
+sideband absence is not a gate. Buffered/VAD paths keep their existing flush
+and `NoSpeech` behavior without inventing a sideband claim.
 
 ---
 
@@ -226,20 +230,20 @@ Whisper uses `no_repeat_ngram_size = 5` to suppress the model's tendency to repe
 
 The engine emits **semantic events** — it communicates what happened, not how to display it:
 
-| Event              | Meaning                                                     |
-| ------------------ | ----------------------------------------------------------- |
-| `VadStart`         | VAD detected speech start (with `speech_prob` and `ts_ms`)  |
-| `VadEnd`           | VAD detected speech end                                     |
-| `VadFallback`      | Flush path used (VAD never fired Start but speech detected) |
-| `Preview`          | Latest transcription of current utterance (full text)       |
-| `Correction`       | Re-transcription improved previous output                   |
-| `UtteranceFinal`   | Complete utterance — VAD-bounded or flush                   |
-| `Drop`             | Content dropped (hallucination, semantic gate)              |
-| `Stats`            | Session-level statistics (emitted on stop/flush)            |
-| `Warning`          | Recoverable error — engine continues                        |
-| `ReplaceRange`     | Bounded mutation for a proven span                          |
-| `InsertAnnotation` | Optional sideband annotation anchored to a span             |
-| `SessionFinalised` | Lifecycle closure only; never a text producer               |
+| Event              | Meaning                                                                      |
+| ------------------ | ---------------------------------------------------------------------------- |
+| `VadStart`         | VAD detected speech start (with `speech_prob` and `ts_ms`)                   |
+| `VadEnd`           | VAD detected speech end                                                      |
+| `SidebandEvidence` | Exact PCM edge or pause; typed `silero_vad` provenance; never text authority |
+| `Preview`          | Latest transcription of current utterance (full text)                        |
+| `Correction`       | Re-transcription improved previous output                                    |
+| `UtteranceFinal`   | Complete utterance — VAD-bounded or flush                                    |
+| `Drop`             | Content dropped (hallucination, semantic gate)                               |
+| `Stats`            | Session-level statistics (emitted on stop/flush)                             |
+| `Warning`          | Recoverable error — engine continues                                         |
+| `ReplaceRange`     | Bounded mutation for a proven span                                           |
+| `InsertAnnotation` | Optional visible annotation; needs a measured content provider               |
+| `SessionFinalised` | Lifecycle closure only; never a text producer                                |
 
 ### Preview semantics (contract)
 

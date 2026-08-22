@@ -33,6 +33,7 @@ use tokio::sync::{mpsc, oneshot};
 use tracing::{info, warn};
 
 use super::ai_formatting::{self, AiFormatResult, AiFormatStatus};
+use crate::pipeline::contracts::{SidebandEvidence, SidebandEvidenceKind};
 
 /// Master switch. Unset/anything-else = OFF; the operator flips it (⛔).
 pub const INLINE_FORMAT_ENV: &str = "CODESCRIBE_INLINE_FORMAT";
@@ -144,7 +145,7 @@ impl ChunkStatus {
 
 /// Typed identity carried from the stable Apple/L2 seal into L3. Text is
 /// payload; session/span/sample identity is authority.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct StableFormatSpan {
     pub session_id: String,
     pub capture_epoch: u64,
@@ -152,6 +153,9 @@ pub struct StableFormatSpan {
     pub sample_start: u64,
     pub sample_end: u64,
     pub text: String,
+    /// Optional content-free timing context. L3 filters this to measured pause
+    /// durations only; speech edges and non-speech semantics are not prompts.
+    pub sideband: Vec<SidebandEvidence>,
 }
 
 /// One sealed-span chunk and its formatting outcome, keyed by the span id.
@@ -397,7 +401,7 @@ async fn worker_loop(mut rx: mpsc::Receiver<Cmd>, shared: Arc<Mutex<SessionStore
 }
 
 async fn process_chunk(shared: &Arc<Mutex<SessionStore>>, generation: u64, span_id: u64) {
-    let (raw, language, chain, lane) = {
+    let (raw, language, chain, lane, timing_instruction) = {
         let Ok(s) = shared.lock() else {
             return;
         };
@@ -418,11 +422,16 @@ async fn process_chunk(shared: &Arc<Mutex<SessionStore>>, generation: u64, span_
             s.language.clone(),
             s.chain.clone(),
             lane,
+            pause_timing_instruction(&record.identity.sideband),
         )
     };
 
     let chained = chain.is_some();
-    let system_prompt = format!("{}\n\n{}", lane.system_prompt(), INLINE_CHUNK_PROMPT);
+    let mut system_prompt = format!("{}\n\n{}", lane.system_prompt(), INLINE_CHUNK_PROMPT);
+    if let Some(timing_instruction) = timing_instruction {
+        system_prompt.push_str("\n\n");
+        system_prompt.push_str(&timing_instruction);
+    }
     let started = Instant::now();
     let outcome = tokio::time::timeout(
         chunk_timeout(),
@@ -523,6 +532,36 @@ async fn process_chunk(shared: &Arc<Mutex<SessionStore>>, generation: u64, span_
         response_advanced,
         "inline_format_chunk",
     );
+}
+
+/// Convert only measured pause duration into a tightly fenced L3 hint.
+///
+/// The hint is a developer instruction, never transcript payload. Speech-edge
+/// probability and the unknown non-speech classification are deliberately not
+/// promoted into words or named sounds.
+fn pause_timing_instruction(sideband: &[SidebandEvidence]) -> Option<String> {
+    let durations_ms = sideband
+        .iter()
+        .filter_map(|evidence| match evidence.evidence {
+            SidebandEvidenceKind::Pause {
+                duration_samples, ..
+            } if evidence.sample_rate_hz > 0 => {
+                Some(duration_samples.saturating_mul(1_000) / u64::from(evidence.sample_rate_hz))
+            }
+            _ => None,
+        })
+        .collect::<Vec<_>>();
+    if durations_ms.is_empty() {
+        return None;
+    }
+    let durations = durations_ms
+        .iter()
+        .map(|duration| format!("{duration} ms"))
+        .collect::<Vec<_>>()
+        .join(", ");
+    Some(format!(
+        "Measured pause timing adjacent to this span: {durations}. Use this timing only to decide punctuation or paragraph boundaries. It is not word or sound-label evidence: never add transcript words or annotations from it."
+    ))
 }
 
 /// Result of one chained request, including whether a stale provider chain was
@@ -1051,6 +1090,8 @@ async fn compose_and_close_with(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::pipeline::contracts::{NonSpeechEvidence, SidebandProvenance};
+    use crate::stt::tail_provider::TailSampleRange;
 
     fn record(id: u64, raw: &str, formatted: Option<&str>) -> ChunkRecord {
         ChunkRecord {
@@ -1061,6 +1102,7 @@ mod tests {
                 sample_start: id.saturating_sub(1) * 16_000,
                 sample_end: id * 16_000,
                 text: raw.to_string(),
+                sideband: Vec::new(),
             },
             raw: raw.to_string(),
             formatted: formatted.map(str::to_string),
@@ -1070,6 +1112,56 @@ mod tests {
                 ChunkStatus::Failed
             },
         }
+    }
+
+    #[test]
+    fn l3_consumes_only_pause_duration_as_formatting_context() {
+        let range = |start, end| TailSampleRange {
+            session: "session-test".to_string(),
+            capture_epoch: 1,
+            sample_start: start,
+            sample_end: end,
+        };
+        let evidence = vec![
+            SidebandEvidence {
+                sequence: 1,
+                range: range(8_000, 8_000),
+                sample_rate_hz: 16_000,
+                provenance: SidebandProvenance::SileroVad,
+                evidence: SidebandEvidenceKind::SpeechStart {
+                    speech_probability: 0.91,
+                },
+            },
+            SidebandEvidence {
+                sequence: 2,
+                range: range(8_000, 24_000),
+                sample_rate_hz: 16_000,
+                provenance: SidebandProvenance::SileroVad,
+                evidence: SidebandEvidenceKind::Pause {
+                    duration_samples: 16_000,
+                    non_speech: NonSpeechEvidence::UnknownNonSpeech,
+                },
+            },
+        ];
+
+        let instruction = pause_timing_instruction(&evidence).expect("pause hint");
+        assert!(instruction.contains("1000 ms"));
+        assert!(instruction.contains("punctuation or paragraph boundaries"));
+        assert!(
+            !instruction.contains("0.91"),
+            "speech probability is not L3 input"
+        );
+        for unsupported in ["laughter", "noise", "cough"] {
+            assert!(
+                !instruction.contains(unsupported),
+                "unmeasured named sound leaked into L3: {unsupported}"
+            );
+        }
+
+        assert!(
+            pause_timing_instruction(&evidence[..1]).is_none(),
+            "speech edges alone are not formatter context"
+        );
     }
 
     /// Punctuation and casing may change freely; the guard only counts words.
@@ -1335,6 +1427,7 @@ mod tests {
                 sample_start: id.saturating_sub(1) * 16_000,
                 sample_end: id * 16_000,
                 text: text.to_string(),
+                sideband: Vec::new(),
             }
         }
 

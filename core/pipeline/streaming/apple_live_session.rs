@@ -1211,6 +1211,11 @@ impl AppleSealState {
             // Seal = "format now" signal (W13-1): a sealed span is byte-stable,
             // so the inline-format buffer may chunk-format it while dictation
             // continues. Sync + non-blocking; no-op unless the flag is armed.
+            let sideband = self
+                .fusion
+                .as_ref()
+                .map(|fusion| fusion.pause_evidence_for_range(&sealed.range))
+                .unwrap_or_default();
             crate::llm::inline_format::on_span_sealed(
                 crate::llm::inline_format::StableFormatSpan {
                     session_id: sealed.range.session.clone(),
@@ -1219,6 +1224,7 @@ impl AppleSealState {
                     sample_start: sealed.range.sample_start,
                     sample_end: sealed.range.sample_end,
                     text: sealed.text.clone(),
+                    sideband,
                 },
             );
             let segments = if sealed.words.is_empty() {
@@ -2527,10 +2533,18 @@ fn apple_stream_worker(
                 state.audio.push(&samples);
                 // One observation of the spectrum, two consumers: the ledger
                 // mints identity from it and the lifecycle wakes/sleeps on it.
-                let speech_live = state
+                let silero_ingest = state
                     .fusion
                     .as_mut()
-                    .is_some_and(|fusion| fusion.ingest(&samples, samples_seen).speech_live);
+                    .map(|fusion| fusion.ingest(&samples, samples_seen));
+                if let Some(ingest) = silero_ingest.as_ref() {
+                    for evidence in &ingest.sideband {
+                        let _ = ev_tx.send(EngineEvent::SidebandEvidence {
+                            evidence: evidence.clone(),
+                        });
+                    }
+                }
+                let speech_live = silero_ingest.is_some_and(|ingest| ingest.speech_live);
                 let audio_secs = samples_seen as f32 / sample_rate.max(1) as f32;
                 match epoch.feed_pcm(&samples, samples_seen, speech_live) {
                     EpochDecision::Forward => {
@@ -5159,10 +5173,15 @@ mod tests {
     /// forever on a stream that never opened. Fail open, every time.
     #[test]
     fn epoch_gate_without_speech_edges_falls_back_to_one_stream() {
-        let gate = EpochGate::for_session(TEST_SAMPLE_RATE, Some(5.0), false);
+        let mut gate = EpochGate::for_session(TEST_SAMPLE_RATE, Some(5.0), false);
         assert!(
             !gate.is_armed(),
             "an armed gate with no edge source would sleep the engine forever"
+        );
+        assert_eq!(
+            gate.feed_pcm(&[0.0; 1_024], 1_024, false),
+            EpochDecision::Forward,
+            "Silero/sideband absence must preserve continuous Apple PCM flow"
         );
         let armed = EpochGate::for_session(TEST_SAMPLE_RATE, Some(5.0), true);
         assert!(armed.is_armed());
