@@ -978,12 +978,11 @@ final class OverlayState: ObservableObject {
 
   // MARK: Action row
 
-  func copyToPasteboard() {
+  func copyToPasteboard(_ pasteboard: NSPasteboard = .general) {
     // P0-D: capture user correction on FINAL for quality loop + lexicon learning.
     captureQualityIfEdited(action: "copy")
-    let pb = NSPasteboard.general
-    pb.clearContents()
-    pb.setString(activeText, forType: .string)
+    pasteboard.clearContents()
+    pasteboard.setString(activeText, forType: .string)
     restartAutoHideCountdown()
   }
 

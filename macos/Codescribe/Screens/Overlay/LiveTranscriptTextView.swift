@@ -173,4 +173,18 @@ struct LiveTranscriptTextView: NSViewRepresentable {
 /// explicit click in the transcript must immediately begin a drag selection.
 final class LiveTranscriptNativeTextView: NSTextView {
   override func acceptsFirstMouse(for event: NSEvent?) -> Bool { true }
+
+  @discardableResult
+  func copySelection(to pasteboard: NSPasteboard) -> Bool {
+    let selection = selectedRange()
+    let source = string as NSString
+    guard selection.length > 0, NSMaxRange(selection) <= source.length else { return false }
+
+    pasteboard.clearContents()
+    return pasteboard.setString(source.substring(with: selection), forType: .string)
+  }
+
+  override func copy(_ sender: Any?) {
+    _ = copySelection(to: .general)
+  }
 }
