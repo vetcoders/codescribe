@@ -364,8 +364,10 @@ instead of being accepted as complete. Config validation requires the complete
 MLX Whisper architecture
 used by the loader (including matching audio/text state widths and compatible
 attention heads, a decode context that leaves room for output, and broad layer
-count safety fences). Audio context is capped at the 1500 positions consumed by
-the supported 30-second Whisper window; missing dimensions are never replaced
+count safety fences). Audio context must equal the 1500 positions consumed by
+the supported 30-second Whisper window; shorter contexts would silently truncate
+audio. The pinned mel filterbank is size-checked and hashed through a bounded
+stream before use; missing dimensions are never replaced
 with runtime defaults.
 Warm-cache repair checks older snapshots when the newest config, weights, or
 tokenizer is invalid, preserving offline recovery from an earlier valid revision.

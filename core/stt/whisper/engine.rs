@@ -2012,7 +2012,11 @@ mod model_payload_tests {
             architecture,
         )
         .unwrap();
-        fs::write(temp.path().join("mel_filters.npz"), b"wrong").unwrap();
+        fs::write(
+            temp.path().join("mel_filters.npz"),
+            vec![0_u8; crate::whisper_weights::MEL_FILTERS_SIZE_BYTES as usize],
+        )
+        .unwrap();
 
         let err = LocalWhisperEngine::new(temp.path())
             .err()

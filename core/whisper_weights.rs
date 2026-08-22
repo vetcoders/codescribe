@@ -12,6 +12,8 @@ pub const SUPPORTED_NAMES: [&str; 2] = ["weights.safetensors", "model.safetensor
 /// SHA-256 of the pinned official OpenAI mel filterbank.
 pub const MEL_FILTERS_SHA256: &str =
     "7450ae70723a5ef9d341e3cee628c7cb0177f36ce42c44b7ed2bf3325f0f6d4c";
+/// Byte length of the pinned official OpenAI mel filterbank.
+pub const MEL_FILTERS_SIZE_BYTES: u64 = 4_271;
 const REQUIRED_TOKENIZER_TOKENS: [&str; 2] = ["<|startoftranscript|>", "<|endoftext|>"];
 const OPTIONAL_PROMPT_TOKENS: [&str; 3] = ["<|transcribe|>", "<|notimestamps|>", "<|startofprev|>"];
 const MAX_WHISPER_LAYERS: usize = 64;
@@ -238,9 +240,9 @@ pub(crate) fn parse_whisper_config(raw: &str, source: &str) -> Result<WhisperArc
             "Whisper config {source} requires n_mels to be 80 or 128"
         ));
     }
-    if architecture.n_audio_ctx > MAX_WHISPER_AUDIO_CONTEXT {
+    if architecture.n_audio_ctx != MAX_WHISPER_AUDIO_CONTEXT {
         return Err(anyhow!(
-            "Whisper config {source} exceeds the resource limit of {MAX_WHISPER_AUDIO_CONTEXT} audio context positions"
+            "Whisper config {source} requires n_audio_ctx={MAX_WHISPER_AUDIO_CONTEXT} for the supported 30-second runtime window"
         ));
     }
     if architecture.n_audio_state != architecture.n_text_state {
@@ -274,9 +276,48 @@ pub(crate) fn parse_whisper_config(raw: &str, source: &str) -> Result<WhisperArc
 
 /// Verify the pinned mel filterbank used by Whisper.
 pub(crate) fn verify_mel_filters(path: &Path) -> Result<()> {
-    // nosemgrep: rust.actix.path-traversal.tainted-path.tainted-path -- Read-only checksum of an operator-selected local model artifact or internally resolved download destination.
-    let bytes = fs::read(path).with_context(|| format!("read {} for checksum", path.display()))?;
-    let actual = format!("{:x}", Sha256::digest(bytes));
+    let mut file = {
+        // nosemgrep: rust.actix.path-traversal.tainted-path.tainted-path -- Read-only checksum of an operator-selected local model artifact or internally resolved download destination.
+        fs::File::open(path)
+    }
+    .with_context(|| format!("open {} for checksum", path.display()))?;
+    let metadata_len = file
+        .metadata()
+        .with_context(|| format!("stat {} for checksum", path.display()))?
+        .len();
+    if metadata_len != MEL_FILTERS_SIZE_BYTES {
+        return Err(anyhow!(
+            "size mismatch for {}: expected {} bytes, got {}",
+            path.display(),
+            MEL_FILTERS_SIZE_BYTES,
+            metadata_len
+        ));
+    }
+
+    let mut hasher = Sha256::new();
+    let mut total = 0_u64;
+    let mut buffer = [0_u8; 8 * 1024];
+    let mut bounded = (&mut file).take(MEL_FILTERS_SIZE_BYTES + 1);
+    loop {
+        let read = bounded
+            .read(&mut buffer)
+            .with_context(|| format!("read {} for checksum", path.display()))?;
+        if read == 0 {
+            break;
+        }
+        total += read as u64;
+        hasher.update(&buffer[..read]);
+    }
+    if total != MEL_FILTERS_SIZE_BYTES {
+        return Err(anyhow!(
+            "size changed while reading {}: expected {} bytes, got {}",
+            path.display(),
+            MEL_FILTERS_SIZE_BYTES,
+            total
+        ));
+    }
+
+    let actual = format!("{:x}", hasher.finalize());
     if actual != MEL_FILTERS_SHA256 {
         return Err(anyhow!(
             "SHA-256 mismatch for {}: expected {}, got {}",
@@ -837,14 +878,16 @@ mod tests {
             );
         }
 
-        let mut accepted_context = valid_config();
-        accepted_context["n_audio_ctx"] = serde_json::json!(MAX_WHISPER_AUDIO_CONTEXT);
-        parse_whisper_config(&accepted_context.to_string(), "fixture").unwrap();
-
-        let mut rejected_context = valid_config();
-        rejected_context["n_audio_ctx"] = serde_json::json!(MAX_WHISPER_AUDIO_CONTEXT + 1);
-        let err = parse_whisper_config(&rejected_context.to_string(), "fixture").unwrap_err();
-        assert!(format!("{err:#}").contains("audio context"), "{err:#}");
+        for value in [
+            1,
+            MAX_WHISPER_AUDIO_CONTEXT - 1,
+            MAX_WHISPER_AUDIO_CONTEXT + 1,
+        ] {
+            let mut rejected_context = valid_config();
+            rejected_context["n_audio_ctx"] = serde_json::json!(value);
+            let err = parse_whisper_config(&rejected_context.to_string(), "fixture").unwrap_err();
+            assert!(format!("{err:#}").contains("30-second"), "{value}: {err:#}");
+        }
     }
 
     #[test]
@@ -883,6 +926,25 @@ mod tests {
 
         let err = validate_whisper_tokenizer_for_architecture(&path, architecture).unwrap_err();
         assert!(format!("{err:#}").contains("runtime-discoverable"));
+    }
+
+    #[test]
+    fn mel_filter_verification_pins_size_before_checksum() {
+        let temp = TempDir::new().unwrap();
+        let path = temp.path().join("mel_filters.npz");
+
+        fs::write(&path, vec![0_u8; MEL_FILTERS_SIZE_BYTES as usize]).unwrap();
+        let checksum_err = verify_mel_filters(&path).unwrap_err();
+        assert!(format!("{checksum_err:#}").contains("SHA-256 mismatch"));
+
+        for size in [MEL_FILTERS_SIZE_BYTES - 1, MEL_FILTERS_SIZE_BYTES + 1] {
+            fs::File::create(&path).unwrap().set_len(size).unwrap();
+            let err = verify_mel_filters(&path).unwrap_err();
+            let message = format!("{err:#}");
+            assert!(message.contains("size mismatch"), "{message}");
+            assert!(message.contains("4271"), "{message}");
+            assert!(message.contains(&size.to_string()), "{message}");
+        }
     }
 
     #[test]

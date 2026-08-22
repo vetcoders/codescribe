@@ -75,8 +75,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   before cold model construction; prompt/control token IDs, automatic-language
   candidates, layer/context resource bounds, and mapped tensor-name collisions
   are validated by the same runtime-owned helpers. Tokenizers cannot emit IDs
-  without embedding rows; audio context is bounded to the supported 30-second
-  window; and surplus tensors are refused before allocation. Quantized payloads and the
+  without embedding rows; audio context must match the supported 30-second
+  window; mel verification is size-bounded before hashing; and surplus tensors
+  are refused before allocation. Quantized payloads and the
   legacy Q8 fallback are refused; the old public Q8 identifiers remain
   deprecated source-compatibility constants only. Building from source now
   declares Rust 1.88 as the minimum supported toolchain.
