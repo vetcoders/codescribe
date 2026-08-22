@@ -898,4 +898,82 @@ mod tests {
             "sealed_text_not_covered_by_acoustic_spans"
         );
     }
+
+    #[test]
+    fn five_acoustic_iwo_survive_reducer_and_transcript_bus() {
+        use super::super::emitter::reduce_transcript_events;
+        use codescribe_core::pipeline::contracts::EngineEvent;
+
+        let spans = (0..5u64)
+            .map(|i| ("Iwo", i * 1_600, i * 1_600 + 1_600, AcousticSpanGrain::Word))
+            .collect();
+        let identity = acoustic("take", 1, 0, 8_000, spans);
+        let event = EngineEvent::UtteranceFinal {
+            utterance_id: 1,
+            text: "Iwo Iwo Iwo Iwo Iwo".into(),
+            raw_text: "Iwo Iwo Iwo Iwo Iwo".into(),
+            start_ts: 0.0,
+            end_ts: 0.5,
+            segments: Vec::new(),
+            vad_speech_pct: None,
+            avg_logprob: None,
+            compression_ratio: None,
+            quality_gate_dropped: false,
+            confidence_flags: Vec::new(),
+            acoustic: Some(identity.clone()),
+        };
+        let reducer = reduce_transcript_events(&[event]);
+        let delivered = reducer
+            .rendered_text()
+            .split_whitespace()
+            .filter(|word| word.eq_ignore_ascii_case("iwo"))
+            .count();
+        assert_eq!(
+            delivered,
+            5,
+            "reducer delivery: {}",
+            reducer.rendered_text()
+        );
+
+        let temp = tempfile::tempdir().unwrap();
+        let path = temp.path().join("events.jsonl");
+        let bus = TranscriptBus::open_at_with_energy(
+            TranscriptSession {
+                session_id: "iwo-five".to_string(),
+                mode: TranscriptMode::Dictation,
+            },
+            path.clone(),
+            Some(16_000),
+            voiced_energy,
+        )
+        .unwrap();
+        bus.publish_started();
+        bus.publish_draft(
+            TranscriptDraftStatus::Created,
+            TranscriptDraft {
+                utterance_id: 1,
+                text: reducer.rendered_text(),
+                start_seconds: 0.0,
+                end_seconds: 0.5,
+                segments: Vec::new(),
+                acoustic: Some(identity),
+            },
+        );
+        bus.publish_sealed(reducer.rendered_text(), None);
+        let raw = std::fs::read_to_string(&path).unwrap();
+        let seal: CleanTranscriptEvent = raw
+            .lines()
+            .map(|line| serde_json::from_str::<CleanTranscriptEvent>(line).unwrap())
+            .find(|event| event.status == "transcript_sealed")
+            .expect("seal");
+        assert_eq!(seal.words.len(), 5);
+        assert!(seal.words.iter().all(|word| word.text == "Iwo"));
+        assert_eq!(
+            seal.text
+                .split_whitespace()
+                .filter(|word| word.eq_ignore_ascii_case("iwo"))
+                .count(),
+            5
+        );
+    }
 }

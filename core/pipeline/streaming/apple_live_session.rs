@@ -48,12 +48,17 @@ use crate::audio::capture_receipt::{
     CaptureLevelAccumulator, CapturePathMeta, begin_session_energy_clock,
     emit_capture_level_receipt,
 };
+use crate::pipeline::acoustic_identity::{
+    AcousticObservation, ObservationLedger, ObservationProducer, mutation_authority_text,
+};
 use crate::pipeline::contracts::{
-    DropKind, EngineEvent, EventSink, LayerSource, TranscriptSegment,
+    AcousticSpanGrain, DropKind, EngineEvent, EventSink, LayerSource, TranscriptSegment,
 };
 use crate::pipeline::stream_postprocess::StreamPostProcessor;
 use crate::stt::apple_stt::{LiveStreamEvent, LiveStreamSession};
-use crate::stt::tail_patcher::{SkipReasonCode, TailPatchConfig, TailPatchOutcome};
+use crate::stt::tail_patcher::{
+    SkipReasonCode, TailPatchConfig, TailPatchOutcome, compute_tail_patch_with_context,
+};
 use crate::stt::tail_provider::{
     TailEvidenceSource, TailEvidenceStability, TailProviderEvidence, TailProviderPayload,
     TailProviderRequest, TailRequestIdentity, TailSampleRange, TailTimingQuality, TimedTailSegment,
@@ -805,6 +810,9 @@ struct AppleSealState {
     /// back to Apple's own segment boundaries.
     fusion_seal_armed: bool,
     fusion_context: FusionContextMode,
+    /// Occurrence / observation ledger for this capture. Apple seals and
+    /// Whisper windows admit here; text overlap is not authority.
+    observations: ObservationLedger,
 }
 
 impl AppleSealState {
@@ -847,6 +855,7 @@ impl AppleSealState {
             fusion: None,
             fusion_seal_armed: false,
             fusion_context: FusionContextMode::UtteranceOnly,
+            observations: ObservationLedger::default(),
         }
     }
 
@@ -963,12 +972,51 @@ impl AppleSealState {
         let (evidence, words) = completion.payload.map_or((None, Vec::new()), |payload| {
             (Some(payload.evidence), payload.segments)
         });
+        let request_id = request_identity
+            .as_ref()
+            .map_or(utterance_id, |identity| identity.request_id);
+        let whisper_observations: Vec<AcousticObservation> = words
+            .iter()
+            .enumerate()
+            .map(|(generation, segment)| {
+                AcousticObservation::from_timed_segment(
+                    segment,
+                    ObservationProducer::Whisper,
+                    request_id,
+                    generation as u64,
+                    AcousticSpanGrain::Word,
+                )
+            })
+            .collect();
+        let admitted = self.observations.admit(&whisper_observations);
+        let authorized = mutation_authority_text(&admitted);
+        let whisper_text = words
+            .iter()
+            .map(|segment| segment.text.as_str())
+            .filter(|text| !text.is_empty())
+            .collect::<Vec<_>>()
+            .join(" ");
         // Coalesced jobs already ran the concat tail-patch. Fusion looks up
         // the last piece on the session clock vs concat-PCM Whisper times and
         // would return NoChange, dropping the joined rewrite (live 2026-08-19).
         let coalesced_window = completion.span_map.len() > 1 || completion.member_ids.len() > 1;
         let outcome = if coalesced_window {
             completion.outcome
+        } else if !authorized.is_empty() && authorized != whisper_text {
+            let baseline = self
+                .pending_events
+                .get(&utterance_id)
+                .map(|pending| pending.layer1_baseline.clone())
+                .unwrap_or_default();
+            compute_tail_patch_with_context(
+                &baseline,
+                &authorized,
+                "",
+                utterance_id,
+                &TailPatchConfig::default(),
+            )
+        } else if authorized.is_empty() && !whisper_observations.is_empty() {
+            TailPatchOutcome::NoChange
         } else if self.fusion.is_some() {
             apply_conservative_fusion(self, ev_tx, utterance_id, &words, completion.outcome)
         } else {
@@ -1258,25 +1306,45 @@ impl AppleSealState {
 fn codescribe_core_acoustic_identity(
     sealed: &SealedSpan,
 ) -> Option<crate::pipeline::contracts::AcousticTranscriptIdentity> {
-    use crate::pipeline::contracts::{
-        AcousticSpanGrain, AcousticTranscriptIdentity, AcousticTranscriptSpan,
-    };
+    use crate::pipeline::contracts::{AcousticTranscriptIdentity, AcousticTranscriptSpan};
 
-    // The final L2 spelling is pinned to the whole measured phrase. Apple and
-    // Whisper may provide narrower evidence, but fusion does not yet retain a
-    // lossless token-to-provider attribution. Claiming word precision here
-    // would therefore be fabricated; phrase grain is the honest contract.
     if sealed.range.sample_end <= sealed.range.sample_start {
         return None;
     }
 
-    Some(AcousticTranscriptIdentity {
-        range: sealed.range.clone(),
-        spans: vec![AcousticTranscriptSpan {
+    let source = if sealed.whisper_words.is_empty() {
+        &sealed.words
+    } else {
+        &sealed.whisper_words
+    };
+    let mut spans: Vec<AcousticTranscriptSpan> = source
+        .iter()
+        .filter(|word| {
+            !word.text.trim().is_empty()
+                && word.range.session == sealed.range.session
+                && word.range.capture_epoch == sealed.range.capture_epoch
+                && word.range.sample_end > word.range.sample_start
+                && word.range.sample_start >= sealed.range.sample_start
+                && word.range.sample_end <= sealed.range.sample_end
+        })
+        .map(|word| AcousticTranscriptSpan {
+            text: word.text.clone(),
+            range: word.range.clone(),
+            grain: AcousticSpanGrain::Word,
+        })
+        .collect();
+    spans.sort_by_key(|span| span.range.sample_start);
+    if spans.is_empty() {
+        spans.push(AcousticTranscriptSpan {
             text: sealed.text.clone(),
             range: sealed.range.clone(),
             grain: AcousticSpanGrain::Phrase,
-        }],
+        });
+    }
+
+    Some(AcousticTranscriptIdentity {
+        range: sealed.range.clone(),
+        spans,
     })
 }
 
@@ -1645,12 +1713,15 @@ fn revision_tolerant_known_prefix(probe: &[String], canvas: &[&str]) -> (usize, 
     let allowed = |k: usize| if k <= 2 { 0 } else { (k / 5).max(1) };
     let mut best_k = 0usize;
     let mut best_edits = 0usize;
+    let mut best_s = 0usize;
+    let mut best_window_end = 0usize;
 
     // One banded edit-distance DP per window start: row `i` covers probe[..i],
     // column `j` the window tail[s..s+j]. For every prefix length the cheapest
     // window end is `min over j`, so a single pass scores all `k` at once.
     for s in 0..tail.len() {
         let jmax = (tail.len() - s).min(n + band);
+        let window = &tail[s..s + jmax];
         let mut prev: Vec<usize> = (0..=jmax).collect();
         for i in 1..=n {
             let mut current = vec![usize::MAX; jmax + 1];
@@ -1659,18 +1730,31 @@ fn revision_tolerant_known_prefix(probe: &[String], canvas: &[&str]) -> (usize, 
             // word — the only endings that may close a matched prefix (see the
             // trailing-deletion note in the doc comment).
             let mut aligned_end = usize::MAX;
+            let mut aligned_j = 0usize;
+            let probe_token = probe[i - 1].as_str();
+            let repetition_delete = window.contains(&probe_token);
             for j in 1..=jmax {
                 // Outside the band the distance already exceeds every budget.
                 if i.abs_diff(j) > band {
                     continue;
                 }
-                let substitute = if probe[i - 1] == tail[s + j - 1] {
+                let substitute = if probe_token == tail[s + j - 1] {
                     prev[j - 1]
                 } else {
                     prev[j - 1].saturating_add(1)
                 };
-                aligned_end = aligned_end.min(substitute);
-                let delete = prev[j].saturating_add(1);
+                if substitute <= aligned_end {
+                    aligned_end = substitute;
+                    aligned_j = j;
+                }
+                // A probe extra that already sits in the canvas window is
+                // another acoustic occurrence, not an ASR revision. Paying
+                // the edit budget for it absorbs the fifth "Iwo".
+                let delete = if repetition_delete {
+                    usize::MAX / 4
+                } else {
+                    prev[j].saturating_add(1)
+                };
                 let insert = current[j - 1].saturating_add(1);
                 current[j] = substitute.min(delete).min(insert);
             }
@@ -1678,11 +1762,47 @@ fn revision_tolerant_known_prefix(probe: &[String], canvas: &[&str]) -> (usize, 
             if edits <= allowed(i) && (i > best_k || (i == best_k && edits < best_edits)) {
                 best_k = i;
                 best_edits = edits;
+                best_s = s;
+                best_window_end = s + aligned_j;
             }
             prev = current;
         }
     }
-    (best_k, best_edits)
+    // An exact restatement of an embedded canvas island is not identity.
+    // A prefix (leftover only after) or a suffix (leftover only before) is a
+    // legal restatement. Leftover on both sides means the probe latched onto
+    // unrelated text.
+    if best_k == n && best_edits == 0 && best_s > 0 && best_window_end < tail.len() {
+        return (0, 0);
+    }
+    (
+        cap_known_prefix_to_canvas_token_counts(probe, canvas, best_k),
+        best_edits,
+    )
+}
+
+/// Extra copies of a canvas token are new acoustic occurrences, not revisions.
+fn cap_known_prefix_to_canvas_token_counts(probe: &[String], canvas: &[&str], k: usize) -> usize {
+    let mut canvas_counts = std::collections::HashMap::<&str, usize>::new();
+    for word in canvas {
+        *canvas_counts.entry(*word).or_insert(0) += 1;
+    }
+    let mut used = std::collections::HashMap::<&str, usize>::new();
+    let k = k.min(probe.len());
+    for (index, token) in probe[..k].iter().enumerate() {
+        let Some(&canvas_n) = canvas_counts
+            .get(token.as_str())
+            .filter(|count| **count > 0)
+        else {
+            continue;
+        };
+        let used_n = used.entry(token.as_str()).or_insert(0);
+        *used_n += 1;
+        if *used_n > canvas_n {
+            return index;
+        }
+    }
+    k
 }
 
 /// Case- and punctuation-insensitive projection for canvas containment checks
@@ -2116,7 +2236,23 @@ fn seal_utterance_final(
     // cumulative callback must not resurrect audio the product already judged.
     state.last_apple_segment_end = end_ts;
 
-    let Some(corrected) = state.postprocessor.process_utterance(&raw_text) else {
+    // Joined identical tokens look like a Whisper repetition loop to
+    // `cleanup_artifacts`. Distinct timed segments are separate occurrences
+    // and must not be collapsed by that heuristic.
+    let Some(corrected) = (if disjoint.len() >= 2 {
+        let parts: Vec<String> = disjoint
+            .iter()
+            .filter_map(|segment| state.postprocessor.process_utterance(&segment.text))
+            .filter(|part| !part.trim().is_empty())
+            .collect();
+        if parts.is_empty() {
+            None
+        } else {
+            Some(parts.join(" "))
+        }
+    } else {
+        state.postprocessor.process_utterance(&raw_text)
+    }) else {
         state.filtered_empty_drops = state.filtered_empty_drops.saturating_add(1);
         warn!(
             raw_chars = raw_text.chars().count(),
@@ -2145,6 +2281,21 @@ fn seal_utterance_final(
         return true;
     }
     let apple_words = apple_segments_on_pcm_clock(state, &disjoint);
+    let request_id = state.utterance_id.saturating_add(1);
+    let apple_observations: Vec<AcousticObservation> = apple_words
+        .iter()
+        .enumerate()
+        .map(|(generation, word)| {
+            AcousticObservation::from_timed_segment(
+                word,
+                ObservationProducer::Apple,
+                request_id,
+                generation as u64,
+                AcousticSpanGrain::Word,
+            )
+        })
+        .collect();
+    let _ = state.observations.admit(&apple_observations);
     let captured_end = state.audio.session_sample_end();
     let span_sample_start = apple_words.first().map_or_else(
         || seconds_to_captured_sample(start_ts, state.sample_rate, captured_end),
@@ -2216,7 +2367,7 @@ fn seal_utterance_final(
         return false;
     }
     let segment_count = disjoint.len().max(1);
-    let committed_text = seal_span_text(&after_lexicon, &state.sealed_prefix, false);
+    let committed_text = seal_span_text(&after_lexicon, &state.sealed_prefix, disjoint.len() >= 2);
     state.pending_events.insert(
         utterance_id,
         PendingAppleSeal {
@@ -3524,6 +3675,17 @@ mod tests {
                 ..
             }
         ));
+    }
+
+    fn count_iwo(text: &str) -> usize {
+        text.split_whitespace()
+            .filter(|word| {
+                word.chars()
+                    .filter(|ch| ch.is_alphabetic())
+                    .collect::<String>()
+                    .eq_ignore_ascii_case("iwo")
+            })
+            .count()
     }
 
     /// Build a timed `TranscriptSegment` for seal-window fixture events.
@@ -5501,5 +5663,137 @@ mod tests {
         assert_eq!(sealed[0].silero_utterance_id, None);
         assert_eq!(sealed[0].range.sample_start, at(0.5));
         assert_eq!(sealed[0].range.sample_end, at(2.0));
+    }
+
+    #[test]
+    fn five_disjoint_iwo_segments_all_reach_the_final() {
+        let (tx, mut rx) = mpsc::unbounded_channel();
+        let mut state = AppleSealState::new(TEST_SAMPLE_RATE);
+        push_capture(&mut state, 6.0);
+        let segments: Vec<_> = (0..5)
+            .map(|i| {
+                let start = i as f32 * 0.4;
+                segment("Iwo", start, start + 0.3)
+            })
+            .collect();
+        emit_stream_events(
+            vec![LiveStreamEvent::PhraseFinal {
+                text: "Iwo Iwo Iwo Iwo Iwo".into(),
+                segments,
+            }],
+            &tx,
+            &mut state,
+            3.0,
+        );
+        let events: Vec<_> = std::iter::from_fn(|| rx.try_recv().ok()).collect();
+        let finals: Vec<_> = events
+            .iter()
+            .filter_map(|event| match event {
+                EngineEvent::UtteranceFinal { text, acoustic, .. } => {
+                    Some((text.as_str(), acoustic.as_ref()))
+                }
+                _ => None,
+            })
+            .collect();
+        assert_eq!(
+            finals.len(),
+            1,
+            "one Apple final for five disjoint words: {events:?}"
+        );
+        let span_count = finals[0]
+            .1
+            .map(|identity| identity.spans.len())
+            .unwrap_or(0);
+        let iwo_count = count_iwo(finals[0].0);
+        assert_eq!(
+            (iwo_count, span_count),
+            (5, 5),
+            "delivery text: {}; acoustic: {:?}",
+            finals[0].0,
+            finals[0].1
+        );
+    }
+
+    #[test]
+    fn cumulative_fifth_iwo_is_not_absorbed_as_a_revision() {
+        let (tx, mut rx) = mpsc::unbounded_channel();
+        let mut state = AppleSealState::new(TEST_SAMPLE_RATE);
+        push_capture(&mut state, 8.0);
+        emit_stream_events(
+            vec![LiveStreamEvent::PhraseFinal {
+                text: "Iwo Iwo Iwo Iwo".into(),
+                segments: (0..4)
+                    .map(|i| {
+                        let start = i as f32 * 0.4;
+                        segment("Iwo", start, start + 0.3)
+                    })
+                    .collect(),
+            }],
+            &tx,
+            &mut state,
+            2.0,
+        );
+        emit_stream_events(
+            vec![LiveStreamEvent::PhraseFinal {
+                text: "Iwo Iwo Iwo Iwo Iwo".into(),
+                segments: vec![segment("Iwo Iwo Iwo Iwo Iwo", 0.0, 1.6)],
+            }],
+            &tx,
+            &mut state,
+            3.0,
+        );
+        let events: Vec<_> = std::iter::from_fn(|| rx.try_recv().ok()).collect();
+        let texts: Vec<_> = events
+            .iter()
+            .filter_map(|event| match event {
+                EngineEvent::UtteranceFinal { text, .. } => Some(text.as_str()),
+                _ => None,
+            })
+            .collect();
+        let iwo_count = texts.iter().map(|text| count_iwo(text)).sum::<usize>();
+        assert_eq!(
+            iwo_count, 5,
+            "the fifth acoustic Iwo must survive the cumulative restatement: {texts:?}"
+        );
+    }
+}
+
+/// Conservation falsifiers from the acoustic-identity cut. These encode the
+/// contract, not a parked skip: they must stay green.
+#[cfg(test)]
+mod conservation_falsifiers {
+    use super::*;
+
+    fn probe_words(callback: &str) -> Vec<String> {
+        callback
+            .split_whitespace()
+            .map(|word| normalize_for_containment(&seal_span_text(word, "", true)))
+            .collect()
+    }
+
+    #[test]
+    fn cumulative_final_may_not_absorb_an_extra_repetition() {
+        let canvas = normalize_for_containment("Iwo Iwo Iwo Iwo");
+        let canvas_words: Vec<&str> = canvas.split_whitespace().collect();
+        let callback = "Iwo Iwo Iwo Iwo Iwo";
+        let probe = probe_words(callback);
+        let (known, _revised) = revision_tolerant_known_prefix(&probe, &canvas_words);
+        assert_eq!(
+            known, 4,
+            "canvas carries four occurrences; the fifth must survive as novel text"
+        );
+    }
+
+    #[test]
+    fn a_textual_match_elsewhere_in_the_canvas_is_not_identity() {
+        let canvas =
+            normalize_for_containment("zupełnie co innego Iwo Iwo Iwo Iwo Iwo dalszy ciąg");
+        let canvas_words: Vec<&str> = canvas.split_whitespace().collect();
+        let probe = probe_words("Iwo Iwo Iwo Iwo Iwo");
+        let (known, _) = revision_tolerant_known_prefix(&probe, &canvas_words);
+        assert_eq!(
+            known, 0,
+            "a match embedded in unrelated canvas text may not consume the final"
+        );
     }
 }

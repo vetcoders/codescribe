@@ -192,6 +192,14 @@ the current wording attached to an authorized span
 
 This distinction is the engine.
 
+Replay is re-delivery of the same **observation** (producer, request,
+generation, occurrence). It is not "the same PCM range". Apple and Whisper on
+one range are two observations of one occurrence; Whisper may correct Apple
+there. Two disjoint ranges with the text "Iwo" are two occurrences. Overlap
+may clip a phrase only when word pins prove which text belongs to the exclusive
+tail; otherwise the text stays visible as read-only evidence and must not mint
+a duplicate token. Unanchored text stays visible without mutation authority.
+
 ### Audio truth
 
 - Mechanical speech energy exists before transcription.
