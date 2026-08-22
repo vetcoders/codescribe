@@ -185,29 +185,32 @@ Release exists.
   “You use dev power mode” caption in the bottom-right of overlay, Agent
   chat, and Settings. Production DMGs stay unmarked.
 
-### Next steps before public `v0.14.1`
+### Candidate closure and next steps before public `v0.14.1`
+
+Candidate `3deadbdf` has completed the local source and distribution gates:
+`make check`, `make verify`, `make test-swift`, `cargo audit`, public-tree and
+history privacy review, Developer ID signing, Apple notarization, stapling, and
+`verify-dmg`. The accepted slim artifact is
+`Codescribe_0.14.1-20260822-3deadbdf8.dmg`; this is still not a GitHub Release.
 
 - Keep the competing PR #82 acoustic ledger out of this release candidate.
   After release, port its occurrence/observation/receipt model only through a
   dedicated cut with the five-`Iwo` conservation fixture and left-, right-,
   and multi-owner overlap falsifiers. Shared contract ancestry is not runtime
   integration.
-- Run the full local gates (`make check`, `make verify`, `make test-swift`),
-  `cargo audit`, and current-branch corpus/acceptance fixtures. The PR #82 CI
-  run did execute and failed on a cancellation-accounting race; the active
-  branch contains the targeted fix but still needs the full rerun.
 - Close or explicitly retain the small deferred set: two missing
   `TAIL_PATCH_APPLY_REFUSED` branch tests, a host probe for Swift-to-Rust task
   cancellation, a user-visible hotkey/TCC recovery notice, and an Agent Bridge
   manifest cache only if measured Settings latency justifies it. Silero fusion
   stays diagnostic and OFF until its enclosing-range semantics pass live A/B.
-- Finish the public-tree and tracked-history privacy scan. Keep the functional
-  OAuth client registration as a reviewed public identifier unless it is
-  replaced atomically; never treat it as a leaked session token and silently
-  break sign-in.
-- Cut and verify one standard signed/notarized/stapled DMG from a clean commit,
-  install that exact stapled `.app`, then publish the tag/appcast/GitHub Release
-  as a separate operator-approved step. Until then `v0.13.3` remains Latest.
+- When the Transcript Bus is idle, install the exact stapled `.app` from that
+  DMG and run the installed-app microphone/delivery smoke plus the available
+  host corpus/acceptance probes. Packaging proof is not installed-runtime proof.
+- Keep the functional OAuth client registration as a reviewed public
+  identifier unless it is replaced atomically; never treat it as a leaked
+  session token and silently break sign-in.
+- Publish the tag, appcast, and GitHub Release only after explicit operator
+  approval and the installed-app smoke. Until then `v0.13.3` remains Latest.
 
 ## [0.14.1] - 2026-08-18
 

@@ -348,3 +348,31 @@ executable checks remain authoritative.
   make a fresh checkout disagree with the bundle produced from it.
 - **Purpose:** Make the repository, generated interface, and signed artifact
   reproduce the same ABI contract from one final commit.
+
+## 2026-08-22 — final artifact truth reconciliation
+
+- **What:** Replace the pre-artifact HOLD and already-completed changelog tasks
+  with the exact final commit, notarization, staple, checksum, and payload-gate
+  evidence; retain installation smoke and publication as separate open steps.
+- **Where:** `CHANGELOG.md` and
+  `docs/releases/2026-08-22-v0.14.1-release-readiness.md`.
+- **Why:** Both documents were intentionally written before the candidate was
+  committed and packaged. They still describe `make check`, privacy scanning,
+  and the signed DMG as pending even though artifact commit `3deadbdf` is
+  pushed and its exact DMG has passed Apple notarization and repository
+  verification.
+- **Purpose:** End with one truthful ledger: the local distribution candidate
+  is accepted, while installed-app smoke and tag/appcast/GitHub publication
+  remain explicit operator-controlled gates.
+
+## 2026-08-22 — public notary receipt minimization
+
+- **What:** Keep the final Apple `Accepted` result while removing the concrete
+  submission UUID from the tracked release ledger.
+- **Where:** `docs/releases/2026-08-22-v0.14.1-release-readiness.md`.
+- **Why:** The post-edit deprivatization scan correctly classified the new UUID
+  as an identity-bearing operational value. It is not a credential, but it is
+  unnecessary in a public repository because staple validation, Gatekeeper,
+  payload verification, and the DMG checksum already prove the artifact.
+- **Purpose:** Preserve reproducible public release evidence without publishing
+  account-scoped operational metadata that belongs in the local handoff.
