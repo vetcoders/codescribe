@@ -2,27 +2,34 @@
 
 > Complete data flow documentation for codescribe's real-time speech-to-text pipeline.
 >
-> **Re-framed 2026-05-26** as the rendering surface for the
-> [Layered Incremental Transcription Pipeline (ADR)](./ADR/2026-05-26-LAYERED_INCREMENTAL_TRANSCRIPTION.md).
-> The overlay is now a 5-layer incremental theatre — _NEVER rewrites from zero, always patches in place._
+> **Re-framed 2026-08-22** as the rendering surface for the canonical
+> [four-layer engine contract](./THE_ENGINE_CONTRACT.md). The 2026-05-26
+> [five-layer ADR](./ADR/2026-05-26-LAYERED_INCREMENTAL_TRANSCRIPTION.md)
+> is a superseded historical inventory.
 >
 > Created by Vetcoders (c)2026
 
-## Layered rendering model (ADR 2026-05-26)
+## Four-layer rendering model
 
-The overlay no longer renders a single linear stream of one engine's output. It renders the
-union of layer events, each mutating the same already-shown text buffer. The ADR specifies
-five layers; **the render path accepts all five event families, but only three producers
-exist today** — the `Status` column below is inventory, not intent:
+The overlay renders one ordered document reduced from four machine layers. Each
+accepted mutation addresses the same PCM/span ledger; no observer may wipe the
+buffer and rebuild the session.
 
-| Layer               | Engine                                                  | Event types                                                          | When                                      | Status                                                                          |
-| ------------------- | ------------------------------------------------------- | -------------------------------------------------------------------- | ----------------------------------------- | ------------------------------------------------------------------------------- |
-| **0 — Live**        | Apple `SFSpeechRecognizer` (primary) · Whisper fallback | `Preview`, `Correction`, `UtteranceFinal`                            | While the user speaks — owns first commit | ✅ shipped, default                                                             |
-| **1 — Tail Patch**  | local Whisper through the typed tail provider seam      | `ReplaceRange { source: TailPatch }`                                 | before the matching Apple span is final   | ✅ required by Local Power + Apple/Auto; exact-span Apple progressive path only |
-| **2 — Lexicon**     | Dictionary substitution (`apply_lexicon`)               | `ReplaceRange { source: Lexicon }`                                   | at seal time, after Layer 1               | ⚠️ delivered in a different shape than the ADR's debounced module               |
-| **2 — LLM polish**  | Small inline LLM (Bielik-11B proposed)                  | `ReplaceRange { source: InlineLlm }`                                 | —                                         | ❌ no producer                                                                  |
-| **3 — Paralingual** | Silero classifier head                                  | `InsertAnnotation { HesitationPause \| Paralingual }`                | —                                         | ❌ no producer (transport exists end-to-end)                                    |
-| **4 — Final BAM**   | Session-end contextual pass                             | `ReplaceRange` (cross-utterance, within bounds) + `SessionFinalised` | On `stop()` / hold-release                | ❌ no producer; `SessionFinalised` _is_ emitted by the live paths               |
+| Layer                        | Owner                                         | Reducer surface                                                          | Current status                                                                                                                      |
+| ---------------------------- | --------------------------------------------- | ------------------------------------------------------------------------ | ----------------------------------------------------------------------------------------------------------------------------------- |
+| **L0 — Apple**               | `SFSpeechRecognizer` live observer            | `Preview`, `Correction`, `UtteranceFinal`                                | Shipped first paint on the Apple progressive route.                                                                                 |
+| **L1 — Whisper**             | Typed tail provider over proven PCM spans     | bounded `ReplaceRange { source: TailPatch }` / corrected final           | Wired on exact-span Apple progressive; VAD/Whisper-first uses Whisper as its primary observer and refuses a second unbound patcher. |
+| **L2 — Lexicon + Light+**    | Deterministic vocabulary and sentence shaping | lexicon rewrite followed by Light+ before stable commit                  | Currently wired on progressive seals and as the delivery floor; explicit `force_raw` skips Light+.                                  |
+| **L3 — Responses formatter** | Existing configured Formatting lane           | span-keyed accepted formatting result through the same reducer authority | Implemented behind `CODESCRIBE_INLINE_FORMAT`; “inline” is scheduling over stable L2 spans, not a small model or second client.     |
+
+The human receives the sealed document after L3; the human is not a fifth
+machine layer. Silero is orthogonal VAD and PCM-time evidence. Plain Silero may
+report speech probability, boundaries, silence duration, and pause timing; named
+laughter/noise annotations require an optional measured paralingual provider.
+
+The historical `InlineLlm` and `FinalBam` enum values remain reserved wire
+vocabulary, not active layer owners. Final BAM is superseded and has no
+automatic producer. `SessionFinalised` is lifecycle-only.
 
 **Hard invariant:** every layer mutates the buffer only through bounded events
 (`Append`, `ReplaceRange`, `InsertAnnotation`, `Backspace`). No layer is allowed to wipe the
@@ -34,24 +41,26 @@ contract and rationale.
 
 ```mermaid
 flowchart LR
-    L0[Layer 0<br/>Apple live deltas]
-    L1[Layer 1<br/>Whisper tail patch]
-    L2[Layer 2<br/>Lexicon + LLM polish]
-    L3[Layer 3<br/>Silero paralingual]
-    L4[Layer 4<br/>Final BAM]
+    L0[L0<br/>Apple live observer]
+    L1[L1<br/>Whisper contextual observer]
+    L2[L2<br/>Lexicon + Light+]
+    L3[L3<br/>Existing Responses formatter]
+    SILERO[Silero<br/>orthogonal VAD/time evidence]
     BUF[(Already-shown buffer<br/>Overlay render target)]
 
     L0 -- Preview / UtteranceFinal --> BUF
     L1 -- ReplaceRange (bounded) --> BUF
-    L2 -- ReplaceRange (bounded) --> BUF
-    L3 -- InsertAnnotation --> BUF
-    L4 -- ReplaceRange (cross-utterance) + SessionFinalised --> BUF
+    L2 -- stable shaped span --> BUF
+    L3 -- accepted span format --> BUF
+    SILERO -. boundaries / pause evidence .-> L1
+    SILERO -. timing evidence .-> L3
 ```
 
-The legacy single-engine pipeline below describes **what powers Layer 0 + Layer 1's Whisper
-backend today**. It still works exactly as documented when Apple is unavailable (fallback mode).
-When Apple is the active Layer 0, the same chunker/VAD/Whisper machinery moves to background
-duty and emits Layer 1 `ReplaceRange` events instead of primary `Preview` events.
+The Whisper-first VAD/scheduler pipeline below is a separate runtime route. It
+uses Whisper as its primary observer when Apple is unavailable or explicitly
+unselected. Apple progressive instead submits exact PCM spans through the typed
+tail-provider seam. Both routes converge on the same reducer; they do not claim
+identical mutation-fence geometry.
 
 ## Pipeline Overview
 
@@ -194,8 +203,9 @@ Speech segments from the VAD gate arrive as `SpeechEvent::Utterance` (interim) o
 1. Receives utterance audio from `SpeechSession`.
 2. Transcribes with Whisper (Metal GPU acceleration).
 3. Post-processes via `StreamPostProcessor` (lexicon correction, hallucination filter, semantic gate).
-4. Emits `EngineEvent::Preview` with accumulated text for the current utterance.
-5. Optionally runs Phase 2 correction (re-transcription of accumulated audio for better accuracy).
+4. Applies the deterministic Light+ floor where the route promises L2 shaping.
+5. Emits `EngineEvent::Preview` with accumulated text for the current utterance.
+6. Optionally runs Phase 2 correction (re-transcription of accumulated audio for better accuracy).
 
 ### Anti-repetition
 
@@ -216,17 +226,20 @@ Whisper uses `no_repeat_ngram_size = 5` to suppress the model's tendency to repe
 
 The engine emits **semantic events** — it communicates what happened, not how to display it:
 
-| Event            | Meaning                                                     |
-| ---------------- | ----------------------------------------------------------- |
-| `VadStart`       | VAD detected speech start (with `speech_prob` and `ts_ms`)  |
-| `VadEnd`         | VAD detected speech end                                     |
-| `VadFallback`    | Flush path used (VAD never fired Start but speech detected) |
-| `Preview`        | Latest transcription of current utterance (full text)       |
-| `Correction`     | Re-transcription improved previous output                   |
-| `UtteranceFinal` | Complete utterance — VAD-bounded or flush                   |
-| `Drop`           | Content dropped (hallucination, semantic gate)              |
-| `Stats`          | Session-level statistics (emitted on stop/flush)            |
-| `Warning`        | Recoverable error — engine continues                        |
+| Event              | Meaning                                                     |
+| ------------------ | ----------------------------------------------------------- |
+| `VadStart`         | VAD detected speech start (with `speech_prob` and `ts_ms`)  |
+| `VadEnd`           | VAD detected speech end                                     |
+| `VadFallback`      | Flush path used (VAD never fired Start but speech detected) |
+| `Preview`          | Latest transcription of current utterance (full text)       |
+| `Correction`       | Re-transcription improved previous output                   |
+| `UtteranceFinal`   | Complete utterance — VAD-bounded or flush                   |
+| `Drop`             | Content dropped (hallucination, semantic gate)              |
+| `Stats`            | Session-level statistics (emitted on stop/flush)            |
+| `Warning`          | Recoverable error — engine continues                        |
+| `ReplaceRange`     | Bounded mutation for a proven span                          |
+| `InsertAnnotation` | Optional sideband annotation anchored to a span             |
+| `SessionFinalised` | Lifecycle closure only; never a text producer               |
 
 ### Preview semantics (contract)
 
@@ -236,7 +249,9 @@ The engine emits **semantic events** — it communicates what happened, not how 
 - Presentation must keep **session structure**, not only a flat string:
   - committed utterances that are already safe to keep
   - one active preview/correction tail for the current utterance
-- Corrections may rewrite only the active tail. Previously committed utterances must stay append-only.
+- Span order and PCM identity stay append-only. An authorized downstream L1/L2/L3
+  observation may still correct wording inside its proven span before
+  `transcript_sealed`; no layer may rebuild or reorder the session.
 - UI sinks still consume only backspace-encoded `TranscriptDelta` payloads; full preview snapshots must be diffed upstream before they reach overlay/chat APIs.
 
 ### Delta generation (backspace magic)
@@ -348,9 +363,10 @@ SpeechEvent (speech segments, silence removed)
     │ transcription_session
     ▼
 Whisper inference → raw transcript
-    │ StreamPostProcessor (lexicon + semantic gate)
+    │ StreamPostProcessor (lexicon + semantic gate) → Light+
     ▼
-EngineEvent::Preview { text } (utterance-local)
+stable L2 span / EngineEvent::Preview { text }
+    │ optional L3 scheduling through existing Responses formatter
     │ EventSink / DeltaSinkAdapter
     ▼
 TranscriptDelta (backspace-encoded diff)
@@ -376,6 +392,9 @@ Displayed text (String, visible in overlay/bubble)
 | `core/stt/tail_patcher/mod.rs`                            | Layer 1 gate, job computation, bounded-patch decision      |
 | `core/pipeline/sinks.rs`                                  | DeltaSinkAdapter, CallbackSink, CollectorEventSink         |
 | `core/pipeline/stream_postprocess.rs`                     | Lexicon correction, semantic gate, hallucination filter    |
+| `core/pipeline/light_plus.rs`                             | Deterministic L2 sentence shaping                          |
+| `core/llm/inline_format.rs`                               | L3 stable-span scheduling and fail-open ledger             |
+| `core/llm/ai_formatting.rs`                               | Existing Responses Formatting lane used by L3              |
 | `app/controller/mod.rs`                                   | Recording state machine, Hold/Toggle orchestration         |
 | `app/controller/helpers.rs`                               | ControllerEventRouter, session mode routing                |
 | `app/presentation/emitter.rs`                             | PresentationEmitter (typing animation via BufferedEmitter) |

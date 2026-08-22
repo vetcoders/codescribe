@@ -111,9 +111,10 @@ pub enum FinalityBar {
     /// banned from further overwrite of that span. Preview stays grey;
     /// committed is bright. This is not the document.
     UtteranceFinal,
-    /// Apple + Whisper + lexicon finished fusion for a Silero-bounded span.
-    /// The record `[sample_start, sample_end)` becomes append-only and may
-    /// start inline formatting. Order on the PCM axis is frozen.
+    /// Apple + Whisper + lexicon / Light+ finished L2 shaping for a
+    /// time-bounded span. The record `[sample_start, sample_end)` becomes
+    /// append-only and may schedule the existing Responses formatter. Order
+    /// on the PCM axis is frozen.
     UtteranceSealed,
     /// The whole session — tail and formatter included — was assembled into
     /// the document. Automation puts its hands down. Full HQ / Cloud may
@@ -129,8 +130,8 @@ pub enum FinalityBar {
 pub enum RelayLayer {
     Apple,
     Whisper,
-    Lexicon,
-    Formatter,
+    LexiconLightPlus,
+    ResponsesFormatter,
     Human,
 }
 
@@ -146,10 +147,15 @@ pub struct EngineContract {
     pub id: &'static str,
     pub primary_key: &'static str,
     pub relay: &'static [RelayLayer],
+    pub machine_layer_count: usize,
     pub bars: &'static [FinalityBar],
     pub forbidden: &'static [&'static str],
     pub whisper_window: &'static str,
     pub full_file_pass: &'static str,
+    pub inline_format_role: &'static str,
+    pub silero_role: &'static str,
+    pub final_bam_status: &'static str,
+    pub session_finalised_role: &'static str,
     pub product_goal: &'static str,
 }
 
@@ -160,10 +166,11 @@ pub const ENGINE_CONTRACT: EngineContract = EngineContract {
     relay: &[
         RelayLayer::Apple,
         RelayLayer::Whisper,
-        RelayLayer::Lexicon,
-        RelayLayer::Formatter,
+        RelayLayer::LexiconLightPlus,
+        RelayLayer::ResponsesFormatter,
         RelayLayer::Human,
     ],
+    machine_layer_count: 4,
     bars: &[
         FinalityBar::UtteranceFinal,
         FinalityBar::UtteranceSealed,
@@ -177,9 +184,16 @@ pub const ENGINE_CONTRACT: EngineContract = EngineContract {
         "auto_replace_after_transcript_sealed",
         "treat_committed_as_document",
         "treat_whole_text_mutable_until_session_seal",
+        "small_inline_llm",
+        "final_bam_automatic_producer",
+        "session_finalised_content_mutation",
     ],
-    whisper_window: "3-5s utterance-bounded partials",
+    whisper_window: "approximately_4s_with_approximately_1s_overlap",
     full_file_pass: "button_only_proposal",
+    inline_format_role: "schedule_existing_responses_formatter",
+    silero_role: "orthogonal_vad_and_pcm_time_evidence",
+    final_bam_status: "superseded_no_automatic_producer",
+    session_finalised_role: "lifecycle_only",
     product_goal: "energy × time → the true sentence, live in the buffer, ~10ms to paste",
 };
 
@@ -281,7 +295,7 @@ pub fn render_engine_contract_html() -> String {
         ),
         (
             "utterance_sealed",
-            "Apple + Whisper + lexicon finished fusion for the Silero-bounded span. Record [sample_start, sample_end) is append-only and may start inline formatting. Order on the PCM axis is frozen.",
+            "Apple + Whisper + lexicon / Light+ finished L2 shaping for the time-bounded span. Record [sample_start, sample_end) is append-only and may schedule the existing Responses formatter. Order on the PCM axis is frozen.",
         ),
         (
             "transcript_sealed",
@@ -303,7 +317,7 @@ pub fn render_engine_contract_html() -> String {
 <p class="engine-contract-kicker">THE ENGINE · quality-report contract · {id}</p>
 <h2>Place on the canvas is given by energy in time — not by tokens.</h2>
 <p class="engine-contract-goal">{goal}</p>
-<p class="engine-contract-relay">Relay: Apple → Whisper → lexicon → formatter → human. Ban is per layer, per span. Whisper works 3–5 s partials at utterance boundaries and fills holes. It does not hallucinate into silence and does not see full audio unless a human presses the button.</p>
+<p class="engine-contract-relay">Four machine layers: L0 Apple → L1 Whisper → L2 lexicon / Light+ → L3 existing Responses formatter; then human. “Inline” is scheduling, not a separate model. Silero is orthogonal VAD and PCM-time evidence. Final BAM is superseded and SessionFinalised is lifecycle-only.</p>
 <table class="engine-contract-bars">
 <thead><tr><th>Bar</th><th>Means</th></tr></thead>
 <tbody>
@@ -359,16 +373,44 @@ mod tests {
 
     #[test]
     fn relay_is_apple_then_whisper_then_lexicon_then_formatter_then_human() {
+        assert_eq!(ENGINE_CONTRACT.machine_layer_count, 4);
+        assert_eq!(ENGINE_CONTRACT.relay.len(), 5);
         assert_eq!(
             ENGINE_CONTRACT.relay,
             &[
                 RelayLayer::Apple,
                 RelayLayer::Whisper,
-                RelayLayer::Lexicon,
-                RelayLayer::Formatter,
+                RelayLayer::LexiconLightPlus,
+                RelayLayer::ResponsesFormatter,
                 RelayLayer::Human
             ]
         );
+        assert_eq!(
+            &ENGINE_CONTRACT.relay[..ENGINE_CONTRACT.machine_layer_count],
+            &[
+                RelayLayer::Apple,
+                RelayLayer::Whisper,
+                RelayLayer::LexiconLightPlus,
+                RelayLayer::ResponsesFormatter,
+            ]
+        );
+        assert_eq!(
+            ENGINE_CONTRACT.relay[ENGINE_CONTRACT.machine_layer_count],
+            RelayLayer::Human
+        );
+        assert_eq!(
+            ENGINE_CONTRACT.inline_format_role,
+            "schedule_existing_responses_formatter"
+        );
+        assert_eq!(
+            ENGINE_CONTRACT.silero_role,
+            "orthogonal_vad_and_pcm_time_evidence"
+        );
+        assert_eq!(
+            ENGINE_CONTRACT.final_bam_status,
+            "superseded_no_automatic_producer"
+        );
+        assert_eq!(ENGINE_CONTRACT.session_finalised_role, "lifecycle_only");
     }
 
     #[test]
@@ -456,7 +498,14 @@ mod tests {
             "treat_whole_text_mutable_until_session_seal",
             "rewrite_from_zero",
             "button_only_proposal",
-            "Apple → Whisper → lexicon → formatter → human",
+            "Apple → Whisper → Lexicon + Light+ → Responses formatter → human",
+            "Exactly four machine layers",
+            "L2 — Lexicon + Light+",
+            "L3 — Responses formatter",
+            "Inline describes scheduling",
+            "Silero is orthogonal",
+            "Final BAM is superseded",
+            "SessionFinalised is lifecycle-only",
             "seal-atlas",
             "SealedSpan.words",
             "clock-lie",
@@ -476,9 +525,71 @@ mod tests {
     }
 
     #[test]
+    fn normative_docs_name_four_machine_layers_and_historical_adrs_are_superseded() {
+        let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("..");
+        for relative in [
+            "docs/THE_ENGINE_CONTRACT.md",
+            "docs/TRANSCRIPT_LANES.md",
+            "docs/OVERLAY_STREAMING.md",
+            "docs/ARCHITECTURE.md",
+            "docs/WHISPER_LIVE.md",
+        ] {
+            let path = root.join(relative);
+            let body = std::fs::read_to_string(&path)
+                .unwrap_or_else(|err| panic!("{} must exist: {err}", path.display()));
+            let lowered = body
+                .to_ascii_lowercase()
+                .split_whitespace()
+                .collect::<Vec<_>>()
+                .join(" ");
+            for needle in [
+                "four machine layers",
+                "light+",
+                "responses",
+                "formatter",
+                "silero",
+                "orthogonal",
+                "final bam",
+                "superseded",
+                "sessionfinalised",
+                "lifecycle",
+            ] {
+                assert!(
+                    lowered.contains(needle),
+                    "{relative} missing four-layer contract token {needle:?}"
+                );
+            }
+            for rejected in [
+                "small inline llm",
+                "adopt a **five-layer",
+                "final bam, when built",
+            ] {
+                assert!(
+                    !lowered.contains(rejected),
+                    "{relative} contains active superseded claim {rejected:?}"
+                );
+            }
+        }
+
+        for relative in [
+            "docs/ADR/2026-05-26-LAYERED_INCREMENTAL_TRANSCRIPTION.md",
+            "docs/ADR/2026-05-28-Correction-Continuous-Hands-Off.md",
+        ] {
+            let path = root.join(relative);
+            let body = std::fs::read_to_string(&path)
+                .unwrap_or_else(|err| panic!("{} must exist: {err}", path.display()));
+            assert!(
+                body.contains("Status: SUPERSEDED IN FULL"),
+                "{relative} must be unmistakably historical"
+            );
+        }
+    }
+
+    #[test]
     fn full_file_pass_is_never_automatic() {
         assert_eq!(ENGINE_CONTRACT.full_file_pass, "button_only_proposal");
-        assert!(ENGINE_CONTRACT.whisper_window.contains("3-5s"));
+        assert!(ENGINE_CONTRACT.whisper_window.contains("4s"));
+        assert!(ENGINE_CONTRACT.whisper_window.contains("1s_overlap"));
     }
 
     #[test]

@@ -19,6 +19,20 @@ How to read:
   default-OFF flag (an operator button). Drawn as a dashed line.
 - **since** — the commit/wave that put the station into service.
 
+The live product contract has exactly four machine layers:
+
+| Layer  | Lane                         | Current truth                                                                                             |
+| ------ | ---------------------------- | --------------------------------------------------------------------------------------------------------- |
+| **L0** | Apple live observer          | First paint and PCM-pinned hypotheses.                                                                    |
+| **L1** | Whisper contextual observer  | Exact-span correction/gap evidence; no automatic full-file pass.                                          |
+| **L2** | Lexicon + Light+             | Deterministic shaping, currently wired on progressive seals and delivery.                                 |
+| **L3** | Existing Responses formatter | Stable-span scheduling through the configured Formatting lane; “inline” is scheduling, not a small model. |
+
+Silero is an orthogonal VAD/time-evidence plane, not a numbered text layer.
+Plain VAD may report speech probability, boundaries, and silence/pause timing;
+richer paralingual labels remain optional and provider-bound. The human receives
+the sealed document after L3 and is not a fifth machine layer.
+
 ---
 
 ## 0. The map at a glance
@@ -40,6 +54,8 @@ MIC ▶ recorder ▶ [J1 PCM ring+spill]
    (local tail-patch       OVERLAY live text ▶ ...user watches letters land
     currently rides A;
     provider L1 is separate)
+              │ stable seals: L2 lexicon + Light+
+              └────────────▶ LINE F / L3 Responses formatting (when armed)
                            │ stop
                            ▼
         LINE S: [J3 truth adjudication] ▶ [J4 postprocess+lexicon]
@@ -87,14 +103,14 @@ mic ▶ recorder ▶ [J1] ▶ Silero VAD chunker ▶ utterance boundaries
         ↑ Refine lane: correction.rs partial passes (VAD-aligned windows)
 ```
 
-| #   | station       | code                                                 | what happens                                                                                                                                                           | since         |
-| --- | ------------- | ---------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------- |
-| B1  | VAD filter    | `core/audio/chunker.rs` (Silero, embedded, zero-I/O) | detects WORDS, not noise; silence edges close utterances — “fundament stabilności”                                                                                     | doctrine §3.5 |
-| B2  | scheduling    | `core/stt/scheduler.rs :: SttScheduler`              | Fast lane = utterance decode; Refine lane = correction re-decodes; per-lane `initial_prompt_for_lane` (⚑ OFF, W13-6A)                                                  | —             |
-| B3  | decode        | `core/stt/whisper/singleton.rs`                      | in-process Whisper (turbo fp16 only; official OpenAI tokenizer + pinned mel asset); TTL reaper unloads 30 min after last finished decode (`whisper_residency_reclaim`) | fp16 only     |
-| B4  | corrections   | `streaming/correction.rs`                            | Phase-2 Refine: partial passes triggered by finals/speech-ms, **VAD-aligned windows** (`plan_vad_aligned_windows_with_config`) so windows never begin mid-phrase       | W1-A          |
-| B5  | postprocess   | `core/pipeline/stream_postprocess.rs`                | lexicon rewrite table (compiled-in seed/programming/operator/protected), hallucination + SemanticGate + empty-drop gates                                               | —             |
-| B6  | canvas + user | **[J2]** → overlay                                   | same reducer/emitter contract as LINE A                                                                                                                                | —             |
+| #   | station           | code                                                 | what happens                                                                                                                                                           | since         |
+| --- | ----------------- | ---------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------- |
+| B1  | VAD/time evidence | `core/audio/chunker.rs` (Silero, embedded, zero-I/O) | reports speech probability and boundary/silence timing; it does not identify words, laughter, or named noise classes                                                   | doctrine §3.5 |
+| B2  | scheduling        | `core/stt/scheduler.rs :: SttScheduler`              | Fast lane = utterance decode; Refine lane = correction re-decodes; per-lane `initial_prompt_for_lane` (⚑ OFF, W13-6A)                                                  | —             |
+| B3  | decode            | `core/stt/whisper/singleton.rs`                      | in-process Whisper (turbo fp16 only; official OpenAI tokenizer + pinned mel asset); TTL reaper unloads 30 min after last finished decode (`whisper_residency_reclaim`) | fp16 only     |
+| B4  | corrections       | `streaming/correction.rs`                            | Phase-2 Refine: partial passes triggered by finals/speech-ms, **VAD-aligned windows** (`plan_vad_aligned_windows_with_config`) so windows never begin mid-phrase       | W1-A          |
+| B5  | postprocess       | `core/pipeline/stream_postprocess.rs`                | lexicon rewrite table (compiled-in seed/programming/operator/protected), hallucination + SemanticGate + empty-drop gates                                               | —             |
+| B6  | canvas + user     | **[J2]** → overlay                                   | same reducer/emitter contract as LINE A                                                                                                                                | —             |
 
 ## 3. LINE L1 — Layer 1 tail-patch
 
@@ -131,17 +147,17 @@ stop ▶ recorder.stop (drain + WAV) ▶ [J3 truth adjudication]
 | S4  | postprocess | **[J4]** same `stream_postprocess` gates + lexicon                   | applied to the ADJUDICATED text (`Post-processed transcript … lexicon_rewrites=n`)                                                                                          | —                  |
 | S5  | fork        | mode decision (hotkey held)                                          | raw → LINE F (formatting) and/or LINE G (assistive); AUTO format may fire on the overlay                                                                                    | —                  |
 
-## 5. LINE F — Formatting LLM lane
+## 5. LINE F — L3 Responses Formatting lane
 
 ```
-raw transcript ▶ ai_formatting (per-lane endpoint/model/key)
-  ▶ [J5 Responses chain: previous_response_id per mode]
+stable L2 spans ▶ inline_format scheduling ▶ existing ai_formatting lane
+  ▶ [J5 Responses chain: previous_response_id per session]
   ▶ semantic guard ▶ [J7 overlay formatted] + [J6 history]
 ```
 
 | #   | station    | code                                                                                  | what happens                                                                                                                                                                                                                                                     | since                   |
 | --- | ---------- | ------------------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ----------------------- |
-| F1  | lane truth | `core/llm/lane_truth.rs`                                                              | endpoint/model/key resolved per lane (Formatting ≠ Assistive ≠ Main — separate key slots, separate chains)                                                                                                                                                       | —                       |
+| F1  | lane truth | `core/llm/lane_truth.rs` + `core/llm/ai_formatting.rs`                                | endpoint/model/key/prompt resolved from the existing Formatting lane (Formatting ≠ Assistive ≠ Main — separate key slots, separate chains); inline scheduling creates no second model or client                                                                  | W2-01                   |
 | F2  | request    | `core/llm/ai_formatting.rs :: build_responses_input`                                  | wire contract: `instructions` param on the FIRST turn only; chained turns re-carry the prompt as a leading `developer` item (the chain does NOT persist instructions server-side)                                                                                | `26d0982d` + `5d62aacb` |
 | F3  | chain      | **[J5]** `core/state/conversation.rs`                                                 | per-mode `previous_response_id`; the chain is REAL memory (2026-08-14: a stored id answered “what was this about” with a full recall of the take, hours later); ids are org/key-scoped — stale after key rotation ⇒ self-heal drops the id and retries unchained | self-heal in flight     |
 | F4  | guard      | `Action quality guardrail` + `semantic_cosine` (`app/controller/quality_delivery.rs`) | divergence (< 0.86) vetoes auto-paste; RAW is always preserved beside the draft                                                                                                                                                                                  | —                       |
@@ -181,14 +197,14 @@ audio file ▶ `codescribe transcribe` CLI / cloud final pass
 
 ## 8. Dashed lines — built, verifier-green, ⚑ default-OFF (operator buttons)
 
-| flag                                    | line it arms                                                                                                                             | code                                                    | evidence                                                          |
-| --------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------- | ----------------------------------------------------------------- |
-| `CODESCRIBE_INLINE_FORMAT`              | W13-1 buforek: sealed spans stream to the formatter DURING dictation (`previous_response_id` chain per span), so stop pays only the tail | `core/llm/inline_format.rs`                             | seam stop 0.398 s vs 8.6–13.8 s; needs live ≥60 s take            |
-| `CODESCRIBE_SILERO_FUSION`              | Silero boundary identity + conservative fusion feeding L1 windows; default OFF                                                           | `streaming/silero_fusion.rs`                            | synthetic starvation skips 18→6 (−67%); take-614 A/B still owed   |
-| `CODESCRIBE_SPAN_IDEMPOTENCE`           | ledger-keyed replay rejection — a sealed span cannot be delivered twice (kills gap-append “×4” dupes; NEVER content similarity)          | `streaming/span_idempotence.rs`                         | named repetition tests green; real-session receipts pending       |
-| `CODESCRIBE_OVERLAY_HIGHLIGHTS`         | lexicon-corrected words + VAD-speech-no-words gaps marked on canvas; highlighted span → Teach                                            | W13-6B (bridge + Swift)                                 | Rust+Swift tests green                                            |
-| `CODESCRIBE_STT_INITIAL_PROMPT_ENABLED` | lexicon VOICE: `Vocabulary:` prompt to Whisper per window                                                                                | `stream_postprocess.rs :: build_whisper_initial_prompt` | A/B: U-WER −1.5 pp but false inserts 1→7 — flip not justified yet |
-| `STT_TAIL_PROVIDER=sidecar\|remote`     | tail decode out of process / off host                                                                                                    | `tail_provider.rs` + `codescribe-stt-sidecar`           | fake-provider receipt 22 ms; production supervision unmeasured    |
+| flag                                    | line it arms                                                                                                                                                    | code                                                    | evidence                                                          |
+| --------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------- | ----------------------------------------------------------------- |
+| `CODESCRIBE_INLINE_FORMAT`              | L3 scheduling: stable L2 spans stream through the existing Formatting lane DURING dictation (`previous_response_id` chain per span), so stop pays only the tail | `core/llm/inline_format.rs`                             | W2-01 verifier-green; default OFF pending integrated live take    |
+| `CODESCRIBE_SILERO_FUSION`              | Silero boundary identity + conservative fusion feeding L1 windows; default OFF                                                                                  | `streaming/silero_fusion.rs`                            | synthetic starvation skips 18→6 (−67%); take-614 A/B still owed   |
+| `CODESCRIBE_SPAN_IDEMPOTENCE`           | ledger-keyed replay rejection — a sealed span cannot be delivered twice (kills gap-append “×4” dupes; NEVER content similarity)                                 | `streaming/span_idempotence.rs`                         | named repetition tests green; real-session receipts pending       |
+| `CODESCRIBE_OVERLAY_HIGHLIGHTS`         | lexicon-corrected words + VAD-speech-no-words gaps marked on canvas; highlighted span → Teach                                                                   | W13-6B (bridge + Swift)                                 | Rust+Swift tests green                                            |
+| `CODESCRIBE_STT_INITIAL_PROMPT_ENABLED` | lexicon VOICE: `Vocabulary:` prompt to Whisper per window                                                                                                       | `stream_postprocess.rs :: build_whisper_initial_prompt` | A/B: U-WER −1.5 pp but false inserts 1→7 — flip not justified yet |
+| `STT_TAIL_PROVIDER=sidecar\|remote`     | tail decode out of process / off host                                                                                                                           | `tail_provider.rs` + `codescribe-stt-sidecar`           | fake-provider receipt 22 ms; production supervision unmeasured    |
 
 ## 9. Junctions — where lines cross
 
@@ -197,7 +213,7 @@ audio file ▶ `codescribe transcribe` CLI / cloud final pass
 | J1  | PCM ring + spill (`recorder`/`live_audio_buffer`)                                | mic capture × Apple ingress × L1 windows × stop WAV × crash recovery | the sample counter minted here is the ONE session clock                                                                      |
 | J2  | canvas (`TranscriptReducer` + `BufferedEmitter` + `app/presentation/emitter.rs`) | Apple finals × L1 `ReplaceRange` × gap-appends × preview             | ONE writer; order and PCM identity are stable, while text inside an authorized unsealed span may be corrected                |
 | J3  | truth adjudication (`truth.rs`)                                                  | live canvas × Whisper residual                                       | preserve the ordered span ledger; accept only evidence bound to its PCM range; never rebuild the session from zero           |
-| J4  | postprocess (`stream_postprocess`)                                               | every text × lexicon × gates                                         | lexicon is the FINAL automated layer; the human layer stays on top                                                           |
+| J4  | L2 postprocess (`stream_postprocess` + `light_plus`)                             | every text × lexicon × Light+ × gates                                | deterministic L2 shaping is currently wired; accepted stable spans may then enter L3 Responses formatting                    |
 | J5  | Responses chain (`state/conversation.rs`)                                        | formatting turns × assistive turns (separate streams)                | per-mode ids; first-turn `instructions`, chained developer item; chain = recoverable session memory                          |
 | J6  | history (`core/state/history.rs`)                                                | every take                                                           | `_raw.txt` + `_formatted.txt` (or `formatting-failed`) + `.m4a` + `.truth.json` — content is never destroyed (doctrine §3.7) |
 | J7  | overlay delivery (`overlay_paste.rs`, OverlayState.swift)                        | formatted draft × auto-paste × manual commit                         | semantic guard vetoes auto-paste only; Revert holds the raw first version                                                    |
@@ -303,8 +319,11 @@ tests, reports, or commits.
 - The live result survives provider failure.
 - Explicit Retranscribe reads the saved audio as a new user action.
 - Retranscribe produces a proposal/result outside normal-stop authority.
-- Final BAM, when built, operates on the ledger and bounded spans.
-- Final BAM is not hated Full Final Pass under a new name.
+- The historical Final BAM proposal is superseded; there is no automatic fifth
+  content producer.
+- Stop drains admitted L1/L3 work and assembles accepted spans; it does not
+  authorize a renamed Full Final Pass.
+- `SessionFinalised` is lifecycle-only and cannot mutate committed text.
 
 ### 11.7 Receipt minimum
 

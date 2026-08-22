@@ -26,15 +26,41 @@ Preview, colours, successive hypotheses and seals are internal mechanics. The us
 
 ## Relay
 
-Apple → Whisper → lexicon → formatter → human
+Apple → Whisper → Lexicon + Light+ → Responses formatter → human
 
 This is a band, not a queue of correctors. Ban is **per layer, per span**. The layer that already passed this span is out. The next one may enrich the **same** time window.
 
 - **Apple** draws now (thin, sharp pencil). Its text is a fast hypothesis pinned to PCM time, not a protected word floor.
 - **Whisper** enters the buffer on **~4 s observations with ~1 s overlap**, bounded by available speech evidence. Never full audio in the automatic pipeline (`full_file_pass = button_only_proposal`). It may fill omissions or replace weaker Apple wording inside the same proven span. It must not hallucinate into silence or rebuild the session from zero.
-- **Lexicon / Light+** tune after Whisper settles.
-- **Formatter** (Responses, `previous_response_id`) has a trash bucket. It may throw away. It may not rearrange the plate.
+- **Lexicon / Light+** are L2 and tune deterministically after Whisper settles. Light+ is currently wired on progressive seals and as the delivery floor.
+- **Responses formatter** is L3 (`previous_response_id`). It has a trash bucket: it may throw away approved verbal debris, but it may not rearrange the plate.
 - **Human** is last, after seal.
+
+### Exactly four machine layers
+
+L0 — Apple; L1 — Whisper; L2 — Lexicon + Light+; L3 — Responses formatter.
+
+| Layer  | Owner                        | Contract                                                           |
+| ------ | ---------------------------- | ------------------------------------------------------------------ |
+| **L0** | Apple                        | Fast, PCM-pinned live hypothesis.                                  |
+| **L1** | Whisper                      | Deeper overlapping observation of the same proven spans.           |
+| **L2** | Lexicon + Light+             | Deterministic vocabulary and sentence shaping; currently wired.    |
+| **L3** | Existing Responses formatter | Session-context formatting through the configured Formatting lane. |
+
+Inline describes scheduling of the existing Responses formatter over stable
+spans. It does not name a small model, a second client, or a second formatting
+product. The human is the recipient after these four machine layers, not a
+fifth machine layer.
+
+Silero is orthogonal VAD and PCM-time evidence. It may contribute speech
+boundaries, silence duration, pause evidence, and pre-roll; richer paralingual
+labels are optional and require a measured provider beyond plain Silero VAD.
+Silero does not occupy a numbered text layer.
+
+Final BAM is superseded and has no automatic content producer. Normal stop
+drains already admitted work and assembles the ordered span ledger; it does not
+start a fifth rewrite. SessionFinalised is lifecycle-only and may not mutate
+text.
 
 `NEVER REWRITE FROM ZERO.` The **PCM axis and ordered span ledger** are
 append-only. Text hypotheses inside an authorized, not-yet-session-sealed span
@@ -606,7 +632,8 @@ Restored:
 - Canvas text evolves within proven span authority.
 - Span identity, ordering, and provenance are invariant.
 - Automatic whole-session rewrite is forbidden.
-- Final BAM is bounded ledger adjudication.
+- Final BAM is superseded; no automatic content producer owns a fifth layer.
+- `SessionFinalised` is lifecycle-only and never edits the document.
 - Q8 never enters runtime.
 - FP16 is complete, validated, and exercised.
 - Layered ON returns when every accepted mutation path is evidenced.

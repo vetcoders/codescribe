@@ -1,10 +1,21 @@
 # ADR 2026-05-26 — Layered Incremental Transcription Pipeline
 
+> **Status: SUPERSEDED IN FULL (2026-08-22).** This file preserves the original
+> five-layer proposal as historical inventory only. It has no current normative
+> force. The active product contract has exactly four machine layers:
+> **L0 Apple → L1 Whisper → L2 Lexicon + Light+ → L3 existing Responses
+> formatter → human**. “Inline” is scheduling of that existing formatter.
+> Silero is orthogonal VAD/time evidence, richer annotations are
+> optional/provider-bound, Final BAM has no producer, and `SessionFinalised` is
+> lifecycle-only. Use [`THE_ENGINE_CONTRACT.md`](../THE_ENGINE_CONTRACT.md),
+> [`TRANSCRIPT_LANES.md`](../TRANSCRIPT_LANES.md), and
+> [`OVERLAY_STREAMING.md`](../OVERLAY_STREAMING.md) for current law.
+
 > **Historical model reference:** the original ADR named a Q8 Whisper artifact.
 > Current runtime policy is FP16-only; resolver, filesystem, direct-engine and
 > embedded paths reject quantized Whisper payloads before tensor load.
 
-> **Status:** PROPOSED → ACCEPTED (operator-authored vision, 2026-05-26)
+> **Historical status:** PROPOSED → ACCEPTED (operator-authored vision, 2026-05-26), then SUPERSEDED 2026-08-22
 > **Replaces:** Whisper-as-primary live STT model (see `WHISPER_LIVE.md`, `OVERLAY_STREAMING.md`)
 > **Owns invariant:** **NEVER REWRITE FROM ZERO.** A later layer may repair text only inside the same PCM-identified span and before its final event.
 > **Trigger:** operator's bench session 2026-05-26 — Apple Dictation latency/UX baseline vs Whisper recall depth.
@@ -46,7 +57,7 @@ describing for weeks:
 
 What is missing is **orchestration glue** and one new contract event.
 
-## Decision
+## Historical decision (superseded)
 
 Adopt a **five-layer incremental transcription pipeline**, with Apple as the live primary engine and
 Whisper + lexicon + LLM as background supplements. They may extend or patch in

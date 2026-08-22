@@ -1,13 +1,13 @@
 # WHISPER LIVE (Embedded Whisper + Streaming Transcription)
 
-> **Status:** DONE ✅ (2026-01-16) · **Re-framed:** 2026-05-26 as Layer 1 + Layer 2 supplement.
+> **Status:** DONE ✅ (2026-01-16) · **Re-framed:** 2026-08-22 as the L1 observer feeding deterministic L2 and the existing L3 formatter.
 >
 > **Tagline:** Whisper stays local, ships embedded by default, and patches the live overlay in the background — it is no longer the first thing the user sees.
 
-## Role in the layered pipeline (ADR 2026-05-26)
+## Role in the canonical four-layer pipeline
 
-Whisper is now **Layer 1 — Tail Patch** and feeds **Layer 2 — Lexicon + LLM Polish** inside the
-[Layered Incremental Transcription Pipeline](./ADR/2026-05-26-LAYERED_INCREMENTAL_TRANSCRIPTION.md).
+Whisper is **L1 — contextual observer** and feeds **L2 — Lexicon + Light+**
+inside the canonical [four-layer engine contract](./THE_ENGINE_CONTRACT.md).
 Live first-pass text in the overlay comes from **Layer 0 — Apple Speech Recognizer**
 (`CODESCRIBE_STT_ENGINE=apple`); Whisper runs on the same audio tail in the background, diffs
 against Layer 0's committed buffer, and emits `EngineEvent::ReplaceRange { source: TailPatch }`
@@ -15,17 +15,23 @@ events that visibly patch tokens Apple missed — mixed-language inserts, rare t
 nouns. The legacy "Whisper-as-primary" path stays as automatic fallback when Apple Speech
 is unavailable (no permission, no macOS Speech framework).
 
-> **Delivery status (2026-08-21).** Layer 1 is wired on **both** live paths but
-> is fail-closed: unset → `off`; explicit `phase1` is experimental. Normal stop
-> never performs a Whisper file pass; full-file decoding belongs only to the
-> explicit Retranscribe/HQ action. Layer 2's inline LLM, Layer 3 and
-> Layer 4 have no producer at all — see the ADR's
-> [Phase delivery status](./ADR/2026-05-26-LAYERED_INCREMENTAL_TRANSCRIPTION.md#phase-delivery-status-2026-08-08).
+> **Delivery status (2026-08-22).** Local Power + Apple/Auto arms the exact-span
+> Apple progressive L1 path; VAD/Whisper-first uses Whisper as its primary
+> observer and refuses a second unbound patcher. Normal stop never performs a
+> hidden Whisper file pass; full-file decoding belongs only to explicit
+> Retranscribe/HQ. L2 Lexicon + Light+ is currently wired. L3 uses the existing
+> Responses Formatting lane behind `CODESCRIBE_INLINE_FORMAT`; “inline” names
+> scheduling, not another model or client.
 
-**Hard invariant that gates every Whisper write:** _NEVER REWRITE FROM ZERO._ Tail Patch may
-only `ReplaceRange` inside the utterance window Layer 0 already committed. If the diff distance
-exceeds the safety threshold, the patch is dropped (annotation emitted) and Layer 0 output stands.
-See the ADR for the full contract.
+The contract has exactly four machine layers. Silero remains orthogonal VAD/time
+evidence, with richer annotations optional and provider-bound. Final BAM is
+superseded and has no automatic producer; `SessionFinalised` is lifecycle-only.
+
+**Hard invariant that gates every Whisper write:** _NEVER REWRITE FROM ZERO._
+Tail Patch may only `ReplaceRange` inside a proven PCM/span identity. Text
+alignment and change ratios may judge a candidate after authority is
+established, but they never mint authority. Unproven or cross-span work fails
+closed. See the engine contract for the full rule.
 
 ## TL;DR
 
@@ -42,8 +48,9 @@ Codescribe’s Whisper layer power-ups:
      deltas — the user sees Layer 0 first, then watches Whisper magically correct mixed-language /
      terminology tokens within ~1 s of utterance end
    - In fallback (no Apple): Whisper takes over the live preview path, behaving like pre-ADR builds
-3. **Full WAV is always teed to disk** — Layer 1 reads from this persistent tail (no extra mic load),
-   Layer 4 (Final BAM) reuses the same WAV at session end
+3. **Full WAV is always teed to disk** — L1 may read retained PCM without a
+   second microphone; the saved WAV remains available for explicit
+   Retranscribe/HQ and diagnostics, not an automatic fifth layer
 
 ## What we shipped
 
@@ -91,21 +98,22 @@ Practical win:
   consumed and extended outside the tray flow. After the ADR, the IPC contract also carries
   `ReplaceRange` and `InsertAnnotation` events for clients that render the layered view.
 - **Quality loop/report** (`bin/codescribe_quality`, `bin/codescribe_loop`) — automated scoring and
-  batch diagnostics. The layered telemetry adds per-layer counters (utterances patched, LLM calls,
-  annotations inserted) so regression hunts can target the right layer.
+  batch diagnostics. Layer receipts identify Whisper proposals, L2 shaping,
+  L3 formatting outcomes, and orthogonal timing evidence so regression hunts
+  target the right owner.
 - **Cloud STT** — optional Layer 1 backend (libraxis cluster / OpenAI whisper-1 / `mlx-audio` +
   `openai/whisper-large-v3`). Latency vs. privacy trade-off lives in Settings; not live preview.
 
 ## Layer mapping for this file
 
-| Section below                                   | Layer it lights up                                                  |
-| ----------------------------------------------- | ------------------------------------------------------------------- |
-| Embedded Whisper (build + runtime lookup)       | Layer 1 (Tail Patch) backend resolution                             |
-| Streaming transcription, chunker, overlap dedup | Layer 1 background pass on utterance tail                           |
-| Stream postprocess, semantic gate               | Pre-diff cleanup feeding Layer 1's `ReplaceRange` decision          |
-| Cloud STT alternatives                          | Pluggable Layer 1 backend                                           |
-| Lexicon substitution (`apply_lexicon`)          | Layer 2 — delivered at seal time, not as the ADR's debounced module |
-| Small inline LLM pass (Phase 2, proposed)       | ❌ not built — no `core/llm/inline_polish.rs`                       |
+| Section below                                   | Layer it lights up                                               |
+| ----------------------------------------------- | ---------------------------------------------------------------- |
+| Embedded Whisper (build + runtime lookup)       | Layer 1 (Tail Patch) backend resolution                          |
+| Streaming transcription, chunker, overlap dedup | Layer 1 background pass on utterance tail                        |
+| Stream postprocess, semantic gate               | Pre-diff cleanup feeding Layer 1's `ReplaceRange` decision       |
+| Cloud STT alternatives                          | Pluggable Layer 1 backend                                        |
+| Lexicon substitution + Light+                   | L2 — deterministic and currently wired at seal/delivery          |
+| Inline formatting scheduler                     | L3 — existing Responses Formatting lane; no separate small model |
 
 Everything below this point is the same Whisper-Live tech that existed before the ADR — it is
 **not removed**, just relocated in the architecture: Whisper became the silent partner that makes
