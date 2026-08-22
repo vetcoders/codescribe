@@ -5503,3 +5503,62 @@ mod tests {
         assert_eq!(sealed[0].range.sample_end, at(2.0));
     }
 }
+
+/// Parked conservation falsifier for the segment-less Apple final path.
+///
+/// Encodes THE ENGINE contract's repetition and conservation fixtures, not
+/// current behaviour. `#[ignore]`d until "Acoustic identity cut order" step 6
+/// in `docs/THE_ENGINE_CONTRACT.md` lands; the anti-drift rule requires a
+/// temporary OFF to name the falsifier it waits for, and this is that falsifier.
+#[cfg(test)]
+mod conservation_falsifiers {
+    use super::*;
+
+    fn probe_words(callback: &str) -> Vec<String> {
+        callback
+            .split_whitespace()
+            .map(|word| normalize_for_containment(&seal_span_text(word, "", true)))
+            .collect()
+    }
+
+    /// `deduplicate_intentional_repetition_by_content`.
+    ///
+    /// Four acoustic occurrences are on the canvas; the cumulative final
+    /// restates five. `revision_tolerant_known_prefix` has an edit budget of
+    /// `max(n / 5, 1)`, so the extra occurrence is absorbed as one edit, the
+    /// whole final reads as "already known", and the fifth `Iwo` is deleted
+    /// with no acoustic authority. Measured 2026-08-22: `known_prefix = 5`.
+    #[test]
+    #[ignore = "acoustic identity cut step 6: repetition must be decided on ranges, not text"]
+    fn cumulative_final_may_not_absorb_an_extra_repetition() {
+        let canvas = normalize_for_containment("Iwo Iwo Iwo Iwo");
+        let canvas_words: Vec<&str> = canvas.split_whitespace().collect();
+        let callback = "Iwo Iwo Iwo Iwo Iwo";
+        let probe = probe_words(callback);
+        let (known, _revised) = revision_tolerant_known_prefix(&probe, &canvas_words);
+        assert_eq!(
+            known, 4,
+            "canvas carries four occurrences; the fifth must survive as novel text"
+        );
+    }
+
+    /// `infer_span_identity_from_text_similarity`.
+    ///
+    /// The matcher scans every start position in the canvas tail, so a probe
+    /// matches a canvas region with no temporal relationship to it. Identity
+    /// must come from the PCM range; text alignment is only legal after
+    /// authority is established inside one range.
+    #[test]
+    #[ignore = "acoustic identity cut step 6: a far-away textual match is not identity"]
+    fn a_textual_match_elsewhere_in_the_canvas_is_not_identity() {
+        let canvas =
+            normalize_for_containment("zupełnie co innego Iwo Iwo Iwo Iwo Iwo dalszy ciąg");
+        let canvas_words: Vec<&str> = canvas.split_whitespace().collect();
+        let probe = probe_words("Iwo Iwo Iwo Iwo Iwo");
+        let (known, _) = revision_tolerant_known_prefix(&probe, &canvas_words);
+        assert_eq!(
+            known, 0,
+            "a match embedded in unrelated canvas text may not consume the final"
+        );
+    }
+}

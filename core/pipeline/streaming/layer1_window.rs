@@ -467,3 +467,74 @@ mod tests {
         }
     }
 }
+
+/// Parked conservation falsifiers for the acoustic-identity cut.
+///
+/// These encode THE ENGINE contract invariants, not current behaviour. They are
+/// `#[ignore]`d because the invariant is not implemented yet — the contract's
+/// anti-drift rule requires a temporary OFF to name the falsifier it is waiting
+/// for, and this is that falsifier. Un-ignore them in the cut that lands
+/// "Acoustic identity cut order" step 3 in `docs/THE_ENGINE_CONTRACT.md`.
+#[cfg(test)]
+mod conservation_falsifiers {
+    use super::*;
+    use crate::stt::tail_provider::{TailProviderRequest, TailRequestIdentity, TailSampleRange};
+
+    fn piece_at(id: u64, text: &str, start_ts: f32, end_ts: f32, segs: usize) -> CoalescedPiece {
+        let rate = 16_000u64;
+        CoalescedPiece {
+            utterance_id: id,
+            committed_text: text.to_string(),
+            audio: vec![0.0; ((end_ts - start_ts) * rate as f32) as usize],
+            sample_start: (start_ts * rate as f32) as u64,
+            sample_end: (end_ts * rate as f32) as u64,
+            start_ts,
+            covered_through_secs: end_ts,
+            segment_count: segs,
+        }
+    }
+
+    /// `declare_a_pcm_range_the_payload_does_not_carry`.
+    ///
+    /// A coalesced window declares `[first.sample_start, last.sample_end)` while
+    /// carrying only the concatenated PCM of its pieces. With any gap between
+    /// pieces the two disagree, `TailProviderRequest::validate_pcm` refuses the
+    /// job, and Layer 1 reports a generic provider error for a window that never
+    /// reached inference. Measured on this module's own five-piece geometry:
+    /// 70 400 samples declared against 31 999 carried.
+    #[test]
+    #[ignore = "acoustic identity cut step 3: window must carry the range it declares"]
+    fn coalesced_window_carries_the_pcm_range_it_declares() {
+        let mut buf = Layer1Coalesce::default();
+        buf.set_neighbour("already sealed");
+        let mut flushes = Vec::new();
+        for i in 0..5 {
+            flushes.extend(buf.push(
+                piece_at(i + 1, "słowo", i as f32, i as f32 + 0.4, 1),
+                16_000,
+            ));
+        }
+        let flush = &flushes[0];
+        let request = TailProviderRequest {
+            identity: TailRequestIdentity {
+                request_id: flush.primary_utterance_id,
+                range: TailSampleRange {
+                    session: "conservation".into(),
+                    capture_epoch: 1,
+                    sample_start: flush.sample_start,
+                    sample_end: flush.sample_end,
+                },
+            },
+            sample_rate: 16_000,
+            language: None,
+        };
+        assert_eq!(
+            flush.sample_end - flush.sample_start,
+            flush.audio.len() as u64,
+            "declared range must equal carried PCM: a window may not promise audio it dropped"
+        );
+        request
+            .validate_pcm(&flush.audio)
+            .expect("a coalesced window must be admissible at the provider seam");
+    }
+}

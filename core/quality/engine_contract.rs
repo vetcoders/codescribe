@@ -187,8 +187,15 @@ pub const ENGINE_CONTRACT: EngineContract = EngineContract {
         "auto_replace_after_transcript_sealed",
         "treat_committed_as_document",
         "treat_whole_text_mutable_until_session_seal",
+        "treat_apple_text_as_immutable_floor",
+        "infer_span_identity_from_text_similarity",
         "small_inline_llm",
         "infer_named_sound_from_silero",
+        "deduplicate_intentional_repetition_by_content",
+        "claim_layered_on_when_no_windows_reach_the_provider",
+        "drop_acoustic_observation_without_receipt",
+        "declare_a_pcm_range_the_payload_does_not_carry",
+        "present_mean_energy_as_span_identity",
         "final_bam_automatic_producer",
         "session_finalised_content_mutation",
     ],
@@ -449,6 +456,43 @@ mod tests {
                 .forbidden
                 .contains(&"treat_committed_as_document")
         );
+    }
+
+    /// The prose `## Forbidden` list owns the product invariant; the const is
+    /// its executable mirror. A token that lives only in the doc renders on no
+    /// quality plate and guards nothing — that is exactly how
+    /// `infer_span_identity_from_text_similarity` and
+    /// `deduplicate_intentional_repetition_by_content` sat unenforced while the
+    /// live Apple path deleted repetition by text (measured 2026-08-22).
+    ///
+    /// The mirror may carry entries the bullet list does not (prose describes
+    /// them in their own sections); the reverse is drift.
+    #[test]
+    fn every_prose_forbidden_is_mirrored_in_the_lock() {
+        let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("..");
+        let body = std::fs::read_to_string(root.join(ENGINE_CONTRACT_DOC))
+            .unwrap_or_else(|err| panic!("{ENGINE_CONTRACT_DOC} must exist: {err}"));
+        let section = body
+            .split("## Forbidden (reports and agents)")
+            .nth(1)
+            .expect("canonical doc must keep the Forbidden section");
+        let section = section.split("\n## ").next().unwrap_or(section);
+
+        let prose: Vec<&str> = section
+            .lines()
+            .filter_map(|line| line.trim().strip_prefix("- `"))
+            .filter_map(|rest| rest.strip_suffix('`'))
+            .collect();
+        assert!(
+            prose.len() >= 15,
+            "Forbidden section parsed as {prose:?} — the bullet shape changed"
+        );
+        for token in prose {
+            assert!(
+                ENGINE_CONTRACT.forbidden.contains(&token),
+                "prose forbids {token:?} but ENGINE_CONTRACT.forbidden does not mirror it"
+            );
+        }
     }
 
     #[test]

@@ -164,6 +164,9 @@ A first-wins final string is not enough. The real document is the ordered span l
 - `infer_named_sound_from_silero`
 - `deduplicate_intentional_repetition_by_content`
 - `claim_layered_on_when_no_windows_reach_the_provider`
+- `drop_acoustic_observation_without_receipt`
+- `declare_a_pcm_range_the_payload_does_not_carry`
+- `present_mean_energy_as_span_identity`
 
 ## Founding invariant — restored 2026-08-21
 
@@ -205,6 +208,67 @@ This distinction is the engine.
 - A final callback is not identity.
 - Identity is minted from capture/session/span evidence.
 
+### Acoustic span identity — identity is not evidence
+
+A word is not a string. A word is an observation of a captured PCM interval
+together with the intensity measured on that interval. Two lexically identical
+words occupying different intervals are two different observations and both
+must survive.
+
+The engine therefore carries **two** separate objects for the same span. They
+must never be collapsed into one another.
+
+**`AcousticSpanIdentity` — the structural key.** Totally ordered, comparable
+for equality, cheap, and content-free:
+
+```text
+session          — capture session id
+capture_epoch    — monotonic epoch inside that session
+sample_start     — inclusive, on the capture PCM counter
+sample_end       — exclusive, on the same counter
+order            — monotonic mint index, unique inside (session, epoch)
+```
+
+- `order` exists so a zero-width or exactly-replayed range is still two
+  distinguishable observations. Without it, `[eof, eof)` fallbacks and
+  intentional repetition inside one Apple commit alias onto one key.
+- Equality is the whole 5-tuple. Nothing else is identity.
+- `order` never derives from text position, token index, or arrival time on
+  the wire. It is minted once, where the observation enters the ledger.
+
+**`AcousticSpanEvidence` — the quality proof.** Measured, lossy, optional:
+
+```text
+hops        — the capture energy hops overlapping the identity range
+mean_db     — convenience aggregate over those hops
+grain       — word / phrase / utterance, as the recognizer actually reported
+timing      — exact_sample_range | compacted_speech_relative | synthetic
+```
+
+- Evidence proves an identity is _anchored in voiced audio_. It does not name
+  the identity.
+- `mean_db` is a scalar average. It is **not** collision-proof and may never be
+  hashed, compared, or promoted into a key
+  (`present_mean_energy_as_span_identity`).
+- Absent evidence is an honest `unanchored` label. It leaves the text visible
+  and strips the right to mutate a neighbour; it never deletes the text.
+- Whisper's mel is fuel for one forward pass and is gone after the decode. It
+  is not a durable word number and must not be presented as one. Any richer
+  fingerprint must first state its cost, its privacy class, its retention, and
+  its comparison rule.
+
+**Authority order.** Authority is established from identity plus evidence
+_first_. Text similarity may be used only afterwards, and only to align inside
+one already-authorized identity. A textual match never establishes, extends, or
+transfers authority (`infer_span_identity_from_text_similarity`).
+
+**Conservation.** For one capture epoch, the count of delivered observations
+bound to distinct identities equals the count of admitted acoustic
+observations. Every deletion, insertion, merge, split, reorder, or substitution
+carries a one-to-one receipt naming the same-span acoustic authority that
+allowed it. An observation that leaves the pipeline without such a receipt is
+a release-blocking failure (`drop_acoustic_observation_without_receipt`).
+
 ### Apple truth
 
 - Apple optimizes time-to-first-useful-text.
@@ -237,6 +301,58 @@ This distinction is the engine.
 - Whisper may not use an unrelated window to alter a neighbor.
 - Whisper may not write into verified silence.
 - Whisper may not replace the complete session automatically.
+
+### Layer 1 window algorithm — ~4 s observation, ~1 s overlap
+
+The cadence is normative, not decorative. A window is a **contiguous slice of
+the capture PCM axis**, never a concatenation of non-adjacent fragments.
+
+1. **Mint the window.** Advance a cursor on the capture sample counter. A
+   window is `[cursor, cursor + 4 s)` clipped to admitted speech evidence; the
+   next window starts at `cursor + 3 s`, so consecutive windows share ~1 s.
+   Window identity is an `AcousticSpanIdentity` over exactly that range.
+2. **Carry what you declare.** The PCM handed to the provider is the literal
+   `[sample_start, sample_end)` slice. A payload whose sample count disagrees
+   with its declared range is refused _before_ inference, with a named receipt
+   — never silently, and never by rewriting the range to fit the buffer
+   (`declare_a_pcm_range_the_payload_does_not_carry`). Coalescing several
+   utterances into one job is legal only when their ranges abut; a gap is
+   either included as real audio or the job is split.
+3. **Map back to one clock.** Provider timestamps are provider-local. Each
+   returned segment is mapped onto the capture counter and re-anchored inside
+   the request range. If the mapping cannot be proven — VAD-compacted decode
+   with no surviving index, a segment that escapes the request range, a
+   degenerate zero-width result — the segment is marked `unanchored` and kept
+   as read-only evidence. It is never dropped silently and never granted
+   mutation rights.
+4. **Resolve the overlap by identity, not by text.** For the shared ~1 s, the
+   later window's observations whose identity range is already covered by an
+   admitted earlier identity are **replay** and are refused with
+   `replayed_range_identity`. Observations in the non-overlapping remainder are
+   new. Two lexically identical observations on two distinct ranges are two
+   observations; the overlap resolver may not compare their strings.
+5. **Intentional repetition.** Repetition is decided on ranges only. N distinct
+   ranges carrying the same text yield N delivered observations. A content
+   match against a _new_ identity is a WARN receipt and the text still lands.
+6. **Clock-lie.** A span whose character rate exceeds
+   `CLOCK_LIE_CHARS_PER_SEC` over its declared range is flagged. A flagged span
+   keeps its text and loses the right to authorize a replacement of a
+   neighbour; it does not lose the text itself.
+7. **Word-grain vs utterance-grain.** Word pins are used where the recognizer
+   actually returned them. Utterance grain is reported as utterance grain and
+   is never expanded into invented per-word ranges. Bounded replacement inside
+   an utterance-grain span addresses the whole span or nothing.
+8. **Gap fill.** Speech present in the window and absent from the canvas is
+   appended at the identity that carries it, in PCM order. An append whose
+   anchor cannot be placed on a proven identity escalates to the stop path
+   instead of guessing a position.
+9. **Bounded replacement.** A replacement is admitted only when the evidence
+   identity and the target identity share `session` and `capture_epoch` and
+   their ranges intersect. Change ratio and LCS may rank candidates inside that
+   one authorized identity. They may not be the gate.
+10. **Drain on stop.** Stop closes the open window, drains admitted work, and
+    assembles the ordered ledger. It starts no new decode and re-decodes
+    nothing already covered.
 
 ### Safety truth
 
@@ -361,6 +477,93 @@ These are remaining contract gaps:
 - Clock-lie remains a real input class.
 - The exact 4 s/1 s cadence is a target requiring runtime receipts.
 
+### Acoustic identity gaps — measured 2026-08-22 on `a95e1272`
+
+These are runtime findings with reproductions, not inferences. Each one is a
+place where the tree mints acoustic evidence and then does not consume it, or
+assembles by string where it holds a range.
+
+- **The energy clock has no consumer that decides anything.**
+  `CaptureLevelAccumulator::push_samples` records an energy hop per capture
+  block (`core/audio/capture_receipt.rs`), and `session_energy_db(start, end)`
+  is read in exactly one place — `word_spans_from_draft`
+  (`app/presentation/transcript_bus.rs`), an observer that turns it into a
+  coverage receipt. Layer 1 acceptance, the overlap resolver, the seal machine,
+  L2 lexicon, L3 formatting, and delivery read it zero times.
+- **The energy clock is epoch-blind while every span identity is epoch-keyed.**
+  `session_energy_db` takes `(u64, u64)` only. `begin_session_energy_clock()`
+  is called once per session while `capture_epoch` advances inside a session,
+  so an energy lookup cannot distinguish two epochs sharing a sample range.
+- **Layer 1 discards the segment ranges it just validated.**
+  `compute_tail_patch_job_with` receives a `TailProviderPayload` whose
+  `segments: Vec<TimedTailSegment>` each carry a `TailSampleRange`, then passes
+  only `payload.text` into `compute_tail_patch_with_context`
+  (`core/pipeline/streaming/session.rs`). The mutation decision is taken by
+  token LCS plus a change-ratio cap on flat strings; the ranges never reach it.
+- **Coalesced Layer 1 windows declare a range they do not carry.**
+  `build_flush` (`core/pipeline/streaming/layer1_window.rs`) concatenates the
+  PCM of several pieces while declaring `[first.sample_start, last.sample_end)`.
+  Any gap or pad overlap between pieces breaks the equality that
+  `TailProviderRequest::validate_pcm` enforces, and the whole window fails as a
+  generic provider error. Reproduction: the module's own
+  `flushes_after_five_segments` fixture yields a declared 70 400 samples
+  against 31 999 carried samples. A single-piece window is unaffected.
+- **The window map back to member utterances is char-offset, not PCM.**
+  `ConcatSpan { utterance_id, start, end }` addresses the concatenated
+  committed _string_; `remap_concat_events` and `split_outcome_for_members`
+  redistribute Layer 1 output on those character positions.
+- **The cadence constant and the runtime disagree.**
+  `ENGINE_CONTRACT.whisper_window` says `approximately_4s_with_approximately_1s_overlap`.
+  `Layer1Coalesce` flushes on `TARGET_SEGMENTS = 5`, `MAX_AUDIO_SECS = 16.0`,
+  or a `PAUSE_SECS = 1.2` gap, and produces disjoint windows with no overlap.
+  `full_file_pass_is_never_automatic` asserts the spelling of the constant, not
+  the behaviour, so the disagreement is invisible to the gate.
+- **The Apple segment-less final path deletes repetition by text.** When an
+  Apple final arrives without usable segments, `seal_utterance_final`
+  (`core/pipeline/streaming/apple_live_session.rs`) matches the callback
+  against the canvas with `revision_tolerant_known_prefix`, a banded
+  edit-distance search that maximizes the consumed prefix over _every_ start
+  position in the canvas tail, with an edit budget of `max(n / 5, 1)`.
+  Reproduction: a canvas carrying four `Iwo` and a cumulative final carrying
+  five yields `known_prefix = 5`, `novel_text = ""`, and the fifth acoustic
+  occurrence is discarded. The same probe matches a canvas region with no
+  temporal relationship to it. This is `deduplicate_intentional_repetition_by_content`
+  and `infer_span_identity_from_text_similarity` in the live path.
+- **Apple final segments that straddle the cursor are dropped, not trimmed.**
+  The overlap normalization in `seal_utterance_final` drops a whole segment on
+  `start_ts < cursor - epsilon`, so a segment that begins before the cursor and
+  extends past it loses its non-overlapping tail. One aggregate WARN
+  (`apple_final_window_overlap_normalized`) is emitted for the callback; no
+  per-observation receipt names what was removed.
+- **Legacy progressive commits fabricate a range.** `note_apple_commit` mints
+  `session: "legacy_progressive"`, `capture_epoch: 0`, `sample_start: 0`, and
+  `sample_end` in _milliseconds_. Every such span starts at zero, so the
+  `try_rewrite_anchored` intersection test is satisfied by any evidence and the
+  per-span fence does not bind on that path. `timing_quality: Synthetic`
+  labels it honestly; nothing refuses it.
+- **Structural receipts are computed and thrown away.**
+  `SpanIdempotenceLedger` records `replayed_range_identity`,
+  `replayed_request_identity`, `non_progressing_timestamps`, `decode_failure`,
+  and `content_similar_preserved`. `span_idempotence_receipts()` has no
+  consumer outside its own module, so `structural replays rejected` and
+  `intentional repetitions preserved` are never reported.
+- **`TailTimingQuality::CompactedSpeechRelative` is never constructed.** Only
+  `ExactSampleRange` is emitted, including for the in-process path that decodes
+  VAD-compacted audio and maps back through `map_compacted_sample_range`. When
+  that mapping returns `None` the segment is dropped by `filter_map` with no
+  receipt.
+- **The executable mirror is missing five prose forbiddens.**
+  `ENGINE_CONTRACT.forbidden` did not carry
+  `treat_apple_text_as_immutable_floor`,
+  `infer_span_identity_from_text_similarity`,
+  `deduplicate_intentional_repetition_by_content`, or
+  `claim_layered_on_when_no_windows_reach_the_provider`, and carries
+  `small_inline_llm` which the prose list does not. Reconciled in this cut.
+- **`LayerSummary` still names superseded producers.**
+  `final_bam_replacements` and `inline_llm_replacements` remain live fields on
+  the session receipt for a producer the ledger declares superseded and a layer
+  the contract forbids.
+
 ## Model contract
 
 - Runtime Whisper is large-v3-turbo FP16/F32 only.
@@ -452,6 +655,23 @@ Acceptance:
 - All five survive projection and delivery.
 - Replaying one identity does not create a sixth copy.
 - Text-equality deduplication is forbidden.
+- The count holds when the recognizer restates cumulatively: a canvas carrying
+  four occurrences and a cumulative final carrying five deliver five, and the
+  fifth is admitted on its own range, not on the length of the restatement.
+- The count holds when the five occupy one Apple commit with utterance grain
+  and no per-word pins.
+
+### Conservation fixture
+
+- `count(delivered observations bound to distinct identities)` equals
+  `count(admitted acoustic observations)` for the epoch.
+- Every difference between the two counts resolves to exactly one receipt
+  naming preserve, correct, or refuse, and the identity it applies to.
+- Deletion, insertion, merge, split, reorder, and substitution each require the
+  same-span acoustic authority; a receipt-less one fails the take.
+- `manual_human` active-name evidence fixes the spelling for its matching
+  identities. Downstream layers may preserve it; normalizing it to another
+  spelling is a refusal, not a correction.
 
 ### Model fixture
 
@@ -490,6 +710,19 @@ Every live session reports:
 - last covered sample
 - transcript seal timestamp
 - delivery timestamp
+- observations admitted on the PCM axis
+- observations delivered bound to a distinct identity
+- observations unanchored (kept, no mutation right)
+- observations refused, by named reason
+- windows refused before inference, by named reason
+- energy-evidence lookups that returned no voiced hop
+
+The last six close the conservation loop. Admitted minus delivered must equal
+the sum of the named refusals; a residue with no name is the failure the
+receipt exists to expose. A window refused before inference is reported as its
+own class and never folded into `provider jobs completed` or into a generic
+skip bucket — that folding is how `claim_layered_on_when_no_windows_reach_the_provider`
+survives a green session.
 
 The zero-work receipt is diagnostic:
 
@@ -704,6 +937,34 @@ Restored:
 10. Port any missing validated-weights/HF/metadata fixes into the current Living Tree.
 11. Align `STT_CONTRACT.md`, `ENV_REGISTRY.toml`, UI copy, and runtime logs.
 12. Only then reconsider the deployment default.
+
+### Acoustic identity cut order
+
+Steps 4–8 above are unreachable until identity is a real object. The order is
+forced by dependency, not preference, and each step lands on its own.
+
+1. Introduce `AcousticSpanIdentity` (`session`, `capture_epoch`,
+   `sample_start`, `sample_end`, `order`) beside the existing
+   `TailSampleRange`. Mint `order` where the observation enters the ledger.
+2. Key the capture energy clock by `(session, capture_epoch)` and expose the
+   hop trace, not only the mean. Keep `mean_db` as evidence, never as key.
+3. Refuse a provider request whose PCM length disagrees with its declared
+   range, before inference, with its own receipt class. Split or pad coalesced
+   windows so the declaration is true.
+4. Thread `payload.segments` into the Layer 1 decision. Establish authority
+   from identity intersection first; let LCS and change ratio rank only inside
+   one authorized identity.
+5. Replace the char-offset `ConcatSpan` map with an identity map.
+6. Replace `revision_tolerant_known_prefix` on the segment-less Apple path with
+   a range-anchored admission. Where no range exists, admit the text as
+   `unanchored` rather than deleting it against the canvas.
+7. Trim, do not drop, Apple final segments that straddle the cursor, and emit
+   one receipt per removed observation.
+8. Emit the conservation receipts and fail the take when admitted minus
+   delivered leaves an unnamed residue.
+9. Mint a real ~4 s / ~1 s window cursor and make the cadence receipt, not the
+   constant's spelling, the thing the gate asserts.
+10. Then, and only then, re-open VAD/scheduler mutation parity.
 
 ## How a quality HTML must behave
 
