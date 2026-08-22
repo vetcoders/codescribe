@@ -74,7 +74,8 @@ use crate::os::hold_badge::BadgeMode;
 use crate::os::hotkeys::{self, HoldMode};
 use crate::os::selection::{
     AssistiveContext, capture_assistive_context,
-    capture_assistive_context_with_image_with_prior_frontmost, capture_frontmost_app_only,
+    capture_assistive_context_with_image_with_prior_frontmost,
+    capture_frontmost_app_only_with_prior_frontmost,
 };
 use crate::os::shortcut_registry;
 use codescribe_core::asr_session::gateway_session_availability;
@@ -994,7 +995,8 @@ impl RecordingController {
         let mut deferred_insert_failure = None;
         let delivery = match disposition {
             OverlayPasteDisposition::Paste => {
-                clipboard::paste_text(&paste_text).context("Failed to paste overlay text")?;
+                clipboard::paste_and_restore(&paste_text)
+                    .context("Failed to paste overlay text")?;
                 OverlayPasteDelivery::Pasted
             }
             OverlayPasteDisposition::CopyAccessibilityDenied => {
@@ -2168,9 +2170,12 @@ impl RecordingController {
                 .clone()
                 .unwrap_or_default()
         } else {
-            tokio::task::spawn_blocking(capture_frontmost_app_only)
-                .await
-                .unwrap_or_default()
+            let prior = self.pre_overlay_frontmost_app.read().await.clone();
+            tokio::task::spawn_blocking(move || {
+                capture_frontmost_app_only_with_prior_frontmost(prior)
+            })
+            .await
+            .unwrap_or_default()
         };
         *self.pre_overlay_frontmost_app.write().await = trigger_context.frontmost_app.clone();
         *self.assistive_context.write().await = Some(trigger_context);
@@ -2434,9 +2439,12 @@ impl RecordingController {
                 .await
                 .unwrap_or_default()
         } else {
-            tokio::task::spawn_blocking(capture_frontmost_app_only)
-                .await
-                .unwrap_or_default()
+            let prior = self.pre_overlay_frontmost_app.read().await.clone();
+            tokio::task::spawn_blocking(move || {
+                capture_frontmost_app_only_with_prior_frontmost(prior)
+            })
+            .await
+            .unwrap_or_default()
         };
         *self.pre_overlay_frontmost_app.write().await = trigger_context.frontmost_app.clone();
         *self.assistive_context.write().await = Some(trigger_context);
@@ -3969,8 +3977,8 @@ impl RecordingController {
             {
                 let lang_str = language_opt.map(String::from);
                 // W13-1: consume the inline-format buffer when armed — stop
-                // pays only for the unformatted tail; falls back to the classic
-                // full-text format when the buffer cannot prove coverage.
+                // closes only the unformatted tail. An active ledger mismatch
+                // fails open to complete L2 text, never a hidden full-text call.
                 let result = codescribe_core::llm::inline_format::format_text_with_inline_buffer(
                     &clean_text,
                     lang_str.as_deref(),
@@ -4025,7 +4033,7 @@ impl RecordingController {
                 info!("Formatting mode (Left Option): correcting transcript via AI");
 
                 let lang_str = language_opt.map(String::from);
-                // W13-1: inline buffer first, classic full format as fallback.
+                // W13-1: span-keyed inline close; active failure keeps full L2.
                 let result = codescribe_core::llm::inline_format::format_text_with_inline_buffer(
                     &clean_text,
                     lang_str.as_deref(),
@@ -4071,7 +4079,7 @@ impl RecordingController {
                 info!("Formatting mode (Toggle): correcting transcript via AI");
 
                 let lang_str = language_opt.map(String::from);
-                // W13-1: inline buffer first, classic full format as fallback.
+                // W13-1: span-keyed inline close; active failure keeps full L2.
                 let result = codescribe_core::llm::inline_format::format_text_with_inline_buffer(
                     &clean_text,
                     lang_str.as_deref(),

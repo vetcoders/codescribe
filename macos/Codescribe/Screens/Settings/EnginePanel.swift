@@ -157,7 +157,7 @@ struct EnginePanel: View {
     Rectangle().fill(CSColor.hairline(0.05)).frame(height: 1)
   }
 
-  // MARK: Engine controls (editable — F1 layered transcription)
+  // MARK: Engine controls
 
   /// Selectable engines. "onnx" is deliberately NOT exposed (experimental,
   /// frozen); "auto" defers to the core policy (Apple live when available).
@@ -173,12 +173,6 @@ struct EnginePanel: View {
     ("cloud", "Cloud"),
   ]
 
-  private var layeredBinding: Binding<Bool> {
-    Binding(
-      get: { model.layeredTranscriptionEnabled },
-      set: { model.setLayeredTranscription($0) })
-  }
-
   private var engineControls: some View {
     VStack(spacing: 8) {
       if let note = model.sttEngineTruthNote {
@@ -191,7 +185,7 @@ struct EnginePanel: View {
       SettingsControlRow(
         title: "ASR mode",
         subtitle:
-          "Apple only = live Apple. Local power = on-device Layer-1 weights. Cloud requires an explicit grant and stays Apple until consent is recorded."
+          "Apple only = live Apple without Layer 1. Local power = Apple-first with mandatory on-device Whisper refinement. Cloud uses its consent-gated provider, not local Whisper."
       ) {
         Menu {
           ForEach(Self.asrModeOptions, id: \.id) { option in
@@ -214,7 +208,8 @@ struct EnginePanel: View {
       }
       SettingsControlRow(
         title: "STT engine",
-        subtitle: "Apple = live speech (product default). Whisper = Layer-1 / offline preference."
+        subtitle:
+          "Auto/Apple = immediate Apple text; Local power continuously repairs it with Whisper. Whisper = direct local engine."
       ) {
         Menu {
           ForEach(Self.sttEngineOptions, id: \.id) { option in
@@ -235,15 +230,92 @@ struct EnginePanel: View {
         .menuIndicator(.hidden)
         .fixedSize()
       }
-      SettingsControlRow(
-        title: "Layered transcription",
-        subtitle: "Live in-flight correction only. Stop does not run a file Whisper pass."
-      ) {
-        Toggle("", isOn: layeredBinding)
-          .toggleStyle(.switch)
-          .labelsHidden()
-          .tint(CSColor.chromeAccent)
+      if model.asrModeId == "local_power" {
+        SettingsControlRow(
+          title: localWhisperRuntimeTitle,
+          subtitle: localWhisperRuntimeSubtitle
+        ) {
+          HStack(spacing: 8) {
+            Text(localWhisperRuntimeLabel)
+              .font(CSFont.mono(11, .medium))
+              .foregroundStyle(localWhisperRuntimeColor)
+            if model.localWhisperRuntimeState == .livePatchingConfigurationMismatch {
+              Button("Repair") {
+                model.repairLocalWhisperLivePatching()
+              }
+              .buttonStyle(.bordered)
+              .controlSize(.small)
+            } else {
+              Button("Recheck") {
+                model.recheckLocalWhisperRuntime()
+              }
+              .buttonStyle(.bordered)
+              .controlSize(.small)
+            }
+          }
+        }
       }
+      SettingsControlRow(
+        title: "Whole-session final pass",
+        subtitle:
+          "Off. This controls only a full-file decode after Stop; live Whisper refinement continues during the take."
+      ) {
+        Text("Off")
+          .font(CSFont.mono(11, .medium))
+          .foregroundStyle(CSColor.textMutedAlt)
+      }
+    }
+  }
+
+  private var localWhisperRuntimeTitle: String {
+    switch model.localWhisperRuntimeState {
+    case .directEngineReady, .directEngineNotReady:
+      return "Local Whisper engine"
+    default:
+      return "Live Whisper refinement"
+    }
+  }
+
+  private var localWhisperRuntimeLabel: String {
+    switch model.localWhisperRuntimeState {
+    case .directEngineReady: return "Ready"
+    case .directEngineNotReady, .livePatchingNotReady: return "Not ready"
+    case .livePatchingConfigured: return "Required · configured"
+    case .livePatchingConfigurationMismatch: return "Degraded"
+    case .notSelected: return "Not selected"
+    }
+  }
+
+  private var localWhisperRuntimeSubtitle: String {
+    switch model.localWhisperRuntimeState {
+    case .directEngineReady:
+      return
+        "The validated local FP16 bundle serves transcription directly; no parallel Apple patcher runs."
+    case .directEngineNotReady:
+      return
+        "The local FP16 bundle is missing or invalid. Direct Whisper cannot serve the next take."
+    case .livePatchingConfigured:
+      return
+        "Apple paints immediately; the validated local FP16 model repairs the same audio spans during the take."
+    case .livePatchingNotReady:
+      return
+        "The local FP16 bundle is missing or invalid. Local power is explicitly not ready until validation passes."
+    case .livePatchingConfigurationMismatch:
+      return
+        "Local power requires the runtime phase1 arming token, but persisted readback is disarmed. Repair before the next take."
+    case .notSelected:
+      return "Local Whisper is not the selected provider."
+    }
+  }
+
+  private var localWhisperRuntimeColor: Color {
+    switch model.localWhisperRuntimeState {
+    case .directEngineReady, .livePatchingConfigured:
+      return CSColor.oliveLight
+    case .directEngineNotReady, .livePatchingNotReady, .livePatchingConfigurationMismatch:
+      return CSColor.amber
+    case .notSelected:
+      return CSColor.textMutedAlt
     }
   }
 
@@ -279,7 +351,7 @@ struct EnginePanel: View {
       } else if !status.available {
         SettingsControlRow(
           title: "Download Whisper",
-          subtitle: "Optional local Candle model (\(status.sizeHint)). Apple STT works without it."
+          subtitle: whisperDownloadSubtitle(status)
         ) {
           Button("Download") {
             model.startWhisperDownload()
@@ -321,7 +393,18 @@ struct EnginePanel: View {
     if status.available {
       return "Ready for Whisper engine · \(status.modelId)"
     }
-    return "Needed only when STT engine is Whisper or layered tail patches"
+    if model.asrModeId == "local_power" {
+      return "Missing or invalid FP16 bundle · Local power is not ready"
+    }
+    return "Required by the direct Whisper engine or Local power live refinement"
+  }
+
+  private func whisperDownloadSubtitle(_ status: CsWhisperModelStatus) -> String {
+    if model.asrModeId == "local_power" {
+      return
+        "Required local FP16 model (\(status.sizeHint)). Missing or invalid weights keep Local power not ready."
+    }
+    return "Local FP16 model (\(status.sizeHint)) for direct Whisper or Local power refinement."
   }
 
   // MARK: Preview timing (overlay pacing — writes the existing promoted keys)

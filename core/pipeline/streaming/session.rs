@@ -19,8 +19,8 @@ use crate::audio::capture_receipt::{
 };
 use crate::audio::chunker::{SpeechEvent, SpeechSession};
 use crate::pipeline::contracts::{
-    DropKind, EngineEvent, EventSink, LayerSource, LayerSummary, TranscriptSegment,
-    collect_confidence_flags,
+    AcousticSpanGrain, AcousticTranscriptIdentity, AcousticTranscriptSpan, DropKind, EngineEvent,
+    EventSink, LayerSource, LayerSummary, TranscriptSegment, collect_confidence_flags,
 };
 use crate::stt::scheduler::{SttLane, SttScheduler, SttTaskHandle};
 use crate::stt::tail_patcher::{
@@ -43,6 +43,32 @@ use super::correction::{
     schedule_partial_pass,
 };
 use super::pipeline::{PostprocessDrop, TranscriptionPipeline};
+
+fn phrase_acoustic_identity(
+    session: &str,
+    capture_epoch: u64,
+    sample_start: u64,
+    sample_end: u64,
+    text: &str,
+) -> Option<AcousticTranscriptIdentity> {
+    if session.trim().is_empty() || text.trim().is_empty() || sample_end <= sample_start {
+        return None;
+    }
+    let range = TailSampleRange {
+        session: session.to_string(),
+        capture_epoch,
+        sample_start,
+        sample_end,
+    };
+    Some(AcousticTranscriptIdentity {
+        range: range.clone(),
+        spans: vec![AcousticTranscriptSpan {
+            text: text.to_string(),
+            range,
+            grain: AcousticSpanGrain::Phrase,
+        }],
+    })
+}
 use super::quality_gate::{
     MAX_WORDS_PER_SEC, MIN_SPEECH_RATIO_FOR_INFERENCE, emit_vad_warning,
     should_drop_short_utterance, should_drop_silence_chunk, text_words_per_second,
@@ -137,8 +163,8 @@ pub struct SessionConfig {
     /// Injected, already-authorized Layer 1 refiner decision (C1).
     ///
     /// The pipeline only consumes this — construction, consent, and mode
-    /// persistence belong to the settings owner. [`Layer1Decision::Disarmed`]
-    /// is the stock product: canvas + lexicon, complete, never an error.
+    /// persistence belong to the settings owner. The decision distinguishes
+    /// Apple-only, local exact-span Whisper, and an injected provider.
     pub layer1: Layer1Decision,
     /// Per-recording host lifecycle boundaries. Present only for a live
     /// recorder; buffered/offline helpers have no system observer owner.
@@ -217,16 +243,180 @@ pub(crate) fn enqueue_pending_utterance(
     }
 }
 
-/// Layer 1 (Whisper tail-patch) gate.
+/// Legacy compatibility override used only to detect an explicitly requested
+/// patcher on the unfenced VAD route and refuse it with typed evidence.
 ///
-/// Driven solely by `CODESCRIBE_LAYERED_TRANSCRIPTION` ([`layered_phase`]).
-/// **Orthogonal to** `FINAL_PASS_MODE` / Smart: Smart never enables this, and
-/// enabling layered never changes stop-path full re-pass routing.
-///
-/// Shared with the Apple progressive path (`super::apple_live_session`) so both
-/// live sessions read one gate — a second copy would be a second truth.
+/// Apple progressive consumes the recording-start [`Layer1Decision`] instead;
+/// no live session re-resolves product mode. This remains orthogonal to final
+/// pass routing: final-pass off never disables live patching.
 pub(super) fn tail_patch_enabled() -> bool {
     layered_phase().is_some_and(|phase| phase >= 1)
+}
+
+/// Stable event code carrying the typed local tail-patch session receipt.
+pub const TAIL_PATCH_SESSION_RECEIPT_WARNING_CODE: &str = "tail_patch_session_receipt";
+
+/// Final stop-drain disposition for the local Whisper lane.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TailPatchDrainDisposition {
+    /// Local tail patching was not armed for this recording.
+    NotArmed,
+    /// Every submitted job reached a terminal disposition before seal.
+    Completed,
+    /// The bounded drain expired with admitted work still outstanding.
+    TimedOut,
+    /// Admitted work was lost for a non-timeout reason (for example worker
+    /// failure) before reaching a terminal patch verdict.
+    Abandoned,
+}
+
+impl TailPatchDrainDisposition {
+    fn as_token(self) -> &'static str {
+        match self {
+            Self::NotArmed => "not_armed",
+            Self::Completed => "completed",
+            Self::TimedOut => "timed_out",
+            Self::Abandoned => "abandoned",
+        }
+    }
+
+    fn from_token(token: &str) -> Option<Self> {
+        match token {
+            "not_armed" => Some(Self::NotArmed),
+            "completed" => Some(Self::Completed),
+            "timed_out" => Some(Self::TimedOut),
+            "abandoned" => Some(Self::Abandoned),
+            _ => None,
+        }
+    }
+}
+
+/// Content-free proof of local Whisper arming, work admission, application,
+/// and bounded stop drainage for one recording.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct TailPatchSessionReceipt {
+    pub armed: bool,
+    pub submitted: u64,
+    pub applied: u64,
+    pub skipped: u64,
+    /// Jobs whose terminal disposition is bounded stop-drain expiry.
+    pub timed_out: u64,
+    /// Jobs discarded for a non-timeout reason after admission.
+    pub abandoned: u64,
+    pub drain: TailPatchDrainDisposition,
+}
+
+impl TailPatchSessionReceipt {
+    /// Construct a receipt. The caller owns counter provenance; this type owns
+    /// the invariant checks and stable event encoding.
+    pub fn new(
+        armed: bool,
+        submitted: u64,
+        applied: u64,
+        skipped: u64,
+        timed_out: u64,
+        abandoned: u64,
+        drain: TailPatchDrainDisposition,
+    ) -> Self {
+        let receipt = Self {
+            armed,
+            submitted,
+            applied,
+            skipped,
+            timed_out,
+            abandoned,
+            drain,
+        };
+        assert!(
+            receipt.is_reconciled(),
+            "tail-patch terminal buckets must reconcile exactly to submitted jobs"
+        );
+        receipt
+    }
+
+    /// Build the production stop receipt. Every job still outstanding after
+    /// the worker's real bounded closure loop is classified as timed out.
+    /// `abandoned` is reserved for a distinct non-timeout discard path.
+    pub fn from_stop(
+        armed: bool,
+        submitted: u64,
+        applied: u64,
+        skipped: u64,
+        timeout_residue: u64,
+    ) -> Self {
+        Self::new(
+            armed,
+            submitted,
+            applied,
+            skipped,
+            timeout_residue,
+            0,
+            if !armed {
+                TailPatchDrainDisposition::NotArmed
+            } else if timeout_residue > 0 {
+                TailPatchDrainDisposition::TimedOut
+            } else {
+                TailPatchDrainDisposition::Completed
+            },
+        )
+    }
+
+    /// An armed lane that submitted no work is a failed runtime witness, not
+    /// proof that Layered worked.
+    pub fn armed_without_submissions(self) -> bool {
+        self.armed && self.submitted == 0
+    }
+
+    /// Whether every submitted job has exactly one terminal bucket.
+    pub fn is_reconciled(self) -> bool {
+        self.applied
+            .saturating_add(self.skipped)
+            .saturating_add(self.timed_out)
+            .saturating_add(self.abandoned)
+            == self.submitted
+    }
+
+    pub(crate) fn as_event(self) -> EngineEvent {
+        EngineEvent::Warning {
+            code: TAIL_PATCH_SESSION_RECEIPT_WARNING_CODE.to_string(),
+            message: format!(
+                "armed={} submitted={} applied={} skipped={} timed_out={} abandoned={} drain={}",
+                self.armed,
+                self.submitted,
+                self.applied,
+                self.skipped,
+                self.timed_out,
+                self.abandoned,
+                self.drain.as_token(),
+            ),
+        }
+    }
+
+    /// Recover the typed receipt from the production ordered event evidence.
+    pub fn from_events(events: &[EngineEvent]) -> Option<Self> {
+        let message = events.iter().rev().find_map(|event| match event {
+            EngineEvent::Warning { code, message }
+                if code == TAIL_PATCH_SESSION_RECEIPT_WARNING_CODE =>
+            {
+                Some(message.as_str())
+            }
+            _ => None,
+        })?;
+        let fields = message
+            .split_whitespace()
+            .filter_map(|field| field.split_once('='))
+            .collect::<std::collections::BTreeMap<_, _>>();
+        let receipt = Self {
+            armed: fields.get("armed")?.parse().ok()?,
+            submitted: fields.get("submitted")?.parse().ok()?,
+            applied: fields.get("applied")?.parse().ok()?,
+            skipped: fields.get("skipped")?.parse().ok()?,
+            timed_out: fields.get("timed_out")?.parse().ok()?,
+            abandoned: fields.get("abandoned")?.parse().ok()?,
+            drain: TailPatchDrainDisposition::from_token(fields.get("drain")?)?,
+        };
+        receipt.is_reconciled().then_some(receipt)
+    }
 }
 
 /// Count a semantic-gate drop, but only for finals.
@@ -323,6 +513,10 @@ where
 /// live canvas is known to be starved, independently of the committed-density
 /// floor that judges the same session from the audio side.
 pub const UNDER_COMMIT_WARNING_CODE: &str = "tail_patch_under_commit";
+
+/// The legacy VAD/scheduler route has no pending-span rewrite fence. Explicit
+/// Layer 1 requests fail closed here instead of mutating an emitted final.
+pub const TAIL_PATCH_ROUTE_UNBOUND_WARNING_CODE: &str = "tail_patch_route_unbound";
 
 /// Build the outward escalation for an under-commit that could not be placed
 /// live.
@@ -474,15 +668,42 @@ pub(super) fn tail_patch_lane_starved(applied: u64, skipped: u64) -> bool {
 /// diagnoses the lane. A starved session — Whisper burned inference on every
 /// sealed utterance and the canvas received none of it — is a WARN, because
 /// that is the lane not doing its one job, silently.
-pub(super) fn log_tail_patch_session_receipt(applied: u64, skipped: u64) {
-    if tail_patch_lane_starved(applied, skipped) {
+pub(super) fn log_tail_patch_session_receipt(receipt: TailPatchSessionReceipt) {
+    if receipt.timed_out > 0 || receipt.abandoned > 0 {
         warn!(
-            applied,
-            skipped,
+            armed = receipt.armed,
+            submitted = receipt.submitted,
+            applied = receipt.applied,
+            skipped = receipt.skipped,
+            timed_out = receipt.timed_out,
+            abandoned = receipt.abandoned,
+            drain = receipt.drain.as_token(),
+            "tail_patch_session_degraded: accepted work missed the bounded stop drain"
+        );
+    } else if receipt.armed_without_submissions() {
+        warn!(
+            armed = receipt.armed,
+            submitted = receipt.submitted,
+            drain = receipt.drain.as_token(),
+            "tail_patch_lane_unexercised: armed session submitted zero Whisper windows"
+        );
+    } else if tail_patch_lane_starved(receipt.applied, receipt.skipped) {
+        warn!(
+            applied = receipt.applied,
+            skipped = receipt.skipped,
             "tail_patch_lane_starved: every computed Whisper correction this session was rejected"
         );
-    } else if applied > 0 || skipped > 0 {
-        info!(applied, skipped, "tail_patch_session_receipt");
+    } else {
+        info!(
+            armed = receipt.armed,
+            submitted = receipt.submitted,
+            applied = receipt.applied,
+            skipped = receipt.skipped,
+            timed_out = receipt.timed_out,
+            abandoned = receipt.abandoned,
+            drain = receipt.drain.as_token(),
+            "tail_patch_session_receipt"
+        );
     }
 }
 
@@ -500,11 +721,10 @@ pub(super) fn log_tail_patch_session_receipt(applied: u64, skipped: u64) {
 /// phrase-level `isFinal` events become multi-seal `UtteranceFinal`s. That is
 /// the CORE ENGINE freezed+append contract — not a Whisper hybrid mid-live.
 ///
-/// Layer 1 tail-patch (`CODESCRIBE_LAYERED_TRANSCRIPTION=phase1+`) is wired on
-/// **both** live paths: the VAD/scheduler path below, and the Apple progressive
-/// path (W2-A), which gap-fills sealed utterances mid-hold from retained PCM.
-/// Smart final-pass stays orthogonal — it only skips/allows the stop-path full
-/// re-pass.
+/// Local Layer 1 tail-patch is deliberately Apple-progressive-only: that path
+/// owns the exact pending-span rewrite fence. The VAD/scheduler path already
+/// runs Whisper as its primary engine and refuses any second, unbound mutation
+/// lane with typed evidence. Smart/final-pass routing stays orthogonal.
 pub(crate) async fn transcription_session(
     chunk_receiver: mpsc::Receiver<Vec<f32>>,
     event_sink: Arc<dyn EventSink>,
@@ -544,11 +764,15 @@ pub(crate) async fn vad_transcription_session(
         lifecycle_events: _,
     } = config;
 
-    // C1 wires the live Layer 1 lane on the Apple progressive path only. On
+    let local_tail_patch_requested = layer1
+        .local_tail_patch_disposition()
+        .is_some_and(|disposition| disposition.is_armed());
+
+    // C1 wires the live provider Layer 1 lane on the Apple progressive path only. On
     // this canvas an armed decision is disarmed explicitly: a refiner that
     // cannot run is a missing improvement, never an error, and never a reason
     // to load anything heavier.
-    if layer1.is_armed() {
+    if layer1.is_provider_armed() {
         warn!(
             "Layer 1 live lane is not wired on the VAD/scheduler path; \
              proceeding canvas + lexicon"
@@ -568,14 +792,22 @@ pub(crate) async fn vad_transcription_session(
     };
     let output_sample_rate = session.output_sample_rate();
     let stt_scheduler = SttScheduler::new();
-    // Layer 1 only — not FINAL_PASS_MODE. Smart does not flip this on.
-    let tail_patch_enabled = tail_patch_enabled();
+    // This route emits its final before async tail work can complete and owns
+    // no pending-span fence. Until it adopts the progressive seal owner, an
+    // explicit Layer 1 request is evidence only — never post-final mutation.
+    let tail_patch_requested = local_tail_patch_requested || tail_patch_enabled();
+    let tail_patch_enabled = false;
     let tail_patch_config = TailPatchConfig::from_env();
-    if tail_patch_enabled {
-        info!(
+    if tail_patch_requested {
+        warn!(
             phase = layered_phase().unwrap_or(0),
-            "Layered transcription Layer 1 (Whisper tail-patch) enabled on VAD session path"
+            "Layered transcription refused on VAD session path without a pending-span fence"
         );
+        event_sink.on_event(&EngineEvent::Warning {
+            code: TAIL_PATCH_ROUTE_UNBOUND_WARNING_CODE.to_string(),
+            message: "VAD/scheduler Layer 1 has no exact pending-span rewrite fence; primary text preserved"
+                .to_string(),
+        });
     }
 
     let mut pipeline = TranscriptionPipeline::new(language);
@@ -1455,6 +1687,11 @@ pub(crate) async fn vad_transcription_session(
                                     avg_logprob,
                                     quality_gate_dropped,
                                 );
+                                let sample_start = ((utterance_start_s.max(0.0) as f64)
+                                    * output_sample_rate as f64)
+                                    .round() as u64;
+                                let sample_end = sample_start
+                                    .saturating_add(utterance_audio_samples as u64);
                                 event_sink.on_event(&EngineEvent::UtteranceFinal {
                                     utterance_id,
                                     text: final_text.clone(),
@@ -1467,13 +1704,17 @@ pub(crate) async fn vad_transcription_session(
                                     compression_ratio,
                                     quality_gate_dropped,
                                     confidence_flags,
+                                    acoustic: phrase_acoustic_identity(
+                                        &session_id,
+                                        0,
+                                        sample_start,
+                                        sample_end,
+                                        &final_text,
+                                    ),
                                 });
                                 if tail_patch_enabled
                                     && let Some(audio) = item.tail_patch_audio.take()
                                 {
-                                    let sample_start = ((utterance_start_s.max(0.0) as f64)
-                                        * output_sample_rate as f64)
-                                        .round() as u64;
                                     let sample_end = sample_start.saturating_add(audio.len() as u64);
                                     let request = TailProviderRequest {
                                         identity: TailRequestIdentity {
@@ -1624,6 +1865,11 @@ pub(crate) async fn vad_transcription_session(
             utterance_avg_logprob,
             utterance_quality_gate_dropped,
         );
+        let sample_start =
+            ((utterance_start_s.max(0.0) as f64) * output_sample_rate as f64).round() as u64;
+        let sample_end = sample_start.saturating_add(utterance_audio_samples as u64);
+        let acoustic =
+            phrase_acoustic_identity(&session_id, 0, sample_start, sample_end, &remaining);
         event_sink.on_event(&EngineEvent::UtteranceFinal {
             utterance_id,
             text: remaining,
@@ -1636,6 +1882,7 @@ pub(crate) async fn vad_transcription_session(
             compression_ratio: utterance_compression_ratio,
             quality_gate_dropped: utterance_quality_gate_dropped,
             confidence_flags,
+            acoustic,
         });
     }
 
@@ -1678,7 +1925,9 @@ pub(crate) async fn vad_transcription_session(
         partial_dropped_count: partial_telemetry.dropped_count,
     });
 
-    log_tail_patch_session_receipt(tail_patch_replacements, tail_patch_skips);
+    let tail_patch_receipt = TailPatchSessionReceipt::from_stop(false, 0, 0, 0, 0);
+    log_tail_patch_session_receipt(tail_patch_receipt);
+    event_sink.on_event(&tail_patch_receipt.as_event());
     emit_capture_level_receipt(
         event_sink.as_ref(),
         &capture_level.finalize(CapturePathMeta::resolve(sample_rate, 1, None)),
@@ -1951,6 +2200,98 @@ pub async fn collect_buffered_engine_events_with_config(
 /// Unit tests for semantic-gate counters, tail-patch emit, and correction windows.
 mod session_tests {
     use super::*;
+
+    #[test]
+    fn tail_patch_session_receipt_round_trips_through_production_event_shape() {
+        let receipt =
+            TailPatchSessionReceipt::new(true, 4, 2, 1, 1, 0, TailPatchDrainDisposition::TimedOut);
+        assert_eq!(
+            TailPatchSessionReceipt::from_events(&[receipt.as_event()]),
+            Some(receipt)
+        );
+        assert!(!receipt.armed_without_submissions());
+
+        let unexercised =
+            TailPatchSessionReceipt::new(true, 0, 0, 0, 0, 0, TailPatchDrainDisposition::Completed);
+        assert!(unexercised.armed_without_submissions());
+    }
+
+    #[test]
+    fn stop_receipt_classifies_completed_and_timeout_residue() {
+        let completed = TailPatchSessionReceipt::from_stop(true, 3, 2, 1, 0);
+        assert_eq!(completed.drain, TailPatchDrainDisposition::Completed);
+        assert_eq!(completed.timed_out, 0);
+        assert_eq!(completed.abandoned, 0);
+
+        let timed_out = TailPatchSessionReceipt::from_stop(true, 3, 1, 0, 2);
+        assert_eq!(timed_out.drain, TailPatchDrainDisposition::TimedOut);
+        assert_eq!(timed_out.timed_out, 2);
+        assert_eq!(timed_out.abandoned, 0);
+        assert_eq!(
+            TailPatchSessionReceipt::from_events(&[timed_out.as_event()]),
+            Some(timed_out)
+        );
+    }
+
+    #[tokio::test]
+    async fn vad_route_refuses_unbound_local_tail_patch_mutation() {
+        let (tx, rx) = mpsc::channel::<Vec<f32>>(1);
+        drop(tx);
+        let collector = Arc::new(SessionEventCollector::new());
+        let sink: Arc<dyn EventSink> = collector.clone();
+        vad_transcription_session(
+            rx,
+            sink,
+            SessionConfig {
+                sample_rate: 16_000,
+                language: Some("pl".to_string()),
+                stream_log_path: None,
+                utterance_silence_sec: None,
+                layer1: Layer1Decision::LocalTailPatch(
+                    crate::asr_session::LocalTailPatchDisposition::ArmedPhase(1),
+                ),
+                lifecycle_events: None,
+            },
+        )
+        .await;
+
+        let events = collector.events();
+        assert!(events.iter().any(|event| matches!(
+            event,
+            EngineEvent::Warning { code, .. }
+                if code == TAIL_PATCH_ROUTE_UNBOUND_WARNING_CODE
+        )));
+        assert!(events.iter().all(|event| !matches!(
+            event,
+            EngineEvent::ReplaceRange {
+                source: LayerSource::TailPatch,
+                ..
+            }
+        )));
+        let receipt = TailPatchSessionReceipt::from_events(&events)
+            .expect("VAD route must emit typed tail-patch evidence");
+        assert!(!receipt.armed);
+        assert_eq!(receipt.submitted, 0);
+        assert_eq!(receipt.drain, TailPatchDrainDisposition::NotArmed);
+        let receipt_pos = events
+            .iter()
+            .position(|event| {
+                matches!(
+                    event,
+                    EngineEvent::Warning { code, .. }
+                        if code == TAIL_PATCH_SESSION_RECEIPT_WARNING_CODE
+                )
+            })
+            .expect("receipt event");
+        let final_pos = events
+            .iter()
+            .position(|event| matches!(event, EngineEvent::SessionFinalised { .. }))
+            .expect("session finalised event");
+        assert!(
+            receipt_pos < final_pos,
+            "receipt must precede session finality"
+        );
+    }
 
     #[test]
     /// Quality-gate drops increment only for final utterances, never interim previews.

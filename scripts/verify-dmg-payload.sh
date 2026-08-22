@@ -319,7 +319,81 @@ if [[ -n "${APP_PATH:-}" ]]; then
     fail "codesign --verify --deep --strict failed on $(basename "$APP_PATH")"
   fi
 
-  # dylib payload
+  echo ""
+  echo "▶ agent bridge resource proof"
+  AGENT_BRIDGE_DIR="$APP_PATH/Contents/Resources/agent-bridge"
+  AGENT_BRIDGE_VERIFY=""
+  if AGENT_BRIDGE_VERIFY=$(python3 - "$AGENT_BRIDGE_DIR" <<'PY'
+import hashlib
+import json
+import os
+import sys
+from pathlib import Path, PurePosixPath
+
+root = Path(sys.argv[1])
+manifest_path = root / "manifest.json"
+if not manifest_path.is_file():
+    raise SystemExit("manifest.json missing")
+try:
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+except (OSError, json.JSONDecodeError) as error:
+    raise SystemExit(f"manifest unreadable: {error}")
+if manifest.get("schema") != "codescribe.agent-bridge.bundle.v1":
+    raise SystemExit("wrong manifest schema")
+if not str(manifest.get("bundle_version") or "").strip():
+    raise SystemExit("empty bundle version")
+entries = manifest.get("files")
+if not isinstance(entries, list) or not entries:
+    raise SystemExit("empty manifest file list")
+
+listed = set()
+for entry in entries:
+    relative = PurePosixPath(str(entry.get("path") or ""))
+    if relative.is_absolute() or ".." in relative.parts or not relative.parts:
+        raise SystemExit(f"unsafe manifest path: {relative}")
+    name = relative.as_posix()
+    if name in listed:
+        raise SystemExit(f"duplicate manifest path: {name}")
+    listed.add(name)
+    path = root.joinpath(*relative.parts)
+    if not path.is_file() or path.is_symlink():
+        raise SystemExit(f"payload file missing or symlinked: {name}")
+    digest = hashlib.sha256(path.read_bytes()).hexdigest()
+    if digest != entry.get("sha256"):
+        raise SystemExit(f"checksum mismatch: {name}")
+    if path.stat().st_size != entry.get("bytes"):
+        raise SystemExit(f"size mismatch: {name}")
+
+actual = {
+    path.relative_to(root).as_posix()
+    for path in root.rglob("*")
+    if path.is_file() and path.relative_to(root).as_posix() != "manifest.json"
+}
+if actual != listed:
+    raise SystemExit(f"manifest coverage mismatch: {sorted(actual ^ listed)}")
+required = {
+    "bin/bus-demux.py",
+    "skills/codescribe/SKILL.md",
+    "skills/codescribe/README.md",
+    "skills/codescribe/FLOW.md",
+    "skills/codescribe/references/attach.md",
+    "skills/codescribe/references/live-vs-seal.md",
+    "skills/codescribe/examples/example-prompt.md",
+}
+missing = sorted(required - listed)
+if missing:
+    raise SystemExit(f"required bridge files missing: {missing}")
+if not os.access(root / "bin" / "bus-demux.py", os.X_OK):
+    raise SystemExit("bus-demux.py is not executable")
+print(f"v{manifest['bundle_version']} · {len(listed)} checksum-verified files")
+PY
+  ); then
+    ok "agent bridge $AGENT_BRIDGE_VERIFY"
+  else
+    fail "agent bridge payload incomplete: $AGENT_BRIDGE_VERIFY"
+  fi
+
+  # Model resource payload
   echo ""
   echo "▶ MiniLM runtime resource proof"
   EMBEDDER_DIR="$APP_PATH/Contents/Resources/models/embedder"

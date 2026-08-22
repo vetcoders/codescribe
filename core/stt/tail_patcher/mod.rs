@@ -8,39 +8,33 @@
 //!
 //! # Relationship to Smart final-pass (`FINAL_PASS_MODE`)
 //!
-//! **Orthogonal toggles — no silent coupling.**
+//! **Orthogonal lifecycle controls — no silent coupling.**
 //!
 //! | Control | Env | Default | What it does |
 //! | --- | --- | --- | --- |
-//! | Final pass | `FINAL_PASS_MODE` | `smart` | Stop-path only: whether to run a full WAV Whisper re-pass after release |
-//! | Layered / Layer 1 | `CODESCRIBE_LAYERED_TRANSCRIPTION` | **phase1** | During-hold gap-fill: Whisper tail patches on sealed utterances. Unset → phase1; explicit `off`/`0`/`false` disarms. |
+//! | Final pass | `FINAL_PASS_MODE` | legacy | Normal stop does not run a full WAV pass; Retranscribe is explicit. |
+//! | Layered / Layer 1 | product mode + compatibility override | Local Power armed | During-hold, exact-span Whisper repair on the Apple progressive path. |
 //!
 //! - **Smart** = skip full stop re-pass when streaming completeness is
 //!   adjudicated Complete. It does **not** enable layered transcription.
 //! - **Off** = never full stop re-pass. It does **not** force Whisper at stop.
-//! - Layered phase ≥ 1 may run under any final-pass mode when the live session
-//!   path actually wires Layer 1 (see below).
+//! - Local Power arms Layer 1 independently of final-pass state. `phase1`
+//!   remains a persisted compatibility token; explicit `off` is degraded.
 //!
-//! Product intent: Smart *works with* layered (completeness skip + live
-//! gap-fill). Phase 1 is the stock live default; W13 fusion / idempotence /
-//! highlight flags remain the operator-flip surface, not this gate.
+//! Product intent and runtime now agree on the Apple path: live patching is a
+//! required part of Local Power, while unfenced routes fail closed.
 //!
-//! # Where Layer 1 is wired today
+//! # Where Layer 1 may mutate today
 //!
-//! Both live paths are wired; gate is [`layered_phase`] ≥ 1 on each.
+//! Only the Apple progressive path owns the required pending-span fence. Its
+//! in-process, sidecar, and remote tail providers all return the same exact
+//! request/range identity. Outcomes are applied to the byte-identical baseline
+//! before `UtteranceFinal`; the event itself already contains the corrected
+//! text. Replays and completions after seal are typed refusals.
 //!
-//! - **VAD/scheduler:** `core/pipeline/streaming/session.rs` →
-//!   `vad_transcription_session` (Whisper engine, or Apple with
-//!   `CODESCRIBE_APPLE_STT_LIVE_MODE=wav`). Attaches FINAL audio per work item,
-//!   spawns Whisper re-transcribe + [`compute_tail_patch`], emits
-//!   `ReplaceRange { source: TailPatch }`, counts in `SessionFinalised.layer_summary`.
-//! - **Apple progressive live:** `core/pipeline/streaming/apple_live_session.rs`
-//!   → `apple_stream_transcription_session` (W2-A). Each sealed `UtteranceFinal`
-//!   resolves to its retained PCM window and is handed to the async Layer 1
-//!   lane, at most one job in flight so Whisper never sits on the event-drain
-//!   loop. A boundary that cannot address retained audio is never patched; a
-//!   full queue drops the request rather than stalling capture; the bounded
-//!   backlog left when capture stops is settled before `SessionFinalised`.
+//! The legacy VAD/scheduler path has no pending-span owner. Explicit Phase 1
+//! therefore fails closed there with `tail_patch_route_unbound`; it may not
+//! revive the old post-final `ReplaceRange` channel.
 //!
 //! # Invariants (from the ADR "Hard invariants")
 //!
@@ -98,21 +92,15 @@ use tracing::info;
 
 use crate::pipeline::contracts::{EngineEvent, LayerSource};
 
-/// Env flag gating the layered transcription pipeline.
+/// Compatibility override for the layered transcription pipeline.
 ///
-/// `CODESCRIBE_LAYERED_TRANSCRIPTION=phase{1,2,3,4}` — **defaults to phase1**.
-/// The live tail patch is a core element of the triangulation, not an opt-in
-/// (operator directive 2026-08-09: "korekcje na żywo to live tail patch, który
-/// MUSI być podstawowym elementem"). Explicit `off`/`0`/`false` disables;
-/// explicit `phaseN` selects a phase.
+/// `CODESCRIBE_LAYERED_TRANSCRIPTION=phase{1,2,3,4}` preserves older phase
+/// selection. Product-mode bootstrap owns the default: Local Power + unset is
+/// armed; explicit off or malformed input is a named degraded disposition.
 ///
 /// **Not** `FINAL_PASS_MODE`: Smart final-pass never writes this flag. Kept
-/// here (not in the config hub) so this cut stays isolated; the orchestrator
-/// can promote it to a typed config field when it lands.
+/// here as the parser/constant owner; the key is promoted through settings.json.
 pub const LAYERED_TRANSCRIPTION_ENV: &str = "CODESCRIBE_LAYERED_TRANSCRIPTION";
-
-/// Phase served when the flag is unset — Layer 1 live tail patch on.
-const LAYERED_DEFAULT_PHASE: u8 = 1;
 
 /// Env override for [`TailPatchConfig::max_change_ratio`].
 pub const TAIL_PATCH_MAX_CHANGE_RATIO_ENV: &str = "CODESCRIBE_TAIL_PATCH_MAX_CHANGE_RATIO";
@@ -221,9 +209,8 @@ pub fn parse_layered_phase_value(raw: &str) -> Option<u8> {
     }
 }
 
-/// Active layered-transcription phase. Unset → the default phase (live tail
-/// patch on); an explicit `off`/`0`/`false` — or unparseable garbage — is the
-/// only way to `None`.
+/// Active layered-transcription phase. Unset, explicit `off`/`0`/`false`, and
+/// unparseable garbage all fail closed to `None`.
 ///
 /// Independent of `FINAL_PASS_MODE` / Smart completeness skip.
 pub fn layered_phase() -> Option<u8> {
@@ -232,10 +219,10 @@ pub fn layered_phase() -> Option<u8> {
 }
 
 /// Resolve the layered phase from an optional raw override without touching
-/// process-global environment state. `None` carries the production default.
+/// process-global environment state. `None` means no compatibility override;
+/// recording bootstrap resolves the product-mode default.
 pub fn layered_phase_from_raw(raw: Option<&str>) -> Option<u8> {
-    raw.map(parse_layered_phase_value)
-        .unwrap_or(Some(LAYERED_DEFAULT_PHASE))
+    raw.and_then(parse_layered_phase_value)
 }
 
 /// Env override for [`TailPatchConfig::small_edit_token_floor`].
@@ -1861,7 +1848,7 @@ mod tests {
     #[test]
     fn layered_phase_parses_phase_prefix() {
         // Pure parse — no process env (suite stays deterministic under parallel exec).
-        assert_eq!(layered_phase_from_raw(None), Some(LAYERED_DEFAULT_PHASE));
+        assert_eq!(layered_phase_from_raw(None), None);
         assert_eq!(layered_phase_from_raw(Some("off")), None);
         assert_eq!(parse_layered_phase_value("phase1"), Some(1));
         assert_eq!(parse_layered_phase_value("phase2"), Some(2));

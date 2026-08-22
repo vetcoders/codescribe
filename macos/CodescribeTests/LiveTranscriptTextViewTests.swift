@@ -48,25 +48,14 @@ final class LiveTranscriptTextViewTests: XCTestCase {
   }
 
   func testNativeCopyUsesOnlyTheCurrentSelection() throws {
-    let pasteboard = NSPasteboard.general
-    let oldItems: [NSPasteboardItem] = (pasteboard.pasteboardItems ?? []).map { item in
-      let copy = NSPasteboardItem()
-      for type in item.types {
-        if let data = item.data(forType: type) {
-          copy.setData(data, forType: type)
-        }
-      }
-      return copy
-    }
-    defer {
-      pasteboard.clearContents()
-      pasteboard.writeObjects(oldItems)
-    }
+    let pasteboard = NSPasteboard(
+      name: NSPasteboard.Name("codescribe.tests.live-transcript.\(UUID().uuidString)")
+    )
 
     let textView = LiveTranscriptTextView.makeTextView()
     textView.string = "alpha beta gamma"
     textView.setSelectedRange(NSRange(location: 6, length: 4))
-    textView.copy(nil)
+    XCTAssertTrue(textView.copySelection(to: pasteboard))
 
     XCTAssertEqual(pasteboard.string(forType: .string), "beta")
   }

@@ -648,21 +648,20 @@ engine-auth: $(ENGINE_BRIDGE)
 # until streaming bridge v2 lands — that is the point, not a flake. Every run
 # prints token similarity + a word-level diff for the grinding loop.
 #
-# LANE PINNED, not inherited. `CODESCRIBE_LAYERED_TRANSCRIPTION` is a power-user
-# key (not promoted to settings.json), so `Config::inject_file_env_for_runtime`
-# copies it out of ~/.codescribe/.env into the process environment. An operator
-# running their daily dictation on `phase1` therefore armed Layer 1 *inside this
-# Layer-0 target* — and Layer 1 is supposed to diverge from Apple, so the bar
-# went red for doing its job. Measured 2026-08-08, one binary, consecutive runs:
+# LANE PINNED, not inherited. This key is now promoted to settings.json, but a
+# test process still accepts an explicit env override. Before promotion, an
+# operator's `phase1` leaked into this Layer-0 target — and Layer 1 is supposed
+# to diverge from Apple, so the bar went red for doing its job. Measured
+# 2026-08-08, one binary, consecutive runs:
 # `Other: 1` → 0.931 PASS, then `Other: 22` → 0.833 FAIL. Explicit `off` also
-# blocks the injection at source (it only fills keys absent from the env).
+# pins the intended measurement at the process boundary.
 
 # The lane the CALLER asked for — and it is exactly what the recipe pins below
 # throw away. `make` cannot see a recipe-level `VAR=x cmd` assignment, but it
 # does see `VAR=x make …` / `make VAR=x`, so `origin` separates "the caller
 # pinned a lane" from "nobody asked". The operator's own `~/.codescribe/.env` is
-# injected in-process by the core, never into this shell, so a daily `phase1`
-# dotenv leaves this empty and the guard below stays silent for daily runs.
+# is no longer an unpromoted injection path; the guard still rejects a caller
+# request that contradicts the recipe's explicit lane pin.
 ifneq ($(origin CODESCRIBE_LAYERED_TRANSCRIPTION),undefined)
 PARITY_LANE_REQUEST := $(CODESCRIBE_LAYERED_TRANSCRIPTION)
 endif

@@ -252,8 +252,9 @@ pub struct UserSettings {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub final_pass_mode: Option<String>,
     /// Layered incremental transcription phase ("off" | "phase1").
-    /// Seeds `CODESCRIBE_LAYERED_TRANSCRIPTION`. Absent matches the core
-    /// default (`unset` → phase1). Explicit "off" / "0" / "false" disarms.
+    /// Seeds `CODESCRIBE_LAYERED_TRANSCRIPTION`. In Local Power, absent means
+    /// the required Apple-first patcher default is armed; explicit `off` is a
+    /// named degraded override. `phase1` remains a compatibility token.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub layered_transcription: Option<String>,
     /// Opt-in Whisper `initial_prompt` vocabulary hint.

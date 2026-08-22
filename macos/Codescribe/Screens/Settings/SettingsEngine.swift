@@ -262,6 +262,7 @@ struct MockSettingsEngine: SettingsEngine {
         variant: record.variant,
         editedText: canonical,
         action: "edit",
+        editProvenance: "manual_human",
         timestampMs: record.timestampMs,
         avgLogprob: nil,
         speechPct: nil,

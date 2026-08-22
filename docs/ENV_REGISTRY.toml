@@ -16,7 +16,19 @@
 
 [meta]
 version = "1.2.0"
-updated = "2026-08-15"
+updated = "2026-08-22"
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# Application async runtime
+# ═══════════════════════════════════════════════════════════════════════════════
+
+[vars.CODESCRIBE_APP_RUNTIME_WORKERS]
+default = "4"
+type = "u64"
+reload = "restart"
+category = "runtime"
+description = "Named Tokio async workers owned by Codescribe.app (clamped to 1-16; invalid values fall back to 4)"
+range = "1-16"
 
 # ═══════════════════════════════════════════════════════════════════════════════
 # VAD (Voice Activity Detection) - Silero Neural Network
@@ -458,11 +470,11 @@ category = "stt"
 description = "Bounded-context A/B for W13-3B Whisper windows: utterance (default), left_pad, or stable_prompt. Left pad never crosses a Silero-sized silence fence."
 
 [vars.CODESCRIBE_SPAN_IDEMPOTENCE]
-default = "0"
+default = "1"
 type = "bool"
 reload = "restart"
 category = "stt"
-description = "W13-4 sealed-span replay refusal + in-span loop fence. Default OFF. When 1/true/on: live seal path refuses a replayed PCM-range / request identity (SessionIngest RejectedSealedUtterance ported onto ledger identity) and fences non-progressing timestamps or decode failure. Content-similar offers on a new identity are WARN-preserved. No default flip."
+description = "Sealed-span replay refusal + in-span loop fence. Default ON: the live seal path refuses a replayed PCM-range / request identity and fences non-progressing timestamps or decode failure. Content-similar offers on a new identity are WARN-preserved. Set 0/false/off only as a diagnostic escape hatch."
 
 [vars.CODESCRIBE_WHISPER_IDLE_UNLOAD_SECS]
 default = "1800"
@@ -550,11 +562,11 @@ category = "stt"
 description = "Libraxis gateway session-mint endpoint (https; loopback http for dev). Endpoint only — URLs with user-info or query material are refused; vendor keys never live in config. Promoted: settings.json is the source of truth"
 
 [vars.CODESCRIBE_LAYERED_TRANSCRIPTION]
-default = "phase1"
+default = ""
 type = "string"
 reload = "hot"
 category = "stt"
-description = "Layered incremental transcription phase gate: phase1 (DEFAULT since 2026-08-09 — operator directive: the live tail patch is a core element of the triangulation, not an opt-in; explicit off/0/false disables) or phase1..phase4 (bare 1..4 accepted). Orthogonal to FINAL_PASS_MODE/Smart — Smart never enables this. Phase ≥ 1 turns on Layer 1 Whisper tail-patch during hold on BOTH live paths: the VAD/scheduler session and the default Apple progressive live session (wired W2-A, a6b1233d). phase1 = Apple Layer 0 + Whisper ReplaceRange patches. Promoted 2026-08-10 to settings.json (single-brain; a stale ~/.codescribe/.env line must not lottery the live path)."
+description = "Promoted compatibility override for live local Whisper refinement. Product mode owns the default: Local Power with Apple/Auto arms the exact-span Apple progressive patcher when unset or phase1; explicit off/0/false/no and malformed values produce a named degraded disposition. Apple-only does not arm it. Direct Whisper on the VAD/scheduler path is already the primary engine and refuses a second unbound mutation lane. Phases 2..4 remain reserved. Orthogonal to FINAL_PASS_MODE; normal stop performs no whole-file pass. Runtime truth is the per-session tail_patch_session_receipt, not UI state."
 
 [vars.CODESCRIBE_SEAL_ATLAS_DUMP]
 default = ""
@@ -1112,6 +1124,13 @@ reload = "hot"
 category = "llm"
 description = "Max idle time between SSE chunks before attempt is failed (ms)"
 
+[vars.CODESCRIBE_AGENT_BRIDGE_HOME]
+default = ""
+type = "string"
+reload = "hot"
+category = "storage"
+description = "Optional absolute override for the agent bridge home used by active-name leases and bus demultiplexing; unset resolves the normal user data path"
+
 [vars.CODESCRIBE_AGENT_USE_PREVIOUS_RESPONSE_ID]
 default = "1"
 type = "bool"
@@ -1394,6 +1413,13 @@ description = "Override .env file path"
 # ═══════════════════════════════════════════════════════════════════════════════
 # Quality / Daemon
 # ═══════════════════════════════════════════════════════════════════════════════
+
+[vars.CODESCRIBE_LEXICON_MIN_CORRECTIONS]
+default = "3"
+type = "u64"
+reload = "hot"
+category = "quality"
+description = "Identical human teach gestures required before a correction pair is written to lexicon.custom.jsonl. Product default 3. 1 restores legacy first-teach upsert (tests may use this for storage-primitive fixtures only)."
 
 [vars.QUBE_DAEMON_AUTOSTART]
 default = "0"

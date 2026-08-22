@@ -1542,6 +1542,7 @@ fn under_commit_warning_event_reaches_the_stop_path_action() {
             compression_ratio: None,
             quality_gate_dropped: false,
             confidence_flags: vec![],
+            acoustic: None,
         });
         if let Some(code) = warning_code {
             sink.on_event(&EngineEvent::Warning {
@@ -2382,6 +2383,16 @@ fn test_overlay_paste_disposition_decision_table() {
             "{label}"
         );
     }
+}
+
+#[test]
+fn overlay_float_confirms_activation_when_workspace_still_names_codescribe() {
+    assert!(super::overlay_paste::overlay_float_still_confirms_activation(true, Some("Alacritty")));
+    assert!(
+        super::overlay_paste::overlay_float_still_confirms_activation(false, Some("Codescribe"))
+    );
+    assert!(!super::overlay_paste::overlay_float_still_confirms_activation(false, Some("Safari")));
+    assert!(!super::overlay_paste::overlay_float_still_confirms_activation(false, None));
 }
 
 #[test]
@@ -5332,6 +5343,7 @@ fn test_final_event(utterance_id: u64, text: &str) -> EngineEvent {
         compression_ratio: None,
         quality_gate_dropped: false,
         confidence_flags: Vec::new(),
+        acoustic: None,
     }
 }
 

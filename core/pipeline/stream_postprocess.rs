@@ -307,6 +307,29 @@ impl Lexicon {
         if current_mtime == self.custom_mtime {
             return;
         }
+        self.reload_custom_rules(current_mtime);
+    }
+
+    /// Move the custom-rule source to a new canonical data directory.
+    ///
+    /// The application normally keeps one data directory for its lifetime, but
+    /// tests and explicit runtime reconfiguration may change `CODESCRIBE_DATA_DIR`.
+    /// Path identity must therefore participate in hot reload: comparing only
+    /// mtimes leaves the process-global singleton pinned to whichever directory
+    /// initialized it first.
+    fn rebind_custom_path(&mut self, custom_path: PathBuf) {
+        if self.custom_path == custom_path {
+            return;
+        }
+        self.custom_path = custom_path;
+        let current_mtime = fs::metadata(&self.custom_path)
+            .ok()
+            .and_then(|m| m.modified().ok());
+        self.reload_custom_rules(current_mtime);
+    }
+
+    /// Replace only the custom half of the table, preserving compiled builtins.
+    fn reload_custom_rules(&mut self, current_mtime: Option<SystemTime>) {
         self.custom_rules.clear();
         self.custom_canonicals.clear();
         let custom_count = fs::read_to_string(&self.custom_path)
@@ -362,21 +385,6 @@ impl Lexicon {
     fn rule_count(&self) -> usize {
         self.builtin_rules.len() + self.custom_rules.len()
     }
-
-    /// Domain-vocabulary hint for this rule set: protected terms first, then the
-    /// operator's custom canonicals, trimmed to the Whisper prompt budget.
-    fn whisper_initial_prompt_receipt(
-        &self,
-        window_context: Option<&str>,
-    ) -> Option<LexiconVoiceReceipt> {
-        let domain_terms = prioritized_domain_terms(window_context);
-        build_lexicon_voice_receipt(
-            &self.protected_canonicals,
-            &self.custom_canonicals,
-            &domain_terms,
-            WHISPER_INITIAL_PROMPT_TOKEN_BUDGET,
-        )
-    }
 }
 
 /// Take the write lock and hot-reload the singleton's custom rules if the file
@@ -386,6 +394,7 @@ fn maybe_reload_global_lexicon() {
     let mut lexicon = GLOBAL_LEXICON
         .write()
         .expect("global lexicon write lock poisoned");
+    lexicon.rebind_custom_path(Config::config_dir().join("lexicon.custom.jsonl"));
     lexicon.maybe_reload();
 }
 
@@ -408,7 +417,20 @@ fn apply_global_lexicon(text: &str) -> String {
 /// (e.g. "Loctree" -> "Luxury").
 pub fn apply_lexicon(text: &str) -> String {
     maybe_reload_global_lexicon();
-    apply_global_lexicon(text)
+    apply_active_names(
+        &apply_global_lexicon(text),
+        &crate::stt::active_names::active_names(),
+    )
+}
+
+fn apply_active_names(text: &str, active_names: &[String]) -> String {
+    let mut corrected = text.to_string();
+    for name in active_names {
+        if let Some(pattern) = build_word_regex(name) {
+            corrected = pattern.replace_all(&corrected, name.as_str()).into_owned();
+        }
+    }
+    corrected
 }
 
 /// Build the domain-vocabulary hint fed into Whisper's `initial_prompt`.
@@ -528,14 +550,30 @@ pub fn whisper_initial_prompt() -> Option<String> {
 pub fn whisper_initial_prompt_for_window(
     window_context: Option<&str>,
 ) -> Option<LexiconVoiceReceipt> {
-    if !stt_initial_prompt_enabled() {
+    let active_names = crate::stt::active_names::active_names();
+    let lexicon_enabled = stt_initial_prompt_enabled();
+    if !lexicon_enabled && active_names.is_empty() {
         return None;
     }
-    maybe_reload_global_lexicon();
-    let lexicon = GLOBAL_LEXICON
-        .read()
-        .expect("global lexicon read lock poisoned");
-    let receipt = lexicon.whisper_initial_prompt_receipt(window_context)?;
+    let receipt = if lexicon_enabled {
+        maybe_reload_global_lexicon();
+        let lexicon = GLOBAL_LEXICON
+            .read()
+            .expect("global lexicon read lock poisoned");
+        let protected = active_names
+            .iter()
+            .chain(lexicon.protected_canonicals.iter())
+            .cloned()
+            .collect::<Vec<_>>();
+        build_lexicon_voice_receipt(
+            &protected,
+            &lexicon.custom_canonicals,
+            &prioritized_domain_terms(window_context),
+            WHISPER_INITIAL_PROMPT_TOKEN_BUDGET,
+        )?
+    } else {
+        build_lexicon_voice_receipt(&active_names, &[], &[], WHISPER_INITIAL_PROMPT_TOKEN_BUDGET)?
+    };
     info!(
         scope = "window",
         selected_terms = ?receipt.terms,
@@ -1340,6 +1378,18 @@ fn truncate_for_embedding(text: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn active_name_canonicalization_is_exact_not_fuzzy() {
+        let names = vec!["Iwo".to_string()];
+        assert_eq!(apply_active_names("cześć iwo", &names), "cześć Iwo");
+        assert_eq!(apply_active_names("lubię piwo", &names), "lubię piwo");
+        assert_eq!(
+            apply_active_names("nieznane imię", &[]),
+            "nieznane imię",
+            "unknown or stale names fail open byte-for-byte"
+        );
+    }
     use serial_test::serial;
     use std::ffi::OsString;
 
@@ -1367,6 +1417,40 @@ mod tests {
                 None => unsafe { std::env::remove_var(self.key) },
             }
         }
+    }
+
+    #[test]
+    #[serial]
+    fn active_lease_reaches_whisper_context_even_when_static_prompt_is_off() {
+        let temp = tempfile::tempdir().unwrap();
+        let lease_dir = temp.path().join("leases");
+        std::fs::create_dir_all(&lease_dir).unwrap();
+        let heartbeat = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_secs_f64();
+        std::fs::write(
+            lease_dir.join("iwo.json"),
+            serde_json::to_vec(&serde_json::json!({
+                "schema": "codescribe.agent-bridge.lease.v1",
+                "name": "iwo",
+                "active": true,
+                "heartbeat_unix": heartbeat,
+            }))
+            .unwrap(),
+        )
+        .unwrap();
+        let _bridge = EnvRestore::capture("CODESCRIBE_AGENT_BRIDGE_HOME");
+        let _prompt = EnvRestore::capture(STT_INITIAL_PROMPT_ENABLED_ENV);
+        unsafe {
+            std::env::set_var("CODESCRIBE_AGENT_BRIDGE_HOME", temp.path());
+            std::env::set_var(STT_INITIAL_PROMPT_ENABLED_ENV, "0");
+        }
+
+        let receipt = whisper_initial_prompt_for_window(None).expect("active name prompt");
+        assert_eq!(receipt.terms, ["Iwo"]);
+        assert!(receipt.prompt.contains("Iwo"));
+        assert_eq!(apply_lexicon("Iwo, lubię piwo"), "Iwo, lubię piwo");
     }
 
     /// Builtin programming lexicon rewrites Whisper mis-hears (e.g. `doker` → `Docker`).
@@ -1554,6 +1638,41 @@ mod tests {
         assert_eq!(final_pass_guardrail_reason(raw, candidate), None);
     }
 
+    /// The process-global lexicon follows the active data directory, not the
+    /// directory that happened to initialize the singleton first.
+    #[test]
+    #[serial]
+    fn global_lexicon_rebinds_when_data_dir_changes() {
+        let _data_dir = EnvRestore::capture("CODESCRIBE_DATA_DIR");
+        let first = tempfile::tempdir().expect("first data dir");
+        let second = tempfile::tempdir().expect("second data dir");
+
+        std::fs::write(
+            first.path().join("lexicon.custom.jsonl"),
+            r#"{"term":"RebindFirst","mispronunciations":["zxq rebind first"]}"#,
+        )
+        .expect("first custom lexicon");
+        std::fs::write(
+            second.path().join("lexicon.custom.jsonl"),
+            r#"{"term":"RebindSecond","mispronunciations":["zxq rebind second"]}"#,
+        )
+        .expect("second custom lexicon");
+
+        unsafe { std::env::set_var("CODESCRIBE_DATA_DIR", first.path()) };
+        assert_eq!(apply_lexicon("mówię zxq rebind first"), "mówię RebindFirst");
+
+        unsafe { std::env::set_var("CODESCRIBE_DATA_DIR", second.path()) };
+        assert_eq!(
+            apply_lexicon("mówię zxq rebind second"),
+            "mówię RebindSecond"
+        );
+        assert_eq!(
+            apply_lexicon("mówię zxq rebind first"),
+            "mówię zxq rebind first",
+            "rules from the previous data directory must be discarded"
+        );
+    }
+
     /// Custom lexicon mtime change reloads rules without recompiling builtins.
     #[test]
     fn test_hot_reload_picks_up_new_rules() {
@@ -1608,12 +1727,16 @@ mod tests {
     fn overlay_correction_chain_teaches_custom_lexicon_for_next_transcript() {
         let temp_dir = tempfile::tempdir().expect("temp data dir for quality chain");
         let _data_dir = EnvRestore::capture("CODESCRIBE_DATA_DIR");
+        let _min_corrections = EnvRestore::capture("CODESCRIBE_LEXICON_MIN_CORRECTIONS");
         let temp_root = temp_dir
             .path()
             .canonicalize()
             .unwrap_or_else(|_| temp_dir.path().to_path_buf());
         unsafe {
             std::env::set_var("CODESCRIBE_DATA_DIR", &temp_root);
+            // This consumer-chain fixture proves stored rules are consumed by
+            // StreamPostProcessor; threshold behavior lives in overlay_quality.
+            std::env::set_var("CODESCRIBE_LEXICON_MIN_CORRECTIONS", "1");
         }
 
         let candidates =

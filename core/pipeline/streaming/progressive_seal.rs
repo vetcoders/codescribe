@@ -364,11 +364,37 @@ impl ProgressiveSealMachine {
     /// Attempt to rewrite a span. Sealed spans refuse (Ok(false)); pending
     /// accept (Ok(true)); unknown ids return Ok(false).
     pub fn try_rewrite(&mut self, id: u64, new_text: impl Into<String>) -> bool {
+        let Some(range) = self
+            .pending
+            .iter()
+            .find(|pending| pending.id == id)
+            .map(|pending| pending.range.clone())
+        else {
+            return false;
+        };
+        self.try_rewrite_anchored(id, &range, new_text)
+    }
+
+    /// Rewrite only the pending span whose PCM identity acoustically overlaps
+    /// the admitted evidence. Other anchored spans and their bytes are untouched.
+    pub fn try_rewrite_anchored(
+        &mut self,
+        id: u64,
+        evidence_range: &TailSampleRange,
+        new_text: impl Into<String>,
+    ) -> bool {
         if !self.may_rewrite(id) {
             return false;
         }
         let new_text = new_text.into();
         if let Some(pending) = self.pending.iter_mut().find(|p| p.id == id) {
+            let same_clock = pending.range.session == evidence_range.session
+                && pending.range.capture_epoch == evidence_range.capture_epoch;
+            let overlaps = pending.range.sample_start < evidence_range.sample_end
+                && evidence_range.sample_start < pending.range.sample_end;
+            if !same_clock || !overlaps {
+                return false;
+            }
             pending.raw_text = new_text;
             return true;
         }
@@ -391,7 +417,9 @@ impl ProgressiveSealMachine {
             let reason = self.seal_block_reason(&span, now_secs);
             match reason {
                 None => {
-                    let sealed = seal_span_text(&span.raw_text, &left_context, force_raw);
+                    let preserve_occurrences = force_raw || span.words.len() >= 2;
+                    let sealed =
+                        seal_span_text(&span.raw_text, &left_context, preserve_occurrences);
                     let sealed_span = SealedSpan {
                         id: span.id,
                         text: sealed,
@@ -416,7 +444,9 @@ impl ProgressiveSealMachine {
                     // silently seal early without the flag.
                     starvation_ceiling_used = true;
                     self.starvation_ceiling_hits = self.starvation_ceiling_hits.saturating_add(1);
-                    let sealed = seal_span_text(&span.raw_text, &left_context, force_raw);
+                    let preserve_occurrences = force_raw || span.words.len() >= 2;
+                    let sealed =
+                        seal_span_text(&span.raw_text, &left_context, preserve_occurrences);
                     let sealed_span = SealedSpan {
                         id: span.id,
                         text: sealed,
@@ -637,6 +667,69 @@ mod progressive_seal_tests {
         m.note_apple_commit(1, "completely different", 6.0, 10.0);
         assert_eq!(m.sealed_spans()[0].text, sealed_text);
         assert!(m.pending_spans().is_empty());
+    }
+
+    #[test]
+    fn anchored_rewrite_requires_overlap_and_preserves_adjacent_span_bytes() {
+        let mut machine = ProgressiveSealMachine::new();
+        assert!(machine.note_apple_commit_timed(AppleCommit {
+            id: 1,
+            raw_text: "pierwszy".into(),
+            end_secs: 1.0,
+            committed_at_secs: 1.0,
+            range: TailSampleRange {
+                session: "overlap".into(),
+                capture_epoch: 7,
+                sample_start: 0,
+                sample_end: 16_000,
+            },
+            words: Vec::new(),
+            apple_evidence: TailProviderEvidence {
+                source: crate::stt::tail_provider::TailEvidenceSource::AppleSpeech,
+                revision: None,
+                stability: crate::stt::tail_provider::TailEvidenceStability::Final,
+                timing_quality: TailTimingQuality::Synthetic,
+                avg_logprob: None,
+            },
+            silero_utterance_id: None,
+        }));
+        assert!(machine.note_apple_commit_timed(AppleCommit {
+            id: 2,
+            raw_text: "drugi".into(),
+            end_secs: 2.0,
+            committed_at_secs: 2.0,
+            range: TailSampleRange {
+                session: "overlap".into(),
+                capture_epoch: 7,
+                sample_start: 16_000,
+                sample_end: 32_000,
+            },
+            words: Vec::new(),
+            apple_evidence: TailProviderEvidence {
+                source: crate::stt::tail_provider::TailEvidenceSource::AppleSpeech,
+                revision: None,
+                stability: crate::stt::tail_provider::TailEvidenceStability::Final,
+                timing_quality: TailTimingQuality::Synthetic,
+                avg_logprob: None,
+            },
+            silero_utterance_id: None,
+        }));
+        let disjoint = TailSampleRange {
+            session: "overlap".into(),
+            capture_epoch: 7,
+            sample_start: 16_000,
+            sample_end: 32_000,
+        };
+        assert!(!machine.try_rewrite_anchored(1, &disjoint, "floating"));
+        let overlapping = TailSampleRange {
+            session: "overlap".into(),
+            capture_epoch: 7,
+            sample_start: 8_000,
+            sample_end: 16_000,
+        };
+        assert!(machine.try_rewrite_anchored(1, &overlapping, "poprawiony"));
+        assert_eq!(machine.pending_spans()[0].raw_text, "poprawiony");
+        assert_eq!(machine.pending_spans()[1].raw_text, "drugi");
     }
 
     /// Seal ordering is lexicon → Light+: a lexicon-corrected word at a

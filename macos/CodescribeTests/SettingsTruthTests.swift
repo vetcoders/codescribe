@@ -129,6 +129,7 @@ final class SettingsTruthTests: XCTestCase {
       (.engine, "engine", "Dictation", .dictation),
       (.audio, "audio", "Audio", .audio),
       (.voiceLab, "voiceLab", "Dictionary", .dictionary),
+      (.lab, "lab", "Lab", .lab),
       (.license, "license", "License", .license),
       (.user, "user", "User", .user),
     ]
@@ -392,8 +393,6 @@ final class SettingsTruthTests: XCTestCase {
       })
 
     model.setSttEngine("whisper")
-    model.setLayeredTranscription(true)
-    model.setLayeredTranscription(false)
     model.setToggleSilenceSeconds(3.5)
     model.setPreviewBufferDelayMs(1038)
     model.setPreviewTypingCps(10.6)
@@ -404,8 +403,6 @@ final class SettingsTruthTests: XCTestCase {
       writes.map(\.key),
       [
         "CODESCRIBE_STT_ENGINE",
-        "CODESCRIBE_LAYERED_TRANSCRIPTION",
-        "CODESCRIBE_LAYERED_TRANSCRIPTION",
         "TOGGLE_SILENCE_SEC",
         "CODESCRIBE_BUFFER_DELAY_MS",
         "CODESCRIBE_TYPING_CPS",
@@ -415,8 +412,91 @@ final class SettingsTruthTests: XCTestCase {
     XCTAssertEqual(
       writes.map(\.value),
       [
-        "whisper", "phase1", "off", "3.5", "1038", "10.6", "5", "8.0",
+        "whisper", "3.5", "1038", "10.6", "5", "8.0",
       ])
+  }
+
+  func testLocalWhisperRuntimeTruthRequiresModelAndExactReadback() {
+    XCTAssertEqual(
+      resolveLocalWhisperRuntimeState(
+        asrModeId: "local_power",
+        sttEngineId: "auto",
+        layeredValue: nil,
+        modelAvailable: true
+      ),
+      .livePatchingConfigured,
+      "unset is the runtime's armed product default"
+    )
+    XCTAssertEqual(
+      resolveLocalWhisperRuntimeState(
+        asrModeId: "local_power",
+        sttEngineId: "apple",
+        layeredValue: "off",
+        modelAvailable: false
+      ),
+      .livePatchingConfigurationMismatch,
+      "explicit off is disarmed even when the model is also unavailable"
+    )
+    XCTAssertEqual(
+      resolveLocalWhisperRuntimeState(
+        asrModeId: "local_power",
+        sttEngineId: "auto",
+        layeredValue: localWhisperLivePatchingRuntimeValue,
+        modelAvailable: true
+      ),
+      .livePatchingConfigured
+    )
+    XCTAssertEqual(
+      resolveLocalWhisperRuntimeState(
+        asrModeId: "local_power",
+        sttEngineId: "auto",
+        layeredValue: "phase2",
+        modelAvailable: true
+      ),
+      .livePatchingConfigurationMismatch,
+      "unknown legacy phases cannot masquerade as the armed phase1 contract"
+    )
+    XCTAssertEqual(
+      resolveLocalWhisperRuntimeState(
+        asrModeId: "local_power",
+        sttEngineId: "auto",
+        layeredValue: nil,
+        modelAvailable: false
+      ),
+      .livePatchingNotReady,
+      "armed-by-default still needs a validated FP16 bundle"
+    )
+    XCTAssertEqual(
+      resolveLocalWhisperRuntimeState(
+        asrModeId: "cloud",
+        sttEngineId: "auto",
+        layeredValue: localWhisperLivePatchingRuntimeValue,
+        modelAvailable: true
+      ),
+      .notSelected,
+      "Cloud must not present local Whisper as its provider"
+    )
+  }
+
+  func testDirectWhisperIsLocalEngineNotAppleFirstPatching() {
+    XCTAssertEqual(
+      resolveLocalWhisperRuntimeState(
+        asrModeId: "local_power",
+        sttEngineId: "whisper",
+        layeredValue: "off",
+        modelAvailable: true
+      ),
+      .directEngineReady
+    )
+    XCTAssertEqual(
+      resolveLocalWhisperRuntimeState(
+        asrModeId: "local_power",
+        sttEngineId: "whisper",
+        layeredValue: localWhisperLivePatchingRuntimeValue,
+        modelAvailable: false
+      ),
+      .directEngineNotReady
+    )
   }
 
   func testSmoothPresetValuesMatchOperatorDefaultExactly() throws {
@@ -1108,8 +1188,11 @@ final class SettingsTruthTests: XCTestCase {
       switch key {
       case "CODESCRIBE_ASR_MODE": persisted.asrMode = value
       case "CODESCRIBE_CLOUD_CONSENT": persisted.cloudConsent = value
+      case "CODESCRIBE_LAYERED_TRANSCRIPTION": persisted.layeredTranscription = value
+      case "CODESCRIBE_STT_ENGINE": persisted.sttEngine = value
       case "CODESCRIBE_ASR_GATEWAY_URL": persisted.asrGatewayUrl = value
       case "STT_ENDPOINT": persisted.sttEndpoint = value
+      case "FINAL_PASS_MODE": persisted.finalPassMode = value
       default: break
       }
     }
@@ -1128,18 +1211,32 @@ final class SettingsTruthTests: XCTestCase {
     XCTAssertFalse(model.cloudConsentGranted)
 
     model.setAsrMode("local_power")
-    XCTAssertEqual(writes.last?.0, "CODESCRIBE_ASR_MODE")
-    XCTAssertEqual(writes.last?.1, "local_power")
+    XCTAssertEqual(
+      writes.suffix(2).map(\.0),
+      ["CODESCRIBE_ASR_MODE", "CODESCRIBE_LAYERED_TRANSCRIPTION"]
+    )
+    XCTAssertEqual(writes.suffix(2).map(\.1), ["local_power", "phase1"])
     XCTAssertEqual(model.asrModeId, "local_power")
 
     model.setAsrMode("cloud")
     XCTAssertEqual(
-      writes.suffix(2).map(\.0),
-      ["CODESCRIBE_CLOUD_CONSENT", "CODESCRIBE_ASR_MODE"]
+      writes.suffix(3).map(\.0),
+      [
+        "CODESCRIBE_CLOUD_CONSENT", "CODESCRIBE_ASR_MODE",
+        "CODESCRIBE_LAYERED_TRANSCRIPTION",
+      ]
     )
-    XCTAssertEqual(writes.suffix(2).map(\.1), ["granted", "cloud"])
+    XCTAssertEqual(writes.suffix(3).map(\.1), ["granted", "cloud", "off"])
     XCTAssertEqual(model.asrModeId, "cloud")
     XCTAssertTrue(model.cloudConsentGranted)
+
+    model.setAsrMode("apple_only")
+    XCTAssertEqual(
+      writes.suffix(2).map(\.0),
+      ["CODESCRIBE_ASR_MODE", "CODESCRIBE_LAYERED_TRANSCRIPTION"]
+    )
+    XCTAssertEqual(writes.suffix(2).map(\.1), ["apple_only", "off"])
+    XCTAssertEqual(model.asrModeId, "apple_only")
 
     model.setSttEndpoint("wss://asr.example/v1/audio/transcribe")
     XCTAssertEqual(writes.last?.0, "STT_ENDPOINT")
@@ -1149,5 +1246,42 @@ final class SettingsTruthTests: XCTestCase {
     model.setFinalPassMode("smart")
     XCTAssertEqual(writes.last?.0, "FINAL_PASS_MODE")
     XCTAssertEqual(writes.last?.1, "off")
+  }
+
+  func testLocalPowerEngineChangesArmAndDisarmExactRuntimeTokenAfterReadback() {
+    var persisted = CsSettings.sample
+    persisted.asrMode = "local_power"
+    persisted.sttEngine = "auto"
+    persisted.layeredTranscription = "off"
+    var batches: [[CsConfigEntry]] = []
+    let engine = MockSettingsEngine(
+      settingsLoader: { persisted },
+      updateConfigManyObserver: { entries in
+        batches.append(entries)
+        for entry in entries {
+          switch entry.key {
+          case "CODESCRIBE_STT_ENGINE": persisted.sttEngine = entry.value
+          case "CODESCRIBE_LAYERED_TRANSCRIPTION": persisted.layeredTranscription = entry.value
+          default: break
+          }
+        }
+      }
+    )
+    let model = SettingsViewModel(engine: engine)
+    model.refresh()
+
+    model.setSttEngine("apple")
+    XCTAssertEqual(
+      batches.last?.map { ($0.key, $0.value) }.map { "\($0.0)=\($0.1)" },
+      ["CODESCRIBE_STT_ENGINE=apple", "CODESCRIBE_LAYERED_TRANSCRIPTION=phase1"]
+    )
+    XCTAssertEqual(model.settings.layeredTranscription, "phase1")
+
+    model.setSttEngine("whisper")
+    XCTAssertEqual(
+      batches.last?.map { ($0.key, $0.value) }.map { "\($0.0)=\($0.1)" },
+      ["CODESCRIBE_STT_ENGINE=whisper", "CODESCRIBE_LAYERED_TRANSCRIPTION=off"]
+    )
+    XCTAssertEqual(model.settings.layeredTranscription, "off")
   }
 }

@@ -181,7 +181,19 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     // Honour the persisted "Show Dock Icon" toggle at launch. LSUIElement
     // makes us an accessory by default; promote to .regular when enabled so
     // the launch state matches the tray toggle.
-    NSApp.setActivationPolicy(config.trayToggles().showDockIcon ? .regular : .accessory)
+    let trayToggles = config.trayToggles()
+    NSApp.setActivationPolicy(trayToggles.showDockIcon ? .regular : .accessory)
+
+    do {
+      let runtime = try startApplicationRuntime()
+      appLogger.info(
+        "Application runtime started with \(runtime.workerCount, privacy: .public) workers: \(runtime.workerNames.joined(separator: ","), privacy: .public)"
+      )
+    } catch {
+      appLogger.fault("Application runtime failed to start: \(error.localizedDescription, privacy: .public)")
+      NSApp.terminate(nil)
+      return
+    }
 
     DistributedNotificationCenter.default().addObserver(
       self,
@@ -469,13 +481,23 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     // Mirrors the launch guards: the test host never started hotkeys, and
     // touching the lazy handle here would construct the bridge at teardown
     // purely to stop something that was never running.
-    guard !Self.isRunningTests else { return }
+    guard !shouldExitForDuplicate, !Self.isRunningTests else { return }
     VoiceLabRuntime.stopOwnedProcess()
     hotkeys.stop()
     sleepWakeObserver?.invalidate()
     sleepWakeObserver = nil
     if let textScaleMonitor { NSEvent.removeMonitor(textScaleMonitor) }
     DistributedNotificationCenter.default().removeObserver(self)
+    do {
+      let runtime = try shutdownApplicationRuntime()
+      appLogger.info(
+        "Application runtime stopped with \(runtime.activeTasks, privacy: .public) owned tasks and \(runtime.stoppedWorkerNames.count, privacy: .public) stopped workers"
+      )
+    } catch {
+      appLogger.error(
+        "Application runtime shutdown failed: \(error.localizedDescription, privacy: .public)"
+      )
+    }
   }
 
   /// Bind the active recorder to the real host power lifecycle.

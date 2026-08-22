@@ -73,6 +73,12 @@ impl TranscriptionPipeline {
         {
             return (stripped, newest_end_ts);
         }
+        if !segments.is_empty() {
+            // Anchored segments exist but the timestamp helper declined.
+            // Text suffix overlap is not identity and must not absorb a
+            // later acoustic occurrence of the same word.
+            return (text.to_string(), None);
+        }
         (self.strip_overlap(text), None)
     }
 

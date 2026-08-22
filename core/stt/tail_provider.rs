@@ -193,11 +193,26 @@ impl TailSampleRange {
             })
     }
 
-    fn contains(&self, other: &Self) -> bool {
+    pub(crate) fn contains(&self, other: &Self) -> bool {
         self.session == other.session
             && self.capture_epoch == other.capture_epoch
             && self.sample_start <= other.sample_start
             && other.sample_end <= self.sample_end
+    }
+
+    /// Half-open ranges on the same capture epoch share samples.
+    pub fn overlaps(&self, other: &Self) -> bool {
+        self.session == other.session
+            && self.capture_epoch == other.capture_epoch
+            && self.sample_start < other.sample_end
+            && other.sample_start < self.sample_end
+    }
+
+    /// Same epoch, no shared samples. Identical lexical text is still two observations.
+    pub fn is_disjoint(&self, other: &Self) -> bool {
+        self.session == other.session
+            && self.capture_epoch == other.capture_epoch
+            && !self.overlaps(other)
     }
 }
 
@@ -302,13 +317,22 @@ impl TailProviderPayload {
         if self.segments.len() > MAX_TAIL_PROVIDER_SEGMENTS {
             bail!("tail provider returned too many segments");
         }
-        self.identity.range.sample_len()?;
+        if self.identity.range.sample_len()? == 0 {
+            bail!("tail provider request range must contain samples");
+        }
         let mut segment_text_bytes = 0usize;
+        let mut previous_segment_end = self.identity.range.sample_start;
         for segment in &self.segments {
-            segment.range.sample_len()?;
+            if segment.range.sample_len()? == 0 {
+                bail!("tail provider segment range must contain samples");
+            }
             if !self.identity.range.contains(&segment.range) {
                 bail!("tail provider segment range escapes request range");
             }
+            if segment.range.sample_start < previous_segment_end {
+                bail!("tail provider segments must be ordered and non-overlapping");
+            }
+            previous_segment_end = segment.range.sample_end;
             segment_text_bytes = segment_text_bytes
                 .checked_add(segment.text.len())
                 .ok_or_else(|| anyhow!("tail provider segment text size overflow"))?;
@@ -424,10 +448,11 @@ impl TailProvider for InProcessTailProvider {
         let raw = if speech.is_empty() {
             RawTranscript::default()
         } else {
-            super::candle_transcribe_long_with_segments(
+            super::candle_transcribe_long_with_segments_with_initial_prompt(
                 &speech,
                 request.sample_rate,
                 request.language.as_deref(),
+                crate::pipeline::stream_postprocess::whisper_initial_prompt(),
             )?
         };
         let request_range = &request.identity.range;
@@ -1095,6 +1120,9 @@ impl TailProvider for RemoteTailProvider {
             .text("model", model.clone())
             .text("language", language.to_string())
             .text("response_format", "verbose_json");
+        if let Some(prompt) = crate::pipeline::stream_postprocess::whisper_initial_prompt() {
+            form = form.text("prompt", prompt);
+        }
         if let Some((field, value)) =
             crate::stt::request_vocabulary::codescribe_stt_vocabulary_form_part(&self.endpoint)
         {
@@ -1483,5 +1511,59 @@ mod tests {
         let mut different_request = request.clone();
         different_request.identity.request_id += 1;
         assert!(fake.transcribe(&different_request, &pcm).is_err());
+    }
+
+    #[test]
+    fn provider_refuses_floating_or_overlapping_segment_clock() {
+        let range = TailSampleRange {
+            session: "ordered".into(),
+            capture_epoch: 2,
+            sample_start: 0,
+            sample_end: 320,
+        };
+        let payload = TailProviderPayload {
+            identity: TailRequestIdentity {
+                request_id: 1,
+                range: range.clone(),
+            },
+            text: "dwa jeden".into(),
+            segments: vec![
+                TimedTailSegment {
+                    text: "dwa".into(),
+                    range: TailSampleRange {
+                        sample_start: 160,
+                        sample_end: 320,
+                        ..range.clone()
+                    },
+                },
+                TimedTailSegment {
+                    text: "jeden".into(),
+                    range: TailSampleRange {
+                        sample_start: 0,
+                        sample_end: 160,
+                        ..range.clone()
+                    },
+                },
+            ],
+            avg_logprob: None,
+            compression_ratio: None,
+            quality_gate_dropped: false,
+            provider_id: TailProviderId::Fake,
+            elapsed_ms: 0,
+            evidence: TailProviderEvidence {
+                source: TailEvidenceSource::Whisper,
+                revision: None,
+                stability: TailEvidenceStability::Final,
+                timing_quality: TailTimingQuality::Synthetic,
+                avg_logprob: None,
+            },
+        };
+        assert!(
+            payload
+                .validate()
+                .unwrap_err()
+                .to_string()
+                .contains("ordered and non-overlapping")
+        );
     }
 }

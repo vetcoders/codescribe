@@ -7,12 +7,15 @@
 > Whisper transcribing **partials on the go** to fill canvas gaps — NOT final-pass-only.
 > Lexicon substitution is the FINAL automated layer, after Whisper.
 >
-> **Status (2026-08-14):** on-the-go gap-fill **exists and is the stock live
-> default** as Layer 1 tail-patch on both live paths (`a6b1233d`, default
-> flip 2026-08-09). `CODESCRIBE_LAYERED_TRANSCRIPTION` unset → `phase1`;
-> explicit `off`/`0`/`false` disarms. Legacy `FINAL_PASS_MODE` no longer owns
-> any normal-stop inference. W13 fusion /
-> idempotence / highlights stay OFF until an operator flip.
+> **Status (2026-08-21):** the Apple progressive path now enforces exact
+> request/span PCM identity, one pre-final rewrite fence, structural replay
+> idempotence, and a bounded stop drain with typed degradation. In-process,
+> sidecar, and remote tail providers share that seam. The legacy VAD/scheduler
+> path and full-session WSS candidates have no equivalent per-word identity, so
+> they fail closed instead of mutating emitted finals. Local Power + Apple/Auto
+> now arms live local Whisper by default; `phase1` remains a compatibility
+> token, while explicit `off` or invalid input is degraded. Legacy
+> `FINAL_PASS_MODE` no longer owns any normal-stop inference.
 > Planning report: internal plan `stt-apple-must-have` (operator artifact store, 2026-07-24).
 
 ---
@@ -163,24 +166,25 @@ Code: `core/config/loader.rs` · `core/stt/mod.rs::selected_engine()` · `reconc
 **Single brain (W2-A):**
 `CODESCRIBE_STT_ENGINE` and `FINAL_PASS_MODE` are **promoted** settings. UI write updates `settings.json`, process env, and `.env` together. No silent dual brain.
 
-Still env-seedable when unset (not dual writers): `CODESCRIBE_LAYERED_TRANSCRIPTION`, `CODESCRIBE_STT_INITIAL_PROMPT_ENABLED`.
+`CODESCRIBE_LAYERED_TRANSCRIPTION` is promoted single-brain configuration;
+`CODESCRIBE_STT_INITIAL_PROMPT_ENABLED` remains env-seedable when unset.
 
-> **Power-user hazard (measured 2026-08-08).** Because `CODESCRIBE_LAYERED_TRANSCRIPTION` is
-> **not** promoted to `settings.json`, `Config::inject_file_env_for_runtime` copies it out of
+> **Historical power-user hazard (measured 2026-08-08, now closed).** Before promotion,
+> `Config::inject_file_env_for_runtime` copied `CODESCRIBE_LAYERED_TRANSCRIPTION` out of
 > `~/.codescribe/.env` into the process env on the first `Config::load()` — in _every_ process
 > that loads the core, tests and harnesses included. A stale `.env` line therefore arms Layer 1
 > silently. This was observed live: the same `make test-engine-parity` binary scored 0.931 with
 > the lane off and 0.833 with the operator's dotenv arming `phase1`, and the low score was the
 > _more accurate_ transcript. The parity target now pins the lane explicitly (`Makefile`), but
-> the general hazard stands for any tool that loads the core. Promoting the key the way
-> `CODESCRIBE_STT_ENGINE` was promoted is an open operator decision.
+> the general hazard affected any tool loading the core. The key is now
+> promoted to settings.json; parity harnesses still pin their requested lane.
 
 **Final pass vs layered (orthogonal):**
 
-| Setting    | Env                                | Default  | Role                                                                                                                 |
-| ---------- | ---------------------------------- | -------- | -------------------------------------------------------------------------------------------------------------------- |
-| Final pass | `FINAL_PASS_MODE`                  | legacy   | No effect on normal stop; retained only for settings migration while explicit Retranscribe owns whole-file inference |
-| Layered    | `CODESCRIBE_LAYERED_TRANSCRIPTION` | `phase1` | During-hold Layer 1 tail-patch on **both** live paths — local Whisper or live cloud WSS, selected by product mode    |
+| Setting               | Env                                | Default    | Role                                                                                                                                 |
+| --------------------- | ---------------------------------- | ---------- | ------------------------------------------------------------------------------------------------------------------------------------ |
+| Final pass            | `FINAL_PASS_MODE`                  | legacy     | No effect on normal stop; retained only for settings migration while explicit Retranscribe owns whole-file inference                 |
+| Layered compatibility | `CODESCRIBE_LAYERED_TRANSCRIPTION` | mode-owned | Local Power + Apple/Auto: unset or `phase1` arms; explicit off/invalid degrades. VAD/direct Whisper refuses a second unbound patcher |
 
 Normal capture ignores legacy final-pass routing and never decodes/uploads the
 completed WAV. Layered phase tokens (`phase1`…) select live refinement;
@@ -217,23 +221,54 @@ file-pass belongs only to explicit retranscribe surfaces.
 
 ### 3.3 Dictation overlay / tray
 
-| Front                         | UniFFI                                             | Handler                         |
-| ----------------------------- | -------------------------------------------------- | ------------------------------- |
-| Live partials / final text    | `CsTranscriptionListener` callbacks                | streaming pipeline → listener   |
-| Recording service object      | `CodescribeHotkeys`                                | shared controller recording API |
-| Tray status glyphs            | `CodescribeTrayStatus` + listener                  | controller tray payload         |
-| Auto-paste / auto-format tray | `set_auto_paste_enabled` / `set_auto_format_level` | `UserSettings` + live toggles   |
+| Front                         | UniFFI                                             | Handler                                                 |
+| ----------------------------- | -------------------------------------------------- | ------------------------------------------------------- |
+| Live partials / final text    | `CsTranscriptionListener` callbacks                | streaming pipeline → listener                           |
+| PCM sideband evidence         | `EngineEventWire::SidebandEvidence`                | Silero ingress → IPC → bridge diagnostic; reducer no-op |
+| Recording service object      | `CodescribeHotkeys`                                | shared controller recording API                         |
+| Tray status glyphs            | `CodescribeTrayStatus` + listener                  | controller tray payload                                 |
+| Auto-paste / auto-format tray | `set_auto_paste_enabled` / `set_auto_format_level` | `UserSettings` + live toggles                           |
 
 ### 3.4 STT engine dispatch (the nit)
 
-| Call site             | When             | Function / transport                           | Engine rule                                              |
-| --------------------- | ---------------- | ---------------------------------------------- | -------------------------------------------------------- |
-| Live Layer 0          | during recording | Apple progressive                              | committed canvas floor                                   |
-| Live Layer 1 local    | during recording | Whisper on ~5 Apple segments                   | aligned sentence swap on the joined window               |
-| Live Layer 1 cloud    | during recording | Voice Lab WSS                                  | normalized gap/tail fill; same substitution rule         |
-| Explicit Retranscribe | operator action  | local completed-file decode or cloud multipart | may replace the selected artifact, never the live canvas |
+| Call site             | When             | Function / transport                                             | Engine rule                                              |
+| --------------------- | ---------------- | ---------------------------------------------------------------- | -------------------------------------------------------- |
+| Live Layer 0          | during recording | Apple progressive                                                | committed canvas floor                                   |
+| Live Layer 1 typed    | during recording | in-process / sidecar / remote tail provider on ~5 Apple segments | exact-PCM outcome rewrites pending baseline before final |
+| Live Layer 1 unbound  | after recording  | full-session Voice Lab WSS candidate                             | evidence only; typed refusal if it proposes mutation     |
+| Legacy VAD tail patch | during recording | VAD/scheduler route                                              | typed refusal; no pending-span fence exists              |
+| Explicit Retranscribe | operator action  | local completed-file decode or cloud multipart                   | may replace the selected artifact, never the live canvas |
 
-**This split is the MacGyver fracture:** UI can show Whisper readiness while live is Apple-only and fails closed.
+Layer 1 mutation identity is `(session, capture_epoch, sample_start, sample_end, request_id, target_utterance_id, event_ordinal)`. The request range
+must contain the target span and any provider payload must echo the admitted
+identity. Patch offsets are applied only to the byte-identical baseline handed
+to the patcher. The accepted text crosses
+`ProgressiveSealMachine::try_rewrite_anchored` once, and only when the evidence
+range overlaps the target on the same session/epoch clock; `UtteranceFinal` is the first and
+last outward committed form. Replays, invalid ranges, missing identities, and
+late completions emit content-free typed warnings and preserve Apple text.
+Identical words in disjoint PCM ranges are distinct applications and survive.
+
+`UtteranceFinal.acoustic` carries the committed phrase identity through the
+presentation reducer into the Transcript Bus. Phrase timing remains `phrase`;
+the system never divides provider segment time evenly into invented word pins.
+The L3 ledger orders `(capture_epoch, sample_start, sample_end)`
+lexicographically and rejects loss, addition, or reorder before delivery.
+
+Active W2-04 Agent leases are read directly as a bounded 120-second snapshot.
+Their names are placed first in the existing Whisper context budget and
+canonicalized only by exact whole-word matching in Lexicon/Light+. Stale,
+malformed, unknown, or colliding leases fail open. There is no phonetic/fuzzy
+rewrite: active `Iwo` does not rewrite Polish `piwo`.
+
+Ordinary overlay TextEditor edits carry `edit_provenance=manual_human`
+separately from delivery `action`. The latch is consumed by one quality commit;
+three distinct correction IDs for the same normalized lexical pair expose
+`1/3`, `2/3`, `3/3` and promote exactly once. Formatter, retranscribe, replay,
+bulk, speech-gap, and delivery actions without that latch cast no vote.
+
+**Runtime proof:** Settings may show configured readiness, but a take counts as
+exercised only when its typed receipt says `armed=true` and `submitted>0`.
 
 ```text
 selected_engine()

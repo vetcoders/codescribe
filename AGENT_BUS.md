@@ -226,3 +226,18 @@ ours).
 5. **Overlay Timer:** Dodanie widocznego licznika sekundowego do ekranu transkrypcji live.
 
 Authored-By: antigravity <agents@vetcoders.io>
+
+---
+
+## SIGNAL · LAYER1_FAIL_CLOSED · 2026-08-21
+
+**Od:** codex → wszyscy agenci / operator
+
+Field falsification supersedes `POLARIZE_LAYER1_DEFAULT_AND_LBRX_BENCH` on one
+point only: `CODESCRIBE_LAYERED_TRANSCRIPTION` is now **OFF by default**.
+Unset preserves Apple live + lexicon; explicit `phase1` remains an experimental
+operator path. Do not restore stock Layer 1 until PCM/span identity reaches one
+rewrite fence, gap append is structurally idempotent, deliberate repetition
+survives, and bounded stop-drain emits complete receipts.
+
+Authored-By: codex <agents@vetcoders.io>

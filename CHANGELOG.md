@@ -7,6 +7,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **The signed app can install the live named-agent bridge.** Agentic Readiness
+  keeps the 13-step Setup Wizard intact while letting the operator explicitly
+  select Codex and/or Claude Code. A checksumed bundle payload installs to the
+  stable `~/.codescribe/agent-bridge/` runtime with one receipt and managed
+  markers; foreign skill folders are visible conflicts. The demux follows live
+  drafts, waits for `transcript_sealed` before state changes, and persists a
+  provider-session lease/cursor plus active names across provider recovery.
+
 ### Fixed
 
 - **`make install-app` accepts keys from Get license.** A keyed local

@@ -2,35 +2,35 @@
 
 > Created by Vetcoders (c)2026
 >
-> **2026-05-26:** transcription pipeline is now layered. See
-> [ADR — Layered Incremental Transcription Pipeline](./ADR/2026-05-26-LAYERED_INCREMENTAL_TRANSCRIPTION.md)
-> for the authoritative model. Sections below describe the packaging and module layout that hosts it.
+> **2026-08-22:** transcription follows the canonical
+> [four-layer engine contract](./THE_ENGINE_CONTRACT.md). The 2026-05-26
+> [five-layer ADR](./ADR/2026-05-26-LAYERED_INCREMENTAL_TRANSCRIPTION.md)
+> is a superseded historical proposal. Sections below describe the packaging
+> and module layout that hosts the current contract.
 
 ## Layered Incremental Transcription (since 2026-05-26)
 
-Live transcription is no longer a single Whisper stream. The ADR specifies five cooperating
-layers, with Apple Speech as the live primary and Whisper / lexicon / small LLM / Silero
-paralingual classifier filling in behind it. The overlay renders the union of layer events and
-never wipes and retypes — _NEVER REWRITE FROM ZERO_ is the operator-mandated invariant. Since
+Live transcription is no longer a single Whisper stream. Exactly four machine
+layers cooperate: Apple, Whisper, Lexicon + Light+, and the existing Responses
+formatter. The overlay renders their accepted span events and never wipes and
+retypes — _NEVER REWRITE FROM ZERO_ is the operator-mandated invariant. Since
 the UI moved to Swift, the enforcement point is
 `macos/Codescribe/Screens/Overlay/OverlayState.swift`: `applyReplaceRange` delegates to
 `OverlayTranscriptSegment.replaceRange`, which returns `false` (patch dropped) for any range
 that does not address the committed segment.
 
-**Two of the five layers execute today, and only behind an opt-in flag.** The table below is
-inventory, not intent — the ADR's
-[Phase delivery status](./ADR/2026-05-26-LAYERED_INCREMENTAL_TRANSCRIPTION.md#phase-delivery-status-2026-08-08)
-carries the per-phase detail.
+| Layer                        | Engine                                        | Status                                                                          | Where it lives                                                                                                                           |
+| ---------------------------- | --------------------------------------------- | ------------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------- |
+| **L0 — Apple**               | `SFSpeechRecognizer` live observer            | ✅ shipped first paint                                                          | `core/stt/apple_stt/` + Apple progressive session                                                                                        |
+| **L1 — Whisper**             | Contextual observation over proven PCM spans  | ✅ exact-span Apple progressive; VAD/Whisper-first remains its own primary lane | `core/stt/tail_patcher/`, `core/stt/tail_provider.rs`, `core/stt/whisper/`                                                               |
+| **L2 — Lexicon + Light+**    | Deterministic vocabulary and sentence shaping | ✅ currently wired                                                              | `core/pipeline/stream_postprocess.rs::apply_lexicon`, `core/pipeline/light_plus.rs`, progressive seals and delivery floor                |
+| **L3 — Responses formatter** | Existing configured Formatting lane           | ✅ implemented behind `CODESCRIBE_INLINE_FORMAT`                                | `core/llm/inline_format.rs` schedules stable spans through `core/llm/ai_formatting.rs`; inline is scheduling, not a separate small model |
 
-| Layer           | Engine                                                  | Status                                                                             | Where it lives                                                                                                                                |
-| --------------- | ------------------------------------------------------- | ---------------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------- |
-| 0 — Live        | Apple `SFSpeechRecognizer` (primary) · Whisper fallback | ✅ shipped, default                                                                | `core/stt/apple_stt/` + `core/stt/whisper/`                                                                                                   |
-| 1 — Tail Patch  | Whisper background diff                                 | ✅ delivered, **opt-in** (`CODESCRIBE_LAYERED_TRANSCRIPTION=phase1+`, default off) | `core/stt/tail_patcher/`, wired into `core/pipeline/streaming/session.rs` **and** `core/pipeline/streaming/apple_live_session.rs`             |
-| 2 — Lexicon     | Dictionary substitution                                 | ⚠️ partial, different shape                                                        | `core/pipeline/stream_postprocess.rs::apply_lexicon`, applied at seal time on the Apple path — not the ADR's debounced `core/lexicon/` module |
-| 2 — LLM polish  | Small inline LLM                                        | ❌ not built                                                                       | no `core/llm/inline_polish.rs`; stop-path `core/llm/ai_formatting.rs` is a different surface                                                  |
-| 3 — Paralingual | Silero classifier head                                  | ❌ not built                                                                       | `InsertAnnotation` transport exists end-to-end; no producer                                                                                   |
-| 4 — Final BAM   | Session-end contextual pass                             | ❌ not built                                                                       | no `core/pipeline/final_bam.rs`; `FINAL_PASS_MODE` is a different mechanism                                                                   |
-| Orchestrator    | —                                                       | ❌ not built, not currently needed                                                 | both live paths share the `tail_patcher` gate directly; no `app/controller/layered_orchestrator.rs`                                           |
+Silero sits beside these layers as VAD and PCM-time evidence. Speech boundaries,
+silence duration, pause timing, and pre-roll are its truthful outputs. Named
+laughter/noise classes require an optional measured provider; plain Silero does
+not claim them. Final BAM is superseded and has no producer, while
+`SessionFinalised` closes lifecycle only.
 
 Existing files (`core/stt/whisper/`, `core/audio/streaming_recorder.rs`, `core/vad/silero_ort.rs`)
 keep their public APIs — Layer 1 reuses them as its backend.
@@ -49,11 +49,11 @@ by `FINAL_PASS_MODE` (`always|smart|off`, Smart default; Settings → Dictation 
 "Final pass"). **Smart only** skips the full stop re-pass on a typed,
 adjudicator-backed completeness decision (`StreamingCompleteness`) — never on
 punctuation and never rewritten by live engine (Off stays Off; Off never forces
-Whisper at stop). Live gap-fill (Layer 1 Whisper tail-patch) is a **separate**
-opt-in via `CODESCRIBE_LAYERED_TRANSCRIPTION` (default off; phase ≥ 1 arms it on
-**both** live paths — VAD/scheduler and the default Apple progressive live, wired
-2026-08-08 in `a6b1233d`). Smart works _with_ layered when both are enabled;
-Smart does not enable layered. Dictionary/lexicon always runs in postprocess.
+Whisper at stop). Live repair is orthogonal: Local Power + Apple/Auto arms the
+exact-span Apple progressive patcher by default. `phase1` remains compatible
+explicit arming; explicit off/invalid is degraded. The VAD/scheduler route uses
+Whisper directly and refuses a second unbound lane. Dictionary/lexicon always
+runs in postprocess.
 
 Two INFO receipts prove the path in `codescribe.log`:
 

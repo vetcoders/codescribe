@@ -1,6 +1,6 @@
 # Codescribe Local Agent Contract
 
-The VetCoders Global Agent Charter is authoritative in this repository. This
+The Vetcoders Global Agent Charter is authoritative in this repository. This
 file adds only Codescribe-specific runtime laws and pointers; it does not create
 a second workflow, dispatch plane, or worktree policy.
 

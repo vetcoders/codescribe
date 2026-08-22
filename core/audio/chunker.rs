@@ -149,6 +149,25 @@ pub(crate) struct VadErrorStats {
     pub total_unavailable_frames: u64,
 }
 
+/// Exact Silero boundary mapped back onto the capture PCM clock.
+///
+/// This stays in the audio layer so the chunker does not depend on pipeline
+/// event contracts. The streaming Silero fusion layer turns it into typed
+/// sideband evidence at the one-VAD session boundary.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub(crate) struct VadBoundaryEvidence {
+    pub kind: VadBoundaryKind,
+    pub sample: u64,
+    pub speech_probability: f32,
+}
+
+/// Which hysteresis edge produced a [`VadBoundaryEvidence`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum VadBoundaryKind {
+    SpeechStart,
+    SpeechEnd,
+}
+
 // ═══════════════════════════════════════════════════════════
 // SpeechSession
 // ═══════════════════════════════════════════════════════════
@@ -208,6 +227,9 @@ pub(crate) struct SpeechSession {
     segment_peak_prob: f32,
     /// Speech probability at the last VAD boundary (Start or End).
     last_boundary_prob: f32,
+    /// Boundary observations waiting for the session-level Silero ingress.
+    /// FIFO order is the PCM order in which the iterator produced them.
+    vad_boundaries: VecDeque<VadBoundaryEvidence>,
     /// Wall-clock instant when this session was created.
     session_start: Instant,
     /// Total number of Silero predict() errors in this session.
@@ -315,6 +337,7 @@ impl SpeechSession {
             max_speech_prob: 0.0,
             segment_peak_prob: 0.0,
             last_boundary_prob: 0.0,
+            vad_boundaries: VecDeque::new(),
             session_start: Instant::now(),
             vad_predict_errors_total: 0,
             vad_predict_errors_pending: 0,
@@ -443,6 +466,7 @@ impl SpeechSession {
             max_speech_prob: 0.0,
             segment_peak_prob: 0.0,
             last_boundary_prob: 0.0,
+            vad_boundaries: VecDeque::new(),
             session_start: Instant::now(),
             vad_predict_errors_total: 0,
             vad_predict_errors_pending: 0,
@@ -588,20 +612,27 @@ impl SpeechSession {
             }
 
             if let Some(start_sample) = start_event {
-                let raw_start = self
-                    .vad_to_raw_index(start_sample)
-                    .saturating_sub(self.pre_roll_raw);
-                self.segment_start = Some(raw_start);
-                self.last_emit_raw = raw_start;
+                let raw_boundary = self.vad_to_raw_index(start_sample);
+                self.vad_boundaries.push_back(VadBoundaryEvidence {
+                    kind: VadBoundaryKind::SpeechStart,
+                    sample: raw_boundary as u64,
+                    speech_probability: speech_prob,
+                });
+                let padded_start = raw_boundary.saturating_sub(self.pre_roll_raw);
+                self.segment_start = Some(padded_start);
+                self.last_emit_raw = padded_start;
                 self.last_boundary_prob = speech_prob;
                 self.segment_peak_prob = speech_prob;
             }
 
             if let Some(end_sample) = end_event {
-                let raw_end = self
-                    .vad_to_raw_index(end_sample)
-                    .saturating_add(self.speech_pad_raw);
-                self.pending_end = Some(raw_end);
+                let raw_boundary = self.vad_to_raw_index(end_sample);
+                self.vad_boundaries.push_back(VadBoundaryEvidence {
+                    kind: VadBoundaryKind::SpeechEnd,
+                    sample: raw_boundary as u64,
+                    speech_probability: speech_prob,
+                });
+                self.pending_end = Some(raw_boundary.saturating_add(self.speech_pad_raw));
                 self.last_boundary_prob = speech_prob;
             }
 
@@ -750,6 +781,14 @@ impl SpeechSession {
     pub(crate) fn open_segment_raw_range(&self) -> Option<(u64, u64)> {
         let start = self.segment_start?;
         Some((start as u64, self.raw_cursor as u64))
+    }
+
+    /// Drain exact Silero start/end observations in production order.
+    ///
+    /// Reading these observations never gates PCM. An empty vector therefore
+    /// means "no sideband evidence", not "drop or delay audio".
+    pub(crate) fn take_vad_boundaries(&mut self) -> Vec<VadBoundaryEvidence> {
+        self.vad_boundaries.drain(..).collect()
     }
 
     /// Close the session and emit whatever is still open.
@@ -1630,6 +1669,31 @@ impl VadIterState {
 mod tests {
     use super::*;
     use serial_test::serial;
+
+    #[test]
+    fn vad_boundary_evidence_drains_once_in_pcm_order() {
+        let mut session = SpeechSession::new_utterance(16_000);
+        session.vad_boundaries.extend([
+            VadBoundaryEvidence {
+                kind: VadBoundaryKind::SpeechStart,
+                sample: 512,
+                speech_probability: 0.91,
+            },
+            VadBoundaryEvidence {
+                kind: VadBoundaryKind::SpeechEnd,
+                sample: 16_384,
+                speech_probability: 0.08,
+            },
+        ]);
+
+        let drained = session.take_vad_boundaries();
+        assert_eq!(drained.len(), 2);
+        assert_eq!(drained[0].kind, VadBoundaryKind::SpeechStart);
+        assert_eq!(drained[0].sample, 512);
+        assert_eq!(drained[1].kind, VadBoundaryKind::SpeechEnd);
+        assert_eq!(drained[1].sample, 16_384);
+        assert!(session.take_vad_boundaries().is_empty());
+    }
 
     /// RAII guard that restores an env var on drop.
     ///

@@ -152,6 +152,10 @@ i runtime nie może znaleźć Whispera przez cache / config:
 
 ## D) Pełny podział działowy (wszystkie zmienne)
 
+### Runtime aplikacji
+
+- `CODESCRIBE_APP_RUNTIME_WORKERS` (RESTART NEEDED; default `4`; clamp `1..16`) — liczba nazwanych workerów jedynego runtime'u Tokio należącego do Codescribe.app. Eksporty async UniFFI są natychmiast przenoszone na ten executor; wartość jest odczytywana wyłącznie przy pierwszym starcie runtime'u.
+
 ### Audio
 
 - `AUDIO_INPUT_DEVICE` – nazwa urządzenia wejściowego (RESTART NEEDED)
@@ -167,7 +171,7 @@ i runtime nie może znaleźć Whispera przez cache / config:
 - `CODESCRIBE_WHISPER_INITIAL_PROMPT` (RESTART NEEDED; alias legacy: `WHISPER_INITIAL_PROMPT`; ignorowane przez ONNX)
 - `STT_ENDPOINT`, `STT_API_KEY` (RESTART NEEDED)
 - `FINAL_PASS_MODE` (legacy; `always|smart|off`; alias `CODESCRIBE_FINAL_PASS_MODE`) — zachowany do migracji ustawień, ale zwykły stop nie wykonuje już żadnego file-passu. Pełny WAV trafia do STT wyłącznie po jawnej akcji Retranscribe (Overlay/Dictionary/Teacher). Live refinement wybiera osobny `CODESCRIBE_LAYERED_TRANSCRIPTION`; słownik/lexicon zawsze działa w postprocess.
-- `CODESCRIBE_LAYERED_TRANSCRIPTION` (HOT RELOADED; default `phase1`; `phase1`..`phase4` lub bare `1`..`4`; jawne `off`/`0`/`false` rozbraja) — ortogonalny gate warstwowej transkrypcji. Unset → `phase1` od 2026-08-09. `phase1+` = Layer 1 Whisper tail-patch (`ReplaceRange`) na **obu** ścieżkach live: VAD/scheduler oraz domyślnym Apple progressive live (W2-A — gap-fill z zatrzymanego PCM, max jeden job w locie, nierozwiązane okno nigdy nie trafia do Whispera). Promoted do `settings.json`. Smart final-pass **nie** ustawia tej flagi.
+- `CODESCRIBE_LAYERED_TRANSCRIPTION` (HOT RELOADED; promoted compatibility override) — Local Power + Apple/Auto uzbraja dokładnie ogrodzony Whisper tail-patch przy braku wartości lub `phase1`; jawne `off`/`0`/`false`/`no` albo błędny token daje named degraded state. Apple-only nie uzbraja lane. Bezpośredni Whisper na VAD/scheduler jest primary engine i odmawia drugiej, unbound mutation lane. Per-take prawdą jest `tail_patch_session_receipt`, nie stan UI. Final pass pozostaje ortogonalny.
 - `STT_TAIL_PROVIDER` (HOT RELOADED; default `inprocess`) — wybiera implementację kontraktu tail-patch: `inprocess`, nadzorowany lokalny `sidecar` po WebSocket albo `remote` po multipart. Awaria sidecara/remote przechodzi do in-process z typed receiptem; zmiana defaultu pozostaje guzikiem operatora.
 - `CODESCRIBE_STT_SIDECAR_BIN` (RESTART NEEDED; dev only) — jawna ścieżka do helpera; aplikacja dystrybucyjna automatycznie znajduje `codescribe-stt-sidecar` obok własnego executable.
 - `CODESCRIBE_TAIL_PATCH_MAX_CHANGE_RATIO` (HOT RELOADED; default `0.5`) — próg bezpieczeństwa Layer 1: jeśli udział zmienionych znaków wobec zatwierdzonej wypowiedzi przekracza tę wartość, cała łatka jest **odrzucana** zamiast nałożona. Dzięki temu rozbieżna re-transkrypcja nigdy nie nadpisze żywego płótna.

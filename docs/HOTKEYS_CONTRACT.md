@@ -446,7 +446,7 @@ const DOUBLE_TAP_INTERVAL_MS: u64 = 200;
 
 When `HOLD_EXCLUSIVE=false` (default), modifier variants work out of the box:
 
-- Shift or Command *during* an already-started Fn hold attaches `{selection_N}`
+- Shift or Command _during_ an already-started Fn hold attaches `{selection_N}`
   (default arm modifier Shift; configurable to Cmd in Settings)
 - Fn+Shift from idle stays dictation — it is not Assistive and does not front Agent
 - The unconfigured arm modifier does not attach (W10-B detector truth)

@@ -57,12 +57,40 @@ private final class OverlayContentContainer: NSView {
   override func setFrameSize(_ newSize: NSSize) {
     super.setFrameSize(newSize)
     hosting.frame = bounds
+    window?.invalidateCursorRects(for: self)
   }
 
   override func layout() {
     super.layout()
     hosting.frame = bounds
   }
+
+  /// AppKit's borderless resize strip is ~1–2 px. Claim the 12 pt band first
+  /// so SwiftUI / movable-background do not steal the edge.
+  override func hitTest(_ point: NSPoint) -> NSView? {
+    if OverlayResizeHit.edge(at: point, in: bounds) != nil { return self }
+    return super.hitTest(point)
+  }
+
+  override func resetCursorRects() {
+    discardCursorRects()
+    for (rect, cursor) in OverlayResizeHit.cursorRects(in: bounds) {
+      addCursorRect(rect, cursor: cursor)
+    }
+  }
+
+  override func mouseDown(with event: NSEvent) {
+    let local = convert(event.locationInWindow, from: nil)
+    guard let edge = OverlayResizeHit.edge(at: local, in: bounds),
+      let window
+    else {
+      super.mouseDown(with: event)
+      return
+    }
+    OverlayResizeHit.track(edge: edge, window: window, start: event)
+  }
+
+  override func acceptsFirstMouse(for event: NSEvent?) -> Bool { true }
 }
 
 enum DictationOverlayWindow {
@@ -317,6 +345,130 @@ final class OverlayPresence {
     }
     if policy == .capture {
       panel.orderFrontRegardless()
+    }
+  }
+}
+
+/// Geometry for a fat resize band on a borderless panel. AppKit's own strip
+/// is one or two pixels; this is the operator-visible target (macOS 15+).
+enum OverlayResizeHit: Sendable {
+  static let band: CGFloat = 12
+
+  enum Edge: Sendable, Equatable {
+    case left, right, top, bottom
+    case topLeft, topRight, bottomLeft, bottomRight
+  }
+
+  static func edge(at point: NSPoint, in bounds: NSRect, band: CGFloat = band) -> Edge? {
+    guard bounds.width > band * 2, bounds.height > band * 2 else { return nil }
+    let left = point.x <= bounds.minX + band
+    let right = point.x >= bounds.maxX - band
+    let bottom = point.y <= bounds.minY + band
+    let top = point.y >= bounds.maxY - band
+    switch (left, right, bottom, top) {
+    case (true, false, true, false): return .bottomLeft
+    case (true, false, false, true): return .topLeft
+    case (false, true, true, false): return .bottomRight
+    case (false, true, false, true): return .topRight
+    case (true, false, false, false): return .left
+    case (false, true, false, false): return .right
+    case (false, false, true, false): return .bottom
+    case (false, false, false, true): return .top
+    default: return nil
+    }
+  }
+
+  static func apply(
+    edge: Edge,
+    start: NSRect,
+    dx: CGFloat,
+    dy: CGFloat,
+    minSize: NSSize
+  ) -> NSRect {
+    var frame = start
+    switch edge {
+    case .right, .topRight, .bottomRight:
+      frame.size.width = max(minSize.width, start.width + dx)
+    case .left, .topLeft, .bottomLeft:
+      let width = max(minSize.width, start.width - dx)
+      frame.origin.x = start.maxX - width
+      frame.size.width = width
+    case .top, .bottom:
+      break
+    }
+    switch edge {
+    case .top, .topLeft, .topRight:
+      frame.size.height = max(minSize.height, start.height + dy)
+    case .bottom, .bottomLeft, .bottomRight:
+      let height = max(minSize.height, start.height - dy)
+      frame.origin.y = start.maxY - height
+      frame.size.height = height
+    case .left, .right:
+      break
+    }
+    return frame
+  }
+
+  static func cursorRects(in bounds: NSRect, band: CGFloat = band) -> [(NSRect, NSCursor)] {
+    let b = band
+    let w = bounds.width
+    let h = bounds.height
+    return [
+      (NSRect(x: 0, y: b, width: b, height: max(0, h - 2 * b)), cursor(for: .left)),
+      (NSRect(x: w - b, y: b, width: b, height: max(0, h - 2 * b)), cursor(for: .right)),
+      (NSRect(x: b, y: h - b, width: max(0, w - 2 * b), height: b), cursor(for: .top)),
+      (NSRect(x: b, y: 0, width: max(0, w - 2 * b), height: b), cursor(for: .bottom)),
+      (NSRect(x: 0, y: h - b, width: b, height: b), cursor(for: .topLeft)),
+      (NSRect(x: w - b, y: h - b, width: b, height: b), cursor(for: .topRight)),
+      (NSRect(x: 0, y: 0, width: b, height: b), cursor(for: .bottomLeft)),
+      (NSRect(x: w - b, y: 0, width: b, height: b), cursor(for: .bottomRight)),
+    ]
+  }
+
+  static func cursor(for edge: Edge) -> NSCursor {
+    if #available(macOS 15.0, *) {
+      let position: NSCursor.FrameResizePosition
+      switch edge {
+      case .left: position = .left
+      case .right: position = .right
+      case .top: position = .top
+      case .bottom: position = .bottom
+      case .topLeft:
+        position = .topLeading(relativeTo: NSApp.userInterfaceLayoutDirection)
+      case .topRight:
+        position = .topTrailing(relativeTo: NSApp.userInterfaceLayoutDirection)
+      case .bottomLeft:
+        position = .bottomLeading(relativeTo: NSApp.userInterfaceLayoutDirection)
+      case .bottomRight:
+        position = .bottomTrailing(relativeTo: NSApp.userInterfaceLayoutDirection)
+      }
+      return NSCursor.frameResize(position: position, directions: [.inward, .outward])
+    }
+    switch edge {
+    case .left, .right: return .resizeLeftRight
+    case .top, .bottom: return .resizeUpDown
+    default: return .crosshair
+    }
+  }
+
+  @MainActor
+  static func track(edge: Edge, window: NSWindow, start: NSEvent) {
+    let startFrame = window.frame
+    let startMouse = start.locationInWindow
+    let startScreen = window.convertToScreen(
+      NSRect(origin: startMouse, size: .zero)
+    ).origin
+    while let next = window.nextEvent(matching: [.leftMouseDragged, .leftMouseUp]) {
+      if next.type == .leftMouseUp { break }
+      let now = NSEvent.mouseLocation
+      let frame = apply(
+        edge: edge,
+        start: startFrame,
+        dx: now.x - startScreen.x,
+        dy: now.y - startScreen.y,
+        minSize: window.minSize
+      )
+      window.setFrame(frame, display: true)
     }
   }
 }

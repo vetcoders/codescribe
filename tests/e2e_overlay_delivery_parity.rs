@@ -34,6 +34,7 @@ use codescribe_core::pipeline::contracts::{
     final_pass_is_length_regression,
 };
 use codescribe_core::pipeline::streaming::{
+    TAIL_PATCH_SESSION_RECEIPT_WARNING_CODE, TailPatchDrainDisposition, TailPatchSessionReceipt,
     assemble_live_from_events, collect_buffered_engine_events,
 };
 use codescribe_core::quality::{MergeMode, merge_live_whisper};
@@ -82,11 +83,10 @@ fn measured_tail_patch_count(events: &[EngineEvent]) -> usize {
 /// Fail-closed contract between the target that asked for a lane and the lane
 /// the run actually exercised.
 ///
-/// `CODESCRIBE_LAYERED_TRANSCRIPTION` is a power-user key, NOT a promoted
-/// settings.json key (`config::settings::is_promoted_key`), so
-/// `Config::inject_file_env_for_runtime` copies it out of `~/.codescribe/.env`
-/// into the process environment. An operator who switched their daily dictation
-/// to `phase1` therefore armed Layer 1 inside a target whose entire purpose is
+/// Before the key was promoted to settings.json,
+/// `Config::inject_file_env_for_runtime` copied it out of `~/.codescribe/.env`.
+/// An operator who switched daily dictation to `phase1` therefore armed Layer 1
+/// inside a target whose entire purpose is
 /// to score Layer 0 against an Apple-fidelity reference — and Layer 1 is
 /// *supposed* to diverge from Apple, so the bar went red for doing its job.
 ///
@@ -109,9 +109,8 @@ fn measured_lane_matches_request(
         (None, leaked) => Err(format!(
             "this target scores Layer 0 against the Apple-fidelity reference, but the run \
              measured Layer 1: {leaked} ReplaceRange{{TailPatch}} event(s) reached the \
-             assembly. `CODESCRIBE_LAYERED_TRANSCRIPTION` is a power-user key, so \
-             ~/.codescribe/.env is injected into the process environment and can arm the \
-             layer underneath a Layer-0 bar. Pin the lane on the target \
+             assembly. An unpinned compatibility override can arm the layer underneath a \
+             Layer-0 bar. Pin the lane on the target \
              (`CODESCRIBE_LAYERED_TRANSCRIPTION=off`) and re-run — the similarity number \
              from this run says nothing about Layer 0."
         )),
@@ -123,6 +122,31 @@ fn measured_lane_matches_request(
         )),
         (Some(_), _) => Ok(()),
     }
+}
+
+/// Product arming gate backed by the runtime receipt, not by settings/UI state
+/// and not by the number of successful text mutations. A submitted window may
+/// legitimately be skipped, but Layered ON with no submitted observation is a
+/// failed run regardless of how clean the Apple transcript looked.
+fn layered_arming_matches_request(
+    requested: bool,
+    receipt: Option<&TailPatchSessionReceipt>,
+) -> Result<(), String> {
+    if !requested {
+        if receipt.is_some_and(|receipt| receipt.submitted > 0) {
+            return Err("Layered OFF submitted Layer 1 windows".to_string());
+        }
+        return Ok(());
+    }
+
+    let receipt = receipt.ok_or_else(|| "Layered ON emitted no arming receipt".to_string())?;
+    if !receipt.armed {
+        return Err("Layered ON receipt says the lane was disarmed".to_string());
+    }
+    if receipt.submitted == 0 {
+        return Err("Layered ON armed the lane but submitted zero windows".to_string());
+    }
+    Ok(())
 }
 
 fn sealed_final(utterance_id: u64, text: &str) -> EngineEvent {
@@ -138,6 +162,7 @@ fn sealed_final(utterance_id: u64, text: &str) -> EngineEvent {
         compression_ratio: None,
         quality_gate_dropped: false,
         confidence_flags: vec![],
+        acoustic: None,
     }
 }
 
@@ -149,6 +174,11 @@ fn tail_patch(utterance_id: u64, start: usize, end: usize, text: &str) -> Engine
         text: text.into(),
         source: LayerSource::TailPatch,
     }
+}
+
+fn layered_acceptance_fixture() -> serde_json::Value {
+    serde_json::from_str(include_str!("fixtures/layered_engine_acceptance.json"))
+        .expect("canonical layered-engine acceptance fixture must stay valid JSON")
 }
 
 /// The refuted run, in miniature: `make test-engine-parity` (Layer 0) with the
@@ -201,6 +231,52 @@ fn parity_lane_guard_passes_when_the_measured_lane_is_the_requested_lane() {
         },
     ];
     assert!(measured_lane_matches_request(None, &lexicon_on_layer0).is_ok());
+}
+
+#[test]
+fn layered_on_with_zero_submitted_windows_is_a_failed_arming_condition() {
+    let receipt =
+        TailPatchSessionReceipt::new(true, 0, 0, 0, 0, 0, TailPatchDrainDisposition::Completed);
+    let err = layered_arming_matches_request(true, Some(&receipt))
+        .expect_err("settings ON plus zero submitted work must fail closed");
+    assert!(
+        err.contains("zero windows"),
+        "unexpected receipt gate: {err}"
+    );
+}
+
+#[test]
+fn layered_arming_uses_submitted_work_not_only_successful_mutations() {
+    let honestly_skipped =
+        TailPatchSessionReceipt::new(true, 1, 0, 1, 0, 0, TailPatchDrainDisposition::Completed);
+    assert!(layered_arming_matches_request(true, Some(&honestly_skipped)).is_ok());
+
+    let leaked_while_off =
+        TailPatchSessionReceipt::new(false, 1, 0, 1, 0, 0, TailPatchDrainDisposition::NotArmed);
+    assert!(layered_arming_matches_request(false, Some(&leaked_while_off)).is_err());
+}
+
+#[test]
+fn stop_receipt_keeps_every_terminal_bucket_and_names_bounded_drain_timeout() {
+    let events = vec![EngineEvent::Warning {
+        code: TAIL_PATCH_SESSION_RECEIPT_WARNING_CODE.to_string(),
+        message:
+            "armed=true submitted=10 applied=4 skipped=3 timed_out=1 abandoned=2 drain=timed_out"
+                .to_string(),
+    }];
+    let receipt = TailPatchSessionReceipt::from_events(&events)
+        .expect("runtime stop receipt must be recoverable from the event stream");
+
+    assert_eq!(receipt.applied, 4);
+    assert_eq!(receipt.skipped, 3);
+    assert_eq!(receipt.timed_out, 1);
+    assert_eq!(receipt.abandoned, 2);
+    assert_eq!(
+        receipt.applied + receipt.skipped + receipt.timed_out + receipt.abandoned,
+        receipt.submitted,
+        "stop evidence must account for every submitted window instead of silently passing"
+    );
+    assert_eq!(receipt.drain, TailPatchDrainDisposition::TimedOut);
 }
 
 /// Engine bar: multi-pause dictation must seal ≥2 freezed finals and cover the
@@ -272,6 +348,7 @@ fn single_final_short_tail_fails_engine_bar() {
         compression_ratio: None,
         quality_gate_dropped: false,
         confidence_flags: vec![],
+        acoustic: None,
     }];
     let assembly = assemble_live_from_events(&events);
     assert_eq!(assembly.sealed_count(), 1);
@@ -580,6 +657,7 @@ fn overlay_assembly_freezes_finals_and_appends_preview_tail() {
             compression_ratio: None,
             quality_gate_dropped: false,
             confidence_flags: vec![],
+            acoustic: None,
         },
         EngineEvent::Preview {
             rev: 2,
@@ -627,6 +705,7 @@ fn parity_assembly_reads_layer1_tail_patches() {
         compression_ratio: None,
         quality_gate_dropped: false,
         confidence_flags: vec![],
+        acoustic: None,
     };
 
     // Layer 0 under-generated "Toolchain" as "Tulczajn"; Layer 1 re-transcribed
@@ -656,6 +735,115 @@ fn parity_assembly_reads_layer1_tail_patches() {
     assert_eq!(
         streaming_floor_from_events(&layered),
         "korzystając z Toolchain 2024"
+    );
+}
+
+/// Canonical Kora acceptance: Apple may publish the weak hypothesis first, but
+/// Layer 1 must repair the same committed span before the delivery boundary.
+/// An empty `final_text` deliberately models `Final pass = off`; the live
+/// tail-patch remains authoritative and does not require a whole-file repass.
+#[test]
+fn canonical_meaning_loss_is_repaired_live_before_delivery_with_final_pass_off() {
+    let fixture = layered_acceptance_fixture();
+    let weak_apple = fixture["meaning_loss"]["apple"]
+        .as_str()
+        .expect("meaning-loss Apple hypothesis");
+    let spoken = fixture["meaning_loss"]["spoken"]
+        .as_str()
+        .expect("meaning-loss spoken truth");
+
+    let events = vec![
+        sealed_final(41, weak_apple),
+        tail_patch(41, 0, weak_apple.chars().count(), spoken),
+    ];
+
+    assert_eq!(
+        measured_tail_patch_count(&events),
+        1,
+        "the acceptance vector must exercise Layer 1 rather than blessing Apple-only text"
+    );
+    let repaired_live = streaming_floor_from_events(&events);
+    assert_eq!(repaired_live, spoken);
+
+    let (source, delivered) = delivery_from_stream_and_final(&repaired_live, "");
+    assert_eq!(source, "streaming_floor");
+    assert_eq!(
+        delivered, spoken,
+        "manual Retranscribe/full-file final must not be the first place meaning returns"
+    );
+    assert!(!delivered.contains("Musi latać"));
+}
+
+/// The first audible token is capture truth. A later in-span correction may
+/// improve the body, but it may not eat the onset before seal or Delivery.
+#[test]
+fn onset_token_iwo_survives_live_patch_seal_and_delivery() {
+    let fixture = layered_acceptance_fixture();
+    let apple = fixture["onset"]["apple"]
+        .as_str()
+        .expect("onset Apple text");
+    let repaired = fixture["onset"]["repaired"]
+        .as_str()
+        .expect("onset repaired text");
+    let first_token = fixture["onset"]["required_first_token"]
+        .as_str()
+        .expect("required onset token");
+
+    let events = vec![
+        sealed_final(7, apple),
+        tail_patch(7, 0, apple.chars().count(), repaired),
+    ];
+    let live = streaming_floor_from_events(&events);
+    let (_, delivered) = delivery_from_stream_and_final(&live, "");
+
+    assert!(
+        live.starts_with(&format!("{first_token} ")),
+        "live onset was lost: {live}"
+    );
+    assert!(
+        delivered.starts_with(&format!("{first_token} ")),
+        "delivery onset was lost after a valid live repair: {delivered}"
+    );
+}
+
+/// Idempotence is keyed by span identity, never by equal text. Replaying the
+/// same `utterance_id` updates its one slot; five new identities carrying the
+/// same intentional phrase must remain five committed spans.
+#[test]
+fn same_span_replay_is_idempotent_while_five_distinct_repetitions_survive() {
+    let fixture = layered_acceptance_fixture();
+    let phrase = fixture["repetition"]["text"]
+        .as_str()
+        .expect("repetition text");
+    let distinct_ids = fixture["repetition"]["distinct_span_ids"]
+        .as_array()
+        .expect("distinct span ids");
+    let replayed_id = fixture["repetition"]["replayed_span_id"]
+        .as_u64()
+        .expect("replayed span id");
+    let expected = fixture["repetition"]["expected_deliveries"]
+        .as_u64()
+        .expect("expected repetition count") as usize;
+    let mut events = Vec::new();
+    for utterance_id in distinct_ids {
+        events.push(sealed_final(
+            utterance_id.as_u64().expect("numeric span id"),
+            phrase,
+        ));
+    }
+    // Provider/session replay of span 3: same identity, therefore one slot.
+    events.push(sealed_final(replayed_id, phrase));
+
+    let assembly = assemble_live_from_events(&events);
+    assert_eq!(assembly.sealed_count(), expected);
+    assert_eq!(
+        assembly
+            .streaming_floor()
+            .split_whitespace()
+            .filter(|token| *token == phrase)
+            .count(),
+        expected,
+        "text-equality dedup must not erase intentional repetitions, while an identity replay must not create a sixth"
     );
 }
 
@@ -1421,6 +1609,14 @@ async fn e2e_production_overlay_corpus_replay() {
             .filter(|event| matches!(event, EngineEvent::Preview { .. }))
             .count();
         let tail_patches = measured_tail_patch_count(&replay.events);
+        let tail_patch_receipt = TailPatchSessionReceipt::from_events(&replay.events);
+        if replay.layer1_armed {
+            layered_arming_matches_request(true, tail_patch_receipt.as_ref()).unwrap_or_else(
+                |mismatch| {
+                    panic!("production replay {opaque_id} Layer 1 arming mismatch: {mismatch}")
+                },
+            );
+        }
 
         let acceptance = if class == "long" {
             normalized_character_parity >= 0.85
@@ -1471,6 +1667,12 @@ async fn e2e_production_overlay_corpus_replay() {
                 "final_count": replay.boundary_evidence.final_count,
                 "unique_final_id_count": replay.boundary_evidence.unique_final_id_count,
                 "tail_patches": tail_patches,
+                "tail_patch_submitted": tail_patch_receipt.as_ref().map(|receipt| receipt.submitted),
+                "tail_patch_applied": tail_patch_receipt.as_ref().map(|receipt| receipt.applied),
+                "tail_patch_skipped": tail_patch_receipt.as_ref().map(|receipt| receipt.skipped),
+                "tail_patch_timed_out": tail_patch_receipt.as_ref().map(|receipt| receipt.timed_out),
+                "tail_patch_abandoned": tail_patch_receipt.as_ref().map(|receipt| receipt.abandoned),
+                "tail_patch_drain": tail_patch_receipt.as_ref().map(|receipt| format!("{:?}", receipt.drain)),
                 "live_chars": replay.live_text.chars().count(),
                 "adjudicated_chars": replay.adjudicated_text.chars().count(),
                 "delivered_chars": replay.delivered_text.chars().count(),
@@ -1722,6 +1924,24 @@ async fn e2e_apple_live_parity() {
     );
     if let Err(mismatch) = measured_lane_matches_request(requested_lane, &events) {
         panic!("parity lane mismatch — {mismatch}");
+    }
+    let tail_patch_receipt = TailPatchSessionReceipt::from_events(&events);
+    if let Err(mismatch) =
+        layered_arming_matches_request(requested_lane.is_some(), tail_patch_receipt.as_ref())
+    {
+        panic!("parity Layer 1 arming mismatch — {mismatch}");
+    }
+    if let Some(receipt) = tail_patch_receipt {
+        eprintln!(
+            "parity Layer 1 receipt: armed={} submitted={} applied={} skipped={} timed_out={} abandoned={} drain={:?}",
+            receipt.armed,
+            receipt.submitted,
+            receipt.applied,
+            receipt.skipped,
+            receipt.timed_out,
+            receipt.abandoned,
+            receipt.drain,
+        );
     }
 
     let normalize = |s: &str| s.split_whitespace().collect::<Vec<_>>().join(" ");

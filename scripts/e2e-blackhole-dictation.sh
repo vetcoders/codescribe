@@ -354,12 +354,10 @@ if [ "${ENGINE:-apple}" = "apple" ]; then
   export CODESCRIBE_BRIDGE_DISCLAIM=1
 fi
 
-# Which lane is this run measuring? The core injects ~/.codescribe/.env into the
-# process environment (CODESCRIBE_LAYERED_TRANSCRIPTION is a power-user key, not
-# a promoted setting), so an unpinned run can silently score a different layer
-# than the caller intended. Print it here and let the test assert it against the
-# events it actually saw (`measured_lane_matches_request`).
-info "layered lane: ${CODESCRIBE_LAYERED_TRANSCRIPTION:-<unpinned — the core may inject ~/.codescribe/.env>}"
+# Which compatibility override is this run measuring? The key is promoted to
+# settings.json, while process env still wins for this harness. Print the
+# explicit test input and let runtime receipts prove the lane actually armed.
+info "layered override: ${CODESCRIBE_LAYERED_TRANSCRIPTION:-<unset — product mode decides>}"
 
 # Pre-build so compile time cannot eat into anything timing-sensitive.
 cargo test --test e2e_overlay_delivery_parity --no-run >"$WORK/build.log" 2>&1 ||

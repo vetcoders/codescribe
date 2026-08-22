@@ -24,6 +24,8 @@ mod agent;
 mod agent_delivery;
 /// Read-only agent readiness and MCP status.
 mod agent_status;
+/// Process-owned async runtime and lifecycle evidence.
+mod application_runtime;
 /// Settings, prompts, keychain, and onboarding config.
 mod config;
 /// Global hotkey registration and app-action callbacks.
@@ -45,6 +47,7 @@ mod tray_status;
 
 pub use agent::{CodescribeAgent, CsAgentListener};
 pub use agent_delivery::CsAgentDeliveryListener;
+pub use application_runtime::CsApplicationRuntimeSnapshot;
 pub use hotkeys::CodescribeHotkeys;
 pub use hotkeys::CsAppActionListener;
 pub use licensing::{CsLicenseState, CsLicenseStatus};
@@ -70,6 +73,7 @@ pub enum CsError {
     Recording { msg: String },
     License { msg: String },
     Quality { msg: String },
+    Runtime { msg: String },
 }
 
 impl std::fmt::Display for CsError {
@@ -80,7 +84,8 @@ impl std::fmt::Display for CsError {
             | CsError::Config { msg }
             | CsError::Recording { msg }
             | CsError::License { msg }
-            | CsError::Quality { msg } => {
+            | CsError::Quality { msg }
+            | CsError::Runtime { msg } => {
                 write!(f, "{msg}")
             }
         }
@@ -88,6 +93,27 @@ impl std::fmt::Display for CsError {
 }
 
 impl std::error::Error for CsError {}
+
+/// Start the one process-owned async runtime. Idempotent while running; once
+/// shut down it cannot be restarted in the same process.
+#[uniffi::export]
+pub fn start_application_runtime() -> Result<CsApplicationRuntimeSnapshot, CsError> {
+    application_runtime::start()
+}
+
+/// Content-free lifecycle snapshot used by diagnostics and delivery probes.
+#[uniffi::export]
+pub fn application_runtime_snapshot() -> Result<CsApplicationRuntimeSnapshot, CsError> {
+    application_runtime::snapshot()
+}
+
+/// Stop controller/account activity first, then tear down every runtime worker.
+#[uniffi::export]
+pub fn shutdown_application_runtime() -> Result<CsApplicationRuntimeSnapshot, CsError> {
+    config::cancel_pending_account_login_for_shutdown();
+    hotkeys::shutdown_application_controller()?;
+    application_runtime::shutdown()
+}
 
 impl From<anyhow::Error> for CsError {
     /// Map `anyhow` failures onto the Agent error variant by default.

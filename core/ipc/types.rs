@@ -11,8 +11,8 @@
 use serde::{Deserialize, Serialize};
 
 use crate::pipeline::contracts::{
-    AnnotationKind, DropKind, EngineEvent, LayerSource, LayerSummary, TranscriptSegment,
-    TranscriptionConfidenceFlag,
+    AnnotationKind, DropKind, EngineEvent, LayerSource, LayerSummary, SidebandEvidence,
+    TranscriptSegment, TranscriptionConfidenceFlag,
 };
 
 /// One timestamped envelope on the IPC stream. The payload is flattened, so a
@@ -78,6 +78,9 @@ pub enum EngineEventWire {
         speech_prob: f32,
         ts_ms: u64,
     },
+    SidebandEvidence {
+        evidence: SidebandEvidence,
+    },
     NoSpeech {
         reason: String,
     },
@@ -101,6 +104,8 @@ pub enum EngineEventWire {
         compression_ratio: Option<f32>,
         quality_gate_dropped: bool,
         confidence_flags: Vec<TranscriptionConfidenceFlag>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        acoustic: Option<crate::pipeline::contracts::AcousticTranscriptIdentity>,
     },
     ReplaceRange {
         utterance_id: u64,
@@ -157,6 +162,9 @@ impl From<&EngineEvent> for EngineEventWire {
                 speech_prob: *speech_prob,
                 ts_ms: *ts_ms,
             },
+            EngineEvent::SidebandEvidence { evidence } => Self::SidebandEvidence {
+                evidence: evidence.clone(),
+            },
             EngineEvent::NoSpeech { reason } => Self::NoSpeech {
                 reason: reason.clone(),
             },
@@ -184,6 +192,7 @@ impl From<&EngineEvent> for EngineEventWire {
                 compression_ratio,
                 quality_gate_dropped,
                 confidence_flags,
+                acoustic,
                 ..
             } => Self::UtteranceFinal {
                 utterance_id: *utterance_id,
@@ -196,6 +205,7 @@ impl From<&EngineEvent> for EngineEventWire {
                 compression_ratio: *compression_ratio,
                 quality_gate_dropped: *quality_gate_dropped,
                 confidence_flags: confidence_flags.clone(),
+                acoustic: acoustic.clone(),
             },
             EngineEvent::Drop { kind, text, reason } => Self::Drop {
                 kind: drop_kind_to_wire(kind).to_string(),
@@ -287,6 +297,11 @@ fn drop_kind_to_wire(kind: &DropKind) -> &'static str {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::pipeline::contracts::{
+        AcousticSpanGrain, AcousticTranscriptIdentity, AcousticTranscriptSpan, NonSpeechEvidence,
+        SidebandEvidenceKind, SidebandProvenance,
+    };
+    use crate::stt::tail_provider::TailSampleRange;
     use serde_json::Value;
 
     /// Test helper: force a JSON value into an object map or panic with context.
@@ -313,6 +328,24 @@ mod tests {
             compression_ratio: Some(1.1),
             quality_gate_dropped: false,
             confidence_flags: vec![TranscriptionConfidenceFlag::VeryLowSpeech],
+            acoustic: Some(AcousticTranscriptIdentity {
+                range: TailSampleRange {
+                    session: "ipc-session".into(),
+                    capture_epoch: 8,
+                    sample_start: 48_000,
+                    sample_end: 120_000,
+                },
+                spans: vec![AcousticTranscriptSpan {
+                    text: "hello world".into(),
+                    range: TailSampleRange {
+                        session: "ipc-session".into(),
+                        capture_epoch: 8,
+                        sample_start: 48_000,
+                        sample_end: 120_000,
+                    },
+                    grain: AcousticSpanGrain::Phrase,
+                }],
+            }),
         };
 
         let wire = EngineEventWire::from(&event);
@@ -329,6 +362,14 @@ mod tests {
         );
         assert_eq!(obj.get("text").and_then(Value::as_str), Some("hello world"));
         assert!(obj.get("segments").is_some(), "segments must be present");
+        assert_eq!(
+            obj.get("acoustic")
+                .and_then(|value| value.get("range"))
+                .and_then(|value| value.get("capture_epoch"))
+                .and_then(Value::as_u64),
+            Some(8),
+            "PCM identity must survive IPC while raw text stays private"
+        );
         assert_eq!(
             obj.get("vad_speech_pct")
                 .and_then(Value::as_f64)
@@ -445,6 +486,54 @@ mod tests {
         assert_eq!(
             obj.get("partial_dropped_count").and_then(Value::as_u64),
             Some(13)
+        );
+    }
+
+    /// Sideband evidence keeps exact PCM identity and typed provenance on the
+    /// process wire without becoming transcript text.
+    #[test]
+    fn sideband_event_serializes_typed_wire_payload() {
+        let event = EngineEvent::SidebandEvidence {
+            evidence: SidebandEvidence {
+                sequence: 7,
+                range: TailSampleRange {
+                    session: "session-1".to_string(),
+                    capture_epoch: 3,
+                    sample_start: 32_000,
+                    sample_end: 48_000,
+                },
+                sample_rate_hz: 16_000,
+                provenance: SidebandProvenance::SileroVad,
+                evidence: SidebandEvidenceKind::Pause {
+                    duration_samples: 16_000,
+                    non_speech: NonSpeechEvidence::UnknownNonSpeech,
+                },
+            },
+        };
+
+        let wire = EngineEventWire::from(&event);
+        let json = serde_json::to_value(&wire).expect("serialize sideband wire");
+        let obj = must_object(json);
+        assert_eq!(
+            obj.get("type").and_then(Value::as_str),
+            Some("sideband_evidence")
+        );
+        let evidence = obj
+            .get("evidence")
+            .and_then(Value::as_object)
+            .expect("sideband payload");
+        assert_eq!(evidence.get("sequence").and_then(Value::as_u64), Some(7));
+        assert_eq!(
+            evidence.get("provenance").and_then(Value::as_str),
+            Some("silero_vad")
+        );
+        assert_eq!(
+            evidence
+                .get("evidence")
+                .and_then(Value::as_object)
+                .and_then(|kind| kind.get("non_speech"))
+                .and_then(Value::as_str),
+            Some("unknown_non_speech")
         );
     }
 

@@ -242,7 +242,7 @@ fn duration_from_env_ms(key: &str, default_ms: u64) -> Duration {
 /// failures, transcript delivered raw. NOT retention: the same-key chain was
 /// proven alive hours later (2026-08-14, full recall of the 10:38 take). The
 /// stored id is poison for THIS key, so drop it and go unchained.
-fn is_stale_chain_error(error: &anyhow::Error) -> bool {
+pub(crate) fn is_stale_chain_error(error: &anyhow::Error) -> bool {
     error.to_string().contains("previous_response_not_found")
 }
 
@@ -2120,8 +2120,66 @@ async fn call_llm_endpoint(
     Ok(output)
 }
 
-/// One chained Responses request over the formatting lane, chain owned by the
-/// caller (W13-1 inline-format buffer).
+/// One immutable resolution of the existing Formatting lane for an inline
+/// dictation session.
+///
+/// The secret is intentionally private and this type deliberately has no
+/// `Debug` implementation: receipts may name the endpoint/model, never the
+/// credential. Pinning this once at recording start prevents a settings edit
+/// from continuing an old `previous_response_id` against a different provider
+/// identity halfway through a take.
+#[derive(Clone)]
+pub(crate) struct InlineFormattingLane {
+    endpoint: String,
+    model: String,
+    api_key: String,
+    system_prompt: String,
+}
+
+impl InlineFormattingLane {
+    pub(crate) fn endpoint(&self) -> &str {
+        &self.endpoint
+    }
+
+    pub(crate) fn model(&self) -> &str {
+        &self.model
+    }
+
+    pub(crate) fn system_prompt(&self) -> &str {
+        &self.system_prompt
+    }
+
+    #[cfg(test)]
+    pub(crate) fn for_test(endpoint: String, model: &str, api_key: &str) -> Self {
+        Self {
+            endpoint,
+            model: model.to_string(),
+            api_key: api_key.to_string(),
+            system_prompt: crate::config::prompts::get_formatting_prompt_for_policy(
+                FormattingPolicy::Correction,
+            )
+            .expect("Correction always has a formatting prompt"),
+        }
+    }
+}
+
+/// Resolve the existing Formatting lane once for an inline dictation session.
+/// This is not a second provider/client/model namespace; it uses the same
+/// endpoint, model, credential slot and shared HTTP client as one-shot Format.
+pub(crate) fn resolve_inline_formatting_lane() -> Result<InlineFormattingLane> {
+    let policy = Config::formatting_policy()?;
+    let system_prompt = formatting_provider_system_prompt(false, policy)
+        .context("Inline formatting requires an enabled Formatting policy prompt")?;
+    Ok(InlineFormattingLane {
+        endpoint: get_formatting_endpoint()?,
+        model: get_formatting_model()?,
+        api_key: get_formatting_api_key()?,
+        system_prompt,
+    })
+}
+
+/// One chained Responses request over a pinned Formatting lane, chain owned by
+/// the caller (W13-1 inline-format buffer).
 ///
 /// Deliberately does NOT touch [`crate::state::conversation`]: the inline
 /// buffer keeps its own `previous_response_id` per dictation session, so chunk
@@ -2132,18 +2190,16 @@ pub(crate) async fn format_inline_chunk(
     language: Option<&str>,
     previous_response_id: Option<String>,
     system_prompt: &str,
+    lane: &InlineFormattingLane,
 ) -> Result<(String, Option<String>)> {
-    let endpoint = get_formatting_endpoint()?;
-    let model = get_formatting_model()?;
-    let api_key = get_formatting_api_key()?;
     format_inline_chunk_resolved(
         chunk_text,
         language,
         previous_response_id,
         system_prompt,
-        &endpoint,
-        &model,
-        &api_key,
+        &lane.endpoint,
+        &lane.model,
+        &lane.api_key,
     )
     .await
 }

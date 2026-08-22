@@ -6996,6 +6996,103 @@ public func FfiConverterTypeCsApiKeyProbeResult_lower(_ value: CsApiKeyProbeResu
 
 
 /**
+ * Observable, content-free runtime lifecycle evidence for Swift and probes.
+ */
+public struct CsApplicationRuntimeSnapshot: Equatable, Hashable {
+    /**
+     * `not_started`, `running`, or `stopped`.
+     */
+    public var state: String
+    /**
+     * Configured async worker count for this process.
+     */
+    public var workerCount: UInt32
+    /**
+     * Named async workers observed entering the runtime.
+     */
+    public var workerNames: [String]
+    /**
+     * Named async workers observed leaving the runtime.
+     */
+    public var stoppedWorkerNames: [String]
+    /**
+     * Root bridge tasks currently owned by the runtime adapter.
+     */
+    public var activeTasks: UInt64
+
+    // Default memberwise initializers are never public by default, so we
+    // declare one manually.
+    public init(
+        /**
+         * `not_started`, `running`, or `stopped`.
+         */state: String,
+        /**
+         * Configured async worker count for this process.
+         */workerCount: UInt32,
+        /**
+         * Named async workers observed entering the runtime.
+         */workerNames: [String],
+        /**
+         * Named async workers observed leaving the runtime.
+         */stoppedWorkerNames: [String],
+        /**
+         * Root bridge tasks currently owned by the runtime adapter.
+         */activeTasks: UInt64) {
+        self.state = state
+        self.workerCount = workerCount
+        self.workerNames = workerNames
+        self.stoppedWorkerNames = stoppedWorkerNames
+        self.activeTasks = activeTasks
+    }
+
+
+}
+
+#if compiler(>=6)
+extension CsApplicationRuntimeSnapshot: Sendable {}
+#endif
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public struct FfiConverterTypeCsApplicationRuntimeSnapshot: FfiConverterRustBuffer {
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> CsApplicationRuntimeSnapshot {
+        return
+            try CsApplicationRuntimeSnapshot(
+                state: FfiConverterString.read(from: &buf),
+                workerCount: FfiConverterUInt32.read(from: &buf),
+                workerNames: FfiConverterSequenceString.read(from: &buf),
+                stoppedWorkerNames: FfiConverterSequenceString.read(from: &buf),
+                activeTasks: FfiConverterUInt64.read(from: &buf)
+        )
+    }
+
+    public static func write(_ value: CsApplicationRuntimeSnapshot, into buf: inout [UInt8]) {
+        FfiConverterString.write(value.state, into: &buf)
+        FfiConverterUInt32.write(value.workerCount, into: &buf)
+        FfiConverterSequenceString.write(value.workerNames, into: &buf)
+        FfiConverterSequenceString.write(value.stoppedWorkerNames, into: &buf)
+        FfiConverterUInt64.write(value.activeTasks, into: &buf)
+    }
+}
+
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeCsApplicationRuntimeSnapshot_lift(_ buf: RustBuffer) throws -> CsApplicationRuntimeSnapshot {
+    return try FfiConverterTypeCsApplicationRuntimeSnapshot.lift(buf)
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeCsApplicationRuntimeSnapshot_lower(_ value: CsApplicationRuntimeSnapshot) -> RustBuffer {
+    return FfiConverterTypeCsApplicationRuntimeSnapshot.lower(value)
+}
+
+
+/**
  * One outgoing composer attachment. Path-based on purpose: the bridge reads and
  * validates the file on the Rust side (via `load_image_for_vision`), which is
  * cheaper than marshalling raw image bytes across FFI and reuses core's single
@@ -9081,13 +9178,19 @@ public struct CsQualityCommitResult: Equatable, Hashable {
      */
     public var pairsLearned: UInt32
     /**
-     * True when the formatting level is not Correction.
+     * True when no custom-lexicon pair was learned: non-teach evidence,
+     * filtered edits, or an explicit teach still below its N-correction gate.
      */
     public var evidenceOnly: Bool
     /**
      * Ready-to-show overlay toast text ("Saved — N pair(s) learned" / "Saved as evidence").
      */
     public var acknowledgement: String
+    /**
+     * Structured progress for one normalized lexical pair.
+     */
+    public var teachSeen: UInt64?
+    public var teachRequired: UInt64?
 
     // Default memberwise initializers are never public by default, so we
     // declare one manually.
@@ -9096,14 +9199,20 @@ public struct CsQualityCommitResult: Equatable, Hashable {
          * Lexicon pairs actually upserted (0 when evidence-only or filtered out).
          */pairsLearned: UInt32,
         /**
-         * True when the formatting level is not Correction.
+         * True when no custom-lexicon pair was learned: non-teach evidence,
+         * filtered edits, or an explicit teach still below its N-correction gate.
          */evidenceOnly: Bool,
         /**
          * Ready-to-show overlay toast text ("Saved — N pair(s) learned" / "Saved as evidence").
-         */acknowledgement: String) {
+         */acknowledgement: String,
+        /**
+         * Structured progress for one normalized lexical pair.
+         */teachSeen: UInt64?, teachRequired: UInt64?) {
         self.pairsLearned = pairsLearned
         self.evidenceOnly = evidenceOnly
         self.acknowledgement = acknowledgement
+        self.teachSeen = teachSeen
+        self.teachRequired = teachRequired
     }
 
 
@@ -9122,7 +9231,9 @@ public struct FfiConverterTypeCsQualityCommitResult: FfiConverterRustBuffer {
             try CsQualityCommitResult(
                 pairsLearned: FfiConverterUInt32.read(from: &buf),
                 evidenceOnly: FfiConverterBool.read(from: &buf),
-                acknowledgement: FfiConverterString.read(from: &buf)
+                acknowledgement: FfiConverterString.read(from: &buf),
+                teachSeen: FfiConverterOptionUInt64.read(from: &buf),
+                teachRequired: FfiConverterOptionUInt64.read(from: &buf)
         )
     }
 
@@ -9130,6 +9241,8 @@ public struct FfiConverterTypeCsQualityCommitResult: FfiConverterRustBuffer {
         FfiConverterUInt32.write(value.pairsLearned, into: &buf)
         FfiConverterBool.write(value.evidenceOnly, into: &buf)
         FfiConverterString.write(value.acknowledgement, into: &buf)
+        FfiConverterOptionUInt64.write(value.teachSeen, into: &buf)
+        FfiConverterOptionUInt64.write(value.teachRequired, into: &buf)
     }
 }
 
@@ -9159,6 +9272,7 @@ public struct CsQualityRecord: Equatable, Hashable {
     public var variant: String
     public var editedText: String
     public var action: String
+    public var editProvenance: String?
     public var timestampMs: UInt64
     public var avgLogprob: Float?
     public var speechPct: Float?
@@ -9166,13 +9280,14 @@ public struct CsQualityRecord: Equatable, Hashable {
 
     // Default memberwise initializers are never public by default, so we
     // declare one manually.
-    public init(id: String, revision: UInt64, rawText: String, variant: String, editedText: String, action: String, timestampMs: UInt64, avgLogprob: Float?, speechPct: Float?, confidenceFlags: [String]) {
+    public init(id: String, revision: UInt64, rawText: String, variant: String, editedText: String, action: String, editProvenance: String?, timestampMs: UInt64, avgLogprob: Float?, speechPct: Float?, confidenceFlags: [String]) {
         self.id = id
         self.revision = revision
         self.rawText = rawText
         self.variant = variant
         self.editedText = editedText
         self.action = action
+        self.editProvenance = editProvenance
         self.timestampMs = timestampMs
         self.avgLogprob = avgLogprob
         self.speechPct = speechPct
@@ -9199,6 +9314,7 @@ public struct FfiConverterTypeCsQualityRecord: FfiConverterRustBuffer {
                 variant: FfiConverterString.read(from: &buf),
                 editedText: FfiConverterString.read(from: &buf),
                 action: FfiConverterString.read(from: &buf),
+                editProvenance: FfiConverterOptionString.read(from: &buf),
                 timestampMs: FfiConverterUInt64.read(from: &buf),
                 avgLogprob: FfiConverterOptionFloat.read(from: &buf),
                 speechPct: FfiConverterOptionFloat.read(from: &buf),
@@ -9213,6 +9329,7 @@ public struct FfiConverterTypeCsQualityRecord: FfiConverterRustBuffer {
         FfiConverterString.write(value.variant, into: &buf)
         FfiConverterString.write(value.editedText, into: &buf)
         FfiConverterString.write(value.action, into: &buf)
+        FfiConverterOptionString.write(value.editProvenance, into: &buf)
         FfiConverterUInt64.write(value.timestampMs, into: &buf)
         FfiConverterOptionFloat.write(value.avgLogprob, into: &buf)
         FfiConverterOptionFloat.write(value.speechPct, into: &buf)
@@ -11044,6 +11161,8 @@ public enum CsError: Swift.Error, Equatable, Hashable, Foundation.LocalizedError
     )
     case Quality(msg: String
     )
+    case Runtime(msg: String
+    )
 
 
 
@@ -11086,6 +11205,9 @@ public struct FfiConverterTypeCsError: FfiConverterRustBuffer {
         case 5: return .Quality(
             msg: try FfiConverterString.read(from: &buf)
             )
+        case 6: return .Runtime(
+            msg: try FfiConverterString.read(from: &buf)
+            )
 
          default: throw UniffiInternalError.unexpectedEnumCase
         }
@@ -11120,6 +11242,11 @@ public struct FfiConverterTypeCsError: FfiConverterRustBuffer {
 
         case let .Quality(msg):
             writeInt(&buf, Int32(5))
+            FfiConverterString.write(msg, into: &buf)
+
+
+        case let .Runtime(msg):
+            writeInt(&buf, Int32(6))
             FfiConverterString.write(msg, into: &buf)
 
         }
@@ -13117,6 +13244,15 @@ fileprivate func uniffiFutureContinuationCallback(handle: UInt64, pollResult: In
     }
 }
 /**
+ * Content-free lifecycle snapshot used by diagnostics and delivery probes.
+ */
+public func applicationRuntimeSnapshot()throws  -> CsApplicationRuntimeSnapshot  {
+    return try  FfiConverterTypeCsApplicationRuntimeSnapshot_lift(try rustCallWithError(FfiConverterTypeCsError_lift) {
+    uniffi_codescribe_ffi_fn_func_application_runtime_snapshot($0
+    )
+})
+}
+/**
  * Enumerate live input hardware and resolve the effective recorder device.
  * Failures cross the bridge as one `CsError::Recording` concern; no device
  * names are persisted here.
@@ -13129,18 +13265,20 @@ public func audioInputSnapshot()throws  -> CsAudioInputSnapshot  {
 }
 /**
  * Persist one overlay correction: the quality record always lands, while lexicon
- * learning is gated by `formatting_level`.
+ * learning is gated by explicit teach action plus the N-correction threshold.
  *
- * Only the Correction level teaches word pairs; higher levels are recorded as
- * evidence with `pairs_learned = 0`, because a creative rewrite is not a
- * transcription fix and would poison the lexicon. An unrecognised
- * `formatting_level` is rejected before anything is written.
+ * Only explicit Correction-level teach gestures can contribute word pairs;
+ * higher levels are recorded as evidence with `pairs_learned = 0`, because a
+ * creative rewrite is not a transcription fix and would poison the lexicon.
+ * A qualifying teach remains evidence until its identical pair reaches the
+ * configured threshold. An unrecognised `formatting_level` is rejected before
+ * anything is written.
  *
  * The confidence fields (`avg_logprob`, `speech_pct`, `confidence_flags`) are
  * stored alongside the text so later analysis can correlate corrections with how
  * unsure the engine was.
  */
-public func commitOverlayQualityRecord(rawText: String, deliveredText: String, editedText: String, action: String, formattingLevel: String, avgLogprob: Float?, speechPct: Float?, confidenceFlags: [String])throws  -> CsQualityCommitResult  {
+public func commitOverlayQualityRecord(rawText: String, deliveredText: String, editedText: String, action: String, formattingLevel: String, editProvenance: String?, avgLogprob: Float?, speechPct: Float?, confidenceFlags: [String])throws  -> CsQualityCommitResult  {
     return try  FfiConverterTypeCsQualityCommitResult_lift(try rustCallWithError(FfiConverterTypeCsError_lift) {
     uniffi_codescribe_ffi_fn_func_commit_overlay_quality_record(
         FfiConverterString.lower(rawText),
@@ -13148,6 +13286,7 @@ public func commitOverlayQualityRecord(rawText: String, deliveredText: String, e
         FfiConverterString.lower(editedText),
         FfiConverterString.lower(action),
         FfiConverterString.lower(formattingLevel),
+        FfiConverterOptionString.lower(editProvenance),
         FfiConverterOptionFloat.lower(avgLogprob),
         FfiConverterOptionFloat.lower(speechPct),
         FfiConverterSequenceString.lower(confidenceFlags),$0
@@ -13302,6 +13441,25 @@ public func requestMicPermission() -> Bool  {
 })
 }
 /**
+ * Stop controller/account activity first, then tear down every runtime worker.
+ */
+public func shutdownApplicationRuntime()throws  -> CsApplicationRuntimeSnapshot  {
+    return try  FfiConverterTypeCsApplicationRuntimeSnapshot_lift(try rustCallWithError(FfiConverterTypeCsError_lift) {
+    uniffi_codescribe_ffi_fn_func_shutdown_application_runtime($0
+    )
+})
+}
+/**
+ * Start the one process-owned async runtime. Idempotent while running; once
+ * shut down it cannot be restarted in the same process.
+ */
+public func startApplicationRuntime()throws  -> CsApplicationRuntimeSnapshot  {
+    return try  FfiConverterTypeCsApplicationRuntimeSnapshot_lift(try rustCallWithError(FfiConverterTypeCsError_lift) {
+    uniffi_codescribe_ffi_fn_func_start_application_runtime($0
+    )
+})
+}
+/**
  * Snapshot Whisper availability without constructing a dictation session.
  */
 public func whisperModelStatus() -> CsWhisperModelStatus  {
@@ -13326,10 +13484,13 @@ private let initializationResult: InitializationResult = {
     if bindings_contract_version != scaffolding_contract_version {
         return InitializationResult.contractVersionMismatch
     }
+    if (uniffi_codescribe_ffi_checksum_func_application_runtime_snapshot() != 28624) {
+        return InitializationResult.apiChecksumMismatch
+    }
     if (uniffi_codescribe_ffi_checksum_func_audio_input_snapshot() != 64324) {
         return InitializationResult.apiChecksumMismatch
     }
-    if (uniffi_codescribe_ffi_checksum_func_commit_overlay_quality_record() != 61070) {
+    if (uniffi_codescribe_ffi_checksum_func_commit_overlay_quality_record() != 33612) {
         return InitializationResult.apiChecksumMismatch
     }
     if (uniffi_codescribe_ffi_checksum_func_current_serving_verdict() != 14135) {
@@ -13369,6 +13530,12 @@ private let initializationResult: InitializationResult = {
         return InitializationResult.apiChecksumMismatch
     }
     if (uniffi_codescribe_ffi_checksum_func_request_mic_permission() != 61967) {
+        return InitializationResult.apiChecksumMismatch
+    }
+    if (uniffi_codescribe_ffi_checksum_func_shutdown_application_runtime() != 56989) {
+        return InitializationResult.apiChecksumMismatch
+    }
+    if (uniffi_codescribe_ffi_checksum_func_start_application_runtime() != 55152) {
         return InitializationResult.apiChecksumMismatch
     }
     if (uniffi_codescribe_ffi_checksum_func_whisper_model_status() != 33505) {

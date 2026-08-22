@@ -7,6 +7,8 @@
 
 use serde::{Deserialize, Serialize};
 
+use crate::stt::tail_provider::TailSampleRange;
+
 // ═══════════════════════════════════════════════════════════
 // Audio stage
 // ═══════════════════════════════════════════════════════════
@@ -612,6 +614,86 @@ pub trait DeltaSink: Send + Sync {
 // Engine events (intent layer)
 // ═══════════════════════════════════════════════════════════
 
+/// Provider that measured a sideband observation.
+///
+/// This is deliberately typed rather than a free-form label: consumers may
+/// trust only capabilities the named provider actually owns. Plain Silero VAD
+/// measures speech probability and speech/non-speech timing; it does not
+/// identify laughter, coughs, music, or environmental-noise classes.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum SidebandProvenance {
+    SileroVad,
+}
+
+/// Honest classification of a span for which VAD found no speech.
+///
+/// `UnknownNonSpeech` is intentionally the only value until a measured
+/// classifier provider exists. It must never be rendered as a named sound.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum NonSpeechEvidence {
+    UnknownNonSpeech,
+}
+
+/// What a sideband observation proves on the PCM sample clock.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum SidebandEvidenceKind {
+    /// Silero crossed the speech-on threshold at `range.sample_start`.
+    SpeechStart { speech_probability: f32 },
+    /// Silero crossed the speech-off threshold at `range.sample_start`.
+    SpeechEnd { speech_probability: f32 },
+    /// Closed non-speech gap between two measured speech edges.
+    ///
+    /// The classification is explicitly unknown: pause duration is timing
+    /// evidence, not evidence of laughter/noise/cough semantics.
+    Pause {
+        duration_samples: u64,
+        non_speech: NonSpeechEvidence,
+    },
+}
+
+/// Ordered, content-free evidence measured beside the transcript.
+///
+/// `range` is the canonical half-open PCM identity for one capture epoch.
+/// Speech edges use a zero-width range at the exact boundary sample; pauses
+/// use the exact `[end_of_speech, next_start_of_speech)` gap. `sequence` is
+/// monotonic within the session and never derives from transcript text.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct SidebandEvidence {
+    pub sequence: u64,
+    pub range: TailSampleRange,
+    pub sample_rate_hz: u32,
+    pub provenance: SidebandProvenance,
+    pub evidence: SidebandEvidenceKind,
+}
+
+/// Honest timing grain supplied by the recognizer for one lexical span.
+/// Phrase/utterance timing must never be expanded into invented word ranges.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum AcousticSpanGrain {
+    Word,
+    Phrase,
+    Utterance,
+}
+
+/// One lexical hypothesis pinned to the canonical capture PCM clock.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct AcousticTranscriptSpan {
+    pub text: String,
+    pub range: TailSampleRange,
+    pub grain: AcousticSpanGrain,
+}
+
+/// Acoustic identity of one committed utterance and its honest-grain spans.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct AcousticTranscriptIdentity {
+    pub range: TailSampleRange,
+    pub spans: Vec<AcousticTranscriptSpan>,
+}
+
 /// Events emitted by the transcription engine.
 ///
 /// These are semantic events — the engine communicates what happened
@@ -625,6 +707,12 @@ pub enum EngineEvent {
     VadStart { speech_prob: f32, ts_ms: u64 },
     /// VAD detected speech end.
     VadEnd { speech_prob: f32, ts_ms: u64 },
+    /// Content-free PCM evidence from an orthogonal measured provider.
+    ///
+    /// Sideband events are never transcript mutations. Reducers, delivery,
+    /// and fail-open paths must preserve text byte-for-byte when they arrive
+    /// or when they are absent.
+    SidebandEvidence { evidence: SidebandEvidence },
     /// Session or utterance completed without usable speech content.
     ///
     /// Emitted when VAD sees no speech at all, or when speech-like segments are
@@ -692,6 +780,10 @@ pub enum EngineEvent {
         compression_ratio: Option<f32>,
         quality_gate_dropped: bool,
         confidence_flags: Vec<TranscriptionConfidenceFlag>,
+        /// Canonical PCM identity. `None` is legacy/unanchored evidence and is
+        /// surfaced as a failed Transcript Bus coverage receipt.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        acoustic: Option<AcousticTranscriptIdentity>,
     },
 
     /// Replace a bounded char range inside an already-committed utterance.
@@ -1200,6 +1292,7 @@ mod tests {
             compression_ratio: Some(1.2),
             quality_gate_dropped: false,
             confidence_flags: Vec::new(),
+            acoustic: None,
         };
         if let EngineEvent::UtteranceFinal {
             utterance_id,
@@ -1213,6 +1306,7 @@ mod tests {
             compression_ratio,
             quality_gate_dropped,
             confidence_flags,
+            ..
         } = event
         {
             assert_eq!(utterance_id, 42);
@@ -1333,6 +1427,59 @@ mod tests {
             .expect("session finalised apply is a noop");
         assert!(!applied);
         assert_eq!(committed, "immutable");
+    }
+
+    /// Sideband evidence is serializable PCM truth and never a text command.
+    #[test]
+    fn engine_event_sideband_roundtrip_and_noop_apply() {
+        let event = EngineEvent::SidebandEvidence {
+            evidence: SidebandEvidence {
+                sequence: 3,
+                range: TailSampleRange {
+                    session: "session-abc".to_string(),
+                    capture_epoch: 2,
+                    sample_start: 16_000,
+                    sample_end: 24_000,
+                },
+                sample_rate_hz: 16_000,
+                provenance: SidebandProvenance::SileroVad,
+                evidence: SidebandEvidenceKind::Pause {
+                    duration_samples: 8_000,
+                    non_speech: NonSpeechEvidence::UnknownNonSpeech,
+                },
+            },
+        };
+
+        let json = serde_json::to_value(&event).expect("serialize sideband evidence");
+        assert_eq!(
+            json.get("type").and_then(serde_json::Value::as_str),
+            Some("sideband_evidence")
+        );
+        let payload = json.get("evidence").expect("typed evidence payload");
+        assert_eq!(
+            payload
+                .get("provenance")
+                .and_then(serde_json::Value::as_str),
+            Some("silero_vad")
+        );
+        assert_eq!(
+            payload
+                .get("evidence")
+                .and_then(|value| value.get("non_speech"))
+                .and_then(serde_json::Value::as_str),
+            Some("unknown_non_speech")
+        );
+
+        let roundtrip: EngineEvent =
+            serde_json::from_value(json).expect("deserialize sideband evidence");
+        assert_eq!(roundtrip, event);
+
+        let mut committed = "byte-stable transcript".to_string();
+        let applied = roundtrip
+            .apply_to_committed_text(&mut committed)
+            .expect("sideband apply is a noop");
+        assert!(!applied);
+        assert_eq!(committed.as_bytes(), b"byte-stable transcript");
     }
 
     // ── RawTranscript confidence metadata ──
@@ -1623,6 +1770,7 @@ mod tests {
                 TranscriptionConfidenceFlag::VeryLowSpeech,
                 TranscriptionConfidenceFlag::PossibleHallucinationLogprob,
             ],
+            acoustic: None,
         };
         if let EngineEvent::UtteranceFinal {
             vad_speech_pct,
@@ -1669,6 +1817,7 @@ mod tests {
                 TranscriptionConfidenceFlag::PossibleHallucinationLogprob,
                 TranscriptionConfidenceFlag::QualityGateDropped,
             ],
+            acoustic: None,
         };
         if let EngineEvent::UtteranceFinal {
             vad_speech_pct,

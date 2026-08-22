@@ -4,9 +4,9 @@
 //! custom lexicon (lexicon.custom.jsonl) that StreamPostProcessor / apply_lexicon already consumes.
 //!
 //! Privacy: purely local, no network, no secrets, no audio.
-//! No new Settings knobs (defaults on; VoiceLab UI later).
+//! No new Settings knobs (three identical human teaches by default; VoiceLab UI later).
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::fs::{self, File, OpenOptions};
 use std::io::{BufRead, BufReader, Write};
 use std::path::{Path, PathBuf};
@@ -81,6 +81,13 @@ pub const LEXICON_SOURCE_IMPORT: &str = "import";
 /// Fallback for rows written before provenance was stamped — unknown origin,
 /// not a claim that a human wrote them.
 pub const LEXICON_SOURCE_LEGACY: &str = "legacy";
+
+/// Environment override for the number of identical human teaches required
+/// before a correction pair becomes a custom-lexicon rule.
+pub const LEXICON_MIN_CORRECTIONS_ENV: &str = "CODESCRIBE_LEXICON_MIN_CORRECTIONS";
+/// Product default: one correction is evidence; three identical corrections
+/// are a learned rule. `1` is the explicit legacy compatibility escape.
+pub const DEFAULT_LEXICON_MIN_CORRECTIONS: u64 = 3;
 
 /// Read-only projection of one custom lexicon rule for product surfaces.
 /// The on-disk JSONL stores one canonical term with one or more variants;
@@ -705,6 +712,24 @@ pub fn upsert_correction_in_custom_lexicon(variant: &str, canonical: &str) -> Re
     upsert_correction_in_custom_lexicon_unlocked(variant, canonical)
 }
 
+/// Insert a promoted lexical pair once, even when detached overlay quality
+/// tasks reach the third-confirmation boundary concurrently.
+fn insert_promoted_correction_once(variant: &str, canonical: &str) -> Result<bool> {
+    let _write_guard = CUSTOM_LEXICON_WRITE_LOCK
+        .get_or_init(|| Mutex::new(()))
+        .lock()
+        .map_err(|_| anyhow::anyhow!("custom lexicon write lock was poisoned"))?;
+    let already_present = custom_lexicon_entries()?.iter().any(|entry| {
+        normalized_variant(&entry.variant) == normalized_variant(variant)
+            && entry.canonical.trim() == canonical.trim()
+    });
+    if already_present {
+        return Ok(false);
+    }
+    upsert_correction_in_custom_lexicon_unlocked(variant, canonical)?;
+    Ok(true)
+}
+
 /// Single-pair upsert body. Caller must already hold [`CUSTOM_LEXICON_WRITE_LOCK`].
 fn upsert_correction_in_custom_lexicon_unlocked(variant: &str, canonical: &str) -> Result<()> {
     upsert_corrections_unlocked(std::slice::from_ref(&(variant, canonical)))
@@ -802,6 +827,131 @@ pub fn cleanup_orphaned_lexicon_temps(dir: &Path) {
 /// instead of stacking a second rule beside it.
 fn normalized_variant(value: &str) -> String {
     value.trim().to_lowercase()
+}
+
+/// Read the human-teach threshold from exactly one place.
+///
+/// An absent, empty, malformed, or zero value fails closed to the product law:
+/// three identical corrections. This is deliberately read at each teach so the
+/// registered hot environment override takes effect without restarting.
+fn lexicon_min_corrections() -> u64 {
+    std::env::var(LEXICON_MIN_CORRECTIONS_ENV)
+        .ok()
+        .and_then(|value| value.trim().parse::<u64>().ok())
+        .filter(|count| *count > 0)
+        .unwrap_or(DEFAULT_LEXICON_MIN_CORRECTIONS)
+}
+
+/// True only for persisted records created by a human lexicon-teach gesture.
+/// Copy, close, send, speech-gap, formatter-only, and bulk/replay paths remain
+/// evidence or explicit operator promotion respectively; none become history
+/// for the automatic N-correction gate.
+fn record_is_human_lexicon_teach(record: &QualityRecord) -> bool {
+    if record
+        .meta
+        .get("edit_provenance")
+        .and_then(serde_json::Value::as_str)
+        .map(str::trim)
+        == Some("manual_human")
+    {
+        return true;
+    }
+    let action = record
+        .meta
+        .get("action")
+        .and_then(serde_json::Value::as_str);
+    match action {
+        Some("teach-span") | Some("teach-dictionary") => true,
+        Some("edit") => {
+            record
+                .meta
+                .get("source")
+                .and_then(serde_json::Value::as_str)
+                .map(str::trim)
+                == Some("voice-lab")
+        }
+        _ => false,
+    }
+}
+
+/// Count distinct quality records that teach exactly this pair. A record with
+/// the same aligned pair twice is still one human teach, not two votes.
+fn identical_human_teach_count(records: &[QualityRecord], variant: &str, canonical: &str) -> u64 {
+    let target_variant = normalized_variant(variant);
+    let target_canonical = canonical.trim();
+
+    records
+        .iter()
+        .filter(|record| record_is_human_lexicon_teach(record))
+        .filter(|record| {
+            let learning_source = if record.raw_text.trim().is_empty() {
+                &record.delivered_text
+            } else {
+                &record.raw_text
+            };
+            extract_lexicon_candidates(learning_source, &record.edited_text)
+                .into_iter()
+                .any(|(seen_variant, seen_canonical)| {
+                    normalized_variant(&seen_variant) == target_variant
+                        && seen_canonical.trim() == target_canonical
+                })
+        })
+        .map(QualityRecord::logical_id)
+        .collect::<HashSet<_>>()
+        .len() as u64
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct PendingLexiconTeach {
+    seen: u64,
+    required: u64,
+}
+
+#[derive(Debug, Default)]
+struct LexiconTeachPromotion {
+    promoted: Vec<(String, String)>,
+    progress: Vec<PendingLexiconTeach>,
+}
+
+/// Classify candidates after their quality record has been saved. The third
+/// matching record is therefore included in the count and performs the first
+/// upsert; later matching records refresh the existing row through the normal
+/// write primitive.
+fn classify_human_lexicon_teaches(
+    candidates: &[(String, String)],
+) -> Result<LexiconTeachPromotion> {
+    let records = all_quality_records()?;
+    let existing = custom_lexicon_entries()?;
+    let required = lexicon_min_corrections();
+    let mut seen_pairs = HashSet::new();
+    let mut result = LexiconTeachPromotion::default();
+
+    for (variant, canonical) in candidates {
+        if !is_sensible_lexicon_candidate(variant, canonical) {
+            continue;
+        }
+        let normalized_pair = (normalized_variant(variant), canonical.trim().to_string());
+        if !seen_pairs.insert(normalized_pair) {
+            continue;
+        }
+
+        let seen = identical_human_teach_count(&records, variant, canonical);
+        let already_promoted = existing.iter().any(|entry| {
+            normalized_variant(&entry.variant) == normalized_variant(variant)
+                && entry.canonical.trim() == canonical.trim()
+        });
+        if seen >= required && !already_promoted {
+            result
+                .promoted
+                .push((variant.trim().to_string(), canonical.trim().to_string()));
+        }
+        result.progress.push(PendingLexiconTeach {
+            seen: seen.min(required),
+            required,
+        });
+    }
+
+    Ok(result)
 }
 
 /// Strip `target` from a row's variant lists, both the top-level
@@ -955,13 +1105,49 @@ pub struct OverlayCorrectionCommit {
     pub quality_path: PathBuf,
     /// Lexicon pairs actually upserted from this commit (0 when evidence-only or filtered).
     pub pairs_learned: u32,
-    /// True when this commit did not teach the custom lexicon.
+    /// True when this commit left no custom-lexicon rule written.
     pub evidence_only: bool,
+    /// Manual confirmation progress, retained for the acknowledgement toast.
+    /// Each tuple is `(identical_teaches_seen, required_teaches)`.
+    lexicon_teach_progress: Vec<PendingLexiconTeach>,
 }
 
 impl OverlayCorrectionCommit {
+    /// Structured single-pair progress for bridge/UI consumers.
+    pub fn confirmation_progress(&self) -> Option<(u64, u64)> {
+        (self.lexicon_teach_progress.len() == 1).then(|| {
+            let progress = &self.lexicon_teach_progress[0];
+            (progress.seen, progress.required)
+        })
+    }
+
     /// Honest post-edit acknowledgement for the overlay toast (operator UX, LL-E).
     pub fn acknowledgement_message(&self) -> String {
+        if !self.lexicon_teach_progress.is_empty() {
+            let learned = match self.pairs_learned {
+                0 => "Saved as evidence".to_string(),
+                1 => "Saved — 1 pair learned".to_string(),
+                count => format!("Saved — {count} pairs learned"),
+            };
+            if self.lexicon_teach_progress.len() == 1 {
+                let progress = &self.lexicon_teach_progress[0];
+                return format!(
+                    "{learned} — {}/{} manual confirmations",
+                    progress.seen, progress.required
+                );
+            }
+            let progress = self
+                .lexicon_teach_progress
+                .iter()
+                .map(|pending| format!("{}/{}", pending.seen, pending.required))
+                .collect::<Vec<_>>()
+                .join(", ");
+            return format!(
+                "{learned} — {} pairs pending ({progress})",
+                self.lexicon_teach_progress.len()
+            );
+        }
+
         if self.evidence_only || self.pairs_learned == 0 {
             "Saved as evidence".to_string()
         } else if self.pairs_learned == 1 {
@@ -977,6 +1163,10 @@ impl OverlayCorrectionCommit {
 /// teach (`teach-span-gap`) stays evidence-only.
 fn overlay_commit_teaches_lexicon(_mode: &str, action: Option<&str>) -> bool {
     matches!(action, Some("teach-span") | Some("teach-dictionary"))
+}
+
+fn edit_provenance_is_manual(edit_provenance: Option<&str>) -> bool {
+    edit_provenance.map(str::trim) == Some("manual_human")
 }
 
 /// High-level: save the quality record for the overlay edit AND feed lexicon candidates.
@@ -1042,6 +1232,37 @@ pub fn commit_overlay_correction_with_confidence(
     speech_pct: Option<f32>,
     confidence_flags: Vec<String>,
 ) -> Result<OverlayCorrectionCommit> {
+    commit_overlay_correction_with_provenance(
+        raw_text,
+        delivered_text,
+        edited_text,
+        mode,
+        model,
+        action,
+        formatting_level,
+        None,
+        avg_logprob,
+        speech_pct,
+        confidence_flags,
+    )
+}
+
+/// Persist one overlay receipt while keeping delivery action separate from the
+/// explicit editor provenance that alone may vote in the three-confirmation gate.
+#[allow(clippy::too_many_arguments)]
+pub fn commit_overlay_correction_with_provenance(
+    raw_text: &str,
+    delivered_text: &str,
+    edited_text: &str,
+    mode: &str,
+    model: Option<String>,
+    action: Option<&str>,
+    formatting_level: Option<&str>,
+    edit_provenance: Option<&str>,
+    avg_logprob: Option<f32>,
+    speech_pct: Option<f32>,
+    confidence_flags: Vec<String>,
+) -> Result<OverlayCorrectionCommit> {
     let formatting_level = formatting_level
         .map(FormattingPolicy::parse)
         .transpose()?
@@ -1050,8 +1271,9 @@ pub fn commit_overlay_correction_with_confidence(
     // 2026-08-17 learned "pisanie Żyda" → "mi się nie wydaje" and "w 3 4" →
     // "Dwa Trzy Cztery Pięć". Lexicon grows only on an explicit teach gesture
     // (highlighted span / Voice Lab), never from a formatting-level flag.
-    let teaches = overlay_commit_teaches_lexicon(mode, action);
-    let record = QualityRecord::new_with_confidence(
+    let teaches =
+        overlay_commit_teaches_lexicon(mode, action) || edit_provenance_is_manual(edit_provenance);
+    let mut record = QualityRecord::new_with_confidence(
         raw_text.to_string(),
         delivered_text.to_string(),
         edited_text.to_string(),
@@ -1063,9 +1285,20 @@ pub fn commit_overlay_correction_with_confidence(
         speech_pct,
         confidence_flags,
     );
+    if let Some(provenance) = edit_provenance
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        && let Some(meta) = record.meta.as_object_mut()
+    {
+        meta.insert(
+            "edit_provenance".to_string(),
+            serde_json::Value::String(provenance.to_string()),
+        );
+    }
     let qpath = save_quality_record(&record)?;
 
     let mut pairs_learned = 0u32;
+    let mut lexicon_teach_progress = Vec::new();
     if teaches {
         // Learn what the recognizer actually heard, not punctuation/casing or
         // rewrites introduced by the formatter/parser between STT and overlay.
@@ -1074,34 +1307,46 @@ pub fn commit_overlay_correction_with_confidence(
         } else {
             raw_text
         };
-        // Word-level extraction may yield several pairs; upsert each.
-        for (variant, canonical) in extract_lexicon_candidates(learning_source, edited_text) {
-            if is_sensible_lexicon_candidate(&variant, &canonical) {
-                match upsert_correction_in_custom_lexicon(&variant, &canonical) {
-                    Ok(()) => {
-                        pairs_learned = pairs_learned.saturating_add(1);
-                        tracing::info!(
-                            "quality: added lexicon candidate {} -> {}",
-                            variant,
-                            canonical
-                        );
-                    }
-                    Err(e) => {
-                        tracing::warn!(
-                            "quality: failed to append lexicon candidate {} -> {}: {}",
-                            variant,
-                            canonical,
-                            e
-                        );
+        // Word-level extraction may yield several pairs. Only candidates taught
+        // by enough identical human records may reach the write primitive.
+        match classify_human_lexicon_teaches(&extract_lexicon_candidates(
+            learning_source,
+            edited_text,
+        )) {
+            Ok(promotion) => {
+                lexicon_teach_progress = promotion.progress;
+                for (variant, canonical) in promotion.promoted {
+                    match insert_promoted_correction_once(&variant, &canonical) {
+                        Ok(true) => {
+                            pairs_learned = pairs_learned.saturating_add(1);
+                            tracing::info!(
+                                "quality: added lexicon candidate {} -> {}",
+                                variant,
+                                canonical
+                            );
+                        }
+                        Ok(false) => {}
+                        Err(e) => {
+                            tracing::warn!(
+                                "quality: failed to append lexicon candidate {} -> {}: {}",
+                                variant,
+                                canonical,
+                                e
+                            );
+                        }
                     }
                 }
             }
+            Err(error) => tracing::warn!(
+                "quality: could not count prior human teaches after saving evidence: {error:#}"
+            ),
         }
     }
     Ok(OverlayCorrectionCommit {
         quality_path: qpath,
         pairs_learned,
-        evidence_only: !teaches,
+        evidence_only: !teaches || pairs_learned == 0,
+        lexicon_teach_progress,
     })
 }
 
@@ -1366,11 +1611,11 @@ pub struct VoiceLabSaveOutcome {
 ///    ID shape + non-empty canonical only — saving a human edit is not a
 ///    lexicon candidacy question).
 /// 2. Word-level pairs are derived from `raw_text -> canonical` (falling back
-///    to delivered text only for legacy records that never captured raw STT)
-///    (aligned replace runs), each individually gated by
-///    [`is_sensible_lexicon_candidate`], and the survivors upserted in one
-///    atomic lexicon rewrite. A failed rewrite leaves the previous lexicon
-///    bytes intact and is reported via `lexicon_error`, never as `Err`.
+///    to delivered text only for legacy records that never captured raw STT).
+///    Each pair needs the configured number of identical saved human teaches;
+///    only promoted pairs enter one atomic lexicon rewrite. A failed rewrite
+///    leaves the previous lexicon bytes intact and is reported via
+///    `lexicon_error`, never as `Err`.
 pub fn finalize_voice_lab_correction(
     correction_id: &str,
     canonical: &str,
@@ -1431,19 +1676,29 @@ pub fn finalize_voice_lab_correction(
     let pairs = derive_lexicon_pairs(learning_source, canonical);
     let mut pairs_learned = 0u32;
     let mut lexicon_error = None;
-    if !pairs.is_empty() {
-        let borrowed: Vec<(&str, &str)> = pairs
-            .iter()
-            .map(|(variant, canonical)| (variant.as_str(), canonical.as_str()))
-            .collect();
-        match upsert_corrections_in_custom_lexicon(&borrowed) {
-            Ok(()) => pairs_learned = borrowed.len() as u32,
-            Err(error) => {
-                tracing::error!(
-                    "quality: voice lab lexicon learn failed after revision save: {error:#}"
-                );
-                lexicon_error = Some(format!("{error:#}"));
+    match classify_human_lexicon_teaches(&pairs) {
+        Ok(promotion) if !promotion.promoted.is_empty() => {
+            let borrowed: Vec<(&str, &str)> = promotion
+                .promoted
+                .iter()
+                .map(|(variant, canonical)| (variant.as_str(), canonical.as_str()))
+                .collect();
+            match upsert_corrections_in_custom_lexicon(&borrowed) {
+                Ok(()) => pairs_learned = borrowed.len() as u32,
+                Err(error) => {
+                    tracing::error!(
+                        "quality: voice lab lexicon learn failed after revision save: {error:#}"
+                    );
+                    lexicon_error = Some(format!("{error:#}"));
+                }
             }
+        }
+        Ok(_) => {}
+        Err(error) => {
+            tracing::error!(
+                "quality: voice lab could not count prior human teaches after revision save: {error:#}"
+            );
+            lexicon_error = Some(format!("{error:#}"));
         }
     }
 
@@ -1671,20 +1926,211 @@ mod tests {
 
     #[test]
     #[serial]
-    fn teach_span_lexicon_learns_pair_and_gap_is_evidence_only() {
+    fn teach_span_requires_three_identical_corrections_and_gap_is_evidence_only() {
         let temp_dir = tempfile::tempdir().expect("temp");
         let _guard = EnvRestore::capture("CODESCRIBE_DATA_DIR");
         let temp_root = temp_dir.path().canonicalize().unwrap();
         unsafe {
             std::env::set_var("CODESCRIBE_DATA_DIR", &temp_root);
         }
+
+        let first = super::teach_span("uni agentka", "Junie", "lexicon_corrected")
+            .expect("first teach lexicon span");
+        assert_eq!(first.pairs_learned, 0);
+        assert!(first.evidence_only);
+        assert_eq!(
+            first.acknowledgement_message(),
+            "Saved as evidence — 1/3 manual confirmations"
+        );
+        assert_eq!(
+            audit_line_count(),
+            1,
+            "first teach persists quality evidence"
+        );
+        let lexicon_path = Config::config_dir().join("lexicon.custom.jsonl");
+        assert!(
+            !lexicon_path.exists(),
+            "one identical teach is evidence, not a rule"
+        );
+
+        let second = super::teach_span("UNI AGENTKA", "Junie", "lexicon_corrected")
+            .expect("second teach lexicon span");
+        assert_eq!(second.pairs_learned, 0);
+        assert!(second.evidence_only);
+        assert_eq!(
+            second.acknowledgement_message(),
+            "Saved as evidence — 2/3 manual confirmations"
+        );
+        assert!(
+            !lexicon_path.exists(),
+            "two identical teaches are still evidence"
+        );
+
         let learned = super::teach_span("uni agentka", "Junie", "lexicon_corrected")
-            .expect("teach lexicon span");
+            .expect("third teach lexicon span");
         assert_eq!(learned.pairs_learned, 1);
         assert!(!learned.evidence_only);
-        let gap = super::teach_span("", "", "speech_gap").expect("teach gap span");
-        assert_eq!(gap.pairs_learned, 0);
-        assert!(gap.evidence_only);
+        assert_eq!(
+            learned.acknowledgement_message(),
+            "Saved — 1 pair learned — 3/3 manual confirmations"
+        );
+        let entries = custom_lexicon_entries().expect("learned custom lexicon");
+        assert!(entries.iter().any(|entry| {
+            entry.variant == "uni agentka"
+                && entry.canonical == "Junie"
+                && entry.source == LEXICON_SOURCE_CORRECTION
+        }));
+        assert_eq!(
+            crate::pipeline::stream_postprocess::apply_lexicon("to uni agentka mówi"),
+            "to Junie mówi",
+            "the third teach must rewrite a later word-boundary transcript"
+        );
+        let refreshed = super::teach_span("UNI AGENTKA", "Junie", "lexicon_corrected")
+            .expect("later identical teach leaves the promoted rule alone");
+        assert_eq!(refreshed.pairs_learned, 0, "promotion occurs exactly once");
+        assert_eq!(
+            refreshed.acknowledgement_message(),
+            "Saved as evidence — 3/3 manual confirmations"
+        );
+        assert_eq!(
+            custom_lexicon_entries()
+                .unwrap()
+                .iter()
+                .filter(|entry| normalized_variant(&entry.variant) == "uni agentka")
+                .count(),
+            1,
+            "re-teaching after promotion must not stack or rewrite duplicate rows"
+        );
+
+        for _ in 0..3 {
+            let gap = super::teach_span("brak", "uzupełnienie", "speech_gap")
+                .expect("speech-gap evidence");
+            assert_eq!(gap.pairs_learned, 0);
+            assert!(gap.evidence_only);
+        }
+        assert!(
+            !custom_lexicon_entries()
+                .unwrap()
+                .iter()
+                .any(|entry| entry.variant == "brak"),
+            "speech-gap records never vote toward a lexicon rule"
+        );
+    }
+
+    #[test]
+    #[serial]
+    fn ordinary_manual_overlay_edits_vote_three_times_and_promote_once() {
+        let temp_dir = tempfile::tempdir().expect("temp");
+        let _guard = EnvRestore::capture("CODESCRIBE_DATA_DIR");
+        let temp_root = temp_dir.path().canonicalize().unwrap();
+        unsafe { std::env::set_var("CODESCRIBE_DATA_DIR", &temp_root) };
+
+        let commit = |action: &str, provenance: Option<&str>| {
+            commit_overlay_correction_with_provenance(
+                "ajwo",
+                "ajwo",
+                "Iwo",
+                "overlay",
+                None,
+                Some(action),
+                Some("correction"),
+                provenance,
+                None,
+                None,
+                Vec::new(),
+            )
+            .unwrap()
+        };
+
+        let first = commit("copy", Some("manual_human"));
+        assert_eq!(first.confirmation_progress(), Some((1, 3)));
+        assert_eq!(first.pairs_learned, 0);
+        let second = commit("paste", Some("manual_human"));
+        assert_eq!(second.confirmation_progress(), Some((2, 3)));
+        assert_eq!(second.pairs_learned, 0);
+        let third = commit("close", Some("manual_human"));
+        assert_eq!(third.confirmation_progress(), Some((3, 3)));
+        assert_eq!(third.pairs_learned, 1);
+
+        let delivery_only = commit("copy", None);
+        assert_eq!(delivery_only.confirmation_progress(), None);
+        assert_eq!(delivery_only.pairs_learned, 0);
+        assert_eq!(
+            custom_lexicon_entries()
+                .unwrap()
+                .iter()
+                .filter(|entry| normalized_variant(&entry.variant) == "ajwo")
+                .count(),
+            1,
+            "the third distinct manual act promotes once; delivery actions do not vote"
+        );
+
+        let records = all_quality_records().unwrap();
+        assert_eq!(
+            records[0]
+                .meta
+                .get("action")
+                .and_then(serde_json::Value::as_str),
+            Some("copy")
+        );
+        assert_eq!(
+            records[0]
+                .meta
+                .get("edit_provenance")
+                .and_then(serde_json::Value::as_str),
+            Some("manual_human")
+        );
+    }
+
+    #[test]
+    fn repeated_revision_of_one_correction_id_is_one_vote() {
+        let mut first = QualityRecord::new(
+            "ajwo".into(),
+            "ajwo".into(),
+            "Iwo".into(),
+            "overlay",
+            None,
+            Some("correction".into()),
+            Some("copy"),
+        );
+        first
+            .meta
+            .as_object_mut()
+            .unwrap()
+            .insert("edit_provenance".into(), "manual_human".into());
+        let mut revision = first.clone();
+        revision.revision = 2;
+        assert_eq!(
+            identical_human_teach_count(&[first, revision], "ajwo", "Iwo"),
+            1
+        );
+    }
+
+    #[test]
+    #[serial]
+    fn concurrent_promotion_insert_reports_exactly_one_new_rule() {
+        let temp_dir = tempfile::tempdir().expect("temp");
+        let _guard = EnvRestore::capture("CODESCRIBE_DATA_DIR");
+        let temp_root = temp_dir.path().canonicalize().unwrap();
+        unsafe { std::env::set_var("CODESCRIBE_DATA_DIR", &temp_root) };
+
+        let barrier = std::sync::Arc::new(std::sync::Barrier::new(2));
+        let handles = (0..2)
+            .map(|_| {
+                let barrier = barrier.clone();
+                std::thread::spawn(move || {
+                    barrier.wait();
+                    insert_promoted_correction_once("ajwo", "Iwo").unwrap()
+                })
+            })
+            .collect::<Vec<_>>();
+        let inserted = handles
+            .into_iter()
+            .map(|handle| handle.join().unwrap())
+            .filter(|inserted| *inserted)
+            .count();
+        assert_eq!(inserted, 1);
+        assert_eq!(custom_lexicon_entries().unwrap().len(), 1);
     }
 
     /// E2E: long-dictation commit learns one pair and stamps correction provenance.
@@ -1715,10 +2161,19 @@ mod tests {
         )
         .expect("commit long dictation evidence");
         assert_eq!(evidence.pairs_learned, 0);
+        let first = teach_span("zaznaczenie", "selection", "lexicon_corrected")
+            .expect("first explicit teach of the one-word fix");
+        assert_eq!(first.pairs_learned, 0);
+        let second = teach_span("ZAZNACZENIE", "selection", "lexicon_corrected")
+            .expect("second explicit teach of the one-word fix");
+        assert_eq!(second.pairs_learned, 0);
         let commit = teach_span("zaznaczenie", "selection", "lexicon_corrected")
-            .expect("explicit teach of the one-word fix");
+            .expect("third explicit teach of the one-word fix");
         assert_eq!(commit.pairs_learned, 1);
-        assert_eq!(commit.acknowledgement_message(), "Saved — 1 pair learned");
+        assert_eq!(
+            commit.acknowledgement_message(),
+            "Saved — 1 pair learned — 3/3 manual confirmations"
+        );
 
         let entries = custom_lexicon_entries().expect("lexicon");
         assert!(
@@ -1738,6 +2193,96 @@ mod tests {
         let pattern = regex::Regex::new(r"(?i)\bzaznaczenie\b").expect("word boundary regex");
         let next = pattern.replace_all("tu zaznaczenie jest", "selection");
         assert_eq!(next, "tu selection jest");
+    }
+
+    /// A different canonical is a different vote, even when the STT variant is identical.
+    #[test]
+    #[serial]
+    fn same_variant_with_different_canonical_does_not_promote_the_first_pair() {
+        let temp_dir = tempfile::tempdir().expect("temp");
+        let _guard = EnvRestore::capture("CODESCRIBE_DATA_DIR");
+        let temp_root = temp_dir.path().canonicalize().unwrap();
+        unsafe {
+            std::env::set_var("CODESCRIBE_DATA_DIR", &temp_root);
+        }
+
+        teach_span("zazdroszczę", "życzliwość", "lexicon_corrected").unwrap();
+        teach_span("ZAZDROSZCZĘ", "życzliwość", "lexicon_corrected").unwrap();
+        let different = teach_span("zazdroszczę", "współczucie", "lexicon_corrected")
+            .expect("different canonical is its own pair");
+
+        assert_eq!(different.pairs_learned, 0);
+        assert!(
+            custom_lexicon_entries().unwrap().is_empty(),
+            "two X teaches plus one Y teach must not promote X"
+        );
+    }
+
+    /// The per-utterance Dictionary teach action uses the same three-correction
+    /// gate as a highlighted span; it is not the bulk proposed-file promotion.
+    #[test]
+    #[serial]
+    fn overlay_teach_dictionary_action_requires_three_identical_corrections() {
+        let temp_dir = tempfile::tempdir().expect("temp");
+        let _guard = EnvRestore::capture("CODESCRIBE_DATA_DIR");
+        let temp_root = temp_dir.path().canonicalize().unwrap();
+        unsafe {
+            std::env::set_var("CODESCRIBE_DATA_DIR", &temp_root);
+        }
+
+        for expected in [0, 0, 1] {
+            let outcome = commit_overlay_correction(
+                "kubernetis",
+                "kubernetis",
+                "Kubernetes",
+                "overlay",
+                None,
+                Some("teach-dictionary"),
+            )
+            .expect("dictionary teach gesture");
+            assert_eq!(outcome.pairs_learned, expected);
+        }
+        assert!(
+            custom_lexicon_entries()
+                .unwrap()
+                .iter()
+                .any(|entry| { entry.variant == "kubernetis" && entry.canonical == "Kubernetes" })
+        );
+    }
+
+    /// Overlay copy and close remain evidence lines, never hidden votes toward teach N.
+    #[test]
+    #[serial]
+    fn overlay_copy_and_close_do_not_increment_the_human_teach_counter() {
+        let temp_dir = tempfile::tempdir().expect("temp");
+        let _guard = EnvRestore::capture("CODESCRIBE_DATA_DIR");
+        let temp_root = temp_dir.path().canonicalize().unwrap();
+        unsafe {
+            std::env::set_var("CODESCRIBE_DATA_DIR", &temp_root);
+        }
+
+        teach_span("pansiwe", "Pensieve", "lexicon_corrected").unwrap();
+        for action in ["copy", "close"] {
+            let evidence = commit_overlay_correction(
+                "pansiwe",
+                "pansiwe",
+                "Pensieve",
+                "overlay",
+                None,
+                Some(action),
+            )
+            .expect("copy/close evidence");
+            assert_eq!(evidence.pairs_learned, 0);
+            assert!(evidence.evidence_only);
+        }
+        let second =
+            teach_span("pansiwe", "Pensieve", "lexicon_corrected").expect("second actual teach");
+
+        assert_eq!(second.pairs_learned, 0);
+        assert!(
+            custom_lexicon_entries().unwrap().is_empty(),
+            "copy and close must not turn the second explicit teach into a rule"
+        );
     }
 
     /// Empty and emptied lexicon rows are dropped on the next rewrite (W11-B husks).
@@ -2117,6 +2662,7 @@ mod tests {
     fn test_voice_lab_read_surface_returns_live_records_and_lexicon_entries() {
         let temp_dir = tempfile::tempdir().expect("temp data dir for read surface");
         let _guard = EnvRestore::capture("CODESCRIBE_DATA_DIR");
+        let _min_guard = EnvRestore::capture(LEXICON_MIN_CORRECTIONS_ENV);
         let temp_root = temp_dir
             .path()
             .canonicalize()
@@ -2124,6 +2670,9 @@ mod tests {
         // SAFETY: this test is serial and EnvRestore restores process state.
         unsafe {
             std::env::set_var("CODESCRIBE_DATA_DIR", &temp_root);
+            // This read-projection fixture is intentionally a one-write
+            // custom-lexicon store fixture, not a product-threshold test.
+            std::env::set_var(LEXICON_MIN_CORRECTIONS_ENV, "1");
         }
 
         assert!(
@@ -2319,8 +2868,12 @@ mod tests {
     fn correction_learning_uses_raw_stt_not_formatted_delivery() {
         let temp_dir = tempfile::tempdir().expect("temp quality root");
         let _guard = EnvRestore::capture("CODESCRIBE_DATA_DIR");
+        let _min_guard = EnvRestore::capture(LEXICON_MIN_CORRECTIONS_ENV);
         let temp_root = temp_dir.path().canonicalize().unwrap();
-        unsafe { std::env::set_var("CODESCRIBE_DATA_DIR", &temp_root) };
+        unsafe {
+            std::env::set_var("CODESCRIBE_DATA_DIR", &temp_root);
+            std::env::set_var(LEXICON_MIN_CORRECTIONS_ENV, "1");
+        };
 
         let outcome = teach_span("rawvariant", "RawCanonical", "lexicon_corrected")
             .expect("explicit teach from raw STT");
@@ -2345,8 +2898,14 @@ mod tests {
     fn voice_lab_revision_keeps_raw_stt_as_dictionary_source() {
         let temp_dir = tempfile::tempdir().expect("temp quality root");
         let _guard = EnvRestore::capture("CODESCRIBE_DATA_DIR");
+        let _min_guard = EnvRestore::capture(LEXICON_MIN_CORRECTIONS_ENV);
         let temp_root = temp_dir.path().canonicalize().unwrap();
-        unsafe { std::env::set_var("CODESCRIBE_DATA_DIR", &temp_root) };
+        unsafe {
+            std::env::set_var("CODESCRIBE_DATA_DIR", &temp_root);
+            // This fixture isolates the raw-source writer behavior; the product
+            // threshold itself is covered by the three-save Voice Lab test.
+            std::env::set_var(LEXICON_MIN_CORRECTIONS_ENV, "1");
+        };
 
         commit_overlay_correction_with_level(
             "rawvariant",
@@ -2380,9 +2939,13 @@ mod tests {
     fn finalizing_correction_appends_revision_and_leaves_one_active_mapping() {
         let temp_dir = tempfile::tempdir().expect("temp data dir for Voice Lab edit");
         let _guard = EnvRestore::capture("CODESCRIBE_DATA_DIR");
+        let _min_guard = EnvRestore::capture(LEXICON_MIN_CORRECTIONS_ENV);
         let temp_root = temp_dir.path().canonicalize().unwrap();
         unsafe {
             std::env::set_var("CODESCRIBE_DATA_DIR", &temp_root);
+            // This regression is the one-write supersession fixture, not the
+            // product threshold contract.
+            std::env::set_var(LEXICON_MIN_CORRECTIONS_ENV, "1");
         }
 
         let quality_path = commit_overlay_correction(
@@ -2440,6 +3003,49 @@ mod tests {
         assert_eq!(active[0].canonical, "Junie Prime");
     }
 
+    /// Voice Lab revisions are human teaches too, but each save gets one vote.
+    #[test]
+    #[serial]
+    fn voice_lab_requires_three_identical_human_saves_before_learning() {
+        let temp_dir = tempfile::tempdir().expect("temp data dir for Voice Lab threshold");
+        let _guard = EnvRestore::capture("CODESCRIBE_DATA_DIR");
+        let temp_root = temp_dir.path().canonicalize().unwrap();
+        unsafe {
+            std::env::set_var("CODESCRIBE_DATA_DIR", &temp_root);
+        }
+
+        let ids = (0..3)
+            .map(|_| seed_voice_lab_record("uni agentka", "uni agentka"))
+            .collect::<Vec<_>>();
+        for (index, id) in ids.iter().enumerate() {
+            let outcome =
+                finalize_voice_lab_correction(id, "Junie").expect("Voice Lab human revision saves");
+            assert_eq!(outcome.pairs_learned, if index == 2 { 1 } else { 0 });
+            assert_eq!(outcome.lexicon_error, None);
+        }
+        assert!(custom_lexicon_entries().unwrap().iter().any(|entry| {
+            entry.variant == "uni agentka"
+                && entry.canonical == "Junie"
+                && entry.source == LEXICON_SOURCE_CORRECTION
+        }));
+    }
+
+    /// Invalid values cannot silently relax the sealed product default.
+    #[test]
+    #[serial]
+    fn lexicon_min_corrections_fails_closed_to_three() {
+        let _guard = EnvRestore::capture(LEXICON_MIN_CORRECTIONS_ENV);
+
+        unsafe { std::env::remove_var(LEXICON_MIN_CORRECTIONS_ENV) };
+        assert_eq!(lexicon_min_corrections(), 3);
+        for invalid in ["", "0", "not-a-number"] {
+            unsafe { std::env::set_var(LEXICON_MIN_CORRECTIONS_ENV, invalid) };
+            assert_eq!(lexicon_min_corrections(), 3, "{invalid:?} must fail closed");
+        }
+        unsafe { std::env::set_var(LEXICON_MIN_CORRECTIONS_ENV, "1") };
+        assert_eq!(lexicon_min_corrections(), 1);
+    }
+
     /// One committed record inside an isolated data dir; returns its logical ID.
     fn seed_voice_lab_record(delivered: &str, edited: &str) -> String {
         commit_overlay_correction(delivered, delivered, edited, "overlay", None, Some("copy"))
@@ -2490,10 +3096,7 @@ mod tests {
 
         assert_eq!(outcome.record.edited_text, canonical.trim());
         assert_eq!(outcome.lexicon_error, None);
-        assert_eq!(
-            outcome.pairs_learned, 1,
-            "pansiwe -> Pensieve is the one sensible pair"
-        );
+        assert_eq!(outcome.pairs_learned, 0, "one save is still evidence");
         assert_eq!(audit_line_count(), 2, "revision appended, nothing replaced");
         assert_eq!(
             recent_quality_records(1).unwrap()[0].edited_text,
@@ -2507,9 +3110,13 @@ mod tests {
     fn pairs_are_gated_individually_not_as_one_edit() {
         let temp_dir = tempfile::tempdir().expect("temp data dir");
         let _guard = EnvRestore::capture("CODESCRIBE_DATA_DIR");
+        let _min_guard = EnvRestore::capture(LEXICON_MIN_CORRECTIONS_ENV);
         let temp_root = temp_dir.path().canonicalize().unwrap();
         unsafe {
             std::env::set_var("CODESCRIBE_DATA_DIR", &temp_root);
+            // This is an extractor/write-primitive fixture; the product
+            // threshold itself is covered separately below.
+            std::env::set_var(LEXICON_MIN_CORRECTIONS_ENV, "1");
         }
 
         let insane = "a".repeat(90); // above MAX_CANDIDATE_CHARS — rejected per-pair
@@ -2559,9 +3166,13 @@ mod tests {
     fn lexicon_write_failure_never_vetoes_the_human_save() {
         let temp_dir = tempfile::tempdir().expect("temp data dir");
         let _guard = EnvRestore::capture("CODESCRIBE_DATA_DIR");
+        let _min_guard = EnvRestore::capture(LEXICON_MIN_CORRECTIONS_ENV);
         let temp_root = temp_dir.path().canonicalize().unwrap();
         unsafe {
             std::env::set_var("CODESCRIBE_DATA_DIR", &temp_root);
+            // Force the writer path: this fixture verifies that an I/O failure
+            // after an eligible promotion cannot veto the human revision.
+            std::env::set_var(LEXICON_MIN_CORRECTIONS_ENV, "1");
         }
 
         let id = seed_voice_lab_record("uni agentka", "uni agentka");

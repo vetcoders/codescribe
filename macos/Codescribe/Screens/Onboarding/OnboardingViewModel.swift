@@ -115,6 +115,9 @@ final class OnboardingViewModel: ObservableObject {
   // Agentic-readiness step state (lazy — probed when the step appears).
   @Published private(set) var readiness: CsAgenticReadiness?
   @Published private(set) var mcpStatus: CsMcpStatusReport?
+  @Published private(set) var agentBridgeStatus: AgentBridgeInstallationStatus
+  @Published private(set) var selectedAgentClients: Set<AgentBridgeClient>
+  @Published private(set) var agentBridgeError: String?
 
   /// Whether the user dismissed the "set up MCP" prompt shown when no MCP server
   /// is configured. Session-only: skipping keeps the readiness step moving without
@@ -131,6 +134,7 @@ final class OnboardingViewModel: ObservableObject {
   private let engine: OnboardingEngine
   private let hotkeys: HotkeysEngine
   private let agentStatus: AgentStatusEngine
+  private let agentBridge: AgentBridgeInstalling
   private let probe: PermissionProbing
 
   /// Invoked when the wizard is finished (Done confirmed) so the host can close
@@ -141,11 +145,14 @@ final class OnboardingViewModel: ObservableObject {
     engine: OnboardingEngine,
     hotkeys: HotkeysEngine = RealHotkeysEngine(),
     agentStatus: AgentStatusEngine = RealAgentStatusEngine(),
+    agentBridge: AgentBridgeInstalling = RealAgentBridgeInstaller(),
     probe: PermissionProbing = NativePermissionProbe()
   ) {
+    let bridgeStatus = agentBridge.status()
     self.engine = engine
     self.hotkeys = hotkeys
     self.agentStatus = agentStatus
+    self.agentBridge = agentBridge
     self.probe = probe
     // Resume from the persisted step; `onboardingProgress` is already clamped
     // to a valid index by the Rust side.
@@ -155,6 +162,9 @@ final class OnboardingViewModel: ObservableObject {
     self.onboardingMode = OnboardingModeChoice.from(engine.onboardingMode())
     self.selectedLanguage = engine.currentLanguage()
     self.hotkeyMode = HotkeyModeChoice.derive(from: hotkeys.modeBindings())
+    self.agentBridgeStatus = bridgeStatus
+    self.selectedAgentClients = Set(bridgeStatus.installedClients)
+    self.agentBridgeError = nil
     self.selectedProviderId =
       engine.assistiveProvider()
       ?? engine.availableProviders().first?.id
@@ -178,6 +188,30 @@ final class OnboardingViewModel: ObservableObject {
 
   var selectedProvider: CsProviderOption? {
     providers.first { $0.id == selectedProviderId } ?? providers.first
+  }
+
+  var agentBridgeUsesPolishCopy: Bool { selectedLanguage == .polish }
+
+  var agentBridgeTitle: String {
+    agentBridgeUsesPolishCopy
+      ? "Połącz Codescribe z agentem."
+      : "Connect Codescribe to your agent."
+  }
+
+  var agentBridgeExplanation: String {
+    if agentBridgeUsesPolishCopy {
+      return "Agent słyszy szkice na żywo tylko wtedy, gdy zwracasz się do niego po imieniu. "
+        + "Może odpowiedzieć w przerwie, ale instalację, commit, usuwanie i inne zmiany "
+        + "wykonuje dopiero po transcript_sealed."
+    }
+    return "The named agent can hear live drafts and reply during the pause. Installation, "
+      + "commits, deletion, and every other state-changing action wait for transcript_sealed."
+  }
+
+  var agentBridgeButtonTitle: String {
+    agentBridgeStatus.installedClients.isEmpty
+      ? (agentBridgeUsesPolishCopy ? "Zainstaluj wybrane" : "Install selected")
+      : (agentBridgeUsesPolishCopy ? "Zainstaluj ponownie" : "Reinstall selected")
   }
 
   // MARK: - Lifecycle refresh
@@ -215,6 +249,27 @@ final class OnboardingViewModel: ObservableObject {
   func refreshReadiness() {
     readiness = agentStatus.agenticReadiness()
     mcpStatus = agentStatus.mcpStatus()
+    agentBridgeStatus = agentBridge.status()
+  }
+
+  func toggleAgentClient(_ client: AgentBridgeClient) {
+    if selectedAgentClients.contains(client) {
+      selectedAgentClients.remove(client)
+    } else {
+      selectedAgentClients.insert(client)
+    }
+  }
+
+  /// The only home-directory write on the readiness step. Merely visiting,
+  /// refreshing, skipping, or continuing never installs a client skill.
+  func installAgentBridge() {
+    do {
+      agentBridgeStatus = try agentBridge.install(selectedClients: selectedAgentClients)
+      agentBridgeError = nil
+    } catch {
+      agentBridgeError = error.localizedDescription
+      agentBridgeStatus = agentBridge.status()
+    }
   }
 
   /// Arm the one-shot deep-link so the Settings window lands on the MCP surface

@@ -16,11 +16,12 @@
    Notes, and every other caret **are** legal ambulances. Assistive still
    delivers as a first-class Agent message — that is a different intent,
    not a ban on pasting into the Agent window.
-4. **Clipboard is borrowed, never stolen.** We may overwrite `NSPasteboard`
-   for a real Cmd+V. We must restore what the user had. If auto-paste cannot
-   land, we lose neither: restore the system clipboard, park the transcript
-   in our buffer (⌘⌥V). Explicit overlay **Copy** is the only verb that
-   writes the pasteboard on purpose and leaves it.
+4. **Clipboard is borrowed, never stolen.** On release we snapshot the user's
+   pasteboard, Cmd+V into the latched caret, then restore. The overlay must
+   resign key first — if `NSWorkspace` still names Codescribe after activate,
+   that is not a veto. If Cmd+V cannot land, park ⌘⌥V and leave the user's
+   pasteboard alone. Explicit overlay **Copy** is the only verb that writes
+   the pasteboard on purpose and leaves it.
 
 ## Intent → route
 

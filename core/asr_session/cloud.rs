@@ -122,7 +122,7 @@ impl GatewayConnection {
         let encrypted = parsed.scheme() == "wss";
         let loopback = matches!(host, "localhost" | "127.0.0.1" | "::1");
         let auth_mode = crate::stt::tail_provider::stt_auth_mode(&endpoint);
-        if (!encrypted && !(parsed.scheme() == "ws" && loopback))
+        if !(encrypted || parsed.scheme() == "ws" && loopback)
             || !parsed.username().is_empty()
             || parsed.password().is_some()
             || (auth_mode != crate::stt::tail_provider::SttAuthMode::Unauthenticated

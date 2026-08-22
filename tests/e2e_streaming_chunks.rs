@@ -252,6 +252,26 @@ fn test_overlap_dedup_stable_across_chunkings() {
 }
 
 #[test]
+fn test_overlap_merge_never_drops_the_iwo_onset_token() {
+    let chunks = [
+        "IWO został ucięte",
+        "został ucięte ale nagranie trwa dalej",
+        "nagranie trwa dalej i kończy się poprawnie",
+    ];
+    let mut merged = String::new();
+    for chunk in chunks {
+        append_with_overlap_dedup(&mut merged, chunk);
+    }
+
+    assert!(
+        normalize_transcript(&merged)
+            .to_lowercase()
+            .starts_with("iwo "),
+        "overlap reconciliation dropped the first audible token: {merged}"
+    );
+}
+
+#[test]
 fn test_streaming_matches_non_streaming_output() {
     if skip_unless_opt_in(
         STT_OPT_IN_ENV,

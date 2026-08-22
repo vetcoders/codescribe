@@ -28,7 +28,7 @@ use crate::agent_delivery::{
 use crate::recording::{
     CsAnnotationKind, CsLayerSummary, CsTranscription, CsTranscriptionListener,
 };
-use crate::{CsError, CsLanguage};
+use crate::{CsError, CsLanguage, application_runtime};
 
 /// Shared process-wide slot for the lazily-created `RecordingController`.
 /// Mutex so the first hotkey/FFI path wins construction; `Option` until first use.
@@ -203,6 +203,40 @@ fn current_controller(controller_store: &SharedController) -> Option<Arc<Recordi
         .map(Arc::clone)
 }
 
+fn release_capture_ownership_for_shutdown() {
+    CAPTURE_OWNER.store(CAPTURE_OWNER_NONE, Ordering::SeqCst);
+}
+
+/// Stop accepting gestures, finish an active microphone take on the app-owned
+/// runtime, and drop the process-global controller slot before worker teardown.
+pub(crate) fn shutdown_application_controller() -> Result<(), CsError> {
+    hotkeys::shutdown_global_hotkey_manager();
+    let controller = shared_controller()
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .take();
+    let stop_result = match controller {
+        Some(controller) => application_runtime::block_on(async move {
+            if matches!(
+                controller.current_state().await,
+                State::RecHold | State::RecToggle | State::Conversation
+            ) {
+                controller
+                    .stop_recording_from_external_surface()
+                    .await
+                    .map_err(|error| CsError::Recording {
+                        msg: format!("application shutdown could not stop recording: {error}"),
+                    })?;
+            }
+            Ok(())
+        })
+        .and_then(|result| result),
+        None => Ok(()),
+    };
+    release_capture_ownership_for_shutdown();
+    stop_result
+}
+
 /// Collapse a latched paste-target app name to `None` when it carries no
 /// information, so Swift never renders a blank or whitespace-only app label as
 /// if it were a known target.
@@ -335,6 +369,22 @@ fn forward_event_to_listener(payload: IpcEventPayload, listener: Arc<dyn CsTrans
         IpcEventPayload::Engine(event) => match event {
             EngineEventWire::VadStart { .. } => listener.on_vad_active(true),
             EngineEventWire::VadEnd { .. } => listener.on_vad_active(false),
+            EngineEventWire::SidebandEvidence { evidence } => {
+                // Content-free timing evidence reaches the app boundary for
+                // diagnostics, but there is deliberately no UI decoration or
+                // transcript callback in W2-02. L3 already consumes the
+                // permitted pause-only subset inside core.
+                tracing::debug!(
+                    sequence = evidence.sequence,
+                    session = %evidence.range.session,
+                    capture_epoch = evidence.range.capture_epoch,
+                    sample_start = evidence.range.sample_start,
+                    sample_end = evidence.range.sample_end,
+                    provenance = ?evidence.provenance,
+                    kind = ?evidence.evidence,
+                    "Silero sideband evidence (non-text)"
+                );
+            }
             EngineEventWire::NoSpeech { reason } => listener.on_no_speech(reason),
             EngineEventWire::Preview { text, .. } => listener.on_preview(text),
             EngineEventWire::Correction {
@@ -498,7 +548,7 @@ async fn compensate_orphaned_preparing(controller: &Arc<RecordingController>) {
 #[derive(uniffi::Object, Default)]
 pub struct CodescribeHotkeys {}
 
-#[uniffi::export(async_runtime = "tokio")]
+#[uniffi::export]
 impl CodescribeHotkeys {
     /// Construct the hotkey facade and initialise logging. Creates no listener,
     /// controller or tap — `start()` owns that.
@@ -510,78 +560,81 @@ impl CodescribeHotkeys {
 
     /// Start or replace the process-global hotkey listener.
     pub async fn start(&self) -> Result<(), CsError> {
-        // Install the process-wide macOS thermal observer once at runtime
-        // bootstrap so STT duty-cycle throttling (core/stt/scheduler.rs) sees
-        // real thermal pressure. Without this the scheduler always reads
-        // ThermalLevel::Nominal and never backs off during hot/long sessions.
-        // Idempotent: install_thermal_probe guards its own observer singleton.
-        codescribe::os::thermal::install_thermal_probe();
+        application_runtime::run(async move {
+            // Install the process-wide macOS thermal observer once at runtime
+            // bootstrap so STT duty-cycle throttling (core/stt/scheduler.rs) sees
+            // real thermal pressure. Without this the scheduler always reads
+            // ThermalLevel::Nominal and never backs off during hot/long sessions.
+            // Idempotent: install_thermal_probe guards its own observer singleton.
+            codescribe::os::thermal::install_thermal_probe();
 
-        // Seed the hotkey detector atomics from persisted config so the
-        // CGEventTap honours the user's saved mode bindings / cadence from
-        // launch. The atomics otherwise hold only compile-time defaults, so
-        // non-default bindings would never take effect. update_config re-applies
-        // this on every later settings change for live-reload without restart.
-        codescribe::os::hotkeys::apply_hotkey_config(
-            &codescribe_core::config::Config::load_without_keychain(),
-        );
+            // Seed the hotkey detector atomics from persisted config so the
+            // CGEventTap honours the user's saved mode bindings / cadence from
+            // launch. The atomics otherwise hold only compile-time defaults, so
+            // non-default bindings would never take effect. update_config re-applies
+            // this on every later settings change for live-reload without restart.
+            codescribe::os::hotkeys::apply_hotkey_config(
+                &codescribe_core::config::Config::load_without_keychain(),
+            );
 
-        let (tx, rx) = unbounded::<HotkeyEvent>();
-        let handle = tokio::runtime::Handle::current();
-        // Publish the runtime handle so sync config-write surfaces can push fresh
-        // settings into the live controller (refresh_live_controller_config).
-        let _ = shared_runtime_handle().set(handle.clone());
-        // Bridge the app-side voice-assistive delivery broadcast onto the Swift
-        // AgentChat listener. Idempotent — a repeated start() does not stack a
-        // second forwarder. The listener itself is registered separately via
-        // `set_agent_delivery_listener` and may arrive before or after this.
-        spawn_delivery_forwarder(handle.clone());
-        let controller_store = shared_controller();
+            let (tx, rx) = unbounded::<HotkeyEvent>();
+            let handle = tokio::runtime::Handle::current();
+            // Publish the runtime handle so sync config-write surfaces can push fresh
+            // settings into the live controller (refresh_live_controller_config).
+            let _ = shared_runtime_handle().set(handle.clone());
+            // Bridge the app-side voice-assistive delivery broadcast onto the Swift
+            // AgentChat listener. Idempotent — a repeated start() does not stack a
+            // second forwarder. The listener itself is registered separately via
+            // `set_agent_delivery_listener` and may arrive before or after this.
+            spawn_delivery_forwarder(handle.clone());
+            let controller_store = shared_controller();
 
-        // Spawn the event-dispatch thread BEFORE bringing up the tap. It drains
-        // `rx` for the lifetime of the retained sender, so it stays ready whether
-        // the CGEventTap comes up now (permissions already granted) or later via
-        // `rearm_after_permission_grant` after a first-run TCC grant. If it were
-        // spawned only after a successful `install_global_hotkey_manager`, a
-        // permission-less cold start would leave no consumer, and a later re-arm
-        // would build a live tap whose events pile up in the channel undispatched.
-        std::thread::spawn(move || {
-            for event in rx {
-                let spawn_handle = handle.clone();
-                let controller_handle = handle.clone();
-                let controller_store = Arc::clone(&controller_store);
-                route_hotkey_event(
-                    event,
-                    current_app_action_listener(),
-                    move |recording_event| {
-                        spawn_handle.spawn(async move {
-                            let controller =
-                                ensure_controller(&controller_store, controller_handle);
-                            let dispatch = dispatch_recording_with_capture_gate(
-                                recording_event,
-                                Arc::clone(&controller),
-                            )
-                            .await;
-                            if let Err(error) = dispatch {
-                                tray_status::update_tray_status(TrayStatus::Error);
-                                notifications::notify("Codescribe", &error.to_string());
-                                eprintln!("Hotkey event error: {error}");
-                            }
-                        });
-                    },
-                    deliver_deferred_insert_and_notify,
-                );
-            }
-        });
+            // Spawn the event-dispatch thread BEFORE bringing up the tap. It drains
+            // `rx` for the lifetime of the retained sender, so it stays ready whether
+            // the CGEventTap comes up now (permissions already granted) or later via
+            // `rearm_after_permission_grant` after a first-run TCC grant. If it were
+            // spawned only after a successful `install_global_hotkey_manager`, a
+            // permission-less cold start would leave no consumer, and a later re-arm
+            // would build a live tap whose events pile up in the channel undispatched.
+            std::thread::spawn(move || {
+                for event in rx {
+                    let spawn_handle = handle.clone();
+                    let controller_handle = handle.clone();
+                    let controller_store = Arc::clone(&controller_store);
+                    route_hotkey_event(
+                        event,
+                        current_app_action_listener(),
+                        move |recording_event| {
+                            spawn_handle.spawn(async move {
+                                let controller =
+                                    ensure_controller(&controller_store, controller_handle);
+                                let dispatch = dispatch_recording_with_capture_gate(
+                                    recording_event,
+                                    Arc::clone(&controller),
+                                )
+                                .await;
+                                if let Err(error) = dispatch {
+                                    tray_status::update_tray_status(TrayStatus::Error);
+                                    notifications::notify("Codescribe", &error.to_string());
+                                    eprintln!("Hotkey event error: {error}");
+                                }
+                            });
+                        },
+                        deliver_deferred_insert_and_notify,
+                    );
+                }
+            });
 
-        // Bring up the tap. On a permission-less first launch this returns an
-        // error, but the sender is retained inside the hotkey service so a later
-        // `rearm_after_permission_grant` can create the tap and feed the
-        // already-running dispatch thread — no app restart required.
-        hotkeys::install_global_hotkey_manager(tx.clone())
-            .map_err(|msg| CsError::Recording { msg })?;
+            // Bring up the tap. On a permission-less first launch this returns an
+            // error, but the sender is retained inside the hotkey service so a later
+            // `rearm_after_permission_grant` can create the tap and feed the
+            // already-running dispatch thread — no app restart required.
+            hotkeys::install_global_hotkey_manager(tx.clone())
+                .map_err(|msg| CsError::Recording { msg })?;
 
-        Ok(())
+            Ok(())
+        })
+        .await?
     }
 
     /// Register the Swift overlay listener for the shared controller event stream.
@@ -612,39 +665,51 @@ impl CodescribeHotkeys {
     /// local recorder/model setup after app launch so the first user-triggered
     /// dictation does not sit in the overlay's `starting` state for seconds.
     pub async fn prewarm_recording(&self) -> Result<(), CsError> {
-        let _ = ensure_controller(&shared_controller(), tokio::runtime::Handle::current());
-        // Warm the ACTIVE engine the router will actually use (Apple SpeechAnalyzer
-        // on macOS 26+, Candle on fallback/older macOS) — not a hardcoded Candle
-        // singleton. `prewarm_active_engine` also runs a synthetic warmup inference,
-        // so the first user dictation pays neither model-load nor Metal
-        // kernel-compilation latency. Idempotent; safe to race the controller's own
-        // background prewarm.
-        tokio::task::spawn_blocking(codescribe::stt::prewarm_active_engine)
-            .await
-            .map_err(|error| CsError::Recording {
-                msg: format!("STT prewarm task failed: {error}"),
-            })?
-            .map_err(|error| CsError::Recording {
-                msg: format!("STT prewarm failed: {error}"),
-            })?;
-        Ok(())
+        application_runtime::run(async move {
+            let _ = ensure_controller(&shared_controller(), tokio::runtime::Handle::current());
+            // Warm the ACTIVE engine the router will actually use (Apple SpeechAnalyzer
+            // on macOS 26+, Candle on fallback/older macOS) — not a hardcoded Candle
+            // singleton. `prewarm_active_engine` also runs a synthetic warmup inference,
+            // so the first user dictation pays neither model-load nor Metal
+            // kernel-compilation latency. Idempotent; safe to race the controller's own
+            // background prewarm.
+            tokio::task::spawn_blocking(codescribe::stt::prewarm_active_engine)
+                .await
+                .map_err(|error| CsError::Recording {
+                    msg: format!("STT prewarm task failed: {error}"),
+                })?
+                .map_err(|error| CsError::Recording {
+                    msg: format!("STT prewarm failed: {error}"),
+                })?;
+            Ok(())
+        })
+        .await?
     }
 
     /// Start the same toggle recording flow used by the default hotkey.
     pub async fn start_recording(&self) -> Result<(), CsError> {
-        start_recording_with_event(HotkeyEvent::ToggleNormal).await
+        application_runtime::run(async move {
+            start_recording_with_event(HotkeyEvent::ToggleNormal).await
+        })
+        .await?
     }
 
     /// Start the same toggle flow in the assistive lane. Overlay owns this
     /// route — the Agent composer mic is a separate, UI-initiated capture.
     pub async fn start_assistive_recording(&self) -> Result<(), CsError> {
-        start_recording_with_event(HotkeyEvent::ToggleAssistive).await
+        application_runtime::run(async move {
+            start_recording_with_event(HotkeyEvent::ToggleAssistive).await
+        })
+        .await?
     }
 
     /// Overlay Retranscribe: `hq:` / `cloud:` prefixes pick the pass.
     /// Bare paths are a Full HQ file pass.
     pub async fn transcribe_file(&self, path: String) -> Result<CsTranscription, CsError> {
-        crate::recording::transcribe_session_file(path).await
+        application_runtime::run(
+            async move { crate::recording::transcribe_session_file(path).await },
+        )
+        .await?
     }
 
     /// Stable path of the last retained session WAV, if it exists.
@@ -654,15 +719,18 @@ impl CodescribeHotkeys {
 
     /// Stop the active legacy-controller recording flow, if one is live.
     pub async fn stop_recording(&self) -> Result<(), CsError> {
-        let Some(controller) = current_controller(&shared_controller()) else {
-            return Ok(());
-        };
-        controller
-            .stop_recording_from_external_surface()
-            .await
-            .map_err(|error| CsError::Recording {
-                msg: error.to_string(),
-            })
+        application_runtime::run(async move {
+            let Some(controller) = current_controller(&shared_controller()) else {
+                return Ok(());
+            };
+            controller
+                .stop_recording_from_external_surface()
+                .await
+                .map_err(|error| CsError::Recording {
+                    msg: error.to_string(),
+                })
+        })
+        .await?
     }
 
     /// Forward a macOS sleep/wake boundary to the active recorder, if any.
@@ -671,23 +739,43 @@ impl CodescribeHotkeys {
     /// notification callback can therefore remain a cheap no-op while idle and
     /// cannot surprise-load a model or start a provider.
     pub async fn note_sleep_wake(&self) -> bool {
-        let Some(controller) = current_controller(&shared_controller()) else {
-            return false;
-        };
-        controller.note_sleep_wake().await
+        match application_runtime::run(async move {
+            let Some(controller) = current_controller(&shared_controller()) else {
+                return false;
+            };
+            controller.note_sleep_wake().await
+        })
+        .await
+        {
+            Ok(reached) => reached,
+            Err(error) => {
+                tracing::error!(%error, "sleep/wake runtime dispatch failed");
+                false
+            }
+        }
     }
 
     /// True while the shared controller is in an active recording/conversation state.
     pub async fn is_recording(&self) -> bool {
-        let Some(controller) = current_controller(&shared_controller()) else {
-            return false;
-        };
-        matches!(
-            controller.current_state().await,
-            codescribe::controller::State::RecHold
-                | codescribe::controller::State::RecToggle
-                | codescribe::controller::State::Conversation
-        )
+        match application_runtime::run(async move {
+            let Some(controller) = current_controller(&shared_controller()) else {
+                return false;
+            };
+            matches!(
+                controller.current_state().await,
+                codescribe::controller::State::RecHold
+                    | codescribe::controller::State::RecToggle
+                    | codescribe::controller::State::Conversation
+            )
+        })
+        .await
+        {
+            Ok(recording) => recording,
+            Err(error) => {
+                tracing::error!(%error, "recording-state runtime dispatch failed");
+                false
+            }
+        }
     }
 
     /// True when the configured formatting provider can handle a user-triggered
@@ -702,19 +790,22 @@ impl CodescribeHotkeys {
         text: String,
         language: Option<CsLanguage>,
     ) -> Result<String, CsError> {
-        let language = language.map(|l| l.as_code().to_string());
-        let result = codescribe::ai_formatting::format_text_with_status(
-            &text,
-            language.as_deref(),
-            false,
-            None,
-        )
-        .await;
-        if result.text.trim().is_empty() {
-            Ok(text)
-        } else {
-            Ok(result.text)
-        }
+        application_runtime::run(async move {
+            let language = language.map(|l| l.as_code().to_string());
+            let result = codescribe::ai_formatting::format_text_with_status(
+                &text,
+                language.as_deref(),
+                false,
+                None,
+            )
+            .await;
+            if result.text.trim().is_empty() {
+                Ok(text)
+            } else {
+                Ok(result.text)
+            }
+        })
+        .await?
     }
 
     /// Format overlay text through an explicitly selected one-shot level
@@ -726,86 +817,115 @@ impl CodescribeHotkeys {
         language: Option<CsLanguage>,
         level: String,
     ) -> Result<String, CsError> {
-        let policy = FormattingPolicy::parse(&level).map_err(|error| CsError::Config {
-            msg: error.to_string(),
-        })?;
-        if policy == FormattingPolicy::Off {
-            return Err(CsError::Config {
-                msg: "manual format level cannot be 'off'".to_string(),
-            });
-        }
-        let language = language.map(|l| l.as_code().to_string());
-        let result = codescribe::ai_formatting::format_text_with_status_for_policy(
-            &text,
-            language.as_deref(),
-            policy,
-        )
-        .await;
-        if result.text.trim().is_empty() {
-            Ok(text)
-        } else {
-            Ok(result.text)
-        }
+        application_runtime::run(async move {
+            let policy = FormattingPolicy::parse(&level).map_err(|error| CsError::Config {
+                msg: error.to_string(),
+            })?;
+            if policy == FormattingPolicy::Off {
+                return Err(CsError::Config {
+                    msg: "manual format level cannot be 'off'".to_string(),
+                });
+            }
+            let language = language.map(|l| l.as_code().to_string());
+            let result = codescribe::ai_formatting::format_text_with_status_for_policy(
+                &text,
+                language.as_deref(),
+                policy,
+            )
+            .await;
+            if result.text.trim().is_empty() {
+                Ok(text)
+            } else {
+                Ok(result.text)
+            }
+        })
+        .await?
     }
 
     /// Paste edited overlay text back into the app that was frontmost before the
     /// overlay. The result includes delivery truth and the app names observed
     /// at the exact delivery boundary so Swift can explain every degradation.
     pub async fn paste_text(&self, text: String) -> Result<CsPasteResult, CsError> {
-        let controller = ensure_controller(&shared_controller(), tokio::runtime::Handle::current());
-        controller
-            .paste_text_from_overlay(text)
-            .await
-            .map(CsPasteResult::from)
-            .map_err(|error| CsError::Recording {
-                msg: error.to_string(),
-            })
+        application_runtime::run(async move {
+            let controller =
+                ensure_controller(&shared_controller(), tokio::runtime::Handle::current());
+            controller
+                .paste_text_from_overlay(text)
+                .await
+                .map(CsPasteResult::from)
+                .map_err(|error| CsError::Recording {
+                    msg: error.to_string(),
+                })
+        })
+        .await?
     }
 
     /// Arm an edited overlay transcript directly when Swift knows the caret is
     /// still inside Codescribe. The controller owns tagging and the W1-A copy
     /// fallback when Paste Here registration is unavailable.
     pub async fn defer_text(&self, text: String) -> Result<CsPasteResult, CsError> {
-        let controller = ensure_controller(&shared_controller(), tokio::runtime::Handle::current());
-        controller
-            .defer_text_from_overlay(text)
-            .await
-            .map(CsPasteResult::from)
-            .map_err(|error| CsError::Recording {
-                msg: error.to_string(),
-            })
+        application_runtime::run(async move {
+            let controller =
+                ensure_controller(&shared_controller(), tokio::runtime::Handle::current());
+            controller
+                .defer_text_from_overlay(text)
+                .await
+                .map(CsPasteResult::from)
+                .map_err(|error| CsError::Recording {
+                    msg: error.to_string(),
+                })
+        })
+        .await?
     }
 
     /// Copy the tagged transcript to the clipboard without a synthetic paste.
     /// Swift calls this when the caret already sits inside Codescribe, where a
     /// synthetic Cmd+V would paste the transcript back into the overlay itself.
     pub async fn copy_text_tagged(&self, text: String) -> Result<(), CsError> {
-        let controller = ensure_controller(&shared_controller(), tokio::runtime::Handle::current());
-        controller
-            .copy_text_from_overlay(text)
-            .await
-            .map_err(|error| CsError::Recording {
-                msg: error.to_string(),
-            })
+        application_runtime::run(async move {
+            let controller =
+                ensure_controller(&shared_controller(), tokio::runtime::Handle::current());
+            controller
+                .copy_text_from_overlay(text)
+                .await
+                .map_err(|error| CsError::Recording {
+                    msg: error.to_string(),
+                })
+        })
+        .await?
     }
 
     /// Name of the app latched for the current overlay session, if known.
     /// Read-only: the paste path keeps owning target activation and delivery.
     pub async fn paste_target_app_name(&self) -> Option<String> {
-        let controller = current_controller(&shared_controller())?;
-        normalize_paste_target_app_name(controller.paste_target_app_name().await)
+        match application_runtime::run(async move {
+            let controller = current_controller(&shared_controller())?;
+            normalize_paste_target_app_name(controller.paste_target_app_name().await)
+        })
+        .await
+        {
+            Ok(target) => target,
+            Err(error) => {
+                tracing::error!(%error, "paste-target runtime dispatch failed");
+                None
+            }
+        }
     }
 
     /// Deliver an assistive transcript from the editable overlay. The
     /// controller attaches the trigger-time selection and accepts this once.
     pub async fn send_assistive_transcript(&self, text: String) -> Result<bool, CsError> {
-        let controller = ensure_controller(&shared_controller(), tokio::runtime::Handle::current());
-        controller
-            .deliver_pending_assistive_transcript(text)
-            .await
-            .map_err(|error| CsError::Recording {
-                msg: error.to_string(),
-            })
+        application_runtime::run(async move {
+            let controller =
+                ensure_controller(&shared_controller(), tokio::runtime::Handle::current());
+            controller
+                .deliver_pending_assistive_transcript(text)
+                .await
+                .map_err(|error| CsError::Recording {
+                    msg: error.to_string(),
+                })
+        })
+        .await?
     }
 
     /// Stop the global hotkey listener if it is active.
@@ -1032,6 +1152,24 @@ async fn dispatch_recording_hotkey_event(
     }
 
     Ok(())
+}
+
+#[cfg(test)]
+mod application_shutdown_tests {
+    use super::*;
+    use serial_test::serial;
+
+    #[test]
+    #[serial]
+    fn shutdown_releases_controller_capture_ownership() {
+        CAPTURE_OWNER.store(CAPTURE_OWNER_CONTROLLER, Ordering::SeqCst);
+        release_capture_ownership_for_shutdown();
+        assert_eq!(
+            CAPTURE_OWNER.load(Ordering::SeqCst),
+            CAPTURE_OWNER_NONE,
+            "application shutdown must never leave microphone ownership latched"
+        );
+    }
 }
 
 /// One-shot manual format levels: unknown levels and `off` are rejected (a

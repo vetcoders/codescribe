@@ -136,13 +136,25 @@ pub(super) fn overlay_paste_disposition(
     OverlayPasteDisposition::CopyTargetMismatch
 }
 
+/// Whether a successful `activate` still counts when `NSWorkspace` has not
+/// flipped yet. The overlay panel can keep the process named Codescribe after
+/// Alacritty/Chrome actually took the key window — requiring a name match here
+/// parks every auto-paste as ⌘⌥V.
+pub(super) fn overlay_float_still_confirms_activation(
+    wait_confirmed: bool,
+    frontmost_after_activate: Option<&str>,
+) -> bool {
+    wait_confirmed
+        || frontmost_after_activate
+            .map(str::trim)
+            .is_some_and(|name| !name.is_empty() && target_is_self_app(name))
+}
+
 /// Activate the latched ambulance and confirm it owns focus.
 ///
 /// Codescribe (Agent window) is already this process — no activate. A foreign
-/// app must both activate and match `NSWorkspace` within the budget. The
-/// floating overlay can leave workspace still naming Codescribe; callers pass
-/// this bit into [`overlay_paste_disposition`] so a confirmed Alacritty is
-/// not vetoed as "frontmost is Codescribe".
+/// app must activate. Matching `NSWorkspace` within the budget is sufficient
+/// but not required when the overlay still names this process.
 pub(super) fn confirm_latched_paste_target(target_app: Option<&str>) -> bool {
     let Some(name) = target_app.map(str::trim).filter(|n| !n.is_empty()) else {
         return false;
@@ -150,8 +162,14 @@ pub(super) fn confirm_latched_paste_target(target_app: Option<&str>) -> bool {
     if target_is_self_app(name) {
         return true;
     }
-    crate::os::selection::activate_app_by_name(name)
-        && crate::os::selection::wait_for_frontmost_app(name, OVERLAY_PASTE_FOCUS_BUDGET)
+    if !crate::os::selection::activate_app_by_name(name) {
+        return false;
+    }
+    let waited = crate::os::selection::wait_for_frontmost_app(name, OVERLAY_PASTE_FOCUS_BUDGET);
+    overlay_float_still_confirms_activation(
+        waited,
+        crate::os::selection::current_frontmost_app_name().as_deref(),
+    )
 }
 
 /// Park a refused synthetic paste in the process-local Paste Here slot.

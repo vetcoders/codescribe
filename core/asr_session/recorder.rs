@@ -6,8 +6,8 @@
 //!
 //! - **Injected authority.** The lane never constructs a provider. It receives
 //!   a [`Layer1Decision`] — an already-authorized, typed decision made by the
-//!   consent/settings owner. [`Layer1Decision::Disarmed`] is the
-//!   stock product: canvas plus lexicon, no error, no fallback loading.
+//!   consent/settings owner. The decision distinguishes Apple-only, local
+//!   exact-span Whisper, and a generic injected provider.
 //! - **Bounded, non-blocking fan-out.** [`RecorderLayer1Lane::offer_pcm`]
 //!   returns immediately on every call. A refiner that cannot keep up costs
 //!   refinement frames, never capture: sustained overflow degrades the lane to
@@ -17,8 +17,9 @@
 //!   canvas.
 //! - **Finals go through the doctrine seam.** Every final is vetted by
 //!   [`SessionIngest`] (ordering, idempotence, sealed utterances) and the
-//!   session outcome routes through [`crate::quality::merge_live_layer1`] —
-//!   the live floor is immutable; Layer 1 text can only fill gaps and tails.
+//!   session outcome routes through [`crate::quality::merge_live_layer1`]. A
+//!   generic full-session candidate remains evidence until it has exact span
+//!   identity; the Apple path owns the bounded rewrite fence.
 //! - **Every failure lands on Apple + lexicon.** Overflow, disconnect,
 //!   sleep/wake, and an incomplete stop-drain all degrade to
 //!   [`RefinerMode::Off`]. Nothing in this module can reach local Whisper —
@@ -123,6 +124,10 @@ pub fn recorder_lifecycle_channel() -> (RecorderLifecycleHandle, RecorderLifecyc
 pub enum Layer1Decision {
     /// No Layer 1 refiner for this recording. Canvas plus lexicon, complete.
     Disarmed,
+    /// Local Whisper owns bounded, PCM-identified tail patches for this
+    /// recording. This is deliberately a recording-start decision, not a
+    /// second environment read inside the Apple session.
+    LocalTailPatch(LocalTailPatchDisposition),
     /// An already-authorized provider, ready to open.
     Armed(Box<dyn AsrSessionProvider + Send>),
 }
@@ -130,12 +135,71 @@ pub enum Layer1Decision {
 impl Layer1Decision {
     /// Whether this decision carries a provider.
     pub fn is_armed(&self) -> bool {
+        matches!(
+            self,
+            Self::Armed(_)
+                | Self::LocalTailPatch(
+                    LocalTailPatchDisposition::ArmedDefault
+                        | LocalTailPatchDisposition::ArmedPhase(_)
+                )
+        )
+    }
+
+    /// Whether the generic provider fan-out lane (Cloud) is armed.
+    pub fn is_provider_armed(&self) -> bool {
         matches!(self, Self::Armed(_))
+    }
+
+    /// Recording-start local tail-patch disposition, when local power was the
+    /// selected product mode.
+    pub fn local_tail_patch_disposition(&self) -> Option<LocalTailPatchDisposition> {
+        match self {
+            Self::LocalTailPatch(disposition) => Some(*disposition),
+            Self::Disarmed | Self::Armed(_) => None,
+        }
+    }
+}
+
+/// Why the local Whisper tail-patch lane is armed or degraded for one take.
+///
+/// This is intentionally distinct from the generic provider lane: Cloud owns
+/// provider fan-out, while Local power owns exact-span Whisper jobs. Both are
+/// resolved once at recording start and carried through [`Layer1Decision`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum LocalTailPatchDisposition {
+    /// The product mode does not request local Whisper.
+    NotApplicable,
+    /// Local power's product default: Apple live plus local Whisper patches.
+    ArmedDefault,
+    /// Explicit `phase1`..`phase4` compatibility token armed the same lane.
+    ArmedPhase(u8),
+    /// Local power was selected but an explicit hard-off token disabled its
+    /// required patcher. This is degraded, never a healthy Apple-only state.
+    DegradedExplicitOff,
+    /// Local power was selected but the override token was not understood.
+    DegradedInvalidOverride,
+}
+
+impl LocalTailPatchDisposition {
+    /// Whether the Apple session must construct the local tail-patch lane.
+    pub fn is_armed(self) -> bool {
+        matches!(self, Self::ArmedDefault | Self::ArmedPhase(_))
+    }
+
+    /// Stable content-free token for logs and receipts.
+    pub fn as_token(self) -> &'static str {
+        match self {
+            Self::NotApplicable => "not_applicable",
+            Self::ArmedDefault => "armed_default",
+            Self::ArmedPhase(_) => "armed_phase",
+            Self::DegradedExplicitOff => "degraded_explicit_off",
+            Self::DegradedInvalidOverride => "degraded_invalid_override",
+        }
     }
 }
 
 impl Default for Layer1Decision {
-    /// The stock product decision: no Layer 1.
+    /// Safe fallback decision: no Layer 1.
     fn default() -> Self {
         Self::Disarmed
     }
@@ -146,6 +210,10 @@ impl fmt::Debug for Layer1Decision {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Self::Disarmed => f.write_str("Layer1Decision::Disarmed"),
+            Self::LocalTailPatch(disposition) => f
+                .debug_struct("Layer1Decision::LocalTailPatch")
+                .field("disposition", disposition)
+                .finish(),
             Self::Armed(provider) => f
                 .debug_struct("Layer1Decision::Armed")
                 .field("mode", &provider.mode().as_token())
@@ -343,7 +411,7 @@ impl RecorderLayer1Lane {
             degrade_notice: None,
         };
         match decision {
-            Layer1Decision::Disarmed => lane,
+            Layer1Decision::Disarmed | Layer1Decision::LocalTailPatch(_) => lane,
             Layer1Decision::Armed(mut provider) => {
                 match provider.open(input) {
                     Ok(()) => {

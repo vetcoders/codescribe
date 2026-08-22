@@ -815,6 +815,31 @@ final class OverlayStateTests: XCTestCase {
     XCTAssertEqual(closeCount, 1)
   }
 
+  func testManualEditProvenanceIsConsumedOnceAndRearmsOnlyOnAnotherEdit() {
+    let state = makeFinalizedState(clock: OverlayStateTestClock())
+    state.userEditedTranscript("first human correction")
+
+    XCTAssertEqual(
+      state.consumeManualEditProvenanceForQuality(isEdited: true),
+      "manual_human"
+    )
+    XCTAssertNil(state.consumeManualEditProvenanceForQuality(isEdited: true))
+
+    state.userEditedTranscript("second human correction")
+    XCTAssertEqual(
+      state.consumeManualEditProvenanceForQuality(isEdited: true),
+      "manual_human"
+    )
+    XCTAssertNil(state.consumeManualEditProvenanceForQuality(isEdited: false))
+
+    state.userEditedTranscript("manual before formatter")
+    state.replaceFormattedTranscriptProgrammatically("formatter output")
+    XCTAssertNil(
+      state.consumeManualEditProvenanceForQuality(isEdited: true),
+      "formatter and retranscribe assignments must cast zero votes"
+    )
+  }
+
   func testWindowDragReanchorsAutoHide() {
     let clock = OverlayStateTestClock()
     let state = makeFinalizedState(clock: clock)
@@ -873,13 +898,16 @@ final class OverlayStateTests: XCTestCase {
   func testCopyKeepsOverlayVisibleAndRearmsAutoHide() {
     let clock = OverlayStateTestClock()
     let state = makeFinalizedState(clock: clock)
+    let pasteboard = NSPasteboard(
+      name: NSPasteboard.Name("codescribe.tests.overlay.\(UUID().uuidString)")
+    )
     var closeCount = 0
     state.onClose = { closeCount += 1 }
 
     clock.now = 4
-    state.copyToPasteboard()
+    state.copyToPasteboard(pasteboard)
     XCTAssertEqual(closeCount, 0)
-    XCTAssertEqual(NSPasteboard.general.string(forType: .string), "ready transcript")
+    XCTAssertEqual(pasteboard.string(forType: .string), "ready transcript")
 
     clock.now = 5
     state.fireAutoHideNowForTests()
@@ -1420,7 +1448,10 @@ final class OverlayStateTests: XCTestCase {
     state.mode = .formatted
 
     // Copy triggers captureQualityIfEdited because texts differ; must return immediately.
-    state.copyToPasteboard()
+    let pasteboard = NSPasteboard(
+      name: NSPasteboard.Name("codescribe.tests.overlay-quality.\(UUID().uuidString)")
+    )
+    state.copyToPasteboard(pasteboard)
     XCTAssertEqual(closeCount, 0, "quality capture must not change Copy's stay-visible contract")
     // The async commit to quality + lexicon happens off-main; test reaches here without wait.
   }

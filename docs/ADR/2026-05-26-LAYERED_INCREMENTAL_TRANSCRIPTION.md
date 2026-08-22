@@ -1,12 +1,23 @@
 # ADR 2026-05-26 — Layered Incremental Transcription Pipeline
 
+> **Status: SUPERSEDED IN FULL (2026-08-22).** This file preserves the original
+> five-layer proposal as historical inventory only. It has no current normative
+> force. The active product contract has exactly four machine layers:
+> **L0 Apple → L1 Whisper → L2 Lexicon + Light+ → L3 existing Responses
+> formatter → human**. “Inline” is scheduling of that existing formatter.
+> Silero is orthogonal VAD/time evidence, richer annotations are
+> optional/provider-bound, Final BAM has no producer, and `SessionFinalised` is
+> lifecycle-only. Use [`THE_ENGINE_CONTRACT.md`](../THE_ENGINE_CONTRACT.md),
+> [`TRANSCRIPT_LANES.md`](../TRANSCRIPT_LANES.md), and
+> [`OVERLAY_STREAMING.md`](../OVERLAY_STREAMING.md) for current law.
+
 > **Historical model reference:** the original ADR named a Q8 Whisper artifact.
 > Current runtime policy is FP16-only; resolver, filesystem, direct-engine and
 > embedded paths reject quantized Whisper payloads before tensor load.
 
-> **Status:** PROPOSED → ACCEPTED (operator-authored vision, 2026-05-26)
+> **Historical status:** PROPOSED → ACCEPTED (operator-authored vision, 2026-05-26), then SUPERSEDED 2026-08-22
 > **Replaces:** Whisper-as-primary live STT model (see `WHISPER_LIVE.md`, `OVERLAY_STREAMING.md`)
-> **Owns invariant:** **NEVER REWRITE FROM ZERO.** All layers act incrementally on what was already shown to the user.
+> **Owns invariant:** **NEVER REWRITE FROM ZERO.** A later layer may repair text only inside the same PCM-identified span and before its final event.
 > **Trigger:** operator's bench session 2026-05-26 — Apple Dictation latency/UX baseline vs Whisper recall depth.
 
 ## Context
@@ -47,11 +58,12 @@ describing for weeks:
 
 What is missing is **orchestration glue** and one new contract event.
 
-## Decision
+## Historical decision (superseded)
 
 Adopt a **five-layer incremental transcription pipeline**, with Apple as the live primary engine and
-Whisper + lexicon + LLM as background supplements that never overwrite what the user already saw —
-they extend, patch in place, and annotate.
+Whisper + lexicon + LLM as background supplements. They may extend or patch in
+place only when span identity and the single rewrite fence prove authority;
+they never rebuild the transcript from zero.
 
 ```mermaid
 flowchart TB
@@ -273,12 +285,14 @@ they simply show Layer 0 output.
 
 ## Migration plan
 
-Four phases. Each ships as an independent machete cut behind a feature flag
-(`CODESCRIBE_LAYERED_TRANSCRIPTION=phase{1,2,3,4}`), defaulting to OFF until phase 4 lands.
+Four phases were proposed as independent machete cuts behind compatibility
+tokens (`CODESCRIBE_LAYERED_TRANSCRIPTION=phase{1,2,3,4}`). Runtime promotion
+on 2026-08-21 made Phase 1 mandatory for Local Power + Apple/Auto; phases 2–4
+remain reserved rather than controlling the Phase-1 product default.
 
 > **Orthogonality (operator 2026-08-05):** `FINAL_PASS_MODE` / Smart is **stop-path
-> full re-pass routing only**. It does not enable this flag. Live gap-fill is Layer 1
-> behind `CODESCRIBE_LAYERED_TRANSCRIPTION`. Smart + layered can compose; neither
+> full re-pass routing only**. It does not enable or disable live Layer 1.
+> Local Power owns live arming; the compatibility key may explicitly degrade it. Neither
 > silently rewrites the other. Off final-pass never forces Whisper at stop.
 
 **Phase 1 — Layer 0 + Layer 1 (Apple primary + Whisper tail patch).**
@@ -286,16 +300,18 @@ Four phases. Each ships as an independent machete cut behind a feature flag
 - Wire Apple as default engine when available; Whisper-as-primary remains the fallback.
 - New `core/stt/tail_patcher/` module + `EngineEvent::ReplaceRange { source: TailPatch }`.
 - Overlay gains `ReplaceRange` render path (visible "cursor walks back, patch lands").
-- **Wiring status (2026-08-08, W2-A `a6b1233d`):** Layer 1 is live on **both** live paths
-  when phase ≥ 1 — the **VAD/scheduler** session (`vad_transcription_session`) and the
-  default Apple **progressive** live session (`apple_stream_transcription_session`).
-  On the Apple path every sealed `UtteranceFinal` resolves to its retained PCM window
+- **Wiring status (revised 2026-08-21):** Layer 1 may mutate only on the default Apple
+  **progressive** live session (`apple_stream_transcription_session`). The VAD/scheduler
+  route has no pending-span owner and now fails closed with
+  `tail_patch_route_unbound` instead of emitting a post-final mutation.
+  On the Apple path every pending final resolves to its retained PCM window
   (W1-B bounded retention) and is handed to an async Layer 1 lane together with the exact
   committed string the `ReplaceRange` offsets are computed against. Bounded queue with
   counted drops (capture is never blocked), at most one job in flight, inference on
-  `spawn_blocking`, and every queued engine event flushed before the patch is emitted so a
-  `ReplaceRange` can never overtake the `UtteranceFinal` it patches. A boundary that cannot
-  address retained audio stays counted as unresolved and is never handed to Whisper.
+  `spawn_blocking`, exact request/payload identity, structural replay keys, and one
+  `ProgressiveSealMachine::try_rewrite` fence. The corrected text is carried by
+  `UtteranceFinal`; no TailPatch mutation is emitted after it. A boundary that cannot address
+  retained audio stays counted as unresolved and is never handed to Whisper.
   The `CODESCRIBE_APPLE_STT_LIVE_MODE=wav` escape hatch remains, but it is no longer needed
   to reach Layer 1.
 - Acceptance test: operator's bench audio reproduces — Layer 0 shows Polish live; Layer 1 fills
@@ -326,25 +342,26 @@ Four phases. Each ships as an independent machete cut behind a feature flag
 
 What this ADR proposed vs. what the runtime actually executes today.
 
-**Superseded on the Layer 1 default (2026-08-09 / polarized 2026-08-14).**
-`CODESCRIBE_LAYERED_TRANSCRIPTION` unset → `phase1` (`LAYERED_DEFAULT_PHASE = 1`).
-Explicit `off`/`0`/`false` is the only disarm. The 2026-08-08 sentence
-"`phase1` is still off by default" is historical. Everything **above**
-phase1 (Layers 2–4 in this table, plus W13 fusion / idempotence /
-highlights) is still off by default.
+**Default revised after field falsification (2026-08-21).**
+`CODESCRIBE_LAYERED_TRANSCRIPTION` unset → `off`. Explicit `phase1` remains an
+experimental operator path. The Apple progressive implementation now carries
+request/span identity through one rewrite fence, rejects structural replays,
+preserves intentional repetition in disjoint PCM ranges, and reports abandoned
+stop work. Promotion to stock remains gated on field/corpus validation, not on
+the removed post-final patch architecture.
 
 The 2026-08-08 table below is inventory, not the default. Read the
 "Delivered?" column with that amendment.
 
-| Phase                                 | Proposed module                          | Delivered?                               | Where it actually lives                                                                                                                                                                                                                                                               |
-| ------------------------------------- | ---------------------------------------- | ---------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| **1 — Layer 1 tail patch**            | `core/stt/tail_patcher/`                 | ✅ **delivered, default phase1**         | `core/stt/tail_patcher/` exists as proposed; wired into `core/pipeline/streaming/session.rs` (VAD/scheduler) and `core/pipeline/streaming/apple_live_session.rs` (Apple progressive, W2-A `a6b1233d`). Unset env → phase1 since 2026-08-09.                                           |
-| **1 — overlay `ReplaceRange` render** | `app/ui/overlay/mod.rs`                  | ✅ delivered, moved                      | `OverlayState.applyReplaceRange` → `OverlayTranscriptSegment.replaceRange` (Swift)                                                                                                                                                                                                    |
-| **1 — orchestrator**                  | `app/controller/layered_orchestrator.rs` | ❌ **not built — and not needed so far** | Both live paths call the shared `tail_patch_enabled` / `compute_tail_patch_job` / `emit_tail_patch_result` primitives directly. One gate, one `LayerSummary` shape, no separate state machine. Revisit only when Layers 2–4 need a single audio cursor (see Consequences)             |
-| **2 — Lexicon**                       | `core/lexicon/`                          | ⚠️ **partial, different shape**          | No `core/lexicon/` module. Lexicon substitution lives in `core/pipeline/stream_postprocess.rs::apply_lexicon` and runs **at seal time** on the Apple progressive path (W1-A `d180add9`) — as the doctrine's final automated layer, not as a debounced Layer 2 sub-pass                |
-| **2 — Inline LLM polish**             | `core/llm/inline_polish.rs`              | ❌ not built                             | No inline per-utterance LLM pass exists. Stop-path AI formatting (`core/llm/ai_formatting.rs`) is a different surface with a different contract                                                                                                                                       |
-| **3 — Paralingual monitor**           | `core/vad/paralingual_classifier.rs`     | ❌ not built                             | `EngineEvent::InsertAnnotation` travels end-to-end (contracts → IPC wire → `OverlayState.applyInsertAnnotation`), but the only site that _constructs_ one is a unit test in `app/presentation/emitter.rs`. The transport is ready; nothing produces paralingual annotations           |
-| **4 — Final BAM**                     | `core/pipeline/final_bam.rs`             | ❌ not built                             | `SessionFinalised` is emitted (carrying `LayerSummary`) by the live paths, not by a session-end contextual pass. Stop-path re-pass routing is `FINAL_PASS_MODE`, which is a _different_ mechanism — it re-runs Whisper on the full WAV, it does not do bounded cross-utterance polish |
+| Phase                                   | Proposed module                                        | Delivered?                               | Where it actually lives                                                                                                                                                                                                                                                                 |
+| --------------------------------------- | ------------------------------------------------------ | ---------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| **1 — Layer 1 tail patch**              | `core/stt/tail_patcher/`                               | ⚠️ delivered, default **off**            | Apple progressive only: exact PCM identity → byte-identical baseline → one pre-final rewrite fence. In-process, sidecar, and remote tail providers share the seam. VAD/scheduler and unbound full-session candidates fail closed. Explicit `phase1` awaits field promotion.             |
+| **1 — overlay `ReplaceRange` render**   | `app/ui/overlay/mod.rs`                                | ✅ delivered, moved                      | `OverlayState.applyReplaceRange` → `OverlayTranscriptSegment.replaceRange` (Swift)                                                                                                                                                                                                      |
+| **1 — orchestrator**                    | `app/controller/layered_orchestrator.rs`               | ❌ **not built — and not needed so far** | Both live paths call the shared `tail_patch_enabled` / `compute_tail_patch_job` / `emit_tail_patch_result` primitives directly. One gate, one `LayerSummary` shape, no separate state machine. Revisit only when Layers 2–4 need a single audio cursor (see Consequences)               |
+| **2 — Lexicon**                         | `core/lexicon/`                                        | ⚠️ **partial, different shape**          | No `core/lexicon/` module. Lexicon substitution lives in `core/pipeline/stream_postprocess.rs::apply_lexicon` and runs **at seal time** on the Apple progressive path (W1-A `d180add9`) — as the doctrine's final automated layer, not as a debounced Layer 2 sub-pass                  |
+| **2 — Inline LLM polish**               | `core/llm/inline_polish.rs`                            | ❌ not built                             | No inline per-utterance LLM pass exists. Stop-path AI formatting (`core/llm/ai_formatting.rs`) is a different surface with a different contract                                                                                                                                         |
+| **Orthogonal Silero sideband (not L3)** | `core/audio/chunker.rs` + `streaming/silero_fusion.rs` | ✅ timing evidence only                  | `EngineEvent::SidebandEvidence` carries exact PCM speech edges and pause=`unknown_non_speech`; reducer is a no-op and the existing Responses L3 may use pause duration only for punctuation/paragraphing. Named paralingual annotations remain unavailable without a measured provider. |
+| **4 — Final BAM**                       | `core/pipeline/final_bam.rs`                           | ❌ not built                             | `SessionFinalised` is emitted (carrying `LayerSummary`) by the live paths, not by a session-end contextual pass. Stop-path re-pass routing is `FINAL_PASS_MODE`, which is a _different_ mechanism — it re-runs Whisper on the full WAV, it does not do bounded cross-utterance polish   |
 
 **Reading rule for the phase specs above:** they describe intent, not inventory. A module path
 in Phases 2–4 is a proposal until this table marks it delivered.

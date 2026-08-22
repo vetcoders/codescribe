@@ -155,3 +155,33 @@ fn runtime_contract_blocks_legacy_worker_symbols() {
         }
     }
 }
+
+#[test]
+fn production_replay_threads_the_typed_layer1_stop_receipt() {
+    let recorder = read_workspace_source("core/audio/streaming_recorder.rs");
+
+    assert!(
+        recorder.contains("tail_patch_receipt: Option<TailPatchSessionReceipt>"),
+        "production replay must expose typed Layer 1 stop evidence"
+    );
+    assert!(
+        recorder.contains("TailPatchSessionReceipt::from_events(&events)"),
+        "production replay must derive its receipt from the same event stream consumed by Delivery"
+    );
+}
+
+#[test]
+fn apple_stop_emits_layer1_receipt_before_session_finalised() {
+    let source = read_workspace_source("core/pipeline/streaming/apple_live_session.rs");
+    let receipt = source
+        .rfind("event_sink.on_event(&receipt.as_event())")
+        .expect("Apple stop must emit the typed Layer 1 receipt into the ordered event stream");
+    let finalised = source
+        .rfind("emit_session_finalised(")
+        .expect("Apple stop must emit SessionFinalised");
+
+    assert!(
+        receipt < finalised,
+        "Layer 1 terminal accounting must reach the event stream before SessionFinalised seals Delivery evidence"
+    );
+}

@@ -13,20 +13,15 @@ struct LabPanel: View {
         .foregroundStyle(CSColor.textHigh)
       Text(
         labMode
-          ? "Lab mode is on. Daily overlay stays off so you test against the bus and the PWA tape."
+          ? "Lab mode is on. Overlay follows the tray toggle — Lab does not steal it."
           : "Open the loopback Voice Lab. Production builds never show this panel."
       )
       .font(CSFont.ui(12.5))
       .foregroundStyle(CSColor.textMutedAlt)
 
-      Toggle("Lab mode (overlay off)", isOn: $labMode)
+      Toggle("Lab mode", isOn: $labMode)
         .toggleStyle(.switch)
         .font(CSFont.ui(13, .medium))
-        .onChange(of: labMode) { _, on in
-          if on {
-            AppModel.shared.overlay.hide()
-          }
-        }
 
       Button("Open Voice Lab") {
         VoiceLabRuntime.openConsole()

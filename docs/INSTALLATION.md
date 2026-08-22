@@ -158,8 +158,43 @@ Codescribe.app/
     ├── MacOS/
     │   └── Codescribe       # App executable
     └── Resources/
-        └── AppIcon.icns     # Application icon
+        ├── AppIcon.icns     # Application icon
+        └── agent-bridge/    # Signed, checksumed external-agent payload
+            ├── manifest.json
+            ├── bin/bus-demux.py
+            └── skills/codescribe/  # Complete skill + references + examples
 ```
+
+## External Agent Bridge
+
+The existing 13-step Setup Wizard exposes the bridge inside **Agentic
+Readiness**. It does not write to the home directory merely because the step is
+shown. The operator must explicitly select Codex, Claude Code, or both and click
+Install/Reinstall.
+
+The installed runtime is stable across checkout moves and deletions:
+
+```text
+~/.codescribe/agent-bridge/
+├── receipt.json
+├── runtime/
+│   ├── manifest.json
+│   ├── bin/bus-demux.py
+│   └── skills/codescribe/
+└── leases/
+```
+
+Selected client skills live at `~/.codex/skills/codescribe/` and/or
+`~/.claude/skills/codescribe/`. `receipt.json` records the bundle version,
+selected clients, installed paths, payload hashes, and one ownership id. Each
+managed client folder carries a matching `.codescribe-managed.json`. Updates
+use staged directory renames and an atomic receipt write. Existing unowned
+folders are visible conflicts and are never overwritten; deselection removes
+only a folder whose marker still matches the receipt.
+
+Polish dictation selection shows the bridge explanation in Polish. All other
+language selections use English fallback. Setup can be skipped and reopened
+later from the existing **Setup Wizard…** tray action.
 
 ### Info.plist Keys
 
