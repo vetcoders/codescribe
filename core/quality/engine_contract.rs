@@ -189,6 +189,10 @@ pub const ENGINE_CONTRACT: EngineContract = EngineContract {
         "treat_whole_text_mutable_until_session_seal",
         "small_inline_llm",
         "infer_named_sound_from_silero",
+        "infer_span_identity_from_text_similarity",
+        "deduplicate_intentional_repetition_by_content",
+        "treat_mean_energy_db_as_identity",
+        "claim_layered_on_when_no_windows_reach_the_provider",
         "final_bam_automatic_producer",
         "session_finalised_content_mutation",
     ],
@@ -448,6 +452,21 @@ mod tests {
             ENGINE_CONTRACT
                 .forbidden
                 .contains(&"treat_committed_as_document")
+        );
+        assert!(
+            ENGINE_CONTRACT
+                .forbidden
+                .contains(&"infer_span_identity_from_text_similarity")
+        );
+        assert!(
+            ENGINE_CONTRACT
+                .forbidden
+                .contains(&"deduplicate_intentional_repetition_by_content")
+        );
+        assert!(
+            ENGINE_CONTRACT
+                .forbidden
+                .contains(&"treat_mean_energy_db_as_identity")
         );
     }
 

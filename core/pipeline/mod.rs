@@ -2,6 +2,8 @@
 //! that fan those events out to consumers, overlap dedup, streaming session
 //! management, and the post-processing passes applied to emitted text.
 
+/// PCM-range identity versus energy evidence; overlap admit receipts.
+pub mod acoustic_identity;
 /// Event contracts: EngineEvent, sinks trait, and shared pipeline types.
 pub mod contracts;
 /// Overlap/duplicate utterance suppression for streamed transcript events.

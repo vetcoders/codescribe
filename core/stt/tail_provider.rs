@@ -199,6 +199,21 @@ impl TailSampleRange {
             && self.sample_start <= other.sample_start
             && other.sample_end <= self.sample_end
     }
+
+    /// Half-open ranges on the same capture epoch share samples.
+    pub fn overlaps(&self, other: &Self) -> bool {
+        self.session == other.session
+            && self.capture_epoch == other.capture_epoch
+            && self.sample_start < other.sample_end
+            && other.sample_start < self.sample_end
+    }
+
+    /// Same epoch, no shared samples. Identical lexical text is still two observations.
+    pub fn is_disjoint(&self, other: &Self) -> bool {
+        self.session == other.session
+            && self.capture_epoch == other.capture_epoch
+            && !self.overlaps(other)
+    }
 }
 
 /// Idempotency key plus the exact audio range it names.

@@ -163,6 +163,7 @@ A first-wins final string is not enough. The real document is the ordered span l
 - `infer_span_identity_from_text_similarity`
 - `infer_named_sound_from_silero`
 - `deduplicate_intentional_repetition_by_content`
+- `treat_mean_energy_db_as_identity`
 - `claim_layered_on_when_no_windows_reach_the_provider`
 
 ## Founding invariant — restored 2026-08-21
@@ -204,6 +205,12 @@ This distinction is the engine.
 - A model confidence score is not identity.
 - A final callback is not identity.
 - Identity is minted from capture/session/span evidence.
+- Mean `energy_db` is quality evidence on the PCM axis, never a collision-proof ID.
+- `dB × ms` names coordinates and hop evidence, not a scalar hash of average loudness.
+- Two identical tokens on disjoint `[sample_start, sample_end)` ranges are two observations.
+- Replaying one range must not mint another token. Text-suffix overlap must not collapse them.
+- Executable admit path: `core/pipeline/acoustic_identity.rs` (`admit_acoustic_spans`).
+- String `strip_suffix_overlap*` remains a legacy unanchored fallback and is forbidden once spans are anchored.
 
 ### Apple truth
 
