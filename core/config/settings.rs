@@ -20,6 +20,7 @@
 use super::types::{Config, ModeBinding, ShortcutBinding, WorkMode, default_mode_bindings};
 use directories::BaseDirs;
 use serde::{Deserialize, Serialize};
+use std::fmt;
 use std::fs::{self, File, OpenOptions};
 use std::io::Write;
 use std::path::{Path, PathBuf};
@@ -28,6 +29,7 @@ use tracing::{debug, info, warn};
 use uuid::Uuid;
 
 use crate::pipeline::acoustic_ledger::EnergyCalibration;
+use crate::llm::provider::{ProviderKind, WireFamily};
 
 /// Serialize settings read/migrate/write transactions. A V1 load writes a
 /// backup and a V3 replacement, so it is a writer even though the public API is
@@ -457,6 +459,211 @@ impl SettingsSnapshotValidation {
     }
 }
 
+/// Stable identity of one resolved LLM lane inside the immutable settings throne.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum RuntimeLlmLaneKind {
+    Main,
+    Formatting,
+    Assistive,
+}
+
+impl RuntimeLlmLaneKind {
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Main => "main",
+            Self::Formatting => "formatting",
+            Self::Assistive => "assistive",
+        }
+    }
+}
+
+/// Credential facts sealed by the loader for one LLM lane.
+///
+/// The secret stays private, has no serde implementation, and is redacted from
+/// `Debug`. Consumers may borrow it for a request but cannot derive a second
+/// settings authority from this record.
+#[derive(Clone, PartialEq, Eq)]
+pub struct RuntimeLlmCredential {
+    key_account: String,
+    api_key: Option<String>,
+    account_auth: bool,
+}
+
+impl RuntimeLlmCredential {
+    pub(super) fn seal(
+        key_account: impl Into<String>,
+        api_key: Option<String>,
+        account_auth: bool,
+    ) -> Self {
+        Self {
+            key_account: key_account.into(),
+            api_key,
+            account_auth,
+        }
+    }
+
+    pub fn key_account(&self) -> &str {
+        &self.key_account
+    }
+
+    pub fn api_key(&self) -> Option<&str> {
+        self.api_key.as_deref()
+    }
+
+    pub const fn account_auth(&self) -> bool {
+        self.account_auth
+    }
+}
+
+impl fmt::Debug for RuntimeLlmCredential {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("RuntimeLlmCredential")
+            .field("key_account", &self.key_account)
+            .field("api_key_present", &self.api_key.is_some())
+            .field("account_auth", &self.account_auth)
+            .finish()
+    }
+}
+
+/// One fully resolved LLM lane. No consumer may reparse settings, env, or
+/// Keychain after receiving this value.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RuntimeLlmLane {
+    lane: RuntimeLlmLaneKind,
+    provider: ProviderKind,
+    wire_family: WireFamily,
+    endpoint: String,
+    model: String,
+    credential: RuntimeLlmCredential,
+    available: bool,
+    unavailable_reason: Option<String>,
+}
+
+impl RuntimeLlmLane {
+    pub(super) fn seal(
+        lane: RuntimeLlmLaneKind,
+        provider: ProviderKind,
+        endpoint: String,
+        model: String,
+        credential: RuntimeLlmCredential,
+        available: bool,
+        unavailable_reason: Option<String>,
+    ) -> Self {
+        Self {
+            lane,
+            provider,
+            wire_family: provider.wire_family(),
+            endpoint,
+            model,
+            credential,
+            available,
+            unavailable_reason,
+        }
+    }
+
+    pub const fn lane(&self) -> RuntimeLlmLaneKind {
+        self.lane
+    }
+
+    pub const fn provider(&self) -> ProviderKind {
+        self.provider
+    }
+
+    pub const fn wire_family(&self) -> WireFamily {
+        self.wire_family
+    }
+
+    pub fn endpoint(&self) -> &str {
+        &self.endpoint
+    }
+
+    pub fn model(&self) -> &str {
+        &self.model
+    }
+
+    pub fn credential(&self) -> &RuntimeLlmCredential {
+        &self.credential
+    }
+
+    pub const fn available(&self) -> bool {
+        self.available
+    }
+
+    pub fn unavailable_reason(&self) -> Option<&str> {
+        self.unavailable_reason.as_deref()
+    }
+
+    pub(super) fn digest_material(&self) -> String {
+        format!(
+            "{}|{}|{:?}|{}|{}|{}|{}|{}|{}",
+            self.lane.as_str(),
+            self.provider.as_str(),
+            self.wire_family,
+            self.endpoint,
+            self.model,
+            self.credential.key_account,
+            self.credential.api_key.is_some(),
+            self.credential.account_auth,
+            self.available,
+        )
+    }
+}
+
+/// The complete LLM part set sealed exactly once by the settings loader.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RuntimeLlmLanes {
+    main: RuntimeLlmLane,
+    formatting: RuntimeLlmLane,
+    assistive: RuntimeLlmLane,
+}
+
+impl RuntimeLlmLanes {
+    pub(super) fn seal(
+        main: RuntimeLlmLane,
+        formatting: RuntimeLlmLane,
+        assistive: RuntimeLlmLane,
+    ) -> Self {
+        debug_assert_eq!(main.lane(), RuntimeLlmLaneKind::Main);
+        debug_assert_eq!(formatting.lane(), RuntimeLlmLaneKind::Formatting);
+        debug_assert_eq!(assistive.lane(), RuntimeLlmLaneKind::Assistive);
+        Self {
+            main,
+            formatting,
+            assistive,
+        }
+    }
+
+    pub fn lane(&self, lane: RuntimeLlmLaneKind) -> &RuntimeLlmLane {
+        match lane {
+            RuntimeLlmLaneKind::Main => &self.main,
+            RuntimeLlmLaneKind::Formatting => &self.formatting,
+            RuntimeLlmLaneKind::Assistive => &self.assistive,
+        }
+    }
+
+    pub fn main(&self) -> &RuntimeLlmLane {
+        &self.main
+    }
+
+    pub fn formatting(&self) -> &RuntimeLlmLane {
+        &self.formatting
+    }
+
+    pub fn assistive(&self) -> &RuntimeLlmLane {
+        &self.assistive
+    }
+
+    pub(super) fn digest_material(&self) -> String {
+        format!(
+            "{}\n{}\n{}",
+            self.main.digest_material(),
+            self.formatting.digest_material(),
+            self.assistive.digest_material(),
+        )
+    }
+}
+
 /// Immutable per-session runtime settings snapshot — W1-A throne part.
 ///
 /// # Part contract
@@ -482,6 +689,9 @@ pub struct RuntimeSettingsSnapshot {
     /// Persisted intent captured by the same loader pass for consumers whose
     /// policy constructors still accept the public settings schema.
     user_settings: UserSettings,
+    /// Resolved provider, protocol, endpoint, model, credential, and
+    /// availability facts for every LLM lane.
+    llm_lanes: RuntimeLlmLanes,
     /// Where the values came from.
     provenance: SettingsSnapshotProvenance,
     /// Integrity fingerprint for session evidence.
@@ -495,6 +705,7 @@ impl RuntimeSettingsSnapshot {
     /// Seal a validated snapshot. Callers outside the loader must not exist in W1.
     pub fn seal(
         values: Config,
+        llm_lanes: RuntimeLlmLanes,
         provenance: SettingsSnapshotProvenance,
         digest: SettingsSnapshotDigest,
     ) -> Result<Self, SettingsSnapshotValidationError> {
@@ -502,6 +713,7 @@ impl RuntimeSettingsSnapshot {
         Ok(Self {
             values,
             user_settings: UserSettings::default(),
+            llm_lanes,
             provenance,
             digest,
             energy_calibration: None,
@@ -512,6 +724,7 @@ impl RuntimeSettingsSnapshot {
     pub(crate) fn seal_loaded(
         values: Config,
         user_settings: UserSettings,
+        llm_lanes: RuntimeLlmLanes,
         provenance: SettingsSnapshotProvenance,
         digest: SettingsSnapshotDigest,
     ) -> Result<Self, SettingsSnapshotValidationError> {
@@ -519,6 +732,7 @@ impl RuntimeSettingsSnapshot {
         Ok(Self {
             values,
             user_settings,
+            llm_lanes,
             provenance,
             digest,
             energy_calibration: None,
@@ -533,6 +747,11 @@ impl RuntimeSettingsSnapshot {
     /// Borrow persisted intent frozen beside the effective values.
     pub fn user_settings(&self) -> &UserSettings {
         &self.user_settings
+    }
+
+    /// Borrow all resolved LLM lanes from the immutable settings throne.
+    pub fn llm_lanes(&self) -> &RuntimeLlmLanes {
+        &self.llm_lanes
     }
 
     /// Borrow provenance for evidence sinks.

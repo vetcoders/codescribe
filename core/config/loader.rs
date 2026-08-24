@@ -14,6 +14,7 @@ use std::collections::{HashMap, HashSet};
 use std::env::VarError;
 use std::fs;
 use std::path::{Path, PathBuf};
+use std::str::FromStr;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Mutex, OnceLock};
 use std::time::{SystemTime, UNIX_EPOCH};
@@ -24,14 +25,16 @@ use super::defaults::{
     default_formatting_provider, default_llm_endpoint, default_llm_model,
 };
 use super::settings::{
-    DEFAULT_AGENT_WORKSPACE_ROOT, FormattingPolicy, RuntimeSettingsSnapshot,
-    SettingsLoaderInput, SettingsSnapshotDigest, SettingsSnapshotProvenance,
-    SettingsSnapshotValidationError, UserSettings, normalize_agent_workspace_roots,
-    parse_agent_workspace_roots,
+    DEFAULT_AGENT_WORKSPACE_ROOT, FormattingPolicy, RuntimeLlmCredential, RuntimeLlmLane,
+    RuntimeLlmLaneKind, RuntimeLlmLanes, RuntimeSettingsSnapshot, SettingsLoaderInput,
+    SettingsSnapshotDigest, SettingsSnapshotProvenance, SettingsSnapshotValidationError,
+    UserSettings, normalize_agent_workspace_roots, parse_agent_workspace_roots,
 };
 use super::types::{
     Config, DeferredInsertShortcut, Language, OverlayPositionMode, TranscriptSendMode,
 };
+use crate::llm::account_auth;
+use crate::llm::provider::{LlmMode, ProviderKind, WireFamily};
 
 /// Has the process already seeded its environment from config? Seeding happens
 /// once, at the first load; later loads read snapshots instead, so a background
@@ -126,9 +129,204 @@ impl Config {
             defaults_applied: true,
             loaded_at_unix_ms,
         };
-        let digest_material = format!("{values:?}\n{provenance:?}");
+        let llm_lanes = Self::resolve_runtime_llm_lanes(&values, &user_settings);
+        let mut digest_values = values.clone();
+        digest_values.llm_api_key = digest_values
+            .llm_api_key
+            .as_ref()
+            .map(|_| "<redacted:present>".to_string());
+        digest_values.stt_api_key = digest_values
+            .stt_api_key
+            .as_ref()
+            .map(|_| "<redacted:present>".to_string());
+        let digest_material = format!(
+            "{digest_values:?}\n{user_settings:?}\n{provenance:?}\n{}",
+            llm_lanes.digest_material(),
+        );
         let digest = SettingsSnapshotDigest::from_hex(sha256_hex(digest_material.as_bytes()));
-        RuntimeSettingsSnapshot::seal_loaded(values, user_settings, provenance, digest)
+        RuntimeSettingsSnapshot::seal_loaded(values, user_settings, llm_lanes, provenance, digest)
+    }
+
+    /// Resolve the complete LLM organ during the one settings-loader pass.
+    /// Consumers only receive the sealed result; none may repeat this work.
+    fn resolve_runtime_llm_lanes(values: &Config, settings: &UserSettings) -> RuntimeLlmLanes {
+        RuntimeLlmLanes::seal(
+            Self::resolve_runtime_llm_lane(RuntimeLlmLaneKind::Main, values, settings),
+            Self::resolve_runtime_llm_lane(RuntimeLlmLaneKind::Formatting, values, settings),
+            Self::resolve_runtime_llm_lane(RuntimeLlmLaneKind::Assistive, values, settings),
+        )
+    }
+
+    fn resolve_runtime_llm_lane(
+        lane: RuntimeLlmLaneKind,
+        values: &Config,
+        settings: &UserSettings,
+    ) -> RuntimeLlmLane {
+        let provider = Self::resolve_runtime_llm_provider(lane, settings);
+        let endpoint = Self::resolve_runtime_llm_endpoint(lane, provider, values, settings);
+        let model = Self::resolve_runtime_llm_model(lane, provider, settings);
+        let key_account = match lane {
+            RuntimeLlmLaneKind::Main => "LLM_API_KEY",
+            RuntimeLlmLaneKind::Formatting => "LLM_FORMATTING_API_KEY",
+            RuntimeLlmLaneKind::Assistive => provider.api_key_env_key(),
+        };
+        let api_key = Self::runtime_env_non_empty(key_account);
+        let endpoint_requires_key = ProviderKind::endpoint_requires_api_key(&endpoint);
+        let account_auth = lane == RuntimeLlmLaneKind::Assistive
+            && provider.wire_family() == WireFamily::OpenAiResponses
+            && endpoint_requires_key
+            && account_auth::provider_oauth_config(provider).is_ok_and(|row| {
+                Self::runtime_env_non_empty(row.tokens_account).is_some()
+            });
+        let available = api_key.is_some() || !endpoint_requires_key || account_auth;
+        let unavailable_reason = (!available).then(|| {
+            format!(
+                "The {} lane points at {}, which requires a credential, but neither Keychain account {} nor a supported signed-in provider account is available.",
+                lane.as_str(),
+                endpoint,
+                key_account,
+            )
+        });
+        let credential = RuntimeLlmCredential::seal(key_account, api_key, account_auth);
+        RuntimeLlmLane::seal(
+            lane,
+            provider,
+            endpoint,
+            model,
+            credential,
+            available,
+            unavailable_reason,
+        )
+    }
+
+    fn resolve_runtime_llm_provider(
+        lane: RuntimeLlmLaneKind,
+        settings: &UserSettings,
+    ) -> ProviderKind {
+        let persisted = match lane {
+            RuntimeLlmLaneKind::Assistive => settings.llm_assistive_provider.clone(),
+            RuntimeLlmLaneKind::Main | RuntimeLlmLaneKind::Formatting => None,
+        };
+        let env_key = match lane {
+            RuntimeLlmLaneKind::Formatting => Some("LLM_FORMATTING_PROVIDER"),
+            RuntimeLlmLaneKind::Assistive => Some("LLM_ASSISTIVE_PROVIDER"),
+            RuntimeLlmLaneKind::Main => None,
+        };
+        let fallback = match lane {
+            RuntimeLlmLaneKind::Formatting => default_formatting_provider(),
+            RuntimeLlmLaneKind::Main | RuntimeLlmLaneKind::Assistive => {
+                default_assistive_provider()
+            }
+        };
+        persisted
+            .and_then(Self::non_empty_string)
+            .and_then(|raw| ProviderKind::from_str(&raw).ok())
+            .or_else(|| {
+                env_key
+                    .and_then(Self::runtime_env_non_empty)
+                    .and_then(|raw| ProviderKind::from_str(&raw).ok())
+            })
+            .or_else(|| ProviderKind::from_str(&fallback).ok())
+            .unwrap_or_default()
+    }
+
+    fn resolve_runtime_llm_model(
+        lane: RuntimeLlmLaneKind,
+        provider: ProviderKind,
+        settings: &UserSettings,
+    ) -> String {
+        let (lane_setting, lane_env) = match lane {
+            RuntimeLlmLaneKind::Main => (None, None),
+            RuntimeLlmLaneKind::Formatting => (
+                settings.llm_formatting_model.clone(),
+                Some("LLM_FORMATTING_MODEL"),
+            ),
+            RuntimeLlmLaneKind::Assistive => (
+                settings.llm_assistive_model.clone(),
+                Some("LLM_ASSISTIVE_MODEL"),
+            ),
+        };
+        let owned = |candidate: String| provider.owns_model(&candidate).then_some(candidate);
+        let lane_model = lane_setting
+            .and_then(Self::non_empty_string)
+            .and_then(owned)
+            .or_else(|| {
+                lane_env
+                    .and_then(Self::runtime_env_non_empty)
+                    .and_then(owned)
+            });
+        let resolved = if lane == RuntimeLlmLaneKind::Main || provider.owns_generic_lane_config() {
+            lane_model
+                .or_else(|| {
+                    settings
+                        .llm_model
+                        .clone()
+                        .and_then(Self::non_empty_string)
+                        .and_then(owned)
+                })
+                .or_else(|| Self::runtime_env_non_empty("LLM_MODEL").and_then(owned))
+        } else {
+            lane_model
+        };
+        resolved.unwrap_or_else(|| match lane {
+            RuntimeLlmLaneKind::Main => default_llm_model(),
+            RuntimeLlmLaneKind::Formatting => {
+                provider.default_model(LlmMode::Formatting).to_string()
+            }
+            RuntimeLlmLaneKind::Assistive => {
+                provider.default_model(LlmMode::Assistive).to_string()
+            }
+        })
+    }
+
+    fn resolve_runtime_llm_endpoint(
+        lane: RuntimeLlmLaneKind,
+        provider: ProviderKind,
+        values: &Config,
+        settings: &UserSettings,
+    ) -> String {
+        let resolved = if lane == RuntimeLlmLaneKind::Main
+            || provider.owns_generic_lane_config()
+        {
+            let (lane_setting, lane_env) = match lane {
+                RuntimeLlmLaneKind::Main => (None, None),
+                RuntimeLlmLaneKind::Formatting => (
+                    settings.llm_formatting_endpoint.clone(),
+                    Some("LLM_FORMATTING_ENDPOINT"),
+                ),
+                RuntimeLlmLaneKind::Assistive => (
+                    settings.llm_assistive_endpoint.clone(),
+                    Some("LLM_ASSISTIVE_ENDPOINT"),
+                ),
+            };
+            lane_setting
+                .and_then(Self::non_empty_string)
+                .or_else(|| lane_env.and_then(Self::runtime_env_non_empty))
+                .or_else(|| {
+                    settings
+                        .llm_endpoint
+                        .clone()
+                        .and_then(Self::non_empty_string)
+                })
+                .or_else(|| Self::runtime_env_non_empty("LLM_ENDPOINT"))
+                .or_else(|| values.llm_endpoint.clone().and_then(Self::non_empty_string))
+                .unwrap_or_else(default_llm_endpoint)
+        } else {
+            Self::runtime_env_non_empty(provider.identity().endpoint_env)
+                .unwrap_or_else(|| provider.identity().default_endpoint.to_string())
+        };
+        provider.normalize_endpoint(&resolved)
+    }
+
+    fn runtime_env_non_empty(key: &str) -> Option<String> {
+        Self::config_runtime_env_var(key)
+            .ok()
+            .and_then(Self::non_empty_string)
+    }
+
+    fn non_empty_string(value: String) -> Option<String> {
+        let value = value.trim().to_string();
+        (!value.is_empty()).then_some(value)
     }
 
     /// The single load path behind both public entry points.

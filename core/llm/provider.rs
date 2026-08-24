@@ -232,6 +232,58 @@ impl ProviderKind {
     pub fn owns_generic_lane_config(self) -> bool {
         self == ProviderKind::default()
     }
+
+    /// Normalize an operator-provided base URL to this provider's canonical
+    /// protocol path. Pure registry behavior: no settings, env, or Keychain.
+    pub fn normalize_endpoint(self, endpoint: &str) -> String {
+        match self.wire_family() {
+            WireFamily::OpenAiResponses => normalize_endpoint(
+                endpoint,
+                "/v1/responses",
+                &["/v1/responses", "/v1/chat/completions", "/v1/completions"],
+            ),
+            WireFamily::AnthropicMessages => normalize_endpoint(
+                endpoint,
+                "/v1/messages",
+                &["/v1/messages", "/v1/responses"],
+            ),
+        }
+    }
+
+    /// Whether an endpoint is one of the registry's official cloud hosts.
+    /// Every other endpoint may be key-optional; the request path can still
+    /// attach an explicitly configured key without inventing a second gate.
+    pub fn endpoint_requires_api_key(endpoint: &str) -> bool {
+        let host = endpoint_host(endpoint);
+        !host.is_empty()
+            && PROVIDER_REGISTRY.iter().any(|row| {
+                host.eq_ignore_ascii_case(endpoint_host(row.default_endpoint))
+            })
+    }
+}
+
+fn normalize_endpoint(endpoint: &str, canonical_suffix: &str, known_suffixes: &[&str]) -> String {
+    let mut base = endpoint.trim().trim_end_matches('/').to_string();
+    for suffix in known_suffixes {
+        if base.ends_with(suffix) {
+            base.truncate(base.len() - suffix.len());
+            return format!("{base}{canonical_suffix}");
+        }
+    }
+    if base.ends_with("/v1") {
+        base.truncate(base.len() - "/v1".len());
+    }
+    format!("{base}{canonical_suffix}")
+}
+
+fn endpoint_host(endpoint: &str) -> &str {
+    endpoint
+        .split("://")
+        .nth(1)
+        .unwrap_or(endpoint)
+        .split(['/', ':'])
+        .next()
+        .unwrap_or_default()
 }
 
 /// How a provider authenticates requests for a lane.
