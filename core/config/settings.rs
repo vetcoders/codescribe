@@ -1,8 +1,23 @@
 //! User-facing settings stored as JSON (GUI-managed).
 //!
 //! These are the "regular user" tier. Power users override via ~/.codescribe/.env.
+//!
+//! # W1-A immutable settings part set (STRUCTURALLY_COMPLETE / NOT_WIRED)
+//!
+//! Declared owners live in this file and in `loader.rs`. W1 places the parts;
+//! W2 connects session consumers once. No second default owner, synchronizer,
+//! or mutable runtime bus may return.
+//!
+//! | Part | Owner symbol / surface | Role |
+//! |---|---|---|
+//! | Persisted intent | [`UserSettings`] | durable `settings.json` choices |
+//! | Loader input | [`SettingsLoaderInput`] | one-shot load envelope for the core loader |
+//! | Immutable snapshot | [`RuntimeSettingsSnapshot`] | session-frozen runtime truth |
+//! | Provenance | [`SettingsSnapshotProvenance`] | source attribution for the snapshot |
+//! | Digest | [`SettingsSnapshotDigest`] | integrity fingerprint for bus/session evidence |
+//! | Validation | [`SettingsSnapshotValidation`] | admit/refuse contract before snapshot seal |
 
-use super::types::{ModeBinding, ShortcutBinding, WorkMode, default_mode_bindings};
+use super::types::{Config, ModeBinding, ShortcutBinding, WorkMode, default_mode_bindings};
 use directories::BaseDirs;
 use serde::{Deserialize, Serialize};
 use std::fs::{self, File, OpenOptions};
@@ -108,8 +123,20 @@ pub fn parse_agent_workspace_roots(value: &str) -> Vec<String> {
     normalize_agent_workspace_roots(value.split(':'))
 }
 
-/// Regular-user settings (JSON, GUI-managed).
-/// All fields are Option — None means "use default or .env override".
+/// Persisted user intent (`settings.json`) — W1-A part, single owner.
+///
+/// # Part contract
+/// - **inputs:** explicit GUI/bridge edits and validated migration writes
+/// - **outputs:** sparse Option fields consumed only by the one core loader
+/// - **forbidden authority:** must not resolve runtime defaults/env precedence;
+///   must not act as a live mutable session snapshot; must not own PCM,
+///   reducer, formatter, or delivery decisions
+/// - **intended W2 consumers:** `core/config/loader.rs` (sole reader that
+///   builds [`RuntimeSettingsSnapshot`]); Swift/bridge edit transport may
+///   write intent but cannot mint session truth
+///
+/// All fields are Option — None means "use default or documented env override"
+/// at loader time, never at consumer time.
 #[derive(Debug, Clone, Serialize, Deserialize, Default, PartialEq)]
 #[serde(default)]
 pub struct UserSettings {
@@ -307,6 +334,184 @@ pub struct UserSettings {
     /// Not a copied list of every connector tool.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub agent_capabilities: Option<crate::agent::capabilities::AgentCapabilityPreferences>,
+}
+
+/// One-shot loader input envelope — W1-A part, declared for the core loader.
+///
+/// # Part contract
+/// - **inputs:** settings.json path, optional env-file permission, process-env
+///   override permission (keys must already be registered in `docs/ENV_REGISTRY.toml`)
+/// - **outputs:** material handed to the single loader pass that emits
+///   [`RuntimeSettingsSnapshot`]
+/// - **forbidden authority:** must not retain mutable runtime state; must not
+///   re-read files mid-take; must not invent a second default owner or
+///   synchronizer; must not select engines/routes/text
+/// - **intended W2 consumers:** `core/config/loader.rs` only, once, at
+///   app/session start or explicit next-session reload
+///
+/// W1 places the type. No loader call site is connected here.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SettingsLoaderInput {
+    /// Canonical path of persisted intent (`settings.json`).
+    pub settings_path: PathBuf,
+    /// When true, the loader may seed missing keys from the optional `.env` file.
+    pub allow_env_file: bool,
+    /// When true, registered process-env overrides may win over persisted intent.
+    pub allow_process_env_overrides: bool,
+}
+
+/// Source attribution for one immutable runtime settings snapshot — W1-A part.
+///
+/// # Part contract
+/// - **inputs:** path/digest of persisted intent, names of applied env overrides
+///   (never secret values), whether code defaults filled gaps, load timestamp
+/// - **outputs:** provenance carried inside [`RuntimeSettingsSnapshot`]
+/// - **forbidden authority:** must not reinterpret precedence; must not mutate
+///   snapshot values; must not stand in for bus/session identity
+/// - **intended W2 consumers:** snapshot constructors in the core loader;
+///   Transcript Bus session evidence; diagnostics that display source lineage
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SettingsSnapshotProvenance {
+    /// Absolute path of the `settings.json` that contributed persisted intent.
+    pub settings_json_path: Option<PathBuf>,
+    /// SHA-256 of the persisted intent bytes when a file was read.
+    pub settings_json_sha256: Option<String>,
+    /// Registered env override *names* applied during the load (values omitted).
+    pub env_overlay_keys: Vec<String>,
+    /// True when documented code defaults filled any absent field.
+    pub defaults_applied: bool,
+    /// Unix epoch milliseconds when the loader sealed this provenance.
+    pub loaded_at_unix_ms: u64,
+}
+
+/// Integrity fingerprint of one immutable runtime settings snapshot — W1-A part.
+///
+/// # Part contract
+/// - **inputs:** canonical non-secret snapshot material selected by the loader
+/// - **outputs:** opaque digest string for session evidence and reproducibility
+/// - **forbidden authority:** must not carry secrets; must not decide settings
+///   values; must not act as a second settings store
+/// - **intended W2 consumers:** [`RuntimeSettingsSnapshot`]; Transcript Bus
+///   session evidence; operator take envelopes (digest only)
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub struct SettingsSnapshotDigest(String);
+
+impl SettingsSnapshotDigest {
+    /// Wrap an already-computed digest string. W2 owns the hashing algorithm.
+    pub fn from_hex(hex: impl Into<String>) -> Self {
+        Self(hex.into())
+    }
+
+    /// Borrow the digest text for evidence sinks.
+    pub fn as_str(&self) -> &str {
+        &self.0
+    }
+}
+
+/// Validation contract that admits or refuses a candidate snapshot — W1-A part.
+///
+/// # Part contract
+/// - **inputs:** resolved [`Config`] candidate plus [`SettingsSnapshotProvenance`]
+/// - **outputs:** `Ok(())` admit or [`SettingsSnapshotValidationError`] refuse
+/// - **forbidden authority:** must not repair by inventing defaults beyond the
+///   documented loader rules; must not write `settings.json`; must not wire
+///   consumers
+/// - **intended W2 consumers:** the single loader path immediately before minting
+///   [`RuntimeSettingsSnapshot`]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct SettingsSnapshotValidation;
+
+/// Why a candidate runtime settings snapshot was refused.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum SettingsSnapshotValidationError {
+    /// A field failed the documented sanitize/range/enum contract.
+    InvalidField {
+        field: &'static str,
+        reason: String,
+    },
+    /// Precedence inputs conflicted in a way the loader must not silently heal.
+    ConflictingSources {
+        detail: String,
+    },
+}
+
+impl SettingsSnapshotValidation {
+    /// Structural admit gate. W1 declares the contract; W2 supplies full rules.
+    ///
+    /// The current body only refuses an empty digest placeholder so the part is
+    /// executable without becoming a second default owner.
+    pub fn admit(
+        _values: &Config,
+        _provenance: &SettingsSnapshotProvenance,
+        digest: &SettingsSnapshotDigest,
+    ) -> Result<(), SettingsSnapshotValidationError> {
+        if digest.as_str().trim().is_empty() {
+            return Err(SettingsSnapshotValidationError::InvalidField {
+                field: "digest",
+                reason: "settings snapshot digest must be non-empty".to_string(),
+            });
+        }
+        Ok(())
+    }
+}
+
+/// Immutable per-session runtime settings snapshot — W1-A throne part.
+///
+/// # Part contract
+/// - **inputs:** one validated [`Config`] from the single core loader pass,
+///   [`SettingsSnapshotProvenance`], and [`SettingsSnapshotDigest`]
+/// - **outputs:** frozen session truth for recording, lanes, bridge projection,
+///   and Swift runtime rows
+/// - **forbidden authority:** must not reread `settings.json`/env; must not
+///   normalize defaults independently; must not mutate during an in-flight take;
+///   must not own PCM identity, document reduction, formatter authorship, or
+///   delivery routing; must not resurrect deleted parallel settings resolvers or
+///   mutable settings-propagation buses
+/// - **intended W2 consumers:** recording controller / session start, bridge
+///   projection, Swift runtime rows, STT/LLM lanes, Transcript Bus session
+///   evidence (digest + provenance only at the bus)
+///
+/// Hot edits create a *new* snapshot for the next recording session. An
+/// in-flight take keeps this value. W1 places the type; no consumer is wired.
+#[derive(Debug, Clone)]
+pub struct RuntimeSettingsSnapshot {
+    /// Resolved runtime values after defaults + allowed env overlays.
+    values: Config,
+    /// Where the values came from.
+    provenance: SettingsSnapshotProvenance,
+    /// Integrity fingerprint for session evidence.
+    digest: SettingsSnapshotDigest,
+}
+
+impl RuntimeSettingsSnapshot {
+    /// Seal a validated snapshot. Callers outside the loader must not exist in W1.
+    pub fn seal(
+        values: Config,
+        provenance: SettingsSnapshotProvenance,
+        digest: SettingsSnapshotDigest,
+    ) -> Result<Self, SettingsSnapshotValidationError> {
+        SettingsSnapshotValidation::admit(&values, &provenance, &digest)?;
+        Ok(Self {
+            values,
+            provenance,
+            digest,
+        })
+    }
+
+    /// Borrow the frozen runtime values.
+    pub fn values(&self) -> &Config {
+        &self.values
+    }
+
+    /// Borrow provenance for evidence sinks.
+    pub fn provenance(&self) -> &SettingsSnapshotProvenance {
+        &self.provenance
+    }
+
+    /// Borrow the digest for Transcript Bus / take envelopes.
+    pub fn digest(&self) -> &SettingsSnapshotDigest {
+        &self.digest
+    }
 }
 
 /// On-disk shape of `settings.json`: the same state as [`UserSettings`], but
