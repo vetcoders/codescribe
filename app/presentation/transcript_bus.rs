@@ -108,6 +108,61 @@ pub struct TranscriptCoverageReceipt {
     pub code: String,
 }
 
+/// Lossless observer projection of one ledger-owned acoustic receipt chain.
+/// The Bus copies these values; it never re-reads energy, admits evidence,
+/// chooses a label, or decides whether an occurrence is sealed.
+///
+/// W2 input: the ledger receipt bundle attached to one reducer entry. The
+/// canonical receipt encodings remain opaque here so their decision history
+/// cannot be rewritten by the projection layer.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct ProjectedAcousticReceipt {
+    pub acoustic_serial_version: u16,
+    pub acoustic_serial: String,
+    pub session_id: String,
+    pub capture_epoch: u64,
+    pub sample_start: u64,
+    pub sample_end: u64,
+    pub duration_ms: u64,
+    pub energy_integral: f64,
+    pub mean_rms_dbfs: f32,
+    pub peak_dbfs: f32,
+    pub vad_open_sample: u64,
+    pub vad_close_sample: u64,
+    pub evidence_calibration_version: String,
+    /// Canonical, immutable encodings minted by the acoustic ledger.
+    pub word_evidence_receipts: Vec<String>,
+    /// Complete Apple/Whisper/text-layer candidate and decision history.
+    pub layer_decision_receipts: Vec<String>,
+    pub seal_receipt: Option<String>,
+    pub manual_edit_receipt: Option<String>,
+}
+
+/// Append-only Bus observation of one reducer revision entry. Every truth
+/// field is supplied by the reducer/ledger; sequence and emission time are the
+/// only Bus-owned metadata.
+///
+/// W2 input: a reducer revision. W2 output: the recording bridge projection
+/// event. Emission and bridge conversion are intentionally unresolved in W1.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct TranscriptBusEvidenceEvent {
+    pub schema: String,
+    pub sequence: u64,
+    pub emitted_at: String,
+    pub session_id: String,
+    pub mode: TranscriptMode,
+    pub reducer_revision: u64,
+    pub reducer_action: String,
+    pub occurrence_session_id: String,
+    pub capture_epoch: u64,
+    pub sample_start: u64,
+    pub sample_end: u64,
+    pub document_index: u64,
+    pub label: String,
+    pub rendered_text: String,
+    pub acoustic_receipts: Vec<ProjectedAcousticReceipt>,
+}
+
 /// Append-only public event contract. `text` is always clean reducer truth;
 /// unfiltered engine `raw_text` never crosses this boundary.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]

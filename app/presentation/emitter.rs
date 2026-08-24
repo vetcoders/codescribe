@@ -7,8 +7,9 @@
 //! arrive in the exact order they were emitted,
 //! eliminating the fire-and-forget tokio::spawn ordering race.
 
-use std::sync::Arc;
+use std::{collections::BTreeMap, sync::Arc};
 
+use codescribe_core::pipeline::acoustic_ledger::OccurrenceIdentity;
 use codescribe_core::pipeline::contracts::{DeltaSink, EngineEvent, EventSink, TranscriptSegment};
 use codescribe_core::pipeline::streaming::BufferedEmitter;
 use tokio::sync::Mutex;
@@ -61,6 +62,59 @@ impl TranscriptUtteranceRecord {
     }
 }
 
+/// One canonical transcript slot, keyed only by the physical occurrence that
+/// earned it. Text is a ledger-authorized label; receipt values are immutable
+/// provenance references and never participate in entry identity.
+///
+/// W2 input: one admitted ledger decision for `occurrence`. W2 output: this
+/// entry inside a [`TranscriptRevision`]. Unresolved W2 consumers are the
+/// formatter proposal path and explicit delivery route.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct TranscriptDocumentEntry {
+    pub occurrence: OccurrenceIdentity,
+    pub label: String,
+    pub observation_receipt: String,
+    pub word_evidence_receipts: Vec<String>,
+    pub layer_decision_receipts: Vec<String>,
+    pub seal_receipt: Option<String>,
+    pub manual_edit_receipt: Option<String>,
+}
+
+/// A ledger-authorized document transition. Every variant names a physical
+/// occurrence; no action locates content by comparing transcript strings.
+///
+/// W2 must construct these actions from ledger receipts. W1 deliberately does
+/// not expose an `apply` path, so no engine, Bus, bridge, or Swift caller can
+/// mutate the document through this declaration alone.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ReducerAction {
+    ApplyLedgerDecision {
+        entry: TranscriptDocumentEntry,
+    },
+    RecordLedgerSeal {
+        occurrence: OccurrenceIdentity,
+        seal_receipt: String,
+    },
+    ApplyManualEdit {
+        entry: TranscriptDocumentEntry,
+    },
+}
+
+/// Immutable reducer output for observers and explicit delivery selection.
+/// `entries` is the complete occurrence-ordered document at `revision`.
+///
+/// W2 output: `TranscriptBus` observation, the single formatter proposal path,
+/// and `delivery_route`. Those consumers are intentionally unresolved in W1;
+/// this file is the only owner of the revision and its document entries.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct TranscriptRevision {
+    pub schema: String,
+    pub revision: u64,
+    pub action: ReducerAction,
+    pub entries: Vec<TranscriptDocumentEntry>,
+    pub rendered_text: String,
+}
+
 /// Source of truth for the session transcript: everything already committed,
 /// plus the in-flight preview tail.
 ///
@@ -71,6 +125,10 @@ impl TranscriptUtteranceRecord {
 /// real utterance is not lost to a blank final.
 #[derive(Debug, Default)]
 pub struct TranscriptReducer {
+    /// Canonical document ordered by the PCM-backed occurrence key. W2 alone
+    /// connects authenticated ledger actions and emits revisions from it.
+    document_by_occurrence: BTreeMap<OccurrenceIdentity, TranscriptDocumentEntry>,
+    revision: u64,
     committed: Vec<TranscriptUtteranceRecord>,
     active_preview: String,
     last_non_empty_preview: String,
