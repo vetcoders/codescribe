@@ -27,6 +27,7 @@
     "bypass_paths",
     "unwired_paths",
     "dangling_references",
+    "unresolved_module_declarations",
     "canary_rows_observed",
     "unclassified_canary_rows",
     "failures",
@@ -84,6 +85,7 @@
     "dangling_references": {
       "oneOf": [{ "type": "array" }, { "type": "string" }]
     },
+    "unresolved_module_declarations": { "type": "array" },
     "canary_rows_observed": { "type": "integer", "minimum": 0 },
     "unclassified_canary_rows": {
       "oneOf": [{ "type": "array" }, { "type": "string" }]

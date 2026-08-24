@@ -1,5 +1,22 @@
 {
   "schema": "codescribe.acoustic-structure-stages.v1",
+  "retired_reference_symbols": [
+    "span_idempotence",
+    "progressive_seal",
+    "stream_postprocess",
+    "live_assembly",
+    "quality_delivery",
+    "acoustic_identity",
+    "light_plus",
+    "punctuation_transplant",
+    "semantic_guard",
+    "quality_gate",
+    "silero_filter",
+    "lane_truth",
+    "assistive_delivery",
+    "overlay_paste",
+    "ConfigChangeBus"
+  ],
   "stages": {
     "demolished": {
       "required_absent": [

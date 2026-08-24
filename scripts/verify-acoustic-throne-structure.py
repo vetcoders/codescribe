@@ -1,15 +1,18 @@
 #!/usr/bin/env python3
-"""Emit Loctree-only structural receipts for the one-throne transplant.
+"""Emit structure-only receipts for the one-throne transplant.
 
 This verifier deliberately knows no Cargo, compiler, Swift runner, application
-launcher, or runtime probe.  Its only subprocess executable is `loct`; every
-executed command is recorded in the receipt and checked before dispatch.
+launcher, or runtime probe. Its only subprocess executable is `loct`; every
+executed command is recorded in the receipt and checked before dispatch. A
+small local Rust-module resolution pass complements Loctree so deleted files
+cannot remain referenced by `mod name;` declarations.
 """
 
 from __future__ import annotations
 
 import argparse
 import json
+import re
 import subprocess
 import sys
 from dataclasses import dataclass
@@ -26,6 +29,13 @@ STAGE_VERDICTS = {
     "wired": "STRUCTURALLY_WIRED",
 }
 SOURCE_SCOPES = {"production", "generated"}
+FORBIDDEN_SCOPES = SOURCE_SCOPES | {"test"}
+NON_CODE_ROLES = {"comment", "string_literal"}
+RUST_SOURCE_ROOTS = ("app", "bin", "bridge", "core", "examples", "tests")
+RUST_MOD_RE = re.compile(
+    r"^\s*(?:pub(?:\([^)]*\))?\s+)?mod\s+([A-Za-z_][A-Za-z0-9_]*)\s*;"
+)
+RUST_PATH_RE = re.compile(r'^\s*#\[path\s*=\s*"([^"]+)"\]\s*$')
 VERIFIER_INFRASTRUCTURE = {
     "scripts/verify-acoustic-throne-structure.py",
     "scripts/verify-authority-shape.sh",
@@ -54,6 +64,7 @@ REQUIRED_RECEIPT_KEYS = {
     "bypass_paths",
     "unwired_paths",
     "dangling_references",
+    "unresolved_module_declarations",
     "canary_rows_observed",
     "unclassified_canary_rows",
     "failures",
@@ -146,13 +157,24 @@ def load_json(path: Path) -> Any:
         raise SystemExit(f"invalid JSON in structural verifier input {path}: {error}") from error
 
 
-def production_occurrences(payload: dict[str, Any]) -> list[dict[str, Any]]:
+def code_occurrences(
+    payload: dict[str, Any], scopes: set[str]
+) -> list[dict[str, Any]]:
     return [
         occurrence
         for occurrence in payload.get("occurrences", [])
-        if occurrence.get("scope_classification") in SOURCE_SCOPES
+        if occurrence.get("scope_classification") in scopes
+        and occurrence.get("match_role") not in NON_CODE_ROLES
         and occurrence.get("file") not in VERIFIER_INFRASTRUCTURE
     ]
+
+
+def production_occurrences(payload: dict[str, Any]) -> list[dict[str, Any]]:
+    return code_occurrences(payload, SOURCE_SCOPES)
+
+
+def forbidden_occurrences(payload: dict[str, Any]) -> list[dict[str, Any]]:
+    return code_occurrences(payload, FORBIDDEN_SCOPES)
 
 
 def definitions(payload: dict[str, Any]) -> list[dict[str, Any]]:
@@ -163,8 +185,67 @@ def definitions(payload: dict[str, Any]) -> list[dict[str, Any]]:
     ]
 
 
-def observed_files(payload: dict[str, Any]) -> list[str]:
-    return sorted({str(hit.get("file")) for hit in production_occurrences(payload) if hit.get("file")})
+def observed_files(
+    payload: dict[str, Any], *, include_tests: bool = False
+) -> list[str]:
+    occurrences = forbidden_occurrences(payload) if include_tests else production_occurrences(payload)
+    return sorted({str(hit.get("file")) for hit in occurrences if hit.get("file")})
+
+
+def rust_source_files(repo: Path) -> list[Path]:
+    files = list(repo.glob("*.rs"))
+    for root_name in RUST_SOURCE_ROOTS:
+        root = repo / root_name
+        if root.is_dir():
+            files.extend(root.rglob("*.rs"))
+    return sorted(set(files))
+
+
+def module_candidates(source: Path, module: str) -> list[Path]:
+    direct = source.parent
+    nested = source.parent / source.stem
+    candidates = [
+        direct / f"{module}.rs",
+        direct / module / "mod.rs",
+        nested / f"{module}.rs",
+        nested / module / "mod.rs",
+    ]
+    return list(dict.fromkeys(candidates))
+
+
+def unresolved_module_declarations(repo: Path) -> list[dict[str, Any]]:
+    unresolved: list[dict[str, Any]] = []
+    for source in rust_source_files(repo):
+        pending_path: str | None = None
+        for line_number, line in enumerate(source.read_text(errors="replace").splitlines(), 1):
+            path_match = RUST_PATH_RE.match(line)
+            if path_match:
+                pending_path = path_match.group(1)
+                continue
+            if line.lstrip().startswith("#[") or not line.strip():
+                continue
+            module_match = RUST_MOD_RE.match(line)
+            if not module_match:
+                pending_path = None
+                continue
+            module = module_match.group(1)
+            candidates = (
+                [source.parent / pending_path]
+                if pending_path is not None
+                else module_candidates(source, module)
+            )
+            pending_path = None
+            if any(candidate.is_file() for candidate in candidates):
+                continue
+            unresolved.append(
+                {
+                    "file": str(source.relative_to(repo)),
+                    "line": line_number,
+                    "module": module,
+                    "candidates": [str(path.relative_to(repo)) for path in candidates],
+                }
+            )
+    return unresolved
 
 
 def read_canary(path: Path | None) -> tuple[list[dict[str, Any]], list[str] | str]:
@@ -182,21 +263,12 @@ def read_canary(path: Path | None) -> tuple[list[dict[str, Any]], list[str] | st
     return rows, unclassified
 
 
-def read_dangling(path: Path | None) -> list[Any] | str:
-    if path is None:
-        return "NOT_PROVIDED"
-    payload = load_json(path)
-    rows = payload.get("dangling_references", []) if isinstance(payload, dict) else payload
-    return rows if isinstance(rows, list) else ["dangling manifest must be a list"]
-
-
 def verify_stage(
     verifier: StructuralVerifier,
     manifest: dict[str, Any],
     stage: str,
     scope: str | None,
     canary_path: Path | None,
-    dangling_path: Path | None,
 ) -> tuple[dict[str, Any], bool]:
     stage_contract = manifest["stages"][stage]
     context = verifier.context()
@@ -207,12 +279,26 @@ def verify_stage(
     if context_receipt.get("authority") != "fresh":
         failures.append(f"Loctree snapshot is not fresh: {context_receipt.get('authority')}")
 
+    forbidden_symbols = list(
+        dict.fromkeys(
+            [
+                *manifest.get("retired_reference_symbols", []),
+                *stage_contract.get("required_absent", []),
+            ]
+        )
+    )
     forbidden_hits: dict[str, list[str]] = {}
-    for symbol in stage_contract.get("required_absent", []):
-        files = observed_files(verifier.occurrences(symbol))
+    for symbol in forbidden_symbols:
+        files = observed_files(verifier.occurrences(symbol), include_tests=True)
         if files:
             forbidden_hits[symbol] = files
             failures.append(f"forbidden symbol {symbol} remains in {files}")
+
+    unresolved_modules = unresolved_module_declarations(verifier.repo)
+    if unresolved_modules:
+        failures.append(
+            f"unresolved Rust module declarations remain: {unresolved_modules}"
+        )
 
     observed_parts: dict[str, dict[str, Any]] = {}
     expected_owners: dict[str, str] = {}
@@ -279,12 +365,18 @@ def verify_stage(
         elif unclassified_canary:
             failures.append(f"unclassified Canary rows: {unclassified_canary}")
 
-    dangling = read_dangling(dangling_path)
+    dangling = [
+        f"forbidden:{symbol}:{path}"
+        for symbol, paths in sorted(forbidden_hits.items())
+        for path in paths
+    ]
+    dangling.extend(
+        f"module:{row['file']}:{row['line']}:{row['module']}"
+        for row in unresolved_modules
+    )
     if stage_contract.get("require_zero_dangling"):
-        if dangling == "NOT_PROVIDED":
-            failures.append("dangling-reference manifest is required for wired receipt")
-        elif dangling:
-            failures.append(f"wired stage retains dangling references: {dangling}")
+        if dangling:
+            failures.append(f"wired stage retains computed dangling references: {dangling}")
 
     expected_verdict = STAGE_VERDICTS[stage]
     conformant = not failures
@@ -306,12 +398,13 @@ def verify_stage(
         "observed_parts": observed_parts,
         "expected_owners": expected_owners,
         "observed_owners": observed_owners,
-        "forbidden_symbols": stage_contract.get("required_absent", []),
+        "forbidden_symbols": forbidden_symbols,
         "forbidden_hits": forbidden_hits,
         "consumer_paths": consumer_paths,
         "bypass_paths": bypass_paths,
         "unwired_paths": unwired_paths,
         "dangling_references": dangling,
+        "unresolved_module_declarations": unresolved_modules,
         "canary_rows_observed": len(canary_rows),
         "unclassified_canary_rows": unclassified_canary,
         "failures": failures,
@@ -341,6 +434,7 @@ def inventory() -> dict[str, Any]:
             "loct context --json",
             "loct occurrences <literal-identifier> --json",
         ],
+        "direct_static_checks": ["Rust mod declaration resolves to a source file"],
         "product_execution": "FORBIDDEN",
         "build_lint_unit_swift_runtime": "NOT_ASSESSED",
     }
@@ -378,7 +472,6 @@ def main() -> int:
     parser.add_argument("--repo", type=Path, default=Path.cwd())
     parser.add_argument("--manifest", type=Path, default=Path(DEFAULT_MANIFEST))
     parser.add_argument("--canary-manifest", type=Path)
-    parser.add_argument("--dangling-manifest", type=Path)
     parser.add_argument("--output", type=Path)
     parser.add_argument("--inventory", action="store_true")
     args = parser.parse_args()
@@ -404,7 +497,6 @@ def main() -> int:
             args.stage,
             args.scope,
             args.canary_manifest,
-            args.dangling_manifest,
         )
     except RuntimeError as error:
         print(f"structural verifier failed closed: {error}", file=sys.stderr)

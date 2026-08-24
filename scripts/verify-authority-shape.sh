@@ -20,8 +20,7 @@ case "$stage" in
   wired)
     test -z "$scope" || { echo 'wired does not accept a scope' >&2; exit 2; }
     exec python3 "$repo/scripts/verify-acoustic-throne-structure.py" wired \
-      --repo "$repo" \
-      --dangling-manifest "$repo/tests/fixtures/acoustic_authority_dangling.json"
+      --repo "$repo"
     ;;
   *)
     echo 'usage: scripts/verify-authority-shape.sh demolished|assembled SCOPE|wired' >&2
