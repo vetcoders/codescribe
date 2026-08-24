@@ -8,8 +8,8 @@ pub mod account_auth;
 pub mod ai_formatting;
 /// HTTP client for cloud STT / LLM multipart upload paths.
 pub mod client;
-/// Inline-format buffer: chunk-chained live formatting so stop pays only the
-/// tail (W13-1, feature-flagged via `CODESCRIBE_INLINE_FORMAT`).
+/// Automatic post-ASR label author part set (occurrence-bound proposals only).
+/// No SessionStore document, no Light+ authorship, unwired until W2.
 pub mod inline_format;
 /// Minimal API-key liveness probes for Settings (one cheap call per key).
 pub mod key_liveness;
