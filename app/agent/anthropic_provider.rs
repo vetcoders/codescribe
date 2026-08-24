@@ -40,6 +40,7 @@ use codescribe_core::agent::{
     AgentEvent, AgentProvider, ContentBlock, ImageAsset, Message, Role, StreamOptions,
     ToolDefinition,
 };
+use codescribe_core::config::RuntimeLlmLane;
 use codescribe_core::llm::provider::{ProviderKind, capability_policy};
 
 /// Value of the mandatory `anthropic-version` header.
@@ -90,16 +91,16 @@ impl AnthropicProvider {
     /// Keychain). Anthropic always authenticates, so a missing key is a
     /// readable error naming the exact account — the availability gate
     /// reports the same reason before a send is ever attempted.
-    pub fn from_lane(
-        lane: codescribe_core::llm::lane_truth::AssistiveLaneSnapshot,
-    ) -> Result<Self> {
+    pub fn from_lane(lane: &RuntimeLlmLane) -> Result<Self> {
         let api_key = lane
-            .api_key
+            .credential()
+            .api_key()
+            .map(str::to_string)
             .context("Anthropic API key (assistive) is required. Set LLM_ANTHROPIC_API_KEY.")?;
-        let endpoint = lane.endpoint;
+        let endpoint = lane.endpoint().to_string();
         // Model comes from the shared assistive-lane setting; Settings supplies a
         // Claude model when the assistive provider is Anthropic.
-        let default_model = lane.model;
+        let default_model = lane.model().to_string();
 
         let initial_response_timeout = Duration::from_millis(parse_env_u64(
             "CODESCRIBE_AI_ATTEMPT_TIMEOUT_MS",

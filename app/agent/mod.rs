@@ -6,8 +6,7 @@
 
 use anyhow::Result;
 use codescribe_core::agent::AgentProvider;
-use codescribe_core::config::Config;
-use codescribe_core::llm::lane_truth;
+use codescribe_core::config::{RuntimeLlmLane, RuntimeLlmLaneKind};
 use codescribe_core::llm::provider::WireFamily;
 
 /// Anthropic Messages-family assistive provider client.
@@ -23,19 +22,24 @@ pub mod tools;
 pub use anthropic_provider::AnthropicProvider;
 pub use openai_provider::OpenAiProvider;
 
-/// Build the agent (assistive-lane) provider from the lane-truth snapshot
-/// (fresh settings → env → Keychain), so a Settings save is honored on the
-/// very next send — no restart, no stale bootstrap env. A lane that cannot be
-/// reached fails with the same actionable reason
-/// [`assistive_unavailable_reason`] reports, never a generic key demand, and
-/// never a silent fallback to an unintended vendor.
-pub fn create_default_provider() -> Result<Box<dyn AgentProvider>> {
-    let config = Config::load();
-    let lane = lane_truth::assistive_availability(&config).map_err(anyhow::Error::msg)?;
+/// Build the Agent provider from the exact assistive lane sealed in the
+/// controller-owned runtime settings snapshot.
+pub fn create_default_provider(lane: &RuntimeLlmLane) -> Result<Box<dyn AgentProvider>> {
+    anyhow::ensure!(
+        lane.lane() == RuntimeLlmLaneKind::Assistive,
+        "agent provider requires the assistive runtime lane"
+    );
+    if !lane.available() {
+        anyhow::bail!(
+            "{}",
+            lane.unavailable_reason()
+                .unwrap_or("assistive runtime lane is unavailable")
+        );
+    }
     // Selected by protocol, not vendor: `OpenAiProvider` is the Responses-family
     // client and carries the lane's provider identity, so xAI rides it without a
     // second implementation.
-    match lane.provider.wire_family() {
+    match lane.wire_family() {
         WireFamily::OpenAiResponses => Ok(Box::new(OpenAiProvider::from_lane(lane)?)),
         WireFamily::AnthropicMessages => Ok(Box::new(AnthropicProvider::from_lane(lane)?)),
     }
@@ -44,6 +48,10 @@ pub fn create_default_provider() -> Result<Box<dyn AgentProvider>> {
 /// User-facing reason the assistive lane cannot reach a model right now
 /// (`None` when a send can proceed). Kept beside [`create_default_provider`]
 /// so the availability gate and provider construction can never drift.
-pub fn assistive_unavailable_reason() -> Option<String> {
-    lane_truth::assistive_availability(&Config::load()).err()
+pub fn assistive_unavailable_reason(lane: &RuntimeLlmLane) -> Option<String> {
+    (!lane.available()).then(|| {
+        lane.unavailable_reason()
+            .unwrap_or("assistive runtime lane is unavailable")
+            .to_string()
+    })
 }

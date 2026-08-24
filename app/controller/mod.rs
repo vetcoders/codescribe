@@ -675,11 +675,16 @@ impl RecordingController {
     /// Deliver the overlay's current transcript with the context captured at
     /// trigger time. Taking the context makes delivery one-shot.
     pub async fn deliver_pending_assistive_transcript(&self, transcript: String) -> Result<bool> {
+        let runtime_settings = self.runtime_settings.clone();
         self.deliver_pending_assistive_transcript_with(
             transcript,
-            |wire, language, max_tokens, persona| {
+            move |wire, language, max_tokens, persona| {
                 Box::pin(send_assistive_with_agent_runtime_lane(
-                    wire, language, max_tokens, persona,
+                    runtime_settings,
+                    wire,
+                    language,
+                    max_tokens,
+                    persona,
                 ))
                     as std::pin::Pin<Box<dyn std::future::Future<Output = ()> + Send>>
             },

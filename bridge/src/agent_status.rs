@@ -156,8 +156,9 @@ impl CodescribeAgentStatus {
     /// Loads `Config` first so Keychain-backed keys are populated into env and the
     /// core gate sees real key presence (mirrors `available_providers`).
     pub fn agentic_readiness(&self) -> CsAgenticReadiness {
-        let _ = codescribe_core::config::Config::load();
-        probe_agentic_readiness().into()
+        let runtime_settings = codescribe_core::config::Config::load_runtime_snapshot()
+            .expect("canonical runtime settings must load for Agent readiness");
+        probe_agentic_readiness(&runtime_settings).into()
     }
 
     /// Provider-neutral capability matrix: native / enhanced / unavailable + reason.

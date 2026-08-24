@@ -12,8 +12,8 @@ use codescribe_core::agent::{
     ToolApprovalRequest, ToolOrigin, ToolRegistry,
 };
 use codescribe_core::attachment::{MAX_VISION_IMAGE_BYTES, load_image_for_vision};
-use codescribe_core::llm::lane_truth::assistive_identity;
-use codescribe_core::llm::provider::provider_supports_vision;
+use codescribe_core::config::RuntimeSettingsSnapshot;
+use codescribe_core::llm::provider::{ProviderKind, provider_supports_vision};
 use tokio::task::AbortHandle;
 
 use crate::{CsError, application_runtime};
@@ -98,8 +98,11 @@ pub trait CsAgentListener: Send + Sync {
 }
 
 /// Thin handle to the codescribe agent engine.
-#[derive(uniffi::Object, Default, Clone)]
+#[derive(uniffi::Object, Clone)]
 pub struct CodescribeAgent {
+    /// One loader-owned settings seal shared by availability, provider
+    /// construction, stream options, vision admission, and persistence.
+    runtime_settings: Arc<RuntimeSettingsSnapshot>,
     /// In-flight turns keyed by thread id, so `cancel_turn` can abort them.
     /// Shared (`Arc`) because each turn's RAII guard must be able to deregister
     /// itself even while the FFI object stays borrowed by other calls.
@@ -109,26 +112,32 @@ pub struct CodescribeAgent {
     approvals: Arc<ApprovalBroker>,
 }
 
+impl Default for CodescribeAgent {
+    fn default() -> Self {
+        let runtime_settings = codescribe_core::config::Config::load_runtime_snapshot()
+            .expect("canonical runtime settings must load for CodescribeAgent");
+        Self {
+            runtime_settings: Arc::new(runtime_settings),
+            turns: Arc::default(),
+            approvals: Arc::default(),
+        }
+    }
+}
+
 #[uniffi::export]
 impl CodescribeAgent {
-    /// Construct the FFI handle. Only initialises logging — provider, tools and
-    /// config are resolved lazily per send, so building the Swift app model
-    /// never triggers a Keychain prompt.
+    /// Construct the FFI handle and seal one runtime settings snapshot for its
+    /// complete lifetime. Every later method observes this exact object.
     #[uniffi::constructor]
     pub fn new() -> Self {
         codescribe::logging::init_logging();
         Self::default()
     }
 
-    /// True when the assistive lane can currently reach a provider. Resolved
-    /// fresh on every call (settings → env → Keychain via lane_truth), so a
-    /// Settings save flips this on the very next send — no restart, no stale
-    /// bootstrap env. A key-optional local endpoint counts as available.
+    /// True when the sealed assistive lane can reach its provider. A
+    /// key-optional local endpoint counts as available.
     pub fn is_available(&self) -> bool {
-        // Warm settings + Keychain only when the agent surface is actually used.
-        // Constructing the Swift app model must not trigger a keychain prompt.
-        let _ = codescribe_core::config::Config::load();
-        codescribe::agent::assistive_unavailable_reason().is_none()
+        self.runtime_settings.llm_lanes().assistive().available()
     }
 
     /// Availability of the assistive lane as one record: `available` mirrors
@@ -136,8 +145,8 @@ impl CodescribeAgent {
     /// reason when the lane cannot reach a model (which lane, endpoint or key
     /// is missing — never a generic "add an API key"). Empty when ready.
     pub fn availability(&self) -> CsAgentAvailability {
-        let _ = codescribe_core::config::Config::load();
-        match codescribe::agent::assistive_unavailable_reason() {
+        let lane = self.runtime_settings.llm_lanes().assistive();
+        match codescribe::agent::assistive_unavailable_reason(lane) {
             None => CsAgentAvailability {
                 available: true,
                 detail: String::new(),
@@ -153,8 +162,13 @@ impl CodescribeAgent {
     /// formatting lane. The core call has its own 8-second timeout and never
     /// participates in the assistive or formatting response chains.
     pub async fn generate_thread_title(&self, text: String) -> Result<Option<String>, CsError> {
+        let runtime_settings = self.runtime_settings.clone();
         application_runtime::run(async move {
-            Ok(codescribe_core::llm::ai_formatting::generate_thread_title(&text).await?)
+            Ok(codescribe_core::llm::ai_formatting::generate_thread_title(
+                &text,
+                runtime_settings.llm_lanes().formatting(),
+            )
+            .await?)
         })
         .await?
     }
@@ -208,7 +222,12 @@ impl CodescribeAgent {
     ) -> Result<String, CsError> {
         let agent = self.clone();
         application_runtime::run(async move {
-            let images = validate_composer_attachments(&attachments)?;
+            let assistive_lane = agent.runtime_settings.llm_lanes().assistive();
+            let images = validate_composer_attachments(
+                &attachments,
+                assistive_lane.provider(),
+                assistive_lane.model(),
+            )?;
             agent.run_stream(text, thread_id, images, listener).await
         })
         .await?
@@ -266,10 +285,8 @@ impl CodescribeAgent {
         attachments: Vec<ImageAttachment>,
         listener: Arc<dyn CsAgentListener>,
     ) -> Result<String, CsError> {
-        // Keep provider construction behavior identical to the old eager
-        // constructor path, but delay it until the user sends a message.
-        let config = codescribe_core::config::Config::load();
-        let provider = codescribe::agent::create_default_provider()?;
+        let assistive_lane = self.runtime_settings.llm_lanes().assistive();
+        let provider = codescribe::agent::create_default_provider(assistive_lane)?;
         let mut registry = ToolRegistry::new();
         codescribe::agent::tools::register_all_tools(&mut registry);
         // settings.json agent.permissions + legacy tool_grants (always-allow).
@@ -316,7 +333,10 @@ impl CodescribeAgent {
         // controller path uses (build_agent_stream_options), so a Swift chat send
         // is not stripped of the WORKSPACE-augmented assistive prompt and the
         // configured `ai_assistive_max_tokens`.
-        let options = build_bridge_stream_options(config.ai_assistive_max_tokens);
+        let options = build_bridge_stream_options(
+            self.runtime_settings.values().ai_assistive_max_tokens,
+            assistive_lane.model(),
+        );
 
         let turn = PreparedTurn {
             session,
@@ -334,7 +354,13 @@ impl CodescribeAgent {
         // purpose: its partial messages are discarded, so the thread on disk
         // keeps the last completed-turn state (today's only cancel trigger is
         // thread deletion, where persisting would resurrect the thread).
-        deliver_completed_thread(thread_id, messages).await;
+        deliver_completed_thread(
+            thread_id,
+            messages,
+            assistive_lane.provider().as_str().to_string(),
+            assistive_lane.model().to_string(),
+        )
+        .await;
         Ok(final_text)
     }
 }
@@ -743,15 +769,13 @@ impl Drop for TurnGuard {
 
 /// Build the assistive stream options for a bridge chat send, honoring the same
 /// assistive system prompt and token cap the in-app controller path uses
-/// (`app/controller/helpers.rs::build_agent_stream_options`). Model is left empty
-/// so the provider resolves it from `LLM_ASSISTIVE_MODEL` (identical default to
-/// the controller), keeping both send paths behaviorally aligned.
-fn build_bridge_stream_options(ai_assistive_max_tokens: i32) -> StreamOptions {
+/// (`app/controller/helpers.rs::build_agent_stream_options`).
+fn build_bridge_stream_options(ai_assistive_max_tokens: i32, model: &str) -> StreamOptions {
     let max_tokens = u32::try_from(ai_assistive_max_tokens)
         .ok()
         .filter(|tokens| *tokens > 0);
     StreamOptions {
-        model: String::new(),
+        model: model.to_string(),
         system_prompt: Some(compose_agent_system_prompt()),
         max_tokens,
         temperature: None,
@@ -783,6 +807,8 @@ fn compose_agent_system_prompt() -> String {
 /// degraded message. Also gates on the selected model's vision capability.
 fn validate_composer_attachments(
     attachments: &[CsAttachment],
+    provider: ProviderKind,
+    model: &str,
 ) -> Result<Vec<ImageAttachment>, CsError> {
     if attachments.is_empty() {
         return Ok(Vec::new());
@@ -799,11 +825,8 @@ fn validate_composer_attachments(
     }
 
     // Vision gate: refuse (readable error) rather than silently drop the images
-    // when the configured assistive model cannot read them. Lane identity comes
-    // from lane_truth (fresh settings), not the frozen bootstrap env.
-    let config = codescribe_core::config::Config::load();
-    let (provider, model) = assistive_identity(&config);
-    if !provider_supports_vision(provider, &model) {
+    // when the sealed assistive model cannot read them.
+    if !provider_supports_vision(provider, model) {
         return Err(CsError::Agent {
             msg: "The selected model can't read images. Switch to a vision-capable \
                   model in Settings, or remove the attachment before sending."
@@ -845,7 +868,12 @@ fn attachment_label(path: &str) -> String {
 /// Deliver the completed composer turn through core's single durable gateway.
 /// Blocking filesystem work stays off the async executor and remains
 /// best-effort because the reply has already reached the user.
-async fn deliver_completed_thread(thread_id: String, messages: Vec<Message>) {
+async fn deliver_completed_thread(
+    thread_id: String,
+    messages: Vec<Message>,
+    provider: String,
+    model: String,
+) {
     let result = tokio::task::spawn_blocking(move || -> anyhow::Result<Option<_>> {
         // `now` is sourced from the freshest message timestamp the session
         // stamped (`Some(Utc::now())` per turn), avoiding a direct `chrono`
@@ -855,8 +883,6 @@ async fn deliver_completed_thread(thread_id: String, messages: Vec<Message>) {
             return Ok(None);
         };
 
-        let config = codescribe_core::config::Config::load();
-        let (provider, model) = assistive_identity(&config);
         let persisted_messages = messages
             .iter()
             .map(|message| {
@@ -871,7 +897,7 @@ async fn deliver_completed_thread(thread_id: String, messages: Vec<Message>) {
         let receipt = ThreadDeliveryGateway::new()?.deliver(ThreadDeliveryInput {
             backend_id: thread_id,
             messages: persisted_messages,
-            provider: provider.as_str().to_string(),
+            provider,
             model,
             source: ThreadDeliverySource::Composer,
             mode: "assistive".to_string(),
@@ -916,10 +942,16 @@ mod tests {
         }
     }
 
+    fn validate_test_attachments(
+        attachments: &[CsAttachment],
+    ) -> Result<Vec<ImageAttachment>, CsError> {
+        validate_composer_attachments(attachments, ProviderKind::OpenAiResponses, "gpt-4o")
+    }
+
     /// An empty attachment list must yield zero vision payloads, not invent one.
     #[test]
     fn empty_attachments_yield_no_images() {
-        let images = validate_composer_attachments(&[]).unwrap();
+        let images = validate_test_attachments(&[]).unwrap();
         assert!(images.is_empty());
     }
 
@@ -930,7 +962,7 @@ mod tests {
         let png = dir.join("shot.png");
         std::fs::write(&png, b"\x89PNG\r\n\x1a\nfake").unwrap();
 
-        let images = validate_composer_attachments(&[cs(&png)]).unwrap();
+        let images = validate_test_attachments(&[cs(&png)]).unwrap();
         assert_eq!(images.len(), 1);
         assert_eq!(images[0].media_type, "image/png");
         assert!(!images[0].data.is_empty());
@@ -946,7 +978,7 @@ mod tests {
         std::fs::write(&txt, b"hello").unwrap();
         let missing = dir.join("gone.png");
 
-        let err = validate_composer_attachments(&[cs(&txt), cs(&missing)]).unwrap_err();
+        let err = validate_test_attachments(&[cs(&txt), cs(&missing)]).unwrap_err();
         let CsError::Agent { msg } = err else {
             panic!("expected a readable agent error");
         };
@@ -967,7 +999,7 @@ mod tests {
                 path: format!("/tmp/x{i}.png"),
             })
             .collect();
-        let err = validate_composer_attachments(&attachments).unwrap_err();
+        let err = validate_test_attachments(&attachments).unwrap_err();
         let CsError::Agent { msg } = err else {
             panic!("expected a readable agent error");
         };

@@ -18,7 +18,6 @@
 
 use std::collections::BTreeMap;
 use std::path::Path;
-use std::str::FromStr;
 use std::sync::{Arc, Mutex, OnceLock};
 use std::thread;
 
@@ -27,9 +26,10 @@ use codescribe_core::agent::{
     ToolCallPreview, ToolDefinition, ToolExecutionPolicy, ToolInputValidator, ToolOrigin,
     ToolRegistry, ToolResultContent, ToolRisk,
 };
-use codescribe_core::llm::lane_truth;
-#[cfg(test)]
-use codescribe_core::llm::provider::LlmMode;
+use codescribe_core::config::RuntimeSettingsSnapshot;
+use codescribe_core::config::settings::{
+    DEFAULT_AGENT_WORKSPACE_ROOT, normalize_agent_workspace_roots,
+};
 use codescribe_core::llm::provider::ProviderKind;
 use codescribe_core::mcp::{McpClient, McpConfigFile, McpServerConfig, McpTool};
 use tracing::{info, warn};
@@ -275,43 +275,36 @@ pub struct CoreReadiness {
     pub tool_workspace_roots: Vec<String>,
 }
 
-/// Probe the core capability gate from live process state: the configured
-/// assistive provider ([`lane_truth::provider`]), whether its key is set, and
-/// the count of native tools, plus persisted/tool workspace-root parity. Cheap —
-/// local config/secret reads plus building an in-memory registry (no server
-/// spawning, no network).
-pub fn probe_core_readiness() -> CoreReadiness {
-    let snapshot = lane_truth::lane_truth_snapshot(
-        lane_truth::LaneTruthLane::Assistive,
-        &codescribe_core::config::Config::load(),
-    );
-    let provider = ProviderKind::from_str(&snapshot.provider_id)
-        .expect("lane truth must emit a canonical provider id");
-    let configured_workspace_roots =
-        codescribe_core::config::Config::effective_agent_workspace_roots();
+/// Probe the core capability gate from one immutable loader result: the sealed
+/// assistive lane, its loader-owned availability verdict, and the count of
+/// native tools, plus persisted/tool workspace-root parity. No secret, env, or
+/// settings store is read here.
+pub fn probe_core_readiness(runtime_settings: &RuntimeSettingsSnapshot) -> CoreReadiness {
+    let assistive_lane = runtime_settings.llm_lanes().assistive();
+    let configured_workspace_roots = configured_workspace_roots(runtime_settings);
     let tool_workspace_roots = super::workspace::configured_roots();
     assemble_core_readiness(
-        provider,
-        snapshot.key_account,
-        snapshot.key_present,
+        assistive_lane.provider(),
+        assistive_lane.credential().key_account().to_string(),
+        assistive_lane.available(),
         configured_workspace_roots,
         tool_workspace_roots,
     )
 }
 
-/// [`probe_core_readiness`] with the secret lookup injected, so tests can
-/// assert the gate honours the *active* provider's key account without
-/// touching the real Keychain.
-#[cfg(test)]
-fn probe_core_readiness_with_secret(
-    resolve_secret: impl FnOnce(&str) -> Option<String>,
-) -> CoreReadiness {
-    let provider = lane_truth::provider(LlmMode::Assistive);
-    let key_env_key = provider.api_key_env_key().to_string();
-    let key_set = resolve_secret(&key_env_key).is_some();
-
-    let roots = codescribe_core::config::Config::effective_agent_workspace_roots();
-    assemble_core_readiness(provider, key_env_key, key_set, roots.clone(), roots)
+fn configured_workspace_roots(runtime_settings: &RuntimeSettingsSnapshot) -> Vec<String> {
+    let roots = normalize_agent_workspace_roots(
+        runtime_settings
+            .user_settings()
+            .agent_workspace_roots
+            .clone()
+            .unwrap_or_default(),
+    );
+    if roots.is_empty() {
+        vec![DEFAULT_AGENT_WORKSPACE_ROOT.to_string()]
+    } else {
+        roots
+    }
 }
 
 /// Assemble a [`CoreReadiness`] from already-resolved inputs, counting native
@@ -464,8 +457,10 @@ fn classify_prview(
 /// Agentic-lane readiness probe: `ready` is the core capability gate (provider +
 /// key + native tools); the MCP rows are informational context. See
 /// [`AgenticReadinessReport`] for the semantics decision.
-pub fn probe_agentic_readiness() -> AgenticReadinessReport {
-    let core = probe_core_readiness();
+pub fn probe_agentic_readiness(
+    runtime_settings: &RuntimeSettingsSnapshot,
+) -> AgenticReadinessReport {
+    let core = probe_core_readiness(runtime_settings);
     let path = match codescribe_core::mcp::default_mcp_config_path() {
         Ok(path) => path,
         Err(error) => {
@@ -1608,43 +1603,15 @@ mod tests {
     fn probe_core_readiness_counts_native_tools() {
         // The real native tool set is compiled in; the count must be non-zero so
         // the core gate never fails purely on "no tools" in a healthy build.
-        let core = super::probe_core_readiness();
+        let snapshot = codescribe_core::config::Config::load_runtime_snapshot()
+            .expect("canonical runtime settings should load");
+        let core = super::probe_core_readiness(&snapshot);
         assert!(
             core.native_tool_count > 0,
             "native tools should be registered"
         );
         assert!(!core.provider_label.is_empty());
         assert!(!core.key_env_key.is_empty());
-    }
-
-    /// Keychain-only secret for the *active* assistive key account satisfies core
-    /// readiness even when process env keys are unset.
-    #[test]
-    #[serial]
-    fn lane_truth_keychain_only_secret_sets_probe_core_readiness() {
-        // Hermetic vs operator machine: Settings may select OpenAI or Anthropic.
-        // Readiness must honor the *active* assistive provider's key account —
-        // not hardcode LLM_ASSISTIVE_API_KEY (fails when provider is Anthropic
-        // and key_env_key is LLM_ANTHROPIC_API_KEY; followup 2026-08-05).
-        let _provider = EnvGuard::remove("LLM_ASSISTIVE_PROVIDER");
-        let _assistive_key = EnvGuard::remove("LLM_ASSISTIVE_API_KEY");
-        let _anthropic_key = EnvGuard::remove("LLM_ANTHROPIC_API_KEY");
-
-        let key_account = codescribe_core::llm::lane_truth::provider(
-            codescribe_core::llm::provider::LlmMode::Assistive,
-        )
-        .api_key_env_key()
-        .to_string();
-
-        let core = probe_core_readiness_with_secret(|account| {
-            (account == key_account.as_str()).then(|| "keychain-only".to_string())
-        });
-
-        assert_eq!(core.key_env_key, key_account);
-        assert!(
-            core.key_set,
-            "Keychain-only secret for active assistive account {key_account} must satisfy readiness"
-        );
     }
 
     /// A passing core gate is READY with zero operator MCP tooling; MCP absence

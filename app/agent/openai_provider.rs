@@ -29,8 +29,8 @@ use codescribe_core::agent::{
     AgentEvent, AgentProvider, ContentBlock, ImageAsset, Message, Role, StreamOptions,
     ToolDefinition,
 };
+use codescribe_core::config::RuntimeLlmLane;
 use codescribe_core::llm::account_auth;
-use codescribe_core::llm::lane_truth::AssistiveLaneSnapshot;
 use codescribe_core::llm::provider::ProviderKind;
 use codescribe_core::llm::responses_streaming_manager::{
     AuthHeaderMode, ResponsesStreamingManager, StreamCallbacks,
@@ -59,23 +59,8 @@ pub struct OpenAiProvider {
     /// Single source of truth for the AGENT path's response chain
     /// (`previous_response_id`).
     ///
-    /// P2.12 (source-of-truth contract): the assistive feature has TWO distinct
-    /// execution paths, each owning its own chain — they are intentionally
-    /// separate, not redundant:
-    ///   1. Agent 2.0 path (this provider): owns the chain HERE, in this
-    ///      per-provider `Arc<Mutex>`. Advanced/reset by
-    ///      `forward_events_and_track_chain` and `apply_chain_reset`.
-    ///   2. Legacy formatter fallback path (`run_legacy_send_path` ->
-    ///      `ai_formatting`): owns its chain in the global
-    ///      `core::state::conversation` store under `AiMode::Assistive`
-    ///      (`assistive_response_id`).
-    ///
-    /// A given turn runs through exactly one path, so the two chains never both
-    /// drive the same request. Do NOT cross-wire them: the agent path must never
-    /// read/write `conversation::*_response_id`, and the legacy path must never
-    /// touch this field. If the legacy fallback is ever retired, the
-    /// `AiMode::Assistive` branch in `core::state::conversation` becomes dead and
-    /// should be removed (owner: GROUP state).
+    /// Single source of truth for the Agent path's server-side response chain.
+    /// Advanced/reset only by this provider's terminal handling.
     previous_response_id: Arc<Mutex<Option<String>>>,
     /// Deadline for the first byte of a response.
     initial_response_timeout: Duration,
@@ -98,15 +83,12 @@ impl OpenAiProvider {
     /// becomes an empty key, which the streaming manager translates into a
     /// clean unauthenticated request — key-optional local endpoints are a
     /// first-class configuration, not an error.
-    pub fn from_lane(lane: AssistiveLaneSnapshot) -> Result<Self> {
-        let AssistiveLaneSnapshot {
-            endpoint,
-            model: default_model,
-            api_key,
-            account_auth: use_account_auth,
-            provider,
-        } = lane;
-        let api_key = api_key.unwrap_or_default();
+    pub fn from_lane(lane: &RuntimeLlmLane) -> Result<Self> {
+        let endpoint = lane.endpoint().to_string();
+        let default_model = lane.model().to_string();
+        let api_key = lane.credential().api_key().unwrap_or_default().to_string();
+        let use_account_auth = lane.credential().account_auth();
+        let provider = lane.provider();
 
         let use_previous_response_id =
             parse_env_bool("CODESCRIBE_AGENT_USE_PREVIOUS_RESPONSE_ID", true);

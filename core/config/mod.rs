@@ -61,7 +61,8 @@ pub use portable::{
     write_portable_export,
 };
 pub use settings::{
-    FormattingPolicy, RuntimeSettingsSnapshot, SettingsLoaderInput, SettingsSnapshotDigest,
+    FormattingPolicy, RuntimeLlmCredential, RuntimeLlmLane, RuntimeLlmLaneKind, RuntimeLlmLanes,
+    RuntimeSettingsSnapshot, SettingsLoaderInput, SettingsSnapshotDigest,
     SettingsSnapshotProvenance, SettingsSnapshotValidation, SettingsSnapshotValidationError,
     UserSettings,
 };

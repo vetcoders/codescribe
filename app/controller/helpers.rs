@@ -17,8 +17,7 @@ use codescribe_core::agent::{
     ThreadDeliveryInput, ThreadDeliveryReceipt, ThreadDeliverySource, ThreadMessage, ThreadStore,
     ToolRegistry,
 };
-use codescribe_core::config::Config;
-use codescribe_core::llm::lane_truth;
+use codescribe_core::config::{Config, RuntimeLlmLane, RuntimeSettingsSnapshot};
 use serde_json::json;
 
 use crate::os::hold_badge::{BadgeMode, HoldBadgeConfig, show_hold_badge_with_config};
@@ -126,13 +125,12 @@ struct AgentRuntime {
 }
 
 /// How a send path ended when it did not fail. Cancellation is an `Ok` outcome,
-/// not an error: user Stop is a normal exit that must skip persistence and the
-/// legacy fallback, which an `Err` would have triggered.
+/// not an error: user Stop is a normal exit that must skip persistence.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum AgentSendOutcome {
     /// The turn ran to completion; its thread is eligible for persistence.
     Completed,
-    /// The user stopped the turn. Nothing is persisted and no fallback runs.
+    /// The user stopped the turn. Nothing is persisted.
     Cancelled,
 }
 
@@ -184,13 +182,6 @@ pub(super) fn set_agent_send_in_flight_for_test(active: bool) {
 }
 
 impl AgentRuntimeState {
-    /// Production entry point to `ensure_runtime_with`, wired to the real
-    /// provider construction and the real ThreadStore. Returns the live runtime
-    /// plus whether this call recovered it from a degraded state.
-    fn ensure_runtime(&mut self) -> Result<(&mut AgentRuntime, bool)> {
-        self.ensure_runtime_with(initialize_agent_runtime, rehydrate_thread_messages)
-    }
-
     /// Install a runtime if none is live. Ordinary consecutive sends reuse the
     /// existing runtime untouched — identity and history never rotate here.
     ///
@@ -442,7 +433,7 @@ fn load_thread_messages_from(
 /// policy (with hot reload), the configured default provider, and a bounded UI
 /// channel. The thread id minted here is provisional — `ensure_runtime_with`
 /// overwrites it with the durable identity whenever one already exists.
-fn initialize_agent_runtime() -> Result<AgentRuntime> {
+fn initialize_agent_runtime(assistive_lane: &RuntimeLlmLane) -> Result<AgentRuntime> {
     let mut registry = ToolRegistry::new();
     crate::agent::tools::register_all_tools(&mut registry);
     // B2: same policy load as the UniFFI bridge path — settings.json
@@ -453,7 +444,7 @@ fn initialize_agent_runtime() -> Result<AgentRuntime> {
     );
     registry.enable_policy_hot_reload();
 
-    let provider = crate::agent::create_default_provider()
+    let provider = crate::agent::create_default_provider(assistive_lane)
         .context("Failed to create default agent provider")?;
     let (ui_tx, ui_rx) = mpsc::channel(AGENT_UI_CHANNEL_CAPACITY);
     let session = AgentSession::new(provider, Arc::new(registry), ui_tx);
@@ -473,15 +464,14 @@ fn initialize_agent_runtime() -> Result<AgentRuntime> {
 fn build_agent_stream_options(
     ai_assistive_max_tokens: i32,
     use_assistive_persona: bool,
+    assistive_lane: &RuntimeLlmLane,
 ) -> StreamOptions {
     let max_tokens = u32::try_from(ai_assistive_max_tokens)
         .ok()
         .filter(|tokens| *tokens > 0);
 
-    let (_, model) = lane_truth::assistive_identity(&Config::load());
-
     StreamOptions {
-        model,
+        model: assistive_lane.model().to_string(),
         system_prompt: Some(compose_agent_system_prompt(use_assistive_persona)),
         max_tokens,
         temperature: None,
@@ -681,27 +671,17 @@ async fn apply_agent_ui_event(event: AgentUiEvent) {
     }
 }
 
-/// Collapse whitespace for a persisted thread message, returning `None` when
-/// nothing is left. Callers use that `None` to skip persistence entirely — a
-/// whitespace-only turn is not a conversation worth writing to disk.
-fn normalize_assistive_thread_text(text: &str) -> Option<String> {
-    let normalized = text.split_whitespace().collect::<Vec<_>>().join(" ");
-    if normalized.is_empty() {
-        None
-    } else {
-        Some(normalized)
-    }
-}
-
 /// Production persist hook: stamp the runtime's history with live assistive
 /// provider/model identity and upsert it through the delivery gateway. Called
 /// after a completed turn only — cancelled turns never reach here.
-fn deliver_runtime_thread(runtime: &AgentRuntime) -> Result<ThreadDeliveryReceipt> {
-    let (provider, model) = lane_truth::assistive_identity(&Config::load());
+fn deliver_runtime_thread(
+    runtime: &AgentRuntime,
+    assistive_lane: &RuntimeLlmLane,
+) -> Result<ThreadDeliveryReceipt> {
     ThreadDeliveryGateway::new()?.deliver(runtime_delivery_input(
         runtime,
-        provider.as_str().to_string(),
-        model,
+        assistive_lane.provider().as_str().to_string(),
+        assistive_lane.model().to_string(),
         Utc::now(),
     ))
 }
@@ -740,99 +720,12 @@ fn runtime_delivery_input(
     }
 }
 
-/// Build the two-message thread a legacy-formatter fallback persists. Returns
-/// `None` when either side normalizes to empty, so a half-turn is never written.
-/// The `legacy-fallback` metadata and `fallback` tag are deliberate: these
-/// threads did not come from the agent runtime and must stay distinguishable.
-fn legacy_assistive_delivery_input(
-    user_text: &str,
-    assistant_text: &str,
-    backend_id: String,
-    now: DateTime<Utc>,
-    model: String,
-) -> Option<ThreadDeliveryInput> {
-    let user_text = normalize_assistive_thread_text(user_text)?;
-    let assistant_text = normalize_assistive_thread_text(assistant_text)?;
-    let metadata = Some(json!({"source":"legacy-fallback"}));
-
-    Some(ThreadDeliveryInput {
-        backend_id,
-        messages: vec![
-            ThreadMessage {
-                role: "user".to_string(),
-                content: vec![json!({"type":"text","text":user_text})],
-                timestamp: now,
-                metadata: metadata.clone(),
-            },
-            ThreadMessage {
-                role: "assistant".to_string(),
-                content: vec![json!({"type":"text","text":assistant_text})],
-                timestamp: now,
-                metadata,
-            },
-        ],
-        provider: "legacy-formatter".to_string(),
-        model,
-        source: ThreadDeliverySource::LegacyFallback,
-        mode: "assistive".to_string(),
-        tags: vec![
-            "agent".to_string(),
-            "overlay".to_string(),
-            "fallback".to_string(),
-        ],
-        timestamp: now,
-    })
-}
-
-/// Gateway-injectable legacy fallback delivery, so tests can persist into a temp
-/// threads directory. `Ok(None)` means there was nothing worth persisting, which
-/// is a success — not a delivery failure.
-fn deliver_legacy_assistive_thread_with_gateway(
-    gateway: &ThreadDeliveryGateway,
-    user_text: &str,
-    assistant_text: &str,
-    backend_id: String,
-    now: DateTime<Utc>,
-    model: String,
-) -> Result<Option<ThreadDeliveryReceipt>> {
-    let Some(input) =
-        legacy_assistive_delivery_input(user_text, assistant_text, backend_id, now, model)
-    else {
-        return Ok(None);
-    };
-
-    gateway.deliver(input).map(Some)
-}
-
-/// Production legacy fallback delivery against the real ThreadStore. Mints a new
-/// thread id per fallback: the fallback has no agent runtime, so there is no
-/// durable conversation identity to rejoin.
-fn deliver_legacy_assistive_thread(
-    user_text: &str,
-    assistant_text: &str,
-) -> Result<Option<ThreadDeliveryReceipt>> {
-    let gateway = ThreadDeliveryGateway::new()?;
-    let now = Utc::now();
-    let (_, model) = lane_truth::assistive_identity(&Config::load());
-
-    deliver_legacy_assistive_thread_with_gateway(
-        &gateway,
-        user_text,
-        assistant_text,
-        ThreadStore::generate_id(),
-        now,
-        model,
-    )
-}
-
-/// Whether a failed agent send should be retried through the legacy formatter.
-/// A `Provider stream error:` means the provider already accepted the turn and
-/// failed mid-stream — replaying it through the formatter would answer the user
-/// twice. Everything else (runtime unavailable, init failure) never reached the
-/// provider, so the fallback is the only way to answer at all.
-fn agent_send_error_allows_legacy_fallback(error: &anyhow::Error) -> bool {
+/// Whether the provider stream has already emitted the terminal UI error.
+/// Initialization failures happen before the stream owns a UI turn and need one
+/// explicit terminal event at the controller boundary.
+fn agent_send_error_was_published(error: &anyhow::Error) -> bool {
     let message = error.to_string();
-    !message.starts_with("Provider stream error:")
+    message.starts_with("Provider stream error:")
 }
 
 /// P1.7: classify a send-path failure as transient (the provider blipped but
@@ -938,9 +831,16 @@ async fn run_agent_send_path(
     runtime_state: &mut AgentRuntimeState,
     text: String,
     stream_options: StreamOptions,
+    assistive_lane: &RuntimeLlmLane,
 ) -> Result<AgentSendOutcome> {
-    run_agent_send_path_with_persist(runtime_state, text, stream_options, deliver_runtime_thread)
-        .await
+    run_agent_send_path_with_persist(
+        runtime_state,
+        text,
+        stream_options,
+        || initialize_agent_runtime(assistive_lane),
+        |runtime| deliver_runtime_thread(runtime, assistive_lane),
+    )
+    .await
 }
 
 /// Drive one agent turn end to end, with an injectable persist hook so tests can
@@ -959,22 +859,25 @@ async fn run_agent_send_path(
 ///
 /// On failure the error is classified before degrading: transient blips keep the
 /// runtime and only reset the chain, hard failures drop it.
-async fn run_agent_send_path_with_persist<P, Delivery>(
+async fn run_agent_send_path_with_persist<Init, P, Delivery>(
     runtime_state: &mut AgentRuntimeState,
     text: String,
     mut stream_options: StreamOptions,
+    initialize_runtime: Init,
     persist_runtime: P,
 ) -> Result<AgentSendOutcome>
 where
+    Init: FnOnce() -> Result<AgentRuntime>,
     P: FnOnce(&AgentRuntime) -> Result<Delivery>,
 {
-    let (runtime, recovered_from_degraded) = match runtime_state.ensure_runtime() {
-        Ok(state) => state,
-        Err(error) => {
-            runtime_state.mark_runtime_degraded("runtime_init_failed");
-            return Err(error).context("Agent runtime unavailable");
-        }
-    };
+    let (runtime, recovered_from_degraded) =
+        match runtime_state.ensure_runtime_with(initialize_runtime, rehydrate_thread_messages) {
+            Ok(state) => state,
+            Err(error) => {
+                runtime_state.mark_runtime_degraded("runtime_init_failed");
+                return Err(error).context("Agent runtime unavailable");
+            }
+        };
     let _ = recovered_from_degraded;
 
     if runtime.reset_chain_on_next_send {
@@ -1123,12 +1026,12 @@ where
             Ok(AgentSendOutcome::Completed)
         }
         Err(error) => {
-            if !agent_send_error_allows_legacy_fallback(&error) {
+            if agent_send_error_was_published(&error) {
                 return Ok(AgentSendOutcome::Completed);
             }
             // P1.7: distinguish a transient provider blip (conversation still
             // valid -> keep messages, reset chain) from a hard failure (drop the
-            // runtime). Both still mark the UI degraded and fall back to legacy.
+            // runtime). Both mark the UI degraded; neither creates another route.
             if agent_send_error_is_transient(&error) {
                 runtime_state.mark_runtime_degraded_preserving_context("send_transient_failure");
             } else {
@@ -1139,102 +1042,26 @@ where
     }
 }
 
-/// Map a legacy formatter result to the assistant text that should be
-/// persisted, if any.
-///
-/// A `Failed` status carries no real assistant content (previously it was
-/// surfaced only as the "AI Failed" sentinel). A failed formatting attempt is
-/// NOT a conversation and must not be persisted (operator decision
-/// 2026-07-06): a dead API key would otherwise land a junk "AI Failed" thread
-/// on disk for every retry, producing 3-4 duplicate garbage threads per
-/// utterance. `Skipped` likewise has nothing to persist. Only genuine output
-/// (`Applied` / `AiNoop`, i.e. partial or full success) is persisted, exactly
-/// as before.
-fn legacy_fallback_assistant_text(
-    status: crate::ai_formatting::AiFormatStatus,
-    text: String,
-) -> Option<String> {
-    use crate::ai_formatting::AiFormatStatus;
-    match status {
-        AiFormatStatus::Applied | AiFormatStatus::AiNoop => Some(text),
-        AiFormatStatus::Failed | AiFormatStatus::Skipped => None,
-    }
-}
-
-const LEGACY_FALLBACK_UNAVAILABLE_MESSAGE: &str =
-    "Agent provider and fallback are unavailable. Check Settings → Providers.";
-
-/// Build the one terminal sequence the Swift Agent surface must receive after
-/// the runtime has handed a voice turn to the legacy formatter. The fallback
-/// used to persist its result without publishing anything, leaving the
-/// assistant placeholder permanently in `Thinking` after a fast provider/key
-/// failure. Keep this mapping pure so the terminal contract is testable without
-/// a live provider or a Swift listener.
-fn legacy_fallback_terminal_events(assistant_text: Option<&str>) -> Vec<AgentDeliveryEvent> {
-    match assistant_text
-        .map(str::trim)
-        .filter(|text| !text.is_empty())
-    {
-        Some(text) => vec![
-            AgentDeliveryEvent::TextDone(text.to_string()),
-            AgentDeliveryEvent::Done,
-        ],
-        None => vec![AgentDeliveryEvent::Error(
-            LEGACY_FALLBACK_UNAVAILABLE_MESSAGE.to_string(),
-        )],
-    }
-}
-
-fn publish_legacy_fallback_terminal(assistant_text: Option<&str>) {
-    for event in legacy_fallback_terminal_events(assistant_text) {
-        crate::agent_delivery::publish_agent_delivery_event(event);
-    }
-}
-
-/// Answer one turn through the legacy formatter instead of the agent runtime.
-/// Returns the assistant text only when there is genuine output to persist; a
-/// formatter failure logs and yields `None` rather than writing a junk thread.
-async fn run_legacy_send_path(
-    text: &str,
-    whisper_language: crate::config::Language,
-) -> Option<String> {
-    let result = crate::ai_formatting::format_text_with_status_channels(
-        text,
-        whisper_language.whisper_hint(),
-        true,
-        None,
-        None,
-    )
-    .await;
-
-    let status = result.status;
-    let assistant_text = legacy_fallback_assistant_text(status, result.text);
-    if assistant_text.is_none() && status == crate::ai_formatting::AiFormatStatus::Failed {
-        warn!(
-            "Legacy formatter failed; skipping thread persist for this attempt (a failed attempt is not a conversation)"
-        );
-    }
-    assistant_text
-}
-
-/// One complete voice-assistive turn including recovery policy: try the agent
-/// runtime, and on failure fall back to the legacy formatter. The runtime lock
-/// is held only for the agent attempt — the fallback runs outside it so a
-/// degraded provider cannot block the next turn from acquiring state. A
-/// cancelled turn short-circuits: no fallback, no persistence.
-async fn run_agent_send_with_fallback(
+/// One complete voice-assistive turn on the sole Agent route. Provider or
+/// initialization failure is terminal for this turn; it is never replayed by a
+/// second formatter authority.
+async fn run_agent_send(
     runtime_state: &Arc<TokioMutex<AgentRuntimeState>>,
+    assistive_lane: &RuntimeLlmLane,
     text: String,
-    whisper_language: crate::config::Language,
     ai_assistive_max_tokens: i32,
     use_assistive_persona: bool,
 ) {
     let _send_guard = AgentSendInFlightGuard::new();
-    let stream_options = build_agent_stream_options(ai_assistive_max_tokens, use_assistive_persona);
+    let stream_options = build_agent_stream_options(
+        ai_assistive_max_tokens,
+        use_assistive_persona,
+        assistive_lane,
+    );
     let agent_result = {
         let mut guard = runtime_state.lock().await;
         // Route to the thread the user is looking at (operator contract
-        // 2026-08-13). No published selection → legacy bound conversation.
+        // 2026-08-13). No published selection keeps the bound conversation.
         let fresh_mint_requested = match assistive_target_thread() {
             Some(target) => {
                 let fresh = target.is_none();
@@ -1243,7 +1070,13 @@ async fn run_agent_send_with_fallback(
             }
             None => false,
         };
-        let result = run_agent_send_path(&mut guard, text.clone(), stream_options).await;
+        let result = run_agent_send_path(
+            &mut guard,
+            text,
+            stream_options,
+            assistive_lane,
+        )
+        .await;
         if fresh_mint_requested {
             // One conscious "+ New thread" = one thread: adopt the minted
             // identity as the target so the next utterance continues it. The
@@ -1256,35 +1089,14 @@ async fn run_agent_send_with_fallback(
     match agent_result {
         Ok(AgentSendOutcome::Completed) => {}
         Ok(AgentSendOutcome::Cancelled) => {
-            info!("Voice-assistive Agent turn cancelled; skipping fallback and persistence");
+            info!("Voice-assistive Agent turn cancelled; skipping persistence");
         }
         Err(error) => {
-            warn!("Agent fallback triggered: reason={}", error);
-            warn!(
-                "Agent runtime failed, switching this response to legacy fallback: {}",
-                error
-            );
-            debug!("Legacy fallback input length: {}", text.len());
-            let fallback_assistant_text = run_legacy_send_path(&text, whisper_language).await;
-            match fallback_assistant_text {
-                Some(assistant_text) => {
-                    match deliver_legacy_assistive_thread(&text, &assistant_text) {
-                        Ok(Some(receipt)) => {
-                            debug!(
-                                backend_thread_id = %receipt.backend_id,
-                                message_count = receipt.message_count,
-                                "Legacy assistive fallback delivered"
-                            );
-                            publish_legacy_fallback_terminal(Some(&assistant_text));
-                        }
-                        Ok(None) => publish_legacy_fallback_terminal(None),
-                        Err(error) => {
-                            warn!("Failed to deliver legacy assistive fallback thread: {error}");
-                            publish_legacy_fallback_terminal(None);
-                        }
-                    }
-                }
-                None => publish_legacy_fallback_terminal(None),
+            warn!("Agent runtime turn failed without alternate route: {error:#}");
+            if !agent_send_error_was_published(&error) {
+                crate::agent_delivery::publish_agent_delivery_event(
+                    AgentDeliveryEvent::Error(error.to_string()),
+                );
             }
         }
     }
@@ -1292,18 +1104,19 @@ async fn run_agent_send_with_fallback(
 
 /// Controller entry point for the assistive lane: bind the turn to the shared
 /// process-global runtime so consecutive utterances continue one conversation,
-/// then run it with the fallback policy.
+/// then run it on the lane sealed by that controller's immutable snapshot.
 pub(crate) async fn send_assistive_with_agent_runtime_lane(
+    runtime_settings: Arc<RuntimeSettingsSnapshot>,
     text: String,
-    whisper_language: crate::config::Language,
+    _whisper_language: crate::config::Language,
     ai_assistive_max_tokens: i32,
     use_assistive_persona: bool,
 ) {
     let runtime_state = shared_agent_runtime_state();
-    run_agent_send_with_fallback(
+    run_agent_send(
         &runtime_state,
+        runtime_settings.llm_lanes().assistive(),
         text,
-        whisper_language,
         ai_assistive_max_tokens,
         use_assistive_persona,
     )
@@ -1707,115 +1520,6 @@ mod tests {
         assert_eq!(
             friendly_tool_name("mcp__aicx-mcp__aicx_intents"),
             "AICX intents"
-        );
-    }
-
-    /// A fallback thread must be persisted AND self-identifying: the receipt
-    /// reports a real two-message first exchange, and the stored thread carries
-    /// the `legacy-formatter` provider, the `fallback` tag, and per-message
-    /// `legacy-fallback` metadata that distinguish it from an agent turn.
-    #[test]
-    fn successful_legacy_fallback_delivers_explicit_metadata_and_receipt() {
-        let tmp = tempfile::TempDir::new().expect("temp dir should initialize");
-        let threads_dir = tmp.path().join("threads");
-        let gateway =
-            ThreadDeliveryGateway::new_in(&threads_dir).expect("gateway should initialize");
-        let now = Utc::now();
-        let receipt = deliver_legacy_assistive_thread_with_gateway(
-            &gateway,
-            "user prompt",
-            "assistant reply",
-            "t_2026-07-19_legacy-fallback".to_string(),
-            now,
-            "legacy-test-model".to_string(),
-        )
-        .expect("legacy fallback delivery should succeed")
-        .expect("non-empty fallback should produce a receipt");
-
-        assert!(receipt.created);
-        assert_eq!(receipt.message_count, 2);
-        assert_eq!(receipt.updated_at, now);
-        assert!(receipt.first_exchange);
-        assert!(receipt.title_eligible);
-
-        let store = ThreadStore::new_in(&threads_dir).expect("store should reopen");
-        let thread = store
-            .load_thread(&receipt.backend_id)
-            .expect("delivered fallback should load");
-        assert_eq!(thread.provider, "legacy-formatter");
-        assert_eq!(thread.model, "legacy-test-model");
-        assert!(thread.tags.iter().any(|tag| tag == "fallback"));
-        assert_eq!(thread.messages.len(), 2);
-        assert_eq!(thread.messages[0].role, "user");
-        assert_eq!(thread.messages[0].content[0]["type"], "text");
-        assert_eq!(thread.messages[0].content[0]["text"], "user prompt");
-        assert_eq!(
-            thread.messages[0].metadata,
-            Some(json!({"source":"legacy-fallback"}))
-        );
-        assert_eq!(thread.messages[1].role, "assistant");
-        assert_eq!(thread.messages[1].content[0]["type"], "text");
-        assert_eq!(thread.messages[1].content[0]["text"], "assistant reply");
-    }
-
-    /// Only genuine formatter output becomes a thread. `Failed` and `Skipped`
-    /// carry no conversation, and persisting them produced the junk "AI Failed"
-    /// threads (3-4 duplicates per utterance) a dead key used to generate.
-    #[test]
-    fn legacy_fallback_skips_persist_on_failed_status() {
-        use crate::ai_formatting::AiFormatStatus;
-
-        // Failed: the formatter produced no real assistant content (dead API
-        // key -> "AI Failed"). Nothing to persist, so no thread is written and
-        // no messages are built. This is the regression guard for the ~12 junk
-        // "AI Failed" threads (incl. 3-4 duplicates per utterance) the operator
-        // saw after a dead key drove every retry through the legacy fallback.
-        assert_eq!(
-            legacy_fallback_assistant_text(AiFormatStatus::Failed, "AI Failed".to_string()),
-            None
-        );
-
-        // Skipped: also nothing to persist.
-        assert_eq!(
-            legacy_fallback_assistant_text(AiFormatStatus::Skipped, String::new()),
-            None
-        );
-
-        // Applied / AiNoop: genuine output (partial or full success) is still
-        // persisted exactly as before.
-        assert_eq!(
-            legacy_fallback_assistant_text(AiFormatStatus::Applied, "formatted reply".to_string()),
-            Some("formatted reply".to_string())
-        );
-        assert_eq!(
-            legacy_fallback_assistant_text(AiFormatStatus::AiNoop, "verbatim reply".to_string()),
-            Some("verbatim reply".to_string())
-        );
-    }
-
-    /// A formatter fallback is still the terminal owner of the already-open
-    /// voice bubble. Success must fill and close it; failure must close it with
-    /// an actionable error. Neither branch may leave Swift in `Thinking`.
-    #[test]
-    fn legacy_fallback_always_publishes_a_terminal_ui_sequence() {
-        assert_eq!(
-            legacy_fallback_terminal_events(Some("  recovered reply  ")),
-            vec![
-                AgentDeliveryEvent::TextDone("recovered reply".to_string()),
-                AgentDeliveryEvent::Done,
-            ]
-        );
-        assert_eq!(
-            legacy_fallback_terminal_events(None),
-            vec![AgentDeliveryEvent::Error(
-                LEGACY_FALLBACK_UNAVAILABLE_MESSAGE.to_string()
-            )]
-        );
-        assert_eq!(
-            legacy_fallback_terminal_events(Some("  ")),
-            vec![AgentDeliveryEvent::Error(
-                LEGACY_FALLBACK_UNAVAILABLE_MESSAGE.to_string()
-            )]
         );
     }
 
@@ -2293,16 +1997,15 @@ mod tests {
         assert!(!runtime_state.runtime_degraded);
     }
 
-    /// A mid-stream provider failure must NOT fall back: the provider already
-    /// took the turn, so re-running it through the legacy formatter would answer
-    /// the same utterance twice.
+    /// A mid-stream provider failure already owns and publishes the terminal UI
+    /// event, so the controller must not publish a duplicate terminal.
     #[test]
-    fn test_provider_stream_errors_skip_legacy_fallback() {
+    fn test_provider_stream_errors_are_already_published() {
         let error = anyhow::anyhow!(
             "Provider stream error: Agent SSE error internal_error: 'list' object has no attribute 'uid'"
         );
 
-        assert!(!agent_send_error_allows_legacy_fallback(&error));
+        assert!(agent_send_error_was_published(&error));
     }
 
     /// Provider that completes one clean turn so the seeded session ends up with
@@ -2496,13 +2199,13 @@ mod tests {
         assert!(!is_agent_send_in_flight());
     }
 
-    /// Counterpart to the stream-error case: a runtime that never reached the
-    /// provider must fall back, otherwise the user gets no answer at all.
+    /// A runtime that never reached the provider still needs one explicit
+    /// terminal UI event from the controller boundary.
     #[test]
-    fn test_runtime_unavailable_errors_allow_legacy_fallback() {
+    fn test_runtime_unavailable_errors_need_terminal_publication() {
         let error = anyhow::anyhow!("Agent runtime unavailable");
 
-        assert!(agent_send_error_allows_legacy_fallback(&error));
+        assert!(!agent_send_error_was_published(&error));
     }
 
     /// Text with no attachment marker must come through byte-identical — the
@@ -2853,6 +2556,7 @@ mod tests {
                 &mut state,
                 "cancel this".to_string(),
                 test_stream_options(),
+                unexpected_runtime_initialization,
                 move |_runtime| {
                     first_persist_count.fetch_add(1, Ordering::SeqCst);
                     Ok(())
@@ -2922,6 +2626,7 @@ mod tests {
             &mut state,
             "try again".to_string(),
             test_stream_options(),
+            unexpected_runtime_initialization,
             move |_runtime| {
                 second_persist_count.fetch_add(1, Ordering::SeqCst);
                 Ok(())
@@ -2959,6 +2664,12 @@ mod tests {
             temperature: None,
             reset_chain: false,
         }
+    }
+
+    fn unexpected_runtime_initialization() -> Result<AgentRuntime> {
+        Err(anyhow::anyhow!(
+            "test expected the installed Agent runtime to remain authoritative"
+        ))
     }
 
     // ── Voice runtime identity and history continuity (W1-A) ────────────────
@@ -3141,6 +2852,7 @@ mod tests {
                 &mut state,
                 text.to_string(),
                 test_stream_options(),
+                unexpected_runtime_initialization,
                 |runtime| {
                     let receipt = gateway.deliver(runtime_delivery_input(
                         runtime,
@@ -3235,6 +2947,7 @@ mod tests {
             &mut state,
             "first question".to_string(),
             test_stream_options(),
+            unexpected_runtime_initialization,
             |runtime| {
                 let receipt = gateway.deliver(runtime_delivery_input(
                     runtime,
@@ -3292,6 +3005,7 @@ mod tests {
             &mut state,
             "second question".to_string(),
             test_stream_options(),
+            unexpected_runtime_initialization,
             |runtime| {
                 let receipt = gateway.deliver(runtime_delivery_input(
                     runtime,
