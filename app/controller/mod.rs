@@ -68,7 +68,7 @@ use crate::audio::streaming_recorder::StreamingRecorder;
 #[cfg(test)]
 use crate::config::DeferredInsertShortcut;
 use crate::config::models::ModelManager;
-use crate::config::{Config, UserSettings};
+use crate::config::{Config, RuntimeSettingsSnapshot, UserSettings};
 use crate::os::clipboard;
 use crate::os::hold_badge::BadgeMode;
 use crate::os::hotkeys::{self, HoldMode};
@@ -350,6 +350,8 @@ fn should_apply_transcription_action_contract(assistive: bool, live_stream_sessi
 pub struct RecordingController {
     /// Application configuration
     config: Arc<RwLock<Config>>,
+    /// One immutable loader result shared by every consumer in a take.
+    runtime_settings: Arc<RuntimeSettingsSnapshot>,
 
     /// Current state
     state: Arc<RwLock<State>>,
@@ -498,7 +500,9 @@ impl RecordingController {
 
     /// Create a new recording controller with configuration loaded from disk
     pub fn new() -> Self {
-        Self::with_config(Config::load(), "RecordingController::new")
+        let snapshot = Config::load_runtime_snapshot()
+            .unwrap_or_else(|error| panic!("runtime settings snapshot refused: {error:?}"));
+        Self::with_runtime_settings(snapshot, "RecordingController::new")
     }
 
     /// Create a new recording controller without populating secrets from Keychain.
@@ -506,8 +510,10 @@ impl RecordingController {
     /// Used by the SwiftUI redesign dictation bridge: starting local recording must
     /// not ask for API-key access as an incidental side effect.
     pub fn new_without_keychain() -> Self {
-        Self::with_config(
-            Config::load_without_keychain(),
+        let snapshot = Config::load_runtime_snapshot_without_keychain()
+            .unwrap_or_else(|error| panic!("runtime settings snapshot refused: {error:?}"));
+        Self::with_runtime_settings(
+            snapshot,
             "RecordingController::new_without_keychain",
         )
     }
@@ -519,7 +525,11 @@ impl RecordingController {
     /// readiness**: capture must start the instant the user presses record, so
     /// the prewarm runs on its own thread and a failure is a warning, never a
     /// blocked recording.
-    fn with_config(config: Config, recorder_context: &str) -> Self {
+    fn with_runtime_settings(
+        runtime_settings: RuntimeSettingsSnapshot,
+        recorder_context: &str,
+    ) -> Self {
+        let config = runtime_settings.values().clone();
         info!(
             "Initializing RecordingController (hold_delay={}ms, beep={}, language={:?})",
             config.hold_start_delay_ms, config.beep_on_start, config.whisper_language
@@ -577,6 +587,7 @@ impl RecordingController {
         }
 
         let config = Arc::new(RwLock::new(config));
+        let runtime_settings = Arc::new(runtime_settings);
         if recorder.is_none() {
             warn!("Recorder unavailable at controller init; voice capture is disabled");
         }
@@ -585,6 +596,7 @@ impl RecordingController {
 
         Self {
             config,
+            runtime_settings,
             state: Arc::new(RwLock::new(State::Idle)),
             recorder: Arc::new(Mutex::new(recorder)),
             assistive_mode: Arc::new(RwLock::new(false)),
@@ -1368,17 +1380,39 @@ impl RecordingController {
         event_broadcast: broadcast::Sender<IpcEvent>,
         session_telemetry: SharedSessionTelemetry,
         transcript_bus: Option<Arc<TranscriptBus>>,
+        acoustic_ledger: Option<
+            Arc<std::sync::Mutex<codescribe_core::pipeline::acoustic_ledger::AcousticLedger>>,
+        >,
     ) -> Arc<dyn codescribe_core::pipeline::contracts::EventSink> {
         let delta_sink = preview_deltas_enabled.then(|| {
             Arc::new(helpers::RoutingDeltaSink)
                 as Arc<dyn codescribe_core::pipeline::contracts::DeltaSink>
         });
+        let projection_broadcast = event_broadcast.clone();
+        let projection_callback = Arc::new(
+            move |event: &crate::presentation::transcript_bus::TranscriptBusEvidenceEvent| {
+                match serde_json::to_string(event) {
+                    Ok(json) => {
+                        let _ = projection_broadcast.send(IpcEvent {
+                            timestamp: chrono::Utc::now()
+                                .to_rfc3339_opts(chrono::SecondsFormat::Millis, true),
+                            payload: IpcEventPayload::TranscriptProjection { json },
+                        });
+                    }
+                    Err(error) => {
+                        tracing::warn!(%error, "transcript projection serialization failed");
+                    }
+                }
+            },
+        );
         let pe: Arc<dyn codescribe_core::pipeline::contracts::EventSink> =
-            Arc::new(PresentationEmitter::new_with_transcript_bus(
+            Arc::new(PresentationEmitter::new_with_authority(
                 transcript_buffer,
                 delta_sink,
                 None,
                 transcript_bus,
+                acoustic_ledger,
+                Some(projection_callback),
             ));
         let ipc_sink: Arc<dyn codescribe_core::pipeline::contracts::EventSink> =
             Arc::new(helpers::IpcBroadcastSink::new(event_broadcast));
@@ -1430,12 +1464,14 @@ impl RecordingController {
         transcript_bus: Option<Arc<TranscriptBus>>,
     ) {
         Self::configure_level_broadcast(recorder, event_broadcast.clone());
+        let acoustic_ledger = recorder.acoustic_ledger_handle();
         recorder.set_event_sink(Some(Self::build_recording_event_sink(
             recorder.transcript_buffer_handle(),
             preview_deltas_enabled,
             event_broadcast,
             session_telemetry,
             transcript_bus,
+            acoustic_ledger,
         )));
     }
 
@@ -1457,12 +1493,14 @@ impl RecordingController {
         // agent without stopping the recorder. Do not route assistive live preview deltas
         // into the same bubble, or previews and finals will duplicate.
         Self::configure_level_broadcast(recorder, event_broadcast.clone());
+        let acoustic_ledger = recorder.acoustic_ledger_handle();
         recorder.set_event_sink(Some(Self::build_recording_event_sink(
             recorder.transcript_buffer_handle(),
             preview_deltas_enabled,
             event_broadcast,
             session_telemetry,
             transcript_bus,
+            acoustic_ledger,
         )));
     }
 
@@ -2184,6 +2222,7 @@ impl RecordingController {
         let start_transition_in_flight = Arc::clone(&self.start_transition_in_flight);
         let session_telemetry = Arc::clone(&self.session_telemetry);
         let active_transcript_bus = Arc::clone(&self.active_transcript_bus);
+        let runtime_settings = Arc::clone(&self.runtime_settings);
 
         let task = tokio::spawn(async move {
             // Wait for the configured delay
@@ -2302,6 +2341,10 @@ impl RecordingController {
             // so the very first deltas route to the correct overlay.
             set_assistive_session(is_assistive);
             reset_session_telemetry(&session_telemetry);
+            rec.bind_session_authority(
+                new_session_id.clone(),
+                Arc::clone(&runtime_settings),
+            );
             let transcript_bus = TranscriptBus::open(TranscriptSession {
                 session_id: new_session_id,
                 mode: if is_assistive {
@@ -2321,8 +2364,10 @@ impl RecordingController {
                 Arc::clone(&session_telemetry),
                 transcript_bus.clone(),
             );
-            let settings = UserSettings::load();
-            rec.configure_layer1(&settings, gateway_session_availability(&config));
+            rec.configure_layer1(
+                runtime_settings.as_ref(),
+                gateway_session_availability(&config),
+            );
             if !cfg!(test) {
                 let language_hint = language.whisper_hint().map(str::to_string);
                 // Audio-first cold start: do not preflight Whisper here. The
@@ -2518,6 +2563,10 @@ impl RecordingController {
         // so the very first deltas route to the correct overlay.
         set_assistive_session(is_assistive);
         reset_session_telemetry(&self.session_telemetry);
+        recorder.bind_session_authority(
+            new_session_id.clone(),
+            Arc::clone(&self.runtime_settings),
+        );
         let transcript_bus = TranscriptBus::open(TranscriptSession {
             session_id: new_session_id,
             mode: if is_assistive {
@@ -2537,8 +2586,10 @@ impl RecordingController {
             Arc::clone(&self.session_telemetry),
             transcript_bus.clone(),
         );
-        let settings = UserSettings::load();
-        recorder.configure_layer1(&settings, gateway_session_availability(&config));
+        recorder.configure_layer1(
+            self.runtime_settings.as_ref(),
+            gateway_session_availability(&config),
+        );
 
         // Skip actual audio stream in tests (no CoreAudio device needed)
         let language_hint = language.whisper_hint().map(str::to_string);

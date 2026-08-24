@@ -9,13 +9,21 @@
 
 use std::{collections::BTreeMap, sync::Arc};
 
-use codescribe_core::pipeline::acoustic_ledger::OccurrenceIdentity;
+use codescribe_core::llm::inline_format::{
+    LabelProposalDisposition, OccurrenceLabelProposal,
+};
+use codescribe_core::pipeline::acoustic_ledger::{
+    AcousticLedger, AcousticSerial, LedgerSealReceipt, MutationReceipt, ObservationIdentity,
+    ObservationProducer, OccurrenceIdentity,
+};
 use codescribe_core::pipeline::contracts::{DeltaSink, EngineEvent, EventSink, TranscriptSegment};
 use codescribe_core::pipeline::streaming::BufferedEmitter;
 use tokio::sync::Mutex;
 use tracing::{debug, info};
 
-use super::transcript_bus::{TranscriptBus, TranscriptDraft, TranscriptDraftStatus};
+use super::transcript_bus::{
+    TranscriptBus, TranscriptBusEvidenceEvent, TranscriptDraft, TranscriptDraftStatus,
+};
 
 /// Commands sent through the ordered channel to the emitter worker.
 enum EmitterCmd {
@@ -67,8 +75,8 @@ impl TranscriptUtteranceRecord {
 /// provenance references and never participate in entry identity.
 ///
 /// W2 input: one admitted ledger decision for `occurrence`. W2 output: this
-/// entry inside a [`TranscriptRevision`]. Unresolved W2 consumers are the
-/// formatter proposal path and explicit delivery route.
+/// entry inside a [`TranscriptRevision`]. Formatter proposals re-enter through
+/// `EngineEvent::OccurrenceLabelProposal`; delivery consumes the decided route.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct TranscriptDocumentEntry {
     pub occurrence: OccurrenceIdentity,
@@ -94,6 +102,7 @@ pub enum ReducerAction {
     RecordLedgerSeal {
         occurrence: OccurrenceIdentity,
         seal_receipt: String,
+        terminal: bool,
     },
     ApplyManualEdit {
         entry: TranscriptDocumentEntry,
@@ -156,6 +165,165 @@ fn append_rendered_fragment(rendered: &mut String, fragment: &str) {
 }
 
 impl TranscriptReducer {
+    fn encode_serial(serial: &AcousticSerial) -> String {
+        format!(
+            "v{}:{}:{}:{}:{}:{}",
+            serial.version,
+            serial.digest,
+            serial.occurrence.session,
+            serial.occurrence.capture_epoch,
+            serial.occurrence.sample_start,
+            serial.occurrence.sample_end,
+        )
+    }
+
+    fn revision_for_action(&mut self, action: ReducerAction) -> TranscriptRevision {
+        self.revision = self.revision.saturating_add(1);
+        let entries = self
+            .document_by_occurrence
+            .values()
+            .cloned()
+            .collect::<Vec<_>>();
+        let rendered_text = entries
+            .iter()
+            .map(|entry| entry.label.trim())
+            .filter(|label| !label.is_empty())
+            .collect::<Vec<_>>()
+            .join(" ");
+        TranscriptRevision {
+            schema: "codescribe.transcript-revision.v1".to_string(),
+            revision: self.revision,
+            action,
+            entries,
+            rendered_text,
+        }
+    }
+
+    /// Apply only the mutation authority granted by the shared ledger. An
+    /// unsigned or unqualified occurrence fails closed and creates no document
+    /// entry, even when an engine supplied visible text.
+    pub fn apply_ledger_mutation(
+        &mut self,
+        ledger: &AcousticLedger,
+        observation: &ObservationIdentity,
+        receipt: &MutationReceipt,
+    ) -> Option<TranscriptRevision> {
+        if !receipt.grants_mutation() || !ledger.is_qualified(&observation.occurrence) {
+            return None;
+        }
+        let serial = ledger.serial_of(&observation.occurrence)?;
+        let composition = ledger.compose(&observation.occurrence).ok()?;
+        let trail = ledger
+            .layer_trail_for(&observation.occurrence)
+            .filter(|decision| decision.is_evidence_backed())
+            .map(|decision| decision.receipt_id.clone())
+            .collect::<Vec<_>>();
+        if trail.is_empty() || composition.tokens.is_empty() {
+            return None;
+        }
+        let entry = TranscriptDocumentEntry {
+            occurrence: observation.occurrence.clone(),
+            label: ledger.text_of(&observation.occurrence)?.to_string(),
+            observation_receipt: format!(
+                "{}:{}:{}:{}",
+                observation.producer.as_str(),
+                observation.request,
+                observation.generation,
+                receipt.as_str(),
+            ),
+            word_evidence_receipts: composition
+                .tokens
+                .iter()
+                .map(|token| {
+                    format!(
+                        "{}:{}:{}",
+                        token.token_ordinal,
+                        token.token,
+                        token.cited_digests().collect::<Vec<_>>().join(","),
+                    )
+                })
+                .collect(),
+            layer_decision_receipts: trail,
+            seal_receipt: ledger
+                .seal_of(&observation.occurrence)
+                .map(|seal| seal.receipt_id.clone()),
+            manual_edit_receipt: ledger
+                .manual_edits()
+                .iter()
+                .rev()
+                .find(|edit| edit.occurrence == observation.occurrence)
+                .map(|edit| edit.receipt_id.clone()),
+        };
+        let _serial_receipt = Self::encode_serial(serial);
+        self.document_by_occurrence
+            .insert(observation.occurrence.clone(), entry.clone());
+        let action = if observation.producer == ObservationProducer::ManualHuman {
+            ReducerAction::ApplyManualEdit { entry }
+        } else {
+            ReducerAction::ApplyLedgerDecision { entry }
+        };
+        Some(self.revision_for_action(action))
+    }
+
+    /// Project ledger-owned finality; the reducer does not decide whether the
+    /// frontier is closed and cannot lift the seal later.
+    pub fn apply_ledger_seal(
+        &mut self,
+        receipt: &LedgerSealReceipt,
+    ) -> Option<TranscriptRevision> {
+        for occurrence in &receipt.sealed_occurrences {
+            if let Some(entry) = self.document_by_occurrence.get_mut(occurrence) {
+                entry.seal_receipt = Some(receipt.receipt_id.clone());
+            }
+        }
+        let occurrence = receipt.sealed_occurrences.first()?.clone();
+        Some(self.revision_for_action(ReducerAction::RecordLedgerSeal {
+            occurrence,
+            seal_receipt: receipt.receipt_id.clone(),
+            terminal: !receipt.is_occurrence_seal(),
+        }))
+    }
+
+    /// The sole automatic author may relabel only an occurrence the ledger
+    /// already holds. Its proposal is first admitted by the ledger and only the
+    /// returned receipt reaches the document.
+    pub fn apply_occurrence_label_proposal(
+        &mut self,
+        ledger: &mut AcousticLedger,
+        proposal: &OccurrenceLabelProposal,
+    ) -> Option<TranscriptRevision> {
+        if !proposal.binds_real_samples() {
+            return None;
+        }
+        let occurrence = OccurrenceIdentity::new(
+            proposal.session.clone(),
+            proposal.capture_epoch,
+            proposal.sample_start,
+            proposal.sample_end,
+        );
+        if !ledger.is_qualified(&occurrence) || ledger.text_of(&occurrence).is_none() {
+            return None;
+        }
+        let candidate_label = if proposal.disposition == LabelProposalDisposition::Propose {
+            proposal.proposed_label.clone()
+        } else {
+            ledger.text_of(&occurrence)?.to_string()
+        };
+        let observation = ObservationIdentity::new(
+            ObservationProducer::Formatter,
+            self.revision.saturating_add(1),
+            self.revision.saturating_add(1),
+            occurrence,
+        );
+        let receipt = ledger.admit(&observation, &candidate_label);
+        let _ = ledger.note_frontier_return(&observation.occurrence, ObservationProducer::Formatter);
+        if proposal.disposition == LabelProposalDisposition::Propose {
+            self.apply_ledger_mutation(ledger, &observation, &receipt)
+        } else {
+            None
+        }
+    }
+
     /// Replace the live preview tail. Previews supersede each other, so this
     /// overwrites rather than appends; a non-empty preview is also remembered as
     /// the fallback an empty final will fall back to.
@@ -352,6 +520,12 @@ impl TranscriptReducer {
     /// dispatching a second per-utterance callback.
     pub fn apply_event(&mut self, event: &EngineEvent) -> Option<String> {
         match event {
+            EngineEvent::LedgerMutation { .. }
+            | EngineEvent::LedgerSeal { .. }
+            | EngineEvent::OccurrenceLabelProposal { .. } => {
+                // Authenticated events use the typed methods above; this legacy
+                // text-returning helper never owns their projection.
+            }
             EngineEvent::Preview { text, .. } => self.apply_preview(text),
             EngineEvent::Correction {
                 text,
@@ -440,6 +614,9 @@ pub struct PresentationEmitter {
     delta_render_mode: DeltaRenderMode,
     /// Durable observer of this exact reducer's committed/final truth.
     transcript_bus: Option<Arc<TranscriptBus>>,
+    acoustic_ledger: Option<Arc<std::sync::Mutex<AcousticLedger>>>,
+    projection_callback:
+        Option<Arc<dyn Fn(&TranscriptBusEvidenceEvent) + Send + Sync>>,
 }
 
 impl PresentationEmitter {
@@ -466,6 +643,28 @@ impl PresentationEmitter {
         delta_callback: Option<Arc<dyn DeltaSink>>,
         stream_log_path: Option<std::path::PathBuf>,
         transcript_bus: Option<Arc<TranscriptBus>>,
+    ) -> Self {
+        Self::new_with_authority(
+            transcript_buffer,
+            delta_callback,
+            stream_log_path,
+            transcript_bus,
+            None,
+            None,
+        )
+    }
+
+    /// Build the production reducer projection over the exact ledger bound to
+    /// the recorder. No other constructor is used by the controller.
+    pub fn new_with_authority(
+        transcript_buffer: Arc<Mutex<String>>,
+        delta_callback: Option<Arc<dyn DeltaSink>>,
+        stream_log_path: Option<std::path::PathBuf>,
+        transcript_bus: Option<Arc<TranscriptBus>>,
+        acoustic_ledger: Option<Arc<std::sync::Mutex<AcousticLedger>>>,
+        projection_callback: Option<
+            Arc<dyn Fn(&TranscriptBusEvidenceEvent) + Send + Sync>,
+        >,
     ) -> Self {
         let emitter = Arc::new(Mutex::new(BufferedEmitter::new(
             transcript_buffer,
@@ -527,6 +726,8 @@ impl PresentationEmitter {
             session_state: std::sync::Mutex::new(TranscriptReducer::default()),
             delta_render_mode: DeltaRenderMode::SessionRendered,
             transcript_bus,
+            acoustic_ledger,
+            projection_callback,
         }
     }
 
@@ -611,6 +812,86 @@ impl EventSink for PresentationEmitter {
     /// Route an `EngineEvent` into session state and the buffered typing emitter.
     fn on_event(&self, event: &EngineEvent) {
         match event {
+            EngineEvent::LedgerMutation {
+                observation,
+                receipt,
+                ..
+            } => {
+                let Some(ledger) = &self.acoustic_ledger else {
+                    return;
+                };
+                let ledger = ledger.lock().unwrap_or_else(|error| error.into_inner());
+                let revision = self
+                    .session_state
+                    .lock()
+                    .unwrap_or_else(|error| error.into_inner())
+                    .apply_ledger_mutation(&ledger, observation, receipt);
+                if let (Some(bus), Some(revision)) = (&self.transcript_bus, revision) {
+                    let events = bus.publish_revision(&revision, &ledger);
+                    if let Some(callback) = &self.projection_callback {
+                        for event in &events {
+                            callback(event);
+                        }
+                    }
+                    self.send_cmd(EmitterCmd::SetTargetText(revision.rendered_text));
+                }
+            }
+            EngineEvent::LedgerSeal { receipt } => {
+                let Some(ledger) = &self.acoustic_ledger else {
+                    return;
+                };
+                let ledger = ledger.lock().unwrap_or_else(|error| error.into_inner());
+                let revision = self
+                    .session_state
+                    .lock()
+                    .unwrap_or_else(|error| error.into_inner())
+                    .apply_ledger_seal(receipt);
+                if let (Some(bus), Some(revision)) = (&self.transcript_bus, revision) {
+                    let events = bus.publish_revision(&revision, &ledger);
+                    if let Some(callback) = &self.projection_callback {
+                        for event in &events {
+                            callback(event);
+                        }
+                    }
+                }
+            }
+            EngineEvent::OccurrenceLabelProposal { proposal } => {
+                let Some(ledger) = &self.acoustic_ledger else {
+                    return;
+                };
+                let occurrence = OccurrenceIdentity::new(
+                    proposal.session.clone(),
+                    proposal.capture_epoch,
+                    proposal.sample_start,
+                    proposal.sample_end,
+                );
+                let mut ledger = ledger.lock().unwrap_or_else(|error| error.into_inner());
+                let (proposal_revision, seal_revision) = {
+                    let mut reducer = self
+                        .session_state
+                        .lock()
+                        .unwrap_or_else(|error| error.into_inner());
+                    let proposal_revision =
+                        reducer.apply_occurrence_label_proposal(&mut ledger, proposal);
+                    let seal_revision = ledger
+                        .seal(&occurrence)
+                        .ok()
+                        .cloned()
+                        .and_then(|receipt| reducer.apply_ledger_seal(&receipt));
+                    (proposal_revision, seal_revision)
+                };
+                if let Some(bus) = &self.transcript_bus {
+                    for revision in [proposal_revision, seal_revision].into_iter().flatten() {
+                        let events = bus.publish_revision(&revision, &ledger);
+                        if let Some(callback) = &self.projection_callback {
+                            for event in &events {
+                                callback(event);
+                            }
+                        }
+                        self.send_cmd(EmitterCmd::SetTargetText(revision.rendered_text));
+                    }
+                }
+            }
             EngineEvent::VadStart { .. } => {
                 if !self
                     .vad_start_emitted

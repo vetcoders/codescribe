@@ -27,7 +27,7 @@
 //! `EngineEvent`s out.
 
 use std::collections::{BTreeMap, HashSet};
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 use std::sync::mpsc as std_mpsc;
 use std::thread;
 use std::time::Duration;
@@ -51,7 +51,12 @@ use crate::audio::capture_receipt::{
 use crate::pipeline::acoustic_identity::{
     AcousticObservation, ObservationLedger, ObservationProducer, mutation_authority_text,
 };
-use crate::pipeline::acoustic_ledger::{CumulativeFinalAdmission, OccurrenceIdentity};
+use crate::config::RuntimeSettingsSnapshot;
+use crate::pipeline::acoustic_ledger::{
+    AcousticEvidence, AcousticLedger, CumulativeFinalAdmission, EnergyCalibration,
+    ObservationIdentity as LedgerObservationIdentity,
+    ObservationProducer as LedgerObservationProducer, OccurrenceIdentity,
+};
 use crate::pipeline::contracts::{
     AcousticSpanGrain, DropKind, EngineEvent, EventSink, LayerSource, TranscriptSegment,
 };
@@ -393,6 +398,10 @@ pub(crate) async fn apple_stream_transcription_session(
     config: SessionConfig,
 ) {
     let SessionConfig {
+        session_id,
+        capture_epoch,
+        runtime_settings,
+        acoustic_ledger,
         sample_rate,
         language,
         stream_log_path,
@@ -419,12 +428,9 @@ pub(crate) async fn apple_stream_transcription_session(
         sample_rate,
         "Apple progressive live session started (stream multi-seal)"
     );
-    let session_id = uuid::Uuid::new_v4().to_string();
-
-    // W13-1 inline-format buffer: arm a fresh chunk/chain session (no-op when
-    // `CODESCRIBE_INLINE_FORMAT` is off). Must happen on the async side — the
-    // blocking seal worker only ever enqueues sealed chunks.
-    crate::llm::inline_format::begin_session(&session_id, language.as_deref());
+    // The controller owns this identity and the one immutable settings read.
+    // Apple may consume both but may not mint a lane-local session or reload.
+    let settings_digest = runtime_settings.digest().as_str().to_string();
 
     // C1: split the one recording-start decision into its explicit local
     // exact-span disposition and (when Cloud is selected) the injected generic
@@ -490,6 +496,10 @@ pub(crate) async fn apple_stream_transcription_session(
                 sample_rate,
                 language: language.as_deref(),
                 session_id: worker_session_id,
+                capture_epoch,
+                runtime_settings,
+                acoustic_ledger,
+                settings_digest,
                 utterance_silence_sec,
             },
         )
@@ -821,6 +831,13 @@ struct AppleSealState {
     /// Occurrence / observation ledger for this capture. Apple seals and
     /// Whisper windows admit here; text overlap is not authority.
     observations: ObservationLedger,
+    /// Shared one-throne ledger. The legacy observation field above remains a
+    /// compiler-repair input only; it has no reducer or seal authority in W2.
+    acoustic_ledger: Arc<Mutex<AcousticLedger>>,
+    /// Measured threshold frozen into the same settings snapshot. Absence is a
+    /// fail-closed W2 state: no occurrence qualifies and no text mutates.
+    energy_calibration: Option<EnergyCalibration>,
+    runtime_settings: Option<Arc<RuntimeSettingsSnapshot>>,
 }
 
 impl AppleSealState {
@@ -864,6 +881,24 @@ impl AppleSealState {
             fusion_seal_armed: false,
             fusion_context: FusionContextMode::UtteranceOnly,
             observations: ObservationLedger::default(),
+            acoustic_ledger: Arc::new(Mutex::new(AcousticLedger::new())),
+            energy_calibration: None,
+            runtime_settings: None,
+        }
+    }
+
+    fn new_for_session_with_ledger(
+        sample_rate: u32,
+        session_id: String,
+        acoustic_ledger: Arc<Mutex<AcousticLedger>>,
+        energy_calibration: Option<EnergyCalibration>,
+        runtime_settings: Arc<RuntimeSettingsSnapshot>,
+    ) -> Self {
+        Self {
+            acoustic_ledger,
+            energy_calibration,
+            runtime_settings: Some(runtime_settings),
+            ..Self::new_for_session(sample_rate, session_id)
         }
     }
 
@@ -959,11 +994,80 @@ impl AppleSealState {
         sample_rate: u32,
         session_id: String,
         tail_patch: mpsc::Sender<TailPatchRequest>,
+        acoustic_ledger: Arc<Mutex<AcousticLedger>>,
+        energy_calibration: Option<EnergyCalibration>,
+        runtime_settings: Arc<RuntimeSettingsSnapshot>,
     ) -> Self {
         Self {
             tail_patch: Some(tail_patch),
-            ..Self::new_for_session(sample_rate, session_id)
+            ..Self::new_for_session_with_ledger(
+                sample_rate,
+                session_id,
+                acoustic_ledger,
+                energy_calibration,
+                runtime_settings,
+            )
         }
+    }
+
+    /// Admit a returned Whisper candidate through the same occurrence ledger
+    /// as Apple. The legacy char-patch outcome is evidence only; it never owns
+    /// a post-seal mutation path.
+    fn complete_whisper_window(
+        &mut self,
+        ev_tx: &mpsc::UnboundedSender<EngineEvent>,
+        completion: TailPatchCompletion,
+        now_secs: f32,
+    ) {
+        let TailPatchCompletion {
+            utterance_id,
+            covered_through_secs,
+            request_identity,
+            outcome: _,
+            payload,
+            span_map: _,
+            member_ids,
+        } = completion;
+        if let Some(payload) = payload {
+            for (generation, segment) in payload.segments.iter().enumerate() {
+                admit_ledger_label(
+                    self,
+                    ev_tx,
+                    OccurrenceIdentity::from(&segment.range),
+                    LedgerObservationProducer::Whisper,
+                    request_identity
+                        .as_ref()
+                        .map_or(utterance_id, |identity| identity.request_id),
+                    generation as u64,
+                    &segment.text,
+                    false,
+                );
+            }
+            if payload.segments.is_empty() {
+                admit_ledger_label(
+                    self,
+                    ev_tx,
+                    OccurrenceIdentity::from(&payload.identity.range),
+                    LedgerObservationProducer::Whisper,
+                    payload.identity.request_id,
+                    0,
+                    &payload.text,
+                    false,
+                );
+            }
+        }
+        self.tail_patch_awaiting_completion =
+            self.tail_patch_awaiting_completion.saturating_sub(1);
+        if member_ids.is_empty() {
+            self.progressive
+                .note_whisper_window_elapsed(utterance_id, covered_through_secs);
+        } else {
+            for (member_id, member_end) in member_ids {
+                self.progressive
+                    .note_whisper_window_elapsed(member_id, member_end);
+            }
+        }
+        self.emit_ready_progressive_seals(ev_tx, now_secs);
     }
 
 
@@ -1013,25 +1117,9 @@ impl AppleSealState {
             };
             self.sealed_count = self.sealed_count.saturating_add(1);
             self.sealed_prefix = self.progressive.sealed_prefix();
-            // Seal = "format now" signal (W13-1): a sealed span is byte-stable,
-            // so the inline-format buffer may chunk-format it while dictation
-            // continues. Sync + non-blocking; no-op unless the flag is armed.
-            let sideband = self
-                .fusion
-                .as_ref()
-                .map(|fusion| fusion.pause_evidence_for_range(&sealed.range))
-                .unwrap_or_default();
-            crate::llm::inline_format::on_span_sealed(
-                crate::llm::inline_format::StableFormatSpan {
-                    session_id: sealed.range.session.clone(),
-                    capture_epoch: sealed.range.capture_epoch,
-                    span_id: sealed.id,
-                    sample_start: sealed.range.sample_start,
-                    sample_end: sealed.range.sample_end,
-                    text: sealed.text.clone(),
-                    sideband,
-                },
-            );
+            // Automatic formatting no longer executes here. The reducer's
+            // occurrence-bound `OccurrenceLabelProposal` admission is the one
+            // post-ASR author and must run before ledger finality.
             let segments = if sealed.words.is_empty() {
                 pending.segments
             } else {
@@ -1651,6 +1739,106 @@ fn seal_sliced_by_silero(
     true
 }
 
+fn admit_ledger_label(
+    state: &mut AppleSealState,
+    ev_tx: &mpsc::UnboundedSender<EngineEvent>,
+    occurrence: OccurrenceIdentity,
+    producer: LedgerObservationProducer,
+    request: u64,
+    generation: u64,
+    label: &str,
+    may_qualify: bool,
+) {
+    let Some(calibration) = state.energy_calibration.as_ref() else {
+        return;
+    };
+    let mut ledger = state
+        .acoustic_ledger
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    if !ledger.is_qualified(&occurrence) {
+        if !may_qualify {
+            return;
+        }
+        let Some(window) = state
+            .audio
+            .window_by_samples(occurrence.sample_start, occurrence.sample_end)
+        else {
+            return;
+        };
+        if window.samples.is_empty() {
+            return;
+        }
+        let energy_integral = window
+            .samples
+            .iter()
+            .map(|sample| f64::from(*sample) * f64::from(*sample))
+            .sum::<f64>();
+        let mean_rms = (energy_integral / window.samples.len() as f64).sqrt();
+        let peak = window
+            .samples
+            .iter()
+            .map(|sample| f64::from(sample.abs()))
+            .fold(0.0_f64, f64::max);
+        let dbfs = |linear: f64| {
+            if linear > 0.0 {
+                20.0 * linear.log10()
+            } else {
+                f64::NEG_INFINITY
+            }
+        };
+        let evidence = AcousticEvidence {
+            occurrence: occurrence.clone(),
+            duration_ms: occurrence.sample_len() as f64 * 1_000.0
+                / state.sample_rate.max(1) as f64,
+            energy_integral,
+            mean_rms_dbfs: dbfs(mean_rms),
+            peak_dbfs: dbfs(peak),
+            vad_open_sample: Some(occurrence.sample_start),
+            vad_close_sample: Some(occurrence.sample_end),
+            evidence_calibration_version: calibration.version.clone(),
+        };
+        if !ledger.qualify(&evidence, calibration).is_qualified() {
+            return;
+        }
+    }
+    if ledger.frontier_of(&occurrence).is_none() {
+        let mut producers = vec![
+            LedgerObservationProducer::Apple,
+            LedgerObservationProducer::Lexicon,
+        ];
+        if state.tail_patch.is_some() {
+            producers.push(LedgerObservationProducer::Whisper);
+        }
+        if state
+            .runtime_settings
+            .as_ref()
+            .is_some_and(|snapshot| snapshot.values().ai_formatting_enabled)
+        {
+            producers.push(LedgerObservationProducer::Formatter);
+        }
+        ledger.schedule_frontier(occurrence.clone(), producers);
+    }
+    let observation = LedgerObservationIdentity::new(
+        producer,
+        request,
+        generation,
+        occurrence.clone(),
+    );
+    let receipt = ledger.admit(&observation, label);
+    let closed = ledger.note_frontier_return(&occurrence, producer);
+    let _ = ev_tx.send(EngineEvent::LedgerMutation {
+        observation,
+        label: label.to_string(),
+        receipt,
+    });
+    if closed
+        && let Ok(seal) = ledger.seal(&occurrence).cloned()
+    {
+        let _ = ev_tx.send(EngineEvent::LedgerSeal { receipt: seal });
+    }
+}
+
 /// Seal one Apple utterance: run the shared lexicon + cleanup pass, then emit
 /// `UtteranceFinal`. Returns `false` when postprocess filtered the text to
 /// empty — mirroring `PostprocessDrop::FilteredEmpty` on the VAD path, an
@@ -1885,6 +2073,27 @@ fn seal_utterance_final(
     } else {
         TailTimingQuality::Synthetic
     };
+    let ledger_occurrence = OccurrenceIdentity::from(&span_range);
+    admit_ledger_label(
+        state,
+        ev_tx,
+        ledger_occurrence.clone(),
+        LedgerObservationProducer::Apple,
+        request_id,
+        0,
+        &raw_text,
+        silero_utterance_id.is_some(),
+    );
+    admit_ledger_label(
+        state,
+        ev_tx,
+        ledger_occurrence,
+        LedgerObservationProducer::Lexicon,
+        request_id,
+        0,
+        &after_lexicon,
+        false,
+    );
     // One id space. While the seal path can mint span ids FROM the ledger, the
     // fallback must burn its id there too, or Silero would later mint the same
     // id for a real utterance — `note_apple_commit_timed` is idempotent on id,
@@ -2192,6 +2401,10 @@ struct AppleWorkerConfig<'a> {
     sample_rate: u32,
     language: Option<&'a str>,
     session_id: String,
+    capture_epoch: u64,
+    runtime_settings: Arc<RuntimeSettingsSnapshot>,
+    acoustic_ledger: Arc<Mutex<AcousticLedger>>,
+    settings_digest: String,
     /// Product "Hands-free silence". `Some` arms the engine lifecycle (speech
     /// epochs); `None` keeps one continuous SFSpeech stream for the whole take.
     utterance_silence_sec: Option<f32>,
@@ -2209,12 +2422,32 @@ fn apple_stream_worker(
         sample_rate,
         language,
         session_id,
+        capture_epoch,
+        runtime_settings,
+        acoustic_ledger,
+        settings_digest,
         utterance_silence_sec,
     } = config;
+    debug_assert_eq!(settings_digest, runtime_settings.digest().as_str());
+    let energy_calibration = runtime_settings.energy_calibration().cloned();
     let mut state = match tail_patch {
-        Some(tx) => AppleSealState::new_with_tail_patch_for_session(sample_rate, session_id, tx),
-        None => AppleSealState::new_for_session(sample_rate, session_id),
+        Some(tx) => AppleSealState::new_with_tail_patch_for_session(
+            sample_rate,
+            session_id,
+            tx,
+            acoustic_ledger,
+            energy_calibration,
+            runtime_settings,
+        ),
+        None => AppleSealState::new_for_session_with_ledger(
+            sample_rate,
+            session_id,
+            acoustic_ledger,
+            energy_calibration,
+            runtime_settings,
+        ),
     };
+    state.capture_epoch = capture_epoch;
     // The session's ONE Silero. Both consumers of speech edges read it: the
     // utterance ledger (identity, ranges) and the engine lifecycle (wake/sleep).
     // It is built whenever either consumer wants it — the fusion flag decides
@@ -2424,6 +2657,11 @@ fn apple_stream_worker(
     // path — the machine's own span timestamps are the clock, because the audio
     // clock is frozen at EOF and can sit milliseconds behind them.
     state.seal_remaining_at_session_end(&ev_tx);
+    if let Ok(mut ledger) = state.acoustic_ledger.lock()
+        && let Ok(receipt) = ledger.seal_terminal(&state.session_id, state.capture_epoch)
+    {
+        let _ = ev_tx.send(EngineEvent::LedgerSeal { receipt });
+    }
 
     // Evidence surface: when `CODESCRIBE_SEAL_ATLAS_DUMP` names a path, write
     // every sealed span with its PCM-pinned word payload as JSON. Runs on the

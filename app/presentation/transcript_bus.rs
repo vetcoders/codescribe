@@ -13,8 +13,11 @@ use std::sync::Mutex;
 
 use chrono::{SecondsFormat, Utc};
 use codescribe_core::audio::capture_receipt::session_energy_db;
+use codescribe_core::pipeline::acoustic_ledger::{AcousticLedger, AcousticSerial};
 use codescribe_core::pipeline::contracts::{AcousticSpanGrain, TranscriptSegment};
 use serde::{Deserialize, Serialize};
+
+use super::emitter::{ReducerAction, TranscriptRevision};
 
 /// Explicit path override for the clean transcript bus.
 pub const TRANSCRIPT_BUS_PATH_ENV: &str = "CODESCRIBE_TRANSCRIPT_BUS_PATH";
@@ -214,6 +217,100 @@ struct TranscriptBusWriter {
 }
 
 impl TranscriptBus {
+    fn project_serial(
+        serial: &AcousticSerial,
+        word_evidence_receipts: Vec<String>,
+        layer_decision_receipts: Vec<String>,
+        seal_receipt: Option<String>,
+        manual_edit_receipt: Option<String>,
+    ) -> ProjectedAcousticReceipt {
+        ProjectedAcousticReceipt {
+            acoustic_serial_version: serial.version,
+            acoustic_serial: serial.digest.clone(),
+            session_id: serial.occurrence.session.clone(),
+            capture_epoch: serial.occurrence.capture_epoch,
+            sample_start: serial.occurrence.sample_start,
+            sample_end: serial.occurrence.sample_end,
+            duration_ms: serial.duration_ms.max(0.0) as u64,
+            energy_integral: serial.energy_integral,
+            mean_rms_dbfs: serial.mean_rms_dbfs as f32,
+            peak_dbfs: serial.peak_dbfs as f32,
+            vad_open_sample: serial.vad_open_sample.unwrap_or(serial.occurrence.sample_start),
+            vad_close_sample: serial.vad_close_sample.unwrap_or(serial.occurrence.sample_end),
+            evidence_calibration_version: serial.evidence_calibration_version.clone(),
+            word_evidence_receipts,
+            layer_decision_receipts,
+            seal_receipt,
+            manual_edit_receipt,
+        }
+    }
+
+    /// Observe one reducer revision and copy its ledger receipts byte-for-byte.
+    /// The Bus owns only append sequence and emission time; it cannot admit,
+    /// reduce, choose labels, or infer finality.
+    pub fn publish_revision(
+        &self,
+        revision: &TranscriptRevision,
+        ledger: &AcousticLedger,
+    ) -> Vec<TranscriptBusEvidenceEvent> {
+        let reducer_action = match &revision.action {
+            ReducerAction::ApplyLedgerDecision { .. } => "apply_ledger_decision",
+            ReducerAction::RecordLedgerSeal { terminal: true, .. } => {
+                "record_ledger_terminal_seal"
+            }
+            ReducerAction::RecordLedgerSeal { terminal: false, .. } => "record_ledger_seal",
+            ReducerAction::ApplyManualEdit { .. } => "apply_manual_edit",
+        };
+        let mut writer = self
+            .writer
+            .lock()
+            .unwrap_or_else(|error| error.into_inner());
+        if writer.sealed && !matches!(&revision.action, ReducerAction::ApplyManualEdit { .. }) {
+            return Vec::new();
+        }
+        let mut emitted = Vec::new();
+        for (document_index, entry) in revision.entries.iter().enumerate() {
+            let Some(serial) = ledger.serial_of(&entry.occurrence) else {
+                continue;
+            };
+            let event = TranscriptBusEvidenceEvent {
+                schema: "codescribe.transcript-evidence.v1".to_string(),
+                sequence: writer.sequence.saturating_add(1),
+                emitted_at: Utc::now().to_rfc3339_opts(SecondsFormat::Micros, true),
+                session_id: self.session.session_id.clone(),
+                mode: self.session.mode,
+                reducer_revision: revision.revision,
+                reducer_action: reducer_action.to_string(),
+                occurrence_session_id: entry.occurrence.session.clone(),
+                capture_epoch: entry.occurrence.capture_epoch,
+                sample_start: entry.occurrence.sample_start,
+                sample_end: entry.occurrence.sample_end,
+                document_index: document_index as u64,
+                label: entry.label.clone(),
+                rendered_text: revision.rendered_text.clone(),
+                acoustic_receipts: vec![Self::project_serial(
+                    serial,
+                    entry.word_evidence_receipts.clone(),
+                    entry.layer_decision_receipts.clone(),
+                    entry.seal_receipt.clone(),
+                    entry.manual_edit_receipt.clone(),
+                )],
+            };
+            if let Err(error) = self.write_evidence_event_locked(&mut writer, &event) {
+                self.log_write_error(error);
+                break;
+            }
+            emitted.push(event);
+        }
+        if matches!(
+            &revision.action,
+            ReducerAction::RecordLedgerSeal { terminal: true, .. }
+        ) {
+            writer.sealed = true;
+        }
+        emitted
+    }
+
     /// Resolve the production path and open the session bus. Failure disables
     /// only observability; it must never stop microphone capture or delivery.
     pub fn open(session: TranscriptSession) -> Option<Self> {
@@ -442,6 +539,19 @@ impl TranscriptBus {
         writer.file.write_all(&encoded)?;
         writer.file.flush()?;
         writer.sequence = next_sequence;
+        Ok(())
+    }
+
+    fn write_evidence_event_locked(
+        &self,
+        writer: &mut TranscriptBusWriter,
+        event: &TranscriptBusEvidenceEvent,
+    ) -> io::Result<()> {
+        let mut encoded = serde_json::to_vec(event).map_err(io::Error::other)?;
+        encoded.push(b'\n');
+        writer.file.write_all(&encoded)?;
+        writer.file.flush()?;
+        writer.sequence = event.sequence;
         Ok(())
     }
 

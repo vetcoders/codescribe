@@ -9,12 +9,14 @@
 //! - explicit process env can still override for tests and developer runs.
 
 use directories::BaseDirs;
+use sha2::{Digest, Sha256};
 use std::collections::{HashMap, HashSet};
 use std::env::VarError;
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Mutex, OnceLock};
+use std::time::{SystemTime, UNIX_EPOCH};
 use tracing::{info, warn};
 
 use super::defaults::{
@@ -22,7 +24,9 @@ use super::defaults::{
     default_formatting_provider, default_llm_endpoint, default_llm_model,
 };
 use super::settings::{
-    DEFAULT_AGENT_WORKSPACE_ROOT, FormattingPolicy, normalize_agent_workspace_roots,
+    DEFAULT_AGENT_WORKSPACE_ROOT, FormattingPolicy, RuntimeSettingsSnapshot,
+    SettingsLoaderInput, SettingsSnapshotDigest, SettingsSnapshotProvenance,
+    SettingsSnapshotValidationError, UserSettings, normalize_agent_workspace_roots,
     parse_agent_workspace_roots,
 };
 use super::types::{
@@ -78,6 +82,53 @@ impl Config {
     /// password prompt as a side effect of starting local dictation.
     pub fn load_without_keychain() -> Self {
         Self::load_with_keychain_population(false)
+    }
+
+    /// Run the one loader pass and seal the immutable settings truth used by a
+    /// recording session. Consumers receive this value; they never re-read
+    /// `settings.json` or process env during a take.
+    pub fn load_runtime_snapshot(
+    ) -> Result<RuntimeSettingsSnapshot, SettingsSnapshotValidationError> {
+        Self::load_runtime_snapshot_with_keychain_population(true)
+    }
+
+    /// Keychain-free form of [`Self::load_runtime_snapshot`] for local capture.
+    pub fn load_runtime_snapshot_without_keychain(
+    ) -> Result<RuntimeSettingsSnapshot, SettingsSnapshotValidationError> {
+        Self::load_runtime_snapshot_with_keychain_population(false)
+    }
+
+    fn load_runtime_snapshot_with_keychain_population(
+        populate_keychain: bool,
+    ) -> Result<RuntimeSettingsSnapshot, SettingsSnapshotValidationError> {
+        let input = SettingsLoaderInput {
+            settings_path: UserSettings::settings_path(),
+            allow_env_file: true,
+            allow_process_env_overrides: true,
+        };
+        let values = Self::load_with_keychain_population(populate_keychain);
+        let user_settings = UserSettings::load();
+        let settings_bytes = fs::read(&input.settings_path).ok();
+        let settings_json_sha256 = settings_bytes.as_deref().map(sha256_hex);
+        let mut env_overlay_keys = Self::seeded_env_keys()
+            .lock()
+            .map(|keys| keys.iter().cloned().collect::<Vec<_>>())
+            .unwrap_or_default();
+        env_overlay_keys.sort_unstable();
+        let loaded_at_unix_ms = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .map(|duration| duration.as_millis() as u64)
+            .unwrap_or_default();
+        let provenance = SettingsSnapshotProvenance {
+            settings_json_path: settings_bytes.as_ref().map(|_| input.settings_path.clone()),
+            settings_json_sha256,
+            env_overlay_keys,
+            defaults_applied: true,
+            loaded_at_unix_ms,
+        };
+        let digest_material = format!("{values:?}\n{provenance:?}");
+        let digest = SettingsSnapshotDigest::from_hex(sha256_hex(digest_material.as_bytes()));
+        RuntimeSettingsSnapshot::seal_loaded(values, user_settings, provenance, digest)
     }
 
     /// The single load path behind both public entry points.
@@ -1595,6 +1646,16 @@ impl Config {
 
         Self::config_dir().join(".env")
     }
+}
+
+fn sha256_hex(bytes: &[u8]) -> String {
+    let mut hasher = Sha256::new();
+    hasher.update(bytes);
+    hasher
+        .finalize()
+        .iter()
+        .map(|byte| format!("{byte:02x}"))
+        .collect()
 }
 
 /// Resolve a path and require it to be a regular file. Canonicalizing first

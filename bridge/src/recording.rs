@@ -4,6 +4,11 @@
 
 use std::sync::Arc;
 
+use codescribe::presentation::emitter::TranscriptRevision;
+use codescribe::presentation::transcript_bus::{
+    ProjectedAcousticReceipt, TranscriptBusEvidenceEvent,
+};
+use codescribe_core::pipeline::acoustic_ledger::AcousticSerial;
 use codescribe_core::pipeline::contracts::{AnnotationKind, LayerSource, LayerSummary};
 use cpal::traits::{DeviceTrait, HostTrait};
 
@@ -65,6 +70,64 @@ pub struct CsTranscriptProjectionEvent {
     pub label: String,
     pub rendered_text: String,
     pub acoustic_receipts: Vec<CsProjectedAcousticReceipt>,
+}
+
+impl From<&ProjectedAcousticReceipt> for CsProjectedAcousticReceipt {
+    fn from(receipt: &ProjectedAcousticReceipt) -> Self {
+        Self {
+            acoustic_serial_version: receipt.acoustic_serial_version,
+            acoustic_serial: receipt.acoustic_serial.clone(),
+            session_id: receipt.session_id.clone(),
+            capture_epoch: receipt.capture_epoch,
+            sample_start: receipt.sample_start,
+            sample_end: receipt.sample_end,
+            duration_ms: receipt.duration_ms,
+            energy_integral: receipt.energy_integral,
+            mean_rms_dbfs: receipt.mean_rms_dbfs,
+            peak_dbfs: receipt.peak_dbfs,
+            vad_open_sample: receipt.vad_open_sample,
+            vad_close_sample: receipt.vad_close_sample,
+            evidence_calibration_version: receipt.evidence_calibration_version.clone(),
+            word_evidence_receipts: receipt.word_evidence_receipts.clone(),
+            layer_decision_receipts: receipt.layer_decision_receipts.clone(),
+            seal_receipt: receipt.seal_receipt.clone(),
+            manual_edit_receipt: receipt.manual_edit_receipt.clone(),
+        }
+    }
+}
+
+impl From<&TranscriptBusEvidenceEvent> for CsTranscriptProjectionEvent {
+    fn from(event: &TranscriptBusEvidenceEvent) -> Self {
+        Self {
+            schema: event.schema.clone(),
+            sequence: event.sequence,
+            emitted_at: event.emitted_at.clone(),
+            session_id: event.session_id.clone(),
+            mode: format!("{:?}", event.mode).to_lowercase(),
+            reducer_revision: event.reducer_revision,
+            reducer_action: event.reducer_action.clone(),
+            occurrence_session_id: event.occurrence_session_id.clone(),
+            capture_epoch: event.capture_epoch,
+            sample_start: event.sample_start,
+            sample_end: event.sample_end,
+            document_index: event.document_index,
+            label: event.label.clone(),
+            rendered_text: event.rendered_text.clone(),
+            acoustic_receipts: event
+                .acoustic_receipts
+                .iter()
+                .map(CsProjectedAcousticReceipt::from)
+                .collect(),
+        }
+    }
+}
+
+/// Compile-time corridor witness: bridge projection consumes reducer revisions
+/// and ledger serials only as immutable inputs; it cannot mint either.
+fn projection_authority_witness(
+    _revision: &TranscriptRevision,
+    _serial: &AcousticSerial,
+) {
 }
 
 /// Live audio-input resolution used by Settings. `runtime_device` is resolved
@@ -478,6 +541,9 @@ mod retranscribe_tests {
 /// The Swift side must hop these onto the main actor.
 #[uniffi::export(with_foreign)]
 pub trait CsTranscriptionListener: Send + Sync {
+    /// Immutable reducer/ledger projection. Swift may display it but cannot
+    /// mutate, seal, or reinterpret transcript truth through this callback.
+    fn on_transcript_projection(&self, event: CsTranscriptProjectionEvent);
     /// The engine is spinning up capture; no audio is flowing yet.
     fn on_recording_preparing(&self);
     /// The microphone is live and utterances may start arriving.

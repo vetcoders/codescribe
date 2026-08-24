@@ -1,0 +1,32 @@
+{
+  "schema": "codescribe.acoustic-authority-dangling.v1",
+  "stage": "wired",
+  "dangling_references": [],
+  "dispositions": [
+    {
+      "source": "W1-A",
+      "edge": "RuntimeSettingsSnapshot",
+      "disposition": "wired through the one loader, controller, recorder, and SessionConfig"
+    },
+    {
+      "source": "W1-B",
+      "edge": "AcousticLedger and AcousticSerial",
+      "disposition": "wired capture to Apple and Whisper admissions, reducer, Bus, bridge, and Swift projection"
+    },
+    {
+      "source": "W1-C",
+      "edge": "TranscriptRevision and TranscriptBusEvidenceEvent",
+      "disposition": "wired reducer output to append-only Bus evidence and immutable bridge projection"
+    },
+    {
+      "source": "W1-D",
+      "edge": "OccurrenceLabelProposal and DeliveryRoute",
+      "disposition": "wired formatter admission in reducer; controller remains sole route consumer"
+    }
+  ],
+  "compile_repair_inputs_for_W3": [
+    "post-W0 deleted-module declarations and consumers remain deliberately red",
+    "UniFFI bindings for CsTranscriptProjectionEvent remain deliberately ungenerated",
+    "Rust and Swift exhaustiveness/type repair remains deliberately unassessed"
+  ]
+}

@@ -429,6 +429,9 @@ final class OverlayState: ObservableObject {
   /// (TextEditor re-layout) and spins the SwiftUI render graph at 100% CPU in Idle.
   /// The authoritative `FinalTranscript` is the only post-finalize update allowed.
   private var finalized = false
+  /// Latest immutable projection event only; Rust `TranscriptRevision` remains
+  /// the document owner and Rust `AcousticSerial` remains evidence authority.
+  private var latestTranscriptProjection: OverlayTranscriptProjection?
   private var agentSessionArmed = false
   private var agentFinalTranscriptAppeared = false
   private var agentAutoSendCancelled = false
@@ -1631,11 +1634,67 @@ final class OverlayState: ObservableObject {
 
   // MARK: Listener-driven mutations (called on the main actor by DictationListener)
 
-
-
-
-
-
+  /// Apply one immutable reducer/ledger projection. Swift checks that the
+  /// projected evidence is present, then displays Rust-owned rendered bytes;
+  /// it never admits a label or decides whether a seal exists.
+  func applyTranscriptProjection(_ event: CsTranscriptProjectionEvent) {
+    guard event.sequence > (latestTranscriptProjection?.sequence ?? 0) else { return }
+    let acousticReceipts = event.acousticReceipts.map { receipt in
+      OverlayProjectedAcousticReceipt(
+        acousticSerialVersion: receipt.acousticSerialVersion,
+        acousticSerial: receipt.acousticSerial,
+        sessionId: receipt.sessionId,
+        captureEpoch: receipt.captureEpoch,
+        sampleStart: receipt.sampleStart,
+        sampleEnd: receipt.sampleEnd,
+        durationMs: receipt.durationMs,
+        energyIntegral: receipt.energyIntegral,
+        meanRmsDbfs: receipt.meanRmsDbfs,
+        peakDbfs: receipt.peakDbfs,
+        vadOpenSample: receipt.vadOpenSample,
+        vadCloseSample: receipt.vadCloseSample,
+        evidenceCalibrationVersion: receipt.evidenceCalibrationVersion,
+        wordEvidenceReceipts: receipt.wordEvidenceReceipts,
+        layerDecisionReceipts: receipt.layerDecisionReceipts,
+        sealReceipt: receipt.sealReceipt,
+        manualEditReceipt: receipt.manualEditReceipt
+      )
+    }
+    guard !acousticReceipts.isEmpty,
+      acousticReceipts.allSatisfy({
+        !$0.acousticSerial.isEmpty && !$0.wordEvidenceReceipts.isEmpty
+          && !$0.layerDecisionReceipts.isEmpty
+      })
+    else { return }
+    let projection = OverlayTranscriptProjection(
+      schema: event.schema,
+      sequence: event.sequence,
+      emittedAt: event.emittedAt,
+      sessionId: event.sessionId,
+      mode: event.mode,
+      reducerRevision: event.reducerRevision,
+      reducerAction: event.reducerAction,
+      occurrenceSessionId: event.occurrenceSessionId,
+      captureEpoch: event.captureEpoch,
+      sampleStart: event.sampleStart,
+      sampleEnd: event.sampleEnd,
+      documentIndex: event.documentIndex,
+      label: event.label,
+      renderedText: event.renderedText,
+      acousticReceipts: acousticReceipts
+    )
+    latestTranscriptProjection = projection
+    markTranscriptActivity()
+    preview = ""
+    committedUtterances = []
+    formattedText = projection.renderedText
+    if projection.reducerAction == "record_ledger_terminal_seal" {
+      finalized = true
+      isFinalPass = false
+      transcribing = false
+      mode = projection.renderedText.isEmpty ? .noSpeech : .formatted
+    }
+  }
   /// Slide context markers across a patch applied to `spanStart..<spanEnd`
   /// (live-text coordinates) that changed its length by `delta`.
   private func rebaseContextMarkers(spanStart: Int, spanEnd: Int, delta: Int) {
@@ -2051,6 +2110,12 @@ final class DictationListener: CsTranscriptionListener, @unchecked Sendable {
 
   init(state: OverlayState) {
     self.state = state
+  }
+
+  func onTranscriptProjection(event: CsTranscriptProjectionEvent) {
+    DispatchQueue.main.async {
+      MainActor.assumeIsolated { self.state?.applyTranscriptProjection(event) }
+    }
   }
 
   func onRecordingPreparing() {

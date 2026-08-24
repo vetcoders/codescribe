@@ -7,6 +7,10 @@
 
 use serde::{Deserialize, Serialize};
 
+use crate::pipeline::acoustic_ledger::{
+    LedgerSealReceipt, MutationReceipt, ObservationIdentity,
+};
+use crate::llm::inline_format::OccurrenceLabelProposal;
 use crate::stt::tail_provider::TailSampleRange;
 
 // ═══════════════════════════════════════════════════════════
@@ -688,6 +692,22 @@ pub enum AcousticSpanGrain {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum EngineEvent {
+    /// The only transcript mutation input. Engines submit an observation to
+    /// `AcousticLedger`; this event carries its exact receipt to the reducer.
+    #[serde(skip)]
+    LedgerMutation {
+        observation: ObservationIdentity,
+        label: String,
+        receipt: MutationReceipt,
+    },
+    /// Ledger-owned finality. Reducer, Bus, bridge, and Swift only project it.
+    #[serde(skip)]
+    LedgerSeal { receipt: LedgerSealReceipt },
+    /// Proposal-only output from the sole automatic post-ASR author. The
+    /// reducer may admit it only through the ledger and only for coordinates
+    /// of an occurrence that already exists.
+    #[serde(skip)]
+    OccurrenceLabelProposal { proposal: OccurrenceLabelProposal },
     /// VAD detected speech start.
     VadStart { speech_prob: f32, ts_ms: u64 },
     /// VAD detected speech end.

@@ -57,6 +57,10 @@ pub enum IpcEventPayload {
     /// capture measurement that never enters the transcription pipeline.
     #[serde(rename = "audio_level")]
     AudioLevel { rms: f32 },
+    /// Byte-for-byte `TranscriptBusEvidenceEvent` JSON. Core transports the
+    /// owner schema without defining a second projection model.
+    #[serde(rename = "transcript_projection")]
+    TranscriptProjection { json: String },
 }
 
 /// Serializable mirror of [`EngineEvent`], tagged by `type` in snake_case.

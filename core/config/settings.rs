@@ -27,6 +27,8 @@ use std::sync::{Mutex, MutexGuard, OnceLock};
 use tracing::{debug, info, warn};
 use uuid::Uuid;
 
+use crate::pipeline::acoustic_ledger::EnergyCalibration;
+
 /// Serialize settings read/migrate/write transactions. A V1 load writes a
 /// backup and a V3 replacement, so it is a writer even though the public API is
 /// named `load`; one lock keeps concurrent migrations and saves from crossing.
@@ -477,10 +479,16 @@ impl SettingsSnapshotValidation {
 pub struct RuntimeSettingsSnapshot {
     /// Resolved runtime values after defaults + allowed env overlays.
     values: Config,
+    /// Persisted intent captured by the same loader pass for consumers whose
+    /// policy constructors still accept the public settings schema.
+    user_settings: UserSettings,
     /// Where the values came from.
     provenance: SettingsSnapshotProvenance,
     /// Integrity fingerprint for session evidence.
     digest: SettingsSnapshotDigest,
+    /// Named, measured acoustic calibration for this snapshot. `None` is an
+    /// explicit fail-closed W2 state; W4 supplies measured production values.
+    energy_calibration: Option<EnergyCalibration>,
 }
 
 impl RuntimeSettingsSnapshot {
@@ -493,14 +501,38 @@ impl RuntimeSettingsSnapshot {
         SettingsSnapshotValidation::admit(&values, &provenance, &digest)?;
         Ok(Self {
             values,
+            user_settings: UserSettings::default(),
             provenance,
             digest,
+            energy_calibration: None,
+        })
+    }
+
+    /// Seal values plus the persisted intent read by the same loader owner.
+    pub(crate) fn seal_loaded(
+        values: Config,
+        user_settings: UserSettings,
+        provenance: SettingsSnapshotProvenance,
+        digest: SettingsSnapshotDigest,
+    ) -> Result<Self, SettingsSnapshotValidationError> {
+        SettingsSnapshotValidation::admit(&values, &provenance, &digest)?;
+        Ok(Self {
+            values,
+            user_settings,
+            provenance,
+            digest,
+            energy_calibration: None,
         })
     }
 
     /// Borrow the frozen runtime values.
     pub fn values(&self) -> &Config {
         &self.values
+    }
+
+    /// Borrow persisted intent frozen beside the effective values.
+    pub fn user_settings(&self) -> &UserSettings {
+        &self.user_settings
     }
 
     /// Borrow provenance for evidence sinks.
@@ -511,6 +543,11 @@ impl RuntimeSettingsSnapshot {
     /// Borrow the digest for Transcript Bus / take envelopes.
     pub fn digest(&self) -> &SettingsSnapshotDigest {
         &self.digest
+    }
+
+    /// Calibration captured by the loader for this immutable session.
+    pub fn energy_calibration(&self) -> Option<&EnergyCalibration> {
+        self.energy_calibration.as_ref()
     }
 }
 

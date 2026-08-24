@@ -17,7 +17,8 @@ use crate::asr_session::recorder::{
     Layer1Decision, RecorderLifecycleEvents, RecorderLifecycleHandle, recorder_lifecycle_channel,
 };
 use crate::audio::recorder::{Recorder, RecorderConfig};
-use crate::config::UserSettings;
+use crate::config::{RuntimeSettingsSnapshot, UserSettings};
+use crate::pipeline::acoustic_ledger::AcousticLedger;
 use crate::pipeline::contracts::{EngineEvent, EventSink};
 use crate::pipeline::streaming::{
     SessionConfig, TailPatchSessionReceipt, collect_buffered_engine_events_with_config,
@@ -65,6 +66,9 @@ pub fn production_layer1_decision(
 
 /// Build the exact engine session configuration consumed by live capture.
 fn recording_session_config(
+    session_id: String,
+    runtime_settings: Arc<RuntimeSettingsSnapshot>,
+    acoustic_ledger: Arc<StdMutex<AcousticLedger>>,
     sample_rate: u32,
     language: Option<String>,
     stream_log_path: Option<std::path::PathBuf>,
@@ -73,6 +77,10 @@ fn recording_session_config(
     lifecycle_events: Option<RecorderLifecycleEvents>,
 ) -> SessionConfig {
     SessionConfig {
+        session_id,
+        capture_epoch: 0,
+        runtime_settings,
+        acoustic_ledger,
         sample_rate,
         language,
         stream_log_path,
@@ -95,6 +103,11 @@ pub async fn replay_production_session(
     settings: &UserSettings,
     gateway: GatewaySessionAvailability,
 ) -> Result<ProductionSessionReplay> {
+    let runtime_settings = Arc::new(
+        crate::config::Config::load_runtime_snapshot_without_keychain()
+            .map_err(|error| anyhow!("runtime settings snapshot refused: {error:?}"))?,
+    );
+    let acoustic_ledger = Arc::new(StdMutex::new(AcousticLedger::new()));
     let layer1 = production_layer1_decision(settings, gateway);
     let layer1_armed = layer1.is_armed();
     let streaming_engine_label = if crate::stt::active_engine_is_apple() {
@@ -105,6 +118,9 @@ pub async fn replay_production_session(
     .to_string();
     let utterance_silence_sec = settings.toggle_silence_sec.filter(|&sec| sec >= 0.5);
     let config = recording_session_config(
+        uuid::Uuid::new_v4().to_string(),
+        runtime_settings,
+        acoustic_ledger,
         sample_rate,
         language,
         None,
@@ -146,6 +162,12 @@ pub struct StreamingRecorder {
     layer1_decision: StdMutex<Layer1Decision>,
     /// O(1) host lifecycle signal for the currently active session.
     lifecycle_handle: Option<RecorderLifecycleHandle>,
+    /// Session-frozen runtime truth. Set once by the controller before start.
+    runtime_settings: Option<Arc<RuntimeSettingsSnapshot>>,
+    /// The one ledger instance shared by PCM capture, engines, and reducer.
+    acoustic_ledger: Option<Arc<StdMutex<AcousticLedger>>>,
+    /// Controller-owned session identity bound with the ledger.
+    authority_session_id: Option<String>,
 }
 
 impl StreamingRecorder {
@@ -169,6 +191,9 @@ impl StreamingRecorder {
             level_callback: None,
             layer1_decision: StdMutex::new(Layer1Decision::Disarmed),
             lifecycle_handle: None,
+            runtime_settings: None,
+            acoustic_ledger: None,
+            authority_session_id: None,
         })
     }
 
@@ -192,6 +217,9 @@ impl StreamingRecorder {
             level_callback: None,
             layer1_decision: StdMutex::new(Layer1Decision::Disarmed),
             lifecycle_handle: None,
+            runtime_settings: None,
+            acoustic_ledger: None,
+            authority_session_id: None,
         })
     }
 
@@ -199,14 +227,32 @@ impl StreamingRecorder {
     /// recording. Missing/invalid/offline gateway state safely disarms Layer 1.
     pub fn configure_layer1(
         &mut self,
-        settings: &UserSettings,
+        runtime_settings: &RuntimeSettingsSnapshot,
         gateway: GatewaySessionAvailability,
     ) {
         *self
             .layer1_decision
             .get_mut()
             .unwrap_or_else(std::sync::PoisonError::into_inner) =
-            production_layer1_decision(settings, gateway);
+            production_layer1_decision(runtime_settings.user_settings(), gateway);
+    }
+
+    /// Bind the next capture to one immutable settings snapshot and one ledger.
+    pub fn bind_session_authority(
+        &mut self,
+        session_id: String,
+        runtime_settings: Arc<RuntimeSettingsSnapshot>,
+    ) -> Arc<StdMutex<AcousticLedger>> {
+        let acoustic_ledger = Arc::new(StdMutex::new(AcousticLedger::new()));
+        self.authority_session_id = Some(session_id);
+        self.runtime_settings = Some(runtime_settings);
+        self.acoustic_ledger = Some(Arc::clone(&acoustic_ledger));
+        acoustic_ledger
+    }
+
+    /// Borrow the ledger handle already bound for the next/active session.
+    pub fn acoustic_ledger_handle(&self) -> Option<Arc<StdMutex<AcousticLedger>>> {
+        self.acoustic_ledger.as_ref().map(Arc::clone)
     }
 
     /// Store a per-utterance text callback.
@@ -275,6 +321,20 @@ impl StreamingRecorder {
                 "start_event_session requires event_sink (set_event_sink(Some(...)) before start)"
             )
         })?;
+        let session_id = self
+            .authority_session_id
+            .clone()
+            .ok_or_else(|| anyhow!("start_event_session requires bound session authority"))?;
+        let runtime_settings = self
+            .runtime_settings
+            .as_ref()
+            .map(Arc::clone)
+            .ok_or_else(|| anyhow!("start_event_session requires RuntimeSettingsSnapshot"))?;
+        let acoustic_ledger = self
+            .acoustic_ledger
+            .as_ref()
+            .map(Arc::clone)
+            .ok_or_else(|| anyhow!("start_event_session requires AcousticLedger"))?;
 
         // Clear previous transcript and reset drop counter
         *self.transcript_buffer.lock().await = String::new();
@@ -334,6 +394,9 @@ impl StreamingRecorder {
                 rx,
                 event_sink,
                 recording_session_config(
+                    session_id,
+                    runtime_settings,
+                    acoustic_ledger,
                     actual_sample_rate,
                     language,
                     log_path,

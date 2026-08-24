@@ -63,7 +63,11 @@ pub use portable::{
     ImportPlan, PortableProfile, export_portable, import_portable_apply, import_portable_dry_run,
     write_portable_export,
 };
-pub use settings::{FormattingPolicy, UserSettings};
+pub use settings::{
+    FormattingPolicy, RuntimeSettingsSnapshot, SettingsLoaderInput, SettingsSnapshotDigest,
+    SettingsSnapshotProvenance, SettingsSnapshotValidation, SettingsSnapshotValidationError,
+    UserSettings,
+};
 pub use storage_reset::{AppDataResetGuard, begin_app_data_reset};
 pub use types::Language;
 

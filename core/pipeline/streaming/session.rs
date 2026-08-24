@@ -4,6 +4,7 @@
 
 use std::collections::VecDeque;
 use std::sync::Arc;
+use std::sync::Mutex as StdMutex;
 
 use anyhow::{Result, anyhow};
 use futures_util::StreamExt;
@@ -18,6 +19,8 @@ use crate::audio::capture_receipt::{
     emit_capture_level_receipt,
 };
 use crate::audio::chunker::{SpeechEvent, SpeechSession};
+use crate::config::RuntimeSettingsSnapshot;
+use crate::pipeline::acoustic_ledger::AcousticLedger;
 use crate::pipeline::contracts::{
     DropKind, EngineEvent, EventSink, LayerSource, LayerSummary, TranscriptSegment,
     collect_confidence_flags,
@@ -130,6 +133,15 @@ fn append_to_correction_window_text(window_text: &mut String, text: &str, max_ch
 ///
 /// No presentation parameters — this is pure engine config.
 pub struct SessionConfig {
+    /// Controller-minted capture identity. Engines may observe it but may not
+    /// replace it with a lane-local UUID.
+    pub session_id: String,
+    /// Capture clock epoch shared by every observation in this session.
+    pub capture_epoch: u64,
+    /// One immutable settings read for the entire session.
+    pub runtime_settings: Arc<RuntimeSettingsSnapshot>,
+    /// The single PCM/evidence/admission owner shared by capture and engines.
+    pub acoustic_ledger: Arc<StdMutex<AcousticLedger>>,
     pub sample_rate: u32,
     pub language: Option<String>,
     pub stream_log_path: Option<std::path::PathBuf>,

@@ -28,7 +28,8 @@ use crate::agent_delivery::{
     CsAgentDeliveryListener, set_delivery_listener, spawn_delivery_forwarder,
 };
 use crate::recording::{
-    CsAnnotationKind, CsLayerSummary, CsTranscription, CsTranscriptionListener,
+    CsAnnotationKind, CsLayerSummary, CsTranscriptProjectionEvent, CsTranscription,
+    CsTranscriptionListener,
 };
 use crate::{CsError, CsLanguage, application_runtime};
 
@@ -389,6 +390,20 @@ fn forward_event_to_listener(payload: IpcEventPayload, listener: Arc<dyn CsTrans
             listener.on_context_marker(position, marker);
         }
         IpcEventPayload::AudioLevel { rms } => listener.on_audio_level(rms),
+        IpcEventPayload::TranscriptProjection { json } => {
+            match serde_json::from_str::<
+                codescribe::presentation::transcript_bus::TranscriptBusEvidenceEvent,
+            >(&json)
+            {
+                Ok(event) => listener.on_transcript_projection(
+                    CsTranscriptProjectionEvent::from(&event),
+                ),
+                Err(error) => tracing::warn!(
+                    %error,
+                    "transcript projection transport rejected invalid Bus schema"
+                ),
+            }
+        }
         IpcEventPayload::Engine(event) => match event {
             EngineEventWire::VadStart { .. } => listener.on_vad_active(true),
             EngineEventWire::VadEnd { .. } => listener.on_vad_active(false),
