@@ -13,17 +13,17 @@ status: metodologia-zamrozona-preflight-przed-implementacja
 ## 1. Po co istnieje ten dokument
 
 To jest kanoniczny, współdzielony handoff dla zespołu badającego **agentic
-silent functional smear** i dla zespołu naprawiającego CodeScribe. Zastępuje
+silent functional smear** i dla zespołu naprawiającego Codescribe. Zastępuje
 konieczność odtwarzania 28 tysięcy linii rozmowy, ale nie zastępuje źródeł.
 
 Dokument rozdziela dwa strumienie pracy:
 
 1. **program badawczy Loctree/Canary** — cztery z góry wybrane repozytoria,
    wspólna metodologia, kontrole dodatnie i ujemne;
-2. **naprawę CodeScribe** — zamknięty preflight, syntetyczny RED, niezależna
+2. **naprawę Codescribe** — zamknięty preflight, syntetyczny RED, niezależna
    replikacja na Dragonie, a dopiero potem implementacja jednego tronu.
 
-Nie otwieramy kolejnego researchu dla CodeScribe. R0 jest zamknięte jako
+Nie otwieramy kolejnego researchu dla Codescribe. R0 jest zamknięte jako
 `PASS_FOR_RED_ONLY`. Dragon nie jest piątą ścieżką opinii. Dragon ma niezależnie
 odtworzyć ten sam RED na tym samym commicie.
 
@@ -157,7 +157,7 @@ regionów mowy z pięcioma dolinami. Szybkie słowa bez doliny wymagają późni
 jawnych word pins/alignment; nie wolno wymyślać pięciu bytów z oczekiwanego
 stringa.
 
-## 6. Prawo zachowania CodeScribe
+## 6. Prawo zachowania Codescribe
 
 Dla syntetycznego korpusu pięciu rozłącznych regionów, z których każdy niesie
 etykietę `Iwo`:
@@ -177,7 +177,7 @@ może zwiększyć liczności. Korekta przed seal zmienia etykietę, nie byt. Mut
 automatyczna po seal jest odrzucana. Ręczna korekta człowieka ma osobne jawne
 provenance.
 
-## 7. Co już wiemy o awarii CodeScribe
+## 7. Co już wiemy o awarii Codescribe
 
 ### Obserwowane
 
@@ -211,7 +211,7 @@ Repozytoria nie zostały dobrane po zobaczeniu wyniku.
 
 | Repo                 | Rola w eksperymencie                         | Najważniejszy kandydat                                             |
 | -------------------- | -------------------------------------------- | ------------------------------------------------------------------ |
-| CodeScribe           | dodatnia kontrola runtime i cel naprawy      | identity/seal/reducer/delivery                                     |
+| Codescribe           | dodatnia kontrola runtime i cel naprawy      | identity/seal/reducer/delivery                                     |
 | AICX                 | kontrola Rust-heavy z czytelnym import graph | utrata role provenance przy mapowaniu authority                    |
 | Vibecrafted          | polyglot/disjoint false-negative challenge   | Python control-plane kontra Rust `compute_view` i finality readers |
 | Vista + Vista Portal | największy przewidywany smear domenowy       | drugi writer wizyty i cross-repo licensing authority               |
@@ -328,9 +328,9 @@ Każdy przypadek kończy się jako:
 ## 11. Ograniczenia obecnych instrumentów
 
 - Prism nie jest jeszcze instrumentem dyskryminującym. Kontrole niezwiązane z
-  authority trafiały do tego samego wysokiego pasma co CodeScribe.
+  authority trafiały do tego samego wysokiego pasma co Codescribe.
 - `loct twins` zwraca głównie imienniki i nie znalazł semantycznych identity
-  twins CodeScribe ani role-authority loss w AICX.
+  twins Codescribe ani role-authority loss w AICX.
 - `loct follow events` nie śledzi znanej ścieżki Rust fanout → reducer → IPC →
   Swift.
 - Graf importów dramatycznie zaniża cross-language runtime Vibecrafted.
@@ -339,7 +339,7 @@ Każdy przypadek kończy się jako:
 
 Dlatego obecne twierdzenie brzmi **exposure aid**, nie predictor ani oracle.
 
-## 12. Zamknięta kolejność preflightu CodeScribe
+## 12. Zamknięta kolejność preflightu Codescribe
 
 1. **Ten dokument + journal** — utrwalić metodologię i role. To jest bieżący
    cut.
@@ -418,15 +418,24 @@ Raport ma zawierać:
 
 Dragon niczego nie poprawia. Wynik wraca do integratora.
 
-## 14. Instrukcja dla Moniki — do osobistego przekazania przez Macieja
+## 14. Instrukcja dla Moniki — pełna ścieżka badawcza Loctree
 
 **Granica dostępu:** żaden agent nie wchodzi na laptop Moniki bez jej osobnego,
 jawnego zaproszenia. Maciej przekazuje tę kartę osobiście.
 
 ### Rola Moniki
 
-Monika jest domenowym współprojektantem trialu Vista, nie operatorką komend i nie
-recenzentką nazw plików. Przed próbą definiuje:
+Monika jest pełnoprawną badaczką Loctree prowadzącą lane Visty od receiptów,
+przez mapę i klasyfikację kandydatów, po runtime trial i werdykt. Jej wiedza
+domenowa nie zastępuje Loctree; jest potrzebna do prawidłowego opisania tego,
+co Loctree znalazło i do odróżnienia legalnej projekcji od drugiego tronu.
+
+Monika pracuje z Loctree aktywnym przez cały trial. Sama zachowuje raw outputy,
+snapshot fingerprinty i false-positive/false-negative ledger. Zespół nie
+„dołącza jej potem” technicznej prawdy — receipt strukturalny i prawda domenowa
+powstają razem.
+
+Przed próbą Monika definiuje:
 
 1. czym produktowo jest jedna wizyta, pacjent, recording occurrence,
    transcript i entitlement;
@@ -436,6 +445,43 @@ recenzentką nazw plików. Przed próbą definiuje:
 5. czy dwa widoczne rekordy oznaczają dwa byty, dwie wersje jednego bytu czy
    błąd.
 
+### Minimalny przebieg Loctree na obu repozytoriach Visty
+
+Uruchomić osobno w rzeczywistym checkoutcie `vista` i `vista-portal`:
+
+```bash
+git status --short --branch
+git rev-parse HEAD
+loct --version
+loct auto
+loct context --full --markdown
+loct repo-view
+loct follow twins
+loct follow pipelines
+```
+
+Następnie dla `vista`:
+
+```bash
+loct crowd visit
+loct crowd patient
+loct crowd transcript
+loct crowd settings
+loct focus src-tauri/src/commands/visits
+loct focus src-tauri/src/vista_agent/tools
+loct slice src-tauri/src/commands/visits/creation.rs
+loct slice src-tauri/src/vista_agent/tools/visit_tools.rs
+```
+
+Loctree nie skleja dwóch repozytoriów Visty w jeden graf. Monika prowadzi więc
+równolegle ręczny cross-repo edge ledger dla licensing/auth, zapisując source,
+target, transport, identity, revision i kierunek authority. Brak importu między
+repozytoriami nie jest brakiem zależności.
+
+Wszystkie komendy i ich pełne outputy trafiają do katalogu artefaktów trialu,
+nie tylko do terminal scrollback. Każdy miss Loctree trafia do append-only
+`~/.vibecrafted/loctree/loctree-fail.md`.
+
 ### Pierwszy Vista trial
 
 Pierwszy kandydat to jedna wizyta utworzona i zmieniona dwiema ścieżkami:
@@ -444,9 +490,10 @@ Pierwszy kandydat to jedna wizyta utworzona i zmieniona dwiema ścieżkami:
 - narzędziem agenta wykonującym własny `INSERT`/`UPDATE`.
 
 Monika prerejestruje oczekiwania dla permission, patient identity, validation,
-idempotency, version/CAS, eventu i stanu końcowego. Badacz dopiero potem mapuje
-write sites, DB rows i receipts. Wynik klasyfikujemy według sekcji 10, nie według
-tego, czy pliki wyglądają podobnie.
+idempotency, version/CAS, eventu i stanu końcowego. Następnie sama mapuje w
+Loctree write sites i ich relacje, a runtime probe wiąże je z DB rows i receipts.
+Wynik klasyfikujemy według sekcji 10, nie według tego, czy pliki wyglądają
+podobnie.
 
 Drugim trialem jest entitlement: ten sam input portalu musi prowadzić do tego
 samego fail-closed capability w portal resolverze, Rust ingress, TS derivation i
@@ -466,14 +513,28 @@ OCZEKIWANY WYNIK:
 CO ODWRÓCI TEN WERDYKT:
 ```
 
-Monika nie musi uruchamiać Loctree. Zespół techniczny dołącza potem receipt
-repo/HEAD, writers, persistence, events, payload i `P(t)/A(t)/D(t)`.
+Do karty Monika dołącza samodzielnie receipt repo/HEAD, Loctree snapshot,
+writers, persistence, events, końcowy payload oraz `P(t)/A(t)/D(t)`. Badacz
+techniczny może pomóc w runtime probe, ale nie przejmuje jej lane'u.
 
-### CodeScribe jako opcjonalna kontrola operatorska
+### Codescribe — obowiązkowa dodatnia kontrola metody
 
-Po zamknięciu P0-B/W5 Monika może powtórzyć stały, jawny korpus. Retranscribe nie
-jest kryterium sukcesu live pipeline. Sukces oznacza, że liczność occurrence,
-Bus, overlay i delivery zgadza się bez ręcznego drugiego przebiegu.
+Codescribe nie jest opcjonalnym testem operatorskim. Jest obowiązkowym positive
+control, na którym już znamy user-visible failure i rozproszenie kandydatów do
+authority. Lane Visty porównuje precision/recall swoich instrumentów z tym
+znanym przypadkiem:
+
+1. ta sama sekwencja instrumentów Loctree na zamrożonym SHA Codescribe:
+   `context → repo-view → focus → slice → literals → twins/prism`;
+2. jawne wskazanie, które known thrones Loctree wystawiło, których nie wystawiło
+   i jakie namesakes podało fałszywie;
+3. porównanie authority union, owner transitions i kanałów poza AST z Vistą;
+4. zapis false positives i false negatives przed zobaczeniem wyniku naprawy.
+
+Po W5 osobny operatorski take może sprawdzić runtime conservation, ale nie
+zastępuje strukturalnego positive control. Retranscribe nie jest kryterium
+sukcesu live pipeline. Sukces oznacza zgodną liczność occurrence, reducer, Bus,
+overlay i delivery bez ręcznego drugiego przebiegu.
 
 ## 15. Dostęp do naszych artefaktów przez SSH
 
@@ -575,4 +636,4 @@ Po zapisaniu i zakomitowaniu tego handoffu integrator wykonuje wyłącznie:
 5. korektę starego Mode-B do bieżącego kontraktu Living Tree;
 6. implementacyjny W1-A/B/C.
 
-Nie ma pomiędzy tymi punktami kolejnego researchu CodeScribe.
+Nie ma pomiędzy tymi punktami kolejnego researchu Codescribe.
