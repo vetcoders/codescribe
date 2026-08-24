@@ -103,3 +103,5 @@ tests/assets/data_assets/*
 /*.txt
 /.aiassistant
 /.atuin
+tests/fixtures/w2_05_dragon_human_reference.txt
+tests/fixtures/w2_05_local_suspicious_span.json
