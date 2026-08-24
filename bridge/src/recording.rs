@@ -18,6 +18,55 @@ pub struct CsTranscription {
     pub language: String,
 }
 
+/// UniFFI-safe, immutable projection of one ledger-owned acoustic receipt.
+/// W2 copies the matching Bus fields byte-for-byte; the bridge cannot admit,
+/// reconcile, seal, or otherwise reinterpret this evidence.
+#[derive(uniffi::Record, Debug, Clone, PartialEq)]
+pub struct CsProjectedAcousticReceipt {
+    pub acoustic_serial_version: u16,
+    pub acoustic_serial: String,
+    pub session_id: String,
+    pub capture_epoch: u64,
+    pub sample_start: u64,
+    pub sample_end: u64,
+    pub duration_ms: u64,
+    pub energy_integral: f64,
+    pub mean_rms_dbfs: f32,
+    pub peak_dbfs: f32,
+    pub vad_open_sample: u64,
+    pub vad_close_sample: u64,
+    pub evidence_calibration_version: String,
+    pub word_evidence_receipts: Vec<String>,
+    pub layer_decision_receipts: Vec<String>,
+    pub seal_receipt: Option<String>,
+    pub manual_edit_receipt: Option<String>,
+}
+
+/// Bridge event schema for one reducer-owned transcript projection. It carries
+/// a rendered value and evidence but no document mutation or finality method.
+///
+/// W2 input: `TranscriptBusEvidenceEvent`. W2 output: the foreign listener
+/// callback below. The producer and Swift consumer remain unresolved in W1;
+/// UniFFI binding regeneration is explicitly deferred to W3.
+#[derive(uniffi::Record, Debug, Clone, PartialEq)]
+pub struct CsTranscriptProjectionEvent {
+    pub schema: String,
+    pub sequence: u64,
+    pub emitted_at: String,
+    pub session_id: String,
+    pub mode: String,
+    pub reducer_revision: u64,
+    pub reducer_action: String,
+    pub occurrence_session_id: String,
+    pub capture_epoch: u64,
+    pub sample_start: u64,
+    pub sample_end: u64,
+    pub document_index: u64,
+    pub label: String,
+    pub rendered_text: String,
+    pub acoustic_receipts: Vec<CsProjectedAcousticReceipt>,
+}
+
 /// Live audio-input resolution used by Settings. `runtime_device` is resolved
 /// from the same cpal host and matching policy as `Recorder::start`: a
 /// configured exact/substring match wins, otherwise the current system default
@@ -484,6 +533,9 @@ pub trait CsTranscriptionListener: Send + Sync {
     fn on_context_marker(&self, position: u64, marker: String);
     /// The session closed; `layer_summary` carries the per-layer edit counters.
     fn on_session_finalised(&self, session_id: String, layer_summary: CsLayerSummary);
+    /// Immutable reducer projection. No W1 producer invokes this callback and
+    /// Swift bindings are regenerated only after W2 wiring is frozen.
+    fn on_transcript_projection(&self, event: CsTranscriptProjectionEvent);
     /// Authoritative post-stop transcript (LocalFinalPass `final_formatted_text`):
     /// the SAME clean text that is pasted/delivered and written to history. Surfaces
     /// fire it once per dictation stop so the overlay FINAL matches delivery/Copy.

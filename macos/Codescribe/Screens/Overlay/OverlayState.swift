@@ -33,6 +33,69 @@ private struct OverlayContextMarker: Equatable {
   var order: Int
 }
 
+/// Read-only evidence copied from the bridge projection. Overlay code must not
+/// reinterpret it as admission or finality authority.
+private struct OverlayProjectedAcousticReceipt: Equatable {
+  let acousticSerialVersion: UInt16
+  let acousticSerial: String
+  let sessionId: String
+  let captureEpoch: UInt64
+  let sampleStart: UInt64
+  let sampleEnd: UInt64
+  let durationMs: UInt64
+  let energyIntegral: Double
+  let meanRmsDbfs: Float
+  let peakDbfs: Float
+  let vadOpenSample: UInt64
+  let vadCloseSample: UInt64
+  let evidenceCalibrationVersion: String
+  let wordEvidenceReceipts: [String]
+  let layerDecisionReceipts: [String]
+  let sealReceipt: String?
+  let manualEditReceipt: String?
+}
+
+/// One immutable reducer projection for display. It is an event value, not a
+/// Swift-owned committed document, and has no admit/reconcile/seal operation.
+///
+/// W2 input: `CsTranscriptProjectionEvent`. W2 output: visible overlay text and
+/// evidence affordances. The listener callback and UI application are
+/// intentionally unresolved until W2/W3.
+private struct OverlayTranscriptProjection: Equatable {
+  let schema: String
+  let sequence: UInt64
+  let emittedAt: String
+  let sessionId: String
+  let mode: String
+  let reducerRevision: UInt64
+  let reducerAction: String
+  let occurrenceSessionId: String
+  let captureEpoch: UInt64
+  let sampleStart: UInt64
+  let sampleEnd: UInt64
+  let documentIndex: UInt64
+  let label: String
+  let renderedText: String
+  let acousticReceipts: [OverlayProjectedAcousticReceipt]
+}
+
+/// Explicit human-edit receipt projection. W2 must send the edit to the
+/// acoustic ledger and populate this only from its accepted receipt; Swift may
+/// request and display the edit but cannot supersede a sealed label by itself.
+private struct OverlayManualEditReceipt: Equatable {
+  let receiptId: String
+  let occurrenceSessionId: String
+  let captureEpoch: UInt64
+  let sampleStart: UInt64
+  let sampleEnd: UInt64
+  let baseRevision: UInt64
+  let acceptedRevision: UInt64
+  let previousLabel: String
+  let replacementLabel: String
+  let predecessorReceipt: String?
+  let editedAt: String
+}
+
 private struct OverlayTranscriptSegment: Equatable {
   var utteranceId: UInt64?
   var text: String
