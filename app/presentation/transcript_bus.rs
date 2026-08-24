@@ -35,6 +35,10 @@ pub enum TranscriptMode {
     Assistive,
 }
 
+#[cfg(test)]
+#[path = "../../tests/support/p0_b_five_iwo.rs"]
+mod p0_b_five_iwo;
+
 /// Immutable identity supplied by the controller before capture starts.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct TranscriptSession {

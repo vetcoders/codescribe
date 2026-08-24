@@ -1,0 +1,112 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://vetcoders.io/schemas/codescribe/acoustic-structure-receipt.v1.json",
+  "title": "Codescribe acoustic throne structural receipt",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema",
+    "stage",
+    "verdict",
+    "expected_verdict",
+    "conformant",
+    "repo",
+    "branch",
+    "head",
+    "dirty_fingerprint",
+    "loctree_version",
+    "loctree_snapshot_fingerprint",
+    "expected_parts",
+    "observed_parts",
+    "expected_owners",
+    "observed_owners",
+    "forbidden_symbols",
+    "forbidden_hits",
+    "consumer_paths",
+    "bypass_paths",
+    "unwired_paths",
+    "dangling_references",
+    "canary_rows_observed",
+    "unclassified_canary_rows",
+    "failures",
+    "assessment",
+    "command_inventory",
+    "command_policy"
+  ],
+  "properties": {
+    "$schema": { "type": "string" },
+    "schema": { "const": "codescribe.acoustic-structure-receipt.v1" },
+    "stage": { "enum": ["demolished", "assembled", "wired"] },
+    "verdict": {
+      "enum": [
+        "OLD_AUTHORITY_REMOVED",
+        "STRUCTURALLY_COMPLETE_NOT_WIRED",
+        "STRUCTURALLY_WIRED",
+        "STRUCTURALLY_NONCONFORMANT"
+      ]
+    },
+    "expected_verdict": {
+      "enum": [
+        "OLD_AUTHORITY_REMOVED",
+        "STRUCTURALLY_COMPLETE_NOT_WIRED",
+        "STRUCTURALLY_WIRED"
+      ]
+    },
+    "conformant": { "type": "boolean" },
+    "repo": { "type": ["string", "null"] },
+    "branch": { "type": ["string", "null"] },
+    "head": { "type": ["string", "null"] },
+    "dirty_fingerprint": { "type": ["string", "null"] },
+    "loctree_version": { "type": ["string", "null"] },
+    "loctree_snapshot_fingerprint": { "type": ["string", "null"] },
+    "expected_parts": { "type": "array", "items": { "type": "string" } },
+    "observed_parts": { "type": "object" },
+    "expected_owners": {
+      "type": "object",
+      "additionalProperties": { "type": "string" }
+    },
+    "observed_owners": {
+      "type": "object",
+      "additionalProperties": { "type": "array" }
+    },
+    "forbidden_symbols": { "type": "array", "items": { "type": "string" } },
+    "forbidden_hits": { "type": "object" },
+    "consumer_paths": { "type": "object" },
+    "bypass_paths": { "type": "object" },
+    "unwired_paths": { "type": "object" },
+    "dangling_references": {
+      "oneOf": [{ "type": "array" }, { "type": "string" }]
+    },
+    "canary_rows_observed": { "type": "integer", "minimum": 0 },
+    "unclassified_canary_rows": {
+      "oneOf": [{ "type": "array" }, { "type": "string" }]
+    },
+    "failures": { "type": "array", "items": { "type": "string" } },
+    "assessment": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["build", "lint", "unit", "swift", "runtime"],
+      "properties": {
+        "build": { "const": "NOT_ASSESSED" },
+        "lint": { "const": "NOT_ASSESSED" },
+        "unit": { "const": "NOT_ASSESSED" },
+        "swift": { "const": "NOT_ASSESSED" },
+        "runtime": { "const": "NOT_ASSESSED" }
+      }
+    },
+    "command_inventory": {
+      "type": "array",
+      "minItems": 1,
+      "items": { "type": "string", "pattern": "^loct (context|occurrences)" }
+    },
+    "command_policy": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["allowed_executable", "all_commands_allowed"],
+      "properties": {
+        "allowed_executable": { "const": "loct" },
+        "all_commands_allowed": { "const": true }
+      }
+    }
+  }
+}

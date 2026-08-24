@@ -1,0 +1,267 @@
+{
+  "schema": "codescribe.acoustic-structure-stages.v1",
+  "stages": {
+    "demolished": {
+      "required_absent": [
+        "AcousticTranscriptIdentity",
+        "SpanIdempotenceLedger",
+        "EventIdentity",
+        "revision_tolerant_known_prefix",
+        "reconcile_sealed_text",
+        "committedSegments",
+        "finalizeTranscript"
+      ],
+      "required_present": [
+        {
+          "symbol": "AcousticLedger",
+          "owner": "core/pipeline/acoustic_ledger.rs",
+          "cardinality": 1
+        }
+      ],
+      "require_canary_classification": true
+    },
+    "assembled": {
+      "required_absent": [
+        "AcousticTranscriptIdentity",
+        "SpanIdempotenceLedger",
+        "EventIdentity",
+        "revision_tolerant_known_prefix",
+        "reconcile_sealed_text",
+        "committedSegments",
+        "finalizeTranscript"
+      ],
+      "required_present": [
+        {
+          "symbol": "AcousticLedger",
+          "owner": "core/pipeline/acoustic_ledger.rs",
+          "cardinality": 1
+        },
+        {
+          "symbol": "OccurrenceIdentity",
+          "owner": "core/pipeline/acoustic_ledger.rs",
+          "cardinality": 1
+        },
+        {
+          "symbol": "ObservationIdentity",
+          "owner": "core/pipeline/acoustic_ledger.rs",
+          "cardinality": 1
+        },
+        {
+          "symbol": "AcousticSerial",
+          "owner": "core/pipeline/acoustic_ledger.rs",
+          "cardinality": 1
+        },
+        {
+          "symbol": "WordEvidenceReceipt",
+          "owner": "core/pipeline/acoustic_ledger.rs",
+          "cardinality": 1
+        },
+        {
+          "symbol": "LayerDecisionReceipt",
+          "owner": "core/pipeline/acoustic_ledger.rs",
+          "cardinality": 1
+        },
+        {
+          "symbol": "ManualEditReceipt",
+          "owner": "core/pipeline/acoustic_ledger.rs",
+          "cardinality": 1
+        },
+        {
+          "symbol": "ObservationFrontier",
+          "owner": "core/pipeline/acoustic_ledger.rs",
+          "cardinality": 1
+        },
+        {
+          "symbol": "LedgerSealReceipt",
+          "owner": "core/pipeline/acoustic_ledger.rs",
+          "cardinality": 1
+        },
+        {
+          "symbol": "RuntimeSettingsSnapshot",
+          "owner": "core/config/settings.rs",
+          "cardinality": 1
+        },
+        {
+          "symbol": "SettingsSnapshotProvenance",
+          "owner": "core/config/settings.rs",
+          "cardinality": 1
+        },
+        {
+          "symbol": "SettingsSnapshotDigest",
+          "owner": "core/config/settings.rs",
+          "cardinality": 1
+        },
+        {
+          "symbol": "TranscriptReducer",
+          "owner": "app/presentation/emitter.rs",
+          "cardinality": 1
+        },
+        {
+          "symbol": "TranscriptDocumentEntry",
+          "owner": "app/presentation/emitter.rs",
+          "cardinality": 1
+        },
+        {
+          "symbol": "TranscriptRevision",
+          "owner": "app/presentation/emitter.rs",
+          "cardinality": 1
+        },
+        {
+          "symbol": "ReducerAction",
+          "owner": "app/presentation/emitter.rs",
+          "cardinality": 1
+        },
+        {
+          "symbol": "ProjectedAcousticReceipt",
+          "owner": "app/presentation/transcript_bus.rs",
+          "cardinality": 1
+        },
+        {
+          "symbol": "TranscriptBusEvidenceEvent",
+          "owner": "app/presentation/transcript_bus.rs",
+          "cardinality": 1
+        },
+        {
+          "symbol": "OccurrenceLabelProposal",
+          "owner": "core/llm/inline_format.rs",
+          "cardinality": 1
+        },
+        {
+          "symbol": "DeliveryRoute",
+          "owner": "app/controller/delivery_route.rs",
+          "cardinality": 1
+        }
+      ],
+      "required_unwired": [
+        {
+          "symbol": "AcousticSerial",
+          "owner_files": ["core/pipeline/acoustic_ledger.rs"]
+        },
+        {
+          "symbol": "TranscriptRevision",
+          "owner_files": ["app/presentation/emitter.rs"]
+        },
+        {
+          "symbol": "RuntimeSettingsSnapshot",
+          "owner_files": ["core/config/settings.rs"]
+        },
+        {
+          "symbol": "OccurrenceLabelProposal",
+          "owner_files": ["core/llm/inline_format.rs"]
+        }
+      ]
+    },
+    "wired": {
+      "required_absent": [
+        "AcousticTranscriptIdentity",
+        "SpanIdempotenceLedger",
+        "EventIdentity",
+        "revision_tolerant_known_prefix",
+        "reconcile_sealed_text",
+        "committedSegments",
+        "finalizeTranscript"
+      ],
+      "required_present": [
+        {
+          "symbol": "AcousticLedger",
+          "owner": "core/pipeline/acoustic_ledger.rs",
+          "cardinality": 1
+        },
+        {
+          "symbol": "AcousticSerial",
+          "owner": "core/pipeline/acoustic_ledger.rs",
+          "cardinality": 1
+        },
+        {
+          "symbol": "WordEvidenceReceipt",
+          "owner": "core/pipeline/acoustic_ledger.rs",
+          "cardinality": 1
+        },
+        {
+          "symbol": "LayerDecisionReceipt",
+          "owner": "core/pipeline/acoustic_ledger.rs",
+          "cardinality": 1
+        },
+        {
+          "symbol": "LedgerSealReceipt",
+          "owner": "core/pipeline/acoustic_ledger.rs",
+          "cardinality": 1
+        },
+        {
+          "symbol": "RuntimeSettingsSnapshot",
+          "owner": "core/config/settings.rs",
+          "cardinality": 1
+        },
+        {
+          "symbol": "TranscriptReducer",
+          "owner": "app/presentation/emitter.rs",
+          "cardinality": 1
+        },
+        {
+          "symbol": "TranscriptRevision",
+          "owner": "app/presentation/emitter.rs",
+          "cardinality": 1
+        },
+        {
+          "symbol": "TranscriptBusEvidenceEvent",
+          "owner": "app/presentation/transcript_bus.rs",
+          "cardinality": 1
+        },
+        {
+          "symbol": "OccurrenceLabelProposal",
+          "owner": "core/llm/inline_format.rs",
+          "cardinality": 1
+        },
+        {
+          "symbol": "DeliveryRoute",
+          "owner": "app/controller/delivery_route.rs",
+          "cardinality": 1
+        }
+      ],
+      "required_edges": [
+        {
+          "symbol": "AcousticLedger",
+          "consumers": [
+            "core/audio/streaming_recorder.rs",
+            "core/pipeline/streaming/apple_live_session.rs"
+          ]
+        },
+        {
+          "symbol": "AcousticSerial",
+          "consumers": [
+            "app/presentation/emitter.rs",
+            "app/presentation/transcript_bus.rs",
+            "bridge/src/recording.rs",
+            "macos/Codescribe/Screens/Overlay/OverlayState.swift"
+          ]
+        },
+        {
+          "symbol": "TranscriptRevision",
+          "consumers": [
+            "app/presentation/transcript_bus.rs",
+            "bridge/src/recording.rs",
+            "macos/Codescribe/Screens/Overlay/OverlayState.swift"
+          ]
+        },
+        {
+          "symbol": "RuntimeSettingsSnapshot",
+          "consumers": [
+            "core/audio/streaming_recorder.rs",
+            "core/pipeline/streaming/apple_live_session.rs",
+            "app/controller/mod.rs"
+          ]
+        },
+        {
+          "symbol": "OccurrenceLabelProposal",
+          "consumers": ["app/presentation/emitter.rs"],
+          "forbidden_consumers": ["app/controller/delivery_route.rs"]
+        },
+        {
+          "symbol": "DeliveryRoute",
+          "consumers": ["app/controller/mod.rs"]
+        }
+      ],
+      "require_zero_dangling": true
+    }
+  }
+}
