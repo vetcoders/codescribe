@@ -417,7 +417,9 @@ impl ProgressiveSealMachine {
             let reason = self.seal_block_reason(&span, now_secs);
             match reason {
                 None => {
-                    let sealed = seal_span_text(&span.raw_text, &left_context, force_raw);
+                    let preserve_occurrences = force_raw || span.words.len() >= 2;
+                    let sealed =
+                        seal_span_text(&span.raw_text, &left_context, preserve_occurrences);
                     let sealed_span = SealedSpan {
                         id: span.id,
                         text: sealed,
@@ -442,7 +444,9 @@ impl ProgressiveSealMachine {
                     // silently seal early without the flag.
                     starvation_ceiling_used = true;
                     self.starvation_ceiling_hits = self.starvation_ceiling_hits.saturating_add(1);
-                    let sealed = seal_span_text(&span.raw_text, &left_context, force_raw);
+                    let preserve_occurrences = force_raw || span.words.len() >= 2;
+                    let sealed =
+                        seal_span_text(&span.raw_text, &left_context, preserve_occurrences);
                     let sealed_span = SealedSpan {
                         id: span.id,
                         text: sealed,

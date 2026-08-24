@@ -169,6 +169,7 @@ A first-wins final string is not enough. The real document is the ordered span l
 - `infer_span_identity_from_text_similarity`
 - `infer_named_sound_from_silero`
 - `deduplicate_intentional_repetition_by_content`
+- `treat_mean_energy_db_as_identity`
 - `claim_layered_on_when_no_windows_reach_the_provider`
 - `drop_acoustic_observation_without_receipt`
 - `declare_a_pcm_range_the_payload_does_not_carry`
@@ -200,6 +201,14 @@ the current wording attached to an authorized span
 
 This distinction is the engine.
 
+Replay is re-delivery of the same **observation** (producer, request,
+generation, occurrence). It is not "the same PCM range". Apple and Whisper on
+one range are two observations of one occurrence; Whisper may correct Apple
+there. Two disjoint ranges with the text "Iwo" are two occurrences. Overlap
+may clip a phrase only when word pins prove which text belongs to the exclusive
+tail; otherwise the text stays visible as read-only evidence and must not mint
+a duplicate token. Unanchored text stays visible without mutation authority.
+
 ### Audio truth
 
 - Mechanical speech energy exists before transcription.
@@ -213,6 +222,12 @@ This distinction is the engine.
 - A model confidence score is not identity.
 - A final callback is not identity.
 - Identity is minted from capture/session/span evidence.
+- Mean `energy_db` is quality evidence on the PCM axis, never a collision-proof ID.
+- `dB × ms` names coordinates and hop evidence, not a scalar hash of average loudness.
+- Two identical tokens on disjoint `[sample_start, sample_end)` ranges are two observations.
+- Replaying one range must not mint another token. Text-suffix overlap must not collapse them.
+- Executable admit path: `core/pipeline/acoustic_identity.rs` (`admit_acoustic_spans`).
+- String `strip_suffix_overlap*` remains a legacy unanchored fallback and is forbidden once spans are anchored.
 
 ### Acoustic span identity — identity is not evidence
 

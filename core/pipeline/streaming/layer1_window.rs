@@ -184,6 +184,7 @@ fn build_flush(pieces: Vec<CoalescedPiece>, neighbour_context: String) -> Coales
     let sample_end = pieces.last().map_or(0, |p| p.sample_end);
     let covered_through_secs = pieces.last().map_or(0.0, |p| p.covered_through_secs);
     let primary_utterance_id = pieces.last().map_or(0, |p| p.utterance_id);
+    let mut cursor = sample_start;
     for (i, piece) in pieces.into_iter().enumerate() {
         if i > 0 {
             committed_text.push(' ');
@@ -203,7 +204,22 @@ fn build_flush(pieces: Vec<CoalescedPiece>, neighbour_context: String) -> Coales
             piece.sample_end.saturating_sub(piece.sample_start),
             "a piece must carry the PCM range it declares before it can be coalesced"
         );
-        audio.extend_from_slice(&piece.audio);
+        let piece_start = piece.sample_start.max(sample_start);
+        if piece_start > cursor {
+            audio.resize(audio.len() + (piece_start - cursor) as usize, 0.0);
+            cursor = piece_start;
+        }
+        let skip = cursor.saturating_sub(piece_start) as usize;
+        if skip < piece.audio.len() {
+            audio.extend_from_slice(&piece.audio[skip..]);
+            cursor = piece_start + piece.audio.len() as u64;
+        }
+    }
+    let declared = sample_end.saturating_sub(sample_start) as usize;
+    if audio.len() < declared {
+        audio.resize(declared, 0.0);
+    } else if audio.len() > declared {
+        audio.truncate(declared);
     }
     CoalesceFlush {
         committed_text,
@@ -554,7 +570,7 @@ mod tests {
 /// for, and this is that falsifier. Un-ignore them in the cut that lands
 /// "Acoustic identity cut order" step 3 in `docs/THE_ENGINE_CONTRACT.md`.
 #[cfg(test)]
-mod conservation_falsifiers {
+mod ledger_conservation_falsifiers {
     use super::*;
     use crate::stt::tail_provider::{TailProviderRequest, TailRequestIdentity, TailSampleRange};
 
@@ -587,6 +603,65 @@ mod conservation_falsifiers {
     /// job, and Layer 1 reports a generic provider error for a window that never
     /// reached inference. Measured on this module's own five-piece geometry:
     /// 70 400 samples declared against 31 999 carried.
+    #[test]
+    fn coalesced_window_carries_the_pcm_range_it_declares() {
+        let mut buf = Layer1Coalesce::default();
+        buf.set_neighbour("already sealed");
+        let mut flushes = Vec::new();
+        for i in 0..5 {
+            flushes.extend(buf.push(
+                piece_at(i + 1, "słowo", i as f32, i as f32 + 0.4, 1),
+                16_000,
+            ));
+        }
+        let flush = &flushes[0];
+        let request = TailProviderRequest {
+            identity: TailRequestIdentity {
+                request_id: flush.primary_utterance_id,
+                range: TailSampleRange {
+                    session: "conservation".into(),
+                    capture_epoch: 1,
+                    sample_start: flush.sample_start,
+                    sample_end: flush.sample_end,
+                },
+            },
+            sample_rate: 16_000,
+            language: None,
+        };
+        assert_eq!(
+            flush.sample_end - flush.sample_start,
+            flush.audio.len() as u64,
+            "declared range must equal carried PCM: a window may not promise audio it dropped"
+        );
+        request
+            .validate_pcm(&flush.audio)
+            .expect("a coalesced window must be admissible at the provider seam");
+    }
+}
+
+/// Conservation falsifier: a coalesced window must carry the PCM range it
+/// declares, or Layer 1 never reaches inference.
+#[cfg(test)]
+mod observation_identity_conservation_falsifiers {
+    use super::*;
+    use crate::stt::tail_provider::{TailProviderRequest, TailRequestIdentity, TailSampleRange};
+
+    fn piece_at(id: u64, text: &str, start_ts: f32, end_ts: f32, segs: usize) -> CoalescedPiece {
+        let rate = 16_000u64;
+        let sample_start = (start_ts * rate as f32) as u64;
+        let sample_end = (end_ts * rate as f32) as u64;
+        CoalescedPiece {
+            utterance_id: id,
+            committed_text: text.to_string(),
+            audio: vec![0.0; sample_end.saturating_sub(sample_start) as usize],
+            sample_start,
+            sample_end,
+            start_ts,
+            covered_through_secs: end_ts,
+            segment_count: segs,
+        }
+    }
+
     #[test]
     fn coalesced_window_carries_the_pcm_range_it_declares() {
         let mut buf = Layer1Coalesce::default();

@@ -196,6 +196,7 @@ pub const ENGINE_CONTRACT: EngineContract = EngineContract {
         "drop_acoustic_observation_without_receipt",
         "declare_a_pcm_range_the_payload_does_not_carry",
         "present_mean_energy_as_span_identity",
+        "treat_mean_energy_db_as_identity",
         "final_bam_automatic_producer",
         "session_finalised_content_mutation",
     ],
@@ -455,6 +456,21 @@ mod tests {
             ENGINE_CONTRACT
                 .forbidden
                 .contains(&"treat_committed_as_document")
+        );
+        assert!(
+            ENGINE_CONTRACT
+                .forbidden
+                .contains(&"infer_span_identity_from_text_similarity")
+        );
+        assert!(
+            ENGINE_CONTRACT
+                .forbidden
+                .contains(&"deduplicate_intentional_repetition_by_content")
+        );
+        assert!(
+            ENGINE_CONTRACT
+                .forbidden
+                .contains(&"treat_mean_energy_db_as_identity")
         );
     }
 

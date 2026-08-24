@@ -2,6 +2,8 @@
 //! that fan those events out to consumers, overlap dedup, streaming session
 //! management, and the post-processing passes applied to emitted text.
 
+/// Occurrence / observation / mutation-receipt ledger for acoustic spans.
+pub mod acoustic_identity;
 /// Acoustic occurrence identity, observation identity, and mutation receipts.
 pub mod acoustic_ledger;
 /// Event contracts: EngineEvent, sinks trait, and shared pipeline types.
@@ -22,6 +24,10 @@ pub mod stream_postprocess;
 pub mod streaming;
 
 // Re-export core event types for ergonomic access
+pub use acoustic_identity::{
+    AcousticObservation, MutationReceipt, ObservationIdentity, ObservationLedger,
+    ObservationProducer, OccurrenceIdentity, admit_acoustic_spans, admit_observations,
+};
 pub use contracts::{DropKind, EngineEvent, EventSink};
 pub use sinks::{CollectorEventSink, DeltaSinkAdapter, FanoutEventSink};
 
