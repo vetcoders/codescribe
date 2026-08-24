@@ -26,9 +26,15 @@ STAGE_VERDICTS = {
     "wired": "STRUCTURALLY_WIRED",
 }
 SOURCE_SCOPES = {"production", "generated"}
+VERIFIER_INFRASTRUCTURE = {
+    "scripts/verify-acoustic-throne-structure.py",
+    "scripts/verify-authority-shape.sh",
+    "scripts/verify-five-iwo.sh",
+}
 REQUIRED_RECEIPT_KEYS = {
     "schema",
     "stage",
+    "scope",
     "verdict",
     "expected_verdict",
     "conformant",
@@ -55,6 +61,34 @@ REQUIRED_RECEIPT_KEYS = {
     "command_inventory",
     "command_policy",
 }
+ASSEMBLY_SCOPE_SYMBOLS = {
+    "settings": {
+        "RuntimeSettingsSnapshot",
+        "SettingsSnapshotProvenance",
+        "SettingsSnapshotDigest",
+    },
+    "acoustic": {
+        "AcousticLedger",
+        "OccurrenceIdentity",
+        "ObservationIdentity",
+        "AcousticSerial",
+        "WordEvidenceReceipt",
+        "LayerDecisionReceipt",
+        "ManualEditReceipt",
+        "ObservationFrontier",
+        "LedgerSealReceipt",
+    },
+    "document": {
+        "TranscriptReducer",
+        "TranscriptDocumentEntry",
+        "TranscriptRevision",
+        "ReducerAction",
+        "ProjectedAcousticReceipt",
+        "TranscriptBusEvidenceEvent",
+    },
+    "text-delivery": {"OccurrenceLabelProposal", "DeliveryRoute"},
+}
+ASSEMBLY_SCOPES = set(ASSEMBLY_SCOPE_SYMBOLS)
 
 
 @dataclass(frozen=True)
@@ -117,6 +151,7 @@ def production_occurrences(payload: dict[str, Any]) -> list[dict[str, Any]]:
         occurrence
         for occurrence in payload.get("occurrences", [])
         if occurrence.get("scope_classification") in SOURCE_SCOPES
+        and occurrence.get("file") not in VERIFIER_INFRASTRUCTURE
     ]
 
 
@@ -159,6 +194,7 @@ def verify_stage(
     verifier: StructuralVerifier,
     manifest: dict[str, Any],
     stage: str,
+    scope: str | None,
     canary_path: Path | None,
     dangling_path: Path | None,
 ) -> tuple[dict[str, Any], bool]:
@@ -181,7 +217,14 @@ def verify_stage(
     observed_parts: dict[str, dict[str, Any]] = {}
     expected_owners: dict[str, str] = {}
     observed_owners: dict[str, list[str]] = {}
-    for part in stage_contract.get("required_present", []):
+    required_present = stage_contract.get("required_present", [])
+    required_unwired = stage_contract.get("required_unwired", [])
+    if scope is not None:
+        scoped_symbols = ASSEMBLY_SCOPE_SYMBOLS[scope]
+        required_present = [part for part in required_present if part["symbol"] in scoped_symbols]
+        required_unwired = [part for part in required_unwired if part["symbol"] in scoped_symbols]
+
+    for part in required_present:
         symbol = part["symbol"]
         owner = part["owner"]
         cardinality = int(part.get("cardinality", 1))
@@ -202,7 +245,7 @@ def verify_stage(
             )
 
     unwired_paths: dict[str, list[str]] = {}
-    for part in stage_contract.get("required_unwired", []):
+    for part in required_unwired:
         symbol = part["symbol"]
         allowed = set(part.get("owner_files", []))
         files = [path for path in observed_files(verifier.occurrences(symbol)) if path not in allowed]
@@ -249,6 +292,7 @@ def verify_stage(
         "$schema": "tests/fixtures/acoustic_structure_receipt.schema.json",
         "schema": RECEIPT_SCHEMA,
         "stage": stage,
+        "scope": scope,
         "verdict": expected_verdict if conformant else "STRUCTURALLY_NONCONFORMANT",
         "expected_verdict": expected_verdict,
         "conformant": conformant,
@@ -258,7 +302,7 @@ def verify_stage(
         "dirty_fingerprint": context_receipt.get("dirty_fingerprint"),
         "loctree_version": context_receipt.get("binary_id"),
         "loctree_snapshot_fingerprint": context_receipt.get("snapshot_fingerprint"),
-        "expected_parts": [part["symbol"] for part in stage_contract.get("required_present", [])],
+        "expected_parts": [part["symbol"] for part in required_present],
         "observed_parts": observed_parts,
         "expected_owners": expected_owners,
         "observed_owners": observed_owners,
@@ -308,6 +352,10 @@ def validate_receipt_shape(receipt: dict[str, Any]) -> None:
         raise RuntimeError(f"receipt schema check missing keys: {missing}")
     if receipt.get("schema") != RECEIPT_SCHEMA:
         raise RuntimeError(f"receipt schema identity mismatch: {receipt.get('schema')}")
+    stage = receipt.get("stage")
+    scope = receipt.get("scope")
+    if (stage == "assembled") != (scope in ASSEMBLY_SCOPES):
+        raise RuntimeError(f"receipt stage/scope mismatch: stage={stage}, scope={scope}")
     inventory_rows = receipt.get("command_inventory")
     if not isinstance(inventory_rows, list) or not inventory_rows:
         raise RuntimeError("receipt command inventory must be a non-empty list")
@@ -326,6 +374,7 @@ def validate_receipt_shape(receipt: dict[str, Any]) -> None:
 def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("stage", nargs="?", choices=sorted(STAGE_VERDICTS))
+    parser.add_argument("scope", nargs="?", choices=sorted(ASSEMBLY_SCOPES))
     parser.add_argument("--repo", type=Path, default=Path.cwd())
     parser.add_argument("--manifest", type=Path, default=Path(DEFAULT_MANIFEST))
     parser.add_argument("--canary-manifest", type=Path)
@@ -339,6 +388,10 @@ def main() -> int:
         return 0
     if args.stage is None:
         parser.error("stage is required unless --inventory is used")
+    if args.stage == "assembled" and args.scope is None:
+        parser.error("assembled stage requires one scope")
+    if args.stage != "assembled" and args.scope is not None:
+        parser.error("scope is valid only for assembled stage")
 
     repo = args.repo.resolve()
     manifest_path = args.manifest if args.manifest.is_absolute() else repo / args.manifest
@@ -349,6 +402,7 @@ def main() -> int:
             verifier,
             manifest,
             args.stage,
+            args.scope,
             args.canary_manifest,
             args.dangling_manifest,
         )

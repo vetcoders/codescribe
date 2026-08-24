@@ -7,6 +7,7 @@
   "required": [
     "schema",
     "stage",
+    "scope",
     "verdict",
     "expected_verdict",
     "conformant",
@@ -37,6 +38,12 @@
     "$schema": { "type": "string" },
     "schema": { "const": "codescribe.acoustic-structure-receipt.v1" },
     "stage": { "enum": ["demolished", "assembled", "wired"] },
+    "scope": {
+      "oneOf": [
+        { "enum": ["settings", "acoustic", "document", "text-delivery"] },
+        { "type": "null" }
+      ]
+    },
     "verdict": {
       "enum": [
         "OLD_AUTHORITY_REMOVED",
