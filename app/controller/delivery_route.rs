@@ -4,6 +4,17 @@
 //! The mic, the transcript, and the agent chain stay other thrones. This module
 //! is only the destination axis (operator diagnosis 2026-08-15: "walka o tron").
 //!
+//! W1-D part set (destination only):
+//! - [`DeliveryRoute`] — sole typed destination owner.
+//! - [`DeliveryIntent`] — operator intent frozen at session start / overlay click.
+//! - [`DeliveryDecision`] — destination-decision part: selected route plus a
+//!   recoverable-failure reason token. Route never chooses transcript text;
+//!   automatic label authorship lives in the formatter module, not here.
+//!
+//! Removed competitors that must not return: `assistive_delivery`,
+//! `overlay_paste`, `quality_delivery` destination construction, and any
+//! second route owner beside [`resolve_delivery_route`].
+//!
 //! Law:
 //! - `DeliveryIntent` is frozen at session start (or at an explicit overlay
 //!   click). It is not re-derived from OS focus.
@@ -14,6 +25,11 @@
 //!   The Agent window, Alacritty/Zellij, Notes, and every other caret are
 //!   legal ambulances. Assistive still delivers as a first-class Agent
 //!   message — that is a different intent, not a paste ban.
+//!
+//! # Intended W2 consumers
+//! - `app/controller/mod.rs` stop / overlay Insert / To Agent paths that
+//!   already import this module. Clipboard, Agent composer, and canvas execute
+//!   a decided route; they do not invent one.
 
 /// Where a finished transcript is allowed to land.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -97,11 +113,37 @@ pub struct DeliveryFacts {
     pub latched_target_is_self: bool,
 }
 
-/// One verdict: a route plus a stable reason token for the budget line.
+/// Typed destination-decision part: operator intent resolved to a
+/// [`DeliveryRoute`] plus a stable reason token.
+///
+/// Success and recoverable failure share this shape. Failure still names the
+/// parked route (`OrientCanvas`, `DeferredInsert`, `ArchiveOnly`, …) so the
+/// stop path can recover without inventing a second destination owner or
+/// choosing transcript text.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct DeliveryDecision {
     pub route: DeliveryRoute,
     pub reason: &'static str,
+}
+
+impl DeliveryDecision {
+    /// Reasons that park delivery without inventing another route owner.
+    pub const fn is_recoverable_failure(self) -> bool {
+        matches!(
+            self.reason,
+            "empty_or_no_speech"
+                | "refuse_paste_into_self"
+                | "quality_commit_pending"
+                | "live_stream_owns_canvas"
+                | "no_visible_surface"
+                | "notes_save_only"
+        )
+    }
+
+    /// True when the decision authorizes a synthetic Cmd+V.
+    pub const fn posts_synthetic_paste(self) -> bool {
+        self.route.posts_synthetic_paste()
+    }
 }
 
 /// Map session flags onto an intent. Assistive wins; notes-only next; format
