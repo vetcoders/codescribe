@@ -27,7 +27,7 @@ protocol SettingsEngine {
   func onboardingMode() -> String?
   func setOnboardingMode(mode: String) throws
 
-  /// Delegates to core lane_truth normalization (eliminates suffix-list dupe in Swift).
+  /// Delegates to the core provider registry (no suffix-list duplicate in Swift).
   func normalizeOpenaiResponsesEndpoint(_ endpoint: String) -> String
 
   // Config writes (auto-tiered by the core router)

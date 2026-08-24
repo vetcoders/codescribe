@@ -2289,7 +2289,7 @@ mod tests {
         }
     }
 
-    /// Blank LLM override removes the JSON path and restores lane_truth fallback.
+    /// Blank LLM override removes the JSON path and restores the loader default.
     #[test]
     #[serial]
     fn empty_llm_override_unsets_json_path_and_restores_resolved_fallback() {
@@ -2331,11 +2331,9 @@ mod tests {
             "reset must remove the override path, got {reset_json}"
         );
         assert_eq!(UserSettings::load().llm_assistive_endpoint, None);
+        let runtime_settings = Config::load_runtime_snapshot().expect("runtime settings seal");
         assert_eq!(
-            crate::llm::lane_truth::endpoint(
-                crate::llm::provider::LlmMode::Assistive,
-                &Config::default(),
-            ),
+            runtime_settings.llm_lanes().assistive().endpoint(),
             crate::config::DEFAULT_OPENAI_RESPONSES_ENDPOINT
         );
     }
@@ -2371,8 +2369,9 @@ mod tests {
             "reset must remove the provider override path, got {reset_json}"
         );
         assert_eq!(UserSettings::load().llm_assistive_provider, None);
+        let runtime_settings = Config::load_runtime_snapshot().expect("runtime settings seal");
         assert_eq!(
-            crate::llm::lane_truth::provider(crate::llm::provider::LlmMode::Assistive),
+            runtime_settings.llm_lanes().assistive().provider(),
             crate::llm::provider::ProviderKind::OpenAiResponses
         );
     }
@@ -2435,11 +2434,9 @@ mod tests {
                 assert_optional_override_absent(&settings, key);
             }
         }
+        let runtime_settings = Config::load_runtime_snapshot().expect("runtime settings seal");
         assert_eq!(
-            crate::llm::lane_truth::endpoint(
-                crate::llm::provider::LlmMode::Assistive,
-                &Config::default(),
-            ),
+            runtime_settings.llm_lanes().assistive().endpoint(),
             crate::config::DEFAULT_OPENAI_RESPONSES_ENDPOINT
         );
     }

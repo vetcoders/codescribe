@@ -18,15 +18,15 @@ use chrono::{DateTime, SecondsFormat, Utc};
 use codescribe_core::config::keychain::{KEYCHAIN_ACCOUNTS, delete_key, save_key};
 use codescribe_core::config::{
     AppDataResetGuard, Config, DEFAULT_ASSISTIVE_PROMPT, DEFAULT_FORMATTING_PROMPT,
-    FormattingPolicy, PromptKind, PromptSnapshot, PromptWriteReason, UserSettings,
-    begin_app_data_reset, prompt_snapshot, prompts, reset_to_defaults, restore_prompt_to_default,
-    write_prompt, write_prompt_bytes_during_reset,
+    FormattingPolicy, PromptKind, PromptSnapshot, PromptWriteReason, RuntimeLlmLane,
+    RuntimeLlmLaneKind, RuntimeSettingsSnapshot, UserSettings, begin_app_data_reset,
+    prompt_snapshot, prompts, reset_to_defaults, restore_prompt_to_default, write_prompt,
+    write_prompt_bytes_during_reset,
 };
 use codescribe_core::llm::account_auth;
 use codescribe_core::llm::key_liveness::{
     ApiKeyLivenessResult, ApiKeyLivenessStatus, probe_api_key_liveness,
 };
-use codescribe_core::llm::lane_truth;
 use codescribe_core::llm::model_discovery::{
     ModelDiscoveryStatus, discover_models as discover_provider_models,
 };
@@ -333,7 +333,7 @@ pub struct CsProviderOption {
     pub models: Vec<CsModelOption>,
 }
 
-/// Stable lane identity used by the secret-free lane truth FFI snapshot.
+/// Stable lane identity used by the secret-free runtime lane projection.
 #[derive(uniffi::Enum, Debug, Clone, Copy, PartialEq, Eq)]
 pub enum CsLlmLane {
     /// Shared fallback lane configured by `LLM_ENDPOINT` / `LLM_MODEL`. Not a
@@ -345,9 +345,9 @@ pub enum CsLlmLane {
     Assistive,
 }
 
-impl From<CsLlmLane> for lane_truth::LaneTruthLane {
+impl From<CsLlmLane> for RuntimeLlmLaneKind {
     /// Cross the FFI boundary inward: the bridge enum exists only so
-    /// `LaneTruthLane` itself never has to be exported to Swift.
+    /// `RuntimeLlmLaneKind` itself never has to be exported to Swift.
     fn from(value: CsLlmLane) -> Self {
         match value {
             CsLlmLane::Main => Self::Main,
@@ -357,10 +357,10 @@ impl From<CsLlmLane> for lane_truth::LaneTruthLane {
     }
 }
 
-/// Complete canonical truth for one LLM lane. Credentials never cross the
+/// Complete canonical projection for one sealed LLM lane. Credentials never cross the
 /// bridge: only the owning account name and presence/auth booleans are exposed.
 #[derive(uniffi::Record, Debug, Clone, PartialEq, Eq)]
-pub struct CsLaneTruthSnapshot {
+pub struct CsRuntimeLlmLane {
     pub lane: CsLlmLane,
     pub provider_id: String,
     pub endpoint: String,
@@ -372,32 +372,33 @@ pub struct CsLaneTruthSnapshot {
     pub unavailable_reason: Option<String>,
 }
 
-impl From<lane_truth::LaneTruthSnapshot> for CsLaneTruthSnapshot {
-    /// Field-for-field projection outward. The core snapshot is already
-    /// secret-free, so this conversion only re-homes the lane discriminant.
-    fn from(value: lane_truth::LaneTruthSnapshot) -> Self {
+impl From<&RuntimeLlmLane> for CsRuntimeLlmLane {
+    /// Secret-free projection outward from the loader-owned lane.
+    fn from(value: &RuntimeLlmLane) -> Self {
         Self {
-            lane: match value.lane {
-                lane_truth::LaneTruthLane::Main => CsLlmLane::Main,
-                lane_truth::LaneTruthLane::Formatting => CsLlmLane::Formatting,
-                lane_truth::LaneTruthLane::Assistive => CsLlmLane::Assistive,
+            lane: match value.lane() {
+                RuntimeLlmLaneKind::Main => CsLlmLane::Main,
+                RuntimeLlmLaneKind::Formatting => CsLlmLane::Formatting,
+                RuntimeLlmLaneKind::Assistive => CsLlmLane::Assistive,
             },
-            provider_id: value.provider_id,
-            endpoint: value.endpoint,
-            model: value.model,
-            key_account: value.key_account,
-            key_present: value.key_present,
-            account_auth: value.account_auth,
-            available: value.available,
-            unavailable_reason: value.unavailable_reason,
+            provider_id: value.provider().as_str().to_string(),
+            endpoint: value.endpoint().to_string(),
+            model: value.model().to_string(),
+            key_account: value.credential().key_account().to_string(),
+            key_present: value.credential().api_key().is_some(),
+            account_auth: value.credential().account_auth(),
+            available: value.available(),
+            unavailable_reason: value.unavailable_reason().map(str::to_string),
         }
     }
 }
 
-/// Project the live Rust lane truth through UniFFI without exposing secrets.
+/// Project one lane from a single loader snapshot without exposing secrets.
 #[uniffi::export]
-pub fn lane_truth_snapshot(lane: CsLlmLane) -> CsLaneTruthSnapshot {
-    lane_truth::lane_truth_snapshot(lane.into(), &Config::load()).into()
+pub fn runtime_llm_lane(lane: CsLlmLane) -> CsRuntimeLlmLane {
+    let runtime_settings = Config::load_runtime_snapshot()
+        .expect("canonical runtime settings must load for lane projection");
+    runtime_settings.llm_lanes().lane(lane.into()).into()
 }
 
 /// Last stop-path serving verdict from the controller runtime owner.
@@ -801,25 +802,29 @@ impl CodescribeConfig {
 
     /// Canonical normalization for OpenAI Responses endpoints.
     /// Strips known suffixes (/v1/responses, /chat/completions, /completions, /v1)
-    /// and forces the /v1/responses tail. Single source of truth in lane_truth;
+    /// and forces the /v1/responses tail through the pure provider registry;
     /// Swift SettingsViewModel delegates here to eliminate duplication (P2-05).
     pub fn normalize_openai_responses_endpoint(&self, endpoint: String) -> String {
-        lane_truth::normalize_openai_responses_endpoint(&endpoint)
+        ProviderKind::OpenAiResponses.normalize_endpoint(&endpoint)
     }
 
     /// Presence booleans for every Keychain-backed API key.
     pub fn key_status(&self) -> CsKeyStatus {
         // This endpoint is explicitly about keys, so it may prompt. Construction
         // of SettingsViewModel/TrayViewModel should remain prompt-free.
-        let _ = Config::load();
+        let runtime_settings = Config::load_runtime_snapshot()
+            .expect("canonical runtime settings must load for key status");
         CsKeyStatus {
-            llm_api_key_set: key_present("LLM_API_KEY"),
-            stt_api_key_set: key_present("STT_API_KEY"),
-            llm_formatting_api_key_set: key_present("LLM_FORMATTING_API_KEY"),
-            llm_assistive_api_key_set: key_present("LLM_ASSISTIVE_API_KEY"),
-            llm_anthropic_api_key_set: key_present("LLM_ANTHROPIC_API_KEY"),
-            llm_xai_api_key_set: key_present("LLM_XAI_API_KEY"),
-            github_token_set: key_present("GITHUB_TOKEN"),
+            llm_api_key_set: key_present("LLM_API_KEY", &runtime_settings),
+            stt_api_key_set: key_present("STT_API_KEY", &runtime_settings),
+            llm_formatting_api_key_set: key_present(
+                "LLM_FORMATTING_API_KEY",
+                &runtime_settings,
+            ),
+            llm_assistive_api_key_set: key_present("LLM_ASSISTIVE_API_KEY", &runtime_settings),
+            llm_anthropic_api_key_set: key_present("LLM_ANTHROPIC_API_KEY", &runtime_settings),
+            llm_xai_api_key_set: key_present("LLM_XAI_API_KEY", &runtime_settings),
+            github_token_set: key_present("GITHUB_TOKEN", &runtime_settings),
         }
     }
 
@@ -828,7 +833,8 @@ impl CodescribeConfig {
     /// The secret never crosses FFI; this method reads env/Keychain internally.
     pub fn test_api_key(&self, account: String) -> Result<CsApiKeyProbeResult, CsError> {
         ensure_known_account(&account)?;
-        Ok(probe_api_key_liveness(&account).into())
+        let runtime_settings = Config::load_runtime_snapshot()?;
+        Ok(probe_api_key_liveness(&account, &runtime_settings).into())
     }
 
     /// Assistive/agent-lane provider catalog with per-provider key presence.
@@ -836,7 +842,8 @@ impl CodescribeConfig {
     /// `discover_models` so dropdown options come from the provider's live API,
     /// not a static fallback.
     pub fn available_providers(&self) -> Vec<CsProviderOption> {
-        let _ = Config::load();
+        let runtime_settings = Config::load_runtime_snapshot()
+            .expect("canonical runtime settings must load for provider catalog");
         ALL_PROVIDERS
             .iter()
             .map(|kind| {
@@ -845,7 +852,7 @@ impl CodescribeConfig {
                 CsProviderOption {
                     id: kind.as_str().to_string(),
                     display_name: kind.display_name().to_string(),
-                    api_key_set: key_present(&account),
+                    api_key_set: key_present(&account, &runtime_settings),
                     api_key_account: account,
                     account_signed_in: account_status.signed_in,
                     account_login_enabled: account_status.client_id_configured,
@@ -1052,7 +1059,7 @@ impl CodescribeConfig {
     /// Missing key is returned as a typed status, not as a thrown bridge error,
     /// so Settings can render "Add API key to discover models" inline.
     pub fn discover_models(&self, provider_id: String) -> CsModelDiscovery {
-        let provider = match ProviderKind::from_str(&provider_id) {
+        let requested_provider = match ProviderKind::from_str(&provider_id) {
             Ok(provider) => provider,
             Err(error) => {
                 return CsModelDiscovery {
@@ -1064,7 +1071,31 @@ impl CodescribeConfig {
             }
         };
 
-        match discover_provider_models(provider) {
+        let runtime_settings = match Config::load_runtime_snapshot() {
+            Ok(runtime_settings) => runtime_settings,
+            Err(error) => {
+                return CsModelDiscovery {
+                    provider_id,
+                    status: "error".to_string(),
+                    message: Some(error.to_string()),
+                    models: Vec::new(),
+                };
+            }
+        };
+        let assistive_lane = runtime_settings.llm_lanes().assistive();
+        if requested_provider != assistive_lane.provider() {
+            return CsModelDiscovery {
+                provider_id,
+                status: "error".to_string(),
+                message: Some(
+                    "Selected provider is not the provider sealed for the assistive lane"
+                        .to_string(),
+                ),
+                models: Vec::new(),
+            };
+        }
+
+        match discover_provider_models(assistive_lane) {
             Ok(result) => {
                 let (status, message) = match result.status {
                     ModelDiscoveryStatus::Fresh => ("fresh".to_string(), None),
@@ -2299,9 +2330,22 @@ fn env_parse<T: std::str::FromStr>(key: &str) -> Option<T> {
         .and_then(|value| value.trim().parse().ok())
 }
 
-/// True when the account env var or Keychain account is present and non-empty.
-fn key_present(account: &str) -> bool {
-    lane_truth::secret(account).is_some()
+/// Secret-presence projection from one loader result. LLM accounts are matched
+/// only against the three sealed lanes; non-LLM control-plane accounts retain
+/// their dedicated settings lookup.
+fn key_present(account: &str, runtime_settings: &RuntimeSettingsSnapshot) -> bool {
+    let lanes = runtime_settings.llm_lanes();
+    for lane in [lanes.main(), lanes.formatting(), lanes.assistive()] {
+        if lane.credential().key_account() == account {
+            return lane.credential().api_key().is_some();
+        }
+    }
+
+    match account {
+        "STT_API_KEY" => runtime_settings.values().stt_api_key.is_some(),
+        "GITHUB_TOKEN" => Config::get_api_key(account).is_some(),
+        _ => false,
+    }
 }
 
 /// One in-flight account login — either a loopback callback server (OpenAI)

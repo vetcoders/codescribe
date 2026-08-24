@@ -17,9 +17,8 @@ use serde::{Deserialize, Serialize};
 use tokio::sync::oneshot;
 use tracing::warn;
 
-use crate::config::Config;
-use crate::llm::lane_truth;
-use crate::llm::provider::{LlmMode, ProviderKind, WireFamily};
+use crate::config::RuntimeLlmLane;
+use crate::llm::provider::{ProviderKind, WireFamily};
 
 /// 5s client timeout for live /models discovery.
 /// P2-09: short to keep Settings responsive. If provider is slow, we degrade to
@@ -30,8 +29,6 @@ use crate::llm::provider::{LlmMode, ProviderKind, WireFamily};
 const DISCOVERY_TIMEOUT: Duration = Duration::from_secs(5);
 /// Last-good models cache filename under the Codescribe config dir.
 const CACHE_FILE_NAME: &str = "model_discovery_cache.json";
-/// Anthropic Models API URL (not OpenAI-compatible `/v1/models`).
-const ANTHROPIC_MODELS_ENDPOINT: &str = "https://api.anthropic.com/v1/models";
 /// Required `anthropic-version` header for the Models endpoint.
 const ANTHROPIC_VERSION: &str = "2023-06-01";
 
@@ -64,7 +61,7 @@ pub struct ModelDiscoveryResult {
 pub enum ModelDiscoveryError {
     NoKey {
         provider: ProviderKind,
-        env_key: &'static str,
+        env_key: String,
     },
     Network {
         provider: ProviderKind,
@@ -284,25 +281,27 @@ fn run_test_after_claim(provider: ProviderKind) {
     }
 }
 
-/// Discover models for a provider using the already-supported config/key path.
+/// Discover models through one already-resolved runtime lane.
 ///
-/// `Config::load()` is intentionally the first operation: it provides the live
-/// settings snapshot consumed by `lane_truth` exactly like the provider runtime.
+/// The endpoint, provider, protocol, and credential all come from the same
+/// immutable settings snapshot as the request path.
 /// Missing keys are hard `no_key` failures and do not fall back to stale cache;
 /// network/http/parse failures return last-good cache when available.
 ///
 /// P2-08: each call claims a per-provider generation; a newer call for the same
 /// provider aborts the in-flight fetch (`tokio::select!` on the cancel channel)
 /// and a superseded result never writes cache — it surfaces as `Cancelled`.
-pub fn discover_models(
-    provider: ProviderKind,
-) -> Result<ModelDiscoveryResult, ModelDiscoveryError> {
-    let config = Config::load();
-    let key_name = provider.api_key_env_key();
-    let api_key = lane_truth::secret(key_name).ok_or(ModelDiscoveryError::NoKey {
-        provider,
-        env_key: key_name,
-    })?;
+pub fn discover_models(lane: &RuntimeLlmLane) -> Result<ModelDiscoveryResult, ModelDiscoveryError> {
+    let provider = lane.provider();
+    let key_name = lane.credential().key_account();
+    let api_key = lane
+        .credential()
+        .api_key()
+        .map(str::to_string)
+        .ok_or(ModelDiscoveryError::NoKey {
+            provider,
+            env_key: key_name.to_string(),
+        })?;
 
     let (generation, cancelled) = claim_generation(provider);
     #[cfg(test)]
@@ -329,9 +328,11 @@ pub fn discover_models(
             // provider serves the same OpenAI-compatible `/v1/models`.
             match provider.wire_family() {
                 WireFamily::OpenAiResponses => {
-                    fetch_openai_models(&client, &config, provider, &api_key).await
+                    fetch_openai_models(&client, lane.endpoint(), provider, &api_key).await
                 }
-                WireFamily::AnthropicMessages => fetch_anthropic_models(&client, &api_key).await,
+                WireFamily::AnthropicMessages => {
+                    fetch_anthropic_models(&client, lane.endpoint(), &api_key).await
+                }
             }
         };
         // `biased` polls the cancel channel first: a pre-fired cancel aborts
@@ -392,12 +393,11 @@ fn commit_fetch_outcome(
 /// gateway is discovered against the same host that will serve inference.
 async fn fetch_openai_models(
     client: &Client,
-    config: &Config,
+    lane_endpoint: &str,
     provider: ProviderKind,
     api_key: &str,
 ) -> Result<Vec<DiscoveredModel>, ModelDiscoveryError> {
-    let endpoint = lane_truth::provider_endpoint(LlmMode::Assistive, provider, config);
-    let endpoint = openai_models_endpoint(&endpoint)?;
+    let endpoint = provider_models_endpoint(lane_endpoint, provider)?;
 
     let response = client
         .get(endpoint)
@@ -427,10 +427,11 @@ async fn fetch_openai_models(
 /// parse error rather than a silent truncation of the picker.
 async fn fetch_anthropic_models(
     client: &Client,
+    lane_endpoint: &str,
     api_key: &str,
 ) -> Result<Vec<DiscoveredModel>, ModelDiscoveryError> {
     let provider = ProviderKind::AnthropicMessages;
-    let endpoint = anthropic_models_endpoint();
+    let endpoint = provider_models_endpoint(lane_endpoint, provider)?;
     let mut after_id: Option<String> = None;
     let mut models = Vec::new();
 
@@ -545,11 +546,13 @@ fn http_status_error(
 /// `/v1/chat/completions`, or a bare proxy base — so the trailing inference
 /// segment is swapped for `models` rather than assumed. Query and fragment are
 /// dropped: they belong to the inference call, not to discovery.
-fn openai_models_endpoint(endpoint: &str) -> Result<String, ModelDiscoveryError> {
-    let provider = ProviderKind::OpenAiResponses;
+fn provider_models_endpoint(
+    endpoint: &str,
+    provider: ProviderKind,
+) -> Result<String, ModelDiscoveryError> {
     let mut url = reqwest::Url::parse(endpoint).map_err(|error| ModelDiscoveryError::Parse {
         provider,
-        message: format!("invalid OpenAI endpoint '{endpoint}': {error}"),
+            message: format!("invalid {} endpoint '{endpoint}': {error}", provider.display_name()),
     })?;
     url.set_query(None);
     url.set_fragment(None);
@@ -569,7 +572,9 @@ fn openai_models_endpoint(endpoint: &str) -> Result<String, ModelDiscoveryError>
         // already right
     } else if next
         .last()
-        .is_some_and(|segment| segment == "responses" || segment == "completions")
+        .is_some_and(|segment| {
+            segment == "responses" || segment == "completions" || segment == "messages"
+        })
     {
         next.pop();
         if next.last().is_some_and(|segment| segment == "chat") {
@@ -583,7 +588,7 @@ fn openai_models_endpoint(endpoint: &str) -> Result<String, ModelDiscoveryError>
     url.path_segments_mut()
         .map_err(|_| ModelDiscoveryError::Parse {
             provider,
-            message: format!("invalid OpenAI endpoint base '{endpoint}'"),
+            message: format!("invalid {} endpoint base '{endpoint}'", provider.display_name()),
         })?
         .clear()
         .extend(next.iter().map(String::as_str));
@@ -688,27 +693,6 @@ fn write_cache(
     })
 }
 
-/// Read an env var, treating whitespace-only as unset.
-#[cfg(test)]
-fn env_non_empty(key: &str) -> Option<String> {
-    std::env::var(key)
-        .ok()
-        .map(|value| value.trim().to_string())
-        .filter(|value| !value.is_empty())
-}
-
-/// Anthropic's models endpoint. Unlike the OpenAI family it is not derived from
-/// configuration — the Messages wire has no per-lane endpoint setting — so the
-/// override exists only under `cfg(test)`, to point at a mock server.
-fn anthropic_models_endpoint() -> String {
-    #[cfg(test)]
-    if let Some(endpoint) = env_non_empty("CODESCRIBE_TEST_ANTHROPIC_MODELS_ENDPOINT") {
-        return endpoint;
-    }
-
-    ANTHROPIC_MODELS_ENDPOINT.to_string()
-}
-
 /// Discovery is exercised against a mock HTTP server and an isolated data dir,
 /// so no case depends on a real provider or on the operator's own config.
 ///
@@ -721,6 +705,11 @@ mod tests {
     use mockito::Matcher;
     use serial_test::serial;
     use tempfile::TempDir;
+
+    fn discover_assistive_models() -> Result<ModelDiscoveryResult, ModelDiscoveryError> {
+        let runtime_settings = Config::load_runtime_snapshot().expect("runtime settings seal");
+        discover_models(runtime_settings.llm_lanes().assistive())
+    }
 
     /// Live OpenAI discovery reports `Fresh` and lands in the cache verbatim,
     /// so the next offline refresh has something to fall back to.
@@ -742,7 +731,7 @@ mod tests {
             .with_body(r#"{"object":"list","data":[{"id":"gpt-live"},{"id":"gpt-other"}]}"#)
             .create();
 
-        let result = discover_models(ProviderKind::OpenAiResponses)
+        let result = discover_assistive_models()
             .expect("discover_models should succeed in OpenAI test path");
 
         assert_eq!(result.status, ModelDiscoveryStatus::Fresh);
@@ -774,10 +763,11 @@ mod tests {
     fn anthropic_models_parse_display_names_and_pagination() {
         let mut env = TestEnv::new();
         let mut server = mockito::Server::new();
+        env.set("LLM_ASSISTIVE_PROVIDER", "anthropic-messages");
         env.set("LLM_ANTHROPIC_API_KEY", "anthropic-test");
         env.set(
-            "CODESCRIBE_TEST_ANTHROPIC_MODELS_ENDPOINT",
-            &format!("{}/v1/models", server.url()),
+            "LLM_ANTHROPIC_ENDPOINT",
+            &format!("{}/v1/messages", server.url()),
         );
 
         let _page_1 = server
@@ -800,7 +790,7 @@ mod tests {
             )
             .create();
 
-        let result = discover_models(ProviderKind::AnthropicMessages)
+        let result = discover_assistive_models()
             .expect("discover_models should succeed in Anthropic test path");
 
         assert_eq!(result.status, ModelDiscoveryStatus::Fresh);
@@ -831,14 +821,15 @@ mod tests {
     fn no_key_returns_error_without_request() {
         let mut env = TestEnv::new();
         let mut server = mockito::Server::new();
+        env.set("LLM_ASSISTIVE_PROVIDER", "anthropic-messages");
         env.remove("LLM_ANTHROPIC_API_KEY");
         env.set(
-            "CODESCRIBE_TEST_ANTHROPIC_MODELS_ENDPOINT",
-            &format!("{}/v1/models", server.url()),
+            "LLM_ANTHROPIC_ENDPOINT",
+            &format!("{}/v1/messages", server.url()),
         );
         let _mock = server.mock("GET", "/v1/models").expect(0).create();
 
-        let err = discover_models(ProviderKind::AnthropicMessages)
+        let err = discover_assistive_models()
             .expect_err("discover_models should fail without key in this Anthropic error test");
 
         assert_eq!(err.code(), "no_key");
@@ -864,7 +855,7 @@ mod tests {
             .with_status(200)
             .with_body(r#"{"data":[{"id":"gpt-cached"}]}"#)
             .create();
-        let fresh = discover_models(ProviderKind::OpenAiResponses)
+        let fresh = discover_assistive_models()
             .expect("discover_models should succeed for cache freshness test");
         assert_eq!(fresh.status, ModelDiscoveryStatus::Fresh);
 
@@ -873,7 +864,7 @@ mod tests {
             .with_status(503)
             .with_body("temporarily unavailable")
             .create();
-        let cached = discover_models(ProviderKind::OpenAiResponses)
+        let cached = discover_assistive_models()
             .expect("discover_models should return cached result without network");
 
         assert_eq!(
@@ -914,7 +905,7 @@ mod tests {
             let _ = claim_generation(provider);
         }));
 
-        let err = discover_models(ProviderKind::OpenAiResponses)
+        let err = discover_assistive_models()
             .expect_err("superseded discovery must return cancelled");
 
         assert_eq!(err.code(), "cancelled");
@@ -947,7 +938,7 @@ mod tests {
             .with_status(200)
             .with_body(r#"{"data":[{"id":"gpt-last-good"}]}"#)
             .create();
-        let fresh = discover_models(ProviderKind::OpenAiResponses)
+        let fresh = discover_assistive_models()
             .expect("seed discovery should succeed before staleness test");
 
         // A fetch that completes after being superseded must commit nothing.
@@ -1055,8 +1046,9 @@ mod tests {
             this.set("CODESCRIBE_DATA_DIR", &data_dir);
             this.set("CODESCRIBE_DISABLE_KEYCHAIN", "1");
             this.remove("LLM_ASSISTIVE_API_KEY");
+            this.remove("LLM_ASSISTIVE_PROVIDER");
             this.remove("LLM_ANTHROPIC_API_KEY");
-            this.remove("CODESCRIBE_TEST_ANTHROPIC_MODELS_ENDPOINT");
+            this.remove("LLM_ANTHROPIC_ENDPOINT");
             this.remove("LLM_ASSISTIVE_ENDPOINT");
             this.remove("LLM_ENDPOINT");
             this

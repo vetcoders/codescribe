@@ -12,10 +12,11 @@ use reqwest::blocking::multipart::{Form, Part};
 use reqwest::blocking::{Client, Response};
 use serde_json::json;
 
-use crate::config::Config;
+use crate::config::{Config, RuntimeLlmLane, RuntimeSettingsSnapshot};
 use crate::config::keychain::KEYCHAIN_ACCOUNTS;
-use crate::llm::lane_truth;
-use crate::llm::provider::{ALL_PROVIDERS, LlmMode, ProviderKind, WireFamily};
+#[cfg(test)]
+use crate::llm::provider::ProviderKind;
+use crate::llm::provider::WireFamily;
 
 /// Wall-clock budget for connect and request; probes must stay cheap for Settings.
 const PROBE_TIMEOUT: Duration = Duration::from_secs(10);
@@ -81,7 +82,10 @@ impl ApiKeyLivenessResult {
 /// the default one, a vendor's own key through the registry — and is probed by
 /// *wire family*, not by vendor, so a new provider on an existing protocol
 /// gets a real verdict instead of "unsupported".
-pub fn probe_api_key_liveness(account: &str) -> ApiKeyLivenessResult {
+pub fn probe_api_key_liveness(
+    account: &str,
+    snapshot: &RuntimeSettingsSnapshot,
+) -> ApiKeyLivenessResult {
     if !KEYCHAIN_ACCOUNTS.contains(&account) {
         return ApiKeyLivenessResult::new(
             account,
@@ -90,8 +94,22 @@ pub fn probe_api_key_liveness(account: &str) -> ApiKeyLivenessResult {
         );
     }
 
-    let config = Config::load();
-    let api_key = lane_truth::secret(account);
+    let config = snapshot.values();
+    let llm_lane = [
+        snapshot.llm_lanes().main(),
+        snapshot.llm_lanes().formatting(),
+        snapshot.llm_lanes().assistive(),
+    ]
+    .into_iter()
+    .find(|lane| lane.credential().key_account() == account);
+    let api_key = llm_lane
+        .and_then(|lane| lane.credential().api_key().map(str::to_string))
+        .or_else(|| (account == "STT_API_KEY").then(|| config.stt_api_key.clone()).flatten())
+        .or_else(|| {
+            (account == "GITHUB_TOKEN")
+                .then(|| crate::config::keychain::cached_runtime_key(account))
+                .flatten()
+        });
     let stt_is_unauthenticated = account == "STT_API_KEY"
         && config
             .stt_endpoint
@@ -131,32 +149,21 @@ pub fn probe_api_key_liveness(account: &str) -> ApiKeyLivenessResult {
         return probe_github_token(&client, account, &api_key);
     }
 
-    // The lane accounts belong to the default provider; every other account is
-    // some provider's own key, resolved through the registry so a new vendor
-    // gets a real probe instead of "unsupported".
-    let provider = match account {
-        "LLM_API_KEY" | "LLM_FORMATTING_API_KEY" | "LLM_ASSISTIVE_API_KEY" => {
-            Some(ProviderKind::default())
-        }
-        _ => ALL_PROVIDERS
-            .into_iter()
-            .find(|kind| kind.api_key_env_key() == account),
-    };
-    let Some(provider) = provider else {
+    let Some(lane) = llm_lane else {
         return ApiKeyLivenessResult::new(
             account,
             ApiKeyLivenessStatus::Unsupported,
-            "no liveness probe is available for this key",
+            "no sealed runtime LLM lane uses this key account",
         );
     };
 
     // Probe shape follows the protocol, not the vendor: xAI answers the same
     // Responses ping as OpenAI.
-    match provider.wire_family() {
+    match lane.wire_family() {
         WireFamily::OpenAiResponses => {
-            probe_responses_key(&client, &config, provider, account, &api_key)
+            probe_responses_key(&client, lane, account, &api_key)
         }
-        WireFamily::AnthropicMessages => probe_anthropic_key(&client, &config, account, &api_key),
+        WireFamily::AnthropicMessages => probe_anthropic_key(&client, lane, account, &api_key),
     }
 }
 
@@ -280,25 +287,12 @@ pub fn classify_probe_response(status: StatusCode, body: &str) -> ApiKeyLiveness
 /// vendor's endpoint and model.
 fn probe_responses_key(
     client: &Client,
-    config: &Config,
-    provider: ProviderKind,
+    lane: &RuntimeLlmLane,
     account: &str,
     api_key: &str,
 ) -> ApiKeyLivenessResult {
-    // The three lane accounts keep their per-account endpoint/model resolution
-    // (they can point at a self-hosted server); a vendor's own key is probed
-    // against that vendor's endpoint and model.
-    let (endpoint, model) = if provider.owns_generic_lane_config() {
-        (
-            lane_truth::endpoint_for_account(config, account),
-            lane_truth::model_for_account(config, account),
-        )
-    } else {
-        (
-            lane_truth::provider_endpoint(LlmMode::Assistive, provider, config),
-            lane_truth::model_for_provider(LlmMode::Assistive, provider, config),
-        )
-    };
+    let endpoint = lane.endpoint().to_string();
+    let model = lane.model();
     let request = json!({
         "model": model,
         "input": [{
@@ -324,13 +318,12 @@ fn probe_responses_key(
 /// `x-api-key` + `anthropic-version` header pair that endpoint requires.
 fn probe_anthropic_key(
     client: &Client,
-    config: &Config,
+    lane: &RuntimeLlmLane,
     account: &str,
     api_key: &str,
 ) -> ApiKeyLivenessResult {
-    let endpoint = lane_truth::anthropic_messages_endpoint();
-    let model =
-        lane_truth::model_for_provider(LlmMode::Assistive, ProviderKind::AnthropicMessages, config);
+    let endpoint = lane.endpoint().to_string();
+    let model = lane.model();
     let request = json!({
         "model": model,
         "messages": [{

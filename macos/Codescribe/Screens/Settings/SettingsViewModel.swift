@@ -1039,7 +1039,7 @@ final class SettingsViewModel: ObservableObject {
   private let mcpAdmin: MCPAdminEngine?
   private let hotkeys: HotkeysEngine?
   private let licenseService: LicenseService
-  private let laneTruthProvider: (CsLlmLane) -> CsLaneTruthSnapshot
+  private let runtimeLlmLaneProvider: (CsLlmLane) -> CsRuntimeLlmLane
   private var modelDiscoveryGenerations: [String: Int] = [:]
   private var assistiveModelEditGeneration = 0
   private var pendingAssistiveModelSelection:
@@ -1058,8 +1058,8 @@ final class SettingsViewModel: ObservableObject {
     hotkeys: HotkeysEngine? = nil,
     licenseService: LicenseService? = nil,
     buildInfo: AppBuildInfo = .current(),
-    laneTruthProvider: @escaping (CsLlmLane) -> CsLaneTruthSnapshot = { lane in
-      laneTruthSnapshot(lane: lane)
+    runtimeLlmLaneProvider: @escaping (CsLlmLane) -> CsRuntimeLlmLane = { lane in
+      runtimeLlmLane(lane: lane)
     },
     servingStatusProvider: @escaping () -> LastServingVerdict? = {
       guard let verdict = currentServingVerdict() else { return nil }
@@ -1078,7 +1078,7 @@ final class SettingsViewModel: ObservableObject {
     self.hotkeys = hotkeys
     self.licenseService = licenseService ?? .preview
     self.buildInfo = buildInfo
-    self.laneTruthProvider = laneTruthProvider
+    self.runtimeLlmLaneProvider = runtimeLlmLaneProvider
     self.servingStatusProvider = servingStatusProvider
 
     // Reading the settings snapshot is passive: it does not write config
@@ -1635,8 +1635,8 @@ final class SettingsViewModel: ObservableObject {
 
   /// Effective lane state after provider/shared fallbacks.
   func llmLane(_ lane: LLMLane) -> LLMLaneModel {
-    let truth = laneTruthProvider(lane.bridgeLane)
-    let providerId = truth.providerId
+    let resolvedLane = runtimeLlmLaneProvider(lane.bridgeLane)
+    let providerId = resolvedLane.providerId
     let configuredModel =
       settings[keyPath: lane.modelPath]?
       .trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
@@ -1646,11 +1646,11 @@ final class SettingsViewModel: ObservableObject {
       lane: lane,
       providerId: providerId,
       provider: providers.first { $0.id == providerId } ?? providers.first,
-      resolvedEndpoint: truth.endpoint,
+      resolvedEndpoint: resolvedLane.endpoint,
       configuredModel: configuredModel,
-      resolvedModel: truth.model,
+      resolvedModel: resolvedLane.model,
       discoveryEndpoint: lane == .assistive
-        ? truth.endpoint
+        ? resolvedLane.endpoint
         : resolvedOpenAIEndpoint(for: .assistive),
       discovery: modelDiscoveries[discoveryProviderId]
         ?? CsModelDiscovery.sample(for: discoveryProviderId)
@@ -1665,8 +1665,7 @@ final class SettingsViewModel: ObservableObject {
 
   private func resolvedOpenAIEndpoint(for lane: LLMLane) -> String {
     // P2-05: lane/shared/default resolution stays here (UI settings surface);
-    // suffix normalization is now delegated to core via FFI (single truth in
-    // lane_truth::normalize_openai_responses_endpoint, exposed in bridge/config).
+    // suffix normalization is delegated to the core provider registry via FFI.
     let laneValue =
       settings[keyPath: lane.endpointPath]?
       .trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
@@ -1680,16 +1679,7 @@ final class SettingsViewModel: ObservableObject {
         ? sharedValue
         : "https://api.openai.com/v1/responses")
 
-    if let engine {
-      return engine.normalizeOpenaiResponsesEndpoint(base)
-    }
-    // Fallback for previews / no-engine (kept tiny; real path always has engine).
-    // NOTE: suffix list duplication removed (L2 over-correct); core lane_truth::normalize
-    // (via bridge) is the single source of truth for responses endpoint. Fallback does
-    // minimal /v1 strip only to avoid duplicating known-suffixes array.
-    var b = base.trimmingCharacters(in: .whitespacesAndNewlines.union(.init(charactersIn: "/")))
-    if b.hasSuffix("/v1") { b.removeLast(3) }
-    return b + "/v1/responses"
+    return engine?.normalizeOpenaiResponsesEndpoint(base) ?? base
   }
 
   /// Persist an endpoint override for one LLM lane. Whitespace-only input is
@@ -2678,8 +2668,8 @@ final class SettingsViewModel: ObservableObject {
       agentStatus: MockAgentStatusEngine(),
       mcpAdmin: MockMCPAdminEngine(),
       hotkeys: MockHotkeysEngine(),
-      laneTruthProvider: { lane in
-        CsLaneTruthSnapshot(
+      runtimeLlmLaneProvider: { lane in
+        CsRuntimeLlmLane(
           lane: lane,
           providerId: "openai-responses",
           endpoint: "https://api.openai.com/v1/responses",

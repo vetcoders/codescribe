@@ -590,8 +590,8 @@ final class SettingsTruthTests: XCTestCase {
       engine: MockSettingsEngine { key, value in
         writes.append((key, value))
       },
-      laneTruthProvider: { lane in
-        CsLaneTruthSnapshot(
+      runtimeLlmLaneProvider: { lane in
+        CsRuntimeLlmLane(
           lane: lane,
           providerId: "openai-responses",
           endpoint: "https://api.openai.com/v1/responses",
