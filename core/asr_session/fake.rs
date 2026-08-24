@@ -12,7 +12,7 @@
 
 use std::collections::VecDeque;
 
-use super::events::{AsrErrorKind, AsrSessionEvent, EventIdentity, SessionId, UsageEvent};
+use super::events::{AsrErrorKind, AsrSessionEvent, SessionId, UsageEvent};
 use super::provider::{AsrSessionProvider, RefinerMode, SessionInput};
 
 /// Utterance id the fake stamps on session-scoped records (its closing usage
@@ -152,11 +152,8 @@ impl AsrSessionProvider for FakeAsrSessionProvider {
         while !self.script.is_empty() {
             self.release_one();
         }
-        if let Some(session_id) = self.session_id.clone() {
-            let identity =
-                EventIdentity::new(session_id, SESSION_SCOPE_UTTERANCE, self.next_sequence());
+        if self.session_id.is_some() {
             self.ready.push(AsrSessionEvent::Usage(UsageEvent {
-                identity,
                 audio_secs: self.pushed_secs(),
                 billable_units: None,
             }));

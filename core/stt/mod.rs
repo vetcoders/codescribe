@@ -69,29 +69,6 @@ enum SttEngine {
     Apple,
 }
 
-/// Resolve the active engine: an explicit `CODESCRIBE_STT_ENGINE` value when it
-/// names one, otherwise the platform auto policy.
-fn selected_engine() -> SttEngine {
-    match std::env::var(ENV_STT_ENGINE) {
-        Ok(value) => requested_engine(&value).unwrap_or_else(default_engine),
-        Err(_) => default_engine(),
-    }
-}
-
-/// Parse an explicit engine request. `""` and `"auto"` yield `None` (defer to
-/// the auto policy); an unrecognized value falls back to Candle rather than
-/// failing the recording.
-fn requested_engine(value: &str) -> Option<SttEngine> {
-    match value.trim().to_ascii_lowercase().as_str() {
-        "onnx" => SttEngine::Onnx,
-        "apple" => SttEngine::Apple,
-        "candle" | "whisper" => SttEngine::Candle,
-        "" | "auto" => return None,
-        _ => SttEngine::Candle,
-    }
-    .into()
-}
-
 /// Auto policy: Apple only when it can actually run, otherwise Candle.
 fn default_engine() -> SttEngine {
     // AUTO only selects Apple when the SpeechAnalyzer bridge is actually
@@ -210,33 +187,6 @@ fn run_apple_live_only<T>(
         warn!("Apple STT live-only: failed during {}: {:#}", context, err);
         err.context(format!("Apple STT live path failed during {context}"))
     })
-}
-
-/// Apple-first long transcription with emergency Whisper only when Apple hard-fails
-/// and there is real audio to recover from.
-fn apple_live_or_emergency_whisper(
-    context: &str,
-    audio: &[f32],
-    sample_rate: u32,
-    language: Option<&str>,
-) -> anyhow::Result<RawTranscript> {
-    match run_apple_live_only(context, || {
-        apple_stt::transcribe_long_with_segments(audio, sample_rate, language)
-    }) {
-        Ok(raw) => Ok(raw),
-        Err(err) if !audio.is_empty() && sample_rate > 0 => {
-            warn!(
-                "Apple live hard-fail during {context} — emergency Whisper recovery ({:#})",
-                err
-            );
-            candle_transcribe_long_with_segments(audio, sample_rate, language).map_err(|werr| {
-                werr.context(format!(
-                    "Apple live failed and emergency Whisper also failed during {context}: {err:#}"
-                ))
-            })
-        }
-        Err(err) => Err(err),
-    }
 }
 
 /// Preferential engine label for UI honesty (`local_apple` / `local_whisper` / …).

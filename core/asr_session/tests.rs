@@ -7,8 +7,7 @@
 use serial_test::serial;
 
 use super::events::{
-    AsrErrorKind, AsrSessionEvent, AudioRange, ErrorEvent, EventIdentity, SessionId,
-    TranscriptEvent, UsageEvent,
+    AsrErrorKind, AsrSessionEvent, AudioRange, ErrorEvent, SessionId, TranscriptEvent, UsageEvent,
 };
 use super::fake::FakeAsrSessionProvider;
 use super::ingest::{IngestVerdict, SessionIngest};
@@ -22,11 +21,6 @@ const ENV_STT_ENGINE: &str = "CODESCRIBE_STT_ENGINE";
 /// Session id used across the ordering tests.
 fn session() -> SessionId {
     SessionId::new("session-a").expect("non-blank session id")
-}
-
-/// Identity in the shared test session for `utterance` at `sequence`.
-fn identity(utterance: u64, sequence: u64) -> EventIdentity {
-    EventIdentity::new(session(), utterance, sequence)
 }
 
 /// Partial hypothesis for `utterance` at `sequence`.
@@ -200,7 +194,6 @@ fn foreign_session_events_are_refused() {
     let mut ingest = SessionIngest::new(session());
     let foreign = SessionId::new("session-b").expect("non-blank session id");
     let event = AsrSessionEvent::Final(TranscriptEvent {
-        identity: EventIdentity::new(foreign, 7, 1),
         text: "z innej sesji".to_string(),
         range: None,
     });

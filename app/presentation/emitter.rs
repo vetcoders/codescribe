@@ -9,9 +9,7 @@
 
 use std::sync::Arc;
 
-use codescribe_core::pipeline::contracts::{
-    AcousticTranscriptIdentity, DeltaSink, EngineEvent, EventSink, TranscriptSegment,
-};
+use codescribe_core::pipeline::contracts::{DeltaSink, EngineEvent, EventSink, TranscriptSegment};
 use codescribe_core::pipeline::streaming::BufferedEmitter;
 use tokio::sync::Mutex;
 use tracing::{debug, info};
@@ -47,7 +45,6 @@ struct TranscriptUtteranceRecord {
     start_ts: f32,
     end_ts: f32,
     segments: Vec<TranscriptSegment>,
-    acoustic: Option<AcousticTranscriptIdentity>,
 }
 
 impl TranscriptUtteranceRecord {
@@ -60,7 +57,6 @@ impl TranscriptUtteranceRecord {
             start_seconds: self.start_ts,
             end_seconds: self.end_ts,
             segments: self.segments.clone(),
-            acoustic: self.acoustic.clone(),
         }
     }
 }
@@ -133,13 +129,6 @@ impl TranscriptReducer {
             // Fast path + P3-03: search from tail (last first). Collapsed if for clippy.
             for (index, rec) in self.committed.iter_mut().enumerate().rev() {
                 if normalize_transcript_fragment(&rec.text) == previous {
-                    if rec.acoustic.is_some() {
-                        tracing::warn!(
-                            utterance_id = rec.utterance_id,
-                            "unanchored late correction refused for PCM-anchored utterance"
-                        );
-                        return None;
-                    }
                     rec.text = corrected;
                     return Some(index);
                 }
@@ -176,7 +165,6 @@ impl TranscriptReducer {
         raw_text: &str,
         timing: (f32, f32),
         segments: Vec<TranscriptSegment>,
-        acoustic: Option<AcousticTranscriptIdentity>,
     ) -> Option<String> {
         let (start_ts, end_ts) = timing;
         let committed_text = {
@@ -205,7 +193,6 @@ impl TranscriptReducer {
             existing.start_ts = start_ts;
             existing.end_ts = end_ts;
             existing.segments = segments;
-            existing.acoustic = acoustic;
             return None;
         }
 
@@ -216,7 +203,6 @@ impl TranscriptReducer {
             start_ts,
             end_ts,
             segments,
-            acoustic,
         });
         Some(committed_text)
     }
@@ -262,13 +248,6 @@ impl TranscriptReducer {
         else {
             return false;
         };
-        if record.acoustic.is_some() {
-            tracing::warn!(
-                utterance_id,
-                "unanchored post-commit patch refused for PCM-anchored utterance"
-            );
-            return false;
-        }
         // Last-mile duplicate guard. A patch is computed against the canvas as
         // it stood when Layer 1 was dispatched; by the time it arrives SFSpeech
         // may have restated the SAME utterance at greater length, already
@@ -330,7 +309,6 @@ impl TranscriptReducer {
                 start_ts,
                 end_ts,
                 segments,
-                acoustic,
                 ..
             } => {
                 return self.finalize(
@@ -339,7 +317,6 @@ impl TranscriptReducer {
                     raw_text,
                     (*start_ts, *end_ts),
                     segments.clone(),
-                    acoustic.clone(),
                 );
             }
             EngineEvent::ReplaceRange { .. } | EngineEvent::InsertAnnotation { .. } => {
@@ -810,11 +787,9 @@ impl EventSink for PresentationEmitter {
 mod tests {
     use super::{DeltaRenderMode, PresentationEmitter, SessionTranscriptState};
     use codescribe_core::pipeline::contracts::{
-        AcousticTranscriptIdentity, AnnotationKind, EngineEvent, EventSink, LayerSource,
-        LayerSummary, NonSpeechEvidence, SidebandEvidence, SidebandEvidenceKind,
-        SidebandProvenance, TranscriptSegment,
+        AnnotationKind, EngineEvent, EventSink, LayerSource, LayerSummary, NonSpeechEvidence,
+        SidebandEvidence, SidebandEvidenceKind, SidebandProvenance, TranscriptSegment,
     };
-    use codescribe_core::stt::tail_provider::TailSampleRange;
     use std::sync::{Arc, Mutex as StdMutex};
     use tokio::sync::Mutex;
 
@@ -1038,43 +1013,6 @@ mod tests {
         };
         assert!(state.apply_layered_patch(&event));
         assert_eq!(state.rendered_text(), "hello world");
-    }
-
-    #[test]
-    fn anchored_utterance_refuses_unanchored_post_commit_patch() {
-        let mut state = SessionTranscriptState::default();
-        let range = codescribe_core::stt::tail_provider::TailSampleRange {
-            session: "anchored".into(),
-            capture_epoch: 3,
-            sample_start: 0,
-            sample_end: 16_000,
-        };
-        state.finalize(
-            1,
-            "Iwo",
-            "iwo",
-            (0.0, 1.0),
-            Vec::new(),
-            Some(AcousticTranscriptIdentity {
-                range: range.clone(),
-                spans: vec![
-                    codescribe_core::pipeline::contracts::AcousticTranscriptSpan {
-                        text: "Iwo".into(),
-                        range,
-                        grain: codescribe_core::pipeline::contracts::AcousticSpanGrain::Phrase,
-                    },
-                ],
-            }),
-        );
-        let patch = EngineEvent::ReplaceRange {
-            utterance_id: 1,
-            start: 0,
-            end: 3,
-            text: "piwo".into(),
-            source: LayerSource::TailPatch,
-        };
-        assert!(!state.apply_layered_patch(&patch));
-        assert_eq!(state.rendered_text(), "Iwo");
     }
 
     /// InsertAnnotation appends annotation text into the committed utterance.

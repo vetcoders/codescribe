@@ -679,21 +679,6 @@ pub enum AcousticSpanGrain {
     Utterance,
 }
 
-/// One lexical hypothesis pinned to the canonical capture PCM clock.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-pub struct AcousticTranscriptSpan {
-    pub text: String,
-    pub range: TailSampleRange,
-    pub grain: AcousticSpanGrain,
-}
-
-/// Acoustic identity of one committed utterance and its honest-grain spans.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-pub struct AcousticTranscriptIdentity {
-    pub range: TailSampleRange,
-    pub spans: Vec<AcousticTranscriptSpan>,
-}
-
 /// Events emitted by the transcription engine.
 ///
 /// These are semantic events — the engine communicates what happened
@@ -780,10 +765,6 @@ pub enum EngineEvent {
         compression_ratio: Option<f32>,
         quality_gate_dropped: bool,
         confidence_flags: Vec<TranscriptionConfidenceFlag>,
-        /// Canonical PCM identity. `None` is legacy/unanchored evidence and is
-        /// surfaced as a failed Transcript Bus coverage receipt.
-        #[serde(default, skip_serializing_if = "Option::is_none")]
-        acoustic: Option<AcousticTranscriptIdentity>,
     },
 
     /// Replace a bounded char range inside an already-committed utterance.

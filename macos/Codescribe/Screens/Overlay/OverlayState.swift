@@ -334,19 +334,12 @@ final class OverlayState: ObservableObject {
   private var recording = false
   /// True after `on_vad_active(true)` until an empty-or-nonempty final consumes it.
   private var speechWasActive = false
-  /// Reason from `on_no_speech`, captured before the terminal stop so
-  /// `finalizeTranscript` can pick the right notice when it resolves to empty.
+  /// Reason from `on_no_speech`, captured before the terminal stop.
   private var pendingNoSpeechMessage: String?
-  private var committedSegments: [OverlayTranscriptSegment] = []
   /// Global transcript markers captured by the agent combo. They remain
   /// independent from per-utterance semantic annotations so the authoritative
   /// final pass cannot erase context references.
   @Published private var contextMarkers: [OverlayContextMarker] = []
-  /// Authoritative post-stop transcript pushed by the Rust controller
-  /// (`on_final_transcript_ready` → LocalFinalPass `final_formatted_text`) — the
-  /// SAME text the delivery/paste and tray "Copy" use. When present it is the
-  /// FINAL the overlay shows, instead of the raw per-utterance streaming assembly.
-  private var authoritativeFinalText: String?
   /// The delivered (pre-user-edit) text at the moment we entered .formatted.
   /// Captured for P0-D quality loop: diff delivered→edited on Copy/Send/close.
   private var deliveredText: String = ""
@@ -645,7 +638,6 @@ final class OverlayState: ObservableObject {
   /// Visual runs for the highlight canvas. Empty when the lane is off.
   var highlightCanvasRuns: [OverlayCanvasRun] {
     guard highlightsEnabled else { return [.text(listeningDisplay)] }
-    let segments = committedSegments.map { (utteranceId: $0.utteranceId, text: $0.text) }
     let runs = OverlayCanvas.runs(
       segments: segments,
       highlights: highlights,
@@ -868,27 +860,6 @@ final class OverlayState: ObservableObject {
     }
   }
 
-  /// Arm the one-step revert slot after an AUTO-formatted FINAL, so Revert
-  /// restores the raw first version — the same undo manual Format already has.
-  /// Operator agreement (2026-08-13, re-raised 2026-08-14): an auto-formatted
-  /// transcript must never be a one-way door; before this, `preFormatText` was
-  /// only set by the manual path, so auto results showed no Revert at all.
-  /// Only arms when auto formatting is actually on, the shown text came from
-  /// the controller's authoritative final, a different non-empty raw assembly
-  /// exists, and no manual slot is already held.
-  private func armAutoFormatRevertSlot(shown: String) {
-    guard autoFormatLevel != .off,
-      usableAuthoritativeFinalText != nil,
-      preFormatText == nil
-    else { return }
-    let rawSource = insertingContextMarkers(into: rawLiveText)
-    guard !rawSource.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
-      rawSource != shown
-    else { return }
-    preFormatText = rawSource
-    preFormatLevel = .off
-  }
-
   func retranscribe(pass: OverlayRetranscribePass) {
     guard let engine else { return }
     guard !recording, !isRetranscribing, !isFormatting else { return }
@@ -966,7 +937,6 @@ final class OverlayState: ObservableObject {
       _ = try await engine.stopRecording()
       recording = false
       isFinalPass = false
-      finalizeTranscript()  // clears `transcribing` as it flips to `.formatted`
       ConfigChangeBus.postServingStatusChanged()
     } catch {
       presentTerminalError(
@@ -1363,7 +1333,6 @@ final class OverlayState: ObservableObject {
     recording = false
     isFinalPass = false
     freezeCaptureClock()
-    finalizeTranscript()
     ConfigChangeBus.postServingStatusChanged()
   }
 
@@ -1371,7 +1340,7 @@ final class OverlayState: ObservableObject {
   /// transcription pass) but no Swift-side `runStop` ran, so nothing had flipped
   /// us out of the live-capture UI. Enter the same "transcribing" phase the
   /// Finish button uses (waveform stops pulsing like capture, status reads
-  /// "transcribing"). The terminal `on_recording_stopped` (→ `finalizeTranscript`)
+  /// "transcribing"). The terminal `on_recording_stopped`
   /// clears it, as do error / close / reset. Cancels the warmup watchdog because
   /// reaching finalisation proves the session progressed. Idempotent: a repeated
   /// `Busy` broadcast (or one arriving after finalize) is a no-op.
@@ -1538,8 +1507,7 @@ final class OverlayState: ObservableObject {
     // in a zombie live-capture UI with no stop parity. A failure with a draft
     // now ENDS the session exactly like a stop: engine released best-effort
     // (the same orphan-mic guard as `ComposerDictation.handleEngineError`),
-    // state finalized through the single authoritative `finalizeTranscript`
-    // path, transcript kept on screen with the normal Copy/Format/Send surface.
+    // transcript kept on screen with the normal Copy/Format/Send surface.
     //
     // `liveText` is `committedUtterances + preview`, so a non-empty draft covers
     // both the in-flight utterance and everything already sealed. An empty take
@@ -1582,12 +1550,10 @@ final class OverlayState: ObservableObject {
     let toast = speechNotice ?? toast
     abortRecordingSession()
     preview = ""
-    committedSegments = []
     committedUtterances = []
     highlights = []
     selectedHighlightId = nil
     speechWasActive = false
-    authoritativeFinalText = nil
     pendingNoSpeechMessage = nil
     noSpeechNotice = OverlayState.defaultNoSpeechNotice
     formattedText = ""
@@ -1602,150 +1568,10 @@ final class OverlayState: ObservableObject {
 
   // MARK: Listener-driven mutations (called on the main actor by DictationListener)
 
-  /// `Preview` is utterance-LOCAL cumulative: each event carries the full
-  /// interim for the current (not-yet-finalised) utterance, and the bridge
-  /// clears it on every `UtteranceFinal`. So we simply mirror it — no prefix
-  /// matching, no commit-on-mismatch.
-  func applyPreview(_ text: String) {
-    guard !finalized else { return }
-    let next = text.trimmingCharacters(in: .whitespacesAndNewlines)
-    guard !next.isEmpty else { return }
-    markTranscriptActivity()
-    preview = next
-    refreshFormattedTranscriptIfNeeded()
-  }
 
-  /// `Correction` targets the current utterance. Scope it to the live preview;
-  /// if the preview was already finalised, patch only the most-recent committed
-  /// segment (and only when `previousText` matches it). Never a free normalized
-  /// search across all committed slots.
-  func applyCorrection(_ text: String, previousText: String) {
-    guard !finalized else { return }
-    let corrected = text.trimmingCharacters(in: .whitespacesAndNewlines)
-    guard !corrected.isEmpty else { return }
-    markTranscriptActivity()
 
-    if !preview.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
-      preview = corrected
-      refreshFormattedTranscriptIfNeeded()
-      return
-    }
 
-    let previous = previousText.trimmingCharacters(in: .whitespacesAndNewlines)
-    if let lastIndex = committedSegments.indices.last,
-      previous.isEmpty || normalized(committedSegments[lastIndex].text) == normalized(previous)
-    {
-      committedSegments[lastIndex].text = corrected
-      committedSegments[lastIndex].annotations = []
-      syncCommittedUtterances()
-      return
-    }
 
-    // No live preview and nothing to patch: surface it as the current interim.
-    preview = corrected
-    refreshFormattedTranscriptIfNeeded()
-  }
-
-  /// `UtteranceFinal` is one completed VAD-bounded utterance, delivered in FIFO
-  /// order with a stable `utteranceId`. Key segments by that id and append in id
-  /// order — the authoritative ordering the bridge already provides. No lossy
-  /// normalized matching, no text-dedup (a legitimately repeated token must not
-  /// be dropped).
-  func applyFinal(
-    utteranceId: UInt64,
-    _ text: String,
-    avgLogprob: Float? = nil,
-    speechPct: Float? = nil,
-    confidenceFlags: [String] = []
-  ) {
-    noteUtteranceConfidence(avgLogprob: avgLogprob, speechPct: speechPct, flags: confidenceFlags)
-    guard !finalized else { return }
-    markTranscriptActivity()
-    // A1 contract sensor (debug-only): Rust trims at source and computes
-    // ReplaceRange/InsertAnnotation offsets over that exact string. A Swift-side
-    // trim here would silently shift those offsets, so we store the text
-    // byte-for-byte and only assert the guarantee.
-    assert(
-      text == text.trimmingCharacters(in: .whitespacesAndNewlines),
-      "UtteranceFinal text not trimmed at source (A1 contract) — ReplaceRange offsets would misalign"
-    )
-    if !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
-      upsertFinalSegment(utteranceId: utteranceId, text: text)
-    } else if highlightsEnabled {
-      noteSpeechGap(
-        utteranceId: utteranceId,
-        speechPct: speechPct
-      )
-    }
-    preview = ""
-    refreshFormattedTranscriptIfNeeded()
-  }
-
-  func applyReplaceRange(
-    utteranceId: UInt64,
-    start: UInt64,
-    end: UInt64,
-    text: String,
-    source: CsLayerSource = .tailPatch
-  ) {
-    guard !finalized else { return }
-    guard let index = committedSegments.lastIndex(where: { $0.utteranceId == utteranceId }) else {
-      showToast("Skipped unbound transcript patch")
-      return
-    }
-    // Snapshot the live-text geometry BEFORE the patch. `contextMarkers`
-    // hold absolute offsets into `rawLiveText` captured at selection time,
-    // so a patch that changes an earlier span's length slides every marker
-    // behind it out of alignment. Rebasing has to happen in the same
-    // transaction — a `{selection_N}` fence that drifts into the middle of
-    // an unrelated word is worse for the agent lane than no fence at all.
-    let origin = liveTextOffset(ofSegmentAt: index)
-    let before = committedSegments[index]
-    let spanStart = origin + before.renderedOffset(forTextOffset: Int(exactly: start) ?? .max)
-    let spanEnd = origin + before.renderedOffset(forTextOffset: Int(exactly: end) ?? .max)
-    let renderedLengthBefore = before.renderedText.count
-
-    let replaced = sliceUtteranceText(before.text, start: start, end: end)
-    guard committedSegments[index].replaceRange(start: start, end: end, replacement: text) else {
-      showToast("Skipped out-of-range transcript patch")
-      return
-    }
-    rebaseContextMarkers(
-      spanStart: spanStart,
-      spanEnd: spanEnd,
-      delta: committedSegments[index].renderedText.count - renderedLengthBefore
-    )
-    rebaseHighlights(
-      utteranceId: utteranceId,
-      start: start,
-      end: end,
-      replacementCount: UInt64(text.count)
-    )
-    if highlightsEnabled, source == .lexicon,
-      let highlight = OverlayCanvas.lexiconHighlight(
-        utteranceId: utteranceId,
-        start: start,
-        replacement: text,
-        before: replaced
-      )
-    {
-      highlights.append(highlight)
-    }
-    syncCommittedUtterances()
-  }
-
-  /// Offset at which `committedSegments[index]` starts inside `rawLiveText`.
-  /// Mirrors that property's own assembly (blank segments dropped, one space
-  /// between the survivors) — the two must not drift apart.
-  private func liveTextOffset(ofSegmentAt index: Int) -> Int {
-    var offset = 0
-    for segment in committedSegments[..<index] {
-      let rendered = segment.renderedText
-      guard !rendered.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { continue }
-      offset += rendered.count + 1
-    }
-    return offset
-  }
 
   /// Slide context markers across a patch applied to `spanStart..<spanEnd`
   /// (live-text coordinates) that changed its length by `delta`.
@@ -1765,20 +1591,6 @@ final class OverlayState: ObservableObject {
     }
   }
 
-  func applyInsertAnnotation(utteranceId: UInt64, position: UInt64, text: String) {
-    guard !finalized else { return }
-    let annotation = text.trimmingCharacters(in: .whitespacesAndNewlines)
-    guard !annotation.isEmpty else { return }
-    guard let index = committedSegments.lastIndex(where: { $0.utteranceId == utteranceId }) else {
-      showToast("Skipped unbound transcript annotation")
-      return
-    }
-    guard committedSegments[index].insertAnnotation(position: position, text: annotation) else {
-      showToast("Skipped out-of-range transcript annotation")
-      return
-    }
-    syncCommittedUtterances()
-  }
 
   func applyContextMarker(position: UInt64, marker: String) {
     guard !finalized, let offset = Int(exactly: position) else { return }
@@ -1787,11 +1599,6 @@ final class OverlayState: ObservableObject {
     contextMarkers.append(
       OverlayContextMarker(position: offset, marker: clean, order: contextMarkers.count)
     )
-    if mode == .formatted {
-      let base = usableAuthoritativeFinalText ?? rawLiveText
-      let rendered = insertingContextMarkers(into: base)
-      if formattedText != rendered { replaceFormattedTranscriptProgrammatically(rendered) }
-    }
   }
 
   func applySessionFinalised() {
@@ -1802,17 +1609,12 @@ final class OverlayState: ObservableObject {
     // visible; the controller finish will surface the resolved .formatted.
     isFinalPass = true
     transcribing = false
-    // Do not call finalizeTranscript here — that is driven by
-    // finishControllerRecording (or equivalent terminal) so the phase
-    // is observable to the user.
   }
 
   /// `on_no_speech` — the engine adjudicated the session with no usable speech.
   /// Fires BEFORE the terminal `on_recording_stopped`, so we only record the
-  /// user-facing reason here; `finalizeTranscript` treats it as the engine's
-  /// no-usable-speech adjudication (unless an authoritative final arrives) and
-  /// flips into the dedicated `.noSpeech` outcome. If the reason arrives AFTER
-  /// an already-empty finalize (late), upgrade the FINAL in place.
+  /// user-facing reason here. If it arrives after an empty terminal outcome,
+  /// upgrade the notice in place.
   func applyNoSpeech(reason: String) {
     let message: String
     switch reason {
@@ -1833,133 +1635,17 @@ final class OverlayState: ObservableObject {
     }
   }
 
-  /// The Rust controller's authoritative post-stop transcript (LocalFinalPass) —
-  /// the SAME text that is delivered/pasted and shown by tray "Copy". This is
-  /// the product seal: the first non-empty value wins byte-for-byte and no later
-  /// machine event may replace it. Stored so
-  /// the single `finalizeTranscript()` uses it instead of the raw streaming
-  /// assembly. Emitted inside the awaited stop pipeline, so it normally arrives
-  /// before the stop/finalise events; if it arrives AFTER (mode already
-  /// `.formatted`), replace the FINAL immediately. Live PREVIEW is untouched —
-  /// it stays raw-streaming on purpose ("live preview · raw").
-  func applyFinalTranscript(_ text: String) {
-    guard !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return }
-    if let sealed = authoritativeFinalText {
-      if text != sealed {
-        NSLog("codescribe: rejected automatic FinalTranscript rewrite after product seal")
-      }
-      return
-    }
-    authoritativeFinalText = text
-    formatFailureStatus = nil
-    let rendered = insertingContextMarkers(into: text)
-    if mode == .formatted, formattedText != rendered {
-      replaceFormattedTranscriptProgrammatically(rendered)
-      armAutoFormatRevertSlot(shown: rendered)
-    } else if mode == .noSpeech {
-      // Real text arrived after we finalised to no-speech (empty at the
-      // time): recover it as the normal FINAL rather than losing it.
-      replaceFormattedTranscriptProgrammatically(rendered)
-      mode = .formatted
-      restartAutoHideCountdown()
-    }
-    if deliveredText.isEmpty {
-      deliveredText = rendered
-    }
-    if agentSessionArmed {
-      agentFinalTranscriptAppeared = true
-    }
-    if sttRawText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
-      sttRawText = text
-    }
-  }
 
-  /// Single authoritative finalize. `runStop`, `finishControllerRecording`, and
-  /// `applySessionFinalised` all funnel here so `formattedText` is produced from
-  /// ONE source rather than three paths each rewriting it from a different buffer.
-  /// Preference: the controller's authoritative LocalFinalPass text (matches
-  /// delivery/Copy); fall back to the id-ordered committed assembly only if that
-  /// event has not arrived.
-  private func finalizeTranscript() {
-    let wasFinalized = finalized
-    cancelWarmupWatchdog()
-    warmingUp = false
-    transcribing = false
-    vadActive = false
-    audioReady = false
-    levelMeter.reset()
-    hasMeasuredAudioLevel = false
-    let shouldShowNoSpeechOutcome =
-      pendingNoSpeechMessage != nil && usableAuthoritativeFinalText == nil
-    if shouldShowNoSpeechOutcome {
-      preview = ""
-    } else {
-      commitPreviewIfNeeded()
-    }
-    let resolvedBase =
-      shouldShowNoSpeechOutcome ? "" : (usableAuthoritativeFinalText ?? rawLiveText)
-    let resolved = insertingContextMarkers(into: resolvedBase)
-    if resolvedBase.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
-      // Nothing usable was captured — VAD silence, or all speech rejected by
-      // the quality gate. Surface a dedicated no-speech outcome instead of a
-      // blank editable FINAL (Copy/Format/Send acting on an empty string).
-      // When `on_no_speech` did not fire (empty final without an explicit
-      // event) we treat the empty finalize as no-speech — an honest
-      // approximation, since the user has nothing to act on either way.
-      if formattedText != "" { replaceFormattedTranscriptProgrammatically("") }
-      noSpeechNotice = pendingNoSpeechMessage ?? OverlayState.defaultNoSpeechNotice
-      mode = .noSpeech
-    } else {
-      if formattedText != resolved { replaceFormattedTranscriptProgrammatically(resolved) }
-      if deliveredText.isEmpty { deliveredText = resolved }
-      qualityFormattingLevel = autoFormatLevel
-      armAutoFormatRevertSlot(shown: resolved)
-      if sttRawText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
-        // Best effort: if no STT raw from per-utterance finals yet, fall back to the
-        // resolved assembly (still the raw-streaming path, not AI formatted).
-        sttRawText = resolvedBase
-      }
-      mode = .formatted
-      if agentSessionArmed {
-        agentFinalTranscriptAppeared = true
-      }
-    }
-    // FREEZE: from here, late streaming events are dropped (see the apply guards)
-    // so nothing keeps mutating @Published state and re-rendering in Idle.
-    finalized = true
-    isFinalPass = false
-    // Notify the recording-lifecycle sink that the session ended. This is the
-    // stop-side counterpart to `handleRecordingStarted` firing `onRecordingStarted?()`:
-    // the tray otherwise only clears its "Recording" pill via the popover's one-shot
-    // onAppear poll, so a hotkey stop left it stuck. Gate on the finalize transition
-    // so redundant re-finalizes (finishControllerRecording + applySessionFinalised)
-    // don't re-fire and churn @Published tray state.
-    if !wasFinalized {
-      if !resolvedBase.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
-        onSuccessfulDictation?()
-      }
-      onRecordingStopped?()
-    }
 
-    // Every terminal outcome gets the same activity-anchored lifetime.
-    restartAutoHideCountdown()
-  }
-
-  private var usableAuthoritativeFinalText: String? {
-    guard let text = authoritativeFinalText else { return nil }
-    return text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? nil : text
-  }
 
   private func resetTranscript() {
     preview = ""
-    committedSegments = []
     committedUtterances = []
     contextMarkers = []
     highlights = []
     selectedHighlightId = nil
     lastTeachAcknowledgement = nil
     speechWasActive = false
-    authoritativeFinalText = nil
     deliveredText = ""
     sttRawText = ""
     manualHumanEditPending = false
@@ -1994,60 +1680,9 @@ final class OverlayState: ObservableObject {
     }
   }
 
-  private func commitPreviewIfNeeded() {
-    let active = preview.trimmingCharacters(in: .whitespacesAndNewlines)
-    guard !active.isEmpty else { return }
-    appendCommittedSegment(active)
-    preview = ""
-    refreshFormattedTranscriptIfNeeded()
-  }
 
-  /// Append a committed segment, keyed by `utteranceId`. Re-finals for an id we
-  /// already hold replace that slot in place (no duplicate, no drop); new ids
-  /// append in arrival order = id order, the bridge's FIFO ordering.
-  /// Contract: Rust already sends trimmed text and is the sole owner of offsets;
-  /// Swift stores it byte-for-byte because ReplaceRange/InsertAnnotation offsets
-  /// are computed by the emitter against this same string.
-  private func upsertFinalSegment(utteranceId: UInt64, text: String) {
-    guard !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return }
-    if let index = committedSegments.firstIndex(where: { $0.utteranceId == utteranceId }) {
-      guard committedSegments[index].text != text else { return }
-      committedSegments[index].text = text
-      committedSegments[index].annotations = []
-    } else {
-      committedSegments.append(OverlayTranscriptSegment(utteranceId: utteranceId, text: text))
-    }
-    syncCommittedUtterances()
-  }
 
-  /// Append an un-keyed committed segment (trailing preview at finalize time —
-  /// speech that never received its own `UtteranceFinal`).
-  private func appendCommittedSegment(_ text: String) {
-    let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
-    guard !trimmed.isEmpty else { return }
-    committedSegments.append(OverlayTranscriptSegment(utteranceId: nil, text: trimmed))
-    syncCommittedUtterances()
-  }
 
-  private func syncCommittedUtterances() {
-    committedUtterances = committedSegments.map(\.renderedText)
-    refreshFormattedTranscriptIfNeeded()
-  }
-
-  private func refreshFormattedTranscriptIfNeeded() {
-    if mode == .formatted {
-      // Once the controller's authoritative final transcript is in, it wins:
-      // late streaming `UtteranceFinal` events must not clobber the FINAL with
-      // the raw streaming assembly. Without it, fall back to the live assembly.
-      // Dedupe the write — an identical reassignment still re-invalidates the
-      // bound TextEditor and feeds the Idle render churn.
-      let resolved =
-        usableAuthoritativeFinalText
-        .map { insertingContextMarkers(into: $0) }
-        ?? liveText
-      if formattedText != resolved { replaceFormattedTranscriptProgrammatically(resolved) }
-    }
-  }
 
   private func insertingContextMarkers(into text: String) -> String {
     guard !contextMarkers.isEmpty else { return text }

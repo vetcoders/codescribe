@@ -229,49 +229,6 @@ fn finalize_requested_final_pass(
     )
 }
 
-/// Run the requested final pass over a raw transcript.
-///
-/// [`FinalPassMode::None`] returns the raw text untouched.
-/// `EmbeddedLexiconCleanup` runs the stream post-processor; if cleanup empties
-/// the text the result is a `Dropped` verdict with empty output, which the
-/// caller must treat as "no speech" rather than as a transcript.
-fn apply_requested_final_pass(
-    raw: &RawTranscript,
-    options: FileTranscriptionOptions,
-) -> (String, Option<FinalPassVerdict>) {
-    match options.final_pass {
-        FinalPassMode::None => (raw.text.clone(), None),
-        FinalPassMode::EmbeddedLexiconCleanup => {
-            let mut processor = StreamPostProcessor::new();
-            match processor.process_utterance(&raw.text) {
-                Some(text) => {
-                    let stats = processor.stats();
-                    let (text, verdict) = finalize_requested_final_pass(
-                        &raw.text,
-                        text,
-                        FinalPassMode::EmbeddedLexiconCleanup,
-                        stats,
-                    );
-                    (text, Some(verdict))
-                }
-                None => {
-                    let stats = processor.stats();
-                    (
-                        String::new(),
-                        Some(FinalPassVerdict {
-                            mode: FinalPassMode::EmbeddedLexiconCleanup,
-                            disposition: FinalPassDisposition::Dropped,
-                            reason: Some("empty_after_cleanup".to_string()),
-                            lexicon_rewrites: stats.lexicon_rewrites,
-                            repetition_cleanups: stats.repetition_cleanups,
-                        }),
-                    )
-                }
-            }
-        }
-    }
-}
-
 /// Fold a Silero VAD filtering result back into the transcript.
 ///
 /// Segments are always replaced, but the **text** is preserved from `raw` when

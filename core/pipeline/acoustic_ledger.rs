@@ -632,8 +632,7 @@ impl CumulativeFinalAdmission {
 
     /// Clamp a text matcher's answer to what acoustic evidence permits.
     ///
-    /// This is where `revision_tolerant_known_prefix` and
-    /// `strip_suffix_overlap_live` lose their authority: their answer is an
+    /// This is where string-prefix and overlap heuristics lose their authority: their answer is an
     /// alignment *hint*, and on an anchored span it may never exceed the number
     /// of committed occurrences the window actually overlaps.
     pub fn clamp_known_prefix(&self, matcher_known_words: usize) -> usize {

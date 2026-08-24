@@ -13,9 +13,7 @@ use std::sync::Mutex;
 
 use chrono::{SecondsFormat, Utc};
 use codescribe_core::audio::capture_receipt::session_energy_db;
-use codescribe_core::pipeline::contracts::{
-    AcousticSpanGrain, AcousticTranscriptIdentity, TranscriptSegment,
-};
+use codescribe_core::pipeline::contracts::{AcousticSpanGrain, TranscriptSegment};
 use serde::{Deserialize, Serialize};
 
 /// Explicit path override for the clean transcript bus.
@@ -54,7 +52,6 @@ pub struct TranscriptDraft {
     pub start_seconds: f32,
     pub end_seconds: f32,
     pub segments: Vec<TranscriptSegment>,
-    pub acoustic: Option<AcousticTranscriptIdentity>,
 }
 
 /// Typed draft transition. Product truth is never represented by this enum;
@@ -301,7 +298,6 @@ impl TranscriptBus {
         }
         let sample_rate = self.sample_rate();
         let mut clock = aggregate_seal_clock(&writer.drafts, sample_rate, self.energy_lookup);
-        reconcile_sealed_text(&text, &mut clock);
         let event = CleanTranscriptEvent {
             schema: "codescribe.transcript.v1".to_string(),
             sequence: 0,
@@ -411,28 +407,6 @@ fn lexical_signature(text: &str) -> Vec<String> {
         .collect()
 }
 
-fn reconcile_sealed_text(text: &str, clock: &mut SealClock) {
-    if !clock.coverage.passed {
-        return;
-    }
-    let anchored = clock
-        .words
-        .iter()
-        .map(|span| span.text.as_str())
-        .collect::<Vec<_>>()
-        .join(" ");
-    if lexical_signature(&anchored) != lexical_signature(text) {
-        clock.words.clear();
-        clock.coverage = failed_coverage("sealed_text_not_covered_by_acoustic_spans");
-        return;
-    }
-    if clock.words.len() == 1 {
-        // L3 may change punctuation/casing, but a one-phrase receipt keeps the
-        // exact reducer/Bus bytes on the original PCM identity.
-        clock.words[0].text = text.to_string();
-    }
-}
-
 /// Path precedence: explicit contract, XDG state, then Codescribe's existing
 /// project/data override (`CODESCRIBE_DATA_DIR`) via `Config::config_dir()`.
 pub fn transcript_bus_path() -> PathBuf {
@@ -472,66 +446,6 @@ fn failed_coverage(code: &str) -> TranscriptCoverageReceipt {
         passed: false,
         code: code.to_string(),
     }
-}
-
-fn word_spans_from_draft(
-    utterance: &TranscriptDraft,
-    energy_lookup: fn(u64, u64) -> Option<f32>,
-) -> (Vec<TranscriptWordSpan>, TranscriptCoverageReceipt) {
-    let Some(acoustic) = &utterance.acoustic else {
-        return (Vec::new(), failed_coverage("missing_pcm_identity"));
-    };
-    if acoustic.range.session.trim().is_empty()
-        || acoustic.range.sample_end <= acoustic.range.sample_start
-    {
-        return (Vec::new(), failed_coverage("invalid_utterance_identity"));
-    }
-    if acoustic.spans.is_empty() && !utterance.text.trim().is_empty() {
-        return (Vec::new(), failed_coverage("missing_lexical_coverage"));
-    }
-
-    let mut previous_end = acoustic.range.sample_start;
-    let mut spans = Vec::with_capacity(acoustic.spans.len());
-    let mut missing_energy = false;
-    for span in &acoustic.spans {
-        let range = &span.range;
-        if span.text.trim().is_empty()
-            || range.session != acoustic.range.session
-            || range.capture_epoch != acoustic.range.capture_epoch
-            || range.sample_start < acoustic.range.sample_start
-            || range.sample_end > acoustic.range.sample_end
-            || range.sample_end <= range.sample_start
-            || range.sample_start < previous_end
-        {
-            return (
-                Vec::new(),
-                failed_coverage("invalid_or_unordered_lexical_span"),
-            );
-        }
-        let energy_db = energy_lookup(range.sample_start, range.sample_end);
-        missing_energy |= energy_db.is_none();
-        spans.push(TranscriptWordSpan {
-            text: span.text.clone(),
-            session_id: range.session.clone(),
-            capture_epoch: range.capture_epoch,
-            sample_start: range.sample_start,
-            sample_end: range.sample_end,
-            energy_db,
-            grain: bus_grain(span.grain),
-        });
-        previous_end = range.sample_end;
-    }
-
-    let coverage = if missing_energy {
-        spans.clear();
-        failed_coverage("lexical_span_without_voiced_energy")
-    } else {
-        TranscriptCoverageReceipt {
-            passed: true,
-            code: "anchored_voiced_coverage".to_string(),
-        }
-    };
-    (spans, coverage)
 }
 
 struct SealClock {
@@ -642,39 +556,6 @@ mod tests {
 
     fn silence(_start: u64, _end: u64) -> Option<f32> {
         None
-    }
-
-    fn acoustic(
-        session: &str,
-        epoch: u64,
-        start: u64,
-        end: u64,
-        spans: Vec<(&str, u64, u64, AcousticSpanGrain)>,
-    ) -> AcousticTranscriptIdentity {
-        let range = codescribe_core::stt::tail_provider::TailSampleRange {
-            session: session.to_string(),
-            capture_epoch: epoch,
-            sample_start: start,
-            sample_end: end,
-        };
-        AcousticTranscriptIdentity {
-            range,
-            spans: spans
-                .into_iter()
-                .map(|(text, sample_start, sample_end, grain)| {
-                    codescribe_core::pipeline::contracts::AcousticTranscriptSpan {
-                        text: text.to_string(),
-                        range: codescribe_core::stt::tail_provider::TailSampleRange {
-                            session: session.to_string(),
-                            capture_epoch: epoch,
-                            sample_start,
-                            sample_end,
-                        },
-                        grain,
-                    }
-                })
-                .collect(),
-        }
     }
 
     /// Conservation at the delivery seam: one published span per drafted span,
@@ -990,62 +871,6 @@ mod tests {
     }
 
     #[test]
-    fn w2_05_synthetic_receipts_reject_omission_and_unanchored_insertion() {
-        let local_start = 48_000;
-        let local_end = 96_000;
-        let forbidden = "synthetic unspoken phrase";
-        let local_draft = TranscriptDraft {
-            utterance_id: 1,
-            text: forbidden.to_string(),
-            start_seconds: 0.0,
-            end_seconds: 0.0,
-            segments: Vec::new(),
-            acoustic: Some(acoustic(
-                "synthetic-local-session",
-                1,
-                local_start,
-                local_end,
-                Vec::new(),
-            )),
-        };
-        let (words, receipt) = word_spans_from_draft(&local_draft, voiced_energy);
-        assert!(words.is_empty());
-        assert_eq!(receipt.code, "missing_lexical_coverage");
-
-        let reference = "Iwo tests FlashVAD and G.A.D.".to_string();
-        let dragon_draft = TranscriptDraft {
-            utterance_id: 1,
-            text: reference.clone(),
-            start_seconds: 0.0,
-            end_seconds: 0.0,
-            segments: Vec::new(),
-            acoustic: Some(acoustic(
-                "synthetic-dragon-session",
-                1,
-                96_672,
-                3_548_352,
-                vec![(&reference, 96_672, 3_548_352, AcousticSpanGrain::Phrase)],
-            )),
-        };
-        let drafts = BTreeMap::from([(1, dragon_draft)]);
-        let mut exact = aggregate_seal_clock(&drafts, Some(48_000), voiced_energy);
-        reconcile_sealed_text(&reference, &mut exact);
-        assert!(exact.coverage.passed);
-        assert_eq!(exact.words[0].text, reference);
-        for required in ["Iwo", "FlashVAD", "G.A.D."] {
-            assert!(exact.words[0].text.contains(required));
-        }
-
-        let broken_delivery = "Iwo tests FlashVAD and an unspoken tail.";
-        let mut broken = aggregate_seal_clock(&drafts, Some(48_000), voiced_energy);
-        reconcile_sealed_text(broken_delivery, &mut broken);
-        assert!(broken.words.is_empty());
-        assert_eq!(
-            broken.coverage.code,
-            "sealed_text_not_covered_by_acoustic_spans"
-        );
-    }
-
     #[test]
     fn five_acoustic_iwo_survive_reducer_and_transcript_bus() {
         use super::super::emitter::reduce_transcript_events;

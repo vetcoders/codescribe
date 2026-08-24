@@ -29,8 +29,7 @@ use tokio_tungstenite::{MaybeTlsStream, WebSocketStream, connect_async};
 
 use super::consent::CloudEgressAuthorization;
 use super::events::{
-    AsrErrorKind, AsrSessionEvent, AudioRange, ErrorEvent, EventIdentity, SessionId,
-    TranscriptEvent, UsageEvent,
+    AsrErrorKind, AsrSessionEvent, AudioRange, ErrorEvent, SessionId, TranscriptEvent, UsageEvent,
 };
 use super::provider::{AsrSessionProvider, RefinerMode, SessionInput};
 
@@ -985,19 +984,6 @@ impl<T: CloudGatewayTransport> LiveCloudAsrSession<T> {
 
     fn session_id(&self) -> Result<SessionId, AsrErrorKind> {
         self.session_id.clone().ok_or(AsrErrorKind::Protocol)
-    }
-
-    fn allocate_identity(&mut self, utterance_id: u64) -> Result<EventIdentity, AsrErrorKind> {
-        if self.next_event_sequence == u64::MAX {
-            return Err(AsrErrorKind::Protocol);
-        }
-        let sequence = self.next_event_sequence;
-        self.next_event_sequence += 1;
-        Ok(EventIdentity::new(
-            self.session_id()?,
-            utterance_id,
-            sequence,
-        ))
     }
 
     fn queue_local_error(&mut self, utterance_id: u64, kind: AsrErrorKind) {

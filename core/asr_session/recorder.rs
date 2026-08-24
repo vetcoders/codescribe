@@ -321,34 +321,6 @@ impl Layer1SessionOutcome {
         self.degrade
     }
 
-    /// The refiner's transcript candidate: sealed finals joined in order.
-    ///
-    /// `None` when the session produced no accepted finals — the caller keeps
-    /// the canvas untouched rather than merging against an empty candidate.
-    pub fn refined_transcript(&self) -> Option<String> {
-        if self.finals.is_empty() {
-            return None;
-        }
-        Some(
-            self.finals
-                .iter()
-                .map(|event| event.text.trim())
-                .filter(|text| !text.is_empty())
-                .collect::<Vec<_>>()
-                .join(" "),
-        )
-    }
-
-    /// Route the outcome through the integrated doctrine-safe truth seam.
-    ///
-    /// This is [`merge_live_layer1`]: the committed live floor is immutable,
-    /// Layer 1 text may fill aligned gaps and extend the tail, and a
-    /// substitution always keeps the live token. Callers deliver
-    /// [`Layer1MergedDelivery::text`]; they never deliver the raw candidate.
-    pub fn adjudicate_against_live_floor(&self, live_floor: &str) -> Layer1MergedDelivery {
-        let candidate = self.refined_transcript();
-        merge_live_layer1(live_floor, candidate.as_deref().unwrap_or(""))
-    }
 }
 
 /// The per-recording Layer 1 lane: open at start, fan out, drain at stop.
@@ -679,9 +651,7 @@ fn session_fatal(kind: AsrErrorKind) -> bool {
 
 #[cfg(test)]
 mod tests {
-    use super::super::events::{
-        ErrorEvent, EventIdentity, SessionId, TranscriptEvent as Transcript,
-    };
+    use super::super::events::{ErrorEvent, SessionId, TranscriptEvent as Transcript};
     use super::super::fake::FakeAsrSessionProvider;
     use super::*;
     use crate::quality::Layer1MergeMode;
@@ -698,11 +668,6 @@ mod tests {
             locale: Some("pl-PL".to_string()),
             sample_rate: 16_000,
         }
-    }
-
-    /// Identity triple within the fixture session.
-    fn identity(utterance_id: u64, sequence_id: u64) -> EventIdentity {
-        EventIdentity::new(session_id(), utterance_id, sequence_id)
     }
 
     /// Partial event fixture.

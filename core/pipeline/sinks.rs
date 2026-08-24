@@ -169,27 +169,6 @@ impl EventSink for DeltaSinkAdapter {
     }
 }
 
-/// Emit the difference between `state.last_text` and `text`, then advance the
-/// diff base.
-///
-/// When a previous utterance closed with content, the first text of the next one
-/// is emitted as an explicit space-prefixed append rather than a diff — a diff
-/// against an empty base would run the two utterances together.
-fn emit_text_delta(sink: &Arc<dyn DeltaSink>, state: &mut DeltaSinkState, text: &str) {
-    if state.last_text.is_empty() && state.needs_separator && !text.is_empty() {
-        let delta = TranscriptDelta::append(format!(" {text}"));
-        sink.apply(&delta);
-        state.last_text = text.to_string();
-        state.needs_separator = false;
-        return;
-    }
-
-    if let Some(delta) = TranscriptDelta::from_diff(&state.last_text, text) {
-        sink.apply(&delta);
-    }
-    state.last_text = text.to_string();
-}
-
 /// Fan-out sink that forwards each event to multiple sinks.
 pub struct FanoutEventSink {
     sinks: Vec<Arc<dyn EventSink>>,

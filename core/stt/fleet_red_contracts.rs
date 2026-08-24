@@ -38,14 +38,12 @@ struct HelperExitOutcome {
 #[test]
 fn fleet_red_asr_session_events_are_typed_and_monotonic() {
     use crate::asr_session::{
-        AsrErrorKind, AsrSessionEvent, ErrorEvent, EventIdentity, IngestVerdict, SessionId,
-        SessionIngest, TranscriptEvent,
+        AsrErrorKind, AsrSessionEvent, ErrorEvent, IngestVerdict, SessionId, SessionIngest,
+        TranscriptEvent,
     };
 
     let session = SessionId::new("session-a").expect("non-blank session id");
-    let id = |sequence_id| EventIdentity::new(session.clone(), 7, sequence_id);
     let transcript = |sequence_id, text: &str| TranscriptEvent {
-        identity: id(sequence_id),
         text: text.to_string(),
         range: None,
     };

@@ -19,8 +19,8 @@ use crate::audio::capture_receipt::{
 };
 use crate::audio::chunker::{SpeechEvent, SpeechSession};
 use crate::pipeline::contracts::{
-    AcousticSpanGrain, AcousticTranscriptIdentity, AcousticTranscriptSpan, DropKind, EngineEvent,
-    EventSink, LayerSource, LayerSummary, TranscriptSegment, collect_confidence_flags,
+    DropKind, EngineEvent, EventSink, LayerSource, LayerSummary, TranscriptSegment,
+    collect_confidence_flags,
 };
 use crate::stt::scheduler::{SttLane, SttScheduler, SttTaskHandle};
 use crate::stt::tail_patcher::{
@@ -44,31 +44,6 @@ use super::correction::{
 };
 use super::pipeline::{PostprocessDrop, TranscriptionPipeline};
 
-fn phrase_acoustic_identity(
-    session: &str,
-    capture_epoch: u64,
-    sample_start: u64,
-    sample_end: u64,
-    text: &str,
-) -> Option<AcousticTranscriptIdentity> {
-    if session.trim().is_empty() || text.trim().is_empty() || sample_end <= sample_start {
-        return None;
-    }
-    let range = TailSampleRange {
-        session: session.to_string(),
-        capture_epoch,
-        sample_start,
-        sample_end,
-    };
-    Some(AcousticTranscriptIdentity {
-        range: range.clone(),
-        spans: vec![AcousticTranscriptSpan {
-            text: text.to_string(),
-            range,
-            grain: AcousticSpanGrain::Phrase,
-        }],
-    })
-}
 use super::quality_gate::{
     MAX_WORDS_PER_SEC, MIN_SPEECH_RATIO_FOR_INFERENCE, emit_vad_warning,
     should_drop_short_utterance, should_drop_silence_chunk, text_words_per_second,

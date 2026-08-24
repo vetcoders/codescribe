@@ -87,8 +87,7 @@ pub use consent::{
     CloudEgressAuthorization, CloudSessionError, authorize_cloud_egress, refiner_for,
 };
 pub use events::{
-    AsrErrorKind, AsrSessionEvent, AudioRange, ErrorEvent, EventIdentity, SessionId,
-    TranscriptEvent, UsageEvent,
+    AsrErrorKind, AsrSessionEvent, AudioRange, ErrorEvent, SessionId, TranscriptEvent, UsageEvent,
 };
 pub use fake::FakeAsrSessionProvider;
 pub use ingest::{IngestVerdict, SessionIngest};

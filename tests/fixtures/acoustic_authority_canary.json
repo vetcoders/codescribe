@@ -1,0 +1,540 @@
+{
+  "schema": "codescribe.acoustic-authority-canary.v1",
+  "baseline": {
+    "branch": "dbxms-runtime-claude",
+    "head": "e0c6d501686a4a1fc36d363980d001581fe82e9f",
+    "merge_checkpoint": "449bfc67e1c564f2557a92de8dfafddaf8353127",
+    "p0_oracle_commit": "2c79af9801f6b91a587acf9eed0f2786d4138ed6",
+    "fixture_sha256": "b002d0655c60c5b2c6ef2e6503892339ee63dbd4c5c76f97d8af7130bba7002d",
+    "loctree_snapshot": "sha256:loctree-snapshot-authority-v1:b7c909f0d1daae1c1e43e844692c34ce6e566314c91a5c8e5c0f454b53fb3bc4",
+    "loctree_binary": "0.14.4+g3e9eb0a7"
+  },
+  "classification_contract": {
+    "allowed": ["THRONE", "MECHANIC", "OBSERVER", "DELETE_FILE", "DELETE_SYMBOL"],
+    "daily_canary_rows": 20,
+    "extended_authority_rows": 32,
+    "total_rows": 52
+  },
+  "rows": [
+    {
+      "id": "daily-01-apple-live-session",
+      "path": "core/pipeline/streaming/apple_live_session.rs",
+      "classification": "DELETE_SYMBOL",
+      "authority": "observation admission, text overlap and terminal seal",
+      "removal_mode": "delete authority definitions; remove all revision_tolerant_known_prefix references",
+      "retained_role": "Apple observation orchestration and candidate production only",
+      "callers": ["core/pipeline/streaming/mod.rs", "core/audio/streaming_recorder.rs"],
+      "expected_dangling": ["complete_whisper_window", "apply_tail_patch_before_seal", "apply_conservative_fusion", "ProgressiveSealMachine"]
+    },
+    {
+      "id": "daily-02-layer1-window",
+      "path": "core/pipeline/streaming/layer1_window.rs",
+      "classification": "MECHANIC",
+      "authority": "PCM window construction",
+      "removal_mode": "none",
+      "retained_role": "window and timestamp remap mechanics; cannot admit or seal",
+      "callers": ["core/pipeline/streaming/apple_live_session.rs"],
+      "expected_dangling": []
+    },
+    {
+      "id": "daily-03-tail-provider",
+      "path": "core/stt/tail_provider.rs",
+      "classification": "MECHANIC",
+      "authority": "candidate decode ranges",
+      "removal_mode": "none",
+      "retained_role": "tail request and timed candidate transport; cannot admit or seal",
+      "callers": ["core/pipeline/streaming/apple_live_session.rs", "core/pipeline/streaming/session.rs"],
+      "expected_dangling": []
+    },
+    {
+      "id": "daily-04-tail-patcher",
+      "path": "core/stt/tail_patcher/mod.rs",
+      "classification": "MECHANIC",
+      "authority": "Whisper label candidate computation",
+      "removal_mode": "none",
+      "retained_role": "candidate producer only; no mutation or seal admission",
+      "callers": ["core/pipeline/streaming/apple_live_session.rs", "core/pipeline/streaming/session.rs"],
+      "expected_dangling": []
+    },
+    {
+      "id": "daily-05-acoustic-ledger",
+      "path": "core/pipeline/acoustic_ledger.rs",
+      "classification": "THRONE",
+      "authority": "PCM identity, evidence, admission, mutation history and seal",
+      "removal_mode": "none",
+      "retained_role": "sole acoustic authority",
+      "callers": ["core/pipeline/streaming/apple_live_session.rs"],
+      "expected_dangling": []
+    },
+    {
+      "id": "daily-06-span-idempotence",
+      "path": "core/pipeline/streaming/span_idempotence.rs",
+      "classification": "DELETE_FILE",
+      "authority": "parallel replay admission and seal state",
+      "removal_mode": "git rm",
+      "retained_role": "none",
+      "callers": ["core/pipeline/streaming/mod.rs", "core/pipeline/streaming/progressive_seal.rs"],
+      "expected_dangling": ["pub mod span_idempotence", "SpanOffer", "SpanOfferVerdict"]
+    },
+    {
+      "id": "daily-07-progressive-seal",
+      "path": "core/pipeline/streaming/progressive_seal.rs",
+      "classification": "DELETE_FILE",
+      "authority": "parallel terminal seal and rewrite admission",
+      "removal_mode": "git rm",
+      "retained_role": "none",
+      "callers": ["core/pipeline/streaming/mod.rs", "core/pipeline/streaming/apple_live_session.rs"],
+      "expected_dangling": ["ProgressiveSealMachine", "SealedSpan", "SealTick", "AppleCommit", "seal_span_text"]
+    },
+    {
+      "id": "daily-08-streaming-session",
+      "path": "core/pipeline/streaming/session.rs",
+      "classification": "DELETE_SYMBOL",
+      "authority": "parallel phrase acoustic identity",
+      "removal_mode": "delete phrase_acoustic_identity definition",
+      "retained_role": "stream scheduling mechanics",
+      "callers": ["core/pipeline/streaming/mod.rs"],
+      "expected_dangling": ["phrase_acoustic_identity call sites"]
+    },
+    {
+      "id": "daily-09-streaming-correction",
+      "path": "core/pipeline/streaming/correction.rs",
+      "classification": "DELETE_FILE",
+      "authority": "parallel text merge and correction admission",
+      "removal_mode": "git rm",
+      "retained_role": "none",
+      "callers": ["core/pipeline/streaming/mod.rs", "core/stt/whisper/mod.rs"],
+      "expected_dangling": ["postprocess_correction_with_snapshot", "merge_corrected_window"]
+    },
+    {
+      "id": "daily-10-live-assembly",
+      "path": "core/pipeline/streaming/live_assembly.rs",
+      "classification": "DELETE_FILE",
+      "authority": "parallel transcript document reducer",
+      "removal_mode": "git rm",
+      "retained_role": "none",
+      "callers": ["core/pipeline/streaming/mod.rs"],
+      "expected_dangling": ["assemble_live_from_events", "ReplaceRange assembly"]
+    },
+    {
+      "id": "daily-11-buffered-emitter",
+      "path": "core/pipeline/streaming/emitter.rs",
+      "classification": "DELETE_FILE",
+      "authority": "parallel transcript document and correction buffer",
+      "removal_mode": "git rm",
+      "retained_role": "none",
+      "callers": ["core/pipeline/streaming/mod.rs"],
+      "expected_dangling": ["BufferedEmitter", "push_correction", "next_emit_chunk"]
+    },
+    {
+      "id": "daily-12-transcript-reducer",
+      "path": "app/presentation/emitter.rs",
+      "classification": "THRONE",
+      "authority": "transcript document reduction",
+      "removal_mode": "remove AcousticTranscriptIdentity coupling only",
+      "retained_role": "sole document reducer",
+      "callers": ["app/controller/production_replay.rs", "app/presentation/mod.rs"],
+      "expected_dangling": ["old acoustic field construction"]
+    },
+    {
+      "id": "daily-13-transcript-bus",
+      "path": "app/presentation/transcript_bus.rs",
+      "classification": "OBSERVER",
+      "authority": "evidence publication only",
+      "removal_mode": "delete reconcile_sealed_text and word_spans_from_draft authority plus old acoustic identity coupling",
+      "retained_role": "observer and evidence sink; cannot reconstruct, admit or seal",
+      "callers": ["app/presentation/emitter.rs", "app/presentation/mod.rs"],
+      "expected_dangling": ["word_spans_from_draft call sites"]
+    },
+    {
+      "id": "daily-14-controller",
+      "path": "app/controller/mod.rs",
+      "classification": "DELETE_SYMBOL",
+      "authority": "parallel stop/final text selection and seal",
+      "removal_mode": "delete process_stopped_recording, process_transcript_text_pipeline and seal_active_transcript definitions",
+      "retained_role": "session orchestration only",
+      "callers": ["app/lib.rs", "bridge/src/recording.rs"],
+      "expected_dangling": ["controller stop/final pipeline call sites"]
+    },
+    {
+      "id": "daily-15-controller-truth",
+      "path": "app/controller/truth.rs",
+      "classification": "DELETE_FILE",
+      "authority": "parallel delivery text and semantic verdict",
+      "removal_mode": "git rm",
+      "retained_role": "none",
+      "callers": ["app/controller/mod.rs"],
+      "expected_dangling": ["postprocess_transcript_for_delivery", "RecordingTruthVerdict"]
+    },
+    {
+      "id": "daily-16-quality-delivery",
+      "path": "app/controller/quality_delivery.rs",
+      "classification": "DELETE_FILE",
+      "authority": "parallel pre-delivery veto",
+      "removal_mode": "git rm",
+      "retained_role": "none",
+      "callers": ["app/controller/mod.rs"],
+      "expected_dangling": ["quality delivery verdict call sites"]
+    },
+    {
+      "id": "daily-17-delivery-route",
+      "path": "app/controller/delivery_route.rs",
+      "classification": "THRONE",
+      "authority": "explicit destination selection",
+      "removal_mode": "none",
+      "retained_role": "sole route authority",
+      "callers": ["app/controller/mod.rs"],
+      "expected_dangling": []
+    },
+    {
+      "id": "daily-18-bridge-recording",
+      "path": "bridge/src/recording.rs",
+      "classification": "OBSERVER",
+      "authority": "transport only",
+      "removal_mode": "none",
+      "retained_role": "UniFFI event transport; cannot reduce transcript",
+      "callers": ["macos/Codescribe/Screens/Overlay/OverlayState.swift"],
+      "expected_dangling": []
+    },
+    {
+      "id": "daily-19-overlay-state",
+      "path": "macos/Codescribe/Screens/Overlay/OverlayState.swift",
+      "classification": "DELETE_SYMBOL",
+      "authority": "parallel document, finality and text-existence selection",
+      "removal_mode": "delete committedSegments, finalizeTranscript, usableAuthoritativeFinalText and automatic document mutation paths",
+      "retained_role": "projection and explicit manual edit only",
+      "callers": ["macos/Codescribe/Screens/Overlay/DictationOverlayView.swift"],
+      "expected_dangling": ["DictationEngine listener callbacks until W2 projection wiring"]
+    },
+    {
+      "id": "daily-20-physical-delivery",
+      "path": "app/os/clipboard.rs",
+      "classification": "MECHANIC",
+      "authority": "physical paste/copy mechanism",
+      "removal_mode": "none",
+      "retained_role": "executes an already-selected DeliveryRoute",
+      "callers": ["app/controller/mod.rs"],
+      "expected_dangling": ["overlay_paste callers"]
+    },
+    {
+      "id": "authority-21-acoustic-identity-donor",
+      "path": "core/pipeline/acoustic_identity.rs",
+      "classification": "DELETE_FILE",
+      "authority": "duplicate PCM identity, admission and mutation receipt organ",
+      "removal_mode": "git rm",
+      "retained_role": "none; donor semantics are not transplanted during W0",
+      "callers": ["core/pipeline/mod.rs", "core/pipeline/streaming/apple_live_session.rs"],
+      "expected_dangling": ["pub mod acoustic_identity", "Adjudicator", "AcousticLedger alias imports"]
+    },
+    {
+      "id": "authority-22-contract-acoustic-identity",
+      "path": "core/pipeline/contracts.rs",
+      "classification": "DELETE_SYMBOL",
+      "authority": "parallel AcousticTranscriptIdentity and AcousticTranscriptSpan",
+      "removal_mode": "delete definitions and every production reference",
+      "retained_role": "engine event transport contracts without acoustic existence authority",
+      "callers": ["app/presentation/emitter.rs", "app/presentation/transcript_bus.rs", "core/ipc/types.rs", "core/pipeline/streaming/apple_live_session.rs", "core/pipeline/streaming/session.rs"],
+      "expected_dangling": ["tests/support/p0_b_five_iwo.rs remains frozen until W4"]
+    },
+    {
+      "id": "authority-23-asr-event-identity",
+      "path": "core/asr_session/events.rs",
+      "classification": "DELETE_SYMBOL",
+      "authority": "parallel EventIdentity occurrence/finality key",
+      "removal_mode": "delete definition, fields, constructors and every production reference",
+      "retained_role": "ASR event payload transport without acoustic identity",
+      "callers": ["core/asr_session/cloud.rs", "core/asr_session/fake.rs", "core/asr_session/recorder.rs", "core/asr_session/mod.rs"],
+      "expected_dangling": ["tests/support P0 verifier references remain frozen until W4"]
+    },
+    {
+      "id": "authority-24-text-dedup",
+      "path": "core/pipeline/dedup.rs",
+      "classification": "DELETE_FILE",
+      "authority": "string equality used as occurrence existence",
+      "removal_mode": "git rm",
+      "retained_role": "none",
+      "callers": ["core/pipeline/mod.rs", "core/pipeline/streaming/offline.rs", "core/pipeline/streaming/pipeline.rs", "core/pipeline/tests.rs"],
+      "expected_dangling": ["dedup_chunk_overlap", "strip_suffix_overlap_live", "strip_segment_overlap_counted"]
+    },
+    {
+      "id": "authority-25-stream-postprocess",
+      "path": "core/pipeline/stream_postprocess.rs",
+      "classification": "DELETE_FILE",
+      "authority": "parallel lexical rewrite and whole-text final pass",
+      "removal_mode": "git rm",
+      "retained_role": "none",
+      "callers": ["core/pipeline/mod.rs", "core/pipeline/streaming/apple_live_session.rs", "core/pipeline/streaming/offline.rs", "core/stt/whisper/engine.rs"],
+      "expected_dangling": ["process_utterance_with_acoustic_occurrences", "apply_lexicon", "apply_active_names"]
+    },
+    {
+      "id": "authority-26-light-plus",
+      "path": "core/pipeline/light_plus.rs",
+      "classification": "DELETE_FILE",
+      "authority": "second automatic post-ASR text author",
+      "removal_mode": "git rm",
+      "retained_role": "none",
+      "callers": ["core/pipeline/mod.rs", "core/pipeline/streaming/progressive_seal.rs"],
+      "expected_dangling": ["light_plus::apply", "apply_with_left_context"]
+    },
+    {
+      "id": "authority-27-punctuation-transplant",
+      "path": "core/stt/punctuation_transplant.rs",
+      "classification": "DELETE_FILE",
+      "authority": "parallel punctuation and capitalization author",
+      "removal_mode": "git rm",
+      "retained_role": "none",
+      "callers": ["core/stt/mod.rs"],
+      "expected_dangling": ["punctuation_transplant module references"]
+    },
+    {
+      "id": "authority-28-inline-format-old-organ",
+      "path": "core/llm/inline_format.rs",
+      "classification": "DELETE_FILE",
+      "authority": "current formatter also owns SessionStore document assembly",
+      "removal_mode": "git rm; W1-D may later place the preregistered proposal-only part at this path",
+      "retained_role": "none during demolition",
+      "callers": ["core/llm/mod.rs"],
+      "expected_dangling": ["InlineFormatter", "SessionStore", "on_span_sealed"]
+    },
+    {
+      "id": "authority-29-ai-formatting-provider",
+      "path": "core/llm/ai_formatting.rs",
+      "classification": "MECHANIC",
+      "authority": "provider request/response mechanism",
+      "removal_mode": "none",
+      "retained_role": "LLM candidate generation only; no document or delivery admission",
+      "callers": ["core/llm/mod.rs"],
+      "expected_dangling": ["inline_format consumer removed until W1-D"]
+    },
+    {
+      "id": "authority-30-semantic-guard",
+      "path": "core/pipeline/semantic_guard.rs",
+      "classification": "DELETE_FILE",
+      "authority": "parallel semantic mutation veto",
+      "removal_mode": "git rm",
+      "retained_role": "none",
+      "callers": ["core/pipeline/mod.rs"],
+      "expected_dangling": ["semantic_guard module references"]
+    },
+    {
+      "id": "authority-31-streaming-quality-gate",
+      "path": "core/pipeline/streaming/quality_gate.rs",
+      "classification": "DELETE_FILE",
+      "authority": "parallel streaming admission veto",
+      "removal_mode": "git rm",
+      "retained_role": "none",
+      "callers": ["core/pipeline/streaming/mod.rs"],
+      "expected_dangling": ["quality gate call sites"]
+    },
+    {
+      "id": "authority-32-whisper-silero-filter",
+      "path": "core/stt/whisper/silero_filter.rs",
+      "classification": "DELETE_FILE",
+      "authority": "drops decoder segments using VAD evidence outside ledger",
+      "removal_mode": "git rm",
+      "retained_role": "none",
+      "callers": ["core/stt/whisper/mod.rs"],
+      "expected_dangling": ["silero_filter module references"]
+    },
+    {
+      "id": "authority-33-silero-fusion",
+      "path": "core/pipeline/streaming/silero_fusion.rs",
+      "classification": "MECHANIC",
+      "authority": "VAD boundary evidence",
+      "removal_mode": "none",
+      "retained_role": "evidence producer only; cannot mutate or seal",
+      "callers": ["core/pipeline/streaming/apple_live_session.rs"],
+      "expected_dangling": ["progressive_seal type references"]
+    },
+    {
+      "id": "authority-34-lane-truth",
+      "path": "core/llm/lane_truth.rs",
+      "classification": "DELETE_FILE",
+      "authority": "parallel runtime settings/provider resolution snapshot",
+      "removal_mode": "git rm",
+      "retained_role": "none",
+      "callers": ["core/llm/key_liveness.rs", "core/llm/model_discovery.rs", "core/quality/qube_report.rs"],
+      "expected_dangling": ["LaneTruthSnapshot", "resolve lane truth"]
+    },
+    {
+      "id": "authority-35-controller-final-pass",
+      "path": "app/controller/final_pass.rs",
+      "classification": "DELETE_FILE",
+      "authority": "whole-session Final BAM arbiter",
+      "removal_mode": "git rm",
+      "retained_role": "none",
+      "callers": ["app/controller/mod.rs"],
+      "expected_dangling": ["final_pass_action"]
+    },
+    {
+      "id": "authority-36-config-final-pass",
+      "path": "core/config/final_pass.rs",
+      "classification": "DELETE_FILE",
+      "authority": "second final-pass routing arbiter",
+      "removal_mode": "git rm",
+      "retained_role": "none",
+      "callers": ["core/config/mod.rs"],
+      "expected_dangling": ["FinalPassMode", "final_pass_routing_mode"]
+    },
+    {
+      "id": "authority-37-assistive-delivery",
+      "path": "app/controller/assistive_delivery.rs",
+      "classification": "DELETE_FILE",
+      "authority": "independent assistive/raw destination construction",
+      "removal_mode": "git rm",
+      "retained_role": "none",
+      "callers": ["app/controller/mod.rs"],
+      "expected_dangling": ["assistive delivery plan call sites"]
+    },
+    {
+      "id": "authority-38-overlay-paste",
+      "path": "app/controller/overlay_paste.rs",
+      "classification": "DELETE_FILE",
+      "authority": "second destination decision after DeliveryRoute",
+      "removal_mode": "git rm",
+      "retained_role": "none",
+      "callers": ["app/controller/mod.rs"],
+      "expected_dangling": ["OverlayPasteDisposition"]
+    },
+    {
+      "id": "authority-39-settings-loader",
+      "path": "core/config/loader.rs",
+      "classification": "THRONE",
+      "authority": "one-time settings load and precedence",
+      "removal_mode": "none",
+      "retained_role": "input to the W1 immutable settings snapshot",
+      "callers": ["core/config/mod.rs"],
+      "expected_dangling": ["lane_truth and final_pass consumers removed"]
+    },
+    {
+      "id": "authority-40-settings-schema",
+      "path": "core/config/settings.rs",
+      "classification": "THRONE",
+      "authority": "persisted settings.json schema",
+      "removal_mode": "none",
+      "retained_role": "owner path for the W1 immutable snapshot types",
+      "callers": ["core/config/loader.rs", "bridge/src/config.rs"],
+      "expected_dangling": ["config final-pass type references"]
+    },
+    {
+      "id": "authority-41-bridge-config",
+      "path": "bridge/src/config.rs",
+      "classification": "MECHANIC",
+      "authority": "settings DTO read/write transport",
+      "removal_mode": "none",
+      "retained_role": "explicit user edit transport; not session runtime truth",
+      "callers": ["macos/Codescribe/Screens/Settings/SettingsEngine.swift"],
+      "expected_dangling": ["removed final-pass and lane-truth fields"]
+    },
+    {
+      "id": "authority-42-settings-engine-swift",
+      "path": "macos/Codescribe/Screens/Settings/SettingsEngine.swift",
+      "classification": "MECHANIC",
+      "authority": "settings edit transport",
+      "removal_mode": "none",
+      "retained_role": "load/update UI boundary; cannot create per-session runtime truth",
+      "callers": ["macos/Codescribe/Screens/Settings/SettingsViewModel.swift"],
+      "expected_dangling": ["ConfigChangeBus notifications removed"]
+    },
+    {
+      "id": "authority-43-settings-view-model",
+      "path": "macos/Codescribe/Screens/Settings/SettingsViewModel.swift",
+      "classification": "OBSERVER",
+      "authority": "UI projection and explicit user edits",
+      "removal_mode": "none",
+      "retained_role": "renders persisted choices; cannot resolve active session settings",
+      "callers": ["macos/Codescribe/Screens/Settings/SettingsView.swift"],
+      "expected_dangling": ["ConfigChangeBus references"]
+    },
+    {
+      "id": "authority-44-config-change-bus",
+      "path": "macos/Codescribe/Core/ConfigChangeBus.swift",
+      "classification": "DELETE_FILE",
+      "authority": "parallel mutable runtime settings propagation",
+      "removal_mode": "git rm",
+      "retained_role": "none",
+      "callers": ["macos/Codescribe/Screens/Overlay/OverlayState.swift", "macos/Codescribe/Screens/Settings/SettingsViewModel.swift", "macos/Codescribe/Screens/Tray/TrayViewModel.swift"],
+      "expected_dangling": ["ConfigChangeBus notification references"]
+    },
+    {
+      "id": "authority-45-stt-engine-selection",
+      "path": "core/stt/mod.rs",
+      "classification": "DELETE_SYMBOL",
+      "authority": "parallel selected/requested engine and emergency fallback",
+      "removal_mode": "delete selected_engine, requested_engine and apple_live_or_emergency_whisper definitions",
+      "retained_role": "engine implementations only",
+      "callers": ["core/audio/streaming_recorder.rs", "core/pipeline/streaming/session.rs"],
+      "expected_dangling": ["engine-selection call sites until W2 settings wiring"]
+    },
+    {
+      "id": "authority-46-asr-bootstrap",
+      "path": "core/asr_session/bootstrap.rs",
+      "classification": "DELETE_FILE",
+      "authority": "parallel runtime lane/provider/settings resolution",
+      "removal_mode": "git rm",
+      "retained_role": "none",
+      "callers": ["core/asr_session/mod.rs", "core/audio/streaming_recorder.rs", "core/stt/fleet_red_contracts.rs"],
+      "expected_dangling": ["ProductAsrSession bootstrap and local_tail_patch_disposition"]
+    },
+    {
+      "id": "authority-47-asr-recorder-finality",
+      "path": "core/asr_session/recorder.rs",
+      "classification": "DELETE_SYMBOL",
+      "authority": "parallel refined transcript and live-floor adjudication",
+      "removal_mode": "delete refined_transcript state and adjudicate_against_live_floor definition",
+      "retained_role": "ASR session lifecycle and observation transport",
+      "callers": ["core/audio/streaming_recorder.rs", "core/pipeline/streaming/session.rs"],
+      "expected_dangling": ["recorder adjudication call sites"]
+    },
+    {
+      "id": "authority-48-whisper-final-pass",
+      "path": "core/stt/whisper/engine.rs",
+      "classification": "DELETE_SYMBOL",
+      "authority": "engine-owned automatic final text rewrite",
+      "removal_mode": "delete apply_requested_final_pass definition",
+      "retained_role": "Whisper candidate decode engine",
+      "callers": ["core/stt/whisper/mod.rs"],
+      "expected_dangling": ["apply_requested_final_pass call sites"]
+    },
+    {
+      "id": "authority-49-core-sinks",
+      "path": "core/pipeline/sinks.rs",
+      "classification": "DELETE_SYMBOL",
+      "authority": "second document mutation through emit_text_delta",
+      "removal_mode": "delete emit_text_delta definition",
+      "retained_role": "event sink transport only",
+      "callers": ["core/pipeline/mod.rs"],
+      "expected_dangling": ["emit_text_delta internal call sites"]
+    },
+    {
+      "id": "authority-50-streaming-pipeline",
+      "path": "core/pipeline/streaming/pipeline.rs",
+      "classification": "MECHANIC",
+      "authority": "generic streaming orchestration",
+      "removal_mode": "none; dedup authority disappears with dedup.rs",
+      "retained_role": "stream cadence only",
+      "callers": ["core/pipeline/streaming/mod.rs"],
+      "expected_dangling": ["strip_suffix_overlap_live", "strip_segment_overlap_counted"]
+    },
+    {
+      "id": "authority-51-selection-evidence",
+      "path": "app/os/selection.rs",
+      "classification": "OBSERVER",
+      "authority": "OS focus and selection evidence",
+      "removal_mode": "none",
+      "retained_role": "input evidence to DeliveryRoute only",
+      "callers": ["app/controller/mod.rs"],
+      "expected_dangling": []
+    },
+    {
+      "id": "authority-52-serving-status",
+      "path": "app/controller/serving_status.rs",
+      "classification": "OBSERVER",
+      "authority": "runtime status projection",
+      "removal_mode": "none",
+      "retained_role": "reports state; cannot select engine or settings",
+      "callers": ["app/controller/mod.rs"],
+      "expected_dangling": ["ConfigChangeBus notification projection"]
+    }
+  ]
+}
