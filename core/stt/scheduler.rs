@@ -472,9 +472,7 @@ fn default_infer(
 fn initial_prompt_for_lane(lane: SttLane) -> Option<String> {
     match lane {
         SttLane::Live => None,
-        SttLane::Commit | SttLane::Refine => {
-            crate::pipeline::stream_postprocess::whisper_initial_prompt()
-        }
+        SttLane::Commit | SttLane::Refine => None,
     }
 }
 

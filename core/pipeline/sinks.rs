@@ -169,6 +169,19 @@ impl EventSink for DeltaSinkAdapter {
     }
 }
 
+fn emit_text_delta(sink: &Arc<dyn DeltaSink>, state: &mut DeltaSinkState, text: &str) {
+    if state.last_text.is_empty() && state.needs_separator && !text.is_empty() {
+        sink.apply(&TranscriptDelta::append(format!(" {text}")));
+        state.last_text = text.to_string();
+        state.needs_separator = false;
+        return;
+    }
+    if let Some(delta) = TranscriptDelta::from_diff(&state.last_text, text) {
+        sink.apply(&delta);
+    }
+    state.last_text = text.to_string();
+}
+
 /// Fan-out sink that forwards each event to multiple sinks.
 pub struct FanoutEventSink {
     sinks: Vec<Arc<dyn EventSink>>,
@@ -389,7 +402,6 @@ mod tests {
             compression_ratio: None,
             quality_gate_dropped: false,
             confidence_flags: Vec::new(),
-            acoustic: None,
         });
 
         // After final, next utterance must append with a word separator.
@@ -429,7 +441,6 @@ mod tests {
             compression_ratio: None,
             quality_gate_dropped: false,
             confidence_flags: Vec::new(),
-            acoustic: None,
         });
         adapter.on_event(&EngineEvent::Correction {
             rev: 2,
@@ -535,7 +546,6 @@ mod tests {
             compression_ratio: None,
             quality_gate_dropped: false,
             confidence_flags: Vec::new(),
-            acoustic: None,
         });
 
         assert_eq!(sink.events().len(), 3);

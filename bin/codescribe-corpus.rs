@@ -29,7 +29,6 @@ use codescribe::qube_report::{
     ReportEnvironment, ReportMetrics, ReportSummary, ReportTranscriptSemantics,
     ReportTranscriptState, ReportTranscripts, render_html as render_qube_html,
 };
-use codescribe_core::asr_session::GatewaySessionAvailability;
 use codescribe_core::config::UserSettings;
 use codescribe_core::pipeline::contracts::{EngineEvent, LayerSource};
 use codescribe_core::quality::engine_contract::{CORPUS_REPORT_SCHEMA, ENGINE_CONTRACT_ID};
@@ -1081,7 +1080,6 @@ async fn run_worker(args: WorkerArgs) -> Result<()> {
                 &clip.path,
                 Some(args.language.clone()),
                 &settings,
-                GatewaySessionAvailability::Unavailable,
                 args.profile.stop_lane(),
             )
             .await;

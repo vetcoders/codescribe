@@ -986,10 +986,21 @@ impl<T: CloudGatewayTransport> LiveCloudAsrSession<T> {
         self.session_id.clone().ok_or(AsrErrorKind::Protocol)
     }
 
+    fn take_event_sequence(&mut self) -> u64 {
+        let sequence_id = self.next_event_sequence;
+        self.next_event_sequence = self.next_event_sequence.saturating_add(1);
+        sequence_id
+    }
+
     fn queue_local_error(&mut self, utterance_id: u64, kind: AsrErrorKind) {
-        if let Ok(identity) = self.allocate_identity(utterance_id) {
-            self.ready
-                .push_back(AsrSessionEvent::Error(ErrorEvent { identity, kind }));
+        if let Ok(session_id) = self.session_id() {
+            let sequence_id = self.take_event_sequence();
+            self.ready.push_back(AsrSessionEvent::Error(ErrorEvent {
+                session_id,
+                utterance_id,
+                sequence_id,
+                kind,
+            }));
         }
     }
 
@@ -1039,23 +1050,35 @@ impl<T: CloudGatewayTransport> LiveCloudAsrSession<T> {
             } => self.normalize_transcript(true, utterance_id, revision, text, start_ms, end_ms),
             GatewayEvent::Error {
                 utterance_id, code, ..
-            } => self.allocate_identity(utterance_id).map(|identity| {
-                Some(AsrSessionEvent::Error(ErrorEvent {
-                    identity,
-                    kind: code.as_asr_kind(),
-                }))
-            }),
+            } => {
+                let session_id = self.session_id();
+                let sequence_id = self.take_event_sequence();
+                session_id.map(|session_id| {
+                    Some(AsrSessionEvent::Error(ErrorEvent {
+                        session_id,
+                        utterance_id,
+                        sequence_id,
+                        kind: code.as_asr_kind(),
+                    }))
+                })
+            }
             GatewayEvent::Usage {
                 audio_ms,
                 billable_units,
                 ..
-            } => self.allocate_identity(0).map(|identity| {
-                Some(AsrSessionEvent::Usage(UsageEvent {
-                    identity,
-                    audio_secs: duration_millis_to_secs(audio_ms),
-                    billable_units,
-                }))
-            }),
+            } => {
+                let session_id = self.session_id();
+                let sequence_id = self.take_event_sequence();
+                session_id.map(|session_id| {
+                    Some(AsrSessionEvent::Usage(UsageEvent {
+                        session_id,
+                        utterance_id: 0,
+                        sequence_id,
+                        audio_secs: duration_millis_to_secs(audio_ms),
+                        billable_units,
+                    }))
+                })
+            }
             GatewayEvent::SessionEnded { .. } => return,
         };
 
@@ -1099,8 +1122,12 @@ impl<T: CloudGatewayTransport> LiveCloudAsrSession<T> {
         if is_final {
             self.sealed_utterances.insert(utterance_id);
         }
+        let session_id = self.session_id()?;
+        let sequence_id = self.take_event_sequence();
         let transcript = TranscriptEvent {
-            identity: self.allocate_identity(utterance_id)?,
+            session_id,
+            utterance_id,
+            sequence_id,
             text,
             range,
         };
@@ -1610,11 +1637,11 @@ mod tests {
         let events = session.drain();
         let sequences: Vec<_> = events
             .iter()
-            .map(|event| event.identity().sequence_id())
+            .map(AsrSessionEvent::sequence_id)
             .collect();
         let utterances: Vec<_> = events
             .iter()
-            .map(|event| event.identity().utterance_id())
+            .map(AsrSessionEvent::utterance_id)
             .collect();
         assert_eq!(sequences, vec![1, 2, 3, 4, 5]);
         assert_eq!(utterances, vec![1, 2, 1, 2, 0]);
@@ -1703,8 +1730,8 @@ mod tests {
                 ..
             })
         ));
-        assert_eq!(events[0].identity().sequence_id(), 1);
-        assert_eq!(events[1].identity().sequence_id(), 2);
+        assert_eq!(events[0].sequence_id(), 1);
+        assert_eq!(events[1].sequence_id(), 2);
     }
 
     #[test]

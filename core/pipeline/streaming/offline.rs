@@ -5,11 +5,9 @@
 use anyhow::Result;
 use tracing::{debug, info};
 
-use crate::pipeline::dedup::dedup_chunk_overlap;
-use crate::pipeline::stream_postprocess::StreamPostProcessor;
 use crate::stt::whisper::singleton::transcribe_chunk;
 
-use super::tuning::{env_bool_default, env_f32};
+use super::tuning::env_f32;
 
 /// Default offline streaming chunk length in seconds when env knobs are absent.
 const DEFAULT_CHUNK_DURATION_SEC: f32 = 4.0;
@@ -25,7 +23,7 @@ pub fn transcribe_streaming_samples(
     samples: &[f32],
     sample_rate: u32,
     language: Option<&str>,
-    mut postprocessor: Option<&mut StreamPostProcessor>,
+    _postprocessor: Option<&mut ()>,
 ) -> Result<String> {
     if samples.is_empty() {
         return Ok(String::new());
@@ -81,12 +79,11 @@ pub fn transcribe_streaming_samples(
             text.split_whitespace().count()
         );
 
-        if let Some(processor) = postprocessor.as_mut() {
-            if let Some(cleaned) = processor.process(&text) {
-                dedup_chunk_overlap(&mut out, &cleaned);
+        if !text.trim().is_empty() {
+            if !out.is_empty() {
+                out.push(' ');
             }
-        } else {
-            dedup_chunk_overlap(&mut out, &text);
+            out.push_str(text.trim());
         }
 
         if end == samples.len() {
@@ -102,15 +99,6 @@ pub fn transcribe_streaming_samples(
         total_ms,
         out.split_whitespace().count()
     );
-
-    // Optional: apply lexicon post-processing to streaming output.
-    // Disabled by default; enable explicitly for offline-eval comparisons.
-    if env_bool_default("CODESCRIBE_STREAM_LEXICON", false) && !out.trim().is_empty() {
-        let mut lex = StreamPostProcessor::new();
-        if let Some(cleaned) = lex.process(&out) {
-            out = cleaned;
-        }
-    }
 
     Ok(out)
 }

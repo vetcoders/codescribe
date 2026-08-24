@@ -49,7 +49,6 @@ async fn replay_operator_take() {
         std::path::Path::new(&wav),
         Some("pl".to_string()),
         &settings,
-        codescribe_core::asr_session::GatewaySessionAvailability::Unavailable,
         codescribe::controller::production_replay::ProductionReplayLane::AppleLexicon,
     )
     .await

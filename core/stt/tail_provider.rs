@@ -452,7 +452,7 @@ impl TailProvider for InProcessTailProvider {
                 &speech,
                 request.sample_rate,
                 request.language.as_deref(),
-                crate::pipeline::stream_postprocess::whisper_initial_prompt(),
+                None,
             )?
         };
         let request_range = &request.identity.range;
@@ -1120,9 +1120,6 @@ impl TailProvider for RemoteTailProvider {
             .text("model", model.clone())
             .text("language", language.to_string())
             .text("response_format", "verbose_json");
-        if let Some(prompt) = crate::pipeline::stream_postprocess::whisper_initial_prompt() {
-            form = form.text("prompt", prompt);
-        }
         if let Some((field, value)) =
             crate::stt::request_vocabulary::codescribe_stt_vocabulary_form_part(&self.endpoint)
         {

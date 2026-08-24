@@ -22,27 +22,18 @@
 //! keep a 400ms floor even if settings lower the generic hold delay. This prevents
 //! accidental Emil sessions while preserving quick toggle-mode for power users.
 
-mod assistive_delivery;
 /// Per-session assistive context bag (selection, app, images).
 mod context_bucket;
 /// One destination throne: intent → Agent / Orient / paste. Focus is not king.
 mod delivery_route;
-/// Stop-path final-pass routing, completeness, and budget reporting.
-mod final_pass;
 /// Session telemetry, image attach helpers, assistive send wiring.
 mod helpers;
 /// Hold/toggle timing, agent-send vetoes, stop adjudication policy.
 mod hotkey_policy;
-/// Overlay paste dispositions and deferred-insert registration.
-mod overlay_paste;
 /// Production-owned, content-private PCM replay of the overlay engine cone.
 pub mod production_replay;
-/// Quality-gated auto-paste / clipboard delivery decisions.
-mod quality_delivery;
 /// Public serving-status surface for tray/UI consumers.
 pub mod serving_status;
-/// Recording-truth adjudication: which engine/text is authoritative.
-mod truth;
 /// Controller state, hotkey types, and recording truth metadata.
 mod types;
 
@@ -50,12 +41,11 @@ pub use helpers::{
     is_assistive_session, is_conversation_session, publish_recording_indicator,
     set_assistive_session, set_assistive_target_thread, set_conversation_session,
 };
-pub use overlay_paste::{OverlayPasteDelivery, OverlayPasteResult};
 pub use types::{HotkeyAction, HotkeyInput, HotkeyType, State, TranscriptionActionContractMode};
+pub use delivery_route::{OverlayPasteDelivery, OverlayPasteResult};
 
 use crate::presentation::{PresentationEmitter, TranscriptBus, TranscriptMode, TranscriptSession};
 use anyhow::{Context, Result};
-use std::path::PathBuf;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
 use std::time::Duration;
@@ -78,7 +68,6 @@ use crate::os::selection::{
     capture_frontmost_app_only_with_prior_frontmost,
 };
 use crate::os::shortcut_registry;
-use codescribe_core::asr_session::gateway_session_availability;
 use context_bucket::ContextBucket;
 #[cfg(test)]
 pub(crate) use context_bucket::ContextMarker;
@@ -88,39 +77,12 @@ use codescribe_core::conversation::{ConversationEngine, MoshiConfig};
 use codescribe_core::ipc::{EngineEventWire, IpcEvent, IpcEventPayload};
 use codescribe_core::tts::AudioPlayer;
 
-use codescribe_core::pipeline::contracts::FinalPassDisposition;
 #[cfg(test)]
 pub(crate) use codescribe_core::pipeline::contracts::TranscriptionConfidenceFlag;
 
-// AssistiveDelivery kept in the pub(crate) surface for crate consumers of the
-// type name; currently only AssistiveLane is named at call sites in this module.
-#[allow(unused_imports)]
-pub(crate) use assistive_delivery::{AssistiveDelivery, AssistiveLane};
-use assistive_delivery::{
-    assemble_assistive_delivery_lane, assemble_raw_paste_wire, capture_combo_context_with_image,
-};
 use delivery_route::{
-    DeliveryFacts, DeliveryIntent, DeliveryRoute, delivery_intent_from_session,
-    format_delivery_route_line, overlay_insert_facts, resolve_delivery_route,
-};
-#[cfg(test)]
-pub(crate) use final_pass::FinalPassRoutingMode;
-pub(crate) use final_pass::{
-    FinalPassAction, FinalPassStages, SmartTailGapSource, StopPathBudget,
-    StreamingCompletenessEvidence, append_tail_gap, apply_committed_density_floor,
-    apply_residual_required_demotion, assess_streaming_completeness, completeness_label,
-    compose_stop_path_residual_from_partials, final_pass_action, final_pass_routing_mode,
-    format_assistive_delivery_budget_line, format_density_override_line,
-    format_final_pass_stages_line, format_residual_required_line, format_stop_path_budget_line,
-    smart_tail_gap_source,
-};
-// The stop path routes on completeness values without ever naming the type:
-// every verdict label now comes from `completeness_label`, so the only sites
-// that spell `StreamingCompleteness` out are the controller tests.
-#[cfg(test)]
-pub(crate) use final_pass::{
-    StreamingCompleteness, assess_streaming_completeness_fields, engine_label_from_verdict,
-    stop_path_budget_covers_total,
+    DeliveryFacts, DeliveryIntent, DeliveryRoute, format_delivery_route_line,
+    overlay_insert_facts, resolve_delivery_route, target_is_self_app,
 };
 #[cfg(test)]
 use helpers::SessionEngineStats;
@@ -129,8 +91,8 @@ pub(crate) use helpers::SessionTelemetrySnapshot;
 #[cfg(test)]
 use helpers::build_image_attachments_from_text;
 use helpers::{
-    CompletenessCommitSource, SharedSessionTelemetry, new_session_telemetry, raw_save_enabled,
-    reset_session_telemetry, send_assistive_with_agent_runtime_lane, snapshot_session_telemetry,
+    SharedSessionTelemetry, new_session_telemetry, reset_session_telemetry,
+    send_assistive_with_agent_runtime_lane,
 };
 use hotkey_policy::{
     STOP_TIMEOUT, effective_hold_start_delay_ms, should_apply_incoming_mode_flags,
@@ -139,31 +101,6 @@ use hotkey_policy::{
 };
 #[cfg(test)]
 use hotkey_policy::{is_assistive_start_event, toggle_stop_adjudicate_timeout};
-use overlay_paste::{
-    DeferredInsertRegistration, OverlayPasteDisposition, confirm_latched_paste_target,
-    deferred_insert_registration, overlay_paste_disposition, park_refused_paste,
-};
-#[cfg(test)]
-use quality_delivery::AutomaticDeliverySink;
-use quality_delivery::{
-    ActionQualityProbe, AutomaticDeliveryOwner, ClipboardDeliverySink, compose_final_status,
-    evaluate_quality_commit_trigger, maybe_wrap_transcript_for_delivery,
-    maybe_wrap_transcript_for_delivery_with_quality, recording_mode_label,
-    session_auto_format_enabled, session_prewarms_semantic_guard, truth_recording_mode_label,
-};
-#[cfg(test)]
-pub(crate) use quality_delivery::{
-    AutoPastePolicyContext, AutoPasteTrigger, resolve_auto_paste_policy,
-};
-pub(crate) use truth::{
-    adjudicate_recording_truth, apply_ai_noop_signal, postprocess_transcript_for_delivery,
-    truth_display_status, truth_engine_label,
-};
-#[cfg(test)]
-pub(crate) use truth::{push_typed_flag, truth_review_trigger};
-use types::{
-    RecordingFallbackClass, RecordingTranscriptSource, RecordingTruthMetadata, ValidatedAudioPath,
-};
 
 /// Live overlay: ms of audio held before the first interim emit.
 const LIVE_PROFILE_BUFFER_DELAY_MS: u64 = 280;
@@ -250,21 +187,6 @@ fn apply_runtime_transcription_profile(config: &Config, assistive: bool) -> bool
     overlay_enabled
 }
 
-/// Write the provenance sidecar next to a saved artifact, logging either way.
-///
-/// Sidecar loss must never fail a delivery that already succeeded, so the error
-/// is warned and swallowed rather than propagated.
-fn write_truth_sidecar_logged(path: &std::path::Path, metadata: &RecordingTruthMetadata) {
-    match types::write_truth_sidecar(path, metadata) {
-        Ok(sidecar_path) => debug!("Truth sidecar saved: {}", sidecar_path.display()),
-        Err(error) => warn!(
-            "Failed to write truth sidecar for {}: {}",
-            path.display(),
-            error
-        ),
-    }
-}
-
 /// Holds a shared flag `true` for a scope and clears it on drop — including on
 /// an early `return` out of a start path, which is exactly where a hand-written
 /// reset gets forgotten.
@@ -305,11 +227,6 @@ struct ProcessRecordingOutcome {
     no_speech_reason: Option<String>,
     commit_trigger: Option<String>,
     transcript_present: bool,
-    final_pass_secs: f64,
-    postproc_secs: f64,
-    format_secs: f64,
-    /// Wall seconds for history save + deliver_once / assistive handoff.
-    delivery_secs: f64,
 }
 
 impl ProcessRecordingOutcome {
@@ -320,10 +237,6 @@ impl ProcessRecordingOutcome {
             no_speech_reason: Some(reason.into()),
             commit_trigger: None,
             transcript_present: false,
-            final_pass_secs: 0.0,
-            postproc_secs: 0.0,
-            format_secs: 0.0,
-            delivery_secs: 0.0,
         }
     }
 }
@@ -393,9 +306,6 @@ pub struct RecordingController {
 
     /// Lock to serialize finish_recording calls
     serial_lock: Arc<Mutex<()>>,
-
-    /// One bounded automatic-delivery owner shared by visible/headless paths.
-    automatic_delivery: AutomaticDeliveryOwner,
 
     /// Flag set by VAD (silence detection) when recording should auto-stop
     vad_triggered: Arc<AtomicBool>,
@@ -549,12 +459,6 @@ impl RecordingController {
                 Err(error) => warn!("Model manager unavailable during startup: {error}"),
             }
 
-            // Lexicon table (~14.5k rules, seconds to compile) warms off-thread
-            // too: its first toucher used to be the Apple live-session thread,
-            // which put the whole compile between "audio stream started" and
-            // "recognizer ready" (5.1 s arm stall, session a5623d55).
-            codescribe_core::pipeline::stream_postprocess::warm_lexicon();
-
             if !crate::whisper::is_initialized() {
                 // Best-effort BACKGROUND prewarm — never block recording readiness.
                 //
@@ -609,7 +513,6 @@ impl RecordingController {
             hold_start_generation: Arc::new(AtomicU64::new(0)),
             start_transition_in_flight: Arc::new(AtomicBool::new(false)),
             serial_lock: Arc::new(Mutex::new(())),
-            automatic_delivery: AutomaticDeliveryOwner::new(Arc::new(ClipboardDeliverySink)),
             vad_triggered: Arc::new(AtomicBool::new(false)),
             assistive_loop_active: Arc::new(AtomicBool::new(false)),
             toggle_user_has_text: Arc::new(AtomicBool::new(false)),
@@ -802,13 +705,7 @@ impl RecordingController {
     {
         let delivery_started = std::time::Instant::now();
         if transcript.trim().is_empty() {
-            info!(
-                "{}",
-                format_assistive_delivery_budget_line(
-                    delivery_started.elapsed().as_secs_f64(),
-                    "empty_transcript",
-                )
-            );
+            info!(elapsed_secs = delivery_started.elapsed().as_secs_f64(), "assistive delivery skipped: empty transcript");
             return Ok(false);
         }
         let to_agent = resolve_delivery_route(
@@ -833,59 +730,25 @@ impl RecordingController {
         // The session trigger context (frontmost app, captured at every session
         // start) is truthful for an explicit send; taking it keeps delivery
         // one-shot either way.
-        let pending = self.pending_assistive_context.write().await.take();
-        let context = match pending {
-            Some(context) => context,
-            None => match self.assistive_context.write().await.take() {
-                Some(context) => context,
-                None => {
-                    // An explicit send must never be refused for want of a
-                    // context. The trigger context dies with the session
-                    // (`reset_session_fields`), but the terminal overlay — and
-                    // its live "To Agent" button — outlives it by minutes; the
-                    // 2026-08-13 01:02 session logged six no_pending_context
-                    // refusals against a user clicking a button the UI showed
-                    // as available. Double-send protection lives in the Swift
-                    // `agentDeliveryStarted` latch, not here. Degrade to a
-                    // bare context: the click means "send this text".
-                    info!(
-                        "{}",
-                        format_assistive_delivery_budget_line(
-                            delivery_started.elapsed().as_secs_f64(),
-                            "degraded_no_context",
-                        )
-                    );
-                    AssistiveContext::default()
-                }
-            },
-        };
+        let _ = self.pending_assistive_context.write().await.take();
+        let _ = self.assistive_context.write().await.take();
         let config = self.config.read().await.clone();
-        let delivery = {
+        {
             let mut bucket = self.context_bucket.lock().await;
-            let delivery = assemble_assistive_delivery_lane(&transcript, &context, &bucket);
             match bucket.archive_and_reset("assistive-delivery") {
                 Ok(Some(dir)) => info!("Context bucket archived: {}", dir.display()),
                 Ok(None) => {}
                 Err(err) => warn!("Context bucket archive failed (items kept): {err:#}"),
             }
-            delivery
-        };
-        // Raw spoken transcript is already history-saved as Raw in the finalize
-        // pipeline (W10-D D4). Wire content is lane-truth for the agent turn.
+        }
         send(
-            delivery.wire,
+            transcript,
             config.whisper_language,
             config.ai_assistive_max_tokens,
-            delivery.lane.use_assistive_persona(),
+            true,
         )
         .await;
-        info!(
-            "{}",
-            format_assistive_delivery_budget_line(
-                delivery_started.elapsed().as_secs_f64(),
-                "delivered",
-            )
-        );
+        info!(elapsed_secs = delivery_started.elapsed().as_secs_f64(), "assistive delivery completed");
         Ok(true)
     }
 
@@ -975,7 +838,18 @@ impl RecordingController {
                 .await;
         }
 
-        let focus_confirmed = confirm_latched_paste_target(target_app.as_deref());
+        let focus_confirmed = target_app
+            .as_deref()
+            .map(str::trim)
+            .filter(|name| !name.is_empty())
+            .is_some_and(|name| {
+                target_is_self_app(name)
+                    || (crate::os::selection::activate_app_by_name(name)
+                        && crate::os::selection::wait_for_frontmost_app(
+                            name,
+                            Duration::from_millis(250),
+                        ))
+            });
         debug!(
             target = ?target_app,
             focus_confirmed,
@@ -983,53 +857,30 @@ impl RecordingController {
         );
 
         let config = self.config.read().await.clone();
-        let paste_text = maybe_wrap_transcript_for_delivery(trimmed, &config, "dictation");
+        let paste_text = trimmed.to_string();
         let frontmost = crate::os::selection::current_frontmost_app_name();
         let preflight = clipboard::synthetic_paste_preflight();
-        let disposition = overlay_paste_disposition(
-            target_app.as_deref(),
-            frontmost.as_deref(),
-            preflight.can_post_events(),
-            focus_confirmed,
-        );
 
         let mut deferred_insert_shortcut = None;
         let mut deferred_insert_failure = None;
-        let delivery = match disposition {
-            OverlayPasteDisposition::Paste => {
-                clipboard::paste_and_restore(&paste_text)
-                    .context("Failed to paste overlay text")?;
-                OverlayPasteDelivery::Pasted
-            }
-            OverlayPasteDisposition::CopyAccessibilityDenied => {
-                warn!(
-                    target_app = ?target_app,
-                    frontmost_app = ?frontmost,
-                    cg_post_event_access = preflight.cg_post_event_access,
-                    ax_trusted = preflight.ax_trusted,
-                    "Synthetic overlay paste blocked by Accessibility preflight"
-                );
-                self.arm_or_copy_deferred_payload(
-                    paste_text,
-                    &config,
-                    &mut deferred_insert_shortcut,
-                    &mut deferred_insert_failure,
-                )?
-            }
-            copy_disposition => {
-                warn!(
-                    ?copy_disposition,
-                    target_app = ?target_app,
-                    frontmost_app = ?frontmost,
-                    "Overlay paste target was not exactly confirmed"
-                );
-                self.arm_or_copy_deferred_payload(
-                    paste_text,
-                    &config,
-                    &mut deferred_insert_shortcut,
-                    &mut deferred_insert_failure,
-                )?
-            }
+        let delivery = if focus_confirmed && preflight.can_post_events() {
+            clipboard::paste_and_restore(&paste_text).context("Failed to paste overlay text")?;
+            OverlayPasteDelivery::Pasted
+        } else {
+            warn!(
+                target_app = ?target_app,
+                frontmost_app = ?frontmost,
+                cg_post_event_access = preflight.cg_post_event_access,
+                ax_trusted = preflight.ax_trusted,
+                focus_confirmed,
+                "Overlay paste could not execute the selected clipboard route; arming deferred insert"
+            );
+            self.arm_or_copy_deferred_payload(
+                paste_text,
+                &config,
+                &mut deferred_insert_shortcut,
+                &mut deferred_insert_failure,
+            )?
         };
 
         Ok(OverlayPasteResult {
@@ -1054,29 +905,21 @@ impl RecordingController {
         shortcut_label: &mut Option<String>,
         registration_failure: &mut Option<String>,
     ) -> Result<OverlayPasteDelivery> {
-        if !park_refused_paste(payload) {
+        if !clipboard::arm_deferred_insert(payload) {
             return Ok(OverlayPasteDelivery::Noop);
         }
         let collision =
             shortcut_registry::deferred_insert_shortcut_conflict(config.deferred_insert_shortcut);
-        match deferred_insert_registration(
-            config.deferred_insert_shortcut,
-            hotkeys::is_global_hotkey_manager_active(),
-            collision.as_deref(),
-        ) {
-            DeferredInsertRegistration::Available {
-                shortcut_label: label,
-            } => {
-                *shortcut_label = Some(label);
-                Ok(OverlayPasteDelivery::DeferredInsertArmed)
-            }
-            DeferredInsertRegistration::Unavailable { reason } => {
-                *registration_failure = Some(reason);
-                // Slot is armed. The chord is not bound, so the overlay stays
-                // the visible buffer. Do not steal the user's clipboard.
-                Ok(OverlayPasteDelivery::DeferredInsertArmed)
-            }
+        if !config.deferred_insert_shortcut.is_enabled() {
+            *registration_failure = Some("Paste Here shortcut is disabled".to_string());
+        } else if !hotkeys::is_global_hotkey_manager_active() {
+            *registration_failure = Some("Paste Here hotkey registration failed".to_string());
+        } else if let Some(reason) = collision {
+            *registration_failure = Some(reason);
+        } else {
+            *shortcut_label = Some(config.deferred_insert_shortcut.label().to_string());
         }
+        Ok(OverlayPasteDelivery::DeferredInsertArmed)
     }
 
     /// Arm tagged overlay text for Paste Here. Shared by the throne's
@@ -1088,7 +931,7 @@ impl RecordingController {
         frontmost_app_name: Option<String>,
     ) -> Result<OverlayPasteResult> {
         let config = self.config.read().await.clone();
-        let payload = maybe_wrap_transcript_for_delivery(trimmed, &config, "dictation");
+        let payload = trimmed.to_string();
         let mut deferred_insert_shortcut = None;
         let mut deferred_insert_failure = None;
         let delivery = self.arm_or_copy_deferred_payload(
@@ -1141,9 +984,7 @@ impl RecordingController {
         if trimmed.is_empty() {
             return Ok(());
         }
-        let config = self.config.read().await.clone();
-        let tagged = maybe_wrap_transcript_for_delivery(trimmed, &config, "dictation");
-        clipboard::set_clipboard(&tagged).context("Failed to copy overlay text")?;
+        clipboard::set_clipboard(trimmed).context("Failed to copy overlay text")?;
         Ok(())
     }
 
@@ -2364,10 +2205,6 @@ impl RecordingController {
                 Arc::clone(&session_telemetry),
                 transcript_bus.clone(),
             );
-            rec.configure_layer1(
-                runtime_settings.as_ref(),
-                gateway_session_availability(&config),
-            );
             if !cfg!(test) {
                 let language_hint = language.whisper_hint().map(str::to_string);
                 // Audio-first cold start: do not preflight Whisper here. The
@@ -2586,11 +2423,6 @@ impl RecordingController {
             Arc::clone(&self.session_telemetry),
             transcript_bus.clone(),
         );
-        recorder.configure_layer1(
-            self.runtime_settings.as_ref(),
-            gateway_session_availability(&config),
-        );
-
         // Skip actual audio stream in tests (no CoreAudio device needed)
         let language_hint = language.whisper_hint().map(str::to_string);
         // Audio-first cold start: do not preflight Whisper here. The recorder
@@ -2719,9 +2551,6 @@ impl RecordingController {
         info!("Stopping toggle recording with final-pass adjudication");
 
         let assistive = *self.assistive_mode.read().await;
-        let hold_mode = *self.hold_mode.read().await;
-        let force_raw = *self.force_raw_mode.read().await;
-        let force_ai = *self.force_ai_mode.read().await;
 
         // Self-deadlock guard (Rust 2024): the read guard temporary from an
         // if-let chain scrutinee outlives the chain body. Inlining the read
@@ -2765,23 +2594,17 @@ impl RecordingController {
             drop(recorder_guard);
 
             let phase3 = std::time::Instant::now();
-            info!(
-                "stop_toggle_inner: PHASE 3 — process_stopped_recording (truth selection + post-process + paste/handoff decision)"
-            );
-            let r = self
-                .process_stopped_recording(
-                    streaming_text,
-                    raw_audio_path_opt,
-                    assistive,
-                    hold_mode,
-                    force_raw,
-                    force_ai,
-                    Some(RecordingTranscriptSource::ToggleSessionAdjudicated),
-                )
-                .await;
+            info!("stop_toggle_inner: PHASE 3 — reducer-owned transcript already delivered");
+            if let Some(path) = raw_audio_path_opt.as_deref() {
+                retain_last_session_audio(path);
+            }
+            let r = Ok(ProcessRecordingOutcome {
+                transcript_present: !streaming_text.trim().is_empty(),
+                ..ProcessRecordingOutcome::default()
+            });
             let phase3_secs = phase3.elapsed().as_secs_f64();
             info!(
-                "stop_toggle_inner: PHASE 3 — process_stopped_recording completed in {:?} (ok={})",
+                "stop_toggle_inner: PHASE 3 — reducer handoff completed in {:?} (ok={})",
                 phase3.elapsed(),
                 r.is_ok()
             );
@@ -2797,34 +2620,12 @@ impl RecordingController {
             .await;
         let cleanup_secs = phase4.elapsed().as_secs_f64();
         let total_secs = stop_start.elapsed().as_secs_f64();
-        // delivery_secs is timed inside the pipeline (history + deliver_once),
-        // not phase-4 cleanup. Remainder absorbs cleanup + adjudication overhead.
-        let (final_pass_secs, postproc_secs, format_secs, delivery_secs) = match &result {
-            Ok(outcome) => (
-                outcome.final_pass_secs,
-                outcome.postproc_secs,
-                outcome.format_secs,
-                outcome.delivery_secs,
-            ),
-            Err(_) => (0.0, 0.0, 0.0, 0.0),
-        };
-        let budget = StopPathBudget {
-            total_secs,
-            rec_stop_secs,
-            final_pass_secs,
-            postproc_secs,
-            format_secs,
-            delivery_secs,
-        };
         info!(
             "stop_toggle_inner: PHASE 4 — cleanup + result handler completed in {:?} (total stop time: {:?}, cleanup={cleanup_secs:.3}s)",
             phase4.elapsed(),
             stop_start.elapsed()
         );
-        info!("{}", format_stop_path_budget_line(budget));
-        // phase3_secs is the outer wall for truth+postproc+format+delivery;
-        // keep it for diagnostics without pretending it is final_pass alone.
-        let _ = phase3_secs;
+        info!(total_secs, rec_stop_secs, phase3_secs, cleanup_secs, "stop_toggle_inner: mechanical stop timing");
 
         result.map(|_| ())
     }
@@ -2966,16 +2767,14 @@ impl RecordingController {
         Self::clear_recorder_callbacks(recorder);
         drop(recorder_guard); // Release lock
 
-        self.process_stopped_recording(
-            streaming_text,
-            raw_audio_path_opt,
-            assistive,
-            hold_mode,
-            force_raw,
-            force_ai,
-            None,
-        )
-        .await
+        if let Some(path) = raw_audio_path_opt.as_deref() {
+            retain_last_session_audio(path);
+        }
+        let _ = (assistive, hold_mode, force_raw, force_ai);
+        Ok(ProcessRecordingOutcome {
+            transcript_present: !streaming_text.trim().is_empty(),
+            ..ProcessRecordingOutcome::default()
+        })
     }
 
 

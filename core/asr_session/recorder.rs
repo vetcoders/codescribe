@@ -43,7 +43,6 @@ use tracing::{info, warn};
 use super::events::{AsrErrorKind, AsrSessionEvent, TranscriptEvent};
 use super::ingest::{IngestVerdict, SessionIngest};
 use super::provider::{AsrSessionProvider, RefinerMode, SessionInput};
-use crate::quality::{Layer1MergedDelivery, merge_live_layer1};
 
 /// Consecutive overflowed frames tolerated before the lane degrades.
 ///
@@ -573,11 +572,11 @@ impl RecorderLayer1Lane {
                 AsrSessionEvent::Partial(transcript) => {
                     self.telemetry.partials_applied += 1;
                     self.draft
-                        .insert(transcript.identity.utterance_id(), transcript.text);
+                        .insert(transcript.utterance_id, transcript.text);
                 }
                 AsrSessionEvent::Final(transcript) => {
                     self.telemetry.finals_accepted += 1;
-                    self.draft.remove(&transcript.identity.utterance_id());
+                    self.draft.remove(&transcript.utterance_id);
                     self.finals.push(transcript);
                 }
                 AsrSessionEvent::Error(error) => {
@@ -673,7 +672,9 @@ mod tests {
     /// Partial event fixture.
     fn partial(utterance_id: u64, sequence_id: u64, text: &str) -> AsrSessionEvent {
         AsrSessionEvent::Partial(Transcript {
-            identity: identity(utterance_id, sequence_id),
+            session_id: session_id(),
+            utterance_id,
+            sequence_id,
             text: text.to_string(),
             range: None,
         })
@@ -682,7 +683,9 @@ mod tests {
     /// Final event fixture.
     fn final_event(utterance_id: u64, sequence_id: u64, text: &str) -> AsrSessionEvent {
         AsrSessionEvent::Final(Transcript {
-            identity: identity(utterance_id, sequence_id),
+            session_id: session_id(),
+            utterance_id,
+            sequence_id,
             text: text.to_string(),
             range: None,
         })
@@ -691,7 +694,9 @@ mod tests {
     /// Typed error event fixture.
     fn error_event(sequence_id: u64, kind: AsrErrorKind) -> AsrSessionEvent {
         AsrSessionEvent::Error(ErrorEvent {
-            identity: identity(0, sequence_id),
+            session_id: session_id(),
+            utterance_id: 0,
+            sequence_id,
             kind,
         })
     }

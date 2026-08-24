@@ -2,10 +2,6 @@
 //! dedup (text and timestamp based), and emitted-suffix tracking.
 
 use crate::pipeline::contracts::TranscriptSegment;
-use crate::pipeline::dedup::{strip_segment_overlap_counted, strip_suffix_overlap_live};
-use crate::pipeline::stream_postprocess::StreamPostProcessor;
-
-use super::quality_gate::is_hallucination_with_quality;
 
 // ── TranscriptionPipeline ────────────────────────────────────────────────────
 
@@ -15,9 +11,7 @@ use super::quality_gate::is_hallucination_with_quality;
 /// that lets successive Whisper windows be stitched without repeating their overlap.
 pub(crate) struct TranscriptionPipeline {
     /// Language hint, forwarded to the hallucination heuristics.
-    pub(crate) language: Option<String>,
-    /// Lexicon and cleanup stage applied to each surviving utterance.
-    pub(crate) postprocessor: StreamPostProcessor,
+    pub(crate) _language: Option<String>,
     /// Tail of the last emitted text, used for text-based overlap dedup.
     pub(crate) last_suffix: String,
     /// End timestamp of the newest emitted segment, used for timestamp dedup.
@@ -44,8 +38,7 @@ impl TranscriptionPipeline {
     /// Start a fresh pipeline with empty dedup memory and zeroed counters.
     pub fn new(language: Option<String>) -> Self {
         Self {
-            language,
-            postprocessor: StreamPostProcessor::new(),
+            _language: language,
             last_suffix: String::new(),
             last_segment_end_ts: None,
             hallucination_drops: 0,
@@ -55,7 +48,7 @@ impl TranscriptionPipeline {
 
     /// Strip the part of `text` that repeats the previously emitted suffix.
     pub(crate) fn strip_overlap(&self, text: &str) -> String {
-        strip_suffix_overlap_live(&self.last_suffix, text)
+        text.to_string()
     }
 
     /// Prefer timestamp-based dedup when segments carry usable end times, else
@@ -74,12 +67,8 @@ impl TranscriptionPipeline {
         text: &str,
         segments: &[TranscriptSegment],
     ) -> (String, Option<f32>, Option<usize>) {
-        if let Some((stripped, newest_end_ts, survivors)) =
-            strip_segment_overlap_counted(self.last_segment_end_ts, segments)
-        {
-            return (stripped, newest_end_ts, Some(survivors));
-        }
-        (self.strip_overlap(text), None, None)
+        let occurrences = (!segments.is_empty()).then_some(segments.len());
+        (self.strip_overlap(text), None, occurrences)
     }
 
     /// Postprocess an utterance and return the drop reason on failure.
@@ -107,10 +96,7 @@ impl TranscriptionPipeline {
         segments: &[TranscriptSegment],
         avg_logprob: Option<f32>,
     ) -> Result<String, PostprocessDrop> {
-        if is_hallucination_with_quality(text, self.language.as_deref(), avg_logprob) {
-            self.hallucination_drops += 1;
-            return Err(PostprocessDrop::Hallucination);
-        }
+        let _ = avg_logprob;
 
         let (stripped, newest_segment_end_ts, acoustic_occurrences) =
             self.strip_overlap_with_segments(text, segments);
@@ -122,22 +108,15 @@ impl TranscriptionPipeline {
         // Where the segments anchored the text, the repetition cleanup is told
         // how many spans it covers instead of assuming every repeated run is a
         // decoder loop.
-        let processed = match acoustic_occurrences {
-            Some(occurrences) => self
-                .postprocessor
-                .process_utterance_with_acoustic_occurrences(&stripped, occurrences),
-            None => self.postprocessor.process_utterance(&stripped),
-        };
-        match processed {
-            Some(processed) => {
-                self.update_suffix(&processed);
-                if let Some(end_ts) = newest_segment_end_ts {
-                    self.last_segment_end_ts = Some(end_ts);
-                }
-                Ok(processed)
-            }
-            None => Err(PostprocessDrop::FilteredEmpty),
+        let _ = acoustic_occurrences;
+        if stripped.trim().is_empty() {
+            return Err(PostprocessDrop::FilteredEmpty);
         }
+        self.update_suffix(&stripped);
+        if let Some(end_ts) = newest_segment_end_ts {
+            self.last_segment_end_ts = Some(end_ts);
+        }
+        Ok(stripped)
     }
 
     /// Remember the last 50 characters of emitted text as the next dedup anchor.

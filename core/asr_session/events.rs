@@ -179,6 +179,13 @@ impl fmt::Display for AsrErrorKind {
 /// Recognized text for one utterance, partial or final.
 #[derive(Debug, Clone, PartialEq)]
 pub struct TranscriptEvent {
+    /// Recording this provider event belongs to. Transport correlation only;
+    /// acoustic existence is owned by `AcousticLedger`.
+    pub session_id: SessionId,
+    /// Provider-local utterance correlation, never a PCM identity.
+    pub utterance_id: u64,
+    /// Codescribe-owned stream order after transport deduplication.
+    pub sequence_id: u64,
     /// The recognized text. Layer 1 output is a *candidate*; committing it is
     /// the caller's decision and is bounded by the append-only doctrine.
     pub text: String,
@@ -189,6 +196,12 @@ pub struct TranscriptEvent {
 /// A typed session failure.
 #[derive(Debug, Clone, PartialEq)]
 pub struct ErrorEvent {
+    /// Recording this provider event belongs to.
+    pub session_id: SessionId,
+    /// Provider-local utterance correlation, or zero for session faults.
+    pub utterance_id: u64,
+    /// Codescribe-owned stream order.
+    pub sequence_id: u64,
     /// What went wrong.
     pub kind: AsrErrorKind,
 }
@@ -196,6 +209,12 @@ pub struct ErrorEvent {
 /// Consumption accounting for one session — no content, ever.
 #[derive(Debug, Clone, PartialEq)]
 pub struct UsageEvent {
+    /// Recording this provider event belongs to.
+    pub session_id: SessionId,
+    /// Provider-local utterance correlation; zero for session accounting.
+    pub utterance_id: u64,
+    /// Codescribe-owned stream order.
+    pub sequence_id: u64,
     /// Audio seconds the provider processed.
     pub audio_secs: f32,
     /// Provider-side billable units, when it reports them.
@@ -216,6 +235,33 @@ pub enum AsrSessionEvent {
 }
 
 impl AsrSessionEvent {
+    /// Recording correlation carried directly by the transport payload.
+    pub fn session_id(&self) -> &SessionId {
+        match self {
+            Self::Partial(event) | Self::Final(event) => &event.session_id,
+            Self::Error(event) => &event.session_id,
+            Self::Usage(event) => &event.session_id,
+        }
+    }
+
+    /// Provider-local utterance correlation; never an acoustic key.
+    pub fn utterance_id(&self) -> u64 {
+        match self {
+            Self::Partial(event) | Self::Final(event) => event.utterance_id,
+            Self::Error(event) => event.utterance_id,
+            Self::Usage(event) => event.utterance_id,
+        }
+    }
+
+    /// Codescribe-owned transport order.
+    pub fn sequence_id(&self) -> u64 {
+        match self {
+            Self::Partial(event) | Self::Final(event) => event.sequence_id,
+            Self::Error(event) => event.sequence_id,
+            Self::Usage(event) => event.sequence_id,
+        }
+    }
+
     /// Whether this event carries recognized text.
     pub fn is_transcript(&self) -> bool {
         matches!(self, Self::Partial(_) | Self::Final(_))

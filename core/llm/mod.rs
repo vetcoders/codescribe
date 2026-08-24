@@ -13,8 +13,6 @@ pub mod client;
 pub mod inline_format;
 /// Minimal API-key liveness probes for Settings (one cheap call per key).
 pub mod key_liveness;
-/// Canonical resolution of lane secrets, endpoints, and model ids.
-pub mod lane_truth;
 /// Live `/models` discovery for Settings pickers with last-good cache.
 pub mod model_discovery;
 /// Provider identity, wire families, and per-model capability policy.

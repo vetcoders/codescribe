@@ -49,6 +49,27 @@ pub enum DeliveryRoute {
     ArchiveOnly,
 }
 
+/// Transport result for an explicit overlay delivery action. Destination
+/// selection still belongs exclusively to [`resolve_delivery_route`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum OverlayPasteDelivery {
+    Pasted,
+    CopiedToClipboard,
+    AccessibilityPermissionNeeded,
+    DeferredInsertArmed,
+    Noop,
+}
+
+/// Operator-visible outcome after executing an already selected overlay route.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct OverlayPasteResult {
+    pub delivery: OverlayPasteDelivery,
+    pub target_app_name: Option<String>,
+    pub frontmost_app_name: Option<String>,
+    pub deferred_insert_shortcut: Option<String>,
+    pub deferred_insert_failure: Option<String>,
+}
+
 impl DeliveryRoute {
     /// Stable telemetry label (snake_case, one token).
     pub const fn as_str(self) -> &'static str {
@@ -128,7 +149,7 @@ pub struct DeliveryDecision {
 
 impl DeliveryDecision {
     /// Reasons that park delivery without inventing another route owner.
-    pub const fn is_recoverable_failure(self) -> bool {
+    pub fn is_recoverable_failure(self) -> bool {
         matches!(
             self.reason,
             "empty_or_no_speech"

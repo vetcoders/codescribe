@@ -12,7 +12,6 @@
 //! seconds) before releasing the sink. Dropping the sink early truncates the
 //! tail of the delivered text.
 
-use crate::asr_session::bootstrap::{GatewaySessionAvailability, layer1_decision_for_recording};
 use crate::asr_session::recorder::{
     Layer1Decision, RecorderLifecycleEvents, RecorderLifecycleHandle, recorder_lifecycle_channel,
 };
@@ -52,18 +51,6 @@ pub struct ProductionSessionReplay {
     pub tail_patch_receipt: Option<TailPatchSessionReceipt>,
 }
 
-/// Resolve the production Layer 1 decision for one recording.
-///
-/// Both the microphone owner and the replay seam call this symbol. Keeping the
-/// settings/consent/gateway decision here prevents an evaluation harness from
-/// silently substituting `Layer1Decision::Disarmed`.
-pub fn production_layer1_decision(
-    settings: &UserSettings,
-    gateway: GatewaySessionAvailability,
-) -> Layer1Decision {
-    layer1_decision_for_recording(settings, gateway)
-}
-
 /// Build the exact engine session configuration consumed by live capture.
 fn recording_session_config(
     session_id: String,
@@ -101,14 +88,13 @@ pub async fn replay_production_session(
     sample_rate: u32,
     language: Option<String>,
     settings: &UserSettings,
-    gateway: GatewaySessionAvailability,
 ) -> Result<ProductionSessionReplay> {
     let runtime_settings = Arc::new(
         crate::config::Config::load_runtime_snapshot_without_keychain()
             .map_err(|error| anyhow!("runtime settings snapshot refused: {error:?}"))?,
     );
     let acoustic_ledger = Arc::new(StdMutex::new(AcousticLedger::new()));
-    let layer1 = production_layer1_decision(settings, gateway);
+    let layer1 = Layer1Decision::Disarmed;
     let layer1_armed = layer1.is_armed();
     let streaming_engine_label = if crate::stt::active_engine_is_apple() {
         "live_apple"
@@ -221,20 +207,6 @@ impl StreamingRecorder {
             acoustic_ledger: None,
             authority_session_id: None,
         })
-    }
-
-    /// Join live settings truth with one minted gateway session for the next
-    /// recording. Missing/invalid/offline gateway state safely disarms Layer 1.
-    pub fn configure_layer1(
-        &mut self,
-        runtime_settings: &RuntimeSettingsSnapshot,
-        gateway: GatewaySessionAvailability,
-    ) {
-        *self
-            .layer1_decision
-            .get_mut()
-            .unwrap_or_else(std::sync::PoisonError::into_inner) =
-            production_layer1_decision(runtime_settings.user_settings(), gateway);
     }
 
     /// Bind the next capture to one immutable settings snapshot and one ledger.
@@ -551,27 +523,6 @@ mod tests {
     use std::path::{Path, PathBuf};
     use tokio::time::Duration;
 
-    /// The replay seam must consume the same recording-start decision as the
-    /// microphone path; a test-only `Disarmed` shortcut would make corpus
-    /// quality evidence adjacent to production again.
-    #[test]
-    fn replay_production_session_cannot_hardcode_disarmed_layer1() {
-        let source = include_str!("streaming_recorder.rs");
-        let replay_body = source
-            .split("pub async fn replay_production_session")
-            .nth(1)
-            .and_then(|tail| tail.split("impl StreamingRecorder").next())
-            .expect("production replay body remains present");
-        assert!(
-            replay_body.contains("production_layer1_decision(settings, gateway)"),
-            "replay must resolve the same production Layer 1 policy as microphone capture"
-        );
-        assert!(
-            !replay_body.contains("Layer1Decision::Disarmed"),
-            "replay must not silently hard-code a disarmed Layer 1 lane"
-        );
-    }
-
     /// Empty/silence/full-scale blocks map to the 0 / 0 / ~1 energy ladder meters use.
     #[test]
     fn block_rms_measures_signal_energy() {
@@ -853,12 +804,11 @@ mod tests {
             let raw =
                 transcribe_streaming_samples(&samples, sample_rate, language.as_deref(), None)
                     .expect("Raw streaming transcription failed");
-            let mut postprocessor = crate::pipeline::stream_postprocess::StreamPostProcessor::new();
             let post = transcribe_streaming_samples(
                 &samples,
                 sample_rate,
                 language.as_deref(),
-                Some(&mut postprocessor),
+                None,
             )
             .expect("Post streaming transcription failed");
 

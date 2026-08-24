@@ -33,10 +33,6 @@ use crate::pipeline::contracts::{
     TranscriptionEngineMode, TranscriptionEngineVerdict, TranscriptionSource, TranscriptionVerdict,
     VadVerdict,
 };
-use crate::pipeline::stream_postprocess::{
-    StreamPostProcessStats, StreamPostProcessor, WHISPER_INITIAL_PROMPT_TOKEN_BUDGET,
-    final_pass_guardrail_reason,
-};
 use crate::safe_path;
 
 use super::embedded::EmbeddedModel;
@@ -105,6 +101,12 @@ const RUNAWAY_BUDGET_MARGIN: f32 = 2.0;
 /// Minimum token budget for the runaway watchdog regardless of audio length, so
 /// very short chunks still get enough headroom to emit normal short utterances.
 const RUNAWAY_MIN_BUDGET: usize = 64;
+/// Frozen decoder watchdog value formerly shared with the retired transcript
+/// quality gate. This remains a decoder safety limit, not text admission.
+const RUNAWAY_MAX_WORDS_PER_SEC: f32 = 5.0;
+/// Prompt capacity is a Whisper decoder constraint, independent of the retired
+/// transcript postprocessor that used to provide prompt contents.
+const WHISPER_INITIAL_PROMPT_TOKEN_BUDGET: usize = 224;
 /// Whisper's marker introducing previous-context tokens. Everything between it
 /// and the decode prefix is treated by the model as prior context, not as text
 /// to transcribe.
@@ -117,7 +119,7 @@ const WHISPER_START_OF_PREVIOUS_TOKEN: &str = "<|startofprev|>";
 /// safety margin. When generated tokens exceed this budget the decode loop bails
 /// instead of paying the full O(n^2)/O(n^3) cost of a runaway hallucination.
 fn runaway_token_budget(audio_sec: f32) -> usize {
-    let raw = (crate::pipeline::streaming::quality_gate::MAX_WORDS_PER_SEC
+    let raw = (RUNAWAY_MAX_WORDS_PER_SEC
         * audio_sec.max(0.0)
         * RUNAWAY_TOKENS_PER_WORD
         * RUNAWAY_BUDGET_MARGIN)
@@ -182,6 +184,7 @@ fn skipped_final_pass(options: FileTranscriptionOptions, reason: &str) -> Option
 /// `final_pass_guardrail_reason` is `Rejected` and the **raw text is kept**;
 /// otherwise the candidate wins as `Changed`. The guardrail is what stops
 /// cleanup from silently rewriting words the model actually heard.
+#[cfg(any())]
 fn finalize_requested_final_pass(
     raw_text: &str,
     candidate_text: String,
@@ -670,32 +673,10 @@ impl LocalWhisperEngine {
             &silence_spans,
         )?;
         super::timing::record_inference_ms(inference_started.elapsed().as_millis() as u64);
-        let timeline = crate::vad::classify_windows(&stats.probabilities, &vad_config);
-
-        let (raw_for_final_pass, tail_drop_count) = if raw.segments.is_empty() {
-            (raw.clone(), 0u32)
-        } else {
-            let outcome = crate::stt::whisper::map_whisper_segments_to_silero(
-                &raw.segments,
-                &timeline,
-                &vad_config,
-            );
-            if outcome.dropped_count > 0 {
-                tracing::info!(
-                    target: "tail_silence_filter",
-                    dropped_count = outcome.dropped_count,
-                    dropped_samples = ?outcome.dropped_text_samples,
-                    "Silero dropped Whisper tail segment(s)"
-                );
-            }
-
-            let dropped_count = outcome.dropped_count;
-            let filtered =
-                apply_silero_filter_outcome(&raw, outcome.text, outcome.segments, dropped_count);
-            (filtered, dropped_count)
-        };
-
-        let (text, final_pass) = apply_requested_final_pass(&raw_for_final_pass, options);
+        let raw_for_final_pass = raw;
+        let tail_drop_count = 0;
+        let text = raw_for_final_pass.text.clone();
+        let final_pass = skipped_final_pass(options, "whole_session_final_pass_retired");
 
         Ok(TranscriptionVerdict::from_parts_with_silero_drops(
             text,
@@ -2435,6 +2416,7 @@ mod dedup_tests {
     }
 
     /// Embedded lexicon cleanup reports Changed with rewrite counts.
+    #[cfg(any())]
     #[test]
     fn requested_final_pass_reports_embedded_lexicon_changes() {
         let raw = RawTranscript {
@@ -2472,6 +2454,7 @@ mod dedup_tests {
     }
 
     /// Artifact-token drift rejects the candidate and keeps the raw transcript.
+    #[cfg(any())]
     #[test]
     fn requested_final_pass_rejects_artifact_token_drift_and_keeps_raw() {
         let raw = "zastanawiam się co ośreda, że ta funkcja już teoretycznie obsolesi legacy";

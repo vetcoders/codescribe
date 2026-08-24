@@ -21,8 +21,6 @@
 pub mod cloud_asr;
 /// Serde default helpers and default model/endpoint constants.
 mod defaults;
-/// Stop-path final-pass routing mode shared by controller and bridge lanes.
-pub mod final_pass;
 /// macOS Keychain storage for API keys (not plaintext `.env`).
 pub mod keychain;
 /// Load/save: defaults, settings.json, optional `.env`, process env overrides.
@@ -58,7 +56,6 @@ pub use cloud_asr::{
     AsrProductMode, AudioEgressConsent, ConsentSource, GatewayMintError, GatewaySessionMint,
     ModeDerivation, ResolvedAsrMode, resolve_asr_product_mode,
 };
-pub use final_pass::{FinalPassRoutingMode, final_pass_routing_mode};
 pub use portable::{
     ImportPlan, PortableProfile, export_portable, import_portable_apply, import_portable_dry_run,
     write_portable_export,

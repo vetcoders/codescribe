@@ -26,7 +26,9 @@ fn session() -> SessionId {
 /// Partial hypothesis for `utterance` at `sequence`.
 fn partial(utterance: u64, sequence: u64, text: &str) -> AsrSessionEvent {
     AsrSessionEvent::Partial(TranscriptEvent {
-        identity: identity(utterance, sequence),
+        session_id: session(),
+        utterance_id: utterance,
+        sequence_id: sequence,
         text: text.to_string(),
         range: None,
     })
@@ -35,7 +37,9 @@ fn partial(utterance: u64, sequence: u64, text: &str) -> AsrSessionEvent {
 /// Sealing final for `utterance` at `sequence`.
 fn final_event(utterance: u64, sequence: u64, text: &str) -> AsrSessionEvent {
     AsrSessionEvent::Final(TranscriptEvent {
-        identity: identity(utterance, sequence),
+        session_id: session(),
+        utterance_id: utterance,
+        sequence_id: sequence,
         text: text.to_string(),
         range: None,
     })
@@ -44,7 +48,9 @@ fn final_event(utterance: u64, sequence: u64, text: &str) -> AsrSessionEvent {
 /// Typed failure for `utterance` at `sequence`.
 fn error_event(utterance: u64, sequence: u64, kind: AsrErrorKind) -> AsrSessionEvent {
     AsrSessionEvent::Error(ErrorEvent {
-        identity: identity(utterance, sequence),
+        session_id: session(),
+        utterance_id: utterance,
+        sequence_id: sequence,
         kind,
     })
 }
@@ -194,6 +200,9 @@ fn foreign_session_events_are_refused() {
     let mut ingest = SessionIngest::new(session());
     let foreign = SessionId::new("session-b").expect("non-blank session id");
     let event = AsrSessionEvent::Final(TranscriptEvent {
+        session_id: foreign,
+        utterance_id: 1,
+        sequence_id: 1,
         text: "z innej sesji".to_string(),
         range: None,
     });
@@ -280,7 +289,9 @@ fn errors_are_typed_with_no_free_form_payload() {
 #[test]
 fn usage_events_carry_accounting_only() {
     let usage = UsageEvent {
-        identity: identity(0, 9),
+        session_id: session(),
+        utterance_id: 0,
+        sequence_id: 9,
         audio_secs: 12.5,
         billable_units: Some(13),
     };
@@ -288,7 +299,7 @@ fn usage_events_carry_accounting_only() {
     assert_eq!(event.as_token(), "usage");
     assert!(!event.is_transcript());
     assert!(!event.is_final());
-    assert_eq!(event.identity().sequence_id(), 9);
+    assert_eq!(event.sequence_id(), 9);
 }
 
 /// Finality is a variant, so every consumer has to decide about it explicitly.
@@ -434,7 +445,7 @@ fn fake_provider_emits_a_monotonic_session() {
     assert_eq!(tail[0], final_event(1, 3, "pacjent ma goraczke"));
     match &tail[1] {
         AsrSessionEvent::Usage(usage) => {
-            assert_eq!(usage.identity.sequence_id(), 4, "usage stays monotonic");
+            assert_eq!(usage.sequence_id, 4, "usage stays monotonic");
             assert_eq!(usage.audio_secs, 1.5);
             assert_eq!(usage.billable_units, None);
         }

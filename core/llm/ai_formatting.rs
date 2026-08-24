@@ -1736,13 +1736,7 @@ async fn format_text_with_status_channels_for_policy(
         };
 
         if let Some(output) = result_opt {
-            // Deterministic protected-vocabulary pass AFTER the LLM. The model can
-            // silently corrupt proper nouns ("Loctree" -> "Luxury") or drop
-            // operator/tool/agent names while rewriting prose; re-applying the
-            // lexicon restores any registered mispronunciation to its canonical
-            // form. Safe + idempotent: it only rewrites known variants, never
-            // ordinary language. Applies to both formatting and assistive modes.
-            let formatted = crate::stream_postprocess::apply_lexicon(&output.assistant_text);
+            let formatted = output.assistant_text;
             let reasoning_text = output.reasoning_text;
 
             // Detect AI refusal responses (OpenAI content policy)

@@ -9,7 +9,7 @@
 
 pub use codescribe_core::{
     Recorder, RecorderConfig, ai_formatting, audio, client, config, qube_daemon, qube_report,
-    safe_path, state, status, stream_postprocess, stt, whisper,
+    safe_path, state, status, stt, whisper,
 };
 
 pub use codescribe_core::{

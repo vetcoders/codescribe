@@ -24,7 +24,6 @@ use crate::safe_path::{
     safe_symlink_or_copy_bounded, safe_write_bounded,
 };
 use crate::state::conversation::{AiMode, reset_conversation_for_mode};
-use crate::stream_postprocess::{StreamPostProcessStats, StreamPostProcessor};
 use tokio::sync::Semaphore;
 use tokio::task::JoinHandle;
 
@@ -188,7 +187,6 @@ pub struct ReportEntry {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub raw_semantics: Option<ReportTranscriptSemantics>,
     pub metrics: ReportMetrics,
-    pub postprocess_stats: Option<StreamPostProcessStats>,
     pub errors: Vec<String>,
 }
 
@@ -576,18 +574,8 @@ async fn process_pair(
         errors.push("Raw transcript is empty".into());
     }
 
-    // Post = raw + lexicon/cleanup (single pass through postprocessor)
-    let mut postprocessor = StreamPostProcessor::new();
-    let post = raw
-        .as_deref()
-        .and_then(|raw_text| postprocessor.process(raw_text));
-    if post
-        .as_ref()
-        .map(|text| text.trim().is_empty())
-        .unwrap_or(raw.is_some() && post.is_none())
-    {
-        errors.push("Postprocess transcript is empty".into());
-    }
+    // The retired transcript postprocessor no longer authors a second text.
+    let post = raw.clone();
 
     let ai_formatted = if config.skip_formatting {
         None
@@ -611,20 +599,6 @@ async fn process_pair(
     } else {
         None
     };
-
-    // Protected-vocabulary audit: flag operator/tool/agent names that survived
-    // the post-lexicon transcript but were dropped or mutated by the AI pass.
-    // This makes technical-name corruption visible to the operator instead of
-    // silently shipping "plausible prose" that lost the intended terms.
-    if let (Some(post_text), Some(ai_text)) = (post.as_deref(), ai_formatted.as_deref()) {
-        let lost = crate::stream_postprocess::protected_terms_lost(post_text, ai_text);
-        if !lost.is_empty() {
-            errors.push(format!(
-                "Protected terms lost in AI formatting: {}",
-                lost.join(", ")
-            ));
-        }
-    }
 
     let cloud = cloud_jobs.take_for(&id, &mut errors).await;
 
@@ -668,7 +642,6 @@ async fn process_pair(
         transcripts,
         raw_semantics,
         metrics,
-        postprocess_stats: Some(postprocessor.stats()),
         errors,
     })
 }
@@ -948,12 +921,6 @@ pub fn render_html(report: &QualityReport, config: &QualityReportConfig) -> Stri
 
     for entry in &report.entries {
         let t = &entry.transcripts;
-        let stats_json = entry
-            .postprocess_stats
-            .as_ref()
-            .and_then(|s| serde_json::to_string(s).ok())
-            .unwrap_or_else(|| "{}".to_string());
-
         body.push_str(&format!(
             "<div class=\"entry\" data-entry=\"{}\" id=\"entry-{}\">",
             html_escape(&entry.id),
@@ -1014,13 +981,6 @@ pub fn render_html(report: &QualityReport, config: &QualityReportConfig) -> Stri
             "<button class=\"reveal\" type=\"button\" data-entry=\"{}\" {}>Reveal references</button>",
             html_escape(&entry.id),
             if debug { "" } else { "disabled" }
-        ));
-
-        body.push_str(&format!(
-            "<div class=\"stats\" data-entry=\"{}\" data-stats='{}'><strong>Postprocess stats</strong>: {}</div>",
-            html_escape(&entry.id),
-            html_escape(&stats_json),
-            html_escape(&stats_summary(entry.postprocess_stats.as_ref()))
         ));
 
         body.push_str("<div class=\"refs\">");
@@ -1469,25 +1429,6 @@ fn render_ref_section(body: &mut String, label: &str, text: Option<&str>, debug:
             html_escape(text)
         ));
     }
-}
-
-/// One-line post-processing counter digest for the HTML entry, or `"n/a"` when
-/// the stage never ran.
-fn stats_summary(stats: Option<&StreamPostProcessStats>) -> String {
-    let Some(stats) = stats else {
-        return "n/a".to_string();
-    };
-
-    format!(
-        "in={}, out={}, drop={}, gate={}, lexicon={}, repeat={}, suspicious={}",
-        stats.input_chunks,
-        stats.output_chunks,
-        stats.dropped_chunks,
-        stats.gate_drops,
-        stats.lexicon_rewrites,
-        stats.repetition_cleanups,
-        stats.suspicious_chunks
-    )
 }
 
 /// Flatten the report into one JSONL row per (entry, stage) transcript, each
@@ -1992,7 +1933,6 @@ mod tests {
                 reason: reason.map(str::to_string),
             }),
             metrics: ReportMetrics::default(),
-            postprocess_stats: None,
             errors: Vec::new(),
         };
 

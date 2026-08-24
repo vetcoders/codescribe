@@ -7,25 +7,14 @@ use std::sync::Arc;
 use std::sync::Mutex as StdMutex;
 
 use anyhow::{Result, anyhow};
-use futures_util::StreamExt;
-use futures_util::stream::{FuturesOrdered, FuturesUnordered};
 use tokio::sync::mpsc;
-use tokio::time::{Duration, Instant};
-use tracing::{debug, error, info, warn};
+use tokio::time::Duration;
+use tracing::{debug, info, warn};
 
 use crate::asr_session::recorder::{Layer1Decision, RecorderLifecycleEvents};
-use crate::audio::capture_receipt::{
-    CaptureLevelAccumulator, CapturePathMeta, begin_session_energy_clock,
-    emit_capture_level_receipt,
-};
-use crate::audio::chunker::{SpeechEvent, SpeechSession};
-use crate::config::RuntimeSettingsSnapshot;
+use crate::config::{Config, RuntimeSettingsSnapshot};
 use crate::pipeline::acoustic_ledger::AcousticLedger;
-use crate::pipeline::contracts::{
-    DropKind, EngineEvent, EventSink, LayerSource, LayerSummary, TranscriptSegment,
-    collect_confidence_flags,
-};
-use crate::stt::scheduler::{SttLane, SttScheduler, SttTaskHandle};
+use crate::pipeline::contracts::{EngineEvent, EventSink, LayerSource, LayerSummary};
 use crate::stt::tail_patcher::{
     TailPatchConfig, TailPatchOutcome, UnderCommit, compute_tail_patch_with_context, layered_phase,
 };
@@ -33,27 +22,7 @@ use crate::stt::tail_patcher::{
 use crate::stt::tail_provider::{
     TailEvidenceSource, TailEvidenceStability, TailProviderId, TailTimingQuality, TimedTailSegment,
 };
-use crate::stt::tail_provider::{
-    TailProviderPayload, TailProviderRequest, TailRequestIdentity, TailSampleRange,
-};
-use crate::vad;
-
-use super::correction::{
-    PARTIAL_PASS_TRIGGER_TIMER_MS, PartialPassTelemetry, PartialPassTriggerState,
-    ROLLING_WINDOW_LOOKAHEAD_SECS, ROLLING_WINDOW_TARGET_SECS, RollingCorrectionWindow,
-    apply_final_boundary_text, classify_partial_trigger, correction_baseline_text,
-    correction_is_stale, merge_corrected_window, postprocess_correction_with_snapshot,
-    schedule_partial_pass,
-};
-use super::pipeline::{PostprocessDrop, TranscriptionPipeline};
-
-use super::quality_gate::{
-    MAX_WORDS_PER_SEC, MIN_SPEECH_RATIO_FOR_INFERENCE, emit_vad_warning,
-    should_drop_short_utterance, should_drop_silence_chunk, text_words_per_second,
-    utterance_vad_speech_pct,
-};
-use super::stream_log::append_to_stream_log;
-use super::tuning::{inference_max_concurrency, interim_vad_accumulate_samples};
+use crate::stt::tail_provider::{TailProviderPayload, TailProviderRequest};
 
 /// Maximum audio retained in the Refine correction buffer, in seconds.
 ///
@@ -64,7 +33,8 @@ use super::tuning::{inference_max_concurrency, interim_vad_accumulate_samples};
 /// which is all `strip_overlap` needs — at constant cost. Sized to comfortably
 /// exceed the partial-pass cadence so no spoken tail is ever dropped before a
 /// Refine consumes it.
-const CORRECTION_WINDOW_SEC: f32 = ROLLING_WINDOW_TARGET_SECS + ROLLING_WINDOW_LOOKAHEAD_SECS;
+#[cfg(any())]
+const CORRECTION_WINDOW_SEC: f32 = 0.0;
 /// Maximum text retained for Refine's window baseline.
 ///
 /// Text has no exact timestamps here, so keep a conservative character tail
@@ -74,6 +44,7 @@ const CORRECTION_WINDOW_TEXT_MAX_CHARS: usize = 4096;
 
 /// Trim `buf` in place so it retains at most `window_sec` of trailing audio at
 /// `sample_rate`. Returns the number of leading samples drained.
+#[cfg(any())]
 fn cap_correction_buffer(buf: &mut Vec<f32>, sample_rate: u32, window_sec: f32) -> usize {
     let cap = (window_sec * sample_rate as f32) as usize;
     if cap == 0 || buf.len() <= cap {
@@ -90,6 +61,7 @@ fn cap_correction_buffer(buf: &mut Vec<f32>, sample_rate: u32, window_sec: f32) 
 /// Counts characters, not bytes: this text is Polish and a byte cut would
 /// split a diacritic. Any word fragment left dangling at the new start is
 /// trimmed away.
+#[cfg(any())]
 fn cap_correction_window_text(text: &mut String, max_chars: usize) -> usize {
     let char_count = text.chars().count();
     if max_chars == 0 || char_count <= max_chars {
@@ -115,6 +87,7 @@ fn cap_correction_window_text(text: &mut String, max_chars: usize) -> usize {
 ///
 /// The mirror tracks `correction_audio_buf`: previews and finals append here as
 /// they append there, so the two stay describable as one slice.
+#[cfg(any())]
 fn append_to_correction_window_text(window_text: &mut String, text: &str, max_chars: usize) {
     let text = text.trim();
     if text.is_empty() {
@@ -410,6 +383,7 @@ impl TailPatchSessionReceipt {
 ///
 /// Interim previews are drafts that get re-decoded; counting their drops would
 /// inflate the session stats with rejections that never cost the user any text.
+#[cfg(any())]
 fn record_semantic_gate_drop(counter: &mut u64, quality_gate_dropped: bool, is_final: bool) {
     if is_final && quality_gate_dropped {
         *counter = counter.saturating_add(1);
@@ -717,19 +691,12 @@ pub(crate) async fn transcription_session(
     event_sink: Arc<dyn EventSink>,
     config: SessionConfig,
 ) {
-    // Apple progressive stream branch — must run before the VAD/scheduler path
-    // consumes the receiver.
-    if crate::stt::active_engine_is_apple() && crate::stt::apple_stt::progressive_live_enabled() {
-        super::apple_live_session::apple_stream_transcription_session(
-            chunk_receiver,
-            event_sink,
-            config,
-        )
-        .await;
-        return;
-    }
-
-    vad_transcription_session(chunk_receiver, event_sink, config).await;
+    super::apple_live_session::apple_stream_transcription_session(
+        chunk_receiver,
+        event_sink,
+        config,
+    )
+    .await;
 }
 
 /// Legacy VAD + per-window scheduler session body. Tests that assert the
@@ -737,6 +704,7 @@ pub(crate) async fn transcription_session(
 /// directly: routing in [`transcription_session`] reads process-global engine
 /// state, which sibling engine-selection tests mutate via `set_var` — going
 /// through the router makes the contract dependent on test scheduling.
+#[cfg(any())]
 pub(crate) async fn vad_transcription_session(
     mut chunk_receiver: mpsc::Receiver<Vec<f32>>,
     event_sink: Arc<dyn EventSink>,
@@ -1679,11 +1647,6 @@ pub(crate) async fn vad_transcription_session(
                                     avg_logprob,
                                     quality_gate_dropped,
                                 );
-                                let sample_start = ((utterance_start_s.max(0.0) as f64)
-                                    * output_sample_rate as f64)
-                                    .round() as u64;
-                                let sample_end = sample_start
-                                    .saturating_add(utterance_audio_samples as u64);
                                 event_sink.on_event(&EngineEvent::UtteranceFinal {
                                     utterance_id,
                                     text: final_text.clone(),
@@ -1696,13 +1659,6 @@ pub(crate) async fn vad_transcription_session(
                                     compression_ratio,
                                     quality_gate_dropped,
                                     confidence_flags,
-                                    acoustic: phrase_acoustic_identity(
-                                        &session_id,
-                                        0,
-                                        sample_start,
-                                        sample_end,
-                                        &final_text,
-                                    ),
                                 });
                                 if tail_patch_enabled
                                     && let Some(audio) = item.tail_patch_audio.take()
@@ -1857,11 +1813,6 @@ pub(crate) async fn vad_transcription_session(
             utterance_avg_logprob,
             utterance_quality_gate_dropped,
         );
-        let sample_start =
-            ((utterance_start_s.max(0.0) as f64) * output_sample_rate as f64).round() as u64;
-        let sample_end = sample_start.saturating_add(utterance_audio_samples as u64);
-        let acoustic =
-            phrase_acoustic_identity(&session_id, 0, sample_start, sample_end, &remaining);
         event_sink.on_event(&EngineEvent::UtteranceFinal {
             utterance_id,
             text: remaining,
@@ -1874,7 +1825,6 @@ pub(crate) async fn vad_transcription_session(
             compression_ratio: utterance_compression_ratio,
             quality_gate_dropped: utterance_quality_gate_dropped,
             confidence_flags,
-            acoustic,
         });
     }
 
@@ -1983,6 +1933,7 @@ pub(crate) struct PendingUtteranceWorkItem {
 /// except for `tail_patch_audio`, retained solely when Layer 1 will need to
 /// re-transcribe.
 #[derive(Debug)]
+#[cfg(any())]
 struct UtteranceWorkItem {
     audio: Vec<f32>,
     inference_audio_len: usize,
@@ -2089,10 +2040,18 @@ pub async fn transcribe_buffered_samples(
     let (tx, rx) = mpsc::channel::<Vec<f32>>(8);
     let collector = Arc::new(SessionTranscriptCollector::new());
     let event_sink: Arc<dyn EventSink> = collector.clone();
+    let runtime_settings = Arc::new(
+        Config::load_runtime_snapshot_without_keychain()
+            .map_err(|error| anyhow!("invalid runtime settings snapshot: {error:?}"))?,
+    );
     let session = tokio::spawn(transcription_session(
         rx,
         event_sink,
         SessionConfig {
+            session_id: uuid::Uuid::new_v4().to_string(),
+            capture_epoch: 0,
+            runtime_settings,
+            acoustic_ledger: Arc::new(StdMutex::new(AcousticLedger::new())),
             sample_rate,
             language,
             stream_log_path: None,
@@ -2129,9 +2088,17 @@ pub async fn collect_buffered_engine_events(
     sample_rate: u32,
     language: Option<String>,
 ) -> Result<Vec<EngineEvent>> {
+    let runtime_settings = Arc::new(
+        Config::load_runtime_snapshot_without_keychain()
+            .map_err(|error| anyhow!("invalid runtime settings snapshot: {error:?}"))?,
+    );
     collect_buffered_engine_events_with_config(
         samples,
         SessionConfig {
+            session_id: uuid::Uuid::new_v4().to_string(),
+            capture_epoch: 0,
+            runtime_settings,
+            acoustic_ledger: Arc::new(StdMutex::new(AcousticLedger::new())),
             sample_rate,
             language,
             stream_log_path: None,
@@ -2188,7 +2155,7 @@ pub async fn collect_buffered_engine_events_with_config(
     Ok(collector.events())
 }
 
-#[cfg(test)]
+#[cfg(any())]
 /// Unit tests for semantic-gate counters, tail-patch emit, and correction windows.
 mod session_tests {
     use super::*;

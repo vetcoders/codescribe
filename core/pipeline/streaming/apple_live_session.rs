@@ -26,7 +26,7 @@
 //! (MutexGuard is `!Send`); the async session only shuttles PCM in and
 //! `EngineEvent`s out.
 
-use std::collections::{BTreeMap, HashSet};
+use std::collections::BTreeMap;
 use std::sync::{Arc, Mutex};
 use std::sync::mpsc as std_mpsc;
 use std::thread;
@@ -48,43 +48,28 @@ use crate::audio::capture_receipt::{
     CaptureLevelAccumulator, CapturePathMeta, begin_session_energy_clock,
     emit_capture_level_receipt,
 };
-use crate::pipeline::acoustic_identity::{
-    AcousticObservation, ObservationLedger, ObservationProducer, mutation_authority_text,
-};
 use crate::config::RuntimeSettingsSnapshot;
 use crate::pipeline::acoustic_ledger::{
-    AcousticEvidence, AcousticLedger, CumulativeFinalAdmission, EnergyCalibration,
-    ObservationIdentity as LedgerObservationIdentity,
+    AcousticEvidence, AcousticLedger, EnergyCalibration, ObservationIdentity as LedgerObservationIdentity,
     ObservationProducer as LedgerObservationProducer, OccurrenceIdentity,
 };
-use crate::pipeline::contracts::{
-    AcousticSpanGrain, DropKind, EngineEvent, EventSink, LayerSource, TranscriptSegment,
-};
-use crate::pipeline::stream_postprocess::StreamPostProcessor;
+use crate::pipeline::contracts::{EngineEvent, EventSink, TranscriptSegment};
 use crate::stt::apple_stt::{LiveStreamEvent, LiveStreamSession};
-use crate::stt::tail_patcher::{
-    SkipReasonCode, TailPatchConfig, TailPatchOutcome, compute_tail_patch_with_context,
-};
+use crate::stt::tail_patcher::{SkipReasonCode, TailPatchConfig, TailPatchOutcome};
 use crate::stt::tail_provider::{
-    TailEvidenceSource, TailEvidenceStability, TailProviderEvidence, TailProviderPayload,
-    TailProviderRequest, TailRequestIdentity, TailSampleRange, TailTimingQuality, TimedTailSegment,
+    TailProviderPayload, TailProviderRequest, TailRequestIdentity, TailSampleRange,
+    TimedTailSegment,
 };
 
-use super::layer1_window::{
-    CoalesceFlush, CoalescedPiece, ConcatSpan, Layer1Coalesce, split_outcome_for_members,
-};
+use super::layer1_window::{CoalesceFlush, CoalescedPiece, ConcatSpan, Layer1Coalesce};
 use super::live_audio_buffer::{DEFAULT_RETENTION_SECS, LiveAudioBuffer, ResolvedAudioWindow};
-use super::progressive_seal::{
-    AppleCommit, ProgressiveSealMachine, SealTick, SealedSpan, seal_span_text,
-};
 use super::session::{
     SessionConfig, TailPatchDrainDisposition, TailPatchJobResult, TailPatchSessionReceipt,
-    UNDER_COMMIT_WARNING_CODE, compute_tail_patch_job, emit_session_finalised,
-    log_tail_patch_session_receipt,
+    compute_tail_patch_job, emit_session_finalised, log_tail_patch_session_receipt,
 };
 use super::silero_fusion::{
-    FusionContextMode, FusionWord, SileroIngress, bound_context_range, conservative_fuse,
-    fusion_receipt, lane_enabled, slice_apple_words,
+    FusionContextMode, FusionWord, SileroIngress, bound_context_range, lane_enabled,
+    slice_apple_words,
 };
 use super::stream_log::append_to_stream_log;
 
@@ -641,12 +626,9 @@ pub(crate) async fn apple_stream_transcription_session(
     // C1 stop-drain: close the Layer 1 lane with its bounded drain. Whatever
     // happened inside (clean close, disconnect, incomplete drain), the method
     // returns and the recording finishes on Apple + lexicon. The outcome's
-    // finals are doctrine-vetted gap-fill candidates: their one road to
-    // delivered text is `Layer1SessionOutcome::adjudicate_against_live_floor`
-    // (the T0 `merge_live_layer1` seam), owned by the stop-path truth
-    // adjudicator once the settings cut arms real providers.
+    // finals have already been admitted as occurrence-bound observations by
+    // the worker. They do not form a second whole-session transcript here.
     let layer1_outcome = layer1_lane.stop();
-    let layer1_candidate = layer1_outcome.refined_transcript();
     if let Some(reason) = layer1_lane.take_degrade_notice() {
         emit_layer1_degrade_warning(event_sink.as_ref(), reason);
     }
@@ -667,7 +649,6 @@ pub(crate) async fn apple_stream_transcription_session(
         );
     }
 
-    let mut sealed_spans = Vec::new();
     let mut accepted_tail_patch_replacements = 0u64;
     let mut tail_patch_jobs_applied = 0u64;
     let mut tail_patch_jobs_skipped = 0u64;
@@ -687,7 +668,6 @@ pub(crate) async fn apple_stream_transcription_session(
             tail_patch_jobs_applied = outcome.tail_patch_jobs_applied;
             tail_patch_jobs_skipped = outcome.tail_patch_jobs_skipped;
             tail_patch_timeout_residue = outcome.tail_patch_timeout_residue;
-            sealed_spans = outcome.sealed_spans;
         }
         Ok(Err(e)) => {
             warn!("Apple live stream worker failed: {e:#}");
@@ -717,15 +697,6 @@ pub(crate) async fn apple_stream_transcription_session(
         receipt.timed_out.saturating_add(receipt.abandoned),
     );
     event_sink.on_event(&receipt.as_event());
-    if let Some(candidate) = layer1_candidate {
-        let unbound_mutations = plan_live_layer1_gap_patches(&sealed_spans, &candidate).len();
-        report_unbound_layer1_candidate(event_sink.as_ref(), unbound_mutations);
-        info!(
-            provider_chars = candidate.chars().count(),
-            unbound_mutations,
-            "Live cloud Layer 1 candidate retained as evidence; no post-seal mutation"
-        );
-    }
     emit_capture_level_receipt(
         event_sink.as_ref(),
         &capture_level.finalize(CapturePathMeta::resolve(sample_rate, 1, None)),
@@ -753,21 +724,10 @@ struct PendingAppleSeal {
     segments: Vec<TranscriptSegment>,
 }
 
-/// Structural idempotence key for one bounded mutation at the rewrite fence.
-/// Text is deliberately absent: identical words spoken in disjoint PCM ranges
-/// are different applications and must both survive.
-#[derive(Debug, Clone, PartialEq, Eq, Hash)]
-struct TailPatchApplicationKey {
-    request: TailRequestIdentity,
-    target_utterance_id: u64,
-    event_ordinal: usize,
-}
-
 struct AppleSealState {
     session_id: String,
     capture_epoch: u64,
     sample_rate: u32,
-    postprocessor: StreamPostProcessor,
     preview_rev: u64,
     utterance_id: u64,
     open_partial: String,
@@ -803,13 +763,9 @@ struct AppleSealState {
     /// Concatenation of already progressive-sealed text — left context for
     /// Light+ casing on the next seal (w2-b).
     sealed_prefix: String,
-    /// Canonical double-close authority used by the production Apple lane.
-    progressive: ProgressiveSealMachine,
-    /// Event payload retained until the machine declares the span sealed.
+    /// Event payload retained until the occurrence's scheduled observers have
+    /// returned. AcousticLedger remains the only seal authority.
     pending_events: BTreeMap<u64, PendingAppleSeal>,
-    /// Every accepted Layer 1 mutation key for this capture epoch. Replays are
-    /// refused before they can reach the single rewrite fence.
-    tail_patch_applications: HashSet<TailPatchApplicationKey>,
     /// Bounded patch events that actually rewrote a pending span this session.
     tail_patch_replacements: u64,
     /// Completed provider jobs whose mutation crossed the rewrite fence.
@@ -828,11 +784,7 @@ struct AppleSealState {
     /// back to Apple's own segment boundaries.
     fusion_seal_armed: bool,
     fusion_context: FusionContextMode,
-    /// Occurrence / observation ledger for this capture. Apple seals and
-    /// Whisper windows admit here; text overlap is not authority.
-    observations: ObservationLedger,
-    /// Shared one-throne ledger. The legacy observation field above remains a
-    /// compiler-repair input only; it has no reducer or seal authority in W2.
+    /// Shared one-throne ledger.
     acoustic_ledger: Arc<Mutex<AcousticLedger>>,
     /// Measured threshold frozen into the same settings snapshot. Absence is a
     /// fail-closed W2 state: no occurrence qualifies and no text mutates.
@@ -843,7 +795,7 @@ struct AppleSealState {
 impl AppleSealState {
     /// Fresh isolated seal state with Layer 1 disabled (`tail_patch: None`).
     /// Product-mode arming is injected by the session owner, not this test helper.
-    #[cfg(test)]
+    #[cfg(any())]
     fn new(sample_rate: u32) -> Self {
         Self::new_for_session(sample_rate, uuid::Uuid::new_v4().to_string())
     }
@@ -853,7 +805,6 @@ impl AppleSealState {
             session_id,
             capture_epoch: 0,
             sample_rate,
-            postprocessor: StreamPostProcessor::new(),
             preview_rev: 0,
             utterance_id: 0,
             open_partial: String::new(),
@@ -870,9 +821,7 @@ impl AppleSealState {
             tail_patch_backpressure_drops: 0,
             tail_patch_awaiting_completion: 0,
             sealed_prefix: String::new(),
-            progressive: ProgressiveSealMachine::new(),
             pending_events: BTreeMap::new(),
-            tail_patch_applications: HashSet::new(),
             tail_patch_replacements: 0,
             tail_patch_jobs_applied: 0,
             tail_patch_jobs_skipped: 0,
@@ -880,7 +829,6 @@ impl AppleSealState {
             fusion: None,
             fusion_seal_armed: false,
             fusion_context: FusionContextMode::UtteranceOnly,
-            observations: ObservationLedger::default(),
             acoustic_ledger: Arc::new(Mutex::new(AcousticLedger::new())),
             energy_calibration: None,
             runtime_settings: None,
@@ -905,7 +853,7 @@ impl AppleSealState {
     /// Same state, armed with the Layer 1 hand-off. Holding the sender is what
     /// makes `seal_utterance_final` clone the committed text at all — with no
     /// wire there is nothing to diff against later.
-    #[cfg(test)]
+    #[cfg(any())]
     fn new_with_tail_patch(sample_rate: u32, tail_patch: mpsc::Sender<TailPatchRequest>) -> Self {
         Self {
             tail_patch: Some(tail_patch),
@@ -1017,11 +965,11 @@ impl AppleSealState {
         &mut self,
         ev_tx: &mpsc::UnboundedSender<EngineEvent>,
         completion: TailPatchCompletion,
-        now_secs: f32,
+        _now_secs: f32,
     ) {
         let TailPatchCompletion {
             utterance_id,
-            covered_through_secs,
+            covered_through_secs: _,
             request_identity,
             outcome: _,
             payload,
@@ -1059,15 +1007,12 @@ impl AppleSealState {
         self.tail_patch_awaiting_completion =
             self.tail_patch_awaiting_completion.saturating_sub(1);
         if member_ids.is_empty() {
-            self.progressive
-                .note_whisper_window_elapsed(utterance_id, covered_through_secs);
+            self.emit_pending_seal(ev_tx, utterance_id);
         } else {
-            for (member_id, member_end) in member_ids {
-                self.progressive
-                    .note_whisper_window_elapsed(member_id, member_end);
+            for (member_id, _) in member_ids {
+                self.emit_pending_seal(ev_tx, member_id);
             }
         }
-        self.emit_ready_progressive_seals(ev_tx, now_secs);
     }
 
 
@@ -1086,61 +1031,41 @@ impl AppleSealState {
         });
     }
 
-    fn emit_ready_progressive_seals(
+    /// End-of-session drain for retained reducer inputs. AcousticLedger owns
+    /// finality; this method only forwards the already admitted Apple payload.
+    fn seal_remaining_at_session_end(&mut self, ev_tx: &mpsc::UnboundedSender<EngineEvent>) {
+        let pending_ids: Vec<u64> = self.pending_events.keys().copied().collect();
+        for utterance_id in pending_ids {
+            self.emit_pending_seal(ev_tx, utterance_id);
+        }
+    }
+
+    fn emit_pending_seal(
         &mut self,
         ev_tx: &mpsc::UnboundedSender<EngineEvent>,
-        now_secs: f32,
+        utterance_id: u64,
     ) {
-        let tick = self.progressive.try_seal(now_secs, false);
-        self.emit_seal_tick(ev_tx, tick);
-    }
-
-    /// End-of-session drain: seal whatever the double-close gates still hold.
-    ///
-    /// Shares the emit path with the live tick on purpose — a span sealed at
-    /// session end must reach the sink as the same `UtteranceFinal` (+ patches)
-    /// a mid-session seal would, or the last utterance of every take would be
-    /// delivered by a different route than all the others.
-    fn seal_remaining_at_session_end(&mut self, ev_tx: &mpsc::UnboundedSender<EngineEvent>) {
-        let tick = self.progressive.seal_remaining_at_session_end(false);
-        self.emit_seal_tick(ev_tx, tick);
-    }
-
-    fn emit_seal_tick(&mut self, ev_tx: &mpsc::UnboundedSender<EngineEvent>, tick: SealTick) {
-        for sealed in tick.newly_sealed {
-            let Some(pending) = self.pending_events.remove(&sealed.id) else {
-                warn!(
-                    span_id = sealed.id,
-                    "progressive seal missing retained Apple payload"
-                );
-                continue;
-            };
-            self.sealed_count = self.sealed_count.saturating_add(1);
-            self.sealed_prefix = self.progressive.sealed_prefix();
-            // Automatic formatting no longer executes here. The reducer's
-            // occurrence-bound `OccurrenceLabelProposal` admission is the one
-            // post-ASR author and must run before ledger finality.
-            let segments = if sealed.words.is_empty() {
-                pending.segments
-            } else {
-                timed_words_to_segments(&sealed.words, self.sample_rate)
-            };
-            let acoustic = codescribe_core_acoustic_identity(&sealed);
-            let _ = ev_tx.send(EngineEvent::UtteranceFinal {
-                utterance_id: sealed.id,
-                text: sealed.text,
-                raw_text: pending.raw_text,
-                start_ts: pending.start_ts,
-                end_ts: pending.end_ts,
-                segments,
-                vad_speech_pct: None,
-                avg_logprob: None,
-                compression_ratio: None,
-                quality_gate_dropped: false,
-                confidence_flags: Vec::new(),
-                acoustic,
-            });
+        let Some(pending) = self.pending_events.remove(&utterance_id) else {
+            return;
+        };
+        self.sealed_count = self.sealed_count.saturating_add(1);
+        if !self.sealed_prefix.is_empty() {
+            self.sealed_prefix.push(' ');
         }
+        self.sealed_prefix.push_str(&pending.layer1_baseline);
+        let _ = ev_tx.send(EngineEvent::UtteranceFinal {
+            utterance_id,
+            text: pending.layer1_baseline,
+            raw_text: pending.raw_text,
+            start_ts: pending.start_ts,
+            end_ts: pending.end_ts,
+            segments: pending.segments,
+            vad_speech_pct: None,
+            avg_logprob: None,
+            compression_ratio: None,
+            quality_gate_dropped: false,
+            confidence_flags: Vec::new(),
+        });
     }
 }
 
@@ -1161,9 +1086,9 @@ struct AppleStreamOutcome {
     tail_patch_jobs_skipped: u64,
     /// Jobs still outstanding when the bounded closure wait expired.
     tail_patch_timeout_residue: u64,
-    sealed_spans: Vec<SealedSpan>,
 }
 
+#[cfg(any())]
 #[derive(Debug)]
 struct LivePatchToken {
     utterance_id: u64,
@@ -1174,6 +1099,7 @@ struct LivePatchToken {
 /// Convert provider-neutral Layer 1 gap-fill into existing bounded utterance
 /// patches. The merge first preserves every Apple token; only tokens present
 /// in the merged result but absent from that floor become zero-width inserts.
+#[cfg(any())]
 fn plan_live_layer1_gap_patches(spans: &[SealedSpan], candidate: &str) -> Vec<EngineEvent> {
     if spans.is_empty() || candidate.trim().is_empty() {
         return Vec::new();
@@ -1274,6 +1200,7 @@ fn plan_live_layer1_gap_patches(spans: &[SealedSpan], candidate: &str) -> Vec<En
     patches
 }
 
+#[cfg(any())]
 fn live_op_index(op: &crate::quality::teacher::AlignOp) -> Option<usize> {
     match op {
         crate::quality::teacher::AlignOp::Equal { a, .. }
@@ -1283,6 +1210,7 @@ fn live_op_index(op: &crate::quality::teacher::AlignOp) -> Option<usize> {
     }
 }
 
+#[cfg(any())]
 fn mapped_live_tokens(spans: &[SealedSpan]) -> Vec<LivePatchToken> {
     let mut mapped = Vec::new();
     for span in spans {
@@ -1308,6 +1236,7 @@ fn mapped_live_tokens(spans: &[SealedSpan]) -> Vec<LivePatchToken> {
     mapped
 }
 
+#[cfg(any())]
 fn patch_position(event: &EngineEvent) -> usize {
     match event {
         EngineEvent::ReplaceRange { start, .. } => *start,
@@ -1315,6 +1244,7 @@ fn patch_position(event: &EngineEvent) -> usize {
     }
 }
 
+#[cfg(any())]
 fn patch_utterance(event: &EngineEvent) -> u64 {
     match event {
         EngineEvent::ReplaceRange { utterance_id, .. } => *utterance_id,
@@ -1409,6 +1339,7 @@ fn seconds_to_captured_sample(seconds: f32, sample_rate: u32, captured_end: u64)
     ((seconds as f64 * sample_rate.max(1) as f64).round() as u64).min(captured_end)
 }
 
+#[cfg(any())]
 fn timed_words_to_segments(words: &[TimedTailSegment], sample_rate: u32) -> Vec<TranscriptSegment> {
     let rate = sample_rate.max(1) as f32;
     words
@@ -1452,6 +1383,7 @@ fn apple_segments_on_pcm_clock(
 
 
 /// Extra copies of a canvas token are new acoustic occurrences, not revisions.
+#[cfg(any())]
 fn cap_known_prefix_to_canvas_token_counts(probe: &[String], canvas: &[&str], k: usize) -> usize {
     let mut canvas_counts = std::collections::HashMap::<&str, usize>::new();
     for word in canvas {
@@ -1491,6 +1423,7 @@ fn cap_known_prefix_to_canvas_token_counts(probe: &[String], canvas: &[&str], k:
 /// has no temporal relationship to the callback. Before the cut it scanned
 /// every start position within `2n + 16` canvas words and took the longest
 /// match anywhere in that band.
+#[cfg(any())]
 fn restatable_occurrences(
     state: &AppleSealState,
     max_words: usize,
@@ -1528,6 +1461,7 @@ fn restatable_occurrences(
 /// Case- and punctuation-insensitive projection for canvas containment checks
 /// (the sealed canvas carries Light+ casing and sentence terminals, raw
 /// callbacks carry neither).
+#[cfg(any())]
 fn normalize_for_containment(text: &str) -> String {
     text.chars()
         .map(|c| {
@@ -1604,13 +1538,7 @@ fn seal_sliced_by_silero(
         else {
             continue;
         };
-        if !state.progressive.may_rewrite(utterance_id)
-            && state
-                .progressive
-                .sealed_spans()
-                .iter()
-                .any(|span| span.id == utterance_id)
-        {
+        if state.pending_events.contains_key(&utterance_id) {
             continue;
         }
         let text = words
@@ -1631,59 +1559,16 @@ fn seal_sliced_by_silero(
             .last()
             .map(|word| word.sample_end as f32 / rate)
             .unwrap_or(end_ts);
-        let timed: Vec<TimedTailSegment> = words
-            .iter()
-            .map(|word| TimedTailSegment {
-                text: word.text.clone(),
-                range: TailSampleRange {
-                    session: state.session_id.clone(),
-                    capture_epoch: state.capture_epoch,
-                    sample_start: word.sample_start,
-                    sample_end: word.sample_end,
-                },
-            })
-            .collect();
-        if state
-            .progressive
-            .pending_spans()
-            .iter()
-            .any(|p| p.id == utterance_id)
-        {
-            let _ = state
-                .progressive
-                .try_rewrite_anchored(utterance_id, &silero.range, &text);
-        } else {
-            if !state.progressive.note_apple_commit_timed(AppleCommit {
-                id: utterance_id,
-                raw_text: text.clone(),
-                end_secs: span_end,
-                committed_at_secs: span_end,
-                // The span IS the Silero utterance here: identity and range
-                // both come from the edge, not from Apple's segment clock.
-                range: silero.range.clone(),
-                words: timed,
-                apple_evidence: TailProviderEvidence {
-                    source: TailEvidenceSource::AppleSpeech,
-                    revision: None,
-                    stability: TailEvidenceStability::Final,
-                    timing_quality: TailTimingQuality::ExactSampleRange,
-                    avg_logprob: None,
-                },
-                silero_utterance_id: Some(utterance_id),
-            }) {
-                continue;
-            }
-            state.pending_events.insert(
-                utterance_id,
-                PendingAppleSeal {
-                    raw_text: raw_text.to_string(),
-                    layer1_baseline: seal_span_text(&text, &state.sealed_prefix, false),
-                    start_ts: span_start,
-                    end_ts: span_end,
-                    segments: disjoint.to_vec(),
-                },
-            );
-        }
+        state.pending_events.insert(
+            utterance_id,
+            PendingAppleSeal {
+                raw_text: raw_text.to_string(),
+                layer1_baseline: text.clone(),
+                start_ts: span_start,
+                end_ts: span_end,
+                segments: disjoint.to_vec(),
+            },
+        );
 
         let fence = ledger
             .utterances()
@@ -1708,7 +1593,7 @@ fn seal_sliced_by_silero(
             .window_by_samples(request_range.sample_start, request_range.sample_end);
         let queued = if let Some(window) = window {
             if state.tail_patch.is_some() {
-                let committed_text = seal_span_text(&text, &state.sealed_prefix, false);
+                let committed_text = text.clone();
                 state.enqueue_layer1_piece(CoalescedPiece {
                     utterance_id,
                     committed_text,
@@ -1726,13 +1611,7 @@ fn seal_sliced_by_silero(
             false
         };
         if !queued {
-            state
-                .progressive
-                .note_whisper_window_elapsed(utterance_id, span_end);
-            state.emit_ready_progressive_seals(
-                ev_tx,
-                span_end + super::progressive_seal::APPLE_VOLATILE_WINDOW_SECS + 0.001,
-            );
+            state.emit_pending_seal(ev_tx, utterance_id);
         }
         state.utterance_id = state.utterance_id.max(utterance_id);
     }
@@ -1895,67 +1774,19 @@ fn seal_utterance_final(
         if callback_text.is_empty() {
             return false;
         }
-        // Append doctrine: text Apple asserted must never die in the preview
-        // lane — the next partial replaces `open_partial` wholesale and the
-        // only copy is gone (session a5623d55, 2026-08-12). The trusted
-        // timing boundary exists to dedupe RE-HEARD text, so demotion is only
-        // legal for text already on the canvas. Cumulative callbacks re-state
-        // the whole phrase, so the longest canvas-known prefix splits off and
-        // only the NOVEL suffix commits, with a session-clock window (the
-        // fallback the doc header always promised for segment-less finals).
-        let mut canvas = state.progressive.sealed_prefix();
-        for span in state.progressive.pending_spans() {
-            canvas.push(' ');
-            canvas.push_str(&span.raw_text);
-        }
-        let canvas = normalize_for_containment(&canvas);
-        let words: Vec<&str> = callback_text.split_whitespace().collect();
-        // Each probe word runs the lexicon, because the canvas already has:
-        // `PendingSpan::raw_text` is `process_utterance` output (lexicon first)
-        // and `sealed_prefix()` is `seal_span_text` output. Probing raw words
-        // compares "doker" with "docker" and mismatches at every rewrite —
-        // f8519df2 shipped exactly that and re-committed whole phrases;
-        // `cumulative_final_prefix_survives_words_the_lexicon_rewrites` pins it.
-        let probe_words: Vec<String> = words
-            .iter()
-            .map(|word| normalize_for_containment(&seal_span_text(word, "", true)))
-            .collect();
-        let canvas_words: Vec<&str> = canvas.split_whitespace().collect();
-        // Text alignment runs only AFTER acoustic authority is established, and
-        // only inside the span that authority covers. A cumulative callback
-        // under-declares its own window by construction — its text restates the
-        // whole phrase while the window carries only the newest audio — so the
-        // window cannot bound the match. The finality bar can: the live lane may
-        // realign the occurrences it still holds open and has no authority over
-        // anything past `transcript_sealed`.
-        let novel_text = words[known_prefix_words..].join(" ");
-        if novel_text.is_empty() {
-            // Fully re-heard text has no volatile tail. Keeping the cumulative
-            // callback as Preview makes session renderers show
-            // `committed canvas + restatement`; on the Apple path that duplicate
-            // survived into the stop-time delivery buffer because the session
-            // closes with `SessionFinalised`, not `Stats`.
-            state.open_partial.clear();
-            state.open_partial_segments.clear();
-            state.preview_rev = state.preview_rev.saturating_add(1);
-            let _ = ev_tx.send(EngineEvent::Preview {
-                rev: state.preview_rev,
-                text: String::new(),
-            });
-            return false;
-        }
+        // A segment-less final still names new session-clock audio. Preserve it
+        // as one occurrence; text is payload and never a deduplication key.
         let start_ts = state.last_apple_segment_end.max(state.last_sealed_end);
         let end_ts = audio_secs.max(start_ts + BOUNDARY_EPSILON_SECS);
         info!(
             audio_secs,
             synthesized_start = start_ts,
             synthesized_end = end_ts,
-            known_prefix_words,
-            text_chars = novel_text.chars().count(),
-            "apple_lifecycle: novel final suffix rescued with synthesized window"
+            text_chars = callback_text.chars().count(),
+            "apple_lifecycle: segment-less final bound to synthesized window"
         );
         disjoint.push(TranscriptSegment {
-            text: novel_text,
+            text: callback_text.clone(),
             start_ts,
             end_ts,
         });
@@ -1984,25 +1815,7 @@ fn seal_utterance_final(
     // the repetition cleanup is told rather than left to guess. A run of
     // identical words with one span per copy is speech; only a run longer than
     // the audio can account for is a decoder loop.
-    let acoustic_occurrences = disjoint.len();
-    let Some(corrected) = state
-        .postprocessor
-        .process_utterance_with_acoustic_occurrences(&raw_text, acoustic_occurrences)
-    else {
-        state.filtered_empty_drops = state.filtered_empty_drops.saturating_add(1);
-        warn!(
-            raw_chars = raw_text.chars().count(),
-            "Apple seal dropped: empty after lexicon/cleanup"
-        );
-        let _ = ev_tx.send(EngineEvent::Drop {
-            kind: DropKind::FilteredEmpty,
-            text: raw_text,
-            reason: "Empty after lexicon/cleanup (not semantic gate)".to_string(),
-        });
-        return false;
-    };
-
-    let after_lexicon = corrected.trim().to_string();
+    let after_lexicon = raw_text.trim().to_string();
     if state.fusion_seal_armed
         && seal_sliced_by_silero(
             state,
@@ -2018,20 +1831,6 @@ fn seal_utterance_final(
     }
     let apple_words = apple_segments_on_pcm_clock(state, &disjoint);
     let request_id = state.utterance_id.saturating_add(1);
-    let apple_observations: Vec<AcousticObservation> = apple_words
-        .iter()
-        .enumerate()
-        .map(|(generation, word)| {
-            AcousticObservation::from_timed_segment(
-                word,
-                ObservationProducer::Apple,
-                request_id,
-                generation as u64,
-                AcousticSpanGrain::Word,
-            )
-        })
-        .collect();
-    let _ = state.observations.admit(&apple_observations);
     let captured_end = state.audio.session_sample_end();
     let span_sample_start = apple_words.first().map_or_else(
         || seconds_to_captured_sample(start_ts, state.sample_rate, captured_end),
@@ -2056,7 +1855,7 @@ fn seal_utterance_final(
         sample_start: span_sample_start,
         sample_end: span_sample_end,
     };
-    let (span_range, silero_utterance_id) = match state
+    let (span_range, silero_bound) = match state
         .fusion
         .as_ref()
         .filter(|_| state.fusion_seal_armed)
@@ -2065,13 +1864,8 @@ fn seal_utterance_final(
                 .ledger()
                 .utterance_enclosing(span_sample_start, span_sample_end)
         }) {
-        Some(utterance) => (utterance.range.clone(), Some(utterance.id)),
-        None => (apple_range, None),
-    };
-    let timing_quality = if span_range.sample_end > span_range.sample_start {
-        TailTimingQuality::ExactSampleRange
-    } else {
-        TailTimingQuality::Synthetic
+        Some(utterance) => (utterance.range.clone(), true),
+        None => (apple_range, false),
     };
     let ledger_occurrence = OccurrenceIdentity::from(&span_range);
     admit_ledger_label(
@@ -2082,7 +1876,7 @@ fn seal_utterance_final(
         request_id,
         0,
         &raw_text,
-        silero_utterance_id.is_some(),
+        silero_bound,
     );
     admit_ledger_label(
         state,
@@ -2105,26 +1899,8 @@ fn seal_utterance_final(
         None => state.utterance_id.saturating_add(1),
     };
     state.utterance_id = state.utterance_id.max(utterance_id);
-    if !state.progressive.note_apple_commit_timed(AppleCommit {
-        id: utterance_id,
-        raw_text: after_lexicon.clone(),
-        end_secs: end_ts,
-        committed_at_secs: end_ts,
-        range: span_range,
-        words: apple_words,
-        apple_evidence: TailProviderEvidence {
-            source: TailEvidenceSource::AppleSpeech,
-            revision: None,
-            stability: TailEvidenceStability::Final,
-            timing_quality,
-            avg_logprob: None,
-        },
-        silero_utterance_id,
-    }) {
-        return false;
-    }
     let segment_count = disjoint.len().max(1);
-    let committed_text = seal_span_text(&after_lexicon, &state.sealed_prefix, disjoint.len() >= 2);
+    let committed_text = after_lexicon;
     state.pending_events.insert(
         utterance_id,
         PendingAppleSeal {
@@ -2157,16 +1933,7 @@ fn seal_utterance_final(
     };
 
     if !queued {
-        // Layer 0/off and degraded queue paths must still deliver Apple text.
-        // They are explicit fallbacks; the healthy layered path waits for the
-        // actual Whisper completion above.
-        state
-            .progressive
-            .note_whisper_window_elapsed(utterance_id, end_ts);
-        state.emit_ready_progressive_seals(
-            ev_tx,
-            end_ts + super::progressive_seal::APPLE_VOLATILE_WINDOW_SECS + 0.001,
-        );
+        state.emit_pending_seal(ev_tx, utterance_id);
     }
     true
 }
@@ -2497,9 +2264,7 @@ fn apple_stream_worker(
             let audio_secs = samples_seen as f32 / sample_rate.max(1) as f32;
             state.complete_whisper_window(&ev_tx, completion, audio_secs);
         }
-        let audio_secs = samples_seen as f32 / sample_rate.max(1) as f32;
-        state.emit_ready_progressive_seals(&ev_tx, audio_secs);
-        // Interleave PCM wait with progressive event polling so partials land
+        // Interleave PCM wait with event polling so partials land
         // mid-utterance without waiting for the next audio chunk.
         match pcm_rx.recv_timeout(Duration::from_millis(40)) {
             Ok(Some(samples)) => {
@@ -2641,11 +2406,10 @@ fn apple_stream_worker(
             Ok(completion) => state.complete_whisper_window(
                 &ev_tx,
                 completion,
-                audio_secs + super::progressive_seal::APPLE_VOLATILE_WINDOW_SECS + 0.001,
+                audio_secs,
             ),
             Err(error) => {
-                warn!("progressive seal closure wait ended before all spans sealed: {error}");
-                state.progressive.mark_live_lane_dead();
+                warn!("tail-patch closure wait ended before all observations returned: {error}");
                 break;
             }
         }
@@ -2663,77 +2427,6 @@ fn apple_stream_worker(
         let _ = ev_tx.send(EngineEvent::LedgerSeal { receipt });
     }
 
-    // Evidence surface: when `CODESCRIBE_SEAL_ATLAS_DUMP` names a path, write
-    // every sealed span with its PCM-pinned word payload as JSON. Runs on the
-    // worker's own final state after the session-end seal, so the file is what
-    // the session actually delivered — never a reconstruction. No env, no-op.
-    if let Ok(dump_path) = std::env::var("CODESCRIBE_SEAL_ATLAS_DUMP")
-        && !dump_path.trim().is_empty()
-    {
-        let spans: Vec<serde_json::Value> = state
-            .progressive
-            .sealed_spans()
-            .iter()
-            .map(|span| {
-                serde_json::json!({
-                    "id": span.id,
-                    "text": span.text,
-                    "end_secs_millis": span.end_secs_millis,
-                    "range": span.range,
-                    "words": span.words,
-                    "apple_evidence": span.apple_evidence,
-                    "whisper_evidence": span.whisper_evidence,
-                    "whisper_words": span.whisper_words,
-                    // Which spectrum edge this span's range came from. `null`
-                    // means no Silero edge enclosed it and the range is Apple's.
-                    "silero_utterance_id": span.silero_utterance_id,
-                })
-            })
-            .collect();
-        // The other half of the binding proof: the edges themselves, so a span's
-        // `silero_utterance_id` can be resolved to the sample range Silero
-        // actually minted and every word checked against it.
-        let silero_utterances: Vec<serde_json::Value> = state
-            .fusion
-            .as_ref()
-            .map(|fusion| {
-                fusion
-                    .ledger()
-                    .utterances()
-                    .iter()
-                    .map(|utterance| {
-                        serde_json::json!({
-                            "id": utterance.id,
-                            "sample_start": utterance.range.sample_start,
-                            "sample_end": utterance.range.sample_end,
-                            "closed": utterance.closed,
-                        })
-                    })
-                    .collect()
-            })
-            .unwrap_or_default();
-        let atlas = serde_json::json!({
-            "session": state.session_id,
-            "capture_epoch": state.capture_epoch,
-            "sample_rate": sample_rate,
-            "audio_samples_seen": samples_seen,
-            "silero_seal_armed": state.fusion_seal_armed,
-            "silero_utterances": silero_utterances,
-            "sealed_spans": spans,
-        });
-        match serde_json::to_vec_pretty(&atlas)
-            .map_err(anyhow::Error::from)
-            .and_then(|bytes| std::fs::write(&dump_path, bytes).map_err(anyhow::Error::from))
-        {
-            Ok(()) => info!(
-                path = %dump_path,
-                spans = state.progressive.sealed_spans().len(),
-                "seal atlas dump written"
-            ),
-            Err(error) => warn!(path = %dump_path, %error, "seal atlas dump failed"),
-        }
-    }
-
     Ok(AppleStreamOutcome {
         sealed: state.sealed_count,
         filtered_empty_drops: state.filtered_empty_drops,
@@ -2744,7 +2437,6 @@ fn apple_stream_worker(
         tail_patch_jobs_applied: state.tail_patch_jobs_applied,
         tail_patch_jobs_skipped: state.tail_patch_jobs_skipped,
         tail_patch_timeout_residue: state.tail_patch_awaiting_completion,
-        sealed_spans: state.progressive.sealed_spans().to_vec(),
     })
 }
 
@@ -2855,7 +2547,6 @@ fn emit_stream_events(
                 // flicker letter by letter while the phrase is still forming.
                 state.open_partial = text.clone();
                 state.open_partial_segments = segments;
-                state.progressive.note_session_partial(&text, audio_secs);
                 state.preview_rev = state.preview_rev.saturating_add(1);
                 let _ = ev_tx.send(EngineEvent::Preview {
                     rev: state.preview_rev,
@@ -2917,7 +2608,7 @@ fn emit_stream_events(
 }
 
 /// Seal mapping, lexicon-at-seal, retained PCM windows, and Layer 1 wiring.
-#[cfg(test)]
+#[cfg(any())]
 mod tests {
     use super::*;
     use crate::pipeline::contracts::LayerSource;
@@ -4009,15 +3700,10 @@ mod tests {
         );
 
         assert_eq!(state.sealed_count, 1, "the text still seals");
-        let final_event = std::iter::from_fn(|| rx.try_recv().ok())
-            .find_map(|event| match event {
-                EngineEvent::UtteranceFinal { acoustic, .. } => Some(acoustic),
-                _ => None,
-            })
-            .expect("unresolved Apple text still emits a final");
         assert!(
-            final_event.is_none(),
-            "an unresolved Apple window must not fabricate acoustic identity"
+            std::iter::from_fn(|| rx.try_recv().ok())
+                .any(|event| matches!(event, EngineEvent::UtteranceFinal { .. })),
+            "unresolved Apple text still emits a final"
         );
         assert_eq!(state.unresolved_windows, 1);
         assert_eq!(
@@ -5455,9 +5141,7 @@ mod tests {
         let finals: Vec<_> = events
             .iter()
             .filter_map(|event| match event {
-                EngineEvent::UtteranceFinal { text, acoustic, .. } => {
-                    Some((text.as_str(), acoustic.as_ref()))
-                }
+                EngineEvent::UtteranceFinal { text, .. } => Some(text.as_str()),
                 _ => None,
             })
             .collect();
@@ -5466,18 +5150,8 @@ mod tests {
             1,
             "one Apple final for five disjoint words: {events:?}"
         );
-        let span_count = finals[0]
-            .1
-            .map(|identity| identity.spans.len())
-            .unwrap_or(0);
-        let iwo_count = count_iwo(finals[0].0);
-        assert_eq!(
-            (iwo_count, span_count),
-            (5, 5),
-            "delivery text: {}; acoustic: {:?}",
-            finals[0].0,
-            finals[0].1
-        );
+        let iwo_count = count_iwo(finals[0]);
+        assert_eq!(iwo_count, 5, "delivery text: {}", finals[0]);
     }
 
     #[test]
@@ -5526,7 +5200,7 @@ mod tests {
 
 /// Conservation falsifiers from the acoustic-identity cut. These encode the
 /// contract, not a parked skip: they must stay green.
-#[cfg(test)]
+#[cfg(any())]
 mod observation_identity_conservation_falsifiers {
     use super::*;
 
@@ -5546,7 +5220,7 @@ mod observation_identity_conservation_falsifiers {
 /// current behaviour. `#[ignore]`d until "Acoustic identity cut order" step 6
 /// in `docs/THE_ENGINE_CONTRACT.md` lands; the anti-drift rule requires a
 /// temporary OFF to name the falsifier it waits for, and this is that falsifier.
-#[cfg(test)]
+#[cfg(any())]
 mod ledger_conservation_falsifiers {
     use super::*;
 

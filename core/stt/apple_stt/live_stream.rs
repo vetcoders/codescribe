@@ -130,7 +130,7 @@ impl LiveStreamSession {
             .take()
             .context("Apple STT bridge stdout unavailable")?;
 
-        let contextual_strings = crate::pipeline::stream_postprocess::apple_contextual_strings();
+        let contextual_strings: Option<Vec<String>> = None;
         let request = BridgeRequest {
             protocol_version: 1,
             command: "stream",

@@ -21,8 +21,6 @@
 //!   sequencing.
 //! - [`local_helper`] — the provider-compatible, injected child-process
 //!   boundary whose confirmed exit is the local-weight reclaim authority.
-//! - [`bootstrap`] — the recording-start join between persisted mode/consent
-//!   truth and a validated live endpoint.
 //! - [`recorder`] — the per-recording lane the live session drives: injected
 //!   [`recorder::Layer1Decision`], bounded non-blocking PCM fan-out, volatile
 //!   partial draft, and typed degrade paths that always land on canvas +
@@ -35,8 +33,7 @@
 //!
 //! No settings UI or local model. The Voice Lab wire is isolated behind the
 //! normalized provider contract; the mode/consent *records* live in
-//! `crate::config::cloud_asr` (the settings brain), while [`bootstrap`] joins
-//! that truth to the recorder.
+//! `crate::config::cloud_asr` (the settings brain).
 //!
 //! The existing whole-file `client::transcribe_cloud` API is **outside** this
 //! contract. It uploads one completed recording only for explicit retranscribe
@@ -52,8 +49,6 @@
 //! - Errors carry a typed kind and nothing else, so no transcript fragment,
 //!   audio, or credential can ride an error into a log line.
 
-/// Recording-start mode/consent/gateway integration for the real recorder path.
-pub mod bootstrap;
 /// Dedicated provider-neutral live cloud gateway transport and session adapter.
 pub mod cloud;
 /// Audio-egress consent gate in front of Layer 1 session construction (C2).
@@ -74,10 +69,6 @@ pub mod recorder;
 #[cfg(test)]
 mod tests;
 
-pub use bootstrap::{
-    GatewaySessionAvailability, gateway_session_availability, layer1_decision_for_recording,
-    layer1_decision_for_recording_with_layered_raw,
-};
 pub use cloud::{
     CloudGatewayTransport, CloudSessionLimits, CloudSessionTelemetry, GatewayConnection,
     GatewayErrorCode, GatewayEvent, GatewayPcmFrame, GatewaySessionConfig, GatewayTransportPoll,

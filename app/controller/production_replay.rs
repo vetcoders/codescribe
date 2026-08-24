@@ -10,7 +10,6 @@ use std::collections::HashSet;
 use std::path::Path;
 
 use anyhow::{Result, anyhow};
-use codescribe_core::asr_session::GatewaySessionAvailability;
 use codescribe_core::audio::streaming_recorder::replay_production_session;
 use codescribe_core::config::UserSettings;
 use codescribe_core::pipeline::contracts::EngineEvent;
@@ -169,7 +168,6 @@ pub async fn replay_overlay_recording(
     wav: &Path,
     language: Option<String>,
     settings: &UserSettings,
-    gateway: GatewaySessionAvailability,
     lane: ProductionReplayLane,
 ) -> Result<ProductionOverlayReplay> {
     let (samples, sample_rate) = codescribe_core::audio::load_audio_file(wav)
@@ -178,9 +176,7 @@ pub async fn replay_overlay_recording(
         return Err(anyhow!("replay WAV contains no samples"));
     }
 
-    let session =
-        replay_production_session(&samples, sample_rate, language.clone(), settings, gateway)
-            .await?;
+    let session = replay_production_session(&samples, sample_rate, language.clone(), settings).await?;
     let reducer = reduce_transcript_events(&session.events);
     let full = reducer.rendered_text();
     let floor = reducer.streaming_floor();
@@ -360,7 +356,6 @@ mod tests {
             &path,
             Some("pl".to_string()),
             &UserSettings::default(),
-            GatewaySessionAvailability::Unavailable,
             ProductionReplayLane::AppleLexicon,
         )
         .await

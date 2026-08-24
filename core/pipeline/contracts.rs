@@ -1293,7 +1293,6 @@ mod tests {
             compression_ratio: Some(1.2),
             quality_gate_dropped: false,
             confidence_flags: Vec::new(),
-            acoustic: None,
         };
         if let EngineEvent::UtteranceFinal {
             utterance_id,
@@ -1771,7 +1770,6 @@ mod tests {
                 TranscriptionConfidenceFlag::VeryLowSpeech,
                 TranscriptionConfidenceFlag::PossibleHallucinationLogprob,
             ],
-            acoustic: None,
         };
         if let EngineEvent::UtteranceFinal {
             vad_speech_pct,
@@ -1818,7 +1816,6 @@ mod tests {
                 TranscriptionConfidenceFlag::PossibleHallucinationLogprob,
                 TranscriptionConfidenceFlag::QualityGateDropped,
             ],
-            acoustic: None,
         };
         if let EngineEvent::UtteranceFinal {
             vad_speech_pct,

@@ -156,6 +156,11 @@ impl From<&EngineEvent> for EngineEventWire {
     /// Narrow `EngineEvent` to wire form; drops `UtteranceFinal::raw_text` at the boundary.
     fn from(value: &EngineEvent) -> Self {
         match value {
+            EngineEvent::LedgerMutation { .. }
+            | EngineEvent::LedgerSeal { .. }
+            | EngineEvent::OccurrenceLabelProposal { .. } => {
+                unreachable!("ledger-internal events do not cross the IPC wire")
+            }
             EngineEvent::VadStart { speech_prob, ts_ms } => Self::VadStart {
                 speech_prob: *speech_prob,
                 ts_ms: *ts_ms,

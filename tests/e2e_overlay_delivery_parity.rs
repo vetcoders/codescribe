@@ -1569,7 +1569,6 @@ async fn e2e_production_overlay_corpus_replay() {
             clip,
             language.clone(),
             &settings,
-            codescribe_core::asr_session::GatewaySessionAvailability::Unavailable,
             lane,
         )
         .await

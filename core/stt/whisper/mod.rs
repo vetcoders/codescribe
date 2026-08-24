@@ -30,8 +30,6 @@ mod engine;
 mod model;
 /// Decoding hyperparameters (temperature, beam, language, …).
 mod params;
-/// Silero VAD post-filter for file-level Whisper segments.
-pub mod silero_filter;
 /// Process-wide engine singleton and public transcribe API.
 pub mod singleton;
 /// Timestamp token helpers for segmented decoder output.
@@ -43,12 +41,7 @@ pub mod timing;
 pub use engine::LocalWhisperEngine; // Kept for advanced usage if needed
 pub use engine::append_with_overlap_dedup;
 pub(crate) use engine::dedup_repetitions;
-pub(crate) use engine::{
-    VadWindowPlanConfig, merge_chunk_transcripts, plan_vad_aligned_windows_with_config,
-    silence_spans_from_vad_probabilities,
-};
 pub use params::DecodingParams; // Kept for params config if needed
-pub use silero_filter::{SileroFilterOutcome, map_whisper_segments_to_silero};
 pub use timing::{FinalPassTiming, take_final_pass_timing};
 
 // Re-export singleton functions at module level (main API).

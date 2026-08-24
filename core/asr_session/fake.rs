@@ -94,7 +94,7 @@ impl FakeAsrSessionProvider {
     /// Move one scripted event to the ready queue, tracking its sequence.
     fn release_one(&mut self) {
         if let Some(event) = self.script.pop_front() {
-            let sequence = event.identity().sequence_id();
+            let sequence = event.sequence_id();
             self.highest_sequence = Some(match self.highest_sequence {
                 Some(previous) => previous.max(sequence),
                 None => sequence,
@@ -152,8 +152,11 @@ impl AsrSessionProvider for FakeAsrSessionProvider {
         while !self.script.is_empty() {
             self.release_one();
         }
-        if self.session_id.is_some() {
+        if let Some(session_id) = self.session_id.clone() {
             self.ready.push(AsrSessionEvent::Usage(UsageEvent {
+                session_id,
+                utterance_id: SESSION_SCOPE_UTTERANCE,
+                sequence_id: self.next_sequence(),
                 audio_secs: self.pushed_secs(),
                 billable_units: None,
             }));

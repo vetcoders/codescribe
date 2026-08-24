@@ -526,7 +526,7 @@ fn transcribe_via_bridge_wav_live(
     let wav = TempWavFile::write(audio, sample_rate)?;
     let audio_path = wav.path().display().to_string();
     let locale = resolved_locale(language);
-    let contextual_strings = crate::pipeline::stream_postprocess::apple_contextual_strings();
+    let contextual_strings: Option<Vec<String>> = None;
     let request = BridgeRequest {
         protocol_version: 1,
         command: "transcribe_live",
@@ -583,7 +583,7 @@ fn run_bridge_stream(
         // Swift host (see `util::pipes`).
         crate::util::pipes::disable_sigpipe(stdin);
 
-        let contextual_strings = crate::pipeline::stream_postprocess::apple_contextual_strings();
+        let contextual_strings: Option<Vec<String>> = None;
         let request = BridgeRequest {
             protocol_version: 1,
             command: "stream",
