@@ -245,9 +245,8 @@ pub struct TranscriptionVerdict {
 }
 
 impl TranscriptionVerdict {
-    /// Build a verdict through the ordinary `from_parts` path and materialize
-    /// engine-owned confidence flags once at the API boundary so downstream
-    /// consumers do not have to recreate heuristics.
+    /// Build a verdict and materialize engine-owned confidence flags once at the
+    /// API boundary so downstream consumers do not have to recreate heuristics.
     pub fn from_parts(
         text: String,
         raw: RawTranscript,
