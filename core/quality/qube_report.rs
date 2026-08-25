@@ -584,6 +584,7 @@ async fn process_pair(
             post_text,
             config.language.as_deref(),
             false,
+            runtime_settings.formatting_policy(),
             runtime_settings.llm_lanes().formatting(),
         )
         .await;

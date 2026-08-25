@@ -151,9 +151,12 @@ impl Drop for ProcessRecordingHangGuard {
 /// change between recordings. A session with no overlay to feed uses a much
 /// longer interim window — nobody is watching the partials, so paying for
 /// frequent interim emissions would be waste.
-fn apply_runtime_transcription_profile(config: &Config, assistive: bool) -> bool {
+fn apply_runtime_transcription_profile(
+    config: &Config,
+    settings: &UserSettings,
+    assistive: bool,
+) -> bool {
     let overlay_enabled = config.transcription_overlay_enabled;
-    let settings = UserSettings::load();
 
     let buffer_delay_ms = settings
         .buffer_delay_ms
@@ -264,7 +267,9 @@ pub struct RecordingController {
     /// Application configuration
     config: Arc<RwLock<Config>>,
     /// One immutable loader result shared by every consumer in a take.
-    runtime_settings: Arc<RuntimeSettingsSnapshot>,
+    /// The Arc inside is replaced only when idle so an active take keeps its
+    /// generation even if Settings writes a later snapshot.
+    runtime_settings: RwLock<Arc<RuntimeSettingsSnapshot>>,
 
     /// Current state
     state: Arc<RwLock<State>>,
@@ -491,7 +496,7 @@ impl RecordingController {
         }
 
         let config = Arc::new(RwLock::new(config));
-        let runtime_settings = Arc::new(runtime_settings);
+        let runtime_settings = RwLock::new(Arc::new(runtime_settings));
         if recorder.is_none() {
             warn!("Recorder unavailable at controller init; voice capture is disabled");
         }
@@ -683,7 +688,7 @@ impl RecordingController {
     /// Deliver the overlay's current transcript with the context captured at
     /// trigger time. Taking the context makes delivery one-shot.
     pub async fn deliver_pending_assistive_transcript(&self, transcript: String) -> Result<bool> {
-        let runtime_settings = self.runtime_settings.clone();
+        let runtime_settings = self.runtime_settings_arc().await;
         self.deliver_pending_assistive_transcript_with(
             transcript,
             move |wire, language, max_tokens, persona| {
@@ -800,9 +805,38 @@ impl RecordingController {
         }
     }
 
-    /// Replace controller configuration at runtime
+    /// Replace controller configuration at runtime.
+    ///
+    /// Prefer [`Self::replace_runtime_settings_when_idle`] after an explicit
+    /// settings write so `config` and `runtime_settings` stay one generation.
     pub async fn set_config(&self, config: Config) {
         *self.config.write().await = config;
+    }
+
+    /// Replace the immutable settings generation when no take is active.
+    ///
+    /// Returns `false` when a recording/conversation/busy take still owns the
+    /// previous Arc — writers must not mutate that generation mid-take.
+    pub async fn replace_runtime_settings_when_idle(
+        &self,
+        runtime_settings: RuntimeSettingsSnapshot,
+    ) -> bool {
+        if self.is_recording().await
+            || self.is_busy().await
+            || matches!(self.current_state().await, State::Conversation)
+        {
+            return false;
+        }
+        let values = runtime_settings.values().clone();
+        *self.config.write().await = values;
+        *self.runtime_settings.write().await = Arc::new(runtime_settings);
+        true
+    }
+
+    /// Borrow the current settings generation as an Arc (may differ from an
+    /// in-flight take that already cloned an older generation).
+    pub async fn runtime_settings_arc(&self) -> Arc<RuntimeSettingsSnapshot> {
+        Arc::clone(&*self.runtime_settings.read().await)
     }
 
     /// Snapshot of current controller configuration
@@ -2076,7 +2110,7 @@ impl RecordingController {
         let start_transition_in_flight = Arc::clone(&self.start_transition_in_flight);
         let session_telemetry = Arc::clone(&self.session_telemetry);
         let active_transcript_bus = Arc::clone(&self.active_transcript_bus);
-        let runtime_settings = Arc::clone(&self.runtime_settings);
+        let runtime_settings = self.runtime_settings_arc().await;
 
         let task = tokio::spawn(async move {
             // Wait for the configured delay
@@ -2136,7 +2170,11 @@ impl RecordingController {
                 },
                 config.hold_indicator,
             );
-            let overlay_enabled = apply_runtime_transcription_profile(&config, is_assistive);
+            let overlay_enabled = apply_runtime_transcription_profile(
+                &config,
+                runtime_settings.user_settings(),
+                is_assistive,
+            );
 
             // Apple live must-have: refuse start before audio when Speech is not
             // ready (empty mid-take death is not an acceptable product mode).
@@ -2364,7 +2402,12 @@ impl RecordingController {
         let toggle_silence_sec = config.toggle_silence_sec;
         let beep_enabled = config.beep_on_start;
         let sound_volume = config.sound_volume;
-        let overlay_enabled = apply_runtime_transcription_profile(&config, is_assistive);
+        let runtime_settings = self.runtime_settings_arc().await;
+        let overlay_enabled = apply_runtime_transcription_profile(
+            &config,
+            runtime_settings.user_settings(),
+            is_assistive,
+        );
 
         // Apple live must-have preflight, BEFORE the recorder lock and on the
         // blocking pool: the probe spawns a bridge child and can block on the
@@ -2415,7 +2458,7 @@ impl RecordingController {
         reset_session_telemetry(&self.session_telemetry);
         recorder.bind_session_authority(
             new_session_id.clone(),
-            Arc::clone(&self.runtime_settings),
+            Arc::clone(&runtime_settings),
         );
         let transcript_bus = TranscriptBus::open(TranscriptSession {
             session_id: new_session_id,
@@ -2825,5 +2868,49 @@ impl Default for RecordingController {
     /// Build a controller with production defaults (`RecordingController::new`).
     fn default() -> Self {
         Self::new()
+    }
+}
+
+#[cfg(test)]
+mod c15d_settings_one_path_falsifiers {
+    use super::*;
+    use crate::config::Config;
+
+    /// C15D falsifier: idle refresh replaces config and runtime_settings together.
+    #[tokio::test]
+    async fn idle_refresh_replaces_config_and_runtime_settings_together() {
+        let controller = RecordingController::new_without_keychain();
+        let before = controller.runtime_settings_arc().await;
+        let next = Config::load_runtime_snapshot_without_keychain()
+            .expect("seal next generation");
+        assert!(
+            controller
+                .replace_runtime_settings_when_idle(next.clone())
+                .await
+        );
+        let after = controller.runtime_settings_arc().await;
+        assert_eq!(after.digest().as_str(), next.digest().as_str());
+        assert_eq!(
+            controller.get_config().await.hold_start_delay_ms,
+            after.values().hold_start_delay_ms
+        );
+        // Previous take Arc is a distinct generation handle even when digests match.
+        let _ = before;
+    }
+
+    /// C15D falsifier: profile publish uses injected snapshot user_settings.
+    #[test]
+    fn recording_profile_uses_controller_snapshot_user_settings() {
+        let snapshot = Config::load_runtime_snapshot_without_keychain()
+            .expect("seal runtime settings");
+        let enabled = apply_runtime_transcription_profile(
+            snapshot.values(),
+            snapshot.user_settings(),
+            false,
+        );
+        assert_eq!(
+            enabled,
+            snapshot.values().transcription_overlay_enabled
+        );
     }
 }

@@ -216,7 +216,7 @@ file-pass belongs only to explicit retranscribe surfaces.
 
 | Front control                   | UniFFI                                              | Core                                                                   |
 | ------------------------------- | --------------------------------------------------- | ---------------------------------------------------------------------- |
-| Load Settings form              | `CodescribeConfig.load_settings()`                  | `UserSettings::load` + `Config::load` + env merge → `CsSettings`       |
+| Load Settings form              | `CodescribeConfig.load_settings()`                  | one `RuntimeSettingsSnapshot` → `CsSettings::from_runtime_snapshot`    |
 | Save knobs                      | `update_config` / `update_config_many`              | `UserSettings::set_*` → write `settings.json`; may seed env            |
 | ASR mode picker                 | `CODESCRIBE_ASR_MODE` + `CODESCRIBE_CLOUD_CONSENT`  | Cloud never displays without `granted`; stop ignores `FINAL_PASS_MODE` |
 | Active STT row                  | `current_serving_verdict()`                         | last live take (`local_apple` → Apple). No Smart-final-pass suffix     |

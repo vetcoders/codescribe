@@ -118,8 +118,9 @@ const DEFAULT_AI_RETRY_DELAY_MS: u64 = 500;
 // was too tight and triggered "Agent runtime unavailable. Using legacy
 // formatter" fallback mid-response, breaking the assistant UX. 90s
 // keeps streams alive across realistic backend hiccups without making
-// stalled requests linger forever. Env override `CODESCRIBE_AI_*_MS`
-// still wins for power users (operator can lower for fast models).
+// stalled requests linger forever. Sealing `CODESCRIBE_AI_*` overlays into
+// RuntimeSettingsSnapshot requires a later amendment; consumers must not
+// re-read process env for retry/timeouts on the one-path settings law.
 /// Per-attempt wall budget for hosted providers before the attempt is abandoned.
 const DEFAULT_AI_ATTEMPT_TIMEOUT_MS: u64 = 90_000;
 /// Max silence between SSE chunks mid-stream before the attempt is abandoned.
@@ -160,23 +161,16 @@ struct RetryPolicy {
 }
 
 impl RetryPolicy {
-    /// Read the policy from `CODESCRIBE_AI_*` overrides, falling back to the
-    /// module defaults for anything unset or unparseable.
-    fn from_env() -> Self {
+    /// Module defaults only. Consumer-local `CODESCRIBE_AI_*` process-env reads
+    /// are forbidden on the one-path settings law; sealing those overlays into
+    /// `RuntimeSettingsSnapshot` requires a later amendment and must not invent
+    /// a formatter settings organ here.
+    fn module_defaults() -> Self {
         Self {
-            max_retries: env_u32("CODESCRIBE_AI_MAX_RETRIES", DEFAULT_AI_MAX_RETRIES),
-            retry_delay: duration_from_env_ms(
-                "CODESCRIBE_AI_RETRY_DELAY_MS",
-                DEFAULT_AI_RETRY_DELAY_MS,
-            ),
-            attempt_timeout: duration_from_env_ms(
-                "CODESCRIBE_AI_ATTEMPT_TIMEOUT_MS",
-                DEFAULT_AI_ATTEMPT_TIMEOUT_MS,
-            ),
-            inter_chunk_timeout: duration_from_env_ms(
-                "CODESCRIBE_AI_INTER_CHUNK_TIMEOUT_MS",
-                DEFAULT_AI_INTER_CHUNK_TIMEOUT_MS,
-            ),
+            max_retries: DEFAULT_AI_MAX_RETRIES,
+            retry_delay: Duration::from_millis(DEFAULT_AI_RETRY_DELAY_MS),
+            attempt_timeout: Duration::from_millis(DEFAULT_AI_ATTEMPT_TIMEOUT_MS),
+            inter_chunk_timeout: Duration::from_millis(DEFAULT_AI_INTER_CHUNK_TIMEOUT_MS),
         }
     }
 }
@@ -1129,22 +1123,28 @@ pub async fn format_text(
     text: &str,
     language: Option<&str>,
     assistive: bool,
+    policy: FormattingPolicy,
     lane: &RuntimeLlmLane,
 ) -> String {
-    format_text_with_status(text, language, assistive, lane, None)
+    format_text_with_status(text, language, assistive, policy, lane, None)
         .await
         .text
 }
 
-/// Format text using AI provider with fallback chain, returning status
+/// Format text using AI provider with fallback chain, returning status.
+///
+/// Callers must supply the sealed take `FormattingPolicy` (from
+/// `RuntimeSettingsSnapshot::formatting_policy()` or an explicit one-shot
+/// choice). This entry must not reload settings or process env.
 pub async fn format_text_with_status(
     text: &str,
     language: Option<&str>,
     assistive: bool,
+    policy: FormattingPolicy,
     lane: &RuntimeLlmLane,
     on_delta: Option<AiStreamCallback>,
 ) -> AiFormatResult {
-    format_text_with_status_channels(text, language, assistive, lane, on_delta, None).await
+    format_text_with_status_channels(text, language, assistive, policy, lane, on_delta, None).await
 }
 
 /// Format text using AI provider with explicit channel callbacks.
@@ -1152,10 +1152,13 @@ pub async fn format_text_with_status(
 /// Contract:
 /// - `on_assistant_delta`: receives only `response.output_text.*` deltas.
 /// - `on_reasoning_delta`: receives only `response.reasoning_summary_text.*` deltas.
+/// - `policy` is an injected fact from the immutable settings throne (or an
+///   explicit one-shot); assistive still forces Correction for the assistive lane.
 pub async fn format_text_with_status_channels(
     text: &str,
     language: Option<&str>,
     assistive: bool,
+    policy: FormattingPolicy,
     lane: &RuntimeLlmLane,
     on_assistant_delta: Option<AiStreamCallback>,
     on_reasoning_delta: Option<AiReasoningCallback>,
@@ -1163,17 +1166,7 @@ pub async fn format_text_with_status_channels(
     let policy = if assistive {
         FormattingPolicy::Correction
     } else {
-        match Config::formatting_policy() {
-            Ok(policy) => policy,
-            Err(error) => {
-                warn!("Rejected invalid formatting policy: {error}");
-                return AiFormatResult {
-                    text: text.to_string(),
-                    reasoning_text: None,
-                    status: AiFormatStatus::Failed,
-                };
-            }
-        }
+        policy
     };
     format_text_with_status_channels_for_policy(
         text,
@@ -1248,7 +1241,7 @@ async fn format_text_with_status_channels_for_policy(
         text.to_string()
     };
 
-    let retry_policy = RetryPolicy::from_env();
+    let retry_policy = RetryPolicy::module_defaults();
     let max_retries = retry_policy.max_retries;
     debug!(
         "AI retry policy: max_retries={}, retry_delay={:?}, attempt_timeout={:?}, \
@@ -2505,6 +2498,39 @@ mod tests {
     fn default_retry_policy_is_single_attempt() {
         assert_eq!(DEFAULT_AI_MAX_RETRIES, 0);
         assert_eq!(DEFAULT_AI_RETRY_DELAY_MS, 500);
+    }
+
+    /// C15D falsifier (source-level; W2 does not execute): module defaults must
+    /// ignore ambient `CODESCRIBE_AI_*` process env.
+    #[test]
+    fn retry_policy_module_defaults_do_not_read_process_env() {
+        let previous = std::env::var_os("CODESCRIBE_AI_MAX_RETRIES");
+        // SAFETY: test-local env mutation; restored below.
+        unsafe { std::env::set_var("CODESCRIBE_AI_MAX_RETRIES", "9") };
+        let policy = RetryPolicy::module_defaults();
+        assert_eq!(policy.max_retries, DEFAULT_AI_MAX_RETRIES);
+        // SAFETY: restore prior ambient value.
+        unsafe {
+            match previous {
+                Some(value) => std::env::set_var("CODESCRIBE_AI_MAX_RETRIES", value),
+                None => std::env::remove_var("CODESCRIBE_AI_MAX_RETRIES"),
+            }
+        }
+    }
+
+    /// C15D falsifier: public formatter entries require an explicit policy and
+    /// must not reconstruct via `Config::formatting_policy`.
+    #[test]
+    fn formatter_entry_requires_explicit_policy_not_config_formatting_policy() {
+        // Compile-time shape check: FormattingPolicy is a required argument.
+        let _: fn(
+            &str,
+            Option<&str>,
+            bool,
+            FormattingPolicy,
+            &RuntimeLlmLane,
+            Option<AiStreamCallback>,
+        ) -> _ = format_text_with_status;
     }
 
     /// Saved settings win over stale env — a settings change takes effect on the

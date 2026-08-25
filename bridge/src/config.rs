@@ -23,6 +23,7 @@ use codescribe_core::config::{
     prompt_snapshot, prompts, reset_to_defaults, restore_prompt_to_default, write_prompt,
     write_prompt_bytes_during_reset,
 };
+use codescribe_core::config::settings::normalize_agent_workspace_roots;
 use codescribe_core::llm::account_auth;
 use codescribe_core::llm::key_liveness::{
     ApiKeyLivenessResult, ApiKeyLivenessStatus, probe_api_key_liveness,
@@ -64,14 +65,12 @@ fn agent_reset_error(mutation_started: bool, message: impl Into<String>) -> CsEr
     CsError::Config { msg }
 }
 
-/// Full settings snapshot pushed to the Swift Settings UI. Combines real
-/// `Config` struct fields (settings.json / .env / defaults already merged by
-/// `Config::load()`) with env-only knobs read from persisted settings / .env
-/// without relying on runtime process-env mutation.
+/// Full settings snapshot pushed to the Swift Settings UI.
 ///
-/// API keys are intentionally absent — they live only in `CsKeyStatus` as
-/// booleans. Write back through `update_config` / `update_config_many` using the
-/// router env keys (see `CodescribeConfig::update_config`).
+/// Constructed only via [`CsSettings::from_runtime_snapshot`] from one sealed
+/// `RuntimeSettingsSnapshot`. API keys are intentionally absent — they live
+/// only in `CsKeyStatus` as booleans. Write back through `update_config` /
+/// `update_config_many` using the router env keys.
 #[derive(uniffi::Record)]
 pub struct CsSettings {
     // ── Hotkeys ──
@@ -175,6 +174,98 @@ pub struct CsSettings {
     /// Libraxis gateway session-mint URL (`CODESCRIBE_ASR_GATEWAY_URL`).
     /// Session mint, not the live WSS socket (`STT_ENDPOINT`).
     pub asr_gateway_url: Option<String>,
+}
+
+impl CsSettings {
+    /// Secret-free DTO projection from one exact immutable runtime snapshot.
+    ///
+    /// Resolved `Config` values, persisted `UserSettings` intent, sealed LLM
+    /// lanes, and sealed formatting policy all come from the same loader pass.
+    /// No process-env / `.env` re-merge is performed here.
+    fn from_runtime_snapshot(runtime: &RuntimeSettingsSnapshot) -> Self {
+        let config = runtime.values();
+        let settings = runtime.user_settings();
+        let main = runtime.llm_lanes().main();
+        let formatting = runtime.llm_lanes().formatting();
+        let assistive = runtime.llm_lanes().assistive();
+        let mut agent_workspace_roots =
+            normalize_agent_workspace_roots(settings.agent_workspace_roots.clone().unwrap_or_default());
+        if agent_workspace_roots.is_empty() {
+            agent_workspace_roots.push("~/.codescribe".to_string());
+        }
+        Self {
+            hold_exclusive: config.hold_exclusive,
+            hold_arm_modifier: config.hold_arm_modifier.as_str().to_string(),
+            hold_start_delay_ms: config.hold_start_delay_ms,
+            double_tap_interval_ms: config.double_tap_interval_ms,
+            toggle_silence_sec: config.toggle_silence_sec,
+            deferred_insert_shortcut: config.deferred_insert_shortcut.wire_id().to_string(),
+            whisper_language: CsLanguage::from(config.whisper_language),
+            ai_formatting_enabled: config.ai_formatting_enabled,
+            transcript_send_mode: config.transcript_send_mode.as_str().to_string(),
+            transcript_tagging_enabled: config.transcript_tagging_enabled,
+            transcript_tag_template: config.transcript_tag_template.clone(),
+            ai_max_tokens: config.ai_max_tokens,
+            ai_assistive_max_tokens: config.ai_assistive_max_tokens,
+            show_tray_glyph: config.show_tray_glyph,
+            show_dock_icon: config.show_dock_icon,
+            transcription_overlay_enabled: config.transcription_overlay_enabled,
+            hold_indicator: config.hold_indicator,
+            hold_badge_size: config.hold_badge_size,
+            hold_badge_offset_x: config.hold_badge_offset_x,
+            hold_badge_offset_y: config.hold_badge_offset_y,
+            overlay_position_mode: config.overlay_position_mode.as_str().to_string(),
+            overlay_custom_x: config.overlay_custom_x,
+            overlay_custom_y: config.overlay_custom_y,
+            beep_on_start: config.beep_on_start,
+            sound_name: config.sound_name.clone(),
+            sound_volume: config.sound_volume,
+            // Saved user choice from the same seal; live device truth stays on
+            // `CsAudioInputSnapshot`.
+            audio_input_device: setting_string(settings.audio_input_device.clone()),
+            history_enabled: config.history_enabled,
+            quick_notes_enabled: config.quick_notes_enabled,
+            quick_notes_save_only: config.quick_notes_save_only,
+            use_local_stt: config.use_local_stt,
+            local_model: config.local_model.clone(),
+            stt_endpoint: config.stt_endpoint.clone(),
+            stt_engine: setting_string(settings.stt_engine.clone()),
+            final_pass_mode: setting_string(settings.final_pass_mode.clone()),
+            llm_endpoint: config.llm_endpoint.clone(),
+            restore_clipboard: config.restore_clipboard,
+            restore_clipboard_delay_ms: config.restore_clipboard_delay_ms,
+            start_at_login: config.start_at_login,
+            agent_enter_sends: config.agent_enter_sends,
+            dump_audio_logs: config.dump_audio_logs,
+            // Editable Settings fields prefer persisted intent from the same
+            // seal so a fresh UI write is visible; sealed lanes fill gaps when
+            // the operator has no persisted row yet.
+            llm_model: setting_string(settings.llm_model.clone())
+                .or_else(|| Some(main.model().to_string())),
+            llm_formatting_endpoint: setting_string(settings.llm_formatting_endpoint.clone())
+                .or_else(|| Some(formatting.endpoint().to_string())),
+            llm_formatting_model: setting_string(settings.llm_formatting_model.clone())
+                .or_else(|| Some(formatting.model().to_string())),
+            llm_assistive_endpoint: setting_string(settings.llm_assistive_endpoint.clone())
+                .or_else(|| Some(assistive.endpoint().to_string())),
+            llm_assistive_model: setting_string(settings.llm_assistive_model.clone())
+                .or_else(|| Some(assistive.model().to_string())),
+            llm_assistive_provider: setting_string(settings.llm_assistive_provider.clone())
+                .or_else(|| Some(assistive.provider().as_str().to_string())),
+            formatting_level: Some(runtime.formatting_policy().as_str().to_string()),
+            whisper_model: setting_string(settings.whisper_model.clone()),
+            layered_transcription: setting_string(settings.layered_transcription.clone()),
+            agent_workspace_roots,
+            buffer_delay_ms: settings.buffer_delay_ms,
+            typing_cps: settings.typing_cps,
+            emit_words_max: settings.emit_words_max,
+            buffered_interim_sec: settings.buffered_interim_sec,
+            backend_max_upload_mb: settings.backend_max_upload_mb,
+            asr_mode: setting_string(settings.asr_mode.clone()),
+            cloud_consent: setting_string(settings.cloud_consent.clone()),
+            asr_gateway_url: setting_string(settings.asr_gateway_url.clone()),
+        }
+    }
 }
 
 /// Live, non-secret impact summary shown before a full local-data reset.
@@ -523,155 +614,14 @@ impl CodescribeConfig {
         Self {}
     }
 
-    /// Full settings snapshot for the Settings UI. Reloads from disk so it
-    /// reflects any writes made since construction.
+    /// Full settings snapshot for the Settings UI. Loads exactly one canonical
+    /// `RuntimeSettingsSnapshot` and projects a secret-free `CsSettings` from
+    /// that instance — never a second `Config::load` + `UserSettings::load` +
+    /// env-file reconstruct.
     pub fn load_settings(&self) -> CsSettings {
-        let config = Config::load();
-        let settings = UserSettings::load();
-        let env_file = load_config_env_file();
-        CsSettings {
-            hold_exclusive: config.hold_exclusive,
-            hold_arm_modifier: config.hold_arm_modifier.as_str().to_string(),
-            hold_start_delay_ms: config.hold_start_delay_ms,
-            double_tap_interval_ms: config.double_tap_interval_ms,
-            toggle_silence_sec: config.toggle_silence_sec,
-            deferred_insert_shortcut: config.deferred_insert_shortcut.wire_id().to_string(),
-            whisper_language: CsLanguage::from(config.whisper_language),
-            ai_formatting_enabled: config.ai_formatting_enabled,
-            transcript_send_mode: config.transcript_send_mode.as_str().to_string(),
-            transcript_tagging_enabled: config.transcript_tagging_enabled,
-            transcript_tag_template: config.transcript_tag_template.clone(),
-            ai_max_tokens: config.ai_max_tokens,
-            ai_assistive_max_tokens: config.ai_assistive_max_tokens,
-            show_tray_glyph: config.show_tray_glyph,
-            show_dock_icon: config.show_dock_icon,
-            transcription_overlay_enabled: config.transcription_overlay_enabled,
-            hold_indicator: config.hold_indicator,
-            hold_badge_size: config.hold_badge_size,
-            hold_badge_offset_x: config.hold_badge_offset_x,
-            hold_badge_offset_y: config.hold_badge_offset_y,
-            overlay_position_mode: config.overlay_position_mode.as_str().to_string(),
-            overlay_custom_x: config.overlay_custom_x,
-            overlay_custom_y: config.overlay_custom_y,
-            beep_on_start: config.beep_on_start,
-            sound_name: config.sound_name.clone(),
-            sound_volume: config.sound_volume,
-            // This is the saved user choice, not the process-env selector held
-            // by the already-running recorder. AudioPanel gets that live truth
-            // separately from `CsAudioInputSnapshot`.
-            audio_input_device: setting_string(settings.audio_input_device.clone()),
-            history_enabled: config.history_enabled,
-            quick_notes_enabled: config.quick_notes_enabled,
-            quick_notes_save_only: config.quick_notes_save_only,
-            use_local_stt: config.use_local_stt,
-            local_model: config.local_model.clone(),
-            stt_endpoint: config.stt_endpoint.clone(),
-            stt_engine: effective_env_string(
-                "CODESCRIBE_STT_ENGINE",
-                settings.stt_engine.clone(),
-                &env_file,
-            ),
-            final_pass_mode: effective_env_string(
-                "FINAL_PASS_MODE",
-                settings.final_pass_mode.clone(),
-                &env_file,
-            )
-            .or_else(|| effective_env_string("CODESCRIBE_FINAL_PASS_MODE", None, &env_file)),
-            llm_endpoint: config.llm_endpoint.clone(),
-            restore_clipboard: config.restore_clipboard,
-            restore_clipboard_delay_ms: config.restore_clipboard_delay_ms,
-            start_at_login: config.start_at_login,
-            agent_enter_sends: config.agent_enter_sends,
-            dump_audio_logs: config.dump_audio_logs,
-            // Env-only knobs: read the persisted stores first so a runtime UI
-            // write is visible without mutating the process environment.
-            llm_model: effective_settings_string(
-                "LLM_MODEL",
-                settings.llm_model.clone(),
-                &env_file,
-            ),
-            llm_formatting_endpoint: effective_settings_string(
-                "LLM_FORMATTING_ENDPOINT",
-                settings.llm_formatting_endpoint.clone(),
-                &env_file,
-            ),
-            llm_formatting_model: effective_settings_string(
-                "LLM_FORMATTING_MODEL",
-                settings.llm_formatting_model.clone(),
-                &env_file,
-            ),
-            llm_assistive_endpoint: effective_settings_string(
-                "LLM_ASSISTIVE_ENDPOINT",
-                settings.llm_assistive_endpoint.clone(),
-                &env_file,
-            ),
-            llm_assistive_model: effective_settings_string(
-                "LLM_ASSISTIVE_MODEL",
-                settings.llm_assistive_model.clone(),
-                &env_file,
-            ),
-            llm_assistive_provider: effective_settings_string(
-                "LLM_ASSISTIVE_PROVIDER",
-                settings.llm_assistive_provider.clone(),
-                &env_file,
-            ),
-            formatting_level: Config::formatting_policy()
-                .ok()
-                .map(|policy| policy.as_str().to_string()),
-            whisper_model: effective_settings_string(
-                "WHISPER_MODEL",
-                settings.whisper_model.clone(),
-                &env_file,
-            ),
-            // Promoted single-brain key: settings.json wins the read-back, so
-            // the Layered toggle reflects the user's write, not stale boot env.
-            layered_transcription: effective_settings_string(
-                "CODESCRIBE_LAYERED_TRANSCRIPTION",
-                settings.layered_transcription.clone(),
-                &env_file,
-            ),
-            agent_workspace_roots: Config::effective_agent_workspace_roots(),
-            buffer_delay_ms: effective_settings_parse(
-                "CODESCRIBE_BUFFER_DELAY_MS",
-                settings.buffer_delay_ms,
-                &env_file,
-            ),
-            typing_cps: effective_settings_parse(
-                "CODESCRIBE_TYPING_CPS",
-                settings.typing_cps,
-                &env_file,
-            ),
-            emit_words_max: effective_settings_parse(
-                "CODESCRIBE_EMIT_WORDS_MAX",
-                settings.emit_words_max,
-                &env_file,
-            ),
-            buffered_interim_sec: effective_settings_parse(
-                "CODESCRIBE_BUFFERED_INTERIM_SEC",
-                settings.buffered_interim_sec,
-                &env_file,
-            ),
-            backend_max_upload_mb: effective_settings_parse(
-                "BACKEND_MAX_UPLOAD_MB",
-                settings.backend_max_upload_mb,
-                &env_file,
-            ),
-            asr_mode: effective_settings_string(
-                "CODESCRIBE_ASR_MODE",
-                settings.asr_mode.clone(),
-                &env_file,
-            ),
-            cloud_consent: effective_settings_string(
-                "CODESCRIBE_CLOUD_CONSENT",
-                settings.cloud_consent.clone(),
-                &env_file,
-            ),
-            asr_gateway_url: effective_settings_string(
-                "CODESCRIBE_ASR_GATEWAY_URL",
-                settings.asr_gateway_url.clone(),
-                &env_file,
-            ),
-        }
+        let runtime = Config::load_runtime_snapshot()
+            .expect("canonical runtime settings must load for Settings UI projection");
+        CsSettings::from_runtime_snapshot(&runtime)
     }
 
     /// Persist Auto Paste and return the prompt-free post-write truth in one
@@ -706,19 +656,16 @@ impl CodescribeConfig {
 
     /// Lightweight tray-only settings read. Unlike `load_settings`, this never
     /// populates the Keychain, so it never prompts just because the user opened
-    /// the menu. It DOES honor the full tier stack (defaults < settings.json <
-    /// .env < process-env) so env overrides such as `SHOW_DOCK_ICON=0` take
-    /// effect — reading `UserSettings` + defaults alone silently dropped them.
+    /// the menu. Projects from one keychain-free runtime snapshot.
     pub fn tray_toggles(&self) -> CsTrayToggles {
-        let config = Config::load_without_keychain();
+        let runtime = Config::load_runtime_snapshot_without_keychain()
+            .expect("canonical runtime settings must load for tray toggles");
+        let config = runtime.values();
         CsTrayToggles {
             show_dock_icon: config.show_dock_icon,
             transcription_overlay_enabled: config.transcription_overlay_enabled,
             auto_paste_enabled: config.auto_paste_enabled,
-            formatting_level: Config::formatting_policy()
-                .unwrap_or_default()
-                .as_str()
-                .to_string(),
+            formatting_level: runtime.formatting_policy().as_str().to_string(),
             start_assistive: config.tray_start_assistive,
             // Notes Mode is "on" only when BOTH flags are set (dictation → note
             // AND no paste). Reading just quick_notes_enabled could show the toggle
@@ -3377,5 +3324,28 @@ mod settings_snapshot_tests {
                 }
             }
         }
+    }
+
+    /// C15D falsifier (source-level; W2 does not execute): Settings UI projection
+    /// comes from one sealed snapshot without an env-file re-merge twin.
+    #[test]
+    fn settings_ui_projects_from_one_runtime_snapshot_without_env_remerge() {
+        let runtime = Config::load_runtime_snapshot_without_keychain()
+            .expect("seal runtime settings for projection");
+        let projected = CsSettings::from_runtime_snapshot(&runtime);
+        assert_eq!(
+            projected.formatting_level.as_deref(),
+            Some(runtime.formatting_policy().as_str())
+        );
+        assert_eq!(
+            projected.hold_start_delay_ms,
+            runtime.values().hold_start_delay_ms
+        );
+        // Persisted intent from the same seal wins over ambient process env.
+        assert_eq!(
+            projected.llm_model,
+            setting_string(runtime.user_settings().llm_model.clone())
+                .or_else(|| Some(runtime.llm_lanes().main().model().to_string()))
+        );
     }
 }

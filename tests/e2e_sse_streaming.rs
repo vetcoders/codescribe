@@ -73,6 +73,7 @@ async fn e2e_sse_streaming_real_formatting() {
         input,
         Some("pl"),
         false,
+        runtime_settings.formatting_policy(),
         runtime_settings.llm_lanes().formatting(),
     )
     .await;
@@ -119,6 +120,7 @@ async fn e2e_sse_streaming_real_assistive() {
         input,
         Some("pl"),
         true,
+        codescribe::config::FormattingPolicy::Correction,
         runtime_settings.llm_lanes().assistive(),
         None,
     )
@@ -163,6 +165,7 @@ async fn e2e_sse_streaming_kurier_mode() {
         input,
         Some("pl"),
         true,
+        codescribe::config::FormattingPolicy::Correction,
         runtime_settings.llm_lanes().assistive(),
     )
     .await;

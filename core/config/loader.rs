@@ -501,10 +501,11 @@ impl Config {
     ///
     /// Explicit process env wins. Values seeded internally during bootstrap are
     /// ignored after bootstrap so a Settings write takes effect without restart.
+    /// Loader-boundary helper for UI/tests that do not already hold a snapshot.
+    /// Resolves policy only through the canonical sealed snapshot — never by a
+    /// second `UserSettings::load` + process-env reconstruct.
     pub fn formatting_policy() -> anyhow::Result<FormattingPolicy> {
-        let runtime = Self::config_runtime_env_var("FORMATTING_LEVEL").ok();
-        let settings = super::settings::UserSettings::load();
-        FormattingPolicy::resolve(runtime.as_deref(), settings.formatting_level.as_deref())
+        Ok(Self::load_runtime_snapshot()?.formatting_policy())
     }
 
     /// Resolve the roots selected in Settings from fresh persisted truth.

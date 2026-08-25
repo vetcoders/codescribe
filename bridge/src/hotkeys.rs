@@ -281,8 +281,12 @@ fn shared_runtime_handle() -> &'static OnceLock<Handle> {
 /// Push freshly-persisted settings into the live shared controller so a Settings
 /// write takes effect without an app restart (language, AI formatting, hold
 /// delays, …). No-op before the runtime/controller exist — a controller created
-/// later already loads fresh config on construction. Runs `set_config` on the
-/// hotkey runtime the controller lives on, mirroring how `start()` drives it.
+/// later already loads fresh config on construction.
+///
+/// Loads exactly one keychain-free `RuntimeSettingsSnapshot` and replaces both
+/// `config` and `runtime_settings` together when the controller is idle. An
+/// active take keeps its immutable generation; the write affects the next
+/// session only.
 pub(crate) fn refresh_live_controller_config() {
     let Some(handle) = shared_runtime_handle().get() else {
         return;
@@ -291,7 +295,18 @@ pub(crate) fn refresh_live_controller_config() {
         return;
     };
     handle.spawn(async move {
-        controller.set_config(Config::load_without_keychain()).await;
+        let Ok(snapshot) = Config::load_runtime_snapshot_without_keychain() else {
+            tracing::warn!("settings refresh skipped: runtime snapshot refused");
+            return;
+        };
+        if !controller
+            .replace_runtime_settings_when_idle(snapshot)
+            .await
+        {
+            tracing::info!(
+                "settings refresh deferred: active take keeps its immutable snapshot generation"
+            );
+        }
     });
 }
 

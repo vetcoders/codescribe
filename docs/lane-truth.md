@@ -117,12 +117,19 @@ different question and does not replace the sealed snapshot.
 ## Canonical access
 
 ```text
-SettingsLoader::load_runtime_snapshot()
-  → SettingsLoader::resolve_runtime_llm_lanes(...)
-  → RuntimeLlmLanes { main, formatting, assistive }
+settings.json
+  → Config::load_runtime_snapshot()
+  → resolve_runtime_llm_lanes + formatting_policy
   → RuntimeSettingsSnapshot::seal_loaded(...)
-  → RuntimeSettingsSnapshot::llm_lanes()
+  → Arc / &RuntimeLlmLane / CsSettings::from_runtime_snapshot
 ```
+
+Consumers of an active recording receive the controller's sealed Arc (or a
+secret-free projection from it). Settings UI / tray / discovery boundaries may
+mint a fresh snapshot; they must not reconstruct precedence via a second
+`Config::load` + `UserSettings::load` + env merge. Explicit settings writes
+affect only a later generation — idle refresh replaces config and the Arc
+together; an active take keeps its immutable generation.
 
 This document describes structure carried from executable cut `484095ce`, its
 documentation successor `d57196ab`, and the C11 source cut. The actual C11 hash

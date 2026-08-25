@@ -107,6 +107,7 @@ data: [DONE]
         &raw,
         None,
         false,
+        runtime_settings.formatting_policy(),
         runtime_settings.llm_lanes().formatting(),
     ));
 
