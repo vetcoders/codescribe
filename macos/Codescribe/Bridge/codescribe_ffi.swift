@@ -659,10 +659,8 @@ public protocol CodescribeAgentProtocol: AnyObject, Sendable {
     func generateThreadTitle(text: String) async throws  -> String?
 
     /**
-     * True when the assistive lane can currently reach a provider. Resolved
-     * fresh on every call (settings → env → Keychain via lane_truth), so a
-     * Settings save flips this on the very next send — no restart, no stale
-     * bootstrap env. A key-optional local endpoint counts as available.
+     * True when the sealed assistive lane can reach its provider. A
+     * key-optional local endpoint counts as available.
      */
     func isAvailable()  -> Bool
 
@@ -754,9 +752,8 @@ open class CodescribeAgent: CodescribeAgentProtocol, @unchecked Sendable {
         return try! rustCall { uniffi_codescribe_ffi_fn_clone_codescribeagent(self.handle, $0) }
     }
     /**
-     * Construct the FFI handle. Only initialises logging — provider, tools and
-     * config are resolved lazily per send, so building the Swift app model
-     * never triggers a Keychain prompt.
+     * Construct the FFI handle and seal one runtime settings snapshot for its
+     * complete lifetime. Every later method observes this exact object.
      */
 public convenience init() {
     let handle =
@@ -838,10 +835,8 @@ open func generateThreadTitle(text: String)async throws  -> String?  {
 }
 
     /**
-     * True when the assistive lane can currently reach a provider. Resolved
-     * fresh on every call (settings → env → Keychain via lane_truth), so a
-     * Settings save flips this on the very next send — no restart, no stale
-     * bootstrap env. A key-optional local endpoint counts as available.
+     * True when the sealed assistive lane can reach its provider. A
+     * key-optional local endpoint counts as available.
      */
 open func isAvailable() -> Bool  {
     return try!  FfiConverterBool.lift(try! rustCall() {
@@ -1287,7 +1282,7 @@ public protocol CodescribeConfigProtocol: AnyObject, Sendable {
     /**
      * Canonical normalization for OpenAI Responses endpoints.
      * Strips known suffixes (/v1/responses, /chat/completions, /completions, /v1)
-     * and forces the /v1/responses tail. Single source of truth in lane_truth;
+     * and forces the /v1/responses tail through the pure provider registry;
      * Swift SettingsViewModel delegates here to eliminate duplication (P2-05).
      */
     func normalizeOpenaiResponsesEndpoint(endpoint: String)  -> String
@@ -1771,7 +1766,7 @@ open func markOnboardingDone()  {try! rustCall() {
     /**
      * Canonical normalization for OpenAI Responses endpoints.
      * Strips known suffixes (/v1/responses, /chat/completions, /completions, /v1)
-     * and forces the /v1/responses tail. Single source of truth in lane_truth;
+     * and forces the /v1/responses tail through the pure provider registry;
      * Swift SettingsViewModel delegates here to eliminate duplication (P2-05).
      */
 open func normalizeOpenaiResponsesEndpoint(endpoint: String) -> String  {
@@ -5305,6 +5300,12 @@ public func FfiConverterTypeCsAppActionListener_lower(_ value: CsAppActionListen
 public protocol CsTranscriptionListener: AnyObject, Sendable {
 
     /**
+     * Immutable reducer/ledger projection. Swift may display it but cannot
+     * mutate, seal, or reinterpret transcript truth through this callback.
+     */
+    func onTranscriptProjection(event: CsTranscriptProjectionEvent)
+
+    /**
      * The engine is spinning up capture; no audio is flowing yet.
      */
     func onRecordingPreparing()
@@ -5466,6 +5467,18 @@ open class CsTranscriptionListenerImpl: CsTranscriptionListener, @unchecked Send
 
 
 
+
+    /**
+     * Immutable reducer/ledger projection. Swift may display it but cannot
+     * mutate, seal, or reinterpret transcript truth through this callback.
+     */
+open func onTranscriptProjection(event: CsTranscriptProjectionEvent)  {try! rustCall() {
+    uniffi_codescribe_ffi_fn_method_cstranscriptionlistener_on_transcript_projection(
+            self.uniffiCloneHandle(),
+        FfiConverterTypeCsTranscriptProjectionEvent_lower(event),$0
+    )
+}
+}
 
     /**
      * The engine is spinning up capture; no audio is flowing yet.
@@ -5700,6 +5713,30 @@ fileprivate struct UniffiCallbackInterfaceCsTranscriptionListener {
             } catch {
                 fatalError("Uniffi callback interface CsTranscriptionListener: handle missing in uniffiClone")
             }
+        },
+        onTranscriptProjection: { (
+            uniffiHandle: UInt64,
+            event: RustBuffer,
+            uniffiOutReturn: UnsafeMutableRawPointer,
+            uniffiCallStatus: UnsafeMutablePointer<RustCallStatus>
+        ) in
+            let makeCall = {
+                () throws -> () in
+                guard let uniffiObj = try? FfiConverterTypeCsTranscriptionListener.handleMap.get(handle: uniffiHandle) else {
+                    throw UniffiInternalError.unexpectedStaleHandle
+                }
+                return uniffiObj.onTranscriptProjection(
+                     event: try FfiConverterTypeCsTranscriptProjectionEvent_lift(event)
+                )
+            }
+
+
+            let writeReturn = { () }
+            uniffiTraitInterfaceCall(
+                callStatus: uniffiCallStatus,
+                makeCall: makeCall,
+                writeReturn: writeReturn
+            )
         },
         onRecordingPreparing: { (
             uniffiHandle: UInt64,
@@ -7719,90 +7756,6 @@ public func FfiConverterTypeCsKeyStatus_lower(_ value: CsKeyStatus) -> RustBuffe
 
 
 /**
- * Complete canonical truth for one LLM lane. Credentials never cross the
- * bridge: only the owning account name and presence/auth booleans are exposed.
- */
-public struct CsLaneTruthSnapshot: Equatable, Hashable {
-    public var lane: CsLlmLane
-    public var providerId: String
-    public var endpoint: String
-    public var model: String
-    public var keyAccount: String
-    public var keyPresent: Bool
-    public var accountAuth: Bool
-    public var available: Bool
-    public var unavailableReason: String?
-
-    // Default memberwise initializers are never public by default, so we
-    // declare one manually.
-    public init(lane: CsLlmLane, providerId: String, endpoint: String, model: String, keyAccount: String, keyPresent: Bool, accountAuth: Bool, available: Bool, unavailableReason: String?) {
-        self.lane = lane
-        self.providerId = providerId
-        self.endpoint = endpoint
-        self.model = model
-        self.keyAccount = keyAccount
-        self.keyPresent = keyPresent
-        self.accountAuth = accountAuth
-        self.available = available
-        self.unavailableReason = unavailableReason
-    }
-
-
-}
-
-#if compiler(>=6)
-extension CsLaneTruthSnapshot: Sendable {}
-#endif
-
-#if swift(>=5.8)
-@_documentation(visibility: private)
-#endif
-public struct FfiConverterTypeCsLaneTruthSnapshot: FfiConverterRustBuffer {
-    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> CsLaneTruthSnapshot {
-        return
-            try CsLaneTruthSnapshot(
-                lane: FfiConverterTypeCsLlmLane.read(from: &buf),
-                providerId: FfiConverterString.read(from: &buf),
-                endpoint: FfiConverterString.read(from: &buf),
-                model: FfiConverterString.read(from: &buf),
-                keyAccount: FfiConverterString.read(from: &buf),
-                keyPresent: FfiConverterBool.read(from: &buf),
-                accountAuth: FfiConverterBool.read(from: &buf),
-                available: FfiConverterBool.read(from: &buf),
-                unavailableReason: FfiConverterOptionString.read(from: &buf)
-        )
-    }
-
-    public static func write(_ value: CsLaneTruthSnapshot, into buf: inout [UInt8]) {
-        FfiConverterTypeCsLlmLane.write(value.lane, into: &buf)
-        FfiConverterString.write(value.providerId, into: &buf)
-        FfiConverterString.write(value.endpoint, into: &buf)
-        FfiConverterString.write(value.model, into: &buf)
-        FfiConverterString.write(value.keyAccount, into: &buf)
-        FfiConverterBool.write(value.keyPresent, into: &buf)
-        FfiConverterBool.write(value.accountAuth, into: &buf)
-        FfiConverterBool.write(value.available, into: &buf)
-        FfiConverterOptionString.write(value.unavailableReason, into: &buf)
-    }
-}
-
-
-#if swift(>=5.8)
-@_documentation(visibility: private)
-#endif
-public func FfiConverterTypeCsLaneTruthSnapshot_lift(_ buf: RustBuffer) throws -> CsLaneTruthSnapshot {
-    return try FfiConverterTypeCsLaneTruthSnapshot.lift(buf)
-}
-
-#if swift(>=5.8)
-@_documentation(visibility: private)
-#endif
-public func FfiConverterTypeCsLaneTruthSnapshot_lower(_ value: CsLaneTruthSnapshot) -> RustBuffer {
-    return FfiConverterTypeCsLaneTruthSnapshot.lower(value)
-}
-
-
-/**
  * Last stop-path serving verdict from the controller runtime owner.
  * The Settings "Active STT" row consumes this — never configured preference.
  */
@@ -8954,6 +8907,123 @@ public func FfiConverterTypeCsPermissionPolicy_lower(_ value: CsPermissionPolicy
 
 
 /**
+ * UniFFI-safe, immutable projection of one ledger-owned acoustic receipt.
+ * W2 copies the matching Bus fields byte-for-byte; the bridge cannot admit,
+ * reconcile, seal, or otherwise reinterpret this evidence.
+ */
+public struct CsProjectedAcousticReceipt: Equatable, Hashable {
+    public var acousticSerialVersion: UInt16
+    public var acousticSerial: String
+    public var sessionId: String
+    public var captureEpoch: UInt64
+    public var sampleStart: UInt64
+    public var sampleEnd: UInt64
+    public var durationMs: UInt64
+    public var energyIntegral: Double
+    public var meanRmsDbfs: Float
+    public var peakDbfs: Float
+    public var vadOpenSample: UInt64
+    public var vadCloseSample: UInt64
+    public var evidenceCalibrationVersion: String
+    public var wordEvidenceReceipts: [String]
+    public var layerDecisionReceipts: [String]
+    public var sealReceipt: String?
+    public var manualEditReceipt: String?
+
+    // Default memberwise initializers are never public by default, so we
+    // declare one manually.
+    public init(acousticSerialVersion: UInt16, acousticSerial: String, sessionId: String, captureEpoch: UInt64, sampleStart: UInt64, sampleEnd: UInt64, durationMs: UInt64, energyIntegral: Double, meanRmsDbfs: Float, peakDbfs: Float, vadOpenSample: UInt64, vadCloseSample: UInt64, evidenceCalibrationVersion: String, wordEvidenceReceipts: [String], layerDecisionReceipts: [String], sealReceipt: String?, manualEditReceipt: String?) {
+        self.acousticSerialVersion = acousticSerialVersion
+        self.acousticSerial = acousticSerial
+        self.sessionId = sessionId
+        self.captureEpoch = captureEpoch
+        self.sampleStart = sampleStart
+        self.sampleEnd = sampleEnd
+        self.durationMs = durationMs
+        self.energyIntegral = energyIntegral
+        self.meanRmsDbfs = meanRmsDbfs
+        self.peakDbfs = peakDbfs
+        self.vadOpenSample = vadOpenSample
+        self.vadCloseSample = vadCloseSample
+        self.evidenceCalibrationVersion = evidenceCalibrationVersion
+        self.wordEvidenceReceipts = wordEvidenceReceipts
+        self.layerDecisionReceipts = layerDecisionReceipts
+        self.sealReceipt = sealReceipt
+        self.manualEditReceipt = manualEditReceipt
+    }
+
+
+}
+
+#if compiler(>=6)
+extension CsProjectedAcousticReceipt: Sendable {}
+#endif
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public struct FfiConverterTypeCsProjectedAcousticReceipt: FfiConverterRustBuffer {
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> CsProjectedAcousticReceipt {
+        return
+            try CsProjectedAcousticReceipt(
+                acousticSerialVersion: FfiConverterUInt16.read(from: &buf),
+                acousticSerial: FfiConverterString.read(from: &buf),
+                sessionId: FfiConverterString.read(from: &buf),
+                captureEpoch: FfiConverterUInt64.read(from: &buf),
+                sampleStart: FfiConverterUInt64.read(from: &buf),
+                sampleEnd: FfiConverterUInt64.read(from: &buf),
+                durationMs: FfiConverterUInt64.read(from: &buf),
+                energyIntegral: FfiConverterDouble.read(from: &buf),
+                meanRmsDbfs: FfiConverterFloat.read(from: &buf),
+                peakDbfs: FfiConverterFloat.read(from: &buf),
+                vadOpenSample: FfiConverterUInt64.read(from: &buf),
+                vadCloseSample: FfiConverterUInt64.read(from: &buf),
+                evidenceCalibrationVersion: FfiConverterString.read(from: &buf),
+                wordEvidenceReceipts: FfiConverterSequenceString.read(from: &buf),
+                layerDecisionReceipts: FfiConverterSequenceString.read(from: &buf),
+                sealReceipt: FfiConverterOptionString.read(from: &buf),
+                manualEditReceipt: FfiConverterOptionString.read(from: &buf)
+        )
+    }
+
+    public static func write(_ value: CsProjectedAcousticReceipt, into buf: inout [UInt8]) {
+        FfiConverterUInt16.write(value.acousticSerialVersion, into: &buf)
+        FfiConverterString.write(value.acousticSerial, into: &buf)
+        FfiConverterString.write(value.sessionId, into: &buf)
+        FfiConverterUInt64.write(value.captureEpoch, into: &buf)
+        FfiConverterUInt64.write(value.sampleStart, into: &buf)
+        FfiConverterUInt64.write(value.sampleEnd, into: &buf)
+        FfiConverterUInt64.write(value.durationMs, into: &buf)
+        FfiConverterDouble.write(value.energyIntegral, into: &buf)
+        FfiConverterFloat.write(value.meanRmsDbfs, into: &buf)
+        FfiConverterFloat.write(value.peakDbfs, into: &buf)
+        FfiConverterUInt64.write(value.vadOpenSample, into: &buf)
+        FfiConverterUInt64.write(value.vadCloseSample, into: &buf)
+        FfiConverterString.write(value.evidenceCalibrationVersion, into: &buf)
+        FfiConverterSequenceString.write(value.wordEvidenceReceipts, into: &buf)
+        FfiConverterSequenceString.write(value.layerDecisionReceipts, into: &buf)
+        FfiConverterOptionString.write(value.sealReceipt, into: &buf)
+        FfiConverterOptionString.write(value.manualEditReceipt, into: &buf)
+    }
+}
+
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeCsProjectedAcousticReceipt_lift(_ buf: RustBuffer) throws -> CsProjectedAcousticReceipt {
+    return try FfiConverterTypeCsProjectedAcousticReceipt.lift(buf)
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeCsProjectedAcousticReceipt_lower(_ value: CsProjectedAcousticReceipt) -> RustBuffer {
+    return FfiConverterTypeCsProjectedAcousticReceipt.lower(value)
+}
+
+
+/**
  * UI-safe view of one base prompt. Content is included because this surface is
  * the prompt editor itself; audit records never include it.
  */
@@ -9414,6 +9484,90 @@ public func FfiConverterTypeCsResetPreview_lift(_ buf: RustBuffer) throws -> CsR
 #endif
 public func FfiConverterTypeCsResetPreview_lower(_ value: CsResetPreview) -> RustBuffer {
     return FfiConverterTypeCsResetPreview.lower(value)
+}
+
+
+/**
+ * Complete canonical projection for one sealed LLM lane. Credentials never cross the
+ * bridge: only the owning account name and presence/auth booleans are exposed.
+ */
+public struct CsRuntimeLlmLane: Equatable, Hashable {
+    public var lane: CsLlmLane
+    public var providerId: String
+    public var endpoint: String
+    public var model: String
+    public var keyAccount: String
+    public var keyPresent: Bool
+    public var accountAuth: Bool
+    public var available: Bool
+    public var unavailableReason: String?
+
+    // Default memberwise initializers are never public by default, so we
+    // declare one manually.
+    public init(lane: CsLlmLane, providerId: String, endpoint: String, model: String, keyAccount: String, keyPresent: Bool, accountAuth: Bool, available: Bool, unavailableReason: String?) {
+        self.lane = lane
+        self.providerId = providerId
+        self.endpoint = endpoint
+        self.model = model
+        self.keyAccount = keyAccount
+        self.keyPresent = keyPresent
+        self.accountAuth = accountAuth
+        self.available = available
+        self.unavailableReason = unavailableReason
+    }
+
+
+}
+
+#if compiler(>=6)
+extension CsRuntimeLlmLane: Sendable {}
+#endif
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public struct FfiConverterTypeCsRuntimeLlmLane: FfiConverterRustBuffer {
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> CsRuntimeLlmLane {
+        return
+            try CsRuntimeLlmLane(
+                lane: FfiConverterTypeCsLlmLane.read(from: &buf),
+                providerId: FfiConverterString.read(from: &buf),
+                endpoint: FfiConverterString.read(from: &buf),
+                model: FfiConverterString.read(from: &buf),
+                keyAccount: FfiConverterString.read(from: &buf),
+                keyPresent: FfiConverterBool.read(from: &buf),
+                accountAuth: FfiConverterBool.read(from: &buf),
+                available: FfiConverterBool.read(from: &buf),
+                unavailableReason: FfiConverterOptionString.read(from: &buf)
+        )
+    }
+
+    public static func write(_ value: CsRuntimeLlmLane, into buf: inout [UInt8]) {
+        FfiConverterTypeCsLlmLane.write(value.lane, into: &buf)
+        FfiConverterString.write(value.providerId, into: &buf)
+        FfiConverterString.write(value.endpoint, into: &buf)
+        FfiConverterString.write(value.model, into: &buf)
+        FfiConverterString.write(value.keyAccount, into: &buf)
+        FfiConverterBool.write(value.keyPresent, into: &buf)
+        FfiConverterBool.write(value.accountAuth, into: &buf)
+        FfiConverterBool.write(value.available, into: &buf)
+        FfiConverterOptionString.write(value.unavailableReason, into: &buf)
+    }
+}
+
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeCsRuntimeLlmLane_lift(_ buf: RustBuffer) throws -> CsRuntimeLlmLane {
+    return try FfiConverterTypeCsRuntimeLlmLane.lift(buf)
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeCsRuntimeLlmLane_lower(_ value: CsRuntimeLlmLane) -> RustBuffer {
+    return FfiConverterTypeCsRuntimeLlmLane.lower(value)
 }
 
 
@@ -10618,6 +10772,118 @@ public func FfiConverterTypeCsToolGrant_lower(_ value: CsToolGrant) -> RustBuffe
 
 
 /**
+ * Bridge event schema for one reducer-owned transcript projection. It carries
+ * a rendered value and evidence but no document mutation or finality method.
+ *
+ * W2 input: `TranscriptBusEvidenceEvent`. W2 output: the foreign listener
+ * callback below. The producer and Swift consumer remain unresolved in W1;
+ * UniFFI binding regeneration is explicitly deferred to W3.
+ */
+public struct CsTranscriptProjectionEvent: Equatable, Hashable {
+    public var schema: String
+    public var sequence: UInt64
+    public var emittedAt: String
+    public var sessionId: String
+    public var mode: String
+    public var reducerRevision: UInt64
+    public var reducerAction: String
+    public var occurrenceSessionId: String
+    public var captureEpoch: UInt64
+    public var sampleStart: UInt64
+    public var sampleEnd: UInt64
+    public var documentIndex: UInt64
+    public var label: String
+    public var renderedText: String
+    public var acousticReceipts: [CsProjectedAcousticReceipt]
+
+    // Default memberwise initializers are never public by default, so we
+    // declare one manually.
+    public init(schema: String, sequence: UInt64, emittedAt: String, sessionId: String, mode: String, reducerRevision: UInt64, reducerAction: String, occurrenceSessionId: String, captureEpoch: UInt64, sampleStart: UInt64, sampleEnd: UInt64, documentIndex: UInt64, label: String, renderedText: String, acousticReceipts: [CsProjectedAcousticReceipt]) {
+        self.schema = schema
+        self.sequence = sequence
+        self.emittedAt = emittedAt
+        self.sessionId = sessionId
+        self.mode = mode
+        self.reducerRevision = reducerRevision
+        self.reducerAction = reducerAction
+        self.occurrenceSessionId = occurrenceSessionId
+        self.captureEpoch = captureEpoch
+        self.sampleStart = sampleStart
+        self.sampleEnd = sampleEnd
+        self.documentIndex = documentIndex
+        self.label = label
+        self.renderedText = renderedText
+        self.acousticReceipts = acousticReceipts
+    }
+
+
+}
+
+#if compiler(>=6)
+extension CsTranscriptProjectionEvent: Sendable {}
+#endif
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public struct FfiConverterTypeCsTranscriptProjectionEvent: FfiConverterRustBuffer {
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> CsTranscriptProjectionEvent {
+        return
+            try CsTranscriptProjectionEvent(
+                schema: FfiConverterString.read(from: &buf),
+                sequence: FfiConverterUInt64.read(from: &buf),
+                emittedAt: FfiConverterString.read(from: &buf),
+                sessionId: FfiConverterString.read(from: &buf),
+                mode: FfiConverterString.read(from: &buf),
+                reducerRevision: FfiConverterUInt64.read(from: &buf),
+                reducerAction: FfiConverterString.read(from: &buf),
+                occurrenceSessionId: FfiConverterString.read(from: &buf),
+                captureEpoch: FfiConverterUInt64.read(from: &buf),
+                sampleStart: FfiConverterUInt64.read(from: &buf),
+                sampleEnd: FfiConverterUInt64.read(from: &buf),
+                documentIndex: FfiConverterUInt64.read(from: &buf),
+                label: FfiConverterString.read(from: &buf),
+                renderedText: FfiConverterString.read(from: &buf),
+                acousticReceipts: FfiConverterSequenceTypeCsProjectedAcousticReceipt.read(from: &buf)
+        )
+    }
+
+    public static func write(_ value: CsTranscriptProjectionEvent, into buf: inout [UInt8]) {
+        FfiConverterString.write(value.schema, into: &buf)
+        FfiConverterUInt64.write(value.sequence, into: &buf)
+        FfiConverterString.write(value.emittedAt, into: &buf)
+        FfiConverterString.write(value.sessionId, into: &buf)
+        FfiConverterString.write(value.mode, into: &buf)
+        FfiConverterUInt64.write(value.reducerRevision, into: &buf)
+        FfiConverterString.write(value.reducerAction, into: &buf)
+        FfiConverterString.write(value.occurrenceSessionId, into: &buf)
+        FfiConverterUInt64.write(value.captureEpoch, into: &buf)
+        FfiConverterUInt64.write(value.sampleStart, into: &buf)
+        FfiConverterUInt64.write(value.sampleEnd, into: &buf)
+        FfiConverterUInt64.write(value.documentIndex, into: &buf)
+        FfiConverterString.write(value.label, into: &buf)
+        FfiConverterString.write(value.renderedText, into: &buf)
+        FfiConverterSequenceTypeCsProjectedAcousticReceipt.write(value.acousticReceipts, into: &buf)
+    }
+}
+
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeCsTranscriptProjectionEvent_lift(_ buf: RustBuffer) throws -> CsTranscriptProjectionEvent {
+    return try FfiConverterTypeCsTranscriptProjectionEvent.lift(buf)
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeCsTranscriptProjectionEvent_lower(_ value: CsTranscriptProjectionEvent) -> RustBuffer {
+    return FfiConverterTypeCsTranscriptProjectionEvent.lower(value)
+}
+
+
+/**
  * Result of a one-shot file transcription.
  */
 public struct CsTranscription: Equatable, Hashable {
@@ -11617,7 +11883,7 @@ public func FfiConverterTypeCsLicenseState_lower(_ value: CsLicenseState) -> Rus
 // Note that we don't yet support `indirect` for enums.
 // See https://github.com/mozilla/uniffi-rs/issues/396 for further discussion.
 /**
- * Stable lane identity used by the secret-free lane truth FFI snapshot.
+ * Stable lane identity used by the secret-free runtime lane projection.
  */
 
 public enum CsLlmLane: Equatable, Hashable {
@@ -13024,6 +13290,31 @@ fileprivate struct FfiConverterSequenceTypeCsModelOption: FfiConverterRustBuffer
 #if swift(>=5.8)
 @_documentation(visibility: private)
 #endif
+fileprivate struct FfiConverterSequenceTypeCsProjectedAcousticReceipt: FfiConverterRustBuffer {
+    typealias SwiftType = [CsProjectedAcousticReceipt]
+
+    public static func write(_ value: [CsProjectedAcousticReceipt], into buf: inout [UInt8]) {
+        let len = Int32(value.count)
+        writeInt(&buf, len)
+        for item in value {
+            FfiConverterTypeCsProjectedAcousticReceipt.write(item, into: &buf)
+        }
+    }
+
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> [CsProjectedAcousticReceipt] {
+        let len: Int32 = try readInt(&buf)
+        var seq = [CsProjectedAcousticReceipt]()
+        seq.reserveCapacity(Int(len))
+        for _ in 0 ..< len {
+            seq.append(try FfiConverterTypeCsProjectedAcousticReceipt.read(from: &buf))
+        }
+        return seq
+    }
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
 fileprivate struct FfiConverterSequenceTypeCsProviderOption: FfiConverterRustBuffer {
     typealias SwiftType = [CsProviderOption]
 
@@ -13321,16 +13612,6 @@ public func downloadWhisperModel(listener: CsWhisperDownloadListener?)async thro
         )
 }
 /**
- * Project the live Rust lane truth through UniFFI without exposing secrets.
- */
-public func laneTruthSnapshot(lane: CsLlmLane) -> CsLaneTruthSnapshot  {
-    return try!  FfiConverterTypeCsLaneTruthSnapshot_lift(try! rustCall() {
-    uniffi_codescribe_ffi_fn_func_lane_truth_snapshot(
-        FfiConverterTypeCsLlmLane_lower(lane),$0
-    )
-})
-}
-/**
  * Read the live custom lexicon as flattened `variant -> canonical` rows.
  */
 public func lexiconCustomEntries()throws  -> [CsLexiconEntry]  {
@@ -13441,6 +13722,16 @@ public func requestMicPermission() -> Bool  {
 })
 }
 /**
+ * Project one lane from a single loader snapshot without exposing secrets.
+ */
+public func runtimeLlmLane(lane: CsLlmLane) -> CsRuntimeLlmLane  {
+    return try!  FfiConverterTypeCsRuntimeLlmLane_lift(try! rustCall() {
+    uniffi_codescribe_ffi_fn_func_runtime_llm_lane(
+        FfiConverterTypeCsLlmLane_lower(lane),$0
+    )
+})
+}
+/**
  * Stop controller/account activity first, then tear down every runtime worker.
  */
 public func shutdownApplicationRuntime()throws  -> CsApplicationRuntimeSnapshot  {
@@ -13499,9 +13790,6 @@ private let initializationResult: InitializationResult = {
     if (uniffi_codescribe_ffi_checksum_func_download_whisper_model() != 38859) {
         return InitializationResult.apiChecksumMismatch
     }
-    if (uniffi_codescribe_ffi_checksum_func_lane_truth_snapshot() != 3436) {
-        return InitializationResult.apiChecksumMismatch
-    }
     if (uniffi_codescribe_ffi_checksum_func_lexicon_custom_entries() != 24996) {
         return InitializationResult.apiChecksumMismatch
     }
@@ -13532,6 +13820,9 @@ private let initializationResult: InitializationResult = {
     if (uniffi_codescribe_ffi_checksum_func_request_mic_permission() != 61967) {
         return InitializationResult.apiChecksumMismatch
     }
+    if (uniffi_codescribe_ffi_checksum_func_runtime_llm_lane() != 23153) {
+        return InitializationResult.apiChecksumMismatch
+    }
     if (uniffi_codescribe_ffi_checksum_func_shutdown_application_runtime() != 56989) {
         return InitializationResult.apiChecksumMismatch
     }
@@ -13550,7 +13841,7 @@ private let initializationResult: InitializationResult = {
     if (uniffi_codescribe_ffi_checksum_method_codescribeagent_generate_thread_title() != 6378) {
         return InitializationResult.apiChecksumMismatch
     }
-    if (uniffi_codescribe_ffi_checksum_method_codescribeagent_is_available() != 64879) {
+    if (uniffi_codescribe_ffi_checksum_method_codescribeagent_is_available() != 44312) {
         return InitializationResult.apiChecksumMismatch
     }
     if (uniffi_codescribe_ffi_checksum_method_codescribeagent_resolve_tool_approval() != 55035) {
@@ -13625,7 +13916,7 @@ private let initializationResult: InitializationResult = {
     if (uniffi_codescribe_ffi_checksum_method_codescribeconfig_mark_onboarding_done() != 62013) {
         return InitializationResult.apiChecksumMismatch
     }
-    if (uniffi_codescribe_ffi_checksum_method_codescribeconfig_normalize_openai_responses_endpoint() != 11644) {
+    if (uniffi_codescribe_ffi_checksum_method_codescribeconfig_normalize_openai_responses_endpoint() != 58157) {
         return InitializationResult.apiChecksumMismatch
     }
     if (uniffi_codescribe_ffi_checksum_method_codescribeconfig_onboarding_mode() != 10234) {
@@ -13940,52 +14231,55 @@ private let initializationResult: InitializationResult = {
     if (uniffi_codescribe_ffi_checksum_method_csappactionlistener_on_show_agent() != 40684) {
         return InitializationResult.apiChecksumMismatch
     }
-    if (uniffi_codescribe_ffi_checksum_method_cstranscriptionlistener_on_recording_preparing() != 27049) {
+    if (uniffi_codescribe_ffi_checksum_method_cstranscriptionlistener_on_transcript_projection() != 430) {
         return InitializationResult.apiChecksumMismatch
     }
-    if (uniffi_codescribe_ffi_checksum_method_cstranscriptionlistener_on_recording_started() != 4381) {
+    if (uniffi_codescribe_ffi_checksum_method_cstranscriptionlistener_on_recording_preparing() != 54126) {
         return InitializationResult.apiChecksumMismatch
     }
-    if (uniffi_codescribe_ffi_checksum_method_cstranscriptionlistener_on_recording_stopped() != 8692) {
+    if (uniffi_codescribe_ffi_checksum_method_cstranscriptionlistener_on_recording_started() != 10468) {
         return InitializationResult.apiChecksumMismatch
     }
-    if (uniffi_codescribe_ffi_checksum_method_cstranscriptionlistener_on_recording_finalising() != 55544) {
+    if (uniffi_codescribe_ffi_checksum_method_cstranscriptionlistener_on_recording_stopped() != 7984) {
         return InitializationResult.apiChecksumMismatch
     }
-    if (uniffi_codescribe_ffi_checksum_method_cstranscriptionlistener_on_preview() != 34377) {
+    if (uniffi_codescribe_ffi_checksum_method_cstranscriptionlistener_on_recording_finalising() != 35300) {
         return InitializationResult.apiChecksumMismatch
     }
-    if (uniffi_codescribe_ffi_checksum_method_cstranscriptionlistener_on_correction() != 49375) {
+    if (uniffi_codescribe_ffi_checksum_method_cstranscriptionlistener_on_preview() != 48992) {
         return InitializationResult.apiChecksumMismatch
     }
-    if (uniffi_codescribe_ffi_checksum_method_cstranscriptionlistener_on_final() != 13855) {
+    if (uniffi_codescribe_ffi_checksum_method_cstranscriptionlistener_on_correction() != 21961) {
         return InitializationResult.apiChecksumMismatch
     }
-    if (uniffi_codescribe_ffi_checksum_method_cstranscriptionlistener_on_replace_range() != 5659) {
+    if (uniffi_codescribe_ffi_checksum_method_cstranscriptionlistener_on_final() != 45086) {
         return InitializationResult.apiChecksumMismatch
     }
-    if (uniffi_codescribe_ffi_checksum_method_cstranscriptionlistener_on_insert_annotation() != 2625) {
+    if (uniffi_codescribe_ffi_checksum_method_cstranscriptionlistener_on_replace_range() != 30542) {
         return InitializationResult.apiChecksumMismatch
     }
-    if (uniffi_codescribe_ffi_checksum_method_cstranscriptionlistener_on_context_marker() != 11256) {
+    if (uniffi_codescribe_ffi_checksum_method_cstranscriptionlistener_on_insert_annotation() != 25560) {
         return InitializationResult.apiChecksumMismatch
     }
-    if (uniffi_codescribe_ffi_checksum_method_cstranscriptionlistener_on_session_finalised() != 5794) {
+    if (uniffi_codescribe_ffi_checksum_method_cstranscriptionlistener_on_context_marker() != 12395) {
         return InitializationResult.apiChecksumMismatch
     }
-    if (uniffi_codescribe_ffi_checksum_method_cstranscriptionlistener_on_final_transcript_ready() != 22215) {
+    if (uniffi_codescribe_ffi_checksum_method_cstranscriptionlistener_on_session_finalised() != 65321) {
         return InitializationResult.apiChecksumMismatch
     }
-    if (uniffi_codescribe_ffi_checksum_method_cstranscriptionlistener_on_vad_active() != 40828) {
+    if (uniffi_codescribe_ffi_checksum_method_cstranscriptionlistener_on_final_transcript_ready() != 4097) {
         return InitializationResult.apiChecksumMismatch
     }
-    if (uniffi_codescribe_ffi_checksum_method_cstranscriptionlistener_on_audio_level() != 55568) {
+    if (uniffi_codescribe_ffi_checksum_method_cstranscriptionlistener_on_vad_active() != 33532) {
         return InitializationResult.apiChecksumMismatch
     }
-    if (uniffi_codescribe_ffi_checksum_method_cstranscriptionlistener_on_no_speech() != 54696) {
+    if (uniffi_codescribe_ffi_checksum_method_cstranscriptionlistener_on_audio_level() != 40054) {
         return InitializationResult.apiChecksumMismatch
     }
-    if (uniffi_codescribe_ffi_checksum_method_cstranscriptionlistener_on_error() != 20067) {
+    if (uniffi_codescribe_ffi_checksum_method_cstranscriptionlistener_on_no_speech() != 24225) {
+        return InitializationResult.apiChecksumMismatch
+    }
+    if (uniffi_codescribe_ffi_checksum_method_cstranscriptionlistener_on_error() != 3849) {
         return InitializationResult.apiChecksumMismatch
     }
     if (uniffi_codescribe_ffi_checksum_method_cstraystatuslistener_on_tray_status() != 48227) {
@@ -13997,7 +14291,7 @@ private let initializationResult: InitializationResult = {
     if (uniffi_codescribe_ffi_checksum_method_cswhisperdownloadlistener_on_complete() != 46072) {
         return InitializationResult.apiChecksumMismatch
     }
-    if (uniffi_codescribe_ffi_checksum_constructor_codescribeagent_new() != 34271) {
+    if (uniffi_codescribe_ffi_checksum_constructor_codescribeagent_new() != 59251) {
         return InitializationResult.apiChecksumMismatch
     }
     if (uniffi_codescribe_ffi_checksum_constructor_codescribeagentstatus_new() != 27409) {

@@ -7,12 +7,11 @@ import SwiftUI
 // The view talks only to the thin `DictationEngine` protocol below, so #Preview
 // renders standalone against `MockDictationEngine`.
 //
-// TRANSCRIPT MODEL (new bridge semantics):
-//   on_preview    → interim text; accepts both utterance-local chunks and
-//                   cumulative session previews without duplicating committed text.
-//   on_correction → targeted replacement when previous_text matches; otherwise
-//                   preserve visible text and append the corrected fragment.
-//   on_final      → completed VAD-bounded utterance → commit + clear preview.
+// TRANSCRIPT MODEL (one-throne bridge semantics):
+//   on_transcript_projection → complete Rust-reduced document plus acoustic
+//                              receipts; the sole Swift text-admission path.
+//   legacy preview/correction/final/patch callbacks remain protocol stubs and
+//   carry no transcript authority.
 //   on_vad_active → speech start/stop → drives the WaveformView pulse.
 //   on_audio_level → capture RMS per block → real waveform amplitude (U22;
 //                   closes the old AMPLITUDE GAP — ambient eq is now only the
@@ -21,11 +20,6 @@ import SwiftUI
 //   on_error     → transient toast.
 
 // MARK: - Engine seam (orchestrator injects the real adapter in App.swift)
-
-private struct OverlayTranscriptAnnotation: Equatable {
-  var position: Int
-  var text: String
-}
 
 private struct OverlayContextMarker: Equatable {
   var position: Int
@@ -84,10 +78,10 @@ private struct OverlayTranscriptProjection: Equatable {
 // Keep the preregistered cross-language edge machine-readable without defining
 // either authority on this side of the bridge.
 #if false
-private func rustProjectionAuthorityWitness(
-  _ serial: AcousticSerial,
-  _ revision: TranscriptRevision
-) {}
+  private func rustProjectionAuthorityWitness(
+    _ serial: AcousticSerial,
+    _ revision: TranscriptRevision
+  ) {}
 #endif
 
 /// Explicit human-edit receipt projection. W2 must send the edit to the
@@ -105,56 +99,6 @@ private struct OverlayManualEditReceipt: Equatable {
   let replacementLabel: String
   let predecessorReceipt: String?
   let editedAt: String
-}
-
-private struct OverlayTranscriptSegment: Equatable {
-  var utteranceId: UInt64?
-  var text: String
-  var annotations: [OverlayTranscriptAnnotation] = []
-
-  var renderedText: String {
-    guard !annotations.isEmpty else { return text }
-    var rendered = text
-    for annotation in annotations.sorted(by: { $0.position > $1.position }) {
-      let bounded = min(max(annotation.position, 0), rendered.count)
-      let index = rendered.index(rendered.startIndex, offsetBy: bounded)
-      rendered.insert(contentsOf: " [\(annotation.text)]", at: index)
-    }
-    return rendered
-  }
-
-  mutating func replaceRange(start: UInt64, end: UInt64, replacement: String) -> Bool {
-    guard start <= end,
-      let startOffset = Int(exactly: start),
-      let endOffset = Int(exactly: end),
-      endOffset <= text.count
-    else { return false }
-    let startIndex = text.index(text.startIndex, offsetBy: startOffset)
-    let endIndex = text.index(text.startIndex, offsetBy: endOffset)
-    text.replaceSubrange(startIndex..<endIndex, with: replacement)
-    annotations = annotations.filter { $0.position <= text.count }
-    return true
-  }
-
-  /// Map a Rust-canonical char offset inside `text` onto the corresponding
-  /// offset inside `renderedText`. Annotations are inserted decoration, so
-  /// every one of them sitting at or before `offset` pushes it right by
-  /// `" [" + text + "]"`. Context markers anchor to RENDERED offsets, so
-  /// rebasing them after a patch has to go through this translation.
-  func renderedOffset(forTextOffset offset: Int) -> Int {
-    let bounded = min(max(offset, 0), text.count)
-    let shift =
-      annotations
-      .filter { $0.position <= bounded }
-      .reduce(0) { $0 + $1.text.count + 3 }
-    return bounded + shift
-  }
-
-  mutating func insertAnnotation(position: UInt64, text annotationText: String) -> Bool {
-    guard let offset = Int(exactly: position), offset <= text.count else { return false }
-    annotations.append(OverlayTranscriptAnnotation(position: offset, text: annotationText))
-    return true
-  }
 }
 
 /// Minimal slice of the controller-backed dictation surface the overlay needs.
@@ -314,11 +258,6 @@ final class OverlayState: ObservableObject {
   /// / close so it can never stick. See `WaveformView(transcribing:)`.
   @Published var transcribing: Bool = false
   @Published var toast: String?  // transient error notice
-  /// Utterance-level STT confidence for the open session (lowest avg_logprob wins).
-  /// Fed by `on_final` confidence args; drives the header low-confidence badge (LL-E).
-  @Published private(set) var sessionAvgLogprob: Float?
-  @Published private(set) var sessionSpeechPct: Float?
-  @Published private(set) var sessionConfidenceFlags: [String] = []
   @Published var errorMessage: String?
   /// W13-6B highlight layer. Default follows the OFF flag; tests inject `true`.
   @Published var highlightsEnabled = false
@@ -417,11 +356,6 @@ final class OverlayState: ObservableObject {
   /// The delivered (pre-user-edit) text at the moment we entered .formatted.
   /// Captured for P0-D quality loop: diff delivered→edited on Copy/Send/close.
   private var deliveredText: String = ""
-  /// Best-effort raw STT transcript text (pre-AI formatting / postprocess) for
-  /// quality records. D-05: wired from authoritative final / STT assembly so
-  /// lexicon v2 and quality analytics get the real misheard text, not only
-  /// the (possibly formatted) delivered. Cleared on reset like deliveredText.
-  private var sttRawText: String = ""
   /// Armed only by a genuine TextEditor write and consumed by the first
   /// delivery action that records that edit. Delivery actions remain separate.
   private var manualHumanEditPending = false
@@ -433,12 +367,9 @@ final class OverlayState: ObservableObject {
   /// source; failures, empty results, and identical no-ops leave it untouched.
   private var preFormatText: String?
   private var preFormatLevel: FormattingPolicyOption?
-  /// Once a session is finalized (mode `.formatted` / Idle), the transcript is
-  /// FROZEN. Late streaming events (Preview/Correction/UtteranceFinal/VAD) that the
-  /// engine may still emit during/after teardown are DROPPED instead of mutating
-  /// `@Published` state — otherwise each late apply re-invalidates the hosting view
-  /// (TextEditor re-layout) and spins the SwiftUI render graph at 100% CPU in Idle.
-  /// The authoritative `FinalTranscript` is the only post-finalize update allowed.
+  /// Once the reducer projects `record_ledger_terminal_seal`, later machine
+  /// projections are rejected. Human edits operate on the terminal presentation;
+  /// they do not rewrite `latestTranscriptProjection`.
   private var finalized = false
   /// Latest immutable projection event only; Rust `TranscriptRevision` remains
   /// the document owner and Rust `AcousticSerial` remains evidence authority.
@@ -508,19 +439,6 @@ final class OverlayState: ObservableObject {
     }
   }
 
-  /// Mirrors `core/transcript_tagging.rs` confidence_label thresholds.
-  /// Badge is shown when the utterance-level signal is low or the hallucination flag is set.
-  var showsLowConfidenceBadge: Bool {
-    OverlayConfidence.showsLowConfidenceBadge(
-      avgLogprob: sessionAvgLogprob,
-      flags: sessionConfidenceFlags
-    )
-  }
-
-  var confidenceBadgeText: String? {
-    guard showsLowConfidenceBadge else { return nil }
-    return "low confidence"
-  }
   /// Only the live-capture pill ripples. During `transcribing` / `final pass` /
   /// one-shot format / retranscribe we swap to the static pill so its
   /// repeatForever animation tears down — a second visual cue that capture
@@ -627,9 +545,15 @@ final class OverlayState: ObservableObject {
     return engine
   }
 
-  /// committed finals + the current interim preview, space-joined.
+  /// Rust-rendered transcript bytes from the latest admitted projection.
+  ///
+  /// The local arrays remain only for static SwiftUI previews that have no
+  /// runtime listener. Once a projection exists, they can never outrank it.
   private var rawLiveText: String {
-    (committedUtterances + [preview])
+    if let projection = latestTranscriptProjection {
+      return projection.renderedText
+    }
+    return (committedUtterances + [preview])
       .filter { !$0.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty }
       .joined(separator: " ")
   }
@@ -714,20 +638,17 @@ final class OverlayState: ObservableObject {
 
   /// Visual runs for the highlight canvas. Empty when the lane is off.
   var highlightCanvasRuns: [OverlayCanvasRun] {
-    guard highlightsEnabled else { return [.text(listeningDisplay)] }
-    let runs = OverlayCanvas.runs(
-      segments: segments,
-      highlights: highlights,
-      preview: preview
-    )
-    return runs.isEmpty ? [.text(listeningDisplay)] : runs
+    // Typed highlight evidence is not part of TranscriptRevision yet. Showing
+    // highlights reconstructed from deleted Swift segments would create a
+    // second transcript authority, so render the canonical projection plainly.
+    [.text(listeningDisplay)]
   }
 
   /// Whatever the action row should copy/send for the current state.
   var activeText: String {
     switch mode {
     case .listening: return liveText
-    case .formatted: return formattedText
+    case .formatted: return insertingContextMarkers(into: formattedText)
     case .noSpeech, .error: return ""
     }
   }
@@ -1264,18 +1185,17 @@ final class OverlayState: ObservableObject {
     // Bridge FFI (generated by uniffi) appends the quality JSONL and feeds safe
     // candidates to lexicon.custom.jsonl. That is blocking disk I/O, so it runs
     // off the main actor — Copy/Send/Close must never wait on the disk.
-    // Raw is best-effort for MVP.
-    // D-05 over-correct: use sttRawText (wired from applyFinalTranscript / STT finals)
-    // as raw_text when available so quality records carry the real pre-formatting
-    // STT text for lexicon v2 consumers. Falls back to delivered (still better than "").
-    let rawForRecord =
-      !sttRawText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
-      ? sttRawText
-      : delivered
+    // The projection exposes only rendered truth. Until its receipt carries a
+    // distinct acoustic-text field, use admitted delivery bytes instead of an
+    // unwritten Swift "raw" shadow.
+    let rawForRecord = delivered
     let formattingLevel = qualityFormattingLevel.rawValue
-    let avgLogprob = sessionAvgLogprob
-    let speechPct = sessionSpeechPct
-    let confidenceFlags = sessionConfidenceFlags
+    // The admitted projection contract does not currently expose aggregate
+    // Whisper confidence. Persist absence honestly instead of maintaining an
+    // unwritten Swift confidence shadow.
+    let avgLogprob: Float? = nil
+    let speechPct: Float? = nil
+    let confidenceFlags: [String] = []
     Task.detached(priority: .utility) { [weak self] in
       // Pass action through to meta (over-correct P2-03). try? because FFI throws on err but
       // quality write is best-effort; never block UI action.
@@ -1295,53 +1215,6 @@ final class OverlayState: ObservableObject {
           self?.showToast(acknowledgement)
         }
       }
-    }
-  }
-
-  /// Pure helpers for XCTest — keep thresholds aligned with `core/transcript_tagging.rs`.
-  enum OverlayConfidence {
-    /// Same as `HIGH_CONFIDENCE_AVG_LOGPROB_MIN` / `LOW_CONFIDENCE_AVG_LOGPROB_MAX`.
-    static let highMin: Float = -0.45
-    static let lowMax: Float = -1.20
-    /// `POSSIBLE_HALLUCINATION_LOGPROB` in contracts.rs — badge gate.
-    static let hallucinationThreshold: Float = -1.0
-
-    static func confidenceLabel(avgLogprob: Float?) -> String {
-      guard let value = avgLogprob else { return "unknown" }
-      if value >= highMin { return "high" }
-      if value <= lowMax { return "low" }
-      return "medium"
-    }
-
-    static func showsLowConfidenceBadge(avgLogprob: Float?, flags: [String]) -> Bool {
-      if flags.contains("possible_hallucination_logprob") {
-        return true
-      }
-      if let avg = avgLogprob, avg <= hallucinationThreshold {
-        return true
-      }
-      return confidenceLabel(avgLogprob: avgLogprob) == "low"
-    }
-  }
-
-  /// Keep the most concerning utterance signal for the open session.
-  private func noteUtteranceConfidence(
-    avgLogprob: Float?,
-    speechPct: Float?,
-    flags: [String]
-  ) {
-    if let next = avgLogprob {
-      if let current = sessionAvgLogprob {
-        sessionAvgLogprob = min(current, next)
-      } else {
-        sessionAvgLogprob = next
-      }
-    }
-    if let speechPct {
-      sessionSpeechPct = speechPct
-    }
-    for flag in flags where !sessionConfidenceFlags.contains(flag) {
-      sessionConfidenceFlags.append(flag)
     }
   }
 
@@ -1584,16 +1457,19 @@ final class OverlayState: ObservableObject {
     // (the same orphan-mic guard as `ComposerDictation.handleEngineError`),
     // transcript kept on screen with the normal Copy/Format/Send surface.
     //
-    // `liveText` is `committedUtterances + preview`, so a non-empty draft covers
-    // both the in-flight utterance and everything already sealed. An empty take
-    // stays terminal — with nothing to lose, the user must still learn that the
-    // session died.
-    let draft = liveText.trimmingCharacters(in: .whitespacesAndNewlines)
-    if !draft.isEmpty {
+    // Only an already admitted Rust projection can be preserved. Listener
+    // preview/final callbacks are intentionally not a fallback authority.
+    if let projection = latestTranscriptProjection,
+      !projection.renderedText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+    {
       if let engine {
         Task { @MainActor in _ = try? await engine.stopRecording() }
       }
-      finishControllerRecording()
+      finishTerminalPresentation(
+        projection: projection,
+        signalsSuccessfulDictation: false,
+        armsAgentAutoSend: false
+      )
       showToast("Dictation failed — transcript kept")
       return
     }
@@ -1641,12 +1517,44 @@ final class OverlayState: ObservableObject {
     restartAutoHideCountdown()
   }
 
+  /// Finish UI and capture lifecycle for bytes already admitted through the
+  /// Rust projection boundary. This helper never accepts free-form text.
+  private func finishTerminalPresentation(
+    projection: OverlayTranscriptProjection,
+    signalsSuccessfulDictation: Bool,
+    armsAgentAutoSend: Bool
+  ) {
+    let renderedText = projection.renderedText
+    let hasTranscript =
+      !renderedText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+    abortRecordingSession()
+    finalized = true
+    isFinalPass = false
+    transcribing = false
+    formattedText = renderedText
+    deliveredText = renderedText
+    agentFinalTranscriptAppeared = armsAgentAutoSend && hasTranscript
+    if hasTranscript {
+      mode = .formatted
+      if signalsSuccessfulDictation {
+        onSuccessfulDictation?()
+      }
+    } else {
+      noSpeechNotice = pendingNoSpeechMessage ?? OverlayState.defaultNoSpeechNotice
+      mode = .noSpeech
+    }
+    restartAutoHideCountdown()
+  }
+
   // MARK: Listener-driven mutations (called on the main actor by DictationListener)
 
   /// Apply one immutable reducer/ledger projection. Swift checks that the
   /// projected evidence is present, then displays Rust-owned rendered bytes;
   /// it never admits a label or decides whether a seal exists.
   func applyTranscriptProjection(_ event: CsTranscriptProjectionEvent) {
+    guard latestTranscriptProjection?.reducerAction != "record_ledger_terminal_seal" else {
+      return
+    }
     guard event.sequence > (latestTranscriptProjection?.sequence ?? 0) else { return }
     let acousticReceipts = event.acousticReceipts.map { receipt in
       OverlayProjectedAcousticReceipt(
@@ -1700,30 +1608,13 @@ final class OverlayState: ObservableObject {
     committedUtterances = []
     formattedText = projection.renderedText
     if projection.reducerAction == "record_ledger_terminal_seal" {
-      finalized = true
-      isFinalPass = false
-      transcribing = false
-      mode = projection.renderedText.isEmpty ? .noSpeech : .formatted
+      finishTerminalPresentation(
+        projection: projection,
+        signalsSuccessfulDictation: true,
+        armsAgentAutoSend: true
+      )
     }
   }
-  /// Slide context markers across a patch applied to `spanStart..<spanEnd`
-  /// (live-text coordinates) that changed its length by `delta`.
-  private func rebaseContextMarkers(spanStart: Int, spanEnd: Int, delta: Int) {
-    guard !contextMarkers.isEmpty else { return }
-    for index in contextMarkers.indices {
-      let position = contextMarkers[index].position
-      if position <= spanStart { continue }
-      if position >= spanEnd {
-        contextMarkers[index].position = max(0, position + delta)
-      } else {
-        // The characters this marker anchored to no longer exist.
-        // Collapse to the patch boundary: never dropped (lost intent),
-        // never left past the replacement (drifted intent).
-        contextMarkers[index].position = spanStart
-      }
-    }
-  }
-
 
   func applyContextMarker(position: UInt64, marker: String) {
     guard !finalized, let offset = Int(exactly: position) else { return }
@@ -1768,9 +1659,6 @@ final class OverlayState: ObservableObject {
     }
   }
 
-
-
-
   private func resetTranscript() {
     preview = ""
     committedUtterances = []
@@ -1780,12 +1668,8 @@ final class OverlayState: ObservableObject {
     lastTeachAcknowledgement = nil
     speechWasActive = false
     deliveredText = ""
-    sttRawText = ""
     manualHumanEditPending = false
     qualityFormattingLevel = .off
-    sessionAvgLogprob = nil
-    sessionSpeechPct = nil
-    sessionConfidenceFlags = []
     preFormatText = nil
     preFormatLevel = nil
     formatFailureStatus = nil
@@ -1812,10 +1696,6 @@ final class OverlayState: ObservableObject {
       mode = .listening
     }
   }
-
-
-
-
 
   private func insertingContextMarkers(into text: String) -> String {
     guard !contextMarkers.isEmpty else { return text }
@@ -1988,7 +1868,7 @@ final class OverlayState: ObservableObject {
   // MARK: Preview / mock helpers (no engine required)
 
   /// Seeded view model for #Preview in the listening state, with a typing reveal
-  /// that imitates `on_preview` arriving char-by-char (mock: 46ms).
+  /// that imitates progressive projection revisions (mock: 46ms).
   static func previewListening() -> OverlayState {
     let s = OverlayState()
     s.mode = .listening
@@ -2145,57 +2025,26 @@ final class DictationListener: CsTranscriptionListener, @unchecked Sendable {
       MainActor.assumeIsolated { self.state?.handleRecordingFinalising() }
     }
   }
-  func onPreview(text: String) {
-    DispatchQueue.main.async { MainActor.assumeIsolated { self.state?.applyPreview(text) } }
-  }
-  func onCorrection(text: String, previousText: String) {
-    DispatchQueue.main.async {
-      MainActor.assumeIsolated { self.state?.applyCorrection(text, previousText: previousText) }
-    }
-  }
+  /// Legacy wire callback retained by the UniFFI protocol. Transcript text is
+  /// admitted only through `onTranscriptProjection`.
+  func onPreview(text _: String) {}
+  /// Legacy wire callback retained by the UniFFI protocol. Transcript text is
+  /// admitted only through `onTranscriptProjection`.
+  func onCorrection(text _: String, previousText _: String) {}
   func onFinal(
-    utteranceId: UInt64,
-    text: String,
-    avgLogprob: Float?,
-    speechPct: Float?,
-    confidenceFlags: [String]
-  ) {
-    DispatchQueue.main.async {
-      MainActor.assumeIsolated {
-        self.state?.applyFinal(
-          utteranceId: utteranceId,
-          text,
-          avgLogprob: avgLogprob,
-          speechPct: speechPct,
-          confidenceFlags: confidenceFlags
-        )
-      }
-    }
-  }
+    utteranceId _: UInt64,
+    text _: String,
+    avgLogprob _: Float?,
+    speechPct _: Float?,
+    confidenceFlags _: [String]
+  ) {}
   func onReplaceRange(
-    utteranceId: UInt64, start: UInt64, end: UInt64, text: String, source: CsLayerSource
-  ) {
-    DispatchQueue.main.async {
-      MainActor.assumeIsolated {
-        self.state?.applyReplaceRange(
-          utteranceId: utteranceId,
-          start: start,
-          end: end,
-          text: text,
-          source: source
-        )
-      }
-    }
-  }
+    utteranceId _: UInt64, start _: UInt64, end _: UInt64, text _: String,
+    source _: CsLayerSource
+  ) {}
   func onInsertAnnotation(
-    utteranceId: UInt64, position: UInt64, text: String, kind: CsAnnotationKind
-  ) {
-    DispatchQueue.main.async {
-      MainActor.assumeIsolated {
-        self.state?.applyInsertAnnotation(utteranceId: utteranceId, position: position, text: text)
-      }
-    }
-  }
+    utteranceId _: UInt64, position _: UInt64, text _: String, kind _: CsAnnotationKind
+  ) {}
   func onContextMarker(position: UInt64, marker: String) {
     DispatchQueue.main.async {
       MainActor.assumeIsolated {
@@ -2206,9 +2055,7 @@ final class DictationListener: CsTranscriptionListener, @unchecked Sendable {
   func onSessionFinalised(sessionId: String, layerSummary: CsLayerSummary) {
     DispatchQueue.main.async { MainActor.assumeIsolated { self.state?.applySessionFinalised() } }
   }
-  func onFinalTranscriptReady(text: String) {
-    DispatchQueue.main.async { MainActor.assumeIsolated { self.state?.applyFinalTranscript(text) } }
-  }
+  func onFinalTranscriptReady(text _: String) {}
   func onVadActive(active: Bool) {
     DispatchQueue.main.async { MainActor.assumeIsolated { self.state?.applyVad(active) } }
   }

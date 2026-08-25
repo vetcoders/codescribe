@@ -371,7 +371,7 @@ typedef void (*UniffiCallbackInterfaceCsAppActionListenerMethod0)(uint64_t, void
 #endif
 #ifndef UNIFFI_FFIDEF_CALLBACK_INTERFACE_CS_TRANSCRIPTION_LISTENER_METHOD0
 #define UNIFFI_FFIDEF_CALLBACK_INTERFACE_CS_TRANSCRIPTION_LISTENER_METHOD0
-typedef void (*UniffiCallbackInterfaceCsTranscriptionListenerMethod0)(uint64_t, void* _Nonnull,
+typedef void (*UniffiCallbackInterfaceCsTranscriptionListenerMethod0)(uint64_t, RustBuffer, void* _Nonnull,
         RustCallStatus *_Nonnull uniffiCallStatus
     );
 
@@ -399,77 +399,77 @@ typedef void (*UniffiCallbackInterfaceCsTranscriptionListenerMethod3)(uint64_t, 
 #endif
 #ifndef UNIFFI_FFIDEF_CALLBACK_INTERFACE_CS_TRANSCRIPTION_LISTENER_METHOD4
 #define UNIFFI_FFIDEF_CALLBACK_INTERFACE_CS_TRANSCRIPTION_LISTENER_METHOD4
-typedef void (*UniffiCallbackInterfaceCsTranscriptionListenerMethod4)(uint64_t, RustBuffer, void* _Nonnull,
+typedef void (*UniffiCallbackInterfaceCsTranscriptionListenerMethod4)(uint64_t, void* _Nonnull,
         RustCallStatus *_Nonnull uniffiCallStatus
     );
 
 #endif
 #ifndef UNIFFI_FFIDEF_CALLBACK_INTERFACE_CS_TRANSCRIPTION_LISTENER_METHOD5
 #define UNIFFI_FFIDEF_CALLBACK_INTERFACE_CS_TRANSCRIPTION_LISTENER_METHOD5
-typedef void (*UniffiCallbackInterfaceCsTranscriptionListenerMethod5)(uint64_t, RustBuffer, RustBuffer, void* _Nonnull,
+typedef void (*UniffiCallbackInterfaceCsTranscriptionListenerMethod5)(uint64_t, RustBuffer, void* _Nonnull,
         RustCallStatus *_Nonnull uniffiCallStatus
     );
 
 #endif
 #ifndef UNIFFI_FFIDEF_CALLBACK_INTERFACE_CS_TRANSCRIPTION_LISTENER_METHOD6
 #define UNIFFI_FFIDEF_CALLBACK_INTERFACE_CS_TRANSCRIPTION_LISTENER_METHOD6
-typedef void (*UniffiCallbackInterfaceCsTranscriptionListenerMethod6)(uint64_t, uint64_t, RustBuffer, RustBuffer, RustBuffer, RustBuffer, void* _Nonnull,
+typedef void (*UniffiCallbackInterfaceCsTranscriptionListenerMethod6)(uint64_t, RustBuffer, RustBuffer, void* _Nonnull,
         RustCallStatus *_Nonnull uniffiCallStatus
     );
 
 #endif
 #ifndef UNIFFI_FFIDEF_CALLBACK_INTERFACE_CS_TRANSCRIPTION_LISTENER_METHOD7
 #define UNIFFI_FFIDEF_CALLBACK_INTERFACE_CS_TRANSCRIPTION_LISTENER_METHOD7
-typedef void (*UniffiCallbackInterfaceCsTranscriptionListenerMethod7)(uint64_t, uint64_t, uint64_t, uint64_t, RustBuffer, RustBuffer, void* _Nonnull,
+typedef void (*UniffiCallbackInterfaceCsTranscriptionListenerMethod7)(uint64_t, uint64_t, RustBuffer, RustBuffer, RustBuffer, RustBuffer, void* _Nonnull,
         RustCallStatus *_Nonnull uniffiCallStatus
     );
 
 #endif
 #ifndef UNIFFI_FFIDEF_CALLBACK_INTERFACE_CS_TRANSCRIPTION_LISTENER_METHOD8
 #define UNIFFI_FFIDEF_CALLBACK_INTERFACE_CS_TRANSCRIPTION_LISTENER_METHOD8
-typedef void (*UniffiCallbackInterfaceCsTranscriptionListenerMethod8)(uint64_t, uint64_t, uint64_t, RustBuffer, RustBuffer, void* _Nonnull,
+typedef void (*UniffiCallbackInterfaceCsTranscriptionListenerMethod8)(uint64_t, uint64_t, uint64_t, uint64_t, RustBuffer, RustBuffer, void* _Nonnull,
         RustCallStatus *_Nonnull uniffiCallStatus
     );
 
 #endif
 #ifndef UNIFFI_FFIDEF_CALLBACK_INTERFACE_CS_TRANSCRIPTION_LISTENER_METHOD9
 #define UNIFFI_FFIDEF_CALLBACK_INTERFACE_CS_TRANSCRIPTION_LISTENER_METHOD9
-typedef void (*UniffiCallbackInterfaceCsTranscriptionListenerMethod9)(uint64_t, uint64_t, RustBuffer, void* _Nonnull,
+typedef void (*UniffiCallbackInterfaceCsTranscriptionListenerMethod9)(uint64_t, uint64_t, uint64_t, RustBuffer, RustBuffer, void* _Nonnull,
         RustCallStatus *_Nonnull uniffiCallStatus
     );
 
 #endif
 #ifndef UNIFFI_FFIDEF_CALLBACK_INTERFACE_CS_TRANSCRIPTION_LISTENER_METHOD10
 #define UNIFFI_FFIDEF_CALLBACK_INTERFACE_CS_TRANSCRIPTION_LISTENER_METHOD10
-typedef void (*UniffiCallbackInterfaceCsTranscriptionListenerMethod10)(uint64_t, RustBuffer, RustBuffer, void* _Nonnull,
+typedef void (*UniffiCallbackInterfaceCsTranscriptionListenerMethod10)(uint64_t, uint64_t, RustBuffer, void* _Nonnull,
         RustCallStatus *_Nonnull uniffiCallStatus
     );
 
 #endif
 #ifndef UNIFFI_FFIDEF_CALLBACK_INTERFACE_CS_TRANSCRIPTION_LISTENER_METHOD11
 #define UNIFFI_FFIDEF_CALLBACK_INTERFACE_CS_TRANSCRIPTION_LISTENER_METHOD11
-typedef void (*UniffiCallbackInterfaceCsTranscriptionListenerMethod11)(uint64_t, RustBuffer, void* _Nonnull,
+typedef void (*UniffiCallbackInterfaceCsTranscriptionListenerMethod11)(uint64_t, RustBuffer, RustBuffer, void* _Nonnull,
         RustCallStatus *_Nonnull uniffiCallStatus
     );
 
 #endif
 #ifndef UNIFFI_FFIDEF_CALLBACK_INTERFACE_CS_TRANSCRIPTION_LISTENER_METHOD12
 #define UNIFFI_FFIDEF_CALLBACK_INTERFACE_CS_TRANSCRIPTION_LISTENER_METHOD12
-typedef void (*UniffiCallbackInterfaceCsTranscriptionListenerMethod12)(uint64_t, int8_t, void* _Nonnull,
+typedef void (*UniffiCallbackInterfaceCsTranscriptionListenerMethod12)(uint64_t, RustBuffer, void* _Nonnull,
         RustCallStatus *_Nonnull uniffiCallStatus
     );
 
 #endif
 #ifndef UNIFFI_FFIDEF_CALLBACK_INTERFACE_CS_TRANSCRIPTION_LISTENER_METHOD13
 #define UNIFFI_FFIDEF_CALLBACK_INTERFACE_CS_TRANSCRIPTION_LISTENER_METHOD13
-typedef void (*UniffiCallbackInterfaceCsTranscriptionListenerMethod13)(uint64_t, float, void* _Nonnull,
+typedef void (*UniffiCallbackInterfaceCsTranscriptionListenerMethod13)(uint64_t, int8_t, void* _Nonnull,
         RustCallStatus *_Nonnull uniffiCallStatus
     );
 
 #endif
 #ifndef UNIFFI_FFIDEF_CALLBACK_INTERFACE_CS_TRANSCRIPTION_LISTENER_METHOD14
 #define UNIFFI_FFIDEF_CALLBACK_INTERFACE_CS_TRANSCRIPTION_LISTENER_METHOD14
-typedef void (*UniffiCallbackInterfaceCsTranscriptionListenerMethod14)(uint64_t, RustBuffer, void* _Nonnull,
+typedef void (*UniffiCallbackInterfaceCsTranscriptionListenerMethod14)(uint64_t, float, void* _Nonnull,
         RustCallStatus *_Nonnull uniffiCallStatus
     );
 
@@ -477,6 +477,13 @@ typedef void (*UniffiCallbackInterfaceCsTranscriptionListenerMethod14)(uint64_t,
 #ifndef UNIFFI_FFIDEF_CALLBACK_INTERFACE_CS_TRANSCRIPTION_LISTENER_METHOD15
 #define UNIFFI_FFIDEF_CALLBACK_INTERFACE_CS_TRANSCRIPTION_LISTENER_METHOD15
 typedef void (*UniffiCallbackInterfaceCsTranscriptionListenerMethod15)(uint64_t, RustBuffer, void* _Nonnull,
+        RustCallStatus *_Nonnull uniffiCallStatus
+    );
+
+#endif
+#ifndef UNIFFI_FFIDEF_CALLBACK_INTERFACE_CS_TRANSCRIPTION_LISTENER_METHOD16
+#define UNIFFI_FFIDEF_CALLBACK_INTERFACE_CS_TRANSCRIPTION_LISTENER_METHOD16
+typedef void (*UniffiCallbackInterfaceCsTranscriptionListenerMethod16)(uint64_t, RustBuffer, void* _Nonnull,
         RustCallStatus *_Nonnull uniffiCallStatus
     );
 
@@ -549,22 +556,23 @@ typedef struct UniffiVTableCallbackInterfaceCsAppActionListener {
 typedef struct UniffiVTableCallbackInterfaceCsTranscriptionListener {
     UniffiCallbackInterfaceFree _Nonnull uniffiFree;
     UniffiCallbackInterfaceClone _Nonnull uniffiClone;
-    UniffiCallbackInterfaceCsTranscriptionListenerMethod0 _Nonnull onRecordingPreparing;
-    UniffiCallbackInterfaceCsTranscriptionListenerMethod1 _Nonnull onRecordingStarted;
-    UniffiCallbackInterfaceCsTranscriptionListenerMethod2 _Nonnull onRecordingStopped;
-    UniffiCallbackInterfaceCsTranscriptionListenerMethod3 _Nonnull onRecordingFinalising;
-    UniffiCallbackInterfaceCsTranscriptionListenerMethod4 _Nonnull onPreview;
-    UniffiCallbackInterfaceCsTranscriptionListenerMethod5 _Nonnull onCorrection;
-    UniffiCallbackInterfaceCsTranscriptionListenerMethod6 _Nonnull onFinal;
-    UniffiCallbackInterfaceCsTranscriptionListenerMethod7 _Nonnull onReplaceRange;
-    UniffiCallbackInterfaceCsTranscriptionListenerMethod8 _Nonnull onInsertAnnotation;
-    UniffiCallbackInterfaceCsTranscriptionListenerMethod9 _Nonnull onContextMarker;
-    UniffiCallbackInterfaceCsTranscriptionListenerMethod10 _Nonnull onSessionFinalised;
-    UniffiCallbackInterfaceCsTranscriptionListenerMethod11 _Nonnull onFinalTranscriptReady;
-    UniffiCallbackInterfaceCsTranscriptionListenerMethod12 _Nonnull onVadActive;
-    UniffiCallbackInterfaceCsTranscriptionListenerMethod13 _Nonnull onAudioLevel;
-    UniffiCallbackInterfaceCsTranscriptionListenerMethod14 _Nonnull onNoSpeech;
-    UniffiCallbackInterfaceCsTranscriptionListenerMethod15 _Nonnull onError;
+    UniffiCallbackInterfaceCsTranscriptionListenerMethod0 _Nonnull onTranscriptProjection;
+    UniffiCallbackInterfaceCsTranscriptionListenerMethod1 _Nonnull onRecordingPreparing;
+    UniffiCallbackInterfaceCsTranscriptionListenerMethod2 _Nonnull onRecordingStarted;
+    UniffiCallbackInterfaceCsTranscriptionListenerMethod3 _Nonnull onRecordingStopped;
+    UniffiCallbackInterfaceCsTranscriptionListenerMethod4 _Nonnull onRecordingFinalising;
+    UniffiCallbackInterfaceCsTranscriptionListenerMethod5 _Nonnull onPreview;
+    UniffiCallbackInterfaceCsTranscriptionListenerMethod6 _Nonnull onCorrection;
+    UniffiCallbackInterfaceCsTranscriptionListenerMethod7 _Nonnull onFinal;
+    UniffiCallbackInterfaceCsTranscriptionListenerMethod8 _Nonnull onReplaceRange;
+    UniffiCallbackInterfaceCsTranscriptionListenerMethod9 _Nonnull onInsertAnnotation;
+    UniffiCallbackInterfaceCsTranscriptionListenerMethod10 _Nonnull onContextMarker;
+    UniffiCallbackInterfaceCsTranscriptionListenerMethod11 _Nonnull onSessionFinalised;
+    UniffiCallbackInterfaceCsTranscriptionListenerMethod12 _Nonnull onFinalTranscriptReady;
+    UniffiCallbackInterfaceCsTranscriptionListenerMethod13 _Nonnull onVadActive;
+    UniffiCallbackInterfaceCsTranscriptionListenerMethod14 _Nonnull onAudioLevel;
+    UniffiCallbackInterfaceCsTranscriptionListenerMethod15 _Nonnull onNoSpeech;
+    UniffiCallbackInterfaceCsTranscriptionListenerMethod16 _Nonnull onError;
 } UniffiVTableCallbackInterfaceCsTranscriptionListener;
 
 #endif
@@ -1440,6 +1448,11 @@ void uniffi_codescribe_ffi_fn_free_cstranscriptionlistener(uint64_t handle, Rust
 void uniffi_codescribe_ffi_fn_init_callback_vtable_cstranscriptionlistener(const UniffiVTableCallbackInterfaceCsTranscriptionListener* _Nonnull vtable
 );
 #endif
+#ifndef UNIFFI_FFIDEF_UNIFFI_CODESCRIBE_FFI_FN_METHOD_CSTRANSCRIPTIONLISTENER_ON_TRANSCRIPT_PROJECTION
+#define UNIFFI_FFIDEF_UNIFFI_CODESCRIBE_FFI_FN_METHOD_CSTRANSCRIPTIONLISTENER_ON_TRANSCRIPT_PROJECTION
+void uniffi_codescribe_ffi_fn_method_cstranscriptionlistener_on_transcript_projection(uint64_t ptr, RustBuffer event, RustCallStatus *_Nonnull out_status
+);
+#endif
 #ifndef UNIFFI_FFIDEF_UNIFFI_CODESCRIBE_FFI_FN_METHOD_CSTRANSCRIPTIONLISTENER_ON_RECORDING_PREPARING
 #define UNIFFI_FFIDEF_UNIFFI_CODESCRIBE_FFI_FN_METHOD_CSTRANSCRIPTIONLISTENER_ON_RECORDING_PREPARING
 void uniffi_codescribe_ffi_fn_method_cstranscriptionlistener_on_recording_preparing(uint64_t ptr, RustCallStatus *_Nonnull out_status
@@ -1593,11 +1606,6 @@ RustBuffer uniffi_codescribe_ffi_fn_func_current_serving_verdict(RustCallStatus 
 uint64_t uniffi_codescribe_ffi_fn_func_download_whisper_model(RustBuffer listener
 );
 #endif
-#ifndef UNIFFI_FFIDEF_UNIFFI_CODESCRIBE_FFI_FN_FUNC_LANE_TRUTH_SNAPSHOT
-#define UNIFFI_FFIDEF_UNIFFI_CODESCRIBE_FFI_FN_FUNC_LANE_TRUTH_SNAPSHOT
-RustBuffer uniffi_codescribe_ffi_fn_func_lane_truth_snapshot(RustBuffer lane, RustCallStatus *_Nonnull out_status
-);
-#endif
 #ifndef UNIFFI_FFIDEF_UNIFFI_CODESCRIBE_FFI_FN_FUNC_LEXICON_CUSTOM_ENTRIES
 #define UNIFFI_FFIDEF_UNIFFI_CODESCRIBE_FFI_FN_FUNC_LEXICON_CUSTOM_ENTRIES
 RustBuffer uniffi_codescribe_ffi_fn_func_lexicon_custom_entries(RustCallStatus *_Nonnull out_status
@@ -1651,6 +1659,11 @@ RustBuffer uniffi_codescribe_ffi_fn_func_quality_teach_span(RustBuffer variant, 
 #define UNIFFI_FFIDEF_UNIFFI_CODESCRIBE_FFI_FN_FUNC_REQUEST_MIC_PERMISSION
 int8_t uniffi_codescribe_ffi_fn_func_request_mic_permission(RustCallStatus *_Nonnull out_status
 
+);
+#endif
+#ifndef UNIFFI_FFIDEF_UNIFFI_CODESCRIBE_FFI_FN_FUNC_RUNTIME_LLM_LANE
+#define UNIFFI_FFIDEF_UNIFFI_CODESCRIBE_FFI_FN_FUNC_RUNTIME_LLM_LANE
+RustBuffer uniffi_codescribe_ffi_fn_func_runtime_llm_lane(RustBuffer lane, RustCallStatus *_Nonnull out_status
 );
 #endif
 #ifndef UNIFFI_FFIDEF_UNIFFI_CODESCRIBE_FFI_FN_FUNC_SHUTDOWN_APPLICATION_RUNTIME
@@ -1961,12 +1974,6 @@ uint16_t uniffi_codescribe_ffi_checksum_func_download_whisper_model(void
 
 );
 #endif
-#ifndef UNIFFI_FFIDEF_UNIFFI_CODESCRIBE_FFI_CHECKSUM_FUNC_LANE_TRUTH_SNAPSHOT
-#define UNIFFI_FFIDEF_UNIFFI_CODESCRIBE_FFI_CHECKSUM_FUNC_LANE_TRUTH_SNAPSHOT
-uint16_t uniffi_codescribe_ffi_checksum_func_lane_truth_snapshot(void
-
-);
-#endif
 #ifndef UNIFFI_FFIDEF_UNIFFI_CODESCRIBE_FFI_CHECKSUM_FUNC_LEXICON_CUSTOM_ENTRIES
 #define UNIFFI_FFIDEF_UNIFFI_CODESCRIBE_FFI_CHECKSUM_FUNC_LEXICON_CUSTOM_ENTRIES
 uint16_t uniffi_codescribe_ffi_checksum_func_lexicon_custom_entries(void
@@ -2024,6 +2031,12 @@ uint16_t uniffi_codescribe_ffi_checksum_func_quality_teach_span(void
 #ifndef UNIFFI_FFIDEF_UNIFFI_CODESCRIBE_FFI_CHECKSUM_FUNC_REQUEST_MIC_PERMISSION
 #define UNIFFI_FFIDEF_UNIFFI_CODESCRIBE_FFI_CHECKSUM_FUNC_REQUEST_MIC_PERMISSION
 uint16_t uniffi_codescribe_ffi_checksum_func_request_mic_permission(void
+
+);
+#endif
+#ifndef UNIFFI_FFIDEF_UNIFFI_CODESCRIBE_FFI_CHECKSUM_FUNC_RUNTIME_LLM_LANE
+#define UNIFFI_FFIDEF_UNIFFI_CODESCRIBE_FFI_CHECKSUM_FUNC_RUNTIME_LLM_LANE
+uint16_t uniffi_codescribe_ffi_checksum_func_runtime_llm_lane(void
 
 );
 #endif
@@ -2840,6 +2853,12 @@ uint16_t uniffi_codescribe_ffi_checksum_method_csagentlistener_on_error(void
 #ifndef UNIFFI_FFIDEF_UNIFFI_CODESCRIBE_FFI_CHECKSUM_METHOD_CSAPPACTIONLISTENER_ON_SHOW_AGENT
 #define UNIFFI_FFIDEF_UNIFFI_CODESCRIBE_FFI_CHECKSUM_METHOD_CSAPPACTIONLISTENER_ON_SHOW_AGENT
 uint16_t uniffi_codescribe_ffi_checksum_method_csappactionlistener_on_show_agent(void
+
+);
+#endif
+#ifndef UNIFFI_FFIDEF_UNIFFI_CODESCRIBE_FFI_CHECKSUM_METHOD_CSTRANSCRIPTIONLISTENER_ON_TRANSCRIPT_PROJECTION
+#define UNIFFI_FFIDEF_UNIFFI_CODESCRIBE_FFI_CHECKSUM_METHOD_CSTRANSCRIPTIONLISTENER_ON_TRANSCRIPT_PROJECTION
+uint16_t uniffi_codescribe_ffi_checksum_method_cstranscriptionlistener_on_transcript_projection(void
 
 );
 #endif

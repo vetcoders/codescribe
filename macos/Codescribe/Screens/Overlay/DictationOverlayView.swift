@@ -131,18 +131,6 @@ struct DictationOverlayView: View {
           .allowsHitTesting(false)
           .accessibilityIdentifier("overlay-phase-status")
       }
-      if let badge = state.confidenceBadgeText {
-        Text(badge)
-          .csMono(9, .semibold)
-          .foregroundStyle(CSColor.terracotta)
-          .padding(.horizontal, 7)
-          .padding(.vertical, 4)
-          .background(CSColor.terracotta.opacity(0.12))
-          .clipShape(Capsule())
-          .allowsHitTesting(false)
-          .accessibilityIdentifier("overlay-confidence-badge")
-          .accessibilityLabel(badge)
-      }
       Spacer(minLength: 0)
       if state.autoPasteControlAvailable {
         autoPasteControl

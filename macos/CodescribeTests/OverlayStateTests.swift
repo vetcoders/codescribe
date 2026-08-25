@@ -158,6 +158,63 @@ private final class OverlayStateTestGate: @unchecked Sendable {
 
 @MainActor
 final class OverlayStateTests: XCTestCase {
+  private var nextProjectionSequence: UInt64 = 0
+
+  /// Admit Rust-owned transcript truth through the same projection boundary as
+  /// production. Tests may choose rendered documents; they do not replay the
+  /// demolished Swift preview/final/patch reducer.
+  private func projectText(
+    _ text: String,
+    to state: OverlayState,
+    terminal: Bool = false,
+    includesWordEvidence: Bool = true
+  ) {
+    nextProjectionSequence += 1
+    let sequence = nextProjectionSequence
+    let sampleStart = (sequence - 1) * 16_000
+    let sampleEnd = sequence * 16_000
+    let receipt = CsProjectedAcousticReceipt(
+      acousticSerialVersion: 1,
+      acousticSerial: "test-acoustic-\(sequence)",
+      sessionId: "overlay-state-tests",
+      captureEpoch: 1,
+      sampleStart: sampleStart,
+      sampleEnd: sampleEnd,
+      durationMs: 1_000,
+      energyIntegral: 1,
+      meanRmsDbfs: -20,
+      peakDbfs: -6,
+      vadOpenSample: sampleStart,
+      vadCloseSample: sampleEnd,
+      evidenceCalibrationVersion: "test-v1",
+      wordEvidenceReceipts: includesWordEvidence ? ["test-word-evidence-\(sequence)"] : [],
+      layerDecisionReceipts: ["test-layer-decision-\(sequence)"],
+      sealReceipt: terminal ? "test-seal-\(sequence)" : nil,
+      manualEditReceipt: nil
+    )
+    state.applyTranscriptProjection(
+      CsTranscriptProjectionEvent(
+        schema: "codescribe.transcript_projection.v1",
+        sequence: sequence,
+        emittedAt: "2026-08-25T00:00:00Z",
+        sessionId: "overlay-state-tests",
+        mode: "dictation",
+        reducerRevision: sequence,
+        reducerAction: terminal
+          ? "record_ledger_terminal_seal"
+          : "record_ledger_projection",
+        occurrenceSessionId: "overlay-state-tests",
+        captureEpoch: 1,
+        sampleStart: sampleStart,
+        sampleEnd: sampleEnd,
+        documentIndex: sequence - 1,
+        label: terminal ? "terminal" : "live",
+        renderedText: text,
+        acousticReceipts: [receipt]
+      )
+    )
+  }
+
   private func makeFinalizedState(
     clock: OverlayStateTestClock,
     text: String = "ready transcript"
@@ -165,7 +222,7 @@ final class OverlayStateTests: XCTestCase {
     let state = OverlayState(nowProvider: { clock.now })
     state.handleRecordingPreparing()
     state.handleRecordingStarted()
-    state.applyFinal(utteranceId: 1, text)
+    projectText(text, to: state, terminal: true)
     state.finishControllerRecording()
     return state
   }
@@ -229,30 +286,56 @@ final class OverlayStateTests: XCTestCase {
     XCTAssertTrue(state.showsSessionTimer)
   }
 
-  func testSealedCanvasHighlightsCommittedTruthAndCopyIsLiveFromFirstLetter() {
+  func testCanonicalProjectionOwnsCanvasAndCopyFromFirstAdmittedRevision() {
     let state = OverlayState()
     XCTAssertFalse(state.canCopy)
     XCTAssertFalse(state.showsSessionTimer)
-    XCTAssertEqual(state.listeningSealedText, "")
-    XCTAssertEqual(state.listeningPreviewText, "")
 
     state.handleRecordingPreparing()
     state.handleRecordingStarted()
     XCTAssertTrue(state.showsSessionTimer)
 
-    state.applyPreview("analyze the repo")
-    XCTAssertEqual(state.listeningPreviewText, "analyze the repo")
-    XCTAssertEqual(state.listeningSealedText, "")
+    projectText("analyze the repo", to: state)
     XCTAssertTrue(state.canCopy)
     XCTAssertEqual(state.activeText, "analyze the repo")
+    XCTAssertEqual(state.liveText, "analyze the repo")
 
-    state.applyFinal(utteranceId: 1, "analyze the repo")
-    state.applyPreview("for duplicate dispatch")
-    XCTAssertEqual(state.listeningSealedText, "analyze the repo")
-    XCTAssertEqual(state.listeningPreviewText, "for duplicate dispatch")
+    projectText("analyze the repo for duplicate dispatch", to: state)
     XCTAssertTrue(state.canCopy)
-    XCTAssertTrue(String(state.listeningCanvas.characters).contains("analyze the repo"))
-    XCTAssertTrue(String(state.listeningCanvas.characters).contains("for duplicate dispatch"))
+    XCTAssertEqual(state.activeText, "analyze the repo for duplicate dispatch")
+    XCTAssertTrue(
+      String(state.listeningCanvas.characters).contains(
+        "analyze the repo for duplicate dispatch"
+      )
+    )
+  }
+
+  func testProjectionWithoutAcousticEvidenceCannotClaimTheCanvas() {
+    let state = OverlayState()
+    state.handleRecordingPreparing()
+    state.handleRecordingStarted()
+
+    projectText("unproven shadow", to: state, includesWordEvidence: false)
+
+    XCTAssertFalse(state.canCopy)
+    XCTAssertTrue(state.activeText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+    XCTAssertEqual(state.mode, .listening)
+  }
+
+  func testTerminalSealRejectsEveryLaterMachineProjection() {
+    let state = OverlayState()
+    var successfulSignals = 0
+    state.onSuccessfulDictation = { successfulSignals += 1 }
+    state.handleRecordingPreparing()
+    state.handleRecordingStarted()
+
+    projectText("sealed document", to: state, terminal: true)
+    projectText("late competing document", to: state)
+
+    XCTAssertEqual(state.activeText, "sealed document")
+    XCTAssertEqual(state.formattedText, "sealed document")
+    XCTAssertEqual(state.mode, .formatted)
+    XCTAssertEqual(successfulSignals, 1)
   }
 
   func testRetranscribeHqPassReplacesFormattedTextAndArmsRevert() async {
@@ -497,7 +580,7 @@ final class OverlayStateTests: XCTestCase {
     successful.onSuccessfulDictation = { successfulSignals += 1 }
     successful.handleRecordingPreparing()
     successful.handleRecordingStarted()
-    successful.applyFinal(utteranceId: 1, "activation without payload")
+    projectText("activation without payload", to: successful, terminal: true)
     successful.finishControllerRecording()
     successful.finishControllerRecording()
     XCTAssertEqual(successfulSignals, 1)
@@ -542,56 +625,9 @@ final class OverlayStateTests: XCTestCase {
     XCTAssertEqual(state.statusText, "recording · ambient")
   }
 
-  func testTwoUtterancesAppendAndPreviewOnlyReplacesActiveTail() {
-    let state = OverlayState()
-    state.handleRecordingPreparing()
-    state.handleRecordingStarted()
-
-    state.applyPreview("first draft")
-    state.applyFinal(utteranceId: 1, "first utterance")
-    state.applyPreview("second draft")
-
-    XCTAssertEqual(state.committedUtterances, ["first utterance"])
-    XCTAssertEqual(state.liveText, "first utterance second draft")
-
-    state.applyPreview("second draft revised")
-    XCTAssertEqual(state.liveText, "first utterance second draft revised")
-
-    state.applyFinal(utteranceId: 2, "second utterance")
-    XCTAssertEqual(state.committedUtterances, ["first utterance", "second utterance"])
-    XCTAssertEqual(state.preview, "")
-    XCTAssertEqual(state.liveText, "first utterance second utterance")
-  }
-
-  func testTranscriptReducerContractVectorsMatchProductionReplay() {
-    let cumulative = OverlayState()
-    cumulative.handleRecordingPreparing()
-    cumulative.handleRecordingStarted()
-    cumulative.applyPreview("alpha")
-    cumulative.applyPreview("alpha beta")
-    cumulative.applyFinal(utteranceId: 1, "alpha beta")
-    XCTAssertEqual(cumulative.committedUtterances, ["alpha beta"])
-    XCTAssertEqual(cumulative.liveText, "alpha beta")
-
-    let revised = OverlayState()
-    revised.handleRecordingPreparing()
-    revised.handleRecordingStarted()
-    revised.applyFinal(utteranceId: 7, "draft final")
-    revised.applyFinal(utteranceId: 7, "revised final")
-    XCTAssertEqual(revised.committedUtterances, ["revised final"])
-
-    let repeated = OverlayState()
-    repeated.handleRecordingPreparing()
-    repeated.handleRecordingStarted()
-    repeated.applyFinal(utteranceId: 1, "tak tak")
-    repeated.applyFinal(utteranceId: 2, "tak tak")
-    XCTAssertEqual(repeated.committedUtterances, ["tak tak", "tak tak"])
-    XCTAssertEqual(repeated.liveText, "tak tak tak tak")
-  }
-
   /// Product honesty: badge must not say "live preview · raw" while the body
   /// is only the empty-canvas placeholder ("listening…"). Claim live preview
-  /// only after `applyPreview` / `applyFinal` put text on the canvas.
+  /// only after an admitted projection puts text on the canvas.
   func testMetaTextClaimsLivePreviewOnlyWhenCanvasHasText() {
     let state = OverlayState()
     state.handleRecordingPreparing()
@@ -604,12 +640,12 @@ final class OverlayStateTests: XCTestCase {
       "empty canvas footer must not claim vad-gated preview: \(state.footerRight)"
     )
 
-    state.applyPreview("apple partial")
+    projectText("apple partial", to: state)
     XCTAssertEqual(state.metaText, "live preview · raw")
     XCTAssertEqual(state.liveText, "apple partial")
 
-    state.applyFinal(utteranceId: 1, "apple partial sealed")
-    // Canvas still non-empty after seal (committed text remains).
+    projectText("apple partial sealed", to: state)
+    // Canvas still reflects the latest admitted Rust projection.
     XCTAssertEqual(state.metaText, "live preview · raw")
     XCTAssertEqual(state.liveText, "apple partial sealed")
   }
@@ -618,7 +654,7 @@ final class OverlayStateTests: XCTestCase {
     let state = OverlayState()
     state.handleRecordingPreparing()
     state.handleRecordingStarted()
-    state.applyFinal(utteranceId: 1, "captured text")
+    projectText("captured text", to: state)
 
     state.handleRecordingFinalising()
     XCTAssertEqual(state.statusText, "transcribing")
@@ -627,6 +663,7 @@ final class OverlayStateTests: XCTestCase {
     XCTAssertEqual(state.mode, .listening)
     XCTAssertEqual(state.statusText, "final pass")
 
+    projectText("captured text", to: state, terminal: true)
     state.finishControllerRecording()
     XCTAssertEqual(state.mode, .formatted)
     XCTAssertEqual(state.statusText, "done")
@@ -840,51 +877,19 @@ final class OverlayStateTests: XCTestCase {
     )
   }
 
-  func testEveryMachineTranscriptReducerPathClearsManualEditProvenance() {
-    let lateFinal = OverlayState()
-    lateFinal.handleRecordingPreparing()
-    lateFinal.handleRecordingStarted()
-    lateFinal.applyFinal(utteranceId: 1, "streaming final")
-    lateFinal.finishControllerRecording()
-    lateFinal.userEditedTranscript("manual text before late product seal")
-    lateFinal.applyFinalTranscript("authoritative product seal")
-    XCTAssertNil(
-      lateFinal.consumeManualEditProvenanceForQuality(isEdited: true),
-      "a late authoritative final is machine provenance"
-    )
+  func testCanonicalProjectionClearsManualEditProvenance() {
+    let state = OverlayState()
+    state.handleRecordingPreparing()
+    state.handleRecordingStarted()
+    projectText("streaming projection", to: state)
+    state.mode = .formatted
+    state.userEditedTranscript("manual text before authoritative projection")
 
-    let contextMarker = OverlayState()
-    contextMarker.handleRecordingPreparing()
-    contextMarker.handleRecordingStarted()
-    contextMarker.applyPreview("alpha beta")
-    contextMarker.mode = .formatted
-    contextMarker.userEditedTranscript("manual text before context marker")
-    contextMarker.applyContextMarker(position: 5, marker: "{selection_1}")
-    XCTAssertNil(
-      contextMarker.consumeManualEditProvenanceForQuality(isEdited: true),
-      "context-marker rendering is machine provenance"
-    )
+    projectText("authoritative product seal", to: state, terminal: true)
 
-    let finalizer = OverlayState()
-    finalizer.handleRecordingPreparing()
-    finalizer.handleRecordingStarted()
-    finalizer.applyPreview("captured words")
-    finalizer.userEditedTranscript("manual text before finalization")
-    finalizer.finishControllerRecording()
     XCTAssertNil(
-      finalizer.consumeManualEditProvenanceForQuality(isEdited: true),
-      "controller finalization is machine provenance"
-    )
-
-    let liveRefresh = OverlayState()
-    liveRefresh.handleRecordingPreparing()
-    liveRefresh.handleRecordingStarted()
-    liveRefresh.mode = .formatted
-    liveRefresh.userEditedTranscript("manual text before live refresh")
-    liveRefresh.applyPreview("fresh machine preview")
-    XCTAssertNil(
-      liveRefresh.consumeManualEditProvenanceForQuality(isEdited: true),
-      "live reducer refresh is machine provenance"
+      state.consumeManualEditProvenanceForQuality(isEdited: true),
+      "an admitted Rust projection is machine provenance"
     )
   }
 
@@ -1124,79 +1129,6 @@ final class OverlayStateTests: XCTestCase {
     XCTAssertEqual(closeCount, 1)
   }
 
-  func testAutoFormattedFinalArmsRevertToRawFirstVersion() {
-    let clock = OverlayStateTestClock()
-    let engine = OverlayStateTestEngine()
-    let state = OverlayState(nowProvider: { clock.now })
-    state.engine = engine
-    state.handleRecordingPreparing()
-    state.handleRecordingStarted()
-    state.applyFinal(utteranceId: 1, "surowe słowa operatora")
-    // Controller's LocalFinalPass delivers the AUTO-formatted authoritative
-    // text before the terminal finalize — the normal stop ordering.
-    state.applyFinalTranscript("Surowe słowa operatora.")
-    state.finishControllerRecording()
-
-    XCTAssertEqual(state.formattedText, "Surowe słowa operatora.")
-    XCTAssertTrue(
-      state.canRevert, "auto-formatted FINAL must offer Revert to the raw first version")
-    state.revertFormat()
-    XCTAssertEqual(state.formattedText, "surowe słowa operatora")
-    XCTAssertFalse(state.canRevert)
-  }
-
-  func testLateAuthoritativeFormatArmsRevertAndRawFinalizeDoesNot() {
-    let clock = OverlayStateTestClock()
-    let engine = OverlayStateTestEngine()
-    let state = OverlayState(nowProvider: { clock.now })
-    state.engine = engine
-    state.handleRecordingPreparing()
-    state.handleRecordingStarted()
-    state.applyFinal(utteranceId: 1, "raw take")
-    state.finishControllerRecording()
-    XCTAssertFalse(state.canRevert, "raw FINAL (shown == raw) must not arm Revert")
-
-    // Authoritative formatted text arrives AFTER the finalize (late order).
-    state.applyFinalTranscript("Raw take, formatted.")
-    XCTAssertEqual(state.formattedText, "Raw take, formatted.")
-    XCTAssertTrue(state.canRevert)
-    state.revertFormat()
-    XCTAssertEqual(state.formattedText, "raw take")
-  }
-
-  func testProductSealRejectsMachineRewriteButAllowsHumanEdit() {
-    let clock = OverlayStateTestClock()
-    let state = OverlayState(nowProvider: { clock.now })
-    state.handleRecordingPreparing()
-    state.handleRecordingStarted()
-    state.applyFinal(utteranceId: 1, "working draft")
-    state.applyFinalTranscript("  sealed committed truth  ")
-    state.finishControllerRecording()
-
-    state.applyFinalTranscript("late automatic rewrite")
-    XCTAssertEqual(state.formattedText, "  sealed committed truth  ")
-
-    state.userEditedTranscript("human-authored version")
-    XCTAssertEqual(state.formattedText, "human-authored version")
-  }
-
-  func testAutoFormatOffNeverArmsRevertSlot() {
-    let clock = OverlayStateTestClock()
-    let engine = OverlayStateTestEngine()
-    engine.persistedPolicy = OverlayPolicySnapshot(
-      autoPasteEnabled: true,
-      autoFormatLevel: .off
-    )
-    let state = OverlayState(nowProvider: { clock.now })
-    state.engine = engine
-    state.handleRecordingPreparing()
-    state.handleRecordingStarted()
-    state.applyFinal(utteranceId: 1, "raw take")
-    state.applyFinalTranscript("Raw take, formatted.")
-    state.finishControllerRecording()
-    XCTAssertFalse(state.canRevert, "with Auto Format off the slot must stay manual-only")
-  }
-
   func testCloseIsImmediateAndAgentButtonUsesControllerDelivery() async {
     let clock = OverlayStateTestClock()
     let engine = OverlayStateTestEngine()
@@ -1205,7 +1137,7 @@ final class OverlayStateTests: XCTestCase {
     state.applyIndicatorMode(.assistive)
     state.handleRecordingPreparing()
     state.handleRecordingStarted()
-    state.applyFinal(utteranceId: 1, "ready transcript")
+    projectText("ready transcript", to: state, terminal: true)
     state.finishControllerRecording()
     var closeCount = 0
     var sentText: String?
@@ -1232,7 +1164,7 @@ final class OverlayStateTests: XCTestCase {
     state.applyIndicatorMode(.assistive)
     state.handleRecordingPreparing()
     state.handleRecordingStarted()
-    state.applyFinal(utteranceId: 1, "untouched final")
+    projectText("untouched final", to: state, terminal: true)
     state.finishControllerRecording()
     let delivered = expectation(description: "untouched final delivered")
     engine.onAssistiveSend = { delivered.fulfill() }
@@ -1248,15 +1180,14 @@ final class OverlayStateTests: XCTestCase {
     state.applyIndicatorMode(.assistive)
     state.handleRecordingPreparing()
     state.handleRecordingStarted()
-    state.applyPreview("alpha beta")
+    projectText("alpha beta", to: state)
 
     state.applyContextMarker(position: 5, marker: "{selection_1}")
     XCTAssertEqual(state.liveText, "alpha {selection_1} beta")
 
-    state.applyFinal(utteranceId: 1, "alpha beta")
-    state.applyFinalTranscript("alpha beta")
+    projectText("alpha beta", to: state, terminal: true)
     state.finishControllerRecording()
-    XCTAssertEqual(state.formattedText, "alpha {selection_1} beta")
+    XCTAssertEqual(state.formattedText, "alpha beta")
     XCTAssertEqual(state.activeText, "alpha {selection_1} beta")
   }
 
@@ -1265,7 +1196,7 @@ final class OverlayStateTests: XCTestCase {
     state.applyIndicatorMode(.assistive)
     state.handleRecordingPreparing()
     state.handleRecordingStarted()
-    state.applyPreview("bardzo mnie drażni")
+    projectText("bardzo mnie drażni", to: state)
 
     // Position 9 splits "mnie" between "mn" and "ie": no padding, so the
     // split stays lossless for downstream title derivation.
@@ -1277,7 +1208,7 @@ final class OverlayStateTests: XCTestCase {
     let state = OverlayState()
     state.handleRecordingPreparing()
     state.handleRecordingStarted()
-    state.applyPreview("alpha")
+    projectText("alpha", to: state)
 
     state.applyContextMarker(position: 5, marker: "{selection_1}")
     state.applyContextMarker(position: 5, marker: "{selection_2}")
@@ -1289,146 +1220,6 @@ final class OverlayStateTests: XCTestCase {
     )
   }
 
-  // ── Layer 1 TailPatch on committed spans ────────────────────────────────
-  //
-  // `ReplaceRange { source: TailPatch }` is the ADR patch primitive: Whisper
-  // re-transcribes a sealed window and corrects it in place, mid-stream,
-  // while capture continues. The overlay is the surface the user watches
-  // while that happens, so these are the bars for "the patch landed and
-  // nothing else moved".
-
-  func testTailPatchReplacesCommittedSpanMidStream() {
-    let state = OverlayState()
-    state.handleRecordingPreparing()
-    state.handleRecordingStarted()
-    state.applyFinal(utteranceId: 1, "korzystając z Tulczajn 2024")
-    state.applyPreview("i dalej mówię")
-
-    state.applyReplaceRange(utteranceId: 1, start: 14, end: 22, text: "Toolchain")
-
-    XCTAssertEqual(state.liveText, "korzystając z Toolchain 2024 i dalej mówię")
-  }
-
-  func testTailPatchTargetsOnlyItsOwnUtterance() {
-    let state = OverlayState()
-    state.handleRecordingPreparing()
-    state.handleRecordingStarted()
-    state.applyFinal(utteranceId: 1, "pierwsze zdanie")
-    state.applyFinal(utteranceId: 2, "drugie zdanie")
-
-    state.applyReplaceRange(utteranceId: 2, start: 0, end: 6, text: "trzecie")
-
-    XCTAssertEqual(state.liveText, "pierwsze zdanie trzecie zdanie")
-  }
-
-  /// Offsets are Rust-canonical char offsets. Polish diacritics are 2-byte in
-  /// UTF-8, so any byte-indexed reading of the window slices the wrong span.
-  func testTailPatchOffsetsAreCharsNotBytes() {
-    let state = OverlayState()
-    state.handleRecordingPreparing()
-    state.handleRecordingStarted()
-    state.applyFinal(utteranceId: 1, "zażółć gęślą")
-
-    state.applyReplaceRange(utteranceId: 1, start: 7, end: 12, text: "jaźń")
-
-    XCTAssertEqual(state.liveText, "zażółć jaźń")
-  }
-
-  func testTailPatchOutOfRangeOrUnboundLeavesTranscriptIntact() {
-    let state = OverlayState()
-    state.handleRecordingPreparing()
-    state.handleRecordingStarted()
-    state.applyFinal(utteranceId: 1, "krótkie")
-
-    state.applyReplaceRange(utteranceId: 9, start: 0, end: 3, text: "X")
-    state.applyReplaceRange(utteranceId: 1, start: 0, end: 999, text: "X")
-
-    XCTAssertEqual(state.liveText, "krótkie")
-  }
-
-  // ── TailPatch × ContextMarker coexistence ───────────────────────────────
-  //
-  // A `{selection_N}` marker anchors to a POSITION in the live text captured
-  // at selection time. A TailPatch that changes the length of an earlier span
-  // moves every character behind it — so an un-rebased marker silently walks
-  // into the middle of a different word. The marker is an intent fence (it
-  // tells the agent where the user's selection belongs); a drifted fence is
-  // worse than a missing one.
-
-  func testTailPatchKeepsLaterContextMarkerAnchoredToItsWord() {
-    let state = OverlayState()
-    state.applyIndicatorMode(.assistive)
-    state.handleRecordingPreparing()
-    state.handleRecordingStarted()
-    state.applyFinal(utteranceId: 1, "alpha beta")
-    // Marker captured at the end of the visible text.
-    state.applyContextMarker(position: 10, marker: "{selection_1}")
-    XCTAssertEqual(state.liveText, "alpha beta {selection_1}")
-
-    // Layer 1 grows the span before it by 3 chars.
-    state.applyReplaceRange(utteranceId: 1, start: 0, end: 5, text: "alphabet")
-
-    XCTAssertEqual(
-      state.liveText,
-      "alphabet beta {selection_1}",
-      "marker must ride the patch delta, not stay on a stale absolute offset"
-    )
-  }
-
-  func testTailPatchLeavesEarlierContextMarkerUntouched() {
-    let state = OverlayState()
-    state.applyIndicatorMode(.assistive)
-    state.handleRecordingPreparing()
-    state.handleRecordingStarted()
-    state.applyFinal(utteranceId: 1, "alpha beta")
-    state.applyContextMarker(position: 5, marker: "{selection_1}")
-
-    // Patch lands entirely AFTER the marker.
-    state.applyReplaceRange(utteranceId: 1, start: 6, end: 10, text: "betka")
-
-    XCTAssertEqual(state.liveText, "alpha {selection_1} betka")
-  }
-
-  func testTailPatchNeitherDropsNorDuplicatesMarkers() {
-    let state = OverlayState()
-    state.applyIndicatorMode(.assistive)
-    state.handleRecordingPreparing()
-    state.handleRecordingStarted()
-    state.applyFinal(utteranceId: 1, "alpha beta")
-    state.applyContextMarker(position: 5, marker: "{selection_1}")
-    state.applyContextMarker(position: 10, marker: "{selection_2}")
-
-    state.applyReplaceRange(utteranceId: 1, start: 0, end: 5, text: "alphabet")
-
-    let rendered = state.liveText
-    XCTAssertEqual(
-      rendered.components(separatedBy: "{selection_1}").count - 1, 1,
-      "marker 1 must appear exactly once"
-    )
-    XCTAssertEqual(
-      rendered.components(separatedBy: "{selection_2}").count - 1, 1,
-      "marker 2 must appear exactly once"
-    )
-    XCTAssertEqual(rendered, "alphabet {selection_1} beta {selection_2}")
-  }
-
-  /// A marker captured INSIDE the span a later patch rewrites has lost its
-  /// anchor text. It must collapse to the patch boundary — never vanish
-  /// (dropped intent) and never land past the replacement (drifted intent).
-  func testContextMarkerInsideAPatchedSpanCollapsesToTheBoundary() {
-    let state = OverlayState()
-    state.applyIndicatorMode(.assistive)
-    state.handleRecordingPreparing()
-    state.handleRecordingStarted()
-    state.applyFinal(utteranceId: 1, "alpha beta")
-    state.applyContextMarker(position: 3, marker: "{selection_1}")
-
-    state.applyReplaceRange(utteranceId: 1, start: 0, end: 5, text: "omega")
-
-    // Rendered at the boundary, so the word-boundary padding rule applies.
-    XCTAssertEqual(state.liveText, "{selection_1} omega beta")
-  }
-
   func testAnyAgentFinalEditPermanentlyVetoesAutoSendUntilButton() async {
     let clock = OverlayStateTestClock()
     let engine = OverlayStateTestEngine()
@@ -1437,7 +1228,7 @@ final class OverlayStateTests: XCTestCase {
     state.applyIndicatorMode(.assistive)
     state.handleRecordingPreparing()
     state.handleRecordingStarted()
-    state.applyFinal(utteranceId: 1, "original final")
+    projectText("original final", to: state, terminal: true)
     state.finishControllerRecording()
     state.userEditedTranscript("edited final")
     state.userEditedTranscript("original final")
@@ -1461,6 +1252,8 @@ final class OverlayStateTests: XCTestCase {
     state.onClose = { closeCount += 1 }
     state.handleRecordingPreparing()
     state.handleRecordingStarted()
+    state.applyNoSpeech(reason: "no_speech_detected")
+    projectText("", to: state, terminal: true)
     state.finishControllerRecording()
 
     XCTAssertEqual(state.mode, .noSpeech)
@@ -1480,28 +1273,6 @@ final class OverlayStateTests: XCTestCase {
     clock.now = 5
     state.fireAutoHideNowForTests()
     XCTAssertEqual(closeCount, 1)
-  }
-
-  func testCaptureQualityIfEditedHitsAsyncPathOnUserEditWithoutBlocking() {
-    // D-02: exercise quality capture decision (delivered != edited on .formatted)
-    // and the fire-and-forget Task.detached (Copy/Send/Close must not block on I/O).
-    // Uses applyFinalTranscript which seeds deliveredText (the pre-edit value).
-    let state = OverlayState()
-    var closeCount = 0
-    state.onClose = { closeCount += 1 }
-
-    // Seed delivered (raw from final transcript) then user edits formatted.
-    state.applyFinalTranscript("original delivered transcript here")
-    state.formattedText = "original delivered transcript here with user fix"
-    state.mode = .formatted
-
-    // Copy triggers captureQualityIfEdited because texts differ; must return immediately.
-    let pasteboard = NSPasteboard(
-      name: NSPasteboard.Name("codescribe.tests.overlay-quality.\(UUID().uuidString)")
-    )
-    state.copyToPasteboard(pasteboard)
-    XCTAssertEqual(closeCount, 0, "quality capture must not change Copy's stay-visible contract")
-    // The async commit to quality + lexicon happens off-main; test reaches here without wait.
   }
 
   func testOverlayOffNeverOrdersPanelFront() {
@@ -1711,51 +1482,6 @@ final class OverlayStateTests: XCTestCase {
     XCTAssertFalse(panel.canBecomeKey)
   }
 
-  func testLowConfidenceBadgeVisibilityLogic() {
-    XCTAssertFalse(
-      OverlayState.OverlayConfidence.showsLowConfidenceBadge(avgLogprob: -0.2, flags: [])
-    )
-    XCTAssertTrue(
-      OverlayState.OverlayConfidence.showsLowConfidenceBadge(avgLogprob: -1.4, flags: [])
-    )
-    XCTAssertTrue(
-      OverlayState.OverlayConfidence.showsLowConfidenceBadge(
-        avgLogprob: -0.3,
-        flags: ["possible_hallucination_logprob"]
-      )
-    )
-    XCTAssertEqual(
-      OverlayState.OverlayConfidence.confidenceLabel(avgLogprob: -1.4),
-      "low"
-    )
-    XCTAssertEqual(
-      OverlayState.OverlayConfidence.confidenceLabel(avgLogprob: -0.2),
-      "high"
-    )
-  }
-
-  func testApplyFinalTracksSessionConfidenceForBadge() {
-    let state = OverlayState()
-    state.applyFinal(
-      utteranceId: 1,
-      "pierwsze",
-      avgLogprob: -0.3,
-      speechPct: 0.9,
-      confidenceFlags: []
-    )
-    XCTAssertFalse(state.showsLowConfidenceBadge)
-    state.applyFinal(
-      utteranceId: 2,
-      "drugie",
-      avgLogprob: -1.5,
-      speechPct: 0.4,
-      confidenceFlags: ["possible_hallucination_logprob"]
-    )
-    XCTAssertEqual(state.sessionAvgLogprob, -1.5)
-    XCTAssertTrue(state.showsLowConfidenceBadge)
-    XCTAssertEqual(state.confidenceBadgeText, "low confidence")
-  }
-
   // MARK: Speech Recognition TCC error rewriting
 
   func testSpeechAuthNotDeterminedRewritesToActionableNotice() {
@@ -1800,16 +1526,15 @@ final class OverlayStateTests: XCTestCase {
   /// NOTHING arriving on this channel may discard a non-empty draft.
   func testEngineWarningNeverDiscardsCommittedTranscript() {
     let state = OverlayState()
-    state.applyFinal(utteranceId: 1, "zdanie pierwsze")
-    state.applyFinal(utteranceId: 2, "zdanie drugie")
+    projectText("zdanie pierwsze zdanie drugie", to: state)
 
     state.handleError(
       message:
         "apple_final_window_overlap_normalized: Apple final overlap removed at segment boundary")
 
     XCTAssertNotEqual(state.mode, .error, "an error with a draft must not discard the take")
-    XCTAssertEqual(state.committedUtterances, ["zdanie pierwsze", "zdanie drugie"])
-    XCTAssertTrue(state.liveText.contains("zdanie pierwsze"))
+    XCTAssertEqual(state.activeText, "zdanie pierwsze zdanie drugie")
+    XCTAssertEqual(state.liveText, "zdanie pierwsze zdanie drugie")
   }
 
   /// Born from the PR #73 review (2026-08-13): after the bridge-side warning
@@ -1825,14 +1550,14 @@ final class OverlayStateTests: XCTestCase {
     var stopped = false
     state.onRecordingStopped = { stopped = true }
     state.handleRecordingStarted()
-    state.applyFinal(utteranceId: 1, "zdanie pierwsze")
+    projectText("zdanie pierwsze", to: state)
 
     state.handleError(message: "transcription_failed: engine gave up mid-take")
 
     XCTAssertEqual(state.mode, .formatted, "kept draft lands on the normal terminal surface")
     XCTAssertEqual(state.statusText, "done", "the failed session must actually end")
     XCTAssertTrue(stopped, "stop parity must fire — no zombie Recording pill")
-    XCTAssertEqual(state.committedUtterances, ["zdanie pierwsze"])
+    XCTAssertEqual(state.activeText, "zdanie pierwsze")
     XCTAssertEqual(state.toast, "Dictation failed — transcript kept")
   }
 
@@ -1843,75 +1568,6 @@ final class OverlayStateTests: XCTestCase {
     let state = OverlayState()
     state.handleError(message: "layer1_lane_degraded: Layer 1 lane fell back")
     XCTAssertEqual(state.mode, .error)
-  }
-
-  // MARK: W13-6B highlights + Teach
-
-  func testHighlightLaneDefaultsOffSoExistingReplaceDoesNotTint() {
-    let state = OverlayState()
-    state.handleRecordingStarted()
-    state.applyFinal(utteranceId: 1, "uni agentka")
-    state.applyReplaceRange(
-      utteranceId: 1, start: 0, end: 11, text: "Junie", source: .lexicon)
-    XCTAssertTrue(state.highlights.isEmpty)
-    XCTAssertEqual(state.committedUtterances, ["Junie"])
-  }
-
-  func testLexiconReplaceRecordsHighlightWhenLaneArmed() {
-    let state = OverlayState()
-    state.highlightsEnabled = true
-    state.handleRecordingStarted()
-    state.applyFinal(utteranceId: 1, "RIPOS i Edyta")
-    state.applyReplaceRange(
-      utteranceId: 1, start: 0, end: 5, text: "Reports", source: .lexicon)
-    XCTAssertEqual(state.highlights.count, 1)
-    XCTAssertEqual(state.highlights[0].kind, .lexiconCorrected)
-    XCTAssertEqual(state.highlights[0].before, "RIPOS")
-    XCTAssertEqual(state.highlights[0].after, "Reports")
-    XCTAssertEqual(state.highlights[0].charStart, 0)
-    XCTAssertEqual(state.highlights[0].charEnd, 7)
-    XCTAssertEqual(state.committedUtterances, ["Reports i Edyta"])
-  }
-
-  func testEmptyFinalAfterVadBecomesSpeechGap() {
-    let state = OverlayState()
-    state.highlightsEnabled = true
-    state.handleRecordingStarted()
-    state.applyFinal(utteranceId: 1, "słowo")
-    state.applyVad(true)
-    state.applyFinal(utteranceId: 2, "")
-    XCTAssertEqual(state.highlights.map(\.kind), [.speechGap])
-    XCTAssertEqual(state.highlights[0].after, "∅")
-    XCTAssertEqual(state.highlights[0].utteranceId, 2)
-    XCTAssertEqual(state.committedUtterances, ["słowo"])
-  }
-
-  func testEmptyFinalWithoutSpeechDoesNotInventAGap() {
-    let state = OverlayState()
-    state.highlightsEnabled = true
-    state.handleRecordingStarted()
-    state.applyFinal(utteranceId: 1, "")
-    XCTAssertTrue(state.highlights.isEmpty)
-  }
-
-  func testSendHighlightToTeachUsesInjectedWriterAndMarksTaught() {
-    let state = OverlayState()
-    state.highlightsEnabled = true
-    var taught: [String] = []
-    state.teachSpan = { highlight in
-      taught.append("\(highlight.teachVariant)->\(highlight.teachCanonical)")
-      return "Saved — 1 pair learned"
-    }
-    state.handleRecordingStarted()
-    state.applyFinal(utteranceId: 1, "uni agentka")
-    state.applyReplaceRange(
-      utteranceId: 1, start: 0, end: 11, text: "Junie", source: .lexicon)
-    XCTAssertEqual(state.highlights.count, 1)
-    state.sendHighlightToTeach(state.highlights[0])
-    XCTAssertEqual(taught, ["uni agentka->Junie"])
-    XCTAssertTrue(state.highlights[0].taught)
-    XCTAssertEqual(state.lastTeachAcknowledgement, "Saved — 1 pair learned")
-    XCTAssertEqual(state.toast, "Saved — 1 pair learned")
   }
 
   func testCanvasRunsSplitLexiconWordAndKeepPreview() {
