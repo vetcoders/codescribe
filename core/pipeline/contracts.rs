@@ -146,11 +146,6 @@ pub enum TranscriptionConfidenceFlag {
     // ── Engine-owned (derived inside the transcription engine) ──
     VeryLowSpeech,
     PossibleHallucinationLogprob,
-    /// Silero-based post-filter dropped one or more Whisper segments
-    /// that fell inside classified trailing silence.
-    SileroDroppedTailHallucinations {
-        count: u32,
-    },
 
     // ── App-level provenance (surfaced by controller truth adjudication) ──
     /// Hold path attempted a final-pass against the saved WAV but the
@@ -184,9 +179,6 @@ impl std::fmt::Display for TranscriptionConfidenceFlag {
             Self::VeryLowSpeech => write!(f, "very_low_speech"),
             Self::PossibleHallucinationLogprob => {
                 write!(f, "possible_hallucination_logprob")
-            }
-            Self::SileroDroppedTailHallucinations { count } => {
-                write!(f, "silero_dropped_tail_hallucinations:{count}")
             }
             Self::LocalFinalPassUnavailable => write!(f, "local_final_pass_unavailable"),
             Self::CloudFallbackUsed => write!(f, "cloud_fallback_used"),
@@ -253,8 +245,9 @@ pub struct TranscriptionVerdict {
 }
 
 impl TranscriptionVerdict {
-    /// Build a verdict and materialize engine-owned confidence flags once at the
-    /// API boundary so downstream consumers do not have to recreate heuristics.
+    /// Build a verdict through the ordinary `from_parts` path and materialize
+    /// engine-owned confidence flags once at the API boundary so downstream
+    /// consumers do not have to recreate heuristics.
     pub fn from_parts(
         text: String,
         raw: RawTranscript,
@@ -274,28 +267,6 @@ impl TranscriptionVerdict {
             final_pass,
             confidence_flags,
         }
-    }
-
-    /// Build a verdict and append typed Silero drop telemetry when the
-    /// file-level post-filter removed tail hallucinations.
-    pub fn from_parts_with_silero_drops(
-        text: String,
-        raw: RawTranscript,
-        vad: Option<VadVerdict>,
-        source: TranscriptionSource,
-        engine: TranscriptionEngineVerdict,
-        final_pass: Option<FinalPassVerdict>,
-        tail_drop_count: u32,
-    ) -> Self {
-        let mut verdict = Self::from_parts(text, raw, vad, source, engine, final_pass);
-        if tail_drop_count > 0 {
-            verdict.confidence_flags.push(
-                TranscriptionConfidenceFlag::SileroDroppedTailHallucinations {
-                    count: tail_drop_count,
-                },
-            );
-        }
-        verdict
     }
 }
 
@@ -1676,36 +1647,6 @@ mod tests {
         );
     }
 
-    /// Silero tail-drop count appends SileroDroppedTailHallucinations flag.
-    #[test]
-    fn verdict_from_parts_with_silero_drops_adds_typed_flag() {
-        let verdict = TranscriptionVerdict::from_parts_with_silero_drops(
-            "krótki tekst".to_string(),
-            RawTranscript {
-                text: "krótki tekst".to_string(),
-                ..Default::default()
-            },
-            Some(VadVerdict {
-                speech_pct: 64.0,
-                speech_windows: 8,
-                total_windows: 12,
-                no_speech: false,
-                no_speech_reason: None,
-                sparkline: "▁▃▅▇█▇".to_string(),
-            }),
-            TranscriptionSource::LocalFinalPass,
-            TranscriptionEngineVerdict::whisper(TranscriptionEngineMode::EmbeddedDefault),
-            None,
-            2,
-        );
-
-        assert!(
-            verdict.confidence_flags.contains(
-                &TranscriptionConfidenceFlag::SileroDroppedTailHallucinations { count: 2 }
-            )
-        );
-    }
-
     // ── Truth QA: UtteranceFinal confidence contract ──
 
     /// UtteranceFinal can embed precomputed confidence_flags for sinks.
@@ -2009,7 +1950,7 @@ mod tests {
         }
     }
 
-    /// All TranscriptionConfidenceFlag variants (incl. payload) serde.
+    /// All TranscriptionConfidenceFlag variants serde.
     #[test]
     fn confidence_flag_serde_roundtrip_covers_all_variants() {
         let cases = [
@@ -2038,27 +1979,6 @@ mod tests {
                 "serde snake_case must match Display"
             );
         }
-
-        let structured = TranscriptionConfidenceFlag::SileroDroppedTailHallucinations { count: 3 };
-        let json = serde_json::to_value(structured).expect("serialize structured flag");
-        assert_eq!(
-            json,
-            serde_json::json!({
-                "silero_dropped_tail_hallucinations": {
-                    "count": 3
-                }
-            })
-        );
-        let restored: TranscriptionConfidenceFlag =
-            serde_json::from_value(json).expect("deserialize structured flag");
-        assert_eq!(
-            restored,
-            TranscriptionConfidenceFlag::SileroDroppedTailHallucinations { count: 3 }
-        );
-        assert_eq!(
-            structured.to_string(),
-            "silero_dropped_tail_hallucinations:3"
-        );
     }
 
     /// Legacy plain string confidence tokens still deserialize.

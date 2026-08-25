@@ -214,14 +214,7 @@ default = "2.0"
 type = "f32"
 reload = "hot"
 category = "vad"
-description = "Trailing silence threshold before the tail filter can drop a low-speech suffix"
-
-[vars.CODESCRIBE_TAIL_DROP_ENABLED]
-default = "1"
-type = "bool"
-reload = "hot"
-category = "vad"
-description = "Enable low-speech trailing-tail removal after the Silero gate"
+description = "Trailing silence threshold for Silero VAD timing evidence"
 
 [vars.TRANSCRIPTION_OVERLAY_ENABLED]
 default = "1"

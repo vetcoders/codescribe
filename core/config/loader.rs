@@ -733,7 +733,7 @@ impl Config {
         }
         // VAD config lives in `core/vad/config.rs` with hardcoded defaults and
         // opt-in power-user env overrides (`CODESCRIBE_UTTERANCE_GAP_SEC`,
-        // `CODESCRIBE_TAIL_SILENCE_SEC`, `CODESCRIBE_TAIL_DROP_ENABLED`).
+        // `CODESCRIBE_TAIL_SILENCE_SEC`).
         // No legacy SILENCE_* variables - single source of truth.
 
         // History (default: on to avoid data loss)

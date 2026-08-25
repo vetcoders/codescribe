@@ -115,7 +115,6 @@ pub enum QualityIssueKind {
     // ── Confidence flags ─────────────────────────────────────────────────
     VeryLowSpeech,
     PossibleHallucinationLogprob,
-    SileroDroppedTailHallucinations,
     LocalFinalPassUnavailable,
     CloudFallbackUsed,
     StreamingPreviewUsedAsVerdict,
@@ -247,7 +246,6 @@ impl QualityIssueKind {
         Self::LiveMissWhisperOk,
         Self::VeryLowSpeech,
         Self::PossibleHallucinationLogprob,
-        Self::SileroDroppedTailHallucinations,
         Self::LocalFinalPassUnavailable,
         Self::CloudFallbackUsed,
         Self::StreamingPreviewUsedAsVerdict,
@@ -300,7 +298,6 @@ impl QualityIssueKind {
             Self::LiveMissWhisperOk => "live_miss_whisper_ok",
             Self::VeryLowSpeech => "very_low_speech",
             Self::PossibleHallucinationLogprob => "possible_hallucination_logprob",
-            Self::SileroDroppedTailHallucinations => "silero_dropped_tail_hallucinations",
             Self::LocalFinalPassUnavailable => "local_final_pass_unavailable",
             Self::CloudFallbackUsed => "cloud_fallback_used",
             Self::StreamingPreviewUsedAsVerdict => "streaming_preview_used_as_verdict",
@@ -511,15 +508,6 @@ impl QualityIssueKind {
                 "avg_logprob crossed the hallucination ceiling.",
                 "avg_logprob is above -1.0, or the text is short-whitelist speech.",
                 "Inspect the span before teaching lexicon; this score is diagnostic only.",
-            ),
-            Self::SileroDroppedTailHallucinations => spec(
-                self,
-                QualityIssueFamily::Confidence,
-                FindingSeverity::Note,
-                FindingTarget::EngineCode,
-                "Silero dropped Whisper segments that sat in trailing silence.",
-                "Those segments overlap speech frames.",
-                "This is a successful filter, not a Daily error.",
             ),
             Self::LocalFinalPassUnavailable => spec(
                 self,
@@ -918,9 +906,6 @@ fn flag_findings(evidence: &TakeQualityEvidence) -> Vec<SupervisorFinding> {
 
 fn kind_for_flag(flag: &str) -> Option<QualityIssueKind> {
     let token = flag.trim();
-    if token.starts_with("silero_dropped_tail_hallucinations") {
-        return Some(QualityIssueKind::SileroDroppedTailHallucinations);
-    }
     match token {
         "very_low_speech" => Some(QualityIssueKind::VeryLowSpeech),
         "possible_hallucination_logprob" => Some(QualityIssueKind::PossibleHallucinationLogprob),
@@ -1285,15 +1270,11 @@ mod tests {
     fn confidence_flag_maps_to_typed_kind() {
         let report = classify_take_findings(&TakeQualityEvidence {
             daily_text: "ok".into(),
-            confidence_flags: vec![
-                "possible_hallucination_logprob".into(),
-                "silero_dropped_tail_hallucinations:2".into(),
-            ],
+            confidence_flags: vec!["possible_hallucination_logprob".into()],
             ..TakeQualityEvidence::default()
         });
         let kinds: HashSet<_> = report.findings.iter().map(|row| row.kind).collect();
         assert!(kinds.contains(&QualityIssueKind::PossibleHallucinationLogprob));
-        assert!(kinds.contains(&QualityIssueKind::SileroDroppedTailHallucinations));
     }
 
     #[test]

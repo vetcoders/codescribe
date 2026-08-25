@@ -115,13 +115,13 @@ final class VoiceLabTests: XCTestCase {
       timestampMs: 42,
       avgLogprob: -1.4,
       speechPct: 0.72,
-      confidenceFlags: ["silero_dropped_tail_hallucinations"]
+      confidenceFlags: ["possible_hallucination_logprob"]
     )
 
     XCTAssertTrue(row.isLowConfidence)
     XCTAssertTrue(row.confidenceSummary.contains("Whisper logprob -1.40"))
     XCTAssertTrue(row.confidenceSummary.contains("Silero/VAD speech 72%"))
-    XCTAssertTrue(row.confidenceSummary.contains("silero_dropped_tail_hallucinations"))
+    XCTAssertTrue(row.confidenceSummary.contains("possible_hallucination_logprob"))
   }
 
   func testArchivedAudioLookupRequiresExactRawTranscript() throws {

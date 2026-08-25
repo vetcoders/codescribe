@@ -26,13 +26,9 @@ pub struct VadConfig {
     /// Silence run at or below this duration is treated as an in-utterance gap.
     pub utterance_gap_threshold_sec: f32,
 
-    /// Silence run at the end of the recording at or above this duration
-    /// becomes `TrailingSilence` and can drop Whisper tail hallucinations.
+    /// Silence run at the end of the recording at or above this duration is
+    /// classified as `TrailingSilence` acoustic timing evidence.
     pub tail_silence_threshold_sec: f32,
-
-    /// When disabled, the Whisper post-filter keeps segments even if Silero
-    /// classified their window as trailing silence.
-    pub tail_drop_enabled: bool,
 }
 
 /// Default speech probability threshold for Silero.
@@ -48,15 +44,12 @@ pub const SILERO_DEFAULT_PRE_ROLL_SEC: f32 = 0.064;
 /// Default silence run still treated as an in-utterance gap, not a boundary.
 /// Overridable via `CODESCRIBE_UTTERANCE_GAP_SEC`.
 pub const SILERO_DEFAULT_UTTERANCE_GAP_SEC: f32 = 0.5;
-/// Default trailing-silence run that qualifies for Whisper tail-drop.
+/// Default trailing-silence run used by VAD timing classification.
 /// Overridable via `CODESCRIBE_TAIL_SILENCE_SEC`.
 pub const SILERO_DEFAULT_TAIL_SILENCE_SEC: f32 = 2.0;
-/// Whether the Whisper tail-drop post-filter is on by default.
-/// Overridable via `CODESCRIBE_TAIL_DROP_ENABLED`.
-pub const SILERO_DEFAULT_TAIL_DROP_ENABLED: bool = true;
 
 impl Default for VadConfig {
-    /// Silero defaults plus env overrides for gap/tail/drop knobs.
+    /// Silero defaults plus env overrides for gap/tail timing knobs.
     fn default() -> Self {
         Self {
             threshold: SILERO_DEFAULT_THRESHOLD,
@@ -74,10 +67,6 @@ impl Default for VadConfig {
                 SILERO_DEFAULT_TAIL_SILENCE_SEC,
             )
             .max(0.0),
-            tail_drop_enabled: env_bool(
-                "CODESCRIBE_TAIL_DROP_ENABLED",
-                SILERO_DEFAULT_TAIL_DROP_ENABLED,
-            ),
         }
     }
 }
@@ -125,19 +114,6 @@ fn env_f32(key: &str, default: f32) -> f32 {
     env::var(key)
         .ok()
         .and_then(|value| value.trim().parse::<f32>().ok())
-        .unwrap_or(default)
-}
-
-/// Read `key` as a boolean (`1/true/yes/on` vs `0/false/no/off`), falling back
-/// to `default` when unset or unrecognized.
-fn env_bool(key: &str, default: bool) -> bool {
-    env::var(key)
-        .ok()
-        .map(|value| match value.trim().to_ascii_lowercase().as_str() {
-            "1" | "true" | "yes" | "on" => true,
-            "0" | "false" | "no" | "off" => false,
-            _ => default,
-        })
         .unwrap_or(default)
 }
 
@@ -190,7 +166,6 @@ mod tests {
     fn test_default_config() {
         let _gap = EnvGuard::unset("CODESCRIBE_UTTERANCE_GAP_SEC");
         let _tail = EnvGuard::unset("CODESCRIBE_TAIL_SILENCE_SEC");
-        let _drop = EnvGuard::unset("CODESCRIBE_TAIL_DROP_ENABLED");
         let config = VadConfig::default();
         assert!((config.threshold - SILERO_DEFAULT_THRESHOLD).abs() < f32::EPSILON);
         assert!(
@@ -209,7 +184,6 @@ mod tests {
             (config.tail_silence_threshold_sec - SILERO_DEFAULT_TAIL_SILENCE_SEC).abs()
                 < f32::EPSILON
         );
-        assert_eq!(config.tail_drop_enabled, SILERO_DEFAULT_TAIL_DROP_ENABLED);
     }
 
     /// Sensitive threshold sits strictly below conservative.
@@ -218,7 +192,6 @@ mod tests {
     fn test_sensitive_vs_conservative() {
         let _gap = EnvGuard::unset("CODESCRIBE_UTTERANCE_GAP_SEC");
         let _tail = EnvGuard::unset("CODESCRIBE_TAIL_SILENCE_SEC");
-        let _drop = EnvGuard::unset("CODESCRIBE_TAIL_DROP_ENABLED");
         let sensitive = VadConfig::sensitive();
         let conservative = VadConfig::conservative();
         assert!(sensitive.threshold < conservative.threshold);
@@ -230,11 +203,9 @@ mod tests {
     fn tail_silence_env_overrides_are_honored() {
         let _gap = EnvGuard::set("CODESCRIBE_UTTERANCE_GAP_SEC", "0.75");
         let _tail = EnvGuard::set("CODESCRIBE_TAIL_SILENCE_SEC", "3.5");
-        let _drop = EnvGuard::set("CODESCRIBE_TAIL_DROP_ENABLED", "0");
 
         let config = VadConfig::default();
         assert!((config.utterance_gap_threshold_sec - 0.75).abs() < f32::EPSILON);
         assert!((config.tail_silence_threshold_sec - 3.5).abs() < f32::EPSILON);
-        assert!(!config.tail_drop_enabled);
     }
 }
