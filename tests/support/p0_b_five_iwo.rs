@@ -11,7 +11,7 @@ use codescribe_core::pipeline::acoustic_ledger::{
     ObservationProducer, OccurrenceIdentity as LedgerOccurrenceIdentity, RefuseReason,
 };
 use serde::Deserialize;
-use serde_json::{Value, json};
+use serde_json::Value;
 use sha2::{Digest, Sha256};
 use std::collections::BTreeSet;
 use std::fs;
@@ -19,8 +19,15 @@ use std::path::{Path, PathBuf};
 
 const MANIFEST_REL: &str = "tests/fixtures/p0_b_five_iwo_manifest.json";
 const EXPECTED_SCHEMA: &str = "codescribe.p0-b.five-iwo-fixture.v1";
+const BUS_EVIDENCE_SCHEMA: &str = "codescribe.transcript-evidence.v1";
 const SESSION_ID: &str = "p0-b-five-iwo";
 const CAPTURE_EPOCH: u64 = 1;
+
+#[derive(Clone, Debug)]
+struct PublishedBusTrace {
+    sealed_bytes: String,
+    post_automatic_attempt_bytes: String,
+}
 
 #[derive(Debug, Deserialize)]
 struct FixtureManifest {
@@ -232,10 +239,7 @@ fn admit_fixture_to_ledger(
             "Whisper must attach to occurrence {}, not mint another one",
             burst.ordinal
         );
-        assert!(ledger.note_frontier_return(
-            &occurrence,
-            ObservationProducer::Whisper
-        ));
+        assert!(ledger.note_frontier_return(&occurrence, ObservationProducer::Whisper));
     }
     (ledger, admitted)
 }
@@ -243,7 +247,7 @@ fn admit_fixture_to_ledger(
 fn publish_through_reducer_and_bus(
     manifest: &FixtureManifest,
     bursts: &[&FixtureBurst],
-) -> (String, Value) {
+) -> (String, PublishedBusTrace) {
     use super::super::emitter::TranscriptReducer;
 
     let (mut ledger, admitted) = admit_fixture_to_ledger(manifest, bursts);
@@ -271,210 +275,264 @@ fn publish_through_reducer_and_bus(
     bus.publish_started();
 
     let mut reducer = TranscriptReducer::default();
+    let mut last_automatic_revision = None;
     for (observation, receipt) in &admitted {
-        reducer
-            .apply_ledger_mutation(&ledger, observation, receipt)
-            .expect("qualified ledger mutation must revise the document");
+        last_automatic_revision = Some(
+            reducer
+                .apply_ledger_mutation(&ledger, observation, receipt)
+                .expect("qualified ledger mutation must revise the document"),
+        );
     }
     let terminal_revision = reducer
         .apply_ledger_seal(&terminal)
         .expect("terminal seal must revise the document");
-    let evidence_events = bus.publish_revision(&terminal_revision, &ledger);
-    assert_eq!(evidence_events.len(), bursts.len());
+    let _ = bus.publish_revision(&terminal_revision, &ledger);
     let rendered = terminal_revision.rendered_text.clone();
+    let sealed_bytes = fs::read_to_string(&path).expect("read terminal Bus trace");
 
-    let words = evidence_events
-        .iter()
-        .map(|event| {
-            let receipt = event
-                .acoustic_receipts
-                .first()
-                .expect("one acoustic receipt per occurrence");
-            let occurrence = LedgerOccurrenceIdentity::new(
-                &event.occurrence_session_id,
-                event.capture_epoch,
-                event.sample_start,
-                event.sample_end,
-            );
-            let mut layers = ledger
-                .layer_trail_for(&occurrence)
-                .map(|decision| {
-                    json!({
-                        "layer": decision.observation.producer.as_str(),
-                        "decision": decision.decision.as_str(),
-                        "receipt": decision.receipt_id,
-                    })
-                })
-                .collect::<Vec<_>>();
-            layers.push(json!({
-                "layer": "retained_text",
-                "decision": "retain",
-                "receipt": format!("reducer-revision-{}", terminal_revision.revision),
-            }));
-            json!({
-                "text": event.label,
-                "acoustic_serial_version": receipt.acoustic_serial_version,
-                "acoustic_serial": receipt.acoustic_serial,
-                "sample_start": receipt.sample_start,
-                "sample_end": receipt.sample_end,
-                "duration_ms": receipt.duration_ms,
-                "energy_integral": receipt.energy_integral,
-                "mean_rms_dbfs": receipt.mean_rms_dbfs,
-                "peak_dbfs": receipt.peak_dbfs,
-                "evidence_calibration_version": receipt.evidence_calibration_version,
-                "vad_open_sample": receipt.vad_open_sample,
-                "vad_close_sample": receipt.vad_close_sample,
-                "observation_frontier": "closed",
-                "layer_decisions": layers,
-                "seal_receipt": {
-                    "state": "sealed",
-                    "receipt": receipt.seal_receipt,
-                },
-                "post_seal_mutations": [],
-            })
-        })
-        .collect::<Vec<_>>();
-    let trace = json!({
-        "status": "transcript_sealed",
-        "text": rendered,
-        "energy_lookup_available": false,
-        "terminal_ledger_seal": {
-            "state": "sealed",
-            "receipt": terminal.receipt_id,
+    let _ = bus.publish_revision(
+        last_automatic_revision
+            .as_ref()
+            .expect("at least one automatic reducer revision"),
+        &ledger,
+    );
+    let post_automatic_attempt_bytes =
+        fs::read_to_string(path).expect("read Bus trace after automatic replay attempt");
+
+    (
+        rendered,
+        PublishedBusTrace {
+            sealed_bytes,
+            post_automatic_attempt_bytes,
         },
-        "words": words,
-    });
-    let raw = fs::read_to_string(path).expect("read synthetic Bus trace");
-    assert!(raw.contains("codescribe.transcript-evidence.v1"));
-    (rendered, trace)
+    )
 }
 
-fn complete_oracle_trace(manifest: &FixtureManifest) -> Value {
-    let words = manifest
-        .bursts
-        .iter()
-        .map(|burst| {
-            json!({
-                "text": burst.label,
-                "acoustic_serial_version": 1,
-                "acoustic_serial": format!("p0b-{}", burst.ordinal),
-                "sample_start": burst.sample_start,
-                "sample_end": burst.sample_end,
-                "duration_ms": burst.duration_ms,
-                "energy_integral": burst.energy_integral,
-                "mean_rms_dbfs": burst.mean_rms_dbfs,
-                "peak_dbfs": burst.peak_dbfs,
-                "evidence_calibration_version": burst.evidence_calibration_version,
-                "vad_open_sample": burst.vad_open_sample,
-                "vad_close_sample": burst.vad_close_sample,
-                "observation_frontier": "closed",
-                "layer_decisions": [
-                    {"layer": "apple", "decision": "insert", "receipt": format!("apple-{}", burst.ordinal)},
-                    {"layer": "whisper", "decision": "preserve", "receipt": format!("whisper-{}", burst.ordinal)},
-                    {"layer": "retained_text", "decision": "retain", "receipt": format!("retained-{}", burst.ordinal)}
-                ],
-                "seal_receipt": {"state": "sealed", "receipt": format!("seal-{}", burst.ordinal)},
-                "post_seal_mutations": []
-            })
-        })
-        .collect::<Vec<_>>();
-    json!({
-        "status": "transcript_sealed",
-        "text": "Iwo Iwo Iwo Iwo Iwo",
-        "energy_lookup_available": false,
-        "terminal_ledger_seal": {"state": "sealed", "receipt": "terminal-p0b"},
-        "words": words
-    })
+fn complete_oracle_trace(manifest: &FixtureManifest) -> PublishedBusTrace {
+    let samples = load_pcm(manifest);
+    let bursts = energy_qualified(&samples, manifest);
+    publish_through_reducer_and_bus(manifest, &bursts).1
 }
 
-fn validate_oracle_trace(trace: &Value, expected: usize) -> Result<(), Vec<String>> {
+fn parse_bus_evidence(raw: &str) -> Result<Vec<TranscriptBusEvidenceEvent>, Vec<String>> {
     let mut failures = Vec::new();
-    if trace.get("status").and_then(Value::as_str) != Some("transcript_sealed") {
-        failures.push("missing terminal transcript seal".to_string());
+    let mut events = Vec::new();
+    for (index, line) in raw.lines().enumerate() {
+        if line.trim().is_empty() {
+            continue;
+        }
+        let value = match serde_json::from_str::<Value>(line) {
+            Ok(value) => value,
+            Err(error) => {
+                failures.push(format!("Bus JSONL line {} is invalid: {error}", index + 1));
+                continue;
+            }
+        };
+        if value.get("schema").and_then(Value::as_str) != Some(BUS_EVIDENCE_SCHEMA) {
+            continue;
+        }
+        match serde_json::from_value::<TranscriptBusEvidenceEvent>(value) {
+            Ok(event) => events.push(event),
+            Err(error) => failures.push(format!(
+                "Bus evidence line {} does not match {BUS_EVIDENCE_SCHEMA}: {error}",
+                index + 1
+            )),
+        }
     }
-    if trace
-        .pointer("/terminal_ledger_seal/state")
-        .and_then(Value::as_str)
-        != Some("sealed")
-    {
-        failures.push("missing terminal ledger seal receipt".to_string());
+    if failures.is_empty() {
+        Ok(events)
+    } else {
+        Err(failures)
     }
-    let words = trace
-        .get("words")
-        .and_then(Value::as_array)
-        .cloned()
-        .unwrap_or_default();
-    if words.len() != expected {
+}
+
+fn evidence_jsonl(events: &[TranscriptBusEvidenceEvent]) -> String {
+    let mut raw = events
+        .iter()
+        .map(|event| serde_json::to_string(event).expect("serialize Bus evidence mutant"))
+        .collect::<Vec<_>>()
+        .join("\n");
+    if !raw.is_empty() {
+        raw.push('\n');
+    }
+    raw
+}
+
+fn trace_from_evidence(events: &[TranscriptBusEvidenceEvent]) -> PublishedBusTrace {
+    let raw = evidence_jsonl(events);
+    PublishedBusTrace {
+        sealed_bytes: raw.clone(),
+        post_automatic_attempt_bytes: raw,
+    }
+}
+
+fn validate_oracle_trace(trace: &PublishedBusTrace, expected: usize) -> Result<(), Vec<String>> {
+    let mut failures = Vec::new();
+    let sealed_events = match parse_bus_evidence(&trace.sealed_bytes) {
+        Ok(events) => events,
+        Err(mut parse_failures) => {
+            failures.append(&mut parse_failures);
+            Vec::new()
+        }
+    };
+    let post_attempt_events = match parse_bus_evidence(&trace.post_automatic_attempt_bytes) {
+        Ok(events) => events,
+        Err(mut parse_failures) => {
+            failures.append(&mut parse_failures);
+            Vec::new()
+        }
+    };
+    if trace.sealed_bytes != trace.post_automatic_attempt_bytes {
+        failures
+            .push("Bus bytes changed after an automatic post-seal publication attempt".to_string());
+    }
+
+    let terminal_events = sealed_events
+        .iter()
+        .filter(|event| event.reducer_action == "record_ledger_terminal_seal")
+        .collect::<Vec<_>>();
+    if terminal_events.len() != expected {
         failures.push(format!(
             "five-Iwo conservation: expected {expected} committed words, observed {} (four-vs-five)",
-            words.len()
+            terminal_events.len()
         ));
     }
-    for (index, word) in words.iter().enumerate() {
+    if terminal_events.last().is_none_or(|event| {
+        let rendered_words = event.rendered_text.split_whitespace().collect::<Vec<_>>();
+        rendered_words.len() != expected
+            || rendered_words
+                .iter()
+                .any(|word| !word.eq_ignore_ascii_case("Iwo"))
+    }) {
+        failures.push("Bus rendered_text does not conserve five Iwo labels".to_string());
+    }
+    if terminal_events
+        .windows(2)
+        .any(|pair| pair[0].rendered_text != pair[1].rendered_text)
+    {
+        failures.push("terminal Bus events disagree on rendered_text".to_string());
+    }
+
+    let mut terminal_receipts = BTreeSet::new();
+    let mut previous_end = None;
+    let mut previous_sequence = None;
+    for (index, event) in terminal_events.iter().enumerate() {
         let ordinal = index + 1;
-        for field in [
-            "acoustic_serial_version",
-            "acoustic_serial",
-            "duration_ms",
-            "energy_integral",
-            "mean_rms_dbfs",
-            "peak_dbfs",
-            "evidence_calibration_version",
-            "vad_open_sample",
-            "vad_close_sample",
-            "seal_receipt",
-        ] {
-            if word.get(field).is_none() || word.get(field).is_some_and(Value::is_null) {
+        if event.session_id != SESSION_ID || event.occurrence_session_id != SESSION_ID {
+            failures.push(format!("word {ordinal} has the wrong Bus session identity"));
+        }
+        if event.capture_epoch != CAPTURE_EPOCH {
+            failures.push(format!("word {ordinal} has the wrong capture epoch"));
+        }
+        if event.document_index != index as u64 {
+            failures.push(format!("word {ordinal} has a non-canonical document index"));
+        }
+        if event.label != "Iwo" {
+            failures.push(format!("word {ordinal} lost the Iwo label"));
+        }
+        if previous_sequence.is_some_and(|sequence| event.sequence <= sequence) {
+            failures.push(format!("word {ordinal} has a replayed Bus sequence"));
+        }
+        previous_sequence = Some(event.sequence);
+        if previous_end.is_some_and(|sample_end| event.sample_start < sample_end) {
+            failures.push(format!("word {ordinal} overlaps an earlier PCM occurrence"));
+        }
+        previous_end = Some(event.sample_end);
+
+        if event.acoustic_receipts.len() != 1 {
+            failures.push(format!(
+                "word {ordinal} must carry exactly one acoustic receipt"
+            ));
+            continue;
+        }
+        let receipt = &event.acoustic_receipts[0];
+        if receipt.acoustic_serial_version == 0 {
+            failures.push(format!(
+                "word {ordinal} missing required evidence field acoustic_serial_version"
+            ));
+        }
+        if receipt.acoustic_serial.is_empty() {
+            failures.push(format!(
+                "word {ordinal} missing required evidence field acoustic_serial"
+            ));
+        }
+        if receipt.duration_ms == 0 {
+            failures.push(format!(
+                "word {ordinal} missing required evidence field duration_ms"
+            ));
+        }
+        if receipt.energy_integral <= 0.0 {
+            failures.push(format!("word {ordinal} lacks positive calibrated energy"));
+        }
+        if receipt.evidence_calibration_version.is_empty() {
+            failures.push(format!(
+                "word {ordinal} missing required evidence field evidence_calibration_version"
+            ));
+        }
+        if receipt.sample_start != event.sample_start
+            || receipt.sample_end != event.sample_end
+            || receipt.vad_open_sample != event.sample_start
+            || receipt.vad_close_sample != event.sample_end
+        {
+            failures.push(format!(
+                "word {ordinal} lacks exact PCM/VAD coverage in Bus evidence"
+            ));
+        }
+        let Some(seal_receipt) = receipt
+            .seal_receipt
+            .as_deref()
+            .filter(|receipt| !receipt.is_empty())
+        else {
+            failures.push(format!(
+                "word {ordinal} observation frontier is not proven closed by a Bus seal receipt"
+            ));
+            continue;
+        };
+        terminal_receipts.insert(seal_receipt);
+        if receipt.word_evidence_receipts.is_empty() {
+            failures.push(format!(
+                "word {ordinal} missing retained-text word evidence receipt"
+            ));
+        }
+        for required in ["apple-", "whisper-"] {
+            if !receipt
+                .layer_decision_receipts
+                .iter()
+                .any(|layer| layer.starts_with(required))
+            {
                 failures.push(format!(
-                    "word {ordinal} missing required evidence field {field}"
+                    "word {ordinal} missing {} layer decision",
+                    required.trim_end_matches('-')
                 ));
             }
         }
-        if word
-            .get("energy_integral")
-            .and_then(Value::as_f64)
-            .is_none_or(|energy| energy <= 0.0)
+    }
+    if terminal_events.len() == expected && terminal_receipts.len() != 1 {
+        failures.push("missing one shared terminal ledger seal receipt in Bus bytes".to_string());
+    }
+
+    let terminal_sequence = terminal_events.iter().map(|event| event.sequence).max();
+    if let Some(terminal_sequence) = terminal_sequence {
+        for event in post_attempt_events
+            .iter()
+            .filter(|event| event.sequence > terminal_sequence)
         {
-            failures.push(format!("word {ordinal} lacks positive calibrated energy"));
-        }
-        if word.get("observation_frontier").and_then(Value::as_str) != Some("closed") {
-            failures.push(format!("word {ordinal} observation frontier is not closed"));
-        }
-        let layers = word
-            .get("layer_decisions")
-            .and_then(Value::as_array)
-            .map(|history| {
-                history
-                    .iter()
-                    .filter_map(|entry| entry.get("layer").and_then(Value::as_str))
-                    .collect::<BTreeSet<_>>()
-            })
-            .unwrap_or_default();
-        for required in ["apple", "whisper", "retained_text"] {
-            if !layers.contains(required) {
-                failures.push(format!("word {ordinal} missing {required} layer decision"));
+            if event.reducer_action != "apply_manual_edit" {
+                failures.push(format!(
+                    "accepted automatic post-seal mutation via Bus action {}",
+                    event.reducer_action
+                ));
+                continue;
             }
-        }
-        if let Some(mutations) = word.get("post_seal_mutations").and_then(Value::as_array) {
-            for mutation in mutations {
-                let accepted = mutation.get("accepted").and_then(Value::as_bool) == Some(true);
-                let producer = mutation
-                    .get("producer")
-                    .and_then(Value::as_str)
-                    .unwrap_or("");
-                if accepted && producer != "manual_human" {
-                    failures.push(format!(
-                        "word {ordinal} accepted automatic post-seal mutation from {producer}"
-                    ));
-                }
-                if accepted
-                    && producer == "manual_human"
-                    && mutation.get("manual_edit_receipt").is_none()
-                {
-                    failures.push(format!(
-                        "word {ordinal} manual edit lacks provenance receipt"
-                    ));
-                }
+            if event.acoustic_receipts.len() != 1
+                || event.acoustic_receipts.iter().any(|receipt| {
+                    receipt
+                        .manual_edit_receipt
+                        .as_deref()
+                        .is_none_or(str::is_empty)
+                })
+            {
+                failures.push("manual edit lacks provenance receipt".to_string());
             }
         }
     }
@@ -516,6 +574,7 @@ fn p0_b_fixture_provenance_digest_and_energy_are_public_synthetic() {
     assert_eq!(manifest.bursts.len(), 5);
     assert_eq!(manifest.vad_valleys.len(), 5);
     for burst in &manifest.bursts {
+        assert_eq!(burst.label, manifest.label);
         let (energy, rms_dbfs, peak_dbfs) =
             measured_energy(&samples, burst.sample_start, burst.sample_end);
         assert!((energy - burst.energy_integral).abs() < 1.0e-5);
@@ -599,18 +658,16 @@ fn p0_b_oracle_fails_closed_for_all_required_negative_controls() {
         validate_oracle_trace(&complete, 5).is_ok(),
         "complete oracle example must prove the verifier can pass"
     );
-    assert_eq!(
-        complete.get("energy_lookup_available"),
-        Some(&Value::Bool(false))
-    );
+    let events = parse_bus_evidence(&complete.sealed_bytes).expect("production Bus evidence");
+    assert_eq!(events.len(), 5);
 
-    let mut four = complete.clone();
-    four["words"].as_array_mut().unwrap().pop();
+    let four = trace_from_evidence(&events[..4]);
     let failures = validate_oracle_trace(&four, 5).unwrap_err().join("; ");
     assert!(failures.contains("four-vs-five"));
 
-    let mut no_energy = complete.clone();
-    no_energy["words"][0]["energy_integral"] = json!(0.0);
+    let mut no_energy = events.clone();
+    no_energy[0].acoustic_receipts[0].energy_integral = 0.0;
+    let no_energy = trace_from_evidence(&no_energy);
     assert!(
         validate_oracle_trace(&no_energy, 5)
             .unwrap_err()
@@ -618,29 +675,31 @@ fn p0_b_oracle_fails_closed_for_all_required_negative_controls() {
             .any(|failure| failure.contains("positive calibrated energy"))
     );
 
-    let mut no_vad_close = complete.clone();
-    no_vad_close["words"][0]["vad_close_sample"] = Value::Null;
+    let mut no_vad_close = events.clone();
+    no_vad_close[0].acoustic_receipts[0].vad_close_sample = 0;
+    let no_vad_close = trace_from_evidence(&no_vad_close);
     assert!(
         validate_oracle_trace(&no_vad_close, 5)
             .unwrap_err()
             .iter()
-            .any(|failure| failure.contains("vad_close_sample"))
+            .any(|failure| failure.contains("PCM/VAD coverage"))
     );
 
-    let mut open_frontier = complete.clone();
-    open_frontier["words"][0]["observation_frontier"] = json!("open");
+    let mut open_frontier = events.clone();
+    open_frontier[0].acoustic_receipts[0].seal_receipt = None;
+    let open_frontier = trace_from_evidence(&open_frontier);
     assert!(
         validate_oracle_trace(&open_frontier, 5)
             .unwrap_err()
             .iter()
-            .any(|failure| failure.contains("frontier is not closed"))
+            .any(|failure| failure.contains("frontier is not proven closed"))
     );
 
-    let mut missing_serial = complete.clone();
-    missing_serial["words"][0]
-        .as_object_mut()
-        .unwrap()
-        .remove("acoustic_serial");
+    let mut missing_serial = events.clone();
+    missing_serial[0].acoustic_receipts[0]
+        .acoustic_serial
+        .clear();
+    let missing_serial = trace_from_evidence(&missing_serial);
     assert!(
         validate_oracle_trace(&missing_serial, 5)
             .unwrap_err()
@@ -648,11 +707,11 @@ fn p0_b_oracle_fails_closed_for_all_required_negative_controls() {
             .any(|failure| failure.contains("acoustic_serial"))
     );
 
-    let mut missing_layer = complete.clone();
-    missing_layer["words"][0]["layer_decisions"]
-        .as_array_mut()
-        .unwrap()
-        .retain(|decision| decision["layer"] != "whisper");
+    let mut missing_layer = events.clone();
+    missing_layer[0].acoustic_receipts[0]
+        .layer_decision_receipts
+        .retain(|receipt| !receipt.starts_with("whisper-"));
+    let missing_layer = trace_from_evidence(&missing_layer);
     assert!(
         validate_oracle_trace(&missing_layer, 5)
             .unwrap_err()
@@ -660,9 +719,31 @@ fn p0_b_oracle_fails_closed_for_all_required_negative_controls() {
             .any(|failure| failure.contains("whisper layer decision"))
     );
 
+    // N13: the validator consumes bytes emitted by production. Corrupting the
+    // terminal reducer action in those bytes must turn the same trace RED.
+    let mut corrupted_terminal_action = events.clone();
+    corrupted_terminal_action[0].reducer_action = "apply_ledger_decision".to_string();
+    let corrupted_terminal_action = trace_from_evidence(&corrupted_terminal_action);
+    assert!(
+        validate_oracle_trace(&corrupted_terminal_action, 5)
+            .unwrap_err()
+            .iter()
+            .any(|failure| failure.contains("four-vs-five"))
+    );
+
+    let terminal_sequence = events
+        .iter()
+        .map(|event| event.sequence)
+        .max()
+        .expect("terminal Bus sequence");
+    let mut automatic_event = events.last().expect("fifth Bus event").clone();
+    automatic_event.sequence = terminal_sequence + 1;
+    automatic_event.reducer_action = "apply_ledger_decision".to_string();
+    automatic_event.acoustic_receipts[0].manual_edit_receipt = None;
+    let mut post_automatic_events = events.clone();
+    post_automatic_events.push(automatic_event);
     let mut automatic_mutation = complete.clone();
-    automatic_mutation["words"][0]["post_seal_mutations"] =
-        json!([{"producer": "formatter", "accepted": true}]);
+    automatic_mutation.post_automatic_attempt_bytes = evidence_jsonl(&post_automatic_events);
     assert!(
         validate_oracle_trace(&automatic_mutation, 5)
             .unwrap_err()
@@ -670,12 +751,13 @@ fn p0_b_oracle_fails_closed_for_all_required_negative_controls() {
             .any(|failure| failure.contains("automatic post-seal mutation"))
     );
 
-    let mut manual_mutation = complete;
-    manual_mutation["words"][0]["post_seal_mutations"] = json!([{
-        "producer": "manual_human",
-        "accepted": true,
-        "manual_edit_receipt": "manual-p0b-1"
-    }]);
+    let mut manual_event = events.last().expect("fifth Bus event").clone();
+    manual_event.sequence = terminal_sequence + 1;
+    manual_event.reducer_action = "apply_manual_edit".to_string();
+    manual_event.acoustic_receipts[0].manual_edit_receipt = Some("manual-p0b-1".to_string());
+    let mut manual_events = events;
+    manual_events.push(manual_event);
+    let manual_mutation = trace_from_evidence(&manual_events);
     assert!(validate_oracle_trace(&manual_mutation, 5).is_ok());
 }
 
@@ -731,9 +813,9 @@ fn p0_b_terminal_seal_fences_automatic_mutation_but_allows_manual_provenance() {
         .seal_terminal(SESSION_ID, CAPTURE_EPOCH)
         .expect("five-Iwo epoch must terminal-seal");
     let (_rendered, seal) = publish_through_reducer_and_bus(&manifest, &bursts);
-    assert_eq!(
-        seal.get("status").and_then(Value::as_str),
-        Some("transcript_sealed")
+    assert!(
+        validate_oracle_trace(&seal, 5).is_ok(),
+        "terminal Bus seal/frontier evidence must come from production JSONL"
     );
 
     let first = bursts[0];
