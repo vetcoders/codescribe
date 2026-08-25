@@ -228,72 +228,6 @@ fn finalize_requested_final_pass(
     )
 }
 
-/// Fold a Silero VAD filtering result back into the transcript.
-///
-/// Segments are always replaced, but the **text** is preserved from `raw` when
-/// nothing was actually dropped and the filtered text is merely an equivalent
-/// or a strict subset. Rebuilding text from segments loses punctuation and
-/// casing, so it is only accepted when a real drop justifies it.
-fn apply_silero_filter_outcome(
-    raw: &RawTranscript,
-    filtered_text: String,
-    filtered_segments: Vec<crate::pipeline::contracts::TranscriptSegment>,
-    dropped_count: u32,
-) -> RawTranscript {
-    let mut filtered = raw.clone();
-    let should_preserve_raw_text = dropped_count == 0
-        && (is_text_equivalent(&filtered_text, &raw.text)
-            || is_strict_text_subset(&filtered_text, &raw.text));
-    filtered.text = if should_preserve_raw_text {
-        raw.text.clone()
-    } else {
-        filtered_text
-    };
-    filtered.segments = filtered_segments;
-    filtered
-}
-
-/// Whether `candidate` is a non-empty, strictly smaller fragment of
-/// `full_text` once both are normalized. Equality is deliberately excluded —
-/// that case is [`is_text_equivalent`].
-fn is_strict_text_subset(candidate: &str, full_text: &str) -> bool {
-    let candidate = normalize_transcript_text(candidate);
-    let full_text = normalize_transcript_text(full_text);
-    !candidate.is_empty() && candidate != full_text && full_text.contains(&candidate)
-}
-
-/// Whether two non-empty texts are the same modulo casing, punctuation and
-/// whitespace.
-fn is_text_equivalent(candidate: &str, full_text: &str) -> bool {
-    let candidate = normalize_transcript_text(candidate);
-    let full_text = normalize_transcript_text(full_text);
-    !candidate.is_empty() && candidate == full_text
-}
-
-/// Reduce a transcript to lowercase alphanumeric words joined by single spaces.
-///
-/// Comparison-only helper: it deliberately destroys punctuation and casing so
-/// that two renderings of the same speech compare equal. Never store its output
-/// as a transcript.
-fn normalize_transcript_text(text: &str) -> String {
-    text.split_whitespace()
-        .filter_map(|token| {
-            let mut normalized = String::new();
-            for ch in token.chars() {
-                if ch.is_alphanumeric() {
-                    normalized.extend(ch.to_lowercase());
-                }
-            }
-            if normalized.is_empty() {
-                None
-            } else {
-                Some(normalized)
-            }
-        })
-        .collect::<Vec<_>>()
-        .join(" ")
-}
-
 /// Whether decoder control tokens should be suppressed at this decode step.
 ///
 /// Only before the first generated token: suppressing them later would stop the
@@ -583,10 +517,11 @@ impl LocalWhisperEngine {
 
     /// Transcribe a file end to end and return the full verdict.
     ///
-    /// The complete path: load and resample the audio, transcribe (chunked for
-    /// long input), apply the Silero VAD filter, then run the requested final
-    /// pass. The returned [`TranscriptionVerdict`] carries both the delivered
-    /// text and the raw text, so a rejected final pass stays auditable.
+    /// The complete path loads and resamples audio, records Silero VAD evidence
+    /// and silence-window guidance, and decodes the original full recording
+    /// (chunked for long input). The returned [`TranscriptionVerdict`] carries
+    /// both the delivered text and the raw text, so a rejected final pass stays
+    /// auditable.
     ///
     /// `language` of `None` triggers detection from the audio itself.
     pub fn transcribe_file_with_language(
@@ -626,35 +561,13 @@ impl LocalWhisperEngine {
             sparkline: stats.sparkline.clone(),
         };
 
-        if no_speech {
-            tracing::info!(
-                "transcribe_file: no speech detected after VAD; returning empty verdict"
-            );
-            return Ok(TranscriptionVerdict::from_parts(
-                String::new(),
-                RawTranscript::default(),
-                Some(vad),
-                TranscriptionSource::LocalFinalPass,
-                self.engine_provenance,
-                skipped_final_pass(
-                    options,
-                    stats
-                        .no_speech_reason
-                        .as_deref()
-                        .unwrap_or("vad_no_speech_detected"),
-                ),
-            ));
-        }
-
         tracing::debug!(
-            "transcribe_file: speech detected; preserving full-audio decode path and using VAD as telemetry/no-speech gate only"
+            "transcribe_file: VAD evidence recorded; decoding full audio with silence-aligned windows"
         );
 
-        // Keep file transcription semantically honest: VAD contributes verdict
-        // metadata and an explicit no-speech short-circuit, but the raw STT
-        // result still comes from the full recording. Trimming down to
-        // `speech_samples` changed the behavior of the historical "raw file
-        // transcription" path and regressed canonical transcripts.
+        // VAD contributes verdict evidence and silence-window guidance. It does
+        // not author the raw STT result: decode uses the original full samples,
+        // never `speech_samples`.
         let vad_config = crate::vad::VadConfig::default();
         let silence_spans = silence_spans_from_vad_probabilities(
             &stats.probabilities,
@@ -670,18 +583,16 @@ impl LocalWhisperEngine {
         )?;
         super::timing::record_inference_ms(inference_started.elapsed().as_millis() as u64);
         let raw_for_final_pass = raw;
-        let tail_drop_count = 0;
         let text = raw_for_final_pass.text.clone();
         let final_pass = skipped_final_pass(options, "whole_session_final_pass_retired");
 
-        Ok(TranscriptionVerdict::from_parts_with_silero_drops(
+        Ok(TranscriptionVerdict::from_parts(
             text,
             raw_for_final_pass,
             Some(vad),
             TranscriptionSource::LocalFinalPass,
             self.engine_provenance,
             final_pass,
-            tail_drop_count,
         ))
     }
 
@@ -1768,84 +1679,6 @@ mod dedup_tests {
         assert!(prompt_token_ids_fit_vocab(&[0, 1, 3], 4));
         assert!(!prompt_token_ids_fit_vocab(&[0, 4], 4));
         assert!(!prompt_token_ids_fit_vocab(&[5], 4));
-    }
-
-    /// Zero dropped segments keeps the original raw text (not the re-joined filter).
-    #[test]
-    fn silero_filter_preserves_raw_text_when_no_segments_were_dropped() {
-        let segments = vec![crate::pipeline::contracts::TranscriptSegment {
-            text: "close chart".to_string(),
-            start_ts: 0.0,
-            end_ts: 1.2,
-        }];
-        let raw = RawTranscript {
-            text: "Close chart, and add plan.".to_string(),
-            segments: segments.clone(),
-            ..Default::default()
-        };
-
-        let filtered = apply_silero_filter_outcome(&raw, "close chart".to_string(), segments, 0);
-
-        assert_eq!(filtered.text, raw.text);
-        assert_eq!(filtered.segments, raw.segments);
-    }
-
-    /// Case/punctuation-only filter text still preserves raw when nothing was dropped.
-    #[test]
-    fn silero_filter_preserves_raw_text_when_no_drop_only_case_or_punctuation_differs() {
-        let segments = vec![crate::pipeline::contracts::TranscriptSegment {
-            text: "close chart and add plan".to_string(),
-            start_ts: 0.0,
-            end_ts: 1.2,
-        }];
-        let raw = RawTranscript {
-            text: "Close chart, and add plan.".to_string(),
-            segments: segments.clone(),
-            ..Default::default()
-        };
-
-        let filtered =
-            apply_silero_filter_outcome(&raw, "close chart and add plan".to_string(), segments, 0);
-
-        assert_eq!(filtered.text, raw.text);
-        assert_eq!(filtered.segments, raw.segments);
-        assert!(!is_strict_text_subset(
-            "close chart and add plan",
-            "Close chart, and add plan."
-        ));
-    }
-
-    /// When segments are dropped, filtered text and segment list replace raw.
-    #[test]
-    fn silero_filter_uses_filtered_text_when_segments_were_dropped() {
-        let raw_segments = vec![
-            crate::pipeline::contracts::TranscriptSegment {
-                text: "close chart".to_string(),
-                start_ts: 0.0,
-                end_ts: 1.2,
-            },
-            crate::pipeline::contracts::TranscriptSegment {
-                text: "subscribe".to_string(),
-                start_ts: 1.2,
-                end_ts: 2.0,
-            },
-        ];
-        let filtered_segments = vec![raw_segments[0].clone()];
-        let raw = RawTranscript {
-            text: "Close chart, and subscribe.".to_string(),
-            segments: raw_segments,
-            ..Default::default()
-        };
-
-        let filtered = apply_silero_filter_outcome(
-            &raw,
-            "close chart".to_string(),
-            filtered_segments.clone(),
-            1,
-        );
-
-        assert_eq!(filtered.text, "close chart");
-        assert_eq!(filtered.segments, filtered_segments);
     }
 
     /// Control-token suppression applies only at decode step zero.
