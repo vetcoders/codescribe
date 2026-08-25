@@ -133,6 +133,14 @@ impl From<std::io::Error> for CsError {
     }
 }
 
+impl From<codescribe_core::config::SettingsSnapshotValidationError> for CsError {
+    fn from(error: codescribe_core::config::SettingsSnapshotValidationError) -> Self {
+        CsError::Config {
+            msg: error.to_string(),
+        }
+    }
+}
+
 /// Language shared across the config (whisper language setting) and recording
 /// (dictation language) surfaces. Maps 1:1 to `codescribe_core::config::Language`.
 #[derive(uniffi::Enum, Debug, Clone, Copy, PartialEq, Eq)]

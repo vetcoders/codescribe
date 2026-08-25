@@ -17,7 +17,7 @@ use serde::{Deserialize, Serialize};
 use tokio::sync::oneshot;
 use tracing::warn;
 
-use crate::config::RuntimeLlmLane;
+use crate::config::{Config, RuntimeLlmLane};
 use crate::llm::provider::{ProviderKind, WireFamily};
 
 /// 5s client timeout for live /models discovery.

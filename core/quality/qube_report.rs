@@ -314,7 +314,8 @@ pub async fn run(config: QualityReportConfig) -> Result<PathBuf> {
     let now: DateTime<Local> = Local::now();
     let generated_at = now.to_rfc3339();
 
-    let runtime_settings = Config::load_runtime_snapshot()?;
+    let runtime_settings = Config::load_runtime_snapshot()
+        .map_err(|error| anyhow!("runtime settings snapshot refused: {error:?}"))?;
     let env_snapshot = snapshot_environment(
         &runtime_settings,
         config.metrics_reference,

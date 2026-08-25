@@ -599,9 +599,6 @@ pub trait CsTranscriptionListener: Send + Sync {
     fn on_context_marker(&self, position: u64, marker: String);
     /// The session closed; `layer_summary` carries the per-layer edit counters.
     fn on_session_finalised(&self, session_id: String, layer_summary: CsLayerSummary);
-    /// Immutable reducer projection. No W1 producer invokes this callback and
-    /// Swift bindings are regenerated only after W2 wiring is frozen.
-    fn on_transcript_projection(&self, event: CsTranscriptProjectionEvent);
     /// Authoritative post-stop transcript (LocalFinalPass `final_formatted_text`):
     /// the SAME clean text that is pasted/delivered and written to history. Surfaces
     /// fire it once per dictation stop so the overlay FINAL matches delivery/Copy.

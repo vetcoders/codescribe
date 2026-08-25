@@ -439,6 +439,21 @@ pub enum SettingsSnapshotValidationError {
     },
 }
 
+impl std::fmt::Display for SettingsSnapshotValidationError {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::InvalidField { field, .. } => {
+                write!(formatter, "runtime settings field '{field}' was refused")
+            }
+            Self::ConflictingSources { .. } => {
+                formatter.write_str("runtime settings sources conflict")
+            }
+        }
+    }
+}
+
+impl std::error::Error for SettingsSnapshotValidationError {}
+
 impl SettingsSnapshotValidation {
     /// Structural admit gate. W1 declares the contract; W2 supplies full rules.
     ///

@@ -1,13 +1,13 @@
 //! Event-driven presentation emitter.
 //!
-//! Converts `EngineEvent`s into user-facing output by delegating to
-//! `BufferedEmitter` (typing animation, delta encoding) from core.
+//! Converts `EngineEvent`s into user-facing output through the one canonical
+//! reducer and an ordered delta-delivery worker.
 //!
 //! Uses an ordered mpsc channel to guarantee that target updates and finish
 //! arrive in the exact order they were emitted,
 //! eliminating the fire-and-forget tokio::spawn ordering race.
 
-use std::{collections::BTreeMap, sync::Arc};
+use std::{collections::BTreeMap, io::Write as _, sync::Arc};
 
 use codescribe_core::llm::inline_format::{
     LabelProposalDisposition, OccurrenceLabelProposal,
@@ -16,8 +16,9 @@ use codescribe_core::pipeline::acoustic_ledger::{
     AcousticLedger, AcousticSerial, LedgerSealReceipt, MutationReceipt, ObservationIdentity,
     ObservationProducer, OccurrenceIdentity,
 };
-use codescribe_core::pipeline::contracts::{DeltaSink, EngineEvent, EventSink, TranscriptSegment};
-use codescribe_core::pipeline::streaming::BufferedEmitter;
+use codescribe_core::pipeline::contracts::{
+    DeltaSink, EngineEvent, EventSink, TranscriptDelta, TranscriptSegment,
+};
 use tokio::sync::Mutex;
 use tracing::{debug, info};
 
@@ -29,6 +30,23 @@ use super::transcript_bus::{
 enum EmitterCmd {
     SetTargetText(String),
     Finish,
+}
+
+fn append_stream_delta(path: &std::path::Path, delta: &str) -> std::io::Result<()> {
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent)?;
+    }
+    let mut file = std::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(path)?;
+    let timestamp = chrono::Utc::now()
+        .to_rfc3339_opts(chrono::SecondsFormat::Millis, true);
+    let payload = delta
+        .replace('\n', "\\n")
+        .replace('\r', "\\r")
+        .replace('\u{0008}', "\\b");
+    writeln!(file, "[{timestamp}] {payload}")
 }
 
 /// What the delta sink is shown on every update.
@@ -590,16 +608,13 @@ pub fn reduce_transcript_events(events: &[EngineEvent]) -> TranscriptReducer {
 #[cfg(test)]
 type SessionTranscriptState = TranscriptReducer;
 
-/// Presentation emitter — bridges `EngineEvent`s to `BufferedEmitter`.
+/// Presentation emitter — the single reducer and ordered delivery writer.
 ///
 /// Implements `EventSink` so it can be plugged directly into `transcription_session`.
-/// Internally manages the `BufferedEmitter` tick loop for typing animation.
-///
-/// All mutations to `BufferedEmitter` are serialized through an mpsc channel,
-/// guaranteeing in-order delivery (no fire-and-forget spawn races).
+/// All target mutations are serialized through one mpsc worker, guaranteeing
+/// that overlay deltas and the shared transcript snapshot see identical order.
 pub struct PresentationEmitter {
     cmd_tx: std::sync::Mutex<Option<tokio::sync::mpsc::UnboundedSender<EmitterCmd>>>,
-    emitter_handle: Option<tokio::task::JoinHandle<()>>,
     cmd_handle: Option<tokio::task::JoinHandle<()>>,
     /// Optional callback for completed utterances (used by Toggle mode).
     utterance_callback: Option<Arc<dyn Fn(String) + Send + Sync>>,
@@ -620,14 +635,7 @@ pub struct PresentationEmitter {
 }
 
 impl PresentationEmitter {
-    /// Build the emitter and start both background tasks: the `BufferedEmitter`
-    /// tick loop (typing animation) and the FIFO command worker.
-    ///
-    /// Every mutation goes through the command channel, which is what removes
-    /// the fire-and-forget spawn ordering race — target updates and finish
-    /// arrive in emit order. The worker catches panics from the emitter so a
-    /// poisoned animation forces a clean finish instead of leaving the tick loop
-    /// running forever.
+    /// Build the reducer and start its single FIFO delivery worker.
     pub fn new(
         transcript_buffer: Arc<Mutex<String>>,
         delta_callback: Option<Arc<dyn DeltaSink>>,
@@ -666,58 +674,35 @@ impl PresentationEmitter {
             Arc<dyn Fn(&TranscriptBusEvidenceEvent) + Send + Sync>,
         >,
     ) -> Self {
-        let emitter = Arc::new(Mutex::new(BufferedEmitter::new(
-            transcript_buffer,
-            delta_callback,
-            stream_log_path,
-        )));
-
-        let emitter_clone = emitter.clone();
-        let emitter_handle = Some(tokio::spawn(
-            codescribe_core::pipeline::streaming::emitter_tick_loop(emitter_clone),
-        ));
-
-        // Ordered command channel: on_event sends commands, worker processes in FIFO order.
+        // One ordered worker owns both public projections of reducer text. It
+        // derives UI deltas from the previous rendered revision, then stores the
+        // exact same target in the shared delivery buffer.
         let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel::<EmitterCmd>();
-        let emitter_for_cmd = emitter.clone();
         let cmd_handle = Some(tokio::spawn(async move {
+            let mut rendered_text = String::new();
             while let Some(cmd) = rx.recv().await {
-                let mut guard = emitter_for_cmd.lock().await;
-                let should_break = matches!(&cmd, EmitterCmd::Finish);
-                let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| match cmd {
-                    EmitterCmd::SetTargetText(text) => guard.set_target_text(text),
-                    EmitterCmd::Finish => {
-                        guard.finish();
-                        None
+                match cmd {
+                    EmitterCmd::SetTargetText(target) => {
+                        if let Some(delta) = TranscriptDelta::from_diff(&rendered_text, &target) {
+                            if let Some(sink) = &delta_callback {
+                                sink.apply(&delta);
+                            }
+                            if let Some(path) = stream_log_path.as_deref()
+                                && let Err(error) = append_stream_delta(path, &delta.delta)
+                            {
+                                tracing::warn!(%error, path = %path.display(), "stream delta log append failed");
+                            }
+                        }
+                        rendered_text.clone_from(&target);
+                        *transcript_buffer.lock().await = target;
                     }
-                }));
-                let mut panicked = false;
-                match result {
-                    Ok(Some(snapshot)) => {
-                        guard.store_transcript_snapshot(snapshot).await;
-                    }
-                    Ok(None) => {}
-                    Err(_) => {
-                        panicked = true;
-                    }
-                }
-                if panicked {
-                    tracing::error!("Emitter command worker panicked; forcing emitter finish");
-                    guard.finish();
-                    break;
-                }
-                if should_break {
-                    break;
+                    EmitterCmd::Finish => break,
                 }
             }
-            // Ensure tick loop exits even when channel closes unexpectedly.
-            let mut guard = emitter_for_cmd.lock().await;
-            guard.finish();
         }));
 
         Self {
             cmd_tx: std::sync::Mutex::new(Some(tx)),
-            emitter_handle,
             cmd_handle,
             utterance_callback: None,
             vad_start_callback: None,
@@ -755,8 +740,7 @@ impl PresentationEmitter {
         self.vad_end_callback = cb;
     }
 
-    /// Signal the emitter to finish and wait for both the command worker
-    /// and the tick loop to complete.
+    /// Signal the emitter to finish after every queued reducer revision.
     pub async fn finish(&mut self) {
         // Send Finish through channel (ordered after all pending pushes).
         if let Ok(guard) = self.cmd_tx.lock()
@@ -765,18 +749,10 @@ impl PresentationEmitter {
             let _ = tx.send(EmitterCmd::Finish);
         }
 
-        // Wait for command worker to drain and exit.
         if let Some(handle) = self.cmd_handle.take()
             && let Err(e) = handle.await
         {
             tracing::error!("Emitter cmd worker failed: {}", e);
-        }
-
-        // Wait for tick loop to finish.
-        if let Some(handle) = self.emitter_handle.take()
-            && let Err(e) = handle.await
-        {
-            tracing::error!("Emitter tick loop failed: {}", e);
         }
     }
 
@@ -798,18 +774,15 @@ impl Drop for PresentationEmitter {
         if let Ok(mut guard) = self.cmd_tx.lock() {
             let _ = guard.take();
         }
-        // Abort detached tasks as a hard stop fallback to avoid leaks.
+        // Abort the detached worker as a hard stop fallback to avoid leaks.
         if let Some(handle) = self.cmd_handle.take() {
-            handle.abort();
-        }
-        if let Some(handle) = self.emitter_handle.take() {
             handle.abort();
         }
     }
 }
 
 impl EventSink for PresentationEmitter {
-    /// Route an `EngineEvent` into session state and the buffered typing emitter.
+    /// Route an `EngineEvent` into reducer state and ordered delta delivery.
     fn on_event(&self, event: &EngineEvent) {
         match event {
             EngineEvent::LedgerMutation {
@@ -1059,8 +1032,7 @@ impl EventSink for PresentationEmitter {
                 };
                 self.send_cmd(EmitterCmd::SetTargetText(rendered));
                 // Stats is the last event from transcription_session.
-                // Signal BufferedEmitter to finish through the ordered channel,
-                // ensuring all pending pushes are processed first.
+                // Finish through the ordered channel after all revisions.
                 self.send_cmd(EmitterCmd::Finish);
             }
             EngineEvent::Warning { code, message } => {

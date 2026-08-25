@@ -2343,7 +2343,7 @@ fn key_present(account: &str, runtime_settings: &RuntimeSettingsSnapshot) -> boo
 
     match account {
         "STT_API_KEY" => runtime_settings.values().stt_api_key.is_some(),
-        "GITHUB_TOKEN" => Config::get_api_key(account).is_some(),
+        "GITHUB_TOKEN" => codescribe_core::config::keychain::runtime_key(account).is_some(),
         _ => false,
     }
 }

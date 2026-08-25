@@ -71,7 +71,7 @@ fn recording_session_config(
         session_id,
         capture_epoch: 0,
         runtime_settings,
-        acoustic_ledger.clone(),
+        acoustic_ledger,
         sample_rate,
         language,
         stream_log_path,
@@ -110,7 +110,7 @@ pub async fn replay_production_session(
     let config = recording_session_config(
         uuid::Uuid::new_v4().to_string(),
         runtime_settings,
-        acoustic_ledger,
+        acoustic_ledger.clone(),
         sample_rate,
         language,
         None,

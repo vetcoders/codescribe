@@ -629,10 +629,18 @@ impl RecordingController {
                 .await
                 .unwrap_or(None),
         };
-        let result = {
-            let mut bucket = self.context_bucket.lock().await;
-            capture_combo_context_with_image(&mut bucket, position, || captured, || image_png)
-        };
+        let mut bucket = self.context_bucket.lock().await;
+        let result = (|| -> anyhow::Result<_> {
+            let mut context = captured;
+            let marker = match context.selected_text.take() {
+                Some(selected_text) => bucket.add_selection(position, selected_text)?,
+                None => None,
+            };
+            if let Some(png) = image_png {
+                let _ = bucket.add_image_png(&png)?;
+            }
+            Ok((context, marker))
+        })();
 
         match result {
             Ok((context, Some(marker))) => {
