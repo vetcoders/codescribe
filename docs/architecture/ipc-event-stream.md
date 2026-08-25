@@ -8,6 +8,8 @@ that embed the codescribe engine.
 - Wire schema authority: `core/ipc/types.rs` (`IpcEvent`, `IpcEventPayload`, `EngineEventWire`)
 - Runtime entrypoint authority: `core/audio/streaming_recorder.rs`
 - Engine event model authority: `core/pipeline/contracts.rs` (`EngineEvent`, `EventSink`)
+- Committed transcript authority: occurrence-ledger revisions published by
+  `app/presentation/transcript_bus.rs::TranscriptBus::publish_revision`
 
 ## Runtime Contract (Single Path)
 
@@ -122,6 +124,12 @@ Engine events are tagged with `type`:
 
 `segments` come from native Whisper timestamp tokens (`<|0.00|>` ... `<|30.00|>`) and are available for both Candle and ONNX STT paths.
 
+Engine events are observational transport, not a transcript document API.
+`Preview` is overlay-only. `UtteranceFinal`, `Correction`, `ReplaceRange`, and
+`InsertAnnotation` are diagnostics/observations; clients must not fold them into
+product text. Only an occurrence-authenticated reducer revision may become
+committed Bus projection and delivery truth.
+
 ## Security and Sanitization
 
 - `raw_text` is internal engine data and is never emitted in IPC payloads.
@@ -146,9 +154,12 @@ For old integrations that still depend on legacy callbacks or worker symbols:
 
 1. Replace `set_delta_callback(...)` wiring with `set_event_sink(Some(Arc<dyn EventSink>))`.
 2. Start sessions via `start_event_session(...)`.
-3. If you only consume text deltas, bridge explicitly with `DeltaSinkAdapter`.
-4. Consume `NoSpeech` and `Stats` from engine events (session telemetry sink), not from ad-hoc worker state.
+3. Consume `NoSpeech` and `Stats` from engine events (session telemetry sink), not from ad-hoc worker state.
+4. Observe committed text through ledger-authenticated Transcript Bus projection; do not build a raw-event text reducer.
 5. Treat `vad_fallback` and other removed wire variants as hard errors.
+
+`DeltaSinkAdapter` no longer exists. The draft Bus API and arbitrary-text seal
+API no longer exist either; no compatibility replacement is provided.
 
 ## Versioning
 
@@ -165,3 +176,7 @@ Recommended policy:
 1. Keep old fields for at least one host release cycle.
 2. Gate new behavior behind tolerant parsing on the consumer side.
 3. Document every wire change in this file and changelog.
+
+The current C11 source cut was performed under a compiler/runtime embargo. Its
+actual commit hash lives only in the durable C11 report; compiler, tests,
+runtime, app, and release behavior are `NOT_ASSESSED`.

@@ -1,7 +1,9 @@
 # WHISPER LIVE (Embedded Whisper + Streaming Transcription)
 
 > **Status:** provisioning facts retained from 2026-01-16 · **Current anatomy:**
-> 2026-08-25, HEAD `484095ce`, as the bounded L1 observer inside the Apple-ledger session.
+> 2026-08-25 after the C11 source cut, as the bounded L1 observer inside the
+> Apple-ledger session. `484095ce` was the last executable cut before docs-only
+> successor `d57196ab`; C11 compiler/runtime behavior is `NOT_ASSESSED`.
 >
 > **Tagline:** Whisper can stay local and ships embedded when a complete model
 > snapshot is available; normal live work observes retained PCM without owning
@@ -78,9 +80,10 @@ decoder context overlap is resolved by request/span identity, never textual simi
   `core/stt/tail_patcher/`) — a request and its returned segments retain PCM
   identity before the candidate reaches `admit_ledger_label` and
   `AcousticLedger`.
-- **IPC server** (`app/ipc/`) — stable runtime interface for GUI/clients; Whisper Live can be
-  consumed and extended outside the tray flow. After the ADR, the IPC contract also carries
-  `ReplaceRange` and `InsertAnnotation` events for clients that render the layered view.
+- **IPC server** (`app/ipc/`) — stable runtime interface for GUI/clients. Raw
+  `UtteranceFinal`, `Correction`, `ReplaceRange`, and `InsertAnnotation` events
+  may remain observable diagnostics; they are not document commands. Committed
+  text comes only from ledger-receipt projection.
 - **Quality loop/report** (`bin/codescribe_quality`, `bin/codescribe_loop`) — automated scoring and
   batch diagnostics. Layer receipts identify Whisper proposals, L2 shaping,
   L3 formatting outcomes, and orthogonal timing evidence so regression hunts

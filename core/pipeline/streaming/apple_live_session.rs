@@ -1491,10 +1491,6 @@ fn normalize_for_containment(text: &str) -> String {
 fn seal_sliced_by_silero(
     state: &mut AppleSealState,
     ev_tx: &mpsc::UnboundedSender<EngineEvent>,
-    raw_text: &str,
-    after_lexicon: &str,
-    start_ts: f32,
-    end_ts: f32,
     disjoint: &[TranscriptSegment],
 ) -> bool {
     let Some(ledger) = state.fusion.as_ref().map(|fusion| fusion.ledger().clone()) else {
@@ -1543,35 +1539,65 @@ fn seal_sliced_by_silero(
         else {
             continue;
         };
-        if state.pending_events.contains_key(&utterance_id) {
-            continue;
-        }
         let text = words
             .iter()
             .map(|word| word.text.as_str())
             .collect::<Vec<_>>()
             .join(" ");
-        let text = if text.trim().is_empty() {
-            after_lexicon.to_string()
-        } else {
-            text
-        };
+        if text.trim().is_empty() {
+            continue;
+        }
         let span_start = words
             .first()
             .map(|word| word.sample_start as f32 / rate)
-            .unwrap_or(start_ts);
+            .unwrap_or(silero.range.sample_start as f32 / rate);
         let span_end = words
             .last()
             .map(|word| word.sample_end as f32 / rate)
-            .unwrap_or(end_ts);
+            .unwrap_or(silero.range.sample_end as f32 / rate);
+        let slice_segments = words
+            .iter()
+            .map(|word| TranscriptSegment {
+                text: word.text.clone(),
+                start_ts: word.sample_start as f32 / rate,
+                end_ts: word.sample_end as f32 / rate,
+            })
+            .collect::<Vec<_>>();
+
+        // Silero has already selected the physical occurrence. Admit the
+        // slice-local Apple label before the raw final can escape as telemetry.
+        // There is no independent slice-local Lexicon rewrite on this path, so
+        // Lexicon reports a no-change observation for the same exact label and
+        // range. Callback-wide text is never copied across sliced occurrences.
+        let occurrence = OccurrenceIdentity::from(&silero.range);
+        admit_ledger_label(
+            state,
+            ev_tx,
+            occurrence.clone(),
+            LedgerObservationProducer::Apple,
+            utterance_id,
+            0,
+            &text,
+            true,
+        );
+        admit_ledger_label(
+            state,
+            ev_tx,
+            occurrence,
+            LedgerObservationProducer::Lexicon,
+            utterance_id,
+            0,
+            &text,
+            false,
+        );
         state.pending_events.insert(
             utterance_id,
             PendingAppleSeal {
-                raw_text: raw_text.to_string(),
+                raw_text: text.clone(),
                 layer1_baseline: text.clone(),
                 start_ts: span_start,
                 end_ts: span_end,
-                segments: disjoint.to_vec(),
+                segments: slice_segments,
             },
         );
 
@@ -1821,15 +1847,7 @@ fn seal_utterance_final(
     // the audio can account for is a decoder loop.
     let after_lexicon = raw_text.trim().to_string();
     if state.fusion_seal_armed
-        && seal_sliced_by_silero(
-            state,
-            ev_tx,
-            &raw_text,
-            &after_lexicon,
-            start_ts,
-            end_ts,
-            &disjoint,
-        )
+        && seal_sliced_by_silero(state, ev_tx, &disjoint)
     {
         return true;
     }
@@ -4912,6 +4930,145 @@ mod tests {
         state.fusion = Some(ingress);
         state.fusion_seal_armed = true;
         (first, second)
+    }
+
+    fn arm_fusion_slice_admission(state: &mut AppleSealState) -> Vec<TranscriptSegment> {
+        state.energy_calibration = Some(EnergyCalibration::new(
+            "fusion-slice-structural-test",
+            0.0,
+            0,
+        ));
+        push_capture(state, 12.0);
+        arm_two_utterances(state);
+        let second_start = state
+            .fusion
+            .as_ref()
+            .expect("fusion fixture")
+            .ledger()
+            .utterances()[1]
+            .range
+            .sample_start as f32
+            / TEST_SAMPLE_RATE as f32;
+        vec![
+            segment("Iwo", 0.2, 0.8),
+            segment("Iwo", second_start + 0.2, second_start + 0.8),
+        ]
+    }
+
+    #[test]
+    fn fusion_slices_admit_disjoint_ledger_occurrences_before_raw_finals() {
+        let (tx, mut rx) = mpsc::unbounded_channel();
+        let mut state = AppleSealState::new(TEST_SAMPLE_RATE);
+        let disjoint = arm_fusion_slice_admission(&mut state);
+        let fusion_ranges = state
+            .fusion
+            .as_ref()
+            .expect("fusion fixture")
+            .ledger()
+            .utterances()
+            .iter()
+            .map(|utterance| (utterance.id, utterance.range.clone()))
+            .collect::<Vec<_>>();
+
+        assert!(seal_sliced_by_silero(&mut state, &tx, &disjoint));
+        let events = std::iter::from_fn(|| rx.try_recv().ok()).collect::<Vec<_>>();
+
+        let apple_mutations = events
+            .iter()
+            .enumerate()
+            .filter_map(|(index, event)| match event {
+                EngineEvent::LedgerMutation {
+                    observation,
+                    label,
+                    ..
+                } if observation.producer == LedgerObservationProducer::Apple => {
+                    Some((index, observation.occurrence.clone(), label.clone()))
+                }
+                _ => None,
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(apple_mutations.len(), 2, "one Apple admit per Silero slice");
+        assert_eq!(apple_mutations[0].2, "Iwo");
+        assert_eq!(apple_mutations[1].2, "Iwo");
+        assert_ne!(
+            apple_mutations[0].1, apple_mutations[1].1,
+            "equal labels on disjoint PCM ranges remain distinct occurrences"
+        );
+
+        for (utterance_id, range) in fusion_ranges {
+            let mutation_index = apple_mutations
+                .iter()
+                .find_map(|(index, occurrence, _)| {
+                    (occurrence.sample_start == range.sample_start
+                        && occurrence.sample_end == range.sample_end)
+                        .then_some(*index)
+                })
+                .expect("slice-local ledger mutation");
+            let final_index = events
+                .iter()
+                .position(|event| {
+                    matches!(
+                        event,
+                        EngineEvent::UtteranceFinal {
+                            utterance_id: final_id,
+                            ..
+                        } if *final_id == utterance_id
+                    )
+                })
+                .expect("observation-only final");
+            assert!(
+                mutation_index < final_index,
+                "ledger admission must precede the raw final for slice {utterance_id}"
+            );
+        }
+
+        assert!(events.iter().all(|event| match event {
+            EngineEvent::LedgerMutation { label, .. } => label == "Iwo",
+            EngineEvent::UtteranceFinal { text, raw_text, .. } => {
+                text == "Iwo" && raw_text == "Iwo"
+            }
+            _ => true,
+        }), "callback-wide text must never be copied into every slice: {events:#?}");
+    }
+
+    #[test]
+    fn fusion_slice_replay_reaches_ledger_identity_refusal() {
+        let (tx, mut rx) = mpsc::unbounded_channel();
+        let mut state = AppleSealState::new(TEST_SAMPLE_RATE);
+        let disjoint = arm_fusion_slice_admission(&mut state);
+        assert!(seal_sliced_by_silero(&mut state, &tx, &disjoint));
+        while rx.try_recv().is_ok() {}
+
+        assert!(seal_sliced_by_silero(&mut state, &tx, &disjoint));
+        let replay_events = std::iter::from_fn(|| rx.try_recv().ok()).collect::<Vec<_>>();
+        let replay_receipts = replay_events
+            .iter()
+            .filter_map(|event| match event {
+                EngineEvent::LedgerMutation {
+                    observation,
+                    receipt,
+                    ..
+                } if observation.producer == LedgerObservationProducer::Apple => Some(receipt),
+                _ => None,
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(replay_receipts.len(), 2);
+        assert!(
+            replay_receipts
+                .iter()
+                .all(|receipt| !receipt.grants_mutation()),
+            "replayed request/range identity must be refused by AcousticLedger"
+        );
+        assert_eq!(
+            state
+                .acoustic_ledger
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .occurrences()
+                .count(),
+            2,
+            "replay must not mint a third occurrence"
+        );
     }
 
     /// (a) Utterance identity comes from the spectrum, and the seal carries it.

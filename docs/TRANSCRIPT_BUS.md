@@ -1,12 +1,13 @@
 # Clean Transcript Bus
 
-Codescribe publishes one private, append-only NDJSON stream containing mutable
-live transcript drafts and one immutable product seal. Dictation, Agent, and
-Assistive share the same capture, VAD, STT, correction, and publication path;
-mode changes only the downstream paste/format/Agent-delivery consumer.
+Codescribe publishes one private, append-only NDJSON stream. The Bus observes
+session lifecycle plus occurrence-authenticated `TranscriptRevision` entries;
+it does not own a transcript document and accepts no arbitrary product text.
+Dictation, Agent, and Assistive share the same capture and ledger authority.
+Mode changes only the downstream delivery consumer.
 
-This bus is an observer. It does not open a microphone, scrape SwiftUI, or
-re-transcribe saved audio.
+This Bus never opens a microphone, scrapes SwiftUI, re-transcribes saved audio,
+folds raw engine events, or reconstructs text from overlay deltas.
 
 ## Path contract
 
@@ -18,79 +19,74 @@ Resolution order:
    `~/.codescribe/transcript-events.jsonl`
 
 The parent directory is created when needed. On Unix the file is forced to
-mode `0600`. A control-plane bridge can consume it with an ordinary follow/tail
-reader; no host, date, room, or control-plane path is embedded in Codescribe.
+mode `0600`. Every accepted line is flushed before publication returns. No
+host, date, room, or control-plane path is embedded in Codescribe.
 
-## `codescribe.transcript.v1`
+## Event families
 
-Each line is one JSON object with:
+`codescribe.transcript.v1` now carries lifecycle only. `publish_started` emits
+one empty `session_started` event for the controller-owned session. It cannot
+publish document text.
 
-- `sequence`, `session_id`, `mode`, `utterance_id`, `emitted_at`, `status`
-- `sample_rate_hz`, `capture_epoch`, `sample_start`, `sample_end`
-- `audio_start_seconds`, `audio_end_seconds`
-- clean draft or sealed `text`, structured `segments`, optional
-  `pipeline_session_id`
-- `words`: PCM-pinned spans (`text`, `session_id`, `capture_epoch`,
-  `sample_start`, `sample_end`, `energy_db`, `grain`). `grain` is `word`,
-  `phrase`, or `utterance` according to what the backend actually measured.
-  Segment seconds are never re-labelled as word timing. Intensity is the
-  overlap-weighted capture RMS in dBFS for that exact sample range. Overlay
-  live text is not a span source.
-- `coverage`: a falsifiable pass/fail receipt. Missing PCM identity, absent
-  voiced-energy evidence, unordered/out-of-range spans, omitted anchored text,
-  or an unanchored insertion leaves reducer `text` visible but publishes no
-  misleading lexical spans and records the failure code.
+`codescribe.transcript-evidence.v1` is the committed projection family. Every
+line is created only by `TranscriptBus::publish_revision(revision, ledger)` and
+contains:
 
-`transcript_sealed` inherits the draft ledger's PCM identities. Its lexical
-signature must match the reducer bytes; L3 punctuation/casing may update the
-text of a single phrase span without changing its range. An omission or added
-tail clears the spans and fails coverage. A controller seal with no prior
-drafts stays honest: times and words are omitted and coverage fails explicitly.
+- Bus `sequence` and `emitted_at` metadata;
+- controller `session_id` and `mode`;
+- reducer revision, action, document index, complete `rendered_text`, and the
+  entry label;
+- exact occurrence identity: session, capture epoch, sample start, sample end;
+- the matching acoustic serial plus word-evidence, layer-decision, seal, and
+  manual-edit receipts copied from the ledger-owned reducer entry.
 
-Statuses are `session_started`, `utterance_draft`, `utterance_revised`, and
-`transcript_sealed`. A revision keeps the original utterance identity.
-`UtteranceFinal` and engine `SessionFinalised` are working boundaries, not
-product truth: Smart/Always final pass, adjudication, dictionary cleanup, and
-formatting can still change the entire result. Only the controller output used
-for history and delivery becomes `transcript_sealed`; the bus rejects all later
-machine writes. `raw_text` and unstable character-by-character UI previews never
-cross this boundary. Every line is flushed before publication returns, so live
-consumers can observe drafts while recording is active.
+The Bus skips entries the ledger cannot authenticate. It cannot admit an
+occurrence, choose a label, infer identity, perform text-tail matching, or mint
+a seal. A terminal `LedgerSeal` reducer action marks the writer sealed. No
+arbitrary string can close committed Bus truth.
 
-Example consumer:
+## Authority boundary
+
+```text
+OccurrenceIdentity + AcousticLedger receipts
+  → TranscriptReducer.document_by_occurrence
+  → TranscriptRevision
+  → TranscriptBus::publish_revision
+  → CsTranscriptProjectionEvent
+  → OverlayState.applyTranscriptProjection
+```
+
+`EngineEvent::Preview` is ephemeral overlay paint. Raw `UtteranceFinal`,
+`Correction`, `ReplaceRange`, and `InsertAnnotation` events are observation or
+diagnostics. `Stats` and `SessionFinalised` are lifecycle. None can enter Bus
+truth, delivery, history, clipboard, final controller text, or a terminal seal.
+
+There is no draft API, draft storage, arbitrary-text `publish_sealed` API, or
+raw-event `DeltaSinkAdapter`. Consumers must observe the authenticated evidence
+projection rather than reduce engine text themselves.
+
+## Consumer contract
+
+An external consumer follows the resolved path with an ordinary NDJSON tailer:
 
 ```bash
 tail -F "$HOME/.codescribe/transcript-events.jsonl"
 ```
 
-That command is the non-XDG default. With `XDG_STATE_HOME` set, follow
+That is the non-XDG default. With `XDG_STATE_HOME` set, follow
 `$XDG_STATE_HOME/codescribe/transcript-events.jsonl`; an explicit bus-path
-override wins over both.
+override wins over both. A consumer must tolerate both schemas and must not
+interpret `session_started` or raw IPC events as permission to mutate product
+state.
 
-Named external agents (same file, not a second microphone):
+Named-agent demultiplexing remains a read-only observer over this same file; it
+never opens audio or changes transcript text. State change is permitted only by
+the downstream consumer of a ledger-authenticated projection, never by a draft
+or preview envelope.
 
-```bash
-python3 ~/.codescribe/agent-bridge/runtime/bin/bus-demux.py \
-  --provider codex --session <provider-session-id> --become --drafts --follow
-python3 ~/.codescribe/agent-bridge/runtime/bin/bus-demux.py \
-  --provider codex --session <provider-session-id> --name james --drafts --follow
-```
+## C11 evidence boundary
 
-The Setup Wizard installs that stable helper only after the operator selects
-Codex, Claude Code, or both. The signed app payload is checksum-verified before
-installation; runtime commands never depend on a source checkout.
-
-Unnamed agents do not pass. The first emitted line is an attach receipt with a
-provider/session lease and cursor. Preserve and poll the follower handle. When a
-provider session recovers after compaction, the same provider/session/name
-resumes from that cursor, including events appended during recovery, without
-replaying the old command. Duplicate names in different provider sessions own
-different leases. Non-stale names are exposed without touching audio:
-
-```bash
-python3 ~/.codescribe/agent-bridge/runtime/bin/bus-demux.py --active-names
-```
-
-Draft/revised envelopes explicitly carry `state_change_allowed: false`; only a
-`transcript_sealed` envelope carries `state_change_allowed: true`. The demux
-never opens audio or changes transcript text.
+`484095ce` was the last executable-code cut before documentation successor
+`d57196ab`. C11 is the next structural executable cut; its actual commit hash is
+recorded only in the durable C11 report. Compiler, tests, runtime, app, install,
+and release behavior are `NOT_ASSESSED` under the C11 embargo.

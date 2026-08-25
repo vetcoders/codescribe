@@ -62,7 +62,7 @@ not to crown either engine.
 
 **Six historical cuts (W13-1 … W13-6)** described the intended finish on the
 2026-08-13/21 snapshots. Their state table is retained as archaeology, not as a
-queue for HEAD `484095ce`.
+queue for the lineage after executable cut `484095ce`.
 
 | Cut   | One line                                                                                                                                  | State                                                        |
 | ----- | ----------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------ |
@@ -74,7 +74,11 @@ queue for HEAD `484095ce`.
 | W13-5 | Capture-level receipt + Audio menu truth (level, device, quality)                                                                         | landed — WARN is non-terminal                                |
 | W13-6 | Lexicon gets a voice (Whisper `initial_prompt`, Apple `contextualStrings`) + word/gap highlighting feeding Teach                          | landed OFF — 6A voice + 6B `CODESCRIBE_OVERLAY_HIGHLIGHTS=0` |
 
-**Current structural truth (2026-08-25, HEAD `484095ce`):**
+**Current structural truth (2026-08-25, C11 working cut):**
+
+`484095ce` was the last executable-code cut before docs successor `d57196ab`.
+C11 is the next structural executable cut; its actual commit belongs in the
+durable report. Compiler and runtime are `NOT_ASSESSED`.
 
 - `RecordingController` is the only in-app microphone owner;
   `StreamingRecorder` owns successful-open `capture_epoch` allocation.
@@ -87,11 +91,18 @@ queue for HEAD `484095ce`.
 - `PresentationEmitter` / `TranscriptReducer` commit ledger events; Transcript
   Bus and Swift observe the projection; delivery follows explicit
   `DeliveryRoute`.
+- Fusion-sliced Apple labels enter the ledger per exact Silero range before raw
+  final telemetry. Preview is overlay-only, and raw final/correction/patch/
+  annotation events cannot mutate document, Bus, or delivery.
+- `publish_revision` is the sole committed Bus writer family; terminal ledger
+  seal closes it. Draft/arbitrary-text seal APIs and the raw-event delta adapter
+  are deleted.
 - The deleted VAD/scheduler mutation route and `progressive_seal.rs` are not
   alternatives. Nothing below authorizes restoring them.
 
-This block is structural source evidence only; C8 intentionally does not run or
-claim compiler/runtime verification, and an independent C9 owns W2 closure.
+This block is structural source evidence only. C11 intentionally does not run
+or claim compiler/runtime verification; independent C12 owns the next
+whole-anatomy audit and W2 remains open.
 
 **What the user feels when this lands:** words stop vanishing; corrections
 actually arrive; stop is near-instant; deliberate repetition is never
@@ -527,9 +538,10 @@ chars, final Apple partial 264, RAW 791 ≈ 3×264 — the same sentence
 delivered almost three times). No ledger can save a buffer with two
 writers.
 
-That dual-writer cut **landed** in `75c89f56`:
-`store_transcript_snapshot` is the shared buffer's only writer; the tick
-loop animates the `DeltaSink` only. Do not re-open it as "field P0".
+That historical dual-writer cut landed in `75c89f56`, but its generic snapshot
+writer is superseded by C11's semantic command split: only a committed ledger
+revision command writes `transcript_buffer`; preview and terminal cleanup paint
+overlay deltas only.
 
 The W13 close-the-gap machinery **already landed** in the settlement
 (`13b1eed8`). Its mutation lanes are fail-closed: Layer 1 itself and the
@@ -542,8 +554,8 @@ voice (6A) sit behind those OFF flags. "Catching up" is therefore not
 new architecture — it is measurement and the operator's flip matrix, in
 this order:
 
-1. ~~single-writer emitter + final snapshot barrier~~ **done**
-   (`75c89f56`);
+1. ~~single-writer emitter + final snapshot barrier~~ **historical predecessor**
+   (`75c89f56`); C11 replaces it with ledger-only delivery writes;
 2. ~~hands-free silence as Apple engine lifecycle~~ **done**
    (`7d163d58`) — the Settings slider is no longer a no-op on the
    progressive lane; it rests SFSpeech so Layer 1 can be fed sealed

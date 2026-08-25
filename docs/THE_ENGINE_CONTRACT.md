@@ -24,6 +24,10 @@ Four live layers, everything in the buffer, **~10 ms to paste**:
 
 Preview, colours, successive hypotheses and seals are internal mechanics. The user buys the sentence, immediately, ready to paste. 20 seconds of delay kills even a perfect transcript: it is no longer presence.
 
+Preview is strictly overlay-only paint. Raw final/correction/range-patch/
+annotation events are observations or diagnostics. Only ledger mutation/seal
+receipts may create committed projections or delivery text.
+
 ## Relay
 
 Apple → Whisper → Lexicon + Light+ → Responses formatter → human
@@ -127,9 +131,9 @@ remain correctable. Key = PCM sample counter, not token position.
 
 | Bar                           | Means                                                                                                                                                                                           |
 | ----------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `utterance_final` / committed | This observer finished its current hypothesis for the fragment. **Not the document and not an immutable token floor.** A later authorized observer may correct the same proven span.            |
+| `utterance_final` / observer-final | This observer finished its current raw hypothesis for the fragment. **Not the document, Bus, delivery, or an immutable token floor.** A later authorized observer may relabel the same proven span through the ledger. |
 | `utterance_sealed`            | The span identity and `[sample_start, sample_end)` placement are frozen. Its text is stable for presentation but remains correctable by an admitted downstream observation before session seal. |
-| `transcript_sealed`           | The whole session — tail and formatter included — was assembled into the document. Automation puts its hands down. Full HQ / Cloud may only propose a variant.                                  |
+| terminal ledger seal / `transcript_sealed` projection | A terminal ledger seal receipt closes the committed Bus writer. Arbitrary text cannot seal it. Full HQ / Cloud may only propose a variant. |
 
 `committed` does **not** mean "this is already the document". It means: **this layer finished its work here; the next layer takes the same time slice.**
 
@@ -457,11 +461,15 @@ Target semantics are identical.
 
 The pre-C6 Whisper-first VAD/scheduler route is retained only as dated design
 archaeology. It is not a live alternative dispatcher and must not be restored.
-On HEAD `484095ce`, `transcription_session` dispatches only to
+In the structural lineage beginning at executable cut `484095ce`, `transcription_session` dispatches only to
 `apple_stream_transcription_session`; Whisper may contribute an authorized
 Layer 1 observation on retained PCM inside that Apple-ledger session.
 
-## Current structural truth — HEAD `484095ce` (2026-08-25)
+## Current structural truth — C11 working cut (2026-08-25)
+
+`484095ce` was the last executable-code cut before docs successor `d57196ab`.
+C11 is the next structural executable cut; its actual commit is recorded only
+in the durable report. Compiler and runtime are `NOT_ASSESSED`.
 
 - `RecordingController` is the only in-app microphone owner.
 - `StreamingRecorder::start_event_session` computes the next `capture_epoch`
@@ -475,10 +483,17 @@ Layer 1 observation on retained PCM inside that Apple-ledger session.
 - `AcousticLedger` alone admits and seals physical occurrences.
 - `PresentationEmitter` / `TranscriptReducer` commit ledger events. Transcript
   Bus and Swift are projections, and delivery follows explicit `DeliveryRoute`.
+- Fusion-sliced Apple words are admitted per exact Silero range before raw final
+  telemetry; callback-wide labels are not replicated across slices.
+- Preview uses an overlay-only command and cannot write delivery or Bus state.
+  Raw final/correction/range-patch/annotation events do not mutate the document.
+- The Bus has one committed writer family, `publish_revision`, and terminal
+  ledger seal closes it. Draft/arbitrary-text seal APIs and the raw-event delta
+  adapter no longer exist.
 - Normal product stop has no automatic whole-file pass. Explicit Retranscribe
   remains a separate operator action.
 
-This is structural source evidence, not a C8 compiler or runtime claim.
+This is structural source evidence, not a compiler or runtime claim.
 
 ### Historical acoustic-identity defects — measured 2026-08-22 on `a95e1272`, superseded as current authority
 

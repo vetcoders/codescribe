@@ -1152,21 +1152,23 @@ pub(crate) struct SessionEngineStats {
     pub partial_dropped_count: u64,
 }
 
-/// How the last committed streaming text was sourced (adjudicator truth).
+/// Which raw engine observation most recently closed telemetry's pending-tail
+/// marker. This is diagnostic bookkeeping only; it never defines product text,
+/// occurrence count, delivery, or Bus finality.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) enum CompletenessCommitSource {
-    /// At least one `UtteranceFinal` landed in this session.
-    UtteranceFinal,
-    /// `SessionFinalised` sealed the buffer.
-    SessionFinalised,
+pub(crate) enum CompletenessObservationSource {
+    /// A raw final observation arrived.
+    RawUtteranceFinal,
+    /// The session lifecycle reported finalisation.
+    SessionLifecycleFinalised,
 }
 
-impl CompletenessCommitSource {
-    /// Stable wire/log tag for this commit source.
+impl CompletenessObservationSource {
+    /// Stable wire/log tag for this observation source.
     pub(crate) fn as_str(self) -> &'static str {
         match self {
-            Self::UtteranceFinal => "utterance_final",
-            Self::SessionFinalised => "session_finalised",
+            Self::RawUtteranceFinal => "raw_utterance_final_observed",
+            Self::SessionLifecycleFinalised => "session_lifecycle_finalised",
         }
     }
 }
@@ -1188,16 +1190,15 @@ pub(crate) const UNDER_COMMIT_WARNING_CODE: &str = "tail_patch_under_commit";
 pub(crate) struct SessionTelemetrySnapshot {
     pub no_speech_reason: Option<String>,
     pub stats: Option<SessionEngineStats>,
-    /// Open Preview/Correction without a subsequent UtteranceFinal (pending tail).
+    /// Open Preview/Correction without a subsequent raw final observation.
     pub pending_tail: bool,
-    /// Last adjudicator commit that sealed streaming text, if any.
-    pub last_commit_source: Option<CompletenessCommitSource>,
-    /// Characters accumulated from UtteranceFinal commits (coverage signal).
-    pub committed_chars: usize,
-    /// Audio boundary of committed streaming text: the monotonic max `end_ts`
-    /// across UtteranceFinal events. Smart-mode stop transcribes only the tail
-    /// after this point (append-only doctrine — committed text is immutable).
-    pub committed_through_secs: Option<f32>,
+    /// Last raw observation that closed the telemetry-only pending-tail marker.
+    pub last_observation_source: Option<CompletenessObservationSource>,
+    /// Characters reported by raw final observations. Never a document count.
+    pub observed_final_chars: usize,
+    /// Monotonic max `end_ts` reported by raw final observations. This is an
+    /// engine-coverage hint only, never an occurrence or delivery boundary.
+    pub observed_final_through_secs: Option<f32>,
     /// Layer 1 escalated an under-commit residual it could not place on a safe
     /// anchor ([`UNDER_COMMIT_WARNING_CODE`]). Monotonic within one session:
     /// once a hole is known no later healthy event may un-know it, because the
@@ -1219,8 +1220,8 @@ pub(crate) fn new_session_telemetry() -> SharedSessionTelemetry {
 }
 
 /// Clear telemetry between sessions. Resets the whole snapshot — including the
-/// committed audio boundary — so a new recording never inherits the previous
-/// session's tail position.
+/// observed audio boundary — so a new recording never inherits the previous
+/// session's diagnostic tail position.
 pub(crate) fn reset_session_telemetry(shared: &SharedSessionTelemetry) {
     let mut guard = shared.lock().unwrap_or_else(|e| e.into_inner());
     *guard = SessionTelemetrySnapshot::default();
@@ -1274,12 +1275,13 @@ impl EventSink for IpcBroadcastSink {
 impl EventSink for SessionTelemetrySink {
     /// Fold one engine event into the session snapshot.
     ///
-    /// Preview and Correction open a pending tail; only a commit closes it.
-    /// `committed_through_secs` advances as a monotonic max so an out-of-order
-    /// final cannot rewind the boundary, and non-finite `end_ts` values are
-    /// rejected outright — NaN would slip past the `current >= end_ts` guard and
-    /// overwrite a valid maximum, silently disabling Smart tail gap-fill for the
-    /// rest of the session. Unmatched events are ignored rather than
+    /// Preview and Correction open a pending telemetry tail; a raw final or
+    /// lifecycle close clears it without gaining document authority.
+    /// `observed_final_through_secs` advances as a monotonic max so an
+    /// out-of-order final cannot rewind the diagnostic boundary. Non-finite
+    /// `end_ts` values are rejected outright; NaN would otherwise overwrite a
+    /// valid maximum and silently disable Smart tail gap-fill for the rest of
+    /// the session. Unmatched events are ignored rather than
     /// exhaustively listed, so new engine events cannot break the build here.
     ///
     /// `Warning` is the one event folded by code rather than by variant: only
@@ -1291,30 +1293,35 @@ impl EventSink for SessionTelemetrySink {
             EngineEvent::NoSpeech { reason } => {
                 guard.no_speech_reason = Some(reason.clone());
             }
-            // Preview / Correction leave an open tail until UtteranceFinal seals it.
+            // Preview / Correction leave an open telemetry tail until a raw
+            // final observation or lifecycle close arrives.
             EngineEvent::Preview { .. } | EngineEvent::Correction { .. } => {
                 guard.pending_tail = true;
             }
             EngineEvent::UtteranceFinal { text, end_ts, .. } => {
                 guard.pending_tail = false;
-                guard.last_commit_source = Some(CompletenessCommitSource::UtteranceFinal);
-                guard.committed_chars = guard
-                    .committed_chars
+                guard.last_observation_source =
+                    Some(CompletenessObservationSource::RawUtteranceFinal);
+                guard.observed_final_chars = guard
+                    .observed_final_chars
                     .saturating_add(text.trim().chars().count());
-                // Monotonic max: an out-of-order final never rewinds the boundary.
+                // Monotonic max: an out-of-order raw observation never rewinds
+                // this diagnostic boundary.
                 // Non-finite end_ts must never poison it (parity with
                 // ComposerTranscript::note_committed_through): NaN falls through
                 // the `current >= end_ts` arm and would overwrite a valid max.
                 if end_ts.is_finite() {
-                    guard.committed_through_secs = Some(match guard.committed_through_secs {
-                        Some(current) if current >= *end_ts => current,
-                        _ => *end_ts,
-                    });
+                    guard.observed_final_through_secs =
+                        Some(match guard.observed_final_through_secs {
+                            Some(current) if current >= *end_ts => current,
+                            _ => *end_ts,
+                        });
                 }
             }
             EngineEvent::SessionFinalised { .. } => {
                 guard.pending_tail = false;
-                guard.last_commit_source = Some(CompletenessCommitSource::SessionFinalised);
+                guard.last_observation_source =
+                    Some(CompletenessObservationSource::SessionLifecycleFinalised);
             }
             // Layer 1 recovered speech it could not place. Set-only: a hole
             // found mid-session stays known until the session is reset, because
@@ -1617,7 +1624,7 @@ mod tests {
             Some("vad_no_speech_detected")
         );
         assert!(!snapshot.pending_tail);
-        assert!(snapshot.last_commit_source.is_none());
+        assert!(snapshot.last_observation_source.is_none());
         let stats = snapshot.stats.expect("stats should be captured");
         assert_eq!(stats.hallucination_drops, 2);
         assert_eq!(stats.filtered_empty_drops, 4);
@@ -1633,11 +1640,11 @@ mod tests {
         assert_eq!(stats.partial_dropped_count, 9);
     }
 
-    /// The open-tail state machine: Preview and Correction open a tail, and only
-    /// a commit closes it — recording which commit did so. A Correction arriving
-    /// after a final re-opens the tail, because there is again uncommitted text.
+    /// The telemetry state machine: Preview and Correction open a diagnostic
+    /// tail; raw final and lifecycle observations close it without gaining text
+    /// authority. A later Correction re-opens only this diagnostic marker.
     #[test]
-    fn test_session_telemetry_tracks_pending_tail_and_commit_source() {
+    fn test_session_telemetry_tracks_pending_tail_and_observation_source() {
         let shared = new_session_telemetry();
         let sink = SessionTelemetrySink::new(Arc::clone(&shared));
 
@@ -1647,7 +1654,7 @@ mod tests {
         });
         let open = snapshot_session_telemetry(&shared);
         assert!(open.pending_tail, "preview leaves a pending tail");
-        assert!(open.last_commit_source.is_none());
+        assert!(open.last_observation_source.is_none());
 
         sink.on_event(&EngineEvent::UtteranceFinal {
             utterance_id: 1,
@@ -1664,11 +1671,11 @@ mod tests {
         let sealed = snapshot_session_telemetry(&shared);
         assert!(!sealed.pending_tail);
         assert_eq!(
-            sealed.last_commit_source,
-            Some(CompletenessCommitSource::UtteranceFinal)
+            sealed.last_observation_source,
+            Some(CompletenessObservationSource::RawUtteranceFinal)
         );
         assert_eq!(
-            sealed.committed_chars,
+            sealed.observed_final_chars,
             "To jest kompletne zdanie.".chars().count()
         );
 
@@ -1686,24 +1693,23 @@ mod tests {
         let finalised = snapshot_session_telemetry(&shared);
         assert!(!finalised.pending_tail);
         assert_eq!(
-            finalised.last_commit_source,
-            Some(CompletenessCommitSource::SessionFinalised)
+            finalised.last_observation_source,
+            Some(CompletenessObservationSource::SessionLifecycleFinalised)
         );
     }
 
-    /// Smart-mode tail transcription needs the audio boundary of committed
-    /// streaming text: the monotonic max `end_ts` across UtteranceFinal events.
-    /// Out-of-order finals must never pull the boundary backwards.
+    /// Telemetry retains the monotonic max raw-final `end_ts` as an engine
+    /// coverage hint. Out-of-order observations must never pull it backwards.
     #[test]
-    fn test_session_telemetry_tracks_committed_through_secs_monotonic_max() {
+    fn test_session_telemetry_tracks_observed_final_through_secs_monotonic_max() {
         let shared = new_session_telemetry();
         let sink = SessionTelemetrySink::new(Arc::clone(&shared));
 
         assert!(
             snapshot_session_telemetry(&shared)
-                .committed_through_secs
+                .observed_final_through_secs
                 .is_none(),
-            "default snapshot has no committed audio boundary"
+            "default snapshot has no observed raw-final boundary"
         );
 
         let utterance_final =
@@ -1722,30 +1728,30 @@ mod tests {
 
         sink.on_event(&utterance_final(1, 0.0, 3.2));
         assert_eq!(
-            snapshot_session_telemetry(&shared).committed_through_secs,
+            snapshot_session_telemetry(&shared).observed_final_through_secs,
             Some(3.2)
         );
 
         sink.on_event(&utterance_final(2, 3.2, 7.9));
         assert_eq!(
-            snapshot_session_telemetry(&shared).committed_through_secs,
+            snapshot_session_telemetry(&shared).observed_final_through_secs,
             Some(7.9)
         );
 
-        // Out-of-order final: boundary stays at the max already committed.
+        // Out-of-order final: diagnostic boundary stays at the max already observed.
         sink.on_event(&utterance_final(3, 4.0, 5.0));
         assert_eq!(
-            snapshot_session_telemetry(&shared).committed_through_secs,
+            snapshot_session_telemetry(&shared).observed_final_through_secs,
             Some(7.9),
-            "committed boundary is a monotonic max, not the last value"
+            "observed boundary is a monotonic max, not the last value"
         );
 
         reset_session_telemetry(&shared);
         assert!(
             snapshot_session_telemetry(&shared)
-                .committed_through_secs
+                .observed_final_through_secs
                 .is_none(),
-            "reset clears the committed audio boundary"
+            "reset clears the observed raw-final boundary"
         );
     }
 
@@ -1776,28 +1782,28 @@ mod tests {
         sink.on_event(&utterance_final(1, 0.0, 3.2));
         sink.on_event(&utterance_final(2, 3.2, f32::NAN));
         assert_eq!(
-            snapshot_session_telemetry(&shared).committed_through_secs,
+            snapshot_session_telemetry(&shared).observed_final_through_secs,
             Some(3.2),
-            "NaN end_ts must not overwrite the committed boundary"
+            "NaN end_ts must not overwrite the observed boundary"
         );
 
         sink.on_event(&utterance_final(3, 3.2, f32::INFINITY));
         assert_eq!(
-            snapshot_session_telemetry(&shared).committed_through_secs,
+            snapshot_session_telemetry(&shared).observed_final_through_secs,
             Some(3.2),
             "+inf end_ts must not advance the boundary"
         );
 
         sink.on_event(&utterance_final(4, 3.2, f32::NEG_INFINITY));
         assert_eq!(
-            snapshot_session_telemetry(&shared).committed_through_secs,
+            snapshot_session_telemetry(&shared).observed_final_through_secs,
             Some(3.2),
             "-inf end_ts must not disturb the boundary"
         );
 
         sink.on_event(&utterance_final(5, 3.2, 4.5));
         assert_eq!(
-            snapshot_session_telemetry(&shared).committed_through_secs,
+            snapshot_session_telemetry(&shared).observed_final_through_secs,
             Some(4.5),
             "finite finals keep advancing after non-finite noise"
         );
@@ -1884,7 +1890,7 @@ mod tests {
     }
 
     /// Reset must clear every field, not just the obvious ones: leftover
-    /// `pending_tail` or `committed_chars` would make the next session's first
+    /// `pending_tail` or `observed_final_chars` would make the next session's first
     /// routing decision read the previous session's state.
     #[test]
     fn test_reset_session_telemetry_clears_snapshot() {
@@ -1897,9 +1903,10 @@ mod tests {
                 ..Default::default()
             });
             guard.pending_tail = true;
-            guard.last_commit_source = Some(CompletenessCommitSource::UtteranceFinal);
-            guard.committed_chars = 12;
-            guard.committed_through_secs = Some(41.0);
+            guard.last_observation_source =
+                Some(CompletenessObservationSource::RawUtteranceFinal);
+            guard.observed_final_chars = 12;
+            guard.observed_final_through_secs = Some(41.0);
             guard.residual_required = true;
         }
         reset_session_telemetry(&shared);
@@ -1908,9 +1915,9 @@ mod tests {
         assert!(snapshot.no_speech_reason.is_none());
         assert!(snapshot.stats.is_none());
         assert!(!snapshot.pending_tail);
-        assert!(snapshot.last_commit_source.is_none());
-        assert_eq!(snapshot.committed_chars, 0);
-        assert!(snapshot.committed_through_secs.is_none());
+        assert!(snapshot.last_observation_source.is_none());
+        assert_eq!(snapshot.observed_final_chars, 0);
+        assert!(snapshot.observed_final_through_secs.is_none());
         assert!(
             !snapshot.residual_required,
             "a stale residual demand would force a Whisper tail pass on the next session"

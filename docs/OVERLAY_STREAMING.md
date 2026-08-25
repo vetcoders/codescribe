@@ -1,7 +1,9 @@
 # Streaming Pipeline: Microphone → Ledger → Projection
 
-> Current structural documentation for Codescribe's normal live capture path on
-> HEAD `484095ce` (2026-08-25). The 2026-05-26
+> Current structural documentation (2026-08-25). `484095ce` was the last
+> executable-code cut before docs successor `d57196ab`; C11 is the next
+> structural executable cut and records its actual hash in its durable report.
+> Compiler and runtime are `NOT_ASSESSED`. The 2026-05-26
 > [five-layer ADR](./ADR/2026-05-26-LAYERED_INCREMENTAL_TRANSCRIPTION.md) and
 > older Whisper-first scheduler diagrams are superseded historical snapshots;
 > they have no current runtime authority.
@@ -102,7 +104,10 @@ Its two Apple bridge transports are an A/B seam inside the same Apple route:
 
 The Apple session feeds one Silero observation path. `seal_sliced_by_silero`
 uses Silero boundary/time/energy evidence to describe PCM ranges on the same
-session clock. Silero cannot author text and cannot seal a transcript by itself.
+session clock. Each selected slice now admits its own slice-local Apple label
+and exact-range no-change Lexicon observation before any raw final telemetry.
+Callback-wide text is not copied into multiple ranges. Silero cannot author text
+and cannot seal a transcript by itself.
 
 Whisper may observe retained PCM as the Layer 1 tail provider. Apple, Whisper,
 Lexicon/Light+, and Responses formatting all offer observations about an
@@ -141,7 +146,11 @@ those events into the canonical document.
 
 The Transcript Bus observes committed reducer revisions and publishes a
 complete rendered projection with acoustic receipts. Preview callbacks and raw
-engine strings are not bus truth.
+engine strings are not bus truth. Preview uses a distinct overlay-only command
+that cannot write the delivery buffer. Raw final/correction/range-patch/
+annotation events are diagnostics only. The Bus exposes no draft or arbitrary
+text seal API; terminal ledger seal is the only automatic close of committed
+truth. The old raw-event-to-delta adapter no longer exists.
 
 ```mermaid
 sequenceDiagram

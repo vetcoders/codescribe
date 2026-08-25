@@ -1,9 +1,10 @@
 # TRANSCRIPT LANES — current execution anatomy
 
 This document is the current structural execution map for Codescribe live
-transcription on HEAD `484095ce` (2026-08-25). Runtime behavior still requires
-independent verification; this map does not turn a documentation census into a
-compiler, test, replay, microphone, or release claim.
+transcription after the C11 source cut (2026-08-25). `484095ce` was the last
+executable-code cut before the documentation successor `d57196ab`; the actual
+C11 commit is recorded only in its durable implementation report. Compiler,
+test, replay, microphone, and release behavior are `NOT_ASSESSED` in C11.
 
 The canonical product contract is [`THE_ENGINE_CONTRACT.md`](THE_ENGINE_CONTRACT.md).
 The visual companion for this route is
@@ -38,7 +39,9 @@ explicit operator intent
   → AcousticLedger::admit / AcousticLedger::seal
   → EngineEvent::LedgerMutation / EngineEvent::LedgerSeal
   → PresentationEmitter / TranscriptReducer
-  → Transcript Bus committed projection
+      ├─ committed ledger revision → overlay + transcript_buffer
+      └─ ephemeral preview         → overlay only
+  → Transcript Bus publish_revision (ledger receipts only)
   → Swift projection observer
   → DeliveryRoute selected from explicit operator intent
 ```
@@ -70,11 +73,11 @@ only.
 | A3 | session bind | `StreamingRecorder::bind_session_authority` | bind one operator session to one `AcousticLedger`; reset only the session-local epoch counter |
 | A4 | dispatch | `core/pipeline/streaming/session.rs::transcription_session` | delegate only to `apple_stream_transcription_session` |
 | A5 | Apple ingress | `apple_stream_worker` | retain PCM, advance the session sample counter, feed the single Silero ingress, and poll the Apple bridge |
-| A6 | observation | `seal_utterance_final`, `seal_sliced_by_silero` | bind Apple text to new session-clock PCM; Silero contributes evidence, never text authority |
+| A6 | observation | `seal_utterance_final`, `seal_sliced_by_silero` | bind Apple text to new session-clock PCM; each Silero slice is admitted for its exact range before any raw-final telemetry; Silero contributes evidence, never text authority |
 | A7 | admission | `admit_ledger_label` | qualify evidence, schedule the observation frontier, and offer Apple/Whisper/Lexicon/formatter labels to the ledger |
 | A8 | physical seal | `AcousticLedger::seal` / `seal_terminal` | close the occurrence only after the scheduled frontier or terminal boundary permits it |
 | A9 | document commit | `PresentationEmitter` / `TranscriptReducer` | reduce `LedgerMutation` and `LedgerSeal` into the canonical document |
-| A10 | projection | Transcript Bus, then Swift | publish and display the committed reducer projection; raw callbacks and previews are not bus truth |
+| A10 | projection | Transcript Bus, then Swift | `publish_revision` publishes and displays the committed reducer projection; raw finals/corrections/patches and previews are not Bus or delivery truth |
 
 ### Apple transport A/B
 
@@ -151,6 +154,11 @@ Dictation, Agent, and Assistive share the same transcript authority even when
 their delivery destinations differ. Clipboard, paste, canvas, and Agent are
 explicitly distinct routes.
 
+`PublishCommittedRevision` is the only emitter-worker command allowed to write
+`transcript_buffer`. `PaintEphemeralPreview` only advances the visual delta
+baseline. The Bus has no draft or arbitrary-text seal API, and there is no raw-
+event delta adapter.
+
 ## 7. Settings and runtime truth
 
 | Surface | Meaning |
@@ -181,7 +189,9 @@ mutation are four different facts. No UI toggle alone proves all four.
   applicable ledger seal.
 - No machine layer may create, merge, erase, split, or reorder physical speech
   by comparing strings.
-- Transcript Bus and Swift are projections of the Rust reducer.
+- Transcript Bus accepts only ledger-authenticated reducer revisions; terminal
+  ledger seal, not arbitrary text, closes committed Bus truth.
+- Swift is a projection observer of the Rust reducer.
 - Delivery follows explicit operator intent.
 
 ## 9. Required receipts and falsifiers

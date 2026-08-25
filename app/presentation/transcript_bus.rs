@@ -1,11 +1,9 @@
 //! Durable clean transcript events for operator and control-plane consumers.
 //!
-//! The bus observes the mutable [`PresentationEmitter`] draft and the one
-//! authoritative product seal chosen by [`crate::controller::RecordingController`].
-//! It never opens audio, re-transcribes a file, or reconstructs text from UI
-//! deltas. One append-only JSON object is flushed per state transition.
+//! The bus observes only occurrence-authenticated revisions emitted by the
+//! [`PresentationEmitter`]. It never opens audio, accepts arbitrary text,
+//! re-transcribes a file, or reconstructs text from UI deltas.
 
-use std::collections::BTreeMap;
 use std::fs::{File, OpenOptions};
 use std::io::{self, Write};
 use std::path::{Path, PathBuf};
@@ -44,33 +42,6 @@ mod p0_b_five_iwo;
 pub struct TranscriptSession {
     pub session_id: String,
     pub mode: TranscriptMode,
-}
-
-/// One mutable utterance slot in the live transcript draft.
-#[derive(Debug, Clone, PartialEq)]
-pub struct TranscriptDraft {
-    pub utterance_id: u64,
-    pub text: String,
-    pub start_seconds: f32,
-    pub end_seconds: f32,
-    pub segments: Vec<TranscriptSegment>,
-}
-
-/// Typed draft transition. Product truth is never represented by this enum;
-/// only [`TranscriptBus::publish_sealed`] can cross the immutable boundary.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum TranscriptDraftStatus {
-    Created,
-    Revised,
-}
-
-impl TranscriptDraftStatus {
-    fn as_str(self) -> &'static str {
-        match self {
-            Self::Created => "utterance_draft",
-            Self::Revised => "utterance_revised",
-        }
-    }
 }
 
 /// Grain of one published span. Word pins are engine evidence; utterance
@@ -193,14 +164,12 @@ pub struct CleanTranscriptEvent {
     pub pipeline_session_id: Option<String>,
 }
 
-/// Synchronous low-frequency writer. Draft boundaries occur on the STT worker,
-/// not the CoreAudio callback, and each line is flushed so a live tailer sees
-/// them before the next utterance or process exit.
+/// Synchronous low-frequency observer. Each lifecycle or authenticated ledger
+/// projection is flushed so a live tailer sees it before process exit.
 pub struct TranscriptBus {
     session: TranscriptSession,
     path: PathBuf,
     writer: Mutex<TranscriptBusWriter>,
-    sample_rate_override: Option<u32>,
 }
 
 /// One lock owns lifecycle and bytes together. This makes the sequence stored
@@ -211,7 +180,6 @@ struct TranscriptBusWriter {
     sequence: u64,
     started: bool,
     sealed: bool,
-    drafts: BTreeMap<u64, TranscriptDraft>,
 }
 
 impl TranscriptBus {
@@ -327,7 +295,7 @@ impl TranscriptBus {
     pub fn open_at(
         session: TranscriptSession,
         path: PathBuf,
-        sample_rate_override: Option<u32>,
+        _sample_rate_override: Option<u32>,
     ) -> io::Result<Self> {
         if let Some(parent) = path.parent() {
             std::fs::create_dir_all(parent)?;
@@ -355,9 +323,7 @@ impl TranscriptBus {
                 sequence: 0,
                 started: false,
                 sealed: false,
-                drafts: BTreeMap::new(),
             }),
-            sample_rate_override,
         };
         Ok(bus)
     }
@@ -379,105 +345,9 @@ impl TranscriptBus {
         }
     }
 
-    /// Publish a new mutable utterance slot or a bounded revision of that slot.
-    pub fn publish_draft(&self, status: TranscriptDraftStatus, utterance: TranscriptDraft) {
-        let status = status.as_str();
-        let sample_rate = self.sample_rate();
-        let event = CleanTranscriptEvent {
-            schema: "codescribe.transcript.v1".to_string(),
-            sequence: 0,
-            session_id: String::new(),
-            mode: self.session.mode,
-            utterance_id: Some(utterance.utterance_id),
-            emitted_at: String::new(),
-            status: status.to_string(),
-            sample_rate_hz: sample_rate,
-            capture_epoch: None,
-            sample_start: None,
-            sample_end: None,
-            audio_start_seconds: None,
-            audio_end_seconds: None,
-            text: utterance.text.clone(),
-            segments: utterance.segments.clone(),
-            words: Vec::new(),
-            coverage: Some(failed_coverage("missing_ledger_identity")),
-            pipeline_session_id: None,
-        };
-
-        let mut writer = self
-            .writer
-            .lock()
-            .unwrap_or_else(|error| error.into_inner());
-        if writer.sealed {
-            tracing::warn!(session_id = %self.session.session_id, %status, "transcript draft ignored after product seal");
-            return;
-        }
-        writer.drafts.insert(utterance.utterance_id, utterance);
-        if let Err(error) = self
-            .ensure_started_locked(&mut writer)
-            .and_then(|_| self.write_event_locked(&mut writer, event))
-        {
-            self.log_write_error(error);
-        }
-    }
-
-    /// Publish the one immutable product truth after every configured automatic
-    /// stage (engine layers, final pass, adjudication, postprocess, formatting)
-    /// has completed. The first call wins byte-for-byte; later calls are ignored.
-    pub fn publish_sealed(&self, text: String, pipeline_session_id: Option<String>) {
-        let mut writer = self
-            .writer
-            .lock()
-            .unwrap_or_else(|error| error.into_inner());
-        if writer.sealed {
-            return;
-        }
-        let sample_rate = self.sample_rate();
-        let segments = writer
-            .drafts
-            .values()
-            .flat_map(|draft| draft.segments.iter().cloned())
-            .collect();
-        let event = CleanTranscriptEvent {
-            schema: "codescribe.transcript.v1".to_string(),
-            sequence: 0,
-            session_id: String::new(),
-            mode: self.session.mode,
-            utterance_id: None,
-            emitted_at: String::new(),
-            status: "transcript_sealed".to_string(),
-            sample_rate_hz: sample_rate,
-            capture_epoch: None,
-            sample_start: None,
-            sample_end: None,
-            audio_start_seconds: None,
-            audio_end_seconds: None,
-            text,
-            segments,
-            words: Vec::new(),
-            coverage: Some(failed_coverage("missing_ledger_identity")),
-            pipeline_session_id,
-        };
-        match self
-            .ensure_started_locked(&mut writer)
-            .and_then(|_| self.write_event_locked(&mut writer, event))
-        {
-            Ok(()) => writer.sealed = true,
-            Err(error) => self.log_write_error(error),
-        }
-    }
-
     /// The resolved path consumed by an external NDJSON tailer.
     pub fn path(&self) -> &Path {
         &self.path
-    }
-
-    fn sample_rate(&self) -> Option<u32> {
-        self.sample_rate_override.or_else(|| {
-            codescribe_core::audio::capture_receipt::last_open_capture_path()
-                .map(|capture| capture.sample_rate)
-                .filter(|rate| *rate > 0)
-        })
     }
 
     fn ensure_started_locked(&self, writer: &mut TranscriptBusWriter) -> io::Result<bool> {
@@ -553,13 +423,6 @@ impl TranscriptBus {
     }
 }
 
-fn lexical_signature(text: &str) -> Vec<String> {
-    text.split(|character: char| !character.is_alphanumeric())
-        .filter(|token| !token.is_empty())
-        .map(str::to_lowercase)
-        .collect()
-}
-
 /// Path precedence: explicit contract, XDG state, then Codescribe's existing
 /// project/data override (`CODESCRIBE_DATA_DIR`) via `Config::config_dir()`.
 pub fn transcript_bus_path() -> PathBuf {
@@ -578,13 +441,6 @@ pub fn transcript_bus_path() -> PathBuf {
         }
     }
     codescribe_core::config::Config::config_dir().join(TRANSCRIPT_BUS_FILENAME)
-}
-
-fn failed_coverage(code: &str) -> TranscriptCoverageReceipt {
-    TranscriptCoverageReceipt {
-        passed: false,
-        code: code.to_string(),
-    }
 }
 
 fn expand_tilde(path: &str) -> PathBuf {
@@ -606,7 +462,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn bus_flushes_clean_events_privately_and_seals_once() {
+    fn bus_flushes_session_lifecycle_privately_without_text_authority() {
         let temp = tempfile::tempdir().unwrap();
         let path = temp.path().join("events.jsonl");
         let bus = TranscriptBus::open_at(
@@ -619,53 +475,18 @@ mod tests {
         )
         .unwrap();
 
-        bus.publish_draft(
-            TranscriptDraftStatus::Created,
-            TranscriptDraft {
-                utterance_id: 7,
-                text: "clean final".to_string(),
-                start_seconds: 0.25,
-                end_seconds: 1.5,
-                segments: Vec::new(),
-            },
-        );
-        bus.publish_sealed(
-            "clean final".to_string(),
-            Some("engine-session".to_string()),
-        );
-        bus.publish_draft(
-            TranscriptDraftStatus::Revised,
-            TranscriptDraft {
-                utterance_id: 7,
-                text: "must not escape finalization".to_string(),
-                start_seconds: 0.25,
-                end_seconds: 1.5,
-                segments: Vec::new(),
-            },
-        );
-        bus.publish_sealed("duplicate final".to_string(), None);
+        bus.publish_started();
+        bus.publish_started();
 
         let lines: Vec<CleanTranscriptEvent> = std::fs::read_to_string(&path)
             .unwrap()
             .lines()
             .map(|line| serde_json::from_str(line).unwrap())
             .collect();
-        assert_eq!(lines.len(), 3);
+        assert_eq!(lines.len(), 1);
         assert_eq!(lines[0].status, "session_started");
-        assert_eq!(lines[1].status, "utterance_draft");
-        assert_eq!(lines[2].status, "transcript_sealed");
-        assert_eq!(lines[2].text, "clean final");
-        assert_eq!(lines[2].pipeline_session_id.as_deref(), Some("engine-session"));
-        assert!(lines[1].words.is_empty());
-        assert!(lines[2].words.is_empty());
-        assert_eq!(
-            lines[1].coverage.as_ref().map(|receipt| receipt.code.as_str()),
-            Some("missing_ledger_identity")
-        );
-        assert_eq!(
-            lines.iter().map(|event| event.sequence).collect::<Vec<_>>(),
-            vec![1, 2, 3]
-        );
+        assert_eq!(lines[0].sequence, 1);
+        assert!(lines[0].text.is_empty());
 
         #[cfg(unix)]
         {

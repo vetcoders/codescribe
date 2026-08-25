@@ -9,6 +9,11 @@ Codescribe-specific runtime laws, release cadence, and canonical pointers.
   and Assistive may route differently downstream; none may create a recorder.
 - `PresentationEmitter` is the transcript reducer of record. The Transcript Bus
   observes committed reducer events; previews and raw engine text are not truth.
+- Only occurrence-authenticated ledger receipts may create committed Bus
+  projections. Raw final/correction/patch events are telemetry or diagnostics.
+- Preview is ephemeral overlay paint. It never writes delivery or Bus state.
+- A terminal ledger seal closes committed Bus truth; no arbitrary text seal,
+  draft publication API, or raw-event delta reducer exists.
 - Apple is the first observer, not immutable text authority. A later observer
   may repair the same occurrence only with matching session, epoch, and PCM span.
 - Equal words may be intentional repetition. Reject replayed observation

@@ -18,6 +18,10 @@
 > VAD/scheduler identity cone and file-tail text-overlap compatibility cone are
 > removed. Offline one-file replay seams use caller-domain epoch `1`. Legacy
 > `FINAL_PASS_MODE` no longer owns any normal-stop inference.
+> C11 makes `publish_revision` the sole committed Bus writer: raw final,
+> correction, replacement, annotation, and preview events cannot write product
+> text. A terminal ledger seal closes Bus truth; compiler/runtime behavior is
+> `NOT_ASSESSED` in this structural cut.
 > Planning report: internal plan `stt-apple-must-have` (operator artifact store, 2026-07-24).
 
 ---
@@ -254,11 +258,13 @@ projection. Replayed observation identity, invalid ranges, missing identities,
 and late automatic completions are refused structurally. Identical words in
 disjoint PCM ranges remain distinct occurrences and survive.
 
-`UtteranceFinal.acoustic` carries the committed phrase identity through the
-presentation reducer into the Transcript Bus. Phrase timing remains `phrase`;
-the system never divides provider segment time evenly into invented word pins.
-The L3 ledger orders `(capture_epoch, sample_start, sample_end)`
-lexicographically and rejects loss, addition, or reorder before delivery.
+`UtteranceFinal` is raw observation/telemetry only. Committed phrase identity
+travels through `LedgerMutation` / `LedgerSeal` receipts and the occurrence-
+keyed reducer into `TranscriptBus::publish_revision`. Phrase timing remains
+`phrase`; the system never divides provider segment time evenly into invented
+word pins. The ledger projection orders `(capture_epoch, sample_start,
+sample_end)` lexicographically and rejects loss, addition, or reorder before
+delivery. Preview is overlay-only and is discarded at terminal boundaries.
 
 Active W2-04 Agent leases are read directly as a bounded 120-second snapshot.
 Their names are placed first in the existing Whisper context budget and

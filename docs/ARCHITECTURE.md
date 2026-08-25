@@ -2,7 +2,10 @@
 
 > Created by Vetcoders (c)2026
 >
-> **Current structural map (2026-08-25, HEAD `484095ce`):** transcription follows the canonical
+> **Current structural map (2026-08-25):** `484095ce` was the last
+> executable-code cut before docs successor `d57196ab`; C11 is the next
+> structural executable cut, with its actual commit recorded only in the
+> durable C11 report. Compiler and runtime are `NOT_ASSESSED`. Transcription follows the canonical
 > [four-layer engine contract](./THE_ENGINE_CONTRACT.md). The 2026-05-26
 > [five-layer ADR](./ADR/2026-05-26-LAYERED_INCREMENTAL_TRANSCRIPTION.md)
 > is a superseded historical proposal. Normal live capture is the Apple session
@@ -14,9 +17,10 @@
 
 Live transcription is no longer a single Whisper stream. Exactly four machine
 layers cooperate: Apple, Whisper, Lexicon + Light+, and the existing Responses
-formatter. Their observations enter `AcousticLedger`; corrections, bounded
-patches, annotations, and marker placement are resolved by the Rust transcript
-reducer in `app/presentation/emitter.rs`. That reducer emits an immutable,
+formatter. Their authorized labels enter `AcousticLedger`; the Rust transcript
+reducer in `app/presentation/emitter.rs` accepts only ledger mutation/seal
+receipts. Raw correction, range-patch, annotation, and final events are
+diagnostics rather than document inputs. That reducer emits an immutable,
 complete rendered projection through the Transcript Bus, together with the
 acoustic receipts that justify it.
 
@@ -45,7 +49,10 @@ not claim them. Final BAM is superseded and has no producer, while
 `AcousticLedger::admit` and `AcousticLedger::seal` own physical occurrence
 decisions. `EngineEvent::LedgerMutation` / `LedgerSeal` flow to
 `PresentationEmitter` / `TranscriptReducer`; Transcript Bus and Swift observe
-the committed projection. `DeliveryRoute` follows explicit operator intent.
+the committed projection. Preview is overlay-only paint and cannot write Bus or
+delivery. Terminal ledger seal closes Bus truth; arbitrary text seal/draft APIs
+and the raw-event delta reducer do not exist. `DeliveryRoute` follows explicit
+operator intent.
 
 ### Explicit Retranscribe and stop-path receipts
 

@@ -124,5 +124,8 @@ SettingsLoader::load_runtime_snapshot()
   → RuntimeSettingsSnapshot::llm_lanes()
 ```
 
-This document describes structure verified on HEAD `484095ce`; it does not
-claim that C8 exercised provider requests or any runtime credential path.
+This document describes structure carried from executable cut `484095ce`, its
+documentation successor `d57196ab`, and the C11 source cut. The actual C11 hash
+lives only in its durable report. C11 did not exercise provider requests,
+compiler gates, or any runtime credential path; those surfaces are
+`NOT_ASSESSED`.

@@ -8,11 +8,11 @@ pub mod acoustic_ledger;
 pub mod contracts;
 /// W13-6B overlay highlight layer (lexicon corrections + speech-gap pustki).
 pub mod highlight;
-/// Event sink adapters: collector, delta, and fan-out to consumers.
+/// Event sink helpers: collectors and fan-out to consumers.
 pub mod sinks;
 /// Live streaming session state for partial/final engine events.
 pub mod streaming;
 
 // Re-export core event types for ergonomic access
 pub use contracts::{DropKind, EngineEvent, EventSink};
-pub use sinks::{CollectorEventSink, DeltaSinkAdapter, FanoutEventSink};
+pub use sinks::{CollectorEventSink, FanoutEventSink};
