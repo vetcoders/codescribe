@@ -6,6 +6,7 @@
 //! offsets — so one decode can rewrite the sentence, then maps
 //! `ReplaceRange` events back onto the original utterance ids.
 
+use crate::pipeline::acoustic_ledger::OccurrenceIdentity;
 use crate::pipeline::contracts::{EngineEvent, LayerSource};
 use crate::stt::tail_patcher::{TailPatchOutcome, UnderCommit};
 
@@ -23,6 +24,8 @@ pub struct ConcatSpan {
 #[derive(Debug, Clone)]
 pub struct CoalescedPiece {
     pub utterance_id: u64,
+    /// Exact physical occurrence whose launched Whisper slot this piece owns.
+    pub occurrence: OccurrenceIdentity,
     pub committed_text: String,
     pub audio: Vec<f32>,
     pub sample_start: u64,
@@ -39,6 +42,8 @@ pub struct CoalesceFlush {
     pub audio: Vec<f32>,
     pub spans: Vec<ConcatSpan>,
     pub member_ids: Vec<(u64, f32)>,
+    /// Exact identities survive pending-presentation removal and queue loss.
+    pub member_occurrences: Vec<(u64, OccurrenceIdentity)>,
     pub neighbour_context: String,
     pub covered_through_secs: f32,
     pub sample_start: u64,
@@ -179,6 +184,7 @@ fn build_flush(pieces: Vec<CoalescedPiece>, neighbour_context: String) -> Coales
     let mut audio = Vec::new();
     let mut spans = Vec::with_capacity(pieces.len());
     let mut member_ids = Vec::with_capacity(pieces.len());
+    let mut member_occurrences = Vec::with_capacity(pieces.len());
     let mut offset = 0usize;
     let sample_start = pieces.first().map_or(0, |p| p.sample_start);
     let sample_end = pieces.last().map_or(0, |p| p.sample_end);
@@ -199,6 +205,7 @@ fn build_flush(pieces: Vec<CoalescedPiece>, neighbour_context: String) -> Coales
             end: offset,
         });
         member_ids.push((piece.utterance_id, piece.covered_through_secs));
+        member_occurrences.push((piece.utterance_id, piece.occurrence.clone()));
         debug_assert_eq!(
             piece.audio.len() as u64,
             piece.sample_end.saturating_sub(piece.sample_start),
@@ -226,6 +233,7 @@ fn build_flush(pieces: Vec<CoalescedPiece>, neighbour_context: String) -> Coales
         audio,
         spans,
         member_ids,
+        member_occurrences,
         neighbour_context,
         covered_through_secs,
         sample_start,
@@ -415,6 +423,12 @@ mod tests {
         let rate = 16_000u64;
         CoalescedPiece {
             utterance_id: id,
+            occurrence: OccurrenceIdentity::new(
+                "layer1-window-test",
+                1,
+                (start_ts * rate as f32) as u64,
+                (end_ts * rate as f32) as u64,
+            ),
             committed_text: text.to_string(),
             // Production builds a piece from a resolved audio window, so the
             // carried PCM always equals the declared range. Deriving the length
@@ -578,6 +592,12 @@ mod ledger_conservation_falsifiers {
         let rate = 16_000u64;
         CoalescedPiece {
             utterance_id: id,
+            occurrence: OccurrenceIdentity::new(
+                "layer1-window-test",
+                1,
+                (start_ts * rate as f32) as u64,
+                (end_ts * rate as f32) as u64,
+            ),
             committed_text: text.to_string(),
             // Production builds a piece from a resolved audio window, so the
             // carried PCM always equals the declared range. Deriving the length
@@ -652,6 +672,12 @@ mod observation_identity_conservation_falsifiers {
         let sample_end = (end_ts * rate as f32) as u64;
         CoalescedPiece {
             utterance_id: id,
+            occurrence: OccurrenceIdentity::new(
+                "layer1-window-test",
+                1,
+                sample_start,
+                sample_end,
+            ),
             committed_text: text.to_string(),
             audio: vec![0.0; sample_end.saturating_sub(sample_start) as usize],
             sample_start,

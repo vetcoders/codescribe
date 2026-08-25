@@ -698,7 +698,8 @@ impl AcousticLedger {
     /// Add one observer only after its concrete job has taken ownership of the
     /// exact occurrence. Existing returns are preserved; configuration intent
     /// alone must never call this operation. Returns `false` when the base
-    /// frontier is absent, already closed, or already sealed.
+    /// frontier is absent, already closed, already sealed, or already contains
+    /// that producer (including a producer that has already returned).
     pub fn schedule_observer(
         &mut self,
         coverage: OccurrenceIdentity,
@@ -713,8 +714,7 @@ impl AcousticLedger {
         if frontier.is_closed() {
             return false;
         }
-        frontier.schedule(producer);
-        true
+        frontier.schedule(producer)
     }
 
     /// Record that a scheduled producer finished with a range.
@@ -1712,8 +1712,8 @@ impl ObservationFrontier {
 
     /// Extend an open launch contract without discarding returns already
     /// recorded for synchronous observers.
-    fn schedule(&mut self, producer: ObservationProducer) {
-        self.scheduled.insert(producer);
+    fn schedule(&mut self, producer: ObservationProducer) -> bool {
+        self.scheduled.insert(producer)
     }
 
     /// Record that a scheduled producer has returned everything it will return.
@@ -2054,6 +2054,36 @@ mod tests {
         assert!(
             !ledger.schedule_observer(occurrence, ObservationProducer::Formatter),
             "a closed frontier cannot be reopened by a late configured observer"
+        );
+    }
+
+    #[test]
+    fn duplicate_schedule_observer_is_not_a_new_launch() {
+        let occurrence = occ(0, 16_000);
+        let mut ledger = AcousticLedger::new();
+        ledger.schedule_frontier(
+            occurrence.clone(),
+            [ObservationProducer::Apple, ObservationProducer::Lexicon],
+        );
+
+        assert!(ledger.schedule_observer(
+            occurrence.clone(),
+            ObservationProducer::Whisper
+        ));
+        assert!(
+            !ledger.schedule_observer(
+                occurrence.clone(),
+                ObservationProducer::Whisper
+            ),
+            "a duplicate before return is not a concrete new launch"
+        );
+        assert!(
+            !ledger.note_frontier_return(&occurrence, ObservationProducer::Whisper),
+            "Apple and Lexicon still keep the frontier open"
+        );
+        assert!(
+            !ledger.schedule_observer(occurrence, ObservationProducer::Whisper),
+            "a returned producer cannot be relaunched inside the same frontier"
         );
     }
 

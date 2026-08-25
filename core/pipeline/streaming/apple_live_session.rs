@@ -886,6 +886,9 @@ impl AppleSealState {
         }
     }
 
+    /// Returns whether the current exact occurrence was accepted into the
+    /// coalescer-owned terminal lifecycle. Queue results for older flushes are
+    /// deliberately independent of this return value.
     fn enqueue_layer1_piece(
         &mut self,
         ev_tx: &mpsc::UnboundedSender<EngineEvent>,
@@ -895,13 +898,14 @@ impl AppleSealState {
             return false;
         }
         let utterance_id = piece.utterance_id;
-        let Some(occurrence) = self
+        let occurrence = piece.occurrence.clone();
+        if !self
             .pending_events
             .get(&utterance_id)
-            .map(|pending| pending.occurrence.clone())
-        else {
+            .is_some_and(|pending| pending.occurrence == occurrence)
+        {
             return false;
-        };
+        }
         let scheduled = self
             .acoustic_ledger
             .lock()
@@ -914,17 +918,12 @@ impl AppleSealState {
             self.layer1_coalesce
                 .set_neighbour(self.sealed_prefix.clone());
         }
-        let flushes = self.layer1_coalesce.push(piece, self.sample_rate);
-        if flushes.is_empty() {
-            // Held for a larger window. Still counts as queued so the
-            // no-Whisper fallback does not seal the fragment raw.
-            return true;
+        for flush in self.layer1_coalesce.push(piece, self.sample_rate) {
+            // A pause can flush A while B becomes the newly held member. A's
+            // transport outcome must never revoke B's accepted ownership.
+            let _ = self.queue_layer1_flush(ev_tx, flush);
         }
-        let mut sent = false;
-        for flush in flushes {
-            sent |= self.queue_layer1_flush(ev_tx, flush);
-        }
-        sent
+        true
     }
 
     fn flush_layer1_coalesce(&mut self, ev_tx: &mpsc::UnboundedSender<EngineEvent>) -> bool {
@@ -944,30 +943,27 @@ impl AppleSealState {
         ev_tx: &mpsc::UnboundedSender<EngineEvent>,
         flush: CoalesceFlush,
     ) -> bool {
-        let Some(tx) = self.tail_patch.clone() else {
-            return false;
-        };
-        let member_occurrences = flush
-            .member_ids
-            .iter()
-            .filter_map(|(utterance_id, _)| {
-                self.pending_events
-                    .get(utterance_id)
-                    .map(|pending| (*utterance_id, pending.occurrence.clone()))
-            })
-            .collect::<Vec<_>>();
+        let member_occurrences = flush.member_occurrences.clone();
         if member_occurrences.len() != flush.member_ids.len() {
             warn!(
                 utterance_id = flush.primary_utterance_id,
                 expected_members = flush.member_ids.len(),
                 exact_members = member_occurrences.len(),
-                "Layer 1 launch refused — a coalesced member lost its exact occurrence identity"
+                "Layer 1 launch refused — coalescer member identity cardinality diverged"
             );
-            for (_, occurrence) in &member_occurrences {
+            for (utterance_id, occurrence) in &member_occurrences {
                 self.return_whisper_without_label(ev_tx, occurrence);
+                self.emit_pending_seal(ev_tx, *utterance_id);
             }
             return false;
         }
+        let Some(tx) = self.tail_patch.clone() else {
+            for (utterance_id, occurrence) in &member_occurrences {
+                self.return_whisper_without_label(ev_tx, occurrence);
+                self.emit_pending_seal(ev_tx, *utterance_id);
+            }
+            return false;
+        };
         let provider_request = TailProviderRequest {
             identity: TailRequestIdentity {
                 request_id: flush.primary_utterance_id,
@@ -1003,8 +999,9 @@ impl AppleSealState {
                     utterance_id = flush.primary_utterance_id,
                     "Layer 1 tail-patch request dropped — queue full or lane gone: {error}"
                 );
-                for (_, occurrence) in &member_occurrences {
+                for (utterance_id, occurrence) in &member_occurrences {
                     self.return_whisper_without_label(ev_tx, occurrence);
+                    self.emit_pending_seal(ev_tx, *utterance_id);
                 }
                 false
             }
@@ -1049,17 +1046,25 @@ impl AppleSealState {
             span_map: _,
             member_occurrences,
         } = completion;
-        let exact_members = member_occurrences
+        let exact_open_members = member_occurrences
             .into_iter()
             .filter(|(member_id, occurrence)| {
                 self.pending_events
                     .get(member_id)
                     .is_some_and(|pending| &pending.occurrence == occurrence)
+                    && self
+                        .acoustic_ledger
+                        .lock()
+                        .unwrap_or_else(std::sync::PoisonError::into_inner)
+                        .frontier_of(occurrence)
+                        .is_some_and(|frontier| {
+                            frontier
+                                .open_producers()
+                                .contains(&LedgerObservationProducer::Whisper)
+                        })
             })
             .collect::<Vec<_>>();
-        if exact_members.is_empty() {
-            self.tail_patch_awaiting_completion =
-                self.tail_patch_awaiting_completion.saturating_sub(1);
+        if exact_open_members.is_empty() {
             return;
         }
 
@@ -1081,9 +1086,9 @@ impl AppleSealState {
         let request_id = request_identity
             .as_ref()
             .map_or(utterance_id, |identity| identity.request_id);
-        let single_member = exact_members.len() == 1;
+        let single_member = exact_open_members.len() == 1;
         let mut mutation_admitted = false;
-        for (generation, (member_id, occurrence)) in exact_members.iter().enumerate() {
+        for (generation, (member_id, occurrence)) in exact_open_members.iter().enumerate() {
             let label = payload.as_ref().and_then(|payload| {
                 let pinned = payload
                     .segments
@@ -1158,25 +1163,25 @@ impl AppleSealState {
         &mut self,
         ev_tx: &mpsc::UnboundedSender<EngineEvent>,
     ) {
-        let occurrences = self
-            .pending_events
-            .values()
-            .map(|pending| pending.occurrence.clone())
-            .collect::<Vec<_>>();
-        for occurrence in occurrences {
-            let is_open = self
+        let occurrences = {
+            let ledger = self
                 .acoustic_ledger
                 .lock()
-                .unwrap_or_else(std::sync::PoisonError::into_inner)
-                .frontier_of(&occurrence)
-                .is_some_and(|frontier| {
-                    frontier
-                        .open_producers()
-                        .contains(&LedgerObservationProducer::Whisper)
-                });
-            if is_open {
-                self.return_whisper_without_label(ev_tx, &occurrence);
-            }
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            ledger
+                .qualified_occurrences()
+                .filter(|occurrence| {
+                    ledger.frontier_of(occurrence).is_some_and(|frontier| {
+                        frontier
+                            .open_producers()
+                            .contains(&LedgerObservationProducer::Whisper)
+                    })
+                })
+                .cloned()
+                .collect::<Vec<_>>()
+        };
+        for occurrence in occurrences {
+            self.return_whisper_without_label(ev_tx, &occurrence);
         }
         self.tail_patch_awaiting_completion = 0;
     }
@@ -1209,6 +1214,18 @@ impl AppleSealState {
         ev_tx: &mpsc::UnboundedSender<EngineEvent>,
         utterance_id: u64,
     ) {
+        let ready = self
+            .pending_events
+            .get(&utterance_id)
+            .is_some_and(|pending| {
+                self.acoustic_ledger
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner)
+                    .is_sealed(&pending.occurrence)
+            });
+        if !ready {
+            return;
+        }
         let Some(pending) = self.pending_events.remove(&utterance_id) else {
             return;
         };
@@ -1771,7 +1788,7 @@ fn seal_sliced_by_silero(
         let window = state
             .audio
             .window_by_samples(request_range.sample_start, request_range.sample_end);
-        let queued = if apple_admitted.is_some()
+        let _current_piece_owned = if apple_admitted.is_some()
             && let Some(window) = window
         {
             if state.tail_patch.is_some() {
@@ -1780,6 +1797,7 @@ fn seal_sliced_by_silero(
                     ev_tx,
                     CoalescedPiece {
                         utterance_id,
+                        occurrence: occurrence.clone(),
                         committed_text,
                         audio: window.samples,
                         sample_start: window.sample_start,
@@ -1807,9 +1825,7 @@ fn seal_sliced_by_silero(
                 false,
             );
         }
-        if !queued {
-            state.emit_pending_seal(ev_tx, utterance_id);
-        }
+        state.emit_pending_seal(ev_tx, utterance_id);
         state.utterance_id = state.utterance_id.max(utterance_id);
     }
     true
@@ -2085,7 +2101,7 @@ fn seal_utterance_final(
     );
 
     let window = resolve_sealed_audio_window(state, end_ts);
-    let queued = if apple_admitted.is_some()
+    let _current_piece_owned = if apple_admitted.is_some()
         && let Some(window) = window
     {
         if state.tail_patch.is_some() {
@@ -2093,6 +2109,7 @@ fn seal_utterance_final(
                 ev_tx,
                 CoalescedPiece {
                     utterance_id,
+                    occurrence: ledger_occurrence.clone(),
                     committed_text,
                     audio: window.samples,
                     sample_start: window.sample_start,
@@ -2122,9 +2139,7 @@ fn seal_utterance_final(
         );
     }
 
-    if !queued {
-        state.emit_pending_seal(ev_tx, utterance_id);
-    }
+    state.emit_pending_seal(ev_tx, utterance_id);
     true
 }
 
@@ -2802,6 +2817,294 @@ fn emit_stream_events(
                 }
             }
         }
+    }
+}
+
+/// C13/C13A lifecycle falsifiers kept active without reviving the stale legacy
+/// Apple test canvas below.
+#[cfg(test)]
+mod c13a_lifecycle_tests {
+    use super::*;
+
+    const TEST_SAMPLE_RATE: u32 = 16_000;
+
+    fn state_for_session(session_id: &str) -> AppleSealState {
+        AppleSealState::new_for_session(TEST_SAMPLE_RATE, session_id.to_string(), 1)
+    }
+
+    fn stage_pending_occurrence(
+        state: &mut AppleSealState,
+        ev_tx: &mpsc::UnboundedSender<EngineEvent>,
+        utterance_id: u64,
+        occurrence: OccurrenceIdentity,
+        label: &str,
+    ) {
+        let calibration = EnergyCalibration {
+            version: "c13a-test".to_string(),
+            min_energy_integral: 1.0,
+            min_valley_samples: 1,
+        };
+        let evidence = AcousticEvidence {
+            occurrence: occurrence.clone(),
+            duration_ms: 1_000.0,
+            energy_integral: 10.0,
+            mean_rms_dbfs: -12.0,
+            peak_dbfs: -3.0,
+            vad_open_sample: Some(occurrence.sample_start),
+            vad_close_sample: Some(occurrence.sample_end),
+            evidence_calibration_version: calibration.version.clone(),
+        };
+        state
+            .acoustic_ledger
+            .lock()
+            .expect("ledger")
+            .qualify(&evidence, &calibration);
+        state.energy_calibration = Some(calibration);
+        assert!(
+            admit_ledger_label(
+                state,
+                ev_tx,
+                occurrence.clone(),
+                LedgerObservationProducer::Apple,
+                utterance_id,
+                0,
+                label,
+                false,
+            )
+            .is_some()
+        );
+        state.pending_events.insert(
+            utterance_id,
+            PendingAppleSeal {
+                occurrence,
+                raw_text: label.to_string(),
+                layer1_baseline: label.to_string(),
+                start_ts: 0.0,
+                end_ts: 1.0,
+                segments: Vec::new(),
+            },
+        );
+    }
+
+    fn piece(
+        utterance_id: u64,
+        occurrence: &OccurrenceIdentity,
+        start_ts: f32,
+        covered_through_secs: f32,
+    ) -> CoalescedPiece {
+        CoalescedPiece {
+            utterance_id,
+            occurrence: occurrence.clone(),
+            committed_text: "Iwo".to_string(),
+            audio: vec![0.5; occurrence.sample_len() as usize],
+            sample_start: occurrence.sample_start,
+            sample_end: occurrence.sample_end,
+            start_ts,
+            covered_through_secs,
+            segment_count: 1,
+        }
+    }
+
+    fn return_lexicon(
+        state: &mut AppleSealState,
+        ev_tx: &mpsc::UnboundedSender<EngineEvent>,
+        utterance_id: u64,
+        occurrence: &OccurrenceIdentity,
+    ) {
+        assert!(
+            admit_ledger_label(
+                state,
+                ev_tx,
+                occurrence.clone(),
+                LedgerObservationProducer::Lexicon,
+                utterance_id,
+                0,
+                "Iwo",
+                false,
+            )
+            .is_some()
+        );
+        state.emit_pending_seal(ev_tx, utterance_id);
+    }
+
+    fn no_payload_completion(request: &TailPatchRequest) -> TailPatchCompletion {
+        TailPatchCompletion {
+            utterance_id: request.utterance_id,
+            covered_through_secs: request.covered_through_secs,
+            request_identity: Some(request.provider_request.identity.clone()),
+            outcome: TailPatchOutcome::skipped(
+                SkipReasonCode::ProviderError,
+                "provider failed",
+            ),
+            payload: None,
+            span_map: request.span_map.clone(),
+            member_occurrences: request.member_occurrences.clone(),
+        }
+    }
+
+    #[test]
+    fn terminal_seal_refusal_is_visible_without_becoming_success() {
+        let (tx, mut rx) = mpsc::unbounded_channel();
+        report_terminal_seal_refusal(&tx, SealRefusal::NotQualified);
+        assert!(rx.try_recv().is_err(), "no-speech is the quiet terminal case");
+
+        report_terminal_seal_refusal(&tx, SealRefusal::FrontierOpen);
+        assert!(matches!(
+            rx.try_recv().expect("frontier refusal diagnostic"),
+            EngineEvent::Warning { code, message }
+                if code == LEDGER_TERMINAL_SEAL_REFUSED_WARNING_CODE
+                    && message == SealRefusal::FrontierOpen.as_str()
+        ));
+        assert!(rx.try_recv().is_err(), "refusal emits no ledger seal");
+    }
+
+    #[test]
+    fn whisper_no_payload_closes_exact_coalesced_members_once() {
+        let (tx, mut event_rx) = mpsc::unbounded_channel();
+        let (tail_tx, mut tail_rx) = mpsc::channel::<TailPatchRequest>(4);
+        let mut state = state_for_session("coalesced");
+        state.tail_patch = Some(tail_tx);
+        let first = OccurrenceIdentity::new("coalesced", 1, 0, 16_000);
+        let second = OccurrenceIdentity::new("coalesced", 1, 16_000, 32_000);
+        assert_ne!(first, second, "disjoint PCM ranges are distinct occurrences");
+
+        stage_pending_occurrence(&mut state, &tx, 1, first.clone(), "Iwo");
+        assert!(state.enqueue_layer1_piece(&tx, piece(1, &first, 0.0, 1.0)));
+        return_lexicon(&mut state, &tx, 1, &first);
+        stage_pending_occurrence(&mut state, &tx, 2, second.clone(), "Iwo");
+        assert!(state.enqueue_layer1_piece(&tx, piece(2, &second, 1.0, 2.0)));
+        return_lexicon(&mut state, &tx, 2, &second);
+        assert!(state.flush_layer1_coalesce(&tx));
+        let request = tail_rx.try_recv().expect("one exact coalesced request");
+        assert_eq!(request.member_occurrences.len(), 2);
+        assert_eq!(state.tail_patch_awaiting_completion, 1);
+        while event_rx.try_recv().is_ok() {}
+
+        state.complete_whisper_window(&tx, no_payload_completion(&request), 2.0);
+        let events = std::iter::from_fn(|| event_rx.try_recv().ok()).collect::<Vec<_>>();
+        assert_eq!(
+            events
+                .iter()
+                .filter(|event| matches!(event, EngineEvent::LedgerSeal { .. }))
+                .count(),
+            2,
+            "each exact member occurrence seals once"
+        );
+        assert!(events.iter().all(|event| !matches!(
+            event,
+            EngineEvent::LedgerMutation { observation, .. }
+                if observation.producer == LedgerObservationProducer::Whisper
+        )));
+        let ledger = state.acoustic_ledger.lock().expect("ledger");
+        assert!(ledger.is_sealed(&first));
+        assert!(ledger.is_sealed(&second));
+        assert_eq!(ledger.text_of(&first), Some("Iwo"));
+        assert_eq!(ledger.text_of(&second), Some("Iwo"));
+        drop(ledger);
+        assert!(state.pending_events.is_empty());
+        assert_eq!(state.tail_patch_awaiting_completion, 0);
+
+        state.complete_whisper_window(&tx, no_payload_completion(&request), 2.0);
+        assert_eq!(state.tail_patch_awaiting_completion, 0);
+        assert!(event_rx.try_recv().is_err(), "replay emits no second seal");
+    }
+
+    #[test]
+    fn pause_flush_rejection_conserves_newly_held_member() {
+        let (tx, mut event_rx) = mpsc::unbounded_channel();
+        let (tail_tx, tail_rx) = mpsc::channel::<TailPatchRequest>(1);
+        drop(tail_rx);
+        let mut state = state_for_session("pause-rejection");
+        state.tail_patch = Some(tail_tx);
+        let first = OccurrenceIdentity::new("pause-rejection", 1, 0, 16_000);
+        let second = OccurrenceIdentity::new("pause-rejection", 1, 48_000, 64_000);
+
+        stage_pending_occurrence(&mut state, &tx, 1, first.clone(), "Iwo");
+        assert!(state.enqueue_layer1_piece(&tx, piece(1, &first, 0.0, 1.0)));
+        return_lexicon(&mut state, &tx, 1, &first);
+
+        stage_pending_occurrence(&mut state, &tx, 2, second.clone(), "Iwo");
+        assert!(
+            state.enqueue_layer1_piece(&tx, piece(2, &second, 3.0, 4.0)),
+            "failure to queue prior flush A cannot revoke newly held B"
+        );
+        return_lexicon(&mut state, &tx, 2, &second);
+        assert!(state.acoustic_ledger.lock().expect("ledger").is_sealed(&first));
+        assert!(!state.pending_events.contains_key(&1));
+        assert!(state.pending_events.contains_key(&2));
+        assert!(state
+            .acoustic_ledger
+            .lock()
+            .expect("ledger")
+            .frontier_of(&second)
+            .expect("B frontier")
+            .open_producers()
+            .contains(&LedgerObservationProducer::Whisper));
+
+        assert!(!state.flush_layer1_coalesce(&tx));
+        let ledger = state.acoustic_ledger.lock().expect("ledger");
+        for occurrence in [&first, &second] {
+            assert!(ledger.is_sealed(occurrence));
+            assert!(!ledger
+                .frontier_of(occurrence)
+                .expect("frontier")
+                .open_producers()
+                .contains(&LedgerObservationProducer::Whisper));
+        }
+        drop(ledger);
+        assert!(state.pending_events.is_empty());
+        assert_eq!(state.tail_patch_awaiting_completion, 0);
+        let final_count = std::iter::from_fn(|| event_rx.try_recv().ok())
+            .filter(|event| matches!(event, EngineEvent::UtteranceFinal { .. }))
+            .count();
+        assert_eq!(final_count, 2, "A and B each emit exactly one pending final");
+    }
+
+    #[test]
+    fn replayed_completion_does_not_consume_another_jobs_debt() {
+        let (tx, _event_rx) = mpsc::unbounded_channel();
+        let (tail_tx, mut tail_rx) = mpsc::channel::<TailPatchRequest>(4);
+        let mut state = state_for_session("two-jobs");
+        state.tail_patch = Some(tail_tx);
+        let first = OccurrenceIdentity::new("two-jobs", 1, 0, 16_000);
+        let second = OccurrenceIdentity::new("two-jobs", 1, 32_000, 48_000);
+
+        stage_pending_occurrence(&mut state, &tx, 1, first.clone(), "Iwo");
+        assert!(state.enqueue_layer1_piece(&tx, piece(1, &first, 0.0, 1.0)));
+        return_lexicon(&mut state, &tx, 1, &first);
+        assert!(state.flush_layer1_coalesce(&tx));
+        let first_request = tail_rx.try_recv().expect("first accepted job");
+
+        stage_pending_occurrence(&mut state, &tx, 2, second.clone(), "Iwo");
+        assert!(state.enqueue_layer1_piece(&tx, piece(2, &second, 2.0, 3.0)));
+        return_lexicon(&mut state, &tx, 2, &second);
+        assert!(state.flush_layer1_coalesce(&tx));
+        let second_request = tail_rx.try_recv().expect("second accepted job");
+        assert_eq!(second_request.member_occurrences, vec![(2, second.clone())]);
+        assert_eq!(state.tail_patch_awaiting_completion, 2);
+
+        state.complete_whisper_window(&tx, no_payload_completion(&first_request), 3.0);
+        assert_eq!(state.tail_patch_awaiting_completion, 1);
+        state.complete_whisper_window(&tx, no_payload_completion(&first_request), 3.0);
+        assert_eq!(
+            state.tail_patch_awaiting_completion, 1,
+            "replayed A cannot consume B's accepted job debt"
+        );
+        assert!(state
+            .acoustic_ledger
+            .lock()
+            .expect("ledger")
+            .frontier_of(&second)
+            .expect("B frontier")
+            .open_producers()
+            .contains(&LedgerObservationProducer::Whisper));
+        assert!(state.pending_events.contains_key(&2));
+
+        state.return_outstanding_whisper_without_label(&tx);
+        state.seal_remaining_at_session_end(&tx);
+        assert_eq!(state.tail_patch_awaiting_completion, 0);
+        assert!(state.acoustic_ledger.lock().expect("ledger").is_sealed(&second));
+        assert!(state.pending_events.is_empty());
     }
 }
 
@@ -3766,24 +4069,6 @@ mod tests {
         ));
     }
 
-    /// A meaningful terminal refusal survives as one named diagnostic; the
-    /// no-qualified-speech outcome remains quiet and is never a fake seal.
-    #[test]
-    fn terminal_seal_refusal_is_visible_without_becoming_success() {
-        let (tx, mut rx) = mpsc::unbounded_channel();
-        report_terminal_seal_refusal(&tx, SealRefusal::NotQualified);
-        assert!(rx.try_recv().is_err(), "no-speech is the quiet terminal case");
-
-        report_terminal_seal_refusal(&tx, SealRefusal::FrontierOpen);
-        assert!(matches!(
-            rx.try_recv().expect("frontier refusal diagnostic"),
-            EngineEvent::Warning { code, message }
-                if code == LEDGER_TERMINAL_SEAL_REFUSED_WARNING_CODE
-                    && message == SealRefusal::FrontierOpen.as_str()
-        ));
-        assert!(rx.try_recv().is_err(), "refusal emits no ledger seal");
-    }
-
     fn stage_pending_occurrence(
         state: &mut AppleSealState,
         ev_tx: &mpsc::UnboundedSender<EngineEvent>,
@@ -3863,73 +4148,6 @@ mod tests {
             )
             .is_some()
         );
-    }
-
-    /// A failed/no-payload coalesced job returns every exact member occurrence
-    /// without admitting a label. Replaying the completion is a no-op and
-    /// cannot emit duplicate seals.
-    #[test]
-    fn whisper_no_payload_closes_exact_coalesced_members_once() {
-        let (tx, mut rx) = mpsc::unbounded_channel();
-        let mut state = AppleSealState::new_for_session(
-            TEST_SAMPLE_RATE,
-            "test-session".to_string(),
-            1,
-        );
-        let first = OccurrenceIdentity::new("test-session", 1, 0, 16_000);
-        let second = OccurrenceIdentity::new("test-session", 1, 32_000, 48_000);
-        stage_pending_occurrence(&mut state, &tx, 1, first.clone(), "Iwo");
-        stage_pending_occurrence(&mut state, &tx, 2, second.clone(), "Iwo");
-        launch_whisper_and_return_lexicon(&mut state, &tx, 1, &first, "Iwo");
-        launch_whisper_and_return_lexicon(&mut state, &tx, 2, &second, "Iwo");
-        while rx.try_recv().is_ok() {}
-        state.tail_patch_awaiting_completion = 1;
-
-        let completion = || TailPatchCompletion {
-            utterance_id: 1,
-            covered_through_secs: 3.0,
-            request_identity: Some(TailRequestIdentity {
-                request_id: 1,
-                range: TailSampleRange {
-                    session: "test-session".to_string(),
-                    capture_epoch: 1,
-                    sample_start: 0,
-                    sample_end: 48_000,
-                },
-            }),
-            outcome: TailPatchOutcome::skipped(
-                SkipReasonCode::ProviderError,
-                "provider failed",
-            ),
-            payload: None,
-            span_map: Vec::new(),
-            member_occurrences: vec![(1, first.clone()), (2, second.clone())],
-        };
-        state.complete_whisper_window(&tx, completion(), 3.0);
-
-        let events = std::iter::from_fn(|| rx.try_recv().ok()).collect::<Vec<_>>();
-        assert_eq!(
-            events
-                .iter()
-                .filter(|event| matches!(event, EngineEvent::LedgerSeal { .. }))
-                .count(),
-            2,
-            "each exact member occurrence seals once"
-        );
-        assert!(events.iter().all(|event| !matches!(
-            event,
-            EngineEvent::LedgerMutation { observation, .. }
-                if observation.producer == LedgerObservationProducer::Whisper
-        )));
-        let ledger = state.acoustic_ledger.lock().expect("ledger");
-        assert!(ledger.is_sealed(&first));
-        assert!(ledger.is_sealed(&second));
-        assert_eq!(ledger.text_of(&first), Some("Iwo"));
-        assert_eq!(ledger.text_of(&second), Some("Iwo"));
-        drop(ledger);
-
-        state.complete_whisper_window(&tx, completion(), 3.0);
-        assert!(rx.try_recv().is_err(), "repeated completion emits no second seal");
     }
 
     /// Missing audio never launches Whisper. Queue loss and stop-time timeout
