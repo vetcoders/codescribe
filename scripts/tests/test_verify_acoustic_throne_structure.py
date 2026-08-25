@@ -1,6 +1,8 @@
 from __future__ import annotations
 
+import copy
 import importlib.util
+import json
 import sys
 import tempfile
 import unittest
@@ -68,7 +70,20 @@ def occurrence(
 
 
 def regex_payload(*rows: dict[str, object]) -> dict[str, object]:
-    return {"matches": {"occurrences": list(rows)}}
+    return {
+        "matches": {
+            "occurrences": list(rows),
+            "offset": 0,
+            "total": len(rows),
+            "truncated": False,
+            "universe": {"scan_complete": True},
+        },
+        "regex_trust": {
+            "pattern_compiled": True,
+            "file_scope_resolved": True,
+            "absence_trustworthy_for_scanned": True,
+        },
+    }
 
 
 def exact_payload(*rows: dict[str, object]) -> dict[str, object]:
@@ -76,9 +91,15 @@ def exact_payload(*rows: dict[str, object]) -> dict[str, object]:
 
 
 class StubVerifier:
-    def __init__(self, repo: Path, *regex_rows: dict[str, object]) -> None:
+    def __init__(
+        self,
+        repo: Path,
+        *regex_rows: dict[str, object],
+        regex_response: dict[str, object] | None = None,
+    ) -> None:
         self.repo = repo
         self.regex_rows = regex_rows
+        self.regex_response = regex_response
         self.command_inventory = [
             ["loct", "context", "--json"],
             ["loct", "occurrences", "quality_gate", "--json"],
@@ -102,6 +123,8 @@ class StubVerifier:
         return exact_payload()
 
     def substring_occurrences(self, _needle: str) -> dict[str, object]:
+        if self.regex_response is not None:
+            return self.regex_response
         return regex_payload(*self.regex_rows)
 
 
@@ -247,6 +270,174 @@ class SubstringResidueTests(unittest.TestCase):
         self.assertEqual(residue[0]["class"], "unclassified_requires_review")
         self.assertTrue(residue[0]["review_required"])
         self.assertFalse(residue[0]["fail_gate"])
+
+    def test_r14_current_complete_payload_is_green(self) -> None:
+        row = occurrence("quality_gate_dropped")
+        residue = VERIFIER.residue_occurrences(
+            regex_payload(row), exact_payload(), "quality_gate"
+        )
+        self.assertEqual(len(residue), 1)
+        self.assertEqual(residue[0]["matched_identifier"], "quality_gate_dropped")
+
+    def test_r15_truncated_or_unproven_truncation_is_red(self) -> None:
+        for value in (True, None):
+            with self.subTest(value=value):
+                payload = regex_payload()
+                if value is None:
+                    del payload["matches"]["truncated"]  # type: ignore[index]
+                else:
+                    payload["matches"]["truncated"] = value  # type: ignore[index]
+                with self.assertRaises(RuntimeError):
+                    VERIFIER.residue_occurrences(
+                        payload, exact_payload(), "quality_gate"
+                    )
+
+        with tempfile.TemporaryDirectory() as raw_repo:
+            truncated = regex_payload()
+            truncated["matches"]["truncated"] = True  # type: ignore[index]
+            with self.assertRaises(RuntimeError):
+                VERIFIER.verify_stage(
+                    StubVerifier(Path(raw_repo), regex_response=truncated),
+                    wired_manifest(),
+                    "wired",
+                    None,
+                    None,
+                )
+
+    def test_r16_total_must_match_emitted_occurrences_and_be_an_integer(self) -> None:
+        row = occurrence("quality_gate_dropped")
+        for total in (0, True, -1, None):
+            with self.subTest(total=total):
+                payload = regex_payload(row)
+                if total is None:
+                    del payload["matches"]["total"]  # type: ignore[index]
+                else:
+                    payload["matches"]["total"] = total  # type: ignore[index]
+                with self.assertRaises(RuntimeError):
+                    VERIFIER.residue_occurrences(
+                        payload, exact_payload(), "quality_gate"
+                    )
+
+    def test_r17_offset_must_be_exact_integer_zero(self) -> None:
+        for offset in (1, True, None):
+            with self.subTest(offset=offset):
+                payload = regex_payload()
+                if offset is None:
+                    del payload["matches"]["offset"]  # type: ignore[index]
+                else:
+                    payload["matches"]["offset"] = offset  # type: ignore[index]
+                with self.assertRaises(RuntimeError):
+                    VERIFIER.residue_occurrences(
+                        payload, exact_payload(), "quality_gate"
+                    )
+
+    def test_r18_scan_complete_must_be_present_and_true(self) -> None:
+        for value in (False, None):
+            with self.subTest(value=value):
+                payload = regex_payload()
+                universe = payload["matches"]["universe"]  # type: ignore[index]
+                if value is None:
+                    del universe["scan_complete"]  # type: ignore[index]
+                else:
+                    universe["scan_complete"] = value  # type: ignore[index]
+                with self.assertRaises(RuntimeError):
+                    VERIFIER.residue_occurrences(
+                        payload, exact_payload(), "quality_gate"
+                    )
+
+    def test_r19_regex_trust_must_be_present_and_all_true(self) -> None:
+        missing_trust = regex_payload()
+        del missing_trust["regex_trust"]
+        with self.assertRaises(RuntimeError):
+            VERIFIER.residue_occurrences(missing_trust, exact_payload(), "quality_gate")
+
+        for key in VERIFIER.REQUIRED_REGEX_TRUST_KEYS:
+            for value in (False, None):
+                with self.subTest(key=key, value=value):
+                    payload = regex_payload()
+                    trust = payload["regex_trust"]
+                    if value is None:
+                        del trust[key]  # type: ignore[index]
+                    else:
+                        trust[key] = value  # type: ignore[index]
+                    with self.assertRaises(RuntimeError):
+                        VERIFIER.residue_occurrences(
+                            payload, exact_payload(), "quality_gate"
+                        )
+
+    def test_r20_matches_and_occurrences_must_be_well_shaped(self) -> None:
+        malformed = regex_payload()
+        del malformed["matches"]
+        missing_occurrences = regex_payload()
+        del missing_occurrences["matches"]["occurrences"]  # type: ignore[index]
+        non_list_occurrences = regex_payload()
+        non_list_occurrences["matches"]["occurrences"] = {}  # type: ignore[index]
+        non_object_occurrence = regex_payload()
+        non_object_occurrence["matches"]["occurrences"] = ["row"]  # type: ignore[index]
+        for payload in (
+            malformed,
+            {"matches": []},
+            missing_occurrences,
+            non_list_occurrences,
+            non_object_occurrence,
+        ):
+            with self.subTest(payload=payload):
+                with self.assertRaises(RuntimeError):
+                    VERIFIER.residue_occurrences(
+                        payload, exact_payload(), "quality_gate"
+                    )
+
+    def test_r21_complete_zero_occurrence_payload_is_green(self) -> None:
+        self.assertEqual(
+            VERIFIER.require_complete_regex_evidence(regex_payload(), "quality_gate"),
+            [],
+        )
+        self.assertEqual(
+            VERIFIER.residue_occurrences(
+                regex_payload(), exact_payload(), "quality_gate"
+            ),
+            [],
+        )
+
+    def test_r22_receipt_summary_and_schema_are_consistent(self) -> None:
+        with tempfile.TemporaryDirectory() as raw_repo:
+            receipt, conformant = VERIFIER.verify_stage(
+                StubVerifier(Path(raw_repo)), wired_manifest(), "wired", None, None
+            )
+        summary = receipt["residue_by_substring"]["summary"]
+        self.assertTrue(conformant)
+        self.assertIs(summary["evidence_complete"], True)
+        self.assertEqual(summary["query_count"], 1)
+        self.assertEqual(summary["complete_query_count"], 1)
+        self.assertEqual(summary["truncated_query_count"], 0)
+        self.assertEqual(
+            set(receipt["residue_by_substring"]) - {"summary"},
+            set(receipt["forbidden_symbols"]),
+        )
+        VERIFIER.validate_receipt_shape(receipt)
+
+        schema_path = (
+            SCRIPT.parents[1] / "tests/fixtures/acoustic_structure_receipt.schema.json"
+        )
+        summary_schema = json.loads(schema_path.read_text())["$defs"]["residueSummary"]
+        required = {
+            "evidence_complete",
+            "query_count",
+            "complete_query_count",
+            "truncated_query_count",
+        }
+        self.assertTrue(required.issubset(summary_schema["required"]))
+        self.assertEqual(
+            summary_schema["properties"]["evidence_complete"], {"const": True}
+        )
+        self.assertEqual(
+            summary_schema["properties"]["truncated_query_count"], {"const": 0}
+        )
+
+        inconsistent = copy.deepcopy(receipt)
+        inconsistent["residue_by_substring"]["summary"]["query_count"] = 2
+        with self.assertRaises(RuntimeError):
+            VERIFIER.validate_receipt_shape(inconsistent)
 
 
 class RustModuleResolutionTests(unittest.TestCase):

@@ -80,6 +80,10 @@
       "type": "object",
       "additionalProperties": false,
       "required": [
+        "evidence_complete",
+        "query_count",
+        "complete_query_count",
+        "truncated_query_count",
         "total_count",
         "unclassified_count",
         "review_required_count",
@@ -87,6 +91,10 @@
         "needle_counts"
       ],
       "properties": {
+        "evidence_complete": { "const": true },
+        "query_count": { "type": "integer", "minimum": 0 },
+        "complete_query_count": { "type": "integer", "minimum": 0 },
+        "truncated_query_count": { "const": 0 },
         "total_count": { "type": "integer", "minimum": 0 },
         "unclassified_count": { "type": "integer", "minimum": 0 },
         "review_required_count": { "type": "integer", "minimum": 0 },

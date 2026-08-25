@@ -63,6 +63,11 @@ RESIDUE_RELATIONS = {
     "filename",
     "verbatim_substring",
 }
+REQUIRED_REGEX_TRUST_KEYS = (
+    "pattern_compiled",
+    "file_scope_resolved",
+    "absence_trustworthy_for_scanned",
+)
 RESIDUE_ROW_KEYS = {
     "file",
     "line",
@@ -352,6 +357,61 @@ def inside_cfg_any_module(repo: Path | None, occurrence: dict[str, Any]) -> bool
     return False
 
 
+def require_complete_regex_evidence(
+    regex_payload: Any, needle: str
+) -> list[dict[str, Any]]:
+    if not isinstance(regex_payload, dict):
+        raise RuntimeError(f"Loctree regex payload for {needle} must be an object")
+    matches = regex_payload.get("matches")
+    if not isinstance(matches, dict):
+        raise RuntimeError(f"Loctree regex matches for {needle} must be an object")
+    occurrences = matches.get("occurrences")
+    if not isinstance(occurrences, list) or any(
+        not isinstance(occurrence, dict) for occurrence in occurrences
+    ):
+        raise RuntimeError(
+            f"Loctree regex occurrences for {needle} must be a list of objects"
+        )
+
+    offset = matches.get("offset")
+    if isinstance(offset, bool) or not isinstance(offset, int) or offset != 0:
+        raise RuntimeError(
+            f"Loctree regex evidence for {needle} has invalid offset: {offset!r}"
+        )
+    total = matches.get("total")
+    if isinstance(total, bool) or not isinstance(total, int) or total < 0:
+        raise RuntimeError(
+            f"Loctree regex evidence for {needle} has invalid total: {total!r}"
+        )
+    if total != len(occurrences):
+        raise RuntimeError(
+            f"Loctree regex evidence for {needle} emitted {len(occurrences)} of {total} matches"
+        )
+    if matches.get("truncated") is not False:
+        raise RuntimeError(
+            f"Loctree regex evidence for {needle} is truncated or lacks truncation proof"
+        )
+
+    universe = matches.get("universe")
+    if not isinstance(universe, dict) or universe.get("scan_complete") is not True:
+        raise RuntimeError(
+            f"Loctree regex evidence for {needle} lacks complete scanned-universe proof"
+        )
+    regex_trust = regex_payload.get("regex_trust")
+    if not isinstance(regex_trust, dict):
+        raise RuntimeError(
+            f"Loctree regex evidence for {needle} lacks regex trust metadata"
+        )
+    untrusted = [
+        key for key in REQUIRED_REGEX_TRUST_KEYS if regex_trust.get(key) is not True
+    ]
+    if untrusted:
+        raise RuntimeError(
+            f"Loctree regex evidence for {needle} lacks required trust: {untrusted}"
+        )
+    return occurrences
+
+
 def residue_occurrences(
     regex_payload: dict[str, Any],
     exact_payload: dict[str, Any],
@@ -359,10 +419,12 @@ def residue_occurrences(
     *,
     repo: Path | None = None,
 ) -> list[dict[str, Any]]:
-    regex_evidence = regex_payload.get("matches", regex_payload)
-    exact_fail_gate = {occurrence_key(row) for row in forbidden_occurrences(exact_payload)}
+    complete_occurrences = require_complete_regex_evidence(regex_payload, needle)
+    exact_fail_gate = {
+        occurrence_key(row) for row in forbidden_occurrences(exact_payload)
+    }
     rows: list[dict[str, Any]] = []
-    for occurrence in regex_evidence.get("occurrences", []):
+    for occurrence in complete_occurrences:
         if occurrence_key(occurrence) in exact_fail_gate:
             continue
         matched_identifier = str(occurrence.get("matched_text", ""))
@@ -411,6 +473,10 @@ def residue_summary(by_needle: dict[str, list[dict[str, Any]]]) -> dict[str, Any
         for row in rows:
             class_counts[str(row["class"])] += 1
     return {
+        "evidence_complete": True,
+        "query_count": len(by_needle),
+        "complete_query_count": len(by_needle),
+        "truncated_query_count": 0,
         "total_count": sum(needle_counts.values()),
         "unclassified_count": class_counts["unclassified_requires_review"],
         "review_required_count": sum(
@@ -421,10 +487,25 @@ def residue_summary(by_needle: dict[str, list[dict[str, Any]]]) -> dict[str, Any
     }
 
 
-def validate_residue_shape(residue: Any) -> None:
+def validate_residue_shape(residue: Any, forbidden_symbols: Any) -> None:
     if not isinstance(residue, dict) or "summary" not in residue:
         raise RuntimeError("receipt residue_by_substring must contain summary")
+    if (
+        not isinstance(forbidden_symbols, list)
+        or any(
+            not isinstance(symbol, str) or not symbol for symbol in forbidden_symbols
+        )
+        or len(set(forbidden_symbols)) != len(forbidden_symbols)
+    ):
+        raise RuntimeError(f"invalid forbidden symbol query set: {forbidden_symbols}")
     by_needle = {key: value for key, value in residue.items() if key != "summary"}
+    if set(by_needle) != set(forbidden_symbols) or len(by_needle) != len(
+        forbidden_symbols
+    ):
+        raise RuntimeError(
+            "residue query buckets do not equal the forbidden symbol query set: "
+            f"expected {sorted(forbidden_symbols)}, observed {sorted(by_needle)}"
+        )
     for needle, rows in by_needle.items():
         if not isinstance(needle, str) or not needle or not isinstance(rows, list):
             raise RuntimeError(f"invalid residue needle bucket: {needle!r}")
@@ -753,7 +834,9 @@ def validate_receipt_shape(receipt: dict[str, Any]) -> None:
         raise RuntimeError(f"receipt schema check missing keys: {missing}")
     if receipt.get("schema") != RECEIPT_SCHEMA:
         raise RuntimeError(f"receipt schema identity mismatch: {receipt.get('schema')}")
-    validate_residue_shape(receipt.get("residue_by_substring"))
+    validate_residue_shape(
+        receipt.get("residue_by_substring"), receipt.get("forbidden_symbols")
+    )
     stage = receipt.get("stage")
     scope = receipt.get("scope")
     if (stage == "assembled") != (scope in ASSEMBLY_SCOPES):
