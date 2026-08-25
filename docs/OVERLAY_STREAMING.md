@@ -455,7 +455,6 @@ Displayed projected text (String, visible in overlay)
 | `tests/e2e_vad_flow.rs`      | VAD init, speech detection, resampling, real audio with canonical recordings                        |
 | `tests/e2e_vad_auto_stop.rs` | Atomic flag mechanism, cross-thread callbacks, monitor polling                                      |
 | `tests/e2e_full_pipeline.rs` | Full pipeline: Whisper × 4 canonical recordings, PostProcessor, Delta backspace, Unicode round-trip |
-| `tests/e2e_vad_gate_live.rs` | Live VAD gate integration with real audio files                                                     |
 
 ### Canonical test recordings
 
