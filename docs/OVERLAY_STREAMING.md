@@ -219,9 +219,9 @@ Speech segments from the VAD gate arrive as `SpeechEvent::Utterance` (interim) o
 5. Emits `EngineEvent::Preview` with accumulated text for the current utterance.
 6. Optionally runs Phase 2 correction (re-transcription of accumulated audio for better accuracy).
 
-### Anti-repetition
+### Repetition authority
 
-Whisper uses `no_repeat_ngram_size = 5` to suppress the model's tendency to repeat phrases (a known Whisper artifact, especially with Polish).
+Equal words may be intentional repetition. Occurrence identity and replay adjudication belong to the `AcousticLedger` and transcript reducer path. Decoder diagnostics may observe repetition, but they do not delete it before the ledger.
 
 ---
 

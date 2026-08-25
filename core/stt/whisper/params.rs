@@ -9,9 +9,6 @@ pub struct DecodingParams {
     /// Temperature for sampling (0.0 = greedy, higher = more random)
     /// mlx_whisper default: 0
     pub temperature: f32,
-    /// Prevent repetitions of n-grams with this size (0 = disabled)
-    /// faster-whisper default: 3
-    pub no_repeat_ngram_size: usize,
     /// Suppress blank/silence tokens early
     pub suppress_blank: bool,
     /// Compression ratio threshold for hallucination detection
@@ -29,11 +26,10 @@ pub struct DecodingParams {
 }
 
 impl Default for DecodingParams {
-    /// Production defaults: greedy decode, n-gram block, timestamps on.
+    /// Production defaults: greedy decode, blank suppression, timestamps on.
     fn default() -> Self {
         Self {
-            temperature: 0.0,        // greedy (mlx_whisper default)
-            no_repeat_ngram_size: 5, // block 5-gram repetitions (catches more Whisper hallucination variants)
+            temperature: 0.0, // greedy (mlx_whisper default)
             suppress_blank: true,
             // Trigger anti-repetition cleanup a bit earlier than stock defaults
             compression_ratio_threshold: 2.2,
@@ -62,12 +58,11 @@ mod tests {
         );
     }
 
-    /// Guard against silent drift of temperature / n-gram / silence thresholds.
+    /// Guard against silent drift of temperature and silence thresholds.
     #[test]
     fn default_core_decode_controls_remain_stable() {
         let params = DecodingParams::default();
         assert_eq!(params.temperature, 0.0);
-        assert_eq!(params.no_repeat_ngram_size, 5);
         assert!(params.suppress_blank);
         assert_eq!(params.compression_ratio_threshold, 2.2);
         assert_eq!(params.logprob_threshold, -1.0);

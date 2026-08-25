@@ -42,9 +42,6 @@ const ONNX_N_FRAMES: usize = 3000;
 /// Minimum generated tokens before allowing EOT (prevent premature stop).
 const MIN_TOKENS_BEFORE_EOT: usize = 16;
 
-/// No-repeat n-gram size (matching candle engine).
-const NO_REPEAT_NGRAM_SIZE: usize = 5;
-
 /// Blank tokens to suppress early (matching candle engine).
 const SUPPRESS_BLANK_TOKENS: [usize; 2] = [220, 50256];
 
@@ -415,7 +412,7 @@ impl OnnxEngine {
 
         // 6. Greedy decoder loop — always full-sequence (no KV cache)
         //    This matches candle engine's approach: full token sequence each step,
-        //    with suppress_blank and n-gram blocking.
+        //    with suppress_blank and early EOT control suppression.
         let mut all_tokens: Vec<u32> = Vec::new(); // generated tokens (after initial)
         let eot = self.tokens.eot;
 
@@ -458,21 +455,6 @@ impl OnnxEngine {
                 for &tok in &SUPPRESS_BLANK_TOKENS {
                     if tok < logits_vec.len() {
                         logits_vec[tok] = f32::NEG_INFINITY;
-                    }
-                }
-            }
-
-            // N-gram blocking (matching candle engine, no_repeat_ngram_size=5)
-            if NO_REPEAT_NGRAM_SIZE > 0 && all_tokens.len() >= NO_REPEAT_NGRAM_SIZE {
-                let prefix_start = all_tokens.len() + 1 - NO_REPEAT_NGRAM_SIZE;
-                let prefix = &all_tokens[prefix_start..];
-                let search_end = all_tokens.len() - NO_REPEAT_NGRAM_SIZE + 1;
-                for i in 0..search_end {
-                    if all_tokens[i..i + NO_REPEAT_NGRAM_SIZE - 1] == *prefix {
-                        let blocked = all_tokens[i + NO_REPEAT_NGRAM_SIZE - 1] as usize;
-                        if blocked < logits_vec.len() {
-                            logits_vec[blocked] = f32::NEG_INFINITY;
-                        }
                     }
                 }
             }
