@@ -761,8 +761,8 @@ impl LocalWhisperEngine {
     ///
     /// The overlap exists so a word split across a boundary is still heard
     /// whole; [`merge_chunk_transcripts`] then removes the duplicated region by
-    /// segment time, falling back to [`append_with_overlap_dedup`] only when a
-    /// decoder does not provide segments.
+    /// segment time. Non-empty output without timestamped segments is refused
+    /// because text is not replay identity.
     /// Segment timestamps are rebased onto the full recording, `avg_logprob` is
     /// averaged across chunks, and `compression_ratio` reports the **worst**
     /// chunk — one hallucinating window must not be hidden by good neighbours.
@@ -861,7 +861,7 @@ impl LocalWhisperEngine {
             }
 
             let overlap_end_secs = covered_until_secs.max(start_sec);
-            merge_chunk_transcripts(&mut merged, transcript, overlap_end_secs);
+            merge_chunk_transcripts(&mut merged, transcript, overlap_end_secs)?;
             covered_until_secs = covered_until_secs.max(end_sec);
         }
 
@@ -2197,20 +2197,20 @@ pub fn merge_chunk_transcripts(
     out: &mut crate::pipeline::contracts::RawTranscript,
     next: crate::pipeline::contracts::RawTranscript,
     overlap_end_secs: f32,
-) {
-    if next.segments.is_empty() {
-        append_with_overlap_dedup(&mut out.text, &next.text);
-        // Segment truth is no longer complete. Clear it so every later chunk
-        // remains on the text fallback instead of rebuilding the transcript
-        // from a partial segment set and dropping this chunk.
-        out.segments.clear();
-        return;
+) -> Result<()> {
+    ensure!(
+        out.text.trim().is_empty() || !out.segments.is_empty(),
+        "overlap assembly requires segment provenance for accumulated text"
+    );
+
+    if next.text.trim().is_empty() && next.segments.is_empty() {
+        return Ok(());
     }
 
-    if !out.text.trim().is_empty() && out.segments.is_empty() {
-        append_with_overlap_dedup(&mut out.text, &next.text);
-        return;
-    }
+    ensure!(
+        next.text.trim().is_empty() || !next.segments.is_empty(),
+        "overlap assembly refused non-empty decode without timestamped segments"
+    );
 
     out.segments.extend(
         next.segments
@@ -2224,6 +2224,7 @@ pub fn merge_chunk_transcripts(
         .filter(|text| !text.is_empty())
         .collect::<Vec<_>>()
         .join(" ");
+    Ok(())
 }
 
 #[cfg(test)]
@@ -2347,7 +2348,8 @@ mod stt_live_first_v2_red {
             ],
             ..Default::default()
         };
-        merge_chunk_transcripts(&mut out, next, 25.0);
+        merge_chunk_transcripts(&mut out, next, 25.0)
+            .expect("timestamped overlap merge must succeed");
         assert!(
             !out.text.contains("Zdanie pierwsze"),
             "overlap re-decode leaked into the merged text: {}",
@@ -2400,7 +2402,8 @@ mod stt_live_first_v2_red {
             ..Default::default()
         };
 
-        merge_chunk_transcripts(&mut out, next, 10.0);
+        merge_chunk_transcripts(&mut out, next, 10.0)
+            .expect("timestamped boundary merge must succeed");
 
         assert_eq!(out.segments.len(), 3);
         assert_eq!(
@@ -2411,29 +2414,39 @@ mod stt_live_first_v2_red {
         assert!(!out.text.contains("  "));
     }
 
-    /// Timestamp-less decoders retain the established text overlap fallback.
+    /// Non-empty decoder output without timestamp provenance fails closed.
     #[test]
-    fn seam_merge_uses_text_fallback_without_segments() {
+    fn seam_merge_rejects_nonempty_segmentless_decode() {
         let mut out = RawTranscript {
-            text: "one two three".into(),
+            text: "one two".into(),
+            segments: vec![TranscriptSegment {
+                text: "one two".into(),
+                start_ts: 0.0,
+                end_ts: 2.0,
+            }],
             ..Default::default()
         };
         let next = RawTranscript {
-            text: "two three four".into(),
+            text: "two middle three".into(),
             ..Default::default()
         };
 
-        merge_chunk_transcripts(&mut out, next, 3.0);
+        let error = merge_chunk_transcripts(&mut out, next, 2.0)
+            .expect_err("segmentless non-empty decode must fail closed");
 
-        assert_eq!(out.text, "one two three four");
-        assert!(out.segments.is_empty());
+        assert!(error.to_string().contains(
+            "overlap assembly refused non-empty decode without timestamped segments"
+        ));
+        assert_eq!(out.text, "one two");
+        assert_eq!(out.segments.len(), 1);
+        assert_eq!(out.segments[0].text, "one two");
+        assert_eq!(out.segments[0].start_ts, 0.0);
+        assert_eq!(out.segments[0].end_ts, 2.0);
     }
 
-    /// Once an earlier chunk lacked timestamps, keep one text-only source of
-    /// truth instead of entering a mixed state that can drop the old prefix on
-    /// a later segment-aware merge.
+    /// Accumulated text without timestamp provenance is not lawful input.
     #[test]
-    fn seam_merge_keeps_mixed_sequences_on_the_text_fallback() {
+    fn seam_merge_rejects_text_without_segment_provenance() {
         let mut out = RawTranscript {
             text: "one two three".into(),
             ..Default::default()
@@ -2448,16 +2461,19 @@ mod stt_live_first_v2_red {
             ..Default::default()
         };
 
-        merge_chunk_transcripts(&mut out, next, 3.0);
+        let error = merge_chunk_transcripts(&mut out, next, 3.0)
+            .expect_err("accumulated text without segments must fail closed");
 
-        assert_eq!(out.text, "one two three four");
+        assert!(error
+            .to_string()
+            .contains("overlap assembly requires segment provenance for accumulated text"));
+        assert_eq!(out.text, "one two three");
         assert!(out.segments.is_empty());
     }
 
-    /// A timestamp-less middle chunk invalidates the accumulated segment map;
-    /// a later timestamped chunk must not rebuild text without that middle.
+    /// A refused segmentless chunk cannot poison a later timestamped retry.
     #[test]
-    fn seam_merge_stays_text_only_after_a_middle_chunk_loses_segments() {
+    fn seam_merge_segmentless_failure_preserves_state_for_timestamped_retry() {
         let mut out = RawTranscript {
             text: "one two".into(),
             segments: vec![TranscriptSegment {
@@ -2468,23 +2484,42 @@ mod stt_live_first_v2_red {
             ..Default::default()
         };
         let middle = RawTranscript {
-            text: "two three".into(),
+            text: "two middle three".into(),
             ..Default::default()
         };
         let tail = RawTranscript {
-            text: "three four".into(),
-            segments: vec![TranscriptSegment {
-                text: "four".into(),
-                start_ts: 3.0,
-                end_ts: 4.0,
-            }],
+            text: "two replay four five".into(),
+            segments: vec![
+                TranscriptSegment {
+                    text: "two replay".into(),
+                    start_ts: 1.5,
+                    end_ts: 2.0,
+                },
+                TranscriptSegment {
+                    text: "four five".into(),
+                    start_ts: 3.0,
+                    end_ts: 4.0,
+                },
+            ],
             ..Default::default()
         };
 
-        merge_chunk_transcripts(&mut out, middle, 2.0);
-        merge_chunk_transcripts(&mut out, tail, 3.0);
+        let error = merge_chunk_transcripts(&mut out, middle, 2.0)
+            .expect_err("segmentless middle decode must fail closed");
+        assert!(error.to_string().contains(
+            "overlap assembly refused non-empty decode without timestamped segments"
+        ));
+        assert_eq!(out.text, "one two");
+        assert_eq!(out.segments.len(), 1);
+        assert_eq!(out.segments[0].text, "one two");
 
-        assert_eq!(out.text, "one two three four");
-        assert!(out.segments.is_empty());
+        merge_chunk_transcripts(&mut out, tail, 2.0)
+            .expect("timestamped retry must succeed after segmentless failure");
+
+        assert_eq!(out.text, "one two four five");
+        assert_eq!(out.segments.len(), 2);
+        assert_eq!(out.segments[0].text, "one two");
+        assert_eq!(out.segments[1].text, "four five");
+        assert!(!out.text.contains("middle"));
     }
 }
