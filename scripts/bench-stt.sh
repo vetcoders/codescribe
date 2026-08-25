@@ -12,12 +12,6 @@ Environment:
   BENCH_STT_LIMIT      fixture limit for historical corpus (default: 10)
   BENCH_STT_OUT        output directory under ~/.codescribe (default: timestamped report dir)
   BENCH_STT_LANGUAGE   Whisper language code (default: pl)
-  CODESCRIBE_BENCH_FORCE_PROMPT
-                       generate a deterministic controlled prompt when runtime prompt is disabled
-  CODESCRIBE_BENCH_RUNTIME_PROMPT_TERM_LIMIT
-                       trim active runtime prompt to first N deterministic terms (unset = full prompt)
-  CODESCRIBE_BENCH_PROMPT_MAX_WER_DELTA_PP
-                       fail active-prompt probe above this WER regression threshold (default: 5.0)
   Whisper model discovery follows the production resolver, including supported
   Hugging Face cache snapshots.
 EOF
@@ -113,13 +107,8 @@ manifest_tsv="$out_dir/fixtures.tsv"
 stage_root="$out_dir/fixtures"
 qube_out="$out_dir/qube-report"
 qube_log="$out_dir/qube-report.log"
-wer_probe_dir="$out_dir/prompted-wer-probe"
 latency_tsv="$out_dir/scheduler-lane-latency.tsv"
 latency_log="$out_dir/scheduler-lane-latency.log"
-wer_tsv="$out_dir/prompted-wer.tsv"
-term_hits_tsv="$out_dir/term-hit-rate.tsv"
-term_source_tsv="$out_dir/term-source.tsv"
-wer_probe_log="$out_dir/prompted-wer.log"
 
 count_lines() {
   if [[ -f "$1" ]]; then
@@ -337,538 +326,9 @@ list_selected_fixtures() {
   cat "$selected_tsv"
 }
 
-write_wer_probe() {
-  mkdir -p "$wer_probe_dir/src"
-  cat > "$wer_probe_dir/Cargo.toml" <<EOF
-[package]
-name = "codescribe-bench-stt-prompted-wer"
-version = "0.1.0"
-edition = "2024"
-
-[dependencies]
-codescribe-core = { path = "$repo_root/core" }
-anyhow = "1"
-EOF
-
-  cat > "$wer_probe_dir/src/main.rs" <<'EOF'
-use anyhow::{Context, Result};
-use codescribe_core::{audio, stream_postprocess, whisper};
-use std::collections::{BTreeMap, BTreeSet};
-use std::env;
-use std::fs::{self, File};
-use std::io::Write;
-use std::path::{Path, PathBuf};
-
-#[derive(Clone, Debug)]
-struct Fixture {
-    id: String,
-    audio_path: PathBuf,
-    reference_path: PathBuf,
-    reference_tokens: Vec<String>,
-    reference_norm: String,
-}
-
-fn tsv_clean(value: &str) -> String {
-    value
-        .chars()
-        .map(|ch| match ch {
-            '\t' | '\r' | '\n' => ' ',
-            _ => ch,
-        })
-        .collect::<String>()
-        .trim()
-        .to_string()
-}
-
-fn normalize_for_eval(text: &str) -> (Vec<String>, String) {
-    let mut normalized = String::with_capacity(text.len());
-    for ch in text.to_lowercase().chars() {
-        if ch.is_alphanumeric() || ch.is_whitespace() {
-            normalized.push(ch);
-        } else {
-            normalized.push(' ');
-        }
-    }
-    let tokens: Vec<String> = normalized
-        .split_whitespace()
-        .map(|t| t.to_string())
-        .collect();
-    let normalized = tokens.join(" ");
-    (tokens, normalized)
-}
-
-fn word_error_rate(reference: &[String], hypothesis: &[String]) -> f32 {
-    let dist = levenshtein(reference, hypothesis);
-    let denom = reference.len().max(1) as f32;
-    dist as f32 / denom
-}
-
-fn unbiased_word_error_rate(
-    reference: &[String],
-    hypothesis: &[String],
-    prompted_terms: &[String],
-) -> f32 {
-    let prompted_words: BTreeSet<String> = prompted_terms
-        .iter()
-        .flat_map(|term| normalize_for_eval(term).0)
-        .collect();
-    let unbiased_reference: Vec<String> = reference
-        .iter()
-        .filter(|token| !prompted_words.contains(*token))
-        .cloned()
-        .collect();
-    let unbiased_hypothesis: Vec<String> = hypothesis
-        .iter()
-        .filter(|token| !prompted_words.contains(*token))
-        .cloned()
-        .collect();
-    word_error_rate(&unbiased_reference, &unbiased_hypothesis)
-}
-
-fn char_error_rate(reference: &str, hypothesis: &str) -> f32 {
-    let ref_chars: Vec<char> = reference.chars().collect();
-    let hyp_chars: Vec<char> = hypothesis.chars().collect();
-    let dist = levenshtein(&ref_chars, &hyp_chars);
-    let denom = ref_chars.len().max(1) as f32;
-    dist as f32 / denom
-}
-
-fn levenshtein<T: Eq>(a: &[T], b: &[T]) -> usize {
-    let mut prev: Vec<usize> = (0..=b.len()).collect();
-    let mut cur = vec![0usize; b.len() + 1];
-
-    for (i, item_a) in a.iter().enumerate() {
-        cur[0] = i + 1;
-        for (j, item_b) in b.iter().enumerate() {
-            let cost = if item_a == item_b { 0 } else { 1 };
-            cur[j + 1] =
-                std::cmp::min(std::cmp::min(prev[j + 1] + 1, cur[j] + 1), prev[j] + cost);
-        }
-        prev.clone_from(&cur);
-    }
-
-    prev[b.len()]
-}
-
-fn contains_term(norm_text: &str, term: &str) -> bool {
-    let (_, term_norm) = normalize_for_eval(term);
-    if term_norm.is_empty() {
-        return false;
-    }
-    let haystack = format!(" {norm_text} ");
-    let needle = format!(" {term_norm} ");
-    haystack.contains(&needle)
-}
-
-fn count_term(norm_text: &str, term: &str) -> usize {
-    let (_, term_norm) = normalize_for_eval(term);
-    if term_norm.is_empty() {
-        return 0;
-    }
-    let haystack = format!(" {norm_text} ");
-    let needle = format!(" {term_norm} ");
-    haystack.match_indices(&needle).count()
-}
-
-fn false_insertion_count(reference_norm: &str, hypothesis_norm: &str, terms: &[String]) -> usize {
-    terms
-        .iter()
-        .map(|term| count_term(hypothesis_norm, term).saturating_sub(count_term(reference_norm, term)))
-        .sum()
-}
-
-fn transcribe_per_window(
-    samples: &[f32],
-    sample_rate: u32,
-    language: &str,
-    prompt: Option<String>,
-) -> Result<String> {
-    const WINDOW_SECONDS: usize = 12;
-    let window_frames = (sample_rate as usize).saturating_mul(WINDOW_SECONDS).max(1);
-    let mut parts = Vec::new();
-    for window in samples.chunks(window_frames) {
-        let transcript = whisper::singleton::transcribe_with_segments_with_initial_prompt(
-            window,
-            sample_rate,
-            Some(language),
-            prompt.clone(),
-        )?;
-        let text = transcript.text.trim();
-        if !text.is_empty() {
-            parts.push(text.to_string());
-        }
-    }
-    Ok(parts.join(" "))
-}
-
-fn prompt_terms(prompt: Option<&str>) -> Vec<String> {
-    let Some(prompt) = prompt else {
-        return Vec::new();
-    };
-    let body = prompt
-        .strip_prefix("Vocabulary:")
-        .unwrap_or(prompt)
-        .trim()
-        .trim_end_matches('.');
-    body.split(';')
-        .map(str::trim)
-        .filter(|term| !term.is_empty())
-        .map(ToString::to_string)
-        .collect()
-}
-
-fn env_truthy(key: &str) -> bool {
-    env::var(key).ok().is_some_and(|value| {
-        matches!(
-            value.trim().to_ascii_lowercase().as_str(),
-            "1" | "true" | "yes" | "on" | "enabled"
-        )
-    })
-}
-
-fn env_f64(key: &str, default: f64) -> f64 {
-    env::var(key)
-        .ok()
-        .and_then(|value| value.trim().parse::<f64>().ok())
-        .unwrap_or(default)
-}
-
-fn env_optional_usize(key: &str) -> Option<usize> {
-    env::var(key)
-        .ok()
-        .and_then(|value| value.trim().parse::<usize>().ok())
-}
-
-fn read_manifest(path: &Path) -> Result<Vec<Fixture>> {
-    let text = fs::read_to_string(path)?;
-    let mut lines = text.lines();
-    let header = lines.next().context("fixture manifest is empty")?;
-    let columns: Vec<&str> = header.split('\t').collect();
-    let id_idx = columns
-        .iter()
-        .position(|name| *name == "id")
-        .context("fixture manifest lacks id column")?;
-    let audio_idx = columns
-        .iter()
-        .position(|name| *name == "staged_audio")
-        .context("fixture manifest lacks staged_audio column")?;
-    let reference_idx = columns
-        .iter()
-        .position(|name| *name == "staged_reference")
-        .context("fixture manifest lacks staged_reference column")?;
-
-    let mut fixtures = Vec::new();
-    for line in lines {
-        if line.trim().is_empty() {
-            continue;
-        }
-        let fields: Vec<&str> = line.split('\t').collect();
-        let Some(id) = fields.get(id_idx) else {
-            continue;
-        };
-        let Some(audio_path) = fields.get(audio_idx) else {
-            continue;
-        };
-        let Some(reference_path) = fields.get(reference_idx) else {
-            continue;
-        };
-        let reference_text = fs::read_to_string(reference_path)?;
-        let (reference_tokens, reference_norm) = normalize_for_eval(&reference_text);
-        fixtures.push(Fixture {
-            id: (*id).to_string(),
-            audio_path: PathBuf::from(audio_path),
-            reference_path: PathBuf::from(reference_path),
-            reference_tokens,
-            reference_norm,
-        });
-    }
-    Ok(fixtures)
-}
-
-fn controlled_fixture_terms(fixtures: &[Fixture], limit: usize) -> Vec<String> {
-    let mut freq: BTreeMap<String, usize> = BTreeMap::new();
-    for fixture in fixtures {
-        let mut seen_in_fixture = BTreeSet::new();
-        for token in &fixture.reference_tokens {
-            if token.chars().count() < 6 {
-                continue;
-            }
-            if !token.chars().any(|ch| ch.is_alphabetic()) {
-                continue;
-            }
-            seen_in_fixture.insert(token.clone());
-        }
-        for token in seen_in_fixture {
-            *freq.entry(token).or_default() += 1;
-        }
-    }
-
-    let mut ranked: Vec<(String, usize)> = freq.into_iter().collect();
-    ranked.sort_by(|(a, freq_a), (b, freq_b)| {
-        freq_a
-            .cmp(freq_b)
-            .then_with(|| b.chars().count().cmp(&a.chars().count()))
-            .then_with(|| a.cmp(b))
-    });
-
-    ranked.into_iter().take(limit).map(|(term, _)| term).collect()
-}
-
-fn write_kv(mut out: &File, key: &str, value: &str) -> Result<()> {
-    writeln!(out, "{}\t{}", tsv_clean(key), tsv_clean(value))?;
-    Ok(())
-}
-
-fn main() -> Result<()> {
-    let args: Vec<String> = env::args().collect();
-    if args.len() != 6 {
-        anyhow::bail!(
-            "usage: {} MANIFEST WER_TSV TERM_HITS_TSV TERM_SOURCE_TSV LANGUAGE",
-            args.first().map(String::as_str).unwrap_or("prompted-wer-probe")
-        );
-    }
-    let manifest_path = PathBuf::from(&args[1]);
-    let wer_tsv = PathBuf::from(&args[2]);
-    let term_hits_tsv = PathBuf::from(&args[3]);
-    let term_source_tsv = PathBuf::from(&args[4]);
-    let language = args[5].as_str();
-    let fixtures = read_manifest(&manifest_path)?;
-
-    let runtime_prompt = stream_postprocess::whisper_initial_prompt();
-    let runtime_terms = prompt_terms(runtime_prompt.as_deref());
-    let runtime_reference_overlap = runtime_terms
-        .iter()
-        .filter(|term| fixtures.iter().any(|fixture| contains_term(&fixture.reference_norm, term)))
-        .count();
-    let force_controlled_prompt = env_truthy("CODESCRIBE_BENCH_FORCE_PROMPT");
-    let runtime_prompt_term_limit = env_optional_usize("CODESCRIBE_BENCH_RUNTIME_PROMPT_TERM_LIMIT");
-    let prompt_max_regression_pp = env_f64("CODESCRIBE_BENCH_PROMPT_MAX_WER_DELTA_PP", 5.0);
-
-    let (source_kind, source_reason, selected_terms, prompt) =
-        if runtime_prompt.is_some() && !runtime_terms.is_empty() {
-            if let Some(limit) = runtime_prompt_term_limit
-                && limit > 0
-                && limit < runtime_terms.len()
-            {
-                let terms: Vec<String> = runtime_terms.iter().take(limit).cloned().collect();
-                let prompt = stream_postprocess::build_whisper_initial_prompt(
-                    &terms,
-                    &[],
-                    stream_postprocess::WHISPER_INITIAL_PROMPT_TOKEN_BUDGET,
-                );
-                (
-                    "runtime_lexicon_trimmed",
-                    "runtime protected/custom dictionary prompt trimmed by CODESCRIBE_BENCH_RUNTIME_PROMPT_TERM_LIMIT; order is the runtime prompt order",
-                    terms,
-                    prompt,
-                )
-            } else {
-                (
-                    "runtime_lexicon",
-                    "runtime protected/custom dictionary prompt is enabled and nonempty",
-                    runtime_terms.clone(),
-                    runtime_prompt.clone(),
-                )
-            }
-        } else if force_controlled_prompt {
-            let terms = controlled_fixture_terms(&fixtures, 32);
-            let prompt = stream_postprocess::build_whisper_initial_prompt(
-                &terms,
-                &[],
-                stream_postprocess::WHISPER_INITIAL_PROMPT_TOKEN_BUDGET,
-            );
-            let reason = if runtime_prompt.is_none() || runtime_terms.is_empty() {
-                "runtime protected/custom dictionary prompt is empty; generated deterministic fixture reference terms"
-            } else {
-                "runtime prompt exists but has zero overlap with references; generated deterministic fixture reference terms"
-            };
-            (
-                "controlled_fixture_reference_terms",
-                reason,
-                terms,
-                prompt,
-            )
-        } else {
-            (
-                "prompt_disabled",
-                "runtime prompt is disabled or empty; prompted probe intentionally passes no initial_prompt",
-                Vec::new(),
-                None,
-            )
-        };
-
-    let term_source_out = File::create(&term_source_tsv)?;
-    writeln!(&term_source_out, "key\tvalue")?;
-    write_kv(&term_source_out, "runtime_prompt_present", &runtime_prompt.is_some().to_string())?;
-    write_kv(
-        &term_source_out,
-        "bench_force_prompt",
-        &force_controlled_prompt.to_string(),
-    )?;
-    write_kv(
-        &term_source_out,
-        "runtime_terms_count",
-        &runtime_terms.len().to_string(),
-    )?;
-    write_kv(
-        &term_source_out,
-        "runtime_reference_overlap",
-        &runtime_reference_overlap.to_string(),
-    )?;
-    write_kv(
-        &term_source_out,
-        "runtime_prompt_term_limit",
-        &runtime_prompt_term_limit
-            .map(|limit| limit.to_string())
-            .unwrap_or_else(|| "unset".to_string()),
-    )?;
-    write_kv(&term_source_out, "selected_source_kind", source_kind)?;
-    write_kv(&term_source_out, "selected_terms_count", &selected_terms.len().to_string())?;
-    write_kv(
-        &term_source_out,
-        "selected_terms",
-        &selected_terms.join("; "),
-    )?;
-    write_kv(&term_source_out, "prompt_present", &prompt.is_some().to_string())?;
-    write_kv(
-        &term_source_out,
-        "prompt_chars",
-        &prompt.as_ref().map(|p| p.len()).unwrap_or(0).to_string(),
-    )?;
-    write_kv(
-        &term_source_out,
-        "prompt_preview",
-        prompt.as_deref().unwrap_or(""),
-    )?;
-    write_kv(
-        &term_source_out,
-        "prompt_regression_guard_pp",
-        &format!("{prompt_max_regression_pp:.3}"),
-    )?;
-    write_kv(&term_source_out, "source_reason", source_reason)?;
-    write_kv(&term_source_out, "decode_scope", "per_window_12_seconds")?;
-
-    whisper::init()?;
-
-    let mut wer_out = File::create(&wer_tsv)?;
-    writeln!(
-        wer_out,
-        "id\taudio_path\treference_path\tsource_kind\tunprompted_raw_wer\tprompted_raw_wer\tdelta_raw_wer_pp\tunprompted_raw_uwer\tprompted_raw_uwer\tunprompted_raw_false_insertions\tprompted_raw_false_insertions\tunprompted_post_wer\tprompted_post_wer\tdelta_post_wer_pp\tunprompted_post_uwer\tprompted_post_uwer\tunprompted_post_false_insertions\tprompted_post_false_insertions\tunprompted_raw_cer\tprompted_raw_cer\tunprompted_post_cer\tprompted_post_cer\tunprompted_raw_chars\tprompted_raw_chars"
-    )?;
-    let mut hits_out = File::create(&term_hits_tsv)?;
-    writeln!(
-        hits_out,
-        "id\tterm\tsource_kind\treference_has_term\tunprompted_raw_hit\tprompted_raw_hit\tunprompted_post_hit\tprompted_post_hit"
-    )?;
-    let mut worst_raw_delta_pp = f32::NEG_INFINITY;
-    let mut worst_post_delta_pp = f32::NEG_INFINITY;
-
-    for fixture in fixtures {
-        let (samples, sample_rate) = audio::load_audio_file(&fixture.audio_path)?;
-        let unprompted = transcribe_per_window(&samples, sample_rate, language, None)?;
-        let prompted = transcribe_per_window(&samples, sample_rate, language, prompt.clone())?;
-        let unprompted_post = stream_postprocess::apply_lexicon(&unprompted);
-        let prompted_post = stream_postprocess::apply_lexicon(&prompted);
-
-        let (unprompted_tokens, unprompted_norm) = normalize_for_eval(&unprompted);
-        let (prompted_tokens, prompted_norm) = normalize_for_eval(&prompted);
-        let (unprompted_post_tokens, unprompted_post_norm) = normalize_for_eval(&unprompted_post);
-        let (prompted_post_tokens, prompted_post_norm) = normalize_for_eval(&prompted_post);
-
-        let unprompted_raw_wer = word_error_rate(&fixture.reference_tokens, &unprompted_tokens);
-        let prompted_raw_wer = word_error_rate(&fixture.reference_tokens, &prompted_tokens);
-        let unprompted_raw_uwer = unbiased_word_error_rate(
-            &fixture.reference_tokens, &unprompted_tokens, &selected_terms);
-        let prompted_raw_uwer = unbiased_word_error_rate(
-            &fixture.reference_tokens, &prompted_tokens, &selected_terms);
-        let unprompted_raw_false_insertions = false_insertion_count(
-            &fixture.reference_norm, &unprompted_norm, &selected_terms);
-        let prompted_raw_false_insertions = false_insertion_count(
-            &fixture.reference_norm, &prompted_norm, &selected_terms);
-        let unprompted_post_wer =
-            word_error_rate(&fixture.reference_tokens, &unprompted_post_tokens);
-        let prompted_post_wer = word_error_rate(&fixture.reference_tokens, &prompted_post_tokens);
-        let unprompted_post_uwer = unbiased_word_error_rate(
-            &fixture.reference_tokens, &unprompted_post_tokens, &selected_terms);
-        let prompted_post_uwer = unbiased_word_error_rate(
-            &fixture.reference_tokens, &prompted_post_tokens, &selected_terms);
-        let unprompted_post_false_insertions = false_insertion_count(
-            &fixture.reference_norm, &unprompted_post_norm, &selected_terms);
-        let prompted_post_false_insertions = false_insertion_count(
-            &fixture.reference_norm, &prompted_post_norm, &selected_terms);
-        let unprompted_raw_cer = char_error_rate(&fixture.reference_norm, &unprompted_norm);
-        let prompted_raw_cer = char_error_rate(&fixture.reference_norm, &prompted_norm);
-        let unprompted_post_cer = char_error_rate(&fixture.reference_norm, &unprompted_post_norm);
-        let prompted_post_cer = char_error_rate(&fixture.reference_norm, &prompted_post_norm);
-        let raw_delta_pp = (prompted_raw_wer - unprompted_raw_wer) * 100.0;
-        let post_delta_pp = (prompted_post_wer - unprompted_post_wer) * 100.0;
-        worst_raw_delta_pp = worst_raw_delta_pp.max(raw_delta_pp);
-        worst_post_delta_pp = worst_post_delta_pp.max(post_delta_pp);
-
-        writeln!(
-            wer_out,
-            "{}\t{}\t{}\t{}\t{:.6}\t{:.6}\t{:.3}\t{:.6}\t{:.6}\t{}\t{}\t{:.6}\t{:.6}\t{:.3}\t{:.6}\t{:.6}\t{}\t{}\t{:.6}\t{:.6}\t{:.6}\t{:.6}\t{}\t{}",
-            tsv_clean(&fixture.id),
-            tsv_clean(&fixture.audio_path.display().to_string()),
-            tsv_clean(&fixture.reference_path.display().to_string()),
-            source_kind,
-            unprompted_raw_wer,
-            prompted_raw_wer,
-            raw_delta_pp,
-            unprompted_raw_uwer,
-            prompted_raw_uwer,
-            unprompted_raw_false_insertions,
-            prompted_raw_false_insertions,
-            unprompted_post_wer,
-            prompted_post_wer,
-            post_delta_pp,
-            unprompted_post_uwer,
-            prompted_post_uwer,
-            unprompted_post_false_insertions,
-            prompted_post_false_insertions,
-            unprompted_raw_cer,
-            prompted_raw_cer,
-            unprompted_post_cer,
-            prompted_post_cer,
-            unprompted.chars().count(),
-            prompted.chars().count()
-        )?;
-
-        for term in &selected_terms {
-            if !contains_term(&fixture.reference_norm, term) {
-                continue;
-            }
-            writeln!(
-                hits_out,
-                "{}\t{}\t{}\ttrue\t{}\t{}\t{}\t{}",
-                tsv_clean(&fixture.id),
-                tsv_clean(term),
-                source_kind,
-                contains_term(&unprompted_norm, term),
-                contains_term(&prompted_norm, term),
-                contains_term(&unprompted_post_norm, term),
-                contains_term(&prompted_post_norm, term)
-            )?;
-        }
-    }
-
-    if prompt.is_some() {
-        let worst_delta = worst_raw_delta_pp.max(worst_post_delta_pp);
-        if f64::from(worst_delta) > prompt_max_regression_pp {
-            anyhow::bail!(
-                "prompted WER regression guard tripped: worst delta {worst_delta:.3} pp > allowed {prompt_max_regression_pp:.3} pp (source_kind={source_kind})"
-            );
-        }
-    }
-
-    Ok(())
-}
-EOF
-}
-
 run_qube_report() {
   rm -rf "$qube_out"
-  log "running legacy qube-report WER control"
+  log "running Qube quality control"
   (
     cd "$repo_root"
     CODESCRIBE_DISABLE_KEYCHAIN=1 CODESCRIBE_NO_EMBED=1 CODESCRIBE_MODEL_PATH="$model_path" \
@@ -900,25 +360,12 @@ run_latency_probe() {
   ) > "$latency_log" 2>&1
 }
 
-run_prompted_wer_probe() {
-  write_wer_probe
-  : > "$wer_tsv"
-  : > "$term_hits_tsv"
-  : > "$term_source_tsv"
-  log "running prompted/unprompted WER probe"
-  (
-    CODESCRIBE_DISABLE_KEYCHAIN=1 CODESCRIBE_NO_EMBED=1 CODESCRIBE_MODEL_PATH="$model_path" CARGO_TARGET_DIR="$repo_root/target" \
-      cargo run --quiet --manifest-path "$wer_probe_dir/Cargo.toml" -- \
-        "$manifest_tsv" "$wer_tsv" "$term_hits_tsv" "$term_source_tsv" "$language"
-  ) > "$wer_probe_log" 2>&1
-}
-
 write_summary_report() {
   local head_short repro fixture_source
   head_short="$(git -C "$repo_root" rev-parse --short=8 HEAD 2>/dev/null || printf 'unknown')"
   repro="scripts/bench-stt.sh --fixtures $fixture_mode --limit $fixture_limit --language $language"
   fixture_source="$(fixture_source_label "$manifest_tsv")"
-  python3 - "$report_path" "$qube_out/report.json" "$manifest_tsv" "$latency_tsv" "$wer_tsv" "$term_hits_tsv" "$term_source_tsv" "$repro" "$repo_root" "$head_short" "$model_path" "$out_dir" "$fixture_source" <<'PY'
+  python3 - "$report_path" "$qube_out/report.json" "$manifest_tsv" "$latency_tsv" "$repro" "$repo_root" "$head_short" "$model_path" "$out_dir" "$fixture_source" <<'PY'
 import csv
 import json
 import math
@@ -929,15 +376,12 @@ report_path = Path(sys.argv[1])
 qube_json = Path(sys.argv[2])
 manifest_tsv = Path(sys.argv[3])
 latency_tsv = Path(sys.argv[4])
-wer_tsv = Path(sys.argv[5])
-term_hits_tsv = Path(sys.argv[6])
-term_source_tsv = Path(sys.argv[7])
-repro = sys.argv[8]
-repo_root = sys.argv[9]
-head_short = sys.argv[10]
-model_path = sys.argv[11]
-out_dir = sys.argv[12]
-fixture_source = sys.argv[13]
+repro = sys.argv[5]
+repo_root = sys.argv[6]
+head_short = sys.argv[7]
+model_path = sys.argv[8]
+out_dir = sys.argv[9]
+fixture_source = sys.argv[10]
 
 qube = json.loads(qube_json.read_text())
 manifest = list(csv.DictReader(manifest_tsv.open(), delimiter="\t"))
@@ -945,22 +389,11 @@ latencies = {
     row["id"]: row
     for row in csv.DictReader(latency_tsv.open(), delimiter="\t")
 }
-wer_rows = list(csv.DictReader(wer_tsv.open(), delimiter="\t")) if wer_tsv.exists() else []
-term_hit_rows = list(csv.DictReader(term_hits_tsv.open(), delimiter="\t")) if term_hits_tsv.exists() else []
-term_source = {}
-if term_source_tsv.exists():
-    for row in csv.DictReader(term_source_tsv.open(), delimiter="\t"):
-        term_source[row["key"]] = row["value"]
 
 def pct(value):
     if value is None:
         return "n/a"
-    return f"{value * 100:.2f}%"
-
-def pp(value):
-    if value is None:
-        return "n/a"
-    return f"{value:+.2f} pp"
+    return f"{float(value) * 100:.2f}%"
 
 def ms(value):
     if value in (None, "", "NA"):
@@ -968,200 +401,102 @@ def ms(value):
     return f"{float(value):.0f}"
 
 def avg(values):
-    values = [float(v) for v in values if v not in (None, "", "NA")]
+    values = [float(value) for value in values if value not in (None, "", "NA")]
     return sum(values) / len(values) if values else None
 
 def p95(values):
-    values = sorted(float(v) for v in values if v not in (None, "", "NA"))
+    values = sorted(float(value) for value in values if value not in (None, "", "NA"))
     if not values:
         return None
-    idx = max(0, math.ceil(0.95 * len(values)) - 1)
-    return values[idx]
-
-def avg_key(rows, key):
-    values = []
-    for row in rows:
-        value = row.get(key)
-        if value in (None, "", "NA"):
-            continue
-        values.append(float(value))
-    return sum(values) / len(values) if values else None
-
-def hit_rate(rows, key):
-    denom = len(rows)
-    if denom == 0:
-        return (0, 0, None)
-    hits = sum(1 for row in rows if row.get(key) == "true")
-    return (hits, denom, hits / denom)
-
-def hit_fmt(rows, key):
-    hits, denom, rate = hit_rate(rows, key)
-    if rate is None:
-        return "n/a"
-    return f"{hits}/{denom} ({rate * 100:.1f}%)"
-
-def row_by_id(rows):
-    return {row.get("id"): row for row in rows}
+    return values[max(0, math.ceil(0.95 * len(values)) - 1)]
 
 summary = qube.get("summary", {})
 entries = qube.get("entries", [])
 first_values = [row.get("first_preview_ms") for row in latencies.values()]
 final_values = [row.get("final_ms") for row in latencies.values()]
 session_done_values = [row.get("session_done_ms") for row in latencies.values()]
-wer_by_id = row_by_id(wer_rows)
 
-unprompted_raw = avg_key(wer_rows, "unprompted_raw_wer")
-prompted_raw = avg_key(wer_rows, "prompted_raw_wer")
-unprompted_raw_uwer = avg_key(wer_rows, "unprompted_raw_uwer")
-prompted_raw_uwer = avg_key(wer_rows, "prompted_raw_uwer")
-unprompted_post = avg_key(wer_rows, "unprompted_post_wer")
-prompted_post = avg_key(wer_rows, "prompted_post_wer")
-unprompted_post_uwer = avg_key(wer_rows, "unprompted_post_uwer")
-prompted_post_uwer = avg_key(wer_rows, "prompted_post_uwer")
-unprompted_raw_false_insertions = sum(int(row["unprompted_raw_false_insertions"]) for row in wer_rows)
-prompted_raw_false_insertions = sum(int(row["prompted_raw_false_insertions"]) for row in wer_rows)
-unprompted_post_false_insertions = sum(int(row["unprompted_post_false_insertions"]) for row in wer_rows)
-prompted_post_false_insertions = sum(int(row["prompted_post_false_insertions"]) for row in wer_rows)
-raw_delta_pp = None if unprompted_raw is None or prompted_raw is None else (prompted_raw - unprompted_raw) * 100.0
-post_delta_pp = None if unprompted_post is None or prompted_post is None else (prompted_post - unprompted_post) * 100.0
-
-lines = []
-lines.append("# Codescribe STT Real-Path Bench")
-lines.append("")
-lines.append("## Run Context")
-lines.append("")
-lines.append(f"- repo: `{repo_root}`")
-lines.append(f"- head: `{head_short}`")
-lines.append(f"- model: `{model_path}`")
-lines.append(f"- output: `{out_dir}`")
-lines.append(f"- fixtures: `{len(manifest)}`")
-lines.append(f"- fixture_source: `{fixture_source}`")
-lines.append("- legacy WER control: existing `qube-report` raw path")
-lines.append("- scheduler latency: `transcription_session` -> `SttScheduler` lanes; model load is excluded")
-lines.append("- prompted WER: identical 12-second window decodes with and without the per-window vocabulary prompt")
-lines.append("")
-lines.append("## Repro Command")
-lines.append("")
-lines.append("```bash")
-lines.append(repro)
-lines.append("```")
-lines.append("")
-lines.append("## Term Source Proof")
-lines.append("")
-lines.append(f"- runtime prompt present: `{term_source.get('runtime_prompt_present', 'n/a')}`")
-lines.append(f"- bench force prompt: `{term_source.get('bench_force_prompt', 'n/a')}`")
-lines.append(f"- runtime terms: `{term_source.get('runtime_terms_count', 'n/a')}`")
-lines.append(f"- runtime terms overlapping references: `{term_source.get('runtime_reference_overlap', 'n/a')}`")
-lines.append(f"- selected source: `{term_source.get('selected_source_kind', 'n/a')}`")
-lines.append(f"- selected terms: `{term_source.get('selected_terms_count', 'n/a')}`")
-lines.append(f"- prompt chars: `{term_source.get('prompt_chars', 'n/a')}`")
-lines.append(f"- decode scope: `{term_source.get('decode_scope', 'n/a')}`")
-lines.append(f"- prompt regression guard: `{term_source.get('prompt_regression_guard_pp', 'n/a')}` pp")
-lines.append(f"- source reason: {term_source.get('source_reason', 'n/a')}")
-lines.append("")
-lines.append("## Metric Separation")
-lines.append("")
-lines.append("- Old metric: `qube-report` WER is retained as a legacy unprompted/control number.")
-lines.append("- WER: ordinary word error rate over all reference words.")
-lines.append("- U-WER: word error rate after removing selected prompt-vocabulary words from both sides; it exposes collateral damage outside the biased vocabulary.")
-lines.append("- False insertions: excess exact occurrences of selected prompt terms in the hypothesis versus the reference.")
-lines.append("- New latency metric: the probe drives `transcription_session`, so Live preview and Commit final pass travel through `SttScheduler`.")
-lines.append("")
-lines.append("## Summary Metrics")
-lines.append("")
-lines.append("| metric | value |")
-lines.append("| --- | ---: |")
-lines.append(f"| legacy qube raw WER | {pct(summary.get('avg_raw_wer'))} |")
-lines.append(f"| legacy qube post WER | {pct(summary.get('avg_post_wer'))} |")
-lines.append(f"| prompted probe unprompted raw WER | {pct(unprompted_raw)} |")
-lines.append(f"| prompted probe prompted raw WER | {pct(prompted_raw)} |")
-lines.append(f"| prompted raw delta | {pp(raw_delta_pp)} |")
-lines.append(f"| prompted probe unprompted raw U-WER | {pct(unprompted_raw_uwer)} |")
-lines.append(f"| prompted probe prompted raw U-WER | {pct(prompted_raw_uwer)} |")
-lines.append(f"| raw false insertions unprompted / prompted | {unprompted_raw_false_insertions} / {prompted_raw_false_insertions} |")
-lines.append(f"| prompted probe unprompted post WER | {pct(unprompted_post)} |")
-lines.append(f"| prompted probe prompted post WER | {pct(prompted_post)} |")
-lines.append(f"| prompted post delta | {pp(post_delta_pp)} |")
-lines.append(f"| prompted probe unprompted post U-WER | {pct(unprompted_post_uwer)} |")
-lines.append(f"| prompted probe prompted post U-WER | {pct(prompted_post_uwer)} |")
-lines.append(f"| post false insertions unprompted / prompted | {unprompted_post_false_insertions} / {prompted_post_false_insertions} |")
-lines.append(f"| raw term hit-rate unprompted | {hit_fmt(term_hit_rows, 'unprompted_raw_hit')} |")
-lines.append(f"| raw term hit-rate prompted | {hit_fmt(term_hit_rows, 'prompted_raw_hit')} |")
-lines.append(f"| post term hit-rate unprompted | {hit_fmt(term_hit_rows, 'unprompted_post_hit')} |")
-lines.append(f"| post term hit-rate prompted | {hit_fmt(term_hit_rows, 'prompted_post_hit')} |")
-lines.append(f"| scheduler first preview avg/p95 | {ms(avg(first_values))} ms / {ms(p95(first_values))} ms |")
-lines.append(f"| scheduler final avg/p95 | {ms(avg(final_values))} ms / {ms(p95(final_values))} ms |")
-lines.append(f"| scheduler session done avg/p95 | {ms(avg(session_done_values))} ms / {ms(p95(session_done_values))} ms |")
-lines.append("")
-lines.append("## Baseline Reference")
-lines.append("")
-lines.append("| baseline | instrument | raw WER | post WER | first avg/p95 ms | final avg/p95 ms |")
-lines.append("| --- | --- | ---: | ---: | ---: | ---: |")
-lines.append("| W1-A run 2 | old direct/qube metric | 22.23% | 24.07% | 3230 / 4042 | 10821 / 36916 |")
-lines.append("| W2-D run 1 | old direct/qube metric | 22.23% | 24.07% | 3706 / 4899 | 11955 / 41451 |")
-lines.append("| W2-D run 2 | old direct/qube metric | 22.23% | 24.07% | 3304 / 5437 | 10963 / 36239 |")
-lines.append("| this run | new scheduler/prompted metric | see above | see above | see above | see above |")
-lines.append("")
-lines.append("> Old direct-engine latency and new scheduler-lane latency are different metrics; deltas across that boundary are diagnostic only, not a regression claim.")
-lines.append("")
-lines.append("## Per-Fixture Metrics")
-lines.append("")
-lines.append("| file | raw WER A/B | raw U-WER A/B | raw false insertions A/B | post WER A/B | post U-WER A/B | post false insertions A/B | first/final ms |")
-lines.append("| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: |")
+lines = [
+    "# Codescribe STT Real-Path Bench",
+    "",
+    "## Run Context",
+    "",
+    f"- repo: `{repo_root}`",
+    f"- head: `{head_short}`",
+    f"- model: `{model_path}`",
+    f"- output: `{out_dir}`",
+    f"- fixtures: `{len(manifest)}`",
+    f"- fixture_source: `{fixture_source}`",
+    "- quality: Qube raw and delivered transcript metrics",
+    "- latency: production `transcription_session` through `SttScheduler`; model load excluded",
+    "- vocabulary-prompt A/B: not measured because no production runtime owner currently emits that prompt",
+    "",
+    "## Repro Command",
+    "",
+    "```bash",
+    repro,
+    "```",
+    "",
+    "## Summary Metrics",
+    "",
+    "| metric | value |",
+    "| --- | ---: |",
+    f"| Qube raw WER | {pct(summary.get('avg_raw_wer'))} |",
+    f"| Qube delivered WER | {pct(summary.get('avg_post_wer'))} |",
+    f"| scheduler first preview avg/p95 | {ms(avg(first_values))} ms / {ms(p95(first_values))} ms |",
+    f"| scheduler final avg/p95 | {ms(avg(final_values))} ms / {ms(p95(final_values))} ms |",
+    f"| scheduler session done avg/p95 | {ms(avg(session_done_values))} ms / {ms(p95(session_done_values))} ms |",
+    "",
+    "## Per-Fixture Metrics",
+    "",
+    "| file | raw WER | delivered WER | first/final ms |",
+    "| --- | ---: | ---: | ---: |",
+]
 for entry in entries:
-    row = latencies.get(entry.get("id"), {})
-    wer_row = wer_by_id.get(entry.get("id"), {})
+    latency = latencies.get(entry.get("id"), {})
     metrics = entry.get("metrics", {})
     lines.append(
-        "| {id} | {un_raw} / {pr_raw} | {un_raw_uwer} / {pr_raw_uwer} | {un_raw_fi} / {pr_raw_fi} | {un_post} / {pr_post} | {un_post_uwer} / {pr_post_uwer} | {un_post_fi} / {pr_post_fi} | {first} / {final} |".format(
+        "| {id} | {raw} | {delivered} | {first} / {final} |".format(
             id=entry.get("id", "unknown"),
-            un_raw=pct(float(wer_row["unprompted_raw_wer"])) if wer_row else "n/a",
-            pr_raw=pct(float(wer_row["prompted_raw_wer"])) if wer_row else "n/a",
-            un_raw_uwer=pct(float(wer_row["unprompted_raw_uwer"])) if wer_row else "n/a",
-            pr_raw_uwer=pct(float(wer_row["prompted_raw_uwer"])) if wer_row else "n/a",
-            un_raw_fi=wer_row.get("unprompted_raw_false_insertions", "n/a"),
-            pr_raw_fi=wer_row.get("prompted_raw_false_insertions", "n/a"),
-            un_post=pct(float(wer_row["unprompted_post_wer"])) if wer_row else "n/a",
-            pr_post=pct(float(wer_row["prompted_post_wer"])) if wer_row else "n/a",
-            un_post_uwer=pct(float(wer_row["unprompted_post_uwer"])) if wer_row else "n/a",
-            pr_post_uwer=pct(float(wer_row["prompted_post_uwer"])) if wer_row else "n/a",
-            un_post_fi=wer_row.get("unprompted_post_false_insertions", "n/a"),
-            pr_post_fi=wer_row.get("prompted_post_false_insertions", "n/a"),
-            first=ms(row.get("first_preview_ms")),
-            final=ms(row.get("final_ms")),
+            raw=pct(metrics.get("raw_wer")),
+            delivered=pct(metrics.get("post_wer")),
+            first=ms(latency.get("first_preview_ms")),
+            final=ms(latency.get("final_ms")),
         )
     )
-lines.append("")
-lines.append("## Fixtures")
-lines.append("")
-lines.append("| id | source | sha256(audio) | sha256(reference) |")
-lines.append("| --- | --- | --- | --- |")
+
+lines.extend([
+    "",
+    "## Fixtures",
+    "",
+    "| id | source | sha256(audio) | sha256(reference) |",
+    "| --- | --- | --- | --- |",
+])
 for row in manifest:
     lines.append(
-        f"| {row['id']} | `{row['source_audio']}` / `{row['source_reference']}` | `{row['sha256_audio']}` | `{row['sha256_reference']}` |"
+        f"| {row['id']} | `{row['source_audio']}` / `{row['source_reference']}` | "
+        f"`{row['sha256_audio']}` | `{row['sha256_reference']}` |"
     )
-lines.append("")
-lines.append("## Not Verified Here")
-lines.append("")
-lines.append("- This per-run report does not decide two-run convergence; the W2-F worker report compares run 1 and run 2.")
-lines.append("- Scheduler latency excludes cold model load.")
-lines.append("")
-lines.append("## Artifacts")
-lines.append("")
-lines.append(f"- qube report JSON: `{qube_json}`")
-lines.append(f"- scheduler latency TSV: `{latency_tsv}`")
-lines.append(f"- prompted WER TSV: `{wer_tsv}`")
-lines.append(f"- term hit-rate TSV: `{term_hits_tsv}`")
-lines.append(f"- term source TSV: `{term_source_tsv}`")
-lines.append(f"- fixture manifest: `{manifest_tsv}`")
-lines.append("")
-report_path.write_text("\n".join(lines) + "\n")
 
-print("\n".join(lines[:44]))
+lines.extend([
+    "",
+    "## Not Verified Here",
+    "",
+    "- This report does not compare a vocabulary prompt because the current production lanes emit none.",
+    "- Scheduler latency excludes cold model load.",
+    "",
+    "## Artifacts",
+    "",
+    f"- Qube report JSON: `{qube_json}`",
+    f"- scheduler latency TSV: `{latency_tsv}`",
+    f"- fixture manifest: `{manifest_tsv}`",
+    "",
+])
+report_path.write_text("\n".join(lines))
+print("\n".join(lines[:34]))
 print(f"\n[bench-stt] report: {report_path}")
 PY
 }
-
 load_env_file
 
 if [[ "$fixture_mode" == "historical" ]] && ! command -v python3 >/dev/null 2>&1; then
@@ -1225,14 +560,6 @@ fi
 
 if [[ ! -s "$latency_tsv" ]]; then
   write_honest_report "streaming latency probe produced no rows."
-fi
-
-if ! run_prompted_wer_probe; then
-  write_honest_report "prompted/unprompted WER probe failed; see $wer_probe_log."
-fi
-
-if [[ ! -s "$wer_tsv" || ! -s "$term_hits_tsv" || ! -s "$term_source_tsv" ]]; then
-  write_honest_report "prompted/unprompted WER probe produced incomplete artifacts."
 fi
 
 write_summary_report

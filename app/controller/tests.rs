@@ -773,7 +773,7 @@ async fn test_stop_path_harness_executes_production_pipeline_delivery_span() {
 // a controller constructed on a parallel thread leaks its init tracing events
 // into this test's captured buffer (observed on CI: the budget receipt line
 // vanished behind a foreign audio-recorder line).
-#[serial_test::serial(assistive_delivery)]
+#[serial_test::serial(agent_composer_delivery)]
 async fn test_assistive_delivery_budget_times_real_send_adapter() {
     #[derive(Clone, Default)]
     struct Buf(std::sync::Arc<std::sync::Mutex<Vec<u8>>>);
@@ -868,7 +868,7 @@ async fn test_assistive_delivery_budget_times_real_send_adapter() {
 /// captured at every session start) instead of failing closed — and stay
 /// one-shot through the fallback.
 #[tokio::test]
-#[serial_test::serial(assistive_delivery)]
+#[serial_test::serial(agent_composer_delivery)]
 async fn test_assistive_delivery_falls_back_to_session_trigger_context() {
     let controller = RecordingController::new();
     *controller.pending_assistive_context.write().await = None;
@@ -1911,81 +1911,6 @@ fn test_only_always_mode_may_full_file_repass() {
     }
 }
 
-/// Dictionary / lexicon is independent of FINAL_PASS_MODE.
-/// Off skips Whisper full re-pass, but StreamPostProcessor / apply_lexicon still rewrite.
-#[test]
-fn test_dictionary_always_applies_when_final_pass_mode_off() {
-    use super::final_pass::{FinalPassAction, final_pass_action};
-
-    // Simulate stop-path Off: skip full re-pass, keep streaming text as the transcript base.
-    let streaming_with_typo = "Uzywam doker do kontenerow.";
-    let complete = StreamingCompleteness::Complete;
-    let incomplete = StreamingCompleteness::Incomplete {
-        reason: "pending_tail",
-    };
-    assert_eq!(
-        final_pass_action(FinalPassRoutingMode::Off, complete),
-        FinalPassAction::SkipStreamingFinal,
-        "Off skip path: no Whisper final pass required for dictionary"
-    );
-    assert_eq!(
-        final_pass_action(FinalPassRoutingMode::Off, incomplete),
-        FinalPassAction::SkipStreamingFinal,
-        "Off skip path holds for incomplete streaming too — dictionary still runs"
-    );
-
-    // Post-process always runs after the skip decision (controller stop path).
-    let via_apply = crate::stream_postprocess::apply_lexicon(streaming_with_typo);
-    assert!(
-        via_apply.contains("Docker"),
-        "apply_lexicon must rewrite 'doker' -> 'Docker' under Off path: {via_apply}"
-    );
-
-    let mut processor = crate::stream_postprocess::StreamPostProcessor::new();
-    let via_processor = processor
-        .process_utterance(streaming_with_typo)
-        .expect("StreamPostProcessor must emit output for non-empty streaming text");
-    assert!(
-        via_processor.contains("Docker"),
-        "StreamPostProcessor must rewrite lexicon term without Whisper final pass: {via_processor}"
-    );
-    assert!(
-        processor.stats().lexicon_rewrites >= 1,
-        "lexicon_rewrites counter must tick when a known typo is corrected"
-    );
-}
-
-/// Lexicon is ungated by FINAL_PASS_MODE on the Smart tail-gap path too.
-///
-/// Structural evidence (single seam, no branch of its own): every action arm writes
-/// `local_final_pass_verdict`, which flows through `adjudicate_recording_truth` →
-/// `truth_verdict.raw_text` → the single unconditional
-/// `process_transcript_text_pipeline` call in `finalize_recording` (mod.rs, one
-/// call site — verify with `loct find --literal process_transcript_text_pipeline`
-/// rather than a line number, which rots). This test pins the text
-/// half: a transcript composed by `append_tail_gap` still gets dictionary rewrites
-/// applied — in both the committed prefix and the appended tail.
-#[test]
-fn test_dictionary_applies_to_tail_gap_composed_transcript() {
-    use super::final_pass::append_tail_gap;
-
-    let composed = append_tail_gap("Uzywam doker do kontenerow.", "kubernets tez uzywam");
-    assert!(
-        composed.starts_with("Uzywam doker do kontenerow."),
-        "committed prefix must survive composition: {composed}"
-    );
-
-    let corrected = crate::stream_postprocess::apply_lexicon(&composed);
-    assert!(
-        corrected.contains("Docker"),
-        "lexicon must rewrite the committed prefix on the tail-gap path: {corrected}"
-    );
-    assert!(
-        corrected.contains("Kubernetes"),
-        "lexicon must rewrite the appended tail on the tail-gap path: {corrected}"
-    );
-}
-
 /// Punctuation is not authority. A well-formed sentence with no adjudicator
 /// commit source is Incomplete, and Smart gap-fills its tail — a model that
 /// ends politely mid-thought must not be mistaken for a finished utterance.
@@ -2292,110 +2217,6 @@ fn test_should_use_toggle_adjudicated_stop_only_for_raw_toggle_when_enabled() {
 }
 
 #[test]
-fn test_overlay_paste_disposition_decision_table() {
-    let cases = [
-        (
-            Some("Pensieve"),
-            Some("  PENSIEVE  "),
-            true,
-            false,
-            OverlayPasteDisposition::Paste,
-            "exact target, case-insensitive",
-        ),
-        (
-            Some("Alacritty"),
-            Some("Alacritty"),
-            true,
-            true,
-            OverlayPasteDisposition::Paste,
-            "vc-terminal / Zellij host is a legal ambulance",
-        ),
-        (
-            Some("Pensieve"),
-            Some("Alacritty"),
-            true,
-            false,
-            OverlayPasteDisposition::CopyTargetMismatch,
-            "third app",
-        ),
-        (
-            Some("Alacritty"),
-            Some("Codescribe"),
-            true,
-            true,
-            OverlayPasteDisposition::Paste,
-            "confirmed Alacritty activation may leave the overlay process frontmost briefly",
-        ),
-        (
-            Some("Alacritty"),
-            Some("Codescribe"),
-            true,
-            false,
-            OverlayPasteDisposition::CopyTargetMismatch,
-            "Alacritty not activated — do not fire Cmd+V at overlay",
-        ),
-        (
-            Some("Codescribe"),
-            Some("Codescribe"),
-            true,
-            false,
-            OverlayPasteDisposition::Paste,
-            "Agent window is a legal Cmd+V sink; overlay caret is a Swift probe",
-        ),
-        (
-            None,
-            Some("Pensieve"),
-            true,
-            false,
-            OverlayPasteDisposition::CopyTargetUnavailable,
-            "target lost",
-        ),
-        (
-            Some("Pensieve"),
-            None,
-            true,
-            false,
-            OverlayPasteDisposition::CopyFrontmostUnavailable,
-            "focus unconfirmed",
-        ),
-        (
-            Some("Pensieve"),
-            None,
-            true,
-            true,
-            OverlayPasteDisposition::Paste,
-            "activation confirmed even if workspace name is missing",
-        ),
-        (
-            Some("Pensieve"),
-            Some("Pensieve"),
-            false,
-            true,
-            OverlayPasteDisposition::CopyAccessibilityDenied,
-            "event posting denied",
-        ),
-    ];
-
-    for (target, frontmost, can_post_events, activation_confirmed, expected, label) in cases {
-        assert_eq!(
-            overlay_paste_disposition(target, frontmost, can_post_events, activation_confirmed),
-            expected,
-            "{label}"
-        );
-    }
-}
-
-#[test]
-fn overlay_float_requires_positive_foreign_focus_confirmation() {
-    assert!(super::overlay_paste::overlay_float_still_confirms_activation(true, Some("Alacritty")));
-    assert!(
-        !super::overlay_paste::overlay_float_still_confirms_activation(false, Some("Codescribe"))
-    );
-    assert!(!super::overlay_paste::overlay_float_still_confirms_activation(false, Some("Safari")));
-    assert!(!super::overlay_paste::overlay_float_still_confirms_activation(false, None));
-}
-
-#[test]
 fn test_transcript_delivery_wrap_is_default_off() {
     let config = Config::default();
 
@@ -2444,25 +2265,6 @@ fn deferred_insert_registration_reports_unavailable_reasons() {
             shortcut_label: "⌘⇧V".to_string(),
         }
     );
-}
-
-/// Refused Cmd+V parks the transcript in-process. The user's pasteboard is
-/// not a fallback delivery channel.
-#[test]
-#[serial]
-fn refused_paste_parks_paste_here_without_touching_clipboard() {
-    use crate::os::clipboard::{get_clipboard, set_clipboard};
-
-    if set_clipboard("user clipboard sentinel").is_err() {
-        return;
-    }
-    assert!(super::overlay_paste::park_refused_paste(
-        "tagged refused transcript".to_string()
-    ));
-    let Ok(current) = get_clipboard() else {
-        return;
-    };
-    assert_eq!(current, "user clipboard sentinel");
 }
 
 #[test]
@@ -4824,199 +4626,6 @@ async fn test_finish_recording_resets_unconditionally_toggle_mode() {
     assert_eq!(controller.current_state().await, State::Idle);
     assert!(!*controller.force_ai_mode.read().await);
     assert!(!*controller.force_raw_mode.read().await);
-}
-
-#[test]
-fn test_action_quality_probe_reports_expected_metrics() {
-    let raw = "Kubernetes wymoga konfiguracji";
-    let final_text = "Kubernetes wymaga konfiguracji.";
-    let stats = crate::stream_postprocess::StreamPostProcessStats {
-        input_chunks: 10,
-        dropped_chunks: 2,
-        ..Default::default()
-    };
-    let probe = ActionQualityProbe::from_transcripts(raw, final_text, &stats);
-
-    assert_eq!(probe.raw_chars, raw.chars().count());
-    assert_eq!(probe.final_chars, final_text.chars().count());
-    assert!(probe.raw_final_diff_ratio > 0.0);
-    assert!(probe.correction_ratio > 0.0);
-    assert!((probe.drop_ratio - 0.2).abs() < 0.001);
-}
-
-#[test]
-fn test_action_quality_probe_is_independent_from_action_routing() {
-    let stats = crate::stream_postprocess::StreamPostProcessStats {
-        input_chunks: 8,
-        dropped_chunks: 1,
-        ..Default::default()
-    };
-    let save_probe = ActionQualityProbe::from_transcripts("to jest test", "To jest test.", &stats);
-    let copy_probe = ActionQualityProbe::from_transcripts("to jest test", "To jest test.", &stats);
-    let augment_probe =
-        ActionQualityProbe::from_transcripts("to jest test", "To jest test.", &stats);
-
-    assert!((save_probe.raw_final_diff_ratio - copy_probe.raw_final_diff_ratio).abs() < 1e-6);
-    assert!((save_probe.raw_final_diff_ratio - augment_probe.raw_final_diff_ratio).abs() < 1e-6);
-    assert!((save_probe.correction_ratio - copy_probe.correction_ratio).abs() < 1e-6);
-    assert!((save_probe.correction_ratio - augment_probe.correction_ratio).abs() < 1e-6);
-    assert!((save_probe.drop_ratio - copy_probe.drop_ratio).abs() < 1e-6);
-    assert!((save_probe.drop_ratio - augment_probe.drop_ratio).abs() < 1e-6);
-}
-
-/// The 2026-08-10 morning failure: the transplant added 24 punctuation marks
-/// over an identical word sequence, the prefix/suffix delta read it as
-/// diff=1.000, and "high_rewrite_ratio" quarantined the shaped text. A
-/// shape-only delta must never trip the character-ratio triggers.
-#[test]
-fn test_quality_gate_exempts_shape_only_transplant_delta() {
-    let stats = crate::stream_postprocess::StreamPostProcessStats::default();
-    let raw = "dzień dobry mam na imię marek mieszkam w kielcach a kibicuję chelsea \
-               dziś o osiemnastej mam spotkanie z natalią która przyjedzie z warszawy";
-    let shaped = "Dzień dobry, mam na imię Marek, mieszkam w Kielcach, a kibicuję Chelsea. \
-                  Dziś o osiemnastej mam spotkanie z Natalią, która przyjedzie z Warszawy.";
-    let probe = ActionQualityProbe::from_transcripts(raw, shaped, &stats);
-    assert!(
-        probe.shape_only,
-        "identical word sequence must be shape_only"
-    );
-    assert!(
-        evaluate_quality_commit_trigger(false, &probe, crate::state::history::TranscriptKind::Raw)
-            .is_none(),
-        "punctuation/case-only delta must not be quarantined"
-    );
-
-    // A delta that changes even one word keeps the full gate.
-    let reworded = "Dzień dobry, mam na imię Marek, mieszkam w Krakowie, a kibicuję Chelsea. \
-                    Dziś o osiemnastej mam spotkanie z Natalią, która przyjedzie z Warszawy.";
-    let reworded_probe = ActionQualityProbe::from_transcripts(raw, reworded, &stats);
-    assert!(
-        !reworded_probe.shape_only,
-        "word change is never shape_only"
-    );
-}
-
-#[test]
-fn test_quality_gate_triggers_commit_for_high_drop_ratio() {
-    let stats = crate::stream_postprocess::StreamPostProcessStats {
-        input_chunks: 10,
-        dropped_chunks: 5,
-        ..Default::default()
-    };
-    let probe = ActionQualityProbe::from_transcripts(
-        "to jest bardzo dlugi tekst surowy",
-        "to jest tekst",
-        &stats,
-    );
-    let trigger =
-        evaluate_quality_commit_trigger(false, &probe, crate::state::history::TranscriptKind::Raw);
-    assert_eq!(trigger, Some("high_drop_ratio"));
-}
-
-#[test]
-fn test_quality_gate_skips_commit_for_force_raw_mode() {
-    let stats = crate::stream_postprocess::StreamPostProcessStats {
-        input_chunks: 10,
-        dropped_chunks: 7,
-        ..Default::default()
-    };
-    let probe =
-        ActionQualityProbe::from_transcripts("to jest bardzo dlugi tekst surowy", "krótki", &stats);
-    let trigger =
-        evaluate_quality_commit_trigger(true, &probe, crate::state::history::TranscriptKind::Raw);
-    assert!(trigger.is_none());
-}
-
-#[test]
-fn test_quality_gate_triggers_commit_when_ai_failed() {
-    let stats = crate::stream_postprocess::StreamPostProcessStats {
-        input_chunks: 2,
-        dropped_chunks: 0,
-        ..Default::default()
-    };
-    let probe = ActionQualityProbe::from_transcripts("raw text", "raw text", &stats);
-    let trigger = evaluate_quality_commit_trigger(
-        false,
-        &probe,
-        crate::state::history::TranscriptKind::FormattingFailed,
-    );
-    assert_eq!(trigger, Some("ai_failed_fallback"));
-}
-
-#[test]
-fn test_quality_gate_catches_short_ai_rewrites_in_danger_zone() {
-    let stats = crate::stream_postprocess::StreamPostProcessStats {
-        input_chunks: 4,
-        dropped_chunks: 0,
-        ..Default::default()
-    };
-    let probe = ActionQualityProbe::from_transcripts("abcdefghijk", "qrstuvwxyz!", &stats);
-    let trigger = evaluate_quality_commit_trigger(
-        false,
-        &probe,
-        crate::state::history::TranscriptKind::FormattedTranscript,
-    );
-    assert_eq!(trigger, Some("high_rewrite_ratio"));
-}
-
-#[test]
-fn test_quality_gate_triggers_commit_on_semantic_divergence() {
-    // A formatting pass that keeps length but changes meaning: character
-    // ratios stay quiet, only the semantic axis can see it. Cosines are the
-    // measured populations from core::pipeline::semantic_guard's calibration.
-    let stats = crate::stream_postprocess::StreamPostProcessStats {
-        input_chunks: 4,
-        dropped_chunks: 0,
-        ..Default::default()
-    };
-    // Append-only formatting (trailing period) keeps every character heuristic
-    // quiet: TranscriptDelta diffs by common prefix/suffix, so mid-string
-    // comma insertion would read as a ~0.9 correction ratio and fire the char
-    // gate before the semantic axis is ever consulted — this test isolates the
-    // semantic branch on purpose.
-    let raw = "zamów proszę odczynniki do laboratorium na przyszły tydzień";
-    let formatted = "zamów proszę odczynniki do laboratorium na przyszły tydzień.";
-    let mut probe = ActionQualityProbe::from_transcripts(raw, formatted, &stats);
-
-    probe.semantic_cosine = Some(0.253);
-    assert_eq!(
-        evaluate_quality_commit_trigger(
-            false,
-            &probe,
-            crate::state::history::TranscriptKind::FormattedTranscript,
-        ),
-        Some("semantic_divergence")
-    );
-
-    // Meaning kept → the semantic axis stays silent and nothing else fires.
-    probe.semantic_cosine = Some(0.95);
-    assert!(
-        evaluate_quality_commit_trigger(
-            false,
-            &probe,
-            crate::state::history::TranscriptKind::FormattedTranscript,
-        )
-        .is_none()
-    );
-
-    // No verdict (fail-open) must behave exactly like the pre-guard gate.
-    probe.semantic_cosine = None;
-    assert!(
-        evaluate_quality_commit_trigger(
-            false,
-            &probe,
-            crate::state::history::TranscriptKind::FormattedTranscript,
-        )
-        .is_none()
-    );
-
-    // Raw lane: even a catastrophic cosine must not fire — the user was
-    // promised their literal words, and the guard judges only AI formatting.
-    probe.semantic_cosine = Some(0.1);
-    assert!(
-        evaluate_quality_commit_trigger(true, &probe, crate::state::history::TranscriptKind::Raw)
-            .is_none()
-    );
 }
 
 #[test]

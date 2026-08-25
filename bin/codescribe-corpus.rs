@@ -404,8 +404,6 @@ struct ExecutionRow {
     teacher_similarity: f64,
     final_pass_attempted: bool,
     final_pass_skipped: bool,
-    lexicon_rewrites: u64,
-    gate_drops: u64,
     audio_hash_unchanged: bool,
     reference_hash_unchanged: bool,
 }
@@ -456,7 +454,7 @@ struct MatrixReport {
     permission_request_apis_called_by_tool: bool,
     tcc_database_inspected: bool,
     permission_state_proven_unchanged: bool,
-    quality_gate: &'static str,
+    measurement_policy: &'static str,
     coverage: CoverageContract,
 }
 
@@ -917,7 +915,7 @@ fn run_matrix(args: MatrixArgs) -> Result<()> {
         permission_request_apis_called_by_tool: false,
         tcc_database_inspected: false,
         permission_state_proven_unchanged: false,
-        quality_gate: "measurement_only_operator_decides",
+        measurement_policy: "measurement_only_operator_decides",
         coverage: CoverageContract::default(),
     };
     let report_path = args.out_dir.join("report.json");
@@ -1317,7 +1315,6 @@ fn success_quality_entry(
             post_cer: Some(post_cer),
             ..ReportMetrics::default()
         },
-        postprocess_stats: Some(replay.postprocess_stats.clone()),
         errors: Vec::new(),
     }
 }
@@ -1340,7 +1337,6 @@ fn failure_quality_entry(execution: &ReplayExecutionContext<'_>, error: &str) ->
         },
         raw_semantics: None,
         metrics: ReportMetrics::default(),
-        postprocess_stats: None,
         errors: vec![error.to_string()],
     }
 }
@@ -1561,8 +1557,6 @@ fn success_row(
         teacher_similarity: teacher_similarity(execution.truth, &replay.delivered_text),
         final_pass_attempted: replay.final_pass_attempted,
         final_pass_skipped: replay.final_pass_skipped,
-        lexicon_rewrites: replay.postprocess_stats.lexicon_rewrites,
-        gate_drops: replay.postprocess_stats.gate_drops,
         audio_hash_unchanged,
         reference_hash_unchanged,
     })
@@ -1603,8 +1597,6 @@ fn failure_row(execution: &ReplayExecutionContext<'_>) -> Result<ExecutionRow> {
         teacher_similarity: 0.0,
         final_pass_attempted: false,
         final_pass_skipped: false,
-        lexicon_rewrites: 0,
-        gate_drops: 0,
         audio_hash_unchanged: sha256_file(&execution.clip.path)? == execution.clip.sha256,
         reference_hash_unchanged: sha256_file(&execution.reference.path)?
             == execution.reference.sha256,
@@ -1859,7 +1851,12 @@ fn matrix_markdown(report: &MatrixReport) -> String {
         report.permission_state_proven_unchanged
     )
     .unwrap();
-    writeln!(output, "- Quality gate: `{}`\n", report.quality_gate).unwrap();
+    writeln!(
+        output,
+        "- Measurement policy: `{}`\n",
+        report.measurement_policy
+    )
+    .unwrap();
     writeln!(
         output,
         "| Profile | OK | Failed | Observed L1 | Mean WER | Mean CER | Char parity | Qube quality |"
@@ -2033,7 +2030,6 @@ mod tests {
                 post_wer: Some(0.25),
                 ..ReportMetrics::default()
             },
-            postprocess_stats: None,
             errors: Vec::new(),
         }];
         let report = build_quality_report(

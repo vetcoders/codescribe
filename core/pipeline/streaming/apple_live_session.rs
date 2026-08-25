@@ -3877,10 +3877,10 @@ mod tests {
         assert!(state.open_partial.is_empty());
     }
 
-    /// The stop-path postprocess still runs over committed text. Seal-time
-    /// correction is only append-safe because a second application is a no-op.
+    /// Apple is the first observer. Sealing commits its observation unchanged;
+    /// later repair requires a matching occurrence identity through the ledger.
     #[test]
-    fn apple_seal_lexicon_is_idempotent_under_stop_path_postprocess() {
+    fn apple_seal_preserves_observed_text_until_ledger_repair() {
         let (tx, mut rx) = mpsc::unbounded_channel();
         let mut state = AppleSealState::new(TEST_SAMPLE_RATE);
         emit_stream_events(
@@ -3897,11 +3897,7 @@ mod tests {
         let EngineEvent::UtteranceFinal { text, .. } = event else {
             panic!("expected UtteranceFinal, got {event:?}");
         };
-        assert_eq!(
-            crate::pipeline::stream_postprocess::apply_lexicon(&text),
-            text,
-            "stop-path lexicon must not rewrite already-sealed text"
-        );
+        assert_eq!(text, "uruchom doker teraz");
     }
 
     // ── W2-A · Layer 1 tail-patch on the Apple progressive path ──────────────

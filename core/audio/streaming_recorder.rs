@@ -41,6 +41,10 @@ const AUDIO_BACKLOG_CHUNKS: usize = 2048;
 pub struct ProductionSessionReplay {
     /// Ordered event stream emitted by the same session implementation as live capture.
     pub events: Vec<EngineEvent>,
+    /// The exact ledger mutated by the replayed production session. Consumers
+    /// project these receipts; they must not reconstruct transcript authority
+    /// from the legacy text events beside them.
+    pub acoustic_ledger: Arc<StdMutex<AcousticLedger>>,
     /// Whether recording-start policy armed a Layer 1 provider before the
     /// single-use decision was consumed by the session.
     pub layer1_armed: bool,
@@ -67,7 +71,7 @@ fn recording_session_config(
         session_id,
         capture_epoch: 0,
         runtime_settings,
-        acoustic_ledger,
+        acoustic_ledger.clone(),
         sample_rate,
         language,
         stream_log_path,
@@ -118,6 +122,7 @@ pub async fn replay_production_session(
     let tail_patch_receipt = TailPatchSessionReceipt::from_events(&events);
     Ok(ProductionSessionReplay {
         events,
+        acoustic_ledger,
         layer1_armed,
         streaming_engine_label,
         tail_patch_receipt,

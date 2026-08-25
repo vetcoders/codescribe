@@ -1980,11 +1980,6 @@ mod tests {
                 && entry.canonical == "Junie"
                 && entry.source == LEXICON_SOURCE_CORRECTION
         }));
-        assert_eq!(
-            crate::pipeline::stream_postprocess::apply_lexicon("to uni agentka mówi"),
-            "to Junie mówi",
-            "the third teach must rewrite a later word-boundary transcript"
-        );
         let refreshed = super::teach_span("UNI AGENTKA", "Junie", "lexicon_corrected")
             .expect("later identical teach leaves the promoted rule alone");
         assert_eq!(refreshed.pairs_learned, 0, "promotion occurs exactly once");
@@ -2479,7 +2474,7 @@ mod tests {
             .unwrap_or_else(|_| temp_dir.path().to_path_buf());
 
         // SAFETY: test-only, #[serial] guarantees exclusive access; mirrors EnvGuard/EnvRestore
-        // pattern used elsewhere (e.g. lane_truth, stream_postprocess). Process-env mutation
+        // pattern used elsewhere in test-only configuration guards. Process-env mutation
         // is the documented way to drive CODESCRIBE_DATA_DIR for hermetic isolation tests.
         unsafe {
             std::env::set_var("CODESCRIBE_DATA_DIR", &temp_root);

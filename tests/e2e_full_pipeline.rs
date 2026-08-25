@@ -1,4 +1,4 @@
-//! E2E full pipeline test: audio → Whisper → postprocessing → backspace delta → result
+//! E2E transcription primitives: audio → Whisper, transcript deltas, and VAD evidence
 //!
 //! Tests the complete transcription pipeline using canonical test recordings
 //! with human reference transcriptions for quality comparison.
@@ -23,7 +23,6 @@ use codescribe_core::pipeline::contracts::{
     BACKSPACE, DeltaSink, FileTranscriptionOptions, TranscriptDelta,
 };
 use codescribe_core::pipeline::sinks::CollectorSink;
-use codescribe_core::pipeline::stream_postprocess::{StreamPostProcessStats, StreamPostProcessor};
 use codescribe_core::vad_api::{
     CHUNK_SIZE, Resampler, SAMPLE_RATE as VAD_SAMPLE_RATE, SileroVad, VadConfig,
 };
@@ -55,8 +54,6 @@ struct TestCase {
     reference: &'static str,
     /// Key terms that MUST appear in transcription (case-insensitive).
     must_contain: &'static [&'static str],
-    /// Key terms the lexicon should fix (Whisper mispronunciation → correct).
-    lexicon_targets: &'static [&'static str],
 }
 
 const TEST_CASES: &[TestCase] = &[
@@ -65,28 +62,24 @@ const TEST_CASES: &[TestCase] = &[
         wav: "01_no-to-dobra.wav",
         reference: "01_no-to-dobra_human_transcription.txt",
         must_contain: &["codescribe", "transkrypcji", "leksykon"],
-        lexicon_targets: &["loctree", "Rust"],
     },
     TestCase {
         name: "02 round 1: easy tech + vet",
         wav: "02_kubernetes-wymaga-konfiguracji.wav",
         reference: "02_kubernetes-wymaga-konfiguracji_human_transcription.txt",
         must_contain: &["kubernetes", "sql", "dawce"],
-        lexicon_targets: &["gRPC", "Tokio", "Axum", "WebSocket"],
     },
     TestCase {
         name: "03 round 2: medium difficulty",
         wav: "03_algorytm-ma-zlozonosc.wav",
         reference: "03_algorytm-ma-zlozonosc_human_transcription.txt",
         must_contain: &["algorytm", "złożoność", "biopsj"],
-        lexicon_targets: &["semgrep", "loctree", "Tauri"],
     },
     TestCase {
         name: "04 round 3: hard mispronunciations",
         wav: "04_runda-3-czyli.wav",
         reference: "04_runda-3-czyli_human_transcription.txt",
         must_contain: &["tramadol", "kubernetes", "embeddingów"],
-        lexicon_targets: &["gRPC", "Robenacoxib"],
     },
 ];
 
@@ -139,42 +132,6 @@ fn word_overlap(a: &str, b: &str) -> f32 {
     }
     let overlap = words_a.intersection(&words_b).count();
     overlap as f32 / words_b.len() as f32
-}
-
-#[derive(Debug, Clone, Copy)]
-struct RoutingQualityProbe {
-    diff_ratio: f32,
-    correction_ratio: f32,
-    drop_ratio: f32,
-}
-
-fn routing_quality_probe(
-    raw: &str,
-    final_text: &str,
-    stats: &StreamPostProcessStats,
-) -> RoutingQualityProbe {
-    let raw_chars = raw.chars().count();
-    let final_chars = final_text.chars().count();
-    let (backspaces, inserts) = TranscriptDelta::from_diff(raw, final_text)
-        .map(|delta| {
-            let backspaces = delta.delta.chars().filter(|c| *c == BACKSPACE).count();
-            let inserts = delta.delta.chars().count().saturating_sub(backspaces);
-            (backspaces, inserts)
-        })
-        .unwrap_or((0, 0));
-    let span = raw_chars.max(final_chars).max(1);
-
-    let drop_ratio = if stats.input_chunks == 0 {
-        0.0
-    } else {
-        stats.dropped_chunks as f32 / stats.input_chunks as f32
-    };
-
-    RoutingQualityProbe {
-        diff_ratio: ((backspaces + inserts) as f32 / span as f32).min(1.0),
-        correction_ratio: (backspaces as f32 / raw_chars.max(1) as f32).min(1.0),
-        drop_ratio,
-    }
 }
 
 // ═══════════════════════════════════════════════════════════
@@ -263,52 +220,6 @@ fn e2e_stage1_raw_whisper_canonical() {
 }
 
 // ═══════════════════════════════════════════════════════════
-// Stage 2: Postprocessing (lexicon + cleanup + hallucination gate)
-// ═══════════════════════════════════════════════════════════
-
-#[test]
-fn e2e_stage2_postprocessor() {
-    let mut pp = StreamPostProcessor::new();
-
-    let cases = [
-        ("Fretka Ziggy jest bardzo wesoła.", true),
-        ("   ", false),
-        ("Dzień dobry :D :D", true),
-        ("...", false),
-    ];
-
-    println!("═══ Stage 2: StreamPostProcessor ═══");
-    for (input, expect_some) in &cases {
-        let result = pp.process(input);
-        let passed = result.is_some() == *expect_some;
-        println!(
-            "  {} input={:30} → {:?}",
-            if passed { "✓" } else { "✗" },
-            input,
-            result
-        );
-        assert_eq!(
-            result.is_some(),
-            *expect_some,
-            "Unexpected result for input: {:?}",
-            input
-        );
-    }
-
-    let rewritten = pp.process("Używam Javy i Pythona");
-    if let Some(text) = &rewritten {
-        println!("  Lexicon output: {}", text);
-        assert!(!text.is_empty());
-    }
-
-    let stats = pp.stats();
-    println!(
-        "  Stats: {} in, {} dropped",
-        stats.input_chunks, stats.dropped_chunks
-    );
-}
-
-// ═══════════════════════════════════════════════════════════
 // Stage 3: TranscriptDelta + backspace corrections
 // ═══════════════════════════════════════════════════════════
 
@@ -352,103 +263,6 @@ fn e2e_stage3_delta_backspace() {
 }
 
 // ═══════════════════════════════════════════════════════════
-// Stage 4: Full pipeline on all 4 recordings
-// ═══════════════════════════════════════════════════════════
-
-#[test]
-#[serial]
-fn e2e_stage4_full_pipeline() {
-    if !is_e2e_stt_enabled() {
-        eprintln!("Skipping full pipeline (set CODESCRIBE_E2E_STT=1)");
-        return;
-    }
-    load_real_env();
-
-    let model_path = match find_model_path() {
-        Some(p) => p,
-        None => {
-            eprintln!("No Whisper model found, skipping");
-            return;
-        }
-    };
-
-    println!("═══ Stage 4: Full Pipeline × 4 recordings ═══");
-    let mut engine = LocalWhisperEngine::new(&model_path).expect("load model");
-    let dir = assets_dir();
-    let mut total_lexicon_rewrites = 0u64;
-
-    for tc in TEST_CASES {
-        let audio = dir.join(tc.wav);
-        let reference = std::fs::read_to_string(dir.join(tc.reference)).unwrap_or_default();
-
-        // 1. Whisper STT
-        let start = std::time::Instant::now();
-        let verdict = engine
-            .transcribe_file_with_language(&audio, Some("pl"), FileTranscriptionOptions::default())
-            .expect("transcribe");
-        let stt_time = start.elapsed();
-        let raw = verdict.text;
-
-        // 2. PostProcessor
-        let mut pp = StreamPostProcessor::new();
-        let processed = pp.process_utterance(&raw).unwrap_or_else(|| raw.clone());
-        let stats = pp.stats();
-        total_lexicon_rewrites += stats.lexicon_rewrites;
-
-        // 3. Delta (raw → processed)
-        let collector = CollectorSink::new();
-        let mut ui_buffer = String::new();
-
-        let d_raw = TranscriptDelta::append(&raw);
-        d_raw.apply(&mut ui_buffer);
-        collector.apply(&d_raw);
-
-        let backspaces = if let Some(correction) = TranscriptDelta::from_diff(&raw, &processed) {
-            let bs = correction.delta.chars().filter(|&c| c == BACKSPACE).count();
-            correction.apply(&mut ui_buffer);
-            collector.apply(&correction);
-            bs
-        } else {
-            0
-        };
-
-        assert_eq!(ui_buffer, processed, "Delta round-trip mismatch");
-
-        let overlap = word_overlap(&processed, &reference);
-
-        println!("───────────────────────────────────────────────────────────");
-        println!("  [{}]", tc.name);
-        println!(
-            "  STT: {:?} | PostProcess: {} rewrites | Delta: {} backspaces",
-            stt_time, stats.lexicon_rewrites, backspaces
-        );
-        println!("  Overlap vs human: {:.0}%", overlap * 100.0);
-        let preview: String = processed.chars().take(100).collect();
-        println!("  Processed: {}...", preview);
-
-        // Check lexicon-target terms survived (case-insensitive)
-        let proc_lower = processed.to_lowercase();
-        let mut found_lexicon = 0;
-        for term in tc.lexicon_targets {
-            if proc_lower.contains(&term.to_lowercase()) {
-                found_lexicon += 1;
-            }
-        }
-        println!(
-            "  Lexicon targets: {}/{} found",
-            found_lexicon,
-            tc.lexicon_targets.len()
-        );
-    }
-
-    println!("═══════════════════════════════════════════════════════════");
-    println!(
-        "  Total lexicon rewrites across all recordings: {}",
-        total_lexicon_rewrites
-    );
-}
-
-// ═══════════════════════════════════════════════════════════
 // Stage 5: Delta round-trip integrity (Polish Unicode)
 // ═══════════════════════════════════════════════════════════
 
@@ -484,32 +298,6 @@ fn e2e_stage5_delta_roundtrip_polish_unicode() {
         "  ✓ {} round-trip pairs verified",
         texts.len() * texts.len()
     );
-}
-
-// ═══════════════════════════════════════════════════════════
-// Stage 6: PostProcessor idempotency
-// ═══════════════════════════════════════════════════════════
-
-#[test]
-fn e2e_stage6_postprocessor_idempotent() {
-    println!("═══ Stage 6: PostProcessor Idempotency ═══");
-
-    let inputs = [
-        "Kubernetes wymaga konfiguracji PostgreSQL jako bazy danych.",
-        "Podajemy amoksycylinę w dawce pięć miligramów na kilogram masy ciała.",
-        "Algorytm ma złożoność O(n) w najgorszym przypadku.",
-    ];
-
-    for input in &inputs {
-        let mut pp1 = StreamPostProcessor::new();
-        let first = pp1.process_utterance(input).expect("first pass");
-
-        let mut pp2 = StreamPostProcessor::new();
-        let second = pp2.process_utterance(&first).expect("second pass");
-
-        println!("  ✓ {:.50}...", input);
-        assert_eq!(first, second, "Not idempotent for: {}", input);
-    }
 }
 
 // ═══════════════════════════════════════════════════════════
@@ -725,47 +513,4 @@ fn e2e_stage7_whisper_hallucination_vs_vad_gated() {
     } else {
         println!("  ⚠ Same hallucination count — VAD didn't help here");
     }
-}
-
-#[test]
-fn e2e_stage8_action_routing_quality_guardrail() {
-    println!("═══ Stage 8: Action Routing Quality Guardrail ═══");
-
-    // Simulated last-pass outputs for key modes:
-    // - RAW Hold Fn: no AI formatting in final output.
-    // - AI Formatting mode: final output after last-pass formatting.
-    let raw_hold = "kubernetes wymoga konfiguracji bazy";
-    let final_raw_hold = "kubernetes wymoga konfiguracji bazy";
-    let final_ai_format = "Kubernetes wymaga konfiguracji bazy.";
-
-    let stats = StreamPostProcessStats {
-        input_chunks: 12,
-        dropped_chunks: 3,
-        ..Default::default()
-    };
-
-    // Guardrail: quality probe is computed from transcript pair and postprocess stats only,
-    // so Save/Copy/Augment routing must not change it.
-    let save_probe = routing_quality_probe(raw_hold, final_ai_format, &stats);
-    let copy_probe = routing_quality_probe(raw_hold, final_ai_format, &stats);
-    let augment_probe = routing_quality_probe(raw_hold, final_ai_format, &stats);
-
-    assert!((save_probe.diff_ratio - copy_probe.diff_ratio).abs() < 1e-6);
-    assert!((save_probe.diff_ratio - augment_probe.diff_ratio).abs() < 1e-6);
-    assert!((save_probe.correction_ratio - copy_probe.correction_ratio).abs() < 1e-6);
-    assert!((save_probe.correction_ratio - augment_probe.correction_ratio).abs() < 1e-6);
-    assert!((save_probe.drop_ratio - copy_probe.drop_ratio).abs() < 1e-6);
-    assert!((save_probe.drop_ratio - augment_probe.drop_ratio).abs() < 1e-6);
-
-    // RAW contract: Copy in RAW mode uses non-AI last-pass output.
-    let raw_copy_probe = routing_quality_probe(raw_hold, final_raw_hold, &stats);
-    assert!(
-        raw_copy_probe.correction_ratio <= copy_probe.correction_ratio,
-        "RAW copy should not introduce additional AI correction vs formatted mode"
-    );
-
-    println!(
-        "  ✓ Stable probes across Save/Copy/Augment (diff={:.3}, correction={:.3}, drop={:.3})",
-        save_probe.diff_ratio, save_probe.correction_ratio, save_probe.drop_ratio
-    );
 }

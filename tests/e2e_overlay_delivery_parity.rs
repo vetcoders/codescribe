@@ -1681,8 +1681,6 @@ async fn e2e_production_overlay_corpus_replay() {
                 "teacher_similarity": teacher.similarity,
                 "wer": wer,
                 "cer": cer,
-                "lexicon_rewrites": replay.postprocess_stats.lexicon_rewrites,
-                "gate_drops": replay.postprocess_stats.gate_drops,
                 "wall_seconds": run_started.elapsed().as_secs_f64(),
             })
             .as_object()

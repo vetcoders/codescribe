@@ -8,15 +8,13 @@
 //! rzeczywiście gada codescribe na GUI"). This bin routes through the exact
 //! stages a GUI delivery does, in the same order:
 //!
-//!   Whisper file final  → lexicon post-process → Light+ → (optional AI format)
-//!   `transcribe_file_verdict`  `StreamPostProcessor`  `light_plus::apply`
+//!   Whisper file final → (optional AI format)
+//!   `transcribe_file_verdict`       sealed formatting lane
 //!
 //! Two faces, matching the GUI's two faces:
 //! - default        = the DELIVERY: one shaped transcript on stdout.
 //! - `--stream` = the LIVE CANVAS view: per-segment text flushed to stdout
-//!   as decoding progresses through the file (lexicon applied per segment;
-//!   Light+ belongs to delivery, not the canvas).
-//! - `--raw` = the Ctrl-hold contract: literal words, no Light+.
+//!   as decoding progresses through the file.
 //! - `-f/--format` = the AI-formatted lane (same `ai_formatting` call and
 //!   lane config the GUI uses; requires a configured key).
 //! - `transcribe live` = follow the app-owned clean transcript bus and flush
@@ -52,9 +50,6 @@ enum Command {
         /// Live-canvas view: flush each decoded segment as it lands
         #[arg(long)]
         stream: bool,
-        /// Literal words — skip the Light+ deterministic shaping (Ctrl-hold contract)
-        #[arg(long)]
-        raw: bool,
         /// AI formatting via the configured formatting lane (same as the GUI)
         #[arg(short, long)]
         format: bool,
@@ -76,14 +71,13 @@ fn main() -> anyhow::Result<()> {
             file,
             language,
             stream,
-            raw,
             format,
             mode,
         } => match mode {
             Some(TranscribeMode::Live) => {
                 anyhow::ensure!(
-                    file.is_none() && !stream && !raw && !format,
-                    "`transcribe live` does not accept a file, --stream, --raw, or --format"
+                    file.is_none() && !stream && !format,
+                    "`transcribe live` does not accept a file, --stream, or --format"
                 );
                 transcribe_live(language)
             }
@@ -91,7 +85,7 @@ fn main() -> anyhow::Result<()> {
                 let file = file.ok_or_else(|| {
                     anyhow::anyhow!("missing <FILE> (or use `codescribe transcribe live`)")
                 })?;
-                transcribe(&file, language.as_deref(), stream, raw, format)
+                transcribe(&file, language.as_deref(), stream, format)
             }
         },
     }
@@ -198,7 +192,6 @@ fn transcribe(
     file: &std::path::Path,
     language: Option<&str>,
     stream: bool,
-    raw: bool,
     format: bool,
 ) -> anyhow::Result<()> {
     use std::io::Write as _;
@@ -210,38 +203,22 @@ fn transcribe(
     let verdict = codescribe_core::stt::transcribe_file_verdict(file, language)?;
     let decode_secs = started.elapsed().as_secs_f64();
 
-    // Lexicon post-process: the same dictionary pass every GUI delivery gets,
-    // in every mode. Per segment in stream view (mirrors the live canvas
-    // receiving utterances), whole-text otherwise.
-    let mut post = codescribe_core::pipeline::stream_postprocess::StreamPostProcessor::new();
     let stdout = std::io::stdout();
 
-    let cleaned = if stream && !verdict.raw.segments.is_empty() {
+    let transcript_text = if stream && !verdict.raw.segments.is_empty() {
         let mut assembled: Vec<String> = Vec::new();
         let mut out = stdout.lock();
         for segment in &verdict.raw.segments {
-            if let Some(clean) = post.process_utterance(&segment.text) {
-                let clean = clean.trim().to_string();
-                if !clean.is_empty() {
-                    writeln!(out, "{clean}")?;
-                    out.flush()?;
-                    assembled.push(clean);
-                }
+            let text = segment.text.trim();
+            if !text.is_empty() {
+                writeln!(out, "{text}")?;
+                out.flush()?;
+                assembled.push(text.to_string());
             }
         }
         assembled.join(" ")
     } else {
-        post.process_utterance(&verdict.text)
-            .unwrap_or_else(|| verdict.text.clone())
-    };
-    let post_stats = post.stats();
-
-    // Light+ floor — every delivery gets it except the literal contract,
-    // mirroring the controller (`--raw` ≙ Ctrl-hold force_raw).
-    let shaped = if raw {
-        cleaned
-    } else {
-        codescribe_core::pipeline::light_plus::apply(&cleaned)
+        verdict.text.clone()
     };
 
     // AI formatting — the same lane call the GUI formatted mode makes.
@@ -251,7 +228,7 @@ fn transcribe(
             .enable_all()
             .build()?;
         let result = runtime.block_on(codescribe_core::ai_formatting::format_text_with_status(
-            &shaped,
+            &transcript_text,
             language,
             false,
             runtime_settings.llm_lanes().formatting(),
@@ -259,11 +236,11 @@ fn transcribe(
         ));
         (result.text, Some(format!("{:?}", result.status)))
     } else {
-        (shaped, None)
+        (transcript_text, None)
     };
 
     // Delivery on stdout (the stream view already printed the canvas; the
-    // delivery still follows it so scripts always end with the shaped text).
+    // delivery still follows it so scripts always end with the final text).
     if stream {
         eprintln!("--- delivery ---");
     }
@@ -271,19 +248,17 @@ fn transcribe(
 
     // Provenance to stderr, GUI-truth style.
     eprintln!(
-        "engine={:?}/{:?} decode_secs={:.2} segments={} chars={} lexicon_rewrites={} avg_logprob={} light_plus={} ai_format={}",
+        "engine={:?}/{:?} decode_secs={:.2} segments={} chars={} avg_logprob={} transcript_authority=stt_verdict ai_format={}",
         verdict.engine.engine,
         verdict.engine.mode,
         decode_secs,
         verdict.raw.segments.len(),
         final_text.chars().count(),
-        post_stats.lexicon_rewrites,
         verdict
             .raw
             .avg_logprob
             .map(|v| std::format!("{v:.2}"))
             .unwrap_or_else(|| "n/a".into()),
-        if raw { "skipped(raw)" } else { "applied" },
         ai_status.as_deref().unwrap_or("off"),
     );
     Ok(())

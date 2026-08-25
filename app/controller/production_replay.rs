@@ -3,8 +3,8 @@
 //! Audio ingress is the only substituted boundary: decoded fixture PCM is fed
 //! in 100 ms chunks instead of arriving from CoreAudio. Everything downstream
 //! is shared with the overlay: recording-start Layer 1 policy, `SessionConfig`,
-//! `transcription_session`, stop truth adjudication, and the unconditional
-//! lexicon/text layer immediately before delivery.
+//! `transcription_session`, the session-owned `AcousticLedger`, and the
+//! `TranscriptReducer` projection delivered to the overlay.
 
 use std::collections::HashSet;
 use std::path::Path;
@@ -12,21 +12,18 @@ use std::path::Path;
 use anyhow::{Result, anyhow};
 use codescribe_core::audio::streaming_recorder::replay_production_session;
 use codescribe_core::config::UserSettings;
-use codescribe_core::pipeline::contracts::EngineEvent;
-use codescribe_core::pipeline::contracts::TranscriptionVerdict;
-use codescribe_core::pipeline::stream_postprocess::StreamPostProcessStats;
+use codescribe_core::pipeline::acoustic_ledger::AcousticLedger;
+use codescribe_core::pipeline::contracts::{EngineEvent, FinalPassDisposition, TranscriptionVerdict};
 use codescribe_core::pipeline::streaming::APPLE_FINAL_OVERLAP_WARNING_CODE;
 
-use super::helpers::SessionTelemetrySnapshot;
-use super::truth::{adjudicate_recording_truth, postprocess_transcript_for_delivery};
-use crate::presentation::emitter::reduce_transcript_events;
+use crate::presentation::emitter::TranscriptReducer;
 
 /// Which production stop lane a corpus replay should exercise.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ProductionReplayLane {
-    /// Shipped no-final-pass degradation: live canvas followed by lexicon.
+    /// Production ledger projection without an additional full-file observation.
     AppleLexicon,
-    /// Explicit production local full-file pass, adjudicated against live.
+    /// Production ledger projection plus a diagnostic local full-file observation.
     LocalFinalPass,
 }
 
@@ -57,7 +54,6 @@ pub struct ProductionOverlayReplay {
     pub final_pass_attempted: bool,
     pub final_pass_skipped: bool,
     pub final_pass_skip_reason: Option<String>,
-    pub postprocess_stats: StreamPostProcessStats,
     pub boundary_evidence: ReplayBoundaryEvidence,
 }
 
@@ -123,43 +119,74 @@ struct ReplayDelivery {
     final_pass_attempted: bool,
     final_pass_skipped: bool,
     final_pass_skip_reason: Option<String>,
-    postprocess_stats: StreamPostProcessStats,
 }
 
-/// Shared replay stop boundary: production adjudication immediately followed
-/// by the production delivery postprocessor. Keeping these calls together
-/// makes a bypass detectable by one deterministic regression witness.
+/// Project authenticated ledger events through the reducer of record.
+fn project_ledger_truth(events: &[EngineEvent], ledger: &mut AcousticLedger) -> Result<String> {
+    let mut reducer = TranscriptReducer::default();
+    let mut rendered = None;
+    for event in events {
+        let revision = match event {
+            EngineEvent::LedgerMutation {
+                observation,
+                receipt,
+                ..
+            } => reducer.apply_ledger_mutation(ledger, observation, receipt),
+            EngineEvent::LedgerSeal { receipt } => reducer.apply_ledger_seal(receipt),
+            EngineEvent::OccurrenceLabelProposal { proposal } => {
+                reducer.apply_occurrence_label_proposal(ledger, proposal)
+            }
+            _ => None,
+        };
+        if let Some(revision) = revision {
+            rendered = Some(revision.rendered_text);
+        }
+    }
+    rendered
+        .filter(|text| !text.trim().is_empty())
+        .ok_or_else(|| anyhow!("production ledger projection produced no deliverable text"))
+}
+
+/// Delivery is a projection of the ledger, never a second text adjudication.
+/// An optional full-file pass remains diagnostic evidence for corpus reports;
+/// it cannot replace, append, or post-process the projected occurrences.
 fn finish_replay_delivery(
     live_text: String,
-    local_final_pass_attempted: bool,
     local_final_pass_verdict: Option<TranscriptionVerdict>,
     streaming_engine_label: &str,
 ) -> Result<ReplayDelivery> {
-    let verdict = adjudicate_recording_truth(
-        true,
-        local_final_pass_attempted,
-        local_final_pass_verdict,
-        live_text,
-        None,
-        Some(streaming_engine_label),
-        &SessionTelemetrySnapshot::default(),
-    );
-    let adjudicated_text = verdict
-        .raw_text
-        .clone()
-        .ok_or_else(|| anyhow!("production adjudication produced no deliverable text"))?;
-    let postprocessed = postprocess_transcript_for_delivery(&adjudicated_text);
+    if live_text.trim().is_empty() {
+        return Err(anyhow!("production ledger projection produced no deliverable text"));
+    }
+    let final_pass_attempted = local_final_pass_verdict.is_some();
+    let (final_pass_skipped, final_pass_skip_reason) = local_final_pass_verdict
+        .as_ref()
+        .and_then(|verdict| verdict.final_pass.as_ref())
+        .map(|pass| {
+            (
+                matches!(
+                    pass.disposition,
+                    FinalPassDisposition::Skipped
+                        | FinalPassDisposition::Rejected
+                        | FinalPassDisposition::Dropped
+                ),
+                pass.reason.clone(),
+            )
+        })
+        .unwrap_or_else(|| {
+            (
+                !final_pass_attempted,
+                (!final_pass_attempted).then(|| "not_attempted".to_string()),
+            )
+        });
     Ok(ReplayDelivery {
-        adjudicated_text,
-        delivered_text: postprocessed.text,
-        transcript_source: verdict
-            .transcript_source
-            .map(|source| source.label().to_string()),
-        engine_label: verdict.engine_label,
-        final_pass_attempted: verdict.final_pass_attempted,
-        final_pass_skipped: verdict.final_pass_skipped,
-        final_pass_skip_reason: verdict.final_pass_skip_reason,
-        postprocess_stats: postprocessed.stats,
+        adjudicated_text: live_text.clone(),
+        delivered_text: live_text,
+        transcript_source: Some("ledger_projection".to_string()),
+        engine_label: Some(streaming_engine_label.to_string()),
+        final_pass_attempted,
+        final_pass_skipped,
+        final_pass_skip_reason,
     })
 }
 
@@ -177,24 +204,23 @@ pub async fn replay_overlay_recording(
     }
 
     let session = replay_production_session(&samples, sample_rate, language.clone(), settings).await?;
-    let reducer = reduce_transcript_events(&session.events);
-    let full = reducer.rendered_text();
-    let floor = reducer.streaming_floor();
-    let live_text = if floor.trim().is_empty() { full } else { floor };
+    let live_text = {
+        let mut ledger = session
+            .acoustic_ledger
+            .lock()
+            .map_err(|_| anyhow!("production ledger lock poisoned"))?;
+        project_ledger_truth(&session.events, &mut ledger)?
+    };
 
-    let (attempted, final_verdict) = match lane {
-        ProductionReplayLane::AppleLexicon => (false, None),
-        ProductionReplayLane::LocalFinalPass => (
-            true,
-            Some(
+    let final_verdict = match lane {
+        ProductionReplayLane::AppleLexicon => None,
+        ProductionReplayLane::LocalFinalPass => Some(
                 codescribe_core::stt::transcribe_file_verdict(wav, language.as_deref())
                     .map_err(|_| anyhow!("production local final pass failed"))?,
             ),
-        ),
     };
     let delivery = finish_replay_delivery(
         live_text.clone(),
-        attempted,
         final_verdict,
         &session.streaming_engine_label,
     )?;
@@ -212,7 +238,6 @@ pub async fn replay_overlay_recording(
         final_pass_attempted: delivery.final_pass_attempted,
         final_pass_skipped: delivery.final_pass_skipped,
         final_pass_skip_reason: delivery.final_pass_skip_reason,
-        postprocess_stats: delivery.postprocess_stats,
         boundary_evidence,
     })
 }
@@ -239,29 +264,23 @@ mod tests {
             compression_ratio: None,
             quality_gate_dropped: false,
             confidence_flags: Vec::new(),
-            acoustic: None,
         }
     }
 
     #[test]
-    fn replay_stop_boundary_cannot_bypass_adjudication_or_lexicon() {
+    fn replay_delivery_preserves_the_ledger_projection_without_rewrite() {
         let delivery = finish_replay_delivery(
             "Uzywam doker do kontenerow.".to_string(),
-            false,
             None,
             "live_apple",
         )
-        .expect("live floor should remain deliverable");
+        .expect("ledger projection should remain deliverable");
         assert_eq!(
             delivery.transcript_source.as_deref(),
-            Some("Streaming fallback"),
-            "the replay must cross production truth adjudication"
+            Some("ledger_projection")
         );
-        assert!(
-            delivery.delivered_text.contains("Docker"),
-            "the replay must cross the unconditional production lexicon layer"
-        );
-        assert!(delivery.postprocess_stats.lexicon_rewrites >= 1);
+        assert_eq!(delivery.delivered_text, "Uzywam doker do kontenerow.");
+        assert_eq!(delivery.adjudicated_text, delivery.delivered_text);
         assert_eq!(delivery.engine_label.as_deref(), Some("live_apple"));
         assert!(!delivery.final_pass_attempted);
         assert!(delivery.final_pass_skipped);
@@ -271,62 +290,17 @@ mod tests {
         );
     }
 
-    #[test]
-    fn replay_carries_runtime_final_pass_attempt_verdict_out_of_adjudication() {
-        let delivery =
-            finish_replay_delivery("pacjent stabilny".to_string(), true, None, "live_apple")
-                .expect("live floor survives an unavailable attempted pass");
-
-        assert!(delivery.final_pass_attempted);
-        assert!(!delivery.final_pass_skipped);
-        assert_eq!(delivery.final_pass_skip_reason, None);
-    }
-
     /// The exact field consumed by the production replay JSON must name the
     /// live Apple canvas when Layer 1 and local final pass are both disarmed.
     #[test]
     fn apple_only_replay_json_surface_never_reports_streaming_whisper() {
         let delivery =
-            finish_replay_delivery("pacjent stabilny".to_string(), false, None, "live_apple")
+            finish_replay_delivery("pacjent stabilny".to_string(), None, "live_apple")
                 .expect("Apple live floor should remain deliverable");
 
         let row = serde_json::json!({ "engine_label": delivery.engine_label });
         assert_eq!(row["engine_label"], "live_apple");
         assert_ne!(row["engine_label"], "streaming_whisper");
-    }
-
-    #[test]
-    fn production_reducer_vectors_preserve_one_slot_and_legitimate_repetition() {
-        let cumulative = vec![
-            EngineEvent::Preview {
-                rev: 1,
-                text: "alpha".into(),
-            },
-            EngineEvent::Preview {
-                rev: 2,
-                text: "alpha beta".into(),
-            },
-            final_event(1, "alpha beta", 0.0, 1.0),
-        ];
-        let reduced = reduce_transcript_events(&cumulative);
-        assert_eq!(reduced.streaming_floor(), "alpha beta");
-        assert_eq!(reduced.committed_count(), 1);
-
-        let revised = vec![
-            final_event(7, "draft final", 0.0, 1.0),
-            final_event(7, "revised final", 0.0, 1.0),
-        ];
-        let reduced = reduce_transcript_events(&revised);
-        assert_eq!(reduced.streaming_floor(), "revised final");
-        assert_eq!(reduced.committed_count(), 1);
-
-        let repeated = vec![
-            final_event(1, "tak tak", 0.0, 1.0),
-            final_event(2, "tak tak", 1.0, 2.0),
-        ];
-        let reduced = reduce_transcript_events(&repeated);
-        assert_eq!(reduced.streaming_floor(), "tak tak tak tak");
-        assert_eq!(reduced.committed_count(), 2);
     }
 
     #[test]
