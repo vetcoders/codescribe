@@ -154,14 +154,6 @@ fn energy_qualified<'a>(samples: &[f32], manifest: &'a FixtureManifest) -> Vec<&
         .collect()
 }
 
-fn fixture_energy_lookup(start: u64, end: u64) -> Option<f32> {
-    load_manifest()
-        .bursts
-        .iter()
-        .find(|burst| burst.sample_start == start && burst.sample_end == end)
-        .map(|burst| burst.mean_rms_dbfs as f32)
-}
-
 fn fixture_calibration(manifest: &FixtureManifest) -> EnergyCalibration {
     EnergyCalibration::new(
         manifest
@@ -267,14 +259,13 @@ fn publish_through_reducer_and_bus(
 
     let temp = tempfile::tempdir().expect("temporary Bus directory");
     let path = temp.path().join("events.jsonl");
-    let bus = TranscriptBus::open_at_with_energy(
+    let bus = TranscriptBus::open_at(
         TranscriptSession {
             session_id: SESSION_ID.to_string(),
             mode: TranscriptMode::Dictation,
         },
         path.clone(),
         Some(manifest.sample_rate),
-        fixture_energy_lookup,
     )
     .expect("open synthetic Transcript Bus");
     bus.publish_started();

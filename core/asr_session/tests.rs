@@ -4,8 +4,6 @@
 //! `stt::fleet_red_contracts`: ordering, duplicate-final idempotence, bounded
 //! ranges, payload-free errors, and the canvas/refiner split.
 
-use serial_test::serial;
-
 use super::events::{
     AsrErrorKind, AsrSessionEvent, AudioRange, ErrorEvent, SessionId, TranscriptEvent, UsageEvent,
 };
@@ -14,9 +12,6 @@ use super::ingest::{IngestVerdict, SessionIngest};
 use super::provider::{
     AsrSessionProvider, CanvasEngine, LayerSelection, RefinerMode, SessionInput,
 };
-
-/// Env key the STT router reads to pick the live canvas engine.
-const ENV_STT_ENGINE: &str = "CODESCRIBE_STT_ENGINE";
 
 /// Session id used across the ordering tests.
 fn session() -> SessionId {
@@ -53,31 +48,6 @@ fn error_event(utterance: u64, sequence: u64, kind: AsrErrorKind) -> AsrSessionE
         sequence_id: sequence,
         kind,
     })
-}
-
-/// Restores `CODESCRIBE_STT_ENGINE` after a canvas-selection test.
-struct EngineEnvGuard {
-    /// Value the key held before the test pinned it.
-    previous: Option<String>,
-}
-
-impl EngineEnvGuard {
-    /// Pin the router's engine selector for this test scope.
-    fn set(value: &str) -> Self {
-        let previous = std::env::var(ENV_STT_ENGINE).ok();
-        unsafe { std::env::set_var(ENV_STT_ENGINE, value) };
-        Self { previous }
-    }
-}
-
-impl Drop for EngineEnvGuard {
-    /// Restore the prior value (or remove the key) when the guard leaves scope.
-    fn drop(&mut self) {
-        match self.previous.as_deref() {
-            Some(value) => unsafe { std::env::set_var(ENV_STT_ENGINE, value) },
-            None => unsafe { std::env::remove_var(ENV_STT_ENGINE) },
-        }
-    }
 }
 
 // ═══════════════════════════════════════════════════════════
@@ -351,39 +321,6 @@ fn refiner_mode_defaults_to_off_and_classifies_audio_egress() {
     assert!(RefinerMode::CloudSession.sends_audio_off_device());
     assert_eq!(CanvasEngine::AppleSpeech.as_token(), "apple_speech");
     assert_eq!(RefinerMode::CloudSession.as_token(), "cloud_session");
-}
-
-/// The canvas axis is read from the live router, and the router's selector has
-/// no say over the refiner axis.
-#[test]
-#[serial]
-fn active_canvas_is_read_from_the_router_and_leaves_the_refiner_alone() {
-    let _guard = EngineEnvGuard::set("candle");
-    let selection = LayerSelection::for_active_canvas(RefinerMode::CloudSession);
-    assert_eq!(selection.canvas(), CanvasEngine::LocalWhisper);
-    assert_eq!(selection.refiner(), RefinerMode::CloudSession);
-
-    unsafe { std::env::set_var(ENV_STT_ENGINE, "apple") };
-    let selection = LayerSelection::for_active_canvas(RefinerMode::CloudSession);
-    assert_eq!(selection.canvas(), CanvasEngine::AppleSpeech);
-    assert_eq!(
-        selection.refiner(),
-        RefinerMode::CloudSession,
-        "the canvas selector must not reach the refiner axis"
-    );
-
-    // And the refiner axis cannot reach back: every mode reports the same
-    // canvas under the same router state.
-    for refiner in [
-        RefinerMode::Off,
-        RefinerMode::CloudSession,
-        RefinerMode::LocalHelper,
-    ] {
-        assert_eq!(
-            LayerSelection::for_active_canvas(refiner).canvas(),
-            CanvasEngine::AppleSpeech
-        );
-    }
 }
 
 // ═══════════════════════════════════════════════════════════

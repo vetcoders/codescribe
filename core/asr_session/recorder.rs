@@ -725,7 +725,6 @@ mod tests {
         assert_eq!(lane.state(), Layer1LaneState::Stopped);
         assert!(outcome.finals().is_empty());
         assert!(outcome.degrade_reason().is_none());
-        assert!(outcome.refined_transcript().is_none());
     }
 
     /// A provider whose open fails is dropped and the recording proceeds
@@ -977,8 +976,12 @@ mod tests {
         assert_eq!(lane.state(), Layer1LaneState::Stopped);
         assert_eq!(outcome.finals().len(), 2);
         assert_eq!(
-            outcome.refined_transcript().as_deref(),
-            Some("pacjent ma goraczke podano plyny")
+            outcome
+                .finals()
+                .iter()
+                .map(|event| event.text.as_str())
+                .collect::<Vec<_>>(),
+            vec!["pacjent ma goraczke", "podano plyny"]
         );
         assert!(
             outcome.degrade_reason().is_none(),
@@ -1010,44 +1013,6 @@ mod tests {
             outcome.degrade_reason(),
             Some(Layer1DegradeReason::Disconnect(AsrErrorKind::Transport))
         );
-    }
-
-    /// The outcome routes through the T0 truth seam: the committed live floor
-    /// is immutable and Layer 1 text only fills the tail/gaps.
-    #[test]
-    fn outcome_adjudication_preserves_the_live_floor() {
-        let mut lane = RecorderLayer1Lane::open(
-            armed(vec![final_event(
-                1,
-                1,
-                "pacjent ma goraczke i wymioty od wczoraj",
-            )]),
-            &input(),
-        );
-        let outcome = lane.stop();
-
-        let live_floor = "pacjent ma goraczke";
-        let merged = outcome.adjudicate_against_live_floor(live_floor);
-        assert_eq!(merged.mode, Layer1MergeMode::LiveFloorGapFill);
-        assert!(
-            merged.text.starts_with(live_floor),
-            "committed live text must survive adjudication verbatim"
-        );
-        assert!(
-            merged.text.contains("wymioty"),
-            "the provider tail may extend the floor"
-        );
-    }
-
-    /// With no finals the outcome refuses to fabricate a candidate, and the
-    /// seam reports the live floor untouched.
-    #[test]
-    fn empty_outcome_leaves_the_live_floor_alone() {
-        let mut lane = RecorderLayer1Lane::open(Layer1Decision::Disarmed, &input());
-        let outcome = lane.stop();
-        let merged = outcome.adjudicate_against_live_floor("pacjent ma goraczke");
-        assert_eq!(merged.mode, Layer1MergeMode::LiveOnly);
-        assert_eq!(merged.text, "pacjent ma goraczke");
     }
 
     /// Stopping a degraded or unarmed lane is a quiet no-op path — the stop

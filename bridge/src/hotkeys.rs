@@ -2111,6 +2111,8 @@ mod preparing_compensation_tests {
     }
 
     impl CsTranscriptionListener for RecordingLifecycleListener {
+        /// No-op: transcript projections are not under test in this suite.
+        fn on_transcript_projection(&self, _event: CsTranscriptProjectionEvent) {}
         /// Count preparing overlay shows for compensation assertions.
         fn on_recording_preparing(&self) {
             self.preparing.fetch_add(1, Ordering::SeqCst);

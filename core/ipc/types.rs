@@ -305,6 +305,7 @@ mod tests {
     use crate::pipeline::contracts::{
         NonSpeechEvidence, SidebandEvidenceKind, SidebandProvenance,
     };
+    use crate::stt::tail_provider::TailSampleRange;
     use serde_json::Value;
 
     /// Test helper: force a JSON value into an object map or panic with context.
@@ -314,7 +315,7 @@ mod tests {
 
     /// Pins that unfiltered `raw_text` never serializes on the IPC utterance_final wire.
     #[test]
-    fn utterance_final_wire_omits_raw_text() {
+    fn utterance_final_wire_omits_private_raw_and_unowned_acoustic_identity() {
         let event = EngineEvent::UtteranceFinal {
             utterance_id: 42,
             text: "hello world".to_string(),
@@ -347,13 +348,9 @@ mod tests {
         );
         assert_eq!(obj.get("text").and_then(Value::as_str), Some("hello world"));
         assert!(obj.get("segments").is_some(), "segments must be present");
-        assert_eq!(
-            obj.get("acoustic")
-                .and_then(|value| value.get("range"))
-                .and_then(|value| value.get("capture_epoch"))
-                .and_then(Value::as_u64),
-            Some(8),
-            "PCM identity must survive IPC while raw text stays private"
+        assert!(
+            obj.get("acoustic").is_none(),
+            "UtteranceFinal IPC cannot project identity owned by the acoustic ledger"
         );
         assert_eq!(
             obj.get("vad_speech_pct")

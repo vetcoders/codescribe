@@ -2350,7 +2350,7 @@ mod tests {
             .await;
         let provider = title_provider(
             WireFamily::AnthropicMessages,
-            server.url(),
+            format!("{}/v1/messages", server.url()),
             "claude-sonnet-4-6",
             Some("anthropic-title-key"),
         );
@@ -2615,7 +2615,7 @@ mod tests {
             "hello world",
             "format carefully",
             false,
-            &server.url(),
+            &format!("{}/v1/messages", server.url()),
             "claude-sonnet-4-6",
             "anthropic-test-key",
         )
@@ -2666,7 +2666,7 @@ mod tests {
             "hello world",
             "format carefully",
             false,
-            &server.url(),
+            &format!("{}/v1/messages", server.url()),
             "claude-opus-4-8",
             "anthropic-test-key",
         )
@@ -2709,7 +2709,7 @@ mod tests {
             "hello world",
             "format carefully",
             false,
-            &server.url(),
+            &format!("{}/v1/messages", server.url()),
             "claude-sonnet-4-6",
             "anthropic-test-key",
         )
@@ -2755,7 +2755,7 @@ mod tests {
             "hello world",
             "format carefully",
             false,
-            &server.url(),
+            &format!("{}/v1/messages", server.url()),
             "claude-sonnet-4-6",
             "anthropic-test-key",
         )

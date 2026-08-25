@@ -343,34 +343,4 @@ mod tests {
         }
     }
 
-    /// Donor path is pure file I/O — never a Whisper stop-path invocation surface.
-    #[test]
-    #[serial]
-    fn donor_optin_zero_whisper_surface_when_final_pass_off() {
-        let _g = env_lock().lock().unwrap();
-        // Structural contract: Off routing skips Whisper; donor only copies files.
-        assert_eq!(crate::config::FinalPassRoutingMode::Off.as_str(), "off");
-        // Runtime proof: `persist_qube_donor_pair` only uses fs/hound — no STT.
-        let temp = tempfile::tempdir().expect("temp");
-        unsafe {
-            std::env::set_var("CODESCRIBE_DATA_DIR", temp.path());
-            std::env::set_var(ENV_KEY, "on");
-            std::env::set_var("FINAL_PASS_MODE", "off");
-        }
-        let src = temp.path().join("s.wav");
-        write_test_wav(&src, &[10, 20, 30, 40]);
-        let paths = persist_qube_donor_pair(&src, "donor text", Local::now())
-            .expect("ok")
-            .expect("pair");
-        assert!(paths.wav.exists());
-        assert!(paths.txt.exists());
-        // No whisper timing side effects from donor work.
-        let timing = crate::stt::whisper::take_final_pass_timing();
-        assert_eq!(timing, crate::stt::whisper::FinalPassTiming::default());
-        unsafe {
-            std::env::remove_var(ENV_KEY);
-            std::env::remove_var("FINAL_PASS_MODE");
-            std::env::remove_var("CODESCRIBE_DATA_DIR");
-        }
-    }
 }

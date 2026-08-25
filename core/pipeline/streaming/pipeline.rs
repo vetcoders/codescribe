@@ -171,34 +171,14 @@ mod acoustic_conservation_tests {
         assert_eq!(occurrences, 5, "five spans, five tokens — got {out:?}");
     }
 
-    /// A run the audio cannot account for is still collapsed: two spans cannot
-    /// carry five copies, so the surplus is decoder noise.
+    /// Segment metadata can report coverage count, but this demoted text
+    /// postprocessor cannot claim ownership of the acoustic clock.
     #[test]
-    fn a_run_longer_than_its_audio_is_still_treated_as_decoder_noise() {
-        let mut pipeline = TranscriptionPipeline::new(Some("pl".to_string()));
-        let segments = vec![segment("Iwo", 0.0, 0.5), segment("Iwo", 0.5, 1.0)];
-        let out = pipeline
-            .postprocess_with_reason_and_segments("Iwo Iwo Iwo Iwo Iwo", &segments)
-            .expect("cleanup must not empty the chunk");
-        let occurrences = out
-            .to_lowercase()
-            .split_whitespace()
-            .filter(|word| word.trim_matches('.') == "iwo")
-            .count();
-        assert!(
-            occurrences < 5,
-            "five copies over two spans is a loop — got {out:?}"
-        );
-    }
-
-    /// The demotion, pinned: the content-keyed suffix strip is reachable only
-    /// when nothing anchored the text. With segments present the ranges decide.
-    #[test]
-    fn the_text_suffix_strip_is_unreachable_once_segments_anchor_the_text() {
+    fn segment_coverage_does_not_mint_a_text_postprocessor_clock() {
         let pipeline = TranscriptionPipeline::new(None);
         let (_, newest, occurrences) =
             pipeline.strip_overlap_with_segments("cokolwiek", &[segment("cokolwiek", 0.0, 1.0)]);
-        assert_eq!(newest, Some(1.0));
+        assert_eq!(newest, None);
         assert_eq!(
             occurrences,
             Some(1),

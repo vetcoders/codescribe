@@ -204,7 +204,7 @@ async fn e2e_sse_direct_stream_parsing() {
 
     let client = Client::new();
     let response = client
-        .post(&endpoint)
+        .post(endpoint)
         .header("Authorization", format!("Bearer {}", api_key))
         .header("Content-Type", "application/json")
         .header("Accept", "text/event-stream")

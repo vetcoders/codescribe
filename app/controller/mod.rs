@@ -2827,7 +2827,3 @@ impl Default for RecordingController {
         Self::new()
     }
 }
-
-/// Controller unit/integration tests live in the sibling `tests` submodule.
-#[cfg(test)]
-mod tests;

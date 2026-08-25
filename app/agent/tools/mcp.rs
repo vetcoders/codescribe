@@ -1226,12 +1226,10 @@ mod tests {
 
     use codescribe_core::agent::{ToolRegistry, ToolResultContent, ToolRisk};
     use serde_json::json;
-    use serial_test::serial;
-
     use super::{
         McpRowTone, desktop_commander_validator, execution_policy, prepare_upstream_input,
-        probe_agentic_readiness_at, probe_core_readiness_with_secret, probe_mcp_status_at,
-        public_tool_name, redact_command_for_approval, register_mcp_tools_from_config_path,
+        probe_agentic_readiness_at, probe_mcp_status_at, public_tool_name,
+        redact_command_for_approval, register_mcp_tools_from_config_path,
     };
 
     /// Pin the Desktop Commander 0.26 tool surface: 26 tools, 15 read-only, 10

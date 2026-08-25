@@ -605,157 +605,20 @@ fn expand_tilde(path: &str) -> PathBuf {
 mod tests {
     use super::*;
 
-    fn voiced_energy(_start: u64, _end: u64) -> Option<f32> {
-        Some(-24.0)
-    }
-
-    fn silence(_start: u64, _end: u64) -> Option<f32> {
-        None
-    }
-
-    /// Conservation at the delivery seam: one published span per drafted span,
-    /// in order, or none at all with a receipt naming why.
-    ///
-    /// Five acoustic occurrences of one name are byte-identical, so nothing
-    /// downstream of this point can tell them apart again. The bus is where the
-    /// count is still checkable, and it must not be the layer that loses one.
     #[test]
-    fn every_drafted_acoustic_span_is_published_exactly_once() {
-        let drafted: Vec<(&str, u64, u64, AcousticSpanGrain)> = (0..5)
-            .map(|i| {
-                (
-                    "Iwo",
-                    i * 16_000,
-                    i * 16_000 + 8_000,
-                    AcousticSpanGrain::Word,
-                )
-            })
-            .collect();
-        let draft = TranscriptDraft {
-            utterance_id: 1,
-            text: "Iwo Iwo Iwo Iwo Iwo".to_string(),
-            start_seconds: 0.0,
-            end_seconds: 5.0,
-            segments: Vec::new(),
-            acoustic: Some(acoustic("s", 1, 0, 80_000, drafted)),
-        };
-        let (spans, coverage) = word_spans_from_draft(&draft, voiced_energy);
-        assert!(coverage.passed, "coverage receipt: {coverage:?}");
-        assert_eq!(spans.len(), 5, "five drafted spans, five published");
-        let starts: Vec<u64> = spans.iter().map(|span| span.sample_start).collect();
-        assert_eq!(starts, vec![0, 16_000, 32_000, 48_000, 64_000]);
-        assert!(
-            spans.iter().all(|span| span.text == "Iwo"),
-            "identical text is not a reason to drop a span"
-        );
-    }
-
-    /// Missing voiced energy is missing evidence, not evidence of absence. The
-    /// anchors are withheld with a receipt; the text stays visible and no span
-    /// is silently published as though it had been verified.
-    #[test]
-    fn a_span_without_voiced_energy_is_withheld_whole_not_partially_published() {
-        let draft = TranscriptDraft {
-            utterance_id: 1,
-            text: "Iwo Iwo".to_string(),
-            start_seconds: 0.0,
-            end_seconds: 2.0,
-            segments: Vec::new(),
-            acoustic: Some(acoustic(
-                "s",
-                1,
-                0,
-                32_000,
-                vec![
-                    ("Iwo", 0, 8_000, AcousticSpanGrain::Word),
-                    ("Iwo", 16_000, 24_000, AcousticSpanGrain::Word),
-                ],
-            )),
-        };
-        let (spans, coverage) = word_spans_from_draft(&draft, silence);
-        assert!(!coverage.passed);
-        assert_eq!(coverage.code, "lexical_span_without_voiced_energy");
-        assert!(
-            spans.is_empty(),
-            "all or nothing: a half-verified anchor set is worse than none"
-        );
-    }
-
-    #[test]
-    fn one_failed_draft_clears_all_aggregate_word_spans() {
-        let covered = TranscriptDraft {
-            utterance_id: 1,
-            text: "pierwszy fragment".to_string(),
-            start_seconds: 0.0,
-            end_seconds: 1.0,
-            segments: Vec::new(),
-            acoustic: Some(acoustic(
-                "s",
-                1,
-                0,
-                16_000,
-                vec![("pierwszy fragment", 0, 16_000, AcousticSpanGrain::Phrase)],
-            )),
-        };
-        let uncovered = TranscriptDraft {
-            utterance_id: 2,
-            text: "drugi fragment".to_string(),
-            start_seconds: 1.0,
-            end_seconds: 2.0,
-            segments: Vec::new(),
-            acoustic: Some(acoustic("s", 1, 16_000, 32_000, Vec::new())),
-        };
-        let drafts = BTreeMap::from([(1, covered), (2, uncovered)]);
-
-        let seal = aggregate_seal_clock(&drafts, Some(16_000), voiced_energy);
-
-        assert!(!seal.coverage.passed);
-        assert_eq!(seal.coverage.code, "missing_lexical_coverage");
-        assert!(
-            seal.words.is_empty(),
-            "a failed aggregate receipt cannot leave earlier words publishable"
-        );
-    }
-
-    /// Utterance grain travels as utterance grain. Presenting one span for a
-    /// whole utterance as word grain would invent per-word PCM identities the
-    /// payload never carried.
-    #[test]
-    fn utterance_grain_is_not_republished_as_word_grain() {
-        let draft = TranscriptDraft {
-            utterance_id: 1,
-            text: "całe zdanie".to_string(),
-            start_seconds: 0.0,
-            end_seconds: 2.0,
-            segments: Vec::new(),
-            acoustic: Some(acoustic(
-                "s",
-                1,
-                0,
-                32_000,
-                vec![("całe zdanie", 0, 32_000, AcousticSpanGrain::Utterance)],
-            )),
-        };
-        let (spans, coverage) = word_spans_from_draft(&draft, voiced_energy);
-        assert!(coverage.passed);
-        assert_eq!(spans.len(), 1);
-        assert_eq!(spans[0].grain, TranscriptWordGrain::Utterance);
-    }
-
-    #[test]
-    fn bus_flushes_start_draft_and_seal_as_private_ndjson() {
+    fn bus_flushes_clean_events_privately_and_seals_once() {
         let temp = tempfile::tempdir().unwrap();
         let path = temp.path().join("events.jsonl");
-        let bus = TranscriptBus::open_at_with_energy(
+        let bus = TranscriptBus::open_at(
             TranscriptSession {
                 session_id: "session-agent".to_string(),
                 mode: TranscriptMode::Agent,
             },
             path.clone(),
             Some(48_000),
-            voiced_energy,
         )
         .unwrap();
+
         bus.publish_draft(
             TranscriptDraftStatus::Created,
             TranscriptDraft {
@@ -764,13 +627,6 @@ mod tests {
                 start_seconds: 0.25,
                 end_seconds: 1.5,
                 segments: Vec::new(),
-                acoustic: Some(acoustic(
-                    "pipeline-session",
-                    4,
-                    12_000,
-                    72_000,
-                    vec![("clean final", 12_000, 72_000, AcousticSpanGrain::Utterance)],
-                )),
             },
         );
         bus.publish_sealed(
@@ -785,7 +641,6 @@ mod tests {
                 start_seconds: 0.25,
                 end_seconds: 1.5,
                 segments: Vec::new(),
-                acoustic: None,
             },
         );
         bus.publish_sealed("duplicate final".to_string(), None);
@@ -798,20 +653,15 @@ mod tests {
         assert_eq!(lines.len(), 3);
         assert_eq!(lines[0].status, "session_started");
         assert_eq!(lines[1].status, "utterance_draft");
-        assert_eq!(lines[1].sample_start, Some(12_000));
-        assert_eq!(lines[1].sample_end, Some(72_000));
         assert_eq!(lines[2].status, "transcript_sealed");
         assert_eq!(lines[2].text, "clean final");
-        assert_eq!(lines[2].sample_start, Some(12_000));
-        assert_eq!(lines[2].sample_end, Some(72_000));
-        assert_eq!(lines[2].audio_start_seconds, Some(0.25));
-        assert_eq!(lines[2].audio_end_seconds, Some(1.5));
-        assert_eq!(lines[2].words.len(), 1);
-        assert_eq!(lines[2].words[0].sample_start, 12_000);
-        assert_eq!(lines[2].words[0].sample_end, 72_000);
-        assert_eq!(lines[2].words[0].grain, TranscriptWordGrain::Utterance);
-        assert_eq!(lines[2].words[0].capture_epoch, 4);
-        assert_eq!(lines[2].words[0].session_id, "pipeline-session");
+        assert_eq!(lines[2].pipeline_session_id.as_deref(), Some("engine-session"));
+        assert!(lines[1].words.is_empty());
+        assert!(lines[2].words.is_empty());
+        assert_eq!(
+            lines[1].coverage.as_ref().map(|receipt| receipt.code.as_str()),
+            Some("missing_ledger_identity")
+        );
         assert_eq!(
             lines.iter().map(|event| event.sequence).collect::<Vec<_>>(),
             vec![1, 2, 3]
@@ -825,182 +675,5 @@ mod tests {
                 0o600
             );
         }
-    }
-
-    #[test]
-    fn seal_publishes_word_spans_on_the_pcm_clock() {
-        let temp = tempfile::tempdir().unwrap();
-        let path = temp.path().join("words.jsonl");
-        let bus = TranscriptBus::open_at_with_energy(
-            TranscriptSession {
-                session_id: "session-words".to_string(),
-                mode: TranscriptMode::Dictation,
-            },
-            path.clone(),
-            Some(16_000),
-            voiced_energy,
-        )
-        .unwrap();
-        bus.publish_draft(
-            TranscriptDraftStatus::Created,
-            TranscriptDraft {
-                utterance_id: 3,
-                text: "dwa slowa".to_string(),
-                start_seconds: 1.0,
-                end_seconds: 2.0,
-                segments: vec![
-                    TranscriptSegment {
-                        text: "dwa".to_string(),
-                        start_ts: 1.0,
-                        end_ts: 1.4,
-                    },
-                    TranscriptSegment {
-                        text: "slowa".to_string(),
-                        start_ts: 1.4,
-                        end_ts: 2.0,
-                    },
-                ],
-                acoustic: Some(acoustic(
-                    "pipeline-words",
-                    9,
-                    16_000,
-                    32_000,
-                    vec![
-                        ("dwa", 16_000, 22_400, AcousticSpanGrain::Word),
-                        ("slowa", 22_400, 32_000, AcousticSpanGrain::Word),
-                    ],
-                )),
-            },
-        );
-        bus.publish_sealed("dwa slowa".to_string(), None);
-
-        let lines: Vec<CleanTranscriptEvent> = std::fs::read_to_string(&path)
-            .unwrap()
-            .lines()
-            .map(|line| serde_json::from_str(line).unwrap())
-            .collect();
-        let seal = lines
-            .iter()
-            .find(|event| event.status == "transcript_sealed")
-            .expect("seal");
-        assert_eq!(seal.sample_start, Some(16_000));
-        assert_eq!(seal.sample_end, Some(32_000));
-        assert_eq!(seal.segments.len(), 2);
-        assert_eq!(seal.words.len(), 2);
-        assert_eq!(seal.words[0].text, "dwa");
-        assert_eq!(seal.words[0].sample_start, 16_000);
-        assert_eq!(seal.words[0].sample_end, 22_400);
-        assert_eq!(seal.words[0].grain, TranscriptWordGrain::Word);
-        assert_eq!(seal.words[1].text, "slowa");
-        assert_eq!(seal.words[1].sample_start, 22_400);
-        assert_eq!(seal.words[1].sample_end, 32_000);
-        assert_eq!(seal.coverage.as_ref().map(|value| value.passed), Some(true));
-    }
-
-    #[test]
-    fn silence_and_missing_identity_cannot_gain_published_lexical_spans() {
-        let draft = TranscriptDraft {
-            utterance_id: 1,
-            text: "modelki trzy".to_string(),
-            start_seconds: 0.0,
-            end_seconds: 1.0,
-            segments: Vec::new(),
-            acoustic: Some(acoustic(
-                "silence",
-                1,
-                0,
-                16_000,
-                vec![("modelki trzy", 0, 16_000, AcousticSpanGrain::Phrase)],
-            )),
-        };
-        let (words, receipt) = word_spans_from_draft(&draft, silence);
-        assert!(words.is_empty(), "energy absence cannot mint lexical spans");
-        assert!(!receipt.passed);
-        assert_eq!(receipt.code, "lexical_span_without_voiced_energy");
-
-        let mut missing = draft;
-        missing.acoustic = None;
-        let (words, receipt) = word_spans_from_draft(&missing, voiced_energy);
-        assert!(words.is_empty());
-        assert_eq!(receipt.code, "missing_pcm_identity");
-    }
-
-    #[test]
-    #[test]
-    fn five_acoustic_iwo_survive_reducer_and_transcript_bus() {
-        use super::super::emitter::reduce_transcript_events;
-        use codescribe_core::pipeline::contracts::EngineEvent;
-
-        let spans = (0..5u64)
-            .map(|i| ("Iwo", i * 1_600, i * 1_600 + 1_600, AcousticSpanGrain::Word))
-            .collect();
-        let identity = acoustic("take", 1, 0, 8_000, spans);
-        let event = EngineEvent::UtteranceFinal {
-            utterance_id: 1,
-            text: "Iwo Iwo Iwo Iwo Iwo".into(),
-            raw_text: "Iwo Iwo Iwo Iwo Iwo".into(),
-            start_ts: 0.0,
-            end_ts: 0.5,
-            segments: Vec::new(),
-            vad_speech_pct: None,
-            avg_logprob: None,
-            compression_ratio: None,
-            quality_gate_dropped: false,
-            confidence_flags: Vec::new(),
-            acoustic: Some(identity.clone()),
-        };
-        let reducer = reduce_transcript_events(&[event]);
-        let delivered = reducer
-            .rendered_text()
-            .split_whitespace()
-            .filter(|word| word.eq_ignore_ascii_case("iwo"))
-            .count();
-        assert_eq!(
-            delivered,
-            5,
-            "reducer delivery: {}",
-            reducer.rendered_text()
-        );
-
-        let temp = tempfile::tempdir().unwrap();
-        let path = temp.path().join("events.jsonl");
-        let bus = TranscriptBus::open_at_with_energy(
-            TranscriptSession {
-                session_id: "iwo-five".to_string(),
-                mode: TranscriptMode::Dictation,
-            },
-            path.clone(),
-            Some(16_000),
-            voiced_energy,
-        )
-        .unwrap();
-        bus.publish_started();
-        bus.publish_draft(
-            TranscriptDraftStatus::Created,
-            TranscriptDraft {
-                utterance_id: 1,
-                text: reducer.rendered_text(),
-                start_seconds: 0.0,
-                end_seconds: 0.5,
-                segments: Vec::new(),
-                acoustic: Some(identity),
-            },
-        );
-        bus.publish_sealed(reducer.rendered_text(), None);
-        let raw = std::fs::read_to_string(&path).unwrap();
-        let seal: CleanTranscriptEvent = raw
-            .lines()
-            .map(|line| serde_json::from_str::<CleanTranscriptEvent>(line).unwrap())
-            .find(|event| event.status == "transcript_sealed")
-            .expect("seal");
-        assert_eq!(seal.words.len(), 5);
-        assert!(seal.words.iter().all(|word| word.text == "Iwo"));
-        assert_eq!(
-            seal.text
-                .split_whitespace()
-                .filter(|word| word.eq_ignore_ascii_case("iwo"))
-                .count(),
-            5
-        );
     }
 }

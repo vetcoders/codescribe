@@ -1101,6 +1101,7 @@ mod tests {
         AnnotationKind, EngineEvent, EventSink, LayerSource, LayerSummary, NonSpeechEvidence,
         SidebandEvidence, SidebandEvidenceKind, SidebandProvenance, TranscriptSegment,
     };
+    use codescribe_core::stt::tail_provider::TailSampleRange;
     use std::sync::{Arc, Mutex as StdMutex};
     use tokio::sync::Mutex;
 
@@ -1129,7 +1130,6 @@ mod tests {
             compression_ratio: None,
             quality_gate_dropped: false,
             confidence_flags: Vec::new(),
-            acoustic: None,
         });
         let before = reducer.rendered_text();
 
@@ -1177,7 +1177,6 @@ mod tests {
             compression_ratio: None,
             quality_gate_dropped: false,
             confidence_flags: Vec::new(),
-            acoustic: None,
         });
         let before = reducer.rendered_text();
 
@@ -1230,7 +1229,6 @@ mod tests {
             compression_ratio: None,
             quality_gate_dropped: false,
             confidence_flags: Vec::new(),
-            acoustic: None,
         };
 
         // The Apple-lane shape from the incident log: per-utterance previews
@@ -1292,7 +1290,6 @@ mod tests {
             "Pierwszy fragment",
             (0.0, 1.0),
             Vec::new(),
-            None,
         );
         assert_eq!(committed.as_deref(), Some("Pierwszy fragment"));
 
@@ -1313,7 +1310,6 @@ mod tests {
             "hello wrold",
             (0.0, 1.0),
             Vec::new(),
-            None,
         );
         let event = EngineEvent::ReplaceRange {
             utterance_id: 1,
@@ -1330,7 +1326,7 @@ mod tests {
     #[test]
     fn insert_annotation_lands_in_committed_utterance() {
         let mut state = SessionTranscriptState::default();
-        state.finalize(2, "yes", "yes", (0.0, 1.0), Vec::new(), None);
+        state.finalize(2, "yes", "yes", (0.0, 1.0), Vec::new());
         let event = EngineEvent::InsertAnnotation {
             utterance_id: 2,
             position: 3,
@@ -1347,7 +1343,7 @@ mod tests {
         // Offsets reference an utterance the authoritative buffer has not
         // committed yet — drop the patch instead of corrupting another one.
         let mut state = SessionTranscriptState::default();
-        state.finalize(1, "hello", "hello", (0.0, 1.0), Vec::new(), None);
+        state.finalize(1, "hello", "hello", (0.0, 1.0), Vec::new());
         let event = EngineEvent::ReplaceRange {
             utterance_id: 99,
             start: 0,
@@ -1369,7 +1365,6 @@ mod tests {
             "Pierwszy fragment",
             (0.0, 1.0),
             Vec::new(),
-            None,
         );
         state.apply_preview("drugi parcjal");
         state.apply_correction("drugi parcjal", "drugi partial");
@@ -1387,7 +1382,6 @@ mod tests {
             "Pierwszy fragment",
             (0.0, 1.0),
             Vec::new(),
-            None,
         );
         state.apply_preview("drugi partial");
         state.backspace_active_preview(3);
@@ -1418,7 +1412,6 @@ mod tests {
             "Pierwszy fragment",
             (12.0, 13.0),
             segments.clone(),
-            None,
         );
 
         assert_eq!(payload.as_deref(), Some("Pierwszy fragment"));
@@ -1444,7 +1437,7 @@ mod tests {
         let mut state = SessionTranscriptState::default();
         state.apply_preview("raw words");
         assert_eq!(
-            state.finalize(1, "raw words", "raw words", (0.0, 1.0), Vec::new(), None,),
+            state.finalize(1, "raw words", "raw words", (0.0, 1.0), Vec::new()),
             Some("raw words".to_string())
         );
 
@@ -1478,7 +1471,6 @@ mod tests {
             compression_ratio: None,
             quality_gate_dropped: false,
             confidence_flags: Vec::new(),
-            acoustic: None,
         });
         emitter.on_event(&EngineEvent::Correction {
             rev: 2,
@@ -1514,7 +1506,6 @@ mod tests {
             compression_ratio: None,
             quality_gate_dropped: false,
             confidence_flags: Vec::new(),
-            acoustic: None,
         });
         emitter.on_event(&EngineEvent::Preview {
             rev: 2,
@@ -1562,7 +1553,6 @@ mod tests {
             compression_ratio: None,
             quality_gate_dropped: false,
             confidence_flags: Vec::new(),
-            acoustic: None,
         };
 
         emitter.on_event(&EngineEvent::Preview {
@@ -1620,7 +1610,6 @@ mod tests {
             compression_ratio: None,
             quality_gate_dropped: false,
             confidence_flags: Vec::new(),
-            acoustic: None,
         });
         emitter.on_event(&EngineEvent::UtteranceFinal {
             utterance_id: 7,
@@ -1634,7 +1623,6 @@ mod tests {
             compression_ratio: None,
             quality_gate_dropped: false,
             confidence_flags: Vec::new(),
-            acoustic: None,
         });
 
         let delivered = delivered.lock().unwrap_or_else(|e| e.into_inner()).clone();
@@ -1670,7 +1658,6 @@ mod tests {
             compression_ratio: None,
             quality_gate_dropped: false,
             confidence_flags: Vec::new(),
-            acoustic: None,
         });
         emitter.on_event(&EngineEvent::Preview {
             rev: 2,
@@ -1703,7 +1690,6 @@ mod tests {
             compression_ratio: None,
             quality_gate_dropped: false,
             confidence_flags: Vec::new(),
-            acoustic: None,
         });
         emitter.on_event(&EngineEvent::Preview {
             rev: 2,
@@ -1750,7 +1736,6 @@ mod tests {
             compression_ratio: None,
             quality_gate_dropped: false,
             confidence_flags: Vec::new(),
-            acoustic: None,
         });
         emitter.on_event(&EngineEvent::Preview {
             rev: 2,
@@ -1792,7 +1777,6 @@ mod tests {
             compression_ratio: None,
             quality_gate_dropped: false,
             confidence_flags: Vec::new(),
-            acoustic: None,
         });
         emitter.on_event(&EngineEvent::UtteranceFinal {
             utterance_id: 2,
@@ -1806,7 +1790,6 @@ mod tests {
             compression_ratio: None,
             quality_gate_dropped: false,
             confidence_flags: Vec::new(),
-            acoustic: None,
         });
 
         // Late correction targets the *first* (penultimate at arrival) utterance.
@@ -1883,7 +1866,6 @@ mod tests {
                 compression_ratio: None,
                 quality_gate_dropped: false,
                 confidence_flags: Vec::new(),
-                acoustic: None,
             });
             emitter.on_event(&EngineEvent::SessionFinalised {
                 session_id: format!("pipeline-{session_id}"),

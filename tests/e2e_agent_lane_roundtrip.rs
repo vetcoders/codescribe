@@ -14,6 +14,7 @@
 
 use codescribe::agent::create_default_provider;
 use codescribe_core::agent::{AgentEvent, ContentBlock, Message, Role, StreamOptions};
+use codescribe_core::config::Config;
 use mockito::Matcher;
 use serial_test::serial;
 use tempfile::TempDir;
@@ -64,7 +65,8 @@ async fn assistive_lane_answers_one_single_shot_turn() {
     let _attempt_timeout = EnvGuard::set("CODESCRIBE_AI_ATTEMPT_TIMEOUT_MS", "2000");
     let _chunk_timeout = EnvGuard::set("CODESCRIBE_AI_INTER_CHUNK_TIMEOUT_MS", "2000");
 
-    let provider = create_default_provider()
+    let runtime_settings = Config::load_runtime_snapshot().expect("seal runtime settings");
+    let provider = create_default_provider(runtime_settings.llm_lanes().assistive())
         .expect("assistive lane must be available (see the reported reason)");
 
     let messages = vec![Message::new(

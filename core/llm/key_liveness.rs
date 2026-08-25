@@ -456,10 +456,10 @@ mod tests {
             .connect_timeout(PROBE_TIMEOUT)
             .build()
             .expect("build probe client");
+        let runtime_settings = Config::load_runtime_snapshot().expect("seal assistive lane");
         let result = probe_responses_key(
             &client,
-            &Config::default(),
-            ProviderKind::OpenAiResponses,
+            runtime_settings.llm_lanes().assistive(),
             "LLM_ASSISTIVE_API_KEY",
             "test-key",
         );

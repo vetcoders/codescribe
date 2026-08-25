@@ -1011,15 +1011,27 @@ mod tests {
     #[test]
     fn openai_endpoint_normalizes_common_api_paths() {
         assert_eq!(
-            openai_models_endpoint("https://api.openai.com/v1/responses").unwrap(),
+            provider_models_endpoint(
+                "https://api.openai.com/v1/responses",
+                ProviderKind::OpenAiResponses,
+            )
+            .unwrap(),
             "https://api.openai.com/v1/models"
         );
         assert_eq!(
-            openai_models_endpoint("https://api.openai.com/v1/chat/completions").unwrap(),
+            provider_models_endpoint(
+                "https://api.openai.com/v1/chat/completions",
+                ProviderKind::OpenAiResponses,
+            )
+            .unwrap(),
             "https://api.openai.com/v1/models"
         );
         assert_eq!(
-            openai_models_endpoint("https://proxy.example/openai").unwrap(),
+            provider_models_endpoint(
+                "https://proxy.example/openai",
+                ProviderKind::OpenAiResponses,
+            )
+            .unwrap(),
             "https://proxy.example/openai/models"
         );
     }

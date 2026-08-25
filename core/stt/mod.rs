@@ -137,15 +137,6 @@ fn run_apple_live_only<T>(
     })
 }
 
-/// Preferential engine label for UI honesty (`local_apple` / `local_whisper` / …).
-pub fn preferred_engine_label() -> &'static str {
-    match default_engine() {
-        SttEngine::Apple => "local_apple",
-        SttEngine::Onnx => "local_whisper",
-        SttEngine::Candle => "local_whisper",
-    }
-}
-
 /// Preflight before starting a recording when live engine is Apple.
 ///
 /// Fails **before** REC so we never open an empty overlay that dies mid-take.
@@ -453,13 +444,6 @@ pub fn transcribe_file_verdict(
     }
 }
 
-/// Whether the **live** router is on the Apple lane (buffer / progressive).
-///
-/// Not a signal to run Apple on file final-pass — see [`transcribe_file_verdict`].
-pub fn active_engine_is_apple() -> bool {
-    matches!(default_engine(), SttEngine::Apple)
-}
-
 /// Sample rate of the synthetic warmup buffer.
 const WARMUP_SAMPLE_RATE: u32 = 16_000;
 
@@ -623,109 +607,10 @@ pub(crate) fn try_transcribe_long_with_segments(
     }
 }
 
-/// Engine-selection, live-only, and Smart-mode tail-gap doctrine unit tests.
-#[cfg(any())]
+/// Live-only and Smart-mode tail-gap doctrine unit tests.
+#[cfg(test)]
 mod tests {
     use super::*;
-    use serial_test::serial;
-
-    /// Restores `CODESCRIBE_STT_ENGINE` after each serial engine-selection test.
-    struct EnvGuard {
-        previous: Option<String>,
-    }
-
-    impl EnvGuard {
-        /// Clear the STT engine env var for the duration of the test, then restore.
-        fn unset() -> Self {
-            let previous = std::env::var(ENV_STT_ENGINE).ok();
-            unsafe { std::env::remove_var(ENV_STT_ENGINE) };
-            Self { previous }
-        }
-
-        /// Pin `CODESCRIBE_STT_ENGINE` to `value` for this test scope, then restore.
-        fn set(value: &str) -> Self {
-            let previous = std::env::var(ENV_STT_ENGINE).ok();
-            unsafe { std::env::set_var(ENV_STT_ENGINE, value) };
-            Self { previous }
-        }
-    }
-
-    impl Drop for EnvGuard {
-        /// Restore the prior env value (or remove the key) when the guard leaves scope.
-        fn drop(&mut self) {
-            match self.previous.as_deref() {
-                Some(value) => unsafe { std::env::set_var(ENV_STT_ENGINE, value) },
-                None => unsafe { std::env::remove_var(ENV_STT_ENGINE) },
-            }
-        }
-    }
-
-    /// Unset engine env must resolve through the platform Apple-or-Candle auto policy.
-    #[test]
-    #[serial]
-    fn selected_engine_defaults_to_platform_auto_policy() {
-        let _guard = EnvGuard::unset();
-        let expected = if apple_stt::is_runtime_available() && apple_stt::is_bridge_resolvable() {
-            SttEngine::Apple
-        } else {
-            SttEngine::Candle
-        };
-        assert_eq!(selected_engine(), expected);
-    }
-
-    /// Explicit candle/onnx/apple env values must pin the selected engine.
-    #[test]
-    #[serial]
-    fn selected_engine_respects_explicit_overrides() {
-        let _guard = EnvGuard::set("candle");
-        assert_eq!(selected_engine(), SttEngine::Candle);
-
-        unsafe { std::env::set_var(ENV_STT_ENGINE, "onnx") };
-        assert_eq!(selected_engine(), SttEngine::Onnx);
-
-        unsafe { std::env::set_var(ENV_STT_ENGINE, "apple") };
-        assert_eq!(selected_engine(), SttEngine::Apple);
-    }
-
-    /// `auto` alias defers to the same platform default as an unset env.
-    #[test]
-    #[serial]
-    fn selected_engine_auto_alias_uses_platform_default() {
-        let _guard = EnvGuard::set("auto");
-        assert_eq!(selected_engine(), default_engine());
-    }
-
-    /// Non-Apple preference must not require Apple bridge/TCC preflight.
-    #[test]
-    #[serial]
-    fn preflight_apple_live_ready_is_noop_when_engine_is_not_apple() {
-        let _guard = EnvGuard::set("whisper");
-        preflight_apple_live_ready().expect("Whisper preference must not require Apple preflight");
-        assert_eq!(preferred_engine_label(), "local_whisper");
-    }
-
-    /// Baseline guard: Apple is already the selected prewarm lane and the real
-    /// prewarm entrypoint must not cross the heavyweight Whisper initializer.
-    /// The initializer counter is compiled only for tests; no model is loaded.
-    #[test]
-    #[serial]
-    fn fleet_red_apple_prewarm_never_loads_whisper() {
-        let _guard = EnvGuard::set("apple");
-        assert_eq!(selected_engine(), SttEngine::Apple);
-
-        whisper::singleton::reset_test_init_calls();
-        let _apple_probe = prewarm_active_engine();
-        assert_eq!(
-            whisper::singleton::test_init_calls(),
-            0,
-            "Apple prewarm must never initialize Whisper"
-        );
-        assert_eq!(
-            whisper::singleton::test_load_calls(),
-            0,
-            "Apple prewarm must never attempt to load Whisper weights"
-        );
-    }
 
     /// Live-only helper surfaces Apple bridge failures instead of silent swap.
     #[test]
@@ -758,7 +643,7 @@ mod tests {
         let fn_body = src
             .split("pub fn transcribe_file_verdict")
             .nth(1)
-            .and_then(|s| s.split("pub fn active_engine_is_apple").next())
+            .and_then(|s| s.split("const WARMUP_SAMPLE_RATE").next())
             .unwrap_or("");
         assert!(
             fn_body.contains("forced to Whisper") || fn_body.contains("file final-pass forced"),

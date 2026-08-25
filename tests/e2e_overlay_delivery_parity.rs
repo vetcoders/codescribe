@@ -29,13 +29,14 @@
 use std::path::{Path, PathBuf};
 
 use codescribe::audio;
+use codescribe::presentation::emitter::reduce_transcript_events;
 use codescribe_core::pipeline::contracts::{
     EngineEvent, FINAL_PASS_REGRESSION_MIN_STREAM_CHARS, LayerSource,
     final_pass_is_length_regression,
 };
 use codescribe_core::pipeline::streaming::{
     TAIL_PATCH_SESSION_RECEIPT_WARNING_CODE, TailPatchDrainDisposition, TailPatchSessionReceipt,
-    assemble_live_from_events, collect_buffered_engine_events,
+    collect_buffered_engine_events,
 };
 use codescribe_core::quality::{MergeMode, merge_live_whisper};
 use codescribe_core::stt;
@@ -46,14 +47,14 @@ mod e2e_stt_matrix;
 
 use e2e_stt_matrix::{STT_OPT_IN_ENV, skip_unless_opt_in};
 
-// ── Product live assembly (shipped `assemble_live_from_events`) ───────────────
+// ── Product transcript reducer (shipped `PresentationEmitter`) ───────────────
 
 fn overlay_assembly_from_events(events: &[EngineEvent]) -> String {
-    assemble_live_from_events(events).full_text()
+    reduce_transcript_events(events).rendered_text()
 }
 
 fn streaming_floor_from_events(events: &[EngineEvent]) -> String {
-    assemble_live_from_events(events).streaming_floor()
+    reduce_transcript_events(events).streaming_floor()
 }
 
 // ── Lane guard: the parity bar must measure the lane it was told to measure ───
@@ -162,7 +163,6 @@ fn sealed_final(utterance_id: u64, text: &str) -> EngineEvent {
         compression_ratio: None,
         quality_gate_dropped: false,
         confidence_flags: vec![],
-        acoustic: None,
     }
 }
 
@@ -290,18 +290,13 @@ fn assert_engine_multi_utterance_assembly(
     human: Option<&str>,
     clip_label: &str,
 ) {
-    let assembly = assemble_live_from_events(events);
-    let sealed = assembly.sealed_count();
-    let full = assembly.full_text();
+    let reducer = reduce_transcript_events(events);
+    let sealed = reducer.committed_count();
+    let full = reducer.rendered_text();
     let chars = full.chars().count();
 
     eprintln!(
-        "  engine bar: sealed_finals={sealed} freezed={:?} full_chars={chars}",
-        assembly
-            .freezed
-            .iter()
-            .map(|s| s.chars().count())
-            .collect::<Vec<_>>()
+        "  engine bar: sealed_finals={sealed} full_chars={chars}"
     );
     eprintln!("  ── live assembly (full) ──\n{full}\n  ── end live assembly ──");
 
@@ -348,14 +343,13 @@ fn single_final_short_tail_fails_engine_bar() {
         compression_ratio: None,
         quality_gate_dropped: false,
         confidence_flags: vec![],
-        acoustic: None,
     }];
-    let assembly = assemble_live_from_events(&events);
-    assert_eq!(assembly.sealed_count(), 1);
-    assert!(assembly.full_text().chars().count() < 40);
+    let reducer = reduce_transcript_events(&events);
+    assert_eq!(reducer.committed_count(), 1);
+    assert!(reducer.rendered_text().chars().count() < 40);
     // Engine bar would fail: sealed < 2 and chars < 120.
     assert!(
-        assembly.sealed_count() < 2 || assembly.full_text().chars().count() < 120,
+        reducer.committed_count() < 2 || reducer.rendered_text().chars().count() < 120,
         "broken shape must fail engine bar predicates"
     );
 }
@@ -657,7 +651,6 @@ fn overlay_assembly_freezes_finals_and_appends_preview_tail() {
             compression_ratio: None,
             quality_gate_dropped: false,
             confidence_flags: vec![],
-            acoustic: None,
         },
         EngineEvent::Preview {
             rev: 2,
@@ -675,10 +668,10 @@ fn overlay_assembly_freezes_finals_and_appends_preview_tail() {
     let floor = streaming_floor_from_events(&events);
     assert_eq!(floor, "pierwsze zdanie");
 
-    let assembly = assemble_live_from_events(&events);
-    assert_eq!(assembly.sealed_count(), 1);
-    assert_eq!(assembly.freezed, vec!["pierwsze zdanie".to_string()]);
-    assert_eq!(assembly.preview, "drugie zdanie live");
+    let reducer = reduce_transcript_events(&events);
+    assert_eq!(reducer.committed_count(), 1);
+    assert_eq!(reducer.streaming_floor(), "pierwsze zdanie");
+    assert_eq!(reducer.rendered_text(), "pierwsze zdanie drugie zdanie live");
 }
 
 /// The parity bar measures `overlay_assembly_from_events` / the streaming
@@ -705,7 +698,6 @@ fn parity_assembly_reads_layer1_tail_patches() {
         compression_ratio: None,
         quality_gate_dropped: false,
         confidence_flags: vec![],
-        acoustic: None,
     };
 
     // Layer 0 under-generated "Toolchain" as "Tulczajn"; Layer 1 re-transcribed
@@ -834,10 +826,10 @@ fn same_span_replay_is_idempotent_while_five_distinct_repetitions_survive() {
     // Provider/session replay of span 3: same identity, therefore one slot.
     events.push(sealed_final(replayed_id, phrase));
 
-    let assembly = assemble_live_from_events(&events);
-    assert_eq!(assembly.sealed_count(), expected);
+    let reducer = reduce_transcript_events(&events);
+    assert_eq!(reducer.committed_count(), expected);
     assert_eq!(
-        assembly
+        reducer
             .streaming_floor()
             .split_whitespace()
             .filter(|token| *token == phrase)
@@ -998,14 +990,14 @@ async fn run_one_clip(clip: &Path, language: Option<String>) {
     eprintln!("  live session done in {:?}", t0.elapsed());
     let _ = std::io::Write::flush(&mut std::io::stderr());
 
-    let live = assemble_live_from_events(&events);
-    let overlay = live.full_text();
+    let live = reduce_transcript_events(&events);
+    let overlay = live.rendered_text();
     let stream_floor = live.streaming_floor();
     let preview_count = events
         .iter()
         .filter(|e| matches!(e, EngineEvent::Preview { .. }))
         .count();
-    let final_count = live.sealed_count();
+    let final_count = live.committed_count();
 
     eprintln!(
         "  events: total={} previews={} utterance_finals(sealed)={}",
@@ -1270,9 +1262,9 @@ async fn capture_clip_via_device(device: &str, clip: &Path) -> (Vec<EngineEvent>
     recorder.stop().await.expect("stop capture session");
 
     let events = sink.0.lock().expect("collector lock").clone();
-    let live = assemble_live_from_events(&events);
+    let live = reduce_transcript_events(&events);
     let transcript = {
-        let full = live.full_text();
+        let full = live.rendered_text();
         if full.trim().is_empty() {
             live.streaming_floor()
         } else {
@@ -1282,7 +1274,7 @@ async fn capture_clip_via_device(device: &str, clip: &Path) -> (Vec<EngineEvent>
     eprintln!(
         "transcript chars={} sealed={} events={}",
         transcript.chars().count(),
-        live.sealed_count(),
+        live.committed_count(),
         events.len()
     );
     // Event-shape census — when the transcript is empty, WHICH events arrived

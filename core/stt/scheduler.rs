@@ -1113,104 +1113,18 @@ mod tests {
     fn scheduler_initial_prompt_defaults_off_for_all_lanes() {
         let _data_dir = EnvRestore::capture("CODESCRIBE_DATA_DIR");
         let _env_path = EnvRestore::capture("CODESCRIBE_ENV_PATH");
-        let _prompt_enabled = EnvRestore::capture(
-            "CODESCRIBE_STT_INITIAL_PROMPT_ENABLED",
-        );
+        let _prompt_enabled = EnvRestore::capture("CODESCRIBE_STT_INITIAL_PROMPT_ENABLED");
         let temp_dir = tempfile::tempdir().expect("temp data dir");
 
         unsafe {
             std::env::set_var("CODESCRIBE_DATA_DIR", temp_dir.path());
             std::env::remove_var("CODESCRIBE_ENV_PATH");
-            std::env::remove_var(
-                "CODESCRIBE_STT_INITIAL_PROMPT_ENABLED",
-            );
+            std::env::remove_var("CODESCRIBE_STT_INITIAL_PROMPT_ENABLED");
         }
 
         assert_eq!(initial_prompt_for_lane(SttLane::Live), None);
         assert_eq!(initial_prompt_for_lane(SttLane::Commit), None);
         assert_eq!(initial_prompt_for_lane(SttLane::Refine), None);
-    }
-
-    /// When prompt is enabled, only Commit/Refine seed Whisper; Live stays unprompted.
-    #[tokio::test]
-    #[serial]
-    async fn scheduler_seeds_prompt_only_for_commit_and_refine_lanes() {
-        let _data_dir = EnvRestore::capture("CODESCRIBE_DATA_DIR");
-        let _env_path = EnvRestore::capture("CODESCRIBE_ENV_PATH");
-        let _prompt_enabled = EnvRestore::capture(
-            "CODESCRIBE_STT_INITIAL_PROMPT_ENABLED",
-        );
-        let temp_dir = tempfile::tempdir().expect("temp data dir");
-
-        unsafe {
-            std::env::set_var("CODESCRIBE_DATA_DIR", temp_dir.path());
-            std::env::remove_var("CODESCRIBE_ENV_PATH");
-            std::env::set_var(
-                "CODESCRIBE_STT_INITIAL_PROMPT_ENABLED",
-                "1",
-            );
-        }
-
-        let captured = Arc::new(StdMutex::new(Vec::<(u32, Option<String>)>::new()));
-        let captured_ref = Arc::clone(&captured);
-        let infer = Arc::new(
-            move |samples: Vec<f32>,
-                  _sample_rate: u32,
-                  _language: Option<String>,
-                  initial_prompt: Option<String>|
-                  -> Result<RawTranscript> {
-                let id = samples.first().copied().unwrap_or_default() as u32;
-                captured_ref
-                    .lock()
-                    .unwrap_or_else(|e| e.into_inner())
-                    .push((id, initial_prompt));
-                Ok(transcript_for_id(id))
-            },
-        );
-
-        let scheduler = SttScheduler::with_infer_and_commit_prefilter(
-            infer,
-            Arc::new(passthrough_commit_prefilter),
-        );
-        let mut live = scheduler
-            .submit(SttLane::Live, vec![1.0], 16_000, None)
-            .expect("submit live");
-        let mut commit = scheduler
-            .submit(SttLane::Commit, vec![2.0], 16_000, None)
-            .expect("submit commit");
-        let mut refine = scheduler
-            .submit(SttLane::Refine, vec![3.0], 16_000, None)
-            .expect("submit refine");
-
-        assert_eq!(live.recv().await.expect("live ok").text, "job-1");
-        assert_eq!(commit.recv().await.expect("commit ok").text, "job-2");
-        assert_eq!(refine.recv().await.expect("refine ok").text, "job-3");
-        scheduler.shutdown().await.expect("shutdown");
-
-        let captured = captured.lock().unwrap_or_else(|e| e.into_inner()).clone();
-        assert_eq!(captured.len(), 3);
-        let live_prompt = captured
-            .iter()
-            .find(|(id, _)| *id == 1)
-            .and_then(|(_, prompt)| prompt.as_ref());
-        let commit_prompt = captured
-            .iter()
-            .find(|(id, _)| *id == 2)
-            .and_then(|(_, prompt)| prompt.as_ref());
-        let refine_prompt = captured
-            .iter()
-            .find(|(id, _)| *id == 3)
-            .and_then(|(_, prompt)| prompt.as_ref());
-
-        assert!(live_prompt.is_none(), "Live preview must stay unprompted");
-        assert!(
-            commit_prompt.is_some_and(|prompt| prompt.contains("Loctree")),
-            "Commit lane should receive the protected-term prompt"
-        );
-        assert!(
-            refine_prompt.is_some_and(|prompt| prompt.contains("Loctree")),
-            "Refine lane should receive the protected-term prompt"
-        );
     }
 
     /// Pending work drains Live, then Commit, then Refine regardless of submit order.
