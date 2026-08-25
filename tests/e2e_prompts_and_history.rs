@@ -1,6 +1,6 @@
 use std::fs;
 
-use codescribe::{ai_formatting, config::prompts, state::history};
+use codescribe::{ai_formatting, config::{Config, prompts}, state::history};
 
 use mockito::Matcher;
 use serial_test::serial;
@@ -102,7 +102,13 @@ data: [DONE]
         .enable_all()
         .build()
         .expect("tokio runtime");
-    let formatted = rt.block_on(ai_formatting::format_text(&raw, None, false));
+    let runtime_settings = Config::load_runtime_snapshot().expect("seal runtime settings");
+    let formatted = rt.block_on(ai_formatting::format_text(
+        &raw,
+        None,
+        false,
+        runtime_settings.llm_lanes().formatting(),
+    ));
 
     // Ensure the LLM endpoint was actually called (i.e., we didn't silently fall back).
     m.assert();

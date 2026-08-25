@@ -143,25 +143,24 @@ async fn main() -> Result<()> {
         if assistive { "ASSISTIVE" } else { "FORMATTING" }
     );
 
-    // Check env vars
-    let llm_endpoint = std::env::var("LLM_FORMATTING_ENDPOINT")
-        .ok()
-        .or_else(|| std::env::var("LLM_ENDPOINT").ok());
-    let llm_model = std::env::var("LLM_FORMATTING_MODEL")
-        .ok()
-        .or_else(|| std::env::var("LLM_MODEL").ok());
-
-    if llm_endpoint.is_none() || llm_model.is_none() {
-        println!("      SKIPPED - LLM_ENDPOINT and/or LLM_MODEL not set");
+    let runtime_settings = codescribe::config::Config::load_runtime_snapshot()?;
+    let lane = if assistive {
+        runtime_settings.llm_lanes().assistive()
+    } else {
+        runtime_settings.llm_lanes().formatting()
+    };
+    if !codescribe::ai_formatting::is_formatting_available(lane) {
+        println!("      SKIPPED - {}", lane.unavailable_reason().unwrap_or("LLM lane unavailable"));
         println!("\n═══════════════════════════════════════════════════════════");
         return Ok(());
     }
 
-    println!("      LLM_ENDPOINT: {}", llm_endpoint.as_ref().unwrap());
-    println!("      LLM_MODEL: {}", llm_model.as_ref().unwrap());
+    println!("      LLM_ENDPOINT: {}", lane.endpoint());
+    println!("      LLM_MODEL: {}", lane.model());
 
     let start = std::time::Instant::now();
-    let formatted = codescribe::ai_formatting::format_text(&raw_text, Some(&lang), assistive).await;
+    let formatted =
+        codescribe::ai_formatting::format_text(&raw_text, Some(&lang), assistive, lane).await;
     let format_time = start.elapsed();
     println!("      Format time: {:?}", format_time);
     println!("      Formatted chars: {}", formatted.len());

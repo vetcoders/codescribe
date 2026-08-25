@@ -836,7 +836,11 @@ impl CodescribeHotkeys {
     /// True when the configured formatting provider can handle a user-triggered
     /// overlay format action.
     pub fn is_formatting_available(&self) -> bool {
-        codescribe::ai_formatting::is_formatting_available()
+        Config::load_runtime_snapshot().is_ok_and(|runtime_settings| {
+            codescribe::ai_formatting::is_formatting_available(
+                runtime_settings.llm_lanes().formatting(),
+            )
+        })
     }
 
     /// Format editable overlay text after recording stops.
@@ -846,11 +850,16 @@ impl CodescribeHotkeys {
         language: Option<CsLanguage>,
     ) -> Result<String, CsError> {
         application_runtime::run(async move {
+            let runtime_settings =
+                Config::load_runtime_snapshot().map_err(|error| CsError::Config {
+                    msg: error.to_string(),
+                })?;
             let language = language.map(|l| l.as_code().to_string());
             let result = codescribe::ai_formatting::format_text_with_status(
                 &text,
                 language.as_deref(),
                 false,
+                runtime_settings.llm_lanes().formatting(),
                 None,
             )
             .await;
@@ -873,6 +882,10 @@ impl CodescribeHotkeys {
         level: String,
     ) -> Result<String, CsError> {
         application_runtime::run(async move {
+            let runtime_settings =
+                Config::load_runtime_snapshot().map_err(|error| CsError::Config {
+                    msg: error.to_string(),
+                })?;
             let policy = FormattingPolicy::parse(&level).map_err(|error| CsError::Config {
                 msg: error.to_string(),
             })?;
@@ -886,6 +899,7 @@ impl CodescribeHotkeys {
                 &text,
                 language.as_deref(),
                 policy,
+                runtime_settings.llm_lanes().formatting(),
             )
             .await;
             if result.text.trim().is_empty() {

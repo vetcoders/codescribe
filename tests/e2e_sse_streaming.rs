@@ -7,7 +7,7 @@
 //!
 //! Created by Vetcoders (c)2026
 
-use codescribe::ai_formatting;
+use codescribe::{ai_formatting, config::Config};
 use serial_test::serial;
 use tracing_subscriber::EnvFilter;
 
@@ -43,20 +43,6 @@ fn load_codescribe_env() {
     }
 }
 
-/// Get API key for formatting mode (new schema)
-fn get_formatting_api_key() -> Option<String> {
-    std::env::var("LLM_FORMATTING_API_KEY")
-        .ok()
-        .filter(|k| !k.is_empty() && !k.starts_with("sk-test"))
-}
-
-/// Get API key for assistive mode (new schema)
-fn get_assistive_api_key() -> Option<String> {
-    std::env::var("LLM_ASSISTIVE_API_KEY")
-        .ok()
-        .filter(|k| !k.is_empty() && !k.starts_with("sk-test"))
-}
-
 /// Test real SSE streaming for FORMATTING mode
 /// Run with: make test-sse
 #[tokio::test]
@@ -65,34 +51,31 @@ fn get_assistive_api_key() -> Option<String> {
 async fn e2e_sse_streaming_real_formatting() {
     load_codescribe_env();
 
-    let Some(api_key) = get_formatting_api_key() else {
-        eprintln!("Skipping: No LLM_FORMATTING_API_KEY found in ~/.codescribe/.env");
+    let runtime_settings = Config::load_runtime_snapshot().expect("seal runtime settings");
+    let lane = runtime_settings.llm_lanes().formatting();
+    if !lane.available() {
+        eprintln!("Skipping: formatting lane unavailable");
         return;
-    };
+    }
 
     unsafe {
         std::env::set_var("CODESCRIBE_AI_MAX_RETRIES", "0");
     }
 
     eprintln!("=== FORMATTING MODE TEST ===");
-    eprintln!(
-        "API Key: {}...{}",
-        &api_key[..8],
-        &api_key[api_key.len() - 4..]
-    );
-    eprintln!(
-        "Endpoint: {}",
-        std::env::var("LLM_FORMATTING_ENDPOINT").unwrap_or_default()
-    );
-    eprintln!(
-        "Model: {}",
-        std::env::var("LLM_FORMATTING_MODEL").unwrap_or_default()
-    );
+    eprintln!("Endpoint: {}", lane.endpoint());
+    eprintln!("Model: {}", lane.model());
 
     let input = "cześć jestem Vetcoders i testuję formatowanie tekstu bez interpunkcji";
     eprintln!("Input:  {}", input);
 
-    let result = ai_formatting::format_text(input, Some("pl"), false).await;
+    let result = ai_formatting::format_text(
+        input,
+        Some("pl"),
+        false,
+        runtime_settings.llm_lanes().formatting(),
+    )
+    .await;
     eprintln!("Output: {}", result);
 
     assert!(!result.is_empty(), "Should return formatted text");
@@ -114,34 +97,32 @@ async fn e2e_sse_streaming_real_assistive() {
         .try_init();
     load_codescribe_env();
 
-    let Some(api_key) = get_assistive_api_key() else {
-        eprintln!("Skipping: No LLM_ASSISTIVE_API_KEY found in ~/.codescribe/.env");
+    let runtime_settings = Config::load_runtime_snapshot().expect("seal runtime settings");
+    let lane = runtime_settings.llm_lanes().assistive();
+    if !lane.available() {
+        eprintln!("Skipping: assistive lane unavailable");
         return;
-    };
+    }
 
     unsafe {
         std::env::set_var("CODESCRIBE_AI_MAX_RETRIES", "0");
     }
 
     eprintln!("=== ASSISTIVE MODE TEST ===");
-    eprintln!(
-        "API Key: {}...{}",
-        &api_key[..8],
-        &api_key[api_key.len() - 4..]
-    );
-    eprintln!(
-        "Endpoint: {}",
-        std::env::var("LLM_ASSISTIVE_ENDPOINT").unwrap_or_default()
-    );
-    eprintln!(
-        "Model: {}",
-        std::env::var("LLM_ASSISTIVE_MODEL").unwrap_or_default()
-    );
+    eprintln!("Endpoint: {}", lane.endpoint());
+    eprintln!("Model: {}", lane.model());
 
     let input = "jak napisać funkcję w Rust która odwraca string";
     eprintln!("Input:  {}", input);
 
-    let fmt_result = ai_formatting::format_text_with_status(input, Some("pl"), true, None).await;
+    let fmt_result = ai_formatting::format_text_with_status(
+        input,
+        Some("pl"),
+        true,
+        runtime_settings.llm_lanes().assistive(),
+        None,
+    )
+    .await;
     eprintln!("Output: {}", fmt_result.text);
     eprintln!("Status: {:?}", fmt_result.status);
 
@@ -161,27 +142,30 @@ async fn e2e_sse_streaming_real_assistive() {
 async fn e2e_sse_streaming_kurier_mode() {
     load_codescribe_env();
 
-    let Some(api_key) = get_assistive_api_key() else {
-        eprintln!("Skipping: No LLM_ASSISTIVE_API_KEY found");
+    let runtime_settings = Config::load_runtime_snapshot().expect("seal runtime settings");
+    let lane = runtime_settings.llm_lanes().assistive();
+    if !lane.available() {
+        eprintln!("Skipping: assistive lane unavailable");
         return;
-    };
+    }
 
     unsafe {
         std::env::set_var("CODESCRIBE_AI_MAX_RETRIES", "0");
     }
 
     eprintln!("=== KURIER MODE TEST (pass-through) ===");
-    eprintln!(
-        "API Key: {}...{}",
-        &api_key[..8],
-        &api_key[api_key.len() - 4..]
-    );
 
     // KURIER trigger: "przekaż" or dictation without question
     let input = "przekaż do Maćka że spotkanie jest przełożone na piątek o dziesiątej";
     eprintln!("Input:  {}", input);
 
-    let result = ai_formatting::format_text(input, Some("pl"), true).await;
+    let result = ai_formatting::format_text(
+        input,
+        Some("pl"),
+        true,
+        runtime_settings.llm_lanes().assistive(),
+    )
+    .await;
     eprintln!("Output: {}", result);
 
     assert!(!result.is_empty(), "Should return formatted message");
@@ -204,14 +188,15 @@ async fn e2e_sse_direct_stream_parsing() {
 
     load_codescribe_env();
 
-    let Some(api_key) = get_formatting_api_key() else {
+    let runtime_settings = Config::load_runtime_snapshot().expect("seal runtime settings");
+    let lane = runtime_settings.llm_lanes().formatting();
+    let Some(api_key) = lane.credential().api_key() else {
         eprintln!("Skipping: No API key found");
         return;
     };
 
-    let endpoint = std::env::var("LLM_FORMATTING_ENDPOINT")
-        .unwrap_or_else(|_| "https://api.openai.com/v1/responses".to_string());
-    let model = std::env::var("LLM_FORMATTING_MODEL").unwrap_or_else(|_| "gpt-4o".to_string());
+    let endpoint = lane.endpoint();
+    let model = lane.model();
 
     eprintln!("=== DIRECT SSE STREAM TEST ===");
     eprintln!("Endpoint: {}", endpoint);

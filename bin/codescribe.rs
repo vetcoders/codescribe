@@ -246,11 +246,16 @@ fn transcribe(
 
     // AI formatting — the same lane call the GUI formatted mode makes.
     let (final_text, ai_status) = if format {
+        let runtime_settings = codescribe_core::config::Config::load_runtime_snapshot()?;
         let runtime = tokio::runtime::Builder::new_multi_thread()
             .enable_all()
             .build()?;
         let result = runtime.block_on(codescribe_core::ai_formatting::format_text_with_status(
-            &shaped, language, false, None,
+            &shaped,
+            language,
+            false,
+            runtime_settings.llm_lanes().formatting(),
+            None,
         ));
         (result.text, Some(format!("{:?}", result.status)))
     } else {

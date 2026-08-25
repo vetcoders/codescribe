@@ -15,9 +15,7 @@ use tracing::info;
 use crate::ai_formatting;
 use crate::audio::load_audio_file;
 use crate::client;
-use crate::config::Config;
-use crate::llm::lane_truth;
-use crate::llm::provider::LlmMode;
+use crate::config::{Config, RuntimeSettingsSnapshot};
 use crate::pipeline::contracts::RawTranscript;
 use crate::safe_path::{
     safe_canonicalize_bounded, safe_copy_bounded, safe_prepare_path, safe_read_to_string_bounded,
@@ -316,7 +314,12 @@ pub async fn run(config: QualityReportConfig) -> Result<PathBuf> {
     let now: DateTime<Local> = Local::now();
     let generated_at = now.to_rfc3339();
 
-    let env_snapshot = snapshot_environment(config.metrics_reference, config.local_transcription);
+    let runtime_settings = Config::load_runtime_snapshot()?;
+    let env_snapshot = snapshot_environment(
+        &runtime_settings,
+        config.metrics_reference,
+        config.local_transcription,
+    );
 
     let config_root = Config::config_dir();
     let input_root = resolve_input_root(&config.input_dir, &config_root)?;
@@ -387,6 +390,7 @@ pub async fn run(config: QualityReportConfig) -> Result<PathBuf> {
             &artifacts_dir,
             &audio_dir,
             &mut cloud_jobs,
+            &runtime_settings,
         )
         .await?;
         totals.accumulate(&entry);
@@ -501,6 +505,7 @@ async fn process_pair(
     artifacts_dir: &Path,
     audio_dir: &Path,
     cloud_jobs: &mut CloudJobSet,
+    runtime_settings: &RuntimeSettingsSnapshot,
 ) -> Result<ReportEntry> {
     let audio_path = pair.audio_path.clone();
     let reference_path = pair.reference_path.clone();
@@ -579,14 +584,21 @@ async fn process_pair(
 
     let ai_formatted = if config.skip_formatting {
         None
-    } else if !ai_formatting::is_formatting_available() {
+    } else if !ai_formatting::is_formatting_available(
+        runtime_settings.llm_lanes().formatting(),
+    ) {
         errors.push("AI formatting skipped: missing endpoint/model/key".into());
         None
     } else if let Some(post_text) = post.as_deref() {
         // Reset conversation chain — batch mode must NOT chain between files
         reset_conversation_for_mode(AiMode::Formatting);
-        let ai_result =
-            ai_formatting::format_text(post_text, config.language.as_deref(), false).await;
+        let ai_result = ai_formatting::format_text(
+            post_text,
+            config.language.as_deref(),
+            false,
+            runtime_settings.llm_lanes().formatting(),
+        )
+        .await;
         info!(
             "[AI_LOG] id={} input_len={} output_len={} input_preview={:?} output_preview={:?}",
             id,
@@ -1504,16 +1516,12 @@ async fn transcribe_raw_for_report(
 /// carrying an Anthropic path whenever formatting was not OpenAI. Keys are
 /// recorded as presence booleans only.
 fn snapshot_environment(
+    runtime_settings: &RuntimeSettingsSnapshot,
     metrics_reference: MetricsReference,
     local_transcription: LocalTranscriptionMode,
 ) -> ReportEnvironment {
-    let config = Config::load();
-    let (formatting_provider, formatting_model) = lane_truth::formatting_identity(&config);
-    // Ask the registry for the provider's own endpoint. The previous shape took
-    // the OpenAI lane endpoint and re-pathed it, which reported an OpenAI host
-    // carrying an Anthropic path whenever the formatting lane was not OpenAI.
-    let formatting_endpoint =
-        lane_truth::provider_endpoint(LlmMode::Formatting, formatting_provider, &config);
+    let config = runtime_settings.values();
+    let formatting = runtime_settings.llm_lanes().formatting();
     ReportEnvironment {
         stt_endpoint: config.stt_endpoint.clone(),
         stt_api_key_present: config
@@ -1521,10 +1529,10 @@ fn snapshot_environment(
             .as_ref()
             .map(|v| !v.trim().is_empty())
             .unwrap_or(false),
-        llm_formatting_endpoint: Some(formatting_endpoint),
-        llm_formatting_model: Some(formatting_model),
-        llm_formatting_key_present: lane_truth::secret("LLM_FORMATTING_API_KEY").is_some(),
-        local_model: Some(config.local_model),
+        llm_formatting_endpoint: Some(formatting.endpoint().to_string()),
+        llm_formatting_model: Some(formatting.model().to_string()),
+        llm_formatting_key_present: formatting.credential().api_key().is_some(),
+        local_model: Some(config.local_model.clone()),
         whisper_language: Some(config.whisper_language.as_str().to_string()),
         metrics_reference: metrics_reference.as_str().to_string(),
         local_transcription: local_transcription.as_str().to_string(),

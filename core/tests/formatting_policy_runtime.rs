@@ -182,9 +182,16 @@ async fn formatting_off_bypasses_llm() {
     let _endpoint = EnvGuard::set("LLM_FORMATTING_ENDPOINT", server.url());
     let _model = EnvGuard::set("LLM_FORMATTING_MODEL", "test-model");
     let _key = EnvGuard::set("LLM_FORMATTING_API_KEY", "test-key");
+    let runtime_settings = Config::load_runtime_snapshot().expect("seal runtime settings");
 
     let input = "This transcript is intentionally long enough to reach the provider path.";
-    let result = format_text_with_status_for_policy(input, Some("en"), FormattingPolicy::Off).await;
+    let result = format_text_with_status_for_policy(
+        input,
+        Some("en"),
+        FormattingPolicy::Off,
+        runtime_settings.llm_lanes().formatting(),
+    )
+    .await;
 
     assert_eq!(result.text, input);
     assert_eq!(result.status, AiFormatStatus::Skipped);
