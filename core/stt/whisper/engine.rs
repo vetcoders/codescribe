@@ -1183,24 +1183,6 @@ impl LocalWhisperEngine {
             let last_logits = logits.i((.., seq_len - 1, ..))?.squeeze(0)?;
             let mut logits_vec = last_logits.to_vec1::<f32>()?;
 
-            // 3. No-Speech Threshold (no_speech_threshold)
-            if step == 0
-                && let Some(nos) = nospeech_token
-            {
-                let nos_idx = nos as usize;
-                if nos_idx < logits_vec.len() {
-                    // Compute softmax probability for nospeech only
-                    let max_val = logits_vec.iter().cloned().fold(f32::NEG_INFINITY, f32::max);
-                    let exp_sum: f32 = logits_vec.iter().map(|&x| (x - max_val).exp()).sum();
-                    let nos_prob = (logits_vec[nos_idx] - max_val).exp() / exp_sum;
-
-                    if nos_prob > self.decoding_params.no_speech_threshold {
-                        tracing::debug!("No speech detected (prob={:.3})", nos_prob);
-                        return Ok(RawTranscript::default()); // Return empty for silence
-                    }
-                }
-            }
-
             // 2. Suppress Blank (suppress_blank)
             if self.decoding_params.suppress_blank && all_tokens.len() < 4 {
                 // Block common blank tokens (space, empty, etc.)

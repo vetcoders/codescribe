@@ -14,9 +14,6 @@ pub struct DecodingParams {
     pub no_repeat_ngram_size: usize,
     /// Suppress blank/silence tokens early
     pub suppress_blank: bool,
-    /// No-speech probability threshold - if no_speech_prob > this, segment is silence
-    /// mlx_whisper default: 0.6
-    pub no_speech_threshold: f32,
     /// Compression ratio threshold for hallucination detection
     /// If gzip ratio > this, decoding failed (hallucination)
     /// mlx_whisper default: 2.4
@@ -38,8 +35,6 @@ impl Default for DecodingParams {
             temperature: 0.0,        // greedy (mlx_whisper default)
             no_repeat_ngram_size: 5, // block 5-gram repetitions (catches more Whisper hallucination variants)
             suppress_blank: true,
-            // More conservative silence rejection (fewer false-empty transcripts on short utterances)
-            no_speech_threshold: 0.72,
             // Trigger anti-repetition cleanup a bit earlier than stock defaults
             compression_ratio_threshold: 2.2,
             logprob_threshold: -1.0, // mlx_whisper default
@@ -74,7 +69,6 @@ mod tests {
         assert_eq!(params.temperature, 0.0);
         assert_eq!(params.no_repeat_ngram_size, 5);
         assert!(params.suppress_blank);
-        assert_eq!(params.no_speech_threshold, 0.72);
         assert_eq!(params.compression_ratio_threshold, 2.2);
         assert_eq!(params.logprob_threshold, -1.0);
         assert!(params.initial_prompt.is_none());
