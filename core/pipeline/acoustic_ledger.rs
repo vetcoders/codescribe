@@ -695,10 +695,34 @@ impl AcousticLedger {
         self.frontiers.insert(coverage, frontier);
     }
 
+    /// Add one observer only after its concrete job has taken ownership of the
+    /// exact occurrence. Existing returns are preserved; configuration intent
+    /// alone must never call this operation. Returns `false` when the base
+    /// frontier is absent, already closed, or already sealed.
+    pub fn schedule_observer(
+        &mut self,
+        coverage: OccurrenceIdentity,
+        producer: ObservationProducer,
+    ) -> bool {
+        if self.seals.contains_key(&coverage) {
+            return false;
+        }
+        let Some(frontier) = self.frontiers.get_mut(&coverage) else {
+            return false;
+        };
+        if frontier.is_closed() {
+            return false;
+        }
+        frontier.schedule(producer);
+        true
+    }
+
     /// Record that a scheduled producer finished with a range.
     ///
-    /// Returns whether the frontier is now closed. A range with no scheduled
-    /// frontier answers `false`: unknown is never closed.
+    /// Returns `true` only for the transition from open to closed. Repeated
+    /// completion is idempotent and cannot cause a second seal emission. A
+    /// range with no scheduled frontier answers `false`: unknown is never
+    /// closed.
     pub fn note_frontier_return(
         &mut self,
         coverage: &OccurrenceIdentity,
@@ -706,8 +730,9 @@ impl AcousticLedger {
     ) -> bool {
         match self.frontiers.get_mut(coverage) {
             Some(frontier) => {
+                let was_closed = frontier.is_closed();
                 frontier.record_return(producer);
-                frontier.is_closed()
+                !was_closed && frontier.is_closed()
             }
             None => false,
         }
@@ -1685,6 +1710,12 @@ impl ObservationFrontier {
         }
     }
 
+    /// Extend an open launch contract without discarding returns already
+    /// recorded for synchronous observers.
+    fn schedule(&mut self, producer: ObservationProducer) {
+        self.scheduled.insert(producer);
+    }
+
     /// Record that a scheduled producer has returned everything it will return.
     pub fn record_return(&mut self, producer: ObservationProducer) {
         if self.scheduled.contains(&producer) {
@@ -1982,6 +2013,48 @@ mod tests {
         occurrence: OccurrenceIdentity,
     ) -> ObservationIdentity {
         ObservationIdentity::new(producer, 7, generation, occurrence)
+    }
+
+    /// Only concrete observer launches extend a frontier. A formatter setting
+    /// without a launched proposal job is absent, and a repeated return cannot
+    /// report a second close transition.
+    #[test]
+    fn frontier_contains_launched_observers_and_closes_once() {
+        let occurrence = occ(0, 16_000);
+        let mut ledger = AcousticLedger::new();
+        ledger.schedule_frontier(
+            occurrence.clone(),
+            [ObservationProducer::Apple, ObservationProducer::Lexicon],
+        );
+        assert!(ledger.schedule_observer(occurrence.clone(), ObservationProducer::Whisper));
+
+        let frontier = ledger.frontier_of(&occurrence).expect("frontier");
+        assert_eq!(
+            frontier.open_producers(),
+            vec![
+                ObservationProducer::Apple,
+                ObservationProducer::Whisper,
+                ObservationProducer::Lexicon,
+            ]
+        );
+        assert!(
+            !frontier
+                .open_producers()
+                .contains(&ObservationProducer::Formatter),
+            "configured but unlaunched Formatter is not scheduled"
+        );
+
+        assert!(!ledger.note_frontier_return(&occurrence, ObservationProducer::Apple));
+        assert!(!ledger.note_frontier_return(&occurrence, ObservationProducer::Lexicon));
+        assert!(ledger.note_frontier_return(&occurrence, ObservationProducer::Whisper));
+        assert!(
+            !ledger.note_frontier_return(&occurrence, ObservationProducer::Whisper),
+            "repeated completion is not a second close transition"
+        );
+        assert!(
+            !ledger.schedule_observer(occurrence, ObservationProducer::Formatter),
+            "a closed frontier cannot be reopened by a late configured observer"
+        );
     }
 
     /// The conservation law itself, on the shape that motivated it: five

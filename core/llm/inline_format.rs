@@ -11,9 +11,12 @@
 //! - Whole-session Final BAM and document assembly (`SessionStore`) do not
 //!   return here.
 //!
-//! W1 places the part and leaves it unwired. W2 alone may connect proposals
-//! into the reducer admission path. ASR, controller, clipboard, Agent, canvas,
-//! and Swift consumers are intentionally absent from this file.
+//! This is an approved future producer contract, not a launched runtime job.
+//! No production scheduler currently constructs or sends a proposal, and an
+//! enabled formatting setting alone must not add `Formatter` to an occurrence
+//! frontier. ASR, controller, clipboard, Agent, canvas, and Swift consumers are
+//! intentionally absent from this file until a concrete job owns an exact
+//! occurrence and guarantees a terminal return.
 
 /// Non-authoritative lexicon constraint retained after Light+ authorship was
 /// removed. Constraint input only — never mints occurrences and never selects
@@ -51,7 +54,7 @@ pub enum LabelProposalDisposition {
 ///
 /// # Outputs
 /// - A proposed label plus [`LabelProposalDisposition`] for later ledger /
-///   reducer admission (W2).
+///   reducer admission after a concrete producer is launched.
 ///
 /// # Forbidden authority
 /// - Creating or deleting occurrence IDs.
@@ -59,8 +62,8 @@ pub enum LabelProposalDisposition {
 /// - Selecting a delivery destination (that is `DeliveryRoute`).
 /// - Whole-session Final BAM rewriting.
 ///
-/// # Intended W2 consumers
-/// - `app/presentation/emitter.rs` (reducer admission of proposals).
+/// # Intended future consumer
+/// - `app/presentation/emitter.rs` (ledger-gated reducer admission after launch).
 ///
 /// # Must not reach
 /// - `app/controller/delivery_route.rs` (route cannot choose text).
@@ -78,7 +81,7 @@ pub struct OccurrenceLabelProposal {
     pub proposed_label: String,
     /// Retained lexicon constraints that informed the proposal, if any.
     pub lexicon_constraints: Vec<RetainedLexiconConstraint>,
-    /// Chained Responses tip for the inline_format path; execution is W2+.
+    /// Chained Responses tip for a future launched inline-format job.
     pub previous_response_id: Option<String>,
     /// Typed proposal disposition for per-layer decision history.
     pub disposition: LabelProposalDisposition,

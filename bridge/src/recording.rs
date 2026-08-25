@@ -528,12 +528,12 @@ mod retranscribe_tests {
 
 /// Foreign callback trait — dictation events forwarded to Swift.
 ///
-/// Distilled from the engine's richer `EngineEvent` stream:
-/// - `on_preview` carries the latest interim/corrected utterance text
-///   (replace-not-append semantics).
-/// - `on_final` carries a completed (VAD-bounded) utterance together with its
-///   `utterance_id`, so committed sinks can stamp the segment identity that
-///   later `on_replace_range` / `on_insert_annotation` patches target.
+/// `on_transcript_projection` is the sole committed transcript callback. The
+/// raw text callbacks below are ephemeral paint or diagnostics and must never
+/// write delivery state, reconstruct occurrence identity, or seal a document:
+/// - `on_preview` carries replace-not-append ephemeral paint.
+/// - `on_final`, `on_correction`, `on_replace_range`, and
+///   `on_insert_annotation` report raw engine observations only.
 /// - `on_vad_active` flips when speech starts/ends.
 /// - `on_no_speech` fires when a session/utterance produced no usable speech.
 /// - `on_error` carries recoverable engine warnings.
@@ -561,11 +561,11 @@ pub trait CsTranscriptionListener: Send + Sync {
     /// Latest interim text for the utterance in flight. Replace-not-append: each
     /// call supersedes the previous preview rather than extending it.
     fn on_preview(&self, text: String);
-    /// An already-previewed utterance was revised; `previous_text` is what the
-    /// surface currently shows, so it can locate and swap the right span.
+    /// Diagnostic raw correction. Committed text arrives only through
+    /// `on_transcript_projection`.
     fn on_correction(&self, text: String, previous_text: String);
-    /// Completed VAD-bounded utterance. Optional STT quality fields feed the
-    /// overlay confidence badge + quality-loop meta (LL-D); empty when unknown.
+    /// Diagnostic VAD-bounded raw final. Optional quality fields feed badges
+    /// and telemetry; this callback has no committed-text authority.
     fn on_final(
         &self,
         utterance_id: u64,
@@ -574,9 +574,8 @@ pub trait CsTranscriptionListener: Send + Sync {
         speech_pct: Option<f32>,
         confidence_flags: Vec<String>,
     );
-    /// Bounded patch of an already-committed utterance: replace `[start, end)`
-    /// within the segment stamped `utterance_id`. `source` names the layer that
-    /// produced it, so the surface can attribute or style the edit.
+    /// Diagnostic bounded patch observation. It does not mutate committed
+    /// projection state.
     fn on_replace_range(
         &self,
         utterance_id: u64,
@@ -585,8 +584,7 @@ pub trait CsTranscriptionListener: Send + Sync {
         text: String,
         source: CsLayerSource,
     );
-    /// Insert an annotation (hesitation pause, paralingual marker) at `position`
-    /// inside the segment stamped `utterance_id`, without replacing any text.
+    /// Diagnostic annotation observation with no committed-text authority.
     fn on_insert_annotation(
         &self,
         utterance_id: u64,
@@ -599,10 +597,6 @@ pub trait CsTranscriptionListener: Send + Sync {
     fn on_context_marker(&self, position: u64, marker: String);
     /// The session closed; `layer_summary` carries the per-layer edit counters.
     fn on_session_finalised(&self, session_id: String, layer_summary: CsLayerSummary);
-    /// Authoritative post-stop transcript (LocalFinalPass `final_formatted_text`):
-    /// the SAME clean text that is pasted/delivered and written to history. Surfaces
-    /// fire it once per dictation stop so the overlay FINAL matches delivery/Copy.
-    fn on_final_transcript_ready(&self, text: String);
     /// Voice activity started (`true`) or stopped (`false`).
     fn on_vad_active(&self, active: bool);
     /// Live microphone input level: RMS of one captured audio block (linear,

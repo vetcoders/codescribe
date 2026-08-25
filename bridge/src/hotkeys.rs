@@ -385,7 +385,6 @@ fn forward_event_to_listener(payload: IpcEventPayload, listener: Arc<dyn CsTrans
             }
             _ => {}
         },
-        IpcEventPayload::FinalTranscript { text } => listener.on_final_transcript_ready(text),
         IpcEventPayload::ContextMarker { position, marker } => {
             listener.on_context_marker(position, marker);
         }
@@ -2171,8 +2170,6 @@ mod preparing_compensation_tests {
         }
         /// No-op: session finalisation summary is not under test here.
         fn on_session_finalised(&self, _session_id: String, _layer_summary: CsLayerSummary) {}
-        /// No-op: final transcript ready is not under test in this suite.
-        fn on_final_transcript_ready(&self, _text: String) {}
         /// No-op: VAD active toggles are not under test in this suite.
         fn on_vad_active(&self, _active: bool) {}
         /// Capture RMS samples so audio-level forwarding can be asserted.

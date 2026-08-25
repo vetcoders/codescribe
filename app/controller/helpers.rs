@@ -1260,13 +1260,19 @@ impl IpcBroadcastSink {
 }
 
 impl EventSink for IpcBroadcastSink {
-    /// Stamp the event and publish it. A send failure is ignored on purpose:
+    /// Stamp and publish an event only when the core IPC owner declares it
+    /// wire-eligible. Ledger mutation/seal events remain on the in-process
+    /// fanout for `PresentationEmitter`; skipping them here is expected.
+    /// A send failure is ignored on purpose:
     /// "no IPC subscribers right now" is the normal state, not an engine error,
     /// and telemetry must never be able to stall the pipeline.
     fn on_event(&self, event: &EngineEvent) {
+        let Ok(wire_event) = EngineEventWire::try_from(event) else {
+            return;
+        };
         let ipc_event = IpcEvent {
             timestamp: chrono::Utc::now().to_rfc3339_opts(SecondsFormat::Millis, true),
-            payload: IpcEventPayload::Engine(EngineEventWire::from(event)),
+            payload: IpcEventPayload::Engine(wire_event),
         };
         let _ = self.tx.send(ipc_event);
     }
@@ -1307,9 +1313,8 @@ impl EventSink for SessionTelemetrySink {
                     .saturating_add(text.trim().chars().count());
                 // Monotonic max: an out-of-order raw observation never rewinds
                 // this diagnostic boundary.
-                // Non-finite end_ts must never poison it (parity with
-                // ComposerTranscript::note_committed_through): NaN falls through
-                // the `current >= end_ts` arm and would overwrite a valid max.
+                // Non-finite end_ts must never poison it: NaN falls through the
+                // `current >= end_ts` arm and would overwrite a valid max.
                 if end_ts.is_finite() {
                     guard.observed_final_through_secs =
                         Some(match guard.observed_final_through_secs {
@@ -1755,11 +1760,9 @@ mod tests {
         );
     }
 
-    /// Parity with `ComposerTranscript::note_committed_through` (PR #69
-    /// review): a non-finite `end_ts` (NaN/±inf) must never poison or advance
-    /// the boundary. NaN falls through the `current >= end_ts` guard and would
-    /// otherwise OVERWRITE a valid max — silently degrading Smart tail
-    /// gap-fill to Skip for the rest of the session.
+    /// A non-finite `end_ts` (NaN/±inf) must never poison or advance the
+    /// diagnostic boundary. NaN falls through the `current >= end_ts` guard
+    /// and would otherwise overwrite a valid max.
     #[test]
     fn test_session_telemetry_ignores_non_finite_end_ts() {
         let shared = new_session_telemetry();

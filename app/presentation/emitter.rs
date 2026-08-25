@@ -252,8 +252,10 @@ impl TranscriptReducer {
     }
 
     /// The sole automatic author may relabel only an occurrence the ledger
-    /// already holds. Its proposal is first admitted by the ledger and only the
-    /// returned receipt reaches the document.
+    /// already holds. The future producer must have launched and scheduled its
+    /// exact occurrence before this return arrives; the reducer never turns an
+    /// unsolicited proposal into its own authority. Only the ledger receipt
+    /// reaches the document.
     pub fn apply_occurrence_label_proposal(
         &mut self,
         ledger: &mut AcousticLedger,
@@ -269,6 +271,14 @@ impl TranscriptReducer {
             proposal.sample_end,
         );
         if !ledger.is_qualified(&occurrence) || ledger.text_of(&occurrence).is_none() {
+            return None;
+        }
+        let formatter_is_open = ledger.frontier_of(&occurrence).is_some_and(|frontier| {
+            frontier
+                .open_producers()
+                .contains(&ObservationProducer::Formatter)
+        });
+        if !formatter_is_open {
             return None;
         }
         let candidate_label = if proposal.disposition == LabelProposalDisposition::Propose {

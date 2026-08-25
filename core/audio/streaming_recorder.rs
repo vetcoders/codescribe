@@ -266,8 +266,9 @@ impl StreamingRecorder {
 
     /// Returns a cloned handle to the transcript buffer.
     ///
-    /// Used by `ControllerEventRouter` to update the buffer as previews arrive,
-    /// so `stop()` returns the accumulated text.
+    /// Shared delivery buffer. Only committed reducer projections may write it;
+    /// previews are ephemeral paint and `stop()` only reads the accumulated
+    /// committed rendering.
     pub fn transcript_buffer_handle(&self) -> Arc<Mutex<String>> {
         self.transcript_buffer.clone()
     }
