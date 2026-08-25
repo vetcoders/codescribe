@@ -12,12 +12,20 @@
 
 Live transcription is no longer a single Whisper stream. Exactly four machine
 layers cooperate: Apple, Whisper, Lexicon + Light+, and the existing Responses
-formatter. The overlay renders their accepted span events and never wipes and
-retypes — _NEVER REWRITE FROM ZERO_ is the operator-mandated invariant. Since
-the UI moved to Swift, the enforcement point is
-`macos/Codescribe/Screens/Overlay/OverlayState.swift`: `applyReplaceRange` delegates to
-`OverlayTranscriptSegment.replaceRange`, which returns `false` (patch dropped) for any range
-that does not address the committed segment.
+formatter. Their observations enter `AcousticLedger`; corrections, bounded
+patches, annotations, and marker placement are resolved by the Rust transcript
+reducer in `app/presentation/emitter.rs`. That reducer emits an immutable,
+complete rendered projection through the Transcript Bus, together with the
+acoustic receipts that justify it.
+
+Swift is a projection consumer, not a second reducer.
+`OverlayState.applyTranscriptProjection` is the only admitted Swift
+transcript-text input. It displays and delivers the projection's complete
+`renderedText` after validating its sequence, reducer revision, and acoustic
+receipts. `OverlayState` does not own transcript segments, fold previews/finals,
+apply replacement ranges, rebase reducer markers, or reconstruct transcript
+highlights. _NEVER REWRITE FROM ZERO_ is enforced upstream by occurrence/span
+identity and reducer authority, not by a Swift text-mutation API.
 
 | Layer                        | Engine                                        | Status                                                                          | Where it lives                                                                                                                           |
 | ---------------------------- | --------------------------------------------- | ------------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------- |
@@ -89,7 +97,8 @@ flowchart TB
         direction LR
         HK[os/hotkeys/]
         CTRL[controller/]
-        PRES[presentation/emitter.rs]
+        PRES[presentation/emitter.rs\nRust transcript reducer]
+        BUS[presentation/transcript_bus.rs\nimmutable projection + acoustic receipts]
         AGENT[agent/]
     end
 
@@ -103,9 +112,11 @@ flowchart TB
         IPC_CORE[ipc types]
     end
 
-    UI --> BRIDGE
-    BRIDGE --> APP
-    APP --> CORE
+    CORE -->|observations| LEDGER[AcousticLedger]
+    LEDGER --> PRES
+    PRES --> BUS
+    BUS --> BRIDGE
+    BRIDGE -->|CsTranscriptProjectionEvent| UI
 
     WH --> MODEL[Whisper Model\nlarge-v3-turbo\nfp16 only\nembedded or runtime-loaded]
 
@@ -123,16 +134,20 @@ flowchart TB
 
 ```
 ┌─────────────┐    ┌────────────┐    ┌───────────────┐    ┌──────────────┐
-│ CGEventTap  │───►│ os/hotkeys/│───►│ controller/   │───►│ stt/apple_stt│
-│ (macOS API) │    │            │    │   mod.rs      │    │  + whisper/  │
-└─────────────┘    └────────────┘    └───────────────┘    └──────────────┘
-       │                                    │                     │
-       │                                    ▼                     ▼
-       │                            ┌──────────────┐      ┌──────────────┐
-       │                            │ Screens/     │      │ Screens/     │
-       │                            │ AgentChat/   │      │ Overlay/     │
-       │                            └──────────────┘      └──────────────┘
-       │                              (Swift, via bridge/ UniFFI)
+│ CGEventTap  │───►│ os/hotkeys/│───►│ controller/   │───►│ STT observers│
+│ (macOS API) │    │            │    │   mod.rs      │    │ Apple/Whisper│
+└─────────────┘    └────────────┘    └───────────────┘    └──────┬───────┘
+       │                                                         ▼
+       │                                               ┌─────────────────┐
+       │                                               │ AcousticLedger  │
+       │                                               │ + Rust reducer  │
+       │                                               └────────┬────────┘
+       │                                                        ▼
+       │                                               ┌─────────────────┐
+       │                                               │ complete Swift  │
+       │                                               │ projection      │
+       │                                               └─────────────────┘
+       │                                                 (display/delivery)
        │
   Fn hold → Raw mode (no AI)
   Fn+Shift hold → Assistive arm (default; Cmd selectable in Settings)
@@ -177,7 +192,7 @@ Codescribe/
 │   ├── controller/               # Recording state machine, stop-path, serving truth
 │   ├── os/                       # Hotkeys (CGEventTap), permissions, clipboard,
 │   │                             #   selection, hold badge, tray status, thermal
-│   ├── presentation/             # PresentationEmitter (typing animation)
+│   ├── presentation/             # Rust transcript reducer + immutable projection bus
 │   ├── agent/                    # Agent loop, tools, monitor
 │   └── agent_delivery.rs         # Voice → thread delivery gateway
 │
@@ -187,7 +202,7 @@ Codescribe/
 │   ├── App.swift                 # AppDelegate / lifecycle
 │   ├── Core/                     # AppModel, ComposerDictation, chat/thread engines
 │   ├── Screens/
-│   │   ├── Overlay/              # OverlayState.swift — layered render enforcement point
+│   │   ├── Overlay/              # OverlayState.swift — projection display/delivery boundary
 │   │   ├── AgentChat/            # Assistive chat surface
 │   │   ├── Settings/             # Settings window + SettingsViewModel
 │   │   ├── Onboarding/           # First-run flow

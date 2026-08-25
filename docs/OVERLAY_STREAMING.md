@@ -11,9 +11,11 @@
 
 ## Four-layer rendering model
 
-The overlay renders one ordered document reduced from four machine layers. Each
-accepted mutation addresses the same PCM/span ledger; no observer may wipe the
-buffer and rebuild the session.
+The overlay displays one ordered document reduced from four machine layers.
+Every observation addresses the same PCM/span truth in `AcousticLedger`.
+`PresentationEmitter` owns the Rust transcript reducer and publishes a complete,
+immutable rendered projection with acoustic receipts; Swift does not replay or
+fold the observations into a second transcript.
 
 | Layer                        | Owner                                         | Reducer surface                                                          | Current status                                                                                                                      |
 | ---------------------------- | --------------------------------------------- | ------------------------------------------------------------------------ | ----------------------------------------------------------------------------------------------------------------------------------- |
@@ -31,13 +33,13 @@ The historical `InlineLlm` and `FinalBam` enum values remain reserved wire
 vocabulary, not active layer owners. Final BAM is superseded and has no
 automatic producer. `SessionFinalised` is lifecycle-only.
 
-**Hard invariant:** every layer mutates the buffer only through bounded events
-(`Append`, `ReplaceRange`, `InsertAnnotation`, `Backspace`). No layer is allowed to wipe the
-buffer and retype. Since the UI moved to Swift the enforcement point is
-`macos/Codescribe/Screens/Overlay/OverlayState.swift` — `applyReplaceRange` delegates to
-`OverlayTranscriptSegment.replaceRange`, which returns `false` and drops the patch for any
-range that does not address the committed segment. See ADR §Hard invariants for the full
-contract and rationale.
+**Hard invariant:** every layer submits observations and bounded mutation intent
+against `AcousticLedger`; the Rust reducer alone resolves appends, corrections,
+replacement ranges, annotations, and markers into the canonical document. No
+layer may wipe the document and rebuild the session. Swift receives only the
+resulting complete `CsTranscriptProjectionEvent`: rendered text plus acoustic
+receipts. `OverlayState.applyTranscriptProjection` is the only admitted Swift
+transcript-text input. See ADR §Hard invariants for the historical rationale.
 
 ```mermaid
 flowchart LR
@@ -46,12 +48,18 @@ flowchart LR
     L2[L2<br/>Lexicon + Light+]
     L3[L3<br/>Existing Responses formatter]
     SILERO[Silero<br/>orthogonal VAD/time evidence]
-    BUF[(Already-shown buffer<br/>Overlay render target)]
+    LEDGER[(AcousticLedger<br/>PCM/span authority)]
+    REDUCER[PresentationEmitter<br/>Rust transcript reducer]
+    PROJECTION[Immutable projection<br/>rendered text + acoustic receipts]
+    SWIFT[OverlayState.applyTranscriptProjection<br/>display / delivery only]
 
-    L0 -- Preview / UtteranceFinal --> BUF
-    L1 -- ReplaceRange (bounded) --> BUF
-    L2 -- stable shaped span --> BUF
-    L3 -- accepted span format --> BUF
+    L0 -- Preview / UtteranceFinal --> LEDGER
+    L1 -- ReplaceRange intent --> LEDGER
+    L2 -- stable shaped span --> LEDGER
+    L3 -- accepted span format --> LEDGER
+    LEDGER --> REDUCER
+    REDUCER --> PROJECTION
+    PROJECTION --> SWIFT
     SILERO -. boundaries / pause evidence .-> L1
     SILERO -. timing evidence .-> L3
 ```
@@ -80,12 +88,12 @@ flowchart TD
     WHISPER[Whisper Engine\ncore/stt/whisper/engine.rs\nMetal GPU · large-v3-turbo fp16]
     POSTPROC[StreamPostProcessor\ncore/pipeline/stream_postprocess.rs\nlexicon + semantic gate]
     EVENT[EngineEvent\ncore/pipeline/contracts.rs]
-    SINK{EventSink / DeltaSink}
-    ROUTER[ControllerEventRouter\napp/controller/helpers.rs]
-    EMITTER[PresentationEmitter\napp/presentation/emitter.rs]
-    CHECK{is_assistive_session?}
-    ASSIST[Agent Chat bubble\nScreens/AgentChat/MessageList.swift]
-    OVERLAY[Floating Overlay\nScreens/Overlay/OverlayState.swift]
+    LEDGER[AcousticLedger\ncore/pipeline/acoustic_ledger.rs]
+    REDUCER[PresentationEmitter\nRust transcript reducer]
+    BUS[Transcript Bus projection\nrendered text + acoustic receipts]
+    BRIDGE[UniFFI projection listener]
+    OVERLAY[OverlayState projection consumer\nScreens/Overlay/OverlayState.swift]
+    ASSIST[Agent Chat delivered message\nScreens/AgentChat/MessageList.swift]
 
     MIC --> CPAL
     CPAL --> SR
@@ -101,16 +109,16 @@ flowchart TD
     WORKER --> WHISPER
     WHISPER --> POSTPROC
     POSTPROC --> EVENT
-    EVENT --> SINK
-    SINK -->|event pipeline| ROUTER
-    SINK -->|legacy| EMITTER
-    ROUTER --> CHECK
-    CHECK -->|assistive| ASSIST
-    CHECK -->|non-assistive| OVERLAY
+    EVENT --> LEDGER
+    LEDGER --> REDUCER
+    REDUCER --> BUS
+    BUS --> BRIDGE
+    BRIDGE --> OVERLAY
+    OVERLAY -->|assistive delivery policy| ASSIST
 
     style DROP stroke:#c33,stroke-width:2px
     style CHUNK stroke:#3a3,stroke-width:2px
-    style EVENT stroke:#33c,stroke-width:2px
+    style REDUCER stroke:#33c,stroke-width:2px
     style OVERLAY stroke:#c93,stroke-width:2px
     style ASSIST stroke:#c93,stroke-width:2px
 ```
@@ -250,15 +258,17 @@ The engine emits **semantic events** — it communicates what happened, not how 
 - `Preview.text` is **utterance-local**: full post-processed text for the current utterance only.
 - On each Whisper decode, `text` replaces the previous Preview (not appended). `rev` increments.
 - After `UtteranceFinal`, the engine resets internal state — next Preview starts fresh.
-- Presentation must keep **session structure**, not only a flat string:
+- The Rust reducer must keep **session structure**, not only a flat string:
   - committed utterances that are already safe to keep
   - one active preview/correction tail for the current utterance
 - Span order and PCM identity stay append-only. An authorized downstream L1/L2/L3
   observation may still correct wording inside its proven span before
   `transcript_sealed`; no layer may rebuild or reorder the session.
-- UI sinks still consume only backspace-encoded `TranscriptDelta` payloads; full preview snapshots must be diffed upstream before they reach overlay/chat APIs.
+- The reducer resolves those events before the Swift boundary. The overlay never
+  receives preview/final/correction mutations or a backspace stream; it receives
+  the complete rendered projection and its acoustic receipts.
 
-### Delta generation (backspace magic)
+### Upstream delta generation (delivery compatibility)
 
 When Whisper processes overlapping audio chunks, later chunks may **correct** earlier transcription. The `TranscriptDelta::from_diff` function generates a minimal delta:
 
@@ -271,7 +281,9 @@ Delta: "\u{0008}\u{0008}\u{0008}\u{0008}\u{0008}\u{0008}\u{0008}\u{0008}PostgreS
        8 backspaces to erase "po zgrze" + new text "PostgreSQL"
 ```
 
-The `\u{0008}` character is ASCII backspace. The UI applies it character-by-character via `TranscriptDelta::apply()`.
+The `\u{0008}` character is ASCII backspace. This remains an upstream/delivery
+compatibility representation derived from successive Rust reducer revisions; it
+is not an input to `OverlayState` and is not Swift transcript authority.
 
 ---
 
@@ -285,11 +297,18 @@ The `\u{0008}` character is ASCII backspace. The UI applies it character-by-char
 
 ### Runtime pipeline path
 
-App runtime uses a single path:
+App runtime uses one transcript-authority path:
 
 - `start_event_session` → `transcription_session` (event pipeline only).
-- Preview/Correction → update session transcript state (`committed utterances + active preview`) → compute a new full session target → emit only the delta needed to reach that target.
-- UtteranceFinal → utterance callback → AI pipeline (skips user bubble re-write).
+- Engine observations are admitted against `AcousticLedger`; corrections,
+  patches, annotations, and markers are reduced in
+  `app/presentation/emitter.rs`.
+- Each accepted reducer revision is published by the Transcript Bus as complete
+  `rendered_text` plus immutable projected acoustic receipts.
+- The bridge forwards that projection to Swift; it does not expose a parallel
+  Swift mutation protocol.
+- `UtteranceFinal` still drives the utterance callback and downstream AI policy,
+  but it does not grant Swift reducer ownership.
 
 Legacy worker path is kept only as deprecated compatibility/diagnostic code and is not used by app runtime.
 
@@ -297,39 +316,54 @@ Legacy worker path is kept only as deprecated compatibility/diagnostic code and 
 
 The controller checks `is_assistive_session()`:
 
-- **Assistive** (Fn+Shift hold / toggle-assistive): deltas go to voice chat user bubble.
-- **Non-assistive** (Fn hold / toggle): deltas go to floating overlay.
+- **Assistive** (Fn+Shift hold / toggle-assistive): the projection consumer hands
+  the Rust-owned rendered transcript to delivery policy; Agent Chat presents the
+  resulting user message without re-reducing transcript events.
+- **Non-assistive** (Fn hold / toggle): the floating overlay consumes the
+  immutable transcript projection.
 
-**Toggle nuance:** In toggle mode, each VAD silence boundary produces an `UtteranceFinal`. The utterance callback processes each utterance independently (AI formatting, clipboard). In the event pipeline, Preview streams into the user bubble, and the commit path finalizes without re-writing (`skip_user_bubble`). Recording continues until double-tap Option.
+**Toggle nuance:** In toggle mode, each VAD silence boundary produces an
+`UtteranceFinal`. The Rust reducer continues to publish canonical revisions; the
+utterance callback processes each resolved utterance independently (AI
+formatting, clipboard), and delivery avoids rewriting an already-presented user
+message (`skip_user_bubble`). Recording continues until double-tap Option.
 
 ---
 
-## Stage 6: Overlay Display
+## Stage 6: Projection Display
 
 ### Non-assistive mode (dictation)
 
-Delta arrives at the **Floating Overlay**:
+An immutable transcript projection arrives at the **Floating Overlay**:
 
-- Deltas reach Swift through the UniFFI listener; `OverlayState.applyPreview` /
-  `applyCorrection` / `applyFinal` fold them into the committed-segment buffer
-  (`macos/Codescribe/Screens/Overlay/OverlayState.swift`).
+- The UniFFI listener forwards `CsTranscriptProjectionEvent` to
+  `OverlayState.applyTranscriptProjection`, the only admitted Swift
+  transcript-text input.
+- Swift rejects non-monotonic sequences, zero reducer revisions, or projections
+  without complete acoustic receipts, then replaces its display from the
+  projection's complete `renderedText`.
+- Transcript segments, preview/final folding, correction and patch application,
+  marker rebasing, and highlight reconstruction remain upstream Rust reducer
+  concerns. Swift neither recreates nor owns that state.
 - Updates the always-on-top transparent overlay window.
 - Auto-resizes to fit text content.
 - Auto-hides after 5 seconds of inactivity (with hover guard).
 
 ### Assistive mode (AI chat)
 
-Delta arrives at the **Agent Tab**:
+The resolved transcript reaches the **Agent Tab** through delivery policy:
 
-- `AgentChatStore` folds the delta into the streaming user message
-  (`macos/Codescribe/Screens/AgentChat/AgentChatStore.swift`).
-- Updates the streaming user message bubble.
+- `AgentChatStore` presents the delivered user message; it does not fold engine
+  events into a competing transcript.
 - After utterance is complete, the transcribed text is sent to the LLM.
 - LLM response streams back via a separate `delta_callback` into assistant message bubbles.
 
 ### Thread safety
 
-All UI updates are dispatched to the **main thread** via `Queue::main().exec_async()` (Grand Central Dispatch). The delta callback fires from the pipeline worker thread; the GCD dispatch ensures AppKit operations happen on the main thread.
+Projection callbacks cross the bridge onto the app's main-actor listener before
+`OverlayState.applyTranscriptProjection` updates display/delivery state. Rust
+owns transcript ordering and reduction; main-actor isolation only protects the
+Swift presentation surface.
 
 ---
 
@@ -344,12 +378,12 @@ Silero VAD (per 32ms frame)   ~2ms           ~8ms
 VAD gate decision             <1ms           ~9ms
 Whisper chunk accumulation    ~4000ms        ~4009ms
 Whisper inference (Metal GPU) ~2000-7000ms   ~6000-11000ms
-PostProcess + delta           <1ms           ~6001ms
-GCD dispatch to main thread   <1ms           ~6002ms
-AppKit text update            <1ms           ~6003ms
+PostProcess + Rust reducer    <1ms           ~6001ms
+Projection bridge dispatch   <1ms           ~6002ms
+Swift projection display     <1ms           ~6003ms
 ─────────────────────────────────────────────────────────
 First visible text:           ~6s after speech starts
-Corrections (backspace):      ~4s after each new chunk
+Corrected projections:       ~4s after each new chunk
 ```
 
 ---
@@ -371,12 +405,17 @@ Whisper inference → raw transcript
     ▼
 stable L2 span / EngineEvent::Preview { text }
     │ optional L3 scheduling through existing Responses formatter
-    │ EventSink / DeltaSinkAdapter
     ▼
-TranscriptDelta (backspace-encoded diff)
-    │ apply to UI buffer
+AcousticLedger admission + Rust transcript reducer
+    │ accepted TranscriptRevision
     ▼
-Displayed text (String, visible in overlay/bubble)
+Transcript Bus evidence projection
+    │ complete rendered_text + acoustic receipts
+    ▼
+CsTranscriptProjectionEvent → OverlayState.applyTranscriptProjection
+    │ display / delivery only
+    ▼
+Displayed projected text (String, visible in overlay)
 ```
 
 ---
@@ -401,8 +440,10 @@ Displayed text (String, visible in overlay/bubble)
 | `core/llm/ai_formatting.rs`                               | Existing Responses Formatting lane used by L3              |
 | `app/controller/mod.rs`                                   | Recording state machine, Hold/Toggle orchestration         |
 | `app/controller/helpers.rs`                               | ControllerEventRouter, session mode routing                |
-| `app/presentation/emitter.rs`                             | PresentationEmitter (typing animation via BufferedEmitter) |
-| `macos/Codescribe/Screens/Overlay/OverlayState.swift`     | Floating overlay state + layered render enforcement        |
+| `core/pipeline/acoustic_ledger.rs`                        | PCM/span evidence authority and immutable receipts         |
+| `app/presentation/emitter.rs`                             | Canonical Rust transcript reducer                           |
+| `app/presentation/transcript_bus.rs`                      | Immutable rendered projections with acoustic receipts      |
+| `macos/Codescribe/Screens/Overlay/OverlayState.swift`     | Projection display/delivery consumer                       |
 | `macos/Codescribe/Screens/AgentChat/AgentChatStore.swift` | Agent chat state (threads, streaming bubbles)              |
 
 ---
