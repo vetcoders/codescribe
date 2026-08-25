@@ -17,15 +17,6 @@ pub(crate) fn env_bool(key: &str) -> bool {
         .unwrap_or(false)
 }
 
-/// Like [`env_bool`], but for knobs whose off-state is not the safe default.
-#[cfg(any(test, feature = "offline_eval"))]
-pub(crate) fn env_bool_default(key: &str, default: bool) -> bool {
-    std::env::var(key)
-        .ok()
-        .map(|v| v == "1" || v.eq_ignore_ascii_case("true"))
-        .unwrap_or(default)
-}
-
 /// Read `key` as an `f32`, falling back to `default` when unset or unparseable.
 pub(crate) fn env_f32(key: &str, default: f32) -> f32 {
     std::env::var(key)

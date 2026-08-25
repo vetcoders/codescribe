@@ -193,7 +193,7 @@ audio file ▶ `codescribe transcribe` CLI / cloud final pass
 - Bench ruler: the same-host `lbrx-stt-engine` column (§13 of the roadmap) —
   its timestamps compress silence (clock-lie class), so any integration maps
   by sample ranges, never by its reported seconds.
-- `streaming/offline.rs` is **tests/offline_eval only** — not a runtime lane.
+- There is no `offline_eval` streaming lane. Adjacent observation windows may overlap for decoder context; overlap replay is resolved by request/span identity, never by textual similarity.
 
 PCM-range idempotence is a default-ON identity law. A repeated
 `(session, capture_epoch, sample_start, sample_end)` cannot land twice;

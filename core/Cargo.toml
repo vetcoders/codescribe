@@ -25,7 +25,6 @@ path = "bin/codescribe-whisper-validate.rs"
 
 [features]
 default = []
-offline_eval = []
 licensing-dev = []
 
 [dependencies]
