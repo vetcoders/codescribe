@@ -6,9 +6,10 @@
 //! - `final`   → phrase seal (multi-utterance freezed+append fuel)
 //! - closing `BridgeResponse` → summary after stdin EOF
 //!
-//! Product live path maps these onto `EngineEvent::{Preview,UtteranceFinal}`.
-//! The old one-shot `run_bridge_stream` (full buffer then wait) remains for
-//! scheduler commit slices and the A/B `wav` escape hatch.
+//! The Apple live session maps these onto
+//! `EngineEvent::{Preview,UtteranceFinal}` before ledger admission. The `wav`
+//! A/B alternative is an older Apple temp-WAV `transcribe_live` request
+//! transport, not a VAD/scheduler route.
 
 use std::io::{BufRead, BufReader, Write};
 use std::process::{Child, ChildStdin, Command, Stdio};
@@ -416,8 +417,13 @@ pub(crate) fn parse_stream_stdout_line(line: &str) -> Option<LiveStreamEvent> {
     None
 }
 
-/// Whether the product live path should use progressive stream multi-seal
-/// (default) vs the legacy VAD+per-window scheduler path.
+/// Compatibility accessor for the Apple bridge transport token.
+///
+/// `stream` selects progressive Apple AudioBuffer delivery; `wav` and
+/// `transcribe_live` name the older Apple temp-WAV request transport. A fresh
+/// Loctree 600-file structural census on 2026-08-25 found this definition and
+/// its re-export but no caller. That is a structural observation, not runtime
+/// proof, and this helper does not select or restore a VAD/scheduler pipeline.
 pub fn progressive_live_enabled() -> bool {
     let mode = std::env::var("CODESCRIBE_APPLE_STT_LIVE_MODE").unwrap_or_else(|_| "stream".into());
     !mode.eq_ignore_ascii_case("wav") && !mode.eq_ignore_ascii_case("transcribe_live")

@@ -1,7 +1,8 @@
 //! P0-D Quality loop MVP: capture user corrections from overlay FINAL transcript edits.
 //! Writes quality records (raw, delivered, edited) to ~/.codescribe/quality/*.jsonl
 //! Extracts lexicon candidates (delivered→edited) and appends safe rules to the
-//! custom lexicon (lexicon.custom.jsonl) that StreamPostProcessor / apply_lexicon already consumes.
+//! custom lexicon (`lexicon.custom.jsonl`) loaded by the current
+//! `custom_lexicon_entries` path and its bridge/quality readers.
 //!
 //! Privacy: purely local, no network, no secrets, no audio.
 //! No new Settings knobs (three identical human teaches by default; VoiceLab UI later).

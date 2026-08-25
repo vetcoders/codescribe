@@ -475,14 +475,14 @@ fn transcribe_file_with_backend(
     Ok((raw_transcript_from_bridge_response(response), backend))
 }
 
-/// Live-path entry point: transcribe in-memory PCM through the bridge.
+/// In-memory Apple bridge A/B entry point.
 ///
-/// Defaults to streaming v2 (one long-lived recognition request fed raw PCM,
-/// the system-dictation shape). The older per-request WAV window path measured
-/// 0.228 parity against system Apple live, which is why streaming exists; it
-/// stays reachable through `CODESCRIBE_APPLE_STT_LIVE_MODE` as an A/B escape
-/// hatch. The host timeout is sized from audio wall-clock plus the bridge's
-/// post-EOF settle grace, so a slow settle is not mistaken for a hang.
+/// `stream` feeds raw PCM to one Apple `SFSpeechAudioBufferRecognitionRequest`.
+/// `wav` writes a temporary WAV and sends one Apple `transcribe_live` bridge
+/// request. Both choices are Apple transport mechanics inside the same
+/// authority architecture; neither selects a VAD/scheduler pipeline. The host
+/// timeout is sized from audio wall-clock plus the bridge's post-EOF settle
+/// grace, so a slow settle is not mistaken for a hang.
 fn transcribe_via_bridge(
     audio: &[f32],
     sample_rate: u32,
@@ -494,11 +494,10 @@ fn transcribe_via_bridge(
 
     init()?;
 
-    // Live path = streaming v2: one long-lived SFSpeechAudioBuffer request fed
-    // raw PCM (system-dictation shape). The old `transcribe_live` WAV window
-    // path measured 0.228 parity against system Apple live — streaming exists
-    // to close that gap. Final-pass still uses `transcribe` → SFSpeechURL.
-    // Escape hatch for A/B: CODESCRIBE_APPLE_STT_LIVE_MODE=wav|stream (default stream).
+    // Apple transport A/B only: `stream` feeds raw PCM into one AudioBuffer
+    // recognition request; `wav` writes one temp WAV for an Apple
+    // `transcribe_live` bridge request. Neither branch changes occurrence or
+    // transcript authority. Final-pass still uses `transcribe` → SFSpeechURL.
     let live_mode =
         std::env::var("CODESCRIBE_APPLE_STT_LIVE_MODE").unwrap_or_else(|_| "stream".into());
     if live_mode.eq_ignore_ascii_case("wav") || live_mode.eq_ignore_ascii_case("transcribe_live") {
@@ -516,8 +515,9 @@ fn transcribe_via_bridge(
     Ok(raw_transcript_from_bridge_response(response))
 }
 
-/// Legacy live path: temp WAV + `transcribe_live` (per-request windowed engine).
-/// Kept as A/B escape hatch; product default is `stream`.
+/// Older Apple transport: one temp WAV + one `transcribe_live` bridge request.
+/// Kept only for transport A/B against the default live AudioBuffer stream; it
+/// is not a separate VAD/scheduler pipeline.
 fn transcribe_via_bridge_wav_live(
     audio: &[f32],
     sample_rate: u32,

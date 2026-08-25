@@ -1,16 +1,19 @@
 //! W13-3B — Silero utterance identity + conservative per-word fusion.
 //!
 //! Lane flag [`SILERO_FUSION_ENV`] is **default OFF**. When armed:
-//! Silero Supervisor edges mint utterance identity on the PCM sample clock;
-//! Apple cumulative finals are sliced onto those ranges by time; Whisper and
-//! Apple then fuse conservatively (agreements + clear gap fills). Unresolved
-//! alternatives are receipted, never confidence-arbitrated. Every write into
-//! a pending span goes through [`super::progressive_seal::ProgressiveSealMachine::try_rewrite`].
+//! Silero Supervisor edges supply boundary, time, and energy evidence on the
+//! PCM sample clock; Apple cumulative finals are sliced onto those ranges by
+//! time; Whisper and Apple then fuse conservatively (agreements + clear gap
+//! fills). Unresolved alternatives are receipted, never confidence-arbitrated.
+//! Text-bearing results return to the Apple session: `admit_ledger_label`
+//! offers each observation to `AcousticLedger::admit`, closed occurrences pass
+//! through `AcousticLedger::seal`, and ledger events reach the transcript
+//! reducer. This module owns no text admission or seal authority.
 //!
 //! # One Silero per session
 //!
 //! [`SileroIngress`] is the session's **only** `SpeechSession`. Both consumers
-//! of speech edges read it: the fusion ledger (utterance identity) and the
+//! of speech edges read it: Silero boundary-range bookkeeping and the
 //! Apple engine lifecycle (`EpochGate` wake/sleep). Two independent VAD
 //! sessions over the same PCM would mean two spectra and two sets of
 //! boundaries, and "the same utterance" would then mean two different sample
@@ -69,8 +72,10 @@ pub struct SileroUtterance {
     pub closed: bool,
 }
 
-/// Ledger of Silero-minted utterance identities. Pure data; the Supervisor
-/// machine in [`SileroIngress`] is the only writer in production.
+/// Silero boundary-range bookkeeping. Pure data; the Supervisor machine in
+/// [`SileroIngress`] is the only writer in production. This is not the
+/// [`crate::pipeline::acoustic_ledger::AcousticLedger`] and owns no text,
+/// occurrence admission, or seal authority.
 #[derive(Debug, Clone, Default)]
 pub struct UtteranceLedger {
     next_id: u64,

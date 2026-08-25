@@ -200,6 +200,10 @@ executable checks remain authoritative.
   the live transcript hot path.
 - **Purpose:** Preserve one stable spoken-name spelling without rewriting
   substrings such as Polish `piwo`, and remove avoidable per-partial work.
+- **Supersession note (2026-08-25):** This is a dated journal receipt, not a
+  current implementation map. The cited `stream_postprocess.rs` surface was
+  later deleted and has no current authority; the event remains here because
+  the active-name work and its measured reason did occur.
 
 ## 2026-08-22 — exact paste-focus confirmation
 

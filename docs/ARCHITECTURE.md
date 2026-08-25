@@ -2,11 +2,13 @@
 
 > Created by Vetcoders (c)2026
 >
-> **2026-08-22:** transcription follows the canonical
+> **Current structural map (2026-08-25, HEAD `484095ce`):** transcription follows the canonical
 > [four-layer engine contract](./THE_ENGINE_CONTRACT.md). The 2026-05-26
 > [five-layer ADR](./ADR/2026-05-26-LAYERED_INCREMENTAL_TRANSCRIPTION.md)
-> is a superseded historical proposal. Sections below describe the packaging
-> and module layout that hosts the current contract.
+> is a superseded historical proposal. Normal live capture is the Apple session
+> plus one acoustic ledger and one Rust reducer; sections below describe the
+> packaging and module layout that hosts that route. This is source evidence,
+> not a C8A compiler or runtime claim.
 
 ## Layered Incremental Transcription (since 2026-05-26)
 
@@ -27,12 +29,12 @@ apply replacement ranges, rebase reducer markers, or reconstruct transcript
 highlights. _NEVER REWRITE FROM ZERO_ is enforced upstream by occurrence/span
 identity and reducer authority, not by a Swift text-mutation API.
 
-| Layer                        | Engine                                        | Status                                                                          | Where it lives                                                                                                                           |
-| ---------------------------- | --------------------------------------------- | ------------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------- |
-| **L0 — Apple**               | `SFSpeechRecognizer` live observer            | ✅ shipped first paint                                                          | `core/stt/apple_stt/` + Apple progressive session                                                                                        |
-| **L1 — Whisper**             | Contextual observation over proven PCM spans  | ✅ exact-span Apple progressive; VAD/Whisper-first remains its own primary lane | `core/stt/tail_patcher/`, `core/stt/tail_provider.rs`, `core/stt/whisper/`                                                               |
-| **L2 — Lexicon + Light+**    | Deterministic vocabulary and sentence shaping | ✅ currently wired                                                              | `core/pipeline/stream_postprocess.rs::apply_lexicon`, `core/pipeline/light_plus.rs`, progressive seals and delivery floor                |
-| **L3 — Responses formatter** | Existing configured Formatting lane           | ✅ implemented behind `CODESCRIBE_INLINE_FORMAT`                                | `core/llm/inline_format.rs` schedules stable spans through `core/llm/ai_formatting.rs`; inline is scheduling, not a separate small model |
+| Layer | Engine | Current authority and exact surface |
+| --- | --- | --- |
+| **L0 — Apple** | First live text observer | `transcription_session` delegates to `apple_stream_transcription_session`; Apple observations enter `AcousticLedger` through `admit_ledger_label` |
+| **L1 — Whisper** | Bounded observation on retained PCM | `core/stt/tail_provider.rs` and `core/stt/tail_patcher/` feed the same Apple-ledger session; Whisper owns no parallel live route |
+| **L2 — Lexicon + Light+** | Deterministic authorized relabeling | `admit_ledger_label` records the Lexicon observation; `core/pipeline/light_plus.rs` is the shaping surface, and `custom_lexicon_entries` is the persisted custom-lexicon loading path |
+| **L3 — Responses formatter** | Configured Formatting-lane observation | `core/llm/inline_format.rs` schedules authorized text through `core/llm/ai_formatting.rs`; `RuntimeSettingsSnapshot::llm_lanes()` supplies sealed lane truth |
 
 Silero sits beside these layers as VAD and PCM-time evidence. Speech boundaries,
 silence duration, pause timing, and pre-roll are its truthful outputs. Named
@@ -40,10 +42,12 @@ laughter/noise classes require an optional measured provider; plain Silero does
 not claim them. Final BAM is superseded and has no producer, while
 `SessionFinalised` closes lifecycle only.
 
-Existing files (`core/stt/whisper/`, `core/audio/streaming_recorder.rs`, `core/vad/silero_ort.rs`)
-keep their public APIs — Layer 1 reuses them as its backend.
+`AcousticLedger::admit` and `AcousticLedger::seal` own physical occurrence
+decisions. `EngineEvent::LedgerMutation` / `LedgerSeal` flow to
+`PresentationEmitter` / `TranscriptReducer`; Transcript Bus and Swift observe
+the committed projection. `DeliveryRoute` follows explicit operator intent.
 
-### Final pass routing & stop-path receipts (since W11, 2026-07-23)
+### Explicit Retranscribe and stop-path receipts
 
 The Apple bridge (`core/stt/apple_stt/codescribe-stt-bridge.swift`) probes
 backends per locale: `SpeechTranscriber` only when supported **and installed**,
@@ -52,16 +56,16 @@ pass vs the 20–30 s double-Whisper era). A third lane,
 `DictationTranscriber` — the SpeechAnalyzer module behind the SYSTEM dictation
 and the only Apple analyzer whose catalog carries pl-PL — sits between them but
 stays **off unless `CODESCRIBE_APPLE_DICTATION_TRANSCRIBER=1`**; it is a
-measurement PoC (W4-A), not a shipped default. Stop-path final-pass routing is owned
-by `FINAL_PASS_MODE` (`always|smart|off`, Smart default; Settings → Dictation →
-"Final pass"). **Smart only** skips the full stop re-pass on a typed,
-adjudicator-backed completeness decision (`StreamingCompleteness`) — never on
-punctuation and never rewritten by live engine (Off stays Off; Off never forces
-Whisper at stop). Live repair is orthogonal: Local Power + Apple/Auto arms the
-exact-span Apple progressive patcher by default. `phase1` remains compatible
-explicit arming; explicit off/invalid is degraded. The VAD/scheduler route uses
-Whisper directly and refuses a second unbound lane. Dictionary/lexicon always
-runs in postprocess.
+measurement PoC (W4-A), not a shipped default.
+
+Normal stop performs no whole-file inference. It closes the Apple stream,
+drains already-admitted live observations within the bounded budget, seals the
+ledger, publishes the reducer projection, and delivers through the explicit
+route. `FINAL_PASS_MODE` and its alias remain migration tokens only. Explicit
+Retranscribe is a separate operator action over a selected completed artifact;
+its proposal does not become live Transcript Bus truth automatically. Live
+Whisper repair is orthogonal and stays bounded to an authorized occurrence in
+the Apple-ledger session.
 
 Two INFO receipts prove the path in `codescribe.log`:
 
@@ -78,54 +82,31 @@ runtime truth (including Apple→Whisper fallback), never configured preference.
 ## System Overview
 
 ```mermaid
-flowchart TB
-    %% High-level packaging / layers
+flowchart LR
+    INTENT[Explicit operator intent]
+    CTRL[RecordingController\nsole in-app microphone owner]
+    REC[StreamingRecorder\nsuccessful-open capture_epoch]
+    DISPATCH[transcription_session\nApple-only live dispatch]
+    APPLE[apple_stream_transcription_session]
+    SILERO[Silero\ntime / energy / boundary evidence]
+    WHISPER[Whisper\nbounded L1 observation]
+    LEXICON[Lexicon + Light+\nauthorized L2 relabel]
+    FORMATTER[Responses\nauthorized L3 relabel]
+    LEDGER[(AcousticLedger\nadmit / seal authority)]
+    REDUCER[PresentationEmitter / TranscriptReducer]
+    BUS[Transcript Bus\ncommitted projection]
+    SWIFT[Swift projection observer]
+    ROUTE[DeliveryRoute]
 
-    subgraph UI["macos/Codescribe/ (SwiftUI + AppKit)"]
-        direction LR
-        OVERLAY[Screens/Overlay/OverlayState.swift]
-        CHAT[Screens/AgentChat/]
-        SETTINGS[Screens/Settings/]
-        TRAY[Screens/Tray/]
-    end
-
-    subgraph BRIDGE["bridge/ (UniFFI)"]
-        FFI[Rust ↔ Swift bindings\nmake app-bindings]
-    end
-
-    subgraph APP["app/ (Rust app layer)"]
-        direction LR
-        HK[os/hotkeys/]
-        CTRL[controller/]
-        PRES[presentation/emitter.rs\nRust transcript reducer]
-        BUS[presentation/transcript_bus.rs\nimmutable projection + acoustic receipts]
-        AGENT[agent/]
-    end
-
-    subgraph CORE["core/ (portable)"]
-        direction LR
-        WH[stt/whisper/]
-        APPLE[stt/apple_stt/]
-        TAIL[stt/tail_patcher/]
-        CO[config/]
-        AU[audio/]
-        IPC_CORE[ipc types]
-    end
-
-    CORE -->|observations| LEDGER[AcousticLedger]
-    LEDGER --> PRES
-    PRES --> BUS
-    BUS --> BRIDGE
-    BRIDGE -->|CsTranscriptProjectionEvent| UI
-
-    WH --> MODEL[Whisper Model\nlarge-v3-turbo\nfp16 only\nembedded or runtime-loaded]
-
-    subgraph TOOLS[Quality & CLI Tools]
-        TEACH[bin/codescribe-teacher]
-        QUBE[bin/qube_daemon + qube_report]
-    end
-
-    APP -.-> TOOLS
+    INTENT --> CTRL --> REC --> DISPATCH --> APPLE
+    SILERO -. evidence .-> APPLE
+    APPLE -- Apple observation --> LEDGER
+    WHISPER -- retained-PCM observation --> LEDGER
+    LEXICON -- relabel --> LEDGER
+    FORMATTER -- relabel --> LEDGER
+    LEDGER -- LedgerMutation / LedgerSeal --> REDUCER --> BUS --> SWIFT
+    INTENT --> ROUTE
+    SWIFT --> ROUTE
 ```
 
 ## Module Architecture
@@ -312,7 +293,7 @@ The Rust AppKit `ui/voice_chat/` module (`mod.rs` / `api.rs` / `handlers.rs` / `
 | Tray app with submenus                       | ✅     |
 | History with slug filenames                  | ✅     |
 | IPC server (runtime interface)               | ✅     |
-| Stream postprocess (semantic gating)         | ✅     |
+| Acoustic-ledger admission + reducer projection | ✅ structurally mapped |
 | Quality loop + report                        | ✅     |
 | Codescribe Core separation                   | ✅     |
 | VAD (auto-stop on silence)                   | ✅     |

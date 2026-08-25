@@ -10,13 +10,14 @@
 > **Status (2026-08-25):** `StreamingRecorder` is the sole allocator of live
 > capture epochs: a checked next value is committed only after the device opens,
 > and a new operator-session bind resets the counter. The Apple progressive path
-> receives that explicit epoch and enforces exact request/span PCM identity, one
-> pre-final rewrite fence, structural replay idempotence, and a bounded stop
-> drain with typed degradation. In-process, sidecar, and remote tail providers
-> share that explicit identity seam. The disabled VAD/scheduler identity cone
-> and file-tail text-overlap compatibility cone are removed. Offline one-file
-> replay seams use caller-domain epoch `1`. Legacy `FINAL_PASS_MODE` no longer
-> owns any normal-stop inference.
+> receives that explicit epoch. `AcousticLedger` alone qualifies occurrences,
+> admits observations, refuses structural replay, and seals; equal text is never
+> occurrence identity. `PresentationEmitter` / `TranscriptReducer` reduce the
+> resulting ledger events before Transcript Bus and Swift observe them.
+> In-process, sidecar, and remote tail providers share that identity seam. The
+> VAD/scheduler identity cone and file-tail text-overlap compatibility cone are
+> removed. Offline one-file replay seams use caller-domain epoch `1`. Legacy
+> `FINAL_PASS_MODE` no longer owns any normal-stop inference.
 > Planning report: internal plan `stt-apple-must-have` (operator artifact store, 2026-07-24).
 
 ---
@@ -199,7 +200,7 @@ whole-file inference is an explicit Retranscribe action.
 
 | Front entry                     | Binding (your settings)             | Bridge / OS                      | Controller                                                 | Backend                                      |
 | ------------------------------- | ----------------------------------- | -------------------------------- | ---------------------------------------------------------- | -------------------------------------------- |
-| Hold Fn (dictation)             | `mode_bindings.dictation = hold_fn` | `CodescribeHotkeys` + CGEventTap | `AppController::handle_hotkey_event` → `handle_hold_event` | recorder + streaming session + `core/stt::*` |
+| Hold Fn (dictation)             | `mode_bindings.dictation = hold_fn` | `CodescribeHotkeys` + CGEventTap | `RecordingController::handle_hotkey_event` → `handle_hold_event` | recorder + streaming session + `core/stt::*` |
 | Double Left Option (formatting) | `formatting = double_left_option`   | same                             | hold/toggle + force AI format path                         | STT same, then `core/llm` formatting         |
 | Double Right Option (assistive) | `assistive = double_right_option`   | same                             | assistive session                                          | STT same, then agent lane                    |
 
@@ -218,7 +219,7 @@ file-pass belongs only to explicit retranscribe surfaces.
 | Whisper model status / download | `whisper_model_status` / `download_whisper_model`   | `core/config/models.rs`                                                |
 | Audio device                    | `audio_input_snapshot` + config keys                | `UserSettings.audio_input_device` + cpal                               |
 | Mic permission                  | `mic_permission_granted` / `request_mic_permission` | `app/os/permissions`                                                   |
-| Lane (LLM) truth                | `lane_truth_snapshot(lane)`                         | `core/llm/lane_truth.rs`                                               |
+| Lane (LLM) truth                | runtime snapshot projection                         | `RuntimeSettingsSnapshot::llm_lanes()` → `RuntimeLlmLanes`             |
 
 ### 3.3 Dictation overlay / tray
 
@@ -240,15 +241,18 @@ file-pass belongs only to explicit retranscribe surfaces.
 | Live capture epoch    | device open/reopen | `StreamingRecorder` checked session-local counter              | issued only after successful open; engines only observe it            |
 | Explicit Retranscribe | operator action  | local completed-file decode or cloud multipart                   | may replace the selected artifact, never the live canvas              |
 
-Layer 1 mutation identity is `(session, capture_epoch, sample_start, sample_end, request_id, target_utterance_id, event_ordinal)`. The request range
-must contain the target span and any provider payload must echo the admitted
-identity. Patch offsets are applied only to the byte-identical baseline handed
-to the patcher. The accepted text crosses
-`ProgressiveSealMachine::try_rewrite_anchored` once, and only when the evidence
-range overlaps the target on the same session/epoch clock; `UtteranceFinal` is the first and
-last outward committed form. Replays, invalid ranges, missing identities, and
-late completions emit content-free typed warnings and preserve Apple text.
-Identical words in disjoint PCM ranges are distinct applications and survive.
+Physical occurrence identity is exactly
+`(session, capture_epoch, sample_start, sample_end)`. Observation identity adds
+producer, request, and generation. Provider-specific request metadata may be
+richer, but it cannot mint a second physical occurrence. The request range must
+contain the target span and any provider payload must echo its admitted PCM
+identity. `AcousticLedger::admit` records the decision and
+`AcousticLedger::seal` closes the occurrence; `EngineEvent::LedgerMutation` and
+`EngineEvent::LedgerSeal` carry those receipts into
+`PresentationEmitter` / `TranscriptReducer`, which alone commit the document
+projection. Replayed observation identity, invalid ranges, missing identities,
+and late automatic completions are refused structurally. Identical words in
+disjoint PCM ranges remain distinct occurrences and survive.
 
 `UtteranceFinal.acoustic` carries the committed phrase identity through the
 presentation reducer into the Transcript Bus. Phrase timing remains `phrase`;

@@ -543,7 +543,7 @@ default = ""
 type = "string"
 reload = "hot"
 category = "stt"
-description = "Promoted compatibility override for live local Whisper refinement. Product mode owns the default: Local Power with Apple/Auto arms the exact-span Apple progressive patcher when unset or phase1; explicit off/0/false/no and malformed values produce a named degraded disposition. Apple-only does not arm it. Direct Whisper on the VAD/scheduler path is already the primary engine and refuses a second unbound mutation lane. Phases 2..4 remain reserved. Orthogonal to FINAL_PASS_MODE; normal stop performs no whole-file pass. Runtime truth is the per-session tail_patch_session_receipt, not UI state."
+description = "Promoted compatibility override for live local Whisper refinement. Product mode owns the default: Local Power with Apple/Auto arms the Layer 1 tail-provider observation on the Apple-ledger session when unset or phase1; explicit off/0/false/no and malformed values produce a named degraded disposition. Apple-only does not arm it. This token does not select or restore a VAD/scheduler route. Phases 2..4 remain reserved. Orthogonal to FINAL_PASS_MODE; normal stop performs no whole-file pass. Runtime truth is the per-session tail_patch_session_receipt, not UI state."
 
 [vars.CODESCRIBE_SEAL_ATLAS_DUMP]
 default = ""
@@ -767,7 +767,7 @@ default = "stream"
 type = "string"
 reload = "restart"
 category = "stt"
-description = "Apple live session transport: stream (AudioBuffer live) or wav (legacy VAD+scheduler escape hatch)"
+description = "Apple live session transport A/B: stream uses live AudioBuffer delivery; wav uses the older Apple transcribe_live temp-WAV request bridge and does not restore the deleted VAD/scheduler pipeline"
 
 [vars.CODESCRIBE_APPLE_DICTATION_TRANSCRIBER]
 default = "0"

@@ -2,14 +2,16 @@
 
 The locked quality-report / seal / relay contract lives in
 [`docs/THE_ENGINE_CONTRACT.md`](THE_ENGINE_CONTRACT.md)
-(`the-engine/v1`, `core/quality/engine_contract.rs`). This roadmap is the
-execution plan. Do not re-litigate the three bars here.
+(`the-engine/v1`, `core/quality/engine_contract.rs`). This roadmap preserves the
+dated W13 execution plan and its measurements. It is not the current runtime
+map; the current structural-truth block below is authoritative.
 
-**Codescribe STT engine — current state vs. target, sealed.**
+**Codescribe STT engine — historical W13 state vs. target, superseded as a
+runtime map.**
 
 |           |                                                                                                                                             |
 | --------- | ------------------------------------------------------------------------------------------------------------------------------------------- |
-| Status    | SEALED — direction decided by the operator; execution tracked per cut                                                                       |
+| Status    | HISTORICAL — measurements retained; pre-ledger implementation guidance is superseded                                                          |
 | Date      | 2026-08-13 (polarized 2026-08-14)                                                                                                           |
 | Plan pack | `~/.vibecrafted/artifacts/vetcoders/codescribe/2026_0813/plans/w13-tail-and-format/` (ATLAS + 6 briefs + DRIVER + de-risk recon)            |
 | Branch    | `fix/the-tail-patches` (Living Tree)                                                                                                        |
@@ -22,18 +24,17 @@ execution plan. Do not re-litigate the three bars here.
 This document exists because the design was ahead of the runtime — and the
 gap kept being re-derived instead of closed.
 
-The layered transcription model (fast on-device words + deep-context
+At the time of this roadmap, the layered transcription model (fast on-device words + deep-context
 correction + lexicon + AI formatting) was designed by the operator and
 repeated, in his own count, ~50 times. Every element of it exists in this
-repository. Almost none of it is connected the way the design draws it.
-The system today is a set of healthy organs that are not wired into one
-bloodstream.
+repository, but almost none of it was connected the way the design drew it.
+That was the 2026-08-13 problem statement, not current authority.
 
 This roadmap freezes three things:
 
 1. **The doctrine** — the decisions that are settled and must not be
    re-litigated by future sessions or agents (§3).
-2. **The gap** — current runtime state vs. target state, side by side,
+2. **The gap** — the dated runtime state vs. target state, side by side,
    with evidence (§5).
 3. **The work** — every implementation point of every cut, enumerated,
    with its non-fakeable acceptance measurement (§6).
@@ -59,9 +60,9 @@ same engine. The layered model is not a compromise between them — it is
 the invention that fuses them. The wave's goal is to FINISH the fusion,
 not to crown either engine.
 
-**Six cuts (W13-1 … W13-6)** deliver the finish. Code for W13-2…6 is on
-`HEAD` behind default-OFF flags (`13b1eed8`). Empty `[ ]` here was a lie
-after settlement — do not re-open those cuts as unstarted work.
+**Six historical cuts (W13-1 … W13-6)** described the intended finish on the
+2026-08-13/21 snapshots. Their state table is retained as archaeology, not as a
+queue for HEAD `484095ce`.
 
 | Cut   | One line                                                                                                                                  | State                                                        |
 | ----- | ----------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------ |
@@ -73,15 +74,24 @@ after settlement — do not re-open those cuts as unstarted work.
 | W13-5 | Capture-level receipt + Audio menu truth (level, device, quality)                                                                         | landed — WARN is non-terminal                                |
 | W13-6 | Lexicon gets a voice (Whisper `initial_prompt`, Apple `contextualStrings`) + word/gap highlighting feeding Teach                          | landed OFF — 6A voice + 6B `CODESCRIBE_OVERLAY_HIGHLIGHTS=0` |
 
-**Current truth (2026-08-21, field-falsified):** the stock live product runs
-Apple canvas + lexicon. Layer 1 Whisper tail-patch is wired but fail-closed
-(`unset` → `off`; explicit `phase1` is experimental) until the request/span
-identity and single rewrite-fence closing bar is complete. W13 fusion /
-idempotence / highlights stay OFF until an operator flip.
-`lbrx-stt-engine` file-mode is a **bench**, not a replacement engine.
-Single-writer emitter landed in `75c89f56`. Next field cut is take-614
-fusion A/B. Closing bar: layered-ON ≥ lbrx file-mode on U-WER vs human,
-at live latency, on all three golden takes.
+**Current structural truth (2026-08-25, HEAD `484095ce`):**
+
+- `RecordingController` is the only in-app microphone owner;
+  `StreamingRecorder` owns successful-open `capture_epoch` allocation.
+- `transcription_session` dispatches only to
+  `apple_stream_transcription_session`.
+- Silero feeds boundary, time, and energy evidence into that Apple session. It
+  owns neither a microphone nor text.
+- Apple, Whisper, Lexicon/Light+, and Responses formatting observe or relabel an
+  already-authorized occurrence. `AcousticLedger` alone admits and seals it.
+- `PresentationEmitter` / `TranscriptReducer` commit ledger events; Transcript
+  Bus and Swift observe the projection; delivery follows explicit
+  `DeliveryRoute`.
+- The deleted VAD/scheduler mutation route and `progressive_seal.rs` are not
+  alternatives. Nothing below authorizes restoring them.
+
+This block is structural source evidence only; C8 intentionally does not run or
+claim compiler/runtime verification, and an independent C9 owns W2 closure.
 
 **What the user feels when this lands:** words stop vanishing; corrections
 actually arrive; stop is near-instant; deliberate repetition is never
@@ -97,7 +107,9 @@ vocabulary before it errs instead of being spell-checked after.
    directions of pendulum swing.)
 2. **Time is the primary key.** PCM sample counter is the session clock;
    SFSpeech span clock is mapped onto it explicitly at ingestion (a 2 ms
-   divergence is measured and documented at `progressive_seal.rs:360–373`).
+   divergence was measured in the historical pre-ledger
+   `progressive_seal.rs:360–373` snapshot; that file is deleted and has no
+   current authority.
 3. **Append-only overlay, layer order preserved:** Apple → Whisper →
    lexicon → human. Sealed spans are immutable; the human layer stays on
    top after seal.
@@ -155,14 +167,14 @@ All measured 2026-08-12/13 unless noted.
   over-hallucination and repetition storms (window overlap, decode
   derailment — see `whisper-window-alignment-fragility` incident record).
 
-## 5. Current state vs. target — the master table
+## 5. Historical state vs. target — superseded W13 master table
 
 | Subsystem               | Current (evidence)                                                                                                                                                                                                                                                                                                                                                               | Target (cut)                                                                                                                                                                                                             |
 | ----------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
 | Utterance identity      | **Engine lifecycle landed** (`7d163d58`): `TOGGLE_SILENCE_SEC` arms `EpochGate` on the Apple progressive lane — Silero watches PCM, speech opens an SFSpeech epoch, silence past the slider seals + rests the engine, next speech wakes with 0.40 s pre-roll. Phrase ids inside an epoch still mint on `PhraseFinal`/frozen partials. Independent of `CODESCRIBE_SILERO_FUSION`. | W13-3 fusion (still OFF) still owns _slicing Apple cumulative finals by time_ and per-word ledger identity — that is not the same cut as the epoch rest/wake                                                             |
 | Word timestamps         | Apple per-word segments cross the bridge into `EngineEvent::UtteranceFinal.segments` — then die outbound in `CsEventSink::on_event` `..` destructure (recording.rs:686–707); Whisper segments dropped at `compute_tail_patch_job` (session.rs:258 takes `.text` only)                                                                                                            | Words pinned to spans end-to-end; segments survive into the ledger and the UI (W13-3, W13-6 highlighting)                                                                                                                |
-| Sealing                 | `ProgressiveSealMachine` IS production seal authority on the Apple lane (`AppleSealState.progressive`, wired `8d65f610`/`d64c3876`) — but `SealedSpan` has end-only time, no per-word payload; the `try_rewrite` fence has zero callers (patches bypass it via `ReplaceRange`)                                                                                                   | Ledger of sealed spans with `[start,end)` + per-word payload; ALL rewrites go through the fence; sealed span = immutable (W13-3)                                                                                         |
-| Whisper windows         | Epoch close now gives Layer 1 a sealed span + retained-PCM window (`7d163d58` + clamp `bdd6eacb`). Mid-phrase 3 s shards and `extract_speech` clock-lies remain on the VAD/scheduler path; fusion-sliced utterance windows stay behind `CODESCRIBE_SILERO_FUSION=0`.                                                                                                             | Fusion-ON: utterance-bounded windows cut at Silero edges, exact offsets by construction (operator A/B on take-614 — not a default flip)                                                                                  |
+| Sealing                 | **Superseded pre-ledger snapshot:** `ProgressiveSealMachine` was described as production seal authority on the Apple lane. It and `progressive_seal.rs` are deleted; this row has no current authority.                                                                                                                                                              | **Current replacement:** `AcousticLedger::admit` / `seal`, then ledger events reduced by `PresentationEmitter` / `TranscriptReducer`                                                                                    |
+| Whisper windows         | **Superseded pre-ledger snapshot:** retained-PCM experiments included a VAD/scheduler route. That route is deleted and must not be restored.                                                                                                                                                                                                                    | Current live dispatch is Apple-only; Whisper is an authorized tail-provider observation on retained PCM inside the Apple-ledger session                                                                                  |
 | Replacement authority   | Small-edit floors + conservative gates veto Whisper's better truth (18 skips/take)                                                                                                                                                                                                                                                                                               | Per-word fusion by span overlap inside the unsealed utterance; corrections land; skips carry a reason code (W13-3)                                                                                                       |
 | Duplicates / repetition | Gap-append doubles raw; dedup once ate deliberate 5× repetition                                                                                                                                                                                                                                                                                                                  | Sealed span cannot be re-delivered (structural); deliberate repetition = different span, always survives; in-span loop fence for engine hallucinations (W13-4)                                                           |
 | Whisper hosting         | In-process; RAM/battery in app; cold 3.9 s after TTL                                                                                                                                                                                                                                                                                                                             | Provider seam: local ws sidecar default target (qube-ws pattern — ends the SIGPIPE class), remote opt-in via STT_API_KEY slot, in-process fallback; per-window latency receipts (W13-2)                                  |
@@ -233,17 +245,19 @@ Verifier: offline replay per incarnation; sidecar run shows per-window
 latency < 1 s and applied > 0; killing the sidecar mid-take completes the
 take via fallback with receipts proving the switch.
 
-### W13-3 — Time-pinned canvas (KEYSTONE) — `[ ]`
+### Historical W13-3 — time-pinned canvas migration — completed and superseded
 
-Current: token position is the primary key; time is dropped at three
-located points (see §5 rows 2–5). De-risk recon (evidence-grade, in the
-plan pack: `recon-w13-3-derisk.md`) settles the build-vs-reuse questions.
+This section records the pre-ledger W13-3 proposal. It is not current
+implementation guidance. C6 completed the authority migration with
+`OccurrenceIdentity`, `ObservationIdentity`, and `AcousticLedger`; do not
+restore the deleted machinery named below.
 
-Implementation points:
+Historical implementation points:
 
 1. **One clock:** PCM sample counter as session timeline; map the SFSpeech
    span clock at ingestion (divergence documented at
-   progressive_seal.rs:360–373). Silero edges computed on the PCM counter.
+   the now-deleted `progressive_seal.rs:360–373`). Silero edges were to be
+   computed on the PCM counter.
 2. **Silero-bounded utterances on the Apple lane:** feed the existing
    Supervisor-mode boundary machine (`VadGateMode::Supervisor` +
    `VadIterState`, chunker.rs:119/:1400, embedded model) at the
@@ -253,12 +267,11 @@ Implementation points:
    `TranscriptSegment` spans. **Hardest part — plan for it explicitly:**
    Apple's restart/freeze/novel-suffix guards (:1225, :940–1005) assume
    Apple's own boundaries.
-3. **Extend, don't rewrite, the seal machinery:** `ProgressiveSealMachine`
-   is the production authority — add span start + per-word payload to
-   `SealedSpan` (additive); wire ALL patch writes through the currently
-   orphaned `may_rewrite`/`try_rewrite` fence; port the idempotence rules
-   of the dormant `SessionIngest` ledger (typed `AudioRange`,
-   `RejectedSealedUtterance`) or re-parent it to the local lanes.
+3. **Superseded migration idea — do not implement:** the roadmap proposed
+   extending `ProgressiveSealMachine`. C6 instead removed it and centralized
+   occurrence admission/seal in `AcousticLedger`; ledger mutation/seal events
+   now reach `PresentationEmitter` / `TranscriptReducer`. Restoring the deleted
+   file or its rewrite fence would create a second authority.
 4. **Thread Whisper timestamps:** carry `RawTranscript.segments` through
    `compute_tail_patch_job` (today session.rs:258 takes `.text` only); add
    window start to `TailPatchRequest`; either skip `extract_speech`
@@ -329,10 +342,11 @@ Audio menu screenshot on a live device.
 
 ### W13-6 — Lexicon voice + highlighting — `[ ]`
 
-Current: 2 585 lexicon rows (seed 2401 + programming 155 + operator 8 +
+Historical snapshot: 2 585 lexicon rows (seed 2401 + programming 155 + operator 8 +
 protected 21) compiled into the binary and applied ONLY as post-hoc
 enumerated rewrites; the strong mechanism —
-`build_whisper_initial_prompt` (stream_postprocess.rs:399, "Vocabulary:",
+`build_whisper_initial_prompt` (the now-deleted historical
+`stream_postprocess.rs:399`, "Vocabulary:",
 224-token budget) wired into `scheduler.rs:476` (per-lane) and
 `singleton.rs:357` (file mode) — sits behind `stt_initial_prompt_enabled`
 whose **default is false** (pinned by loader.rs:2296), drawing from

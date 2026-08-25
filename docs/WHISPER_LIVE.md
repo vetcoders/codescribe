@@ -1,37 +1,36 @@
 # WHISPER LIVE (Embedded Whisper + Streaming Transcription)
 
-> **Status:** DONE ✅ (2026-01-16) · **Re-framed:** 2026-08-22 as the L1 observer feeding deterministic L2 and the existing L3 formatter.
+> **Status:** provisioning facts retained from 2026-01-16 · **Current anatomy:**
+> 2026-08-25, HEAD `484095ce`, as the bounded L1 observer inside the Apple-ledger session.
 >
-> **Tagline:** Whisper stays local, ships embedded by default, and patches the live overlay in the background — it is no longer the first thing the user sees.
+> **Tagline:** Whisper can stay local and ships embedded when a complete model
+> snapshot is available; normal live work observes retained PCM without owning
+> the microphone, dispatcher, occurrence ledger, or document reducer.
 
 ## Role in the canonical four-layer pipeline
 
-Whisper is **L1 — contextual observer** and feeds **L2 — Lexicon + Light+**
-inside the canonical [four-layer engine contract](./THE_ENGINE_CONTRACT.md).
-Live first-pass text in the overlay comes from **Layer 0 — Apple Speech Recognizer**
-(`CODESCRIBE_STT_ENGINE=apple`); Whisper runs on the same audio tail in the background, diffs
-against Layer 0's committed buffer, and emits `EngineEvent::ReplaceRange { source: TailPatch }`
-events that visibly patch tokens Apple missed — mixed-language inserts, rare terminology, proper
-nouns. The legacy "Whisper-as-primary" path stays as automatic fallback when Apple Speech
-is unavailable (no permission, no macOS Speech framework).
+Whisper is **L1 — contextual observer** inside the canonical
+[four-layer engine contract](./THE_ENGINE_CONTRACT.md). Normal live capture
+dispatches only to `apple_stream_transcription_session`. Apple supplies the
+first observation; an armed Whisper tail provider receives a bounded retained-
+PCM window carrying session, successful-open epoch, sample range, request, and
+generation identity. Its result is offered to the same `AcousticLedger` as the
+Apple observation and may relabel only that authorized occurrence.
 
-> **Delivery status (2026-08-22).** Local Power + Apple/Auto arms the exact-span
-> Apple progressive L1 path; VAD/Whisper-first uses Whisper as its primary
-> observer and refuses a second unbound patcher. Normal stop never performs a
-> hidden Whisper file pass; full-file decoding belongs only to explicit
-> Retranscribe/HQ. L2 Lexicon + Light+ is currently wired. L3 uses the existing
-> Responses Formatting lane behind `CODESCRIBE_INLINE_FORMAT`; “inline” names
-> scheduling, not another model or client.
+Normal stop never performs a hidden Whisper file pass. Full-file decoding
+belongs to explicit Retranscribe, a separate operator action over a selected
+completed artifact. Its output remains a proposal until the operator accepts
+it; it is not a continuation of live capture or automatic Transcript Bus truth.
 
 The contract has exactly four machine layers. Silero remains orthogonal VAD/time
 evidence, with richer annotations optional and provider-bound. Final BAM is
 superseded and has no automatic producer; `SessionFinalised` is lifecycle-only.
 
 **Hard invariant that gates every Whisper write:** _NEVER REWRITE FROM ZERO._
-Tail Patch may only `ReplaceRange` inside a proven PCM/span identity. Text
-alignment and change ratios may judge a candidate after authority is
-established, but they never mint authority. Unproven or cross-span work fails
-closed. See the engine contract for the full rule.
+Whisper may relabel only a proven occurrence identity. Text alignment and
+change ratios may rank a candidate after authority is established, but they
+never mint, merge, transfer, or erase occurrence authority. Unproven or cross-
+span work fails closed. See the engine contract for the full rule.
 
 ## TL;DR
 
@@ -42,13 +41,11 @@ Codescribe’s Whisper layer power-ups:
      structurally complete safetensors file containing only supported runtime dtypes
    - build policy embeds Whisper whenever the model is available at build time
    - runtime lookup from `CODESCRIBE_MODEL_PATH`, configured model dirs, bundled app resources, or the Hugging Face cache is a fallback path for `CODESCRIBE_NO_EMBED=1` builds or recovery
-2. **Live (streaming) transcription** while the user is recording
-   - Live occurrence admission and seal belong to `AcousticLedger`; committed text is reduced by
-     `PresentationEmitter` / `TranscriptReducer`
-   - In the layered model: Whisper events arrive as `ReplaceRange` patches **after** Apple's live
-     deltas — the user sees Layer 0 first, then watches Whisper magically correct mixed-language /
-     terminology tokens within ~1 s of utterance end
-   - In fallback (no Apple): Whisper takes over the live preview path, behaving like pre-ADR builds
+2. **Bounded live Layer 1 observation** while the user is recording
+   - `transcription_session` still dispatches only to the Apple session
+   - the tail provider observes retained PCM associated with one authorized occurrence
+   - `AcousticLedger` decides admission and seal; `PresentationEmitter` /
+     `TranscriptReducer` commits the document projected to Transcript Bus and Swift
 3. **Full WAV is always teed to disk** — L1 may read retained PCM without a
    second microphone; the saved WAV remains available for explicit
    Retranscribe/HQ and diagnostics, not an automatic fifth layer
@@ -77,9 +74,10 @@ decoder context overlap is resolved by request/span identity, never textual simi
 
 ## What’s new around Whisper Live
 
-- **Stream postprocess** (`core/pipeline/stream_postprocess.rs`) — semantic gating and cleanup of
-  chunk output. In the layered model this feeds Layer 1's diff input — patches are made against
-  the post-processed text, not the raw decoder output.
+- **Typed tail-provider observation** (`core/stt/tail_provider.rs`,
+  `core/stt/tail_patcher/`) — a request and its returned segments retain PCM
+  identity before the candidate reaches `admit_ledger_label` and
+  `AcousticLedger`.
 - **IPC server** (`app/ipc/`) — stable runtime interface for GUI/clients; Whisper Live can be
   consumed and extended outside the tray flow. After the ADR, the IPC contract also carries
   `ReplaceRange` and `InsertAnnotation` events for clients that render the layered view.
@@ -87,8 +85,9 @@ decoder context overlap is resolved by request/span identity, never textual simi
   batch diagnostics. Layer receipts identify Whisper proposals, L2 shaping,
   L3 formatting outcomes, and orthogonal timing evidence so regression hunts
   target the right owner.
-- **Cloud STT** — optional Layer 1 backend (libraxis cluster / OpenAI whisper-1 / `mlx-audio` +
-  `openai/whisper-large-v3`). Latency vs. privacy trade-off lives in Settings; not live preview.
+- **Cloud STT** — an optional consent-gated provider implementation behind the
+  same Layer 1 contract. Transport choice does not grant broader occurrence
+  authority than the local provider.
 
 ## Layer mapping for this file
 
@@ -96,7 +95,7 @@ decoder context overlap is resolved by request/span identity, never textual simi
 | ----------------------------------------------- | ---------------------------------------------------------------- |
 | Embedded Whisper (build + runtime lookup)       | Layer 1 (Tail Patch) backend resolution                          |
 | Live observation path                          | Ledger admission/seal and reducer-owned committed text           |
-| Stream postprocess, semantic gate               | Pre-diff cleanup feeding Layer 1's `ReplaceRange` decision       |
+| Typed tail-provider request and ledger admission | PCM-bound Layer 1 observation and occurrence-safe relabeling     |
 | Cloud STT alternatives                          | Pluggable Layer 1 backend                                        |
 | Lexicon substitution + Light+                   | L2 — deterministic and currently wired at seal/delivery          |
 | Inline formatting scheduler                     | L3 — existing Responses Formatting lane; no separate small model |
@@ -129,7 +128,8 @@ live in [`TRANSCRIPT_LANES.md`](TRANSCRIPT_LANES.md); this document does not red
   - retains PCM/session evidence for the ledger-owned live path
 - `app/controller/mod.rs`
   - uses `StreamingRecorder` and prefers the streaming transcript on `stop()`
-  - can still save the WAV for logs and/or cloud final transcript replacement
+  - can retain the WAV for logs, diagnostics, and explicit Retranscribe without
+    turning it into an automatic normal-stop replacement
 
 ## Build & distribution
 

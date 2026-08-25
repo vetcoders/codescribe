@@ -1,384 +1,238 @@
-# TRANSCRIPT LANES — every transcription path, linearized
+# TRANSCRIPT LANES — current execution anatomy
 
-**One line per path: where it starts → what it passes through → what it
-crosses → what the user sees.** Anchors are `file :: symbol` (symbols survive
-the Living Tree better than line numbers). Originally mapped against
-`fix/the-tail-patches` HEAD `16e0b9c3`; corrected against
-`fix/p0-p2-before-release` integrated runtime cut `ad1052d1`, 2026-08-21.
+This document is the current structural execution map for Codescribe live
+transcription on HEAD `484095ce` (2026-08-25). Runtime behavior still requires
+independent verification; this map does not turn a documentation census into a
+compiler, test, replay, microphone, or release claim.
 
-This file is the execution map. Product invariants live in
-`THE_ENGINE_CONTRACT.md`. Where an older row below calls Apple text a floor,
-immutable, append-only, or protected, the engine contract supersedes that
-wording: **audio time and span identity are stable; text hypotheses are not**.
+The canonical product contract is [`THE_ENGINE_CONTRACT.md`](THE_ENGINE_CONTRACT.md).
+The visual companion for this route is
+[`OVERLAY_STREAMING.md`](OVERLAY_STREAMING.md).
 
-How to read:
+## Authority in one paragraph
 
-- **LINE** — one transcription path, with stations in order.
-- **`[Jn]`** — a junction: the station where lines cross (full list in §9).
-- **⚑ OFF** — machinery that exists and is verifier-green but sits behind a
-  default-OFF flag (an operator button). Drawn as a dashed line.
-- **since** — the commit/wave that put the station into service.
-
-The live product contract has exactly four machine layers:
-
-| Layer  | Lane                         | Current truth                                                                                             |
-| ------ | ---------------------------- | --------------------------------------------------------------------------------------------------------- |
-| **L0** | Apple live observer          | First paint and PCM-pinned hypotheses.                                                                    |
-| **L1** | Whisper contextual observer  | Exact-span correction/gap evidence; no automatic full-file pass.                                          |
-| **L2** | Lexicon + Light+             | Deterministic shaping, currently wired on progressive seals and delivery.                                 |
-| **L3** | Existing Responses formatter | Stable-span scheduling through the configured Formatting lane; “inline” is scheduling, not a small model. |
-
-Silero is an orthogonal VAD/time-evidence plane, not a numbered text layer.
-Plain VAD may report speech probability, boundaries, and silence/pause timing;
-richer paralingual labels remain optional and provider-bound. The human receives
-the sealed document after L3 and is not a fifth machine layer.
-
----
+`RecordingController` is the only in-app microphone owner. `StreamingRecorder`
+allocates `capture_epoch` only after a successful physical open.
+`transcription_session` dispatches normal live capture only to
+`apple_stream_transcription_session`. Apple is the first observer; Whisper may
+observe retained PCM as Layer 1, and Lexicon/Light+ plus Responses may relabel
+only an already-authorized occurrence. Silero supplies boundary, time, energy,
+and pause evidence but owns no text. `AcousticLedger` alone admits and seals
+physical occurrences. `PresentationEmitter` / `TranscriptReducer` commit
+ledger events; Transcript Bus and Swift observe the resulting projection.
+`DeliveryRoute` follows explicit operator intent, never OS focus alone.
 
 ## 0. The map at a glance
 
+```text
+explicit operator intent
+  → RecordingController                         only in-app microphone owner
+  → StreamingRecorder                           successful-open capture_epoch
+  → transcription_session                       Apple-only live dispatcher
+  → apple_stream_transcription_session
+      ├─ Apple                                   L0 observation
+      ├─ Whisper on retained PCM                 bounded L1 observation
+      ├─ Lexicon + Light+                        authorized L2 relabel
+      ├─ Responses formatter                     authorized L3 relabel
+      └─ Silero                                  time / energy / boundary evidence
+  → AcousticLedger::admit / AcousticLedger::seal
+  → EngineEvent::LedgerMutation / EngineEvent::LedgerSeal
+  → PresentationEmitter / TranscriptReducer
+  → Transcript Bus committed projection
+  → Swift projection observer
+  → DeliveryRoute selected from explicit operator intent
 ```
-            ┌──────────────────────────── LIVE ────────────────────────────┐
-MIC ▶ recorder ▶ [J1 PCM ring+spill]
-                   │
-   ┌───────────────┴────────────────┐
-   │ LINE A (DEFAULT)               │ LINE B (CODESCRIBE_STT_ENGINE=whisper/onnx)
-   │ Apple SFSpeech progressive     │ Silero VAD ▶ scheduler ▶ Whisper
-   │ partials+finals                │ utterance finals + Refine corrections
-   │      ▼                         │      ▼
-   │ ProgressiveSealMachine         │ stream_postprocess (lexicon, gates)
-   │      ▼                         │      ▼
-   └──▶ [J2 CANVAS: reducer+emitter] ◀────┘
-              ▲            │
-   LINE L1 ───┘            ▼
-   (local tail-patch       OVERLAY live text ▶ ...user watches letters land
-    currently rides A;
-    provider L1 is separate)
-              │ stable seals: L2 lexicon + Light+
-              └────────────▶ LINE F / L3 Responses formatting (when armed)
-                           │ stop
-                           ▼
-        LINE S: [J3 truth adjudication] ▶ [J4 postprocess+lexicon]
-                           ▼
-              ┌────────────┴─────────────┐
-              ▼                          ▼
-        LINE F formatting LLM      LINE G assistive → To Agent
-        ([J5 response chain])      (thread rail conversation)
-              ▼
-        [J6 history files] + [J7 overlay final: Copy/Insert/Revert/Format/To Agent/Auto-Paste]
 
-LINE C (no mic): audio file ▶ cloud or local Whisper ▶ same [J4]→[J6] tail
+This is one live route, one capture clock, one occurrence ledger, and one Rust
+document reducer. No observer opens another microphone or builds a parallel
+transcript.
+
+## 1. Machine layers and sideband evidence
+
+| Layer | Current role | Authority boundary |
+| --- | --- | --- |
+| L0 — Apple | First live text observer inside the Apple session | Describes PCM-bound occurrences; does not own physical identity |
+| L1 — Whisper | Tail-provider observation on retained PCM | May correct the matching authorized occurrence; does not own a parallel live dispatcher |
+| L2 — Lexicon + Light+ | Deterministic retained-text relabeling | May relabel an authorized occurrence; equal strings are never identity |
+| L3 — Responses formatter | Configured Formatting-lane observation | May format authorized text; may not mint physical speech |
+
+Silero is outside the numbered text layers. Its single session ingress supplies
+speech edges, range, energy, and pause evidence to the Apple session. It cannot
+admit text, seal a document, or select delivery. `SessionFinalised` is lifecycle
+only.
+
+## 2. Normal live capture
+
+| # | Station | Exact current surface | Contract |
+| --- | --- | --- | --- |
+| A1 | operator intent | `RecordingController::handle_hotkey_event` and mode handlers | Dictation, Agent, and Assistive select downstream behavior, not microphone ownership |
+| A2 | physical open | `StreamingRecorder::start_event_session` | compute next epoch with checked arithmetic, open recorder, then assign the epoch |
+| A3 | session bind | `StreamingRecorder::bind_session_authority` | bind one operator session to one `AcousticLedger`; reset only the session-local epoch counter |
+| A4 | dispatch | `core/pipeline/streaming/session.rs::transcription_session` | delegate only to `apple_stream_transcription_session` |
+| A5 | Apple ingress | `apple_stream_worker` | retain PCM, advance the session sample counter, feed the single Silero ingress, and poll the Apple bridge |
+| A6 | observation | `seal_utterance_final`, `seal_sliced_by_silero` | bind Apple text to new session-clock PCM; Silero contributes evidence, never text authority |
+| A7 | admission | `admit_ledger_label` | qualify evidence, schedule the observation frontier, and offer Apple/Whisper/Lexicon/formatter labels to the ledger |
+| A8 | physical seal | `AcousticLedger::seal` / `seal_terminal` | close the occurrence only after the scheduled frontier or terminal boundary permits it |
+| A9 | document commit | `PresentationEmitter` / `TranscriptReducer` | reduce `LedgerMutation` and `LedgerSeal` into the canonical document |
+| A10 | projection | Transcript Bus, then Swift | publish and display the committed reducer projection; raw callbacks and previews are not bus truth |
+
+### Apple transport A/B
+
+`CODESCRIBE_APPLE_STT_LIVE_MODE` chooses transport inside the same Apple
+authority route:
+
+- `stream` uses live Apple AudioBuffer delivery;
+- `wav` (and the compatibility spelling `transcribe_live`) uses the older
+  Apple temp-WAV request bridge.
+
+The `wav` value changes no microphone, occurrence, reducer, or delivery
+authority.
+
+## 3. Layer 1 and explicit Retranscribe
+
+Normal live Whisper work is a bounded Layer 1 observation over retained PCM.
+The request and returned segments carry session, successful-open epoch, sample
+range, request, and generation identity. A candidate can relabel only the
+occurrence authorized by that identity. Replayed observation identity/range is
+refused structurally; lexical equality does not merge two disjoint occurrences.
+
+The current provider seam remains `TailProvider` with `inprocess`, `sidecar`,
+and `remote` implementations. Product settings decide whether Local Power arms
+the live Layer 1 observation. Per-take receipts, not Settings copy, establish
+whether work was actually submitted, applied, refused, timed out, or abandoned.
+
+Explicit Retranscribe is different: it is a new operator-authorized inference
+over a selected completed artifact. It may decode a whole file, but it is not a
+normal-stop continuation, is not live capture, and does not retroactively
+become Transcript Bus truth unless the operator accepts its proposal.
+
+## 4. Stop and session finality
+
+Normal stop:
+
+1. closes the open Apple stream or speech epoch;
+2. seals any non-empty open partial through the same occurrence path;
+3. drains only work already admitted during capture within the bounded budget;
+4. seals remaining ledger state and emits the committed projection;
+5. emits lifecycle finality; and
+6. delivers through the route latched from explicit operator intent.
+
+Normal stop starts no whole-file Whisper pass and no fifth text layer. Legacy
+`FINAL_PASS_MODE` spellings remain migration tokens; explicit Retranscribe owns
+whole-file inference.
+
+## 5. Responses Formatting lane truth
+
+The runtime settings loader resolves LLM lanes once and seals them in one
+`RuntimeSettingsSnapshot`. Consumers use
+`RuntimeSettingsSnapshot::llm_lanes()` to read the sealed `RuntimeLlmLanes`
+for `main`, `formatting`, and `assistive`; they do not repeat environment,
+settings, endpoint, model, provider, or credential resolution during a take.
+
+L3 uses the resolved Formatting lane. Inline formatting describes scheduling
+over stable authorized spans; it does not create another model, client, or
+transcript reducer. Formatting and Assistive chains remain distinct.
+
+## 6. Projection and delivery
+
+```text
+AcousticLedger decisions
+  → EngineEvent::LedgerMutation / EngineEvent::LedgerSeal
+  → PresentationEmitter / TranscriptReducer
+  → Transcript Bus committed projection
+  → CsTranscriptProjectionEvent
+  → OverlayState.applyTranscriptProjection
+  → DeliveryRoute
 ```
+
+Swift replaces its view from the complete Rust-owned projection. It does not
+fold Apple finals, Whisper patches, or lexicon changes into a second text state.
+Dictation, Agent, and Assistive share the same transcript authority even when
+their delivery destinations differ. Clipboard, paste, canvas, and Agent are
+explicitly distinct routes.
+
+## 7. Settings and runtime truth
+
+| Surface | Meaning |
+| --- | --- |
+| `CODESCRIBE_ASR_MODE` | product intent: `local_power`, `cloud`, or `apple_only` |
+| `CODESCRIBE_LAYERED_TRANSCRIPTION` | compatibility override for live Layer 1 arming; it does not select another dispatcher |
+| `CODESCRIBE_APPLE_STT_LIVE_MODE` | Apple bridge transport A/B only |
+| `STT_TAIL_PROVIDER` | Layer 1 provider implementation |
+| `FINAL_PASS_MODE` / `CODESCRIBE_FINAL_PASS_MODE` | migration-only stop token; no normal-stop file pass |
+| `RuntimeSettingsSnapshot::llm_lanes()` | sealed per-take LLM provider/model/endpoint/credential availability |
+| `tail_patch_session_receipt` | per-take evidence of live Layer 1 exercise and terminal accounting |
+
+Configured intent, runtime arming, provider exercise, and accepted ledger
+mutation are four different facts. No UI toggle alone proves all four.
+
+## 8. Authority laws
+
+- Physical identity is `(session, capture_epoch, sample_start, sample_end)`.
+- Observation identity adds producer, request, and generation.
+- Equal words on disjoint ranges are distinct occurrences and both survive.
+- Re-delivery of one observation identity/range does not create another word.
+- Text similarity may align inside an already-authorized occurrence; it never
+  establishes or transfers authority.
+- Apple is first observer, not immutable text ownership.
+- Silero can measure when and where speech occurred; it cannot say what was
+  spoken.
+- A later authorized observer may relabel the same occurrence before the
+  applicable ledger seal.
+- No machine layer may create, merge, erase, split, or reorder physical speech
+  by comparing strings.
+- Transcript Bus and Swift are projections of the Rust reducer.
+- Delivery follows explicit operator intent.
+
+## 9. Required receipts and falsifiers
+
+At minimum, a live evidence report distinguishes:
+
+- selected STT engine and resolved ASR product mode;
+- Layer 1 armed/disarmed reason and provider kind;
+- observations/windows submitted, completed, applied, refused, timed out, and
+  abandoned;
+- replay refusals and unanchored observations;
+- occurrence admissions and seals;
+- transcript seal and delivery route/timestamp; and
+- any residue where admitted and projected occurrence counts do not reconcile.
+
+Release falsifiers include intentional repetition on disjoint PCM, replay of
+the same observation identity, segment-less Apple finals, clock-lie input,
+Layer 1 zero-work while armed, provider failure, bounded stop drain, and
+delivery-target mismatch. C8A does not execute these gates.
+
+## 10. Historical field receipts — superseded as implementation maps
+
+The following dated evidence remains useful for regression design but has no
+current architectural authority:
+
+| Date | Historical receipt | Current interpretation |
+| --- | --- | --- |
+| 2026-08-12 | Long Apple takes showed restart/cumulative-final loss and an expensive stop wait | keep the freeze, identity, and bounded-drain falsifiers; do not infer current ownership from the old file layout |
+| 2026-08-13/14 | W13 measured Layer 1 starvation, duplicate delivery, capture drift, and full-stop formatting latency | retain the fixtures and performance bars; current occurrence admission belongs to `AcousticLedger` |
+| 2026-08-21/22 | Pre-ledger diagrams described `ProgressiveSealMachine`, `progressive_seal.rs`, `StreamPostProcessor`, `stream_postprocess.rs`, a `Whisper-first` `VAD/scheduler` route, and `core/llm/lane_truth.rs` / `lane_truth_snapshot` | all named surfaces are historical or deleted, not current stations; do not restore them from this receipt |
+
+Historical rows and ADRs may preserve the measured facts when they carry an
+equally local dated/superseded marker. They may not be cited as an actionable
+route on current HEAD.
+
+## 11. Documentation authority and drift control
+
+- [`THE_ENGINE_CONTRACT.md`](THE_ENGINE_CONTRACT.md) owns product invariants.
+- This file owns current lane anatomy and must change with authority routing.
+- [`OVERLAY_STREAMING.md`](OVERLAY_STREAMING.md) owns the companion live-flow
+  visualization.
+- [`STT_CONTRACT.md`](STT_CONTRACT.md) owns engine/configuration semantics.
+- [`TRANSCRIPT_BUS.md`](TRANSCRIPT_BUS.md) owns committed bus events and path
+  resolution.
+- [`DELIVERY_ROUTE.md`](DELIVERY_ROUTE.md) owns destination selection.
+- [`ENV_REGISTRY.toml`](ENV_REGISTRY.toml) owns supported environment tokens.
+
+When prose and executable behavior differ, establish source/runtime truth and
+update the relevant contract in the same coherent cut. Old measurements never
+outrank current Git, Loctree, or source bodies.
 
 ---
 
-## 1. LINE A — Apple progressive live (the instant
-
-**preview** lane)
-
-```
-mic ▶ recorder ▶ [J1] ▶ apple_stream_worker PCM ingress ▶ SFSpeech bridge
-  ▶ partial callbacks (volatile) + phrase finals ▶ ProgressiveSealMachine
-  ▶ seal adjudication + guards ▶ [J2 canvas] ▶ emitter ▶ OVERLAY (live letters)
-```
-
-| #   | station       | code                                                                                                      | what happens                                                                                                                                                                        | since                              |
-| --- | ------------- | --------------------------------------------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ---------------------------------- |
-| A1  | capture       | `core/audio/recorder.rs`, `streaming_recorder.rs`                                                         | cpal stream from `AUDIO_INPUT_DEVICE` (native rate/channels) feeds the ring; `CODESCRIBE_AUDIO_SPILL` keeps the FULL take on disk while the RAM ring caps at 300 s                  | spill: W-A retention               |
-| A2  | engine choice | `core/stt/mod.rs :: selected_engine`                                                                      | `CODESCRIBE_STT_ENGINE` (`apple` / `whisper` / `onnx`); unset ⇒ Apple when available, otherwise Candle Whisper                                                                      | W11 respec                         |
-| A3  | lane routing  | `core/pipeline/streaming/session.rs :: transcription_session`                                             | Apple engine + progressive mode branches into `apple_live_session` BEFORE the VAD path                                                                                              | W2-A                               |
-| A4  | PCM ingress   | `apple_live_session.rs :: apple_stream_worker`                                                            | PCM frames go to the bridge; the same frames feed L1 windows — the **sample counter minted here is the session clock** (doctrine §3.2)                                              | W2-A                               |
-| A5  | recognition   | `core/stt/apple_stt/` + `codescribe-stt-bridge` (Swift)                                                   | SFSpeechRecognizer streams volatile partials and cumulative phrase finals; pl-PL on-device ~0.24 s; TCC is owned by the app process                                                 | W11                                |
-| A6  | sealing       | `progressive_seal.rs :: ProgressiveSealMachine`                                                           | finals seal utterances; the SFSpeech span clock maps onto the PCM clock (2 ms divergence measured); `may_rewrite`/`try_rewrite` is the future time-fence                            | wired W2-B (`8d65f610`/`d64c3876`) |
-| A7  | guards        | `apple_live_session.rs` (`phrase final adjudicated`, `novel final suffix rescued`, `freeze open partial`) | cumulative finals are adjudicated against sealed state; novel suffixes are rescued with synthesized windows; restart-retained partials are frozen — the anti-duplication front line | W1-B/W2-A                          |
-| A8  | canvas        | **[J2]** `emitter.rs :: TranscriptReducer`                                                                | committed utterances + one active preview; **single writer** `store_transcript_snapshot` (the tick loop only animates)                                                              | `75c89f56`                         |
-| A9  | user          | overlay live view                                                                                         | letters land as spoken; later observations may append, fill gaps, or replace weaker text inside the same proven PCM span; rewriting the session from zero remains forbidden         | corrected doctrine 2026-08-21      |
-
-## 2. LINE B — VAD/scheduler live (Whisper-first lane)
-
-```
-mic ▶ recorder ▶ [J1] ▶ Silero VAD chunker ▶ utterance boundaries
-  ▶ SttScheduler (Fast lane) ▶ Whisper singleton ▶ stream_postprocess
-  ▶ [J2 canvas] ▶ emitter ▶ OVERLAY
-        ↑ Refine lane: correction.rs partial passes (VAD-aligned windows)
-```
-
-| #   | station           | code                                                   | what happens                                                                                                                                                           | since     |
-| --- | ----------------- | ------------------------------------------------------ | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------- | --------- |
-| B1  | VAD/time evidence | `core/audio/chunker.rs` + `streaming/silero_fusion.rs` | emits ordered `SidebandEvidence` with exact PCM edges and pause=`unknown_non_speech`; it does not identify words, laughter, or named noise classes                     | W2-02     |
-| B2  | scheduling        | `core/stt/scheduler.rs :: SttScheduler`                | Fast lane = utterance decode; Refine lane = correction re-decodes; per-lane `initial_prompt_for_lane` (⚑ OFF, W13-6A)                                                  | —         |
-| B3  | decode            | `core/stt/whisper/singleton.rs`                        | in-process Whisper (turbo fp16 only; official OpenAI tokenizer + pinned mel asset); TTL reaper unloads 30 min after last finished decode (`whisper_residency_reclaim`) | fp16 only |
-| B4  | corrections       | `streaming/correction.rs`                              | Phase-2 Refine: partial passes triggered by finals/speech-ms, **VAD-aligned windows** (`plan_vad_aligned_windows_with_config`) so windows never begin mid-phrase       | W1-A      |
-| B5  | postprocess       | `core/pipeline/stream_postprocess.rs`                  | lexicon rewrite table (compiled-in seed/programming/operator/protected), hallucination + SemanticGate + empty-drop gates                                               | —         |
-| B6  | canvas + user     | **[J2]** → overlay                                     | same reducer/emitter contract as LINE A                                                                                                                                | —         |
-
-## 3. LINE L1 — Layer 1 tail-patch
-
-```
-[J1 stopped PCM window] ▶ compute_tail_patch_job ▶ TailProvider
-  ▶ Whisper re-decode of the window ▶ word-aligned LCS diff
-  ▶ ReplaceRange on [J2 canvas]   (gap-fill, never full-replace)
-```
-
-| #    | station       | code                                                               | what happens                                                                                                                                                                                                                                                     | since                         |
-| ---- | ------------- | ------------------------------------------------------------------ | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ----------------------------- |
-| L1.1 | arming        | `layer1_decision_for_recording` + `LocalTailPatchDisposition`      | Local Power + Apple/Auto arms local Whisper by default; `phase1` is compatible explicit arming; explicit `off` or malformed override is named degradation; Apple-only does not arm                                                                               | `6b9a6475`                    |
-| L1.2 | window        | Apple: `apple_live_session.rs`; VAD: `session.rs`                  | Apple progressive carries exact request/span identity through its mutation fence; VAD/scheduler already uses Whisper as its primary engine and explicitly refuses a second unbound mutation lane                                                                 | `6b9a6475`                    |
-| L1.3 | provider seam | `core/stt/tail_provider.rs :: TailProvider`                        | typed payload with **integer sample identity** `(session, capture_epoch, sample_start, sample_end)` + evidence + receipts; `STT_TAIL_PROVIDER=inprocess` is the default; `sidecar`/`remote` ⚑ built (W13-2B `4a9fc3fd`), falling back to inprocess with receipts | W13-2A `16ffe025`             |
-| L1.4 | diff + apply  | `core/stt/tail_patcher/`                                           | current implementation uses word-aligned LCS and a change-ratio guard; target authority comes from PCM/span identity, never textual similarity alone; accepted corrections apply through one pre-final `ReplaceRange` fence                                      | corrected doctrine 2026-08-21 |
-| L1.5 | receipts      | `tail_patch_session_receipt` + per-request `tail_provider_receipt` | `armed/submitted/applied/skipped/timed_out/abandoned/drain` reconcile at job grain; receipt enters the ordered event stream before `SessionFinalised`; zero submitted while armed fails acceptance                                                               | `6b9a6475` + `ad1052d1`       |
-
-Field truth, 2026-08-14: ~42% of patches were rejected in sampled sessions —
-the number the ⚑ Silero-fusion flip (§8) exists to fix.
-
-## 4. LINE S — Stop path (every live line terminates here)
-
-```
-stop ▶ recorder.stop (drain + WAV) ▶ [J3 truth adjudication]
-  ▶ residual-from-partials (live-first) ▶ [J4 postprocess + lexicon]
-  ▶ LINE F (format) or LINE G (agent) ▶ [J6 history] + [J7 delivery]
-```
-
-| #   | station     | code                                                                 | what happens                                                                                                                                                                | since              |
-| --- | ----------- | -------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------ |
-| S1  | drain       | `stop_toggle_inner` PHASE 0–4 (`app/controller/mod.rs`)              | serialized stop; `stop_path_budget` log line prices every phase — the budget is sacred (doctrine §3.4)                                                                      | —                  |
-| S2  | truth       | **[J3]** `app/controller/truth.rs :: adjudicate_recording_truth`     | ordered audio-span ledger is authority; Apple and provider observations are adjudicated per proven span; no whole-session rebuild                                           | corrected doctrine |
-| S3  | residual    | `app/controller/final_pass.rs` + `final_pass_residual_from_partials` | normal product stop performs no hidden whole-file Whisper pass; historical `smart` remains a migration/runtime token; explicit Retranscribe alone owns whole-file inference | 2026-08-21         |
-| S4  | postprocess | **[J4]** same `stream_postprocess` gates + lexicon                   | applied to the ADJUDICATED text (`Post-processed transcript … lexicon_rewrites=n`)                                                                                          | —                  |
-| S5  | fork        | mode decision (hotkey held)                                          | raw → LINE F (formatting) and/or LINE G (assistive); AUTO format may fire on the overlay                                                                                    | —                  |
-
-## 5. LINE F — L3 Responses Formatting lane
-
-```
-stable L2 spans ▶ inline_format scheduling ▶ existing ai_formatting lane
-  ▶ [J5 Responses chain: previous_response_id per session]
-  ▶ semantic guard ▶ [J7 overlay formatted] + [J6 history]
-```
-
-| #   | station    | code                                                                                  | what happens                                                                                                                                                                                                                                                     | since                   |
-| --- | ---------- | ------------------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ----------------------- |
-| F1  | lane truth | `core/llm/lane_truth.rs` + `core/llm/ai_formatting.rs`                                | endpoint/model/key/prompt resolved from the existing Formatting lane (Formatting ≠ Assistive ≠ Main — separate key slots, separate chains); inline scheduling creates no second model or client                                                                  | W2-01                   |
-| F2  | request    | `core/llm/ai_formatting.rs :: build_responses_input`                                  | wire contract: `instructions` param on the FIRST turn only; chained turns re-carry the prompt as a leading `developer` item (the chain does NOT persist instructions server-side)                                                                                | `26d0982d` + `5d62aacb` |
-| F3  | chain      | **[J5]** `core/state/conversation.rs`                                                 | per-mode `previous_response_id`; the chain is REAL memory (2026-08-14: a stored id answered “what was this about” with a full recall of the take, hours later); ids are org/key-scoped — stale after key rotation ⇒ self-heal drops the id and retries unchained | self-heal in flight     |
-| F4  | guard      | `Action quality guardrail` + `semantic_cosine` (`app/controller/quality_delivery.rs`) | divergence (< 0.86) vetoes auto-paste; RAW is always preserved beside the draft                                                                                                                                                                                  | —                       |
-| F5  | user       | **[J7]** overlay formatted view                                                       | Copy / Insert→alacritty / **Revert** (armed with the raw first version after AUTO format, `16e0b9c3`) / Format / To Agent; Auto Paste toggle                                                                                                                     | `16e0b9c3`              |
-
-## 6. LINE G — Assistive → To Agent lane
-
-```
-dictation ▶ same LINE A/B live ▶ stop ▶ assistive delivery
-  ▶ agent thread (rail) ▶ provider (account-auth aware) ▶ reply in thread
-```
-
-| #   | station  | code                                   | what happens                                                                                                                                               | since      |
-| --- | -------- | -------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------- | ---------- |
-| G1  | routing  | `app/controller/assistive_delivery.rs` | dictation goes to the SELECTED thread; a new thread is created only through explicit New thread (routing contract)                                         | contract   |
-| G2  | provider | `app/agent/openai_provider.rs`         | Responses + tools + SSE; chained turns re-carry the system prompt as a developer item (same wire contract as F2); account tokens fetched fresh per request | `e591d514` |
-| G3  | auth     | `core/llm/account_auth/`               | OAuth sign-in verifies `api.responses.write` BEFORE saving (“connected” is never a lie); scope-starved tokens are rejected at login                        | `230443fc` |
-| G4  | user     | thread rail conversation               | agent replies land in the thread; permission gate is risk-based, and native side-effectful tools fail closed in the voice lane                             | —          |
-
-## 7. LINE C — File/cloud mode (no microphone)
-
-```
-audio file ▶ `codescribe transcribe` CLI / cloud final pass
-  ▶ local Whisper full-file OR multipart STT endpoint (STT_ENDPOINT)
-  ▶ [J4 postprocess] ▶ stdout / files [J6]
-```
-
-- Local full-file: same in-app Whisper, proper boundaries ⇒ **API-class
-  output** (the decisive A/B/C proof — the machine and model were never the
-  bottleneck; window feeding was).
-- Cloud: `core/llm/client.rs` multipart (`[Multipart STT]` retries), also the
-  target class of `STT_TAIL_PROVIDER=remote`.
-- Bench ruler: the same-host `lbrx-stt-engine` column (§13 of the roadmap) —
-  its timestamps compress silence (clock-lie class), so any integration maps
-  by sample ranges, never by its reported seconds.
-- There is no `offline_eval` streaming lane. Adjacent observation windows may overlap for decoder context; overlap replay is resolved by request/span identity, never by textual similarity.
-
-PCM-range idempotence is a default-ON identity law. A repeated
-`(session, capture_epoch, sample_start, sample_end)` cannot land twice;
-`CODESCRIBE_SPAN_IDEMPOTENCE=0` exists only for diagnostic comparison.
-
-## 8. Dashed lines — built, verifier-green, ⚑ default-OFF (operator buttons)
-
-| flag                                    | line it arms                                                                                                                                                    | code                                                    | evidence                                                                |
-| --------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------- | ----------------------------------------------------------------------- |
-| `CODESCRIBE_INLINE_FORMAT`              | L3 scheduling: stable L2 spans stream through the existing Formatting lane DURING dictation (`previous_response_id` chain per span), so stop pays only the tail | `core/llm/inline_format.rs`                             | W2-01 verifier-green; default OFF pending integrated live take          |
-| `CODESCRIBE_SILERO_FUSION`              | diagnostic Silero boundary identity + fusion; production default OFF while widened-pending vs request-range ownership is unresolved                             | `streaming/silero_fusion.rs`                            | synthetic starvation skips 18→6 (−67%); enclosing-range + live A/B owed |
-| `CODESCRIBE_OVERLAY_HIGHLIGHTS`         | lexicon-corrected words + VAD-speech-no-words gaps marked on canvas; highlighted span → Teach                                                                   | W13-6B (bridge + Swift)                                 | Rust+Swift tests green                                                  |
-| `CODESCRIBE_STT_INITIAL_PROMPT_ENABLED` | lexicon VOICE: `Vocabulary:` prompt to Whisper per window                                                                                                       | `stream_postprocess.rs :: build_whisper_initial_prompt` | A/B: U-WER −1.5 pp but false inserts 1→7 — flip not justified yet       |
-| `STT_TAIL_PROVIDER=sidecar\|remote`     | tail decode out of process / off host                                                                                                                           | `tail_provider.rs` + `codescribe-stt-sidecar`           | fake-provider receipt 22 ms; production supervision unmeasured          |
-
-## 9. Junctions — where lines cross
-
-| J   | place                                                                            | who meets whom                                                       | contract                                                                                                                     |
-| --- | -------------------------------------------------------------------------------- | -------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------- |
-| J1  | PCM ring + spill (`recorder`/`live_audio_buffer`)                                | mic capture × Apple ingress × L1 windows × stop WAV × crash recovery | the sample counter minted here is the ONE session clock                                                                      |
-| J2  | canvas (`TranscriptReducer` + `BufferedEmitter` + `app/presentation/emitter.rs`) | Apple finals × L1 `ReplaceRange` × gap-appends × preview             | ONE writer; order and PCM identity are stable, while text inside an authorized unsealed span may be corrected                |
-| J3  | truth adjudication (`truth.rs`)                                                  | live canvas × Whisper residual                                       | preserve the ordered span ledger; accept only evidence bound to its PCM range; never rebuild the session from zero           |
-| J4  | L2 postprocess (`stream_postprocess` + `light_plus`)                             | every text × lexicon × Light+ × gates                                | deterministic L2 shaping is currently wired; accepted stable spans may then enter L3 Responses formatting                    |
-| J5  | Responses chain (`state/conversation.rs`)                                        | formatting turns × assistive turns (separate streams)                | per-mode ids; first-turn `instructions`, chained developer item; chain = recoverable session memory                          |
-| J6  | history (`core/state/history.rs`)                                                | every take                                                           | `_raw.txt` + `_formatted.txt` (or `formatting-failed`) + `.m4a` + `.truth.json` — content is never destroyed (doctrine §3.7) |
-| J7  | overlay delivery (`overlay_paste.rs`, OverlayState.swift)                        | formatted draft × auto-paste × manual commit                         | semantic guard vetoes auto-paste only; Revert holds the raw first version                                                    |
-
-## 10. What the user sees, surface by surface
-
-| surface       | fed by                         | truth it shows                                                                                                                       |
-| ------------- | ------------------------------ | ------------------------------------------------------------------------------------------------------------------------------------ |
-| overlay LIVE  | LINE A/B via J2                | letters as spoken; live backspace corrections may replace weaker text inside the same proven span; session-wide rewrite is forbidden |
-| overlay FINAL | LINE S→F via J7                | formatted draft + buttons (Copy / Insert / Revert / Format / To Agent); Auto Paste when guard allows                                 |
-| paste target  | J7                             | formatted text into the latched foreign app; refuse (`CopyTargetUnavailable` / mismatch) ⇒ Paste Here slot, user clipboard untouched |
-| thread rail   | LINE G                         | agent conversation, chained turn by turn                                                                                             |
-| history dir   | J6                             | `~/.codescribe/transcriptions/<date>/` — raw, formatted, m4a, truth receipts                                                         |
-| menu/tray     | controller state               | recording state; Audio truth section (W13-5: device, level, quality verdict)                                                         |
-| warnings      | `contracts.rs` warning classes | ONLY `transcription_failed` is terminal/UI; receipts (capture level, tail patch, seal) are log-only                                  |
-
----
-
-## 11. Superseding lane laws — 2026-08-21
-
-These laws are normative. They replace stale `immutable floor`, `never delete`,
-and `append-only text` interpretations wherever those appear in old comments,
-tests, reports, or commits.
-
-### 11.1 Authority
-
-- PCM samples and their monotonic capture clock are primary evidence.
-- A transcript token is an observation, not evidence by itself.
-- Apple is the first low-latency observer.
-- Whisper is a slower contextual observer.
-- Lexicon is deterministic domain evidence.
-- Formatting is a presentation transform, not speech evidence.
-- Human edits have final authority after session seal.
-- No model owns the document.
-- No earlier model owns a word merely because it emitted first.
-- No later model may mutate a span it cannot identify.
-
-### 11.2 Canvas geometry
-
-- Every accepted observation names a session.
-- Every accepted observation names a capture epoch.
-- Every accepted observation names `[sample_start, sample_end)`.
-- Replayed delivery of the same identity is idempotent.
-- Identical words on different spans are intentional until proven otherwise.
-- Span order follows PCM time and cannot be reordered.
-- Text inside an authorized span may evolve before `transcript_sealed`.
-- A correction may replace inflection, morphology, spelling, or a whole phrase.
-- A correction may remove a hallucinated word from its own span.
-- A correction may add speech missing from the current canvas.
-- A correction may not steal words from a neighboring span.
-- A correction may not erase an uncovered region of speech.
-- A correction may not build the entire session from zero.
-
-### 11.3 Window cadence
-
-- The target Whisper observation cadence is about four seconds.
-- Adjacent windows overlap by about one second.
-- Window edges must respect available speech-boundary evidence.
-- Overlap exists to recover context, not to duplicate text.
-- Overlap replay is resolved by request/span identity.
-- Text similarity may help alignment after identity is established.
-- Text similarity may never mint identity.
-- VAD edges are evidence about speech activity, not transcript authority.
-- Apple commit timing is evidence, not a perfect word boundary.
-- Clock-lie or unresolved windows fail closed and emit receipts.
-
-### 11.4 Layer 1 deployment truth
-
-- The product destination is Apple-first with continuous Whisper refinement.
-- Local Power arms live refinement by product default.
-- `phase1` is not allowed to mean a decorative UI toggle.
-- Settings ON requires an armed runtime lane.
-- Settings ON with zero submitted windows is a product failure.
-- Settings OFF may never be inferred from model unavailability silently.
-- Missing FP16 produces named degradation.
-- Q8 is never a fallback.
-- Cloud and local providers must implement the same observation semantics.
-- Provider differences may affect transport and latency only.
-- Provider choice may not change canvas authority.
-
-### 11.5 Current implementation truth
-
-- Apple progressive has request identity and span maps on the integrated cut.
-- Apple progressive has one pre-final rewrite fence.
-- Apple progressive tracks structural replay identity.
-- Apple progressive exposes reconciled job-grain arming and drain receipts.
-- VAD/scheduler does not have the same pending-span rewrite fence.
-- VAD/scheduler therefore preserves primary text and emits degradation.
-- The old claim “L1 rides both paths identically” remains false: direct Whisper
-  is the primary engine on VAD/scheduler, not an Apple repair lane.
-- Settings no longer exposes an independent optimistic Layered toggle.
-- Model invalidity and explicit-off configuration are named degraded states.
-- Runtime receipt, not Settings copy, proves that a take submitted patch jobs.
-
-### 11.6 Stop semantics
-
-- Releasing Fn closes capture.
-- It does not authorize a whole-file rewrite.
-- Admitted patch work receives a bounded drain opportunity.
-- Work still outstanding after the bounded drain is counted as timed out.
-- Non-timeout discard is counted separately as abandoned.
-- Both outcomes emit named degradation evidence.
-- The live result survives provider failure.
-- Explicit Retranscribe reads the saved audio as a new user action.
-- Retranscribe produces a proposal/result outside normal-stop authority.
-- The historical Final BAM proposal is superseded; there is no automatic fifth
-  content producer.
-- Stop drains admitted L1/L3 work and assembles accepted spans; it does not
-  authorize a renamed Full Final Pass.
-- `SessionFinalised` is lifecycle-only and cannot mutate committed text.
-
-### 11.7 Receipt minimum
-
-- session id
-- capture epoch
-- sample range
-- provider request identity
-- provider kind
-- source transcript hypothesis
-- candidate transcript hypothesis
-- alignment evidence
-- accepted operation type
-- accepted character/token range
-- affected span identities
-- rejection or degradation reason
-- queue admission time
-- inference completion time
-- fence application time
-- final disposition: applied, skipped, replayed, abandoned, or timed out
-
-### 11.8 Release falsifiers
-
-- A take where Apple loses a meaningful phrase must be repaired before Delivery.
-- The canonical phrase `Whisper musi łatać partiale` must survive the live path.
-- Manual Retranscribe recovering meaning that Delivery lost is a failed live run.
-- Layered ON with `tail_patch_replacements=0`, `refusals=0`, and no submitted window is a failed arming test.
-- A first token such as `IWO` lost before seal is an onset/pre-roll failure.
-- Five intentional repetitions on distinct spans must remain five repetitions.
-- Replaying the same span identity must not create a duplicate.
-- An invalid/Q8 model must be refused before tensor load.
-- A corrupt model artifact must not become permanently complete.
-- A valid alternate weights file must not be shadowed by an invalid preferred name.
-- A valid older HF snapshot must not be shadowed by an invalid newer snapshot.
-- Malformed safetensors metadata must fail discovery before engine load.
-
-## 12. Documentation authority and drift control
-
-- `THE_ENGINE_CONTRACT.md` defines product invariants.
-- This file defines the executable lane map.
-- `STT_CONTRACT.md` defines engine/configuration behavior.
-- `ENV_REGISTRY.toml` defines supported environment keys.
-- Runtime logs and Transcript Bus receipts prove actual execution.
-- Historical reports are evidence, never silent authority.
-- A comment marked `operator law` requires a direct operator decision reference.
-- Agent interpretations may not be attributed to named operators.
-- Superseded rules remain searchable but must be labeled superseded.
-- Tests for superseded behavior must be rewritten or deleted.
-- Green tests for the wrong contract are regressions, not reassurance.
-- Every contract-changing patch updates code, tests, settings, UI, and docs together.
-
-_Provenance: distilled from `docs/THE_ENGINE_ROADMAP.md`, the W13 settlement
-ledger, a private field-review transcript, and structural/runtime verification
-on `fix/p0-p2-before-release@361ece40`, 2026-08-21._
-
-𝚅𝚒𝚋𝚎𝚌𝚛𝚊𝚏𝚝𝚎𝚍. with AI Agents by VetCoders (c)2024-2026 LibraxisAI
+_Vibecrafted with AI Agents by VetCoders (c)2024–2026 LibraxisAI_

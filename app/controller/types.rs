@@ -382,7 +382,7 @@ pub struct TranscriptPipelineParams {
 pub struct TranscriptProcessOutcome {
     /// Why manual commit/decision mode should be shown (if required).
     pub commit_trigger: Option<String>,
-    /// Wall seconds spent in StreamPostProcessor.
+    /// Wall seconds attributed to transcript postprocessing and presentation.
     pub postproc_secs: f64,
     /// Wall seconds spent in AI/local formatting branch.
     pub format_secs: f64,

@@ -1,119 +1,128 @@
-# Lane Truth — LLM configuration resolver
+# Runtime Settings Snapshot — resolved LLM lanes
 
-`lane_truth` is the runtime resolver for LLM provider identity, endpoints,
-models, and credential presence. The documentation below describes the current
-code path, not a deprecated `.env` sample.
+The runtime resolver is the single settings-loader pass that seals a
+`RuntimeSettingsSnapshot`. There is no current `lane_truth_snapshot` resolver or
+`core/llm/lane_truth.rs` module.
 
-## Lanes
+`SettingsLoader::load_runtime_snapshot` delegates to
+`load_runtime_snapshot_with_keychain_population`, which reads the allowed
+inputs, resolves all LLM lanes once, records provenance, computes a redacted
+digest, and seals the immutable session snapshot. Consumers read
+`RuntimeSettingsSnapshot::llm_lanes()`; they do not repeat settings, environment,
+or credential resolution during a take.
 
-| Lane                | Runtime use                                   | Provider                                   | Credential account                                                         |
-| ------------------- | --------------------------------------------- | ------------------------------------------ | -------------------------------------------------------------------------- |
-| `main`              | shared fallback for OpenAI Responses settings | `openai-responses`                         | `LLM_API_KEY`                                                              |
-| `formatting`        | cleanup / formatting pass                     | `openai-responses` or `anthropic-messages` | `LLM_FORMATTING_API_KEY` for OpenAI, `LLM_ANTHROPIC_API_KEY` for Anthropic |
-| `assistive` / agent | assistive chat and the app agent provider     | `openai-responses` or `anthropic-messages` | `LLM_ASSISTIVE_API_KEY` for OpenAI, `LLM_ANTHROPIC_API_KEY` for Anthropic  |
+## Snapshot shape
 
-Provider ids are literal: `openai-responses` and `anthropic-messages`.
-Friendly aliases may parse in code, but persisted docs and examples should use
-the canonical kebab-case ids.
+`RuntimeSettingsSnapshot` freezes:
 
-## Precedence
+- resolved `Config` values;
+- the `UserSettings` intent read by the same loader pass;
+- `RuntimeLlmLanes` for `main`, `formatting`, and `assistive`;
+- settings provenance and an integrity digest; and
+- optional energy calibration.
 
-The OpenAI endpoint resolver for `formatting` and `assistive` uses this order:
+Each `RuntimeLlmLane` contains its lane kind, provider, wire family, normalized
+endpoint, model, resolved credential state, availability, and an optional
+unavailable reason. `RuntimeLlmCredential` keeps the runtime key internally;
+its `Debug` representation and snapshot digest expose presence only, never the
+secret value.
 
-1. fresh lane setting from `settings.json`
-2. lane env (`LLM_FORMATTING_ENDPOINT` or `LLM_ASSISTIVE_ENDPOINT`)
-3. fresh shared setting (`llm_endpoint`)
-4. shared env (`LLM_ENDPOINT`)
-5. loaded config value
-6. default `https://api.openai.com/v1/responses`
+## Lanes and credential accounts
 
-OpenAI model resolution follows the same lane-before-shared shape, except it has
-no loaded-config fallback: fresh lane setting → lane env → fresh shared setting
-→ shared env → lane default. Defaults are `gpt-4.1` for formatting and
-`gpt-5.5` for assistive. Claude model ids are ignored by the OpenAI model path.
+| Lane | Runtime role | Credential account selected by the loader |
+| --- | --- | --- |
+| `main` | Shared/main LLM settings | `LLM_API_KEY` |
+| `formatting` | Formatting lane | `LLM_FORMATTING_API_KEY` |
+| `assistive` | Assistive and agent lane | The resolved provider's `api_key_env_key()` |
 
-Provider resolution is lane-specific. Formatting currently reads
-`LLM_FORMATTING_PROVIDER` from env. Assistive reads the fresh persisted
-`llm_assistive_provider` first, then falls back to `LLM_ASSISTIVE_PROVIDER`.
-Invalid or missing provider values fall back to `openai-responses`.
+Provider identity and protocol are resolved before endpoint, model, credential,
+and availability. The snapshot stores the result as typed `ProviderKind` and
+`WireFamily`; downstream consumers do not infer protocol from URL or model text.
 
-Anthropic endpoint resolution is provider-owned: `anthropic-messages` uses
-`https://api.anthropic.com/v1/messages`. Its lane defaults are
-`claude-sonnet-4-6` for formatting and `claude-opus-4-8` for assistive, unless
-a Claude model is configured through the same lane/shared hierarchy.
+## Provider precedence
 
-## Credential and reset contract
+`resolve_runtime_llm_provider` applies lane-specific precedence:
 
-- Snapshots are secret-free: they expose `key_present`, `key_account`,
-  `account_auth`, availability, and a human-readable unavailable reason, never
-  the secret value.
-- Explicit non-empty process env wins over Keychain for credential lookup;
-  empty or missing env falls back to Keychain.
-- Reset means unset/remove the value. Empty persisted settings are normalized to
-  `None`, so the next lower-precedence layer is used.
-- Do not put real-looking keys in docs. Store secrets through Settings / macOS
-  Keychain or use non-secret placeholders in examples.
+- `assistive`: non-empty persisted `llm_assistive_provider`, then
+  `LLM_ASSISTIVE_PROVIDER`, then the configured assistive-provider default;
+- `formatting`: `LLM_FORMATTING_PROVIDER`, then the configured
+  formatting-provider default;
+- `main`: the configured main/assistive-provider default used by the loader.
 
-## Endpoint normalization
+Each candidate must parse as `ProviderKind`. Invalid or empty candidates fall
+through to the next source; the final typed default is fail-safe.
 
-- OpenAI-compatible endpoints are normalized to `/v1/responses`. Examples:
-  `https://api.openai.com` and `https://api.openai.com/v1` both resolve to
-  `https://api.openai.com/v1/responses`.
-- Anthropic Messages resolves to `/v1/messages`.
-- Key-optional endpoints are allowed only for non-official OpenAI-compatible
-  hosts. The guidance endpoint `https://api.libraxis.cloud/v1` is suggested for
-  setup text, but runtime never silently reroutes traffic there.
+## Model precedence
 
-## Availability and diagnostics
+`resolve_runtime_llm_model` accepts only model ids owned by the resolved
+provider.
 
-Assistive / agent availability is true when any of these is true:
+For `formatting` and `assistive`, the lane-specific order is:
 
-- an API key exists for the resolved provider account,
-- an OpenAI Responses lane has ChatGPT account auth on the official OpenAI host,
-- the endpoint is an allowed key-optional non-official host.
+1. non-empty persisted lane model;
+2. non-empty lane environment model;
+3. for providers that own generic lane configuration, non-empty persisted
+   shared `llm_model`;
+4. for those same providers, non-empty shared `LLM_MODEL`;
+5. the resolved provider's default for that lane.
 
-**Auth preference at startup (assistive / agent):** when both a stored API key
-and a signed-in ChatGPT OAuth account are present for official OpenAI Responses,
-**OAuth wins**. The API key remains visible to Settings/probe as `key_present`,
-but the send path authenticates with account tokens (fresh bearer per request).
-If the user signs out of ChatGPT, the lane falls back to the stored API key.
+`main` uses the shared persisted/environment sources before its default. A
+model owned by a different provider is skipped rather than carried into the
+sealed lane.
 
-Official OpenAI and Anthropic endpoints require credentials. ChatGPT account auth
-is only used for official OpenAI Responses and is intentionally not sent to
-key-optional endpoints.
+## Endpoint precedence
 
-The Settings key probe and the agent gate answer different questions. The probe
-checks whether a stored key can perform a minimal provider request and reports
-states such as invalid key, no credits, network error, or unsupported. The agent
-gate asks whether the resolved lane is available at runtime after endpoint,
-provider, key, Keychain, and account-auth resolution.
+For `main` and providers that own generic lane configuration,
+`resolve_runtime_llm_endpoint` uses:
 
-## Testable examples
+1. non-empty persisted lane endpoint, where the lane has one;
+2. non-empty lane endpoint environment value;
+3. non-empty persisted shared `llm_endpoint`;
+4. non-empty shared `LLM_ENDPOINT`;
+5. the already-loaded `Config.llm_endpoint` value;
+6. the default LLM endpoint.
 
-OpenAI formatting with shared fallback:
+For provider-owned configuration, the loader uses the provider's endpoint
+environment key and then its default endpoint. In both cases the resolved
+provider normalizes the final URL through `ProviderKind::normalize_endpoint`.
 
-```env
-LLM_ENDPOINT=https://api.openai.com/v1/responses
-LLM_MODEL=gpt-4.1
-LLM_FORMATTING_MODEL=gpt-4.1
-# Store LLM_FORMATTING_API_KEY in Keychain or set it outside committed files.
+## Credential and availability truth
+
+The sealed lane selects its credential account after provider resolution. The
+loader records a non-empty resolved API key when present. Assistive account auth
+is considered only for the OpenAI Responses wire family on an endpoint that
+requires credentials and only when the provider OAuth token account is present.
+
+A lane is available when at least one of these source-verified conditions holds:
+
+- the resolved API key is present;
+- the normalized endpoint does not require an API key; or
+- the supported assistive account-auth condition is true.
+
+Otherwise the snapshot seals an unavailable reason naming the lane, endpoint,
+and credential account. That is runtime lane truth; a Settings probe answers a
+different question and does not replace the sealed snapshot.
+
+## Immutability and reset behavior
+
+- One take uses one `RuntimeSettingsSnapshot`; consumers must not reread
+  `settings.json` or process environment during the take.
+- Settings changes create a new snapshot for a later session rather than
+  mutating the in-flight value.
+- Empty candidates are normalized away by the resolver, allowing the next
+  lower-precedence source to win.
+- Never put real-looking keys in documentation. Persist credentials through the
+  supported Settings/Keychain surface or inject them outside committed files.
+
+## Canonical access
+
+```text
+SettingsLoader::load_runtime_snapshot()
+  → SettingsLoader::resolve_runtime_llm_lanes(...)
+  → RuntimeLlmLanes { main, formatting, assistive }
+  → RuntimeSettingsSnapshot::seal_loaded(...)
+  → RuntimeSettingsSnapshot::llm_lanes()
 ```
 
-Assistive / agent through a key-optional local-compatible endpoint:
-
-```env
-LLM_ASSISTIVE_ENDPOINT=http://127.0.0.1:11434/v1
-LLM_ASSISTIVE_MODEL=local-assistive-model
-# No API key is required for this non-official local endpoint.
-```
-
-Anthropic assistive:
-
-```env
-LLM_ASSISTIVE_PROVIDER=anthropic-messages
-LLM_ASSISTIVE_MODEL=claude-opus-4-8
-# Store LLM_ANTHROPIC_API_KEY in Keychain or set it outside committed files.
-```
-
-To reset a lane endpoint or model, remove that env line or clear the field in
-Settings. Do not replace it with a fake key or an empty quoted secret in docs.
+This document describes structure verified on HEAD `484095ce`; it does not
+claim that C8 exercised provider requests or any runtime credential path.

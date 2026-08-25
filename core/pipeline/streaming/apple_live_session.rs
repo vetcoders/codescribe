@@ -1,26 +1,29 @@
-//! Apple progressive live session — system-dictation shape.
+//! Apple live session — the only target of the normal live dispatcher.
 //!
-//! Bypasses Silero-VAD + per-window Whisper scheduler for the Apple live path.
 //! One long-lived SFSpeech stream maps:
 //! - `partial` → `EngineEvent::Preview` (RAW — previews are not canvas yet)
 //! - phrase `final` → `EngineEvent::UtteranceFinal` (multi-seal freezed+append)
 //! - open partial on stop → sealed as a last final when non-empty
 //!
-//! Every seal runs the shared `StreamPostProcessor::process_utterance` pass
-//! (lexicon + cleanup, no semantic gate) BEFORE the text becomes committed
-//! canvas. Local Whisper may improve that pending text only through the same
-//! PCM-identified rewrite fence before `UtteranceFinal` is emitted.
+//! At seal, Apple and Lexicon/Light+ are separate observations of the same
+//! PCM-identified occurrence. `admit_ledger_label` offers them to
+//! `AcousticLedger::admit`; a closed occurrence passes through
+//! `AcousticLedger::seal`; `EngineEvent::LedgerMutation` and
+//! `EngineEvent::LedgerSeal` then carry the receipts to
+//! `PresentationEmitter` / `TranscriptReducer`. Neither raw Apple text nor the
+//! seal-time shaping pass owns the document.
 //!
 //! Whisper is never the primary live engine here. Local Power arms it as the
-//! required Layer 1 repair lane: each sealed utterance resolves to its retained PCM window and is
-//! re-transcribed off this path. Bounded TailPatch mutations are applied to the
-//! exact pending baseline behind one rewrite fence; the resulting
-//! `UtteranceFinal` already contains them. No patch event may follow finality —
-//! AGENTS.md (THE ONE RULE): filling canvas gaps on the go, never a stop-time
-//! full-text authority.
+//! required Layer 1 observer: each sealed utterance resolves to retained PCM and
+//! is re-transcribed by the tail provider. Its result is offered to the same
+//! `AcousticLedger`; it cannot mint a second occurrence or mutate after seal.
+//! This is live gap repair, never stop-time whole-text authority.
 //! Apple-only deliberately omits this lane; explicit off/invalid overrides in
-//! Local Power produce a typed degraded state. Escape hatch:
-//! `CODESCRIBE_APPLE_STT_LIVE_MODE=wav` restores the legacy VAD+scheduler path.
+//! Local Power produce a typed degraded state.
+//! `CODESCRIBE_APPLE_STT_LIVE_MODE=wav` selects the older Apple `transcribe_live`
+//! temp-WAV request transport for A/B comparison with live AudioBuffer delivery.
+//! It does not restore the deleted VAD/scheduler pipeline or create another
+//! transcript authority.
 //!
 //! The bridge global lock + child process live on a **dedicated OS thread**
 //! (MutexGuard is `!Send`); the async session only shuttles PCM in and

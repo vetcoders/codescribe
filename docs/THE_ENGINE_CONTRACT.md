@@ -226,10 +226,12 @@ a duplicate token. Unanchored text stays visible without mutation authority.
 - `dB × ms` names coordinates and hop evidence, not a scalar hash of average loudness.
 - Two identical tokens on disjoint `[sample_start, sample_end)` ranges are two observations.
 - Replaying one range must not mint another token. Text-suffix overlap must not collapse them.
-- Executable admit path: `core/pipeline/acoustic_identity.rs` (`admit_acoustic_spans`).
-- String `strip_suffix_overlap*` remains a legacy unanchored fallback and is forbidden once spans are anchored.
+- Executable admit/seal path: `core/pipeline/acoustic_ledger.rs`
+  (`AcousticLedger::admit` and `AcousticLedger::seal`). Live Apple observations
+  enter that authority through `admit_ledger_label`.
+- Text overlap never establishes occurrence identity or admission authority.
 
-### Acoustic span identity — identity is not evidence
+### Ledger identity — identity is not evidence
 
 A word is not a string. A word is an observation of a captured PCM interval
 together with the intensity measured on that interval. Two lexically identical
@@ -239,25 +241,27 @@ must survive.
 The engine therefore carries **two** separate objects for the same span. They
 must never be collapsed into one another.
 
-**`AcousticSpanIdentity` — the structural key.** Totally ordered, comparable
-for equality, cheap, and content-free:
+**`OccurrenceIdentity` — the structural key.** Comparable for equality and
+content-free:
 
 ```text
 session          — capture session id
-capture_epoch    — monotonic epoch inside that session
+capture_epoch    — successful physical-open epoch inside that session
 sample_start     — inclusive, on the capture PCM counter
 sample_end       — exclusive, on the same counter
-order            — monotonic mint index, unique inside (session, epoch)
 ```
 
-- `order` exists so a zero-width or exactly-replayed range is still two
-  distinguishable observations. Without it, `[eof, eof)` fallbacks and
-  intentional repetition inside one Apple commit alias onto one key.
-- Equality is the whole 5-tuple. Nothing else is identity.
-- `order` never derives from text position, token index, or arrival time on
-  the wire. It is minted once, where the observation enters the ledger.
+- Equality is the whole 4-tuple. Nothing else is physical identity.
+- A same-range replay is the same occurrence, not a new one. Two disjoint
+  ranges carrying equal text are two occurrences and both survive.
+- Zero-width or reversed ranges are unanchored evidence and carry no mutation
+  authority.
 
-**`AcousticSpanEvidence` — the quality proof.** Measured, lossy, optional:
+**`ObservationIdentity` — one hypothesis about that occurrence.** It adds the
+producer, request, and generation to `OccurrenceIdentity`. Generation orders a
+hypothesis; it never changes how many physical occurrences exist.
+
+**Acoustic evidence — the quality proof.** Measured, lossy, optional:
 
 ```text
 hops        — the capture energy hops overlapping the identity range
@@ -283,12 +287,12 @@ _first_. Text similarity may be used only afterwards, and only to align inside
 one already-authorized identity. A textual match never establishes, extends, or
 transfers authority (`infer_span_identity_from_text_similarity`).
 
-**Conservation.** For one capture epoch, the count of delivered observations
-bound to distinct identities equals the count of admitted acoustic
-observations. Every deletion, insertion, merge, split, reorder, or substitution
-carries a one-to-one receipt naming the same-span acoustic authority that
-allowed it. An observation that leaves the pipeline without such a receipt is
-a release-blocking failure (`drop_acoustic_observation_without_receipt`).
+**Conservation.** `AcousticLedger::admit` records one decision per offered
+observation, and `AcousticLedger::seal` closes the physical occurrence.
+`EngineEvent::LedgerMutation` and `EngineEvent::LedgerSeal` carry those receipts
+to `PresentationEmitter` / `TranscriptReducer`; Transcript Bus and Swift only
+observe the committed projection. Text producers may relabel an authorized
+occurrence, but may not mint, merge, or erase physical speech.
 
 ### Apple truth
 
@@ -449,60 +453,38 @@ Target semantics are identical.
 - It must not masquerade as Local Power.
 - It must not display Layered ON.
 
-### Whisper-first
+### Historical Whisper-first route — superseded, no current authority
 
-- Whisper-first may use VAD/scheduler utterance decoding.
-- It still uses the same PCM clock.
-- It still uses the same reducer authority.
-- It still forbids automatic whole-session rewrite.
-- Current VAD/scheduler mutation parity is incomplete.
-- Missing rewrite-fence parity must emit a named refusal.
+The pre-C6 Whisper-first VAD/scheduler route is retained only as dated design
+archaeology. It is not a live alternative dispatcher and must not be restored.
+On HEAD `484095ce`, `transcription_session` dispatches only to
+`apple_stream_transcription_session`; Whisper may contribute an authorized
+Layer 1 observation on retained PCM inside that Apple-ledger session.
 
-## Current HEAD truth — integrated runtime cut `ad1052d1`
+## Current structural truth — HEAD `484095ce` (2026-08-25)
 
-The contract above is the product destination.
+- `RecordingController` is the only in-app microphone owner.
+- `StreamingRecorder::start_event_session` computes the next `capture_epoch`
+  with checked arithmetic before open and assigns it only after
+  `recorder.start()` succeeds.
+- `transcription_session` dispatches only to
+  `apple_stream_transcription_session`.
+- Silero supplies boundary, time, and energy evidence; it owns no text.
+- Apple, Whisper, Lexicon/Light+, and Responses formatting observe or relabel an
+  occurrence already authorized by `AcousticLedger`.
+- `AcousticLedger` alone admits and seals physical occurrences.
+- `PresentationEmitter` / `TranscriptReducer` commit ledger events. Transcript
+  Bus and Swift are projections, and delivery follows explicit `DeliveryRoute`.
+- Normal product stop has no automatic whole-file pass. Explicit Retranscribe
+  remains a separate operator action.
 
-Current implementation evidence is narrower:
+This is structural source evidence, not a C8 compiler or runtime claim.
 
-- Apple progressive carries integer request identity.
-- Apple progressive carries a span map.
-- Apple progressive has one pre-final rewrite fence.
-- Apple progressive tests structural replay rejection.
-- Apple progressive counts submitted jobs into exactly one terminal bucket:
-  applied, skipped, timed out, or abandoned.
-- VAD/scheduler lacks the same pending-span rewrite fence.
-- VAD/scheduler preserves primary text instead of mutating blindly.
-- Local Power + Apple/Auto arms the local tail patcher when the compatibility
-  setting is absent or `phase1`.
-- Explicit `off` and malformed overrides are named degraded states.
-- Settings exposes configured/not-ready/degraded truth, not an independent ON
-  boolean; only the ordered runtime receipt proves per-take exercise.
-- Cloud still uses the generic consent-gated provider lane; local exact-span
-  patching is a distinct typed decision because its mutation fence is local.
-- The receipt is emitted before `SessionFinalised` and reconciles every
-  submitted job.
-- Normal product stop has no hidden whole-file pass.
-- Historical `smart` may remain in persisted configuration.
-- Explicit Retranscribe can load the verified local FP16 model.
+### Historical acoustic-identity defects — measured 2026-08-22 on `a95e1272`, superseded as current authority
 
-These are remaining contract gaps:
-
-- Cloud generic Layer 1 and local exact-span patching do not share one
-  mutation implementation; transport parity must not imply authority parity.
-- VAD/scheduler intentionally refuses a second patcher until it owns an
-  equivalent pending-span fence; direct Whisper remains its primary engine.
-- Settings can validate the FP16 bundle only as available/unavailable; it
-  cannot yet name the corrupt component through the bridge.
-- Textual LCS/change-ratio logic still participates in acceptance.
-- Full word-grain identity is not guaranteed for every Apple span.
-- Clock-lie remains a real input class.
-- The exact 4 s/1 s cadence is a target requiring runtime receipts.
-
-### Acoustic identity gaps — measured 2026-08-22 on `a95e1272`
-
-These are runtime findings with reproductions, not inferences. Each one is a
-place where the tree mints acoustic evidence and then does not consume it, or
-assembles by string where it holds a range.
+These reproductions remain useful archaeology, but describe the pre-C6 tree and
+have no current architectural authority. Current replacements are stated next
+to the resolved defects; this section is not a work queue.
 
 - **The energy clock has no consumer that decides anything.**
   `CaptureLevelAccumulator::push_samples` records an energy hop per capture
@@ -539,7 +521,8 @@ assembles by string where it holds a range.
   or a `PAUSE_SECS = 1.2` gap, and produces disjoint windows with no overlap.
   `full_file_pass_is_never_automatic` asserts the spelling of the constant, not
   the behaviour, so the disagreement is invisible to the gate.
-- **The Apple segment-less final path deletes repetition by text.** When an
+- **Pre-C6 repetition defect, resolved structurally by C6.** The Apple
+  segment-less final path deleted repetition by text. When an
   Apple final arrives without usable segments, `seal_utterance_final`
   (`core/pipeline/streaming/apple_live_session.rs`) matches the callback
   against the canvas with `revision_tolerant_known_prefix`, a banded
@@ -549,7 +532,11 @@ assembles by string where it holds a range.
   five yields `known_prefix = 5`, `novel_text = ""`, and the fifth acoustic
   occurrence is discarded. The same probe matches a canvas region with no
   temporal relationship to it. This is `deduplicate_intentional_repetition_by_content`
-  and `infer_span_identity_from_text_similarity` in the live path.
+  and `infer_span_identity_from_text_similarity` in that historical path. On
+  `484095ce`, `revision_tolerant_known_prefix` has no executable occurrence;
+  `seal_utterance_final` binds the callback to new session-clock PCM and routes
+  Apple and Lexicon observations through `admit_ledger_label` into
+  `AcousticLedger`.
 - **Apple final segments that straddle the cursor are dropped, not trimmed.**
   The overlap normalization in `seal_utterance_final` drops a whole segment on
   `start_ts < cursor - epsilon`, so a segment that begins before the cursor and
@@ -561,12 +548,16 @@ assembles by string where it holds a range.
   only after a successful open, and threads that value into the Apple state.
   A new operator-session bind resets the counter; stop/discard does not.
   Offline one-file replay seams use caller-domain epoch `1`.
-- **Structural receipts are computed and thrown away.**
+- **Pre-C6 receipt surface, superseded by `AcousticLedger`.** Structural
+  receipts were computed and thrown away.
   `SpanIdempotenceLedger` records `replayed_range_identity`,
   `replayed_request_identity`, `non_progressing_timestamps`, `decode_failure`,
   and `content_similar_preserved`. `span_idempotence_receipts()` has no
   consumer outside its own module, so `structural replays rejected` and
-  `intentional repetitions preserved` are never reported.
+  `intentional repetitions preserved` were never reported. On `484095ce`,
+  `AcousticLedger::admit` records the decision, `decide_observation` refuses a
+  repeated observation identity, and ledger mutation/seal events reach the
+  reducer.
 - **`TailTimingQuality::CompactedSpeechRelative` is never constructed.** Only
   `ExactSampleRange` is emitted, including for the in-process path that decodes
   VAD-compacted audio and maps back through `map_compacted_sample_range`. When
@@ -943,54 +934,10 @@ Restored:
 - FP16 is complete, validated, and exercised.
 - Layered ON returns when every accepted mutation path is evidenced.
 
-## Immediate convergence order
+## Historical convergence plan — superseded by the C6 ledger migration
 
-1. Make persisted Layered state and recorder arming one typed truth.
-2. Make Local Power arm the local FP16 provider deterministically.
-3. Emit an explicit arming receipt at recording start.
-4. Submit overlapping ~4 s / ~1 s observations during speech.
-5. Preserve exact PCM/request/span identity through completion.
-6. Apply corrections through the single reducer fence.
-7. Repair the canonical meaning-loss fixture before Delivery.
-8. Preserve onset and intentional-repetition fixtures.
-9. Bring VAD/scheduler to the same mutation authority or keep it explicitly read-only.
-10. Port any missing validated-weights/HF/metadata fixes into the current Living Tree.
-11. Align `STT_CONTRACT.md`, `ENV_REGISTRY.toml`, UI copy, and runtime logs.
-12. Only then reconsider the deployment default.
-
-### Acoustic identity cut order
-
-Steps 4–8 above are unreachable until identity is a real object. The order is
-forced by dependency, not preference, and each step lands on its own.
-
-Status on `fix/dbxms-by-claude`, measured 2026-08-22: **1 landed, 3 landed,
-4 partial, 6 landed, plus two defects found while cutting.** Steps 2, 5, 7, 8,
-9 and 10 are untouched. See "What landed" below.
-
-1. Introduce `AcousticSpanIdentity` (`session`, `capture_epoch`,
-   `sample_start`, `sample_end`, `order`) beside the existing
-   `TailSampleRange`. Mint `order` where the observation enters the ledger.
-2. Key the capture energy clock by `(session, capture_epoch)` and expose the
-   hop trace, not only the mean. Keep `mean_db` as evidence, never as key.
-3. Refuse a provider request whose PCM length disagrees with its declared
-   range, before inference, with its own receipt class. Split or pad coalesced
-   windows so the declaration is true.
-4. Thread `payload.segments` into the Layer 1 decision. Establish authority
-   from identity intersection first; let LCS and change ratio rank only inside
-   one authorized identity.
-5. Replace the char-offset `ConcatSpan` map with an identity map.
-6. Replace `revision_tolerant_known_prefix` on the segment-less Apple path with
-   a range-anchored admission. Where no range exists, admit the text as
-   `unanchored` rather than deleting it against the canvas.
-7. Trim, do not drop, Apple final segments that straddle the cursor, and emit
-   one receipt per removed observation.
-8. Emit the conservation receipts and fail the take when admitted minus
-   delivered leaves an unnamed residue.
-9. Mint a real ~4 s / ~1 s window cursor and make the cadence receipt, not the
-   constant's spelling, the thing the gate asserts.
-10. Then, and only then, re-open VAD/scheduler mutation parity.
-
-### What landed — acoustic identity cut, 2026-08-22
+The 2026-08-22 cut order below is retained as measured archaeology, not as
+current implementation guidance. It led to the three-way identity split:
 
 The model shipped is a three-way split, not the single `AcousticSpanIdentity`
 step 1 sketched. The correction is the point: `order` on the physical identity
@@ -1005,16 +952,14 @@ would let a replay mint a new occurrence by arriving late.
   order. Conservation is auditable because the receipt count always equals the
   observation count.
 
-Landed with it:
+That historical cut also established the following facts:
 
 - **Step 3.** A coalesced Layer 1 window splits at every PCM gap instead of
   declaring `[first.start, last.end)` over audio it dropped. One flush per
   contiguous run, each declaring exactly what it carries.
-- **Step 6.** `revision_tolerant_known_prefix` keeps its behaviour and loses
-  its authority. Its answer is an alignment hint, clamped to the committed
-  occurrences the callback may claim: whole spans only, and no more canvas
-  words than the callback itself carries. Where nothing is anchored the legacy
-  answer stands rather than a fabricated verdict.
+- **Historical step 6.** `revision_tolerant_known_prefix` briefly lost authority
+  while remaining as an alignment hint. C6 subsequently removed it. It has no
+  executable occurrence on `484095ce`; do not restore it.
 - **Step 4, partially.** Layer 1 already fenced on PCM identity and already
   validated segment containment, ordering and non-overlap. The gap was that the
   spans did not protect the text; the surviving span count now reaches the
@@ -1032,7 +977,7 @@ Two defects found while cutting, neither in the original 12:
   count: a run with one span per copy is speech; only a run longer than the
   audio can account for is collapsed.
 
-Known open, stated rather than implied:
+Historical open findings at that snapshot, stated rather than implied:
 
 - A cumulative Apple final under-declares its window by construction — its text
   restates the whole phrase while the window carries only the newest audio. No
@@ -1043,7 +988,10 @@ Known open, stated rather than implied:
   constructor. The recorder-issued epoch is required through the constructor
   chain; only recorder construction/rebind boundaries and test fixtures retain
   honest zero sentinels.
-- Steps 2, 5, 7, 8, 9, 10 unstarted.
+- Steps 2, 5, 7, 8, 9, and 10 were unstarted in that dated snapshot. This is not
+  current status and does not authorize restoration of the deleted
+  VAD/scheduler pipeline. Current authority is `AcousticLedger`; an independent
+  C9 gate, not this documentation cut, owns the W2 closure verdict.
 
 ## How a quality HTML must behave
 

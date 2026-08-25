@@ -1,5 +1,10 @@
 # W13-0 clock lies — input for W13-3A
 
+> **Dated pre-ledger evidence snapshot.** This fixture preserves measurements
+> and expected claims from the 2026-08-12 W13 anatomy. References to
+> `progressive_seal.rs` are historical and superseded; that deleted file is not
+> a current implementation map. Every measured row below remains unchanged.
+
 Measured or structurally proven on `fix/the-tail-patches@2e270b0f`.
 No production change in this cut. W13-3A consumes this list item-by-item.
 
