@@ -11,12 +11,11 @@
 //! - Whole-session Final BAM and document assembly (`SessionStore`) do not
 //!   return here.
 //!
-//! This is an approved future producer contract, not a launched runtime job.
-//! No production scheduler currently constructs or sends a proposal, and an
-//! enabled formatting setting alone must not add `Formatter` to an occurrence
-//! frontier. ASR, controller, clipboard, Agent, canvas, and Swift consumers are
-//! intentionally absent from this file until a concrete job owns an exact
-//! occurrence and guarantees a terminal return.
+//! The Apple live session is the sole producer. It may construct this contract
+//! only after a bounded execution permit owns the exact occurrence and must
+//! return that same Formatter frontier slot on every terminal outcome. An
+//! enabled setting alone never schedules `Formatter`; no bridge, CLI, Swift,
+//! delivery, or whole-session raw-string route consumes this contract.
 
 /// Non-authoritative lexicon constraint retained after Light+ authorship was
 /// removed. Constraint input only — never mints occurrences and never selects
@@ -62,7 +61,7 @@ pub enum LabelProposalDisposition {
 /// - Selecting a delivery destination (that is `DeliveryRoute`).
 /// - Whole-session Final BAM rewriting.
 ///
-/// # Intended future consumer
+/// # Consumer
 /// - `app/presentation/emitter.rs` (ledger-gated reducer admission after launch).
 ///
 /// # Must not reach
@@ -81,7 +80,7 @@ pub struct OccurrenceLabelProposal {
     pub proposed_label: String,
     /// Retained lexicon constraints that informed the proposal, if any.
     pub lexicon_constraints: Vec<RetainedLexiconConstraint>,
-    /// Chained Responses tip for a future launched inline-format job.
+    /// Chained Responses tip for a launched inline-format job.
     pub previous_response_id: Option<String>,
     /// Typed proposal disposition for per-layer decision history.
     pub disposition: LabelProposalDisposition,

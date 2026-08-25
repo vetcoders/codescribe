@@ -107,10 +107,10 @@ candle) and stays prompt-free — that pass is not the `:8444` worker.
 Verify without a live take: POST `~/.codescribe/last_session.wav` to
 `http://127.0.0.1:8444/v1/audio/transcriptions` with `vocabulary=programming`.
 
-**Format is not transcript authority (2026-08-19).** Overlay Format (LLM
-cleanup) may guess a language name, invent tokens, and drop the coda. HQ
-compare is Whisper file vs raw Apple, never vs Format. Format is a delivery
-style pass, not a second STT engine.
+**Legacy Overlay Format is removed (2026-08-25).** The former raw LLM
+replacement / delivery-style path no longer exists. Automatic formatting is
+only the occurrence-bound observer described below; HQ compare remains Whisper
+file vs raw Apple, never vs formatted text.
 
 **Dictionary helper (everyone, 2026-08-17):** Settings → Dictionary Retranscribe
 is an explicit file surface on the row's archived `<stem>_raw.{m4a,wav,flac}`.
@@ -258,6 +258,18 @@ identity. `AcousticLedger::admit` records the decision and
 projection. Replayed observation identity, invalid ranges, missing identities,
 and late automatic completions are refused structurally. Identical words in
 disjoint PCM ranges remain distinct occurrences and survive.
+
+Automatic formatting is one occurrence-bound observer on the Apple live path,
+not a second transcript pass. It is scheduled only after a bounded execution
+permit owns the exact existing `(session, capture_epoch, sample_start,
+sample_end)` and every earlier scheduled automatic observer for that occurrence
+has returned. Its sole product route is `OccurrenceLabelProposal` ->
+`EngineEvent::OccurrenceLabelProposal` -> `PresentationEmitter` /
+`TranscriptReducer` -> `AcousticLedger::admit(Formatter)`. Applied rewrites
+propose a label; healthy no-ops and intentional skips preserve; provider or
+structural failures refuse. Every accepted job returns its exact frontier slot
+before occurrence and terminal sealing; settings or lane availability alone do
+not schedule Formatter.
 
 `UtteranceFinal` is raw observation/telemetry only. Committed phrase identity
 travels through `LedgerMutation` / `LedgerSeal` receipts and the occurrence-

@@ -707,6 +707,9 @@ pub struct RuntimeSettingsSnapshot {
     /// Resolved provider, protocol, endpoint, model, credential, and
     /// availability facts for every LLM lane.
     llm_lanes: RuntimeLlmLanes,
+    /// Effective formatting policy resolved by the same loader pass. Runtime
+    /// consumers may not reconstruct this from process env or persisted rows.
+    formatting_policy: FormattingPolicy,
     /// Where the values came from.
     provenance: SettingsSnapshotProvenance,
     /// Integrity fingerprint for session evidence.
@@ -721,6 +724,7 @@ impl RuntimeSettingsSnapshot {
     pub fn seal(
         values: Config,
         llm_lanes: RuntimeLlmLanes,
+        formatting_policy: FormattingPolicy,
         provenance: SettingsSnapshotProvenance,
         digest: SettingsSnapshotDigest,
     ) -> Result<Self, SettingsSnapshotValidationError> {
@@ -729,6 +733,7 @@ impl RuntimeSettingsSnapshot {
             values,
             user_settings: UserSettings::default(),
             llm_lanes,
+            formatting_policy,
             provenance,
             digest,
             energy_calibration: None,
@@ -740,6 +745,7 @@ impl RuntimeSettingsSnapshot {
         values: Config,
         user_settings: UserSettings,
         llm_lanes: RuntimeLlmLanes,
+        formatting_policy: FormattingPolicy,
         provenance: SettingsSnapshotProvenance,
         digest: SettingsSnapshotDigest,
     ) -> Result<Self, SettingsSnapshotValidationError> {
@@ -748,6 +754,7 @@ impl RuntimeSettingsSnapshot {
             values,
             user_settings,
             llm_lanes,
+            formatting_policy,
             provenance,
             digest,
             energy_calibration: None,
@@ -767,6 +774,11 @@ impl RuntimeSettingsSnapshot {
     /// Borrow all resolved LLM lanes from the immutable settings throne.
     pub fn llm_lanes(&self) -> &RuntimeLlmLanes {
         &self.llm_lanes
+    }
+
+    /// Effective per-take formatter policy from the immutable settings throne.
+    pub const fn formatting_policy(&self) -> FormattingPolicy {
+        self.formatting_policy
     }
 
     /// Borrow provenance for evidence sinks.

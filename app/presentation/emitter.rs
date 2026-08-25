@@ -252,17 +252,18 @@ impl TranscriptReducer {
     }
 
     /// The sole automatic author may relabel only an occurrence the ledger
-    /// already holds. The future producer must have launched and scheduled its
+    /// already holds. The producer must have launched and scheduled its
     /// exact occurrence before this return arrives; the reducer never turns an
     /// unsolicited proposal into its own authority. Only the ledger receipt
-    /// reaches the document.
+    /// reaches the document. The boolean is true only when this call returned
+    /// that exact open Formatter slot; the event handler may seal only then.
     pub fn apply_occurrence_label_proposal(
         &mut self,
         ledger: &mut AcousticLedger,
         proposal: &OccurrenceLabelProposal,
-    ) -> Option<TranscriptRevision> {
+    ) -> (bool, Option<TranscriptRevision>) {
         if !proposal.binds_real_samples() {
-            return None;
+            return (false, None);
         }
         let occurrence = OccurrenceIdentity::new(
             proposal.session.clone(),
@@ -271,7 +272,7 @@ impl TranscriptReducer {
             proposal.sample_end,
         );
         if !ledger.is_qualified(&occurrence) || ledger.text_of(&occurrence).is_none() {
-            return None;
+            return (false, None);
         }
         let formatter_is_open = ledger.frontier_of(&occurrence).is_some_and(|frontier| {
             frontier
@@ -279,26 +280,29 @@ impl TranscriptReducer {
                 .contains(&ObservationProducer::Formatter)
         });
         if !formatter_is_open {
-            return None;
+            return (false, None);
         }
-        let candidate_label = if proposal.disposition == LabelProposalDisposition::Propose {
-            proposal.proposed_label.clone()
-        } else {
-            ledger.text_of(&occurrence)?.to_string()
-        };
+        if proposal.disposition != LabelProposalDisposition::Propose {
+            let _ = ledger.note_frontier_return(&occurrence, ObservationProducer::Formatter);
+            return (true, None);
+        }
+        let candidate_label = proposal.proposed_label.trim();
+        if candidate_label.is_empty() {
+            let _ = ledger.note_frontier_return(&occurrence, ObservationProducer::Formatter);
+            return (true, None);
+        }
         let observation = ObservationIdentity::new(
             ObservationProducer::Formatter,
             self.revision.saturating_add(1),
             self.revision.saturating_add(1),
             occurrence,
         );
-        let receipt = ledger.admit(&observation, &candidate_label);
+        let receipt = ledger.admit(&observation, candidate_label);
         let _ = ledger.note_frontier_return(&observation.occurrence, ObservationProducer::Formatter);
-        if proposal.disposition == LabelProposalDisposition::Propose {
-            self.apply_ledger_mutation(ledger, &observation, &receipt)
-        } else {
-            None
-        }
+        (
+            true,
+            self.apply_ledger_mutation(ledger, &observation, &receipt),
+        )
     }
 
     fn committed_rendered_text(&self) -> String {
@@ -549,12 +553,11 @@ impl EventSink for PresentationEmitter {
                         .session_state
                         .lock()
                         .unwrap_or_else(|error| error.into_inner());
-                    let proposal_revision =
+                    let (formatter_returned, proposal_revision) =
                         reducer.apply_occurrence_label_proposal(&mut ledger, proposal);
-                    let seal_revision = ledger
-                        .seal(&occurrence)
-                        .ok()
-                        .cloned()
+                    let seal_revision = formatter_returned
+                        .then(|| ledger.seal(&occurrence).ok().cloned())
+                        .flatten()
                         .and_then(|receipt| reducer.apply_ledger_seal(&receipt));
                     (proposal_revision, seal_revision)
                 };
@@ -704,8 +707,12 @@ impl EventSink for PresentationEmitter {
 mod tests {
     use super::{PresentationEmitter, TranscriptReducer};
     use crate::presentation::transcript_bus::{TranscriptBus, TranscriptMode, TranscriptSession};
+    use codescribe_core::llm::inline_format::{
+        LabelProposalDisposition, OccurrenceLabelProposal,
+    };
     use codescribe_core::pipeline::acoustic_ledger::{
-        AcousticLedger, ObservationIdentity, ObservationProducer, OccurrenceIdentity,
+        AcousticEvidence, AcousticLedger, EnergyCalibration, ObservationIdentity,
+        ObservationProducer, OccurrenceIdentity,
     };
     use codescribe_core::pipeline::contracts::{
         AnnotationKind, DeltaSink, EngineEvent, EventSink, LayerSource, LayerSummary,
@@ -941,5 +948,118 @@ mod tests {
 
         assert_eq!(reducer.document_by_occurrence.len(), 2);
         assert_eq!(reducer.committed_rendered_text(), "Iwo Iwo");
+    }
+
+    fn open_formatter_frontier() -> (AcousticLedger, TranscriptReducer, OccurrenceIdentity) {
+        let occurrence = OccurrenceIdentity::new("formatter-session", 9, 0, 16_000);
+        let calibration = EnergyCalibration {
+            version: "formatter-emitter-test".to_string(),
+            min_energy_integral: 1.0,
+            min_valley_samples: 1,
+        };
+        let evidence = AcousticEvidence {
+            occurrence: occurrence.clone(),
+            duration_ms: 1_000.0,
+            energy_integral: 10.0,
+            mean_rms_dbfs: -12.0,
+            peak_dbfs: -3.0,
+            vad_open_sample: Some(occurrence.sample_start),
+            vad_close_sample: Some(occurrence.sample_end),
+            evidence_calibration_version: calibration.version.clone(),
+        };
+        let mut ledger = AcousticLedger::new();
+        assert!(ledger.qualify(&evidence, &calibration).is_qualified());
+        ledger.schedule_frontier(
+            occurrence.clone(),
+            [ObservationProducer::Apple, ObservationProducer::Lexicon],
+        );
+        let apple = ObservationIdentity::new(
+            ObservationProducer::Apple,
+            1,
+            0,
+            occurrence.clone(),
+        );
+        let apple_receipt = ledger.admit(&apple, "Iwo");
+        assert!(!ledger.note_frontier_return(&occurrence, ObservationProducer::Apple));
+        let mut reducer = TranscriptReducer::default();
+        assert!(reducer
+            .apply_ledger_mutation(&ledger, &apple, &apple_receipt)
+            .is_some());
+
+        let lexicon = ObservationIdentity::new(
+            ObservationProducer::Lexicon,
+            1,
+            0,
+            occurrence.clone(),
+        );
+        let _ = ledger.admit(&lexicon, "Iwo");
+        assert!(ledger.schedule_observer(
+            occurrence.clone(),
+            ObservationProducer::Formatter,
+        ));
+        assert!(!ledger.note_frontier_return(&occurrence, ObservationProducer::Lexicon));
+        (ledger, reducer, occurrence)
+    }
+
+    #[test]
+    fn preserve_refuse_and_empty_propose_return_formatter_without_fake_observation() {
+        for (disposition, proposed_label) in [
+            (LabelProposalDisposition::PreserveExisting, ""),
+            (LabelProposalDisposition::Refuse, ""),
+            (LabelProposalDisposition::Propose, "   "),
+        ] {
+            let (mut ledger, mut reducer, occurrence) = open_formatter_frontier();
+            let trail_before = ledger.layer_trail_for(&occurrence).count();
+            let proposal = OccurrenceLabelProposal::for_existing_occurrence(
+                occurrence.session.clone(),
+                occurrence.capture_epoch,
+                occurrence.sample_start,
+                occurrence.sample_end,
+                proposed_label,
+                disposition,
+            );
+
+            let (formatter_returned, revision) =
+                reducer.apply_occurrence_label_proposal(&mut ledger, &proposal);
+            assert!(formatter_returned);
+            assert!(revision.is_none());
+            assert_eq!(ledger.layer_trail_for(&occurrence).count(), trail_before);
+            assert_eq!(ledger.text_of(&occurrence), Some("Iwo"));
+            assert!(ledger.seal(&occurrence).is_ok());
+            assert_eq!(reducer.committed_rendered_text(), "Iwo");
+        }
+    }
+
+    #[test]
+    fn formatter_proposal_can_only_relabel_one_existing_open_occurrence_once() {
+        let (mut ledger, mut reducer, occurrence) = open_formatter_frontier();
+        let qualified_before = ledger.qualified_occurrences().count();
+        let proposal = OccurrenceLabelProposal::for_existing_occurrence(
+            occurrence.session.clone(),
+            occurrence.capture_epoch,
+            occurrence.sample_start,
+            occurrence.sample_end,
+            "Iwo!",
+            LabelProposalDisposition::Propose,
+        );
+
+        let (formatter_returned, revision) =
+            reducer.apply_occurrence_label_proposal(&mut ledger, &proposal);
+        assert!(formatter_returned);
+        assert!(revision.is_some());
+        assert_eq!(ledger.text_of(&occurrence), Some("Iwo!"));
+        assert_eq!(ledger.qualified_occurrences().count(), qualified_before);
+        assert_eq!(reducer.document_by_occurrence.len(), 1);
+        assert!(ledger.seal(&occurrence).is_ok());
+
+        let trail_after_seal = ledger.layer_trail_for(&occurrence).count();
+        let (formatter_returned, revision) =
+            reducer.apply_occurrence_label_proposal(&mut ledger, &proposal);
+        assert!(!formatter_returned);
+        assert!(revision.is_none());
+        assert_eq!(ledger.layer_trail_for(&occurrence).count(), trail_after_seal);
+        assert_eq!(ledger.text_of(&occurrence), Some("Iwo!"));
+        assert_eq!(ledger.qualified_occurrences().count(), qualified_before);
+        assert_eq!(reducer.document_by_occurrence.len(), 1);
     }
 }

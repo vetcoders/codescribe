@@ -129,6 +129,15 @@ impl Config {
             defaults_applied: true,
             loaded_at_unix_ms,
         };
+        let runtime_formatting_policy = Self::config_runtime_env_var("FORMATTING_LEVEL").ok();
+        let formatting_policy = FormattingPolicy::resolve(
+            runtime_formatting_policy.as_deref(),
+            user_settings.formatting_level.as_deref(),
+        )
+        .map_err(|error| SettingsSnapshotValidationError::InvalidField {
+            field: "formatting_policy",
+            reason: error.to_string(),
+        })?;
         let llm_lanes = Self::resolve_runtime_llm_lanes(&values, &user_settings);
         let mut digest_values = values.clone();
         digest_values.llm_api_key = digest_values
@@ -140,11 +149,19 @@ impl Config {
             .as_ref()
             .map(|_| "<redacted:present>".to_string());
         let digest_material = format!(
-            "{digest_values:?}\n{user_settings:?}\n{provenance:?}\n{}",
+            "{digest_values:?}\n{user_settings:?}\n{provenance:?}\nformatting_policy={}\n{}",
+            formatting_policy.as_str(),
             llm_lanes.digest_material(),
         );
         let digest = SettingsSnapshotDigest::from_hex(sha256_hex(digest_material.as_bytes()));
-        RuntimeSettingsSnapshot::seal_loaded(values, user_settings, llm_lanes, provenance, digest)
+        RuntimeSettingsSnapshot::seal_loaded(
+            values,
+            user_settings,
+            llm_lanes,
+            formatting_policy,
+            provenance,
+            digest,
+        )
     }
 
     /// Resolve the complete LLM organ during the one settings-loader pass.
