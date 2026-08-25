@@ -13,9 +13,6 @@ pub(crate) mod apple_live_session;
 pub(crate) mod layer1_window;
 /// Bounded per-session PCM retention, so a sealed utterance can be re-read for tail-patch.
 pub(crate) mod live_audio_buffer;
-/// Offline replay of recorded samples, for tests and evaluation.
-#[cfg(any(test, feature = "offline_eval"))]
-pub(crate) mod offline;
 /// Per-session text postprocess: hallucination drops, overlap dedup, emitted-suffix tracking.
 pub(crate) mod pipeline;
 /// Event-based transcription session: VAD ingestion, the Whisper inference loop, final emission.
@@ -28,8 +25,6 @@ pub(crate) mod stream_log;
 pub(crate) mod tuning;
 
 pub use apple_live_session::APPLE_FINAL_OVERLAP_WARNING_CODE;
-#[cfg(any(test, feature = "offline_eval"))]
-pub use offline::transcribe_streaming_samples;
 pub use session::{
     SessionConfig, TAIL_PATCH_SESSION_RECEIPT_WARNING_CODE, TailPatchDrainDisposition,
     TailPatchSessionReceipt, collect_buffered_engine_events,

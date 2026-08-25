@@ -105,7 +105,7 @@ pub mod stt_api {
     };
     pub use crate::stt::whisper::{
         detect_language, get_model_path, init, transcribe, transcribe_file_verdict,
-        transcribe_streaming, transcribe_with_segments,
+        transcribe_with_segments,
     };
 }
 

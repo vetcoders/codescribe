@@ -454,16 +454,6 @@ pub fn transcribe_with_segments_with_initial_prompt(
     })
 }
 
-/// Transcribe with streaming callback
-pub fn transcribe_streaming<'a>(
-    samples: &[f32],
-    sample_rate: u32,
-    language: Option<&str>,
-    callback: Option<super::engine::ChunkCallback<'a>>,
-) -> Result<String> {
-    with_engine(|engine| engine.transcribe_long_streaming(samples, sample_rate, language, callback))
-}
-
 /// Transcribe a file with full structured verdict (VAD stats, confidence, provenance).
 pub fn transcribe_file_verdict(
     path: &std::path::Path,

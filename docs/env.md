@@ -60,8 +60,6 @@ Poniższe działają „same z siebie” — jeśli ich nie ustawisz, aplikacja 
 
 **Streaming (chunky)**
 
-- `CODESCRIBE_STREAM_CHUNK_SEC` – domyślnie `3.0` (HOT RELOADED)
-- `CODESCRIBE_STREAM_OVERLAP_RATIO` – domyślnie `0.2` (HOT RELOADED)
 - `CODESCRIBE_MAX_INFERENCE_CONCURRENCY` – domyślnie `1` (HOT RELOADED; clamp `1..4`)
 - `CODESCRIBE_BUFFER_DELAY_MS` – domyślnie `280` (HOT RELOADED)
 - `CODESCRIBE_TYPING_CPS` – domyślnie `90` (HOT RELOADED)
@@ -182,8 +180,6 @@ i runtime nie może znaleźć Whispera przez cache / config:
 
 ### Streaming / VAD / buffer
 
-- `CODESCRIBE_STREAM_CHUNK_SEC` (HOT RELOADED)
-- `CODESCRIBE_STREAM_OVERLAP_RATIO` (HOT RELOADED)
 - `CODESCRIBE_MAX_INFERENCE_CONCURRENCY` (HOT RELOADED; clamp `1..4`)
 - `CODESCRIBE_BUFFER_DELAY_MS` (HOT RELOADED)
 - `CODESCRIBE_TYPING_CPS` (HOT RELOADED)
@@ -288,12 +284,6 @@ make test-sse
 
 - `CODESCRIBE_E2E_OLLAMA` (RESTART NEEDED)
 - `CODESCRIBE_E2E_RUN_MEDIUM` (RESTART NEEDED)
-- `CODESCRIBE_E2E_CORPUS` (RESTART NEEDED)
-- `CODESCRIBE_E2E_CORPUS_DATE` (RESTART NEEDED)
-- `CODESCRIBE_E2E_CORPUS_LIMIT` (RESTART NEEDED)
-- `CODESCRIBE_E2E_CORPUS_MAX_REGRESSION` (RESTART NEEDED)
-- `CODESCRIBE_E2E_CORPUS_LANGUAGE` (RESTART NEEDED)
-- `CODESCRIBE_E2E_CORPUS_DIR` (RESTART NEEDED)
 
 ### Logging (legacy)
 
@@ -332,7 +322,6 @@ STT_API_KEY=...
 **4) Strojenie streaming / powtórki**
 
 ```
-CODESCRIBE_STREAM_CHUNK_SEC=12
 CODESCRIBE_STREAM_SIMILARITY=0.90
 CODESCRIBE_STREAM_NOVELTY=0.20
 ```
@@ -342,5 +331,4 @@ CODESCRIBE_STREAM_NOVELTY=0.20
 ## Report expectation (dla wdrożeniowca)
 
 - Jeśli coś nie działa: sprawdź `~/.codescribe/.env` i porównaj z sekcją „B” i „C”.
-- Jeśli pojawiają się powtórki: zwiększ `CODESCRIBE_STREAM_CHUNK_SEC`.
 - Jeśli brak AI: sprawdź czy `LLM_*` są ustawione.

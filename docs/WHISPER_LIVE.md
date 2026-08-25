@@ -43,7 +43,8 @@ Codescribe’s Whisper layer power-ups:
    - build policy embeds Whisper whenever the model is available at build time
    - runtime lookup from `CODESCRIBE_MODEL_PATH`, configured model dirs, bundled app resources, or the Hugging Face cache is a fallback path for `CODESCRIBE_NO_EMBED=1` builds or recovery
 2. **Live (streaming) transcription** while the user is recording
-   - Audio is chunked and transcribed in the background
+   - Live occurrence admission and seal belong to `AcousticLedger`; committed text is reduced by
+     `PresentationEmitter` / `TranscriptReducer`
    - In the layered model: Whisper events arrive as `ReplaceRange` patches **after** Apple's live
      deltas — the user sees Layer 0 first, then watches Whisper magically correct mixed-language /
      terminology tokens within ~1 s of utterance end
@@ -67,27 +68,12 @@ Key behavior:
 - **Shipped build:** embedded Whisper is the canonical path.
 - **Fallback build/runtime:** runtime model lookup remains available when embedding is intentionally unavailable.
 
-### 2) Streaming transcription (during recording)
+### 2) Live transcription authority
 
-We removed the old bottleneck:
-
-```text
-Audio callback → buffer → stop() → WAV write/read → transcribe entire audio → LLM
-```
-
-And replaced it with:
-
-```text
-Audio callback → non-blocking channel → chunking worker → spawn_blocking(Whisper) → transcript buffer
-                                                         ↓
-                                                     overlap dedup
-
-stop() → transcribe last pending samples → return final transcript → LLM/paste
-```
-
-Practical win:
-
-- **~35s recording:** `stop()` is ~0.5s (last chunk only) instead of ~4s (whole audio)
+The live product path is occurrence-ledger and reducer owned. `AcousticLedger` decides admission
+and seal; `PresentationEmitter` / `TranscriptReducer` owns committed document text. See
+[`TRANSCRIPT_LANES.md`](TRANSCRIPT_LANES.md) for the canonical live topology and the rule that
+decoder context overlap is resolved by request/span identity, never textual similarity.
 
 ## What’s new around Whisper Live
 
@@ -109,30 +95,20 @@ Practical win:
 | Section below                                   | Layer it lights up                                               |
 | ----------------------------------------------- | ---------------------------------------------------------------- |
 | Embedded Whisper (build + runtime lookup)       | Layer 1 (Tail Patch) backend resolution                          |
-| Streaming transcription, chunker, overlap dedup | Layer 1 background pass on utterance tail                        |
+| Live observation path                          | Ledger admission/seal and reducer-owned committed text           |
 | Stream postprocess, semantic gate               | Pre-diff cleanup feeding Layer 1's `ReplaceRange` decision       |
 | Cloud STT alternatives                          | Pluggable Layer 1 backend                                        |
 | Lexicon substitution + Light+                   | L2 — deterministic and currently wired at seal/delivery          |
 | Inline formatting scheduler                     | L3 — existing Responses Formatting lane; no separate small model |
 
-Everything below this point is the same Whisper-Live tech that existed before the ADR — it is
-**not removed**, just relocated in the architecture: Whisper became the silent partner that makes
-Apple's first pass true.
+The remaining sections describe retained Whisper provisioning and live observation surfaces.
+Canonical ownership and routing stay in [`TRANSCRIPT_LANES.md`](TRANSCRIPT_LANES.md).
 
 ## How it works (high level)
 
-```mermaid
-flowchart TD
-    A["CPAL input callback (audio thread)"] -->|try_send f32 samples| B[mpsc channel]
-    B --> C["StreamingRecorder worker (tokio task)"]
-    C -->|accumulate| D[chunk buffer]
-    D -->|every ~15s with ~2s overlap| E[spawn_blocking]
-    E --> F["Whisper singleton engine (Metal)"]
-    F --> G[chunk text]
-    G --> H[append_with_overlap_dedup]
-    H --> I[transcript_buffer]
-    I --> J["controller stop(): finalize + paste / LLM"]
-```
+Live audio observations remain attached to PCM/session identity through the ledger path, then
+committed reducer events drive presentation and delivery. The complete lane graph and overlap law
+live in [`TRANSCRIPT_LANES.md`](TRANSCRIPT_LANES.md); this document does not redefine them.
 
 ## Where in the code
 
@@ -140,7 +116,7 @@ flowchart TD
 
 - `core/stt/whisper/embedded.rs` — embedded Whisper payload exposed to the engine when compiled in
 - `core/stt/whisper/singleton.rs` — global engine singleton (prefers embedded payload, falls back to runtime model lookup)
-- `core/stt/whisper/engine.rs` — Candle/Whisper inference, chunking, overlap dedup (`append_with_overlap_dedup`)
+- `core/stt/whisper/engine.rs` — Candle/Whisper inference and active long-window decoder internals
 
 ### Live streaming recorder
 
@@ -150,9 +126,7 @@ flowchart TD
   - exposes `Recorder::actual_sample_rate()`
 - `core/audio/streaming_recorder.rs`
   - connects recorder callback → `mpsc::channel` (non-blocking)
-  - chunking (default: `15s` chunks + `2s` overlap)
-  - background transcription via `tokio::spawn_blocking`
-  - dedup between chunks via `append_with_overlap_dedup`
+  - retains PCM/session evidence for the ledger-owned live path
 - `app/controller/mod.rs`
   - uses `StreamingRecorder` and prefers the streaming transcript on `stop()`
   - can still save the WAV for logs and/or cloud final transcript replacement
@@ -193,7 +167,7 @@ Checklist:
 - Explicit `CODESCRIBE_NO_EMBED=1`: runtime lookup
 - Missing model during build: runtime lookup fallback for that artifact
 
-### “Why does streaming care about actual sample rate?”
+### “Why does live recognition care about actual sample rate?”
 
 Microphones usually run at `48kHz`. We record at the device’s native rate for compatibility,
 and Whisper internally resamples to `16kHz`.
@@ -205,7 +179,6 @@ get hallucinations and low confidence (classic “gibberish” pattern).
 
 - Model load: first init depends on local path/cache, then the engine stays resident
 - Live transcription: overlaps with recording
-- After `stop()`: usually just final chunk, typically well below 1s
 
 ---
 

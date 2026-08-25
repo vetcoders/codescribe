@@ -53,9 +53,6 @@ fn candle_config(architecture: crate::whisper_weights::WhisperArchitecture) -> C
     }
 }
 
-/// Callback for streaming chunk results (called after each chunk is transcribed)
-pub type ChunkCallback<'a> = &'a dyn Fn(&str);
-
 /// Process-lifetime Candle device for Whisper.
 ///
 /// Cached so idle-unload can drop model weights without calling
@@ -894,68 +891,6 @@ impl LocalWhisperEngine {
         Ok(self
             .transcribe_long_with_language_segments(audio, sample_rate, language)?
             .text)
-    }
-
-    /// Transcribe long audio with streaming callback
-    /// Callback is called after each chunk with cumulative transcription so far
-    pub fn transcribe_long_streaming(
-        &mut self,
-        audio: &[f32],
-        sample_rate: u32,
-        language: Option<&str>,
-        on_chunk: Option<ChunkCallback>,
-    ) -> Result<String> {
-        let samples = audio_loader::resample_to_16k(audio, sample_rate);
-        let debug_tokens = env::var("CODESCRIBE_DEBUG_TOKENS")
-            .map(|v| v != "0" && v.to_lowercase() != "false")
-            .unwrap_or(false);
-
-        let detected_lang;
-        let language = match language {
-            Some(l) => Some(l),
-            None => {
-                detected_lang = self.detect_language_16k(&samples)?;
-                tracing::info!("Detected language: {}", detected_lang);
-                Some(detected_lang.as_str())
-            }
-        };
-
-        let chunk_samples = 16_000usize * 25; // 25 seconds
-        let overlap = 16_000usize * 5; // 5 seconds overlap
-        ensure!(chunk_samples > overlap, "chunk_samples must be > overlap");
-        let step = chunk_samples - overlap;
-
-        let total_chunks = (samples.len().saturating_sub(1) / step) + 1;
-        let mut out = String::new();
-        let mut offset = 0usize;
-        let mut chunk_num = 0usize;
-
-        while offset < samples.len() {
-            chunk_num += 1;
-            let end = (offset + chunk_samples).min(samples.len());
-            let chunk = &samples[offset..end];
-
-            tracing::debug!(
-                "Processing chunk {}/{} ({} samples)",
-                chunk_num,
-                total_chunks,
-                chunk.len()
-            );
-
-            let text = self.transcribe_samples_16k(chunk, language, debug_tokens)?;
-            append_with_overlap_dedup(&mut out, &text);
-
-            // Call streaming callback with cumulative result
-            if let Some(ref callback) = on_chunk {
-                callback(out.trim());
-            }
-
-            offset = offset.saturating_add(step);
-        }
-
-        // Overlap/seam assembly above remains responsible only for joining windows.
-        // Preserve the assembled decoded text for downstream occurrence adjudication.
-        Ok(out.trim().to_string())
     }
 
     /// Detect the spoken language of in-memory audio, resampling to 16 kHz

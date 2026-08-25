@@ -128,22 +128,6 @@ category = "streaming"
 description = "Maximum number of concurrent inference tasks in streaming pipeline (clamped to 1-4)"
 range = "1-4"
 
-[vars.CODESCRIBE_STREAM_CHUNK_SEC]
-default = "4.0"
-type = "f32"
-reload = "hot"
-category = "streaming"
-description = "Streaming chunk duration in seconds (utterance cadence)"
-range = "0.5-30.0"
-
-[vars.CODESCRIBE_STREAM_OVERLAP_RATIO]
-default = "0.25"
-type = "f32"
-reload = "hot"
-category = "streaming"
-description = "Overlap ratio between chunks"
-range = "0.05-0.8"
-
 [vars.CODESCRIBE_STREAM_SIMILARITY]
 default = "0.93"
 type = "f32"
@@ -1583,48 +1567,6 @@ description = "Enable AppKit/UI tests gated by CODESCRIBE_UI_TESTS"
 # ═══════════════════════════════════════════════════════════════════════════════
 # Opt-in E2E / developer probes
 # ═══════════════════════════════════════════════════════════════════════════════
-
-[vars.CODESCRIBE_E2E_CORPUS]
-default = "0"
-type = "bool"
-reload = "restart"
-category = "test"
-description = "Enable the real WAV/TXT corpus regression probe"
-
-[vars.CODESCRIBE_E2E_CORPUS_DATE]
-default = ""
-type = "string"
-reload = "restart"
-category = "test"
-description = "Optional date filter for the corpus regression probe"
-
-[vars.CODESCRIBE_E2E_CORPUS_DIR]
-default = ""
-type = "string"
-reload = "restart"
-category = "test"
-description = "Optional corpus directory override for WAV/TXT regression pairs"
-
-[vars.CODESCRIBE_E2E_CORPUS_LANGUAGE]
-default = ""
-type = "string"
-reload = "restart"
-category = "test"
-description = "Optional Whisper language hint for corpus regression runs"
-
-[vars.CODESCRIBE_E2E_CORPUS_LIMIT]
-default = "3"
-type = "usize"
-reload = "restart"
-category = "test"
-description = "Maximum number of corpus pairs processed by one E2E run"
-
-[vars.CODESCRIBE_E2E_CORPUS_MAX_REGRESSION]
-default = "0.05"
-type = "f32"
-reload = "restart"
-category = "test"
-description = "Maximum accepted WER/CER regression ratio for the corpus probe"
 
 [vars.CODESCRIBE_E2E_LANG]
 default = "pl"
