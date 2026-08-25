@@ -586,7 +586,6 @@ endef
 # Fast: pure assembly + stream-floor + always-on e2e contracts (no STT / no Apple).
 test-engine:
 	@echo "=== Core engine (unit + always-on contracts, no STT) ==="
-	@cargo test -p codescribe-core --lib live_assembly -- --nocapture
 	@cargo test -p codescribe-core --lib apply_final_boundary -- --nocapture
 	@cargo test --test e2e_overlay_delivery_parity -- --nocapture
 	@echo "OK — freezed+append + single-final-tail fail bar green."

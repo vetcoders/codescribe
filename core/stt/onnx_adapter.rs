@@ -1,4 +1,4 @@
-//! ONNX Whisper adapter — speech-to-text via ort (ONNX Runtime).
+//! ONNX Whisper engine — speech-to-text via ort (ONNX Runtime).
 //!
 //! **STATUS: EXPERIMENTAL** — Candle fp16 (MLX) is the production local path.
 //! Benchmark (2026-02-11, 10 Polish files) showed ONNX +3.6–3.9pp WER vs Candle.
@@ -8,8 +8,8 @@
 //! Set `CODESCRIBE_ONNX_CPU_ONLY=1` to force CPU (CoreML is unstable on Tahoe beta).
 //! Set `CODESCRIBE_ONNX_QUANT=int8|q4|quantized|fp16` to force a quantization variant.
 //!
-//! Implements the same `TranscriptionAdapter` trait as the candle-based
-//! `WhisperSingletonAdapter`, making it a drop-in replacement.
+//! Exposes direct initialization and transcription functions over one
+//! process-wide engine singleton.
 
 use std::path::{Path, PathBuf};
 use std::sync::{Mutex, OnceLock};
@@ -24,7 +24,7 @@ use tracing::{debug, info, warn};
 use candle_transformers::models::whisper::{self as whisper_audio, Config as WhisperConfig};
 
 use crate::audio::loader as audio_loader;
-use crate::pipeline::contracts::{RawTranscript, SpeechUtterance, TranscriptionAdapter};
+use crate::pipeline::contracts::RawTranscript;
 use crate::stt::whisper::DecodingParams;
 use crate::stt::whisper::timestamps::{self, TimestampRange};
 
@@ -60,7 +60,7 @@ fn warn_if_initial_prompt_ignored() {
         {
             WARNED.get_or_init(|| {
                 warn!(
-                    "{} is set, but ONNX adapter does not support initial_prompt; value is ignored",
+                    "{} is set, but the ONNX engine does not support initial_prompt; value is ignored",
                     key
                 );
             });
@@ -111,8 +111,7 @@ impl ResolvedTokens {
 /// Internal engine holding ort sessions, tokenizer, and mel filters.
 ///
 /// `Session::run()` requires `&mut self`, so this struct lives behind a Mutex
-/// in the global singleton. The public `OnnxWhisperAdapter` is a zero-sized
-/// type that locks the Mutex to get `&mut OnnxEngine` access.
+/// in the global singleton used by the direct transcription functions.
 struct OnnxEngine {
     encoder: Session,
     decoder: Session,
@@ -579,50 +578,6 @@ impl OnnxEngine {
     }
 }
 
-// ── OnnxWhisperAdapter (zero-sized public type) ──────────────────────────────
-
-/// Zero-sized adapter wrapping the global ONNX engine singleton.
-///
-/// Mirrors `WhisperSingletonAdapter` pattern: the struct itself is trivially
-/// Send+Sync, and `transcribe()` locks the internal Mutex to get `&mut` access.
-pub struct OnnxWhisperAdapter;
-
-impl OnnxWhisperAdapter {
-    /// Construct the adapter. Does NOT initialise the engine — call
-    /// [`init`] first, or `transcribe` will fail with "engine not initialized".
-    pub fn new() -> Self {
-        Self
-    }
-}
-
-impl Default for OnnxWhisperAdapter {
-    /// Same as [`OnnxWhisperAdapter::new`] — ZST construction only, no init.
-    fn default() -> Self {
-        Self
-    }
-}
-
-impl TranscriptionAdapter for OnnxWhisperAdapter {
-    /// Lock the global ONNX engine and run long-form decode for this utterance.
-    ///
-    /// Requires a prior successful [`init`]; returns `Err` if the engine is
-    /// missing or the mutex is poisoned.
-    fn transcribe(
-        &self,
-        utterance: &SpeechUtterance,
-        language: Option<&str>,
-    ) -> Result<RawTranscript> {
-        let engine = ENGINE
-            .get()
-            .context("ONNX Whisper engine not initialized. Call onnx_adapter::init() first.")?;
-        let mut guard = engine
-            .lock()
-            .map_err(|e| anyhow!("ONNX engine mutex poisoned: {}", e))?;
-
-        guard.transcribe_long_raw(&utterance.samples, utterance.sample_rate, language)
-    }
-}
-
 // ── Helper functions ────────────────────────────────────────────────────────
 
 /// Create an ort Session with CoreML EP preference (or CPU-only if forced).
@@ -895,7 +850,7 @@ fn load_mel_filters_from_reader<R: std::io::Read + std::io::Seek>(
 
 // ── Tests ────────────────────────────────────────────────────────────────────
 
-/// Unit tests for mel filterbank math, logits extraction, and adapter traits.
+/// Unit tests for mel filterbank math, logits extraction, and engine initialization.
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -949,14 +904,6 @@ mod tests {
         assert!(last_position_logits(&[1, 2, 3], &[0.0f32; 2]).is_err());
     }
 
-    /// Verify adapter satisfies Send + Sync (required by TranscriptionAdapter).
-    #[test]
-    fn adapter_is_send_sync() {
-        /// Compile-time bound helper: only types that are Send+Sync type-check.
-        fn assert_send_sync<T: Send + Sync>() {}
-        assert_send_sync::<OnnxWhisperAdapter>();
-    }
-
     /// Integration test: load ONNX model from HF cache and verify init.
     /// Requires `hf download onnx-community/whisper-large-v3-turbo` to be run first.
     #[test]
@@ -990,46 +937,4 @@ mod tests {
         );
     }
 
-    /// End-to-end smoke test: transcribe synthetic noise via ONNX adapter.
-    /// Low-amplitude random noise simulates real silence (Whisper expects analog noise, not digital zeros).
-    #[test]
-    #[ignore] // Requires ONNX model in HF cache
-    fn onnx_transcribe_noise_silence() {
-        use crate::pipeline::contracts::{SpeechUtterance, TranscriptionAdapter};
-        use rand::Rng;
-
-        match init() {
-            Err(err) if err.to_string().contains("not found in HF cache") => {
-                eprintln!(
-                    "Skipping: ONNX model not in HF cache (hf download onnx-community/whisper-large-v3-turbo)"
-                );
-                return;
-            }
-            result => result.expect("ONNX init failed"),
-        }
-        let adapter = OnnxWhisperAdapter::new();
-
-        // 2 seconds of low-amplitude random noise at 16kHz (simulates real silence)
-        let mut rng = rand::thread_rng();
-        let noise: Vec<f32> = (0..32000).map(|_| rng.gen_range(-0.001..0.001)).collect();
-        let utterance = SpeechUtterance {
-            samples: noise,
-            sample_rate: 16000,
-            start_ts: 0.0,
-            end_ts: 2.0,
-        };
-
-        let result = adapter.transcribe(&utterance, Some("pl"));
-        assert!(result.is_ok(), "Transcribe failed: {:?}", result.err());
-
-        let transcript = result.unwrap();
-        eprintln!("Noise-silence transcript: '{}'", transcript.text);
-        // With realistic noise, no-speech should trigger or produce minimal hallucination
-        // Acceptable: empty, or very short hallucination (Whisper quirk)
-        assert!(
-            transcript.text.len() < 100,
-            "Noise-silence produced too much text: '{}'",
-            transcript.text
-        );
-    }
 }

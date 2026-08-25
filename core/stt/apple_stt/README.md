@@ -2,7 +2,7 @@
 
 This directory contains the Apple STT backend for codescribe:
 
-- `mod.rs` — Rust `TranscriptionAdapter` + subprocess bridge client + final-pass verdict helper.
+- `mod.rs` — Rust subprocess bridge client + direct transcription and final-pass verdict helpers.
 - `codescribe-stt-bridge.swift` — Swift bridge executable with per-locale backend selection.
 
 ## Backend selection (per locale)

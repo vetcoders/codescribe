@@ -1,4 +1,4 @@
-//! Apple on-device STT adapter (macOS 26+) via Swift bridge subprocess.
+//! Apple on-device STT (macOS 26+) via Swift bridge subprocess.
 //!
 //! Dual-backend probe/transcribe order (per locale):
 //! 1. **SpeechTranscriber** (`SpeechAnalyzer`) when the locale is supported+installed
@@ -32,8 +32,8 @@ use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
 use crate::pipeline::contracts::{
-    RawTranscript, SpeechUtterance, TranscriptSegment, TranscriptionAdapter,
-    TranscriptionEngineMode, TranscriptionEngineVerdict, TranscriptionSource, TranscriptionVerdict,
+    RawTranscript, TranscriptSegment, TranscriptionEngineMode, TranscriptionEngineVerdict,
+    TranscriptionSource, TranscriptionVerdict,
 };
 
 /// Floor macOS major version for the Apple STT path (SpeechAnalyzer era).
@@ -66,35 +66,6 @@ const BRIDGE_PROBE_TIMEOUT: Duration = Duration::from_secs(120);
 /// `sfSpeechRecognitionDeadlineSeconds()` in the Swift bridge.
 #[cfg(test)]
 const SF_SPEECH_RECOGNITION_DEADLINE_SECS: f64 = 2.5;
-
-/// Zero-sized adapter using Apple's SpeechAnalyzer via subprocess bridge.
-pub struct AppleSpeechAnalyzerAdapter;
-
-impl AppleSpeechAnalyzerAdapter {
-    /// Construct the adapter. Zero-sized: all state lives in the bridge child
-    /// process and the process-wide `OnceLock` caches below.
-    pub fn new() -> Self {
-        Self
-    }
-}
-
-impl Default for AppleSpeechAnalyzerAdapter {
-    /// Same as [`Self::new`]: zero-sized; runtime state lives in the bridge child.
-    fn default() -> Self {
-        Self
-    }
-}
-
-impl TranscriptionAdapter for AppleSpeechAnalyzerAdapter {
-    /// Transcribe one utterance via the Swift bridge (Apple on-device backends).
-    fn transcribe(
-        &self,
-        utterance: &SpeechUtterance,
-        language: Option<&str>,
-    ) -> Result<RawTranscript> {
-        transcribe_long_with_segments(&utterance.samples, utterance.sample_rate, language)
-    }
-}
 
 /// One protocol-v1 request line written to the bridge child's stdin.
 ///
@@ -1496,14 +1467,6 @@ mod tests {
             }
         }
         let _ = std::fs::remove_dir_all(&root);
-    }
-
-    /// Adapter must be Send+Sync so engine routers can share it across threads.
-    #[test]
-    fn adapter_is_send_sync() {
-        /// Compile-time Send+Sync bound check (no runtime body).
-        fn assert_send_sync<T: Send + Sync>() {}
-        assert_send_sync::<AppleSpeechAnalyzerAdapter>();
     }
 
     /// Short language codes expand to the product default region (pl→pl-PL, en→en-US).

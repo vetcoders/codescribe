@@ -18,11 +18,9 @@
 //!
 /// Bounded read-only view of active W2-04 Agent session-name leases.
 pub mod active_names;
-/// Candle Whisper singleton adapter implementing `TranscriptionAdapter`.
-pub mod adapter;
 /// Apple SpeechAnalyzer live STT bridge (letter-level canvas; live lane only).
 pub mod apple_stt;
-/// ONNX Whisper runtime adapter selected via `CODESCRIBE_STT_ENGINE=onnx`.
+/// ONNX Whisper runtime selected via `CODESCRIBE_STT_ENGINE=onnx`.
 pub mod onnx_adapter;
 /// Explicit cloud/loopback STT topic token. Client-owned; never from audio.
 pub mod request_vocabulary;
@@ -40,7 +38,6 @@ pub mod whisper;
 mod fleet_red_contracts;
 
 use crate::pipeline::contracts::RawTranscript;
-use crate::pipeline::contracts::TranscriptionAdapter;
 use std::sync::OnceLock;
 use tracing::warn;
 
@@ -66,29 +63,6 @@ fn default_engine() -> SttEngine {
         SttEngine::Apple
     } else {
         SttEngine::Candle
-    }
-}
-
-/// Get the active STT adapter based on `CODESCRIBE_STT_ENGINE` env var or auto policy.
-///
-/// - `"onnx"` → initializes ONNX engine + returns `OnnxWhisperAdapter`
-/// - `"apple"` → initializes SpeechAnalyzer bridge + returns Apple adapter
-/// - unset/`"auto"` → Apple on supported macOS, otherwise Candle
-/// - anything else → `WhisperSingletonAdapter` (candle)
-///
-/// Apple path gracefully falls back to Candle if unavailable.
-pub fn get_adapter() -> anyhow::Result<Box<dyn TranscriptionAdapter>> {
-    match default_engine() {
-        SttEngine::Onnx => {
-            onnx_adapter::init()?;
-            Ok(Box::new(onnx_adapter::OnnxWhisperAdapter::new()))
-        }
-        SttEngine::Apple => {
-            apple_stt::init()?;
-            Ok(Box::new(apple_stt::AppleSpeechAnalyzerAdapter::new())
-                as Box<dyn TranscriptionAdapter>)
-        }
-        SttEngine::Candle => Ok(Box::new(adapter::WhisperSingletonAdapter::new())),
     }
 }
 

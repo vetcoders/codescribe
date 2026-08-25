@@ -40,8 +40,8 @@ text first, then make it true.**
 Independently, the codebase already contains the building blocks for the hybrid the operator has been
 describing for weeks:
 
-- `core/stt/apple_stt/mod.rs` — 522 LOC `AppleSpeechAnalyzerAdapter` implementing
-  `TranscriptionAdapter`, defaulted through `CODESCRIBE_STT_ENGINE=auto`, with graceful fallback to Candle.
+- At decision time, `core/stt/apple_stt/mod.rs` exposed the Apple subprocess bridge
+  through the shared STT router, with `CODESCRIBE_STT_ENGINE=auto` falling back to Candle.
 - At decision time, `core/stt/whisper/*` was the production Whisper path
   (embedded turbo-mlx-q8 + Silero VAD).
 - `core/audio/streaming_recorder.rs` — chunker emits utterance events **and** the recorder

@@ -1,7 +1,7 @@
 //! Pipeline contracts — shared data types for the transcription pipeline.
 //!
 //! These types define the boundaries between pipeline stages:
-//!   AudioChunk → SpeechUtterance → RawTranscript → TranscriptDelta → DeltaSink
+//!   AudioChunk → RawTranscript → TranscriptDelta → DeltaSink
 //!
 //! Vibecrafted with AI Agents by Vetcoders (c)2026 Vetcoders
 
@@ -26,22 +26,6 @@ pub struct AudioChunk {
     pub start_ts: f32,
     /// End time relative to recording session (seconds).
     pub end_ts: f32,
-}
-
-/// A complete speech utterance (after VAD gating / silence detection).
-#[derive(Debug, Clone)]
-pub struct SpeechUtterance {
-    pub samples: Vec<f32>,
-    pub sample_rate: u32,
-    pub start_ts: f32,
-    pub end_ts: f32,
-}
-
-impl SpeechUtterance {
-    /// Duration in seconds.
-    pub fn duration(&self) -> f32 {
-        self.end_ts - self.start_ts
-    }
 }
 
 // ═══════════════════════════════════════════════════════════
@@ -545,22 +529,8 @@ impl std::fmt::Display for TranscriptDelta {
 }
 
 // ═══════════════════════════════════════════════════════════
-// Traits (adapter boundaries)
+// Traits (sink boundaries)
 // ═══════════════════════════════════════════════════════════
-
-/// Adapter for speech-to-text engines.
-///
-/// Implementations: `LocalWhisperEngine` (current), future cloud STT providers.
-pub trait TranscriptionAdapter: Send + Sync {
-    /// Transcribe one VAD-bounded utterance. `language` is a BCP-47-ish hint
-    /// (`None` = engine autodetect). Returns the untouched engine output;
-    /// postprocessing belongs to later pipeline stages.
-    fn transcribe(
-        &self,
-        utterance: &SpeechUtterance,
-        language: Option<&str>,
-    ) -> anyhow::Result<RawTranscript>;
-}
 
 /// Sink for transcript deltas (UI, IPC, clipboard, etc).
 ///
@@ -1127,20 +1097,6 @@ mod tests {
         let mut buf = before.to_string();
         delta.apply(&mut buf);
         assert_eq!(buf, after);
-    }
-
-    // ── SpeechUtterance ──
-
-    /// `SpeechUtterance::duration` is end_ts − start_ts in seconds.
-    #[test]
-    fn utterance_duration() {
-        let u = SpeechUtterance {
-            samples: vec![0.0; 16000],
-            sample_rate: 16000,
-            start_ts: 1.5,
-            end_ts: 2.5,
-        };
-        assert!((u.duration() - 1.0).abs() < f32::EPSILON);
     }
 
     // ── RawTranscript ──
