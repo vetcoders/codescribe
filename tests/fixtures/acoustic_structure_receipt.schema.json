@@ -4,6 +4,125 @@
   "title": "Codescribe acoustic throne structural receipt",
   "type": "object",
   "additionalProperties": false,
+  "$defs": {
+    "residueRow": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "file",
+        "line",
+        "matched_identifier",
+        "needle",
+        "relation",
+        "match_role",
+        "scope_classification",
+        "class",
+        "fail_gate",
+        "review_required",
+        "reason"
+      ],
+      "properties": {
+        "file": { "type": "string", "minLength": 1 },
+        "line": { "type": "integer", "minimum": 1 },
+        "matched_identifier": { "type": "string", "minLength": 1 },
+        "needle": { "type": "string", "minLength": 1 },
+        "relation": {
+          "enum": [
+            "snake_infix",
+            "snake_prefix",
+            "snake_suffix",
+            "pascal_twin",
+            "filename",
+            "verbatim_substring"
+          ]
+        },
+        "match_role": { "type": "string", "minLength": 1 },
+        "scope_classification": { "type": "string", "minLength": 1 },
+        "class": {
+          "enum": [
+            "executable_authority",
+            "executable_consumer",
+            "harmless_historical_name",
+            "diagnostic_or_log_label",
+            "comment_or_string",
+            "test_only_mutant",
+            "fixture",
+            "verifier_self_literal",
+            "unclassified_requires_review"
+          ]
+        },
+        "fail_gate": { "const": false },
+        "review_required": { "type": "boolean" },
+        "reason": { "type": "string", "minLength": 1 }
+      },
+      "allOf": [
+        {
+          "if": {
+            "properties": {
+              "class": { "const": "unclassified_requires_review" }
+            },
+            "required": ["class"]
+          },
+          "then": {
+            "properties": { "review_required": { "const": true } }
+          },
+          "else": {
+            "properties": { "review_required": { "const": false } }
+          }
+        }
+      ]
+    },
+    "residueRows": {
+      "type": "array",
+      "items": { "$ref": "#/$defs/residueRow" }
+    },
+    "residueSummary": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "total_count",
+        "unclassified_count",
+        "review_required_count",
+        "class_counts",
+        "needle_counts"
+      ],
+      "properties": {
+        "total_count": { "type": "integer", "minimum": 0 },
+        "unclassified_count": { "type": "integer", "minimum": 0 },
+        "review_required_count": { "type": "integer", "minimum": 0 },
+        "class_counts": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "executable_authority",
+            "executable_consumer",
+            "harmless_historical_name",
+            "diagnostic_or_log_label",
+            "comment_or_string",
+            "test_only_mutant",
+            "fixture",
+            "verifier_self_literal",
+            "unclassified_requires_review"
+          ],
+          "properties": {
+            "executable_authority": { "type": "integer", "minimum": 0 },
+            "executable_consumer": { "type": "integer", "minimum": 0 },
+            "harmless_historical_name": { "type": "integer", "minimum": 0 },
+            "diagnostic_or_log_label": { "type": "integer", "minimum": 0 },
+            "comment_or_string": { "type": "integer", "minimum": 0 },
+            "test_only_mutant": { "type": "integer", "minimum": 0 },
+            "fixture": { "type": "integer", "minimum": 0 },
+            "verifier_self_literal": { "type": "integer", "minimum": 0 },
+            "unclassified_requires_review": { "type": "integer", "minimum": 0 }
+          }
+        },
+        "needle_counts": {
+          "type": "object",
+          "additionalProperties": { "type": "integer", "minimum": 0 }
+        }
+      }
+    }
+  },
   "required": [
     "schema",
     "stage",
@@ -23,6 +142,7 @@
     "observed_owners",
     "forbidden_symbols",
     "forbidden_hits",
+    "residue_by_substring",
     "consumer_paths",
     "bypass_paths",
     "unwired_paths",
@@ -79,6 +199,14 @@
     },
     "forbidden_symbols": { "type": "array", "items": { "type": "string" } },
     "forbidden_hits": { "type": "object" },
+    "residue_by_substring": {
+      "type": "object",
+      "required": ["summary"],
+      "properties": {
+        "summary": { "$ref": "#/$defs/residueSummary" }
+      },
+      "additionalProperties": { "$ref": "#/$defs/residueRows" }
+    },
     "consumer_paths": { "type": "object" },
     "bypass_paths": { "type": "object" },
     "unwired_paths": { "type": "object" },
@@ -106,7 +234,7 @@
     "command_inventory": {
       "type": "array",
       "minItems": 1,
-      "items": { "type": "string", "pattern": "^loct (context|occurrences)" }
+      "items": { "type": "string", "pattern": "^loct (context|occurrences|find)" }
     },
     "command_policy": {
       "type": "object",

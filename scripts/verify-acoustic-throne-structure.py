@@ -41,6 +41,44 @@ VERIFIER_INFRASTRUCTURE = {
     "scripts/verify-authority-shape.sh",
     "scripts/verify-five-iwo.sh",
 }
+VERIFIER_LITERAL_PATHS = VERIFIER_INFRASTRUCTURE | {
+    "scripts/tests/test_verify_acoustic_throne_structure.py",
+}
+RESIDUE_CLASSES = (
+    "executable_authority",
+    "executable_consumer",
+    "harmless_historical_name",
+    "diagnostic_or_log_label",
+    "comment_or_string",
+    "test_only_mutant",
+    "fixture",
+    "verifier_self_literal",
+    "unclassified_requires_review",
+)
+RESIDUE_RELATIONS = {
+    "snake_infix",
+    "snake_prefix",
+    "snake_suffix",
+    "pascal_twin",
+    "filename",
+    "verbatim_substring",
+}
+RESIDUE_ROW_KEYS = {
+    "file",
+    "line",
+    "matched_identifier",
+    "needle",
+    "relation",
+    "match_role",
+    "scope_classification",
+    "class",
+    "fail_gate",
+    "review_required",
+    "reason",
+}
+KNOWN_RESIDUE_TWINS = {
+    "stream_postprocess": ("StreamPostProcessor",),
+}
 REQUIRED_RECEIPT_KEYS = {
     "schema",
     "stage",
@@ -60,6 +98,7 @@ REQUIRED_RECEIPT_KEYS = {
     "observed_owners",
     "forbidden_symbols",
     "forbidden_hits",
+    "residue_by_substring",
     "consumer_paths",
     "bypass_paths",
     "unwired_paths",
@@ -113,6 +152,7 @@ class StructuralVerifier:
         self.repo = repo
         self.command_inventory: list[list[str]] = []
         self._occurrences: dict[str, dict[str, Any]] = {}
+        self._substring_occurrences: dict[str, dict[str, Any]] = {}
 
     def run_loct(self, *args: str) -> LoctResult:
         command = [ALLOWED_EXECUTABLE, *args]
@@ -147,6 +187,14 @@ class StructuralVerifier:
             self._occurrences[symbol] = self.run_loct("occurrences", symbol).payload
         return self._occurrences[symbol]
 
+    def substring_occurrences(self, needle: str) -> dict[str, Any]:
+        if needle not in self._substring_occurrences:
+            pattern = substring_identifier_pattern(needle)
+            self._substring_occurrences[needle] = self.run_loct(
+                "find", "--regex", pattern
+            ).payload
+        return self._substring_occurrences[needle]
+
 
 def load_json(path: Path) -> Any:
     try:
@@ -175,6 +223,262 @@ def production_occurrences(payload: dict[str, Any]) -> list[dict[str, Any]]:
 
 def forbidden_occurrences(payload: dict[str, Any]) -> list[dict[str, Any]]:
     return code_occurrences(payload, FORBIDDEN_SCOPES)
+
+
+def pascal_twin(needle: str) -> str:
+    parts = [part for part in re.split(r"[^A-Za-z0-9]+", needle) if part]
+    if len(parts) < 2:
+        return needle
+    return "".join(part[:1].upper() + part[1:] for part in parts)
+
+
+def substring_variants(needle: str) -> list[str]:
+    return list(
+        dict.fromkeys(
+            [needle, pascal_twin(needle), *KNOWN_RESIDUE_TWINS.get(needle, ())]
+        )
+    )
+
+
+def substring_identifier_pattern(needle: str) -> str:
+    alternatives = "|".join(re.escape(variant) for variant in substring_variants(needle))
+    return rf"[A-Za-z0-9_]*({alternatives})[A-Za-z0-9_]*"
+
+
+def occurrence_key(occurrence: dict[str, Any]) -> tuple[str, int, int]:
+    return (
+        str(occurrence.get("file", "")),
+        int(occurrence.get("line", 0)),
+        int(occurrence.get("column", 0)),
+    )
+
+
+def residue_relation(matched_identifier: str, needle: str, file: str) -> str:
+    twins = [variant for variant in substring_variants(needle) if variant != needle]
+    if any(twin in matched_identifier for twin in twins):
+        return "pascal_twin"
+    if needle in matched_identifier:
+        if matched_identifier == needle:
+            return "verbatim_substring"
+        if matched_identifier.startswith(needle):
+            return "snake_prefix"
+        if matched_identifier.endswith(needle):
+            return "snake_suffix"
+        return "snake_infix"
+    if needle in Path(file).name or any(twin in Path(file).name for twin in twins):
+        return "filename"
+    return "verbatim_substring"
+
+
+def is_fixture_path(file: str) -> bool:
+    return file.startswith("tests/fixtures/") or "/fixtures/" in file
+
+
+def is_test_path(file: str) -> bool:
+    path = Path(file)
+    return (
+        file.startswith("tests/")
+        or file.startswith("scripts/tests/")
+        or any(part.endswith("Tests") for part in path.parts)
+    )
+
+
+def classify_substring_residue(
+    occurrence: dict[str, Any],
+    needle: str,
+    *,
+    disabled_cfg_any: bool = False,
+) -> tuple[str, str]:
+    file = str(occurrence.get("file", ""))
+    matched_identifier = str(occurrence.get("matched_text", ""))
+    match_role = str(occurrence.get("match_role", "unknown"))
+    scope = str(occurrence.get("scope_classification", "unknown"))
+    context = str(occurrence.get("context", "")).lower()
+
+    if file in VERIFIER_LITERAL_PATHS:
+        return "verifier_self_literal", "verifier-owned evidence literal"
+    if is_fixture_path(file):
+        return "fixture", "fixture or frozen structural manifest"
+    if file.startswith("docs/"):
+        return "harmless_historical_name", "historical documentation name"
+    if match_role in NON_CODE_ROLES:
+        return "comment_or_string", "Loctree marks the match as non-code text"
+    if (
+        disabled_cfg_any
+        or scope == "test"
+        or is_test_path(file)
+        or matched_identifier.startswith("test_")
+    ):
+        return "test_only_mutant", "test-only or cfg-disabled evidence"
+    if matched_identifier.startswith("should_drop"):
+        return "executable_authority", "engine-local predicate can drop decoder output"
+    if matched_identifier.endswith("Dropped") or any(
+        marker in context for marker in ("display", "diagnostic", "qualityissuekind", "report")
+    ):
+        return "diagnostic_or_log_label", "diagnostic or report label for a drop decision"
+    if "_dropped" in matched_identifier:
+        return "executable_consumer", "drop-state field or flag is forwarded or consumed"
+    return "unclassified_requires_review", "no deterministic taxonomy rule matched"
+
+
+def inside_cfg_any_module(repo: Path | None, occurrence: dict[str, Any]) -> bool:
+    if repo is None:
+        return False
+    relative = Path(str(occurrence.get("file", "")))
+    if relative.suffix != ".rs":
+        return False
+    source = repo / relative
+    if not source.is_file():
+        return False
+    target = int(occurrence.get("line", 0)) - 1
+    lines = source.read_text(errors="replace").splitlines()
+    if not 0 <= target < len(lines):
+        return False
+    for attribute_index in range(target, -1, -1):
+        if not re.fullmatch(r"\s*#\[cfg\(any\(\)\)\]\s*", lines[attribute_index]):
+            continue
+        module_index = attribute_index + 1
+        while module_index <= target and not lines[module_index].strip():
+            module_index += 1
+        if module_index > target or not re.search(
+            r"\bmod\s+[A-Za-z_][A-Za-z0-9_]*\s*\{", lines[module_index]
+        ):
+            continue
+        depth = 0
+        for line in lines[module_index : target + 1]:
+            depth += line.count("{") - line.count("}")
+        if depth > 0:
+            return True
+    return False
+
+
+def residue_occurrences(
+    regex_payload: dict[str, Any],
+    exact_payload: dict[str, Any],
+    needle: str,
+    *,
+    repo: Path | None = None,
+) -> list[dict[str, Any]]:
+    regex_evidence = regex_payload.get("matches", regex_payload)
+    exact_fail_gate = {occurrence_key(row) for row in forbidden_occurrences(exact_payload)}
+    rows: list[dict[str, Any]] = []
+    for occurrence in regex_evidence.get("occurrences", []):
+        if occurrence_key(occurrence) in exact_fail_gate:
+            continue
+        matched_identifier = str(occurrence.get("matched_text", ""))
+        if not matched_identifier:
+            continue
+        residue_class, reason = classify_substring_residue(
+            occurrence,
+            needle,
+            disabled_cfg_any=inside_cfg_any_module(repo, occurrence),
+        )
+        rows.append(
+            {
+                "file": str(occurrence.get("file", "")),
+                "line": int(occurrence.get("line", 0)),
+                "matched_identifier": matched_identifier,
+                "needle": needle,
+                "relation": residue_relation(
+                    matched_identifier, needle, str(occurrence.get("file", ""))
+                ),
+                "match_role": str(occurrence.get("match_role", "unknown")),
+                "scope_classification": str(
+                    occurrence.get("scope_classification", "unknown")
+                ),
+                "class": residue_class,
+                "fail_gate": False,
+                "review_required": residue_class == "unclassified_requires_review",
+                "reason": reason,
+            }
+        )
+    return sorted(
+        rows,
+        key=lambda row: (
+            row["file"],
+            row["line"],
+            row["matched_identifier"],
+            row["match_role"],
+        ),
+    )
+
+
+def residue_summary(by_needle: dict[str, list[dict[str, Any]]]) -> dict[str, Any]:
+    class_counts = {residue_class: 0 for residue_class in RESIDUE_CLASSES}
+    needle_counts: dict[str, int] = {}
+    for needle, rows in by_needle.items():
+        needle_counts[needle] = len(rows)
+        for row in rows:
+            class_counts[str(row["class"])] += 1
+    return {
+        "total_count": sum(needle_counts.values()),
+        "unclassified_count": class_counts["unclassified_requires_review"],
+        "review_required_count": sum(
+            1 for rows in by_needle.values() for row in rows if row["review_required"]
+        ),
+        "class_counts": class_counts,
+        "needle_counts": needle_counts,
+    }
+
+
+def validate_residue_shape(residue: Any) -> None:
+    if not isinstance(residue, dict) or "summary" not in residue:
+        raise RuntimeError("receipt residue_by_substring must contain summary")
+    by_needle = {key: value for key, value in residue.items() if key != "summary"}
+    for needle, rows in by_needle.items():
+        if not isinstance(needle, str) or not needle or not isinstance(rows, list):
+            raise RuntimeError(f"invalid residue needle bucket: {needle!r}")
+        for row in rows:
+            if not isinstance(row, dict) or set(row) != RESIDUE_ROW_KEYS:
+                raise RuntimeError(f"invalid residue row shape for {needle}: {row}")
+            if row["needle"] != needle:
+                raise RuntimeError(f"residue row needle mismatch for {needle}: {row}")
+            if (
+                not isinstance(row["file"], str)
+                or not row["file"]
+                or not isinstance(row["line"], int)
+                or isinstance(row["line"], bool)
+                or row["line"] < 1
+                or not isinstance(row["matched_identifier"], str)
+                or not row["matched_identifier"]
+                or not isinstance(row["match_role"], str)
+                or not row["match_role"]
+                or not isinstance(row["scope_classification"], str)
+                or not row["scope_classification"]
+                or not isinstance(row["reason"], str)
+                or not row["reason"]
+            ):
+                raise RuntimeError(f"invalid residue evidence fields for {needle}: {row}")
+            if row["relation"] not in RESIDUE_RELATIONS:
+                raise RuntimeError(f"invalid residue relation for {needle}: {row}")
+            if row["class"] not in RESIDUE_CLASSES:
+                raise RuntimeError(f"invalid residue class for {needle}: {row}")
+            if row["fail_gate"] is not False:
+                raise RuntimeError(f"residue row attempted to enter fail gate: {row}")
+            expected_review = row["class"] == "unclassified_requires_review"
+            if row["review_required"] is not expected_review:
+                raise RuntimeError(f"residue review flag contradicts class: {row}")
+    expected_summary = residue_summary(by_needle)
+    if residue["summary"] != expected_summary:
+        raise RuntimeError(
+            f"residue summary mismatch: expected {expected_summary}, "
+            f"observed {residue['summary']}"
+        )
+
+
+def build_residue_by_substring(
+    verifier: StructuralVerifier, forbidden_symbols: list[str]
+) -> dict[str, Any]:
+    by_needle = {
+        needle: residue_occurrences(
+            verifier.substring_occurrences(needle),
+            verifier.occurrences(needle),
+            needle,
+            repo=verifier.repo,
+        )
+        for needle in forbidden_symbols
+    }
+    return {**by_needle, "summary": residue_summary(by_needle)}
 
 
 def definitions(payload: dict[str, Any]) -> list[dict[str, Any]]:
@@ -293,6 +597,7 @@ def verify_stage(
         if files:
             forbidden_hits[symbol] = files
             failures.append(f"forbidden symbol {symbol} remains in {files}")
+    residue_by_substring = build_residue_by_substring(verifier, forbidden_symbols)
 
     unresolved_modules = unresolved_module_declarations(verifier.repo)
     if unresolved_modules:
@@ -400,6 +705,7 @@ def verify_stage(
         "observed_owners": observed_owners,
         "forbidden_symbols": forbidden_symbols,
         "forbidden_hits": forbidden_hits,
+        "residue_by_substring": residue_by_substring,
         "consumer_paths": consumer_paths,
         "bypass_paths": bypass_paths,
         "unwired_paths": unwired_paths,
@@ -433,6 +739,7 @@ def inventory() -> dict[str, Any]:
         "command_templates": [
             "loct context --json",
             "loct occurrences <literal-identifier> --json",
+            "loct find --regex <substring-identifier-pattern> --json",
         ],
         "direct_static_checks": ["Rust mod declaration resolves to a source file"],
         "product_execution": "FORBIDDEN",
@@ -446,6 +753,7 @@ def validate_receipt_shape(receipt: dict[str, Any]) -> None:
         raise RuntimeError(f"receipt schema check missing keys: {missing}")
     if receipt.get("schema") != RECEIPT_SCHEMA:
         raise RuntimeError(f"receipt schema identity mismatch: {receipt.get('schema')}")
+    validate_residue_shape(receipt.get("residue_by_substring"))
     stage = receipt.get("stage")
     scope = receipt.get("scope")
     if (stage == "assembled") != (scope in ASSEMBLY_SCOPES):
