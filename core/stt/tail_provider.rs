@@ -9,7 +9,6 @@
 use std::net::{IpAddr, Ipv4Addr, SocketAddr, TcpListener, TcpStream};
 use std::path::PathBuf;
 use std::process::{Child, Command, Stdio};
-use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Mutex, OnceLock};
 use std::time::{Duration, Instant};
 
@@ -132,11 +131,6 @@ pub const MAX_TAIL_PROVIDER_TEXT_BYTES: usize = 64 * 1024;
 pub const MAX_TAIL_PROVIDER_SEGMENTS: usize = 2_048;
 /// Maximum bytes accepted for an identity/session or evidence revision token.
 pub const MAX_TAIL_PROVIDER_ID_BYTES: usize = 256;
-
-/// Compatibility request counter until W13-3A threads capture identity into
-/// the live call site. It prevents unrelated legacy windows from sharing an
-/// idempotency key; explicit callers should supply their own identity.
-static LEGACY_REQUEST_ID: AtomicU64 = AtomicU64::new(1);
 
 /// Provider incarnation chosen for a tail-patch request.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -1332,29 +1326,6 @@ pub fn transcribe_configured(
         "tail_provider_receipt"
     );
     Ok(payload)
-}
-
-/// Compatibility adapter for current call sites. W13-3A replaces this local
-/// identity with the real capture session/epoch and absolute window range.
-pub(crate) fn transcribe_legacy_window(
-    pcm: &[f32],
-    sample_rate: u32,
-    language: Option<&str>,
-) -> Result<RawTranscript> {
-    let request = TailProviderRequest {
-        identity: TailRequestIdentity {
-            request_id: LEGACY_REQUEST_ID.fetch_add(1, Ordering::Relaxed),
-            range: TailSampleRange {
-                session: "legacy_tail_patch".to_string(),
-                capture_epoch: 0,
-                sample_start: 0,
-                sample_end: pcm.len() as u64,
-            },
-        },
-        sample_rate,
-        language: language.map(str::to_owned),
-    };
-    transcribe_configured(&request, pcm)?.into_raw_transcript(sample_rate)
 }
 
 #[cfg(test)]

@@ -205,8 +205,9 @@ punctuation; receipts show chunks formatted in flight.
 
 ### W13-2 — Tail-patch provider seam (sidecar / remote / in-process) — `[ ]`
 
-Current: one in-process path behind `whisper_tail_patch_transcribe`
-(core/stt/mod.rs); STT_API_KEY slot reports "Unsupported" in
+Current: the typed request/span provider seam serves in-process, sidecar, and
+remote implementations directly; the file-tail compatibility wrapper and its
+text-overlap composer are removed. STT_API_KEY slot reports "Unsupported" in
 key_liveness; cold 3.9 s after TTL inside the app process.
 
 Implementation points:

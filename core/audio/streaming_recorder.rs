@@ -58,6 +58,7 @@ pub struct ProductionSessionReplay {
 /// Build the exact engine session configuration consumed by live capture.
 fn recording_session_config(
     session_id: String,
+    capture_epoch: u64,
     runtime_settings: Arc<RuntimeSettingsSnapshot>,
     acoustic_ledger: Arc<StdMutex<AcousticLedger>>,
     sample_rate: u32,
@@ -69,7 +70,7 @@ fn recording_session_config(
 ) -> SessionConfig {
     SessionConfig {
         session_id,
-        capture_epoch: 0,
+        capture_epoch,
         runtime_settings,
         acoustic_ledger,
         sample_rate,
@@ -107,6 +108,7 @@ pub async fn replay_production_session(
     let utterance_silence_sec = settings.toggle_silence_sec.filter(|&sec| sec >= 0.5);
     let config = recording_session_config(
         uuid::Uuid::new_v4().to_string(),
+        1,
         runtime_settings,
         acoustic_ledger.clone(),
         sample_rate,
@@ -157,6 +159,9 @@ pub struct StreamingRecorder {
     acoustic_ledger: Option<Arc<StdMutex<AcousticLedger>>>,
     /// Controller-owned session identity bound with the ledger.
     authority_session_id: Option<String>,
+    /// Last capture-open epoch issued for the currently bound session.
+    /// Zero means this bind has not successfully opened capture yet.
+    capture_epoch: u64,
 }
 
 impl StreamingRecorder {
@@ -183,6 +188,7 @@ impl StreamingRecorder {
             runtime_settings: None,
             acoustic_ledger: None,
             authority_session_id: None,
+            capture_epoch: 0,
         })
     }
 
@@ -209,6 +215,7 @@ impl StreamingRecorder {
             runtime_settings: None,
             acoustic_ledger: None,
             authority_session_id: None,
+            capture_epoch: 0,
         })
     }
 
@@ -219,6 +226,7 @@ impl StreamingRecorder {
         runtime_settings: Arc<RuntimeSettingsSnapshot>,
     ) -> Arc<StdMutex<AcousticLedger>> {
         let acoustic_ledger = Arc::new(StdMutex::new(AcousticLedger::new()));
+        self.capture_epoch = 0;
         self.authority_session_id = Some(session_id);
         self.runtime_settings = Some(runtime_settings);
         self.acoustic_ledger = Some(Arc::clone(&acoustic_ledger));
@@ -310,6 +318,9 @@ impl StreamingRecorder {
             .as_ref()
             .map(Arc::clone)
             .ok_or_else(|| anyhow!("start_event_session requires AcousticLedger"))?;
+        let next_capture_epoch = self.capture_epoch.checked_add(1).ok_or_else(|| {
+            anyhow!("capture epoch overflow: no unused epoch remains for the bound session")
+        })?;
 
         // Clear previous transcript and reset drop counter
         *self.transcript_buffer.lock().await = String::new();
@@ -336,6 +347,7 @@ impl StreamingRecorder {
 
         // Start actual audio stream
         self.recorder.start().await?;
+        self.capture_epoch = next_capture_epoch;
 
         // Update sample rate to match real input stream
         let actual_sample_rate = self.recorder.actual_sample_rate();
@@ -370,6 +382,7 @@ impl StreamingRecorder {
                 event_sink,
                 recording_session_config(
                     session_id,
+                    next_capture_epoch,
                     runtime_settings,
                     acoustic_ledger,
                     actual_sample_rate,

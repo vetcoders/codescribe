@@ -797,13 +797,13 @@ impl AppleSealState {
     /// Product-mode arming is injected by the session owner, not this test helper.
     #[cfg(any())]
     fn new(sample_rate: u32) -> Self {
-        Self::new_for_session(sample_rate, uuid::Uuid::new_v4().to_string())
+        Self::new_for_session(sample_rate, uuid::Uuid::new_v4().to_string(), 0)
     }
 
-    fn new_for_session(sample_rate: u32, session_id: String) -> Self {
+    fn new_for_session(sample_rate: u32, session_id: String, capture_epoch: u64) -> Self {
         Self {
             session_id,
-            capture_epoch: 0,
+            capture_epoch,
             sample_rate,
             preview_rev: 0,
             utterance_id: 0,
@@ -838,6 +838,7 @@ impl AppleSealState {
     fn new_for_session_with_ledger(
         sample_rate: u32,
         session_id: String,
+        capture_epoch: u64,
         acoustic_ledger: Arc<Mutex<AcousticLedger>>,
         energy_calibration: Option<EnergyCalibration>,
         runtime_settings: Arc<RuntimeSettingsSnapshot>,
@@ -846,7 +847,7 @@ impl AppleSealState {
             acoustic_ledger,
             energy_calibration,
             runtime_settings: Some(runtime_settings),
-            ..Self::new_for_session(sample_rate, session_id)
+            ..Self::new_for_session(sample_rate, session_id, capture_epoch)
         }
     }
 
@@ -941,6 +942,7 @@ impl AppleSealState {
     fn new_with_tail_patch_for_session(
         sample_rate: u32,
         session_id: String,
+        capture_epoch: u64,
         tail_patch: mpsc::Sender<TailPatchRequest>,
         acoustic_ledger: Arc<Mutex<AcousticLedger>>,
         energy_calibration: Option<EnergyCalibration>,
@@ -951,6 +953,7 @@ impl AppleSealState {
             ..Self::new_for_session_with_ledger(
                 sample_rate,
                 session_id,
+                capture_epoch,
                 acoustic_ledger,
                 energy_calibration,
                 runtime_settings,
@@ -1719,11 +1722,10 @@ fn admit_ledger_label(
 
 /// Seal one Apple utterance: run the shared lexicon + cleanup pass, then emit
 /// `UtteranceFinal`. Returns `false` when postprocess filtered the text to
-/// empty — mirroring `PostprocessDrop::FilteredEmpty` on the VAD path, an
-/// explicit `Drop` event is emitted instead of an empty final.
+/// empty; an explicit `Drop` event is emitted instead of an empty final.
 ///
 /// `raw_text` keeps the uncorrected engine output so the quality loop can see
-/// exactly what the lexicon rewrote (same contract as the VAD path).
+/// exactly what the lexicon rewrote.
 fn seal_utterance_final(
     state: &mut AppleSealState,
     ev_tx: &mpsc::UnboundedSender<EngineEvent>,
@@ -2200,6 +2202,7 @@ fn apple_stream_worker(
         Some(tx) => AppleSealState::new_with_tail_patch_for_session(
             sample_rate,
             session_id,
+            capture_epoch,
             tx,
             acoustic_ledger,
             energy_calibration,
@@ -2208,12 +2211,12 @@ fn apple_stream_worker(
         None => AppleSealState::new_for_session_with_ledger(
             sample_rate,
             session_id,
+            capture_epoch,
             acoustic_ledger,
             energy_calibration,
             runtime_settings,
         ),
     };
-    state.capture_epoch = capture_epoch;
     // The session's ONE Silero. Both consumers of speech edges read it: the
     // utterance ledger (identity, ranges) and the engine lifecycle (wake/sleep).
     // It is built whenever either consumer wants it — the fusion flag decides

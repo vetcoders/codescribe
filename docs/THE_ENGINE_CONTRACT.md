@@ -556,12 +556,11 @@ assembles by string where it holds a range.
   extends past it loses its non-overlapping tail. One aggregate WARN
   (`apple_final_window_overlap_normalized`) is emitted for the callback; no
   per-observation receipt names what was removed.
-- **Legacy progressive commits fabricate a range.** `note_apple_commit` mints
-  `session: "legacy_progressive"`, `capture_epoch: 0`, `sample_start: 0`, and
-  `sample_end` in _milliseconds_. Every such span starts at zero, so the
-  `try_rewrite_anchored` intersection test is satisfied by any evidence and the
-  per-span fence does not bind on that path. `timing_quality: Synthetic`
-  labels it honestly; nothing refuses it.
+- **Live capture epoch ownership is explicit.** `StreamingRecorder` computes
+  the next epoch with checked arithmetic before opening the device, commits it
+  only after a successful open, and threads that value into the Apple state.
+  A new operator-session bind resets the counter; stop/discard does not.
+  Offline one-file replay seams use caller-domain epoch `1`.
 - **Structural receipts are computed and thrown away.**
   `SpanIdempotenceLedger` records `replayed_range_identity`,
   `replayed_request_identity`, `non_progressing_timestamps`, `decode_failure`,
@@ -1040,10 +1039,10 @@ Known open, stated rather than implied:
   range rule can bound its alignment, so the finality bar does: whole committed
   spans, bounded by the callback's own length. A textual match further back than
   that bound is out of reach, but a match _inside_ it is still decided by text.
-- `note_apple_commit` still fabricates `session: "legacy_progressive"`,
-  `capture_epoch: 0`, `0..end_millis` for every span, so every legacy span
-  contains every earlier one. Left alone deliberately: `TailSampleRange::contains`
-  has consumers that would change behaviour, and that is its own cut.
+- Live Apple state no longer starts from a production-capable epoch-zero base
+  constructor. The recorder-issued epoch is required through the constructor
+  chain; only recorder construction/rebind boundaries and test fixtures retain
+  honest zero sentinels.
 - Steps 2, 5, 7, 8, 9, 10 unstarted.
 
 ## How a quality HTML must behave

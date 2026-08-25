@@ -7,15 +7,16 @@
 > Whisper transcribing **partials on the go** to fill canvas gaps — NOT final-pass-only.
 > Lexicon substitution is the FINAL automated layer, after Whisper.
 >
-> **Status (2026-08-21):** the Apple progressive path now enforces exact
-> request/span PCM identity, one pre-final rewrite fence, structural replay
-> idempotence, and a bounded stop drain with typed degradation. In-process,
-> sidecar, and remote tail providers share that seam. The legacy VAD/scheduler
-> path and full-session WSS candidates have no equivalent per-word identity, so
-> they fail closed instead of mutating emitted finals. Local Power + Apple/Auto
-> now arms live local Whisper by default; `phase1` remains a compatibility
-> token, while explicit `off` or invalid input is degraded. Legacy
-> `FINAL_PASS_MODE` no longer owns any normal-stop inference.
+> **Status (2026-08-25):** `StreamingRecorder` is the sole allocator of live
+> capture epochs: a checked next value is committed only after the device opens,
+> and a new operator-session bind resets the counter. The Apple progressive path
+> receives that explicit epoch and enforces exact request/span PCM identity, one
+> pre-final rewrite fence, structural replay idempotence, and a bounded stop
+> drain with typed degradation. In-process, sidecar, and remote tail providers
+> share that explicit identity seam. The disabled VAD/scheduler identity cone
+> and file-tail text-overlap compatibility cone are removed. Offline one-file
+> replay seams use caller-domain epoch `1`. Legacy `FINAL_PASS_MODE` no longer
+> owns any normal-stop inference.
 > Planning report: internal plan `stt-apple-must-have` (operator artifact store, 2026-07-24).
 
 ---
@@ -184,7 +185,7 @@ Code: `core/config/loader.rs` · `core/stt/mod.rs::selected_engine()` · `reconc
 | Setting               | Env                                | Default    | Role                                                                                                                                 |
 | --------------------- | ---------------------------------- | ---------- | ------------------------------------------------------------------------------------------------------------------------------------ |
 | Final pass            | `FINAL_PASS_MODE`                  | legacy     | No effect on normal stop; retained only for settings migration while explicit Retranscribe owns whole-file inference                 |
-| Layered compatibility | `CODESCRIBE_LAYERED_TRANSCRIPTION` | mode-owned | Local Power + Apple/Auto: unset or `phase1` arms; explicit off/invalid degrades. VAD/direct Whisper refuses a second unbound patcher |
+| Layered compatibility | `CODESCRIBE_LAYERED_TRANSCRIPTION` | mode-owned | Local Power + Apple/Auto: unset or `phase1` arms; explicit off/invalid degrades. No parallel VAD/scheduler live route remains |
 
 Normal capture ignores legacy final-pass routing and never decodes/uploads the
 completed WAV. Layered phase tokens (`phase1`…) select live refinement;
@@ -236,7 +237,7 @@ file-pass belongs only to explicit retranscribe surfaces.
 | Live Layer 0          | during recording | Apple progressive                                                | first PCM-pinned observation; text is revisable by same-span evidence |
 | Live Layer 1 typed    | during recording | in-process / sidecar / remote tail provider on ~5 Apple segments | exact-PCM outcome rewrites pending baseline before final              |
 | Live Layer 1 unbound  | after recording  | full-session Voice Lab WSS candidate                             | evidence only; typed refusal if it proposes mutation                  |
-| Legacy VAD tail patch | during recording | VAD/scheduler route                                              | typed refusal; no pending-span fence exists                           |
+| Live capture epoch    | device open/reopen | `StreamingRecorder` checked session-local counter              | issued only after successful open; engines only observe it            |
 | Explicit Retranscribe | operator action  | local completed-file decode or cloud multipart                   | may replace the selected artifact, never the live canvas              |
 
 Layer 1 mutation identity is `(session, capture_epoch, sample_start, sample_end, request_id, target_utterance_id, event_ordinal)`. The request range
