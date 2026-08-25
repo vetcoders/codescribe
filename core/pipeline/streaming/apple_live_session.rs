@@ -1063,7 +1063,6 @@ impl AppleSealState {
             vad_speech_pct: None,
             avg_logprob: None,
             compression_ratio: None,
-            quality_gate_dropped: false,
             confidence_flags: Vec::new(),
         });
     }
@@ -2633,7 +2632,6 @@ mod tests {
             segments,
             avg_logprob: None,
             compression_ratio: None,
-            quality_gate_dropped: false,
             provider_id: crate::stt::tail_provider::TailProviderId::Fake,
             elapsed_ms: 0,
             evidence: TailProviderEvidence {

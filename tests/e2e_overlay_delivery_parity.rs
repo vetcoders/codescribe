@@ -161,7 +161,6 @@ fn sealed_final(utterance_id: u64, text: &str) -> EngineEvent {
         vad_speech_pct: None,
         avg_logprob: None,
         compression_ratio: None,
-        quality_gate_dropped: false,
         confidence_flags: vec![],
     }
 }
@@ -341,7 +340,6 @@ fn single_final_short_tail_fails_engine_bar() {
         vad_speech_pct: None,
         avg_logprob: None,
         compression_ratio: None,
-        quality_gate_dropped: false,
         confidence_flags: vec![],
     }];
     let reducer = reduce_transcript_events(&events);
@@ -649,7 +647,6 @@ fn overlay_assembly_freezes_finals_and_appends_preview_tail() {
             vad_speech_pct: None,
             avg_logprob: None,
             compression_ratio: None,
-            quality_gate_dropped: false,
             confidence_flags: vec![],
         },
         EngineEvent::Preview {
@@ -696,7 +693,6 @@ fn parity_assembly_reads_layer1_tail_patches() {
         vad_speech_pct: None,
         avg_logprob: None,
         compression_ratio: None,
-        quality_gate_dropped: false,
         confidence_flags: vec![],
     };
 

@@ -295,7 +295,6 @@ pub struct TailProviderPayload {
     pub segments: Vec<TimedTailSegment>,
     pub avg_logprob: Option<f32>,
     pub compression_ratio: Option<f32>,
-    pub quality_gate_dropped: bool,
     pub provider_id: TailProviderId,
     pub elapsed_ms: u64,
     pub evidence: TailProviderEvidence,
@@ -383,7 +382,6 @@ impl TailProviderPayload {
                 .collect(),
             avg_logprob: self.avg_logprob,
             compression_ratio: self.compression_ratio,
-            quality_gate_dropped: self.quality_gate_dropped,
         })
     }
 }
@@ -491,7 +489,6 @@ impl TailProvider for InProcessTailProvider {
             segments,
             avg_logprob: raw.avg_logprob,
             compression_ratio: raw.compression_ratio,
-            quality_gate_dropped: raw.quality_gate_dropped,
             provider_id: self.provider_id(),
             elapsed_ms: started.elapsed().as_millis().min(u64::MAX as u128) as u64,
             evidence: TailProviderEvidence {
@@ -1175,7 +1172,6 @@ impl TailProvider for RemoteTailProvider {
             segments,
             avg_logprob: response.avg_logprob,
             compression_ratio: response.compression_ratio,
-            quality_gate_dropped: false,
             provider_id: TailProviderId::Remote,
             elapsed_ms: started.elapsed().as_millis().min(u64::MAX as u128) as u64,
             evidence: TailProviderEvidence {
@@ -1462,7 +1458,6 @@ mod tests {
             }],
             avg_logprob: Some(-0.21),
             compression_ratio: Some(1.12),
-            quality_gate_dropped: false,
             provider_id: TailProviderId::Fake,
             elapsed_ms: 7,
             evidence: TailProviderEvidence {
@@ -1544,7 +1539,6 @@ mod tests {
             ],
             avg_logprob: None,
             compression_ratio: None,
-            quality_gate_dropped: false,
             provider_id: TailProviderId::Fake,
             elapsed_ms: 0,
             evidence: TailProviderEvidence {

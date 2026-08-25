@@ -129,12 +129,11 @@ pub struct ReportSummary {
     pub avg_ai_cer: Option<f32>,
     pub avg_cloud_cer: Option<f32>,
     pub raw_no_speech_detected: usize,
-    pub raw_quality_gate_dropped: usize,
     pub raw_text_committed: usize,
 }
 
-/// Why a raw transcript looks the way it does — the difference between "the
-/// engine heard nothing", "a gate rejected it", and "it broke".
+/// Why a raw transcript looks the way it does — the difference between measured
+/// no-speech, committed decoder text, and an unexplained empty observation.
 ///
 /// Without this distinction an empty transcript is indistinguishable from a
 /// silent failure, and the whole point of the report is attribution.
@@ -143,8 +142,6 @@ pub struct ReportSummary {
 pub enum ReportTranscriptState {
     /// Real text came out.
     TextCommitted,
-    /// Text existed but a quality gate rejected it.
-    QualityGateDropped,
     /// VAD found no speech in the audio at all.
     NoSpeechDetected,
     /// Empty with no reason on record — the state that warrants investigation.
@@ -156,7 +153,6 @@ impl std::fmt::Display for ReportTranscriptState {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             Self::TextCommitted => write!(f, "text_committed"),
-            Self::QualityGateDropped => write!(f, "quality_gate_dropped"),
             Self::NoSpeechDetected => write!(f, "no_speech_detected"),
             Self::EmptyTranscript => write!(f, "empty_transcript"),
         }
@@ -263,10 +259,8 @@ impl CloudJobSet {
 /// Explain an empty (or non-empty) raw transcript.
 ///
 /// Precedence is deliberate: non-empty text wins outright, then a VAD no-speech
-/// reason, then a quality-gate drop, and only an otherwise unexplained blank
-/// falls through to `EmptyTranscript`. Checking the gate first would mislabel
-/// genuine silence as a rejection. `None` means there was no transcript object at
-/// all — transcription itself failed, which is a different error.
+/// reason, and only an otherwise unexplained blank falls through to
+/// `EmptyTranscript`. `None` means there was no transcript object at all.
 fn classify_raw_semantics(
     transcript: Option<&RawTranscript>,
     no_speech_reason: Option<&str>,
@@ -285,13 +279,6 @@ fn classify_raw_semantics(
         return Some(ReportTranscriptSemantics {
             state: ReportTranscriptState::NoSpeechDetected,
             reason: Some(reason.to_string()),
-        });
-    }
-
-    if transcript.quality_gate_dropped {
-        return Some(ReportTranscriptSemantics {
-            state: ReportTranscriptState::QualityGateDropped,
-            reason: Some("quality_gate_dropped".to_string()),
         });
     }
 
@@ -862,9 +849,8 @@ fn render_markdown(report: &QualityReport) -> String {
         fmt_opt(report.summary.avg_cloud_cer),
     ));
     out.push_str(&format!(
-        "- Raw transcript semantics: text_committed={}, quality_gate_dropped={}, no_speech_detected={}\n",
+        "- Raw transcript semantics: text_committed={}, no_speech_detected={}\n",
         report.summary.raw_text_committed,
-        report.summary.raw_quality_gate_dropped,
         report.summary.raw_no_speech_detected,
     ));
 
@@ -889,12 +875,11 @@ pub fn render_html(report: &QualityReport, config: &QualityReportConfig) -> Stri
     let mut body = String::new();
 
     body.push_str(&format!(
-        "<h1>Codescribe Quality Report</h1>{}<p>Generated: {}</p><p>Metrics reference: {}</p><p>Raw semantics: text_committed={} • quality_gate_dropped={} • no_speech_detected={}</p>",
+        "<h1>Codescribe Quality Report</h1>{}<p>Generated: {}</p><p>Metrics reference: {}</p><p>Raw semantics: text_committed={} • no_speech_detected={}</p>",
         crate::quality::engine_contract::render_engine_contract_html(),
         html_escape(&report.generated_at),
         html_escape(&report.environment.metrics_reference),
         report.summary.raw_text_committed,
-        report.summary.raw_quality_gate_dropped,
         report.summary.raw_no_speech_detected
     ));
 
@@ -1806,7 +1791,6 @@ struct Totals {
     ai_cer: Vec<f32>,
     cloud_cer: Vec<f32>,
     raw_no_speech_detected: usize,
-    raw_quality_gate_dropped: usize,
     raw_text_committed: usize,
     processed: usize,
 }
@@ -1846,7 +1830,6 @@ impl Totals {
         if let Some(semantics) = entry.raw_semantics.as_ref() {
             match semantics.state {
                 ReportTranscriptState::NoSpeechDetected => self.raw_no_speech_detected += 1,
-                ReportTranscriptState::QualityGateDropped => self.raw_quality_gate_dropped += 1,
                 ReportTranscriptState::TextCommitted => self.raw_text_committed += 1,
                 ReportTranscriptState::EmptyTranscript => {}
             }
@@ -1869,7 +1852,6 @@ impl Totals {
             avg_ai_cer: avg(&self.ai_cer),
             avg_cloud_cer: avg(&self.cloud_cer),
             raw_no_speech_detected: self.raw_no_speech_detected,
-            raw_quality_gate_dropped: self.raw_quality_gate_dropped,
             raw_text_committed: self.raw_text_committed,
         }
     }
@@ -1890,9 +1872,9 @@ fn avg(values: &[f32]) -> Option<f32> {
 mod tests {
     use super::*;
 
-    /// Pins VAD-empty vs quality-gate-drop vs committed-text as distinct states.
+    /// Pins VAD-empty, unexplained empty, and committed text as distinct states.
     #[test]
-    fn classify_raw_semantics_distinguishes_no_speech_and_gate_drop() {
+    fn classify_raw_semantics_distinguishes_no_speech_empty_and_committed() {
         let no_speech = classify_raw_semantics(
             Some(&RawTranscript::default()),
             Some("vad_no_speech_detected"),
@@ -1901,22 +1883,9 @@ mod tests {
         assert_eq!(no_speech.state, ReportTranscriptState::NoSpeechDetected);
         assert_eq!(no_speech.reason.as_deref(), Some("vad_no_speech_detected"));
 
-        let gate_drop_semantics = classify_raw_semantics(
-            Some(&RawTranscript {
-                quality_gate_dropped: true,
-                ..Default::default()
-            }),
-            None,
-        )
-        .expect("semantics");
-        assert_eq!(
-            gate_drop_semantics.state,
-            ReportTranscriptState::QualityGateDropped
-        );
-        assert_eq!(
-            gate_drop_semantics.reason.as_deref(),
-            Some("quality_gate_dropped")
-        );
+        let empty = classify_raw_semantics(Some(&RawTranscript::default()), None)
+            .expect("semantics");
+        assert_eq!(empty.state, ReportTranscriptState::EmptyTranscript);
 
         let committed = classify_raw_semantics(
             Some(&RawTranscript {
@@ -1949,15 +1918,13 @@ mod tests {
         };
 
         totals.accumulate(&mk_entry(ReportTranscriptState::TextCommitted, None));
-        totals.accumulate(&mk_entry(ReportTranscriptState::QualityGateDropped, None));
         totals.accumulate(&mk_entry(
             ReportTranscriptState::NoSpeechDetected,
             Some("vad_no_speech_detected"),
         ));
 
-        let summary = totals.finish(3);
+        let summary = totals.finish(2);
         assert_eq!(summary.raw_text_committed, 1);
-        assert_eq!(summary.raw_quality_gate_dropped, 1);
         assert_eq!(summary.raw_no_speech_detected, 1);
     }
 

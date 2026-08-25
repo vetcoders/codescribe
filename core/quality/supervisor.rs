@@ -25,7 +25,7 @@ pub const VOCABULARY_OFF: &str = "off";
 const MAX_ATTENTION_FINDINGS: usize = 8;
 
 /// Silence-corpus residue Whisper emits on empty audio. Must stay in the
-/// same spirit as `pipeline/streaming/quality_gate.rs` (`WHISPER_HALLUCINATIONS_*`).
+/// same spirit as the decoder's hallucination diagnostics.
 const SILENCE_CORPUS_RESIDUE: &[&str] = &[
     "thank you",
     "thanks for watching",
@@ -115,7 +115,6 @@ pub enum QualityIssueKind {
     // ── Confidence flags ─────────────────────────────────────────────────
     VeryLowSpeech,
     PossibleHallucinationLogprob,
-    QualityGateDropped,
     SileroDroppedTailHallucinations,
     LocalFinalPassUnavailable,
     CloudFallbackUsed,
@@ -248,7 +247,6 @@ impl QualityIssueKind {
         Self::LiveMissWhisperOk,
         Self::VeryLowSpeech,
         Self::PossibleHallucinationLogprob,
-        Self::QualityGateDropped,
         Self::SileroDroppedTailHallucinations,
         Self::LocalFinalPassUnavailable,
         Self::CloudFallbackUsed,
@@ -302,7 +300,6 @@ impl QualityIssueKind {
             Self::LiveMissWhisperOk => "live_miss_whisper_ok",
             Self::VeryLowSpeech => "very_low_speech",
             Self::PossibleHallucinationLogprob => "possible_hallucination_logprob",
-            Self::QualityGateDropped => "quality_gate_dropped",
             Self::SileroDroppedTailHallucinations => "silero_dropped_tail_hallucinations",
             Self::LocalFinalPassUnavailable => "local_final_pass_unavailable",
             Self::CloudFallbackUsed => "cloud_fallback_used",
@@ -513,16 +510,7 @@ impl QualityIssueKind {
                 FindingTarget::EngineCode,
                 "avg_logprob crossed the hallucination ceiling.",
                 "avg_logprob is above -1.0, or the text is short-whitelist speech.",
-                "Keep the quality gate; inspect the span before teaching lexicon.",
-            ),
-            Self::QualityGateDropped => spec(
-                self,
-                QualityIssueFamily::Confidence,
-                FindingSeverity::P1,
-                FindingTarget::EngineCode,
-                "A quality gate dropped text that existed.",
-                "The gate reason is missing, or the text was short-whitelist speech.",
-                "Attribute the drop. Empty ≠ silence ≠ failure.",
+                "Inspect the span before teaching lexicon; this score is diagnostic only.",
             ),
             Self::SileroDroppedTailHallucinations => spec(
                 self,
@@ -601,7 +589,7 @@ impl QualityIssueKind {
                 QualityIssueFamily::Confidence,
                 FindingSeverity::P2,
                 FindingTarget::EngineCode,
-                "Whisper compression_ratio crossed the quality-gate threshold.",
+                "Whisper compression_ratio crossed the diagnostic threshold.",
                 "compression_ratio is below the engine threshold.",
                 "Pair with logprob. Do not teach lexicon from a compressed dump.",
             ),
@@ -936,7 +924,6 @@ fn kind_for_flag(flag: &str) -> Option<QualityIssueKind> {
     match token {
         "very_low_speech" => Some(QualityIssueKind::VeryLowSpeech),
         "possible_hallucination_logprob" => Some(QualityIssueKind::PossibleHallucinationLogprob),
-        "quality_gate_dropped" => Some(QualityIssueKind::QualityGateDropped),
         "local_final_pass_unavailable" => Some(QualityIssueKind::LocalFinalPassUnavailable),
         "cloud_fallback_used" => Some(QualityIssueKind::CloudFallbackUsed),
         "streaming_preview_used_as_verdict" => {

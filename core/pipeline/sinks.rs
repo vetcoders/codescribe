@@ -400,7 +400,6 @@ mod tests {
             vad_speech_pct: Some(100.0),
             avg_logprob: None,
             compression_ratio: None,
-            quality_gate_dropped: false,
             confidence_flags: Vec::new(),
         });
 
@@ -439,7 +438,6 @@ mod tests {
             vad_speech_pct: Some(100.0),
             avg_logprob: None,
             compression_ratio: None,
-            quality_gate_dropped: false,
             confidence_flags: Vec::new(),
         });
         adapter.on_event(&EngineEvent::Correction {
@@ -503,7 +501,6 @@ mod tests {
         adapter.on_event(&EngineEvent::Stats {
             dropped_audio_chunks: 0,
             hallucination_drops: 1,
-            semantic_gate_drops: 0,
             filtered_empty_drops: 0,
             corrections_applied: 0,
             total_utterances: 0,
@@ -544,7 +541,6 @@ mod tests {
             vad_speech_pct: Some(100.0),
             avg_logprob: None,
             compression_ratio: None,
-            quality_gate_dropped: false,
             confidence_flags: Vec::new(),
         });
 

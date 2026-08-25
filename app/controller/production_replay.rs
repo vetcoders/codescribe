@@ -262,7 +262,6 @@ mod tests {
             vad_speech_pct: None,
             avg_logprob: None,
             compression_ratio: None,
-            quality_gate_dropped: false,
             confidence_flags: Vec::new(),
         }
     }

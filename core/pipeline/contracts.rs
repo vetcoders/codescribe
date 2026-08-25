@@ -59,8 +59,6 @@ pub struct RawTranscript {
     pub avg_logprob: Option<f32>,
     /// Compression ratio of the decoded text (high = repetitive/hallucinated).
     pub compression_ratio: Option<f32>,
-    /// True when the quality gate (logprob + compression) dropped this result.
-    pub quality_gate_dropped: bool,
 }
 
 /// A single segment from the STT engine (optional granularity).
@@ -148,7 +146,6 @@ pub enum TranscriptionConfidenceFlag {
     // ── Engine-owned (derived inside the transcription engine) ──
     VeryLowSpeech,
     PossibleHallucinationLogprob,
-    QualityGateDropped,
     /// Silero-based post-filter dropped one or more Whisper segments
     /// that fell inside classified trailing silence.
     SileroDroppedTailHallucinations {
@@ -188,7 +185,6 @@ impl std::fmt::Display for TranscriptionConfidenceFlag {
             Self::PossibleHallucinationLogprob => {
                 write!(f, "possible_hallucination_logprob")
             }
-            Self::QualityGateDropped => write!(f, "quality_gate_dropped"),
             Self::SileroDroppedTailHallucinations { count } => {
                 write!(f, "silero_dropped_tail_hallucinations:{count}")
             }
@@ -267,11 +263,8 @@ impl TranscriptionVerdict {
         engine: TranscriptionEngineVerdict,
         final_pass: Option<FinalPassVerdict>,
     ) -> Self {
-        let confidence_flags = collect_confidence_flags(
-            vad.as_ref().map(|vad| vad.speech_pct),
-            raw.avg_logprob,
-            raw.quality_gate_dropped,
-        );
+        let confidence_flags =
+            collect_confidence_flags(vad.as_ref().map(|vad| vad.speech_pct), raw.avg_logprob);
         Self {
             text,
             raw,
@@ -465,7 +458,6 @@ impl TranscriptionEngineVerdict {
 pub(crate) fn collect_confidence_flags(
     vad_speech_pct: Option<f32>,
     avg_logprob: Option<f32>,
-    quality_gate_dropped: bool,
 ) -> Vec<TranscriptionConfidenceFlag> {
     let mut flags = Vec::new();
 
@@ -475,10 +467,6 @@ pub(crate) fn collect_confidence_flags(
 
     if avg_logprob.is_some_and(|avg| avg <= POSSIBLE_HALLUCINATION_LOGPROB) {
         flags.push(TranscriptionConfidenceFlag::PossibleHallucinationLogprob);
-    }
-
-    if quality_gate_dropped {
-        flags.push(TranscriptionConfidenceFlag::QualityGateDropped);
     }
 
     flags
@@ -720,8 +708,8 @@ pub enum EngineEvent {
     SidebandEvidence { evidence: SidebandEvidence },
     /// Session or utterance completed without usable speech content.
     ///
-    /// Emitted when VAD sees no speech at all, or when speech-like segments are
-    /// fully rejected by quality gates/hallucination filters.
+    /// Emitted when VAD sees no speech at all, or when an observed session ends
+    /// without committed text for another recorded reason.
     NoSpeech { reason: String },
 
     /// Interim preview — latest transcription of the current utterance.
@@ -766,8 +754,7 @@ pub enum EngineEvent {
     /// - `text` is the final post-processed utterance text.
     /// - `vad_speech_pct` preserves how much of the utterance Silero classified
     ///   as speech, so consumers do not have to reverse-engineer silence risk.
-    /// - `confidence_flags` carries the engine-owned truth derived from VAD
-    ///   speech ratio plus Whisper quality-gate metadata.
+    /// - `confidence_flags` carries VAD and decoder diagnostic metadata.
     /// - After this event, the engine clears its internal accumulated_text.
     /// - Sinks must reset `last_preview` to empty (next Preview starts fresh).
     /// - In toggle mode, the utterance callback processes this text (AI/clipboard).
@@ -783,7 +770,6 @@ pub enum EngineEvent {
         vad_speech_pct: Option<f32>,
         avg_logprob: Option<f32>,
         compression_ratio: Option<f32>,
-        quality_gate_dropped: bool,
         confidence_flags: Vec<TranscriptionConfidenceFlag>,
     },
 
@@ -824,7 +810,6 @@ pub enum EngineEvent {
     Stats {
         dropped_audio_chunks: u64,
         hallucination_drops: u64,
-        semantic_gate_drops: u64,
         filtered_empty_drops: u64,
         corrections_applied: u64,
         total_utterances: u64,
@@ -1245,7 +1230,6 @@ mod tests {
         let event = EngineEvent::Stats {
             dropped_audio_chunks: 2,
             hallucination_drops: 3,
-            semantic_gate_drops: 1,
             filtered_empty_drops: 0,
             corrections_applied: 4,
             total_utterances: 10,
@@ -1274,7 +1258,7 @@ mod tests {
         }
     }
 
-    /// UtteranceFinal carries text, VAD%, logprob, and quality-gate fields.
+    /// UtteranceFinal carries text, VAD%, and decoder diagnostics.
     #[test]
     fn engine_event_utterance_final_roundtrip() {
         let event = EngineEvent::UtteranceFinal {
@@ -1291,7 +1275,6 @@ mod tests {
             vad_speech_pct: Some(84.0),
             avg_logprob: Some(-0.35),
             compression_ratio: Some(1.2),
-            quality_gate_dropped: false,
             confidence_flags: Vec::new(),
         };
         if let EngineEvent::UtteranceFinal {
@@ -1304,7 +1287,6 @@ mod tests {
             vad_speech_pct,
             avg_logprob,
             compression_ratio,
-            quality_gate_dropped,
             confidence_flags,
             ..
         } = event
@@ -1318,7 +1300,6 @@ mod tests {
             assert_eq!(vad_speech_pct, Some(84.0));
             assert_eq!(avg_logprob, Some(-0.35));
             assert_eq!(compression_ratio, Some(1.2));
-            assert!(!quality_gate_dropped);
             assert!(confidence_flags.is_empty());
         } else {
             panic!("Expected UtteranceFinal variant");
@@ -1484,42 +1465,25 @@ mod tests {
 
     // ── RawTranscript confidence metadata ──
 
-    /// Default confidence fields are unset / not quality-dropped.
+    /// Default decoder diagnostics are unset.
     #[test]
     fn raw_transcript_default_has_no_confidence() {
         let rt = RawTranscript::default();
         assert!(rt.avg_logprob.is_none());
         assert!(rt.compression_ratio.is_none());
-        assert!(!rt.quality_gate_dropped);
     }
 
-    /// Raw transcript can carry logprob + compression without a drop flag.
+    /// Raw transcript carries logprob and compression as diagnostics.
     #[test]
     fn raw_transcript_carries_confidence_metadata() {
         let rt = RawTranscript {
             text: "test".to_string(),
             avg_logprob: Some(-0.35),
             compression_ratio: Some(1.2),
-            quality_gate_dropped: false,
             ..Default::default()
         };
         assert_eq!(rt.avg_logprob, Some(-0.35));
         assert_eq!(rt.compression_ratio, Some(1.2));
-        assert!(!rt.quality_gate_dropped);
-    }
-
-    /// Quality-gate drop keeps metrics so consumers can still diagnose.
-    #[test]
-    fn raw_transcript_quality_gate_dropped_preserves_metadata() {
-        let rt = RawTranscript {
-            avg_logprob: Some(-1.5),
-            compression_ratio: Some(4.0),
-            quality_gate_dropped: true,
-            ..Default::default()
-        };
-        assert!(rt.text.is_empty());
-        assert!(rt.quality_gate_dropped);
-        assert!(rt.avg_logprob.unwrap() < -1.0);
     }
 
     /// Default file options leave final-pass mode at `None` (opt-in only).
@@ -1578,7 +1542,6 @@ mod tests {
                 text: "Cześć".to_string(),
                 avg_logprob: Some(-0.25),
                 compression_ratio: Some(1.1),
-                quality_gate_dropped: false,
                 ..Default::default()
             },
             Some(VadVerdict {
@@ -1602,7 +1565,6 @@ mod tests {
         assert_eq!(verdict.text, "Cześć");
         assert!(!verdict.vad.as_ref().unwrap().no_speech);
         assert_eq!(verdict.raw.avg_logprob, Some(-0.25));
-        assert!(!verdict.raw.quality_gate_dropped);
         assert!(verdict.confidence_flags.is_empty());
         assert_eq!(
             verdict.final_pass.as_ref().unwrap().mode,
@@ -1676,10 +1638,6 @@ mod tests {
             "possible_hallucination_logprob"
         );
         assert_eq!(
-            TranscriptionConfidenceFlag::QualityGateDropped.to_string(),
-            "quality_gate_dropped"
-        );
-        assert_eq!(
             TranscriptionConfidenceFlag::UnverifiedStream.to_string(),
             "unverified_stream"
         );
@@ -1694,7 +1652,6 @@ mod tests {
                 text: "podejrzany wynik".to_string(),
                 avg_logprob: Some(-1.2),
                 compression_ratio: Some(4.0),
-                quality_gate_dropped: true,
                 ..Default::default()
             },
             Some(VadVerdict {
@@ -1715,7 +1672,6 @@ mod tests {
             vec![
                 TranscriptionConfidenceFlag::VeryLowSpeech,
                 TranscriptionConfidenceFlag::PossibleHallucinationLogprob,
-                TranscriptionConfidenceFlag::QualityGateDropped,
             ]
         );
     }
@@ -1765,7 +1721,6 @@ mod tests {
             vad_speech_pct: Some(4.0),
             avg_logprob: Some(-0.85),
             compression_ratio: Some(2.5),
-            quality_gate_dropped: false,
             confidence_flags: vec![
                 TranscriptionConfidenceFlag::VeryLowSpeech,
                 TranscriptionConfidenceFlag::PossibleHallucinationLogprob,
@@ -1775,7 +1730,6 @@ mod tests {
             vad_speech_pct,
             avg_logprob,
             compression_ratio,
-            quality_gate_dropped,
             confidence_flags,
             ..
         } = event
@@ -1786,54 +1740,11 @@ mod tests {
                 compression_ratio.unwrap() > 2.0,
                 "high compression must survive"
             );
-            assert!(!quality_gate_dropped);
             assert_eq!(
                 confidence_flags,
                 vec![
                     TranscriptionConfidenceFlag::VeryLowSpeech,
                     TranscriptionConfidenceFlag::PossibleHallucinationLogprob,
-                ]
-            );
-        }
-    }
-
-    /// Quality-gate-dropped UtteranceFinal still ships logprob metadata.
-    #[test]
-    fn utterance_final_quality_gate_truth() {
-        let event = EngineEvent::UtteranceFinal {
-            utterance_id: 1,
-            text: String::new(),
-            raw_text: String::new(),
-            start_ts: 0.0,
-            end_ts: 1.0,
-            segments: Vec::new(),
-            vad_speech_pct: Some(3.0),
-            avg_logprob: Some(-1.5),
-            compression_ratio: Some(4.0),
-            quality_gate_dropped: true,
-            confidence_flags: vec![
-                TranscriptionConfidenceFlag::VeryLowSpeech,
-                TranscriptionConfidenceFlag::PossibleHallucinationLogprob,
-                TranscriptionConfidenceFlag::QualityGateDropped,
-            ],
-        };
-        if let EngineEvent::UtteranceFinal {
-            vad_speech_pct,
-            quality_gate_dropped,
-            avg_logprob,
-            confidence_flags,
-            ..
-        } = event
-        {
-            assert_eq!(vad_speech_pct, Some(3.0));
-            assert!(quality_gate_dropped, "gate drop must be visible in event");
-            assert!(avg_logprob.unwrap() < -1.0);
-            assert_eq!(
-                confidence_flags,
-                vec![
-                    TranscriptionConfidenceFlag::VeryLowSpeech,
-                    TranscriptionConfidenceFlag::PossibleHallucinationLogprob,
-                    TranscriptionConfidenceFlag::QualityGateDropped,
                 ]
             );
         }
@@ -1855,7 +1766,6 @@ mod tests {
                 }],
                 avg_logprob: Some(-0.35),
                 compression_ratio: Some(1.2),
-                quality_gate_dropped: false,
             },
             Some(VadVerdict {
                 speech_pct: 78.0,
@@ -2106,7 +2016,6 @@ mod tests {
             // Engine-owned
             TranscriptionConfidenceFlag::VeryLowSpeech,
             TranscriptionConfidenceFlag::PossibleHallucinationLogprob,
-            TranscriptionConfidenceFlag::QualityGateDropped,
             // App-level provenance (new in 0.9.3)
             TranscriptionConfidenceFlag::LocalFinalPassUnavailable,
             TranscriptionConfidenceFlag::CloudFallbackUsed,
@@ -2167,10 +2076,6 @@ mod tests {
             (
                 "\"possible_hallucination_logprob\"",
                 TranscriptionConfidenceFlag::PossibleHallucinationLogprob,
-            ),
-            (
-                "\"quality_gate_dropped\"",
-                TranscriptionConfidenceFlag::QualityGateDropped,
             ),
             (
                 "\"local_final_pass_unavailable\"",
@@ -2250,7 +2155,6 @@ mod tests {
                 }],
                 avg_logprob: Some(-0.4),
                 compression_ratio: Some(1.1),
-                quality_gate_dropped: false,
             },
             None,
             TranscriptionSource::LocalFinalPass,

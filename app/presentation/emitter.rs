@@ -992,7 +992,6 @@ impl EventSink for PresentationEmitter {
             }
             EngineEvent::Stats {
                 hallucination_drops,
-                semantic_gate_drops,
                 filtered_empty_drops,
                 corrections_applied,
                 total_utterances,
@@ -1006,10 +1005,9 @@ impl EventSink for PresentationEmitter {
                 partial_dropped_count,
             } => {
                 info!(
-                    "Session stats: utterances={}, hallucinations={}, semantic_gate={}, filtered_empty={}, corrections={}, dropped_chunks={}, partial_runs={} (utterance={}, speech={}, watchdog={}, stale={}, coalesced={}, dropped={})",
+                    "Session stats: utterances={}, hallucinations={}, filtered_empty={}, corrections={}, dropped_chunks={}, partial_runs={} (utterance={}, speech={}, watchdog={}, stale={}, coalesced={}, dropped={})",
                     total_utterances,
                     hallucination_drops,
-                    semantic_gate_drops,
                     filtered_empty_drops,
                     corrections_applied,
                     dropped_audio_chunks,
@@ -1128,7 +1126,6 @@ mod tests {
             vad_speech_pct: None,
             avg_logprob: None,
             compression_ratio: None,
-            quality_gate_dropped: false,
             confidence_flags: Vec::new(),
         });
         let before = reducer.rendered_text();
@@ -1175,7 +1172,6 @@ mod tests {
             vad_speech_pct: None,
             avg_logprob: None,
             compression_ratio: None,
-            quality_gate_dropped: false,
             confidence_flags: Vec::new(),
         });
         let before = reducer.rendered_text();
@@ -1227,7 +1223,6 @@ mod tests {
             vad_speech_pct: Some(100.0),
             avg_logprob: None,
             compression_ratio: None,
-            quality_gate_dropped: false,
             confidence_flags: Vec::new(),
         };
 
@@ -1469,7 +1464,6 @@ mod tests {
             vad_speech_pct: Some(100.0),
             avg_logprob: None,
             compression_ratio: None,
-            quality_gate_dropped: false,
             confidence_flags: Vec::new(),
         });
         emitter.on_event(&EngineEvent::Correction {
@@ -1504,7 +1498,6 @@ mod tests {
             vad_speech_pct: Some(100.0),
             avg_logprob: None,
             compression_ratio: None,
-            quality_gate_dropped: false,
             confidence_flags: Vec::new(),
         });
         emitter.on_event(&EngineEvent::Preview {
@@ -1551,7 +1544,6 @@ mod tests {
             vad_speech_pct: Some(100.0),
             avg_logprob: None,
             compression_ratio: None,
-            quality_gate_dropped: false,
             confidence_flags: Vec::new(),
         };
 
@@ -1608,7 +1600,6 @@ mod tests {
             vad_speech_pct: Some(5.0),
             avg_logprob: None,
             compression_ratio: None,
-            quality_gate_dropped: false,
             confidence_flags: Vec::new(),
         });
         emitter.on_event(&EngineEvent::UtteranceFinal {
@@ -1621,7 +1612,6 @@ mod tests {
             vad_speech_pct: Some(5.0),
             avg_logprob: None,
             compression_ratio: None,
-            quality_gate_dropped: false,
             confidence_flags: Vec::new(),
         });
 
@@ -1656,7 +1646,6 @@ mod tests {
             vad_speech_pct: Some(100.0),
             avg_logprob: None,
             compression_ratio: None,
-            quality_gate_dropped: false,
             confidence_flags: Vec::new(),
         });
         emitter.on_event(&EngineEvent::Preview {
@@ -1688,7 +1677,6 @@ mod tests {
             vad_speech_pct: Some(100.0),
             avg_logprob: None,
             compression_ratio: None,
-            quality_gate_dropped: false,
             confidence_flags: Vec::new(),
         });
         emitter.on_event(&EngineEvent::Preview {
@@ -1698,7 +1686,6 @@ mod tests {
         emitter.on_event(&EngineEvent::Stats {
             dropped_audio_chunks: 0,
             hallucination_drops: 0,
-            semantic_gate_drops: 0,
             filtered_empty_drops: 0,
             corrections_applied: 0,
             total_utterances: 1,
@@ -1734,7 +1721,6 @@ mod tests {
             vad_speech_pct: Some(100.0),
             avg_logprob: None,
             compression_ratio: None,
-            quality_gate_dropped: false,
             confidence_flags: Vec::new(),
         });
         emitter.on_event(&EngineEvent::Preview {
@@ -1775,7 +1761,6 @@ mod tests {
             vad_speech_pct: Some(100.0),
             avg_logprob: None,
             compression_ratio: None,
-            quality_gate_dropped: false,
             confidence_flags: Vec::new(),
         });
         emitter.on_event(&EngineEvent::UtteranceFinal {
@@ -1788,7 +1773,6 @@ mod tests {
             vad_speech_pct: Some(100.0),
             avg_logprob: None,
             compression_ratio: None,
-            quality_gate_dropped: false,
             confidence_flags: Vec::new(),
         });
 
@@ -1864,7 +1848,6 @@ mod tests {
                 vad_speech_pct: Some(91.0),
                 avg_logprob: Some(-0.2),
                 compression_ratio: None,
-                quality_gate_dropped: false,
                 confidence_flags: Vec::new(),
             });
             emitter.on_event(&EngineEvent::SessionFinalised {

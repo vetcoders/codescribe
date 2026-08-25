@@ -1139,7 +1139,6 @@ use tokio::sync::broadcast;
 #[derive(Debug, Clone, Default)]
 pub(crate) struct SessionEngineStats {
     pub hallucination_drops: u64,
-    pub semantic_gate_drops: u64,
     pub filtered_empty_drops: u64,
     pub corrections_applied: u64,
     pub total_utterances: u64,
@@ -1328,7 +1327,6 @@ impl EventSink for SessionTelemetrySink {
             }
             EngineEvent::Stats {
                 hallucination_drops,
-                semantic_gate_drops,
                 filtered_empty_drops,
                 corrections_applied,
                 total_utterances,
@@ -1343,7 +1341,6 @@ impl EventSink for SessionTelemetrySink {
             } => {
                 guard.stats = Some(SessionEngineStats {
                     hallucination_drops: *hallucination_drops,
-                    semantic_gate_drops: *semantic_gate_drops,
                     filtered_empty_drops: *filtered_empty_drops,
                     corrections_applied: *corrections_applied,
                     total_utterances: *total_utterances,
@@ -1602,7 +1599,6 @@ mod tests {
         sink.on_event(&EngineEvent::Stats {
             dropped_audio_chunks: 3,
             hallucination_drops: 2,
-            semantic_gate_drops: 1,
             filtered_empty_drops: 4,
             corrections_applied: 5,
             total_utterances: 0,
@@ -1624,7 +1620,6 @@ mod tests {
         assert!(snapshot.last_commit_source.is_none());
         let stats = snapshot.stats.expect("stats should be captured");
         assert_eq!(stats.hallucination_drops, 2);
-        assert_eq!(stats.semantic_gate_drops, 1);
         assert_eq!(stats.filtered_empty_drops, 4);
         assert_eq!(stats.corrections_applied, 5);
         assert_eq!(stats.total_utterances, 0);
@@ -1664,7 +1659,6 @@ mod tests {
             vad_speech_pct: Some(80.0),
             avg_logprob: None,
             compression_ratio: None,
-            quality_gate_dropped: false,
             confidence_flags: vec![],
         });
         let sealed = snapshot_session_telemetry(&shared);
@@ -1723,7 +1717,6 @@ mod tests {
                 vad_speech_pct: Some(80.0),
                 avg_logprob: None,
                 compression_ratio: None,
-                quality_gate_dropped: false,
                 confidence_flags: vec![],
             };
 
@@ -1777,7 +1770,6 @@ mod tests {
                 vad_speech_pct: Some(80.0),
                 avg_logprob: None,
                 compression_ratio: None,
-                quality_gate_dropped: false,
                 confidence_flags: vec![],
             };
 
@@ -1834,7 +1826,6 @@ mod tests {
             vad_speech_pct: Some(80.0),
             avg_logprob: None,
             compression_ratio: None,
-            quality_gate_dropped: false,
             confidence_flags: vec![],
         };
 

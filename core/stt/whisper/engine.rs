@@ -101,8 +101,8 @@ const RUNAWAY_BUDGET_MARGIN: f32 = 2.0;
 /// Minimum token budget for the runaway watchdog regardless of audio length, so
 /// very short chunks still get enough headroom to emit normal short utterances.
 const RUNAWAY_MIN_BUDGET: usize = 64;
-/// Frozen decoder watchdog value formerly shared with the retired transcript
-/// quality gate. This remains a decoder safety limit, not text admission.
+/// Frozen decoder watchdog value retained as a decoder safety limit, not text
+/// admission.
 const RUNAWAY_MAX_WORDS_PER_SEC: f32 = 5.0;
 /// Prompt capacity is a Whisper decoder constraint, independent of the retired
 /// transcript postprocessor that used to provide prompt contents.
@@ -114,10 +114,9 @@ const WHISPER_START_OF_PREVIOUS_TOKEN: &str = "<|startofprev|>";
 
 /// Token budget for the in-loop runaway watchdog given the chunk audio length.
 ///
-/// Derived from the shared words-per-second cap
-/// (`quality_gate::MAX_WORDS_PER_SEC`) times tokens-per-word and a generous
-/// safety margin. When generated tokens exceed this budget the decode loop bails
-/// instead of paying the full O(n^2)/O(n^3) cost of a runaway hallucination.
+/// Derived from the decoder's words-per-second cap times tokens-per-word and a
+/// generous safety margin. When generated tokens exceed this budget the decode
+/// loop stops instead of paying the full O(n^2)/O(n^3) cost of a runaway decode.
 fn runaway_token_budget(audio_sec: f32) -> usize {
     let raw = (RUNAWAY_MAX_WORDS_PER_SEC
         * audio_sec.max(0.0)
@@ -837,7 +836,6 @@ impl LocalWhisperEngine {
         let mut logprob_sum = 0.0_f32;
         let mut logprob_count = 0_u32;
         let mut worst_compression = 0.0_f32;
-        let mut any_quality_gate_dropped = false;
 
         for (start_sec, end_sec) in windows {
             let start = ((start_sec * 16_000.0).round() as usize).min(samples.len());
@@ -857,10 +855,6 @@ impl LocalWhisperEngine {
             {
                 worst_compression = cr;
             }
-            if transcript.quality_gate_dropped {
-                any_quality_gate_dropped = true;
-            }
-
             if !transcript.segments.is_empty() {
                 let offset_sec = start as f32 / 16_000.0;
                 transcript.segments.iter_mut().for_each(|segment| {
@@ -887,7 +881,6 @@ impl LocalWhisperEngine {
             } else {
                 None
             },
-            quality_gate_dropped: any_quality_gate_dropped,
         })
     }
 
@@ -1056,8 +1049,8 @@ impl LocalWhisperEngine {
     /// - a runaway watchdog ([`runaway_token_budget`]) bails before a
     ///   hallucination costs the full quadratic decode,
     /// - [`NgramBlocker`] suppresses repeated n-grams incrementally,
-    /// - the quality gate ([`should_drop_for_quality_gate`]) can discard a
-    ///   window whose logprob and compression ratio both look pathological.
+    /// - avg-logprob and compression-ratio diagnostics remain attached to the
+    ///   decoded observation for downstream inspection.
     ///
     /// `debug_tokens` logs the raw token stream for diagnosis.
     fn transcribe_samples_16k_raw(
@@ -1165,8 +1158,6 @@ impl LocalWhisperEngine {
         // decode bails early instead of grinding to max_new_tokens at O(n^2) cost.
         let audio_sec = samples_16k.len() as f32 / whisper::SAMPLE_RATE as f32;
         let runaway_budget = runaway_token_budget(audio_sec);
-        let mut runaway_tripped = false;
-
         let mut sum_logprob = 0.0f32;
         let mut token_count = 0usize;
 
@@ -1178,7 +1169,6 @@ impl LocalWhisperEngine {
                     audio_sec,
                     runaway_budget
                 );
-                runaway_tripped = true;
                 break;
             }
             let token_tensor = Tensor::new(tokens.as_slice(), &self.device)?.unsqueeze(0)?;
@@ -1329,17 +1319,6 @@ impl LocalWhisperEngine {
             ngram_blocker.observe(&all_tokens);
         }
 
-        // Runaway decode: drop the transcript rather than emit a hallucinated
-        // wall of text. Mirrors the post-hoc quality gate's dropped contract.
-        if runaway_tripped {
-            let avg_logprob = (token_count > 0).then(|| sum_logprob / token_count as f32);
-            return Ok(RawTranscript {
-                avg_logprob,
-                quality_gate_dropped: true,
-                ..Default::default()
-            });
-        }
-
         let (text, segments) = if timestamps_enabled {
             let range = self
                 .ts_range
@@ -1395,20 +1374,6 @@ impl LocalWhisperEngine {
             final_ratio = new_ratio;
         }
 
-        if should_drop_for_quality_gate(avg_logprob, final_ratio, &self.decoding_params) {
-            tracing::warn!(
-                "Quality gate dropped transcript (avg_logprob={:?}, compression_ratio={:.2})",
-                avg_logprob,
-                final_ratio
-            );
-            return Ok(RawTranscript {
-                avg_logprob,
-                compression_ratio: Some(final_ratio),
-                quality_gate_dropped: true,
-                ..Default::default()
-            });
-        }
-
         if final_text.is_empty() {
             return Ok(RawTranscript {
                 avg_logprob,
@@ -1422,7 +1387,6 @@ impl LocalWhisperEngine {
             segments: final_segments,
             avg_logprob,
             compression_ratio: Some(final_ratio),
-            quality_gate_dropped: false,
         })
     }
 }
@@ -1659,8 +1623,7 @@ impl NgramBlocker {
 /// Ratio of raw length to gzip-compressed length.
 ///
 /// A hallucinated loop compresses far better than natural speech, so a high
-/// ratio is the repetition signal half of the quality gate. Empty text yields
-/// `0.0`.
+/// ratio is useful diagnostic evidence for repetition. Empty text yields `0.0`.
 fn compression_ratio(text: &str) -> f32 {
     let original_len = text.len();
     if original_len == 0 {
@@ -1672,22 +1635,6 @@ fn compression_ratio(text: &str) -> f32 {
     let compressed = encoder.finish().unwrap_or_default();
 
     original_len as f32 / compressed.len() as f32
-}
-
-/// Whether a decoded window should be discarded as hallucinated.
-///
-/// Requires **both** signals: low confidence (`avg_logprob` under threshold)
-/// and high repetition (`compression_ratio` over threshold). Either alone is
-/// common in legitimate speech — quiet audio scores low, a chant compresses
-/// well — so demanding both is what keeps the gate from eating real words.
-fn should_drop_for_quality_gate(
-    avg_logprob: Option<f32>,
-    compression_ratio: f32,
-    params: &DecodingParams,
-) -> bool {
-    let low_logprob = avg_logprob.is_some_and(|avg| avg < params.logprob_threshold);
-    let high_compression = compression_ratio > params.compression_ratio_threshold;
-    low_logprob && high_compression
 }
 
 /// Build a VarBuilder from verified unquantized tensors.
@@ -2120,7 +2067,7 @@ pub fn dedup_repetitions(text: &str) -> String {
     dedup_repeated_words(&pass1)
 }
 
-/// Dedup helpers, n-gram parity, quality gate, Silero filter, and final-pass tests.
+/// Dedup helpers, n-gram parity, decoder diagnostics, Silero filter, and final-pass tests.
 #[cfg(test)]
 mod dedup_tests {
     use super::*;
@@ -2318,15 +2265,6 @@ mod dedup_tests {
         assert_ngram_parity(3, &[]);
         // Single distinct token repeated (worst case for ngram_size==1).
         assert_ngram_parity(1, &[42, 42, 42, 42]);
-    }
-
-    /// Drop requires both low avg logprob and high compression ratio together.
-    #[test]
-    fn quality_gate_requires_both_logprob_and_compression_signals() {
-        let params = DecodingParams::default();
-        assert!(!should_drop_for_quality_gate(Some(-0.2), 3.0, &params));
-        assert!(!should_drop_for_quality_gate(Some(-3.0), 1.4, &params));
-        assert!(should_drop_for_quality_gate(Some(-3.0), 3.0, &params));
     }
 
     /// Zero dropped segments keeps the original raw text (not the re-joined filter).

@@ -379,17 +379,6 @@ impl TailPatchSessionReceipt {
     }
 }
 
-/// Count a semantic-gate drop, but only for finals.
-///
-/// Interim previews are drafts that get re-decoded; counting their drops would
-/// inflate the session stats with rejections that never cost the user any text.
-#[cfg(any())]
-fn record_semantic_gate_drop(counter: &mut u64, quality_gate_dropped: bool, is_final: bool) {
-    if is_final && quality_gate_dropped {
-        *counter = counter.saturating_add(1);
-    }
-}
-
 /// Re-transcribe a sealed utterance's audio and diff it against the text
 /// already committed, producing Layer 1 patch events.
 ///
@@ -770,7 +759,6 @@ pub(crate) async fn vad_transcription_session(
     let mut utterance_id: u64 = 0;
     let mut scheduler_utterance_id: u64 = 1;
     let mut total_utterances: u64 = 0;
-    let mut semantic_gate_drops: u64 = 0;
     let mut filtered_empty_drops: u64 = 0;
     let mut corrections_applied: u64 = 0;
     let mut tail_patch_replacements: u64 = 0;
@@ -788,7 +776,6 @@ pub(crate) async fn vad_transcription_session(
     let mut utterance_vad_speech_samples: u64 = 0;
     let mut utterance_avg_logprob: Option<f32> = None;
     let mut utterance_compression_ratio: Option<f32> = None;
-    let mut utterance_quality_gate_dropped = false;
     // Accumulate segment timestamps for the current utterance across interim slices.
     let mut utterance_segments: Vec<TranscriptSegment> = Vec::new();
 
@@ -1463,22 +1450,12 @@ pub(crate) async fn vad_transcription_session(
                     Ok(raw_transcript) => {
                         let raw_avg_logprob = raw_transcript.avg_logprob;
                         let raw_compression_ratio = raw_transcript.compression_ratio;
-                        let raw_quality_gate_dropped = raw_transcript.quality_gate_dropped;
-                        record_semantic_gate_drop(
-                            &mut semantic_gate_drops,
-                            raw_quality_gate_dropped,
-                            item.is_final,
-                        );
                         if item.is_final {
                             utterance_avg_logprob = raw_avg_logprob;
                             utterance_compression_ratio = raw_compression_ratio;
-                            utterance_quality_gate_dropped = raw_quality_gate_dropped;
                         } else if utterance_avg_logprob.is_none() {
                             utterance_avg_logprob = raw_avg_logprob;
                             utterance_compression_ratio = raw_compression_ratio;
-                            if raw_quality_gate_dropped {
-                                utterance_quality_gate_dropped = true;
-                            }
                         }
                         let raw_text = raw_transcript.text;
                         let mut raw_segments = raw_transcript.segments;
@@ -1635,18 +1612,13 @@ pub(crate) async fn vad_transcription_session(
                                 );
                                 let avg_logprob = utterance_avg_logprob.take();
                                 let compression_ratio = utterance_compression_ratio.take();
-                                let quality_gate_dropped =
-                                    std::mem::take(&mut utterance_quality_gate_dropped);
                                 let vad_speech_pct = utterance_vad_speech_pct(
                                     utterance_audio_samples,
                                     output_sample_rate,
                                     utterance_vad_speech_samples,
                                 );
-                                let confidence_flags = collect_confidence_flags(
-                                    vad_speech_pct,
-                                    avg_logprob,
-                                    quality_gate_dropped,
-                                );
+                                let confidence_flags =
+                                    collect_confidence_flags(vad_speech_pct, avg_logprob);
                                 event_sink.on_event(&EngineEvent::UtteranceFinal {
                                     utterance_id,
                                     text: final_text.clone(),
@@ -1657,7 +1629,6 @@ pub(crate) async fn vad_transcription_session(
                                     vad_speech_pct,
                                     avg_logprob,
                                     compression_ratio,
-                                    quality_gate_dropped,
                                     confidence_flags,
                                 });
                                 if tail_patch_enabled
@@ -1704,7 +1675,6 @@ pub(crate) async fn vad_transcription_session(
                             utterance_vad_speech_samples = 0;
                             utterance_avg_logprob = None;
                             utterance_compression_ratio = None;
-                            utterance_quality_gate_dropped = false;
                             // Fix A: Save current suffix as utterance-boundary snapshot
                             // for the next FINAL to restore from.
                             utterance_boundary_suffix = pipeline.last_suffix.clone();
@@ -1808,11 +1778,8 @@ pub(crate) async fn vad_transcription_session(
             output_sample_rate,
             utterance_vad_speech_samples,
         );
-        let confidence_flags = collect_confidence_flags(
-            vad_speech_pct,
-            utterance_avg_logprob,
-            utterance_quality_gate_dropped,
-        );
+        let confidence_flags =
+            collect_confidence_flags(vad_speech_pct, utterance_avg_logprob);
         event_sink.on_event(&EngineEvent::UtteranceFinal {
             utterance_id,
             text: remaining,
@@ -1823,7 +1790,6 @@ pub(crate) async fn vad_transcription_session(
             vad_speech_pct,
             avg_logprob: utterance_avg_logprob,
             compression_ratio: utterance_compression_ratio,
-            quality_gate_dropped: utterance_quality_gate_dropped,
             confidence_flags,
         });
     }
@@ -1837,11 +1803,10 @@ pub(crate) async fn vad_transcription_session(
         }
         let reason = if speech_activity_observed
             || pipeline.hallucination_drops > 0
-            || semantic_gate_drops > 0
             || filtered_empty_drops > 0
             || dropped_utterances > 0
         {
-            "all_speech_rejected_by_quality_gate"
+            "speech_observed_without_committed_text"
         } else {
             "vad_no_speech_detected"
         };
@@ -1854,7 +1819,6 @@ pub(crate) async fn vad_transcription_session(
     event_sink.on_event(&EngineEvent::Stats {
         dropped_audio_chunks: dropped_utterances,
         hallucination_drops: pipeline.hallucination_drops,
-        semantic_gate_drops,
         filtered_empty_drops,
         corrections_applied,
         total_utterances,
@@ -1884,10 +1848,9 @@ pub(crate) async fn vad_transcription_session(
     }
 
     info!(
-        "Transcription session finished: {} utterances, {} hallucination drops, {} semantic gate drops, {} filtered empty drops, {} tail patches, partial_runs={} (utterance={}, speech={}, watchdog={}, stale={}, coalesced={}, dropped={})",
+        "Transcription session finished: {} utterances, {} hallucination drops, {} filtered empty drops, {} tail patches, partial_runs={} (utterance={}, speech={}, watchdog={}, stale={}, coalesced={}, dropped={})",
         total_utterances,
         pipeline.hallucination_drops,
-        semantic_gate_drops,
         filtered_empty_drops,
         tail_patch_replacements,
         partial_telemetry.runs_total,
@@ -2252,23 +2215,6 @@ mod session_tests {
         );
     }
 
-    #[test]
-    /// Quality-gate drops increment only for final utterances, never interim previews.
-    fn semantic_gate_drop_counter_tracks_quality_gate_flag() {
-        let mut drops = 0;
-        record_semantic_gate_drop(&mut drops, false, true);
-        assert_eq!(drops, 0);
-
-        record_semantic_gate_drop(&mut drops, true, false);
-        assert_eq!(
-            drops, 0,
-            "interim preview drops must not count as utterance drops"
-        );
-
-        record_semantic_gate_drop(&mut drops, true, true);
-        assert_eq!(drops, 1);
-    }
-
     #[tokio::test]
     async fn w13_provenance_survives_tail_patch_job() {
         let range = TailSampleRange {
@@ -2301,7 +2247,6 @@ mod session_tests {
             }],
             avg_logprob: Some(-0.21),
             compression_ratio: Some(1.03),
-            quality_gate_dropped: false,
             provider_id: TailProviderId::Fake,
             elapsed_ms: 7,
             evidence: evidence.clone(),

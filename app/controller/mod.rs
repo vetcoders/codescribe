@@ -1130,12 +1130,12 @@ impl RecordingController {
                         let reason = outcome
                             .commit_trigger
                             .as_deref()
-                            .unwrap_or("quality_gate_clean");
+                            .unwrap_or("transcript_present");
                         info!("COMMIT decision: trigger={reason}");
                     } else if cfg.quick_notes_enabled && cfg.quick_notes_save_only {
                         info!("COMMIT decision: skipped (quick_notes_save_only)");
                     } else {
-                        info!("COMMIT decision: skipped (quality gate clean)");
+                        info!("COMMIT decision: skipped (delivery conditions not met)");
                     }
                 }
             }

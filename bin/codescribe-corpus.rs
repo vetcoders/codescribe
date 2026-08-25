@@ -1387,18 +1387,6 @@ fn build_quality_report(
             )
         })
         .count();
-    let raw_quality_gate_dropped = entries
-        .iter()
-        .filter(|entry| {
-            matches!(
-                entry
-                    .raw_semantics
-                    .as_ref()
-                    .map(|semantics| semantics.state),
-                Some(ReportTranscriptState::QualityGateDropped)
-            )
-        })
-        .count();
     QualityReport {
         generated_at: Utc::now().to_rfc3339(),
         environment: ReportEnvironment {
@@ -1423,7 +1411,6 @@ fn build_quality_report(
             avg_raw_cer: mean_f32(&raw_cer),
             avg_post_cer: mean_f32(&post_cer),
             raw_no_speech_detected,
-            raw_quality_gate_dropped,
             raw_text_committed,
             ..ReportSummary::default()
         },

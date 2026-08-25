@@ -106,7 +106,6 @@ pub enum EngineEventWire {
         vad_speech_pct: Option<f32>,
         avg_logprob: Option<f32>,
         compression_ratio: Option<f32>,
-        quality_gate_dropped: bool,
         confidence_flags: Vec<TranscriptionConfidenceFlag>,
     },
     ReplaceRange {
@@ -134,7 +133,6 @@ pub enum EngineEventWire {
     Stats {
         dropped_audio_chunks: u64,
         hallucination_drops: u64,
-        semantic_gate_drops: u64,
         filtered_empty_drops: u64,
         corrections_applied: u64,
         total_utterances: u64,
@@ -197,7 +195,6 @@ impl From<&EngineEvent> for EngineEventWire {
                 vad_speech_pct,
                 avg_logprob,
                 compression_ratio,
-                quality_gate_dropped,
                 confidence_flags,
                 ..
             } => Self::UtteranceFinal {
@@ -209,7 +206,6 @@ impl From<&EngineEvent> for EngineEventWire {
                 vad_speech_pct: *vad_speech_pct,
                 avg_logprob: *avg_logprob,
                 compression_ratio: *compression_ratio,
-                quality_gate_dropped: *quality_gate_dropped,
                 confidence_flags: confidence_flags.clone(),
             },
             EngineEvent::Drop { kind, text, reason } => Self::Drop {
@@ -220,7 +216,6 @@ impl From<&EngineEvent> for EngineEventWire {
             EngineEvent::Stats {
                 dropped_audio_chunks,
                 hallucination_drops,
-                semantic_gate_drops,
                 filtered_empty_drops,
                 corrections_applied,
                 total_utterances,
@@ -234,7 +229,6 @@ impl From<&EngineEvent> for EngineEventWire {
             } => Self::Stats {
                 dropped_audio_chunks: *dropped_audio_chunks,
                 hallucination_drops: *hallucination_drops,
-                semantic_gate_drops: *semantic_gate_drops,
                 filtered_empty_drops: *filtered_empty_drops,
                 corrections_applied: *corrections_applied,
                 total_utterances: *total_utterances,
@@ -330,7 +324,6 @@ mod tests {
             vad_speech_pct: Some(5.0),
             avg_logprob: Some(-0.3),
             compression_ratio: Some(1.1),
-            quality_gate_dropped: false,
             confidence_flags: vec![TranscriptionConfidenceFlag::VeryLowSpeech],
         };
 
@@ -365,10 +358,6 @@ mod tests {
                 .map(|v| v as f32),
             Some(-0.3),
             "confidence metadata must survive IPC boundary"
-        );
-        assert_eq!(
-            obj.get("quality_gate_dropped").and_then(Value::as_bool),
-            Some(false)
         );
         assert_eq!(
             obj.get("confidence_flags").and_then(Value::as_array),
@@ -441,7 +430,6 @@ mod tests {
         let event = EngineEvent::Stats {
             dropped_audio_chunks: 3,
             hallucination_drops: 2,
-            semantic_gate_drops: 1,
             filtered_empty_drops: 4,
             corrections_applied: 5,
             total_utterances: 6,
