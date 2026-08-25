@@ -1114,7 +1114,7 @@ mod tests {
         let _data_dir = EnvRestore::capture("CODESCRIBE_DATA_DIR");
         let _env_path = EnvRestore::capture("CODESCRIBE_ENV_PATH");
         let _prompt_enabled = EnvRestore::capture(
-            crate::pipeline::stream_postprocess::STT_INITIAL_PROMPT_ENABLED_ENV,
+            "CODESCRIBE_STT_INITIAL_PROMPT_ENABLED",
         );
         let temp_dir = tempfile::tempdir().expect("temp data dir");
 
@@ -1122,7 +1122,7 @@ mod tests {
             std::env::set_var("CODESCRIBE_DATA_DIR", temp_dir.path());
             std::env::remove_var("CODESCRIBE_ENV_PATH");
             std::env::remove_var(
-                crate::pipeline::stream_postprocess::STT_INITIAL_PROMPT_ENABLED_ENV,
+                "CODESCRIBE_STT_INITIAL_PROMPT_ENABLED",
             );
         }
 
@@ -1138,7 +1138,7 @@ mod tests {
         let _data_dir = EnvRestore::capture("CODESCRIBE_DATA_DIR");
         let _env_path = EnvRestore::capture("CODESCRIBE_ENV_PATH");
         let _prompt_enabled = EnvRestore::capture(
-            crate::pipeline::stream_postprocess::STT_INITIAL_PROMPT_ENABLED_ENV,
+            "CODESCRIBE_STT_INITIAL_PROMPT_ENABLED",
         );
         let temp_dir = tempfile::tempdir().expect("temp data dir");
 
@@ -1146,7 +1146,7 @@ mod tests {
             std::env::set_var("CODESCRIBE_DATA_DIR", temp_dir.path());
             std::env::remove_var("CODESCRIBE_ENV_PATH");
             std::env::set_var(
-                crate::pipeline::stream_postprocess::STT_INITIAL_PROMPT_ENABLED_ENV,
+                "CODESCRIBE_STT_INITIAL_PROMPT_ENABLED",
                 "1",
             );
         }

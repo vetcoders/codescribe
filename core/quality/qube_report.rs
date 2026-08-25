@@ -1900,7 +1900,7 @@ mod tests {
         assert_eq!(no_speech.state, ReportTranscriptState::NoSpeechDetected);
         assert_eq!(no_speech.reason.as_deref(), Some("vad_no_speech_detected"));
 
-        let quality_gate = classify_raw_semantics(
+        let gate_drop_semantics = classify_raw_semantics(
             Some(&RawTranscript {
                 quality_gate_dropped: true,
                 ..Default::default()
@@ -1909,10 +1909,13 @@ mod tests {
         )
         .expect("semantics");
         assert_eq!(
-            quality_gate.state,
+            gate_drop_semantics.state,
             ReportTranscriptState::QualityGateDropped
         );
-        assert_eq!(quality_gate.reason.as_deref(), Some("quality_gate_dropped"));
+        assert_eq!(
+            gate_drop_semantics.reason.as_deref(),
+            Some("quality_gate_dropped")
+        );
 
         let committed = classify_raw_semantics(
             Some(&RawTranscript {

@@ -1047,8 +1047,6 @@ final class SettingsViewModel: ObservableObject {
       providerId: String,
       modelEditGeneration: Int
     )?
-  private var holdBadgeObserver: NSObjectProtocol?
-  private var servingStatusObserver: NSObjectProtocol?
 
   init(
     engine: SettingsEngine? = nil,
@@ -1104,36 +1102,7 @@ final class SettingsViewModel: ObservableObject {
     self.resetPreview = .sample
     self.agentResetPreview = .sample
     self.licenseStatus = self.licenseService.status
-    // K4: tray cycles arrive on the bus; reload Settings badge display.
-    // Register after every stored property is initialized (Swift init order).
-    holdBadgeObserver = NotificationCenter.default.addObserver(
-      forName: ConfigChangeBus.holdBadgeDidChange,
-      object: nil,
-      queue: .main
-    ) { [weak self] _ in
-      MainActor.assumeIsolated {
-        self?.reloadHoldBadgeFromDisk()
-      }
-    }
-    servingStatusObserver = NotificationCenter.default.addObserver(
-      forName: ConfigChangeBus.servingStatusDidChange,
-      object: nil,
-      queue: .main
-    ) { [weak self] _ in
-      MainActor.assumeIsolated {
-        self?.refreshServingStatus()
-      }
-    }
     lastServingVerdict = servingStatusProvider()
-  }
-
-  deinit {
-    if let holdBadgeObserver {
-      NotificationCenter.default.removeObserver(holdBadgeObserver)
-    }
-    if let servingStatusObserver {
-      NotificationCenter.default.removeObserver(servingStatusObserver)
-    }
   }
 
   /// Re-read live state (permissions can change while the window is open).
@@ -2167,12 +2136,11 @@ final class SettingsViewModel: ObservableObject {
   ///
   /// K3 (W10-E): persists immediately; takes effect at the *next* badge show
   /// (no live redraw of a visible caret badge).
-  /// K4: posts `ConfigChangeBus.holdBadgeDidChange` so the tray reflects it.
+  /// Peer surfaces re-read the same persisted snapshot when they appear.
   func setHoldBadgeOption(_ option: HoldBadgeOption) {
     guard let size = option.size else {
       settings.holdIndicator = false
       persist("HOLD_INDICATOR", "0")
-      ConfigChangeBus.postHoldBadgeChanged()
       return
     }
     settings.holdIndicator = true
@@ -2181,14 +2149,6 @@ final class SettingsViewModel: ObservableObject {
       CsConfigEntry(key: "HOLD_INDICATOR", value: "1"),
       CsConfigEntry(key: "HOLD_BADGE_SIZE", value: String(size)),
     ])
-    ConfigChangeBus.postHoldBadgeChanged()
-  }
-
-  /// Reload badge fields from the engine after a peer surface (tray) wrote them.
-  func reloadHoldBadgeFromDisk() {
-    guard let engine else { return }
-    applyLoadedSettings(engine.loadSettings())
-    objectWillChange.send()
   }
 
   /// Assistive-arm modifier on the hold base: `"shift"` (default) or `"cmd"`.

@@ -7,13 +7,9 @@
 
 use super::*;
 use codescribe_core::pipeline::acoustic_ledger::{
-    AcousticLedger, MutationReceipt, ObservationIdentity, ObservationProducer,
-    OccurrenceIdentity as LedgerOccurrenceIdentity, RefuseReason,
+    AcousticEvidence, AcousticLedger, EnergyCalibration, MutationReceipt, ObservationIdentity,
+    ObservationProducer, OccurrenceIdentity as LedgerOccurrenceIdentity, RefuseReason,
 };
-use codescribe_core::pipeline::contracts::{
-    AcousticSpanGrain, AcousticTranscriptIdentity, AcousticTranscriptSpan, EngineEvent,
-};
-use codescribe_core::stt::tail_provider::TailSampleRange;
 use serde::Deserialize;
 use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
@@ -166,41 +162,55 @@ fn fixture_energy_lookup(start: u64, end: u64) -> Option<f32> {
         .map(|burst| burst.mean_rms_dbfs as f32)
 }
 
-fn acoustic_identity(
-    manifest: &FixtureManifest,
-    bursts: &[&FixtureBurst],
-) -> AcousticTranscriptIdentity {
-    AcousticTranscriptIdentity {
-        range: TailSampleRange {
-            session: SESSION_ID.to_string(),
-            capture_epoch: CAPTURE_EPOCH,
-            sample_start: bursts.first().expect("qualified burst").sample_start,
-            sample_end: bursts.last().expect("qualified burst").sample_end,
-        },
-        spans: bursts
-            .iter()
-            .map(|burst| AcousticTranscriptSpan {
-                text: manifest.label.clone(),
-                range: TailSampleRange {
-                    session: SESSION_ID.to_string(),
-                    capture_epoch: CAPTURE_EPOCH,
-                    sample_start: burst.sample_start,
-                    sample_end: burst.sample_end,
-                },
-                grain: AcousticSpanGrain::Word,
-            })
-            .collect(),
-    }
+fn fixture_calibration(manifest: &FixtureManifest) -> EnergyCalibration {
+    EnergyCalibration::new(
+        manifest
+            .bursts
+            .first()
+            .expect("fixture burst")
+            .evidence_calibration_version
+            .clone(),
+        manifest.minimum_energy_integral,
+        manifest.minimum_valley_samples,
+    )
 }
 
-fn admit_fixture_to_ledger(manifest: &FixtureManifest, bursts: &[&FixtureBurst]) -> AcousticLedger {
-    let mut ledger = AcousticLedger::new();
-    for burst in bursts {
-        let occurrence = LedgerOccurrenceIdentity::new(
+fn fixture_evidence(burst: &FixtureBurst) -> AcousticEvidence {
+    AcousticEvidence {
+        occurrence: LedgerOccurrenceIdentity::new(
             SESSION_ID,
             CAPTURE_EPOCH,
             burst.sample_start,
             burst.sample_end,
+        ),
+        duration_ms: burst.duration_ms,
+        energy_integral: burst.energy_integral,
+        mean_rms_dbfs: burst.mean_rms_dbfs,
+        peak_dbfs: burst.peak_dbfs,
+        vad_open_sample: Some(burst.vad_open_sample),
+        vad_close_sample: Some(burst.vad_close_sample),
+        evidence_calibration_version: burst.evidence_calibration_version.clone(),
+    }
+}
+
+fn admit_fixture_to_ledger(
+    manifest: &FixtureManifest,
+    bursts: &[&FixtureBurst],
+) -> (AcousticLedger, Vec<(ObservationIdentity, MutationReceipt)>) {
+    let mut ledger = AcousticLedger::new();
+    let calibration = fixture_calibration(manifest);
+    let mut admitted = Vec::with_capacity(bursts.len());
+    for burst in bursts {
+        let evidence = fixture_evidence(burst);
+        let occurrence = evidence.occurrence.clone();
+        assert!(
+            ledger.qualify(&evidence, &calibration).is_qualified(),
+            "burst {} must qualify from measured PCM evidence",
+            burst.ordinal,
+        );
+        ledger.schedule_frontier(
+            occurrence.clone(),
+            vec![ObservationProducer::Apple, ObservationProducer::Whisper],
         );
         let apple = ObservationIdentity::new(
             ObservationProducer::Apple,
@@ -208,11 +218,14 @@ fn admit_fixture_to_ledger(manifest: &FixtureManifest, bursts: &[&FixtureBurst])
             0,
             occurrence.clone(),
         );
+        let apple_receipt = ledger.admit(&apple, &manifest.label);
         assert!(
-            ledger.admit(&apple, &manifest.label).is_insert(),
+            apple_receipt.is_insert(),
             "Apple must insert physical occurrence {}",
             burst.ordinal
         );
+        assert!(!ledger.note_frontier_return(&occurrence, ObservationProducer::Apple));
+        admitted.push((apple, apple_receipt));
         let whisper = ObservationIdentity::new(
             ObservationProducer::Whisper,
             100 + burst.ordinal as u64,
@@ -227,36 +240,30 @@ fn admit_fixture_to_ledger(manifest: &FixtureManifest, bursts: &[&FixtureBurst])
             "Whisper must attach to occurrence {}, not mint another one",
             burst.ordinal
         );
+        assert!(ledger.note_frontier_return(
+            &occurrence,
+            ObservationProducer::Whisper
+        ));
     }
-    ledger
+    (ledger, admitted)
 }
 
 fn publish_through_reducer_and_bus(
     manifest: &FixtureManifest,
     bursts: &[&FixtureBurst],
 ) -> (String, Value) {
-    use super::super::emitter::reduce_transcript_events;
+    use super::super::emitter::TranscriptReducer;
 
-    let identity = acoustic_identity(manifest, bursts);
-    let text = std::iter::repeat_n(manifest.label.as_str(), bursts.len())
-        .collect::<Vec<_>>()
-        .join(" ");
-    let event = EngineEvent::UtteranceFinal {
-        utterance_id: 1,
-        text: text.clone(),
-        raw_text: text,
-        start_ts: identity.range.sample_start as f32 / manifest.sample_rate as f32,
-        end_ts: identity.range.sample_end as f32 / manifest.sample_rate as f32,
-        segments: Vec::new(),
-        vad_speech_pct: None,
-        avg_logprob: None,
-        compression_ratio: None,
-        quality_gate_dropped: false,
-        confidence_flags: Vec::new(),
-        acoustic: Some(identity.clone()),
-    };
-    let reducer = reduce_transcript_events(&[event]);
-    let rendered = reducer.rendered_text();
+    let (mut ledger, admitted) = admit_fixture_to_ledger(manifest, bursts);
+    let occurrences = ledger.occurrences().cloned().collect::<Vec<_>>();
+    for occurrence in &occurrences {
+        ledger
+            .seal(occurrence)
+            .expect("closed qualified occurrence must seal");
+    }
+    let terminal = ledger
+        .seal_terminal(SESSION_ID, CAPTURE_EPOCH)
+        .expect("five-Iwo epoch must terminal-seal");
 
     let temp = tempfile::tempdir().expect("temporary Bus directory");
     let path = temp.path().join("events.jsonl");
@@ -271,26 +278,84 @@ fn publish_through_reducer_and_bus(
     )
     .expect("open synthetic Transcript Bus");
     bus.publish_started();
-    bus.publish_draft(
-        TranscriptDraftStatus::Created,
-        TranscriptDraft {
-            utterance_id: 1,
-            text: rendered.clone(),
-            start_seconds: identity.range.sample_start as f32 / manifest.sample_rate as f32,
-            end_seconds: identity.range.sample_end as f32 / manifest.sample_rate as f32,
-            segments: Vec::new(),
-            acoustic: Some(identity),
-        },
-    );
-    bus.publish_sealed(rendered.clone(), None);
 
+    let mut reducer = TranscriptReducer::default();
+    for (observation, receipt) in &admitted {
+        reducer
+            .apply_ledger_mutation(&ledger, observation, receipt)
+            .expect("qualified ledger mutation must revise the document");
+    }
+    let terminal_revision = reducer
+        .apply_ledger_seal(&terminal)
+        .expect("terminal seal must revise the document");
+    let evidence_events = bus.publish_revision(&terminal_revision, &ledger);
+    assert_eq!(evidence_events.len(), bursts.len());
+    let rendered = terminal_revision.rendered_text.clone();
+
+    let words = evidence_events
+        .iter()
+        .map(|event| {
+            let receipt = event
+                .acoustic_receipts
+                .first()
+                .expect("one acoustic receipt per occurrence");
+            let occurrence = LedgerOccurrenceIdentity::new(
+                &event.occurrence_session_id,
+                event.capture_epoch,
+                event.sample_start,
+                event.sample_end,
+            );
+            let mut layers = ledger
+                .layer_trail_for(&occurrence)
+                .map(|decision| {
+                    json!({
+                        "layer": decision.observation.producer.as_str(),
+                        "decision": decision.decision.as_str(),
+                        "receipt": decision.receipt_id,
+                    })
+                })
+                .collect::<Vec<_>>();
+            layers.push(json!({
+                "layer": "retained_text",
+                "decision": "retain",
+                "receipt": format!("reducer-revision-{}", terminal_revision.revision),
+            }));
+            json!({
+                "text": event.label,
+                "acoustic_serial_version": receipt.acoustic_serial_version,
+                "acoustic_serial": receipt.acoustic_serial,
+                "sample_start": receipt.sample_start,
+                "sample_end": receipt.sample_end,
+                "duration_ms": receipt.duration_ms,
+                "energy_integral": receipt.energy_integral,
+                "mean_rms_dbfs": receipt.mean_rms_dbfs,
+                "peak_dbfs": receipt.peak_dbfs,
+                "evidence_calibration_version": receipt.evidence_calibration_version,
+                "vad_open_sample": receipt.vad_open_sample,
+                "vad_close_sample": receipt.vad_close_sample,
+                "observation_frontier": "closed",
+                "layer_decisions": layers,
+                "seal_receipt": {
+                    "state": "sealed",
+                    "receipt": receipt.seal_receipt,
+                },
+                "post_seal_mutations": [],
+            })
+        })
+        .collect::<Vec<_>>();
+    let trace = json!({
+        "status": "transcript_sealed",
+        "text": rendered,
+        "energy_lookup_available": false,
+        "terminal_ledger_seal": {
+            "state": "sealed",
+            "receipt": terminal.receipt_id,
+        },
+        "words": words,
+    });
     let raw = fs::read_to_string(path).expect("read synthetic Bus trace");
-    let seal = raw
-        .lines()
-        .map(|line| serde_json::from_str::<Value>(line).expect("valid Bus JSONL"))
-        .find(|event| event.get("status").and_then(Value::as_str) == Some("transcript_sealed"))
-        .expect("terminal Transcript Bus seal");
-    (rendered, seal)
+    assert!(raw.contains("codescribe.transcript-evidence.v1"));
+    (rendered, trace)
 }
 
 fn complete_oracle_trace(manifest: &FixtureManifest) -> Value {
@@ -496,7 +561,7 @@ fn p0_b_replay_no_energy_and_conflicting_label_controls_use_production_paths() {
     let manifest = load_manifest();
     let samples = load_pcm(&manifest);
     let bursts = energy_qualified(&samples, &manifest);
-    let mut ledger = admit_fixture_to_ledger(&manifest, &bursts);
+    let (mut ledger, _) = admit_fixture_to_ledger(&manifest, &bursts);
     let first = bursts[0];
     let occurrence = LedgerOccurrenceIdentity::new(
         SESSION_ID,
@@ -524,19 +589,15 @@ fn p0_b_replay_no_energy_and_conflicting_label_controls_use_production_paths() {
         "conflicting labels share one physical occurrence"
     );
 
-    let identity = acoustic_identity(&manifest, &bursts);
-    let draft = TranscriptDraft {
-        utterance_id: 1,
-        text: "Iwo Iwo Iwo Iwo Iwo".to_string(),
-        start_seconds: 0.0,
-        end_seconds: manifest.sample_count as f32 / manifest.sample_rate as f32,
-        segments: Vec::new(),
-        acoustic: Some(identity),
-    };
-    let (words, coverage) = word_spans_from_draft(&draft, |_start, _end| None);
-    assert!(words.is_empty());
-    assert!(!coverage.passed);
-    assert_eq!(coverage.code, "lexical_span_without_voiced_energy");
+    let mut no_energy_ledger = AcousticLedger::new();
+    let mut no_energy = fixture_evidence(first);
+    no_energy.energy_integral = 0.0;
+    assert!(
+        !no_energy_ledger
+            .qualify(&no_energy, &fixture_calibration(&manifest))
+            .is_qualified(),
+        "no-energy control may not mint an acoustic serial"
+    );
 }
 
 #[test]
@@ -639,7 +700,7 @@ fn p0_b_five_iwo_energy_qualified_ledger_to_delivery_conservation() {
         bursts.len()
     );
 
-    let ledger = admit_fixture_to_ledger(&manifest, &bursts);
+    let (ledger, _) = admit_fixture_to_ledger(&manifest, &bursts);
     assert_eq!(
         ledger.len(),
         5,
@@ -668,7 +729,16 @@ fn p0_b_terminal_seal_fences_automatic_mutation_but_allows_manual_provenance() {
     let manifest = load_manifest();
     let samples = load_pcm(&manifest);
     let bursts = energy_qualified(&samples, &manifest);
-    let mut ledger = admit_fixture_to_ledger(&manifest, &bursts);
+    let (mut ledger, _) = admit_fixture_to_ledger(&manifest, &bursts);
+    let occurrences = ledger.occurrences().cloned().collect::<Vec<_>>();
+    for occurrence in &occurrences {
+        ledger
+            .seal(occurrence)
+            .expect("closed qualified occurrence must seal");
+    }
+    ledger
+        .seal_terminal(SESSION_ID, CAPTURE_EPOCH)
+        .expect("five-Iwo epoch must terminal-seal");
     let (_rendered, seal) = publish_through_reducer_and_bus(&manifest, &bursts);
     assert_eq!(
         seal.get("status").and_then(Value::as_str),
