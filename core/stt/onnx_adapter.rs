@@ -507,10 +507,10 @@ impl OnnxEngine {
     /// Transcribe audio of any length by sliding the encoder's native 30-second
     /// window with a 5-second overlap, then stitching the pieces.
     ///
-    /// The overlap exists for context continuity, and is also why the joins go
-    /// through `append_with_overlap_dedup` + `dedup_repetitions` — without them
-    /// the shared 5 seconds would surface twice. Segment timestamps are shifted
-    /// by each chunk's session offset so they stay session-absolute.
+    /// The overlap exists for context continuity, and its joins continue through
+    /// `append_with_overlap_dedup` as live seam assembly so the shared 5 seconds
+    /// do not surface twice. No global content cleanup follows that assembly.
+    /// Segment timestamps are shifted by each chunk's session offset.
     fn transcribe_long_raw(
         &mut self,
         samples: &[f32],
@@ -526,9 +526,7 @@ impl OnnxEngine {
 
         if samples_16k.len() <= chunk_samples {
             // Short audio — single pass (pad-or-trim handles the rest)
-            let mut transcript = self.transcribe_internal_16k_raw(&samples_16k, language)?;
-            transcript.text = crate::stt::whisper::dedup_repetitions(&transcript.text);
-            return Ok(transcript);
+            return self.transcribe_internal_16k_raw(&samples_16k, language);
         }
 
         let mut out = String::new();
@@ -562,7 +560,9 @@ impl OnnxEngine {
 
         let trimmed = out.trim();
         Ok(RawTranscript {
-            text: crate::stt::whisper::dedup_repetitions(trimmed),
+            // Overlap/seam assembly above remains live; preserve its decoded text
+            // without a separate global content-cleanup pass.
+            text: trimmed.to_string(),
             segments: all_segments,
             ..Default::default()
         })

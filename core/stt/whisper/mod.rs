@@ -40,7 +40,6 @@ pub mod timing;
 // Public API exports
 pub use engine::LocalWhisperEngine; // Kept for advanced usage if needed
 pub use engine::append_with_overlap_dedup;
-pub(crate) use engine::dedup_repetitions;
 pub use params::DecodingParams; // Kept for params config if needed
 pub use timing::{FinalPassTiming, take_final_pass_timing};
 

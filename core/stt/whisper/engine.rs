@@ -869,7 +869,7 @@ impl LocalWhisperEngine {
         }
 
         Ok(RawTranscript {
-            text: dedup_repetitions(merged.text.trim()),
+            text: merged.text.trim().to_string(),
             segments: merged.segments,
             avg_logprob: if logprob_count > 0 {
                 Some(logprob_sum / logprob_count as f32)
@@ -953,8 +953,9 @@ impl LocalWhisperEngine {
             offset = offset.saturating_add(step);
         }
 
-        // Apply word/phrase-level repetition deduplication before returning
-        Ok(dedup_repetitions(out.trim()))
+        // Overlap/seam assembly above remains responsible only for joining windows.
+        // Preserve the assembled decoded text for downstream occurrence adjudication.
+        Ok(out.trim().to_string())
     }
 
     /// Detect the spoken language of in-memory audio, resampling to 16 kHz
@@ -1312,35 +1313,17 @@ impl LocalWhisperEngine {
             None
         };
 
-        // 4. Compression Ratio Threshold - apply dedup if ratio too high
-        let mut final_text = text;
-        let mut final_segments = segments;
-        let mut final_ratio = compression_ratio(&final_text);
+        // 4. Compression Ratio Threshold - diagnostic evidence only
+        let final_ratio = compression_ratio(&text);
         if final_ratio > self.decoding_params.compression_ratio_threshold {
             tracing::warn!(
-                "High compression ratio ({:.2}) - applying dedup cleanup",
+                threshold = self.decoding_params.compression_ratio_threshold,
+                "High compression ratio ({:.2}); preserving decoded transcript for occurrence-authority adjudication",
                 final_ratio
             );
-
-            // Apply word/phrase deduplication to reduce repetitions
-            let cleaned = dedup_repetitions(&final_text).trim().to_string();
-            let new_ratio = compression_ratio(&cleaned);
-
-            if new_ratio > self.decoding_params.compression_ratio_threshold {
-                tracing::warn!("Still high after dedup ({:.2})", new_ratio);
-            } else {
-                tracing::debug!(
-                    "Compression ratio improved: {:.2} -> {:.2}",
-                    final_ratio,
-                    new_ratio
-                );
-            }
-            final_text = cleaned;
-            final_segments = Vec::new();
-            final_ratio = new_ratio;
         }
 
-        if final_text.is_empty() {
+        if text.is_empty() {
             return Ok(RawTranscript {
                 avg_logprob,
                 compression_ratio: Some(final_ratio),
@@ -1349,8 +1332,8 @@ impl LocalWhisperEngine {
         }
 
         Ok(RawTranscript {
-            text: final_text,
-            segments: final_segments,
+            text,
+            segments,
             avg_logprob,
             compression_ratio: Some(final_ratio),
         })
@@ -1867,146 +1850,10 @@ mod model_payload_tests {
     }
 }
 
-// ═══════════════════════════════════════════════════════════════════════════════
-// Repetition Deduplication (Word and Phrase Level)
-// ═══════════════════════════════════════════════════════════════════════════════
-
-/// Normalize word for comparison: lowercase + strip trailing punctuation
-fn normalize_for_compare(word: &str) -> String {
-    word.trim_end_matches(|c: char| c.is_ascii_punctuation())
-        .to_lowercase()
-}
-
-/// Check if two words are equivalent (ignoring case and trailing punctuation)
-fn words_equivalent(a: &str, b: &str) -> bool {
-    normalize_for_compare(a) == normalize_for_compare(b)
-}
-
-/// Remove consecutive repeated words: "test test test value" -> "test value"
-/// Case-insensitive comparison, ignores trailing punctuation.
-/// Preserves original form of first occurrence.
-pub fn dedup_repeated_words(text: &str) -> String {
-    let words: Vec<&str> = text.split_whitespace().collect();
-    if words.len() < 2 {
-        return text.to_string();
-    }
-
-    let mut result: Vec<&str> = Vec::with_capacity(words.len());
-    let mut i = 0;
-
-    while i < words.len() {
-        result.push(words[i]);
-        // Skip consecutive duplicates (case-insensitive, punctuation-tolerant)
-        while i + 1 < words.len() && words_equivalent(words[i], words[i + 1]) {
-            i += 1;
-        }
-        i += 1;
-    }
-
-    result.join(" ")
-}
-
-/// Remove repeated 2-4 word phrases: "w tej chwili w tej chwili zajmuje" -> "w tej chwili zajmuje"
-pub fn dedup_repeated_phrases(text: &str) -> String {
-    let words: Vec<&str> = text.split_whitespace().collect();
-    if words.len() < 4 {
-        return text.to_string();
-    }
-
-    let mut result: Vec<&str> = Vec::with_capacity(words.len());
-    let mut i = 0;
-
-    while i < words.len() {
-        // Try phrase lengths 4, 3, 2 (longest first)
-        let mut skipped = false;
-        for phrase_len in (2..=4).rev() {
-            if i + phrase_len * 2 <= words.len() {
-                let phrase1 = &words[i..i + phrase_len];
-                let phrase2 = &words[i + phrase_len..i + phrase_len * 2];
-
-                // Case-insensitive, punctuation-tolerant phrase comparison
-                let matches = phrase1
-                    .iter()
-                    .zip(phrase2.iter())
-                    .all(|(a, b)| words_equivalent(a, b));
-
-                if matches {
-                    // Add phrase once, skip the duplicate
-                    result.extend_from_slice(phrase1);
-                    i += phrase_len * 2;
-                    // Continue checking for more repetitions of same phrase
-                    while i + phrase_len <= words.len() {
-                        let next = &words[i..i + phrase_len];
-                        let still_matches = phrase1
-                            .iter()
-                            .zip(next.iter())
-                            .all(|(a, b)| words_equivalent(a, b));
-                        if still_matches {
-                            i += phrase_len;
-                        } else {
-                            break;
-                        }
-                    }
-                    skipped = true;
-                    break;
-                }
-            }
-        }
-
-        if !skipped {
-            result.push(words[i]);
-            i += 1;
-        }
-    }
-
-    result.join(" ")
-}
-
-/// Apply both word and phrase deduplication
-pub fn dedup_repetitions(text: &str) -> String {
-    let pass1 = dedup_repeated_phrases(text);
-    dedup_repeated_words(&pass1)
-}
-
-/// Dedup helpers, decoder diagnostics, Silero filter, and final-pass tests.
+/// Decoder diagnostics, Silero filter, and final-pass tests.
 #[cfg(test)]
 mod dedup_tests {
     use super::*;
-
-    /// Adjacent identical words collapse to a single occurrence.
-    #[test]
-    fn test_dedup_repeated_words() {
-        assert_eq!(
-            dedup_repeated_words("zaimplementowane. zaimplementowane i w idei"),
-            "zaimplementowane. i w idei"
-        );
-        assert_eq!(dedup_repeated_words("test test test value"), "test value");
-        assert_eq!(
-            dedup_repeated_words("no repetition here"),
-            "no repetition here"
-        );
-    }
-
-    /// Adjacent repeated multi-word phrases collapse once, punctuation-tolerant.
-    #[test]
-    fn test_dedup_repeated_phrases() {
-        assert_eq!(
-            dedup_repeated_phrases("56 GB. 56 GB. który zajmuje"),
-            "56 GB. który zajmuje"
-        );
-        assert_eq!(
-            dedup_repeated_phrases("w tej chwili w tej chwili zajmuje"),
-            "w tej chwili zajmuje"
-        );
-    }
-
-    /// Phrase pass then word pass removes both kinds of Whisper stutter.
-    #[test]
-    fn test_dedup_repetitions_combined() {
-        let input = "który zajmuje który zajmuje 56 GB. 56 GB. test test";
-        let expected = "który zajmuje 56 GB. test";
-        assert_eq!(dedup_repetitions(input), expected);
-    }
 
     /// Token budget floors short audio and stops a runaway before max_new_tokens.
     #[test]

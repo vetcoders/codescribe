@@ -11,8 +11,8 @@ pub struct DecodingParams {
     pub temperature: f32,
     /// Suppress blank/silence tokens early
     pub suppress_blank: bool,
-    /// Compression ratio threshold for hallucination detection
-    /// If gzip ratio > this, decoding failed (hallucination)
+    /// Compression ratio threshold for diagnostic hallucination evidence.
+    /// Exceeding it warns but does not authorize decoded-text cleanup.
     /// mlx_whisper default: 2.4
     pub compression_ratio_threshold: f32,
     /// Log probability threshold - if avg logprob < this, decoding failed
@@ -31,7 +31,7 @@ impl Default for DecodingParams {
         Self {
             temperature: 0.0, // greedy (mlx_whisper default)
             suppress_blank: true,
-            // Trigger anti-repetition cleanup a bit earlier than stock defaults
+            // Diagnostic threshold retained below the stock default for earlier warning.
             compression_ratio_threshold: 2.2,
             logprob_threshold: -1.0, // mlx_whisper default
             initial_prompt: None,    // no prompt by default
