@@ -33,9 +33,6 @@ use crate::stt::whisper::timestamps::{self, TimestampRange};
 /// Maximum tokens to generate per segment.
 const MAX_NEW_TOKENS: usize = 448;
 
-/// No-speech probability threshold — above this we return empty.
-const NO_SPEECH_THRESHOLD: f32 = 0.6;
-
 /// Number of mel bins for whisper-large-v3-turbo.
 const NUM_MEL_BINS: usize = 128;
 
@@ -82,15 +79,12 @@ struct ResolvedTokens {
     sot: u32,              // <|startoftranscript|>
     eot: u32,              // <|endoftext|>
     transcribe: u32,       // <|transcribe|>
-    nospeech: Option<u32>, // <|nospeech|>
 }
 
 impl ResolvedTokens {
     /// Resolve the special token IDs from `tokenizer.json` rather than
     /// hardcoding them: ONNX exports of different Whisper variants renumber the
     /// special-token block, and a stale constant would decode as ordinary text.
-    /// `<|nospeech|>` is optional — some exports omit it, which only disables
-    /// the no-speech short-circuit.
     fn from_tokenizer(tokenizer: &Tokenizer) -> Result<Self> {
         let sot = tokenizer
             .token_to_id("<|startoftranscript|>")
@@ -101,12 +95,10 @@ impl ResolvedTokens {
         let transcribe = tokenizer
             .token_to_id("<|transcribe|>")
             .context("Tokenizer missing <|transcribe|>")?;
-        let nospeech = tokenizer.token_to_id("<|nospeech|>");
         Ok(Self {
             sot,
             eot,
             transcribe,
-            nospeech,
         })
     }
 
@@ -423,10 +415,9 @@ impl OnnxEngine {
 
         // 6. Greedy decoder loop — always full-sequence (no KV cache)
         //    This matches candle engine's approach: full token sequence each step,
-        //    with suppress_blank, n-gram blocking, and proper softmax for no-speech.
+        //    with suppress_blank and n-gram blocking.
         let mut all_tokens: Vec<u32> = Vec::new(); // generated tokens (after initial)
         let eot = self.tokens.eot;
-        let nospeech = self.tokens.nospeech;
 
         // Cap total sequence at model's positional embedding size
         let max_seq = self.whisper_config.max_target_positions;
@@ -434,7 +425,7 @@ impl OnnxEngine {
             .saturating_sub(initial_tokens.len())
             .min(MAX_NEW_TOKENS);
 
-        for step in 0..max_gen {
+        for _ in 0..max_gen {
             // Build full input: initial_tokens + all generated tokens so far
             let mut input_seq = initial_tokens.clone();
             input_seq.extend(all_tokens.iter().map(|&t| t as i64));
@@ -461,26 +452,6 @@ impl OnnxEngine {
             // Guard against malformed model output: shape values come from the model
             // and must not be trusted to panic-index. See `last_position_logits`.
             let mut logits_vec: Vec<f32> = last_position_logits(logits_shape, logits_data)?;
-
-            // No-speech check on first step (proper softmax, matching candle engine)
-            if step == 0
-                && let Some(nos) = nospeech
-            {
-                let nos_idx = nos as usize;
-                if nos_idx < logits_vec.len() {
-                    let max_val = logits_vec.iter().cloned().fold(f32::NEG_INFINITY, f32::max);
-                    let exp_sum: f32 = logits_vec.iter().map(|&x| (x - max_val).exp()).sum();
-                    let nos_prob = (logits_vec[nos_idx] - max_val).exp() / exp_sum;
-                    debug!(
-                        "No-speech softmax: nos_prob={:.4}, threshold={}, logit={:.2}, max={:.2}",
-                        nos_prob, NO_SPEECH_THRESHOLD, logits_vec[nos_idx], max_val
-                    );
-                    if nos_prob > NO_SPEECH_THRESHOLD {
-                        debug!("No speech detected (prob={:.3})", nos_prob);
-                        return Ok(RawTranscript::default());
-                    }
-                }
-            }
 
             // Suppress blank tokens early (matching candle engine)
             if all_tokens.len() < 4 {
@@ -956,28 +927,6 @@ mod tests {
     fn mel_filterbank_not_all_zero() {
         let filters = compute_mel_filterbank(128, 400, 16000);
         assert!(filters.iter().any(|&f| f > 0.0));
-    }
-
-    /// Softmax used for no-speech gating must emit probabilities in [0, 1].
-    #[test]
-    fn softmax_no_speech_is_valid_probability() {
-        // Verify the softmax computation produces valid probabilities [0,1]
-        let logits = vec![1.0f32, 2.0, 3.0, -1.0, 0.5];
-        let max_val = logits.iter().cloned().fold(f32::NEG_INFINITY, f32::max);
-        let exp_sum: f32 = logits.iter().map(|&x| (x - max_val).exp()).sum();
-
-        for &logit in &logits {
-            let prob = (logit - max_val).exp() / exp_sum;
-            assert!((0.0..=1.0).contains(&prob), "prob={} out of [0,1]", prob);
-        }
-
-        // Sum of all probs should be ~1.0
-        let total: f32 = logits.iter().map(|&x| (x - max_val).exp() / exp_sum).sum();
-        assert!(
-            (total - 1.0).abs() < 1e-5,
-            "softmax sum={}, expected 1.0",
-            total
-        );
     }
 
     /// Happy path: last sequence row is sliced out of a [batch, seq, vocab] tensor.
