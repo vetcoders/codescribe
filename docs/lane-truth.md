@@ -18,6 +18,7 @@ or credential resolution during a take.
 - resolved `Config` values;
 - the `UserSettings` intent read by the same loader pass;
 - `RuntimeLlmLanes` for `main`, `formatting`, and `assistive`;
+- the effective formatting policy;
 - settings provenance and an integrity digest; and
 - optional energy calibration.
 
@@ -109,6 +110,11 @@ different question and does not replace the sealed snapshot.
   `settings.json` or process environment during the take.
 - Settings changes create a new snapshot for a later session rather than
   mutating the in-flight value.
+- `RecordingController` owns exactly one mutable settings handle,
+  `RwLock<Arc<RuntimeSettingsSnapshot>>`. Hold scheduling, hold/toggle start,
+  refresh and existing stop/finalize paths cross the same lifecycle lock.
+- A pending delayed hold already owns its selected Arc, so refresh defers. A
+  finished stale hold handle is consumed and does not block a later idle refresh.
 - Empty candidates are normalized away by the resolver, allowing the next
   lower-precedence source to win.
 - Never put real-looking keys in documentation. Persist credentials through the
@@ -128,8 +134,22 @@ Consumers of an active recording receive the controller's sealed Arc (or a
 secret-free projection from it). Settings UI / tray / discovery boundaries may
 mint a fresh snapshot; they must not reconstruct precedence via a second
 `Config::load` + `UserSettings::load` + env merge. Explicit settings writes
-affect only a later generation — idle refresh replaces config and the Arc
-together; an active take keeps its immutable generation.
+affect only a later generation — idle refresh performs one Arc replacement;
+an active or pending take keeps its immutable generation.
+
+## Frozen unresolved formatter facts
+
+The current frozen snapshot does not own formatting/assistive prompt content or
+formatter retry/timing values. Provider execution still resolves prompt and
+optional tuning files from `formatting_provider_system_prompt` inside its retry
+loop. `RetryPolicy::module_defaults` also means the registered
+`CODESCRIBE_AI_*` retry and timeout overlays do not control this formatter path.
+
+Those facts are an explicit unresolved amendment boundary, not part of the
+controller repair. Closing it requires an approved immutable owner for prompt
+content/source evidence and effective retry/count/delay/timeout values. This cut
+does not extend `RuntimeSettingsSnapshot`, add a second carrier, alter the
+formatter, or remove the registered environment contract.
 
 This document describes structure carried from executable cut `484095ce`, its
 documentation successor `d57196ab`, and the C11 source cut. The actual C11 hash

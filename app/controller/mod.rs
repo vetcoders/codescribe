@@ -264,9 +264,8 @@ fn should_apply_transcription_action_contract(assistive: bool, live_stream_sessi
 
 /// Recording controller managing state machine and lifecycle
 pub struct RecordingController {
-    /// Application configuration
-    config: Arc<RwLock<Config>>,
-    /// One immutable loader result shared by every consumer in a take.
+    /// The one mutable controller generation handle. Each take clones this Arc
+    /// once and every config, user-settings, LLM and recorder fact comes from it.
     /// The Arc inside is replaced only when idle so an active take keeps its
     /// generation even if Settings writes a later snapshot.
     runtime_settings: RwLock<Arc<RuntimeSettingsSnapshot>>,
@@ -495,7 +494,6 @@ impl RecordingController {
             }
         }
 
-        let config = Arc::new(RwLock::new(config));
         let runtime_settings = RwLock::new(Arc::new(runtime_settings));
         if recorder.is_none() {
             warn!("Recorder unavailable at controller init; voice capture is disabled");
@@ -504,7 +502,6 @@ impl RecordingController {
         let session_telemetry = new_session_telemetry();
 
         Self {
-            config,
             runtime_settings,
             state: Arc::new(RwLock::new(State::Idle)),
             recorder: Arc::new(Mutex::new(recorder)),
@@ -572,15 +569,8 @@ impl RecordingController {
 
     /// Flip the cursor badge to "processing" while a stop pipeline runs.
     async fn show_processing_badge_if_enabled(&self) {
-        let hold_indicator = self.config.read().await.hold_indicator;
+        let hold_indicator = self.get_config().await.hold_indicator;
         publish_recording_indicator(BadgeMode::Processing, hold_indicator);
-    }
-
-
-    /// Publish a cursor-badge mode, honoring the user's badge setting.
-    async fn publish_indicator(&self, mode: BadgeMode) {
-        let hold_indicator = self.config.read().await.hold_indicator;
-        publish_recording_indicator(mode, hold_indicator);
     }
 
     /// Character offset the live transcript has reached, used to anchor a
@@ -750,7 +740,7 @@ impl RecordingController {
         // one-shot either way.
         let _ = self.pending_assistive_context.write().await.take();
         let _ = self.assistive_context.write().await.take();
-        let config = self.config.read().await.clone();
+        let config = self.get_config().await;
         {
             let mut bucket = self.context_bucket.lock().await;
             match bucket.archive_and_reset("assistive-delivery") {
@@ -805,30 +795,32 @@ impl RecordingController {
         }
     }
 
-    /// Replace controller configuration at runtime.
-    ///
-    /// Prefer [`Self::replace_runtime_settings_when_idle`] after an explicit
-    /// settings write so `config` and `runtime_settings` stay one generation.
-    pub async fn set_config(&self, config: Config) {
-        *self.config.write().await = config;
-    }
-
     /// Replace the immutable settings generation when no take is active.
     ///
-    /// Returns `false` when a recording/conversation/busy take still owns the
-    /// previous Arc — writers must not mutate that generation mid-take.
+    /// Scheduling, starts, stops and refresh all cross `serial_lock`. A live
+    /// delayed-hold task counts as active ownership; a finished stale handle is
+    /// consumed so it cannot block refresh forever.
     pub async fn replace_runtime_settings_when_idle(
         &self,
         runtime_settings: RuntimeSettingsSnapshot,
     ) -> bool {
-        if self.is_recording().await
-            || self.is_busy().await
-            || matches!(self.current_state().await, State::Conversation)
+        let _serial_guard = self.serial_lock.lock().await;
+
         {
+            let mut hold_task = self.hold_start_task.lock().await;
+            let finished = hold_task.as_ref().map(|task| task.is_finished());
+            match finished {
+                Some(false) => return false,
+                Some(true) => {
+                    let _ = hold_task.take();
+                }
+                None => {}
+            }
+        }
+
+        if self.current_state().await != State::Idle {
             return false;
         }
-        let values = runtime_settings.values().clone();
-        *self.config.write().await = values;
         *self.runtime_settings.write().await = Arc::new(runtime_settings);
         true
     }
@@ -841,7 +833,7 @@ impl RecordingController {
 
     /// Snapshot of current controller configuration
     pub async fn get_config(&self) -> Config {
-        self.config.read().await.clone()
+        self.runtime_settings_arc().await.values().clone()
     }
 
     /// App name latched before the current overlay session took focus.
@@ -903,7 +895,7 @@ impl RecordingController {
             "Overlay paste target activation"
         );
 
-        let config = self.config.read().await.clone();
+        let config = self.get_config().await;
         let paste_text = trimmed.to_string();
         let frontmost = crate::os::selection::current_frontmost_app_name();
         let preflight = clipboard::synthetic_paste_preflight();
@@ -977,7 +969,7 @@ impl RecordingController {
         target_app: Option<String>,
         frontmost_app_name: Option<String>,
     ) -> Result<OverlayPasteResult> {
-        let config = self.config.read().await.clone();
+        let config = self.get_config().await;
         let payload = trimmed.to_string();
         let mut deferred_insert_shortcut = None;
         let mut deferred_insert_failure = None;
@@ -1041,7 +1033,7 @@ impl RecordingController {
         let mut task_guard = self.hold_start_task.lock().await;
         if let Some(task) = task_guard.take() {
             if task.is_finished() {
-                let _ = task.await;
+                debug!("Cleared finished hold-start task (generation={generation})");
             } else {
                 debug!("Invalidated pending hold-start task (generation={generation})");
             }
@@ -1155,7 +1147,7 @@ impl RecordingController {
                 if let Some(reason) = outcome.no_speech_reason.as_deref() {
                     info!("NoSpeech outcome in finish_recording: reason={reason}");
                 } else if !assistive {
-                    let cfg = self.config.read().await.clone();
+                    let cfg = self.get_config().await;
 
                     if outcome.transcript_present
                         && cfg.transcription_overlay_enabled
@@ -1497,7 +1489,7 @@ impl RecordingController {
                             if matches!(current_state, State::RecHold | State::RecToggle) {
                                 publish_recording_indicator(
                                     BadgeMode::Assistive,
-                                    self.config.read().await.hold_indicator,
+                                    self.get_config().await.hold_indicator,
                                 );
                             }
                         }
@@ -1515,7 +1507,7 @@ impl RecordingController {
                             if matches!(current_state, State::RecHold | State::RecToggle) {
                                 publish_recording_indicator(
                                     BadgeMode::Assistive,
-                                    self.config.read().await.hold_indicator,
+                                    self.get_config().await.hold_indicator,
                                 );
                             }
                         }
@@ -2054,9 +2046,19 @@ impl RecordingController {
 
     /// Schedule delayed recording start for hold mode
     async fn schedule_hold_start(&self, assistive: bool) -> Result<()> {
+        // Scheduling selects the take generation. Refresh and every actual
+        // start/stop transition cross this same boundary, while the spawned
+        // task itself is never awaited under the guard.
+        let _scheduling_guard = self.serial_lock.lock().await;
+
+        // Cancel any existing delayed start before selecting the next Arc.
+        self.cancel_pending_hold_start().await;
+        let task_generation = self.hold_start_generation.load(Ordering::SeqCst);
+        let runtime_settings = self.runtime_settings_arc().await;
+        let config = runtime_settings.values().clone();
+
         // Hold mode never runs the assistive loop
         self.assistive_loop_active.store(false, Ordering::SeqCst);
-        let config = self.config.read().await.clone();
         let configured_delay_ms = config.hold_start_delay_ms;
         let delay_ms = effective_hold_start_delay_ms(configured_delay_ms, assistive);
         let beep = config.beep_on_start;
@@ -2072,10 +2074,6 @@ impl RecordingController {
             assistive,
             *hold_mode.read().await
         );
-
-        // Cancel any existing delayed start
-        self.cancel_pending_hold_start().await;
-        let task_generation = self.hold_start_generation.load(Ordering::SeqCst);
 
         *self.pending_assistive_context.write().await = None;
         let initial_hold_mode = *hold_mode.read().await;
@@ -2110,7 +2108,6 @@ impl RecordingController {
         let start_transition_in_flight = Arc::clone(&self.start_transition_in_flight);
         let session_telemetry = Arc::clone(&self.session_telemetry);
         let active_transcript_bus = Arc::clone(&self.active_transcript_bus);
-        let runtime_settings = self.runtime_settings_arc().await;
 
         let task = tokio::spawn(async move {
             // Wait for the configured delay
@@ -2344,6 +2341,8 @@ impl RecordingController {
             );
             return Ok(());
         }
+        let runtime_settings = self.runtime_settings_arc().await;
+        let config = runtime_settings.values();
         let _start_guard = AtomicFlagGuard::new(Arc::clone(&self.start_transition_in_flight));
 
         *self.pending_assistive_context.write().await = None;
@@ -2389,22 +2388,22 @@ impl RecordingController {
 
         info!("Starting toggle recording (session={})", new_session_id);
 
-        let config = self.config.read().await.clone();
         // Cursor-following recording badge (config-gated): pulsing red for toggle /
         // hands-off, purple for assistive/agent.
-        self.publish_indicator(if is_assistive {
-            BadgeMode::Assistive
-        } else {
-            BadgeMode::Toggle
-        })
-        .await;
+        publish_recording_indicator(
+            if is_assistive {
+                BadgeMode::Assistive
+            } else {
+                BadgeMode::Toggle
+            },
+            config.hold_indicator,
+        );
         let language = config.whisper_language;
         let toggle_silence_sec = config.toggle_silence_sec;
         let beep_enabled = config.beep_on_start;
         let sound_volume = config.sound_volume;
-        let runtime_settings = self.runtime_settings_arc().await;
         let overlay_enabled = apply_runtime_transcription_profile(
-            &config,
+            config,
             runtime_settings.user_settings(),
             is_assistive,
         );
@@ -2876,11 +2875,53 @@ mod c15d_settings_one_path_falsifiers {
     use super::*;
     use crate::config::Config;
 
-    /// C15D falsifier: idle refresh replaces config and runtime_settings together.
+    /// C15D-A structural falsifier: the controller source has one mutable
+    /// settings handle, one write site and no compatibility setter.
+    #[test]
+    fn controller_has_exactly_one_mutable_settings_generation() {
+        let source = include_str!("mod.rs");
+        let retired_config_field = ["config: Arc<RwLock<", "Config>>"].concat();
+        let runtime_arc_field = [
+            "runtime_settings: RwLock<Arc<",
+            "RuntimeSettingsSnapshot>>",
+        ]
+        .concat();
+        let runtime_arc_write = ["*self.runtime_settings", ".write().await"].concat();
+        let retired_setter = ["pub async ", "fn set_", "config"].concat();
+
+        assert!(!source.contains(&retired_config_field));
+        assert_eq!(source.matches(&runtime_arc_field).count(), 1);
+        assert_eq!(source.matches(&runtime_arc_write).count(), 1);
+        assert!(!source.contains(&retired_setter));
+    }
+
+    /// C15D-A projection falsifier: public config is a value projected from
+    /// the current Arc, not separately stored controller state.
     #[tokio::test]
-    async fn idle_refresh_replaces_config_and_runtime_settings_together() {
+    async fn get_config_projects_current_runtime_snapshot_values() {
+        let controller = RecordingController::new_without_keychain();
+        let snapshot = controller.runtime_settings_arc().await;
+        let projected = controller.get_config().await;
+
+        assert_eq!(
+            projected.hold_start_delay_ms,
+            snapshot.values().hold_start_delay_ms
+        );
+        assert_eq!(projected.beep_on_start, snapshot.values().beep_on_start);
+        assert_eq!(
+            projected.transcription_overlay_enabled,
+            snapshot.values().transcription_overlay_enabled
+        );
+    }
+
+    /// C15D-A generation falsifier: idle refresh performs one Arc replacement
+    /// and cannot mutate a previously selected Arc.
+    #[tokio::test]
+    async fn idle_refresh_replaces_one_arc_and_preserves_previous_generation() {
         let controller = RecordingController::new_without_keychain();
         let before = controller.runtime_settings_arc().await;
+        let before_digest = before.digest().as_str().to_string();
+        let before_delay = before.values().hold_start_delay_ms;
         let next = Config::load_runtime_snapshot_without_keychain()
             .expect("seal next generation");
         assert!(
@@ -2889,16 +2930,109 @@ mod c15d_settings_one_path_falsifiers {
                 .await
         );
         let after = controller.runtime_settings_arc().await;
+        assert!(!Arc::ptr_eq(&before, &after));
         assert_eq!(after.digest().as_str(), next.digest().as_str());
         assert_eq!(
             controller.get_config().await.hold_start_delay_ms,
             after.values().hold_start_delay_ms
         );
-        // Previous take Arc is a distinct generation handle even when digests match.
-        let _ = before;
+        assert_eq!(before.digest().as_str(), before_digest.as_str());
+        assert_eq!(before.values().hold_start_delay_ms, before_delay);
     }
 
-    /// C15D falsifier: profile publish uses injected snapshot user_settings.
+    /// C15D-A lifecycle falsifier: an unfinished delayed hold owns its selected
+    /// generation, so refresh defers and leaves the Arc untouched.
+    #[tokio::test]
+    async fn pending_hold_rejects_refresh_and_preserves_generation() {
+        let controller = RecordingController::new_without_keychain();
+        let before = controller.runtime_settings_arc().await;
+        let (release, wait) = tokio::sync::oneshot::channel::<()>();
+        let pending = tokio::spawn(async move {
+            let _ = wait.await;
+        });
+        *controller.hold_start_task.lock().await = Some(pending);
+
+        let next = Config::load_runtime_snapshot_without_keychain()
+            .expect("seal deferred generation");
+        assert!(!controller.replace_runtime_settings_when_idle(next).await);
+        let after = controller.runtime_settings_arc().await;
+        assert!(Arc::ptr_eq(&before, &after));
+
+        let _ = release.send(());
+        controller.cancel_pending_hold_start().await;
+    }
+
+    /// C15D-A stale-handle falsifier: a completed delayed task is cleanup, not
+    /// live ownership, and therefore cannot block an idle refresh forever.
+    #[tokio::test]
+    async fn finished_hold_handle_does_not_block_idle_refresh() {
+        let controller = RecordingController::new_without_keychain();
+        let finished = tokio::spawn(async {});
+        while !finished.is_finished() {
+            tokio::task::yield_now().await;
+        }
+        *controller.hold_start_task.lock().await = Some(finished);
+
+        let next = Config::load_runtime_snapshot_without_keychain()
+            .expect("seal post-hold generation");
+        assert!(controller.replace_runtime_settings_when_idle(next).await);
+        assert!(controller.hold_start_task.lock().await.is_none());
+    }
+
+    /// C15D-A active-take falsifier: both recording states keep their current
+    /// Arc until the existing serialized stop/finalize path returns to Idle.
+    #[tokio::test]
+    async fn active_hold_and_toggle_reject_refresh() {
+        let controller = RecordingController::new_without_keychain();
+        for active_state in [State::RecHold, State::RecToggle] {
+            *controller.state.write().await = active_state;
+            let before = controller.runtime_settings_arc().await;
+            let next = Config::load_runtime_snapshot_without_keychain()
+                .expect("seal later generation");
+            assert!(!controller.replace_runtime_settings_when_idle(next).await);
+            let after = controller.runtime_settings_arc().await;
+            assert!(Arc::ptr_eq(&before, &after));
+        }
+        *controller.state.write().await = State::Idle;
+    }
+
+    /// C15D-A source falsifier: each start body selects exactly one Arc under
+    /// `serial_lock`, then derives config, UserSettings and recorder binding
+    /// from that named Arc. This is structural evidence, not a scheduler proof.
+    #[test]
+    fn hold_and_toggle_each_derive_take_facts_from_one_selected_arc() {
+        let source = include_str!("mod.rs");
+        let hold_signature = ["async fn schedule_hold_", "start"].concat();
+        let toggle_signature = ["async fn start_toggle_", "recording"].concat();
+        let stop_signature = ["async fn stop_toggle_", "and_adjudicate"].concat();
+        let hold_start = source.find(&hold_signature).expect("hold start body");
+        let toggle_start = source.find(&toggle_signature).expect("toggle start body");
+        let stop_start = source[toggle_start..]
+            .find(&stop_signature)
+            .map(|offset| toggle_start + offset)
+            .expect("toggle stop boundary");
+        let hold_body = &source[hold_start..toggle_start];
+        let toggle_body = &source[toggle_start..stop_start];
+
+        let serial_lock = ["self.serial_lock", ".lock().await"].concat();
+        let select_arc = ["self.runtime_settings_", "arc().await"].concat();
+        let config_projection = ["runtime_settings", ".values()"].concat();
+        let user_projection = ["runtime_settings", ".user_settings()"].concat();
+        let recorder_binding = ["Arc::clone(&runtime_", "settings)"].concat();
+
+        for body in [hold_body, toggle_body] {
+            assert_eq!(body.matches(&select_arc).count(), 1);
+            assert_eq!(body.matches(&config_projection).count(), 1);
+            assert_eq!(body.matches(&user_projection).count(), 1);
+            assert_eq!(body.matches(&recorder_binding).count(), 1);
+            assert!(
+                body.find(&serial_lock).expect("lifecycle lock")
+                    < body.find(&select_arc).expect("settings Arc selection")
+            );
+        }
+    }
+
+    /// C15D falsifier: profile publish uses one snapshot's values and settings.
     #[test]
     fn recording_profile_uses_controller_snapshot_user_settings() {
         let snapshot = Config::load_runtime_snapshot_without_keychain()
