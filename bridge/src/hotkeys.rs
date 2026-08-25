@@ -16,9 +16,7 @@ use codescribe::os::permissions::{PermissionStatus, check_accessibility, check_i
 use codescribe::os::shortcut_registry::{detect_hotkey_conflicts, fn_tap_intercept_note};
 use codescribe::os::tray_status::{self, TrayStatus};
 use codescribe::os::{clipboard, notifications};
-use codescribe_core::config::{
-    Config, FormattingPolicy, ModeBinding, ShortcutBinding, UserSettings, WorkMode,
-};
+use codescribe_core::config::{Config, ModeBinding, ShortcutBinding, UserSettings, WorkMode};
 use codescribe_core::ipc::{EngineEventWire, IpcEventPayload};
 use crossbeam_channel::unbounded;
 use tokio::runtime::Handle;
@@ -31,7 +29,7 @@ use crate::recording::{
     CsAnnotationKind, CsLayerSummary, CsTranscriptProjectionEvent, CsTranscription,
     CsTranscriptionListener,
 };
-use crate::{CsError, CsLanguage, application_runtime};
+use crate::{CsError, application_runtime};
 
 /// Shared process-wide slot for the lazily-created `RecordingController`.
 /// Mutex so the first hotkey/FFI path wins construction; `Option` until first use.
@@ -842,74 +840,6 @@ impl CodescribeHotkeys {
         })
     }
 
-    /// Format editable overlay text after recording stops.
-    pub async fn format_text(
-        &self,
-        text: String,
-        language: Option<CsLanguage>,
-    ) -> Result<String, CsError> {
-        application_runtime::run(async move {
-            let runtime_settings =
-                Config::load_runtime_snapshot().map_err(|error| CsError::Config {
-                    msg: error.to_string(),
-                })?;
-            let language = language.map(|l| l.as_code().to_string());
-            let result = codescribe::ai_formatting::format_text_with_status(
-                &text,
-                language.as_deref(),
-                false,
-                runtime_settings.llm_lanes().formatting(),
-                None,
-            )
-            .await;
-            if result.text.trim().is_empty() {
-                Ok(text)
-            } else {
-                Ok(result.text)
-            }
-        })
-        .await?
-    }
-
-    /// Format overlay text through an explicitly selected one-shot level
-    /// (`correction` / `smart` / `max`). Never reads or writes the persisted
-    /// Auto Format policy; `off` is rejected — a manual action must act.
-    pub async fn format_text_for_level(
-        &self,
-        text: String,
-        language: Option<CsLanguage>,
-        level: String,
-    ) -> Result<String, CsError> {
-        application_runtime::run(async move {
-            let runtime_settings =
-                Config::load_runtime_snapshot().map_err(|error| CsError::Config {
-                    msg: error.to_string(),
-                })?;
-            let policy = FormattingPolicy::parse(&level).map_err(|error| CsError::Config {
-                msg: error.to_string(),
-            })?;
-            if policy == FormattingPolicy::Off {
-                return Err(CsError::Config {
-                    msg: "manual format level cannot be 'off'".to_string(),
-                });
-            }
-            let language = language.map(|l| l.as_code().to_string());
-            let result = codescribe::ai_formatting::format_text_with_status_for_policy(
-                &text,
-                language.as_deref(),
-                policy,
-                runtime_settings.llm_lanes().formatting(),
-            )
-            .await;
-            if result.text.trim().is_empty() {
-                Ok(text)
-            } else {
-                Ok(result.text)
-            }
-        })
-        .await?
-    }
-
     /// Paste edited overlay text back into the app that was frontmost before the
     /// overlay. The result includes delivery truth and the app names observed
     /// at the exact delivery boundary so Swift can explain every degradation.
@@ -1251,48 +1181,6 @@ mod application_shutdown_tests {
             panic!("shutdown timeout must be a recording error");
         };
         assert!(msg.contains("timed out"), "{msg}");
-    }
-}
-
-/// One-shot manual format levels: unknown levels and `off` are rejected (a
-/// manual action must act), while legacy aliases still normalize through the
-/// same `FormattingPolicy` owner.
-#[cfg(test)]
-mod format_level_tests {
-    use super::*;
-
-    /// Unknown level strings must fail config-side, not silently no-op.
-    #[tokio::test]
-    async fn format_text_for_level_rejects_unknown_level() {
-        let hotkeys = CodescribeHotkeys::default();
-        let result = hotkeys
-            .format_text_for_level("hello".to_string(), None, "mega".to_string())
-            .await;
-        assert!(matches!(result, Err(CsError::Config { .. })));
-    }
-
-    /// Manual format must act: `off` is rejected rather than a silent pass-through.
-    #[tokio::test]
-    async fn format_text_for_level_rejects_off() {
-        let hotkeys = CodescribeHotkeys::default();
-        let result = hotkeys
-            .format_text_for_level("hello".to_string(), None, "off".to_string())
-            .await;
-        assert!(matches!(result, Err(CsError::Config { .. })));
-    }
-
-    /// Legacy aliases (e.g. `creative` → Max) still normalize via FormattingPolicy.
-    #[tokio::test]
-    async fn format_text_for_level_accepts_legacy_alias_shape() {
-        // Aliases normalize through the same FormattingPolicy owner as C01;
-        // "creative" must map to Max, not fail. No provider is configured in
-        // tests, so the formatter falls back to returning usable text without
-        // any network call.
-        let hotkeys = CodescribeHotkeys::default();
-        let result = hotkeys
-            .format_text_for_level("hi".to_string(), None, "creative".to_string())
-            .await;
-        assert!(result.is_ok());
     }
 }
 

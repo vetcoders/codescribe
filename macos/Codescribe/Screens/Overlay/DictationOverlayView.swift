@@ -483,16 +483,14 @@ struct DictationOverlayView: View {
         if state.canRevert {
           actionButton(
             title: "Revert",
-            help: "Restore the transcript from before the last format",
+            help: "Restore the transcript from before the last retranscription",
             icon: "arrow.uturn.backward",
             tone: .neutral,
             iconOnly: iconOnly,
             action: { state.revertFormat() }
           )
-          .accessibilityIdentifier("overlay-format-revert")
+          .accessibilityIdentifier("overlay-retranscribe-revert")
         }
-
-        manualFormatMenu(iconOnly: iconOnly)
 
         manualRetranscribeMenu(iconOnly: iconOnly)
 
@@ -518,36 +516,6 @@ struct DictationOverlayView: View {
         action: { state.close() }
       )
     }
-  }
-
-  private func manualFormatMenu(iconOnly: Bool) -> some View {
-    Menu {
-      ForEach(OverlayActionPresentation.manualFormatLevels) { level in
-        Button(level.visibleName) {
-          state.formatTranscript(level: level)
-        }
-      }
-    } label: {
-      actionButtonLabel(
-        title: state.isFormatting ? "Formatting..." : OverlayActionPresentation.formatTitle,
-        icon: "wand.and.stars",
-        tone: .neutral,
-        iconOnly: iconOnly
-      )
-    }
-    .menuStyle(.button)
-    .csFocusRing(cornerRadius: 8)
-    .menuIndicator(.hidden)
-    .help(state.manualFormatHelp)
-    .disabled(!state.canFormat)
-    .opacity(state.canFormat ? 1 : 0.45)
-    .accessibilityLabel(OverlayActionPresentation.formatTitle)
-    .accessibilityValue(
-      state.autoFormatLevel == .off
-        ? "Auto Format Off" : "Auto Format \(state.autoFormatLevel.visibleName)"
-    )
-    .accessibilityHint(OverlayActionPresentation.formatHelp)
-    .accessibilityIdentifier("overlay-format-menu")
   }
 
   private func manualRetranscribeMenu(iconOnly: Bool) -> some View {

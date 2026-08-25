@@ -8,15 +8,13 @@
 //! rzeczywiście gada codescribe na GUI"). This bin routes through the exact
 //! stages a GUI delivery does, in the same order:
 //!
-//!   Whisper file final → (optional AI format)
-//!   `transcribe_file_verdict`       sealed formatting lane
+//!   Whisper file final → canonical transcript verdict
+//!   `transcribe_file_verdict`
 //!
 //! Two faces, matching the GUI's two faces:
 //! - default        = the DELIVERY: one shaped transcript on stdout.
 //! - `--stream` = the LIVE CANVAS view: per-segment text flushed to stdout
 //!   as decoding progresses through the file.
-//! - `-f/--format` = the AI-formatted lane (same `ai_formatting` call and
-//!   lane config the GUI uses; requires a configured key).
 //! - `transcribe live` = follow the app-owned clean transcript bus and flush
 //!   newly created utterance drafts to stdout one line at a time. Revisions and
 //!   the final product seal remain explicit bus events. It never opens a
@@ -50,9 +48,6 @@ enum Command {
         /// Live-canvas view: flush each decoded segment as it lands
         #[arg(long)]
         stream: bool,
-        /// AI formatting via the configured formatting lane (same as the GUI)
-        #[arg(short, long)]
-        format: bool,
         #[command(subcommand)]
         mode: Option<TranscribeMode>,
     },
@@ -71,13 +66,12 @@ fn main() -> anyhow::Result<()> {
             file,
             language,
             stream,
-            format,
             mode,
         } => match mode {
             Some(TranscribeMode::Live) => {
                 anyhow::ensure!(
-                    file.is_none() && !stream && !format,
-                    "`transcribe live` does not accept a file, --stream, or --format"
+                    file.is_none() && !stream,
+                    "`transcribe live` does not accept a file or --stream"
                 );
                 transcribe_live(language)
             }
@@ -85,7 +79,7 @@ fn main() -> anyhow::Result<()> {
                 let file = file.ok_or_else(|| {
                     anyhow::anyhow!("missing <FILE> (or use `codescribe transcribe live`)")
                 })?;
-                transcribe(&file, language.as_deref(), stream, format)
+                transcribe(&file, language.as_deref(), stream)
             }
         },
     }
@@ -192,7 +186,6 @@ fn transcribe(
     file: &std::path::Path,
     language: Option<&str>,
     stream: bool,
-    format: bool,
 ) -> anyhow::Result<()> {
     use std::io::Write as _;
 
@@ -221,45 +214,26 @@ fn transcribe(
         verdict.text.clone()
     };
 
-    // AI formatting — the same lane call the GUI formatted mode makes.
-    let (final_text, ai_status) = if format {
-        let runtime_settings = codescribe_core::config::Config::load_runtime_snapshot()?;
-        let runtime = tokio::runtime::Builder::new_multi_thread()
-            .enable_all()
-            .build()?;
-        let result = runtime.block_on(codescribe_core::ai_formatting::format_text_with_status(
-            &transcript_text,
-            language,
-            false,
-            runtime_settings.llm_lanes().formatting(),
-            None,
-        ));
-        (result.text, Some(format!("{:?}", result.status)))
-    } else {
-        (transcript_text, None)
-    };
-
     // Delivery on stdout (the stream view already printed the canvas; the
     // delivery still follows it so scripts always end with the final text).
     if stream {
         eprintln!("--- delivery ---");
     }
-    println!("{final_text}");
+    println!("{transcript_text}");
 
     // Provenance to stderr, GUI-truth style.
     eprintln!(
-        "engine={:?}/{:?} decode_secs={:.2} segments={} chars={} avg_logprob={} transcript_authority=stt_verdict ai_format={}",
+        "engine={:?}/{:?} decode_secs={:.2} segments={} chars={} avg_logprob={} transcript_authority=stt_verdict",
         verdict.engine.engine,
         verdict.engine.mode,
         decode_secs,
         verdict.raw.segments.len(),
-        final_text.chars().count(),
+        transcript_text.chars().count(),
         verdict
             .raw
             .avg_logprob
             .map(|v| std::format!("{v:.2}"))
             .unwrap_or_else(|| "n/a".into()),
-        ai_status.as_deref().unwrap_or("off"),
     );
     Ok(())
 }

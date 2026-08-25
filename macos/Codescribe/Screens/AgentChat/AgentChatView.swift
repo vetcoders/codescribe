@@ -3,10 +3,7 @@ import SwiftUI
 
 /// Agent Chat MVP shell. `NavigationSplitView`: local in-memory thread rail ↔
 /// thread view. Turns render You / Tool-activity / Assistant; `send` routes a
-/// single-shot `formatText(_:assistive:)` round-trip through the injected
-/// `AgentChatEngine`, then simulates a word-reveal stream. See AgentChatStore
-/// for the full FFI-gap note (no streaming / threads / tools backend yet —
-/// real streaming chat is a tracked core-change follow-up).
+/// streamed `streamReply` turn through the injected `AgentChatEngine`.
 struct AgentChatView: View {
   @StateObject var store: AgentChatStore
   /// Rail state survives window close/reopen and app relaunch. Collapse is
