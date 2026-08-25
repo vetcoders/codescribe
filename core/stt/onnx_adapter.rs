@@ -505,12 +505,11 @@ impl OnnxEngine {
     }
 
     /// Transcribe audio of any length by sliding the encoder's native 30-second
-    /// window with a 5-second overlap, then stitching the pieces.
+    /// window with a 5-second overlap for decoder context.
     ///
-    /// The overlap exists for context continuity, and its joins continue through
-    /// `append_with_overlap_dedup` as live seam assembly so the shared 5 seconds
-    /// do not surface twice. No global content cleanup follows that assembly.
-    /// Segment timestamps are shifted by each chunk's session offset.
+    /// Overlap replay is rejected by prior absolute PCM coverage, and returned
+    /// text is projected from the retained timestamped segments. Non-empty
+    /// segmentless output is refused because text is not replay identity.
     fn transcribe_long_raw(
         &mut self,
         samples: &[f32],
@@ -529,9 +528,9 @@ impl OnnxEngine {
             return self.transcribe_internal_16k_raw(&samples_16k, language);
         }
 
-        let mut out = String::new();
         let mut all_segments = Vec::new();
         let mut offset = 0usize;
+        let mut covered_until_samples = 0usize;
 
         while offset < samples_16k.len() {
             let end = (offset + chunk_samples).min(samples_16k.len());
@@ -543,26 +542,37 @@ impl OnnxEngine {
             }
 
             let transcript = self.transcribe_internal_16k_raw(chunk, language)?;
-            if !transcript.text.is_empty() {
-                crate::stt::whisper::append_with_overlap_dedup(&mut out, &transcript.text);
-            }
-            if !transcript.segments.is_empty() {
-                let offset_sec = offset as f32 / 16_000.0;
-                all_segments.extend(transcript.segments.into_iter().map(|mut s| {
-                    s.start_ts += offset_sec;
-                    s.end_ts += offset_sec;
-                    s
-                }));
-            }
+            ensure!(
+                transcript.text.trim().is_empty() || !transcript.segments.is_empty(),
+                "ONNX overlap assembly refused non-empty decode without timestamped segments"
+            );
 
+            let offset_secs = offset as f32 / 16_000.0;
+            let covered_until_secs = covered_until_samples as f32 / 16_000.0;
+            all_segments.extend(
+                transcript
+                    .segments
+                    .into_iter()
+                    .map(|mut segment| {
+                        segment.start_ts += offset_secs;
+                        segment.end_ts += offset_secs;
+                        segment
+                    })
+                    .filter(|segment| segment.end_ts > covered_until_secs),
+            );
+
+            covered_until_samples = end;
             offset += step;
         }
 
-        let trimmed = out.trim();
+        let text = all_segments
+            .iter()
+            .map(|segment| segment.text.trim())
+            .filter(|text| !text.is_empty())
+            .collect::<Vec<_>>()
+            .join(" ");
         Ok(RawTranscript {
-            // Overlap/seam assembly above remains live; preserve its decoded text
-            // without a separate global content-cleanup pass.
-            text: trimmed.to_string(),
+            text,
             segments: all_segments,
             ..Default::default()
         })
