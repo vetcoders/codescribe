@@ -444,14 +444,33 @@ fn report_terminal_seal_refusal(
 /// Reconcile job-level terminal buckets after the worker's bounded closure
 /// loop. No-change, provider skip, and rewrite-fence refusal all land in
 /// `skipped`; `applied` means a completed job whose bounded mutation survived.
-fn tail_patch_receipt_after_stop(
-    armed: bool,
-    submitted: u64,
+#[derive(Clone, Copy)]
+struct TailPatchWorkerAccounting {
     applied_jobs: u64,
     skipped_jobs: u64,
     timeout_residue: u64,
-    abandoned_jobs: u64,
+}
+
+fn tail_patch_receipt_after_stop(
+    armed: bool,
+    submitted: u64,
+    worker_accounting: Option<TailPatchWorkerAccounting>,
 ) -> TailPatchSessionReceipt {
+    // The worker increments its awaiting-completion counter before the async
+    // owner accepts a request. On bounded closure expiry, that counter already
+    // owns every async in-flight/queued request as `timed_out`; the async side
+    // must not classify the same requests again as `abandoned`. Abandonment is
+    // reserved for the distinct route where the worker returns no accounting.
+    let (applied_jobs, skipped_jobs, timeout_residue, abandoned_jobs) =
+        match worker_accounting {
+            Some(accounting) => (
+                accounting.applied_jobs,
+                accounting.skipped_jobs,
+                accounting.timeout_residue,
+                0,
+            ),
+            None => (0, 0, 0, submitted),
+        };
     TailPatchSessionReceipt::new(
         armed,
         submitted,
@@ -779,20 +798,19 @@ pub(crate) async fn apple_stream_transcription_session(
         while chunk_receiver.recv().await.is_some() {}
     }
 
-    // `ev_rx` closes only when the seal worker has returned and dropped both
-    // its event sender and completion receiver. Running queued Whisper jobs at
-    // this point cannot change canvas; it only lengthens stop and used to make
-    // the receipt count undeliverable patches. Preserve the Apple floor and
-    // abandon the orphaned refinement work explicitly.
-    let mut abandoned_tail_patch_jobs = u64::from(tail_patch_in_flight);
+    // `ev_rx` closes only after the worker's bounded closure loop has assigned
+    // every accepted request still awaiting completion to its timeout bucket.
+    // Running those Whisper jobs now cannot change canvas; drain and drop the
+    // async work, but do not mint a second terminal bucket for it here.
+    let mut outstanding_tail_patch_jobs = u64::from(tail_patch_in_flight);
     while tp_rx.try_recv().is_ok() {
         tail_patch_submitted = tail_patch_submitted.saturating_add(1);
-        abandoned_tail_patch_jobs = abandoned_tail_patch_jobs.saturating_add(1);
+        outstanding_tail_patch_jobs = outstanding_tail_patch_jobs.saturating_add(1);
     }
-    if abandoned_tail_patch_jobs > 0 {
+    if outstanding_tail_patch_jobs > 0 {
         warn!(
-            abandoned_tail_patch_jobs,
-            "Layer 1 tail-patch work abandoned after Apple seal worker closed"
+            outstanding_tail_patch_jobs,
+            "Layer 1 tail-patch async work dropped after worker terminal accounting closed"
         );
     }
     // C1 stop-drain: close the Layer 1 lane with its bounded drain. Whatever
@@ -822,9 +840,7 @@ pub(crate) async fn apple_stream_transcription_session(
     }
 
     let mut accepted_tail_patch_replacements = 0u64;
-    let mut tail_patch_jobs_applied = 0u64;
-    let mut tail_patch_jobs_skipped = 0u64;
-    let mut tail_patch_timeout_residue = 0u64;
+    let mut tail_patch_worker_accounting = None;
     match worker.join() {
         Ok(Ok(outcome)) => {
             info!(
@@ -837,9 +853,11 @@ pub(crate) async fn apple_stream_transcription_session(
                 "Apple progressive live session finished"
             );
             accepted_tail_patch_replacements = outcome.tail_patch_replacements;
-            tail_patch_jobs_applied = outcome.tail_patch_jobs_applied;
-            tail_patch_jobs_skipped = outcome.tail_patch_jobs_skipped;
-            tail_patch_timeout_residue = outcome.tail_patch_timeout_residue;
+            tail_patch_worker_accounting = Some(TailPatchWorkerAccounting {
+                applied_jobs: outcome.tail_patch_jobs_applied,
+                skipped_jobs: outcome.tail_patch_jobs_skipped,
+                timeout_residue: outcome.tail_patch_timeout_residue,
+            });
         }
         Ok(Err(e)) => {
             warn!("Apple live stream worker failed: {e:#}");
@@ -858,10 +876,7 @@ pub(crate) async fn apple_stream_transcription_session(
     let receipt = tail_patch_receipt_after_stop(
         tail_patch_on,
         tail_patch_submitted,
-        tail_patch_jobs_applied,
-        tail_patch_jobs_skipped,
-        tail_patch_timeout_residue,
-        abandoned_tail_patch_jobs,
+        tail_patch_worker_accounting,
     );
     log_tail_patch_session_receipt(receipt);
     report_tail_patch_drain_degrade(
@@ -4798,32 +4813,56 @@ mod tests {
 
     #[test]
     fn tail_patch_receipt_uses_worker_adjudicated_job_buckets() {
-        let receipt = tail_patch_receipt_after_stop(true, 3, 1, 1, 1, 0);
+        let receipt = tail_patch_receipt_after_stop(
+            true,
+            3,
+            Some(TailPatchWorkerAccounting {
+                applied_jobs: 1,
+                skipped_jobs: 1,
+                timeout_residue: 1,
+            }),
+        );
         assert_eq!(receipt.applied, 1);
         assert_eq!(receipt.skipped, 1);
         assert_eq!(receipt.timed_out, 1);
         assert_eq!(receipt.abandoned, 0);
         assert!(receipt.is_reconciled());
 
-        let worker_failed = tail_patch_receipt_after_stop(true, 2, 0, 0, 0, 2);
+        let worker_failed = tail_patch_receipt_after_stop(true, 2, None);
         assert_eq!(worker_failed.abandoned, 2);
         assert_eq!(worker_failed.drain, TailPatchDrainDisposition::Abandoned);
         assert!(worker_failed.is_reconciled());
+    }
 
-        let mixed = tail_patch_receipt_after_stop(true, 4, 0, 0, 2, 2);
-        assert_eq!(mixed.timed_out, 2);
-        assert_eq!(mixed.abandoned, 2);
-        assert_eq!(
-            mixed.drain,
-            TailPatchDrainDisposition::TimedOut,
-            "timeout takes precedence while both terminal counters remain explicit"
+    #[test]
+    fn worker_timeout_owns_async_outstanding_job_exactly_once() {
+        let receipt = tail_patch_receipt_after_stop(
+            true,
+            1,
+            Some(TailPatchWorkerAccounting {
+                applied_jobs: 0,
+                skipped_jobs: 0,
+                timeout_residue: 1,
+            }),
         );
+        assert_eq!(receipt.timed_out, 1);
+        assert_eq!(receipt.abandoned, 0);
+        assert_eq!(receipt.drain, TailPatchDrainDisposition::TimedOut);
+        assert!(receipt.is_reconciled());
     }
 
     #[test]
     #[should_panic(expected = "tail-patch terminal buckets must reconcile exactly")]
     fn tail_patch_receipt_rejects_missing_independent_terminal_evidence() {
-        let _ = tail_patch_receipt_after_stop(true, 3, 1, 1, 0, 0);
+        let _ = tail_patch_receipt_after_stop(
+            true,
+            3,
+            Some(TailPatchWorkerAccounting {
+                applied_jobs: 1,
+                skipped_jobs: 1,
+                timeout_residue: 0,
+            }),
+        );
     }
 
     fn synthetic_tail_job(utterance_id: u64, outcome: TailPatchOutcome) -> TailPatchJobResult {
