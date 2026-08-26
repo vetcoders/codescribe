@@ -18,8 +18,7 @@ There is exactly one supported live runtime path:
 1. `StreamingRecorder::set_event_sink(Some(...))`
 2. `StreamingRecorder::start_event_session(...)`
 3. `pipeline::streaming::transcription_session(...)`
-4. `SttScheduler` serializes inference work
-5. `EventSink` fanout distributes `EngineEvent` to presentation, IPC and session telemetry sinks
+4. `EventSink` fanout distributes `EngineEvent` to presentation, IPC and session telemetry sinks
 
 Controller wiring uses the same contract for hold/toggle sessions:
 
@@ -122,7 +121,7 @@ Engine events are tagged with `type`:
 }
 ```
 
-`segments` come from native Whisper timestamp tokens (`<|0.00|>` ... `<|30.00|>`) and are available for both Candle and ONNX STT paths.
+`segments` come from native Whisper timestamp tokens (`<|0.00|>` ... `<|30.00|>`) on the Candle STT path.
 
 Engine events are observational transport, not a transcript document API.
 `Preview` is overlay-only. `UtteranceFinal`, `Correction`, `ReplaceRange`, and

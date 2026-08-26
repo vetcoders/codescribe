@@ -107,8 +107,6 @@ manifest_tsv="$out_dir/fixtures.tsv"
 stage_root="$out_dir/fixtures"
 qube_out="$out_dir/qube-report"
 qube_log="$out_dir/qube-report.log"
-latency_tsv="$out_dir/scheduler-lane-latency.tsv"
-latency_log="$out_dir/scheduler-lane-latency.log"
 
 count_lines() {
   if [[ -f "$1" ]]; then
@@ -344,77 +342,36 @@ run_qube_report() {
   ) 2>&1 | tee "$qube_log"
 }
 
-run_latency_probe() {
-  : > "$latency_tsv"
-  log "running scheduler-lane latency probe"
-  (
-    cd "$repo_root"
-      BENCH_STT_LATENCY_MANIFEST="$manifest_tsv" \
-      BENCH_STT_LATENCY_OUT="$latency_tsv" \
-      BENCH_STT_LANGUAGE="$language" \
-      CODESCRIBE_DISABLE_KEYCHAIN=1 \
-      CODESCRIBE_NO_EMBED=1 \
-      CODESCRIBE_MODEL_PATH="$model_path" \
-      CARGO_TARGET_DIR="$repo_root/target" \
-      cargo test -p codescribe-core bench_stt_scheduler_latency_probe_from_env -- --ignored --nocapture
-  ) > "$latency_log" 2>&1
-}
-
 write_summary_report() {
   local head_short repro fixture_source
   head_short="$(git -C "$repo_root" rev-parse --short=8 HEAD 2>/dev/null || printf 'unknown')"
   repro="scripts/bench-stt.sh --fixtures $fixture_mode --limit $fixture_limit --language $language"
   fixture_source="$(fixture_source_label "$manifest_tsv")"
-  python3 - "$report_path" "$qube_out/report.json" "$manifest_tsv" "$latency_tsv" "$repro" "$repo_root" "$head_short" "$model_path" "$out_dir" "$fixture_source" <<'PY'
+  python3 - "$report_path" "$qube_out/report.json" "$manifest_tsv" "$repro" "$repo_root" "$head_short" "$model_path" "$out_dir" "$fixture_source" <<'PY'
 import csv
 import json
-import math
 import sys
 from pathlib import Path
 
 report_path = Path(sys.argv[1])
 qube_json = Path(sys.argv[2])
 manifest_tsv = Path(sys.argv[3])
-latency_tsv = Path(sys.argv[4])
-repro = sys.argv[5]
-repo_root = sys.argv[6]
-head_short = sys.argv[7]
-model_path = sys.argv[8]
-out_dir = sys.argv[9]
-fixture_source = sys.argv[10]
+repro = sys.argv[4]
+repo_root = sys.argv[5]
+head_short = sys.argv[6]
+model_path = sys.argv[7]
+out_dir = sys.argv[8]
+fixture_source = sys.argv[9]
 
 qube = json.loads(qube_json.read_text())
 manifest = list(csv.DictReader(manifest_tsv.open(), delimiter="\t"))
-latencies = {
-    row["id"]: row
-    for row in csv.DictReader(latency_tsv.open(), delimiter="\t")
-}
-
 def pct(value):
     if value is None:
         return "n/a"
     return f"{float(value) * 100:.2f}%"
 
-def ms(value):
-    if value in (None, "", "NA"):
-        return "n/a"
-    return f"{float(value):.0f}"
-
-def avg(values):
-    values = [float(value) for value in values if value not in (None, "", "NA")]
-    return sum(values) / len(values) if values else None
-
-def p95(values):
-    values = sorted(float(value) for value in values if value not in (None, "", "NA"))
-    if not values:
-        return None
-    return values[max(0, math.ceil(0.95 * len(values)) - 1)]
-
 summary = qube.get("summary", {})
 entries = qube.get("entries", [])
-first_values = [row.get("first_preview_ms") for row in latencies.values()]
-final_values = [row.get("final_ms") for row in latencies.values()]
-session_done_values = [row.get("session_done_ms") for row in latencies.values()]
 
 lines = [
     "# Codescribe STT Real-Path Bench",
@@ -428,7 +385,7 @@ lines = [
     f"- fixtures: `{len(manifest)}`",
     f"- fixture_source: `{fixture_source}`",
     "- quality: Qube raw and delivered transcript metrics",
-    "- latency: production `transcription_session` through `SttScheduler`; model load excluded",
+    "- latency: not measured by this quality bench",
     "- vocabulary-prompt A/B: not measured because no production runtime owner currently emits that prompt",
     "",
     "## Repro Command",
@@ -443,25 +400,19 @@ lines = [
     "| --- | ---: |",
     f"| Qube raw WER | {pct(summary.get('avg_raw_wer'))} |",
     f"| Qube delivered WER | {pct(summary.get('avg_post_wer'))} |",
-    f"| scheduler first preview avg/p95 | {ms(avg(first_values))} ms / {ms(p95(first_values))} ms |",
-    f"| scheduler final avg/p95 | {ms(avg(final_values))} ms / {ms(p95(final_values))} ms |",
-    f"| scheduler session done avg/p95 | {ms(avg(session_done_values))} ms / {ms(p95(session_done_values))} ms |",
     "",
     "## Per-Fixture Metrics",
     "",
-    "| file | raw WER | delivered WER | first/final ms |",
-    "| --- | ---: | ---: | ---: |",
+    "| file | raw WER | delivered WER |",
+    "| --- | ---: | ---: |",
 ]
 for entry in entries:
-    latency = latencies.get(entry.get("id"), {})
     metrics = entry.get("metrics", {})
     lines.append(
-        "| {id} | {raw} | {delivered} | {first} / {final} |".format(
+        "| {id} | {raw} | {delivered} |".format(
             id=entry.get("id", "unknown"),
             raw=pct(metrics.get("raw_wer")),
             delivered=pct(metrics.get("post_wer")),
-            first=ms(latency.get("first_preview_ms")),
-            final=ms(latency.get("final_ms")),
         )
     )
 
@@ -483,12 +434,11 @@ lines.extend([
     "## Not Verified Here",
     "",
     "- This report does not compare a vocabulary prompt because the current production lanes emit none.",
-    "- Scheduler latency excludes cold model load.",
+    "- This quality report does not measure production streaming latency.",
     "",
     "## Artifacts",
     "",
     f"- Qube report JSON: `{qube_json}`",
-    f"- scheduler latency TSV: `{latency_tsv}`",
     f"- fixture manifest: `{manifest_tsv}`",
     "",
 ])
@@ -552,14 +502,6 @@ fi
 
 if [[ ! -f "$qube_out/report.json" ]]; then
   write_honest_report "qube-report finished without report.json."
-fi
-
-if ! run_latency_probe; then
-  write_honest_report "streaming latency probe failed; see $latency_log."
-fi
-
-if [[ ! -s "$latency_tsv" ]]; then
-  write_honest_report "streaming latency probe produced no rows."
 fi
 
 write_summary_report

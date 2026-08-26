@@ -1,17 +1,16 @@
-//! Thermal pressure probe — feeds the STT scheduler's back-off decisions.
+//! Thermal pressure probe — observes and publishes device pressure.
 //!
 //! macOS reports thermal pressure through `NSProcessInfo.thermalState` and a
-//! change notification. This module observes both and publishes the level into
-//! the process-wide atomic that `core/stt/scheduler.rs` reads, so the refine and
-//! commit lanes can stand down before the machine throttles under them.
+//! change notification. This module observes both and publishes the level to
+//! the neutral process-runtime state in `codescribe_core`.
 //!
-//! Escalation is staged: `Serious` pauses the refine lane, `Critical` pauses
-//! commit as well and raises the thermal tray badge. Recovery clears that badge
-//! only if it is still the one showing.
+//! Critical pressure raises the thermal tray badge. Recovery clears that badge
+//! only if it is still the one showing. Thermal state does not claim to pause or
+//! throttle STT work.
 //!
 //! Off macOS the probe publishes `Nominal` once and does nothing further.
 
-use codescribe_core::stt::scheduler::{
+use codescribe_core::runtime::thermal::{
     ThermalLevel, current_process_thermal_level, set_process_thermal_level,
 };
 
@@ -66,7 +65,7 @@ pub fn install_thermal_probe() {
     }
 }
 
-/// Last published thermal level, as the STT scheduler sees it.
+/// Last thermal level published by this process observer.
 pub fn current_thermal_level() -> ThermalLevel {
     current_process_thermal_level()
 }
@@ -110,19 +109,11 @@ unsafe fn apply_current_state(source: &str) {
                 clear_thermal_tray_status_if_current();
             }
             ThermalLevel::Serious => {
-                tracing::warn!(
-                    ?level,
-                    source,
-                    "macOS thermal pressure serious; STT refine lane paused"
-                );
+                tracing::warn!(?level, source, "macOS thermal pressure serious");
                 clear_thermal_tray_status_if_current();
             }
             ThermalLevel::Critical => {
-                tracing::error!(
-                    ?level,
-                    source,
-                    "macOS thermal pressure critical; STT commit/refine lanes paused"
-                );
+                tracing::error!(?level, source, "macOS thermal pressure critical");
                 crate::os::tray_status::update_tray_status(
                     crate::os::tray_status::TrayStatus::Thermal,
                 );
@@ -189,11 +180,9 @@ mod tests {
     #[test]
     fn install_thermal_probe_publishes_a_level_and_is_idempotent() {
         // On macOS this genuinely registers the NSProcessInfo thermal observer
-        // and reads the live thermal state into the scheduler-visible atomic
-        // (core/stt/scheduler.rs consumes current_process_thermal_level). A
+        // and reads the live thermal state into the canonical process state. A
         // second call must be a guarded no-op and must not panic. This proves
-        // the probe installs cleanly now that CodescribeHotkeys::start wires it
-        // at runtime bootstrap (previously the fn had zero callers).
+        // the probe remains wired at runtime bootstrap without a scheduler.
         install_thermal_probe();
         let first = current_thermal_level();
         install_thermal_probe();

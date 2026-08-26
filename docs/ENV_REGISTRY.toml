@@ -120,12 +120,6 @@ reload = "hot"
 category = "streaming"
 description = "Maximum words emitted per tick (buffered mode)"
 
-[vars.CODESCRIBE_MAX_INFERENCE_CONCURRENCY]
-default = "1"
-type = "u64"
-reload = "hot"
-category = "streaming"
-description = "Maximum number of concurrent inference tasks in streaming pipeline (clamped to 1-4)"
 range = "1-4"
 
 [vars.CODESCRIBE_STREAM_SIMILARITY]
@@ -170,12 +164,6 @@ reload = "hot"
 category = "streaming"
 description = "Strip trailing ':D' hallucinations from streaming output"
 
-[vars.CODESCRIBE_BUFFERED_CORRECTION_PREFIX]
-default = "0.50"
-type = "f32"
-reload = "hot"
-category = "streaming"
-description = "Prefix ratio required to accept buffered correction"
 range = "0.4-0.9"
 
 [vars.CODESCRIBE_BUFFERED_INTERIM_SEC]
@@ -416,7 +404,7 @@ default = ""
 type = "string"
 reload = "restart"
 category = "stt"
-description = "Initial prompt hint for Whisper decoding (ignored by ONNX adapter)"
+description = "Initial prompt hint for local Whisper decoding"
 
 [vars.CODESCRIBE_STT_INITIAL_PROMPT_ENABLED]
 default = "0"
@@ -503,19 +491,12 @@ reload = "rebuild"
 category = "stt"
 description = "Whisper model name embedded at build time (core/build.rs fat SKU path)"
 
-[vars.CODESCRIBE_ONNX_MODEL_PATH]
-default = ""
-type = "string"
-reload = "restart"
-category = "stt"
-description = "Override path to the ONNX Whisper model directory (onnx engine)"
-
 [vars.CODESCRIBE_STT_ENGINE]
 default = "auto"
 type = "string"
 reload = "restart"
 category = "stt"
-description = "STT engine: auto (Apple on supported macOS, Candle fallback), candle, onnx, or apple"
+description = "STT engine: auto (Apple on supported macOS, Candle fallback), whisper/candle, or apple"
 
 [vars.CODESCRIBE_ASR_MODE]
 default = ""
@@ -622,62 +603,6 @@ reload = "hot"
 category = "stt"
 description = "Layer 1 small-edit budget: a substitution-shaped tail patch touching at most this many tokens bypasses the MAX_CHANGE_RATIO cap. The ratio alone structurally starves short utterances (any 1-word fix on a 1-3-token commit is >=50% change — measured 2026-08-12: 116 skips, 0 applied). Pure insertions never use this budget"
 
-[vars.CODESCRIBE_STT_THERMAL_GOVERNOR_ENABLED]
-default = "1"
-type = "bool"
-reload = "restart"
-category = "stt"
-description = "Enable thermal-aware STT scheduling backoff"
-
-[vars.CODESCRIBE_STT_MIN_INFER_INTERVAL_MS]
-default = "90"
-type = "int"
-reload = "restart"
-category = "stt"
-description = "Minimum interval between live preview STT inference jobs in milliseconds"
-
-[vars.CODESCRIBE_STT_COMMIT_MIN_INTERVAL_MS]
-default = "180"
-type = "int"
-reload = "restart"
-category = "stt"
-description = "Minimum interval between committed/final STT inference jobs in milliseconds"
-
-[vars.CODESCRIBE_STT_REFINE_MIN_INTERVAL_MS]
-default = "240"
-type = "int"
-reload = "restart"
-category = "stt"
-description = "Minimum interval between refinement STT inference jobs in milliseconds"
-
-[vars.CODESCRIBE_STT_THERMAL_NOMINAL_MULT]
-default = "0.0"
-type = "float"
-reload = "restart"
-category = "stt"
-description = "Thermal duty-cycle multiplier for nominal system thermal pressure; 0.0 disables nominal backoff"
-
-[vars.CODESCRIBE_STT_THERMAL_FAIR_MULT]
-default = "1.0"
-type = "float"
-reload = "restart"
-category = "stt"
-description = "Thermal multiplier for fair system thermal pressure"
-
-[vars.CODESCRIBE_STT_THERMAL_SERIOUS_MULT]
-default = "2.0"
-type = "float"
-reload = "restart"
-category = "stt"
-description = "Thermal multiplier for serious system thermal pressure"
-
-[vars.CODESCRIBE_STT_THERMAL_CRITICAL_MULT]
-default = "4.0"
-type = "float"
-reload = "restart"
-category = "stt"
-description = "Thermal multiplier for critical system thermal pressure"
-
 [vars.BENCH_STT_FIXTURES]
 default = "auto"
 type = "string"
@@ -705,41 +630,6 @@ type = "string"
 reload = "restart"
 category = "test"
 description = "scripts/bench-stt.sh Whisper language hint for bench probes"
-
-[vars.BENCH_STT_LATENCY_MANIFEST]
-default = ""
-type = "string"
-reload = "restart"
-category = "test"
-description = "Internal bench hook: fixture manifest path for the scheduler-lane latency probe"
-
-[vars.BENCH_STT_LATENCY_OUT]
-default = ""
-type = "string"
-reload = "restart"
-category = "test"
-description = "Internal bench hook: TSV output path for the scheduler-lane latency probe"
-
-[vars.CODESCRIBE_BENCH_FORCE_PROMPT]
-default = "0"
-type = "bool"
-reload = "restart"
-category = "test"
-description = "scripts/bench-stt.sh prompted-WER probe: generate deterministic fixture prompt when runtime prompt is disabled or empty"
-
-[vars.CODESCRIBE_BENCH_RUNTIME_PROMPT_TERM_LIMIT]
-default = ""
-type = "int"
-reload = "restart"
-category = "test"
-description = "scripts/bench-stt.sh prompted-WER probe: trim active runtime prompt to the first N deterministic terms; unset uses the full prompt"
-
-[vars.CODESCRIBE_BENCH_PROMPT_MAX_WER_DELTA_PP]
-default = "5.0"
-type = "float"
-reload = "restart"
-category = "test"
-description = "scripts/bench-stt.sh prompted-WER probe: fail when active prompt increases WER above this percentage-point threshold"
 
 [vars.CODESCRIBE_APPLE_STT_BRIDGE]
 default = ""
@@ -775,34 +665,6 @@ type = "bool"
 reload = "restart"
 category = "stt"
 description = "Arm the DictationTranscriber PoC lane (W4-A) — the SpeechAnalyzer module behind SYSTEM dictation, the only Apple analyzer whose catalog carries pl-PL. Default off: unarmed, the backend fall-through is byte-for-byte the shipped SFSpeech order. Read by both the Rust side and the inherited bridge child, so one key arms the whole path. Not a shipped default — flipping it is an operator decision"
-
-[vars.CODESCRIBE_ONNX_CPU_ONLY]
-default = "0"
-type = "bool"
-reload = "restart"
-category = "stt"
-description = "Force ONNX to use CPU only (no GPU/Metal)"
-
-[vars.CODESCRIBE_ONNX_MODEL_PATH]
-default = ""
-type = "string"
-reload = "restart"
-category = "stt"
-description = "Custom path to ONNX Whisper model"
-
-[vars.CODESCRIBE_ONNX_QUANT]
-default = ""
-type = "string"
-reload = "restart"
-category = "stt"
-description = "ONNX quantization level (e.g. q4, q8)"
-
-[vars.CODESCRIBE_ONNX_REPO]
-default = "onnx-community/whisper-large-v3-turbo"
-type = "string"
-reload = "restart"
-category = "stt"
-description = "HuggingFace repo for ONNX model download"
 
 [vars.STT_ENDPOINT]
 default = ""

@@ -30,7 +30,8 @@ use super::settings::{
     RuntimeFormatterExecution, RuntimeLlmCredential, RuntimeLlmLane, RuntimeLlmLaneKind,
     RuntimeLlmLanes, RuntimeSettingsSnapshot, RuntimeSnapshotParts, SettingsLoaderInput,
     SettingsSnapshotDigest, SettingsSnapshotProvenance, SettingsSnapshotValidationError,
-    UserSettings, normalize_agent_workspace_roots, parse_agent_workspace_roots,
+    UserSettings, normalize_agent_workspace_roots, normalize_stt_engine,
+    parse_agent_workspace_roots,
 };
 use super::types::{
     Config, DeferredInsertShortcut, Language, OverlayPositionMode, TranscriptSendMode,
@@ -1421,8 +1422,13 @@ impl Config {
                         }
                     }
                     "CODESCRIBE_STT_ENGINE" => {
-                        settings_ref.stt_engine = Some((*value).to_string());
-                        Self::reconcile_stt_runtime_key(key, value);
+                        let normalized = normalize_stt_engine(value).ok_or_else(|| {
+                            anyhow::anyhow!(
+                                "invalid STT engine {value:?}; expected auto, apple, whisper, or candle"
+                            )
+                        })?;
+                        settings_ref.stt_engine = Some(normalized.clone());
+                        Self::reconcile_stt_runtime_key(key, &normalized);
                     }
                     "FINAL_PASS_MODE" | "CODESCRIBE_FINAL_PASS_MODE" => {
                         let normalized = value.trim().to_ascii_lowercase();
@@ -1624,7 +1630,14 @@ impl Config {
     /// live engine selection. A leftover `CODESCRIBE_STT_ENGINE=auto` in `.env`
     /// must not win over an explicit `speech.engine.stt_engine` write.
     pub fn reconcile_stt_runtime_key(key: &str, value: &str) {
-        let value = value.trim();
+        let normalized_engine = (key == "CODESCRIBE_STT_ENGINE")
+            .then(|| normalize_stt_engine(value))
+            .flatten();
+        if key == "CODESCRIBE_STT_ENGINE" && normalized_engine.is_none() {
+            warn!("Refused retired or unknown STT engine selector: {value}");
+            return;
+        }
+        let value = normalized_engine.as_deref().unwrap_or_else(|| value.trim());
         if value.is_empty() {
             return;
         }

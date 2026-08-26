@@ -432,15 +432,35 @@ fn test_engine_tab_stt_engine_env_default() {
 
 #[test]
 #[serial]
-fn test_engine_tab_stt_engine_env_onnx() {
-    let previous = std::env::var("CODESCRIBE_STT_ENGINE").ok();
-    unsafe { std::env::set_var("CODESCRIBE_STT_ENGINE", "onnx") };
-    let engine = std::env::var("CODESCRIBE_STT_ENGINE").unwrap_or_else(|_| "candle".to_string());
-    assert_eq!(engine, "onnx", "STT engine should reflect env var");
-    match previous {
-        Some(value) => unsafe { std::env::set_var("CODESCRIBE_STT_ENGINE", value) },
-        None => unsafe { std::env::remove_var("CODESCRIBE_STT_ENGINE") },
-    }
+fn test_retired_onnx_setting_is_rejected_while_silero_remains_available() {
+    let _tmp = setup_test_env();
+    let path = UserSettings::settings_path();
+    fs::create_dir_all(path.parent().expect("settings parent")).expect("create settings parent");
+    fs::write(
+        &path,
+        r#"{
+  "schema_version": 3,
+  "speech": { "engine": { "stt_engine": "onnx" } }
+}"#,
+    )
+    .expect("write retired ONNX setting");
+
+    let mut settings = UserSettings::load();
+    assert_eq!(
+        settings.stt_engine.as_deref(),
+        Some("apple"),
+        "retired ONNX settings must resolve to the product default"
+    );
+    settings.set_string("CODESCRIBE_STT_ENGINE", "onnx");
+    assert_eq!(settings.stt_engine.as_deref(), Some("apple"));
+
+    let silero_surface = std::any::type_name::<codescribe_core::vad::SileroVad>();
+    assert!(silero_surface.ends_with("SileroVad"));
+    assert!(
+        codescribe_core::vad::embedded::is_embedded_available()
+            || codescribe_core::vad::user_model_path().exists(),
+        "Silero VAD must remain compiled and available after ONNX Whisper retirement"
+    );
 }
 
 #[test]

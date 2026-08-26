@@ -2008,7 +2008,7 @@ final class SettingsViewModel: ObservableObject {
   var sttEngineId: String {
     let raw = (settings.sttEngine ?? "apple").lowercased()
     switch raw {
-    case "auto", "apple", "whisper", "candle", "onnx": return raw == "candle" ? "whisper" : raw
+    case "auto", "apple", "whisper", "candle": return raw == "candle" ? "whisper" : raw
     default: return "apple"
     }
   }
@@ -2045,7 +2045,6 @@ final class SettingsViewModel: ObservableObject {
     switch id.lowercased() {
     case "auto": normalized = "auto"
     case "whisper", "candle": normalized = "whisper"
-    case "onnx": normalized = "onnx"
     default: normalized = "apple"
     }
     settings.sttEngine = normalized

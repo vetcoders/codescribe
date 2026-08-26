@@ -60,16 +60,16 @@ Recording stopped before a transcript was available.
 
 **Schema v3 — speech.engine keys that actually matter:**
 
-| JSON path                       | Internal field          | Wire / env              | Values                                               | Required for “simple works”? |
-| ------------------------------- | ----------------------- | ----------------------- | ---------------------------------------------------- | ---------------------------- |
-| `speech.language`               | `whisper_language`      | `WHISPER_LANGUAGE`      | `pl`, `en`, …                                        | Yes (you have `pl` ✓)        |
-| `speech.engine.stt_engine`      | `stt_engine`            | `CODESCRIBE_STT_ENGINE` | `auto` \| `apple` \| `whisper` \| `candle` \| `onnx` | **Yes — pick explicit**      |
-| `speech.engine.final_pass_mode` | `final_pass_mode`       | `FINAL_PASS_MODE`       | legacy migration token                               | No                           |
-| `speech.engine.whisper_model`   | `whisper_model`         | `WHISPER_MODEL`         | model id                                             | If engine = whisper          |
-| `speech.engine.mode`            | maps to `use_local_stt` | legacy                  | `local_whisper` / `cloud_whisper`                    | Optional legacy              |
-| `speech.engine.local_model`     | `local_model`           | path                    | model path                                           | Optional                     |
-| `speech.formatting.level`       | `formatting_level`      | —                       | `off`/`correction`/`smart`/`max`                     | AI format (not STT)          |
-| `speech.emission.*`             | buffer/typing           | Voice Lab               | numbers                                              | Overlay pacing only          |
+| JSON path                       | Internal field          | Wire / env              | Values                                     | Required for “simple works”? |
+| ------------------------------- | ----------------------- | ----------------------- | ------------------------------------------ | ---------------------------- |
+| `speech.language`               | `whisper_language`      | `WHISPER_LANGUAGE`      | `pl`, `en`, …                              | Yes (you have `pl` ✓)        |
+| `speech.engine.stt_engine`      | `stt_engine`            | `CODESCRIBE_STT_ENGINE` | `auto` \| `apple` \| `whisper` \| `candle` | **Yes — pick explicit**      |
+| `speech.engine.final_pass_mode` | `final_pass_mode`       | `FINAL_PASS_MODE`       | legacy migration token                     | No                           |
+| `speech.engine.whisper_model`   | `whisper_model`         | `WHISPER_MODEL`         | model id                                   | If engine = whisper          |
+| `speech.engine.mode`            | maps to `use_local_stt` | legacy                  | `local_whisper` / `cloud_whisper`          | Optional legacy              |
+| `speech.engine.local_model`     | `local_model`           | path                    | model path                                 | Optional                     |
+| `speech.formatting.level`       | `formatting_level`      | —                       | `off`/`correction`/`smart`/`max`           | AI format (not STT)          |
+| `speech.emission.*`             | buffer/typing           | Voice Lab               | numbers                                    | Overlay pacing only          |
 
 STT authentication follows endpoint ownership: `api.openai.com` and
 `api.libraxis.cloud` use `Authorization: Bearer`; loopback servers require no
@@ -186,9 +186,9 @@ Code: `core/config/loader.rs` · `core/stt/mod.rs::selected_engine()` · `reconc
 
 **Final pass vs layered (orthogonal):**
 
-| Setting               | Env                                | Default    | Role                                                                                                                                 |
-| --------------------- | ---------------------------------- | ---------- | ------------------------------------------------------------------------------------------------------------------------------------ |
-| Final pass            | `FINAL_PASS_MODE`                  | legacy     | No effect on normal stop; retained only for settings migration; explicit non-Overlay file surfaces own whole-file inference          |
+| Setting               | Env                                | Default    | Role                                                                                                                          |
+| --------------------- | ---------------------------------- | ---------- | ----------------------------------------------------------------------------------------------------------------------------- |
+| Final pass            | `FINAL_PASS_MODE`                  | legacy     | No effect on normal stop; retained only for settings migration; explicit non-Overlay file surfaces own whole-file inference   |
 | Layered compatibility | `CODESCRIBE_LAYERED_TRANSCRIPTION` | mode-owned | Local Power + Apple/Auto: unset or `phase1` arms; explicit off/invalid degrades. No parallel VAD/scheduler live route remains |
 
 Normal capture ignores legacy final-pass routing and never decodes/uploads the
@@ -201,11 +201,11 @@ whole-file inference stays outside the daily Overlay on explicit file surfaces.
 
 ### 3.1 Hotkeys (start/stop recording)
 
-| Front entry                     | Binding (your settings)             | Bridge / OS                      | Controller                                                 | Backend                                      |
-| ------------------------------- | ----------------------------------- | -------------------------------- | ---------------------------------------------------------- | -------------------------------------------- |
+| Front entry                     | Binding (your settings)             | Bridge / OS                      | Controller                                                       | Backend                                      |
+| ------------------------------- | ----------------------------------- | -------------------------------- | ---------------------------------------------------------------- | -------------------------------------------- |
 | Hold Fn (dictation)             | `mode_bindings.dictation = hold_fn` | `CodescribeHotkeys` + CGEventTap | `RecordingController::handle_hotkey_event` → `handle_hold_event` | recorder + streaming session + `core/stt::*` |
-| Double Left Option (formatting) | `formatting = double_left_option`   | same                             | hold/toggle + force AI format path                         | STT same, then `core/llm` formatting         |
-| Double Right Option (assistive) | `assistive = double_right_option`   | same                             | assistive session                                          | STT same, then agent lane                    |
+| Double Left Option (formatting) | `formatting = double_left_option`   | same                             | hold/toggle + force AI format path                               | STT same, then `core/llm` formatting         |
+| Double Right Option (assistive) | `assistive = double_right_option`   | same                             | assistive session                                                | STT same, then agent lane                    |
 
 **Stop** drains the live recorder/session and delivers its committed transcript
 (paste / overlay / agent). It does not upload the completed WAV. Whole-file
@@ -227,24 +227,24 @@ file-pass belongs only to explicit non-Overlay file surfaces.
 
 ### 3.3 Dictation overlay / tray
 
-| Front                         | UniFFI                                             | Handler                                                        |
-| ----------------------------- | -------------------------------------------------- | -------------------------------------------------------------- |
-| Committed transcript truth    | `CsTranscriptProjectionEvent`                     | ledger receipt → reducer → Transcript Bus → listener projection |
+| Front                         | UniFFI                                             | Handler                                                         |
+| ----------------------------- | -------------------------------------------------- | --------------------------------------------------------------- |
+| Committed transcript truth    | `CsTranscriptProjectionEvent`                      | ledger receipt → reducer → Transcript Bus → listener projection |
 | Ephemeral/raw observations    | remaining `CsTranscriptionListener` text callbacks | preview paint or diagnostics only; never delivery writers       |
-| PCM sideband evidence         | `EngineEventWire::SidebandEvidence`                | Silero ingress → IPC → bridge diagnostic; reducer no-op          |
-| Recording service object      | `CodescribeHotkeys`                                | shared controller recording API                                |
-| Tray status glyphs            | `CodescribeTrayStatus` + listener                  | controller tray payload                                        |
-| Auto-paste / auto-format tray | `set_auto_paste_enabled` / `set_auto_format_level` | `UserSettings` + live toggles                                  |
+| PCM sideband evidence         | `EngineEventWire::SidebandEvidence`                | Silero ingress → IPC → bridge diagnostic; reducer no-op         |
+| Recording service object      | `CodescribeHotkeys`                                | shared controller recording API                                 |
+| Tray status glyphs            | `CodescribeTrayStatus` + listener                  | controller tray payload                                         |
+| Auto-paste / auto-format tray | `set_auto_paste_enabled` / `set_auto_format_level` | `UserSettings` + live toggles                                   |
 
 ### 3.4 STT engine dispatch (the nit)
 
-| Call site             | When             | Function / transport                                             | Engine rule                                                           |
-| --------------------- | ---------------- | ---------------------------------------------------------------- | --------------------------------------------------------------------- |
-| Live Layer 0          | during recording | Apple progressive                                                | first PCM-pinned observation; text is revisable by same-span evidence |
-| Live Layer 1 typed    | during recording | in-process / sidecar / remote tail provider on ~5 Apple segments | exact-PCM outcome rewrites pending baseline before final              |
-| Live Layer 1 unbound  | after recording  | full-session Voice Lab WSS candidate                             | evidence only; typed refusal if it proposes mutation                  |
-| Live capture epoch    | device open/reopen | `StreamingRecorder` checked session-local counter              | issued only after successful open; engines only observe it            |
-| Explicit Retranscribe | operator action  | local completed-file decode or cloud multipart                   | may replace the selected artifact, never the live canvas              |
+| Call site             | When               | Function / transport                                             | Engine rule                                                           |
+| --------------------- | ------------------ | ---------------------------------------------------------------- | --------------------------------------------------------------------- |
+| Live Layer 0          | during recording   | Apple progressive                                                | first PCM-pinned observation; text is revisable by same-span evidence |
+| Live Layer 1 typed    | during recording   | in-process / sidecar / remote tail provider on ~5 Apple segments | exact-PCM outcome rewrites pending baseline before final              |
+| Live Layer 1 unbound  | after recording    | full-session Voice Lab WSS candidate                             | evidence only; typed refusal if it proposes mutation                  |
+| Live capture epoch    | device open/reopen | `StreamingRecorder` checked session-local counter                | issued only after successful open; engines only observe it            |
+| Explicit Retranscribe | operator action    | local completed-file decode or cloud multipart                   | may replace the selected artifact, never the live canvas              |
 
 Physical occurrence identity is exactly
 `(session, capture_epoch, sample_start, sample_end)`. Observation identity adds
@@ -261,8 +261,7 @@ disjoint PCM ranges remain distinct occurrences and survive.
 
 Automatic formatting is one occurrence-bound observer on the Apple live path,
 not a second transcript pass. It is scheduled only after a bounded execution
-permit owns the exact existing `(session, capture_epoch, sample_start,
-sample_end)` and every earlier scheduled automatic observer for that occurrence
+permit owns the exact existing `(session, capture_epoch, sample_start, sample_end)` and every earlier scheduled automatic observer for that occurrence
 has returned. Its sole product route is `OccurrenceLabelProposal` ->
 `EngineEvent::OccurrenceLabelProposal` -> `PresentationEmitter` /
 `TranscriptReducer` -> `AcousticLedger::admit(Formatter)`. Applied rewrites
@@ -275,8 +274,7 @@ not schedule Formatter.
 travels through `LedgerMutation` / `LedgerSeal` receipts and the occurrence-
 keyed reducer into `TranscriptBus::publish_revision`. Phrase timing remains
 `phrase`; the system never divides provider segment time evenly into invented
-word pins. The ledger projection orders `(capture_epoch, sample_start,
-sample_end)` lexicographically and rejects loss, addition, or reorder before
+word pins. The ledger projection orders `(capture_epoch, sample_start, sample_end)` lexicographically and rejects loss, addition, or reorder before
 delivery. Preview is overlay-only and is discarded at terminal boundaries.
 
 Active W2-04 Agent leases are read directly as a bounded 120-second snapshot.
@@ -301,7 +299,6 @@ exercised only when its typed receipt says `armed=true` and `submitted>0`.
 
 ```text
 selected_engine()
-  ├── Onnx   → onnx_adapter
   ├── Apple  → LIVE: run_apple_live_only  |  ADAPTER: run_apple_or_whisper
   └── Candle → whisper singleton (label: local_whisper)
 ```
@@ -316,12 +313,12 @@ Before the controller opens a microphone (`start_toggle_recording`, hold-start
 task) it evaluates `controller::admission::evaluate_live_admission` on the
 selected settings generation, in this order, and stops at the first blocker:
 
-| Order | Blocker code | Cause | Operator action |
-| --- | --- | --- | --- |
-| 1 | `admission_capture_device_unavailable` | cpal cannot resolve the configured/default input | plug/select an input device |
-| 2 | `admission_calibration_missing` / `_refused` / `_no_profile` / `_unusable` | `energy-calibration.json` absent, tampered, expired/future-dated, internally rollbacked, or not measured on this capture generation | Settings › Audio › **Calibrate microphone** (~10 s of normal speech) |
-| 3 | `admission_seal_lane_disarmed` | `CODESCRIBE_SILERO_FUSION` off → no occurrence can qualify, no utterance can commit | set `CODESCRIBE_SILERO_FUSION=1` |
-| 4 | `admission_seal_vad_unavailable` | Silero ORT session refused to load | reinstall / check the embedded VAD asset |
+| Order | Blocker code                                                               | Cause                                                                                                                               | Operator action                                                      |
+| ----- | -------------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------- | -------------------------------------------------------------------- |
+| 1     | `admission_capture_device_unavailable`                                     | cpal cannot resolve the configured/default input                                                                                    | plug/select an input device                                          |
+| 2     | `admission_calibration_missing` / `_refused` / `_no_profile` / `_unusable` | `energy-calibration.json` absent, tampered, expired/future-dated, internally rollbacked, or not measured on this capture generation | Settings › Audio › **Calibrate microphone** (~10 s of normal speech) |
+| 3     | `admission_seal_lane_disarmed`                                             | `CODESCRIBE_SILERO_FUSION` off → no occurrence can qualify, no utterance can commit                                                 | set `CODESCRIBE_SILERO_FUSION=1`                                     |
+| 4     | `admission_seal_vad_unavailable`                                           | Silero ORT session refused to load                                                                                                  | reinstall / check the embedded VAD asset                             |
 
 A refusal writes nothing to the Transcript Bus, opens no stream, resets the
 session to Idle and reaches the overlay as one `admission_refused` warning

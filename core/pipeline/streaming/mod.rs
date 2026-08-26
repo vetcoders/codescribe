@@ -20,8 +20,6 @@ pub(crate) mod session;
 pub(crate) mod silero_fusion;
 /// Session stream-log sink (`CODESCRIBE_STREAM_LOG*` env contract).
 pub(crate) mod stream_log;
-/// Env-tunable runtime knobs shared across these modules.
-pub(crate) mod tuning;
 
 pub use apple_live_session::APPLE_FINAL_OVERLAP_WARNING_CODE;
 pub use session::{

@@ -1,9 +1,8 @@
 //! Speech-to-text engine router.
 //!
-//! Three backends live behind one call surface — Candle Whisper, ONNX Whisper,
-//! and Apple SpeechAnalyzer — selected by `CODESCRIBE_STT_ENGINE`. Unset or
-//! `auto` resolves through [`default_engine`]: Apple when its runtime *and*
-//! bridge are both reachable, otherwise Candle.
+//! Two backends live behind one call surface — Candle Whisper and Apple
+//! SpeechAnalyzer. The automatic policy resolves through [`default_engine`]:
+//! Apple when its runtime *and* bridge are both reachable, otherwise Candle.
 //!
 //! ## The lane split (product truth, not an implementation detail)
 //!
@@ -20,13 +19,8 @@
 pub mod active_names;
 /// Apple SpeechAnalyzer live STT bridge (letter-level canvas; live lane only).
 pub mod apple_stt;
-/// ONNX Whisper runtime selected via `CODESCRIBE_STT_ENGINE=onnx`.
-pub mod onnx_adapter;
 /// Explicit cloud/loopback STT topic token. Client-owned; never from audio.
 pub mod request_vocabulary;
-/// Serialized STT request scheduler: live, commit, and refine lanes with
-/// supersede semantics for stale requests and thermal-pressure backoff.
-pub mod scheduler;
 /// Layer-1 on-the-go Whisper tail-patch helpers for append-only gap fill.
 pub mod tail_patcher;
 /// Typed, time-ranged provider seam for Whisper tail-patch windows.
@@ -38,7 +32,6 @@ pub mod whisper;
 mod fleet_red_contracts;
 
 use crate::pipeline::contracts::RawTranscript;
-use std::sync::OnceLock;
 use tracing::warn;
 
 /// Which STT backend the router dispatches to.
@@ -47,8 +40,6 @@ enum SttEngine {
     /// Candle Whisper — the local model. Only engine that honours an
     /// `initial_prompt`, and the only legal file final-pass route.
     Candle,
-    /// ONNX Whisper runtime.
-    Onnx,
     /// Apple SpeechAnalyzer via the external bridge; live lane only.
     Apple,
 }
@@ -68,8 +59,8 @@ fn default_engine() -> SttEngine {
 
 // ── Engine-level router ──────────────────────────────────────────────────────
 //
-// These functions dispatch to candle, ONNX, or Apple SpeechAnalyzer based on
-// `CODESCRIBE_STT_ENGINE` plus the default auto policy. They match the call semantics of
+// These functions dispatch to Candle or Apple SpeechAnalyzer under the default
+// auto policy. They match the call semantics of
 // `LocalWhisperEngine::transcribe_with_language` (chunk) and
 // `transcribe_long_with_language` (utterance/correction).
 //
@@ -133,23 +124,10 @@ pub fn preflight_apple_live_ready() -> anyhow::Result<()> {
     })
 }
 
-/// Warn once that a domain-vocabulary `initial_prompt` is being dropped —
-/// only Candle Whisper can consume one.
-fn warn_initial_prompt_unsupported(engine: &str) {
-    /// Process-once latch so repeated fallbacks do not flood tracing logs.
-    static WARNED: OnceLock<()> = OnceLock::new();
-    WARNED.get_or_init(|| {
-        warn!(
-            "STT initial_prompt is supported only by Candle Whisper; {} route will ignore it.",
-            engine
-        );
-    });
-}
-
 // FORGOTTEN-GEM(vc-prune 2026-06-10): parked code, intentionally kept —
 // the whole synchronous one-shot transcription contract (transcribe_chunk /
-// try_transcribe_long_with_segments across whisper/apple/onnx providers) is
-// parked: runtime uses the scheduler+streaming path. Kept as the documented
+// try_transcribe_long_with_segments across Whisper/Apple providers) is parked:
+// runtime uses the streaming session path. Kept as the documented
 // provider contract for CLI/batch revival; operator decides revive-or-delete.
 /// Candle chunk transcription through the Whisper singleton.
 #[allow(dead_code)]
@@ -203,7 +181,6 @@ fn candle_try_transcribe_long_with_segments(
 /// Initialize whichever STT engine is active by env.
 pub fn init_active_engine() -> anyhow::Result<()> {
     match default_engine() {
-        SttEngine::Onnx => onnx_adapter::init(),
         SttEngine::Apple => apple_stt::init(),
         SttEngine::Candle => whisper::init(),
     }
@@ -228,10 +205,6 @@ pub fn transcribe_file_verdict(
     use crate::pipeline::contracts::FileTranscriptionOptions;
 
     match default_engine() {
-        SttEngine::Onnx => {
-            // ONNX has no dedicated file-verdict path; use Candle Whisper for file final-pass.
-            whisper::transcribe_file_verdict(path, language, FileTranscriptionOptions::default())
-        }
         SttEngine::Apple => {
             // Do not route file final through Apple — even as "primary with Whisper
             // fallback". Apple file STT is not a product final path.
@@ -285,20 +258,6 @@ pub fn prewarm_active_engine() -> anyhow::Result<()> {
             }
             Ok(())
         }
-        SttEngine::Onnx => {
-            onnx_adapter::init()?;
-            match onnx_adapter::transcribe_long_with_segments(
-                &warmup,
-                WARMUP_SAMPLE_RATE,
-                Some("en"),
-            ) {
-                Ok(_) => tracing::info!("STT active-engine warmup inference complete (onnx)"),
-                Err(error) => {
-                    tracing::warn!("STT ONNX warmup inference failed (non-fatal): {error:#}")
-                }
-            }
-            Ok(())
-        }
         SttEngine::Candle => {
             whisper::init()?;
             match candle_transcribe_long_with_segments(&warmup, WARMUP_SAMPLE_RATE, Some("en")) {
@@ -334,7 +293,6 @@ pub(crate) fn transcribe_chunk(
     language: Option<&str>,
 ) -> anyhow::Result<String> {
     match default_engine() {
-        SttEngine::Onnx => onnx_adapter::transcribe_chunk(audio, sample_rate, language),
         SttEngine::Apple => run_apple_live_only("transcribe_chunk", || {
             apple_stt::transcribe_chunk(audio, sample_rate, language)
         }),
@@ -349,45 +307,10 @@ pub(crate) fn transcribe_long_with_segments(
     language: Option<&str>,
 ) -> anyhow::Result<RawTranscript> {
     match default_engine() {
-        SttEngine::Onnx => {
-            onnx_adapter::transcribe_long_with_segments(audio, sample_rate, language)
-        }
         SttEngine::Apple => run_apple_live_only("transcribe_long_with_segments", || {
             apple_stt::transcribe_long_with_segments(audio, sample_rate, language)
         }),
         SttEngine::Candle => candle_transcribe_long_with_segments(audio, sample_rate, language),
-    }
-}
-
-/// Transcribe long audio while seeding Candle Whisper with a per-call domain
-/// vocabulary prompt. Non-Candle engines keep their existing behavior.
-pub(crate) fn transcribe_long_with_segments_with_initial_prompt(
-    audio: &[f32],
-    sample_rate: u32,
-    language: Option<&str>,
-    initial_prompt: Option<String>,
-) -> anyhow::Result<RawTranscript> {
-    if initial_prompt.is_none() {
-        return transcribe_long_with_segments(audio, sample_rate, language);
-    }
-
-    match default_engine() {
-        SttEngine::Onnx => {
-            warn_initial_prompt_unsupported("ONNX");
-            onnx_adapter::transcribe_long_with_segments(audio, sample_rate, language)
-        }
-        SttEngine::Apple => {
-            warn_initial_prompt_unsupported("Apple SpeechAnalyzer");
-            run_apple_live_only("transcribe_long_with_segments_with_initial_prompt", || {
-                apple_stt::transcribe_long_with_segments(audio, sample_rate, language)
-            })
-        }
-        SttEngine::Candle => candle_transcribe_long_with_segments_with_initial_prompt(
-            audio,
-            sample_rate,
-            language,
-            initial_prompt,
-        ),
     }
 }
 
@@ -399,9 +322,6 @@ pub(crate) fn try_transcribe_long_with_segments(
     language: Option<&str>,
 ) -> anyhow::Result<RawTranscript> {
     match default_engine() {
-        SttEngine::Onnx => {
-            onnx_adapter::try_transcribe_long_with_segments(audio, sample_rate, language)
-        }
         SttEngine::Apple => run_apple_live_only("try_transcribe_long_with_segments", || {
             apple_stt::transcribe_long_with_segments(audio, sample_rate, language)
         }),

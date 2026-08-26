@@ -645,10 +645,8 @@ impl CodescribeHotkeys {
     /// Start or replace the process-global hotkey listener.
     pub async fn start(&self) -> Result<(), CsError> {
         application_runtime::run(async move {
-            // Install the process-wide macOS thermal observer once at runtime
-            // bootstrap so STT duty-cycle throttling (core/stt/scheduler.rs) sees
-            // real thermal pressure. Without this the scheduler always reads
-            // ThermalLevel::Nominal and never backs off during hot/long sessions.
+            // Install the process-wide macOS thermal observer at runtime
+            // bootstrap so tray state and diagnostics reflect device pressure.
             // Idempotent: install_thermal_probe guards its own observer singleton.
             codescribe::os::thermal::install_thermal_probe();
 

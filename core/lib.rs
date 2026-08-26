@@ -78,9 +78,11 @@ pub mod pipeline;
 /// Transcript quality: overlay scoring, the qube daemon and its report, and the
 /// teacher merge between live and Whisper text.
 pub mod quality;
+/// Neutral process-runtime state shared with platform adapters.
+pub mod runtime;
 /// Conversation state tracking and voice-chat history helpers.
 pub mod state;
-/// Speech-to-text engine router (Candle, ONNX, Apple live backends).
+/// Speech-to-text engine router (Candle and Apple live backends).
 pub mod stt;
 /// Transcript tagging helpers for paste-delivery wrappers.
 pub mod transcript_tagging;

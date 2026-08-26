@@ -159,8 +159,7 @@ struct EnginePanel: View {
 
   // MARK: Engine controls
 
-  /// Selectable engines. "onnx" is deliberately NOT exposed (experimental,
-  /// frozen); "auto" defers to the core policy (Apple live when available).
+  /// Selectable engines. "auto" defers to the core policy (Apple live when available).
   private static let sttEngineOptions: [(id: String, label: String)] = [
     ("auto", "Auto"),
     ("apple", "Apple (live)"),

@@ -1167,7 +1167,7 @@ struct SpeechV2 {
 }
 
 /// Which recognizer runs and how. `mode` is the legacy local/cloud switch;
-/// `stt_engine` is the newer three-way selector that supersedes it. Both are
+/// `stt_engine` is the newer product selector that supersedes it. Both are
 /// kept because existing files on disk still carry the former.
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 #[serde(default)]
@@ -1198,6 +1198,20 @@ struct SpeechEngineV2 {
     asr_mode: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     gateway_session_url: Option<String>,
+}
+
+/// Normalize the only accepted local STT engine settings.
+///
+/// `candle` is the low-level spelling of the user-facing `whisper` route.
+/// Retired or unknown selectors are rejected rather than kept as dormant
+/// compatibility values that a future router could accidentally revive.
+pub(crate) fn normalize_stt_engine(value: &str) -> Option<String> {
+    match value.trim().to_ascii_lowercase().as_str() {
+        "auto" => Some("auto".to_string()),
+        "apple" => Some("apple".to_string()),
+        "whisper" | "candle" => Some("whisper".to_string()),
+        _ => None,
+    }
 }
 
 /// LLM post-processing of the transcript: whether it runs, how aggressively,
@@ -1759,8 +1773,8 @@ impl UserSettings {
                 .speech
                 .as_ref()
                 .and_then(|s| s.engine.as_ref())
-                .and_then(|e| e.stt_engine.clone())
-                .filter(|s| !s.trim().is_empty())
+                .and_then(|e| e.stt_engine.as_deref())
+                .and_then(normalize_stt_engine)
                 .or_else(|| Some("apple".to_string())),
             final_pass_mode: v2
                 .speech
@@ -2222,7 +2236,15 @@ impl UserSettings {
             "SOUND_NAME" => self.sound_name = Some(value.to_owned()),
             "WHISPER_MODEL" => self.whisper_model = Some(value.to_owned()),
             "ONBOARDING_MODE" => self.onboarding_mode = Some(value.to_owned()),
-            "CODESCRIBE_STT_ENGINE" => self.stt_engine = Some(value.to_owned()),
+            "CODESCRIBE_STT_ENGINE" => match normalize_stt_engine(value) {
+                Some(normalized) => self.stt_engine = Some(normalized),
+                None => {
+                    warn!(
+                        "Rejected STT engine write (expected auto|apple|whisper|candle): {value}"
+                    );
+                    return;
+                }
+            },
             "FINAL_PASS_MODE" | "CODESCRIBE_FINAL_PASS_MODE" => {
                 let normalized = value.trim().to_ascii_lowercase();
                 match normalized.as_str() {

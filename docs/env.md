@@ -60,7 +60,6 @@ Poniższe działają „same z siebie” — jeśli ich nie ustawisz, aplikacja 
 
 **Streaming (chunky)**
 
-- `CODESCRIBE_MAX_INFERENCE_CONCURRENCY` – domyślnie `1` (HOT RELOADED; clamp `1..4`)
 - `CODESCRIBE_BUFFER_DELAY_MS` – domyślnie `280` (HOT RELOADED)
 - `CODESCRIBE_TYPING_CPS` – domyślnie `90` (HOT RELOADED)
 - `CODESCRIBE_EMIT_WORDS_MAX` – max słów na tick (buffered), domyślnie `2` (HOT RELOADED)
@@ -166,7 +165,7 @@ i runtime nie może znaleźć Whispera przez cache / config:
 - `USE_LOCAL_STT` (RESTART NEEDED)
 - `LOCAL_MODEL`, `WHISPER_MODEL` (RESTART NEEDED)
 - `WHISPER_LANGUAGE` (HOT RELOADED; default `auto`; applies to the next capture. `auto` leaves language detection to Whisper for mixed-language dictation.)
-- `CODESCRIBE_WHISPER_INITIAL_PROMPT` (RESTART NEEDED; alias legacy: `WHISPER_INITIAL_PROMPT`; ignorowane przez ONNX)
+- `CODESCRIBE_WHISPER_INITIAL_PROMPT` (RESTART NEEDED; alias legacy: `WHISPER_INITIAL_PROMPT`)
 - `STT_ENDPOINT`, `STT_API_KEY` (RESTART NEEDED)
 - `FINAL_PASS_MODE` (legacy; `always|smart|off`; alias `CODESCRIBE_FINAL_PASS_MODE`) — zachowany do migracji ustawień, ale zwykły stop nie wykonuje już żadnego file-passu. Pełny plik trafia do STT wyłącznie przez jawne powierzchnie Dictionary/Teacher/Voice Lab/CLI; daily Overlay nie ma file-pass writera. Live refinement wybiera osobny `CODESCRIBE_LAYERED_TRANSCRIPTION`; słownik/lexicon zawsze działa w postprocess.
 - `CODESCRIBE_LAYERED_TRANSCRIPTION` (HOT RELOADED; promoted compatibility override) — Local Power + Apple/Auto uzbraja ograniczoną obserwację Whisper Layer 1 na retained PCM wewnątrz normalnej sesji Apple-ledger przy braku wartości lub `phase1`; jawne `off`/`0`/`false`/`no` albo błędny token daje named degraded state. Apple-only nie uzbraja lane. Ten token nie wybiera bezpośredniego silnika, drugiego dispatchera ani osobnej ścieżki mikrofonu. Per-take prawdą jest `tail_patch_session_receipt`, nie stan UI. Final pass pozostaje ortogonalny.
@@ -180,7 +179,6 @@ i runtime nie może znaleźć Whispera przez cache / config:
 
 ### Streaming / VAD / buffer
 
-- `CODESCRIBE_MAX_INFERENCE_CONCURRENCY` (HOT RELOADED; clamp `1..4`)
 - `CODESCRIBE_BUFFER_DELAY_MS` (HOT RELOADED)
 - `CODESCRIBE_TYPING_CPS` (HOT RELOADED)
 - VAD internals: hardcoded (no env knobs)

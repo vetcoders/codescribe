@@ -416,6 +416,19 @@ final class SettingsTruthTests: XCTestCase {
       ])
   }
 
+  func testRetiredOnnxEngineSettingFallsBackToTheProductDefault() {
+    var persisted = CsSettings.sample
+    persisted.sttEngine = "onnx"
+    let model = SettingsViewModel(
+      engine: MockSettingsEngine(settingsLoader: { persisted })
+    )
+
+    model.refresh()
+
+    XCTAssertEqual(model.sttEngineId, "apple")
+    XCTAssertEqual(model.sttEngineLabel, "Apple (live)")
+  }
+
   func testLocalWhisperRuntimeTruthRequiresModelAndExactReadback() {
     XCTAssertEqual(
       resolveLocalWhisperRuntimeState(
