@@ -29,7 +29,7 @@ final class OverlayResizeHitTests: XCTestCase {
 
   func testApplyKeepsMinSizeWhenDraggingInward() {
     let start = NSRect(x: 100, y: 80, width: 400, height: 320)
-    let minSize = NSSize(width: 320, height: 300)
+    let minSize = DictationOverlayWindow.minSize
     let crushed = OverlayResizeHit.apply(
       edge: .right,
       start: start,
@@ -43,7 +43,7 @@ final class OverlayResizeHitTests: XCTestCase {
 
   func testLeftAndBottomKeepTheOppositeEdgePinned() {
     let start = NSRect(x: 100, y: 80, width: 400, height: 320)
-    let minSize = NSSize(width: 320, height: 300)
+    let minSize = DictationOverlayWindow.minSize
     let left = OverlayResizeHit.apply(
       edge: .left,
       start: start,

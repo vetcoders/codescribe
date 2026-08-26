@@ -128,6 +128,15 @@ struct OverlayPolicySnapshot: Equatable {
 enum OverlayActionPresentation {
   static let sendTitle = "To Agent"
   static let sendHelp = "Send transcript to the agent"
+  static let finishTitle = "Finish"
+  static let finishHelp = "Stop capture and seal the take"
+}
+
+/// Compact chrome primary act for the slim overlay. Secondary actions live in
+/// the attached menu; CloseDot remains the always-visible dismiss control.
+enum OverlayPrimaryActionKind: Equatable {
+  case finish
+  case insert
 }
 
 /// Dictionary/history helper follows Settings `asr_mode`. Apple-only has no helper.
@@ -632,6 +641,45 @@ final class OverlayState: ObservableObject {
 
   var autoPasteAccessibilityValue: String {
     autoPasteEnabled ? "On" : "Off"
+  }
+
+  /// One primary act for the slim chrome combo control. `nil` for terminal
+  /// outcomes that only need Close (no-speech / error).
+  var primaryActionKind: OverlayPrimaryActionKind? {
+    switch mode {
+    case .listening: return .finish
+    case .formatted: return .insert
+    case .noSpeech, .error: return nil
+    }
+  }
+
+  var primaryActionTitle: String {
+    switch primaryActionKind {
+    case .finish: return OverlayActionPresentation.finishTitle
+    case .insert: return insertActionPresentation.title
+    case nil: return ""
+    }
+  }
+
+  var primaryActionHelp: String {
+    switch primaryActionKind {
+    case .finish: return OverlayActionPresentation.finishHelp
+    case .insert: return insertActionPresentation.help
+    case nil: return ""
+    }
+  }
+
+  /// Footer may whisper canvas honesty only when it adds information the
+  /// single status pill does not already carry (avoids recording/waiting stacks).
+  var showsFooterHonesty: Bool {
+    mode == .listening
+      && !transcribing
+      && !isFinalPass
+      && liveText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+  }
+
+  var footerHonestyText: String {
+    audioReady ? "waiting for words" : "waiting for audio"
   }
 
   // MARK: Recording lifecycle (engine-backed; no-op when engine is absent)

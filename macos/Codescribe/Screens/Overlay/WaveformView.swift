@@ -56,11 +56,14 @@ struct WaveformView: View {
   var indicatorMode: CsIndicatorMode = .hold
   /// Real capture level, when the engine streams it. nil → ambient animation.
   var meter: AudioLevelMeter? = nil
+  /// Chrome placement uses a tighter strip so the waveform can live in the
+  /// primary bar without competing with transcript words.
+  var compact: Bool = false
 
-  private let barWidth: CGFloat = 2
-  private let gap: CGFloat = 3
-  private let maxBarHeight: CGFloat = 12
-  private let trackHeight: CGFloat = 16
+  private var barWidth: CGFloat { compact ? 1.5 : 2 }
+  private var gap: CGFloat { compact ? 2 : 3 }
+  private var maxBarHeight: CGFloat { compact ? 9 : 12 }
+  private var trackHeight: CGFloat { compact ? 12 : 16 }
   private let minScale: CGFloat = 0.35
 
   private var contentWidth: CGFloat {

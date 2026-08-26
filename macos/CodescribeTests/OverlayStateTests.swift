@@ -1268,13 +1268,12 @@ final class OverlayStateTests: XCTestCase {
     try png.write(to: dest)
     XCTAssertGreaterThan(png.count, 800)
 
-    // The middle of the action row is deliberately empty between To Agent and
-    // Close. Bright pixels here mean the native TextEditor escaped its body and
-    // painted transcript glyphs underneath the action controls (the observed
-    // live FINAL regression). Hairlines and glass stay below this threshold.
+    // Slim chrome: the bottom action layer is gone. Bright glyphs in the footer
+    // band mean the native TextEditor escaped its clipped body and painted into
+    // the engine whisper row. Hairlines and glass stay below this threshold.
     var leakedBrightPixels = 0
-    for x in 330..<520 {
-      for y in 35..<65 {
+    for x in 40..<580 {
+      for y in 6..<28 {
         guard let color = bitmap.colorAt(x: x, y: y)?.usingColorSpace(.deviceRGB) else {
           continue
         }
@@ -1287,8 +1286,57 @@ final class OverlayStateTests: XCTestCase {
     }
     XCTAssertLessThan(
       leakedBrightPixels, 5,
-      "formatted transcript painted into the action-row spacer"
+      "formatted transcript painted into the footer band"
     )
+  }
+
+  func testSlimChromePrimaryActionAndFooterHonesty() {
+    let listening = OverlayState()
+    listening.handleRecordingPreparing()
+    XCTAssertEqual(listening.primaryActionKind, .finish)
+    XCTAssertEqual(listening.primaryActionTitle, OverlayActionPresentation.finishTitle)
+    XCTAssertTrue(listening.showsFooterHonesty)
+    XCTAssertEqual(listening.footerHonestyText, "waiting for audio")
+
+    listening.handleRecordingStarted()
+    XCTAssertEqual(listening.footerHonestyText, "waiting for words")
+
+    projectText("hello", to: listening)
+    XCTAssertFalse(listening.showsFooterHonesty)
+
+    let formatted = OverlayState.previewFormatted()
+    XCTAssertEqual(formatted.primaryActionKind, .insert)
+    XCTAssertFalse(formatted.showsFooterHonesty)
+
+    let silent = OverlayState.previewNoSpeech()
+    XCTAssertNil(silent.primaryActionKind)
+  }
+
+  @MainActor
+  func testSlimOverlayListeningChromeRendersWithoutBottomActionMass() throws {
+    let state = OverlayState.previewListening()
+    let size = CGSize(width: 470, height: DictationOverlayWindow.minSize.height)
+    let hostingView = NSHostingView(
+      rootView: DictationOverlayView(state: state)
+        .frame(width: size.width, height: size.height)
+        .preferredColorScheme(.dark)
+    )
+    hostingView.frame = CGRect(origin: .zero, size: size)
+    hostingView.layoutSubtreeIfNeeded()
+    RunLoop.main.run(until: Date().addingTimeInterval(0.03))
+    guard let bitmap = hostingView.bitmapImageRepForCachingDisplay(in: hostingView.bounds) else {
+      return XCTFail("could not allocate the slim listening overlay bitmap")
+    }
+    hostingView.cacheDisplay(in: hostingView.bounds, to: bitmap)
+    guard let png = bitmap.representation(using: .png, properties: [:]) else {
+      XCTFail("could not render the slim listening overlay")
+      return
+    }
+    let dest = FileManager.default.temporaryDirectory
+      .appendingPathComponent("codescribe-slim-listening-overlay.png")
+    try png.write(to: dest)
+    XCTAssertGreaterThan(png.count, 800)
+    XCTAssertEqual(DictationOverlayWindow.minSize.height, 260)
   }
 
 }

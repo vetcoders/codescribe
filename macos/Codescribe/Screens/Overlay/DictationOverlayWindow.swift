@@ -94,26 +94,20 @@ private final class OverlayContentContainer: NSView {
 }
 
 enum DictationOverlayWindow {
-  /// Hard floor for the panel's content size — below this the glass chrome and
-  /// compact action row overlap. Enforced for user edge-drag (`minSize`/`contentMinSize`)
-  /// AND for every programmatic `setFrame` via `clamp(_:to:)` (AppKit does not
-  /// apply `minSize` to programmatic frames).
-  /// Height raised 250 → 300 so the live-transcript body keeps its reserved floor
-  /// (`DictationOverlayView.bodyMinHeight` = waveform block + ~3 transcript
-  /// lines) without the content column overflowing the window and squaring the
-  /// glass corners. U22 kept 300 in lockstep: the action row slimmed by ~16pt
-  /// and `bodyMinHeight` grew 114 → 130 by the same amount, so the chrome +
-  /// body sum is unchanged (and the view now carries a terminal window-frame
-  /// clip as the structural backstop). Width floor (320) is unchanged.
-  static let minSize = NSSize(width: 320, height: 300)
+  /// Hard floor for the panel's content size. Enforced for user edge-drag
+  /// (`minSize`/`contentMinSize`) AND for every programmatic `setFrame` via
+  /// `clamp(_:to:)` (AppKit does not apply `minSize` to programmatic frames).
+  /// Slim chrome cut: modeMeta + bottom action row removed; waveform moved into
+  /// the primary bar. Height 300 → 260 keeps `bodyMinHeight` (~3 transcript
+  /// lines) without the old action-layer mass. Width floor (320) is unchanged.
+  static let minSize = NSSize(width: 320, height: 260)
   /// First-launch content size (no persisted value yet). LANDSCAPE rectangle —
   /// operator spec: the resting state is a horizontal bar (waveform + a few
   /// transcript lines), never a portrait column. Resizing persists, so users
   /// who prefer a tall panel drag it once and keep it.
-  static let defaultSize = NSSize(width: 470, height: 330)
-  /// Bumped v4 → v5: v4 shipped a portrait default by mistake; the restored
-  /// landscape default must take effect once over that persisted shape.
-  private static let sizeDefaultsKey = "DictationOverlayPanel.contentSize.v5"
+  static let defaultSize = NSSize(width: 470, height: 280)
+  /// Bumped v5 → v6: slim evidence chrome lowers the resting landscape height.
+  private static let sizeDefaultsKey = "DictationOverlayPanel.contentSize.v6"
 
   /// Build the floating overlay panel around an injected `OverlayState`.
   /// The state's `engine`, `onClose`, and `onSendToAgent` are wired by the

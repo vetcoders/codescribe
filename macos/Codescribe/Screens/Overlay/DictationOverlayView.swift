@@ -1,61 +1,39 @@
 import SwiftUI
 
-// The floating dictation overlay content — pixel-faithful to
-// "codescribe App - Dictation Overlay.dc.html".
+// Slim evidence-first dictation overlay.
 //
 // Layout (top → bottom):
-//   header      brand wordmark · status pill · Auto Paste · placement (…) menu
-//   mode + meta tag chip (RECORDING/AGENT/PROCESSING/READY) · meta line
-//   body        listening = waveform (live RMS level) + word-reveal transcript
-//               formatted = editable finalized transcript
-//   action row  recording: Finish; finalized: Copy · Insert · Format · To Agent.
-//               All actions are neutral/grey; Close is the ONE red control.
-//   footer      ● <engine chip from serving/preference> · meta on the right
+//   header   brand · ONE status pill · compact waveform · timer · Auto Paste ·
+//            placement · primary action combo (Finish/Insert + secondary menu)
+//   body     transcript is the product surface (listening / formatted / terminal)
+//   footer   ● engine chip · optional canvas honesty · toast
 //
-// Delivery/status whispers in the footer next to the engine chip — never a
-// floating pill over the action row.
+// Removed on purpose: duplicate RECORDING/modeMeta row, full bottom Finish/Close
+// action layer, and decorative body-top waveform competing with words.
+//
+// Authority: this view only visualizes OverlayState / projection receipts. It
+// never invents transcript truth, seals, or a second recorder. Future AoT mode
+// attaches to AgentChatStore (same thread owner) via existing sendToAgent — not
+// a parallel chat window.
 struct DictationOverlayView: View {
   @ObservedObject var state: OverlayState
 
-  // Mock-derived geometry constants (not design tokens — local to this surface).
-  // The window is user-resizable; content flows to fill whatever frame it gets,
-  // never narrower than `windowMinWidth`. Below `actionIconOnlyThreshold`, the
-  // action row switches to fixed icon buttons so the old full-label intrinsic width
-  // no longer dictates the window floor. `DictationOverlayWindow.minSize.height`
-  // MUST stay ≥ the chrome + `bodyMinHeight` sum — otherwise the content column
-  // overflows the window frame and GlassPanel paints its rounded background past
-  // the window rect, squaring the visible corners (see DictationOverlayWindow's
-  // corner note).
+  // Geometry constants local to this surface. The window is user-resizable;
+  // content fills the frame and never goes narrower than `windowMinWidth`.
+  // `DictationOverlayWindow.minSize.height` MUST stay ≥ chrome + `bodyMinHeight`
+  // or GlassPanel paints past the window rect and squares the corners.
   private let windowMinWidth: CGFloat = 320
-  private let actionIconOnlyThreshold: CGFloat = 380
-  // U22 diet: the action row used to eat ~1/3 of the overlay (38pt content +
-  // 10pt vertical padding + 10pt button padding). Trimmed to 30/6/6 with a
-  // 12pt semibold label — the ~16pt saved is handed to the transcript via
-  // `bodyMinHeight` below (lockstep, window minSize unchanged).
-  private let actionRowContentHeight: CGFloat = 30
-  private let actionIconButtonSize: CGFloat = 28
-  // `bodyMinHeight` reserves the body floor at the min window size: the listening
-  // body needs the waveform block (~46) PLUS `transcriptMinHeight` so the growing
-  // transcript keeps ~3 legible lines instead of collapsing to a clipped sliver.
-  // 114 → 130: the vertical space reclaimed from the slimmer action row stays
-  // with the transcript. `DictationOverlayWindow.minSize.height` (300) still
-  // covers chrome + this floor — the content column stays ≤ the window frame
-  // (see the corner-clip note above).
   private let bodyMinHeight: CGFloat = 130
-  private let transcriptMinHeight: CGFloat = 84
+  private let transcriptMinHeight: CGFloat = 96
   private let buttonRadius: CGFloat = 10
-  /// Action chrome stays put but whispers until the pointer is on the row.
-  @State private var actionRowHovered = false
+  private let primaryActionHeight: CGFloat = 28
 
   var body: some View {
     GlassPanel(cornerRadius: CSRadius.window, sitsInForest: true) {
       VStack(alignment: .leading, spacing: 0) {
         header
         hairline(0.06)
-        modeMetaRow
         bodySection
-        hairline(0.06)
-        actionRow
         hairline(0.05)
         footer
       }
@@ -99,7 +77,7 @@ struct DictationOverlayView: View {
   // MARK: Header
 
   private var header: some View {
-    HStack(spacing: 12) {
+    HStack(spacing: 10) {
       // Brand block with a LIVE dot: the orange dot sits in the window's
       // traffic-light zone and reads as a control, so it IS one — click
       // closes the overlay (same as the Close action). Hover shows the
@@ -112,35 +90,58 @@ struct DictationOverlayView: View {
           .foregroundStyle(CSColor.textHigh)
           .allowsHitTesting(false)
       }
-      // Swap the whole VIEW TYPE on live vs idle, not just a flag: the
-      // animated pill (with @State + repeatForever) exists ONLY while live,
-      // and is replaced by a static pill of different identity in idle/final,
-      // so SwiftUI tears down its animation instead of leaving it ticking.
+      // One phase pill only — do not also paint RECORDING/tag/meta rows.
+      // Swap the whole VIEW TYPE on live vs idle so the rippling animation
+      // tears down instead of ticking after capture ends.
       if state.statusRippling {
         StatusPill(
           text: state.statusText,
           color: state.statusColor,
           rippling: true
         )
-        .padding(.leading, 6)
         .allowsHitTesting(false)
         .accessibilityIdentifier("overlay-phase-status")
       } else {
         StaticStatusPill(text: state.statusText, color: state.statusColor)
-          .padding(.leading, 6)
           .allowsHitTesting(false)
           .accessibilityIdentifier("overlay-phase-status")
       }
-      Spacer(minLength: 0)
+
+      if state.mode == .listening {
+        chromeWaveform
+      }
+
+      Spacer(minLength: 4)
+
+      sessionTimer
+
       if state.autoPasteControlAvailable {
         autoPasteControl
       }
       placementMenu
         .foregroundStyle(CSColor.textFaint)
+      compactPrimaryAction
     }
-    .padding(.horizontal, 20)
-    .padding(.vertical, 12)
+    .padding(.horizontal, 16)
+    .padding(.vertical, 10)
     .background(OverlayDragHandle())
+  }
+
+  /// Audio-evidence strip in the primary bar. Amplitude/VAD only — word/PCM
+  /// synchronized scrolling needs authenticated sample spans from projection
+  /// receipts and is intentionally not invented here.
+  private var chromeWaveform: some View {
+    WaveformView(
+      barCount: 18,
+      active: !state.transcribing && !state.isFinalPass && (state.audioReady || state.vadActive),
+      transcribing: state.transcribing || state.isFinalPass,
+      indicatorMode: state.indicatorMode,
+      meter: state.levelMeter,
+      compact: true
+    )
+    .accessibilityIdentifier("overlay-chrome-waveform")
+    .accessibilityLabel("Live audio level")
+    .allowsHitTesting(false)
   }
 
   /// Compact persisted delivery control. `ViewThatFits` keeps the literal label
@@ -209,38 +210,9 @@ struct DictationOverlayView: View {
     .accessibilityIdentifier("overlay-placement-menu")
   }
 
-  // MARK: Mode + meta row
-
-  private var modeMetaRow: some View {
-    HStack(spacing: 10) {
-      Text(state.tagText)
-        .csMono(10, .semibold)
-        .tracking(0.8)
-        .foregroundStyle(state.tagColor)
-        .padding(.horizontal, 9)
-        .padding(.vertical, 3)
-        .background(state.tagColor.opacity(0.1))
-        .overlay(
-          RoundedRectangle(cornerRadius: 6, style: .continuous)
-            .strokeBorder(state.tagColor.opacity(0.28), lineWidth: 1)
-        )
-        .clipShape(RoundedRectangle(cornerRadius: 6, style: .continuous))
-      Text(state.metaText)
-        .csMono(11, .medium)
-        .foregroundStyle(CSColor.textFaint)
-      Spacer(minLength: 0)
-      sessionTimer
-    }
-    .padding(.horizontal, 20)
-    .padding(.top, 8)
-    .padding(.bottom, 4)
-    .background(OverlayDragHandle())
-  }
-
-  /// Live `00:00` session counter — the absolute reference for audio sync,
-  /// transcription lag, and stream drift (UI_DIVERGENCE_AUDIT pkt 5). Ticks
-  /// only while `.listening`; the state freezes the underlying stamp when
-  /// capture stops, so the final displayed value is the session's true length.
+  /// Live `00:00` session counter — absolute reference for audio sync and lag.
+  /// Lives in the primary chrome (not a second status row). Capture end freezes
+  /// the stamp so the displayed value is the session's true length.
   @ViewBuilder
   private var sessionTimer: some View {
     if state.showsSessionTimer {
@@ -292,19 +264,9 @@ struct DictationOverlayView: View {
   }
 
   private var listeningBody: some View {
-    VStack(alignment: .leading, spacing: 0) {
-      WaveformView(
-        active: !state.transcribing && !state.isFinalPass && (state.audioReady || state.vadActive),
-        transcribing: state.transcribing || state.isFinalPass,
-        indicatorMode: state.indicatorMode,
-        meter: state.levelMeter
-      )
-      .padding(.top, 4)
-      .padding(.bottom, 8)
-      .allowsHitTesting(false)
-      .background(OverlayDragHandle())
-      transcriptScroll
-    }
+    // Transcript is the product. Audio evidence lives in the primary chrome
+    // waveform; do not restack a decorative strip above the words.
+    transcriptScroll
   }
 
   /// Native live transcript: follows the newest words until the user clicks or
@@ -367,8 +329,8 @@ struct DictationOverlayView: View {
 
   /// Terminal outcome for a session that captured no usable speech. Replaces
   /// the empty editable FINAL with a calm, non-alarming notice (mic glyph +
-  /// message). No Copy/Format/Send — there is nothing to act on; only Close
-  /// remains in the action row.
+  /// message). No Copy/Insert/Send — there is nothing to act on; CloseDot
+  /// remains the dismiss control.
   private var noSpeechBody: some View {
     HStack(spacing: 12) {
       CSIconView(icon: .mic, size: 18, weight: .regular)
@@ -408,163 +370,69 @@ struct DictationOverlayView: View {
     .frame(maxWidth: .infinity, minHeight: bodyMinHeight, alignment: .leading)
   }
 
-  // MARK: Action row
+  // MARK: Compact primary action
 
-  /// U22 semantics: every ACTION (Finish/Copy/Insert/Format/To Agent) is a neutral
-  /// grey surface — the one exception is Close, the sole destructive control,
-  /// which wears `CSColor.danger` and must read as red at first glance.
-  private enum ActionButtonTone {
-    case neutral
-    case danger
-  }
-
-  private var actionRow: some View {
-    GeometryReader { proxy in
-      let iconOnly = proxy.size.width < actionIconOnlyThreshold
-      actionRowContent(iconOnly: iconOnly)
-        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .center)
-    }
-    .frame(height: actionRowContentHeight)
-    .padding(.horizontal, 20)
-    .padding(.vertical, 6)
-    .contentShape(Rectangle())
-    .opacity(actionRowHovered ? 1 : 0.22)
-    .animation(.easeOut(duration: 0.16), value: actionRowHovered)
-    .onHover { actionRowHovered = $0 }
-    .accessibilityElement(children: .contain)
-  }
-
+  /// HIG-shaped combo control: click runs the primary act; menu holds related
+  /// secondary commands. CloseDot stays the always-visible dismiss path; Close
+  /// remains available in the menu as an explicit secondary.
   @ViewBuilder
-  private func actionRowContent(iconOnly: Bool) -> some View {
-    HStack(spacing: 8) {
-      if state.mode == .listening {
-        actionButton(
-          title: "Finish",
-          icon: "checkmark",
-          tone: .neutral,
-          iconOnly: iconOnly,
-          action: { state.stop() }
-        )
-        if state.canCopy {
-          actionButton(
-            title: "Copy",
-            icon: "doc.on.doc",
-            tone: .neutral,
-            iconOnly: iconOnly,
-            action: { state.copyToPasteboard() }
-          )
-        }
-      } else if state.mode == .formatted {
-        if state.canCopy {
-          actionButton(
-            title: "Copy",
-            icon: "doc.on.doc",
-            tone: .neutral,
-            iconOnly: iconOnly,
-            action: { state.copyToPasteboard() }
-          )
-        }
-
-        actionButton(
-          title: state.insertActionPresentation.title,
-          help: state.insertActionPresentation.help,
-          icon: "arrow.down.doc.fill",
-          tone: .neutral,
-          iconOnly: iconOnly,
-          action: { state.pasteToPreviousApp() }
-        )
-
-        actionButton(
-          title: OverlayActionPresentation.sendTitle,
-          help: OverlayActionPresentation.sendHelp,
-          icon: "paperplane.fill",
-          tone: .neutral,
-          iconOnly: iconOnly,
-          action: { state.sendToAgent() }
-        )
+  private var compactPrimaryAction: some View {
+    if let kind = state.primaryActionKind {
+      Menu {
+        secondaryActionButtons(for: kind)
+        Divider()
+        Button("Close", role: .destructive) { state.close() }
+      } label: {
+        primaryActionLabel(title: state.primaryActionTitle)
+      } primaryAction: {
+        performPrimaryAction(kind)
       }
-
-      Spacer(minLength: 0)
-
-      actionButton(
-        title: "Close",
-        icon: "xmark",
-        tone: .danger,
-        iconOnly: iconOnly,
-        action: { state.close() }
-      )
+      .menuStyle(.button)
+      .csFocusRing(cornerRadius: 8)
+      .help(state.primaryActionHelp)
+      .accessibilityLabel(state.primaryActionTitle)
+      .accessibilityHint(state.primaryActionHelp)
+      .accessibilityIdentifier("overlay-primary-action")
     }
-  }
-
-  private func actionButton(
-    title: String,
-    help: String? = nil,
-    icon: String,
-    tone: ActionButtonTone,
-    iconOnly: Bool,
-    isEnabled: Bool = true,
-    action: @escaping () -> Void
-  ) -> some View {
-    Button(action: action) {
-      actionButtonLabel(title: title, icon: icon, tone: tone, iconOnly: iconOnly)
-    }
-    .csFocusRing(cornerRadius: 8)
-    .help(help ?? title)
-    .accessibilityLabel(title)
-    .accessibilityHint(help ?? title)
-    .disabled(!isEnabled)
-    .opacity(isEnabled ? 1 : 0.45)
   }
 
   @ViewBuilder
-  private func actionButtonLabel(
-    title: String,
-    icon: String,
-    tone: ActionButtonTone,
-    iconOnly: Bool
-  ) -> some View {
+  private func secondaryActionButtons(for kind: OverlayPrimaryActionKind) -> some View {
+    switch kind {
+    case .finish:
+      if state.canCopy {
+        Button("Copy") { state.copyToPasteboard() }
+      }
+    case .insert:
+      if state.canCopy {
+        Button("Copy") { state.copyToPasteboard() }
+      }
+      Button(OverlayActionPresentation.sendTitle) { state.sendToAgent() }
+    }
+  }
+
+  private func performPrimaryAction(_ kind: OverlayPrimaryActionKind) {
+    switch kind {
+    case .finish: state.stop()
+    case .insert: state.pasteToPreviousApp()
+    }
+  }
+
+  private func primaryActionLabel(title: String) -> some View {
     let shape = RoundedRectangle(cornerRadius: buttonRadius, style: .continuous)
-    Group {
-      if iconOnly {
-        Image(systemName: icon)
-          .font(.system(size: 12, weight: .semibold))
-          .frame(width: actionIconButtonSize, height: actionIconButtonSize)
-      } else {
-        Text(title)
-          .font(CSFont.ui(12, .semibold))
-          .padding(.horizontal, 13)
-          .padding(.vertical, 6)
-      }
+    return HStack(spacing: 4) {
+      Text(title)
+        .font(CSFont.ui(12, .semibold))
+        .lineLimit(1)
+      Image(systemName: "chevron.down")
+        .font(.system(size: 9, weight: .semibold))
     }
-    .foregroundStyle(actionForeground(tone))
-    .background(actionBackground(tone))
-    .overlay {
-      if let border = actionBorder(tone) {
-        shape.strokeBorder(border, lineWidth: 1)
-      }
-    }
+    .foregroundStyle(CSColor.textBody)
+    .padding(.horizontal, 10)
+    .frame(height: primaryActionHeight)
+    .background(CSColor.surfaceRaised(0.06))
+    .overlay(shape.strokeBorder(CSColor.hairline(0.14), lineWidth: 1))
     .clipShape(shape)
-  }
-
-  private func actionForeground(_ tone: ActionButtonTone) -> Color {
-    switch tone {
-    case .neutral: return CSColor.textBody
-    case .danger: return CSColor.textHigh
-    }
-  }
-
-  private func actionBackground(_ tone: ActionButtonTone) -> Color {
-    switch tone {
-    case .neutral: return CSColor.surfaceRaised(0.04)
-    case .danger: return CSColor.danger
-    }
-  }
-
-  private func actionBorder(_ tone: ActionButtonTone) -> Color? {
-    switch tone {
-    case .neutral: return CSColor.hairline(0.12)
-    case .danger: return nil
-    }
   }
 
   // MARK: Footer
@@ -586,13 +454,15 @@ struct DictationOverlayView: View {
         }
       }
       Spacer(minLength: 0)
-      Text(state.footerRight)
-        .foregroundStyle(CSColor.textFaintAlt)
-        .accessibilityIdentifier("overlay-phase-footer")
+      if state.showsFooterHonesty {
+        Text(state.footerHonestyText)
+          .foregroundStyle(CSColor.textFaintAlt)
+          .accessibilityIdentifier("overlay-phase-footer")
+      }
     }
     .csMono(10, .medium)
-    .padding(.horizontal, 20)
-    .padding(.vertical, 8)
+    .padding(.horizontal, 16)
+    .padding(.vertical, 7)
     .background(OverlayDragHandle())
   }
 
@@ -635,11 +505,11 @@ private struct BlinkingCaret: View {
   }
 
   #Preview("Transcribing") {
-    // Pinned to the window's min content size (320×300) so this preview doubles as
-    // the min-size regression check: "transcribing…" fills the main status slot and
+    // Pinned to the window's min content size so this preview doubles as the
+    // min-size regression check: "transcribing…" fills the main status slot and
     // the transcript reserves ~2–3 lines instead of collapsing at the floor.
     DictationOverlayView(state: .previewTranscribing())
-      .frame(width: 320, height: 300)
+      .frame(width: 320, height: 260)
       .padding(44)
       .background(
         LinearGradient(
@@ -655,7 +525,7 @@ private struct BlinkingCaret: View {
     // Copy/Format/Send, only Close. Pinned to the min content size so it also
     // guards the floor layout for this outcome.
     DictationOverlayView(state: .previewNoSpeech())
-      .frame(width: 320, height: 300)
+      .frame(width: 320, height: 260)
       .padding(44)
       .background(
         LinearGradient(
@@ -678,9 +548,9 @@ private struct BlinkingCaret: View {
       .preferredColorScheme(.dark)
   }
 
-  #Preview("Formatted · icon actions") {
+  #Preview("Formatted · compact chrome") {
     DictationOverlayView(state: .previewFormatted())
-      .frame(width: 340, height: 300)
+      .frame(width: 340, height: 260)
       .padding(44)
       .background(
         LinearGradient(
@@ -697,7 +567,7 @@ private struct BlinkingCaret: View {
     // rather than forcing the panel taller).
     DictationOverlayView(state: .previewListening())
       .environment(\.csTextScale, 1.4)
-      .frame(width: 470, height: 330)
+      .frame(width: 470, height: 280)
       .padding(44)
       .background(
         LinearGradient(
@@ -711,7 +581,7 @@ private struct BlinkingCaret: View {
 
 /// The overlay's brand dot as a real close control. It sits where macOS puts
 /// traffic lights, so it honors that promise: hover swaps in the familiar "x"
-/// glyph and click closes the overlay (same path as the Close action button).
+/// glyph and click closes the overlay (same path as Close in the secondary menu).
 /// The cursor stays the SYSTEM ARROW — real macOS window controls never switch
 /// to a pointing hand, and neither does this one (U22; reverts 5415e7e's
 /// pointingHand). Only the dot is live — the wordmark text is inert.
