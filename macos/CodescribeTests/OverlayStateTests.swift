@@ -483,6 +483,51 @@ final class OverlayStateTests: XCTestCase {
     XCTAssertEqual(state.statusText, "recording · ambient")
   }
 
+  func testControllerStopWithoutTerminalProjectionCannotLeaveZombieRecordingUI() {
+    let state = OverlayState()
+    var stoppedCallbacks = 0
+    state.onRecordingStopped = { stoppedCallbacks += 1 }
+
+    state.handleRecordingPreparing()
+    state.handleRecordingStarted()
+    state.applyAudioLevel(0.7)
+    state.applyVad(true)
+    state.handleRecordingFinalising()
+    state.finishControllerRecording()
+
+    XCTAssertEqual(state.mode, .error)
+    XCTAssertEqual(state.statusText, "failed")
+    XCTAssertEqual(state.tagText, "ERROR")
+    XCTAssertEqual(
+      state.errorMessage,
+      "Recording ended before a sealed transcript was committed"
+    )
+    XCTAssertFalse(state.warmingUp)
+    XCTAssertFalse(state.transcribing)
+    XCTAssertFalse(state.audioReady)
+    XCTAssertFalse(state.vadActive)
+    XCTAssertFalse(state.isFinalPass)
+    XCTAssertFalse(state.hasMeasuredAudioLevel)
+    XCTAssertNil(state.levelMeter.gain)
+    XCTAssertEqual(stoppedCallbacks, 1)
+
+    state.finishControllerRecording()
+    XCTAssertEqual(stoppedCallbacks, 1, "terminal recovery must be idempotent")
+  }
+
+  func testControllerStopUsesExplicitNoSpeechOutcomeWhenEngineProvidedIt() {
+    let state = OverlayState()
+    state.handleRecordingPreparing()
+    state.handleRecordingStarted()
+    state.applyNoSpeech(reason: "no_speech_detected")
+
+    state.finishControllerRecording()
+
+    XCTAssertEqual(state.mode, .noSpeech)
+    XCTAssertEqual(state.statusText, "no speech")
+    XCTAssertEqual(state.noSpeechNotice, OverlayState.defaultNoSpeechNotice)
+  }
+
   /// Product honesty: badge must not say "live preview · raw" while the body
   /// is only the empty-canvas placeholder ("listening…"). Claim live preview
   /// only after an admitted projection puts text on the canvas.

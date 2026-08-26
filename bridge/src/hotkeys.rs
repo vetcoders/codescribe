@@ -316,8 +316,8 @@ pub(crate) fn refresh_live_controller_config() {
 ///
 /// The listener is resolved per event rather than captured, so a listener that
 /// registers after the forwarder starts still receives everything from that
-/// point on. Lag is survivable (keep forwarding); only a closed channel ends the
-/// task.
+/// point on. Lag is survivable by reconciling from controller truth; only a
+/// closed channel ends the task, after a terminal native reset.
 fn spawn_event_forwarder(controller: Arc<RecordingController>, handle: Handle) {
     let listener_store = shared_listener();
     let mut events = controller.subscribe_events();
@@ -327,40 +327,91 @@ fn spawn_event_forwarder(controller: Arc<RecordingController>, handle: Handle) {
                 Ok(event) => event,
                 // Lagged: the broadcast channel (cap 256) overflowed during a
                 // burst of dictation events and dropped `skipped` messages. That
-                // is recoverable — keep forwarding subsequent events instead of
-                // tearing the listener bridge down permanently.
+                // is recoverable only if we first repaint lifecycle state from
+                // the controller. Otherwise a dropped terminal `idle` leaves the
+                // Swift overlay recording forever even though capture ended.
                 Err(RecvError::Lagged(skipped)) => {
-                    eprintln!(
-                        "Hotkey event forwarder lagged; dropped {skipped} broadcast event(s)"
+                    let state = controller.current_state().await;
+                    tracing::warn!(
+                        skipped,
+                        authoritative_state = %state,
+                        "hotkey event forwarder lagged; reconciling listener lifecycle"
                     );
+                    release_controller_capture_owner_if_idle(state);
+                    if let Some(listener) = current_transcription_listener(&listener_store) {
+                        forward_controller_state_to_listener(state, listener);
+                    }
                     continue;
                 }
                 // Closed: the controller (sender) was dropped — nothing more will
-                // ever arrive, so end the forwarder task.
-                Err(RecvError::Closed) => break,
+                // ever arrive. Fail terminally so no native UI can retain stale
+                // capture ownership or a live-recording presentation.
+                Err(RecvError::Closed) => {
+                    release_controller_capture_owner_if_idle(State::Idle);
+                    if let Some(listener) = current_transcription_listener(&listener_store) {
+                        forward_controller_state_to_listener(State::Idle, listener);
+                    }
+                    break;
+                }
             };
             if matches!(
                 &event.payload,
                 IpcEventPayload::StateChange { to, .. } if to == "idle"
             ) {
-                let _ = CAPTURE_OWNER.compare_exchange(
-                    CAPTURE_OWNER_CONTROLLER,
-                    CAPTURE_OWNER_NONE,
-                    Ordering::AcqRel,
-                    Ordering::Acquire,
-                );
+                release_controller_capture_owner_if_idle(State::Idle);
             }
-            let listener = listener_store
-                .read()
-                .unwrap_or_else(|e| e.into_inner())
-                .as_ref()
-                .map(Arc::clone);
+            let listener = current_transcription_listener(&listener_store);
             let Some(listener) = listener else {
                 continue;
             };
             forward_event_to_listener(event.payload, listener);
         }
     });
+}
+
+/// Snapshot the current Swift transcription listener without holding the lock
+/// across a foreign callback.
+fn current_transcription_listener(
+    listener_store: &SharedListener,
+) -> Option<Arc<dyn CsTranscriptionListener>> {
+    listener_store
+        .read()
+        .unwrap_or_else(|e| e.into_inner())
+        .as_ref()
+        .map(Arc::clone)
+}
+
+/// Release the process-wide microphone gate whenever controller truth is idle.
+fn release_controller_capture_owner_if_idle(state: State) {
+    if state == State::Idle {
+        let _ = CAPTURE_OWNER.compare_exchange(
+            CAPTURE_OWNER_CONTROLLER,
+            CAPTURE_OWNER_NONE,
+            Ordering::AcqRel,
+            Ordering::Acquire,
+        );
+    }
+}
+
+/// Repaint the native lifecycle from the controller's authoritative state.
+/// Used both by ordinary state broadcasts and loss recovery after `Lagged`.
+fn forward_controller_state_to_listener(state: State, listener: Arc<dyn CsTranscriptionListener>) {
+    match state {
+        State::RecHold | State::RecToggle | State::Conversation => {
+            PREPARING_PENDING.store(false, Ordering::Release);
+            tray_status::update_tray_status(TrayStatus::Listening);
+            listener.on_recording_started();
+        }
+        State::Busy => {
+            tray_status::update_tray_status(TrayStatus::Thinking);
+            listener.on_recording_finalising();
+        }
+        State::Idle => {
+            PREPARING_PENDING.store(false, Ordering::Release);
+            tray_status::update_tray_status(TrayStatus::Idle);
+            listener.on_recording_stopped();
+        }
+    }
 }
 
 /// Translate one IPC payload into the Swift listener's callback vocabulary and
@@ -372,30 +423,11 @@ fn spawn_event_forwarder(controller: Arc<RecordingController>, handle: Handle) {
 fn forward_event_to_listener(payload: IpcEventPayload, listener: Arc<dyn CsTranscriptionListener>) {
     match payload {
         IpcEventPayload::StateChange { to, .. } => match to.as_str() {
-            "rec_hold" | "rec_toggle" | "conversation" => {
-                // A real state transition resolves any pending optimistic
-                // "preparing" overlay, so the post-dispatch compensator must not
-                // also fire a terminal stop for it.
-                PREPARING_PENDING.store(false, Ordering::Release);
-                tray_status::update_tray_status(TrayStatus::Listening);
-                listener.on_recording_started();
-            }
-            "busy" => {
-                // Capture ended; the controller is running the final transcription
-                // pass. Surface it as a distinct "finalising" beat BEFORE the
-                // terminal `idle`→stopped, so the native hold-release / toggle stop
-                // can show a "transcribing" phase instead of the still-pulsing
-                // live-capture UI. Does not touch PREPARING_PENDING — a real Rec
-                // state (rec_hold/rec_toggle) always precedes Busy and already
-                // cleared it.
-                tray_status::update_tray_status(TrayStatus::Thinking);
-                listener.on_recording_finalising();
-            }
-            "idle" => {
-                PREPARING_PENDING.store(false, Ordering::Release);
-                tray_status::update_tray_status(TrayStatus::Idle);
-                listener.on_recording_stopped();
-            }
+            "rec_hold" => forward_controller_state_to_listener(State::RecHold, listener),
+            "rec_toggle" => forward_controller_state_to_listener(State::RecToggle, listener),
+            "conversation" => forward_controller_state_to_listener(State::Conversation, listener),
+            "busy" => forward_controller_state_to_listener(State::Busy, listener),
+            "idle" => forward_controller_state_to_listener(State::Idle, listener),
             _ => {}
         },
         IpcEventPayload::ContextMarker { position, marker } => {
@@ -2291,6 +2323,51 @@ mod preparing_compensation_tests {
         );
         assert_eq!(listener.stopped(), 1, "idle → stopped");
         assert_eq!(listener.finalising(), 1, "idle must not re-fire finalising");
+        teardown();
+    }
+
+    /// A lag recovery does not replay dropped payloads. It snapshots controller
+    /// truth instead; when that truth is Idle, native capture ownership and the
+    /// overlay lifecycle must both end even if the original idle broadcast was
+    /// among the dropped messages.
+    #[tokio::test]
+    #[serial]
+    async fn authoritative_idle_reconciliation_releases_native_capture() {
+        let _guard = TEST_LOCK.lock().await;
+        let (listener, _controller) = install();
+        CAPTURE_OWNER.store(CAPTURE_OWNER_CONTROLLER, Ordering::SeqCst);
+
+        forward_controller_state_to_listener(
+            State::Idle,
+            Arc::clone(&listener) as Arc<dyn CsTranscriptionListener>,
+        );
+        release_controller_capture_owner_if_idle(State::Idle);
+
+        assert_eq!(listener.stopped(), 1, "authoritative Idle must stop UI");
+        assert_eq!(
+            CAPTURE_OWNER.load(Ordering::SeqCst),
+            CAPTURE_OWNER_NONE,
+            "authoritative Idle must release the microphone gate"
+        );
+        teardown();
+    }
+
+    /// Reconciliation also preserves non-terminal controller truth instead of
+    /// flattening every loss event into a stop.
+    #[tokio::test]
+    #[serial]
+    async fn authoritative_busy_reconciliation_keeps_finalising_phase() {
+        let _guard = TEST_LOCK.lock().await;
+        let (listener, _controller) = install();
+
+        forward_controller_state_to_listener(
+            State::Busy,
+            Arc::clone(&listener) as Arc<dyn CsTranscriptionListener>,
+        );
+
+        assert_eq!(listener.finalising(), 1);
+        assert_eq!(listener.stopped(), 0);
+        assert_eq!(listener.started(), 0);
         teardown();
     }
 

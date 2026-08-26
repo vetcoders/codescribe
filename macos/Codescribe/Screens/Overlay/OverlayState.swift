@@ -1085,10 +1085,36 @@ final class OverlayState: ObservableObject {
   }
 
   func finishControllerRecording() {
+    let shouldNotifyStopped =
+      !finalized && (recording || warmingUp || transcribing || audioReady || vadActive)
     cancelWarmupWatchdog()
     recording = false
+    warmingUp = false
+    transcribing = false
+    audioReady = false
+    vadActive = false
     isFinalPass = false
     freezeCaptureClock()
+    levelMeter.reset()
+    hasMeasuredAudioLevel = false
+
+    // A terminal ledger projection normally finalizes presentation before the
+    // controller returns to idle. If it did not, never leave `.listening` on
+    // screen: capture is over and claiming RECORDING would be false. Preserve
+    // any admitted canvas bytes, surface the missing seal, and release every
+    // app-level recording latch through the same terminal callback.
+    if shouldNotifyStopped {
+      finalized = true
+      if let noSpeech = pendingNoSpeechMessage {
+        noSpeechNotice = noSpeech
+        mode = .noSpeech
+      } else if mode == .listening {
+        errorMessage = "Recording ended before a sealed transcript was committed"
+        mode = .error
+      }
+      onRecordingStopped?()
+      restartAutoHideCountdown()
+    }
   }
 
   /// Native hold-release / toggle stop: the controller entered `Busy` (final
