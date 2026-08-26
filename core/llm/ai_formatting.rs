@@ -27,7 +27,7 @@ use std::sync::{Arc, OnceLock};
 use std::time::Duration;
 use tracing::{debug, info, trace, warn};
 
-use crate::config::{Config, FormattingPolicy, RuntimeLlmLane, RuntimeSettingsSnapshot};
+use crate::config::{FormattingPolicy, RuntimeLlmLane, RuntimeSettingsSnapshot};
 
 use super::account_auth;
 use super::provider::{ProviderKind, WireFamily, capability_policy};
@@ -1092,15 +1092,8 @@ pub async fn format_text_with_status(
     runtime_settings: &RuntimeSettingsSnapshot,
     on_delta: Option<AiStreamCallback>,
 ) -> AiFormatResult {
-    format_text_with_status_channels(
-        text,
-        language,
-        assistive,
-        runtime_settings,
-        on_delta,
-        None,
-    )
-    .await
+    format_text_with_status_channels(text, language, assistive, runtime_settings, on_delta, None)
+        .await
 }
 
 /// Format text using AI provider with explicit channel callbacks.
@@ -1137,15 +1130,8 @@ pub async fn format_text_with_status_for_policy(
     language: Option<&str>,
     runtime_settings: &RuntimeSettingsSnapshot,
 ) -> AiFormatResult {
-    format_text_with_status_channels_for_policy(
-        text,
-        language,
-        false,
-        runtime_settings,
-        None,
-        None,
-    )
-    .await
+    format_text_with_status_channels_for_policy(text, language, false, runtime_settings, None, None)
+        .await
 }
 
 /// The single implementation every public formatting entry point funnels into.
@@ -1747,110 +1733,6 @@ async fn call_llm_endpoint(
     Ok(output)
 }
 
-fn ensure_inline_responses_wire(lane: &RuntimeLlmLane) -> Result<()> {
-    if lane.wire_family() != WireFamily::OpenAiResponses {
-        anyhow::bail!(
-            "Inline formatting requires a Responses API lane; configured {} uses {:?}",
-            lane.provider().display_name(),
-            lane.wire_family()
-        );
-    }
-    Ok(())
-}
-
-/// One chained Responses request over a pinned Formatting lane, chain owned by
-/// the caller (W13-1 inline-format buffer).
-///
-/// Deliberately does NOT touch [`crate::state::conversation`]: the inline
-/// buffer keeps its own `previous_response_id` per dictation session, so chunk
-/// chaining can reset per session without disturbing the persistent
-/// formatting-mode conversation. Returns `(assistant_text, response_id)`.
-pub(crate) async fn format_inline_chunk(
-    chunk_text: &str,
-    language: Option<&str>,
-    previous_response_id: Option<String>,
-    system_prompt: &str,
-    lane: &RuntimeLlmLane,
-) -> Result<(String, Option<String>)> {
-    ensure_inline_responses_wire(lane)?;
-    let api_key = lane
-        .credential()
-        .api_key()
-        .context("Inline formatting requires the sealed formatting credential")?;
-    format_inline_chunk_resolved(
-        chunk_text,
-        language,
-        previous_response_id,
-        system_prompt,
-        lane.endpoint(),
-        lane.model(),
-        api_key,
-    )
-    .await
-}
-
-/// Send one inline-chunk Responses request against explicitly supplied wire
-/// values. Resolution is split out (mirroring
-/// [`call_anthropic_messages_resolved`]) so the delivery harness can exercise
-/// the wire contract against a mock without config in play.
-pub(crate) async fn format_inline_chunk_resolved(
-    chunk_text: &str,
-    language: Option<&str>,
-    previous_response_id: Option<String>,
-    system_prompt: &str,
-    endpoint: &str,
-    model: &str,
-    api_key: &str,
-) -> Result<(String, Option<String>)> {
-    let user_message = match language {
-        Some(lang) => format!("[Language: {lang}]\n\n{chunk_text}"),
-        None => chunk_text.to_string(),
-    };
-    let request = ResponsesRequest {
-        model: model.to_string(),
-        input: build_responses_input(
-            system_prompt,
-            previous_response_id.as_deref(),
-            vec![InputContent::Text { text: user_message }],
-        ),
-        // Param on the first turn only; chained turns carry the prompt in input.
-        instructions: chained_instructions(system_prompt, previous_response_id.as_deref()),
-        previous_response_id,
-        max_output_tokens: None,
-        temperature: get_temperature(false),
-        stream: false,
-    };
-
-    let response = get_client()
-        .post(endpoint)
-        .header("Authorization", format!("Bearer {api_key}"))
-        .header("x-api-key", api_key)
-        .header("Content-Type", "application/json")
-        .json(&request)
-        .send()
-        .await
-        .context("Inline chunk request failed")?;
-
-    if !response.status().is_success() {
-        let status = response.status();
-        let body = response.text().await.unwrap_or_default();
-        anyhow::bail!("Inline chunk HTTP {} - {}", status, body);
-    }
-
-    let responses_result: ResponsesResponse = response
-        .json()
-        .await
-        .context("Failed to parse inline chunk response")?;
-    let output = extract_output_channels(&responses_result.output);
-    if output.assistant_text.is_empty() {
-        anyhow::bail!(
-            "No text content in inline chunk response (id: {})",
-            responses_result.id
-        );
-    }
-    Ok((output.assistant_text, Some(responses_result.id)))
-}
-
 /// Resolve assistive-lane auth: signed-in ChatGPT OAuth wins over a stored API key.
 /// Returns `(secret, bearer_only)` — OAuth tokens must not also go out as `x-api-key`.
 async fn resolve_lane_auth(lane: &RuntimeLlmLane) -> Result<(String, bool)> {
@@ -1863,7 +1745,8 @@ async fn resolve_lane_auth(lane: &RuntimeLlmLane) -> Result<(String, bool)> {
     if !lane.available() {
         anyhow::bail!(
             "{}",
-            lane.unavailable_reason().unwrap_or("LLM lane is unavailable")
+            lane.unavailable_reason()
+                .unwrap_or("LLM lane is unavailable")
         );
     }
     Ok((
@@ -1993,6 +1876,7 @@ pub fn is_formatting_available(lane: &RuntimeLlmLane) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::config::Config;
     use mockito::Matcher;
     use serde_json::json;
     use serial_test::serial;
@@ -2005,24 +1889,6 @@ mod tests {
     ];
     /// Env flag set in the runtime-lanes child process so nested tests skip re-spawn.
     const RUNTIME_LLM_LANES_TEST_CHILD: &str = "CODESCRIBE_RUNTIME_LLM_LANES_TEST_CHILD";
-
-    /// Inline L3 carries a Responses chain id, so it must not send that wire
-    /// shape to Anthropic Messages.
-    #[test]
-    #[serial]
-    fn inline_formatter_accepts_only_sealed_responses_wire() {
-        let _provider = EnvGuard::set("LLM_FORMATTING_PROVIDER", "openai-responses");
-        let runtime_settings = Config::load_runtime_snapshot().expect("seal Responses lane");
-        assert!(ensure_inline_responses_wire(runtime_settings.llm_lanes().formatting()).is_ok());
-
-        let _provider = EnvGuard::set("LLM_FORMATTING_PROVIDER", "anthropic-messages");
-        let _endpoint = EnvGuard::set(
-            "LLM_ANTHROPIC_ENDPOINT",
-            "https://api.anthropic.com/v1/messages",
-        );
-        let runtime_settings = Config::load_runtime_snapshot().expect("seal Anthropic lane");
-        assert!(ensure_inline_responses_wire(runtime_settings.llm_lanes().formatting()).is_err());
-    }
 
     /// The stale-chain classifier keys on the provider's error code alone:
     /// `previous_response_not_found` (id minted under a rotated-away key) is
@@ -2455,7 +2321,8 @@ mod tests {
         let runtime_settings = Config::load_runtime_snapshot().expect("seal runtime settings");
         let _f1 = format_text("test", None, false, &runtime_settings);
         let _f2 = format_text_with_status("test", None, false, &runtime_settings, None);
-        let _f3 = format_text_with_status_channels("test", None, false, &runtime_settings, None, None);
+        let _f3 =
+            format_text_with_status_channels("test", None, false, &runtime_settings, None, None);
         let _f4 = format_text_with_status_for_policy("test", None, &runtime_settings);
     }
 
@@ -2517,12 +2384,18 @@ mod tests {
             snapshot.llm_lanes().formatting().endpoint(),
             "https://fresh-formatting.example/v1/responses"
         );
-        assert_eq!(snapshot.llm_lanes().formatting().model(), "fresh-formatting-model");
+        assert_eq!(
+            snapshot.llm_lanes().formatting().model(),
+            "fresh-formatting-model"
+        );
         assert_eq!(
             snapshot.llm_lanes().assistive().endpoint(),
             "https://fresh-assistive.example/v1/responses"
         );
-        assert_eq!(snapshot.llm_lanes().assistive().model(), "fresh-assistive-model");
+        assert_eq!(
+            snapshot.llm_lanes().assistive().model(),
+            "fresh-assistive-model"
+        );
     }
 
     #[tokio::test]
