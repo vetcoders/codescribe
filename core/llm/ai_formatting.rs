@@ -2446,15 +2446,17 @@ mod tests {
 
     /// C15D falsifier: public formatter entries require one selected runtime
     /// generation rather than separate policy, lane, prompt, or timing facts.
+    ///
+    /// Statically proves that all public formatting entry points require the immutable
+    /// runtime settings generation (`&RuntimeSettingsSnapshot`) without polling futures,
+    /// guaranteeing zero network activity.
     #[test]
     fn formatter_entry_requires_runtime_settings_snapshot() {
-        let _: fn(
-            &str,
-            Option<&str>,
-            bool,
-            &RuntimeSettingsSnapshot,
-            Option<AiStreamCallback>,
-        ) -> _ = format_text_with_status;
+        let runtime_settings = Config::load_runtime_snapshot().expect("seal runtime settings");
+        let _f1 = format_text("test", None, false, &runtime_settings);
+        let _f2 = format_text_with_status("test", None, false, &runtime_settings, None);
+        let _f3 = format_text_with_status_channels("test", None, false, &runtime_settings, None, None);
+        let _f4 = format_text_with_status_for_policy("test", None, &runtime_settings);
     }
 
     /// Saved settings win over stale env — a settings change takes effect on the
