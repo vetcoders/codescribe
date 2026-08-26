@@ -1,6 +1,10 @@
 use std::fs;
 
-use codescribe::{ai_formatting, config::{Config, prompts}, state::history};
+use codescribe::{
+    ai_formatting,
+    config::{Config, prompts},
+    state::history,
+};
 
 use mockito::Matcher;
 use serial_test::serial;

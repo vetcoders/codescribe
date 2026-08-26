@@ -1224,13 +1224,13 @@ mod tests {
     use std::fs;
     use std::path::PathBuf;
 
-    use codescribe_core::agent::{ToolRegistry, ToolResultContent, ToolRisk};
-    use serde_json::json;
     use super::{
         McpRowTone, desktop_commander_validator, execution_policy, prepare_upstream_input,
         probe_agentic_readiness_at, probe_mcp_status_at, public_tool_name,
         redact_command_for_approval, register_mcp_tools_from_config_path,
     };
+    use codescribe_core::agent::{ToolRegistry, ToolResultContent, ToolRisk};
+    use serde_json::json;
 
     /// Pin the Desktop Commander 0.26 tool surface: 26 tools, 15 read-only, 10
     /// approval-gated, and one Unknown (`give_feedback_to_desktop_commander`).

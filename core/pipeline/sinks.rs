@@ -228,7 +228,6 @@ mod tests {
         assert_eq!(sink.collected(), vec!["one", "two", "three"]);
     }
 
-
     // ── CollectorEventSink ──
 
     /// CollectorEventSink stores every engine event and filters previews/drops/finals.

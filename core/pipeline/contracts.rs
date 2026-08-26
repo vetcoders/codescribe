@@ -7,10 +7,8 @@
 
 use serde::{Deserialize, Serialize};
 
-use crate::pipeline::acoustic_ledger::{
-    LedgerSealReceipt, MutationReceipt, ObservationIdentity,
-};
 use crate::llm::inline_format::OccurrenceLabelProposal;
+use crate::pipeline::acoustic_ledger::{LedgerSealReceipt, MutationReceipt, ObservationIdentity};
 use crate::stt::tail_provider::TailSampleRange;
 
 // ═══════════════════════════════════════════════════════════

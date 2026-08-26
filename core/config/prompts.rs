@@ -311,10 +311,7 @@ fn seal_runtime_prompt(kind: PromptKind, tuning_filename: &str) -> RuntimeSealed
     let snapshot = prompt_snapshot(kind);
     let base_sha256 = sha256_hex(snapshot.content.as_bytes());
     let tuning = load_optional(tuning_filename);
-    let tuning_sha256 = tuning
-        .as_deref()
-        .map(str::as_bytes)
-        .map(sha256_hex);
+    let tuning_sha256 = tuning.as_deref().map(str::as_bytes).map(sha256_hex);
     let mut composed_content = snapshot.content;
     if let Some(tuning) = tuning {
         composed_content.push_str("\n\n");

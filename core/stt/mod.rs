@@ -457,5 +457,4 @@ mod tests {
         );
         let _ = apple_arm;
     }
-
 }

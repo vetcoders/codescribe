@@ -1635,14 +1635,8 @@ mod tests {
         session.open(&input()).expect("open");
 
         let events = session.drain();
-        let sequences: Vec<_> = events
-            .iter()
-            .map(AsrSessionEvent::sequence_id)
-            .collect();
-        let utterances: Vec<_> = events
-            .iter()
-            .map(AsrSessionEvent::utterance_id)
-            .collect();
+        let sequences: Vec<_> = events.iter().map(AsrSessionEvent::sequence_id).collect();
+        let utterances: Vec<_> = events.iter().map(AsrSessionEvent::utterance_id).collect();
         assert_eq!(sequences, vec![1, 2, 3, 4, 5]);
         assert_eq!(utterances, vec![1, 2, 1, 2, 0]);
         assert_eq!(events[2].as_token(), "final");

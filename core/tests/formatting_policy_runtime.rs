@@ -1,6 +1,4 @@
-use codescribe_core::ai_formatting::{
-    AiFormatStatus, format_text_with_status_for_policy,
-};
+use codescribe_core::ai_formatting::{AiFormatStatus, format_text_with_status_for_policy};
 use codescribe_core::config::{
     Config, FormattingPolicy, PromptKind, PromptWriteReason, prompt_snapshot, prompts, write_prompt,
 };
@@ -226,12 +224,7 @@ async fn formatting_off_bypasses_llm() {
     let runtime_settings = Config::load_runtime_snapshot().expect("seal runtime settings");
 
     let input = "This transcript is intentionally long enough to reach the provider path.";
-    let result = format_text_with_status_for_policy(
-        input,
-        Some("en"),
-        &runtime_settings,
-    )
-    .await;
+    let result = format_text_with_status_for_policy(input, Some("en"), &runtime_settings).await;
 
     assert_eq!(result.text, input);
     assert_eq!(result.status, AiFormatStatus::Skipped);

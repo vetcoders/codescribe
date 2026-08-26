@@ -150,7 +150,10 @@ async fn main() -> Result<()> {
         runtime_settings.llm_lanes().formatting()
     };
     if !codescribe::ai_formatting::is_formatting_available(lane) {
-        println!("      SKIPPED - {}", lane.unavailable_reason().unwrap_or("LLM lane unavailable"));
+        println!(
+            "      SKIPPED - {}",
+            lane.unavailable_reason().unwrap_or("LLM lane unavailable")
+        );
         println!("\n═══════════════════════════════════════════════════════════");
         return Ok(());
     }

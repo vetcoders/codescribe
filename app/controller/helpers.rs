@@ -11,6 +11,8 @@ use tokio::sync::{Mutex as TokioMutex, mpsc};
 use tracing::{debug, info, warn};
 
 use crate::agent_delivery::{AgentDeliveryEvent, register_agent_delivery_turn};
+use crate::os::hold_badge::{BadgeMode, HoldBadgeConfig, show_hold_badge_with_config};
+use crate::os::tray_status;
 use anyhow::{Context, Result};
 use codescribe_core::agent::{
     AgentSession, AgentUiEvent, ImageAttachment, Message, StreamOptions, ThreadDeliveryGateway,
@@ -20,8 +22,6 @@ use codescribe_core::agent::{
 use codescribe_core::config::{
     Config, RuntimeLlmLane, RuntimeSettingsSnapshot, SettingsSnapshotDigest,
 };
-use crate::os::hold_badge::{BadgeMode, HoldBadgeConfig, show_hold_badge_with_config};
-use crate::os::tray_status;
 
 /// Global flag for current session mode.
 /// true = assistive (chat UI), false = non-assistive (simple transcription overlay)
@@ -1140,13 +1140,7 @@ async fn run_agent_send(
             }
             None => false,
         };
-        let result = run_agent_send_path(
-            &mut guard,
-            text,
-            stream_options,
-            runtime_settings,
-        )
-        .await;
+        let result = run_agent_send_path(&mut guard, text, stream_options, runtime_settings).await;
         if fresh_mint_requested {
             // One conscious "+ New thread" = one thread: adopt the minted
             // identity as the target so the next utterance continues it. The
@@ -1164,9 +1158,9 @@ async fn run_agent_send(
         Err(error) => {
             warn!("Agent runtime turn failed without alternate route: {error:#}");
             if !agent_send_error_was_published(&error) {
-                crate::agent_delivery::publish_agent_delivery_event(
-                    AgentDeliveryEvent::Error(error.to_string()),
-                );
+                crate::agent_delivery::publish_agent_delivery_event(AgentDeliveryEvent::Error(
+                    error.to_string(),
+                ));
             }
         }
     }
@@ -1993,8 +1987,7 @@ mod tests {
                 ..Default::default()
             });
             guard.pending_tail = true;
-            guard.last_observation_source =
-                Some(CompletenessObservationSource::RawUtteranceFinal);
+            guard.last_observation_source = Some(CompletenessObservationSource::RawUtteranceFinal);
             guard.observed_final_chars = 12;
             guard.observed_final_through_secs = Some(41.0);
             guard.residual_required = true;
@@ -2076,10 +2069,7 @@ mod tests {
     fn changed_settings_digest_rolls_runtime_preserving_history_and_thread() {
         let old_digest = test_settings_snapshot_digest(2);
         let expected_digest = test_settings_snapshot_digest(3);
-        let old_runtime = seed_completed_runtime_with_digest(
-            "thread_existing",
-            old_digest.clone(),
-        );
+        let old_runtime = seed_completed_runtime_with_digest("thread_existing", old_digest.clone());
         let expected_messages = old_runtime.session.messages().to_vec();
         assert_eq!(old_runtime.session.thread_id(), Some("resp_seed"));
         let mut runtime_state = AgentRuntimeState {

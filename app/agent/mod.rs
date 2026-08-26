@@ -47,9 +47,10 @@ pub fn create_default_provider(
         WireFamily::OpenAiResponses => {
             Ok(Box::new(OpenAiProvider::from_lane(lane, request_timing)?))
         }
-        WireFamily::AnthropicMessages => {
-            Ok(Box::new(AnthropicProvider::from_lane(lane, request_timing)?))
-        }
+        WireFamily::AnthropicMessages => Ok(Box::new(AnthropicProvider::from_lane(
+            lane,
+            request_timing,
+        )?)),
     }
 }
 

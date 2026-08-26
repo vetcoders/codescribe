@@ -101,14 +101,14 @@ impl Config {
     /// Run the one loader pass and seal the immutable settings truth used by a
     /// recording session. Consumers receive this value; they never re-read
     /// `settings.json` or process env during a take.
-    pub fn load_runtime_snapshot(
-    ) -> Result<RuntimeSettingsSnapshot, SettingsSnapshotValidationError> {
+    pub fn load_runtime_snapshot()
+    -> Result<RuntimeSettingsSnapshot, SettingsSnapshotValidationError> {
         Self::load_runtime_snapshot_with_keychain_population(true)
     }
 
     /// Keychain-free form of [`Self::load_runtime_snapshot`] for local capture.
-    pub fn load_runtime_snapshot_without_keychain(
-    ) -> Result<RuntimeSettingsSnapshot, SettingsSnapshotValidationError> {
+    pub fn load_runtime_snapshot_without_keychain()
+    -> Result<RuntimeSettingsSnapshot, SettingsSnapshotValidationError> {
         Self::load_runtime_snapshot_with_keychain_population(false)
     }
 
@@ -192,18 +192,11 @@ impl Config {
     fn resolve_runtime_ai_execution(formatting_policy: FormattingPolicy) -> RuntimeAiExecution {
         let (formatting_prompt, assistive_prompt) =
             super::prompts::seal_runtime_prompts(formatting_policy);
-        let max_retries = Self::runtime_env_or_default(
-            AI_MAX_RETRIES_ENV,
-            DEFAULT_AI_MAX_RETRIES,
-        );
-        let retry_delay_ms = Self::runtime_env_or_default(
-            AI_RETRY_DELAY_MS_ENV,
-            DEFAULT_AI_RETRY_DELAY_MS,
-        );
-        let attempt_timeout_ms = Self::runtime_env_or_default(
-            AI_ATTEMPT_TIMEOUT_MS_ENV,
-            DEFAULT_AI_ATTEMPT_TIMEOUT_MS,
-        );
+        let max_retries = Self::runtime_env_or_default(AI_MAX_RETRIES_ENV, DEFAULT_AI_MAX_RETRIES);
+        let retry_delay_ms =
+            Self::runtime_env_or_default(AI_RETRY_DELAY_MS_ENV, DEFAULT_AI_RETRY_DELAY_MS);
+        let attempt_timeout_ms =
+            Self::runtime_env_or_default(AI_ATTEMPT_TIMEOUT_MS_ENV, DEFAULT_AI_ATTEMPT_TIMEOUT_MS);
         let inter_chunk_timeout_ms = Self::runtime_env_or_default(
             AI_INTER_CHUNK_TIMEOUT_MS_ENV,
             DEFAULT_AI_INTER_CHUNK_TIMEOUT_MS,
@@ -231,7 +224,9 @@ impl Config {
             .ok()
             .and_then(|value| {
                 let value = value.trim();
-                (!value.is_empty()).then(|| value.parse::<T>().ok()).flatten()
+                (!value.is_empty())
+                    .then(|| value.parse::<T>().ok())
+                    .flatten()
             })
             .unwrap_or(default)
     }
@@ -264,9 +259,8 @@ impl Config {
         let account_auth = lane == RuntimeLlmLaneKind::Assistive
             && provider.wire_family() == WireFamily::OpenAiResponses
             && endpoint_requires_key
-            && account_auth::provider_oauth_config(provider).is_ok_and(|row| {
-                Self::runtime_env_non_empty(row.tokens_account).is_some()
-            });
+            && account_auth::provider_oauth_config(provider)
+                .is_ok_and(|row| Self::runtime_env_non_empty(row.tokens_account).is_some());
         let available = api_key.is_some() || !endpoint_requires_key || account_auth;
         let unavailable_reason = (!available).then(|| {
             format!(
@@ -362,9 +356,7 @@ impl Config {
             RuntimeLlmLaneKind::Formatting => {
                 provider.default_model(LlmMode::Formatting).to_string()
             }
-            RuntimeLlmLaneKind::Assistive => {
-                provider.default_model(LlmMode::Assistive).to_string()
-            }
+            RuntimeLlmLaneKind::Assistive => provider.default_model(LlmMode::Assistive).to_string(),
         })
     }
 
@@ -374,9 +366,7 @@ impl Config {
         values: &Config,
         settings: &UserSettings,
     ) -> String {
-        let resolved = if lane == RuntimeLlmLaneKind::Main
-            || provider.owns_generic_lane_config()
-        {
+        let resolved = if lane == RuntimeLlmLaneKind::Main || provider.owns_generic_lane_config() {
             let (lane_setting, lane_env) = match lane {
                 RuntimeLlmLaneKind::Main => (None, None),
                 RuntimeLlmLaneKind::Formatting => (

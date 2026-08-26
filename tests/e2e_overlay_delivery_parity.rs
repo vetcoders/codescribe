@@ -204,14 +204,14 @@ fn layered_arming_matches_request(
 
 fn admitted_occurrence_label(occurrence_id: u64, text: &str) -> EngineEvent {
     let sample_start = occurrence_id.saturating_mul(16_000);
-    let occurrence =
-        OccurrenceIdentity::new("synthetic-ledger-session", 1, sample_start, sample_start + 8_000);
-    let observation = ObservationIdentity::new(
-        ObservationProducer::Apple,
-        occurrence_id,
-        0,
-        occurrence,
+    let occurrence = OccurrenceIdentity::new(
+        "synthetic-ledger-session",
+        1,
+        sample_start,
+        sample_start + 8_000,
     );
+    let observation =
+        ObservationIdentity::new(ObservationProducer::Apple, occurrence_id, 0, occurrence);
     let receipt = AcousticLedger::new().admit(&observation, text);
     EngineEvent::LedgerMutation {
         observation,
@@ -226,20 +226,20 @@ fn admitted_occurrence_revision(
     whisper_label: &str,
 ) -> Vec<EngineEvent> {
     let sample_start = occurrence_id.saturating_mul(16_000);
-    let occurrence =
-        OccurrenceIdentity::new("synthetic-ledger-session", 1, sample_start, sample_start + 8_000);
+    let occurrence = OccurrenceIdentity::new(
+        "synthetic-ledger-session",
+        1,
+        sample_start,
+        sample_start + 8_000,
+    );
     let apple = ObservationIdentity::new(
         ObservationProducer::Apple,
         occurrence_id,
         0,
         occurrence.clone(),
     );
-    let whisper = ObservationIdentity::new(
-        ObservationProducer::Whisper,
-        occurrence_id,
-        1,
-        occurrence,
-    );
+    let whisper =
+        ObservationIdentity::new(ObservationProducer::Whisper, occurrence_id, 1, occurrence);
     let mut ledger = AcousticLedger::new();
     let apple_receipt = ledger.admit(&apple, apple_label);
     let whisper_receipt = ledger.admit(&whisper, whisper_label);
@@ -751,10 +751,7 @@ fn preview_is_excluded_from_committed_projection_and_delivery_floor() {
 /// ledger label mutation for the same PCM occurrence.
 #[test]
 fn raw_tail_patch_cannot_mutate_the_ledger_projection() {
-    let layer0 = vec![admitted_occurrence_label(
-        1,
-        "korzystając z Tulczajn 2024",
-    )];
+    let layer0 = vec![admitted_occurrence_label(1, "korzystając z Tulczajn 2024")];
     let layered = vec![
         admitted_occurrence_label(1, "korzystając z Tulczajn 2024"),
         EngineEvent::ReplaceRange {
@@ -1083,10 +1080,14 @@ async fn run_one_clip(clip: &Path, language: Option<String>) {
         stream_floor.chars().count()
     );
     if !overlay.is_empty() {
-        eprintln!("  ── committed_projection (full) ──\n{overlay}\n  ── end committed_projection ──");
+        eprintln!(
+            "  ── committed_projection (full) ──\n{overlay}\n  ── end committed_projection ──"
+        );
     }
     if !stream_floor.is_empty() && stream_floor != overlay {
-        eprintln!("  ── ledger_delivery_floor (full) ──\n{stream_floor}\n  ── end ledger_delivery_floor ──");
+        eprintln!(
+            "  ── ledger_delivery_floor (full) ──\n{stream_floor}\n  ── end ledger_delivery_floor ──"
+        );
     }
 
     // Live must produce something for speech fixtures (otherwise STT cold/broken).

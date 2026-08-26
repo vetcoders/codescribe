@@ -220,8 +220,12 @@ impl TranscriptBus {
             energy_integral: serial.energy_integral,
             mean_rms_dbfs: serial.mean_rms_dbfs as f32,
             peak_dbfs: serial.peak_dbfs as f32,
-            vad_open_sample: serial.vad_open_sample.unwrap_or(serial.occurrence.sample_start),
-            vad_close_sample: serial.vad_close_sample.unwrap_or(serial.occurrence.sample_end),
+            vad_open_sample: serial
+                .vad_open_sample
+                .unwrap_or(serial.occurrence.sample_start),
+            vad_close_sample: serial
+                .vad_close_sample
+                .unwrap_or(serial.occurrence.sample_end),
             evidence_calibration_version: serial.evidence_calibration_version.clone(),
             word_evidence_receipts,
             layer_decision_receipts,
@@ -240,10 +244,10 @@ impl TranscriptBus {
     ) -> Vec<TranscriptBusEvidenceEvent> {
         let reducer_action = match &revision.action {
             ReducerAction::ApplyLedgerDecision { .. } => "apply_ledger_decision",
-            ReducerAction::RecordLedgerSeal { terminal: true, .. } => {
-                "record_ledger_terminal_seal"
-            }
-            ReducerAction::RecordLedgerSeal { terminal: false, .. } => "record_ledger_seal",
+            ReducerAction::RecordLedgerSeal { terminal: true, .. } => "record_ledger_terminal_seal",
+            ReducerAction::RecordLedgerSeal {
+                terminal: false, ..
+            } => "record_ledger_seal",
             ReducerAction::ApplyManualEdit { .. } => "apply_manual_edit",
         };
         let mut writer = self

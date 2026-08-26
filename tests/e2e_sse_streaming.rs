@@ -68,13 +68,7 @@ async fn e2e_sse_streaming_real_formatting() {
     let input = "cześć jestem Vetcoders i testuję formatowanie tekstu bez interpunkcji";
     eprintln!("Input:  {}", input);
 
-    let result = ai_formatting::format_text(
-        input,
-        Some("pl"),
-        false,
-        &runtime_settings,
-    )
-    .await;
+    let result = ai_formatting::format_text(input, Some("pl"), false, &runtime_settings).await;
     eprintln!("Output: {}", result);
 
     assert!(!result.is_empty(), "Should return formatted text");
@@ -113,14 +107,9 @@ async fn e2e_sse_streaming_real_assistive() {
     let input = "jak napisać funkcję w Rust która odwraca string";
     eprintln!("Input:  {}", input);
 
-    let fmt_result = ai_formatting::format_text_with_status(
-        input,
-        Some("pl"),
-        true,
-        &runtime_settings,
-        None,
-    )
-    .await;
+    let fmt_result =
+        ai_formatting::format_text_with_status(input, Some("pl"), true, &runtime_settings, None)
+            .await;
     eprintln!("Output: {}", fmt_result.text);
     eprintln!("Status: {:?}", fmt_result.status);
 
@@ -156,13 +145,7 @@ async fn e2e_sse_streaming_kurier_mode() {
     let input = "przekaż do Maćka że spotkanie jest przełożone na piątek o dziesiątej";
     eprintln!("Input:  {}", input);
 
-    let result = ai_formatting::format_text(
-        input,
-        Some("pl"),
-        true,
-        &runtime_settings,
-    )
-    .await;
+    let result = ai_formatting::format_text(input, Some("pl"), true, &runtime_settings).await;
     eprintln!("Output: {}", result);
 
     assert!(!result.is_empty(), "Should return formatted message");

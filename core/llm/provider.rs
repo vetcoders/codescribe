@@ -242,11 +242,9 @@ impl ProviderKind {
                 "/v1/responses",
                 &["/v1/responses", "/v1/chat/completions", "/v1/completions"],
             ),
-            WireFamily::AnthropicMessages => normalize_endpoint(
-                endpoint,
-                "/v1/messages",
-                &["/v1/messages", "/v1/responses"],
-            ),
+            WireFamily::AnthropicMessages => {
+                normalize_endpoint(endpoint, "/v1/messages", &["/v1/messages", "/v1/responses"])
+            }
         }
     }
 
@@ -256,9 +254,9 @@ impl ProviderKind {
     pub fn endpoint_requires_api_key(endpoint: &str) -> bool {
         let host = endpoint_host(endpoint);
         !host.is_empty()
-            && PROVIDER_REGISTRY.iter().any(|row| {
-                host.eq_ignore_ascii_case(endpoint_host(row.default_endpoint))
-            })
+            && PROVIDER_REGISTRY
+                .iter()
+                .any(|row| host.eq_ignore_ascii_case(endpoint_host(row.default_endpoint)))
     }
 }
 

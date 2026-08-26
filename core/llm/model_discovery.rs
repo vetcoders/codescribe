@@ -294,14 +294,14 @@ fn run_test_after_claim(provider: ProviderKind) {
 pub fn discover_models(lane: &RuntimeLlmLane) -> Result<ModelDiscoveryResult, ModelDiscoveryError> {
     let provider = lane.provider();
     let key_name = lane.credential().key_account();
-    let api_key = lane
-        .credential()
-        .api_key()
-        .map(str::to_string)
-        .ok_or(ModelDiscoveryError::NoKey {
-            provider,
-            env_key: key_name.to_string(),
-        })?;
+    let api_key =
+        lane.credential()
+            .api_key()
+            .map(str::to_string)
+            .ok_or(ModelDiscoveryError::NoKey {
+                provider,
+                env_key: key_name.to_string(),
+            })?;
 
     let (generation, cancelled) = claim_generation(provider);
     #[cfg(test)]
@@ -552,7 +552,10 @@ fn provider_models_endpoint(
 ) -> Result<String, ModelDiscoveryError> {
     let mut url = reqwest::Url::parse(endpoint).map_err(|error| ModelDiscoveryError::Parse {
         provider,
-            message: format!("invalid {} endpoint '{endpoint}': {error}", provider.display_name()),
+        message: format!(
+            "invalid {} endpoint '{endpoint}': {error}",
+            provider.display_name()
+        ),
     })?;
     url.set_query(None);
     url.set_fragment(None);
@@ -570,12 +573,9 @@ fn provider_models_endpoint(
 
     if next.last().is_some_and(|segment| segment == "models") {
         // already right
-    } else if next
-        .last()
-        .is_some_and(|segment| {
-            segment == "responses" || segment == "completions" || segment == "messages"
-        })
-    {
+    } else if next.last().is_some_and(|segment| {
+        segment == "responses" || segment == "completions" || segment == "messages"
+    }) {
         next.pop();
         if next.last().is_some_and(|segment| segment == "chat") {
             next.pop();
@@ -588,7 +588,10 @@ fn provider_models_endpoint(
     url.path_segments_mut()
         .map_err(|_| ModelDiscoveryError::Parse {
             provider,
-            message: format!("invalid {} endpoint base '{endpoint}'", provider.display_name()),
+            message: format!(
+                "invalid {} endpoint base '{endpoint}'",
+                provider.display_name()
+            ),
         })?
         .clear()
         .extend(next.iter().map(String::as_str));
@@ -905,8 +908,8 @@ mod tests {
             let _ = claim_generation(provider);
         }));
 
-        let err = discover_assistive_models()
-            .expect_err("superseded discovery must return cancelled");
+        let err =
+            discover_assistive_models().expect_err("superseded discovery must return cancelled");
 
         assert_eq!(err.code(), "cancelled");
         assert_eq!(err.provider(), ProviderKind::OpenAiResponses);

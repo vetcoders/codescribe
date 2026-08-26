@@ -2,8 +2,8 @@ use std::sync::Arc;
 
 #[tokio::test]
 async fn test_format_text_with_status_signature() {
-    let runtime_settings = codescribe::config::Config::load_runtime_snapshot()
-        .expect("seal runtime settings");
+    let runtime_settings =
+        codescribe::config::Config::load_runtime_snapshot().expect("seal runtime settings");
     let callback = Arc::new(|delta: &str| {
         println!("Received delta: {}", delta);
     });

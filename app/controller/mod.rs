@@ -39,12 +39,12 @@ pub mod serving_status;
 /// Controller state, hotkey types, and recording truth metadata.
 mod types;
 
+pub use delivery_route::{OverlayPasteDelivery, OverlayPasteResult};
 pub use helpers::{
     is_assistive_session, is_conversation_session, publish_recording_indicator,
     set_assistive_session, set_assistive_target_thread, set_conversation_session,
 };
 pub use types::{HotkeyAction, HotkeyInput, HotkeyType, State, TranscriptionActionContractMode};
-pub use delivery_route::{OverlayPasteDelivery, OverlayPasteResult};
 
 use crate::presentation::transcript_bus::TranscriptSessionEndReason;
 use crate::presentation::{PresentationEmitter, TranscriptBus, TranscriptMode, TranscriptSession};
@@ -84,8 +84,8 @@ use codescribe_core::tts::AudioPlayer;
 pub(crate) use codescribe_core::pipeline::contracts::TranscriptionConfidenceFlag;
 
 use delivery_route::{
-    DeliveryFacts, DeliveryIntent, DeliveryRoute, format_delivery_route_line,
-    overlay_insert_facts, resolve_delivery_route, target_is_self_app,
+    DeliveryFacts, DeliveryIntent, DeliveryRoute, format_delivery_route_line, overlay_insert_facts,
+    resolve_delivery_route, target_is_self_app,
 };
 #[cfg(test)]
 use helpers::SessionEngineStats;
@@ -469,10 +469,7 @@ impl RecordingController {
     pub fn new_without_keychain() -> Self {
         let snapshot = Config::load_runtime_snapshot_without_keychain()
             .unwrap_or_else(|error| panic!("runtime settings snapshot refused: {error:?}"));
-        Self::with_runtime_settings(
-            snapshot,
-            "RecordingController::new_without_keychain",
-        )
+        Self::with_runtime_settings(snapshot, "RecordingController::new_without_keychain")
     }
 
     /// Shared constructor behind both public entry points.
@@ -756,7 +753,10 @@ impl RecordingController {
     {
         let delivery_started = std::time::Instant::now();
         if transcript.trim().is_empty() {
-            info!(elapsed_secs = delivery_started.elapsed().as_secs_f64(), "assistive delivery skipped: empty transcript");
+            info!(
+                elapsed_secs = delivery_started.elapsed().as_secs_f64(),
+                "assistive delivery skipped: empty transcript"
+            );
             return Ok(false);
         }
         let to_agent = resolve_delivery_route(
@@ -799,7 +799,10 @@ impl RecordingController {
             true,
         )
         .await;
-        info!(elapsed_secs = delivery_started.elapsed().as_secs_f64(), "assistive delivery completed");
+        info!(
+            elapsed_secs = delivery_started.elapsed().as_secs_f64(),
+            "assistive delivery completed"
+        );
         Ok(true)
     }
 
@@ -2411,12 +2414,8 @@ impl RecordingController {
                         });
                 if let Err(e) = preflight {
                     error!("Hold-start aborted (Apple STT preflight): {e:#}");
-                    Self::unwind_hold_start(
-                        &hold_session,
-                        None,
-                        HoldStartAbort::PreflightRefused,
-                    )
-                    .await;
+                    Self::unwind_hold_start(&hold_session, None, HoldStartAbort::PreflightRefused)
+                        .await;
                     return;
                 }
             }
@@ -2501,10 +2500,7 @@ impl RecordingController {
             // so the very first deltas route to the correct overlay.
             set_assistive_session(is_assistive);
             reset_session_telemetry(&hold_session.session_telemetry);
-            rec.bind_session_authority(
-                new_session_id.clone(),
-                Arc::clone(&runtime_settings),
-            );
+            rec.bind_session_authority(new_session_id.clone(), Arc::clone(&runtime_settings));
             let transcript_bus = TranscriptBus::open(TranscriptSession {
                 session_id: new_session_id,
                 mode: if is_assistive {
@@ -2583,8 +2579,7 @@ impl RecordingController {
             // one that writes its terminal line.
             if hold_start_generation.load(Ordering::SeqCst) != task_generation {
                 warn!("Hold-start superseded after recorder start; stopping stale session");
-                Self::unwind_hold_start(&hold_session, Some(rec), HoldStartAbort::Superseded)
-                    .await;
+                Self::unwind_hold_start(&hold_session, Some(rec), HoldStartAbort::Superseded).await;
                 return;
             }
             drop(rec_guard);
@@ -2756,10 +2751,7 @@ impl RecordingController {
         // so the very first deltas route to the correct overlay.
         set_assistive_session(is_assistive);
         reset_session_telemetry(&self.session_telemetry);
-        recorder.bind_session_authority(
-            new_session_id.clone(),
-            Arc::clone(&runtime_settings),
-        );
+        recorder.bind_session_authority(new_session_id.clone(), Arc::clone(&runtime_settings));
         let transcript_bus = TranscriptBus::open(TranscriptSession {
             session_id: new_session_id,
             mode: if is_assistive {
@@ -2981,7 +2973,10 @@ impl RecordingController {
             phase4.elapsed(),
             stop_start.elapsed()
         );
-        info!(total_secs, rec_stop_secs, phase3_secs, cleanup_secs, "stop_toggle_inner: mechanical stop timing");
+        info!(
+            total_secs,
+            rec_stop_secs, phase3_secs, cleanup_secs, "stop_toggle_inner: mechanical stop timing"
+        );
 
         result.map(|_| ())
     }
@@ -3085,7 +3080,6 @@ impl RecordingController {
         result.map(|_| ())
     }
 
-
     /// Process the recording: stop, transcribe, format, paste
     ///
     /// ## Mode Logic:
@@ -3132,7 +3126,6 @@ impl RecordingController {
             ..ProcessRecordingOutcome::default()
         })
     }
-
 
     /// Force reset to IDLE state without stopping recorder.
     ///
@@ -3182,11 +3175,8 @@ mod c15d_settings_one_path_falsifiers {
     fn controller_has_exactly_one_mutable_settings_generation() {
         let source = include_str!("mod.rs");
         let retired_config_field = ["config: Arc<RwLock<", "Config>>"].concat();
-        let runtime_arc_field = [
-            "runtime_settings: RwLock<Arc<",
-            "RuntimeSettingsSnapshot>>",
-        ]
-        .concat();
+        let runtime_arc_field =
+            ["runtime_settings: RwLock<Arc<", "RuntimeSettingsSnapshot>>"].concat();
         let runtime_arc_write = ["*self.runtime_settings", ".write().await"].concat();
         let retired_setter = ["pub async ", "fn set_", "config"].concat();
 
@@ -3223,8 +3213,7 @@ mod c15d_settings_one_path_falsifiers {
         let before = controller.runtime_settings_arc().await;
         let before_digest = before.digest().as_str().to_string();
         let before_delay = before.values().hold_start_delay_ms;
-        let next = Config::load_runtime_snapshot_without_keychain()
-            .expect("seal next generation");
+        let next = Config::load_runtime_snapshot_without_keychain().expect("seal next generation");
         assert!(
             controller
                 .replace_runtime_settings_when_idle(next.clone())
@@ -3253,8 +3242,8 @@ mod c15d_settings_one_path_falsifiers {
         });
         *controller.hold_start_task.lock().await = Some(pending);
 
-        let next = Config::load_runtime_snapshot_without_keychain()
-            .expect("seal deferred generation");
+        let next =
+            Config::load_runtime_snapshot_without_keychain().expect("seal deferred generation");
         assert!(!controller.replace_runtime_settings_when_idle(next).await);
         let after = controller.runtime_settings_arc().await;
         assert!(Arc::ptr_eq(&before, &after));
@@ -3274,8 +3263,8 @@ mod c15d_settings_one_path_falsifiers {
         }
         *controller.hold_start_task.lock().await = Some(finished);
 
-        let next = Config::load_runtime_snapshot_without_keychain()
-            .expect("seal post-hold generation");
+        let next =
+            Config::load_runtime_snapshot_without_keychain().expect("seal post-hold generation");
         assert!(controller.replace_runtime_settings_when_idle(next).await);
         assert!(controller.hold_start_task.lock().await.is_none());
     }
@@ -3288,8 +3277,8 @@ mod c15d_settings_one_path_falsifiers {
         for active_state in [State::RecHold, State::RecToggle] {
             *controller.state.write().await = active_state;
             let before = controller.runtime_settings_arc().await;
-            let next = Config::load_runtime_snapshot_without_keychain()
-                .expect("seal later generation");
+            let next =
+                Config::load_runtime_snapshot_without_keychain().expect("seal later generation");
             assert!(!controller.replace_runtime_settings_when_idle(next).await);
             let after = controller.runtime_settings_arc().await;
             assert!(Arc::ptr_eq(&before, &after));
@@ -3336,17 +3325,11 @@ mod c15d_settings_one_path_falsifiers {
     /// C15D falsifier: profile publish uses one snapshot's values and settings.
     #[test]
     fn recording_profile_uses_controller_snapshot_user_settings() {
-        let snapshot = Config::load_runtime_snapshot_without_keychain()
-            .expect("seal runtime settings");
-        let enabled = apply_runtime_transcription_profile(
-            snapshot.values(),
-            snapshot.user_settings(),
-            false,
-        );
-        assert_eq!(
-            enabled,
-            snapshot.values().transcription_overlay_enabled
-        );
+        let snapshot =
+            Config::load_runtime_snapshot_without_keychain().expect("seal runtime settings");
+        let enabled =
+            apply_runtime_transcription_profile(snapshot.values(), snapshot.user_settings(), false);
+        assert_eq!(enabled, snapshot.values().transcription_overlay_enabled);
     }
 }
 
@@ -3481,7 +3464,9 @@ mod hold_start_terminal_lifecycle_falsifiers {
         let bus_install = ["hold_session.active_transcript_bus", ".write().await = "].concat();
         let recorder_start = ["rec.start_event_", "session("].concat();
         assert!(
-            hold_body.find(&bus_install).expect("bus installed in hold body")
+            hold_body
+                .find(&bus_install)
+                .expect("bus installed in hold body")
                 < hold_body
                     .find(&recorder_start)
                     .expect("recorder start in hold body")

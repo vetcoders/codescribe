@@ -73,9 +73,9 @@ fn warn_if_initial_prompt_ignored() {
 
 /// Token IDs resolved dynamically from tokenizer.json.
 struct ResolvedTokens {
-    sot: u32,              // <|startoftranscript|>
-    eot: u32,              // <|endoftext|>
-    transcribe: u32,       // <|transcribe|>
+    sot: u32,        // <|startoftranscript|>
+    eot: u32,        // <|endoftext|>
+    transcribe: u32, // <|transcribe|>
 }
 
 impl ResolvedTokens {
@@ -936,5 +936,4 @@ mod tests {
             "Mel filters should be computed"
         );
     }
-
 }

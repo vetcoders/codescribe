@@ -829,19 +829,18 @@ impl AcousticLedger {
         let mut ordinals = Vec::new();
         let mut vad_close = 0u64;
         for occurrence in &in_epoch {
-            let seal = self.seals.get(occurrence).ok_or(SealRefusal::OccurrenceStillOpen)?;
+            let seal = self
+                .seals
+                .get(occurrence)
+                .ok_or(SealRefusal::OccurrenceStillOpen)?;
             serials.extend(seal.serials.iter().cloned());
             ordinals.extend(seal.layer_trail_ordinals.iter().copied());
             vad_close = vad_close.max(seal.vad_close_sample);
         }
         let first = in_epoch.first().expect("non-empty epoch");
         let last = in_epoch.last().expect("non-empty epoch");
-        let coverage = OccurrenceIdentity::new(
-            session,
-            capture_epoch,
-            first.sample_start,
-            last.sample_end,
-        );
+        let coverage =
+            OccurrenceIdentity::new(session, capture_epoch, first.sample_start, last.sample_end);
         // The terminal frontier schedules nobody: closure here is a restatement
         // of the constituent occurrence frontiers, which were each checked in
         // `seal` above. It is not independent evidence and must not be read as
@@ -1725,10 +1724,7 @@ impl ObservationFrontier {
 
     /// Producers that were scheduled and have not finished.
     pub fn open_producers(&self) -> Vec<ObservationProducer> {
-        self.scheduled
-            .difference(&self.returned)
-            .copied()
-            .collect()
+        self.scheduled.difference(&self.returned).copied().collect()
     }
 
     /// Whether every scheduled producer has finished.
@@ -1948,7 +1944,8 @@ impl OccurrenceDerivation {
                 None
             }
             Self::Refine { parent, child } => {
-                if child.sample_start < parent.sample_start || child.sample_end > parent.sample_end {
+                if child.sample_start < parent.sample_start || child.sample_end > parent.sample_end
+                {
                     return Some("refine_child_outside_parent");
                 }
                 None
@@ -2066,15 +2063,9 @@ mod tests {
             [ObservationProducer::Apple, ObservationProducer::Lexicon],
         );
 
-        assert!(ledger.schedule_observer(
-            occurrence.clone(),
-            ObservationProducer::Whisper
-        ));
+        assert!(ledger.schedule_observer(occurrence.clone(), ObservationProducer::Whisper));
         assert!(
-            !ledger.schedule_observer(
-                occurrence.clone(),
-                ObservationProducer::Whisper
-            ),
+            !ledger.schedule_observer(occurrence.clone(), ObservationProducer::Whisper),
             "a duplicate before return is not a concrete new launch"
         );
         assert!(

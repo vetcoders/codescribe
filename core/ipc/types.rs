@@ -301,9 +301,7 @@ mod tests {
     use crate::pipeline::acoustic_ledger::{
         MutationReceipt, ObservationIdentity, ObservationProducer, OccurrenceIdentity,
     };
-    use crate::pipeline::contracts::{
-        NonSpeechEvidence, SidebandEvidenceKind, SidebandProvenance,
-    };
+    use crate::pipeline::contracts::{NonSpeechEvidence, SidebandEvidenceKind, SidebandProvenance};
     use crate::stt::tail_provider::TailSampleRange;
     use serde_json::Value;
 

@@ -9,9 +9,7 @@
 
 use std::{collections::BTreeMap, io::Write as _, sync::Arc};
 
-use codescribe_core::llm::inline_format::{
-    LabelProposalDisposition, OccurrenceLabelProposal,
-};
+use codescribe_core::llm::inline_format::{LabelProposalDisposition, OccurrenceLabelProposal};
 use codescribe_core::pipeline::acoustic_ledger::{
     AcousticLedger, AcousticSerial, LedgerSealReceipt, MutationReceipt, ObservationIdentity,
     ObservationProducer, OccurrenceIdentity,
@@ -39,8 +37,7 @@ fn append_stream_delta(path: &std::path::Path, delta: &str) -> std::io::Result<(
         .create(true)
         .append(true)
         .open(path)?;
-    let timestamp = chrono::Utc::now()
-        .to_rfc3339_opts(chrono::SecondsFormat::Millis, true);
+    let timestamp = chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Millis, true);
     let payload = delta
         .replace('\n', "\\n")
         .replace('\r', "\\r")
@@ -234,10 +231,7 @@ impl TranscriptReducer {
 
     /// Project ledger-owned finality; the reducer does not decide whether the
     /// frontier is closed and cannot lift the seal later.
-    pub fn apply_ledger_seal(
-        &mut self,
-        receipt: &LedgerSealReceipt,
-    ) -> Option<TranscriptRevision> {
+    pub fn apply_ledger_seal(&mut self, receipt: &LedgerSealReceipt) -> Option<TranscriptRevision> {
         for occurrence in &receipt.sealed_occurrences {
             if let Some(entry) = self.document_by_occurrence.get_mut(occurrence) {
                 entry.seal_receipt = Some(receipt.receipt_id.clone());
@@ -298,7 +292,8 @@ impl TranscriptReducer {
             occurrence,
         );
         let receipt = ledger.admit(&observation, candidate_label);
-        let _ = ledger.note_frontier_return(&observation.occurrence, ObservationProducer::Formatter);
+        let _ =
+            ledger.note_frontier_return(&observation.occurrence, ObservationProducer::Formatter);
         (
             true,
             self.apply_ledger_mutation(ledger, &observation, &receipt),
@@ -347,8 +342,7 @@ pub struct PresentationEmitter {
     /// Durable observer of this exact reducer's committed/final truth.
     transcript_bus: Option<Arc<TranscriptBus>>,
     acoustic_ledger: Option<Arc<std::sync::Mutex<AcousticLedger>>>,
-    projection_callback:
-        Option<Arc<dyn Fn(&TranscriptBusEvidenceEvent) + Send + Sync>>,
+    projection_callback: Option<Arc<dyn Fn(&TranscriptBusEvidenceEvent) + Send + Sync>>,
 }
 
 impl PresentationEmitter {
@@ -387,9 +381,7 @@ impl PresentationEmitter {
         stream_log_path: Option<std::path::PathBuf>,
         transcript_bus: Option<Arc<TranscriptBus>>,
         acoustic_ledger: Option<Arc<std::sync::Mutex<AcousticLedger>>>,
-        projection_callback: Option<
-            Arc<dyn Fn(&TranscriptBusEvidenceEvent) + Send + Sync>,
-        >,
+        projection_callback: Option<Arc<dyn Fn(&TranscriptBusEvidenceEvent) + Send + Sync>>,
     ) -> Self {
         // One ordered worker preserves paint order while keeping authority
         // effects explicit. Both command families may paint; only a committed
@@ -513,9 +505,7 @@ impl EventSink for PresentationEmitter {
                             }
                         }
                     }
-                    self.send_cmd(EmitterCmd::PublishCommittedRevision(
-                        revision.rendered_text,
-                    ));
+                    self.send_cmd(EmitterCmd::PublishCommittedRevision(revision.rendered_text));
                 }
             }
             EngineEvent::LedgerSeal { receipt } => {
@@ -561,14 +551,13 @@ impl EventSink for PresentationEmitter {
                         .and_then(|receipt| reducer.apply_ledger_seal(&receipt));
                     (proposal_revision, seal_revision)
                 };
-                for (is_label_revision, revision) in [
-                    (true, proposal_revision),
-                    (false, seal_revision),
-                ]
-                .into_iter()
-                .filter_map(|(is_label_revision, revision)| {
-                    revision.map(|revision| (is_label_revision, revision))
-                }) {
+                for (is_label_revision, revision) in
+                    [(true, proposal_revision), (false, seal_revision)]
+                        .into_iter()
+                        .filter_map(|(is_label_revision, revision)| {
+                            revision.map(|revision| (is_label_revision, revision))
+                        })
+                {
                     if let Some(bus) = &self.transcript_bus {
                         let events = bus.publish_revision(&revision, &ledger);
                         if let Some(callback) = &self.projection_callback {
@@ -578,9 +567,7 @@ impl EventSink for PresentationEmitter {
                         }
                     }
                     if is_label_revision {
-                        self.send_cmd(EmitterCmd::PublishCommittedRevision(
-                            revision.rendered_text,
-                        ));
+                        self.send_cmd(EmitterCmd::PublishCommittedRevision(revision.rendered_text));
                     }
                 }
             }
@@ -707,9 +694,7 @@ impl EventSink for PresentationEmitter {
 mod tests {
     use super::{PresentationEmitter, TranscriptReducer};
     use crate::presentation::transcript_bus::{TranscriptBus, TranscriptMode, TranscriptSession};
-    use codescribe_core::llm::inline_format::{
-        LabelProposalDisposition, OccurrenceLabelProposal,
-    };
+    use codescribe_core::llm::inline_format::{LabelProposalDisposition, OccurrenceLabelProposal};
     use codescribe_core::pipeline::acoustic_ledger::{
         AcousticEvidence, AcousticLedger, EnergyCalibration, ObservationIdentity,
         ObservationProducer, OccurrenceIdentity,
@@ -742,12 +727,8 @@ mod tests {
         request: u64,
         label: &str,
     ) -> EngineEvent {
-        let observation = ObservationIdentity::new(
-            ObservationProducer::Apple,
-            request,
-            0,
-            occurrence,
-        );
+        let observation =
+            ObservationIdentity::new(ObservationProducer::Apple, request, 0, occurrence);
         let receipt = ledger.admit(&observation, label);
         EngineEvent::LedgerMutation {
             observation,
@@ -775,11 +756,8 @@ mod tests {
     async fn preview_paints_overlay_without_writing_delivery() {
         let delivery = Arc::new(Mutex::new("ledger truth".to_string()));
         let deltas = Arc::new(RecordingDeltaSink::default());
-        let mut emitter = PresentationEmitter::new(
-            Arc::clone(&delivery),
-            Some(deltas.clone()),
-            None,
-        );
+        let mut emitter =
+            PresentationEmitter::new(Arc::clone(&delivery), Some(deltas.clone()), None);
 
         emitter.on_event(&EngineEvent::Preview {
             rev: 1,
@@ -788,11 +766,13 @@ mod tests {
         emitter.finish().await;
 
         assert_eq!(delivery.lock().await.as_str(), "ledger truth");
-        assert!(!deltas
-            .deltas
-            .lock()
-            .unwrap_or_else(|error| error.into_inner())
-            .is_empty());
+        assert!(
+            !deltas
+                .deltas
+                .lock()
+                .unwrap_or_else(|error| error.into_inner())
+                .is_empty()
+        );
     }
 
     #[tokio::test]
@@ -839,11 +819,13 @@ mod tests {
         emitter.finish().await;
 
         assert_eq!(delivery.lock().await.as_str(), "Iwo");
-        assert!(!deltas
-            .deltas
-            .lock()
-            .unwrap_or_else(|error| error.into_inner())
-            .is_empty());
+        assert!(
+            !deltas
+                .deltas
+                .lock()
+                .unwrap_or_else(|error| error.into_inner())
+                .is_empty()
+        );
         assert_eq!(projection_count.load(Ordering::SeqCst), 1);
         assert!(
             std::fs::read_to_string(bus_path)
@@ -941,9 +923,11 @@ mod tests {
             else {
                 unreachable!();
             };
-            assert!(reducer
-                .apply_ledger_mutation(&ledger, &observation, &receipt)
-                .is_some());
+            assert!(
+                reducer
+                    .apply_ledger_mutation(&ledger, &observation, &receipt)
+                    .is_some()
+            );
         }
 
         assert_eq!(reducer.document_by_occurrence.len(), 2);
@@ -973,30 +957,20 @@ mod tests {
             occurrence.clone(),
             [ObservationProducer::Apple, ObservationProducer::Lexicon],
         );
-        let apple = ObservationIdentity::new(
-            ObservationProducer::Apple,
-            1,
-            0,
-            occurrence.clone(),
-        );
+        let apple = ObservationIdentity::new(ObservationProducer::Apple, 1, 0, occurrence.clone());
         let apple_receipt = ledger.admit(&apple, "Iwo");
         assert!(!ledger.note_frontier_return(&occurrence, ObservationProducer::Apple));
         let mut reducer = TranscriptReducer::default();
-        assert!(reducer
-            .apply_ledger_mutation(&ledger, &apple, &apple_receipt)
-            .is_some());
-
-        let lexicon = ObservationIdentity::new(
-            ObservationProducer::Lexicon,
-            1,
-            0,
-            occurrence.clone(),
+        assert!(
+            reducer
+                .apply_ledger_mutation(&ledger, &apple, &apple_receipt)
+                .is_some()
         );
+
+        let lexicon =
+            ObservationIdentity::new(ObservationProducer::Lexicon, 1, 0, occurrence.clone());
         let _ = ledger.admit(&lexicon, "Iwo");
-        assert!(ledger.schedule_observer(
-            occurrence.clone(),
-            ObservationProducer::Formatter,
-        ));
+        assert!(ledger.schedule_observer(occurrence.clone(), ObservationProducer::Formatter,));
         assert!(!ledger.note_frontier_return(&occurrence, ObservationProducer::Lexicon));
         (ledger, reducer, occurrence)
     }
@@ -1057,7 +1031,10 @@ mod tests {
             reducer.apply_occurrence_label_proposal(&mut ledger, &proposal);
         assert!(!formatter_returned);
         assert!(revision.is_none());
-        assert_eq!(ledger.layer_trail_for(&occurrence).count(), trail_after_seal);
+        assert_eq!(
+            ledger.layer_trail_for(&occurrence).count(),
+            trail_after_seal
+        );
         assert_eq!(ledger.text_of(&occurrence), Some("Iwo!"));
         assert_eq!(ledger.qualified_occurrences().count(), qualified_before);
         assert_eq!(reducer.document_by_occurrence.len(), 1);

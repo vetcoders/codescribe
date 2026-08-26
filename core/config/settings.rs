@@ -438,14 +438,9 @@ pub struct SettingsSnapshotValidation;
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum SettingsSnapshotValidationError {
     /// A field failed the documented sanitize/range/enum contract.
-    InvalidField {
-        field: &'static str,
-        reason: String,
-    },
+    InvalidField { field: &'static str, reason: String },
     /// Precedence inputs conflicted in a way the loader must not silently heal.
-    ConflictingSources {
-        detail: String,
-    },
+    ConflictingSources { detail: String },
 }
 
 impl std::fmt::Display for SettingsSnapshotValidationError {
@@ -849,10 +844,7 @@ pub struct RuntimeAiRequestTiming {
 }
 
 impl RuntimeAiRequestTiming {
-    pub(super) const fn seal(
-        attempt_timeout: Duration,
-        inter_chunk_timeout: Duration,
-    ) -> Self {
+    pub(super) const fn seal(attempt_timeout: Duration, inter_chunk_timeout: Duration) -> Self {
         Self {
             attempt_timeout,
             inter_chunk_timeout,

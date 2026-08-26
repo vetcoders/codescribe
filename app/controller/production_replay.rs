@@ -13,7 +13,9 @@ use anyhow::{Result, anyhow};
 use codescribe_core::audio::streaming_recorder::replay_production_session;
 use codescribe_core::config::UserSettings;
 use codescribe_core::pipeline::acoustic_ledger::AcousticLedger;
-use codescribe_core::pipeline::contracts::{EngineEvent, FinalPassDisposition, TranscriptionVerdict};
+use codescribe_core::pipeline::contracts::{
+    EngineEvent, FinalPassDisposition, TranscriptionVerdict,
+};
 use codescribe_core::pipeline::streaming::APPLE_FINAL_OVERLAP_WARNING_CODE;
 
 use crate::presentation::emitter::TranscriptReducer;
@@ -163,7 +165,9 @@ fn finish_replay_delivery(
     streaming_engine_label: &str,
 ) -> Result<ReplayDelivery> {
     if live_text.trim().is_empty() {
-        return Err(anyhow!("production ledger projection produced no deliverable text"));
+        return Err(anyhow!(
+            "production ledger projection produced no deliverable text"
+        ));
     }
     let final_pass_attempted = local_final_pass_verdict.is_some();
     let (final_pass_skipped, final_pass_skip_reason) = local_final_pass_verdict
@@ -210,7 +214,8 @@ pub async fn replay_overlay_recording(
         return Err(anyhow!("replay WAV contains no samples"));
     }
 
-    let session = replay_production_session(&samples, sample_rate, language.clone(), settings).await?;
+    let session =
+        replay_production_session(&samples, sample_rate, language.clone(), settings).await?;
     let live_text = {
         let mut ledger = session
             .acoustic_ledger
@@ -222,9 +227,9 @@ pub async fn replay_overlay_recording(
     let final_verdict = match lane {
         ProductionReplayLane::AppleLexicon => None,
         ProductionReplayLane::LocalFinalPass => Some(
-                codescribe_core::stt::transcribe_file_verdict(wav, language.as_deref())
-                    .map_err(|_| anyhow!("production local final pass failed"))?,
-            ),
+            codescribe_core::stt::transcribe_file_verdict(wav, language.as_deref())
+                .map_err(|_| anyhow!("production local final pass failed"))?,
+        ),
     };
     let delivery = finish_replay_delivery(
         live_text.clone(),
@@ -300,9 +305,8 @@ mod tests {
     /// live Apple canvas when Layer 1 and local final pass are both disarmed.
     #[test]
     fn apple_only_replay_json_surface_never_reports_streaming_whisper() {
-        let delivery =
-            finish_replay_delivery("pacjent stabilny".to_string(), None, "live_apple")
-                .expect("Apple live floor should remain deliverable");
+        let delivery = finish_replay_delivery("pacjent stabilny".to_string(), None, "live_apple")
+            .expect("Apple live floor should remain deliverable");
 
         let row = serde_json::json!({ "engine_label": delivery.engine_label });
         assert_eq!(row["engine_label"], "live_apple");

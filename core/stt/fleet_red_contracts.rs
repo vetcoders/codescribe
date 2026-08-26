@@ -293,7 +293,6 @@ fn fleet_red_cloud_requires_explicit_consent() {
     let consented = resolve_asr_product_mode(Some("cloud"), Some("granted"), None);
     assert!(construct(&consented.consent).is_ok());
     assert_eq!(refiner_for(&consented), RefinerMode::CloudSession);
-
 }
 
 #[test]

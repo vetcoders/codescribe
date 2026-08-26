@@ -12,8 +12,8 @@ async fn main() {
         .nth(1)
         .expect("usage: format_chain_probe <raw.txt>");
     let raw = std::fs::read_to_string(&path).expect("read raw transcript");
-    let runtime_settings = codescribe_core::config::Config::load_runtime_snapshot()
-        .expect("seal runtime settings");
+    let runtime_settings =
+        codescribe_core::config::Config::load_runtime_snapshot().expect("seal runtime settings");
     println!("=== RAW ({} chars) from {path}", raw.chars().count());
 
     for turn in 1..=2 {

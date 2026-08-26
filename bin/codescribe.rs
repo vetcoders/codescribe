@@ -182,11 +182,7 @@ fn live_event_text<'a>(status: &str, text: &'a str) -> Option<&'a str> {
     (!text.is_empty()).then_some(text)
 }
 
-fn transcribe(
-    file: &std::path::Path,
-    language: Option<&str>,
-    stream: bool,
-) -> anyhow::Result<()> {
+fn transcribe(file: &std::path::Path, language: Option<&str>, stream: bool) -> anyhow::Result<()> {
     use std::io::Write as _;
 
     anyhow::ensure!(file.exists(), "file not found: {}", file.display());

@@ -547,5 +547,4 @@ mod tests {
             Some("cloud_failed_fallback")
         );
     }
-
 }

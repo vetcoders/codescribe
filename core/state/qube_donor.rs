@@ -342,5 +342,4 @@ mod tests {
             std::env::remove_var("CODESCRIBE_DATA_DIR");
         }
     }
-
 }
