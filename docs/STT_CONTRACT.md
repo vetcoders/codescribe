@@ -310,6 +310,28 @@ selected_engine()
 
 ---
 
+### 3.x Acoustic admission (precondition of every take)
+
+Before the controller opens a microphone (`start_toggle_recording`, hold-start
+task) it evaluates `controller::admission::evaluate_live_admission` on the
+selected settings generation, in this order, and stops at the first blocker:
+
+| Order | Blocker code | Cause | Operator action |
+| --- | --- | --- | --- |
+| 1 | `admission_capture_device_unavailable` | cpal cannot resolve the configured/default input | plug/select an input device |
+| 2 | `admission_calibration_missing` / `_refused` / `_no_profile` / `_unusable` | `energy-calibration.json` absent, tampered, or has no profile for this device | Settings › Audio › **Calibrate microphone** (~10 s of normal speech) |
+| 3 | `admission_seal_lane_disarmed` | `CODESCRIBE_SILERO_FUSION` off → no occurrence can qualify, no utterance can commit | set `CODESCRIBE_SILERO_FUSION=1` |
+| 4 | `admission_seal_vad_unavailable` | Silero ORT session refused to load | reinstall / check the embedded VAD asset |
+
+A refusal writes nothing to the Transcript Bus, opens no stream, resets the
+session to Idle and reaches the overlay as one `admission_refused` warning
+(`USER_TERMINAL_WARNING_CODES`) carrying the blocker code, explanation and
+action. `CodescribeHotkeys.admissionReadiness()` exposes the same verdict to
+Settings › Audio; `calibrateEnergy(seconds:)` performs the guided measurement
+through the real recorder path and stores the profile via
+`EnergyCalibrationArtifact::record_profile`. Nothing on this path invents a
+threshold; `EnergyCalibration` has no default.
+
 ## 4. Labels vs truth
 
 | Surface                              | Source of truth                             | Not truth          |

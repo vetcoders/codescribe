@@ -145,3 +145,65 @@ final class AudioPanelTests: XCTestCase {
     XCTAssertEqual(writes.map(\.1), ["0", "0.40"])
   }
 }
+
+@MainActor
+final class AcousticAdmissionPanelTests: XCTestCase {
+  func testAdmissionRowWordsTheControllerBlockerWithoutDeciding() {
+    let missing = admissionDisplayState(.sampleMissing)
+    XCTAssertEqual(missing.tone, .unavailable)
+    XCTAssertEqual(missing.title, "Microphone not calibrated yet")
+    XCTAssertTrue(missing.detail.contains("Calibrate microphone"))
+
+    let granted = admissionDisplayState(.sampleGranted)
+    XCTAssertEqual(granted.tone, .healthy)
+    XCTAssertTrue(granted.title.contains("MacBook Pro Microphone"))
+    XCTAssertTrue(granted.detail.contains("cal1-macbook-pro-microphone-1@48000hz"))
+
+    let pending = admissionDisplayState(nil)
+    XCTAssertEqual(pending.tone, .fallback)
+  }
+
+  func testRefreshAdmissionReadsEngineVerdict() async {
+    var engine = MockSettingsEngine()
+    engine.admissionReadiness = .sampleMissing
+    let model = SettingsViewModel(engine: engine, permissionProbe: MockPermissionProbe(.allGranted))
+    XCTAssertNil(model.admission)
+
+    await model.refreshAdmission()
+
+    XCTAssertEqual(model.admission?.code, "admission_calibration_missing")
+    XCTAssertFalse(model.admission?.ready ?? true)
+  }
+
+  func testRunCalibrationStoresNoticeAndRereadsAdmission() async {
+    var engine = MockSettingsEngine()
+    var requestedSeconds: [UInt32] = []
+    engine.admissionReadiness = .sampleGranted
+    engine.calibrateEnergyObserver = { seconds in
+      requestedSeconds.append(seconds)
+      return .sample
+    }
+    let model = SettingsViewModel(engine: engine, permissionProbe: MockPermissionProbe(.allGranted))
+
+    await model.runCalibration()
+
+    XCTAssertEqual(requestedSeconds, [SettingsViewModel.calibrationCaptureSeconds])
+    XCTAssertFalse(model.calibrationPending)
+    XCTAssertTrue(model.calibrationNotice?.contains("-54.3 dBFS") == true)
+    XCTAssertEqual(model.admission?.code, "admission_granted")
+  }
+
+  func testRunCalibrationRefusalIsSurfacedNotHidden() async {
+    var engine = MockSettingsEngine()
+    engine.admissionReadiness = .sampleMissing
+    engine.calibrateEnergyObserver = { _ in
+      throw NSError(domain: "Calibration", code: 1, userInfo: [NSLocalizedDescriptionKey: "calibration_refused: only 0.4s of active speech measured"])
+    }
+    let model = SettingsViewModel(engine: engine, permissionProbe: MockPermissionProbe(.allGranted))
+
+    await model.runCalibration()
+
+    XCTAssertTrue(model.calibrationNotice?.hasPrefix("Calibration refused") == true)
+    XCTAssertEqual(model.admission?.code, "admission_calibration_missing")
+  }
+}

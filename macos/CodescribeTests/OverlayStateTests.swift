@@ -1107,6 +1107,33 @@ final class OverlayStateTests: XCTestCase {
     XCTAssertNil(OverlayState.speechAuthNotice(from: "Couldn't start recording: mic busy"))
   }
 
+  // MARK: Acoustic admission refusal rewriting
+
+  func testAdmissionCalibrationMissingRewritesToCalibrateHint() {
+    let notice = OverlayState.admissionNotice(
+      from:
+        "Couldn't start recording: admission_calibration_missing: no acoustic calibration measured yet (/x/energy-calibration.json) — Run Calibrate microphone in Settings › Audio (about 10 seconds of normal speech)."
+    )
+    XCTAssertNotNil(notice)
+    XCTAssertTrue(notice?.headline.contains("Calibrate microphone") == true)
+    XCTAssertTrue(notice?.detail.contains("Run Calibrate microphone") == true)
+    XCTAssertFalse(notice?.headline.contains("admission_") == true)
+  }
+
+  func testAdmissionWarningEnvelopeUnwrapsInnerCode() {
+    let notice = OverlayState.admissionNotice(
+      from: "admission_refused: admission_seal_lane_disarmed: seal lane disarmed (CODESCRIBE_SILERO_FUSION is off), so no utterance can commit — Set CODESCRIBE_SILERO_FUSION=1 in ~/.codescribe/.env (the Silero seal lane bounds every committed utterance)."
+    )
+    XCTAssertNotNil(notice)
+    XCTAssertTrue(notice?.headline.contains("CODESCRIBE_SILERO_FUSION=1") == true)
+    XCTAssertTrue(notice?.detail.contains("no utterance can commit") == true)
+  }
+
+  func testNonAdmissionErrorsAreNotRewrittenAsAdmission() {
+    XCTAssertNil(OverlayState.admissionNotice(from: "Couldn't start recording: mic busy"))
+    XCTAssertNil(OverlayState.admissionNotice(from: "speech_auth_denied"))
+  }
+
   func testHandleErrorSurfacesFriendlySpeechAuthToast() {
     let state = OverlayState()
     state.handleError(

@@ -146,6 +146,42 @@ pub struct CsAudioInputSnapshot {
     pub runtime_configuration_matches: bool,
 }
 
+/// Admission readiness of the next product recording, projected for Settings,
+/// the overlay, and the tray. `ready == false` carries exactly one blocker
+/// (`code` + `message` with the action) — the same verdict the controller
+/// applies before it opens a microphone. Never a second decision.
+#[derive(uniffi::Record, Debug, Clone, PartialEq)]
+pub struct CsAdmissionReadiness {
+    pub ready: bool,
+    /// `admission_granted` or the blocker code (`admission_*`).
+    pub code: String,
+    /// User-readable explanation + action (empty when granted).
+    pub message: String,
+    pub device_name: Option<String>,
+    pub sample_rate: Option<u32>,
+    pub calibration_version: Option<String>,
+    /// Loader verdict on the calibration artifact: `sealed` / `missing` / `refused`.
+    pub calibration_status: String,
+    pub calibration_path: String,
+    pub calibrated_devices: Vec<String>,
+    pub seal_lane_armed: bool,
+    pub seal_lane_env: String,
+}
+
+/// What a guided calibration measured and stored (levels and counts only).
+#[derive(uniffi::Record, Debug, Clone, PartialEq)]
+pub struct CsEnergyCalibrationReport {
+    pub device_name: String,
+    pub sample_rate: u32,
+    pub measured_seconds: f32,
+    pub active_speech_median_dbfs: f32,
+    pub noise_floor_dbfs: Option<f32>,
+    pub peak_dbfs: f32,
+    pub existence_threshold_dbfs: f32,
+    pub version: String,
+    pub path: String,
+}
+
 /// Whether local Whisper weights are ready (embedded or on-disk). Used by
 /// Settings → Dictation so users can download the model without a fat DMG.
 #[derive(uniffi::Record, Debug, Clone, PartialEq, Eq)]

@@ -43,7 +43,9 @@ API changes, regenerate UniFFI Swift bindings with `make app-bindings`.
 - After a coherent app-changing cut, run `make install-if-idle` (or
   `make install-app` after a live-recording check).
 - Refuse installation while the Transcript Bus shows `session_started` without
-  a later `transcript_sealed`; never tear down the app mid-take.
+  a later `session_ended` (the controller's text-free lifecycle terminal;
+  `transcript_sealed` is honoured for legacy buses); never tear down the app
+  mid-take.
 - Cut at most one `make release-standard` notarized slim DMG per calendar day
   when the bus is idle. Recut only when the operator asks.
 - An ad-hoc `/Applications` build is not a distribution DMG. Production DMGs

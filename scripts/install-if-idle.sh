@@ -1,6 +1,8 @@
 #!/usr/bin/env bash
 # Install the local app only when no Codescribe take is in flight.
-# Bus authority: session_started without a later transcript_sealed → refuse.
+# Bus authority: session_started without a later session_ended (lifecycle
+# terminal written by the controller on every path back to Idle) → refuse.
+# The legacy transcript_sealed marker is still honoured for older buses.
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
@@ -34,7 +36,7 @@ for raw in lines[-4000:]:
         continue
     if event.get("session_id") != session:
         continue
-    if status == "transcript_sealed":
+    if status in ("session_ended", "transcript_sealed"):
         sealed = True
 raise SystemExit(0 if (session is not None and not sealed) else 1)
 PY

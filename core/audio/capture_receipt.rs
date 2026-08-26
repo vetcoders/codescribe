@@ -451,7 +451,9 @@ pub fn emit_capture_level_receipt(sink: &dyn EventSink, receipt: &CaptureLevelRe
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::pipeline::contracts::{USER_TERMINAL_WARNING_CODES, warning_is_user_terminal};
+    use crate::pipeline::contracts::{
+        ADMISSION_REFUSED_WARNING_CODE, USER_TERMINAL_WARNING_CODES, warning_is_user_terminal,
+    };
     use std::sync::Mutex;
 
     struct CapturingSink {
@@ -479,10 +481,13 @@ mod tests {
     /// it. Attenuated speech below −52 dB warns. The WARN is never terminal.
     #[test]
     fn w13_capture_receipt_active_speech() {
+        // W13-5: quality receipts never become terminal. The list may only
+        // hold true take-terminal codes: a failed transcription and a refused
+        // acoustic admission (the take never opened a microphone).
         assert_eq!(
             USER_TERMINAL_WARNING_CODES,
-            &["transcription_failed"],
-            "W13-5 must not enlarge the terminal-warning list"
+            &["transcription_failed", ADMISSION_REFUSED_WARNING_CODE],
+            "W13-5 must not enlarge the terminal-warning list beyond take-terminal codes"
         );
         assert!(
             !warning_is_user_terminal(CAPTURE_LEVEL_LOW_CODE),

@@ -25,8 +25,22 @@ host, date, room, or control-plane path is embedded in Codescribe.
 ## Event families
 
 `codescribe.transcript.v1` now carries lifecycle only. `publish_started` emits
-one empty `session_started` event for the controller-owned session. It cannot
-publish document text.
+one empty `session_started` event for the controller-owned session, and
+`publish_ended` emits one empty `session_ended` event when the controller
+leaves that session (every path back to Idle, including zero-seal takes and
+stop-timeout recovery). Neither can publish document text. A
+`session_started` without a later `session_ended` for the same `session_id`
+means the take is still live; `scripts/install-if-idle.sh` keys on exactly
+that pair.
+
+A product recording can only begin after **acoustic admission**: the
+controller resolves the input device without opening it, requires a measured
+`EnergyCalibration` profile for that device from the immutable settings
+snapshot (`energy-calibration.json` beside `settings.json`, see
+`core/config/energy_calibration.rs`) and an armed Silero seal lane
+(`CODESCRIBE_SILERO_FUSION`). A refused start writes nothing to the Bus and
+opens no microphone; the refusal reaches the overlay as an
+`admission_refused` warning with one actionable `admission_*` code.
 
 `codescribe.transcript-evidence.v1` is the committed projection family. Every
 line is created only by `TranscriptBus::publish_revision(revision, ledger)` and

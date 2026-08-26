@@ -1376,10 +1376,42 @@ final class OverlayState: ObservableObject {
       + "Settings › Privacy & Security › Speech Recognition"
   }
 
+  /// User-facing rewrite for acoustic admission refusals. The controller
+  /// refuses BEFORE opening the microphone and reports one `admission_*`
+  /// code followed by its explanation and action; the toast keeps the short
+  /// headline, the panel keeps the full actionable message. Nil otherwise.
+  static func admissionNotice(from message: String) -> (headline: String, detail: String)? {
+    guard let range = message.range(of: "admission_") else { return nil }
+    let tail = String(message[range.lowerBound...])
+    let code = tail.prefix { $0 == "_" || $0.isLetter }
+    let detail = tail.dropFirst(code.count).drop { $0 == ":" || $0 == " " }
+    let headline: String
+    switch code {
+    case "admission_calibration_missing", "admission_calibration_no_profile":
+      headline = "Microphone not calibrated — Settings › Audio › Calibrate microphone"
+    case "admission_calibration_refused", "admission_calibration_unusable":
+      headline = "Stored calibration can't be used — recalibrate in Settings › Audio"
+    case "admission_seal_lane_disarmed":
+      headline = "Seal lane is off — set CODESCRIBE_SILERO_FUSION=1"
+    case "admission_seal_vad_unavailable":
+      headline = "Silero VAD did not load — recording refused"
+    case "admission_capture_device_unavailable":
+      headline = "No microphone available — recording refused"
+    case "admission_refused":
+      // Warning-channel envelope: the real code follows in the message.
+      return admissionNotice(from: String(detail))
+    default:
+      return nil
+    }
+    let detailText = detail.isEmpty ? headline : String(detail)
+    return (headline, detailText)
+  }
+
   private func presentTerminalError(message: String, toast: String) {
     let speechNotice = OverlayState.speechAuthNotice(from: message)
-    let message = speechNotice ?? message
-    let toast = speechNotice ?? toast
+    let admissionNotice = OverlayState.admissionNotice(from: message)
+    let message = speechNotice ?? admissionNotice?.detail ?? message
+    let toast = speechNotice ?? admissionNotice?.headline ?? toast
     abortRecordingSession()
     preview = ""
     committedUtterances = []

@@ -23,7 +23,12 @@ take.
 - `RuntimeAiExecution`: sealed formatting/assistive prompts, retry count/delay,
   and Agent/formatter request timing;
 - settings provenance and an integrity digest; and
-- optional energy calibration.
+- the measured acoustic calibration truth (`SealedEnergyCalibration`: the
+  `energy-calibration.json` artifact read by the same loader pass, or an
+  explicit `missing`/`refused` state). A session obtains its
+  `EnergyCalibration` only through
+  `energy_calibration_for_capture(device, sample_rate)`; there is no default
+  and no permissive floor.
 
 Each `RuntimeLlmLane` contains its lane kind, provider, wire family, normalized
 endpoint, model, resolved credential state, availability, and an optional

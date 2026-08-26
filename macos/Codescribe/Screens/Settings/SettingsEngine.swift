@@ -38,6 +38,12 @@ protocol SettingsEngine {
   func loadAudioInputSnapshot() throws -> CsAudioInputSnapshot
   func resetAudioInputDevice() throws
 
+  // Acoustic admission: the controller's own precondition for any take
+  // (measured calibration for the device + armed Silero seal lane). Reads
+  // never open a stream; calibration captures ~10 s through the real recorder.
+  func loadAdmissionReadiness() async throws -> CsAdmissionReadiness
+  func calibrateEnergy(seconds: UInt32) async throws -> CsEnergyCalibrationReport
+
   // Voice Lab quality truth (JSONL stays behind the Rust bridge)
   func loadQualityRecentRecords(limit: UInt64) throws -> [CsQualityRecord]
   func loadLexiconCustomEntries() throws -> [CsLexiconEntry]
@@ -92,6 +98,9 @@ protocol SettingsEngine {
 /// truth. Injected by App.swift for the live app.
 final class RealSettingsEngine: SettingsEngine {
   private let config = CodescribeConfig()
+  /// Facade over the process-global controller slots; constructing it creates
+  /// no listener, controller, or tap.
+  private let hotkeys = CodescribeHotkeys()
 
   func loadSettings() -> CsSettings { config.loadSettings() }
   func configDir() -> String { config.configDir() }
@@ -114,6 +123,12 @@ final class RealSettingsEngine: SettingsEngine {
   }
   func resetAudioInputDevice() throws {
     try config.resetAudioInputDevice()
+  }
+  func loadAdmissionReadiness() async throws -> CsAdmissionReadiness {
+    try await hotkeys.admissionReadiness()
+  }
+  func calibrateEnergy(seconds: UInt32) async throws -> CsEnergyCalibrationReport {
+    try await hotkeys.calibrateEnergy(seconds: seconds)
   }
   func loadQualityRecentRecords(limit: UInt64) throws -> [CsQualityRecord] {
     try qualityRecentRecords(limit: limit)
@@ -207,6 +222,9 @@ struct MockSettingsEngine: SettingsEngine {
   var qualityRecordsLoader: (() throws -> [CsQualityRecord])?
   var lexiconEntriesLoader: (() throws -> [CsLexiconEntry])?
   var audioSnapshot: CsAudioInputSnapshot = .sample
+  var admissionReadiness: CsAdmissionReadiness = .sampleGranted
+  var calibrationReport: CsEnergyCalibrationReport = .sample
+  var calibrateEnergyObserver: ((UInt32) throws -> CsEnergyCalibrationReport)?
   var resetPreviewValue: CsResetPreview = .sample
   var agentResetPreviewValue: CsAgentResetPreview = .sample
   var formattingSnapshot: CsPromptSnapshot = .sampleFormatting
@@ -239,6 +257,13 @@ struct MockSettingsEngine: SettingsEngine {
   func loadAudioInputSnapshot() throws -> CsAudioInputSnapshot { audioSnapshot }
   func resetAudioInputDevice() throws {
     try resetAudioInputDeviceObserver?()
+  }
+  func loadAdmissionReadiness() async throws -> CsAdmissionReadiness { admissionReadiness }
+  func calibrateEnergy(seconds: UInt32) async throws -> CsEnergyCalibrationReport {
+    if let calibrateEnergyObserver {
+      return try calibrateEnergyObserver(seconds)
+    }
+    return calibrationReport
   }
   func loadQualityRecentRecords(limit: UInt64) throws -> [CsQualityRecord] {
     let records = try qualityRecordsLoader?() ?? qualityRecords
@@ -391,6 +416,51 @@ extension CsAudioInputSnapshot {
     configuredDeviceAvailable: true,
     fallbackToDefault: false,
     runtimeConfigurationMatches: true
+  )
+}
+
+extension CsAdmissionReadiness {
+  static let sampleGranted = CsAdmissionReadiness(
+    ready: true,
+    code: "admission_granted",
+    message: "",
+    deviceName: "MacBook Pro Microphone",
+    sampleRate: 48_000,
+    calibrationVersion: "cal1-macbook-pro-microphone-1@48000hz",
+    calibrationStatus: "sealed",
+    calibrationPath: "~/Library/Application Support/Codescribe/energy-calibration.json",
+    calibratedDevices: ["MacBook Pro Microphone"],
+    sealLaneArmed: true,
+    sealLaneEnv: "CODESCRIBE_SILERO_FUSION"
+  )
+
+  static let sampleMissing = CsAdmissionReadiness(
+    ready: false,
+    code: "admission_calibration_missing",
+    message:
+      "no acoustic calibration measured yet — Run Calibrate microphone in Settings › Audio (about 10 seconds of normal speech).",
+    deviceName: nil,
+    sampleRate: nil,
+    calibrationVersion: nil,
+    calibrationStatus: "missing",
+    calibrationPath: "~/Library/Application Support/Codescribe/energy-calibration.json",
+    calibratedDevices: [],
+    sealLaneArmed: false,
+    sealLaneEnv: "CODESCRIBE_SILERO_FUSION"
+  )
+}
+
+extension CsEnergyCalibrationReport {
+  static let sample = CsEnergyCalibrationReport(
+    deviceName: "MacBook Pro Microphone",
+    sampleRate: 48_000,
+    measuredSeconds: 6.2,
+    activeSpeechMedianDbfs: -38.4,
+    noiseFloorDbfs: nil,
+    peakDbfs: -12.5,
+    existenceThresholdDbfs: -54.3,
+    version: "cal1-macbook-pro-microphone-1",
+    path: "~/Library/Application Support/Codescribe/energy-calibration.json"
   )
 }
 

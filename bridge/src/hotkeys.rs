@@ -9,7 +9,9 @@ use std::sync::atomic::{AtomicBool, AtomicU8, Ordering};
 use std::sync::{Arc, Mutex, OnceLock, RwLock};
 use std::time::Duration;
 
-use codescribe::controller::{HotkeyAction, HotkeyInput, HotkeyType, RecordingController, State};
+use codescribe::controller::{
+    HotkeyAction, HotkeyInput, HotkeyType, RecordingController, State, admission,
+};
 use codescribe::os::hold_badge::BadgeMode;
 use codescribe::os::hotkeys::{self, HoldAction, HoldMode, HotkeyEvent};
 use codescribe::os::permissions::{PermissionStatus, check_accessibility, check_input_monitoring};
@@ -26,8 +28,8 @@ use crate::agent_delivery::{
     CsAgentDeliveryListener, set_delivery_listener, spawn_delivery_forwarder,
 };
 use crate::recording::{
-    CsAnnotationKind, CsLayerSummary, CsTranscriptProjectionEvent, CsTranscription,
-    CsTranscriptionListener,
+    CsAdmissionReadiness, CsAnnotationKind, CsEnergyCalibrationReport, CsLayerSummary,
+    CsTranscriptProjectionEvent, CsTranscription, CsTranscriptionListener,
 };
 use crate::{CsError, application_runtime};
 
@@ -1585,6 +1587,124 @@ fn should_rearm_hotkey_tap(
     !already_active
         && accessibility == PermissionStatus::Granted
         && input_monitoring == PermissionStatus::Granted
+}
+
+#[uniffi::export]
+impl CodescribeHotkeys {
+    /// Admission readiness of the next product recording — the same verdict
+    /// the controller applies before opening a microphone. Uses the live
+    /// controller's settings generation when one exists, otherwise one fresh
+    /// keychain-free snapshot; never constructs a controller for a read.
+    /// Opens no stream. Also keeps the tray honest while idle.
+    pub async fn admission_readiness(&self) -> Result<CsAdmissionReadiness, CsError> {
+        application_runtime::run(async move {
+            let controller = current_controller(&shared_controller());
+            let snapshot = match &controller {
+                Some(controller) => controller.runtime_settings_arc().await,
+                None => Arc::new(Config::load_runtime_snapshot_without_keychain().map_err(
+                    |error| CsError::Config {
+                        msg: format!("runtime settings snapshot refused: {error}"),
+                    },
+                )?),
+            };
+            let probe_snapshot = Arc::clone(&snapshot);
+            let verdict = tokio::task::spawn_blocking(move || {
+                admission::evaluate_live_admission_arc(&probe_snapshot)
+            })
+            .await
+            .unwrap_or_else(|join| {
+                Err(admission::AdmissionBlocker::CaptureDeviceUnavailable {
+                    reason: format!("admission probe panicked: {join}"),
+                })
+            });
+            let idle = match &controller {
+                Some(controller) => controller.current_state().await == State::Idle,
+                None => true,
+            };
+            if idle {
+                tray_status::update_tray_status(if verdict.is_ok() {
+                    TrayStatus::Idle
+                } else {
+                    TrayStatus::Error
+                });
+            }
+            Ok(project_admission_readiness(&snapshot, verdict))
+        })
+        .await?
+    }
+
+    /// Guided acoustic calibration through the shared controller's recorder:
+    /// `seconds` (clamped 4..=30) of the operator speaking normally. Stores a
+    /// device profile beside `settings.json` and pushes the new settings
+    /// generation into the live controller so the next take uses it.
+    pub async fn calibrate_energy(
+        &self,
+        seconds: u32,
+    ) -> Result<CsEnergyCalibrationReport, CsError> {
+        application_runtime::run(async move {
+            let controller =
+                ensure_controller(&shared_controller(), tokio::runtime::Handle::current());
+            let duration = Duration::from_secs(u64::from(seconds.clamp(4, 30)));
+            let report = controller
+                .capture_energy_calibration(duration)
+                .await
+                .map_err(|error| CsError::Recording {
+                    msg: error.to_string(),
+                })?;
+            refresh_live_controller_config();
+            Ok(CsEnergyCalibrationReport {
+                device_name: report.device_name,
+                sample_rate: report.sample_rate,
+                measured_seconds: report.measured_seconds,
+                active_speech_median_dbfs: report.active_speech_median_dbfs,
+                noise_floor_dbfs: report.noise_floor_dbfs,
+                peak_dbfs: report.peak_dbfs,
+                existence_threshold_dbfs: report.existence_threshold_dbfs,
+                version: report.version,
+                path: report.path.display().to_string(),
+            })
+        })
+        .await?
+    }
+}
+
+/// Project one admission verdict plus the snapshot's calibration facts into
+/// the bridge record. Pure so the shape is testable without hardware.
+fn project_admission_readiness(
+    snapshot: &codescribe_core::config::RuntimeSettingsSnapshot,
+    verdict: Result<admission::AdmissionGrant, admission::AdmissionBlocker>,
+) -> CsAdmissionReadiness {
+    let calibration = admission::calibration_status_view(snapshot);
+    let seal_lane_armed = codescribe_core::pipeline::streaming::seal_lane_probe().armed;
+    let base = CsAdmissionReadiness {
+        ready: false,
+        code: String::new(),
+        message: String::new(),
+        device_name: None,
+        sample_rate: None,
+        calibration_version: None,
+        calibration_status: calibration.code.to_string(),
+        calibration_path: calibration.path.display().to_string(),
+        calibrated_devices: calibration.devices,
+        seal_lane_armed,
+        seal_lane_env: codescribe_core::pipeline::streaming::SILERO_FUSION_ENV.to_string(),
+    };
+    match verdict {
+        Ok(grant) => CsAdmissionReadiness {
+            ready: true,
+            code: "admission_granted".to_string(),
+            device_name: Some(grant.device_name),
+            sample_rate: Some(grant.sample_rate),
+            calibration_version: Some(grant.calibration_version),
+            ..base
+        },
+        Err(blocker) => CsAdmissionReadiness {
+            ready: false,
+            code: blocker.code().to_string(),
+            message: format!("{} — {}", blocker.explanation(), blocker.action()),
+            ..base
+        },
+    }
 }
 
 #[uniffi::export]

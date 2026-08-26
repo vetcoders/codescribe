@@ -2189,11 +2189,28 @@ public func FfiConverterTypeCodescribeConfig_lower(_ value: CodescribeConfig) ->
 public protocol CodescribeHotkeysProtocol: AnyObject, Sendable {
 
     /**
+     * Admission readiness of the next product recording — the same verdict
+     * the controller applies before opening a microphone. Uses the live
+     * controller's settings generation when one exists, otherwise one fresh
+     * keychain-free snapshot; never constructs a controller for a read.
+     * Opens no stream. Also keeps the tray honest while idle.
+     */
+    func admissionReadiness() async throws  -> CsAdmissionReadiness
+
+    /**
      * The closed set of gestures a mode can bind to, with display labels. Drives
      * the Settings picker (no free-form key capture — the binding space is a
      * fixed enum, see `HOTKEYS_CONTRACT`).
      */
     func availableBindings()  -> [CsBindingOption]
+
+    /**
+     * Guided acoustic calibration through the shared controller's recorder:
+     * `seconds` (clamped 4..=30) of the operator speaking normally. Stores a
+     * device profile beside `settings.json` and pushes the new settings
+     * generation into the live controller so the next take uses it.
+     */
+    func calibrateEnergy(seconds: UInt32) async throws  -> CsEnergyCalibrationReport
 
     /**
      * Cancel the controller-owned voice-assistive Agent turn correlated by the
@@ -2456,6 +2473,30 @@ public convenience init() {
 
 
     /**
+     * Admission readiness of the next product recording — the same verdict
+     * the controller applies before opening a microphone. Uses the live
+     * controller's settings generation when one exists, otherwise one fresh
+     * keychain-free snapshot; never constructs a controller for a read.
+     * Opens no stream. Also keeps the tray honest while idle.
+     */
+open func admissionReadiness()async throws  -> CsAdmissionReadiness  {
+    return
+        try  await uniffiRustCallAsync(
+            rustFutureFunc: {
+                uniffi_codescribe_ffi_fn_method_codescribehotkeys_admission_readiness(
+                    self.uniffiCloneHandle()
+
+                )
+            },
+            pollFunc: ffi_codescribe_ffi_rust_future_poll_rust_buffer,
+            completeFunc: ffi_codescribe_ffi_rust_future_complete_rust_buffer,
+            freeFunc: ffi_codescribe_ffi_rust_future_free_rust_buffer,
+            liftFunc: FfiConverterTypeCsAdmissionReadiness_lift,
+            errorHandler: FfiConverterTypeCsError_lift
+        )
+}
+
+    /**
      * The closed set of gestures a mode can bind to, with display labels. Drives
      * the Settings picker (no free-form key capture — the binding space is a
      * fixed enum, see `HOTKEYS_CONTRACT`).
@@ -2466,6 +2507,29 @@ open func availableBindings() -> [CsBindingOption]  {
             self.uniffiCloneHandle(),$0
     )
 })
+}
+
+    /**
+     * Guided acoustic calibration through the shared controller's recorder:
+     * `seconds` (clamped 4..=30) of the operator speaking normally. Stores a
+     * device profile beside `settings.json` and pushes the new settings
+     * generation into the live controller so the next take uses it.
+     */
+open func calibrateEnergy(seconds: UInt32)async throws  -> CsEnergyCalibrationReport  {
+    return
+        try  await uniffiRustCallAsync(
+            rustFutureFunc: {
+                uniffi_codescribe_ffi_fn_method_codescribehotkeys_calibrate_energy(
+                    self.uniffiCloneHandle(),
+                    FfiConverterUInt32.lower(seconds)
+                )
+            },
+            pollFunc: ffi_codescribe_ffi_rust_future_poll_rust_buffer,
+            completeFunc: ffi_codescribe_ffi_rust_future_complete_rust_buffer,
+            freeFunc: ffi_codescribe_ffi_rust_future_free_rust_buffer,
+            liftFunc: FfiConverterTypeCsEnergyCalibrationReport_lift,
+            errorHandler: FfiConverterTypeCsError_lift
+        )
 }
 
     /**
@@ -6718,6 +6782,118 @@ public func FfiConverterTypeCsAccountLoginResult_lower(_ value: CsAccountLoginRe
 
 
 /**
+ * Admission readiness of the next product recording, projected for Settings,
+ * the overlay, and the tray. `ready == false` carries exactly one blocker
+ * (`code` + `message` with the action) — the same verdict the controller
+ * applies before it opens a microphone. Never a second decision.
+ */
+public struct CsAdmissionReadiness: Equatable, Hashable {
+    public var ready: Bool
+    /**
+     * `admission_granted` or the blocker code (`admission_*`).
+     */
+    public var code: String
+    /**
+     * User-readable explanation + action (empty when granted).
+     */
+    public var message: String
+    public var deviceName: String?
+    public var sampleRate: UInt32?
+    public var calibrationVersion: String?
+    /**
+     * Loader verdict on the calibration artifact: `sealed` / `missing` / `refused`.
+     */
+    public var calibrationStatus: String
+    public var calibrationPath: String
+    public var calibratedDevices: [String]
+    public var sealLaneArmed: Bool
+    public var sealLaneEnv: String
+
+    // Default memberwise initializers are never public by default, so we
+    // declare one manually.
+    public init(ready: Bool,
+        /**
+         * `admission_granted` or the blocker code (`admission_*`).
+         */code: String,
+        /**
+         * User-readable explanation + action (empty when granted).
+         */message: String, deviceName: String?, sampleRate: UInt32?, calibrationVersion: String?,
+        /**
+         * Loader verdict on the calibration artifact: `sealed` / `missing` / `refused`.
+         */calibrationStatus: String, calibrationPath: String, calibratedDevices: [String], sealLaneArmed: Bool, sealLaneEnv: String) {
+        self.ready = ready
+        self.code = code
+        self.message = message
+        self.deviceName = deviceName
+        self.sampleRate = sampleRate
+        self.calibrationVersion = calibrationVersion
+        self.calibrationStatus = calibrationStatus
+        self.calibrationPath = calibrationPath
+        self.calibratedDevices = calibratedDevices
+        self.sealLaneArmed = sealLaneArmed
+        self.sealLaneEnv = sealLaneEnv
+    }
+
+
+}
+
+#if compiler(>=6)
+extension CsAdmissionReadiness: Sendable {}
+#endif
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public struct FfiConverterTypeCsAdmissionReadiness: FfiConverterRustBuffer {
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> CsAdmissionReadiness {
+        return
+            try CsAdmissionReadiness(
+                ready: FfiConverterBool.read(from: &buf),
+                code: FfiConverterString.read(from: &buf),
+                message: FfiConverterString.read(from: &buf),
+                deviceName: FfiConverterOptionString.read(from: &buf),
+                sampleRate: FfiConverterOptionUInt32.read(from: &buf),
+                calibrationVersion: FfiConverterOptionString.read(from: &buf),
+                calibrationStatus: FfiConverterString.read(from: &buf),
+                calibrationPath: FfiConverterString.read(from: &buf),
+                calibratedDevices: FfiConverterSequenceString.read(from: &buf),
+                sealLaneArmed: FfiConverterBool.read(from: &buf),
+                sealLaneEnv: FfiConverterString.read(from: &buf)
+        )
+    }
+
+    public static func write(_ value: CsAdmissionReadiness, into buf: inout [UInt8]) {
+        FfiConverterBool.write(value.ready, into: &buf)
+        FfiConverterString.write(value.code, into: &buf)
+        FfiConverterString.write(value.message, into: &buf)
+        FfiConverterOptionString.write(value.deviceName, into: &buf)
+        FfiConverterOptionUInt32.write(value.sampleRate, into: &buf)
+        FfiConverterOptionString.write(value.calibrationVersion, into: &buf)
+        FfiConverterString.write(value.calibrationStatus, into: &buf)
+        FfiConverterString.write(value.calibrationPath, into: &buf)
+        FfiConverterSequenceString.write(value.calibratedDevices, into: &buf)
+        FfiConverterBool.write(value.sealLaneArmed, into: &buf)
+        FfiConverterString.write(value.sealLaneEnv, into: &buf)
+    }
+}
+
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeCsAdmissionReadiness_lift(_ buf: RustBuffer) throws -> CsAdmissionReadiness {
+    return try FfiConverterTypeCsAdmissionReadiness.lift(buf)
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeCsAdmissionReadiness_lower(_ value: CsAdmissionReadiness) -> RustBuffer {
+    return FfiConverterTypeCsAdmissionReadiness.lower(value)
+}
+
+
+/**
  * Assistive-lane availability for the Swift chat surface: `available` gates
  * the send, `detail` is the honest reason shown in the thread when the lane
  * cannot reach a model (empty when ready).
@@ -7529,6 +7705,89 @@ public func FfiConverterTypeCsDictionaryTeachResult_lift(_ buf: RustBuffer) thro
 #endif
 public func FfiConverterTypeCsDictionaryTeachResult_lower(_ value: CsDictionaryTeachResult) -> RustBuffer {
     return FfiConverterTypeCsDictionaryTeachResult.lower(value)
+}
+
+
+/**
+ * What a guided calibration measured and stored (levels and counts only).
+ */
+public struct CsEnergyCalibrationReport: Equatable, Hashable {
+    public var deviceName: String
+    public var sampleRate: UInt32
+    public var measuredSeconds: Float
+    public var activeSpeechMedianDbfs: Float
+    public var noiseFloorDbfs: Float?
+    public var peakDbfs: Float
+    public var existenceThresholdDbfs: Float
+    public var version: String
+    public var path: String
+
+    // Default memberwise initializers are never public by default, so we
+    // declare one manually.
+    public init(deviceName: String, sampleRate: UInt32, measuredSeconds: Float, activeSpeechMedianDbfs: Float, noiseFloorDbfs: Float?, peakDbfs: Float, existenceThresholdDbfs: Float, version: String, path: String) {
+        self.deviceName = deviceName
+        self.sampleRate = sampleRate
+        self.measuredSeconds = measuredSeconds
+        self.activeSpeechMedianDbfs = activeSpeechMedianDbfs
+        self.noiseFloorDbfs = noiseFloorDbfs
+        self.peakDbfs = peakDbfs
+        self.existenceThresholdDbfs = existenceThresholdDbfs
+        self.version = version
+        self.path = path
+    }
+
+
+}
+
+#if compiler(>=6)
+extension CsEnergyCalibrationReport: Sendable {}
+#endif
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public struct FfiConverterTypeCsEnergyCalibrationReport: FfiConverterRustBuffer {
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> CsEnergyCalibrationReport {
+        return
+            try CsEnergyCalibrationReport(
+                deviceName: FfiConverterString.read(from: &buf),
+                sampleRate: FfiConverterUInt32.read(from: &buf),
+                measuredSeconds: FfiConverterFloat.read(from: &buf),
+                activeSpeechMedianDbfs: FfiConverterFloat.read(from: &buf),
+                noiseFloorDbfs: FfiConverterOptionFloat.read(from: &buf),
+                peakDbfs: FfiConverterFloat.read(from: &buf),
+                existenceThresholdDbfs: FfiConverterFloat.read(from: &buf),
+                version: FfiConverterString.read(from: &buf),
+                path: FfiConverterString.read(from: &buf)
+        )
+    }
+
+    public static func write(_ value: CsEnergyCalibrationReport, into buf: inout [UInt8]) {
+        FfiConverterString.write(value.deviceName, into: &buf)
+        FfiConverterUInt32.write(value.sampleRate, into: &buf)
+        FfiConverterFloat.write(value.measuredSeconds, into: &buf)
+        FfiConverterFloat.write(value.activeSpeechMedianDbfs, into: &buf)
+        FfiConverterOptionFloat.write(value.noiseFloorDbfs, into: &buf)
+        FfiConverterFloat.write(value.peakDbfs, into: &buf)
+        FfiConverterFloat.write(value.existenceThresholdDbfs, into: &buf)
+        FfiConverterString.write(value.version, into: &buf)
+        FfiConverterString.write(value.path, into: &buf)
+    }
+}
+
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeCsEnergyCalibrationReport_lift(_ buf: RustBuffer) throws -> CsEnergyCalibrationReport {
+    return try FfiConverterTypeCsEnergyCalibrationReport.lift(buf)
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeCsEnergyCalibrationReport_lower(_ value: CsEnergyCalibrationReport) -> RustBuffer {
+    return FfiConverterTypeCsEnergyCalibrationReport.lower(value)
 }
 
 
@@ -12726,6 +12985,30 @@ fileprivate struct FfiConverterOptionUInt8: FfiConverterRustBuffer {
 #if swift(>=5.8)
 @_documentation(visibility: private)
 #endif
+fileprivate struct FfiConverterOptionUInt32: FfiConverterRustBuffer {
+    typealias SwiftType = UInt32?
+
+    public static func write(_ value: SwiftType, into buf: inout [UInt8]) {
+        guard let value = value else {
+            writeInt(&buf, Int8(0))
+            return
+        }
+        writeInt(&buf, Int8(1))
+        FfiConverterUInt32.write(value, into: &buf)
+    }
+
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> SwiftType {
+        switch try readInt(&buf) as Int8 {
+        case 0: return nil
+        case 1: return try FfiConverterUInt32.read(from: &buf)
+        default: throw UniffiInternalError.unexpectedOptionalTag
+        }
+    }
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
 fileprivate struct FfiConverterOptionUInt16: FfiConverterRustBuffer {
     typealias SwiftType = UInt16?
 
@@ -14000,7 +14283,13 @@ private let initializationResult: InitializationResult = {
     if (uniffi_codescribe_ffi_checksum_method_codescribeconfig_update_config_many() != 23821) {
         return InitializationResult.apiChecksumMismatch
     }
+    if (uniffi_codescribe_ffi_checksum_method_codescribehotkeys_admission_readiness() != 59942) {
+        return InitializationResult.apiChecksumMismatch
+    }
     if (uniffi_codescribe_ffi_checksum_method_codescribehotkeys_available_bindings() != 35701) {
+        return InitializationResult.apiChecksumMismatch
+    }
+    if (uniffi_codescribe_ffi_checksum_method_codescribehotkeys_calibrate_energy() != 1823) {
         return InitializationResult.apiChecksumMismatch
     }
     if (uniffi_codescribe_ffi_checksum_method_codescribehotkeys_cancel_voice_turn() != 32656) {

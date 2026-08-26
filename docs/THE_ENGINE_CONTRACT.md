@@ -112,11 +112,17 @@ hands-free epoch lifecycle needs speech edges). There is no second VAD and no
 new sideband flag. If Silero cannot load, `EpochGate` disarms and Apple runs as
 one continuous stream with no sideband events.
 
-`CODESCRIBE_SILERO_FUSION` remains a diagnostic default-OFF lane for this
-release. Fusion can widen a pending Apple range beyond the narrower Layer 1
-request identity, while admission currently requires the request to contain
-the pending range. Until a live A/B and an enclosing-range falsifier converge
-that ownership, enabling fusion is not a supported production configuration.
+`CODESCRIBE_SILERO_FUSION` is still default-OFF in `ENV_REGISTRY.toml`, but it
+is no longer a diagnostic-only lane: under the one-throne corridor an
+occurrence exists only when calibrated energy **and** a Silero-bounded region
+agree, and `seal_utterance_final` lets a region qualify only when it was
+Silero-bound (`may_qualify = silero_bound`). With the lane off, no occurrence
+can ever qualify and no utterance can commit. The controller therefore treats
+a disarmed lane as an admission blocker (`admission_seal_lane_disarmed`) and
+refuses to open the microphone rather than recording into a ledger that
+cannot seal. Flipping the registry default is an operator decision; the
+earlier enclosing-range concern (fusion widening a pending Apple range beyond
+the Layer 1 request identity) still needs its falsifier before that flip.
 
 Final BAM is superseded and has no automatic content producer. Normal stop
 drains already admitted work and assembles the ordered span ledger; it does not

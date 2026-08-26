@@ -12,6 +12,46 @@ struct AudioInputDisplayState: Equatable {
   let detail: String
 }
 
+/// Pure UI projection of the controller's admission verdict for XCTest. The
+/// bridge record already carries the one blocker the controller would apply;
+/// this function only words it — it never decides readiness itself.
+func admissionDisplayState(_ readiness: CsAdmissionReadiness?) -> AudioInputDisplayState {
+  guard let readiness else {
+    return AudioInputDisplayState(
+      tone: .fallback,
+      title: "Checking acoustic admission…",
+      detail: "Reading the controller's calibration and seal-lane verdict."
+    )
+  }
+  if readiness.ready {
+    let device = readiness.deviceName ?? "input device"
+    let version = readiness.calibrationVersion ?? "measured profile"
+    return AudioInputDisplayState(
+      tone: .healthy,
+      title: "Ready to record on \(device)",
+      detail: "Calibration \(version); seal lane armed."
+    )
+  }
+  let title: String
+  switch readiness.code {
+  case "admission_calibration_missing":
+    title = "Microphone not calibrated yet"
+  case "admission_calibration_no_profile":
+    title = "No calibration for the current microphone"
+  case "admission_calibration_refused", "admission_calibration_unusable":
+    title = "Stored calibration cannot be used"
+  case "admission_seal_lane_disarmed":
+    title = "Seal lane is off (\(readiness.sealLaneEnv))"
+  case "admission_seal_vad_unavailable":
+    title = "Silero VAD did not load"
+  case "admission_capture_device_unavailable":
+    title = "No input device available"
+  default:
+    title = "Recording cannot start"
+  }
+  return AudioInputDisplayState(tone: .unavailable, title: title, detail: readiness.message)
+}
+
 /// Pure UI projection for XCTest. The bridge snapshot already contains the
 /// live cpal resolution; this function never re-resolves a configured wish.
 func audioInputDisplayState(_ snapshot: CsAudioInputSnapshot) -> AudioInputDisplayState {
@@ -93,6 +133,12 @@ struct AudioPanel: View {
       inputDeviceSection
         .padding(.top, 11)
 
+      SettingsSectionLabel("Acoustic admission")
+        .padding(.top, 24)
+      admissionSection
+        .padding(.top, 11)
+        .task { await model.refreshAdmission() }
+
       SettingsSectionLabel("Sound feedback")
         .padding(.top, 24)
       feedbackSection
@@ -146,6 +192,63 @@ struct AudioPanel: View {
     .padding(15)
     .background(card)
     .overlay(cardBorder)
+  }
+
+  /// The controller's precondition for any take, and the one operator step
+  /// that can satisfy it locally: a ~10 s guided measurement through the real
+  /// recorder path. No value is ever invented here.
+  private var admissionSection: some View {
+    VStack(alignment: .leading, spacing: 14) {
+      admissionStatus
+
+      HStack(alignment: .top) {
+        Text(
+          "Calibration measures your normal speech level on this microphone and derives the existence floor (ITU-T P.56 margin). Audio is not kept."
+        )
+        .font(CSFont.mono(10, .medium))
+        .foregroundStyle(CSColor.textFaint)
+        Spacer(minLength: 12)
+        Button(model.calibrationPending ? "Listening…" : "Calibrate microphone") {
+          Task { await model.runCalibration() }
+        }
+        .csFocusRing(cornerRadius: 8)
+        .font(CSFont.mono(10.5, .semibold))
+        .foregroundStyle(CSColor.chromeAccent)
+        .disabled(model.calibrationPending)
+        .accessibilityLabel("Calibrate microphone")
+      }
+
+      if let notice = model.calibrationNotice {
+        Text(notice)
+          .font(CSFont.ui(11.5))
+          .foregroundStyle(CSColor.textMutedAlt)
+          .accessibilityLabel("Calibration result")
+      }
+    }
+    .padding(15)
+    .background(card)
+    .overlay(cardBorder)
+  }
+
+  @ViewBuilder
+  private var admissionStatus: some View {
+    if let error = model.admissionReadError {
+      statusRow(
+        color: CSColor.terracottaLight,
+        title: "Admission check unavailable",
+        detail: error
+      )
+    } else {
+      let state = admissionDisplayState(model.admission)
+      statusRow(
+        color: statusColor(state.tone),
+        title: state.title,
+        detail: state.detail
+      )
+      .accessibilityElement(children: .ignore)
+      .accessibilityLabel("Acoustic admission")
+      .accessibilityValue("\(state.title). \(state.detail)")
+    }
   }
 
   @ViewBuilder

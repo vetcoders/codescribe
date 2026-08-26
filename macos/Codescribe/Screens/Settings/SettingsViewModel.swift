@@ -993,6 +993,13 @@ final class SettingsViewModel: ObservableObject {
   @Published private(set) var voiceLabTeachMessage: String?
   @Published private(set) var audioInput: CsAudioInputSnapshot
   @Published private(set) var audioInputReadError: String?
+  /// The controller's own admission verdict (nil until the first refresh).
+  @Published private(set) var admission: CsAdmissionReadiness?
+  @Published private(set) var admissionReadError: String?
+  /// A guided calibration capture is in flight (the mic is open ~10 s).
+  @Published private(set) var calibrationPending: Bool = false
+  /// Last calibration outcome, success or refusal, for the Audio row.
+  @Published private(set) var calibrationNotice: String?
   @Published private(set) var resetPreview: CsResetPreview
   @Published private(set) var agentResetPreview: CsAgentResetPreview
   @Published private(set) var licenseStatus: CsLicenseStatus
@@ -1099,6 +1106,8 @@ final class SettingsViewModel: ObservableObject {
     self.voiceLabReadError = nil
     self.audioInput = .sample
     self.audioInputReadError = nil
+    self.admission = nil
+    self.admissionReadError = nil
     self.resetPreview = .sample
     self.agentResetPreview = .sample
     self.licenseStatus = self.licenseService.status
@@ -1766,6 +1775,47 @@ final class SettingsViewModel: ObservableObject {
     settings.audioInputDevice = device
     persist("AUDIO_INPUT_DEVICE", device)
     refreshAudioInput()
+  }
+
+  // MARK: - Acoustic admission (controller truth, never a second decision)
+
+  /// Seconds of normal speech the guided calibration captures.
+  static let calibrationCaptureSeconds: UInt32 = 10
+
+  func refreshAdmission() async {
+    guard let engine else { return }
+    do {
+      admission = try await engine.loadAdmissionReadiness()
+      admissionReadError = nil
+    } catch {
+      admissionReadError = String(describing: error)
+    }
+  }
+
+  /// Run the guided calibration through the real recorder path, then re-read
+  /// admission so the row reflects the controller's verdict, not a guess.
+  func runCalibration() async {
+    guard let engine, !calibrationPending else { return }
+    calibrationPending = true
+    calibrationNotice = nil
+    defer { calibrationPending = false }
+    do {
+      let report = try await engine.calibrateEnergy(
+        seconds: Self.calibrationCaptureSeconds)
+      calibrationNotice = Self.calibrationSummary(report)
+    } catch {
+      calibrationNotice = "Calibration refused: \(error)"
+    }
+    await refreshAdmission()
+  }
+
+  /// One-line, number-honest summary of a stored calibration profile.
+  static func calibrationSummary(_ report: CsEnergyCalibrationReport) -> String {
+    let speech = String(format: "%.1f", report.activeSpeechMedianDbfs)
+    let floor = String(format: "%.1f", report.existenceThresholdDbfs)
+    let seconds = String(format: "%.1f", report.measuredSeconds)
+    return
+      "Calibrated \(report.deviceName): speech \(speech) dBFS over \(seconds) s → existence floor \(floor) dBFS"
   }
 
   func resetAudioInputDevice() {

@@ -55,6 +55,30 @@ pub fn lane_enabled() -> bool {
     lane_enabled_from_raw(raw.as_deref())
 }
 
+/// Whether the seal lane can bound existence for a product take, probed with
+/// no session open: the lane flag and whether the shared Silero graph loads.
+/// `seal_utterance_final` passes `may_qualify = silero_bound`, so without
+/// both no occurrence can ever qualify — admission readiness must ask first
+/// instead of letting a take record into a ledger that cannot seal.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct SealLaneProbe {
+    /// [`SILERO_FUSION_ENV`] is set to an enabling value.
+    pub armed: bool,
+    /// The embedded Silero model actually loaded in this process.
+    pub vad_available: bool,
+}
+
+/// Probe the seal lane. Cheap after the first call: the Silero session is a
+/// process-wide `OnceLock`.
+pub fn seal_lane_probe() -> SealLaneProbe {
+    let armed = lane_enabled();
+    let vad_available = SileroIngress::new(16_000, "admission-probe", 0).vad_available();
+    SealLaneProbe {
+        armed,
+        vad_available,
+    }
+}
+
 fn lane_enabled_from_raw(raw: Option<&str>) -> bool {
     raw.is_some_and(|raw| {
         matches!(

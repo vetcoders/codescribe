@@ -261,6 +261,63 @@ pub type AudioCallback = Box<dyn Fn(&[f32]) + Send + Sync + 'static>;
 /// until [`Recorder::stop`] writes them to a temp WAV;
 /// [`Recorder::snapshot_wav`] can slice the buffer without interrupting
 /// capture.
+/// Resolve the input device exactly as a recording start would: an
+/// `AUDIO_INPUT_DEVICE` exact/substring match wins, otherwise the system
+/// default. Shared by [`Recorder::start`] and [`probe_input_capture_path`].
+fn select_input_device(host: &cpal::Host) -> Result<(Device, String)> {
+    let preferred = std::env::var("AUDIO_INPUT_DEVICE")
+        .ok()
+        .map(|s| s.trim().to_string())
+        .filter(|s| !s.is_empty());
+
+    let device = if let Some(preferred) = preferred {
+        let devices = host
+            .input_devices()
+            .context("Failed to enumerate input devices")?;
+
+        let mut selected: Option<Device> = None;
+        for d in devices {
+            if let Ok(desc) = d.description() {
+                let name = desc.to_string();
+                if name == preferred || name.to_lowercase().contains(&preferred.to_lowercase()) {
+                    selected = Some(d);
+                    break;
+                }
+            }
+        }
+
+        selected
+            .or_else(|| host.default_input_device())
+            .context("No input device available")?
+    } else {
+        host.default_input_device()
+            .context("No input device available")?
+    };
+
+    let device_name = device
+        .description()
+        .map(|d| d.to_string())
+        .unwrap_or_else(|_| "Unknown".to_string());
+    Ok((device, device_name))
+}
+
+/// Identity of the capture path a recording would open right now — device
+/// name, native sample rate, native channels — without opening a stream or
+/// prompting for permission. The admission gate resolves the calibration
+/// profile from this before any microphone is touched.
+pub fn probe_input_capture_path() -> Result<crate::audio::capture_receipt::CapturePathMeta> {
+    let host = cpal::default_host();
+    let (device, device_name) = select_input_device(&host)?;
+    let supported = device
+        .default_input_config()
+        .context("Failed to get default input config")?;
+    Ok(crate::audio::capture_receipt::CapturePathMeta {
+        device_name,
+        sample_rate: supported.sample_rate(),
+        channels: supported.channels().max(1),
+    })
+}
+
 pub struct Recorder {
     pub config: RecorderConfig,
     buffer: AudioBuffer,
@@ -418,43 +475,10 @@ impl Recorder {
         self.diagnostics = RecorderDiagnostics::default();
         self.warn_inert_vad_stop_callback("Recorder start");
 
-        // Select input device
+        // Select input device — the same policy the admission probe uses, so
+        // readiness can never disagree with the device a take would open.
         let host = cpal::default_host();
-
-        let preferred = std::env::var("AUDIO_INPUT_DEVICE")
-            .ok()
-            .map(|s| s.trim().to_string())
-            .filter(|s| !s.is_empty());
-
-        let device = if let Some(preferred) = preferred {
-            let devices = host
-                .input_devices()
-                .context("Failed to enumerate input devices")?;
-
-            let mut selected: Option<Device> = None;
-            for d in devices {
-                if let Ok(desc) = d.description() {
-                    let name = desc.to_string();
-                    if name == preferred || name.to_lowercase().contains(&preferred.to_lowercase())
-                    {
-                        selected = Some(d);
-                        break;
-                    }
-                }
-            }
-
-            selected
-                .or_else(|| host.default_input_device())
-                .context("No input device available")?
-        } else {
-            host.default_input_device()
-                .context("No input device available")?
-        };
-
-        let device_name = device
-            .description()
-            .map(|d| d.to_string())
-            .unwrap_or_else(|_| "Unknown".to_string());
+        let (device, device_name) = select_input_device(&host)?;
         info!("Using input device: {}", device_name);
         self.last_input_device = device_name;
 

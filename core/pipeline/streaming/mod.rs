@@ -29,6 +29,7 @@ pub use session::{
     TailPatchSessionReceipt, collect_buffered_engine_events,
     collect_buffered_engine_events_with_config,
 };
+pub use silero_fusion::{SILERO_FUSION_ENV, SealLaneProbe, seal_lane_probe};
 
 pub(crate) use session::transcription_session;
 pub(crate) use stream_log::stream_log_path;

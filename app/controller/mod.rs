@@ -22,6 +22,8 @@
 //! keep a 400ms floor even if settings lower the generic hold delay. This prevents
 //! accidental Emil sessions while preserving quick toggle-mode for power users.
 
+/// Admission readiness: the precondition of beginning a product recording.
+pub mod admission;
 /// Per-session assistive context bag (selection, app, images).
 mod context_bucket;
 /// One destination throne: intent → Agent / Orient / paste. Focus is not king.
@@ -836,6 +838,130 @@ impl RecordingController {
         self.runtime_settings_arc().await.values().clone()
     }
 
+    /// Admission readiness of the next product recording, decided against
+    /// this controller's current settings generation. Probes the device that
+    /// would open and the seal lane; opens no stream, invents no floor.
+    pub async fn admission_readiness(
+        &self,
+    ) -> Result<admission::AdmissionGrant, admission::AdmissionBlocker> {
+        let snapshot = self.runtime_settings_arc().await;
+        tokio::task::spawn_blocking(move || admission::evaluate_live_admission_arc(&snapshot))
+            .await
+            .unwrap_or_else(|join| {
+                Err(admission::AdmissionBlocker::CaptureDeviceUnavailable {
+                    reason: format!("admission probe panicked: {join}"),
+                })
+            })
+    }
+
+    /// Surface a refused start on the one engine `Warning` channel the bridge
+    /// already forwards to `listener.on_error` (user-terminal code), and flag
+    /// the tray. The refusal happened before any microphone opened, so no
+    /// state transition exists to carry it — this is the only signal.
+    fn broadcast_admission_refusal(
+        event_broadcast: &broadcast::Sender<IpcEvent>,
+        blocker: &admission::AdmissionBlocker,
+    ) {
+        crate::os::tray_status::update_tray_status(crate::os::tray_status::TrayStatus::Error);
+        let _ = event_broadcast.send(IpcEvent {
+            timestamp: chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Millis, true),
+            payload: IpcEventPayload::Engine(EngineEventWire::Warning {
+                code: codescribe_core::pipeline::contracts::ADMISSION_REFUSED_WARNING_CODE
+                    .to_string(),
+                message: blocker.to_string(),
+            }),
+        });
+    }
+
+    /// Guided acoustic calibration: capture `duration` of the operator speaking
+    /// through the exact recorder path a take would open, derive a device
+    /// profile from the capture-level receipt (ITU-T P.56 margin), persist it
+    /// beside `settings.json`, and report the measured figures. Levels and
+    /// counts only — the temporary WAV the recorder writes is deleted and no
+    /// audio is retained. Refuses unless the controller is idle.
+    pub async fn capture_energy_calibration(
+        &self,
+        duration: Duration,
+    ) -> Result<admission::EnergyCalibrationReport> {
+        use codescribe_core::audio::capture_receipt::{CaptureLevelAccumulator, CapturePathMeta};
+        use codescribe_core::config::energy_calibration::{
+            EnergyCalibrationArtifact, EnergyCalibrationProfile, SOURCE_GUIDED_CAPTURE,
+            energy_calibration_path,
+        };
+
+        let _guard = self.serial_lock.lock().await;
+        let current_state = *self.state.read().await;
+        if current_state != State::Idle {
+            anyhow::bail!("calibration_busy: cannot calibrate while state={current_state}");
+        }
+        let mut recorder_guard = self.recorder.lock().await;
+        let recorder = Self::recorder_from_guard_mut(&mut recorder_guard, "Calibration")?;
+        Self::ensure_recorder_ready_for_start(recorder, "Calibration preflight").await?;
+
+        let accumulator = Arc::new(std::sync::Mutex::new(CaptureLevelAccumulator::new()));
+        let sink = Arc::clone(&accumulator);
+        recorder.recorder.config.auto_silence = false;
+        recorder.recorder.set_callback(Box::new(move |data| {
+            sink.lock()
+                .unwrap_or_else(|error| error.into_inner())
+                .push_samples(data);
+        }));
+        info!(
+            duration_secs = duration.as_secs_f32(),
+            "acoustic calibration capture starting"
+        );
+        recorder.recorder.start().await?;
+        tokio::time::sleep(duration).await;
+        let stopped = recorder.recorder.stop().await;
+        Self::clear_recorder_callbacks(recorder);
+        let temp_wav = stopped?;
+        if let Some(path) = temp_wav
+            && let Err(error) = std::fs::remove_file(&path)
+        {
+            warn!(path = %path.display(), %error, "calibration temp WAV could not be removed");
+        }
+        let meta = CapturePathMeta::from_open_path(
+            recorder.recorder.actual_sample_rate(),
+            recorder.recorder.last_native_channels(),
+            recorder.recorder.last_input_device(),
+        );
+        drop(recorder_guard);
+
+        let receipt = accumulator
+            .lock()
+            .unwrap_or_else(|error| error.into_inner())
+            .finalize(meta);
+        receipt.log();
+        let now_ms = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_millis() as u64)
+            .unwrap_or_default();
+        let profile = EnergyCalibrationProfile::derive(&receipt, now_ms, SOURCE_GUIDED_CAPTURE)
+            .map_err(|refusal| anyhow::anyhow!("calibration_refused: {refusal}"))?;
+        let path = energy_calibration_path();
+        EnergyCalibrationArtifact::record_profile(&path, profile.clone(), now_ms)
+            .map_err(|refusal| anyhow::anyhow!("calibration_store_failed: {refusal}"))?;
+        info!(
+            device = %profile.capture_path.device_name,
+            version = %profile.version,
+            existence_threshold_dbfs = profile.floors.existence_threshold_dbfs,
+            path = %path.display(),
+            "acoustic calibration profile stored"
+        );
+        Ok(admission::EnergyCalibrationReport {
+            device_name: profile.capture_path.device_name.clone(),
+            sample_rate: profile.capture_path.sample_rate,
+            measured_seconds: receipt.active_speech_samples as f32
+                / receipt.sample_rate.max(1) as f32,
+            active_speech_median_dbfs: profile.measurement.active_speech_median_dbfs,
+            noise_floor_dbfs: profile.measurement.noise_floor_dbfs,
+            peak_dbfs: profile.measurement.peak_dbfs,
+            existence_threshold_dbfs: profile.floors.existence_threshold_dbfs,
+            version: profile.version,
+            path,
+        })
+    }
+
     /// App name latched before the current overlay session took focus.
     ///
     /// This is a read-only snapshot for UI copy. Delivery continues to read the
@@ -1091,7 +1217,13 @@ impl RecordingController {
         *self.force_raw_mode.write().await = false;
         *self.force_ai_mode.write().await = false;
         *self.session_id.write().await = None;
-        *self.active_transcript_bus.write().await = None;
+        // Every path back to Idle ends the Bus session exactly once (text-free
+        // lifecycle line), so an observer can tell "the take is over" apart
+        // from "the take is live" even when zero occurrences sealed.
+        let ended_bus = self.active_transcript_bus.write().await.take();
+        if let Some(bus) = ended_bus {
+            bus.publish_ended();
+        }
         *self.assistive_context.write().await = None;
         *self.pre_overlay_frontmost_app.write().await = None;
         self.start_transition_in_flight
@@ -2195,6 +2327,41 @@ impl RecordingController {
                 }
             }
 
+            // Acoustic admission must-have (same gate as toggle): refuse before
+            // the recorder lock and before any microphone opens. Hold has no
+            // return channel to the UI, so the refusal rides the engine
+            // Warning channel the bridge forwards as a terminal error.
+            if !cfg!(test) {
+                // `.clone()` (not `Arc::clone`) on purpose: C15D counts one
+                // recorder binding per start body; this is the same Arc.
+                let admission_settings = runtime_settings.clone();
+                let verdict = tokio::task::spawn_blocking(move || {
+                    admission::evaluate_live_admission_arc(&admission_settings)
+                })
+                .await
+                .unwrap_or_else(|join| {
+                    Err(admission::AdmissionBlocker::CaptureDeviceUnavailable {
+                        reason: format!("admission probe panicked: {join}"),
+                    })
+                });
+                match verdict {
+                    Ok(grant) => info!(
+                        device = %grant.device_name,
+                        sample_rate = grant.sample_rate,
+                        calibration_version = %grant.calibration_version,
+                        "acoustic admission granted for hold start"
+                    ),
+                    Err(blocker) => {
+                        error!("Hold-start refused (acoustic admission): {blocker}");
+                        Self::broadcast_admission_refusal(&event_broadcast, &blocker);
+                        *session_id.write().await = None;
+                        set_assistive_session(false);
+                        crate::os::hold_badge::hide_hold_badge();
+                        return;
+                    }
+                }
+            }
+
             // Start the recorder (skip in tests: no CoreAudio device needed)
             // hang_sec is derived from hardcoded VAD defaults (single source of truth).
             let mut rec_guard = recorder.lock().await;
@@ -2425,6 +2592,28 @@ impl RecordingController {
                 self.reset_session_after_start_failure("Toggle-start Apple STT preflight")
                     .await;
                 return Err(e);
+            }
+        }
+
+        // Acoustic admission must-have: a take whose occurrences can never
+        // qualify (no measured calibration, seal lane disarmed) must be refused
+        // HERE, before the recorder lock and before any microphone opens — not
+        // recorded into a WAV that grows while the Bus stays on session_started.
+        if !cfg!(test) {
+            match self.admission_readiness().await {
+                Ok(grant) => info!(
+                    device = %grant.device_name,
+                    sample_rate = grant.sample_rate,
+                    calibration_version = %grant.calibration_version,
+                    "acoustic admission granted for toggle start"
+                ),
+                Err(blocker) => {
+                    error!("Toggle-start refused (acoustic admission): {blocker}");
+                    Self::broadcast_admission_refusal(&self.event_broadcast, &blocker);
+                    self.reset_session_after_start_failure("Toggle-start admission")
+                        .await;
+                    return Err(anyhow::anyhow!("{blocker}"));
+                }
             }
         }
 

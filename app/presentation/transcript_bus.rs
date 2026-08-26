@@ -180,6 +180,8 @@ struct TranscriptBusWriter {
     sequence: u64,
     started: bool,
     sealed: bool,
+    /// The controller left this session; nothing lifecycle-wise follows.
+    ended: bool,
 }
 
 impl TranscriptBus {
@@ -323,6 +325,7 @@ impl TranscriptBus {
                 sequence: 0,
                 started: false,
                 sealed: false,
+                ended: false,
             }),
         };
         Ok(bus)
@@ -341,6 +344,49 @@ impl TranscriptBus {
                 tracing::info!(path = %self.path.display(), session_id = %self.session.session_id, mode = ?self.session.mode, "clean transcript bus session started");
             }
             Ok(false) => {}
+            Err(error) => self.log_write_error(error),
+        }
+    }
+
+    /// Publish the session's terminal lifecycle line exactly once, and only
+    /// after a `session_started` was written. Text-free: it carries no
+    /// transcript authority (evidence seals, if any, precede it) — it tells an
+    /// observer the controller left this session, so `session_started`
+    /// without a later `session_ended` means "take still live", even when
+    /// zero occurrences sealed.
+    pub fn publish_ended(&self) {
+        let mut writer = self
+            .writer
+            .lock()
+            .unwrap_or_else(|error| error.into_inner());
+        if !writer.started || writer.ended {
+            return;
+        }
+        let event = CleanTranscriptEvent {
+            schema: "codescribe.transcript.v1".to_string(),
+            sequence: 0,
+            session_id: String::new(),
+            mode: self.session.mode,
+            utterance_id: None,
+            emitted_at: String::new(),
+            status: "session_ended".to_string(),
+            sample_rate_hz: None,
+            capture_epoch: None,
+            sample_start: None,
+            sample_end: None,
+            audio_start_seconds: None,
+            audio_end_seconds: None,
+            text: String::new(),
+            segments: Vec::new(),
+            words: Vec::new(),
+            coverage: None,
+            pipeline_session_id: None,
+        };
+        match self.write_event_locked(&mut writer, event) {
+            Ok(()) => {
+                writer.ended = true;
+                tracing::info!(path = %self.path.display(), session_id = %self.session.session_id, sealed = writer.sealed, "clean transcript bus session ended");
+            }
             Err(error) => self.log_write_error(error),
         }
     }
@@ -496,5 +542,38 @@ mod tests {
                 0o600
             );
         }
+    }
+
+    /// `session_ended` is the text-free terminal lifecycle line: written once,
+    /// only after `session_started`, never for a session that never started.
+    #[test]
+    fn bus_ends_a_started_session_exactly_once_and_never_an_unstarted_one() {
+        let temp = tempfile::tempdir().unwrap();
+        let path = temp.path().join("events.jsonl");
+        let session = TranscriptSession {
+            session_id: "session-ended".to_string(),
+            mode: TranscriptMode::Dictation,
+        };
+
+        let never_started = TranscriptBus::open_at(session.clone(), path.clone(), None).unwrap();
+        never_started.publish_ended();
+        assert_eq!(std::fs::read_to_string(&path).unwrap().lines().count(), 0);
+
+        let bus = TranscriptBus::open_at(session, path.clone(), None).unwrap();
+        bus.publish_started();
+        bus.publish_ended();
+        bus.publish_ended();
+
+        let lines: Vec<CleanTranscriptEvent> = std::fs::read_to_string(&path)
+            .unwrap()
+            .lines()
+            .map(|line| serde_json::from_str(line).unwrap())
+            .collect();
+        assert_eq!(lines.len(), 2);
+        assert_eq!(lines[0].status, "session_started");
+        assert_eq!(lines[1].status, "session_ended");
+        assert_eq!(lines[1].sequence, 2);
+        assert_eq!(lines[1].session_id, "session-ended");
+        assert!(lines[1].text.is_empty());
     }
 }
