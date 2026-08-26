@@ -46,6 +46,7 @@ pub use helpers::{
 pub use types::{HotkeyAction, HotkeyInput, HotkeyType, State, TranscriptionActionContractMode};
 pub use delivery_route::{OverlayPasteDelivery, OverlayPasteResult};
 
+use crate::presentation::transcript_bus::TranscriptSessionEndReason;
 use crate::presentation::{PresentationEmitter, TranscriptBus, TranscriptMode, TranscriptSession};
 use anyhow::{Context, Result};
 use std::sync::Arc;
@@ -212,6 +213,46 @@ impl Drop for AtomicFlagGuard {
     fn drop(&mut self) {
         self.flag.store(false, Ordering::SeqCst);
     }
+}
+
+/// Why a delayed hold start unwound before it became an active recording.
+/// Each variant is the truthful cause the terminal Bus line reports.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum HoldStartAbort {
+    /// Apple Speech preflight refused before the microphone opened.
+    PreflightRefused,
+    /// Acoustic admission refused before the microphone opened.
+    AdmissionRefused,
+    /// No recorder instance, or it could not reach a clean pre-start state.
+    RecorderUnavailable,
+    /// `start_event_session` failed, including after the one stale-lock retry.
+    RecorderStartFailed,
+    /// A key-up or reschedule bumped the hold generation before `RecHold`.
+    Superseded,
+}
+
+impl HoldStartAbort {
+    /// The typed reason written on the Bus terminal line for this abort.
+    fn bus_reason(self) -> TranscriptSessionEndReason {
+        match self {
+            Self::Superseded => TranscriptSessionEndReason::StartSuperseded,
+            Self::PreflightRefused
+            | Self::AdmissionRefused
+            | Self::RecorderUnavailable
+            | Self::RecorderStartFailed => TranscriptSessionEndReason::StartFailed,
+        }
+    }
+}
+
+/// The controller-owned session slots a delayed hold start fills before the
+/// take is active. The spawned task has no `&self`; every early exit after
+/// its start guard unwinds through exactly these handles.
+struct HoldStartSession {
+    session_id: Arc<RwLock<Option<String>>>,
+    active_transcript_bus: Arc<RwLock<Option<Arc<TranscriptBus>>>>,
+    assistive_context: Arc<RwLock<Option<AssistiveContext>>>,
+    pre_overlay_frontmost_app: Arc<RwLock<Option<String>>>,
+    session_telemetry: SharedSessionTelemetry,
 }
 
 /// Keep the last session WAV at a stable path so overlay Retranscribe
@@ -1220,10 +1261,11 @@ impl RecordingController {
         // Every path back to Idle ends the Bus session exactly once (text-free
         // lifecycle line), so an observer can tell "the take is over" apart
         // from "the take is live" even when zero occurrences sealed.
-        let ended_bus = self.active_transcript_bus.write().await.take();
-        if let Some(bus) = ended_bus {
-            bus.publish_ended();
-        }
+        Self::end_transcript_bus(
+            &self.active_transcript_bus,
+            TranscriptSessionEndReason::Completed,
+        )
+        .await;
         *self.assistive_context.write().await = None;
         *self.pre_overlay_frontmost_app.write().await = None;
         self.start_transition_in_flight
@@ -1234,6 +1276,50 @@ impl RecordingController {
             .store(false, Ordering::SeqCst);
         // `state` becomes Idle only once the rest of the session state is consistent.
         self.set_state(State::Idle).await;
+    }
+
+    /// End the active Bus session exactly once with a typed reason. This is
+    /// the only controller call site of `publish_ended`: the active-take reset
+    /// and the pre-active hold unwind both go through here, so no second
+    /// lifecycle owner can drift on when the terminal line is written. An
+    /// installed Bus that never started ends silently (Bus idempotency).
+    async fn end_transcript_bus(
+        slot: &RwLock<Option<Arc<TranscriptBus>>>,
+        reason: TranscriptSessionEndReason,
+    ) {
+        let ended_bus = slot.write().await.take();
+        if let Some(bus) = ended_bus {
+            bus.publish_ended(reason);
+        }
+    }
+
+    /// The one exit for a delayed hold start that fails or is superseded after
+    /// its start guard and before `RecHold`. Stops a recorder that already
+    /// opened, detaches its callbacks, writes exactly one terminal Bus line
+    /// (none when the Bus never started), releases the session slots and hides
+    /// the badge. `state` never left Idle on this path, so it is not touched.
+    /// Idempotent: a second call finds every slot empty and the Bus ended.
+    async fn unwind_hold_start(
+        session: &HoldStartSession,
+        rec: Option<&mut StreamingRecorder>,
+        abort: HoldStartAbort,
+    ) {
+        warn!("Hold-start unwound before recording became active: {abort:?}");
+        if let Some(rec) = rec {
+            if rec.recorder.is_active()
+                && let Err(stop_err) = rec.stop_and_discard_path().await
+            {
+                warn!("Hold-start unwind: stale-session stop failed: {stop_err}");
+            }
+            Self::clear_recorder_callbacks(rec);
+        }
+        Self::end_transcript_bus(&session.active_transcript_bus, abort.bus_reason()).await;
+        *session.session_id.write().await = None;
+        *session.assistive_context.write().await = None;
+        *session.pre_overlay_frontmost_app.write().await = None;
+        reset_session_telemetry(&session.session_telemetry);
+        set_assistive_session(false);
+        crate::os::hold_badge::hide_hold_badge();
     }
 
     /// Unwind session state after a start that never produced a recording, so a
@@ -2230,7 +2316,6 @@ impl RecordingController {
         self.vad_triggered.store(false, Ordering::SeqCst);
 
         let state = Arc::clone(&self.state);
-        let session_id = Arc::clone(&self.session_id);
         let recorder = Arc::clone(&self.recorder);
         let delay = Duration::from_millis(delay_ms);
         let vad_flag = Arc::clone(&self.vad_triggered);
@@ -2238,8 +2323,14 @@ impl RecordingController {
         let serial_lock = Arc::clone(&self.serial_lock);
         let hold_start_generation = Arc::clone(&self.hold_start_generation);
         let start_transition_in_flight = Arc::clone(&self.start_transition_in_flight);
-        let session_telemetry = Arc::clone(&self.session_telemetry);
-        let active_transcript_bus = Arc::clone(&self.active_transcript_bus);
+        // Every exit after the start guard releases exactly these slots.
+        let hold_session = HoldStartSession {
+            session_id: Arc::clone(&self.session_id),
+            active_transcript_bus: Arc::clone(&self.active_transcript_bus),
+            assistive_context: Arc::clone(&self.assistive_context),
+            pre_overlay_frontmost_app: Arc::clone(&self.pre_overlay_frontmost_app),
+            session_telemetry: Arc::clone(&self.session_telemetry),
+        };
 
         let task = tokio::spawn(async move {
             // Wait for the configured delay
@@ -2283,7 +2374,7 @@ impl RecordingController {
 
             // Generate session ID
             let new_session_id = Uuid::new_v4().to_string();
-            *session_id.write().await = Some(new_session_id.clone());
+            *hold_session.session_id.write().await = Some(new_session_id.clone());
 
             info!("Starting hold recording (session={})", new_session_id);
 
@@ -2320,9 +2411,12 @@ impl RecordingController {
                         });
                 if let Err(e) = preflight {
                     error!("Hold-start aborted (Apple STT preflight): {e:#}");
-                    *session_id.write().await = None;
-                    set_assistive_session(false);
-                    crate::os::hold_badge::hide_hold_badge();
+                    Self::unwind_hold_start(
+                        &hold_session,
+                        None,
+                        HoldStartAbort::PreflightRefused,
+                    )
+                    .await;
                     return;
                 }
             }
@@ -2354,9 +2448,12 @@ impl RecordingController {
                     Err(blocker) => {
                         error!("Hold-start refused (acoustic admission): {blocker}");
                         Self::broadcast_admission_refusal(&event_broadcast, &blocker);
-                        *session_id.write().await = None;
-                        set_assistive_session(false);
-                        crate::os::hold_badge::hide_hold_badge();
+                        Self::unwind_hold_start(
+                            &hold_session,
+                            None,
+                            HoldStartAbort::AdmissionRefused,
+                        )
+                        .await;
                         return;
                     }
                 }
@@ -2370,17 +2467,24 @@ impl RecordingController {
                 Err(error) => {
                     error!("Hold-start aborted: {error}");
                     drop(rec_guard);
-                    *session_id.write().await = None;
-                    set_assistive_session(false);
+                    Self::unwind_hold_start(
+                        &hold_session,
+                        None,
+                        HoldStartAbort::RecorderUnavailable,
+                    )
+                    .await;
                     return;
                 }
             };
             if let Err(e) = Self::ensure_recorder_ready_for_start(rec, "Hold-start preflight").await
             {
                 error!("Hold-start aborted: {e}");
-                drop(rec_guard);
-                *session_id.write().await = None;
-                set_assistive_session(false);
+                Self::unwind_hold_start(
+                    &hold_session,
+                    Some(rec),
+                    HoldStartAbort::RecorderUnavailable,
+                )
+                .await;
                 return;
             }
             // Hold-to-talk: the key-down is the source of truth. Don't auto-stop
@@ -2396,7 +2500,7 @@ impl RecordingController {
             // Set session mode for delta routing BEFORE starting the pipeline,
             // so the very first deltas route to the correct overlay.
             set_assistive_session(is_assistive);
-            reset_session_telemetry(&session_telemetry);
+            reset_session_telemetry(&hold_session.session_telemetry);
             rec.bind_session_authority(
                 new_session_id.clone(),
                 Arc::clone(&runtime_settings),
@@ -2410,6 +2514,11 @@ impl RecordingController {
                 },
             })
             .map(Arc::new);
+            // Install the Bus before the recorder starts: from here every exit
+            // runs through `unwind_hold_start`, which ends whatever is in this
+            // slot — silently while un-started, with one terminal line once
+            // `publish_started` has been written.
+            *hold_session.active_transcript_bus.write().await = transcript_bus.clone();
 
             // Runtime pipeline is always event-based. Hold mode has no utterance callback;
             // text is finalized on key-up in `finish_recording`.
@@ -2417,7 +2526,7 @@ impl RecordingController {
                 rec,
                 is_assistive || overlay_enabled,
                 event_broadcast.clone(),
-                Arc::clone(&session_telemetry),
+                Arc::clone(&hold_session.session_telemetry),
                 transcript_bus.clone(),
             );
             if !cfg!(test) {
@@ -2437,42 +2546,45 @@ impl RecordingController {
                             rec,
                             is_assistive || overlay_enabled,
                             event_broadcast.clone(),
-                            Arc::clone(&session_telemetry),
+                            Arc::clone(&hold_session.session_telemetry),
                             transcript_bus.clone(),
                         );
                         let retry_result = rec.start_event_session(language_hint).await;
                         if let Err(retry_err) = retry_result {
                             error!("Failed to start recorder after recovery: {retry_err}");
-                            Self::clear_recorder_callbacks(rec);
-                            *session_id.write().await = None;
-                            set_assistive_session(false);
+                            Self::unwind_hold_start(
+                                &hold_session,
+                                Some(rec),
+                                HoldStartAbort::RecorderStartFailed,
+                            )
+                            .await;
                             return;
                         }
                     } else {
                         error!("Failed to start recorder: {e}");
-                        Self::clear_recorder_callbacks(rec);
-                        *session_id.write().await = None;
-                        set_assistive_session(false);
+                        Self::unwind_hold_start(
+                            &hold_session,
+                            Some(rec),
+                            HoldStartAbort::RecorderStartFailed,
+                        )
+                        .await;
                         return;
                     }
                 }
             }
 
-            *active_transcript_bus.write().await = transcript_bus.clone();
             if let Some(bus) = &transcript_bus {
                 bus.publish_started();
             }
 
+            // A key-up that landed while `state` was still Idle bumped the
+            // generation without `serial_lock`; the take must not survive it.
+            // The Bus already carries `session_started`, so this exit is the
+            // one that writes its terminal line.
             if hold_start_generation.load(Ordering::SeqCst) != task_generation {
                 warn!("Hold-start superseded after recorder start; stopping stale session");
-                if rec.recorder.is_active()
-                    && let Err(stop_err) = rec.stop_and_discard_path().await
-                {
-                    warn!("Hold-start stale-session stop failed: {stop_err}");
-                }
-                Self::clear_recorder_callbacks(rec);
-                *session_id.write().await = None;
-                set_assistive_session(false);
+                Self::unwind_hold_start(&hold_session, Some(rec), HoldStartAbort::Superseded)
+                    .await;
                 return;
             }
             drop(rec_guard);
@@ -3234,6 +3346,145 @@ mod c15d_settings_one_path_falsifiers {
         assert_eq!(
             enabled,
             snapshot.values().transcription_overlay_enabled
+        );
+    }
+}
+
+#[cfg(test)]
+mod hold_start_terminal_lifecycle_falsifiers {
+    use super::*;
+    use crate::presentation::transcript_bus::{
+        CleanTranscriptEvent, TRANSCRIPT_BUS_PATH_ENV, TranscriptSessionEndReason,
+    };
+
+    fn hold_input(action: HotkeyAction) -> HotkeyInput {
+        HotkeyInput {
+            key_type: HotkeyType::Hold,
+            action,
+            assistive: true,
+            hold_mode: HoldMode::Chat,
+            force_raw: false,
+            force_ai: false,
+        }
+    }
+
+    /// W2 P0 falsifier: key-up lands after `session_started` and before
+    /// `RecHold`. The recorder mutex is the deterministic gate — the task
+    /// cannot reach `TranscriptBus::open` while the test holds it, and there is
+    /// no generation check between that gate and the post-start check, so a
+    /// key-up issued while the gate is held and then releasing it drives exactly
+    /// the audited interleaving. Virtual time only; no wall-clock sleeps.
+    #[tokio::test(start_paused = true)]
+    async fn keyup_between_bus_start_and_rec_hold_ends_the_session_exactly_once() {
+        let temp = tempfile::tempdir().expect("temp bus dir");
+        let bus_path = temp.path().join("transcript-events.jsonl");
+        // SAFETY: current-thread test runtime; the variable is read only by the
+        // `TranscriptBus::open` inside this test's own hold start.
+        unsafe { std::env::set_var(TRANSCRIPT_BUS_PATH_ENV, &bus_path) };
+
+        let controller = RecordingController::new_without_keychain();
+        let recorder_gate = controller.recorder.lock().await;
+        assert!(
+            recorder_gate.is_some(),
+            "falsifier needs a constructed recorder to reach the Bus start"
+        );
+        *controller.hold_mode.write().await = HoldMode::Chat;
+
+        controller
+            .handle_hold_event(hold_input(HotkeyAction::Down))
+            .await
+            .expect("hold down schedules a delayed start");
+        let task = controller
+            .hold_start_task
+            .lock()
+            .await
+            .take()
+            .expect("delayed hold start scheduled");
+        let scheduled_generation = controller.hold_start_generation.load(Ordering::SeqCst);
+
+        // Step virtual time until the task has passed its pre-lock checks and
+        // is parked on the recorder gate (the start guard is raised just
+        // before the session id is written, ahead of the recorder lock).
+        while !controller.start_transition_in_flight.load(Ordering::SeqCst) {
+            assert!(
+                !task.is_finished(),
+                "hold start finished before reaching the recorder gate"
+            );
+            tokio::time::advance(Duration::from_millis(1)).await;
+        }
+        assert_eq!(controller.current_state().await, State::Idle);
+        assert!(controller.session_id.read().await.is_some());
+        assert!(controller.active_transcript_bus.read().await.is_none());
+
+        // The real key-up path: state is still Idle, so this cancels the
+        // pending start by bumping the generation — without `serial_lock`.
+        controller
+            .handle_hold_event(hold_input(HotkeyAction::Up))
+            .await
+            .expect("key-up while idle cancels");
+        assert_ne!(
+            controller.hold_start_generation.load(Ordering::SeqCst),
+            scheduled_generation
+        );
+
+        drop(recorder_gate);
+        task.await.expect("hold start task joins");
+
+        let lines: Vec<CleanTranscriptEvent> = std::fs::read_to_string(&bus_path)
+            .expect("bus file written")
+            .lines()
+            .map(|line| serde_json::from_str(line).expect("bus line"))
+            .collect();
+        let statuses: Vec<&str> = lines.iter().map(|event| event.status.as_str()).collect();
+        assert_eq!(statuses, ["session_started", "session_ended"]);
+        assert_eq!(lines[0].session_id, lines[1].session_id);
+        assert_eq!(
+            lines[1].end_reason,
+            Some(TranscriptSessionEndReason::StartSuperseded)
+        );
+        assert!(lines[1].text.is_empty());
+
+        assert_eq!(controller.current_state().await, State::Idle);
+        assert!(controller.session_id.read().await.is_none());
+        assert!(controller.active_transcript_bus.read().await.is_none());
+        assert!(controller.assistive_context.read().await.is_none());
+        assert!(controller.pre_overlay_frontmost_app.read().await.is_none());
+        assert!(!controller.start_transition_in_flight.load(Ordering::SeqCst));
+        assert!(
+            !controller
+                .recorder
+                .lock()
+                .await
+                .as_ref()
+                .expect("recorder")
+                .recorder
+                .is_active()
+        );
+
+        unsafe { std::env::remove_var(TRANSCRIPT_BUS_PATH_ENV) };
+    }
+
+    /// Structural falsifier: exactly one controller call site writes the
+    /// terminal Bus line, and the hold task installs its Bus into the active
+    /// slot before any recorder start so every later exit can end it.
+    #[test]
+    fn controller_has_one_terminal_bus_publisher() {
+        let source = include_str!("mod.rs");
+        let publish_ended = [".publish_", "ended("].concat();
+        assert_eq!(source.matches(&publish_ended).count(), 1);
+
+        let hold_signature = ["async fn schedule_hold_", "start"].concat();
+        let toggle_signature = ["async fn start_toggle_", "recording"].concat();
+        let hold_start = source.find(&hold_signature).expect("hold start body");
+        let toggle_start = source.find(&toggle_signature).expect("toggle start body");
+        let hold_body = &source[hold_start..toggle_start];
+        let bus_install = ["hold_session.active_transcript_bus", ".write().await = "].concat();
+        let recorder_start = ["rec.start_event_", "session("].concat();
+        assert!(
+            hold_body.find(&bus_install).expect("bus installed in hold body")
+                < hold_body
+                    .find(&recorder_start)
+                    .expect("recorder start in hold body")
         );
     }
 }

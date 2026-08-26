@@ -33,6 +33,16 @@ stop-timeout recovery). Neither can publish document text. A
 means the take is still live; `scripts/install-if-idle.sh` keys on exactly
 that pair.
 
+`session_ended` carries one typed `end_reason` (`TranscriptSessionEndReason`):
+`completed` for a take that reached the serialized stop path,
+`start_superseded` when a key-up or reschedule invalidated a hold start after
+`session_started` and before the take became an active recording, and
+`start_failed` when the recorder could not be started after the session was
+announced. The controller has exactly one terminal publisher
+(`end_transcript_bus`); the delayed hold start unwinds every pre-active exit
+through `unwind_hold_start`, so no started session is left without its
+terminal line. The first terminal line wins; later calls are no-ops.
+
 A product recording can only begin after **acoustic admission**: the
 controller resolves the input device without opening it, requires a measured
 `EnergyCalibration` profile for that device from the immutable settings

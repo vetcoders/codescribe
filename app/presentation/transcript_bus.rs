@@ -136,6 +136,20 @@ pub struct TranscriptBusEvidenceEvent {
     pub acoustic_receipts: Vec<ProjectedAcousticReceipt>,
 }
 
+/// Why the controller left a Bus session. Typed on purpose: the terminal
+/// line carries a reason an observer can branch on, never free text.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum TranscriptSessionEndReason {
+    /// The take went through the serialized stop path (sealed or zero-seal).
+    Completed,
+    /// A newer hold generation (key-up / reschedule) superseded this start
+    /// after `session_started` and before the take became an active recording.
+    StartSuperseded,
+    /// The recorder could not be started after `session_started` was written.
+    StartFailed,
+}
+
 /// Append-only public event contract. `text` is always clean reducer truth;
 /// unfiltered engine `raw_text` never crosses this boundary.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -162,6 +176,9 @@ pub struct CleanTranscriptEvent {
     pub coverage: Option<TranscriptCoverageReceipt>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub pipeline_session_id: Option<String>,
+    /// Present only on `session_ended`: why the controller left the session.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub end_reason: Option<TranscriptSessionEndReason>,
 }
 
 /// Synchronous low-frequency observer. Each lifecycle or authenticated ledger
@@ -353,8 +370,10 @@ impl TranscriptBus {
     /// transcript authority (evidence seals, if any, precede it) — it tells an
     /// observer the controller left this session, so `session_started`
     /// without a later `session_ended` means "take still live", even when
-    /// zero occurrences sealed.
-    pub fn publish_ended(&self) {
+    /// zero occurrences sealed. `reason` is the typed cause; a session that was
+    /// superseded or failed before recording says so instead of masquerading
+    /// as a completed take.
+    pub fn publish_ended(&self, reason: TranscriptSessionEndReason) {
         let mut writer = self
             .writer
             .lock()
@@ -381,11 +400,12 @@ impl TranscriptBus {
             words: Vec::new(),
             coverage: None,
             pipeline_session_id: None,
+            end_reason: Some(reason),
         };
         match self.write_event_locked(&mut writer, event) {
             Ok(()) => {
                 writer.ended = true;
-                tracing::info!(path = %self.path.display(), session_id = %self.session.session_id, sealed = writer.sealed, "clean transcript bus session ended");
+                tracing::info!(path = %self.path.display(), session_id = %self.session.session_id, sealed = writer.sealed, ?reason, "clean transcript bus session ended");
             }
             Err(error) => self.log_write_error(error),
         }
@@ -421,6 +441,7 @@ impl TranscriptBus {
                 words: Vec::new(),
                 coverage: None,
                 pipeline_session_id: None,
+                end_reason: None,
             },
         )?;
         writer.started = true;
@@ -556,13 +577,13 @@ mod tests {
         };
 
         let never_started = TranscriptBus::open_at(session.clone(), path.clone(), None).unwrap();
-        never_started.publish_ended();
+        never_started.publish_ended(TranscriptSessionEndReason::StartSuperseded);
         assert_eq!(std::fs::read_to_string(&path).unwrap().lines().count(), 0);
 
         let bus = TranscriptBus::open_at(session, path.clone(), None).unwrap();
         bus.publish_started();
-        bus.publish_ended();
-        bus.publish_ended();
+        bus.publish_ended(TranscriptSessionEndReason::Completed);
+        bus.publish_ended(TranscriptSessionEndReason::StartFailed);
 
         let lines: Vec<CleanTranscriptEvent> = std::fs::read_to_string(&path)
             .unwrap()
@@ -575,5 +596,11 @@ mod tests {
         assert_eq!(lines[1].sequence, 2);
         assert_eq!(lines[1].session_id, "session-ended");
         assert!(lines[1].text.is_empty());
+        assert_eq!(lines[0].end_reason, None);
+        // The first terminal wins; a later call with another reason is a no-op.
+        assert_eq!(
+            lines[1].end_reason,
+            Some(TranscriptSessionEndReason::Completed)
+        );
     }
 }
