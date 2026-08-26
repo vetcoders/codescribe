@@ -1267,8 +1267,10 @@ public protocol CodescribeConfigProtocol: AnyObject, Sendable {
     func keyStatus()  -> CsKeyStatus
 
     /**
-     * Full settings snapshot for the Settings UI. Reloads from disk so it
-     * reflects any writes made since construction.
+     * Full settings snapshot for the Settings UI. Loads exactly one canonical
+     * `RuntimeSettingsSnapshot` and projects a secret-free `CsSettings` from
+     * that instance — never a second `Config::load` + `UserSettings::load` +
+     * env-file reconstruct.
      */
     func loadSettings()  -> CsSettings
 
@@ -1452,9 +1454,7 @@ public protocol CodescribeConfigProtocol: AnyObject, Sendable {
     /**
      * Lightweight tray-only settings read. Unlike `load_settings`, this never
      * populates the Keychain, so it never prompts just because the user opened
-     * the menu. It DOES honor the full tier stack (defaults < settings.json <
-     * .env < process-env) so env overrides such as `SHOW_DOCK_ICON=0` take
-     * effect — reading `UserSettings` + defaults alone silently dropped them.
+     * the menu. Projects from one keychain-free runtime snapshot.
      */
     func trayToggles()  -> CsTrayToggles
 
@@ -1740,8 +1740,10 @@ open func keyStatus() -> CsKeyStatus  {
 }
 
     /**
-     * Full settings snapshot for the Settings UI. Reloads from disk so it
-     * reflects any writes made since construction.
+     * Full settings snapshot for the Settings UI. Loads exactly one canonical
+     * `RuntimeSettingsSnapshot` and projects a secret-free `CsSettings` from
+     * that instance — never a second `Config::load` + `UserSettings::load` +
+     * env-file reconstruct.
      */
 open func loadSettings() -> CsSettings  {
     return try!  FfiConverterTypeCsSettings_lift(try! rustCall() {
@@ -2089,9 +2091,7 @@ open func testApiKey(account: String)throws  -> CsApiKeyProbeResult  {
     /**
      * Lightweight tray-only settings read. Unlike `load_settings`, this never
      * populates the Keychain, so it never prompts just because the user opened
-     * the menu. It DOES honor the full tier stack (defaults < settings.json <
-     * .env < process-env) so env overrides such as `SHOW_DOCK_ICON=0` take
-     * effect — reading `UserSettings` + defaults alone silently dropped them.
+     * the menu. Projects from one keychain-free runtime snapshot.
      */
 open func trayToggles() -> CsTrayToggles  {
     return try!  FfiConverterTypeCsTrayToggles_lift(try! rustCall() {
@@ -2233,18 +2233,6 @@ public protocol CodescribeHotkeysProtocol: AnyObject, Sendable {
      * fallback when Paste Here registration is unavailable.
      */
     func deferText(text: String) async throws  -> CsPasteResult
-
-    /**
-     * Format editable overlay text after recording stops.
-     */
-    func formatText(text: String, language: CsLanguage?) async throws  -> String
-
-    /**
-     * Format overlay text through an explicitly selected one-shot level
-     * (`correction` / `smart` / `max`). Never reads or writes the persisted
-     * Auto Format policy; `off` is rejected — a manual action must act.
-     */
-    func formatTextForLevel(text: String, language: CsLanguage?, level: String) async throws  -> String
 
     /**
      * Current per-mode bindings (Dictation / Formatting / Assistive), normalized
@@ -2390,8 +2378,8 @@ public protocol CodescribeHotkeysProtocol: AnyObject, Sendable {
     func stopRecording() async throws
 
     /**
-     * Overlay Retranscribe: `hq:` / `cloud:` prefixes pick the pass.
-     * Bare paths are a Full HQ file pass.
+     * Explicit file consumers use `hq:` / `cloud:` prefixes to pick the pass.
+     * Bare paths are a Full HQ file pass; daily Overlay never calls this API.
      */
     func transcribeFile(path: String) async throws  -> CsTranscription
 
@@ -2587,48 +2575,6 @@ open func deferText(text: String)async throws  -> CsPasteResult  {
             completeFunc: ffi_codescribe_ffi_rust_future_complete_rust_buffer,
             freeFunc: ffi_codescribe_ffi_rust_future_free_rust_buffer,
             liftFunc: FfiConverterTypeCsPasteResult_lift,
-            errorHandler: FfiConverterTypeCsError_lift
-        )
-}
-
-    /**
-     * Format editable overlay text after recording stops.
-     */
-open func formatText(text: String, language: CsLanguage?)async throws  -> String  {
-    return
-        try  await uniffiRustCallAsync(
-            rustFutureFunc: {
-                uniffi_codescribe_ffi_fn_method_codescribehotkeys_format_text(
-                    self.uniffiCloneHandle(),
-                    FfiConverterString.lower(text),FfiConverterOptionTypeCsLanguage.lower(language)
-                )
-            },
-            pollFunc: ffi_codescribe_ffi_rust_future_poll_rust_buffer,
-            completeFunc: ffi_codescribe_ffi_rust_future_complete_rust_buffer,
-            freeFunc: ffi_codescribe_ffi_rust_future_free_rust_buffer,
-            liftFunc: FfiConverterString.lift,
-            errorHandler: FfiConverterTypeCsError_lift
-        )
-}
-
-    /**
-     * Format overlay text through an explicitly selected one-shot level
-     * (`correction` / `smart` / `max`). Never reads or writes the persisted
-     * Auto Format policy; `off` is rejected — a manual action must act.
-     */
-open func formatTextForLevel(text: String, language: CsLanguage?, level: String)async throws  -> String  {
-    return
-        try  await uniffiRustCallAsync(
-            rustFutureFunc: {
-                uniffi_codescribe_ffi_fn_method_codescribehotkeys_format_text_for_level(
-                    self.uniffiCloneHandle(),
-                    FfiConverterString.lower(text),FfiConverterOptionTypeCsLanguage.lower(language),FfiConverterString.lower(level)
-                )
-            },
-            pollFunc: ffi_codescribe_ffi_rust_future_poll_rust_buffer,
-            completeFunc: ffi_codescribe_ffi_rust_future_complete_rust_buffer,
-            freeFunc: ffi_codescribe_ffi_rust_future_free_rust_buffer,
-            liftFunc: FfiConverterString.lift,
             errorHandler: FfiConverterTypeCsError_lift
         )
 }
@@ -3001,8 +2947,8 @@ open func stopRecording()async throws   {
 }
 
     /**
-     * Overlay Retranscribe: `hq:` / `cloud:` prefixes pick the pass.
-     * Bare paths are a Full HQ file pass.
+     * Explicit file consumers use `hq:` / `cloud:` prefixes to pick the pass.
+     * Bare paths are a Full HQ file pass; daily Overlay never calls this API.
      */
 open func transcribeFile(path: String)async throws  -> CsTranscription  {
     return
@@ -5349,12 +5295,12 @@ public func FfiConverterTypeCsAppActionListener_lower(_ value: CsAppActionListen
 /**
  * Foreign callback trait — dictation events forwarded to Swift.
  *
- * Distilled from the engine's richer `EngineEvent` stream:
- * - `on_preview` carries the latest interim/corrected utterance text
- * (replace-not-append semantics).
- * - `on_final` carries a completed (VAD-bounded) utterance together with its
- * `utterance_id`, so committed sinks can stamp the segment identity that
- * later `on_replace_range` / `on_insert_annotation` patches target.
+ * `on_transcript_projection` is the sole committed transcript callback. The
+ * raw text callbacks below are ephemeral paint or diagnostics and must never
+ * write delivery state, reconstruct occurrence identity, or seal a document:
+ * - `on_preview` carries replace-not-append ephemeral paint.
+ * - `on_final`, `on_correction`, `on_replace_range`, and
+ * `on_insert_annotation` report raw engine observations only.
  * - `on_vad_active` flips when speech starts/ends.
  * - `on_no_speech` fires when a session/utterance produced no usable speech.
  * - `on_error` carries recoverable engine warnings.
@@ -5402,27 +5348,25 @@ public protocol CsTranscriptionListener: AnyObject, Sendable {
     func onPreview(text: String)
 
     /**
-     * An already-previewed utterance was revised; `previous_text` is what the
-     * surface currently shows, so it can locate and swap the right span.
+     * Diagnostic raw correction. Committed text arrives only through
+     * `on_transcript_projection`.
      */
     func onCorrection(text: String, previousText: String)
 
     /**
-     * Completed VAD-bounded utterance. Optional STT quality fields feed the
-     * overlay confidence badge + quality-loop meta (LL-D); empty when unknown.
+     * Diagnostic VAD-bounded raw final. Optional quality fields feed badges
+     * and telemetry; this callback has no committed-text authority.
      */
     func onFinal(utteranceId: UInt64, text: String, avgLogprob: Float?, speechPct: Float?, confidenceFlags: [String])
 
     /**
-     * Bounded patch of an already-committed utterance: replace `[start, end)`
-     * within the segment stamped `utterance_id`. `source` names the layer that
-     * produced it, so the surface can attribute or style the edit.
+     * Diagnostic bounded patch observation. It does not mutate committed
+     * projection state.
      */
     func onReplaceRange(utteranceId: UInt64, start: UInt64, end: UInt64, text: String, source: CsLayerSource)
 
     /**
-     * Insert an annotation (hesitation pause, paralingual marker) at `position`
-     * inside the segment stamped `utterance_id`, without replacing any text.
+     * Diagnostic annotation observation with no committed-text authority.
      */
     func onInsertAnnotation(utteranceId: UInt64, position: UInt64, text: String, kind: CsAnnotationKind)
 
@@ -5436,13 +5380,6 @@ public protocol CsTranscriptionListener: AnyObject, Sendable {
      * The session closed; `layer_summary` carries the per-layer edit counters.
      */
     func onSessionFinalised(sessionId: String, layerSummary: CsLayerSummary)
-
-    /**
-     * Authoritative post-stop transcript (LocalFinalPass `final_formatted_text`):
-     * the SAME clean text that is pasted/delivered and written to history. Surfaces
-     * fire it once per dictation stop so the overlay FINAL matches delivery/Copy.
-     */
-    func onFinalTranscriptReady(text: String)
 
     /**
      * Voice activity started (`true`) or stopped (`false`).
@@ -5472,12 +5409,12 @@ public protocol CsTranscriptionListener: AnyObject, Sendable {
 /**
  * Foreign callback trait — dictation events forwarded to Swift.
  *
- * Distilled from the engine's richer `EngineEvent` stream:
- * - `on_preview` carries the latest interim/corrected utterance text
- * (replace-not-append semantics).
- * - `on_final` carries a completed (VAD-bounded) utterance together with its
- * `utterance_id`, so committed sinks can stamp the segment identity that
- * later `on_replace_range` / `on_insert_annotation` patches target.
+ * `on_transcript_projection` is the sole committed transcript callback. The
+ * raw text callbacks below are ephemeral paint or diagnostics and must never
+ * write delivery state, reconstruct occurrence identity, or seal a document:
+ * - `on_preview` carries replace-not-append ephemeral paint.
+ * - `on_final`, `on_correction`, `on_replace_range`, and
+ * `on_insert_annotation` report raw engine observations only.
  * - `on_vad_active` flips when speech starts/ends.
  * - `on_no_speech` fires when a session/utterance produced no usable speech.
  * - `on_error` carries recoverable engine warnings.
@@ -5603,8 +5540,8 @@ open func onPreview(text: String)  {try! rustCall() {
 }
 
     /**
-     * An already-previewed utterance was revised; `previous_text` is what the
-     * surface currently shows, so it can locate and swap the right span.
+     * Diagnostic raw correction. Committed text arrives only through
+     * `on_transcript_projection`.
      */
 open func onCorrection(text: String, previousText: String)  {try! rustCall() {
     uniffi_codescribe_ffi_fn_method_cstranscriptionlistener_on_correction(
@@ -5616,8 +5553,8 @@ open func onCorrection(text: String, previousText: String)  {try! rustCall() {
 }
 
     /**
-     * Completed VAD-bounded utterance. Optional STT quality fields feed the
-     * overlay confidence badge + quality-loop meta (LL-D); empty when unknown.
+     * Diagnostic VAD-bounded raw final. Optional quality fields feed badges
+     * and telemetry; this callback has no committed-text authority.
      */
 open func onFinal(utteranceId: UInt64, text: String, avgLogprob: Float?, speechPct: Float?, confidenceFlags: [String])  {try! rustCall() {
     uniffi_codescribe_ffi_fn_method_cstranscriptionlistener_on_final(
@@ -5632,9 +5569,8 @@ open func onFinal(utteranceId: UInt64, text: String, avgLogprob: Float?, speechP
 }
 
     /**
-     * Bounded patch of an already-committed utterance: replace `[start, end)`
-     * within the segment stamped `utterance_id`. `source` names the layer that
-     * produced it, so the surface can attribute or style the edit.
+     * Diagnostic bounded patch observation. It does not mutate committed
+     * projection state.
      */
 open func onReplaceRange(utteranceId: UInt64, start: UInt64, end: UInt64, text: String, source: CsLayerSource)  {try! rustCall() {
     uniffi_codescribe_ffi_fn_method_cstranscriptionlistener_on_replace_range(
@@ -5649,8 +5585,7 @@ open func onReplaceRange(utteranceId: UInt64, start: UInt64, end: UInt64, text: 
 }
 
     /**
-     * Insert an annotation (hesitation pause, paralingual marker) at `position`
-     * inside the segment stamped `utterance_id`, without replacing any text.
+     * Diagnostic annotation observation with no committed-text authority.
      */
 open func onInsertAnnotation(utteranceId: UInt64, position: UInt64, text: String, kind: CsAnnotationKind)  {try! rustCall() {
     uniffi_codescribe_ffi_fn_method_cstranscriptionlistener_on_insert_annotation(
@@ -5684,19 +5619,6 @@ open func onSessionFinalised(sessionId: String, layerSummary: CsLayerSummary)  {
             self.uniffiCloneHandle(),
         FfiConverterString.lower(sessionId),
         FfiConverterTypeCsLayerSummary_lower(layerSummary),$0
-    )
-}
-}
-
-    /**
-     * Authoritative post-stop transcript (LocalFinalPass `final_formatted_text`):
-     * the SAME clean text that is pasted/delivered and written to history. Surfaces
-     * fire it once per dictation stop so the overlay FINAL matches delivery/Copy.
-     */
-open func onFinalTranscriptReady(text: String)  {try! rustCall() {
-    uniffi_codescribe_ffi_fn_method_cstranscriptionlistener_on_final_transcript_ready(
-            self.uniffiCloneHandle(),
-        FfiConverterString.lower(text),$0
     )
 }
 }
@@ -6075,30 +5997,6 @@ fileprivate struct UniffiCallbackInterfaceCsTranscriptionListener {
                 return uniffiObj.onSessionFinalised(
                      sessionId: try FfiConverterString.lift(sessionId),
                      layerSummary: try FfiConverterTypeCsLayerSummary_lift(layerSummary)
-                )
-            }
-
-
-            let writeReturn = { () }
-            uniffiTraitInterfaceCall(
-                callStatus: uniffiCallStatus,
-                makeCall: makeCall,
-                writeReturn: writeReturn
-            )
-        },
-        onFinalTranscriptReady: { (
-            uniffiHandle: UInt64,
-            text: RustBuffer,
-            uniffiOutReturn: UnsafeMutableRawPointer,
-            uniffiCallStatus: UnsafeMutablePointer<RustCallStatus>
-        ) in
-            let makeCall = {
-                () throws -> () in
-                guard let uniffiObj = try? FfiConverterTypeCsTranscriptionListener.handleMap.get(handle: uniffiHandle) else {
-                    throw UniffiInternalError.unexpectedStaleHandle
-                }
-                return uniffiObj.onFinalTranscriptReady(
-                     text: try FfiConverterString.lift(text)
                 )
             }
 
@@ -9831,14 +9729,12 @@ public func FfiConverterTypeCsRuntimeLlmLane_lower(_ value: CsRuntimeLlmLane) ->
 
 
 /**
- * Full settings snapshot pushed to the Swift Settings UI. Combines real
- * `Config` struct fields (settings.json / .env / defaults already merged by
- * `Config::load()`) with env-only knobs read from persisted settings / .env
- * without relying on runtime process-env mutation.
+ * Full settings snapshot pushed to the Swift Settings UI.
  *
- * API keys are intentionally absent — they live only in `CsKeyStatus` as
- * booleans. Write back through `update_config` / `update_config_many` using the
- * router env keys (see `CodescribeConfig::update_config`).
+ * Constructed only via [`CsSettings::from_runtime_snapshot`] from one sealed
+ * `RuntimeSettingsSnapshot`. API keys are intentionally absent — they live
+ * only in `CsKeyStatus` as booleans. Write back through `update_config` /
+ * `update_config_many` using the router env keys.
  */
 public struct CsSettings: Equatable, Hashable {
     public var holdExclusive: Bool
@@ -12985,30 +12881,6 @@ fileprivate struct FfiConverterOptionUInt8: FfiConverterRustBuffer {
 #if swift(>=5.8)
 @_documentation(visibility: private)
 #endif
-fileprivate struct FfiConverterOptionUInt32: FfiConverterRustBuffer {
-    typealias SwiftType = UInt32?
-
-    public static func write(_ value: SwiftType, into buf: inout [UInt8]) {
-        guard let value = value else {
-            writeInt(&buf, Int8(0))
-            return
-        }
-        writeInt(&buf, Int8(1))
-        FfiConverterUInt32.write(value, into: &buf)
-    }
-
-    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> SwiftType {
-        switch try readInt(&buf) as Int8 {
-        case 0: return nil
-        case 1: return try FfiConverterUInt32.read(from: &buf)
-        default: throw UniffiInternalError.unexpectedOptionalTag
-        }
-    }
-}
-
-#if swift(>=5.8)
-@_documentation(visibility: private)
-#endif
 fileprivate struct FfiConverterOptionUInt16: FfiConverterRustBuffer {
     typealias SwiftType = UInt16?
 
@@ -13025,6 +12897,30 @@ fileprivate struct FfiConverterOptionUInt16: FfiConverterRustBuffer {
         switch try readInt(&buf) as Int8 {
         case 0: return nil
         case 1: return try FfiConverterUInt16.read(from: &buf)
+        default: throw UniffiInternalError.unexpectedOptionalTag
+        }
+    }
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+fileprivate struct FfiConverterOptionUInt32: FfiConverterRustBuffer {
+    typealias SwiftType = UInt32?
+
+    public static func write(_ value: SwiftType, into buf: inout [UInt8]) {
+        guard let value = value else {
+            writeInt(&buf, Int8(0))
+            return
+        }
+        writeInt(&buf, Int8(1))
+        FfiConverterUInt32.write(value, into: &buf)
+    }
+
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> SwiftType {
+        switch try readInt(&buf) as Int8 {
+        case 0: return nil
+        case 1: return try FfiConverterUInt32.read(from: &buf)
         default: throw UniffiInternalError.unexpectedOptionalTag
         }
     }
@@ -13241,30 +13137,6 @@ fileprivate struct FfiConverterOptionTypeCsTokenUsage: FfiConverterRustBuffer {
         switch try readInt(&buf) as Int8 {
         case 0: return nil
         case 1: return try FfiConverterTypeCsTokenUsage.read(from: &buf)
-        default: throw UniffiInternalError.unexpectedOptionalTag
-        }
-    }
-}
-
-#if swift(>=5.8)
-@_documentation(visibility: private)
-#endif
-fileprivate struct FfiConverterOptionTypeCsLanguage: FfiConverterRustBuffer {
-    typealias SwiftType = CsLanguage?
-
-    public static func write(_ value: SwiftType, into buf: inout [UInt8]) {
-        guard let value = value else {
-            writeInt(&buf, Int8(0))
-            return
-        }
-        writeInt(&buf, Int8(1))
-        FfiConverterTypeCsLanguage.write(value, into: &buf)
-    }
-
-    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> SwiftType {
-        switch try readInt(&buf) as Int8 {
-        case 0: return nil
-        case 1: return try FfiConverterTypeCsLanguage.read(from: &buf)
         default: throw UniffiInternalError.unexpectedOptionalTag
         }
     }
@@ -14193,7 +14065,7 @@ private let initializationResult: InitializationResult = {
     if (uniffi_codescribe_ffi_checksum_method_codescribeconfig_key_status() != 32281) {
         return InitializationResult.apiChecksumMismatch
     }
-    if (uniffi_codescribe_ffi_checksum_method_codescribeconfig_load_settings() != 41624) {
+    if (uniffi_codescribe_ffi_checksum_method_codescribeconfig_load_settings() != 21744) {
         return InitializationResult.apiChecksumMismatch
     }
     if (uniffi_codescribe_ffi_checksum_method_codescribeconfig_mark_onboarding_done() != 62013) {
@@ -14274,7 +14146,7 @@ private let initializationResult: InitializationResult = {
     if (uniffi_codescribe_ffi_checksum_method_codescribeconfig_test_api_key() != 58988) {
         return InitializationResult.apiChecksumMismatch
     }
-    if (uniffi_codescribe_ffi_checksum_method_codescribeconfig_tray_toggles() != 53653) {
+    if (uniffi_codescribe_ffi_checksum_method_codescribeconfig_tray_toggles() != 33834) {
         return InitializationResult.apiChecksumMismatch
     }
     if (uniffi_codescribe_ffi_checksum_method_codescribeconfig_update_config() != 45382) {
@@ -14299,12 +14171,6 @@ private let initializationResult: InitializationResult = {
         return InitializationResult.apiChecksumMismatch
     }
     if (uniffi_codescribe_ffi_checksum_method_codescribehotkeys_defer_text() != 26341) {
-        return InitializationResult.apiChecksumMismatch
-    }
-    if (uniffi_codescribe_ffi_checksum_method_codescribehotkeys_format_text() != 21736) {
-        return InitializationResult.apiChecksumMismatch
-    }
-    if (uniffi_codescribe_ffi_checksum_method_codescribehotkeys_format_text_for_level() != 21029) {
         return InitializationResult.apiChecksumMismatch
     }
     if (uniffi_codescribe_ffi_checksum_method_codescribehotkeys_get_mode_bindings() != 18882) {
@@ -14373,7 +14239,7 @@ private let initializationResult: InitializationResult = {
     if (uniffi_codescribe_ffi_checksum_method_codescribehotkeys_stop_recording() != 38552) {
         return InitializationResult.apiChecksumMismatch
     }
-    if (uniffi_codescribe_ffi_checksum_method_codescribehotkeys_transcribe_file() != 38781) {
+    if (uniffi_codescribe_ffi_checksum_method_codescribehotkeys_transcribe_file() != 1637) {
         return InitializationResult.apiChecksumMismatch
     }
     if (uniffi_codescribe_ffi_checksum_method_codescribehotkeys_validate_bindings() != 29971) {
@@ -14538,16 +14404,16 @@ private let initializationResult: InitializationResult = {
     if (uniffi_codescribe_ffi_checksum_method_cstranscriptionlistener_on_preview() != 48992) {
         return InitializationResult.apiChecksumMismatch
     }
-    if (uniffi_codescribe_ffi_checksum_method_cstranscriptionlistener_on_correction() != 21961) {
+    if (uniffi_codescribe_ffi_checksum_method_cstranscriptionlistener_on_correction() != 62884) {
         return InitializationResult.apiChecksumMismatch
     }
-    if (uniffi_codescribe_ffi_checksum_method_cstranscriptionlistener_on_final() != 45086) {
+    if (uniffi_codescribe_ffi_checksum_method_cstranscriptionlistener_on_final() != 8328) {
         return InitializationResult.apiChecksumMismatch
     }
-    if (uniffi_codescribe_ffi_checksum_method_cstranscriptionlistener_on_replace_range() != 30542) {
+    if (uniffi_codescribe_ffi_checksum_method_cstranscriptionlistener_on_replace_range() != 6198) {
         return InitializationResult.apiChecksumMismatch
     }
-    if (uniffi_codescribe_ffi_checksum_method_cstranscriptionlistener_on_insert_annotation() != 25560) {
+    if (uniffi_codescribe_ffi_checksum_method_cstranscriptionlistener_on_insert_annotation() != 14795) {
         return InitializationResult.apiChecksumMismatch
     }
     if (uniffi_codescribe_ffi_checksum_method_cstranscriptionlistener_on_context_marker() != 12395) {
@@ -14556,19 +14422,16 @@ private let initializationResult: InitializationResult = {
     if (uniffi_codescribe_ffi_checksum_method_cstranscriptionlistener_on_session_finalised() != 65321) {
         return InitializationResult.apiChecksumMismatch
     }
-    if (uniffi_codescribe_ffi_checksum_method_cstranscriptionlistener_on_final_transcript_ready() != 4097) {
+    if (uniffi_codescribe_ffi_checksum_method_cstranscriptionlistener_on_vad_active() != 40828) {
         return InitializationResult.apiChecksumMismatch
     }
-    if (uniffi_codescribe_ffi_checksum_method_cstranscriptionlistener_on_vad_active() != 33532) {
+    if (uniffi_codescribe_ffi_checksum_method_cstranscriptionlistener_on_audio_level() != 55568) {
         return InitializationResult.apiChecksumMismatch
     }
-    if (uniffi_codescribe_ffi_checksum_method_cstranscriptionlistener_on_audio_level() != 40054) {
+    if (uniffi_codescribe_ffi_checksum_method_cstranscriptionlistener_on_no_speech() != 54696) {
         return InitializationResult.apiChecksumMismatch
     }
-    if (uniffi_codescribe_ffi_checksum_method_cstranscriptionlistener_on_no_speech() != 24225) {
-        return InitializationResult.apiChecksumMismatch
-    }
-    if (uniffi_codescribe_ffi_checksum_method_cstranscriptionlistener_on_error() != 3849) {
+    if (uniffi_codescribe_ffi_checksum_method_cstranscriptionlistener_on_error() != 20067) {
         return InitializationResult.apiChecksumMismatch
     }
     if (uniffi_codescribe_ffi_checksum_method_cstraystatuslistener_on_tray_status() != 48227) {

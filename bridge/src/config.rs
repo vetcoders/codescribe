@@ -16,6 +16,7 @@ use std::sync::{Mutex, Once, OnceLock};
 
 use chrono::{DateTime, SecondsFormat, Utc};
 use codescribe_core::config::keychain::{KEYCHAIN_ACCOUNTS, delete_key, save_key};
+use codescribe_core::config::settings::normalize_agent_workspace_roots;
 use codescribe_core::config::{
     AppDataResetGuard, Config, DEFAULT_ASSISTIVE_PROMPT, DEFAULT_FORMATTING_PROMPT,
     FormattingPolicy, PromptKind, PromptSnapshot, PromptWriteReason, RuntimeLlmLane,
@@ -23,7 +24,6 @@ use codescribe_core::config::{
     prompt_snapshot, prompts, reset_to_defaults, restore_prompt_to_default, write_prompt,
     write_prompt_bytes_during_reset,
 };
-use codescribe_core::config::settings::normalize_agent_workspace_roots;
 use codescribe_core::llm::account_auth;
 use codescribe_core::llm::key_liveness::{
     ApiKeyLivenessResult, ApiKeyLivenessStatus, probe_api_key_liveness,
@@ -188,8 +188,9 @@ impl CsSettings {
         let main = runtime.llm_lanes().main();
         let formatting = runtime.llm_lanes().formatting();
         let assistive = runtime.llm_lanes().assistive();
-        let mut agent_workspace_roots =
-            normalize_agent_workspace_roots(settings.agent_workspace_roots.clone().unwrap_or_default());
+        let mut agent_workspace_roots = normalize_agent_workspace_roots(
+            settings.agent_workspace_roots.clone().unwrap_or_default(),
+        );
         if agent_workspace_roots.is_empty() {
             agent_workspace_roots.push("~/.codescribe".to_string());
         }
@@ -764,10 +765,7 @@ impl CodescribeConfig {
         CsKeyStatus {
             llm_api_key_set: key_present("LLM_API_KEY", &runtime_settings),
             stt_api_key_set: key_present("STT_API_KEY", &runtime_settings),
-            llm_formatting_api_key_set: key_present(
-                "LLM_FORMATTING_API_KEY",
-                &runtime_settings,
-            ),
+            llm_formatting_api_key_set: key_present("LLM_FORMATTING_API_KEY", &runtime_settings),
             llm_assistive_api_key_set: key_present("LLM_ASSISTIVE_API_KEY", &runtime_settings),
             llm_anthropic_api_key_set: key_present("LLM_ANTHROPIC_API_KEY", &runtime_settings),
             llm_xai_api_key_set: key_present("LLM_XAI_API_KEY", &runtime_settings),
@@ -3012,7 +3010,9 @@ mod reset_tests {
 /// carryover. Every test here mutates process env, so all are `#[serial]`.
 #[cfg(test)]
 mod settings_snapshot_tests {
-    use super::{CodescribeConfig, remove_path_without_following_symlinks};
+    use super::{
+        CodescribeConfig, CsSettings, remove_path_without_following_symlinks, setting_string,
+    };
     use codescribe_core::config::{Config, UserSettings};
     use serial_test::serial;
     use std::ffi::{OsStr, OsString};
