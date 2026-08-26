@@ -42,6 +42,7 @@
           "enum": [
             "executable_authority",
             "executable_consumer",
+            "canonical_edge",
             "harmless_historical_name",
             "diagnostic_or_log_label",
             "comment_or_string",
@@ -104,6 +105,7 @@
           "required": [
             "executable_authority",
             "executable_consumer",
+            "canonical_edge",
             "harmless_historical_name",
             "diagnostic_or_log_label",
             "comment_or_string",
@@ -115,6 +117,7 @@
           "properties": {
             "executable_authority": { "type": "integer", "minimum": 0 },
             "executable_consumer": { "type": "integer", "minimum": 0 },
+            "canonical_edge": { "type": "integer", "minimum": 0 },
             "harmless_historical_name": { "type": "integer", "minimum": 0 },
             "diagnostic_or_log_label": { "type": "integer", "minimum": 0 },
             "comment_or_string": { "type": "integer", "minimum": 0 },

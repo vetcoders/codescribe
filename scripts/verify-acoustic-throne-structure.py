@@ -47,6 +47,7 @@ VERIFIER_LITERAL_PATHS = VERIFIER_INFRASTRUCTURE | {
 RESIDUE_CLASSES = (
     "executable_authority",
     "executable_consumer",
+    "canonical_edge",
     "harmless_historical_name",
     "diagnostic_or_log_label",
     "comment_or_string",
@@ -308,6 +309,21 @@ def classify_substring_residue(
         return "harmless_historical_name", "historical documentation name"
     if match_role in NON_CODE_ROLES:
         return "comment_or_string", "Loctree marks the match as non-code text"
+    pascal_needle = pascal_twin(needle)
+    if (
+        file == "core/quality/engine_contract.rs"
+        and matched_identifier == f"Lexicon{pascal_needle}"
+    ) or (
+        file
+        in {
+            "app/controller/delivery_route.rs",
+            "app/controller/mod.rs",
+            "bridge/src/hotkeys.rs",
+        }
+        and matched_identifier
+        in {f"{pascal_needle}Delivery", f"{pascal_needle}Result"}
+    ):
+        return "canonical_edge", "fixed-throne type or relay edge"
     if (
         disabled_cfg_any
         or scope == "test"
@@ -326,7 +342,9 @@ def classify_substring_residue(
     return "unclassified_requires_review", "no deterministic taxonomy rule matched"
 
 
-def inside_cfg_any_module(repo: Path | None, occurrence: dict[str, Any]) -> bool:
+def inside_non_runtime_cfg_module(
+    repo: Path | None, occurrence: dict[str, Any]
+) -> bool:
     if repo is None:
         return False
     relative = Path(str(occurrence.get("file", "")))
@@ -340,7 +358,9 @@ def inside_cfg_any_module(repo: Path | None, occurrence: dict[str, Any]) -> bool
     if not 0 <= target < len(lines):
         return False
     for attribute_index in range(target, -1, -1):
-        if not re.fullmatch(r"\s*#\[cfg\(any\(\)\)\]\s*", lines[attribute_index]):
+        if not re.fullmatch(
+            r"\s*#\[cfg\((?:any\(\)|test)\)\]\s*", lines[attribute_index]
+        ):
             continue
         module_index = attribute_index + 1
         while module_index <= target and not lines[module_index].strip():
@@ -433,7 +453,7 @@ def residue_occurrences(
         residue_class, reason = classify_substring_residue(
             occurrence,
             needle,
-            disabled_cfg_any=inside_cfg_any_module(repo, occurrence),
+            disabled_cfg_any=inside_non_runtime_cfg_module(repo, occurrence),
         )
         rows.append(
             {
