@@ -327,6 +327,13 @@ impl TranscriptReducer {
 /// Presentation emitter — the single reducer and ordered delivery writer.
 ///
 /// Implements `EventSink` so it can be plugged directly into `transcription_session`.
+/// Observer of one committed Bus projection.
+///
+/// Named because this is an authority-bearing role, not an anonymous closure
+/// slot: it is invoked only after an occurrence-authenticated ledger receipt
+/// has already produced a committed revision, never on preview paint.
+pub type ProjectionObserver = Arc<dyn Fn(&TranscriptBusEvidenceEvent) + Send + Sync>;
+
 /// All target mutations are serialized through one mpsc worker, guaranteeing
 /// that overlay deltas and the shared transcript snapshot see identical order.
 pub struct PresentationEmitter {
@@ -342,7 +349,7 @@ pub struct PresentationEmitter {
     /// Durable observer of this exact reducer's committed/final truth.
     transcript_bus: Option<Arc<TranscriptBus>>,
     acoustic_ledger: Option<Arc<std::sync::Mutex<AcousticLedger>>>,
-    projection_callback: Option<Arc<dyn Fn(&TranscriptBusEvidenceEvent) + Send + Sync>>,
+    projection_callback: Option<ProjectionObserver>,
 }
 
 impl PresentationEmitter {
@@ -381,7 +388,7 @@ impl PresentationEmitter {
         stream_log_path: Option<std::path::PathBuf>,
         transcript_bus: Option<Arc<TranscriptBus>>,
         acoustic_ledger: Option<Arc<std::sync::Mutex<AcousticLedger>>>,
-        projection_callback: Option<Arc<dyn Fn(&TranscriptBusEvidenceEvent) + Send + Sync>>,
+        projection_callback: Option<ProjectionObserver>,
     ) -> Self {
         // One ordered worker preserves paint order while keeping authority
         // effects explicit. Both command families may paint; only a committed
@@ -721,12 +728,37 @@ mod tests {
         }
     }
 
+    /// Qualify one occurrence through the ledger's calibrated energy predicate,
+    /// then admit an Apple observation over exactly that span.
+    ///
+    /// Both steps are load-bearing. `admit` alone records a layer decision whose
+    /// serial list is copied from `evidence`, so an occurrence that never
+    /// cleared `qualify` produces a decision that is not evidence-backed — and
+    /// the reducer must refuse it. Authenticating here is what makes the
+    /// assertions downstream about repetition and revision projection, rather
+    /// than about the admission gate itself.
     fn admitted_mutation(
         ledger: &mut AcousticLedger,
         occurrence: OccurrenceIdentity,
         request: u64,
         label: &str,
     ) -> EngineEvent {
+        let calibration = EnergyCalibration {
+            version: "emitter-test".to_string(),
+            min_energy_integral: 1.0,
+            min_valley_samples: 1,
+        };
+        let evidence = AcousticEvidence {
+            occurrence: occurrence.clone(),
+            duration_ms: 1_000.0,
+            energy_integral: 10.0,
+            mean_rms_dbfs: -12.0,
+            peak_dbfs: -3.0,
+            vad_open_sample: Some(occurrence.sample_start),
+            vad_close_sample: Some(occurrence.sample_end),
+            evidence_calibration_version: calibration.version.clone(),
+        };
+        assert!(ledger.qualify(&evidence, &calibration).is_qualified());
         let observation =
             ObservationIdentity::new(ObservationProducer::Apple, request, 0, occurrence);
         let receipt = ledger.admit(&observation, label);
@@ -932,6 +964,69 @@ mod tests {
 
         assert_eq!(reducer.document_by_occurrence.len(), 2);
         assert_eq!(reducer.committed_rendered_text(), "Iwo Iwo");
+
+        // The two entries are kept apart by their PCM span, not by their text.
+        // Asserting the exact keys stops a future dedup-by-string from passing
+        // this test with one entry and a doubled render.
+        let spans = reducer
+            .document_by_occurrence
+            .keys()
+            .map(|occurrence| (occurrence.sample_start, occurrence.sample_end))
+            .collect::<Vec<_>>();
+        assert_eq!(spans, vec![(0, 8_000), (16_000, 24_000)]);
+        for entry in reducer.document_by_occurrence.values() {
+            assert_eq!(entry.label, "Iwo");
+        }
+    }
+
+    /// A terminal seal closes committed truth. A later non-manual observation
+    /// replaying the same occurrence must move neither the label nor the
+    /// document, and must not mint a revision.
+    #[test]
+    fn sealed_occurrence_refuses_a_later_machine_observation() {
+        let mut ledger = AcousticLedger::new();
+        let occurrence = OccurrenceIdentity::new("session", 11, 0, 16_000);
+        let admitted = admitted_mutation(&mut ledger, occurrence.clone(), 1, "Iwo");
+        let EngineEvent::LedgerMutation {
+            observation,
+            receipt,
+            ..
+        } = admitted
+        else {
+            unreachable!();
+        };
+        let mut reducer = TranscriptReducer::default();
+        let first = reducer
+            .apply_ledger_mutation(&ledger, &observation, &receipt)
+            .expect("an authenticated occurrence commits");
+
+        // A seal is only mintable once the scheduled observer frontier has
+        // actually closed; there is no arbitrary text seal.
+        ledger.schedule_frontier(occurrence.clone(), [ObservationProducer::Apple]);
+        // Apple is the only scheduled observer, so its return is the exact
+        // open -> closed transition.
+        assert!(ledger.note_frontier_return(&occurrence, ObservationProducer::Apple));
+        let sealed = ledger
+            .seal(&occurrence)
+            .expect("a closed frontier over qualified audio seals")
+            .clone();
+        assert!(reducer.apply_ledger_seal(&sealed).is_some());
+        let revision_after_seal = reducer.revision;
+
+        // Same occurrence, later generation, different text: refused outright.
+        let replay = ObservationIdentity::new(ObservationProducer::Apple, 2, 1, occurrence.clone());
+        let replay_receipt = ledger.admit(&replay, "Iwo drugie");
+        assert!(
+            reducer
+                .apply_ledger_mutation(&ledger, &replay, &replay_receipt)
+                .is_none()
+        );
+
+        assert_eq!(reducer.revision, revision_after_seal);
+        assert_eq!(ledger.text_of(&occurrence), Some("Iwo"));
+        assert_eq!(reducer.committed_rendered_text(), "Iwo");
+        assert_eq!(reducer.document_by_occurrence.len(), 1);
+        assert_eq!(first.entries.len(), 1);
     }
 
     fn open_formatter_frontier() -> (AcousticLedger, TranscriptReducer, OccurrenceIdentity) {
