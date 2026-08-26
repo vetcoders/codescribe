@@ -1820,36 +1820,4 @@ mod tests {
         assert_eq!(basic.summary_rows().len(), 1);
         assert_eq!(basic.summary_rows()[0].tone, McpRowTone::Neutral);
     }
-
-    /// Restores a removed process env var on drop for hermetic readiness tests.
-    struct EnvGuard {
-        key: &'static str,
-        previous: Option<String>,
-    }
-
-    impl EnvGuard {
-        /// Remove `key` until this guard drops, then restore prior state.
-        fn remove(key: &'static str) -> Self {
-            let previous = std::env::var(key).ok();
-            // SAFETY: this process-env test is serialized with `serial`.
-            unsafe { std::env::remove_var(key) };
-            Self { key, previous }
-        }
-    }
-
-    impl Drop for EnvGuard {
-        /// Restore the captured previous env state for this guard's key.
-        fn drop(&mut self) {
-            match self.previous.as_deref() {
-                Some(value) => {
-                    // SAFETY: this process-env test is serialized with `serial`.
-                    unsafe { std::env::set_var(self.key, value) };
-                }
-                None => {
-                    // SAFETY: this process-env test is serialized with `serial`.
-                    unsafe { std::env::remove_var(self.key) };
-                }
-            }
-        }
-    }
 }

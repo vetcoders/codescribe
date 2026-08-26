@@ -4,11 +4,9 @@
 
 use std::sync::Arc;
 
-use codescribe::presentation::emitter::TranscriptRevision;
 use codescribe::presentation::transcript_bus::{
     ProjectedAcousticReceipt, TranscriptBusEvidenceEvent,
 };
-use codescribe_core::pipeline::acoustic_ledger::AcousticSerial;
 use codescribe_core::pipeline::contracts::{AnnotationKind, LayerSource, LayerSummary};
 use cpal::traits::{DeviceTrait, HostTrait};
 
@@ -121,10 +119,6 @@ impl From<&TranscriptBusEvidenceEvent> for CsTranscriptProjectionEvent {
         }
     }
 }
-
-/// Compile-time corridor witness: bridge projection consumes reducer revisions
-/// and ledger serials only as immutable inputs; it cannot mint either.
-fn projection_authority_witness(_revision: &TranscriptRevision, _serial: &AcousticSerial) {}
 
 /// Live audio-input resolution used by Settings. `runtime_device` is resolved
 /// from the same cpal host and matching policy as `Recorder::start`: a

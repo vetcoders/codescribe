@@ -7,7 +7,6 @@
 //! Secrets NEVER cross the FFI boundary — only `CsKeyStatus` booleans report
 //! whether a key is present.
 
-use std::collections::HashMap;
 use std::fs::{self, OpenOptions};
 use std::io::Write;
 use std::path::{Path, PathBuf};
@@ -2188,18 +2187,6 @@ fn append_reset_audit(event: &ResetAuditEvent<'_>) -> std::io::Result<()> {
     file.sync_data()
 }
 
-/// Parse the on-disk `.env` once per settings read. An absent or unparseable
-/// file yields an empty map so the caller falls through to the remaining tiers
-/// instead of failing the whole snapshot.
-fn load_config_env_file() -> HashMap<String, String> {
-    let path = Config::env_path();
-    if path.exists() {
-        Config::parse_env_file(&path).unwrap_or_default()
-    } else {
-        HashMap::new()
-    }
-}
-
 /// Trim and collapse a blank string to `None`. The tier lookups below treat
 /// "present but empty" as "not configured", so a stray `KEY=` never shadows a
 /// real value from a lower tier.
@@ -2211,68 +2198,6 @@ fn non_empty(value: String) -> Option<String> {
 /// A persisted settings value, normalized to `None` when blank.
 fn setting_string(value: Option<String>) -> Option<String> {
     value.and_then(non_empty)
-}
-
-/// A value from the parsed `.env` file, normalized to `None` when blank. Reads
-/// the file, not the process env, so a UI write is visible without `set_var`.
-fn file_env_string(key: &str, env_file: &HashMap<String, String>) -> Option<String> {
-    env_file.get(key).cloned().and_then(non_empty)
-}
-
-/// Promoted settings are settings.json-owned; prefer that store over process
-/// env so stale bootstrap-seeded env does not mask a fresh UI write.
-fn effective_settings_string(
-    key: &str,
-    setting: Option<String>,
-    env_file: &HashMap<String, String>,
-) -> Option<String> {
-    setting_string(setting)
-        .or_else(|| file_env_string(key, env_file))
-        .or_else(|| env_string(key))
-}
-
-/// Env-managed settings are persisted to .env when changed from the UI. Read
-/// that file before process env so runtime writes are visible without set_var.
-fn effective_env_string(
-    key: &str,
-    setting: Option<String>,
-    env_file: &HashMap<String, String>,
-) -> Option<String> {
-    file_env_string(key, env_file)
-        .or_else(|| setting_string(setting))
-        .or_else(|| env_string(key))
-}
-
-/// Typed counterpart of `effective_settings_string` for numeric knobs: already
-/// parsed settings first, then `.env`, then process env. A value that fails to
-/// parse is skipped rather than propagated, so a malformed override falls
-/// through to the next tier instead of poisoning the snapshot.
-fn effective_settings_parse<T>(
-    key: &str,
-    setting: Option<T>,
-    env_file: &HashMap<String, String>,
-) -> Option<T>
-where
-    T: std::str::FromStr,
-{
-    setting
-        .or_else(|| file_env_string(key, env_file).and_then(|value| value.parse().ok()))
-        .or_else(|| env_parse(key))
-}
-
-/// Non-empty env var as `Some(String)`, else `None`.
-fn env_string(key: &str) -> Option<String> {
-    std::env::var(key)
-        .ok()
-        .map(|value| value.trim().to_string())
-        .filter(|value| !value.is_empty())
-}
-
-/// Parse a non-empty env var into `T`, else `None`.
-fn env_parse<T: std::str::FromStr>(key: &str) -> Option<T> {
-    std::env::var(key)
-        .ok()
-        .and_then(|value| value.trim().parse().ok())
 }
 
 /// Secret-presence projection from one loader result. LLM accounts are matched

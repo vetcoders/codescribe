@@ -44,7 +44,7 @@ pub use helpers::{
     is_assistive_session, is_conversation_session, publish_recording_indicator,
     set_assistive_session, set_assistive_target_thread, set_conversation_session,
 };
-pub use types::{HotkeyAction, HotkeyInput, HotkeyType, State, TranscriptionActionContractMode};
+pub use types::{HotkeyAction, HotkeyInput, HotkeyType, State};
 
 use crate::presentation::transcript_bus::TranscriptSessionEndReason;
 use crate::presentation::{PresentationEmitter, TranscriptBus, TranscriptMode, TranscriptSession};
@@ -58,8 +58,6 @@ use tracing::{debug, error, info, warn};
 use uuid::Uuid;
 
 use crate::audio::streaming_recorder::StreamingRecorder;
-#[cfg(test)]
-use crate::config::DeferredInsertShortcut;
 use crate::config::models::ModelManager;
 use crate::config::{Config, RuntimeSettingsSnapshot, UserSettings};
 use crate::os::clipboard;
@@ -72,38 +70,22 @@ use crate::os::selection::{
 };
 use crate::os::shortcut_registry;
 use context_bucket::ContextBucket;
-#[cfg(test)]
-pub(crate) use context_bucket::ContextMarker;
 
 // Moshi conversation engine and audio output
 use codescribe_core::conversation::{ConversationEngine, MoshiConfig};
 use codescribe_core::ipc::{EngineEventWire, IpcEvent, IpcEventPayload};
 use codescribe_core::tts::AudioPlayer;
 
-#[cfg(test)]
-pub(crate) use codescribe_core::pipeline::contracts::TranscriptionConfidenceFlag;
-
 use delivery_route::{
     DeliveryFacts, DeliveryIntent, DeliveryRoute, format_delivery_route_line, overlay_insert_facts,
     resolve_delivery_route, target_is_self_app,
 };
-#[cfg(test)]
-use helpers::SessionEngineStats;
-#[cfg(test)]
-pub(crate) use helpers::SessionTelemetrySnapshot;
-#[cfg(test)]
-use helpers::build_image_attachments_from_text;
-use helpers::{
-    SharedSessionTelemetry, new_session_telemetry, reset_session_telemetry,
-    send_assistive_with_agent_runtime_lane,
-};
+use helpers::send_assistive_with_agent_runtime_lane;
 use hotkey_policy::{
     STOP_TIMEOUT, effective_hold_start_delay_ms, should_apply_incoming_mode_flags,
     should_block_hotkey_during_agent_send, should_use_toggle_adjudicated_stop,
     toggle_final_pass_enabled,
 };
-#[cfg(test)]
-use hotkey_policy::{is_assistive_start_event, toggle_stop_adjudicate_timeout};
 
 /// Live overlay: ms of audio held before the first interim emit.
 const LIVE_PROFILE_BUFFER_DELAY_MS: u64 = 280;
@@ -119,32 +101,6 @@ const NO_OVERLAY_PROFILE_INTERIM_SEC: f32 = 8.0;
 /// thread never constructs IPC events or timestamps and never accumulates a
 /// backlog when the bridge/UI is slower than CoreAudio.
 const AUDIO_LEVEL_QUEUE_CAPACITY: usize = 1;
-
-/// Test-only latch: when true, process_recording blocks forever.
-/// Armed by hang_process_recording_for_test; cleared by its Drop guard.
-#[cfg(test)]
-static PROCESS_RECORDING_TEST_HANG: AtomicBool = AtomicBool::new(false);
-
-/// Clears [`PROCESS_RECORDING_TEST_HANG`] on drop, so a test that arms the hang
-/// cannot leak it into the next test in the same process.
-#[cfg(test)]
-struct ProcessRecordingHangGuard;
-
-/// Make `process_recording` block forever, so the stuck-stop watchdog can be
-/// exercised without a real recorder or a real stall.
-#[cfg(test)]
-fn hang_process_recording_for_test() -> ProcessRecordingHangGuard {
-    PROCESS_RECORDING_TEST_HANG.store(true, Ordering::SeqCst);
-    ProcessRecordingHangGuard
-}
-
-#[cfg(test)]
-impl Drop for ProcessRecordingHangGuard {
-    /// Clear PROCESS_RECORDING_TEST_HANG so the hang cannot leak across tests.
-    fn drop(&mut self) {
-        PROCESS_RECORDING_TEST_HANG.store(false, Ordering::SeqCst);
-    }
-}
 
 /// Publish the live-transcription tuning for the session that is about to start
 /// and report whether the overlay is enabled.
@@ -252,7 +208,6 @@ struct HoldStartSession {
     active_transcript_bus: Arc<RwLock<Option<Arc<TranscriptBus>>>>,
     assistive_context: Arc<RwLock<Option<AssistiveContext>>>,
     pre_overlay_frontmost_app: Arc<RwLock<Option<String>>>,
-    session_telemetry: SharedSessionTelemetry,
 }
 
 /// Keep the last session WAV at a stable path so overlay Retranscribe
@@ -273,36 +228,6 @@ struct ProcessRecordingOutcome {
     no_speech_reason: Option<String>,
     commit_trigger: Option<String>,
     transcript_present: bool,
-}
-
-impl ProcessRecordingOutcome {
-    /// Outcome for a stop that produced no usable transcript. Timings are zero
-    /// because this path exits before the delivery cone.
-    fn no_speech(reason: impl Into<String>) -> Self {
-        Self {
-            no_speech_reason: Some(reason.into()),
-            commit_trigger: None,
-            transcript_present: false,
-        }
-    }
-}
-
-/// Whether a finalized transcript may replace the whole user bubble rather than
-/// append to it. Append-mode and live-stream sessions own their canvas
-/// incrementally, so a full rewrite there would erase committed text.
-#[cfg(test)]
-fn should_allow_full_user_bubble_rewrite(
-    skip_user_bubble: bool,
-    append_mode: bool,
-    live_stream_session: bool,
-) -> bool {
-    !skip_user_bubble && !append_mode && !live_stream_session
-}
-
-/// The action contract applies only to plain dictation: assistive sessions
-/// deliver through the agent lane, and live-stream sessions bypass formatting.
-fn should_apply_transcription_action_contract(assistive: bool, live_stream_session: bool) -> bool {
-    !assistive && !live_stream_session
 }
 
 /// Recording controller managing state machine and lifecycle
@@ -410,8 +335,6 @@ pub struct RecordingController {
 
     /// Broadcast stream for IPC subscribers.
     event_broadcast: broadcast::Sender<IpcEvent>,
-    /// Per-session telemetry from engine events (`NoSpeech`, `Stats`).
-    session_telemetry: SharedSessionTelemetry,
 }
 
 impl RecordingController {
@@ -539,7 +462,6 @@ impl RecordingController {
             warn!("Recorder unavailable at controller init; voice capture is disabled");
         }
         let (event_broadcast, _) = broadcast::channel::<IpcEvent>(256);
-        let session_telemetry = new_session_telemetry();
 
         Self {
             runtime_settings,
@@ -573,7 +495,6 @@ impl RecordingController {
             conversation_generation: Arc::new(AtomicU64::new(0)),
             conversation_task: Arc::new(Mutex::new(None)),
             event_broadcast,
-            session_telemetry,
         }
     }
 
@@ -1320,7 +1241,6 @@ impl RecordingController {
         *session.session_id.write().await = None;
         *session.assistive_context.write().await = None;
         *session.pre_overlay_frontmost_app.write().await = None;
-        reset_session_telemetry(&session.session_telemetry);
         set_assistive_session(false);
         crate::os::hold_badge::hide_hold_badge();
     }
@@ -1331,7 +1251,6 @@ impl RecordingController {
         warn!("{context}: resetting controller flags after failed start");
         self.reset_session_fields().await;
         set_assistive_session(false);
-        reset_session_telemetry(&self.session_telemetry);
     }
 
     /// Unwind session state after a recording that completed. Telemetry is kept
@@ -1465,7 +1384,6 @@ impl RecordingController {
         self.toggle_assistant_has_text
             .store(false, Ordering::SeqCst);
         set_assistive_session(false);
-        reset_session_telemetry(&self.session_telemetry);
         info!("RECOVERY decision: stale active stream cleared, controller remains IDLE");
     }
 
@@ -1479,7 +1397,6 @@ impl RecordingController {
         transcript_buffer: Arc<tokio::sync::Mutex<String>>,
         preview_deltas_enabled: bool,
         event_broadcast: broadcast::Sender<IpcEvent>,
-        session_telemetry: SharedSessionTelemetry,
         transcript_bus: Option<Arc<TranscriptBus>>,
         acoustic_ledger: Option<
             Arc<std::sync::Mutex<codescribe_core::pipeline::acoustic_ledger::AcousticLedger>>,
@@ -1517,10 +1434,8 @@ impl RecordingController {
             ));
         let ipc_sink: Arc<dyn codescribe_core::pipeline::contracts::EventSink> =
             Arc::new(helpers::IpcBroadcastSink::new(event_broadcast));
-        let telemetry_sink: Arc<dyn codescribe_core::pipeline::contracts::EventSink> =
-            Arc::new(helpers::SessionTelemetrySink::new(session_telemetry));
         Arc::new(codescribe_core::pipeline::sinks::FanoutEventSink::new(
-            vec![pe, ipc_sink, telemetry_sink],
+            vec![pe, ipc_sink],
         ))
     }
 
@@ -1561,7 +1476,6 @@ impl RecordingController {
         recorder: &mut StreamingRecorder,
         preview_deltas_enabled: bool,
         event_broadcast: broadcast::Sender<IpcEvent>,
-        session_telemetry: SharedSessionTelemetry,
         transcript_bus: Option<Arc<TranscriptBus>>,
     ) {
         Self::configure_level_broadcast(recorder, event_broadcast.clone());
@@ -1570,7 +1484,6 @@ impl RecordingController {
             recorder.transcript_buffer_handle(),
             preview_deltas_enabled,
             event_broadcast,
-            session_telemetry,
             transcript_bus,
             acoustic_ledger,
         )));
@@ -1583,7 +1496,6 @@ impl RecordingController {
         preview_deltas_enabled: bool,
         _flush_voice_chat_on_vad_end: bool,
         event_broadcast: broadcast::Sender<IpcEvent>,
-        session_telemetry: SharedSessionTelemetry,
         transcript_bus: Option<Arc<TranscriptBus>>,
     ) {
         // Hands-off is ONE continuous recorder session (ADR 2026-05-28 Faza 1).
@@ -1599,7 +1511,6 @@ impl RecordingController {
             recorder.transcript_buffer_handle(),
             preview_deltas_enabled,
             event_broadcast,
-            session_telemetry,
             transcript_bus,
             acoustic_ledger,
         )));
@@ -2332,7 +2243,6 @@ impl RecordingController {
             active_transcript_bus: Arc::clone(&self.active_transcript_bus),
             assistive_context: Arc::clone(&self.assistive_context),
             pre_overlay_frontmost_app: Arc::clone(&self.pre_overlay_frontmost_app),
-            session_telemetry: Arc::clone(&self.session_telemetry),
         };
 
         let task = tokio::spawn(async move {
@@ -2499,7 +2409,6 @@ impl RecordingController {
             // Set session mode for delta routing BEFORE starting the pipeline,
             // so the very first deltas route to the correct overlay.
             set_assistive_session(is_assistive);
-            reset_session_telemetry(&hold_session.session_telemetry);
             rec.bind_session_authority(new_session_id.clone(), Arc::clone(&runtime_settings));
             let transcript_bus = TranscriptBus::open(TranscriptSession {
                 session_id: new_session_id,
@@ -2522,7 +2431,6 @@ impl RecordingController {
                 rec,
                 is_assistive || overlay_enabled,
                 event_broadcast.clone(),
-                Arc::clone(&hold_session.session_telemetry),
                 transcript_bus.clone(),
             );
             if !cfg!(test) {
@@ -2542,7 +2450,6 @@ impl RecordingController {
                             rec,
                             is_assistive || overlay_enabled,
                             event_broadcast.clone(),
-                            Arc::clone(&hold_session.session_telemetry),
                             transcript_bus.clone(),
                         );
                         let retry_result = rec.start_event_session(language_hint).await;
@@ -2750,7 +2657,6 @@ impl RecordingController {
         // Set session mode for delta routing BEFORE starting the pipeline,
         // so the very first deltas route to the correct overlay.
         set_assistive_session(is_assistive);
-        reset_session_telemetry(&self.session_telemetry);
         recorder.bind_session_authority(new_session_id.clone(), Arc::clone(&runtime_settings));
         let transcript_bus = TranscriptBus::open(TranscriptSession {
             session_id: new_session_id,
@@ -2768,7 +2674,6 @@ impl RecordingController {
             overlay_enabled,
             is_assistive,
             self.event_broadcast.clone(),
-            Arc::clone(&self.session_telemetry),
             transcript_bus.clone(),
         );
         // Skip actual audio stream in tests (no CoreAudio device needed)
@@ -2789,7 +2694,6 @@ impl RecordingController {
                     overlay_enabled,
                     is_assistive,
                     self.event_broadcast.clone(),
-                    Arc::clone(&self.session_telemetry),
                     transcript_bus.clone(),
                 );
                 if let Err(retry_err) = recorder.start_event_session(language_hint).await {
@@ -3095,12 +2999,6 @@ impl RecordingController {
         force_raw: bool,
         force_ai: bool,
     ) -> Result<ProcessRecordingOutcome> {
-        #[cfg(test)]
-        if PROCESS_RECORDING_TEST_HANG.load(Ordering::SeqCst) {
-            info!("process_recording: hanging in test until stuck-stop watchdog cancels it");
-            std::future::pending::<()>().await;
-        }
-
         if cfg!(test) {
             info!(
                 "process_recording: skipped in tests (assistive={}, hold_mode={:?}, force_raw={}, force_ai={})",
