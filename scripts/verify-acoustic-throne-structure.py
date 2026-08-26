@@ -31,7 +31,18 @@ STAGE_VERDICTS = {
 SOURCE_SCOPES = {"production", "generated"}
 FORBIDDEN_SCOPES = SOURCE_SCOPES | {"test"}
 NON_CODE_ROLES = {"comment", "string_literal"}
-RUST_SOURCE_ROOTS = ("app", "bin", "bridge", "core", "examples", "tests")
+RUST_MODULE_DECLARATION_PATTERN = (
+    r"(?m)^[[:space:]]*(?:pub(?:\([^)]*\))?[[:space:]]+)?"
+    r"mod[[:space:]]+[A-Za-z_][A-Za-z0-9_]*[[:space:]]*;"
+)
+RUST_PATH_ATTRIBUTE_PATTERN = r'#\[path[[:space:]]*=[[:space:]]*"[^"]+"\]'
+RUST_TEST_ATTRIBUTE_PATTERN = r"#\[(?:[A-Za-z0-9_]+::)?test\]"
+STANDARD_MODULE_SOURCE_NAMES = {"lib.rs", "main.rs", "mod.rs"}
+LOCTREE_MODULE_INVENTORY_QUERY = (
+    "[.files[] | {path, imports: [.imports[]? | "
+    "select(.is_mod_declaration == true) | "
+    "{line, source, source_raw, resolved_path, symbols}]}]"
+)
 RUST_MOD_RE = re.compile(
     r"^\s*(?:pub(?:\([^)]*\))?\s+)?mod\s+([A-Za-z_][A-Za-z0-9_]*)\s*;"
 )
@@ -150,7 +161,7 @@ ASSEMBLY_SCOPES = set(ASSEMBLY_SCOPE_SYMBOLS)
 @dataclass(frozen=True)
 class LoctResult:
     command: list[str]
-    payload: dict[str, Any]
+    payload: Any
 
 
 class StructuralVerifier:
@@ -160,12 +171,9 @@ class StructuralVerifier:
         self._occurrences: dict[str, dict[str, Any]] = {}
         self._substring_occurrences: dict[str, dict[str, Any]] = {}
 
-    def run_loct(self, *args: str) -> LoctResult:
-        command = [ALLOWED_EXECUTABLE, *args]
+    def _run_loct_json(self, command: list[str]) -> LoctResult:
         if command[0] != ALLOWED_EXECUTABLE:
             raise RuntimeError(f"structural verifier refused non-Loctree command: {command}")
-        if "--json" not in command:
-            command.append("--json")
         self.command_inventory.append(command)
         completed = subprocess.run(
             command,
@@ -184,6 +192,16 @@ class StructuralVerifier:
         except json.JSONDecodeError as error:
             raise RuntimeError(f"Loctree returned non-JSON for {' '.join(command)}: {error}") from error
         return LoctResult(command, payload)
+
+    def run_loct(self, *args: str) -> LoctResult:
+        command = [ALLOWED_EXECUTABLE, *args]
+        if "--json" not in command:
+            command.append("--json")
+        return self._run_loct_json(command)
+
+    def run_loct_query(self, expression: str) -> LoctResult:
+        """Run a Loctree jq expression whose stdout is already JSON."""
+        return self._run_loct_json([ALLOWED_EXECUTABLE, expression])
 
     def context(self) -> dict[str, Any]:
         return self.run_loct("context").payload
@@ -342,49 +360,42 @@ def classify_substring_residue(
     return "unclassified_requires_review", "no deterministic taxonomy rule matched"
 
 
-def inside_non_runtime_cfg_module(
-    repo: Path | None, occurrence: dict[str, Any]
-) -> bool:
-    if repo is None:
-        return False
-    relative = Path(str(occurrence.get("file", "")))
-    if relative.suffix != ".rs":
-        return False
-    source = repo / relative
-    if not source.is_file():
-        return False
-    target = int(occurrence.get("line", 0)) - 1
-    lines = source.read_text(errors="replace").splitlines()
-    if not 0 <= target < len(lines):
-        return False
-    for attribute_index in range(target, -1, -1):
-        if not re.fullmatch(
-            r"\s*#\[cfg\((?:any\(\)|test)\)\]\s*", lines[attribute_index]
-        ):
-            continue
-        module_index = attribute_index + 1
-        while module_index <= target and not lines[module_index].strip():
-            module_index += 1
-        if module_index > target or not re.search(
-            r"\bmod\s+[A-Za-z_][A-Za-z0-9_]*\s*\{", lines[module_index]
-        ):
-            continue
-        depth = 0
-        for line in lines[module_index : target + 1]:
-            depth += line.count("{") - line.count("}")
-        if depth > 0:
-            return True
-    return False
+def direct_test_attribute_lines(regex_payload: Any) -> set[tuple[str, int]]:
+    """Return only test attributes proven by a complete Loctree regex receipt."""
+    return {
+        (str(row.get("file", "")), int(row.get("line", 0)))
+        for row in require_complete_regex_evidence(
+            regex_payload,
+            "direct Rust test attribute",
+            expected_query=RUST_TEST_ATTRIBUTE_PATTERN,
+        )
+        if str(row.get("file", "")).endswith(".rs")
+        and row.get("match_role") not in NON_CODE_ROLES
+    }
 
 
 def require_complete_regex_evidence(
-    regex_payload: Any, needle: str
+    regex_payload: Any,
+    needle: str,
+    *,
+    expected_query: str | None = None,
 ) -> list[dict[str, Any]]:
     if not isinstance(regex_payload, dict):
         raise RuntimeError(f"Loctree regex payload for {needle} must be an object")
+    if regex_payload.get("mode") != "regex":
+        raise RuntimeError(f"Loctree evidence for {needle} is not in regex mode")
+    query = regex_payload.get("query")
+    if not isinstance(query, str) or (expected_query is not None and query != expected_query):
+        raise RuntimeError(
+            f"Loctree regex query for {needle} is not the requested query: {query!r}"
+        )
     matches = regex_payload.get("matches")
     if not isinstance(matches, dict):
         raise RuntimeError(f"Loctree regex matches for {needle} must be an object")
+    if matches.get("query") != query:
+        raise RuntimeError(f"Loctree regex query metadata for {needle} is incoherent")
+    if matches.get("match_mode") != "regex" or matches.get("source") != "regex":
+        raise RuntimeError(f"Loctree evidence source for {needle} is not regex")
     occurrences = matches.get("occurrences")
     if not isinstance(occurrences, list) or any(
         not isinstance(occurrence, dict) for occurrence in occurrences
@@ -403,9 +414,15 @@ def require_complete_regex_evidence(
         raise RuntimeError(
             f"Loctree regex evidence for {needle} has invalid total: {total!r}"
         )
-    if total != len(occurrences):
+    emitted = matches.get("emitted")
+    if isinstance(emitted, bool) or not isinstance(emitted, int) or emitted < 0:
         raise RuntimeError(
-            f"Loctree regex evidence for {needle} emitted {len(occurrences)} of {total} matches"
+            f"Loctree regex evidence for {needle} has invalid emitted count: {emitted!r}"
+        )
+    if total != emitted or emitted != len(occurrences):
+        raise RuntimeError(
+            f"Loctree regex evidence for {needle} emitted {emitted}/{total} "
+            f"with {len(occurrences)} rows"
         )
     if matches.get("truncated") is not False:
         raise RuntimeError(
@@ -417,6 +434,27 @@ def require_complete_regex_evidence(
         raise RuntimeError(
             f"Loctree regex evidence for {needle} lacks complete scanned-universe proof"
         )
+    indexed_files = universe.get("indexed_files")
+    scanned_files = universe.get("scanned_files")
+    if (
+        isinstance(indexed_files, bool)
+        or not isinstance(indexed_files, int)
+        or indexed_files <= 0
+        or isinstance(scanned_files, bool)
+        or not isinstance(scanned_files, int)
+        or scanned_files != indexed_files
+    ):
+        raise RuntimeError(
+            f"Loctree regex universe for {needle} is incomplete: "
+            f"indexed={indexed_files!r}, scanned={scanned_files!r}"
+        )
+    scope = matches.get("scope")
+    if (
+        not isinstance(scope, dict)
+        or scope.get("files_in_universe") != indexed_files
+        or scope.get("files_scanned") != indexed_files
+    ):
+        raise RuntimeError(f"Loctree regex scope for {needle} disagrees with its universe")
     regex_trust = regex_payload.get("regex_trust")
     if not isinstance(regex_trust, dict):
         raise RuntimeError(
@@ -429,6 +467,30 @@ def require_complete_regex_evidence(
         raise RuntimeError(
             f"Loctree regex evidence for {needle} lacks required trust: {untrusted}"
         )
+    identities: set[tuple[str, int, int, str]] = set()
+    for occurrence in occurrences:
+        file = occurrence.get("file")
+        line = occurrence.get("line")
+        column = occurrence.get("column")
+        matched_text = occurrence.get("matched_text")
+        if (
+            not isinstance(file, str)
+            or not file
+            or Path(file).is_absolute()
+            or isinstance(line, bool)
+            or not isinstance(line, int)
+            or line <= 0
+            or isinstance(column, bool)
+            or not isinstance(column, int)
+            or column <= 0
+            or not isinstance(matched_text, str)
+            or not matched_text
+        ):
+            raise RuntimeError(f"Loctree regex row for {needle} is malformed: {occurrence}")
+        identity = (file, line, column, matched_text)
+        if identity in identities:
+            raise RuntimeError(f"Loctree regex rows for {needle} contain duplicate {identity}")
+        identities.add(identity)
     return occurrences
 
 
@@ -437,12 +499,17 @@ def residue_occurrences(
     exact_payload: dict[str, Any],
     needle: str,
     *,
-    repo: Path | None = None,
+    direct_test_functions: set[tuple[str, int, str]] | None = None,
 ) -> list[dict[str, Any]]:
-    complete_occurrences = require_complete_regex_evidence(regex_payload, needle)
+    complete_occurrences = require_complete_regex_evidence(
+        regex_payload,
+        needle,
+        expected_query=substring_identifier_pattern(needle),
+    )
     exact_fail_gate = {
         occurrence_key(row) for row in forbidden_occurrences(exact_payload)
     }
+    proven_test_functions = direct_test_functions or set()
     rows: list[dict[str, Any]] = []
     for occurrence in complete_occurrences:
         if occurrence_key(occurrence) in exact_fail_gate:
@@ -450,10 +517,17 @@ def residue_occurrences(
         matched_identifier = str(occurrence.get("matched_text", ""))
         if not matched_identifier:
             continue
+        is_direct_test_function = (
+            str(occurrence.get("file", "")),
+            int(occurrence.get("line", 0)),
+            str(occurrence.get("matched_text", "")),
+        ) in proven_test_functions
         residue_class, reason = classify_substring_residue(
             occurrence,
             needle,
-            disabled_cfg_any=inside_non_runtime_cfg_module(repo, occurrence),
+            # Keep the legacy keyword used by frozen wrapper tests, but feed it
+            # only a complete Loctree receipt. Raw Rust source is not anatomy.
+            disabled_cfg_any=is_direct_test_function,
         )
         rows.append(
             {
@@ -567,15 +641,118 @@ def validate_residue_shape(residue: Any, forbidden_symbols: Any) -> None:
         )
 
 
+def exact_function_receipt(
+    payload: Any,
+    *,
+    file: str,
+    line: int,
+    identifier: str,
+) -> bool:
+    if not isinstance(payload, dict):
+        raise RuntimeError(f"Loctree exact payload for {identifier} must be an object")
+    if (
+        payload.get("query") != identifier
+        or payload.get("query_kind") != "identifier"
+        or payload.get("match_mode") != "identifier_boundary"
+        or payload.get("source") != "literal"
+    ):
+        raise RuntimeError(f"Loctree exact payload for {identifier} has wrong query mode")
+    occurrences = payload.get("occurrences")
+    total = payload.get("total")
+    emitted = payload.get("emitted")
+    offset = payload.get("offset")
+    if (
+        not isinstance(occurrences, list)
+        or any(not isinstance(row, dict) for row in occurrences)
+        or isinstance(total, bool)
+        or not isinstance(total, int)
+        or isinstance(emitted, bool)
+        or not isinstance(emitted, int)
+        or total != emitted
+        or emitted != len(occurrences)
+        or isinstance(offset, bool)
+        or not isinstance(offset, int)
+        or offset != 0
+        or payload.get("truncated") is not False
+    ):
+        raise RuntimeError(f"Loctree exact payload for {identifier} is incomplete")
+    universe = payload.get("universe")
+    if (
+        not isinstance(universe, dict)
+        or universe.get("scan_complete") is not True
+        or universe.get("scanned_files") != universe.get("indexed_files")
+    ):
+        raise RuntimeError(f"Loctree exact payload for {identifier} lacks full universe")
+    matching = [
+        row
+        for row in occurrences
+        if row.get("file") == file
+        and row.get("line") == line
+        and row.get("matched_text") == identifier
+    ]
+    if len(matching) != 1:
+        return False
+    enclosing = matching[0].get("enclosing_symbol")
+    return (
+        isinstance(enclosing, dict)
+        and enclosing.get("name") == identifier
+        and enclosing.get("file") == file
+        and enclosing.get("line") == line
+        and enclosing.get("kind") == "function"
+    )
+
+
+def direct_test_function_keys(
+    verifier: StructuralVerifier,
+    regex_payloads: dict[str, Any],
+    test_attribute_lines: set[tuple[str, int]],
+) -> set[tuple[str, int, str]]:
+    candidates: set[tuple[str, int, str]] = set()
+    for needle, payload in regex_payloads.items():
+        rows = require_complete_regex_evidence(
+            payload,
+            needle,
+            expected_query=substring_identifier_pattern(needle),
+        )
+        for row in rows:
+            file = str(row.get("file", ""))
+            line = int(row.get("line", 0))
+            identifier = str(row.get("matched_text", ""))
+            if (file, line - 1) not in test_attribute_lines:
+                continue
+            if exact_function_receipt(
+                verifier.occurrences(identifier),
+                file=file,
+                line=line,
+                identifier=identifier,
+            ):
+                candidates.add((file, line, identifier))
+    return candidates
+
+
 def build_residue_by_substring(
     verifier: StructuralVerifier, forbidden_symbols: list[str]
 ) -> dict[str, Any]:
+    test_attribute_lines = direct_test_attribute_lines(
+        verifier.run_loct(
+            "find", "--regex", RUST_TEST_ATTRIBUTE_PATTERN, "--all"
+        ).payload
+    )
+    regex_payloads = {
+        needle: verifier.substring_occurrences(needle) for needle in forbidden_symbols
+    }
+    exact_payloads = {
+        needle: verifier.occurrences(needle) for needle in forbidden_symbols
+    }
+    proven_test_functions = direct_test_function_keys(
+        verifier, regex_payloads, test_attribute_lines
+    )
     by_needle = {
         needle: residue_occurrences(
-            verifier.substring_occurrences(needle),
-            verifier.occurrences(needle),
+            regex_payloads[needle],
+            exact_payloads[needle],
             needle,
-            repo=verifier.repo,
+            direct_test_functions=proven_test_functions,
         )
         for needle in forbidden_symbols
     }
@@ -597,59 +774,188 @@ def observed_files(
     return sorted({str(hit.get("file")) for hit in occurrences if hit.get("file")})
 
 
-def rust_source_files(repo: Path) -> list[Path]:
-    files = list(repo.glob("*.rs"))
-    for root_name in RUST_SOURCE_ROOTS:
-        root = repo / root_name
-        if root.is_dir():
-            files.extend(root.rglob("*.rs"))
-    return sorted(set(files))
+def normalized_repo_path(path: Path) -> str:
+    """Normalize a Loctree-owned repo path without consulting the filesystem."""
+    if path.is_absolute():
+        raise RuntimeError(f"Loctree module path escaped the repository: {path}")
+    parts: list[str] = []
+    for part in path.parts:
+        if part in {"", "."}:
+            continue
+        if part == "..":
+            if not parts:
+                raise RuntimeError(f"Loctree module path escaped the repository: {path}")
+            parts.pop()
+            continue
+        parts.append(part)
+    if not parts:
+        raise RuntimeError(f"Loctree module path resolved to repository root: {path}")
+    return "/".join(parts)
 
 
-def module_candidates(source: Path, module: str) -> list[Path]:
-    direct = source.parent
-    nested = source.parent / source.stem
+def module_candidates(source: str, module: str) -> list[str]:
+    source_path = Path(source)
+    if source_path.name not in STANDARD_MODULE_SOURCE_NAMES:
+        return []
+    direct = source_path.parent
     candidates = [
         direct / f"{module}.rs",
         direct / module / "mod.rs",
-        nested / f"{module}.rs",
-        nested / module / "mod.rs",
     ]
-    return list(dict.fromkeys(candidates))
+    return list(dict.fromkeys(normalized_repo_path(path) for path in candidates))
 
 
-def unresolved_module_declarations(repo: Path) -> list[dict[str, Any]]:
+def module_inventory(payload: Any) -> tuple[set[str], list[dict[str, Any]]]:
+    if not isinstance(payload, list) or any(not isinstance(row, dict) for row in payload):
+        raise RuntimeError("Loctree module inventory must be a JSON list of file rows")
+    paths: list[str] = []
+    edges: list[dict[str, Any]] = []
+    for row in payload:
+        path = row.get("path")
+        imports = row.get("imports")
+        if not isinstance(path, str) or not isinstance(imports, list):
+            raise RuntimeError(f"Loctree module inventory row is malformed: {row}")
+        normalized_path = normalized_repo_path(Path(path))
+        if normalized_path != path:
+            raise RuntimeError(f"Loctree inventory path is not normalized: {path}")
+        paths.append(path)
+        for edge in imports:
+            if not isinstance(edge, dict):
+                raise RuntimeError(f"Loctree module edge is malformed: {edge}")
+            edges.append({"file": path, **edge})
+    normalized = [normalized_repo_path(Path(path)) for path in paths]
+    if len(set(normalized)) != len(normalized):
+        raise RuntimeError("Loctree file inventory contains duplicate normalized paths")
+    return set(normalized), edges
+
+
+def regex_indexed_file_count(payload: Any, label: str) -> int:
+    try:
+        value = payload["matches"]["universe"]["indexed_files"]
+    except (KeyError, TypeError) as error:
+        raise RuntimeError(f"Loctree regex payload for {label} lacks indexed count") from error
+    if isinstance(value, bool) or not isinstance(value, int) or value <= 0:
+        raise RuntimeError(f"Loctree regex payload for {label} has invalid indexed count")
+    return value
+
+
+def unresolved_module_declarations(
+    module_payload: Any,
+    path_payload: Any,
+    inventory_payload: Any,
+) -> list[dict[str, Any]]:
+    module_rows = [
+        row
+        for row in require_complete_regex_evidence(
+            module_payload,
+            "Rust module declarations",
+            expected_query=RUST_MODULE_DECLARATION_PATTERN,
+        )
+        if str(row.get("file", "")).endswith(".rs")
+        and row.get("match_role") not in NON_CODE_ROLES
+    ]
+    path_rows = [
+        row
+        for row in require_complete_regex_evidence(
+            path_payload,
+            "Rust path attributes",
+            expected_query=RUST_PATH_ATTRIBUTE_PATTERN,
+        )
+        if str(row.get("file", "")).endswith(".rs")
+        and row.get("match_role") not in NON_CODE_ROLES
+    ]
+
+    indexed_paths, module_edges = module_inventory(inventory_payload)
+    for payload, label in (
+        (module_payload, "Rust module declarations"),
+        (path_payload, "Rust path attributes"),
+    ):
+        if regex_indexed_file_count(payload, label) != len(indexed_paths):
+            raise RuntimeError(
+                f"Loctree {label} universe disagrees with module inventory"
+            )
+    for row in [*module_rows, *path_rows]:
+        if row.get("file") not in indexed_paths:
+            raise RuntimeError(f"Loctree regex row is outside module inventory: {row}")
+
+    modules_by_key: dict[tuple[str, int], str] = {}
+    for row in module_rows:
+        file = str(row.get("file", ""))
+        line = int(row.get("line", 0))
+        module_match = RUST_MOD_RE.match(str(row.get("matched_text", "")))
+        if module_match is None:
+            raise RuntimeError(f"Loctree returned an unparsable Rust module declaration: {row}")
+        key = (file, line)
+        if key in modules_by_key:
+            raise RuntimeError(f"Loctree module census has duplicate declaration: {key}")
+        modules_by_key[key] = module_match.group(1)
+
+    resolved_edge_keys: set[tuple[str, int]] = set()
+    for edge in module_edges:
+        file = edge.get("file")
+        line = edge.get("line")
+        target = edge.get("resolved_path")
+        symbols = edge.get("symbols")
+        if (
+            not isinstance(file, str)
+            or isinstance(line, bool)
+            or not isinstance(line, int)
+            or line <= 0
+            or not isinstance(target, str)
+            or not target
+            or not isinstance(symbols, list)
+            or len(symbols) != 1
+            or not isinstance(symbols[0], dict)
+            or not isinstance(symbols[0].get("name"), str)
+        ):
+            raise RuntimeError(f"Loctree module edge is incomplete: {edge}")
+        key = (file, line)
+        if key in resolved_edge_keys:
+            raise RuntimeError(f"Loctree module inventory has duplicate edge: {key}")
+        if key not in modules_by_key:
+            raise RuntimeError(f"Loctree module edge has no regex declaration: {edge}")
+        if symbols[0]["name"] != modules_by_key[key]:
+            raise RuntimeError(f"Loctree module edge name disagrees with declaration: {edge}")
+        normalized_target = normalized_repo_path(Path(target))
+        if normalized_target != target or target not in indexed_paths:
+            raise RuntimeError(f"Loctree module edge target is outside inventory: {edge}")
+        resolved_edge_keys.add(key)
+
+    immediate_path_overrides: dict[tuple[str, int], str] = {}
+    for row in path_rows:
+        file = str(row.get("file", ""))
+        line = int(row.get("line", 0))
+        path_match = RUST_PATH_RE.match(str(row.get("matched_text", "")))
+        if path_match is None:
+            raise RuntimeError(f"Loctree returned an unparsable Rust path attribute: {row}")
+        key = (file, line + 1)
+        if key in immediate_path_overrides:
+            raise RuntimeError(
+                f"Loctree module has more than one immediate path override: {key}"
+            )
+        immediate_path_overrides[key] = path_match.group(1)
+
     unresolved: list[dict[str, Any]] = []
-    for source in rust_source_files(repo):
-        pending_path: str | None = None
-        for line_number, line in enumerate(source.read_text(errors="replace").splitlines(), 1):
-            path_match = RUST_PATH_RE.match(line)
-            if path_match:
-                pending_path = path_match.group(1)
-                continue
-            if line.lstrip().startswith("#[") or not line.strip():
-                continue
-            module_match = RUST_MOD_RE.match(line)
-            if not module_match:
-                pending_path = None
-                continue
-            module = module_match.group(1)
-            candidates = (
-                [source.parent / pending_path]
-                if pending_path is not None
-                else module_candidates(source, module)
-            )
-            pending_path = None
-            if any(candidate.is_file() for candidate in candidates):
-                continue
-            unresolved.append(
-                {
-                    "file": str(source.relative_to(repo)),
-                    "line": line_number,
-                    "module": module,
-                    "candidates": [str(path.relative_to(repo)) for path in candidates],
-                }
-            )
+    missing_edge_keys = sorted(set(modules_by_key).difference(resolved_edge_keys))
+    for source, line in missing_edge_keys:
+        module = modules_by_key[(source, line)]
+        override = immediate_path_overrides.get((source, line))
+        candidates = (
+            [normalized_repo_path(Path(source).parent / override)]
+            if override is not None
+            else module_candidates(source, module)
+        )
+        existing = [candidate for candidate in candidates if candidate in indexed_paths]
+        if len(existing) == 1:
+            continue
+        unresolved.append(
+            {
+                "file": source,
+                "line": line,
+                "module": module,
+                "candidates": candidates,
+            }
+        )
     return unresolved
 
 
@@ -699,8 +1005,30 @@ def verify_stage(
             forbidden_hits[symbol] = files
             failures.append(f"forbidden symbol {symbol} remains in {files}")
     residue_by_substring = build_residue_by_substring(verifier, forbidden_symbols)
+    residue_gate = residue_by_substring["summary"]
+    if residue_gate["unclassified_count"] or residue_gate["review_required_count"]:
+        failures.append(
+            "forbidden residue retains unresolved classifications: "
+            f"unclassified={residue_gate['unclassified_count']}, "
+            f"review_required={residue_gate['review_required_count']}"
+        )
+    executable_residue = sum(
+        residue_gate["class_counts"][name]
+        for name in ("executable_authority", "executable_consumer")
+    )
+    if executable_residue:
+        failures.append(f"forbidden residue retains {executable_residue} executable rows")
 
-    unresolved_modules = unresolved_module_declarations(verifier.repo)
+    module_payload = verifier.run_loct(
+        "find", "--regex", RUST_MODULE_DECLARATION_PATTERN, "--all"
+    ).payload
+    path_payload = verifier.run_loct(
+        "find", "--regex", RUST_PATH_ATTRIBUTE_PATTERN, "--all"
+    ).payload
+    inventory_payload = verifier.run_loct_query(LOCTREE_MODULE_INVENTORY_QUERY).payload
+    unresolved_modules = unresolved_module_declarations(
+        module_payload, path_payload, inventory_payload
+    )
     if unresolved_modules:
         failures.append(
             f"unresolved Rust module declarations remain: {unresolved_modules}"
@@ -783,6 +1111,23 @@ def verify_stage(
     if stage_contract.get("require_zero_dangling"):
         if dangling:
             failures.append(f"wired stage retains computed dangling references: {dangling}")
+
+    ending_context = verifier.context()
+    ending_receipt = ending_context.get("receipt", {})
+    coherence_keys = (
+        "head_full",
+        "dirty_fingerprint",
+        "snapshot_fingerprint",
+        "binary_id",
+        "authority",
+    )
+    context_drift = {
+        key: (context_receipt.get(key), ending_receipt.get(key))
+        for key in coherence_keys
+        if context_receipt.get(key) != ending_receipt.get(key)
+    }
+    if context_drift:
+        failures.append(f"Loctree context changed during structural verification: {context_drift}")
 
     expected_verdict = STAGE_VERDICTS[stage]
     conformant = not failures
