@@ -56,12 +56,12 @@ identity from text, or rebuild the transcript in Swift.
 
 ## Four machine observations
 
-| Layer | Role | Authority boundary |
-| --- | --- | --- |
-| L0 — Apple | First live text observer inside the Apple session | May describe an occurrence; may not mint physical speech |
-| L1 — Whisper | Tail-provider observation over retained PCM | May correct the same authorized occurrence; never owns a parallel live route |
-| L2 — Lexicon + Light+ | Deterministic retained-text relabeling | May relabel an authorized occurrence; equal strings are not identity |
-| L3 — Responses formatter | Configured formatting observation | May format authorized text; may not add physical occurrences |
+| Layer                    | Role                                              | Authority boundary                                                           |
+| ------------------------ | ------------------------------------------------- | ---------------------------------------------------------------------------- |
+| L0 — Apple               | First live text observer inside the Apple session | May describe an occurrence; may not mint physical speech                     |
+| L1 — Whisper             | Tail-provider observation over retained PCM       | May correct the same authorized occurrence; never owns a parallel live route |
+| L2 — Lexicon + Light+    | Deterministic retained-text relabeling            | May relabel an authorized occurrence; equal strings are not identity         |
+| L3 — Responses formatter | Configured formatting observation                 | May format authorized text; may not add physical occurrences                 |
 
 Silero is outside the text-layer stack. It supplies time, energy, pause, and
 boundary evidence to the Apple session. It owns neither text nor a microphone.
@@ -182,12 +182,12 @@ share the same transcript authority even when their destinations differ.
 
 ## Normal live route versus explicit non-live work
 
-| Surface | Microphone / authority status |
-| --- | --- |
-| Normal live capture | The Apple-only dispatcher and the single ledger/reducer path described above |
-| Explicit Retranscribe | A new operator-authorized inference over a selected completed artifact; not a normal-stop continuation and not live capture |
-| Corpus, replay, or bench tooling | Offline evidence surfaces; they do not prove or replace the normal live path |
-| Historical W13 / five-layer diagrams | Dated archaeology only; no authority to restore deleted runtime surfaces |
+| Surface                              | Microphone / authority status                                                                                               |
+| ------------------------------------ | --------------------------------------------------------------------------------------------------------------------------- |
+| Normal live capture                  | The Apple-only dispatcher and the single ledger/reducer path described above                                                |
+| Explicit Retranscribe                | A new operator-authorized inference over a selected completed artifact; not a normal-stop continuation and not live capture |
+| Corpus, replay, or bench tooling     | Offline evidence surfaces; they do not prove or replace the normal live path                                                |
+| Historical W13 / five-layer diagrams | Dated archaeology only; no authority to restore deleted runtime surfaces                                                    |
 
 ## Transformation summary
 
@@ -209,21 +209,21 @@ explicit operator intent
 
 ## Key source files
 
-| File | Current role |
-| --- | --- |
-| `app/controller/mod.rs` | `RecordingController`, hotkey handling, single in-app microphone ownership |
-| `app/controller/delivery_route.rs` | `DeliveryRoute` from explicit operator intent |
-| `core/audio/streaming_recorder.rs` | Session authority binding and successful-open `capture_epoch` allocation |
-| `core/pipeline/streaming/session.rs` | `transcription_session`, currently an Apple-only dispatcher |
-| `core/pipeline/streaming/apple_live_session.rs` | Live Apple session, observer qualification, ledger admission and seal |
-| `core/pipeline/streaming/silero_fusion.rs` | Silero boundary/time/energy evidence for Apple-session slicing |
-| `core/stt/apple_stt/mod.rs` | Apple AudioBuffer versus temp-WAV bridge transport selection |
-| `core/stt/apple_stt/live_stream.rs` | Apple live bridge helpers and structurally uncalled compatibility accessor |
-| `core/pipeline/acoustic_ledger.rs` | Only occurrence admission/seal authority and immutable receipts |
-| `core/pipeline/contracts.rs` | Ledger mutation/seal event contracts |
-| `app/presentation/emitter.rs` | Canonical Rust transcript reducer |
-| `app/presentation/transcript_bus.rs` | Committed projection observer and bus publication |
-| `macos/Codescribe/Screens/Overlay/OverlayState.swift` | Swift projection consumer |
+| File                                                  | Current role                                                               |
+| ----------------------------------------------------- | -------------------------------------------------------------------------- |
+| `app/controller/mod.rs`                               | `RecordingController`, hotkey handling, single in-app microphone ownership |
+| `app/controller/delivery_route.rs`                    | `DeliveryRoute` from explicit operator intent                              |
+| `core/audio/streaming_recorder.rs`                    | Session authority binding and successful-open `capture_epoch` allocation   |
+| `core/pipeline/streaming/session.rs`                  | `transcription_session`, currently an Apple-only dispatcher                |
+| `core/pipeline/streaming/apple_live_session.rs`       | Live Apple session, observer qualification, ledger admission and seal      |
+| `core/pipeline/streaming/silero_fusion.rs`            | Silero boundary/time/energy evidence for Apple-session slicing             |
+| `core/stt/apple_stt/mod.rs`                           | Apple AudioBuffer versus temp-WAV bridge transport selection               |
+| `core/stt/apple_stt/live_stream.rs`                   | Apple live bridge helpers and structurally uncalled compatibility accessor |
+| `core/pipeline/acoustic_ledger.rs`                    | Only occurrence admission/seal authority and immutable receipts            |
+| `core/pipeline/contracts.rs`                          | Ledger mutation/seal event contracts                                       |
+| `app/presentation/emitter.rs`                         | Canonical Rust transcript reducer                                          |
+| `app/presentation/transcript_bus.rs`                  | Committed projection observer and bus publication                          |
+| `macos/Codescribe/Screens/Overlay/OverlayState.swift` | Swift projection consumer                                                  |
 
 ---
 

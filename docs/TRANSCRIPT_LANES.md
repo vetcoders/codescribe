@@ -52,12 +52,12 @@ transcript.
 
 ## 1. Machine layers and sideband evidence
 
-| Layer | Current role | Authority boundary |
-| --- | --- | --- |
-| L0 — Apple | First live text observer inside the Apple session | Describes PCM-bound occurrences; does not own physical identity |
-| L1 — Whisper | Tail-provider observation on retained PCM | May correct the matching authorized occurrence; does not own a parallel live dispatcher |
-| L2 — Lexicon + Light+ | Deterministic retained-text relabeling | May relabel an authorized occurrence; equal strings are never identity |
-| L3 — Responses formatter | Configured Formatting-lane observation | May format authorized text; may not mint physical speech |
+| Layer                    | Current role                                      | Authority boundary                                                                      |
+| ------------------------ | ------------------------------------------------- | --------------------------------------------------------------------------------------- |
+| L0 — Apple               | First live text observer inside the Apple session | Describes PCM-bound occurrences; does not own physical identity                         |
+| L1 — Whisper             | Tail-provider observation on retained PCM         | May correct the matching authorized occurrence; does not own a parallel live dispatcher |
+| L2 — Lexicon + Light+    | Deterministic retained-text relabeling            | May relabel an authorized occurrence; equal strings are never identity                  |
+| L3 — Responses formatter | Configured Formatting-lane observation            | May format authorized text; may not mint physical speech                                |
 
 Silero is outside the numbered text layers. Its single session ingress supplies
 speech edges, range, energy, and pause evidence to the Apple session. It cannot
@@ -66,18 +66,18 @@ only.
 
 ## 2. Normal live capture
 
-| # | Station | Exact current surface | Contract |
-| --- | --- | --- | --- |
-| A1 | operator intent | `RecordingController::handle_hotkey_event` and mode handlers | Dictation, Agent, and Assistive select downstream behavior, not microphone ownership |
-| A2 | physical open | `StreamingRecorder::start_event_session` | compute next epoch with checked arithmetic, open recorder, then assign the epoch |
-| A3 | session bind | `StreamingRecorder::bind_session_authority` | bind one operator session to one `AcousticLedger`; reset only the session-local epoch counter |
-| A4 | dispatch | `core/pipeline/streaming/session.rs::transcription_session` | delegate only to `apple_stream_transcription_session` |
-| A5 | Apple ingress | `apple_stream_worker` | retain PCM, advance the session sample counter, feed the single Silero ingress, and poll the Apple bridge |
-| A6 | observation | `seal_utterance_final`, `seal_sliced_by_silero` | bind Apple text to new session-clock PCM; each Silero slice is admitted for its exact range before any raw-final telemetry; Silero contributes evidence, never text authority |
-| A7 | admission | `admit_ledger_label` | qualify evidence, schedule the observation frontier, and offer Apple/Whisper/Lexicon/formatter labels to the ledger |
-| A8 | physical seal | `AcousticLedger::seal` / `seal_terminal` | close the occurrence only after the scheduled frontier or terminal boundary permits it |
-| A9 | document commit | `PresentationEmitter` / `TranscriptReducer` | reduce `LedgerMutation` and `LedgerSeal` into the canonical document |
-| A10 | projection | Transcript Bus, then Swift | `publish_revision` publishes and displays the committed reducer projection; raw finals/corrections/patches and previews are not Bus or delivery truth |
+| #   | Station         | Exact current surface                                        | Contract                                                                                                                                                                      |
+| --- | --------------- | ------------------------------------------------------------ | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| A1  | operator intent | `RecordingController::handle_hotkey_event` and mode handlers | Dictation, Agent, and Assistive select downstream behavior, not microphone ownership                                                                                          |
+| A2  | physical open   | `StreamingRecorder::start_event_session`                     | compute next epoch with checked arithmetic, open recorder, then assign the epoch                                                                                              |
+| A3  | session bind    | `StreamingRecorder::bind_session_authority`                  | bind one operator session to one `AcousticLedger`; reset only the session-local epoch counter                                                                                 |
+| A4  | dispatch        | `core/pipeline/streaming/session.rs::transcription_session`  | delegate only to `apple_stream_transcription_session`                                                                                                                         |
+| A5  | Apple ingress   | `apple_stream_worker`                                        | retain PCM, advance the session sample counter, feed the single Silero ingress, and poll the Apple bridge                                                                     |
+| A6  | observation     | `seal_utterance_final`, `seal_sliced_by_silero`              | bind Apple text to new session-clock PCM; each Silero slice is admitted for its exact range before any raw-final telemetry; Silero contributes evidence, never text authority |
+| A7  | admission       | `admit_ledger_label`                                         | qualify evidence, schedule the observation frontier, and offer Apple/Whisper/Lexicon/formatter labels to the ledger                                                           |
+| A8  | physical seal   | `AcousticLedger::seal` / `seal_terminal`                     | close the occurrence only after the scheduled frontier or terminal boundary permits it                                                                                        |
+| A9  | document commit | `PresentationEmitter` / `TranscriptReducer`                  | reduce `LedgerMutation` and `LedgerSeal` into the canonical document                                                                                                          |
+| A10 | projection      | Transcript Bus, then Swift                                   | `publish_revision` publishes and displays the committed reducer projection; raw finals/corrections/patches and previews are not Bus or delivery truth                         |
 
 ### Apple transport A/B
 
@@ -161,15 +161,15 @@ event delta adapter.
 
 ## 7. Settings and runtime truth
 
-| Surface | Meaning |
-| --- | --- |
-| `CODESCRIBE_ASR_MODE` | product intent: `local_power`, `cloud`, or `apple_only` |
-| `CODESCRIBE_LAYERED_TRANSCRIPTION` | compatibility override for live Layer 1 arming; it does not select another dispatcher |
-| `CODESCRIBE_APPLE_STT_LIVE_MODE` | Apple bridge transport A/B only |
-| `STT_TAIL_PROVIDER` | Layer 1 provider implementation |
-| `FINAL_PASS_MODE` / `CODESCRIBE_FINAL_PASS_MODE` | migration-only stop token; no normal-stop file pass |
-| `RuntimeSettingsSnapshot::llm_lanes()` | sealed per-take LLM provider/model/endpoint/credential availability |
-| `tail_patch_session_receipt` | per-take evidence of live Layer 1 exercise and terminal accounting |
+| Surface                                          | Meaning                                                                               |
+| ------------------------------------------------ | ------------------------------------------------------------------------------------- |
+| `CODESCRIBE_ASR_MODE`                            | product intent: `local_power`, `cloud`, or `apple_only`                               |
+| `CODESCRIBE_LAYERED_TRANSCRIPTION`               | compatibility override for live Layer 1 arming; it does not select another dispatcher |
+| `CODESCRIBE_APPLE_STT_LIVE_MODE`                 | Apple bridge transport A/B only                                                       |
+| `STT_TAIL_PROVIDER`                              | Layer 1 provider implementation                                                       |
+| `FINAL_PASS_MODE` / `CODESCRIBE_FINAL_PASS_MODE` | migration-only stop token; no normal-stop file pass                                   |
+| `RuntimeSettingsSnapshot::llm_lanes()`           | sealed per-take LLM provider/model/endpoint/credential availability                   |
+| `tail_patch_session_receipt`                     | per-take evidence of live Layer 1 exercise and terminal accounting                    |
 
 Configured intent, runtime arming, provider exercise, and accepted ledger
 mutation are four different facts. No UI toggle alone proves all four.
@@ -217,11 +217,11 @@ delivery-target mismatch. C8A does not execute these gates.
 The following dated evidence remains useful for regression design but has no
 current architectural authority:
 
-| Date | Historical receipt | Current interpretation |
-| --- | --- | --- |
-| 2026-08-12 | Long Apple takes showed restart/cumulative-final loss and an expensive stop wait | keep the freeze, identity, and bounded-drain falsifiers; do not infer current ownership from the old file layout |
-| 2026-08-13/14 | W13 measured Layer 1 starvation, duplicate delivery, capture drift, and full-stop formatting latency | retain the fixtures and performance bars; current occurrence admission belongs to `AcousticLedger` |
-| 2026-08-21/22 | Pre-ledger diagrams described `ProgressiveSealMachine`, `progressive_seal.rs`, `StreamPostProcessor`, `stream_postprocess.rs`, a `Whisper-first` `VAD/scheduler` route, and `core/llm/lane_truth.rs` / `lane_truth_snapshot` | all named surfaces are historical or deleted, not current stations; do not restore them from this receipt |
+| Date          | Historical receipt                                                                                                                                                                                                           | Current interpretation                                                                                           |
+| ------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------- |
+| 2026-08-12    | Long Apple takes showed restart/cumulative-final loss and an expensive stop wait                                                                                                                                             | keep the freeze, identity, and bounded-drain falsifiers; do not infer current ownership from the old file layout |
+| 2026-08-13/14 | W13 measured Layer 1 starvation, duplicate delivery, capture drift, and full-stop formatting latency                                                                                                                         | retain the fixtures and performance bars; current occurrence admission belongs to `AcousticLedger`               |
+| 2026-08-21/22 | Pre-ledger diagrams described `ProgressiveSealMachine`, `progressive_seal.rs`, `StreamPostProcessor`, `stream_postprocess.rs`, a `Whisper-first` `VAD/scheduler` route, and `core/llm/lane_truth.rs` / `lane_truth_snapshot` | all named surfaces are historical or deleted, not current stations; do not restore them from this receipt        |
 
 Historical rows and ADRs may preserve the measured facts when they carry an
 equally local dated/superseded marker. They may not be cited as an actionable

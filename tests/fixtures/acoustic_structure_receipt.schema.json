@@ -245,7 +245,10 @@
     "command_inventory": {
       "type": "array",
       "minItems": 1,
-      "items": { "type": "string", "pattern": "^loct (context|occurrences|find)" }
+      "items": {
+        "type": "string",
+        "pattern": "^loct (context|occurrences|find)"
+      }
     },
     "command_policy": {
       "type": "object",

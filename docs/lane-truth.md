@@ -38,11 +38,11 @@ secret value.
 
 ## Lanes and credential accounts
 
-| Lane | Runtime role | Credential account selected by the loader |
-| --- | --- | --- |
-| `main` | Shared/main LLM settings | `LLM_API_KEY` |
-| `formatting` | Formatting lane | `LLM_FORMATTING_API_KEY` |
-| `assistive` | Assistive and agent lane | The resolved provider's `api_key_env_key()` |
+| Lane         | Runtime role             | Credential account selected by the loader   |
+| ------------ | ------------------------ | ------------------------------------------- |
+| `main`       | Shared/main LLM settings | `LLM_API_KEY`                               |
+| `formatting` | Formatting lane          | `LLM_FORMATTING_API_KEY`                    |
+| `assistive`  | Assistive and agent lane | The resolved provider's `api_key_env_key()` |
 
 Provider identity and protocol are resolved before endpoint, model, credential,
 and availability. The snapshot stores the result as typed `ProviderKind` and

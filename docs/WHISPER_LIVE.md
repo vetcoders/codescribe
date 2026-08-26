@@ -94,14 +94,14 @@ decoder context overlap is resolved by request/span identity, never textual simi
 
 ## Layer mapping for this file
 
-| Section below                                   | Layer it lights up                                               |
-| ----------------------------------------------- | ---------------------------------------------------------------- |
-| Embedded Whisper (build + runtime lookup)       | Layer 1 (Tail Patch) backend resolution                          |
-| Live observation path                          | Ledger admission/seal and reducer-owned committed text           |
+| Section below                                    | Layer it lights up                                               |
+| ------------------------------------------------ | ---------------------------------------------------------------- |
+| Embedded Whisper (build + runtime lookup)        | Layer 1 (Tail Patch) backend resolution                          |
+| Live observation path                            | Ledger admission/seal and reducer-owned committed text           |
 | Typed tail-provider request and ledger admission | PCM-bound Layer 1 observation and occurrence-safe relabeling     |
-| Cloud STT alternatives                          | Pluggable Layer 1 backend                                        |
-| Lexicon substitution + Light+                   | L2 — deterministic and currently wired at seal/delivery          |
-| Inline formatting scheduler                     | L3 — existing Responses Formatting lane; no separate small model |
+| Cloud STT alternatives                           | Pluggable Layer 1 backend                                        |
+| Lexicon substitution + Light+                    | L2 — deterministic and currently wired at seal/delivery          |
+| Inline formatting scheduler                      | L3 — existing Responses Formatting lane; no separate small model |
 
 The remaining sections describe retained Whisper provisioning and live observation surfaces.
 Canonical ownership and routing stay in [`TRANSCRIPT_LANES.md`](TRANSCRIPT_LANES.md).

@@ -135,11 +135,11 @@ remain correctable. Key = PCM sample counter, not token position.
 
 ## Three bars — not synonyms
 
-| Bar                           | Means                                                                                                                                                                                           |
-| ----------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `utterance_final` / observer-final | This observer finished its current raw hypothesis for the fragment. **Not the document, Bus, delivery, or an immutable token floor.** A later authorized observer may relabel the same proven span through the ledger. |
-| `utterance_sealed`            | The span identity and `[sample_start, sample_end)` placement are frozen. Its text is stable for presentation but remains correctable by an admitted downstream observation before session seal. |
-| terminal ledger seal / `transcript_sealed` projection | A terminal ledger seal receipt closes the committed Bus writer. Arbitrary text cannot seal it. Full HQ / Cloud may only propose a variant. |
+| Bar                                                   | Means                                                                                                                                                                                                                  |
+| ----------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `utterance_final` / observer-final                    | This observer finished its current raw hypothesis for the fragment. **Not the document, Bus, delivery, or an immutable token floor.** A later authorized observer may relabel the same proven span through the ledger. |
+| `utterance_sealed`                                    | The span identity and `[sample_start, sample_end)` placement are frozen. Its text is stable for presentation but remains correctable by an admitted downstream observation before session seal.                        |
+| terminal ledger seal / `transcript_sealed` projection | A terminal ledger seal receipt closes the committed Bus writer. Arbitrary text cannot seal it. Full HQ / Cloud may only propose a variant.                                                                             |
 
 `committed` does **not** mean "this is already the document". It means: **this layer finished its work here; the next layer takes the same time slice.**
 

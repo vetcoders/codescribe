@@ -33,12 +33,12 @@ apply replacement ranges, rebase reducer markers, or reconstruct transcript
 highlights. _NEVER REWRITE FROM ZERO_ is enforced upstream by occurrence/span
 identity and reducer authority, not by a Swift text-mutation API.
 
-| Layer | Engine | Current authority and exact surface |
-| --- | --- | --- |
-| **L0 — Apple** | First live text observer | `transcription_session` delegates to `apple_stream_transcription_session`; Apple observations enter `AcousticLedger` through `admit_ledger_label` |
-| **L1 — Whisper** | Bounded observation on retained PCM | `core/stt/tail_provider.rs` and `core/stt/tail_patcher/` feed the same Apple-ledger session; Whisper owns no parallel live route |
-| **L2 — Lexicon + Light+** | Deterministic authorized relabeling | `admit_ledger_label` records the Lexicon observation; `core/pipeline/light_plus.rs` is the shaping surface, and `custom_lexicon_entries` is the persisted custom-lexicon loading path |
-| **L3 — Responses formatter** | Configured Formatting-lane observation | `core/llm/inline_format.rs` schedules authorized text through `core/llm/ai_formatting.rs`; `RuntimeSettingsSnapshot::llm_lanes()` supplies sealed lane truth |
+| Layer                        | Engine                                 | Current authority and exact surface                                                                                                                                                   |
+| ---------------------------- | -------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| **L0 — Apple**               | First live text observer               | `transcription_session` delegates to `apple_stream_transcription_session`; Apple observations enter `AcousticLedger` through `admit_ledger_label`                                     |
+| **L1 — Whisper**             | Bounded observation on retained PCM    | `core/stt/tail_provider.rs` and `core/stt/tail_patcher/` feed the same Apple-ledger session; Whisper owns no parallel live route                                                      |
+| **L2 — Lexicon + Light+**    | Deterministic authorized relabeling    | `admit_ledger_label` records the Lexicon observation; `core/pipeline/light_plus.rs` is the shaping surface, and `custom_lexicon_entries` is the persisted custom-lexicon loading path |
+| **L3 — Responses formatter** | Configured Formatting-lane observation | `core/llm/inline_format.rs` schedules authorized text through `core/llm/ai_formatting.rs`; `RuntimeSettingsSnapshot::llm_lanes()` supplies sealed lane truth                          |
 
 Silero sits beside these layers as VAD and PCM-time evidence. Speech boundaries,
 silence duration, pause timing, and pre-roll are its truthful outputs. Named
@@ -284,28 +284,28 @@ The Rust AppKit `ui/voice_chat/` module (`mod.rs` / `api.rs` / `handlers.rs` / `
 
 ## Implementation Status
 
-| Feature                                      | Status |
-| -------------------------------------------- | ------ |
-| Local Whisper STT (Metal GPU)                | ✅     |
-| Runtime Whisper model lookup                 | ✅     |
-| Global hotkeys (CGEventTap)                  | ✅     |
-| Three recording modes (Raw/Assistive/Toggle) | ✅     |
-| Voice Chat UI (split panel)                  | ✅     |
-| Chat bubbles (NSStackView)                   | ✅     |
-| Drafts panel with tabs                       | ✅     |
-| Settings window from tray + overlay          | ✅     |
-| AI formatting (Responses API)                | ✅     |
-| Streaming AI responses                       | ✅     |
-| Attachments in chat                          | ✅     |
-| Tray app with submenus                       | ✅     |
-| History with slug filenames                  | ✅     |
-| IPC server (runtime interface)               | ✅     |
+| Feature                                        | Status                 |
+| ---------------------------------------------- | ---------------------- |
+| Local Whisper STT (Metal GPU)                  | ✅                     |
+| Runtime Whisper model lookup                   | ✅                     |
+| Global hotkeys (CGEventTap)                    | ✅                     |
+| Three recording modes (Raw/Assistive/Toggle)   | ✅                     |
+| Voice Chat UI (split panel)                    | ✅                     |
+| Chat bubbles (NSStackView)                     | ✅                     |
+| Drafts panel with tabs                         | ✅                     |
+| Settings window from tray + overlay            | ✅                     |
+| AI formatting (Responses API)                  | ✅                     |
+| Streaming AI responses                         | ✅                     |
+| Attachments in chat                            | ✅                     |
+| Tray app with submenus                         | ✅                     |
+| History with slug filenames                    | ✅                     |
+| IPC server (runtime interface)                 | ✅                     |
 | Acoustic-ledger admission + reducer projection | ✅ structurally mapped |
-| Quality loop + report                        | ✅     |
-| Codescribe Core separation                   | ✅     |
-| VAD (auto-stop on silence)                   | ✅     |
-| Transcription overlay                        | ✅     |
-| Tauri GUI (future)                           | 📋     |
+| Quality loop + report                          | ✅                     |
+| Codescribe Core separation                     | ✅                     |
+| VAD (auto-stop on silence)                     | ✅                     |
+| Transcription overlay                          | ✅                     |
+| Tauri GUI (future)                             | 📋                     |
 
 ## Model Location
 
