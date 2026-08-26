@@ -107,8 +107,7 @@ data: [DONE]
         &raw,
         None,
         false,
-        runtime_settings.formatting_policy(),
-        runtime_settings.llm_lanes().formatting(),
+        &runtime_settings,
     ));
 
     // Ensure the LLM endpoint was actually called (i.e., we didn't silently fall back).

@@ -734,8 +734,7 @@ pub(crate) async fn apple_stream_transcription_session(
                     let result = format_text_with_status_for_policy(
                         &request.existing_label,
                         language.as_deref(),
-                        runtime_settings.formatting_policy(),
-                        runtime_settings.llm_lanes().formatting(),
+                        runtime_settings.as_ref(),
                     )
                     .await;
                     FormatterCompletion::from_result(request, result)

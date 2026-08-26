@@ -4,12 +4,13 @@ The runtime resolver is the single settings-loader pass that seals a
 `RuntimeSettingsSnapshot`. There is no current `lane_truth_snapshot` resolver or
 `core/llm/lane_truth.rs` module.
 
-`SettingsLoader::load_runtime_snapshot` delegates to
+`Config::load_runtime_snapshot` delegates to
 `load_runtime_snapshot_with_keychain_population`, which reads the allowed
-inputs, resolves all LLM lanes once, records provenance, computes a redacted
-digest, and seals the immutable session snapshot. Consumers read
-`RuntimeSettingsSnapshot::llm_lanes()`; they do not repeat settings, environment,
-or credential resolution during a take.
+inputs, resolves all LLM lanes and AI execution facts once, records provenance,
+computes a redacted digest, and seals the immutable session snapshot. Consumers
+read `RuntimeSettingsSnapshot::llm_lanes()` and `ai_execution()`; they do not
+repeat settings, environment, prompt-file, or credential resolution during a
+take.
 
 ## Snapshot shape
 
@@ -19,6 +20,8 @@ or credential resolution during a take.
 - the `UserSettings` intent read by the same loader pass;
 - `RuntimeLlmLanes` for `main`, `formatting`, and `assistive`;
 - the effective formatting policy;
+- `RuntimeAiExecution`: sealed formatting/assistive prompts, retry count/delay,
+  and Agent/formatter request timing;
 - settings provenance and an integrity digest; and
 - optional energy calibration.
 
@@ -125,9 +128,9 @@ different question and does not replace the sealed snapshot.
 ```text
 settings.json
   → Config::load_runtime_snapshot()
-  → resolve_runtime_llm_lanes + formatting_policy
+  → resolve_runtime_llm_lanes + formatting_policy + resolve_runtime_ai_execution
   → RuntimeSettingsSnapshot::seal_loaded(...)
-  → Arc / &RuntimeLlmLane / CsSettings::from_runtime_snapshot
+  → Arc / borrowed lanes and AI execution / CsSettings::from_runtime_snapshot
 ```
 
 Consumers of an active recording receive the controller's sealed Arc (or a
@@ -137,22 +140,23 @@ mint a fresh snapshot; they must not reconstruct precedence via a second
 affect only a later generation — idle refresh performs one Arc replacement;
 an active or pending take keeps its immutable generation.
 
-## Frozen unresolved formatter facts
+## Sealed AI execution generation
 
-The current frozen snapshot does not own formatting/assistive prompt content or
-formatter retry/timing values. Provider execution still resolves prompt and
-optional tuning files from `formatting_provider_system_prompt` inside its retry
-loop. `RetryPolicy::module_defaults` also means the registered
-`CODESCRIBE_AI_*` retry and timeout overlays do not control this formatter path.
+`Config::load_runtime_snapshot_with_keychain_population` is the sole production
+reader and writer for the registered retry/delay/attempt/inter-chunk facts. It
+also resolves each base prompt and trimmed tuning suffix exactly once. Prompt
+content remains private; custom `Debug` and digest material carry only
+`PromptSource`, SHA-256 evidence, and numeric values.
 
-Those facts are an explicit unresolved amendment boundary, not part of the
-controller repair. Closing it requires an approved immutable owner for prompt
-content/source evidence and effective retry/count/delay/timeout values. This cut
-does not extend `RuntimeSettingsSnapshot`, add a second carrier, alter the
-formatter, or remove the registered environment contract.
+Formatter retries borrow the same `RuntimeFormatterExecution` and append the
+CRITICAL retry suffix only to a request-local copy. Agent providers borrow the
+same `RuntimeAiRequestTiming` as formatter requests. A settings, prompt, tuning,
+or admitted env change becomes visible only when a later snapshot is selected;
+it cannot alter an in-flight generation.
 
-This document describes structure carried from executable cut `484095ce`, its
-documentation successor `d57196ab`, and the C11 source cut. The actual C11 hash
-lives only in its durable report. C11 did not exercise provider requests,
-compiler gates, or any runtime credential path; those surfaces are
-`NOT_ASSESSED`.
+The Ollama-specific registered timeout is intentionally a zero-reader residue;
+this cut does not invent a consumer for it.
+
+This W2 structural document does not attest compilation, provider requests, or
+runtime behavior; those surfaces remain `NOT_ASSESSED` until the locked W3/W4
+falsifiers run.

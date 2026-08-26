@@ -27,7 +27,7 @@ use std::sync::{Arc, OnceLock};
 use std::time::Duration;
 use tracing::{debug, info, trace, warn};
 
-use crate::config::{Config, FormattingPolicy, RuntimeLlmLane};
+use crate::config::{Config, FormattingPolicy, RuntimeLlmLane, RuntimeSettingsSnapshot};
 
 use super::account_auth;
 use super::provider::{ProviderKind, WireFamily, capability_policy};
@@ -103,28 +103,6 @@ struct StreamRequestContext {
     inter_chunk_timeout: Duration,
 }
 
-// Retry count is "extra attempts after the first request". Default 0 keeps
-// daily-driver formatting fail-fast instead of multiplying deterministic
-// provider/parser failures into long cascades.
-/// Extra attempts after the first request; 0 = fail-fast for daily formatting.
-const DEFAULT_AI_MAX_RETRIES: u32 = 0;
-/// Sleep between retries when [`DEFAULT_AI_MAX_RETRIES`] is raised via env.
-const DEFAULT_AI_RETRY_DELAY_MS: u64 = 500;
-// Bumped from 30s → 90s (2026-05-13). Operator observed
-// "Agent SSE inter-chunk timeout after 30s" mid-stream from chat overlay
-// during longer responses (multi-paragraph PL text with code blocks).
-// LLM backends ('programmer' model on api.libraxis.cloud) emit tokens
-// in bursts with 5-15s pauses for reasoning/tool-call hops; 30s budget
-// was too tight and triggered "Agent runtime unavailable. Using legacy
-// formatter" fallback mid-response, breaking the assistant UX. 90s
-// keeps streams alive across realistic backend hiccups without making
-// stalled requests linger forever. Sealing `CODESCRIBE_AI_*` overlays into
-// RuntimeSettingsSnapshot requires a later amendment; consumers must not
-// re-read process env for retry/timeouts on the one-path settings law.
-/// Per-attempt wall budget for hosted providers before the attempt is abandoned.
-const DEFAULT_AI_ATTEMPT_TIMEOUT_MS: u64 = 90_000;
-/// Max silence between SSE chunks mid-stream before the attempt is abandoned.
-const DEFAULT_AI_INTER_CHUNK_TIMEOUT_MS: u64 = 90_000;
 /// reqwest overall request timeout for the shared AI HTTP client.
 const DEFAULT_AI_CLIENT_TIMEOUT_MS: u64 = 90_000;
 /// TCP connect deadline for the shared AI HTTP client.
@@ -147,33 +125,6 @@ const THREAD_TITLE_MAX_CHARS: usize = 72;
 const THREAD_TITLE_PROMPT: &str = "Create a concise 3-6 word title for this conversation. \
 Use the user's language and a descriptive noun phrase. Return only the title on one line, \
 with no quotes, bullet, label, or decorative punctuation.";
-
-/// The full retry/timeout budget for one formatting call, resolved once per call.
-///
-/// Snapshotting the whole policy up front means a mid-flight env change cannot
-/// make attempt 2 of the same request behave differently from attempt 1.
-#[derive(Debug, Clone, Copy)]
-struct RetryPolicy {
-    max_retries: u32,
-    retry_delay: Duration,
-    attempt_timeout: Duration,
-    inter_chunk_timeout: Duration,
-}
-
-impl RetryPolicy {
-    /// Module defaults only. Consumer-local `CODESCRIBE_AI_*` process-env reads
-    /// are forbidden on the one-path settings law; sealing those overlays into
-    /// `RuntimeSettingsSnapshot` requires a later amendment and must not invent
-    /// a formatter settings organ here.
-    fn module_defaults() -> Self {
-        Self {
-            max_retries: DEFAULT_AI_MAX_RETRIES,
-            retry_delay: Duration::from_millis(DEFAULT_AI_RETRY_DELAY_MS),
-            attempt_timeout: Duration::from_millis(DEFAULT_AI_ATTEMPT_TIMEOUT_MS),
-            inter_chunk_timeout: Duration::from_millis(DEFAULT_AI_INTER_CHUNK_TIMEOUT_MS),
-        }
-    }
-}
 
 /// Read a `u32` env override, falling back to `default` on unset or garbage.
 ///
@@ -1123,28 +1074,33 @@ pub async fn format_text(
     text: &str,
     language: Option<&str>,
     assistive: bool,
-    policy: FormattingPolicy,
-    lane: &RuntimeLlmLane,
+    runtime_settings: &RuntimeSettingsSnapshot,
 ) -> String {
-    format_text_with_status(text, language, assistive, policy, lane, None)
+    format_text_with_status(text, language, assistive, runtime_settings, None)
         .await
         .text
 }
 
 /// Format text using AI provider with fallback chain, returning status.
 ///
-/// Callers must supply the sealed take `FormattingPolicy` (from
-/// `RuntimeSettingsSnapshot::formatting_policy()` or an explicit one-shot
-/// choice). This entry must not reload settings or process env.
+/// Callers supply the selected runtime generation. This entry never reloads
+/// settings, prompt files, or process env.
 pub async fn format_text_with_status(
     text: &str,
     language: Option<&str>,
     assistive: bool,
-    policy: FormattingPolicy,
-    lane: &RuntimeLlmLane,
+    runtime_settings: &RuntimeSettingsSnapshot,
     on_delta: Option<AiStreamCallback>,
 ) -> AiFormatResult {
-    format_text_with_status_channels(text, language, assistive, policy, lane, on_delta, None).await
+    format_text_with_status_channels(
+        text,
+        language,
+        assistive,
+        runtime_settings,
+        on_delta,
+        None,
+    )
+    .await
 }
 
 /// Format text using AI provider with explicit channel callbacks.
@@ -1152,45 +1108,44 @@ pub async fn format_text_with_status(
 /// Contract:
 /// - `on_assistant_delta`: receives only `response.output_text.*` deltas.
 /// - `on_reasoning_delta`: receives only `response.reasoning_summary_text.*` deltas.
-/// - `policy` is an injected fact from the immutable settings throne (or an
-///   explicit one-shot); assistive still forces Correction for the assistive lane.
+/// - policy, lane, prompt, retry, and request timing all come from one immutable
+///   settings generation; assistive still selects the assistive lane/prompt.
 pub async fn format_text_with_status_channels(
     text: &str,
     language: Option<&str>,
     assistive: bool,
-    policy: FormattingPolicy,
-    lane: &RuntimeLlmLane,
+    runtime_settings: &RuntimeSettingsSnapshot,
     on_assistant_delta: Option<AiStreamCallback>,
     on_reasoning_delta: Option<AiReasoningCallback>,
 ) -> AiFormatResult {
-    let policy = if assistive {
-        FormattingPolicy::Correction
-    } else {
-        policy
-    };
     format_text_with_status_channels_for_policy(
         text,
         language,
         assistive,
-        lane,
-        policy,
+        runtime_settings,
         on_assistant_delta,
         on_reasoning_delta,
     )
     .await
 }
 
-/// Format through an explicitly selected normalized policy. This is the seam
-/// used by deliberate one-shot formatting actions; it never changes persisted
-/// Auto Format state.
+/// Format through the normalized policy sealed in the selected generation.
+/// Deliberate one-shot callers choose a generation at their outer boundary;
+/// this request path cannot reconstruct policy or prompt independently.
 pub async fn format_text_with_status_for_policy(
     text: &str,
     language: Option<&str>,
-    policy: FormattingPolicy,
-    lane: &RuntimeLlmLane,
+    runtime_settings: &RuntimeSettingsSnapshot,
 ) -> AiFormatResult {
-    format_text_with_status_channels_for_policy(text, language, false, lane, policy, None, None)
-        .await
+    format_text_with_status_channels_for_policy(
+        text,
+        language,
+        false,
+        runtime_settings,
+        None,
+        None,
+    )
+    .await
 }
 
 /// The single implementation every public formatting entry point funnels into.
@@ -1210,11 +1165,11 @@ async fn format_text_with_status_channels_for_policy(
     text: &str,
     language: Option<&str>,
     assistive: bool,
-    lane: &RuntimeLlmLane,
-    policy: FormattingPolicy,
+    runtime_settings: &RuntimeSettingsSnapshot,
     on_assistant_delta: Option<AiStreamCallback>,
     on_reasoning_delta: Option<AiReasoningCallback>,
 ) -> AiFormatResult {
+    let policy = runtime_settings.formatting_policy();
     if !assistive && policy == FormattingPolicy::Off {
         return AiFormatResult {
             text: text.to_string(),
@@ -1241,15 +1196,29 @@ async fn format_text_with_status_channels_for_policy(
         text.to_string()
     };
 
-    let retry_policy = RetryPolicy::module_defaults();
-    let max_retries = retry_policy.max_retries;
+    let ai_execution = runtime_settings.ai_execution();
+    let formatter_execution = ai_execution.formatter();
+    let request_timing = ai_execution.request_timing();
+    let lane = if assistive {
+        runtime_settings.llm_lanes().assistive()
+    } else {
+        runtime_settings.llm_lanes().formatting()
+    };
+    let sealed_prompt = if assistive {
+        formatter_execution.assistive_prompt()
+    } else {
+        formatter_execution
+            .formatting_prompt()
+            .expect("Off policy bypasses before provider prompt selection")
+    };
+    let max_retries = formatter_execution.max_retries();
     debug!(
         "AI retry policy: max_retries={}, retry_delay={:?}, attempt_timeout={:?}, \
          inter_chunk_timeout={:?}",
-        retry_policy.max_retries,
-        retry_policy.retry_delay,
-        retry_policy.attempt_timeout,
-        retry_policy.inter_chunk_timeout
+        max_retries,
+        formatter_execution.retry_delay(),
+        request_timing.attempt_timeout(),
+        request_timing.inter_chunk_timeout()
     );
 
     // Mode key for the conversation chain this call rides on — needed by the
@@ -1261,9 +1230,8 @@ async fn format_text_with_status_channels_for_policy(
         crate::state::conversation::AiMode::Formatting
     };
     // One-shot chain self-heal: a stale stored response_id re-runs the SAME
-    // attempt unchained instead of consuming the retry budget (the budget is
-    // often 0, and a poisoned chain would otherwise hard-fail every take
-    // until restart).
+    // attempt unchained instead of consuming the selected retry budget; a
+    // poisoned chain would otherwise burn attempts without changing inputs.
     let mut stale_chain_retry_used = false;
     let mut attempt = 0;
     while attempt <= max_retries {
@@ -1273,28 +1241,26 @@ async fn format_text_with_status_channels_for_policy(
             assistive,
             cleaned.len()
         );
-        // Select prompt based on mode
-        let mut system_prompt = if assistive {
+        let mut system_prompt = sealed_prompt.composed_content().to_string();
+        if assistive {
             if attempt == 0 {
                 info!("Using assistive mode (model: {})", lane.model());
             }
-            formatting_provider_system_prompt(true, policy)
-                .expect("assistive mode always owns a provider prompt")
         } else {
             if attempt == 0 {
                 info!("Using formatting mode (model: {})", lane.model());
             }
-            formatting_provider_system_prompt(false, policy)
-                .expect("Off policy bypasses before provider prompt selection")
-        };
+        }
 
         // If retrying, wait and strengthen instructions
         if attempt > 0 {
             info!(
                 "Retry attempt {}/{} (waiting {:?})",
-                attempt, max_retries, retry_policy.retry_delay
+                attempt,
+                max_retries,
+                formatter_execution.retry_delay()
             );
-            tokio::time::sleep(retry_policy.retry_delay).await;
+            tokio::time::sleep(formatter_execution.retry_delay()).await;
 
             // Append critical instruction
             system_prompt.push_str(
@@ -1332,8 +1298,8 @@ async fn format_text_with_status_channels_for_policy(
                 assistant: on_assistant_delta.clone(),
                 reasoning: on_reasoning_delta.clone(),
             },
-            initial_response_timeout: retry_policy.attempt_timeout,
-            inter_chunk_timeout: retry_policy.inter_chunk_timeout,
+            initial_response_timeout: request_timing.attempt_timeout(),
+            inter_chunk_timeout: request_timing.inter_chunk_timeout(),
         };
         let mut retryable_error = true;
         let result_opt = if should_stream {
@@ -1370,7 +1336,7 @@ async fn format_text_with_status_channels_for_policy(
                 }
             }
         } else {
-            let attempt_timeout = retry_policy.attempt_timeout;
+            let attempt_timeout = request_timing.attempt_timeout();
             match tokio::time::timeout(
                 attempt_timeout,
                 call_provider_once(
@@ -1512,20 +1478,6 @@ async fn format_text_with_status_channels_for_policy(
         text: cleaned,
         reasoning_text: None,
         status: AiFormatStatus::Failed,
-    }
-}
-
-/// Exact system prompt handed to the provider for a normalized request.
-/// Exposed so delivery tests can observe the provider seam rather than merely
-/// asserting enum-to-enum mappings.
-pub fn formatting_provider_system_prompt(
-    assistive: bool,
-    policy: FormattingPolicy,
-) -> Option<String> {
-    if assistive {
-        Some(crate::config::prompts::get_assistive_prompt())
-    } else {
-        crate::config::prompts::get_formatting_prompt_for_policy(policy)
     }
 }
 
@@ -2492,43 +2444,15 @@ mod tests {
         assert!(!is_effectively_same("to jest test", "To jest test"));
     }
 
-    /// The shipped default is fail-fast — one attempt, no retry. Pinned because
-    /// raising it silently multiplies latency on every deterministic failure.
+    /// C15D falsifier: public formatter entries require one selected runtime
+    /// generation rather than separate policy, lane, prompt, or timing facts.
     #[test]
-    fn default_retry_policy_is_single_attempt() {
-        assert_eq!(DEFAULT_AI_MAX_RETRIES, 0);
-        assert_eq!(DEFAULT_AI_RETRY_DELAY_MS, 500);
-    }
-
-    /// C15D falsifier (source-level; W2 does not execute): module defaults must
-    /// ignore ambient `CODESCRIBE_AI_*` process env.
-    #[test]
-    fn retry_policy_module_defaults_do_not_read_process_env() {
-        let previous = std::env::var_os("CODESCRIBE_AI_MAX_RETRIES");
-        // SAFETY: test-local env mutation; restored below.
-        unsafe { std::env::set_var("CODESCRIBE_AI_MAX_RETRIES", "9") };
-        let policy = RetryPolicy::module_defaults();
-        assert_eq!(policy.max_retries, DEFAULT_AI_MAX_RETRIES);
-        // SAFETY: restore prior ambient value.
-        unsafe {
-            match previous {
-                Some(value) => std::env::set_var("CODESCRIBE_AI_MAX_RETRIES", value),
-                None => std::env::remove_var("CODESCRIBE_AI_MAX_RETRIES"),
-            }
-        }
-    }
-
-    /// C15D falsifier: public formatter entries require an explicit policy and
-    /// must not reconstruct via `Config::formatting_policy`.
-    #[test]
-    fn formatter_entry_requires_explicit_policy_not_config_formatting_policy() {
-        // Compile-time shape check: FormattingPolicy is a required argument.
+    fn formatter_entry_requires_runtime_settings_snapshot() {
         let _: fn(
             &str,
             Option<&str>,
             bool,
-            FormattingPolicy,
-            &RuntimeLlmLane,
+            &RuntimeSettingsSnapshot,
             Option<AiStreamCallback>,
         ) -> _ = format_text_with_status;
     }

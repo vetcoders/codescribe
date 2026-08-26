@@ -6,7 +6,7 @@
 
 use anyhow::Result;
 use codescribe_core::agent::AgentProvider;
-use codescribe_core::config::{RuntimeLlmLane, RuntimeLlmLaneKind};
+use codescribe_core::config::{RuntimeLlmLane, RuntimeLlmLaneKind, RuntimeSettingsSnapshot};
 use codescribe_core::llm::provider::WireFamily;
 
 /// Anthropic Messages-family assistive provider client.
@@ -24,7 +24,11 @@ pub use openai_provider::OpenAiProvider;
 
 /// Build the Agent provider from the exact assistive lane sealed in the
 /// controller-owned runtime settings snapshot.
-pub fn create_default_provider(lane: &RuntimeLlmLane) -> Result<Box<dyn AgentProvider>> {
+pub fn create_default_provider(
+    runtime_settings: &RuntimeSettingsSnapshot,
+) -> Result<Box<dyn AgentProvider>> {
+    let lane = runtime_settings.llm_lanes().assistive();
+    let request_timing = runtime_settings.ai_execution().request_timing();
     anyhow::ensure!(
         lane.lane() == RuntimeLlmLaneKind::Assistive,
         "agent provider requires the assistive runtime lane"
@@ -40,8 +44,12 @@ pub fn create_default_provider(lane: &RuntimeLlmLane) -> Result<Box<dyn AgentPro
     // client and carries the lane's provider identity, so xAI rides it without a
     // second implementation.
     match lane.wire_family() {
-        WireFamily::OpenAiResponses => Ok(Box::new(OpenAiProvider::from_lane(lane)?)),
-        WireFamily::AnthropicMessages => Ok(Box::new(AnthropicProvider::from_lane(lane)?)),
+        WireFamily::OpenAiResponses => {
+            Ok(Box::new(OpenAiProvider::from_lane(lane, request_timing)?))
+        }
+        WireFamily::AnthropicMessages => {
+            Ok(Box::new(AnthropicProvider::from_lane(lane, request_timing)?))
+        }
     }
 }
 

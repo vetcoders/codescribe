@@ -14,8 +14,7 @@ async fn test_format_text_with_status_signature() {
         "test input",
         Some("en"),
         true, // assistive
-        codescribe::config::FormattingPolicy::Correction,
-        runtime_settings.llm_lanes().assistive(),
+        &runtime_settings,
         Some(callback),
     );
 
@@ -24,8 +23,7 @@ async fn test_format_text_with_status_signature() {
         "test input",
         None,
         false,
-        runtime_settings.formatting_policy(),
-        runtime_settings.llm_lanes().formatting(),
+        &runtime_settings,
         None,
     );
 }

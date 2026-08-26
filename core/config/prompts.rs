@@ -20,6 +20,9 @@ use std::process::Command;
 use tracing::{info, warn};
 use uuid::Uuid;
 
+pub use super::settings::PromptSource;
+use super::settings::{FormattingPolicy, RuntimeSealedPrompt};
+
 // Default prompts (fallback if file missing/empty)
 /// Built-in prompt for [`FormattingPolicy::Correction`] — the conservative rung.
 ///
@@ -170,31 +173,6 @@ impl PromptKind {
     }
 }
 
-/// Where the content of a resolved prompt actually came from.
-///
-/// Recorded so a surprising prompt can be traced to an override, a fallback, or
-/// a silently unreadable file — the three cases look identical downstream.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum PromptSource {
-    /// A non-empty operator override on disk.
-    CustomFile,
-    /// The compiled-in default: no file, or a file that was empty.
-    BuiltInFallback,
-    /// The file exists but could not be read; the default was used instead.
-    ReadError,
-}
-
-impl PromptSource {
-    /// Stable identifier for logs and telemetry.
-    pub const fn as_str(self) -> &'static str {
-        match self {
-            Self::CustomFile => "custom_file",
-            Self::BuiltInFallback => "built_in_fallback",
-            Self::ReadError => "read_error",
-        }
-    }
-}
-
 /// A resolved prompt plus the provenance of its content.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct PromptSnapshot {
@@ -313,6 +291,43 @@ fn load_optional(filename: &str) -> Option<String> {
         }
         Err(_) => None,
     }
+}
+
+/// Resolve and seal both formatter prompts for one runtime generation.
+///
+/// This is the only prompt-file construction seam used by the settings loader.
+/// The editor APIs below remain live, but request execution receives only these
+/// immutable values and never consults the filesystem again.
+pub(crate) fn seal_runtime_prompts(
+    formatting_policy: FormattingPolicy,
+) -> (Option<RuntimeSealedPrompt>, RuntimeSealedPrompt) {
+    let formatting_prompt = PromptKind::for_formatting_policy(formatting_policy)
+        .map(|kind| seal_runtime_prompt(kind, "formatting_tuning.txt"));
+    let assistive_prompt = seal_runtime_prompt(PromptKind::Assistive, "assistive_tuning.txt");
+    (formatting_prompt, assistive_prompt)
+}
+
+fn seal_runtime_prompt(kind: PromptKind, tuning_filename: &str) -> RuntimeSealedPrompt {
+    let snapshot = prompt_snapshot(kind);
+    let base_sha256 = sha256_hex(snapshot.content.as_bytes());
+    let tuning = load_optional(tuning_filename);
+    let tuning_sha256 = tuning
+        .as_deref()
+        .map(str::as_bytes)
+        .map(sha256_hex);
+    let mut composed_content = snapshot.content;
+    if let Some(tuning) = tuning {
+        composed_content.push_str("\n\n");
+        composed_content.push_str(&tuning);
+    }
+    let composed_sha256 = sha256_hex(composed_content.as_bytes());
+    RuntimeSealedPrompt::seal(
+        composed_content,
+        snapshot.source,
+        composed_sha256,
+        base_sha256,
+        tuning_sha256,
+    )
 }
 
 /// The Correction-rung formatting prompt, tuning appended.

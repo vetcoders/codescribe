@@ -51,15 +51,14 @@ fn load_codescribe_env() {
 async fn e2e_sse_streaming_real_formatting() {
     load_codescribe_env();
 
+    unsafe {
+        std::env::set_var("CODESCRIBE_AI_MAX_RETRIES", "0");
+    }
     let runtime_settings = Config::load_runtime_snapshot().expect("seal runtime settings");
     let lane = runtime_settings.llm_lanes().formatting();
     if !lane.available() {
         eprintln!("Skipping: formatting lane unavailable");
         return;
-    }
-
-    unsafe {
-        std::env::set_var("CODESCRIBE_AI_MAX_RETRIES", "0");
     }
 
     eprintln!("=== FORMATTING MODE TEST ===");
@@ -73,8 +72,7 @@ async fn e2e_sse_streaming_real_formatting() {
         input,
         Some("pl"),
         false,
-        runtime_settings.formatting_policy(),
-        runtime_settings.llm_lanes().formatting(),
+        &runtime_settings,
     )
     .await;
     eprintln!("Output: {}", result);
@@ -98,15 +96,14 @@ async fn e2e_sse_streaming_real_assistive() {
         .try_init();
     load_codescribe_env();
 
+    unsafe {
+        std::env::set_var("CODESCRIBE_AI_MAX_RETRIES", "0");
+    }
     let runtime_settings = Config::load_runtime_snapshot().expect("seal runtime settings");
     let lane = runtime_settings.llm_lanes().assistive();
     if !lane.available() {
         eprintln!("Skipping: assistive lane unavailable");
         return;
-    }
-
-    unsafe {
-        std::env::set_var("CODESCRIBE_AI_MAX_RETRIES", "0");
     }
 
     eprintln!("=== ASSISTIVE MODE TEST ===");
@@ -120,8 +117,7 @@ async fn e2e_sse_streaming_real_assistive() {
         input,
         Some("pl"),
         true,
-        codescribe::config::FormattingPolicy::Correction,
-        runtime_settings.llm_lanes().assistive(),
+        &runtime_settings,
         None,
     )
     .await;
@@ -144,15 +140,14 @@ async fn e2e_sse_streaming_real_assistive() {
 async fn e2e_sse_streaming_kurier_mode() {
     load_codescribe_env();
 
+    unsafe {
+        std::env::set_var("CODESCRIBE_AI_MAX_RETRIES", "0");
+    }
     let runtime_settings = Config::load_runtime_snapshot().expect("seal runtime settings");
     let lane = runtime_settings.llm_lanes().assistive();
     if !lane.available() {
         eprintln!("Skipping: assistive lane unavailable");
         return;
-    }
-
-    unsafe {
-        std::env::set_var("CODESCRIBE_AI_MAX_RETRIES", "0");
     }
 
     eprintln!("=== KURIER MODE TEST (pass-through) ===");
@@ -165,8 +160,7 @@ async fn e2e_sse_streaming_kurier_mode() {
         input,
         Some("pl"),
         true,
-        codescribe::config::FormattingPolicy::Correction,
-        runtime_settings.llm_lanes().assistive(),
+        &runtime_settings,
     )
     .await;
     eprintln!("Output: {}", result);

@@ -61,10 +61,11 @@ pub use portable::{
     write_portable_export,
 };
 pub use settings::{
-    FormattingPolicy, RuntimeLlmCredential, RuntimeLlmLane, RuntimeLlmLaneKind, RuntimeLlmLanes,
-    RuntimeSettingsSnapshot, SettingsLoaderInput, SettingsSnapshotDigest,
-    SettingsSnapshotProvenance, SettingsSnapshotValidation, SettingsSnapshotValidationError,
-    UserSettings,
+    FormattingPolicy, PromptSource, RuntimeAiExecution, RuntimeAiRequestTiming,
+    RuntimeFormatterExecution, RuntimeLlmCredential, RuntimeLlmLane, RuntimeLlmLaneKind,
+    RuntimeLlmLanes, RuntimeSealedPrompt, RuntimeSettingsSnapshot, SettingsLoaderInput,
+    SettingsSnapshotDigest, SettingsSnapshotProvenance, SettingsSnapshotValidation,
+    SettingsSnapshotValidationError, UserSettings,
 };
 pub use storage_reset::{AppDataResetGuard, begin_app_data_reset};
 pub use types::Language;
@@ -72,7 +73,7 @@ pub use types::Language;
 // Re-export prompts API (public API for GUI apps)
 pub use prompts::{
     DEFAULT_ASSISTIVE_PROMPT, DEFAULT_FORMATTING_PROMPT, DEFAULT_MAX_FORMATTING_PROMPT,
-    DEFAULT_SMART_FORMATTING_PROMPT, PromptKind, PromptSnapshot, PromptSource, PromptWriteReason,
+    DEFAULT_SMART_FORMATTING_PROMPT, PromptKind, PromptSnapshot, PromptWriteReason,
     get_assistive_prompt, get_assistive_prompt_path, get_formatting_prompt,
     get_formatting_prompt_for_policy, get_formatting_prompt_path,
     get_formatting_prompt_path_for_policy, open_prompt_file, open_prompts_folder, prompt_snapshot,

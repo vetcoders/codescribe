@@ -66,7 +66,23 @@ async fn assistive_lane_answers_one_single_shot_turn() {
     let _chunk_timeout = EnvGuard::set("CODESCRIBE_AI_INTER_CHUNK_TIMEOUT_MS", "2000");
 
     let runtime_settings = Config::load_runtime_snapshot().expect("seal runtime settings");
-    let provider = create_default_provider(runtime_settings.llm_lanes().assistive())
+    assert_eq!(
+        runtime_settings
+            .ai_execution()
+            .request_timing()
+            .attempt_timeout()
+            .as_millis(),
+        2_000
+    );
+    assert_eq!(
+        runtime_settings
+            .ai_execution()
+            .request_timing()
+            .inter_chunk_timeout()
+            .as_millis(),
+        2_000
+    );
+    let provider = create_default_provider(&runtime_settings)
         .expect("assistive lane must be available (see the reported reason)");
 
     let messages = vec![Message::new(

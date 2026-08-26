@@ -286,7 +286,7 @@ impl CodescribeAgent {
         listener: Arc<dyn CsAgentListener>,
     ) -> Result<String, CsError> {
         let assistive_lane = self.runtime_settings.llm_lanes().assistive();
-        let provider = codescribe::agent::create_default_provider(assistive_lane)?;
+        let provider = codescribe::agent::create_default_provider(self.runtime_settings.as_ref())?;
         let mut registry = ToolRegistry::new();
         codescribe::agent::tools::register_all_tools(&mut registry);
         // settings.json agent.permissions + legacy tool_grants (always-allow).
@@ -335,7 +335,7 @@ impl CodescribeAgent {
         // configured `ai_assistive_max_tokens`.
         let options = build_bridge_stream_options(
             self.runtime_settings.values().ai_assistive_max_tokens,
-            assistive_lane.model(),
+            self.runtime_settings.as_ref(),
         );
 
         let turn = PreparedTurn {
@@ -770,13 +770,22 @@ impl Drop for TurnGuard {
 /// Build the assistive stream options for a bridge chat send, honoring the same
 /// assistive system prompt and token cap the in-app controller path uses
 /// (`app/controller/helpers.rs::build_agent_stream_options`).
-fn build_bridge_stream_options(ai_assistive_max_tokens: i32, model: &str) -> StreamOptions {
+fn build_bridge_stream_options(
+    ai_assistive_max_tokens: i32,
+    runtime_settings: &RuntimeSettingsSnapshot,
+) -> StreamOptions {
     let max_tokens = u32::try_from(ai_assistive_max_tokens)
         .ok()
         .filter(|tokens| *tokens > 0);
     StreamOptions {
-        model: model.to_string(),
-        system_prompt: Some(compose_agent_system_prompt()),
+        model: runtime_settings.llm_lanes().assistive().model().to_string(),
+        system_prompt: Some(compose_agent_system_prompt(
+            runtime_settings
+                .ai_execution()
+                .formatter()
+                .assistive_prompt()
+                .composed_content(),
+        )),
         max_tokens,
         temperature: None,
         reset_chain: false,
@@ -791,12 +800,11 @@ fn build_bridge_stream_options(ai_assistive_max_tokens: i32, model: &str) -> Str
 /// GitHub-connector fallback, and the measured Responses/streaming API ground
 /// truth with the answer-first rule (operator incident 2026-08-14: a spoken
 /// engine question got a clarification questionnaire instead of an answer).
-fn compose_agent_system_prompt() -> String {
-    let base = codescribe_core::config::prompts::get_assistive_prompt();
+fn compose_agent_system_prompt(assistive_prompt: &str) -> String {
     let workspace = codescribe::agent::tools::workspace::workspace_prompt_section();
     let doctrine = codescribe::agent::tools::doctrine::review_doctrine_prompt_section();
     let api_truth = codescribe::agent::tools::api_truth::responses_api_prompt_section();
-    format!("{base}\n\n{workspace}\n\n{doctrine}\n\n{api_truth}")
+    format!("{assistive_prompt}\n\n{workspace}\n\n{doctrine}\n\n{api_truth}")
 }
 
 /// Load + validate composer attachments into vision `ImageAttachment`s.

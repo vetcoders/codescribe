@@ -1068,24 +1068,24 @@ description = "How to send transcripts (streaming|end_of_utterance)"
 
 [vars.CODESCRIBE_AI_MAX_RETRIES]
 default = "3"
-type = "u64"
+type = "u32"
 reload = "hot"
 category = "llm"
-description = "Max retries for AI formatting attempts (total attempts = retries + 1)"
+description = "Extra AI formatting attempts (total attempts = retries + 1); loader seals valid overlays into the next selected runtime snapshot"
 
 [vars.CODESCRIBE_AI_RETRY_DELAY_MS]
 default = "2000"
 type = "u64"
 reload = "hot"
 category = "llm"
-description = "Delay between AI retries (ms)"
+description = "Delay between AI retries (ms); loader seals valid overlays into the next selected runtime snapshot"
 
 [vars.CODESCRIBE_AI_ATTEMPT_TIMEOUT_MS]
 default = "30000"
 type = "u64"
 reload = "hot"
 category = "llm"
-description = "Per-attempt timeout for non-Ollama AI requests (ms)"
+description = "Shared formatter and Agent per-attempt timeout (ms); loader seals valid overlays into the next selected runtime snapshot"
 
 [vars.CODESCRIBE_AI_OLLAMA_ATTEMPT_TIMEOUT_MS]
 default = "5000"
@@ -1099,7 +1099,7 @@ default = "30000"
 type = "u64"
 reload = "hot"
 category = "llm"
-description = "Max idle time between SSE chunks before attempt is failed (ms)"
+description = "Shared formatter and Agent max idle time between SSE chunks (ms); loader seals valid overlays into the next selected runtime snapshot"
 
 [vars.CODESCRIBE_AGENT_BRIDGE_HOME]
 default = ""

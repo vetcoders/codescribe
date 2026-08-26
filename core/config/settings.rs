@@ -2,11 +2,11 @@
 //!
 //! These are the "regular user" tier. Power users override via ~/.codescribe/.env.
 //!
-//! # W1-A immutable settings part set (STRUCTURALLY_COMPLETE / NOT_WIRED)
+//! # Immutable settings part set
 //!
-//! Declared owners live in this file and in `loader.rs`. W1 places the parts;
-//! W2 connects session consumers once. No second default owner, synchronizer,
-//! or mutable runtime bus may return.
+//! Declared owners live in this file and in `loader.rs`. Session consumers
+//! borrow one selected generation. No second default owner, synchronizer, or
+//! mutable runtime bus may return.
 //!
 //! | Part | Owner symbol / surface | Role |
 //! |---|---|---|
@@ -25,6 +25,7 @@ use std::fs::{self, File, OpenOptions};
 use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::sync::{Mutex, MutexGuard, OnceLock};
+use std::time::Duration;
 use tracing::{debug, info, warn};
 use uuid::Uuid;
 
@@ -679,7 +680,230 @@ impl RuntimeLlmLanes {
     }
 }
 
-/// Immutable per-session runtime settings snapshot — W1-A throne part.
+/// Where the content of a resolved prompt actually came from.
+///
+/// Runtime execution records this typed evidence rather than carrying an
+/// absolute path or raw I/O error text into the selected generation.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PromptSource {
+    /// A non-empty operator override on disk.
+    CustomFile,
+    /// The compiled-in default: no file, or a file that was empty.
+    BuiltInFallback,
+    /// The file exists but could not be read; the default was used instead.
+    ReadError,
+}
+
+impl PromptSource {
+    /// Stable identifier for digest material, logs, and telemetry.
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::CustomFile => "custom_file",
+            Self::BuiltInFallback => "built_in_fallback",
+            Self::ReadError => "read_error",
+        }
+    }
+}
+
+/// One prompt sealed for a selected runtime generation.
+///
+/// Content is intentionally private and omitted from `Debug`. Consumers may
+/// borrow the exact attempt-zero bytes but cannot mutate or re-resolve them.
+#[derive(Clone, PartialEq, Eq)]
+pub struct RuntimeSealedPrompt {
+    composed_content: String,
+    source: PromptSource,
+    composed_sha256: String,
+    base_sha256: String,
+    tuning_sha256: Option<String>,
+}
+
+impl RuntimeSealedPrompt {
+    pub(super) fn seal(
+        composed_content: String,
+        source: PromptSource,
+        composed_sha256: String,
+        base_sha256: String,
+        tuning_sha256: Option<String>,
+    ) -> Self {
+        Self {
+            composed_content,
+            source,
+            composed_sha256,
+            base_sha256,
+            tuning_sha256,
+        }
+    }
+
+    pub fn composed_content(&self) -> &str {
+        &self.composed_content
+    }
+
+    pub const fn source(&self) -> PromptSource {
+        self.source
+    }
+
+    pub fn composed_sha256(&self) -> &str {
+        &self.composed_sha256
+    }
+
+    pub fn base_sha256(&self) -> &str {
+        &self.base_sha256
+    }
+
+    pub fn tuning_sha256(&self) -> Option<&str> {
+        self.tuning_sha256.as_deref()
+    }
+
+    fn digest_material(&self) -> String {
+        format!(
+            "source={}|composed_sha256={}|base_sha256={}|tuning_sha256={}",
+            self.source.as_str(),
+            self.composed_sha256,
+            self.base_sha256,
+            self.tuning_sha256.as_deref().unwrap_or("none"),
+        )
+    }
+}
+
+impl fmt::Debug for RuntimeSealedPrompt {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("RuntimeSealedPrompt")
+            .field("source", &self.source)
+            .field("composed_sha256", &self.composed_sha256)
+            .field("base_sha256", &self.base_sha256)
+            .field("tuning_sha256", &self.tuning_sha256)
+            .finish()
+    }
+}
+
+/// Formatter prompt and retry truth for one selected generation.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RuntimeFormatterExecution {
+    formatting_prompt: Option<RuntimeSealedPrompt>,
+    assistive_prompt: RuntimeSealedPrompt,
+    max_retries: u32,
+    retry_delay: Duration,
+}
+
+impl RuntimeFormatterExecution {
+    pub(super) fn seal(
+        formatting_prompt: Option<RuntimeSealedPrompt>,
+        assistive_prompt: RuntimeSealedPrompt,
+        max_retries: u32,
+        retry_delay: Duration,
+    ) -> Self {
+        Self {
+            formatting_prompt,
+            assistive_prompt,
+            max_retries,
+            retry_delay,
+        }
+    }
+
+    pub fn formatting_prompt(&self) -> Option<&RuntimeSealedPrompt> {
+        self.formatting_prompt.as_ref()
+    }
+
+    pub fn assistive_prompt(&self) -> &RuntimeSealedPrompt {
+        &self.assistive_prompt
+    }
+
+    pub const fn max_retries(&self) -> u32 {
+        self.max_retries
+    }
+
+    pub const fn retry_delay(&self) -> Duration {
+        self.retry_delay
+    }
+
+    fn digest_material(&self) -> String {
+        let formatting = self
+            .formatting_prompt
+            .as_ref()
+            .map(RuntimeSealedPrompt::digest_material)
+            .unwrap_or_else(|| "off".to_string());
+        format!(
+            "formatting_prompt={formatting}\nassistive_prompt={}\nmax_retries={}\nretry_delay_ms={}",
+            self.assistive_prompt.digest_material(),
+            self.max_retries,
+            self.retry_delay.as_millis(),
+        )
+    }
+}
+
+/// Shared request timing for formatter and Agent providers in one generation.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RuntimeAiRequestTiming {
+    attempt_timeout: Duration,
+    inter_chunk_timeout: Duration,
+}
+
+impl RuntimeAiRequestTiming {
+    pub(super) const fn seal(
+        attempt_timeout: Duration,
+        inter_chunk_timeout: Duration,
+    ) -> Self {
+        Self {
+            attempt_timeout,
+            inter_chunk_timeout,
+        }
+    }
+
+    pub const fn attempt_timeout(&self) -> Duration {
+        self.attempt_timeout
+    }
+
+    pub const fn inter_chunk_timeout(&self) -> Duration {
+        self.inter_chunk_timeout
+    }
+
+    fn digest_material(&self) -> String {
+        format!(
+            "attempt_timeout_ms={}\ninter_chunk_timeout_ms={}",
+            self.attempt_timeout.as_millis(),
+            self.inter_chunk_timeout.as_millis(),
+        )
+    }
+}
+
+/// All AI execution facts owned by one immutable runtime settings generation.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RuntimeAiExecution {
+    formatter: RuntimeFormatterExecution,
+    request_timing: RuntimeAiRequestTiming,
+}
+
+impl RuntimeAiExecution {
+    pub(super) fn seal(
+        formatter: RuntimeFormatterExecution,
+        request_timing: RuntimeAiRequestTiming,
+    ) -> Self {
+        Self {
+            formatter,
+            request_timing,
+        }
+    }
+
+    pub const fn formatter(&self) -> &RuntimeFormatterExecution {
+        &self.formatter
+    }
+
+    pub const fn request_timing(&self) -> &RuntimeAiRequestTiming {
+        &self.request_timing
+    }
+
+    pub(super) fn digest_material(&self) -> String {
+        format!(
+            "{}\n{}",
+            self.formatter.digest_material(),
+            self.request_timing.digest_material(),
+        )
+    }
+}
+
+/// Immutable per-session runtime settings snapshot — the settings throne.
 ///
 /// # Part contract
 /// - **inputs:** one validated [`Config`] from the single core loader pass,
@@ -696,7 +920,7 @@ impl RuntimeLlmLanes {
 ///   evidence (digest + provenance only at the bus)
 ///
 /// Hot edits create a *new* snapshot for the next recording session. An
-/// in-flight take keeps this value. W1 places the type; no consumer is wired.
+/// in-flight take keeps this value and every AI retry/request fact it selected.
 #[derive(Debug, Clone)]
 pub struct RuntimeSettingsSnapshot {
     /// Resolved runtime values after defaults + allowed env overlays.
@@ -710,6 +934,9 @@ pub struct RuntimeSettingsSnapshot {
     /// Effective formatting policy resolved by the same loader pass. Runtime
     /// consumers may not reconstruct this from process env or persisted rows.
     formatting_policy: FormattingPolicy,
+    /// Prompt, retry, and shared Agent/formatter request facts sealed by the
+    /// same loader pass as the selected lanes and policy.
+    ai_execution: RuntimeAiExecution,
     /// Where the values came from.
     provenance: SettingsSnapshotProvenance,
     /// Integrity fingerprint for session evidence.
@@ -720,32 +947,14 @@ pub struct RuntimeSettingsSnapshot {
 }
 
 impl RuntimeSettingsSnapshot {
-    /// Seal a validated snapshot. Callers outside the loader must not exist in W1.
-    pub fn seal(
-        values: Config,
-        llm_lanes: RuntimeLlmLanes,
-        formatting_policy: FormattingPolicy,
-        provenance: SettingsSnapshotProvenance,
-        digest: SettingsSnapshotDigest,
-    ) -> Result<Self, SettingsSnapshotValidationError> {
-        SettingsSnapshotValidation::admit(&values, &provenance, &digest)?;
-        Ok(Self {
-            values,
-            user_settings: UserSettings::default(),
-            llm_lanes,
-            formatting_policy,
-            provenance,
-            digest,
-            energy_calibration: None,
-        })
-    }
-
-    /// Seal values plus the persisted intent read by the same loader owner.
+    /// Seal values plus persisted intent and AI execution facts in the sole
+    /// settings-loader writer.
     pub(crate) fn seal_loaded(
         values: Config,
         user_settings: UserSettings,
         llm_lanes: RuntimeLlmLanes,
         formatting_policy: FormattingPolicy,
+        ai_execution: RuntimeAiExecution,
         provenance: SettingsSnapshotProvenance,
         digest: SettingsSnapshotDigest,
     ) -> Result<Self, SettingsSnapshotValidationError> {
@@ -755,6 +964,7 @@ impl RuntimeSettingsSnapshot {
             user_settings,
             llm_lanes,
             formatting_policy,
+            ai_execution,
             provenance,
             digest,
             energy_calibration: None,
@@ -779,6 +989,11 @@ impl RuntimeSettingsSnapshot {
     /// Effective per-take formatter policy from the immutable settings throne.
     pub const fn formatting_policy(&self) -> FormattingPolicy {
         self.formatting_policy
+    }
+
+    /// Borrow the AI execution facts sealed for this exact generation.
+    pub const fn ai_execution(&self) -> &RuntimeAiExecution {
+        &self.ai_execution
     }
 
     /// Borrow provenance for evidence sinks.

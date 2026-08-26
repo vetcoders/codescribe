@@ -40,7 +40,7 @@ use codescribe_core::agent::{
     AgentEvent, AgentProvider, ContentBlock, ImageAsset, Message, Role, StreamOptions,
     ToolDefinition,
 };
-use codescribe_core::config::RuntimeLlmLane;
+use codescribe_core::config::{RuntimeAiRequestTiming, RuntimeLlmLane};
 use codescribe_core::llm::provider::{ProviderKind, capability_policy};
 
 /// Value of the mandatory `anthropic-version` header.
@@ -54,10 +54,6 @@ const ANTHROPIC_VERSION: &str = "2023-06-01";
 /// against this same limit, which made the old 8192 doubly throttling.
 const DEFAULT_MAX_TOKENS: u32 = 128_000;
 
-/// How long to wait for response headers before giving up.
-const DEFAULT_INITIAL_RESPONSE_TIMEOUT_MS: u64 = 90_000;
-/// How long a started stream may stall between chunks before giving up.
-const DEFAULT_INTER_CHUNK_TIMEOUT_MS: u64 = 90_000;
 /// Transport-level ceiling on the whole request; generous, since a long tool
 /// turn is legitimate and the finer timeouts above do the real policing.
 const STREAM_REQUEST_TIMEOUT: Duration = Duration::from_secs(3600);
@@ -91,7 +87,10 @@ impl AnthropicProvider {
     /// Keychain). Anthropic always authenticates, so a missing key is a
     /// readable error naming the exact account — the availability gate
     /// reports the same reason before a send is ever attempted.
-    pub fn from_lane(lane: &RuntimeLlmLane) -> Result<Self> {
+    pub fn from_lane(
+        lane: &RuntimeLlmLane,
+        request_timing: &RuntimeAiRequestTiming,
+    ) -> Result<Self> {
         let api_key = lane
             .credential()
             .api_key()
@@ -102,14 +101,8 @@ impl AnthropicProvider {
         // Claude model when the assistive provider is Anthropic.
         let default_model = lane.model().to_string();
 
-        let initial_response_timeout = Duration::from_millis(parse_env_u64(
-            "CODESCRIBE_AI_ATTEMPT_TIMEOUT_MS",
-            DEFAULT_INITIAL_RESPONSE_TIMEOUT_MS,
-        ));
-        let inter_chunk_timeout = Duration::from_millis(parse_env_u64(
-            "CODESCRIBE_AI_INTER_CHUNK_TIMEOUT_MS",
-            DEFAULT_INTER_CHUNK_TIMEOUT_MS,
-        ));
+        let initial_response_timeout = request_timing.attempt_timeout();
+        let inter_chunk_timeout = request_timing.inter_chunk_timeout();
 
         let client = Client::builder()
             .timeout(STREAM_REQUEST_TIMEOUT)
@@ -929,14 +922,6 @@ fn validate_anthropic_endpoint(endpoint: &str) -> Result<reqwest::Url> {
         other => anyhow::bail!("Unsupported endpoint URL scheme: {}", other),
     }
     Ok(url)
-}
-
-/// Read a `u64` env override, falling back on absent or unparseable values.
-fn parse_env_u64(key: &str, default: u64) -> u64 {
-    std::env::var(key)
-        .ok()
-        .and_then(|value| value.trim().parse::<u64>().ok())
-        .unwrap_or(default)
 }
 
 // ── SSE wire types ───────────────────────────────────────────────────────────

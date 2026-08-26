@@ -17,7 +17,7 @@ use std::path::{Path, PathBuf};
 use std::str::FromStr;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Mutex, OnceLock};
-use std::time::{SystemTime, UNIX_EPOCH};
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use tracing::{info, warn};
 
 use super::defaults::{
@@ -25,10 +25,11 @@ use super::defaults::{
     default_formatting_provider, default_llm_endpoint, default_llm_model,
 };
 use super::settings::{
-    DEFAULT_AGENT_WORKSPACE_ROOT, FormattingPolicy, RuntimeLlmCredential, RuntimeLlmLane,
-    RuntimeLlmLaneKind, RuntimeLlmLanes, RuntimeSettingsSnapshot, SettingsLoaderInput,
-    SettingsSnapshotDigest, SettingsSnapshotProvenance, SettingsSnapshotValidationError,
-    UserSettings, normalize_agent_workspace_roots, parse_agent_workspace_roots,
+    DEFAULT_AGENT_WORKSPACE_ROOT, FormattingPolicy, RuntimeAiExecution, RuntimeAiRequestTiming,
+    RuntimeFormatterExecution, RuntimeLlmCredential, RuntimeLlmLane, RuntimeLlmLaneKind,
+    RuntimeLlmLanes, RuntimeSettingsSnapshot, SettingsLoaderInput, SettingsSnapshotDigest,
+    SettingsSnapshotProvenance, SettingsSnapshotValidationError, UserSettings,
+    normalize_agent_workspace_roots, parse_agent_workspace_roots,
 };
 use super::types::{
     Config, DeferredInsertShortcut, Language, OverlayPositionMode, TranscriptSendMode,
@@ -50,6 +51,15 @@ static CONFIG_ENV_BOOTSTRAP_LOCK: OnceLock<Mutex<()>> = OnceLock::new();
 /// outer lock two distinct UI writes can both load the same snapshot and the
 /// later rename silently erase the earlier field.
 static CONFIG_PERSISTENCE_LOCK: OnceLock<Mutex<()>> = OnceLock::new();
+
+const AI_MAX_RETRIES_ENV: &str = "CODESCRIBE_AI_MAX_RETRIES";
+const AI_RETRY_DELAY_MS_ENV: &str = "CODESCRIBE_AI_RETRY_DELAY_MS";
+const AI_ATTEMPT_TIMEOUT_MS_ENV: &str = "CODESCRIBE_AI_ATTEMPT_TIMEOUT_MS";
+const AI_INTER_CHUNK_TIMEOUT_MS_ENV: &str = "CODESCRIBE_AI_INTER_CHUNK_TIMEOUT_MS";
+const DEFAULT_AI_MAX_RETRIES: u32 = 3;
+const DEFAULT_AI_RETRY_DELAY_MS: u64 = 2_000;
+const DEFAULT_AI_ATTEMPT_TIMEOUT_MS: u64 = 30_000;
+const DEFAULT_AI_INTER_CHUNK_TIMEOUT_MS: u64 = 30_000;
 
 fn config_persistence_guard() -> std::sync::MutexGuard<'static, ()> {
     CONFIG_PERSISTENCE_LOCK
@@ -139,6 +149,7 @@ impl Config {
             reason: error.to_string(),
         })?;
         let llm_lanes = Self::resolve_runtime_llm_lanes(&values, &user_settings);
+        let ai_execution = Self::resolve_runtime_ai_execution(formatting_policy);
         let mut digest_values = values.clone();
         digest_values.llm_api_key = digest_values
             .llm_api_key
@@ -149,9 +160,10 @@ impl Config {
             .as_ref()
             .map(|_| "<redacted:present>".to_string());
         let digest_material = format!(
-            "{digest_values:?}\n{user_settings:?}\n{provenance:?}\nformatting_policy={}\n{}",
+            "{digest_values:?}\n{user_settings:?}\n{provenance:?}\nformatting_policy={}\n{}\n{}",
             formatting_policy.as_str(),
             llm_lanes.digest_material(),
+            ai_execution.digest_material(),
         );
         let digest = SettingsSnapshotDigest::from_hex(sha256_hex(digest_material.as_bytes()));
         RuntimeSettingsSnapshot::seal_loaded(
@@ -159,9 +171,59 @@ impl Config {
             user_settings,
             llm_lanes,
             formatting_policy,
+            ai_execution,
             provenance,
             digest,
         )
+    }
+
+    /// Resolve prompt, retry, and shared Agent/formatter timing once for the
+    /// selected runtime generation. No consumer may reconstruct these facts.
+    fn resolve_runtime_ai_execution(formatting_policy: FormattingPolicy) -> RuntimeAiExecution {
+        let (formatting_prompt, assistive_prompt) =
+            super::prompts::seal_runtime_prompts(formatting_policy);
+        let max_retries = Self::runtime_env_or_default(
+            AI_MAX_RETRIES_ENV,
+            DEFAULT_AI_MAX_RETRIES,
+        );
+        let retry_delay_ms = Self::runtime_env_or_default(
+            AI_RETRY_DELAY_MS_ENV,
+            DEFAULT_AI_RETRY_DELAY_MS,
+        );
+        let attempt_timeout_ms = Self::runtime_env_or_default(
+            AI_ATTEMPT_TIMEOUT_MS_ENV,
+            DEFAULT_AI_ATTEMPT_TIMEOUT_MS,
+        );
+        let inter_chunk_timeout_ms = Self::runtime_env_or_default(
+            AI_INTER_CHUNK_TIMEOUT_MS_ENV,
+            DEFAULT_AI_INTER_CHUNK_TIMEOUT_MS,
+        );
+
+        RuntimeAiExecution::seal(
+            RuntimeFormatterExecution::seal(
+                formatting_prompt,
+                assistive_prompt,
+                max_retries,
+                Duration::from_millis(retry_delay_ms),
+            ),
+            RuntimeAiRequestTiming::seal(
+                Duration::from_millis(attempt_timeout_ms),
+                Duration::from_millis(inter_chunk_timeout_ms),
+            ),
+        )
+    }
+
+    fn runtime_env_or_default<T>(key: &str, default: T) -> T
+    where
+        T: FromStr,
+    {
+        Self::config_runtime_env_var(key)
+            .ok()
+            .and_then(|value| {
+                let value = value.trim();
+                (!value.is_empty()).then(|| value.parse::<T>().ok()).flatten()
+            })
+            .unwrap_or(default)
     }
 
     /// Resolve the complete LLM organ during the one settings-loader pass.

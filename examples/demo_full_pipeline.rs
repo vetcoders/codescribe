@@ -159,14 +159,13 @@ async fn main() -> Result<()> {
     println!("      LLM_MODEL: {}", lane.model());
 
     let start = std::time::Instant::now();
-    let policy = if assistive {
-        codescribe::config::FormattingPolicy::Correction
-    } else {
-        runtime_settings.formatting_policy()
-    };
-    let formatted =
-        codescribe::ai_formatting::format_text(&raw_text, Some(&lang), assistive, policy, lane)
-            .await;
+    let formatted = codescribe::ai_formatting::format_text(
+        &raw_text,
+        Some(&lang),
+        assistive,
+        &runtime_settings,
+    )
+    .await;
     let format_time = start.elapsed();
     println!("      Format time: {:?}", format_time);
     println!("      Formatted chars: {}", formatted.len());

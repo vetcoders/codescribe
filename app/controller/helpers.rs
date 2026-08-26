@@ -431,7 +431,9 @@ fn load_thread_messages_from(
 /// policy (with hot reload), the configured default provider, and a bounded UI
 /// channel. The thread id minted here is provisional — `ensure_runtime_with`
 /// overwrites it with the durable identity whenever one already exists.
-fn initialize_agent_runtime(assistive_lane: &RuntimeLlmLane) -> Result<AgentRuntime> {
+fn initialize_agent_runtime(
+    runtime_settings: &Arc<RuntimeSettingsSnapshot>,
+) -> Result<AgentRuntime> {
     let mut registry = ToolRegistry::new();
     crate::agent::tools::register_all_tools(&mut registry);
     // B2: same policy load as the UniFFI bridge path — settings.json
@@ -442,7 +444,7 @@ fn initialize_agent_runtime(assistive_lane: &RuntimeLlmLane) -> Result<AgentRunt
     );
     registry.enable_policy_hot_reload();
 
-    let provider = crate::agent::create_default_provider(assistive_lane)
+    let provider = crate::agent::create_default_provider(runtime_settings.as_ref())
         .context("Failed to create default agent provider")?;
     let (ui_tx, ui_rx) = mpsc::channel(AGENT_UI_CHANNEL_CAPACITY);
     let session = AgentSession::new(provider, Arc::new(registry), ui_tx);
@@ -462,15 +464,23 @@ fn initialize_agent_runtime(assistive_lane: &RuntimeLlmLane) -> Result<AgentRunt
 fn build_agent_stream_options(
     ai_assistive_max_tokens: i32,
     use_assistive_persona: bool,
-    assistive_lane: &RuntimeLlmLane,
+    runtime_settings: &RuntimeSettingsSnapshot,
 ) -> StreamOptions {
+    let assistive_lane = runtime_settings.llm_lanes().assistive();
     let max_tokens = u32::try_from(ai_assistive_max_tokens)
         .ok()
         .filter(|tokens| *tokens > 0);
 
     StreamOptions {
         model: assistive_lane.model().to_string(),
-        system_prompt: Some(compose_agent_system_prompt(use_assistive_persona)),
+        system_prompt: Some(compose_agent_system_prompt(
+            use_assistive_persona,
+            runtime_settings
+                .ai_execution()
+                .formatter()
+                .assistive_prompt()
+                .composed_content(),
+        )),
         max_tokens,
         temperature: None,
         // First-attempt default: preserve conversational chain. Session retry
@@ -484,7 +494,7 @@ fn build_agent_stream_options(
 /// - `use_assistive_persona=true` (act-on-selection lane): base is `assistive.txt`.
 /// - `use_assistive_persona=false` (voice-chat lane, W10-D): agent persona only —
 ///   workspace + doctrine, no "text assistant" identity.
-fn compose_agent_system_prompt(use_assistive_persona: bool) -> String {
+fn compose_agent_system_prompt(use_assistive_persona: bool, assistive_prompt: &str) -> String {
     let workspace = crate::agent::tools::workspace::workspace_prompt_section();
     let doctrine = crate::agent::tools::doctrine::review_doctrine_prompt_section();
     // Measured Responses/streaming contract facts + the answer-first rule —
@@ -492,8 +502,7 @@ fn compose_agent_system_prompt(use_assistive_persona: bool) -> String {
     // clarification questionnaire (operator incident 2026-08-14).
     let api_truth = crate::agent::tools::api_truth::responses_api_prompt_section();
     if use_assistive_persona {
-        let base = crate::config::get_assistive_prompt();
-        format!("{base}\n\n{workspace}\n\n{doctrine}\n\n{api_truth}")
+        format!("{assistive_prompt}\n\n{workspace}\n\n{doctrine}\n\n{api_truth}")
     } else {
         format!(
             "You are the Codescribe agent. Answer and act on the user's spoken request using the available tools when helpful.\n\n{workspace}\n\n{doctrine}\n\n{api_truth}"
@@ -829,13 +838,14 @@ async fn run_agent_send_path(
     runtime_state: &mut AgentRuntimeState,
     text: String,
     stream_options: StreamOptions,
-    assistive_lane: &RuntimeLlmLane,
+    runtime_settings: &Arc<RuntimeSettingsSnapshot>,
 ) -> Result<AgentSendOutcome> {
+    let assistive_lane = runtime_settings.llm_lanes().assistive();
     run_agent_send_path_with_persist(
         runtime_state,
         text,
         stream_options,
-        || initialize_agent_runtime(assistive_lane),
+        || initialize_agent_runtime(runtime_settings),
         |runtime| deliver_runtime_thread(runtime, assistive_lane),
     )
     .await
@@ -1045,7 +1055,7 @@ where
 /// second formatter authority.
 async fn run_agent_send(
     runtime_state: &Arc<TokioMutex<AgentRuntimeState>>,
-    assistive_lane: &RuntimeLlmLane,
+    runtime_settings: &Arc<RuntimeSettingsSnapshot>,
     text: String,
     ai_assistive_max_tokens: i32,
     use_assistive_persona: bool,
@@ -1054,7 +1064,7 @@ async fn run_agent_send(
     let stream_options = build_agent_stream_options(
         ai_assistive_max_tokens,
         use_assistive_persona,
-        assistive_lane,
+        runtime_settings.as_ref(),
     );
     let agent_result = {
         let mut guard = runtime_state.lock().await;
@@ -1072,7 +1082,7 @@ async fn run_agent_send(
             &mut guard,
             text,
             stream_options,
-            assistive_lane,
+            runtime_settings,
         )
         .await;
         if fresh_mint_requested {
@@ -1113,7 +1123,7 @@ pub(crate) async fn send_assistive_with_agent_runtime_lane(
     let runtime_state = shared_agent_runtime_state();
     run_agent_send(
         &runtime_state,
-        runtime_settings.llm_lanes().assistive(),
+        &runtime_settings,
         text,
         ai_assistive_max_tokens,
         use_assistive_persona,

@@ -21,8 +21,7 @@ async fn main() {
             &raw,
             Some("pl"),
             false,
-            runtime_settings.formatting_policy(),
-            runtime_settings.llm_lanes().formatting(),
+            &runtime_settings,
         )
         .await;
         println!("\n=== TURN {turn} ({} chars) ===", out.chars().count());

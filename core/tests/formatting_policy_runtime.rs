@@ -1,5 +1,5 @@
 use codescribe_core::ai_formatting::{
-    AiFormatStatus, format_text_with_status_for_policy, formatting_provider_system_prompt,
+    AiFormatStatus, format_text_with_status_for_policy,
 };
 use codescribe_core::config::{
     Config, FormattingPolicy, PromptKind, PromptWriteReason, prompt_snapshot, prompts, write_prompt,
@@ -8,6 +8,7 @@ use serial_test::serial;
 use sha2::{Digest, Sha256};
 use std::ffi::{OsStr, OsString};
 use std::path::PathBuf;
+use std::time::Duration;
 
 struct EnvGuard {
     key: &'static str,
@@ -40,6 +41,24 @@ impl Drop for EnvGuard {
             }
         }
     }
+}
+
+/// Registry defaults are sealed by the loader when all four overlays are
+/// absent. Formatter and Agent execution only borrow these selected facts.
+#[test]
+#[serial]
+fn runtime_ai_execution_uses_registered_defaults() {
+    let _max_retries = EnvGuard::unset("CODESCRIBE_AI_MAX_RETRIES");
+    let _retry_delay = EnvGuard::unset("CODESCRIBE_AI_RETRY_DELAY_MS");
+    let _attempt_timeout = EnvGuard::unset("CODESCRIBE_AI_ATTEMPT_TIMEOUT_MS");
+    let _inter_chunk_timeout = EnvGuard::unset("CODESCRIBE_AI_INTER_CHUNK_TIMEOUT_MS");
+    let runtime_settings = Config::load_runtime_snapshot().expect("seal runtime settings");
+    let formatter = runtime_settings.ai_execution().formatter();
+    let timing = runtime_settings.ai_execution().request_timing();
+    assert_eq!(formatter.max_retries(), 3);
+    assert_eq!(formatter.retry_delay(), Duration::from_millis(2_000));
+    assert_eq!(timing.attempt_timeout(), Duration::from_millis(30_000));
+    assert_eq!(timing.inter_chunk_timeout(), Duration::from_millis(30_000));
 }
 
 #[test]
@@ -75,15 +94,26 @@ fn formatting_policy_selects_exact_prompt() {
     .expect("seed common tuning");
 
     for (policy, _, content) in fixtures {
+        let _runtime_policy = EnvGuard::set("FORMATTING_LEVEL", policy.as_str());
+        let runtime_settings = Config::load_runtime_snapshot().expect("seal runtime settings");
         let expected = format!("{content}\n\nshared tuning fixture");
         assert_eq!(
-            formatting_provider_system_prompt(false, policy).as_deref(),
+            runtime_settings
+                .ai_execution()
+                .formatter()
+                .formatting_prompt()
+                .map(|prompt| prompt.composed_content()),
             Some(expected.as_str()),
             "provider seam selected the wrong prompt for {policy:?}"
         );
     }
+    let _runtime_policy = EnvGuard::set("FORMATTING_LEVEL", FormattingPolicy::Off.as_str());
+    let runtime_settings = Config::load_runtime_snapshot().expect("seal Off runtime settings");
     assert_eq!(
-        formatting_provider_system_prompt(false, FormattingPolicy::Off),
+        runtime_settings
+            .ai_execution()
+            .formatter()
+            .formatting_prompt(),
         None
     );
 }
@@ -132,8 +162,12 @@ fn formatting_policy_walkaround_receipt() {
         Config::formatting_policy().expect("resolve Off"),
         FormattingPolicy::Off
     );
+    let runtime_settings = Config::load_runtime_snapshot().expect("seal Off runtime settings");
     assert_eq!(
-        formatting_provider_system_prompt(false, FormattingPolicy::Off),
+        runtime_settings
+            .ai_execution()
+            .formatter()
+            .formatting_prompt(),
         None
     );
     println!(
@@ -152,8 +186,14 @@ fn formatting_policy_walkaround_receipt() {
         assert_eq!(Config::formatting_policy().expect("resolve policy"), policy);
 
         let snapshot = prompt_snapshot(kind);
-        let selected = formatting_provider_system_prompt(false, policy)
-            .expect("enabled policy selects provider prompt");
+        let runtime_settings =
+            Config::load_runtime_snapshot().expect("seal selected runtime settings");
+        let selected = runtime_settings
+            .ai_execution()
+            .formatter()
+            .formatting_prompt()
+            .expect("enabled policy selects provider prompt")
+            .composed_content();
         let prompt_digest = format!("{:x}", Sha256::digest(snapshot.content.as_bytes()));
         let selected_digest = format!("{:x}", Sha256::digest(selected.as_bytes()));
         assert_eq!(selected_digest, prompt_digest);
@@ -182,14 +222,14 @@ async fn formatting_off_bypasses_llm() {
     let _endpoint = EnvGuard::set("LLM_FORMATTING_ENDPOINT", server.url());
     let _model = EnvGuard::set("LLM_FORMATTING_MODEL", "test-model");
     let _key = EnvGuard::set("LLM_FORMATTING_API_KEY", "test-key");
+    let _policy = EnvGuard::set("FORMATTING_LEVEL", FormattingPolicy::Off.as_str());
     let runtime_settings = Config::load_runtime_snapshot().expect("seal runtime settings");
 
     let input = "This transcript is intentionally long enough to reach the provider path.";
     let result = format_text_with_status_for_policy(
         input,
         Some("en"),
-        FormattingPolicy::Off,
-        runtime_settings.llm_lanes().formatting(),
+        &runtime_settings,
     )
     .await;
 

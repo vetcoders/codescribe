@@ -29,17 +29,12 @@ use codescribe_core::agent::{
     AgentEvent, AgentProvider, ContentBlock, ImageAsset, Message, Role, StreamOptions,
     ToolDefinition,
 };
-use codescribe_core::config::RuntimeLlmLane;
+use codescribe_core::config::{RuntimeAiRequestTiming, RuntimeLlmLane};
 use codescribe_core::llm::account_auth;
 use codescribe_core::llm::provider::ProviderKind;
 use codescribe_core::llm::responses_streaming_manager::{
     AuthHeaderMode, ResponsesStreamingManager, StreamCallbacks,
 };
-
-/// How long to wait for the first byte of the response before giving up.
-const DEFAULT_INITIAL_RESPONSE_TIMEOUT_MS: u64 = 90_000;
-/// How long a started stream may stall between chunks before giving up.
-const DEFAULT_INTER_CHUNK_TIMEOUT_MS: u64 = 90_000;
 
 /// Agent provider speaking the Responses API over SSE.
 #[derive(Clone)]
@@ -83,7 +78,10 @@ impl OpenAiProvider {
     /// becomes an empty key, which the streaming manager translates into a
     /// clean unauthenticated request — key-optional local endpoints are a
     /// first-class configuration, not an error.
-    pub fn from_lane(lane: &RuntimeLlmLane) -> Result<Self> {
+    pub fn from_lane(
+        lane: &RuntimeLlmLane,
+        request_timing: &RuntimeAiRequestTiming,
+    ) -> Result<Self> {
         let endpoint = lane.endpoint().to_string();
         let default_model = lane.model().to_string();
         let api_key = lane.credential().api_key().unwrap_or_default().to_string();
@@ -92,14 +90,8 @@ impl OpenAiProvider {
 
         let use_previous_response_id =
             parse_env_bool("CODESCRIBE_AGENT_USE_PREVIOUS_RESPONSE_ID", true);
-        let initial_response_timeout = Duration::from_millis(parse_env_u64(
-            "CODESCRIBE_AI_ATTEMPT_TIMEOUT_MS",
-            DEFAULT_INITIAL_RESPONSE_TIMEOUT_MS,
-        ));
-        let inter_chunk_timeout = Duration::from_millis(parse_env_u64(
-            "CODESCRIBE_AI_INTER_CHUNK_TIMEOUT_MS",
-            DEFAULT_INTER_CHUNK_TIMEOUT_MS,
-        ));
+        let initial_response_timeout = request_timing.attempt_timeout();
+        let inter_chunk_timeout = request_timing.inter_chunk_timeout();
 
         let client = Client::builder()
             .timeout(Duration::from_secs(3600))
@@ -793,14 +785,6 @@ fn to_data_uri(data: &[u8], media_type: &str) -> String {
         }
     };
     format!("data:{media_type};base64,{}", BASE64.encode(data))
-}
-
-/// Read a `u64` env override, falling back on absent or unparseable values.
-fn parse_env_u64(key: &str, default: u64) -> u64 {
-    env::var(key)
-        .ok()
-        .and_then(|value| value.parse::<u64>().ok())
-        .unwrap_or(default)
 }
 
 /// Read a boolean env override, accepting `1/true/yes/on` and their negatives.

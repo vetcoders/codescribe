@@ -224,6 +224,7 @@ file-pass belongs only to explicit retranscribe surfaces.
 | Audio device                    | `audio_input_snapshot` + config keys                | `UserSettings.audio_input_device` + cpal                               |
 | Mic permission                  | `mic_permission_granted` / `request_mic_permission` | `app/os/permissions`                                                   |
 | Lane (LLM) truth                | runtime snapshot projection                         | `RuntimeSettingsSnapshot::llm_lanes()` → `RuntimeLlmLanes`             |
+| AI execution generation         | next selected runtime snapshot                      | sealed prompts + retry/delay + shared Agent/formatter request timing   |
 
 ### 3.3 Dictation overlay / tray
 
