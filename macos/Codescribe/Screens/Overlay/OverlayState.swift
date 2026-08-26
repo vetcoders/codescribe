@@ -118,7 +118,6 @@ protocol DictationEngine: AnyObject {
   func pasteTargetAppName() async -> String?
   func sendAssistiveTranscript(text: String) async throws -> Bool
   func transcribeFile(path: String) async throws -> CsTranscription
-  func lastSessionAudioPath() -> String?
 }
 
 struct OverlayPolicySnapshot: Equatable {
@@ -127,14 +126,12 @@ struct OverlayPolicySnapshot: Equatable {
 }
 
 enum OverlayActionPresentation {
-  static let retranscribeTitle = "Retranscribe"
-  static let retranscribeHelp = "Re-run the session audio as Full HQ file pass or Cloud pass"
   static let sendTitle = "To Agent"
   static let sendHelp = "Send transcript to the agent"
 }
 
 /// Dictionary/history helper follows Settings `asr_mode`. Apple-only has no helper.
-func helperRetranscribePass(asrMode: String) -> OverlayRetranscribePass? {
+func helperRetranscribePass(asrMode: String) -> FileRetranscribePass? {
   switch asrMode.lowercased() {
   case "local_power": return .fullHq
   case "cloud": return .cloud
@@ -150,7 +147,7 @@ enum HelperFilePassRefusal: Equatable, Error {
 /// Bind a Dictionary row to an explicit file pass. Never invent `last_session.wav`.
 enum HelperFilePass {
   static func request(asrMode: String, archivedAudio: URL?) -> Result<
-    (OverlayRetranscribePass, String), HelperFilePassRefusal
+    (FileRetranscribePass, String), HelperFilePassRefusal
   > {
     guard let pass = helperRetranscribePass(asrMode: asrMode) else {
       return .failure(.noHelper)
@@ -161,7 +158,7 @@ enum HelperFilePass {
     return .success((pass, "\(pass.rawValue):\(archived.path)"))
   }
 
-  static func compare(daily: String, helper: String, pass: OverlayRetranscribePass) -> String {
+  static func compare(daily: String, helper: String, pass: FileRetranscribePass) -> String {
     let left = daily.trimmingCharacters(in: .whitespacesAndNewlines)
     let right = helper.trimmingCharacters(in: .whitespacesAndNewlines)
     if left == right {
@@ -172,7 +169,7 @@ enum HelperFilePass {
   }
 }
 
-enum OverlayRetranscribePass: String, CaseIterable, Identifiable {
+enum FileRetranscribePass: String, CaseIterable, Identifiable {
   case fullHq = "hq"
   case cloud = "cloud"
 
@@ -187,8 +184,8 @@ enum OverlayRetranscribePass: String, CaseIterable, Identifiable {
 
   var help: String {
     switch self {
-    case .fullHq: "Full local Whisper file pass over the last session audio"
-    case .cloud: "Cloud STT pass over the last session audio"
+    case .fullHq: "Full local Whisper pass over the selected audio file"
+    case .cloud: "Cloud STT pass over the selected audio file"
     }
   }
 }
@@ -260,9 +257,7 @@ final class OverlayState: ObservableObject {
   /// Injected Teach writer. Production uses `qualityTeachSpan`; tests replace
   /// this so XCTest never writes the operator's live lexicon.
   var teachSpan: ((OverlayHighlight) throws -> String)?
-  @Published var isRetranscribing: Bool = false
   @Published var isEditingTranscript: Bool = false
-  @Published var formatFailureStatus: String?
   /// Prompt-free policy snapshot from C02's persisted settings owner. These
   /// values are replaced only by a fresh engine read, never by optimistic UI.
   @Published private(set) var autoPasteEnabled = true
@@ -349,9 +344,6 @@ final class OverlayState: ObservableObject {
   /// Armed only by a genuine TextEditor write and consumed by the first
   /// delivery action that records that edit. Delivery actions remain separate.
   private var manualHumanEditPending = false
-  /// One-step retranscription undo. A successful file pass replaces this
-  /// source; Revert consumes it once and restores the exact prior bytes.
-  private var preFormatText: String?
   /// Once the reducer projects `record_ledger_terminal_seal`, later machine
   /// projections are rejected. Human edits operate on the terminal presentation;
   /// they do not rewrite `latestTranscriptProjection`.
@@ -403,7 +395,6 @@ final class OverlayState: ObservableObject {
   // MARK: Derived display (one source of truth for the view)
 
   var statusText: String {
-    if isRetranscribing { return "retranscribing" }
     if mode == .error { return "failed" }
     if mode == .formatted { return "done" }
     if mode == .noSpeech { return "no speech" }
@@ -414,7 +405,6 @@ final class OverlayState: ObservableObject {
     return hasMeasuredAudioLevel ? "recording" : "recording · ambient"
   }
   var statusColor: Color {
-    if isRetranscribing { return CSColor.modeProcessing }
     switch mode {
     case .listening: return CSColor.terracotta
     case .formatted: return CSColor.oliveLight
@@ -423,20 +413,18 @@ final class OverlayState: ObservableObject {
     }
   }
 
-  /// Only the live-capture pill ripples. During `transcribing` / `final pass` /
-  /// retranscribe we swap to the static pill so its
+  /// Only the live-capture pill ripples. During `transcribing` / `final pass`
+  /// we swap to the static pill so its
   /// repeatForever animation tears down — a second visual cue that capture
   /// has ended and post-processing is in flight, not a waveform grind.
   var statusRippling: Bool {
     mode == .listening
       && !transcribing
       && !isFinalPass
-      && !isRetranscribing
       && (audioReady || vadActive)
   }
 
   var tagText: String {
-    if isRetranscribing { return "RETRANSCRIBE" }
     if isFinalPass || transcribing { return "PROCESSING" }
     switch mode {
     case .listening:
@@ -447,7 +435,7 @@ final class OverlayState: ObservableObject {
     }
   }
   var tagColor: Color {
-    if isRetranscribing || isFinalPass || transcribing {
+    if isFinalPass || transcribing {
       return CSColor.modeProcessing
     }
     switch mode {
@@ -460,7 +448,6 @@ final class OverlayState: ObservableObject {
   }
 
   var metaText: String {
-    if isRetranscribing { return "retranscribe · file pass" }
     if isFinalPass { return "final pass · formatting" }
     switch mode {
     case .listening:
@@ -478,7 +465,6 @@ final class OverlayState: ObservableObject {
     }
   }
   var footerRight: String {
-    if isRetranscribing { return "retranscribing" }
     if isFinalPass { return "final pass" }
     if mode == .noSpeech { return "no speech" }
     if mode == .error { return "error" }
@@ -633,21 +619,11 @@ final class OverlayState: ObservableObject {
     }
   }
 
-  var canRetranscribe: Bool {
-    !recording
-      && !isRetranscribing
-      && (mode == .formatted || mode == .noSpeech)
-  }
-
-  var canRevert: Bool {
-    preFormatText != nil && !isRetranscribing
-  }
-
-  /// Post-take review owns the floating panel. Retranscribe (and the
-  /// formatted / no-speech surface they run on) must not yield to an Assistive
-  /// tray tick — that path calls `hide()` and arms Agent auto-send.
+  /// Post-take review owns the floating panel. The formatted / no-speech
+  /// surface must not yield to an Assistive tray tick — that path calls
+  /// `hide()` and arms Agent auto-send.
   var blocksAssistiveOverlayHide: Bool {
-    isRetranscribing || mode == .formatted || mode == .noSpeech
+    mode == .formatted || mode == .noSpeech
   }
 
   var insertActionPresentation: OverlayInsertActionPresentation {
@@ -715,7 +691,6 @@ final class OverlayState: ObservableObject {
     warmingUp = true
     resetTranscript()
     formattedText = ""
-    formatFailureStatus = nil
     errorMessage = nil
     beginCaptureClock()
     recording = true
@@ -761,67 +736,6 @@ final class OverlayState: ObservableObject {
       message: "Couldn't start recording: \(described)",
       toast: "Couldn't start recording"
     )
-  }
-
-  func retranscribe(pass: OverlayRetranscribePass) {
-    guard let engine else { return }
-    guard !recording, !isRetranscribing else { return }
-    guard mode == .formatted || mode == .noSpeech else { return }
-    guard let audioPath = engine.lastSessionAudioPath() else {
-      formatFailureStatus = "retranscribe — no last_session.wav"
-      showToast("No last_session.wav — record a take first")
-      return
-    }
-    let source = activeText
-    isRetranscribing = true
-    agentAutoSendCancelled = true
-    cancelAutoHide()
-    Task { [weak self] in
-      let outcome: Result<CsTranscription, Error>
-      do {
-        let prefixed = "\(pass.rawValue):\(audioPath)"
-        let result = try await Task.detached(priority: .userInitiated) {
-          try await engine.transcribeFile(path: prefixed)
-        }.value
-        outcome = .success(result)
-      } catch {
-        outcome = .failure(error)
-      }
-      guard let self else { return }
-      defer { self.isRetranscribing = false }
-      switch outcome {
-      case .success(let result):
-        let next = result.text.trimmingCharacters(in: .whitespacesAndNewlines)
-        if next.isEmpty {
-          self.formatFailureStatus = "retranscribe — empty"
-          self.showToast("Retranscribe returned no speech")
-          return
-        }
-        if !source.isEmpty { self.preFormatText = source }
-        self.manualHumanEditPending = false
-        self.formattedText = result.text
-        self.formatFailureStatus = nil
-        self.mode = .formatted
-        self.cancelAutoHide()
-      case .failure(let error):
-        let reason = error.localizedDescription
-        self.formatFailureStatus = "retranscribe — \(pass.visibleName) failed: \(reason)"
-        self.showToast("Couldn't retranscribe — \(reason)")
-      }
-    }
-  }
-
-  /// Restore the exact source of the most recent successful retranscription.
-  /// The slot is consumed once and this explicit user activity starts a fresh
-  /// terminal lifetime from the injected monotonic clock.
-  func revertFormat() {
-    guard let source = preFormatText, !isRetranscribing else { return }
-    preFormatText = nil
-    manualHumanEditPending = false
-    formattedText = source
-    formatFailureStatus = nil
-    mode = .formatted
-    restartAutoHideCountdown()
   }
 
   private func runStop() async {
@@ -957,7 +871,6 @@ final class OverlayState: ObservableObject {
     transcribing = false
     isFinalPass = false
     isEditingTranscript = false
-    isRetranscribing = false
     onClose?()
   }
 
@@ -995,7 +908,7 @@ final class OverlayState: ObservableObject {
   }
 
   /// TextEditor writes through this seam so only actual user edits — never a
-  /// machine projection or retranscription — re-anchor the terminal lifetime.
+  /// machine projection or file-pass output — re-anchor the terminal lifetime.
   func userEditedTranscript(_ text: String) {
     if agentSessionArmed, agentFinalTranscriptAppeared, text != formattedText {
       agentAutoSendCancelled = true
@@ -1135,7 +1048,6 @@ final class OverlayState: ObservableObject {
     if !recording {
       resetTranscript()
       formattedText = ""
-      isRetranscribing = false
       errorMessage = nil
       beginCaptureClock()
     }
@@ -1160,8 +1072,6 @@ final class OverlayState: ObservableObject {
         resetTranscript()
       }
       formattedText = ""
-      isRetranscribing = false
-      formatFailureStatus = nil
       errorMessage = nil
       beginCaptureClock()
     }
@@ -1565,8 +1475,6 @@ final class OverlayState: ObservableObject {
     speechWasActive = false
     deliveredText = ""
     manualHumanEditPending = false
-    preFormatText = nil
-    formatFailureStatus = nil
     pendingNoSpeechMessage = nil
     noSpeechNotice = OverlayState.defaultNoSpeechNotice
     finalized = false
@@ -1866,9 +1774,6 @@ final class ControllerDictationEngine: DictationEngine {
   func transcribeFile(path: String) async throws -> CsTranscription {
     try await hotkeys.transcribeFile(path: path)
   }
-  func lastSessionAudioPath() -> String? {
-    hotkeys.lastSessionAudioPath()
-  }
 }
 
 // MARK: - Listener bridge (Rust callbacks → main actor → OverlayState)
@@ -1998,6 +1903,5 @@ final class DictationListener: CsTranscriptionListener, @unchecked Sendable {
     func transcribeFile(path: String) async throws -> CsTranscription {
       CsTranscription(text: "", language: "en")
     }
-    func lastSessionAudioPath() -> String? { nil }
   }
 #endif

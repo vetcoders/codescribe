@@ -3,6 +3,13 @@ import XCTest
 @testable import Codescribe
 
 final class HelperRetranscribePassTests: XCTestCase {
+  func testFilePassLabelsDescribeSelectedAudio() {
+    XCTAssertEqual(
+      FileRetranscribePass.allCases.map(\.visibleName),
+      ["Full HQ file pass", "Cloud pass"]
+    )
+  }
+
   func testLocalPowerUsesCandleHq() {
     XCTAssertEqual(helperRetranscribePass(asrMode: "local_power"), .fullHq)
   }

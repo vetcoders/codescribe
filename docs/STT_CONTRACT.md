@@ -74,7 +74,7 @@ Recording stopped before a transcript was available.
 STT authentication follows endpoint ownership: `api.openai.com` and
 `api.libraxis.cloud` use `Authorization: Bearer`; loopback servers require no
 API key; remaining custom endpoints retain the `x-api-key` contract. The key
-probe, live socket handshake, and explicit retranscribe path use the same
+probe, live socket handshake, and explicit file-pass path use the same
 resolver, so Settings cannot disagree with delivery. Settings → Test is the
 multipart file probe (`/v1/audio/transcriptions`) for every OpenAI-compatible
 host. A stored `wss`/`ws` `…/transcribe` URL is remapped to that file path
@@ -88,7 +88,7 @@ WebSocket (`config` → bounded PCM `chunk` → periodic `flush` → `end`) and
 streams its normalized events into `PresentationEmitter`. A public HTTPS
 `/v1/audio/transcriptions` URL — OpenAI or Libraxis — is file, not a silent
 socket. A complete audio-file multipart request is allowed for Settings → Test
-and for an explicit retranscribe action (Overlay, Dictionary, or Teacher).
+and for an explicit file action (Dictionary or Teacher).
 
 **Domain token (client-owned, 2026-08-18).** Codescribe names the take
 `vocabulary=programming` on loopback and Libraxis file/live requests
@@ -98,14 +98,13 @@ Absence means no dictionary bias. The client never classifies audio to pick
 `programming` vs another domain. A quality bench that must stay unbiased
 sends `off` explicitly — omitting the field is not a silent product default.
 
-**File retranscribe (2026-08-19).** Overlay Retranscribe `cloud:`, Dictionary
-`cloud:`, and any `last_session.wav` upload to remapped loopback `:8444`
-(`/v1/audio/transcriptions`) are product file takes. They attach
-`vocabulary=programming` so Polish+tech speech can prefer `Rust` over
-`raz`. Overlay click-Retranscribe without the menu is Full HQ (local
-candle) and stays prompt-free — that pass is not the `:8444` worker.
-Verify without a live take: POST `~/.codescribe/last_session.wav` to
-`http://127.0.0.1:8444/v1/audio/transcriptions` with `vocabulary=programming`.
+**Explicit file passes (2026-08-26).** Dictionary `cloud:` and Teacher uploads
+to remapped loopback `:8444` (`/v1/audio/transcriptions`) are product file
+takes. They attach `vocabulary=programming` so Polish+tech speech can prefer
+`Rust` over `raz`. Dictionary binds the archived row audio; it never invents
+`last_session.wav`. Voice Lab and CLI file passes remain diagnostic surfaces.
+The daily Overlay has no full-file transcription action: it renders Bus
+projections and explicit human edits, never raw `transcribeFile` output.
 
 **Legacy Overlay Format is removed (2026-08-25).** The former raw LLM
 replacement / delivery-style path no longer exists. Automatic formatting is
@@ -115,7 +114,7 @@ file vs raw Apple, never vs formatted text.
 **Dictionary helper (everyone, 2026-08-17):** Settings → Dictionary Retranscribe
 is an explicit file surface on the row's archived `<stem>_raw.{m4a,wav,flac}`.
 Helper engine follows `speech.engine.asr_mode`: `local_power` → `hq:` (same
-candle file pass as Overlay HQ / `codescribe transcribe --raw`); `cloud` →
+candle file pass as `codescribe transcribe --raw`); `cloud` →
 `cloud:` file upload. `apple_only` has no helper. The daily transcript is not
 overwritten until the user saves a correction. Missing archive must refuse —
 never fall back to `last_session.wav`. Lab three-judge / `:8444` is not this
@@ -189,12 +188,12 @@ Code: `core/config/loader.rs` · `core/stt/mod.rs::selected_engine()` · `reconc
 
 | Setting               | Env                                | Default    | Role                                                                                                                                 |
 | --------------------- | ---------------------------------- | ---------- | ------------------------------------------------------------------------------------------------------------------------------------ |
-| Final pass            | `FINAL_PASS_MODE`                  | legacy     | No effect on normal stop; retained only for settings migration while explicit Retranscribe owns whole-file inference                 |
+| Final pass            | `FINAL_PASS_MODE`                  | legacy     | No effect on normal stop; retained only for settings migration; explicit non-Overlay file surfaces own whole-file inference          |
 | Layered compatibility | `CODESCRIBE_LAYERED_TRANSCRIPTION` | mode-owned | Local Power + Apple/Auto: unset or `phase1` arms; explicit off/invalid degrades. No parallel VAD/scheduler live route remains |
 
 Normal capture ignores legacy final-pass routing and never decodes/uploads the
 completed WAV. Layered phase tokens (`phase1`…) select live refinement;
-whole-file inference is an explicit Retranscribe action.
+whole-file inference stays outside the daily Overlay on explicit file surfaces.
 
 ---
 
@@ -210,7 +209,7 @@ whole-file inference is an explicit Retranscribe action.
 
 **Stop** drains the live recorder/session and delivers its committed transcript
 (paste / overlay / agent). It does not upload the completed WAV. Whole-file
-file-pass belongs only to explicit retranscribe surfaces.
+file-pass belongs only to explicit non-Overlay file surfaces.
 
 ### 3.2 Settings UI → config
 
@@ -289,7 +288,7 @@ rewrite: active `Iwo` does not rewrite Polish `piwo`.
 Ordinary overlay TextEditor edits carry `edit_provenance=manual_human`
 separately from delivery `action`. The latch is consumed by one quality commit;
 three distinct correction IDs for the same normalized lexical pair expose
-`1/3`, `2/3`, `3/3` and promote exactly once. Formatter, retranscribe, replay,
+`1/3`, `2/3`, `3/3` and promote exactly once. Formatter, machine file passes, replay,
 bulk, speech-gap, and delivery actions without that latch cast no vote.
 
 Dictionary **Teach** is a separate, explicit bulk-promotion command: it mines

@@ -362,12 +362,6 @@ struct DictationOverlayView: View {
           .accessibilityIdentifier("overlay-transcript-formatted")
           .help("Click to edit. The caret stays in the other app until you do.")
       }
-      if let status = state.formatFailureStatus {
-        Text(status)
-          .csMono(11, .medium)
-          .foregroundStyle(CSColor.textFaint)
-          .accessibilityIdentifier("overlay-format-failure-status")
-      }
     }
   }
 
@@ -480,20 +474,6 @@ struct DictationOverlayView: View {
           action: { state.pasteToPreviousApp() }
         )
 
-        if state.canRevert {
-          actionButton(
-            title: "Revert",
-            help: "Restore the transcript from before the last retranscription",
-            icon: "arrow.uturn.backward",
-            tone: .neutral,
-            iconOnly: iconOnly,
-            action: { state.revertFormat() }
-          )
-          .accessibilityIdentifier("overlay-retranscribe-revert")
-        }
-
-        manualRetranscribeMenu(iconOnly: iconOnly)
-
         actionButton(
           title: OverlayActionPresentation.sendTitle,
           help: OverlayActionPresentation.sendHelp,
@@ -502,8 +482,6 @@ struct DictationOverlayView: View {
           iconOnly: iconOnly,
           action: { state.sendToAgent() }
         )
-      } else if state.mode == .noSpeech {
-        manualRetranscribeMenu(iconOnly: iconOnly)
       }
 
       Spacer(minLength: 0)
@@ -516,35 +494,6 @@ struct DictationOverlayView: View {
         action: { state.close() }
       )
     }
-  }
-
-  private func manualRetranscribeMenu(iconOnly: Bool) -> some View {
-    Menu {
-      ForEach(OverlayRetranscribePass.allCases) { pass in
-        Button(pass.visibleName) {
-          state.retranscribe(pass: pass)
-        }
-      }
-    } label: {
-      actionButtonLabel(
-        title: state.isRetranscribing
-          ? "Retranscribing..." : OverlayActionPresentation.retranscribeTitle,
-        icon: "arrow.triangle.2.circlepath",
-        tone: .neutral,
-        iconOnly: iconOnly
-      )
-    } primaryAction: {
-      state.retranscribe(pass: .fullHq)
-    }
-    .menuStyle(.button)
-    .csFocusRing(cornerRadius: 8)
-    .menuIndicator(.hidden)
-    .help(OverlayActionPresentation.retranscribeHelp)
-    .disabled(!state.canRetranscribe)
-    .opacity(state.canRetranscribe ? 1 : 0.45)
-    .accessibilityLabel(OverlayActionPresentation.retranscribeTitle)
-    .accessibilityHint(OverlayActionPresentation.retranscribeHelp)
-    .accessibilityIdentifier("overlay-retranscribe-menu")
   }
 
   private func actionButton(

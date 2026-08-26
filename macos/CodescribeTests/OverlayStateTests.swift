@@ -32,14 +32,6 @@ private final class OverlayStateTestEngine: DictationEngine {
   var sentAssistiveTexts: [String] = []
   var assistiveSendResult = true
   var onAssistiveSend: (() -> Void)?
-  var transcribedPaths: [String] = []
-  var transcribedResult = "hq file pass transcript"
-  var transcribedError: Error?
-  var lastAudioPath: String? = "/tmp/last_session.wav"
-  var onTranscribe: (() -> Void)?
-  /// When set, retranscribe waits here so tests can observe the in-flight
-  /// phase and fire tray/indicator ticks before the work completes.
-  var workGate: OverlayStateTestGate?
 
   func setListener(_ listener: CsTranscriptionListener) {}
   func startRecording(language: CsLanguage?) async throws {}
@@ -95,48 +87,13 @@ private final class OverlayStateTestEngine: DictationEngine {
     onAssistiveSend?()
     return assistiveSendResult
   }
-  func transcribeFile(path: String) async throws -> CsTranscription {
-    transcribedPaths.append(path)
-    onTranscribe?()
-    await workGate?.wait()
-    if let transcribedError { throw transcribedError }
-    return CsTranscription(text: transcribedResult, language: "pl")
+  func transcribeFile(path _: String) async throws -> CsTranscription {
+    CsTranscription(text: "", language: "pl")
   }
-  func lastSessionAudioPath() -> String? { lastAudioPath }
 }
 
 private final class OverlayStateTestClock {
   var now: TimeInterval = 0
-}
-
-/// Holds retranscribe until the test opens it. Sendable so the detached
-/// engine task and the MainActor test can share it.
-private final class OverlayStateTestGate: @unchecked Sendable {
-  private let lock = NSLock()
-  private var continuation: CheckedContinuation<Void, Never>?
-  private var opened = false
-
-  func wait() async {
-    await withCheckedContinuation { (c: CheckedContinuation<Void, Never>) in
-      lock.lock()
-      if opened {
-        lock.unlock()
-        c.resume()
-      } else {
-        continuation = c
-        lock.unlock()
-      }
-    }
-  }
-
-  func open() {
-    lock.lock()
-    opened = true
-    let pending = continuation
-    continuation = nil
-    lock.unlock()
-    pending?.resume()
-  }
 }
 
 @MainActor
@@ -208,18 +165,6 @@ final class OverlayStateTests: XCTestCase {
     projectText(text, to: state, terminal: true)
     state.finishControllerRecording()
     return state
-  }
-
-  private func waitUntilRetranscribeIdle(
-    _ state: OverlayState,
-    file: StaticString = #filePath,
-    line: UInt = #line
-  ) async {
-    for _ in 0..<200 {
-      if !state.isRetranscribing { return }
-      await Task.yield()
-    }
-    XCTFail("overlay retranscribe did not finish", file: file, line: line)
   }
 
   func testInsertActionPresentationNamesKnownTargetAndFallsBackHonestly() {
@@ -321,63 +266,6 @@ final class OverlayStateTests: XCTestCase {
     XCTAssertEqual(successfulSignals, 1)
   }
 
-  func testRetranscribeHqPassReplacesFormattedTextAndArmsRevert() async {
-    let clock = OverlayStateTestClock()
-    let state = makeFinalizedState(clock: clock, text: "live draft")
-    let engine = OverlayStateTestEngine()
-    engine.transcribedResult = "full hq file pass"
-    let called = expectation(description: "retranscribe")
-    engine.onTranscribe = { called.fulfill() }
-    state.engine = engine
-    XCTAssertTrue(state.canRetranscribe)
-
-    state.retranscribe(pass: .fullHq)
-    await fulfillment(of: [called], timeout: 1)
-    await waitUntilRetranscribeIdle(state)
-    XCTAssertEqual(engine.transcribedPaths, ["hq:/tmp/last_session.wav"])
-    XCTAssertEqual(state.formattedText, "full hq file pass")
-    XCTAssertTrue(state.canRevert)
-    XCTAssertEqual(state.mode, .formatted)
-  }
-
-  func testRetranscribeMissingWavToastsInsteadOfSilentReturn() {
-    let clock = OverlayStateTestClock()
-    let state = makeFinalizedState(clock: clock, text: "live draft")
-    let engine = OverlayStateTestEngine()
-    engine.lastAudioPath = nil
-    state.engine = engine
-    XCTAssertTrue(state.canRetranscribe)
-
-    state.retranscribe(pass: .fullHq)
-    XCTAssertTrue(engine.transcribedPaths.isEmpty)
-    XCTAssertEqual(state.toast, "No last_session.wav — record a take first")
-    XCTAssertEqual(state.formatFailureStatus, "retranscribe — no last_session.wav")
-  }
-
-  func testRetranscribeSurfacesEngineErrorInToast() async {
-    let clock = OverlayStateTestClock()
-    let state = makeFinalizedState(clock: clock, text: "live draft")
-    let engine = OverlayStateTestEngine()
-    engine.transcribedError = NSError(
-      domain: "Retranscribe",
-      code: 7,
-      userInfo: [NSLocalizedDescriptionKey: "Metal device lost"]
-    )
-    let called = expectation(description: "retranscribe-error")
-    engine.onTranscribe = { called.fulfill() }
-    state.engine = engine
-
-    state.retranscribe(pass: .fullHq)
-    await fulfillment(of: [called], timeout: 1)
-    await waitUntilRetranscribeIdle(state)
-    XCTAssertEqual(engine.transcribedPaths, ["hq:/tmp/last_session.wav"])
-    XCTAssertEqual(state.toast, "Couldn't retranscribe — Metal device lost")
-    XCTAssertEqual(
-      state.formatFailureStatus,
-      "retranscribe — Full HQ file pass failed: Metal device lost"
-    )
-  }
-
   func testTranscriptEditIsOptInUntilClick() {
     let state = OverlayState()
     state.mode = .formatted
@@ -425,11 +313,6 @@ final class OverlayStateTests: XCTestCase {
   func testApprovedOverlayActionPresentationIsLiteral() {
     XCTAssertEqual(OverlayActionPresentation.sendTitle, "To Agent")
     XCTAssertEqual(OverlayActionPresentation.sendHelp, "Send transcript to the agent")
-    XCTAssertEqual(OverlayActionPresentation.retranscribeTitle, "Retranscribe")
-    XCTAssertEqual(
-      OverlayRetranscribePass.allCases.map(\.visibleName),
-      ["Full HQ file pass", "Cloud pass"]
-    )
   }
 
   func testOverlayPolicyRefreshesAtSessionEntryFromPersistedTruth() {
@@ -910,34 +793,6 @@ final class OverlayStateTests: XCTestCase {
     XCTAssertEqual(state.toast, "no ax")
   }
 
-  func testRevertRestoresExactTextAndStartsFreshFiveSecondDeadline() async {
-    let clock = OverlayStateTestClock()
-    let state = makeFinalizedState(clock: clock, text: "  exact source bytes  ")
-    let engine = OverlayStateTestEngine()
-    let retranscribeCalled = expectation(description: "retranscribe called")
-    engine.transcribedResult = "retranscribed result"
-    engine.onTranscribe = { retranscribeCalled.fulfill() }
-    state.engine = engine
-    var closeCount = 0
-    state.onClose = { closeCount += 1 }
-
-    clock.now = 4
-    state.retranscribe(pass: .fullHq)
-    await fulfillment(of: [retranscribeCalled], timeout: 1)
-    await waitUntilRetranscribeIdle(state)
-    clock.now = 100
-    state.revertFormat()
-
-    XCTAssertEqual(state.formattedText, "  exact source bytes  ")
-    XCTAssertFalse(state.canRevert)
-    clock.now = 104.9
-    state.fireAutoHideNowForTests()
-    XCTAssertEqual(closeCount, 0)
-    clock.now = 105
-    state.fireAutoHideNowForTests()
-    XCTAssertEqual(closeCount, 1)
-  }
-
   func testCloseIsImmediateAndAgentButtonUsesControllerDelivery() async {
     let clock = OverlayStateTestClock()
     let engine = OverlayStateTestEngine()
@@ -1146,56 +1001,6 @@ final class OverlayStateTests: XCTestCase {
     XCTAssertEqual(outCount, 1)
     XCTAssertEqual(controller.state.indicatorMode, .assistive)
     XCTAssertFalse(controller.state.autoPasteControlAvailable)
-  }
-
-  func testRetranscribeDoesNotHideOverlayOrApplyAssistive() async {
-    var outCount = 0
-    let clock = OverlayStateTestClock()
-    let state = makeFinalizedState(clock: clock, text: "live draft")
-    let engine = OverlayStateTestEngine()
-    let gate = OverlayStateTestGate()
-    engine.workGate = gate
-    engine.transcribedResult = "hq file pass"
-    state.engine = engine
-    var closeCount = 0
-    state.onClose = { closeCount += 1 }
-
-    let controller = OverlayController(
-      state: state,
-      engine: engine,
-      overlayEnabledProvider: { true },
-      assistiveStatusProvider: { false },
-      panelFactory: { _, _ in NSPanel() },
-      orderPanelFront: { _ in },
-      orderPanelOut: { _ in outCount += 1 }
-    )
-    controller.show()
-
-    let started = expectation(description: "retranscribe in flight")
-    engine.onTranscribe = {
-      XCTAssertFalse(Thread.isMainThread, "retranscribe must not pin MainActor")
-      started.fulfill()
-    }
-    state.retranscribe(pass: .fullHq)
-    await fulfillment(of: [started], timeout: 1)
-
-    XCTAssertTrue(state.isRetranscribing)
-    XCTAssertEqual(state.statusText, "retranscribing")
-    XCTAssertEqual(state.tagText, "RETRANSCRIBE")
-    XCTAssertFalse(state.statusRippling)
-    XCTAssertTrue(state.blocksAssistiveOverlayHide)
-
-    controller.handleIndicatorModeChange(.assistive)
-    XCTAssertEqual(outCount, 0)
-    XCTAssertNotEqual(state.indicatorMode, .assistive)
-    XCTAssertEqual(closeCount, 0)
-
-    gate.open()
-    await waitUntilRetranscribeIdle(state)
-    XCTAssertEqual(outCount, 0)
-    XCTAssertEqual(closeCount, 0)
-    XCTAssertEqual(state.formattedText, "hq file pass")
-    XCTAssertEqual(state.mode, .formatted)
   }
 
   func testFormattedReviewBlocksAssistiveHideWithoutFormatInFlight() {

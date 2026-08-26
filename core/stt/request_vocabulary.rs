@@ -11,8 +11,8 @@ pub const CODESCRIBE_STT_VOCABULARY: &str = "programming";
 
 /// Multipart form field the loopback/Libraxis file worker reads.
 ///
-/// Overlay Retranscribe `cloud:` / `last_session.wav` / `:8444` must attach
-/// this field. Official OpenAI file audio must not.
+/// Explicit loopback/Libraxis cloud file passes must attach this field.
+/// Official OpenAI file audio must not.
 pub const VOCABULARY_FORM_FIELD: &str = "vocabulary";
 
 /// Topic token to send on one outbound STT URL, if that host accepts one.

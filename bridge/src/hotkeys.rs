@@ -770,8 +770,8 @@ impl CodescribeHotkeys {
         .await?
     }
 
-    /// Overlay Retranscribe: `hq:` / `cloud:` prefixes pick the pass.
-    /// Bare paths are a Full HQ file pass.
+    /// Explicit file consumers use `hq:` / `cloud:` prefixes to pick the pass.
+    /// Bare paths are a Full HQ file pass; daily Overlay never calls this API.
     pub async fn transcribe_file(&self, path: String) -> Result<CsTranscription, CsError> {
         application_runtime::run(
             async move { crate::recording::transcribe_session_file(path).await },

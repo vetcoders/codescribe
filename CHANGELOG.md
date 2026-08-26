@@ -98,11 +98,10 @@ Release exists.
 - **Overlay default stays pinned top-right.** Free motion is only the
   explicit toggle. A drag without it is ephemeral. Edge-resize always
   persists, independent of the pin.
-- **Format/Retranscribe keep the overlay hittable.** One-shot Format
-  and file retranscribe no longer hide the panel (including when the
-  tray ticks Assistive), steal focus, or pin MainActor for the LLM /
-  Whisper round-trip. The status pill is a static `formatting` /
-  `retranscribing` phase, not a waveform grind.
+- **Overlay no longer owns a whole-file transcript replacement.** The file
+  retranscribe/revert UI that wrote machine output directly into the formatted
+  canvas is removed. Daily Overlay text now comes only from Bus projections or
+  explicit human edits; Dictionary and Voice Lab file helpers stay separate.
 - **Mid-hold Shift attaches `{selection_N}`.** Shift or Command during an
   already-started Fn hold captures the current selection into the context
   bucket and overlay marker. It does not open Agent, hide the overlay, or
@@ -119,11 +118,10 @@ Release exists.
   fragments share one Whisper window and apply the aligned sentence
   swap. Fusion no longer rewrites only the last piece or skips the
   joined sentence at the 50% change cap.
-- **File retranscribe names the programming domain.** Overlay/Dictionary
-  `cloud:` on `last_session.wav` (remapped loopback `:8444`) sends
+- **Dictionary file retranscribe names the programming domain.** Its `cloud:`
+  pass over archived row audio (remapped loopback `:8444`) sends
   `vocabulary=programming` — test-locked on the multipart body. Official
-  OpenAI still omits the field. Overlay Format is not HQ authority;
-  compare Whisper file vs raw, never vs Format.
+  OpenAI still omits the field; the daily Overlay owns no file-pass writer.
 
 ### Changed
 
