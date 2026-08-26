@@ -118,6 +118,12 @@ different question and does not replace the sealed snapshot.
   refresh and existing stop/finalize paths cross the same lifecycle lock.
 - A pending delayed hold already owns its selected Arc, so refresh defers. A
   finished stale hold handle is consumed and does not block a later idle refresh.
+- The process-global voice Agent runtime is reusable only while its recorded
+  `SettingsSnapshotDigest` equals the selected Arc's digest. A changed digest
+  rolls the provider/session before send from that same Arc, preserves the full
+  in-memory message history and durable thread id, and clears the old provider
+  response chain through restoration. Rollover is normal lifecycle, not
+  degradation, an Agent error, or a fallback route.
 - Empty candidates are normalized away by the resolver, allowing the next
   lower-precedence source to win.
 - Never put real-looking keys in documentation. Persist credentials through the

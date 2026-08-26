@@ -17,7 +17,9 @@ use codescribe_core::agent::{
     ThreadDeliveryInput, ThreadDeliveryReceipt, ThreadDeliverySource, ThreadMessage, ThreadStore,
     ToolRegistry,
 };
-use codescribe_core::config::{Config, RuntimeLlmLane, RuntimeSettingsSnapshot};
+use codescribe_core::config::{
+    Config, RuntimeLlmLane, RuntimeSettingsSnapshot, SettingsSnapshotDigest,
+};
 use crate::os::hold_badge::{BadgeMode, HoldBadgeConfig, show_hold_badge_with_config};
 use crate::os::tray_status;
 
@@ -116,6 +118,9 @@ struct AgentRuntime {
     session: AgentSession,
     ui_rx: mpsc::Receiver<AgentUiEvent>,
     thread_store_id: String,
+    /// Evidence for the immutable settings generation that constructed this
+    /// runtime's provider and request timing. The digest does not own settings.
+    settings_snapshot_digest: SettingsSnapshotDigest,
     /// Soft-degrade / retry flag: next send clears the provider chain and
     /// full-replays local history. User Stop does **not** set this — Stop
     /// restores the pre-turn chain snapshot instead (operator 2026-08-05).
@@ -180,8 +185,10 @@ pub(super) fn set_agent_send_in_flight_for_test(active: bool) {
 }
 
 impl AgentRuntimeState {
-    /// Install a runtime if none is live. Ordinary consecutive sends reuse the
-    /// existing runtime untouched — identity and history never rotate here.
+    /// Reuse a live runtime only when it belongs to the selected settings
+    /// generation. Equal digests preserve the runtime byte-for-byte. A changed
+    /// digest rebuilds the provider/session before send while retaining the full
+    /// in-memory history and durable thread identity.
     ///
     /// A rebuild after `runtime = None` (hard degrade) rejoins the durable
     /// `thread_store_id` and rehydrates the last successfully persisted history
@@ -189,8 +196,9 @@ impl AgentRuntimeState {
     /// prior conversation instead of silently starting a new thread. A failed
     /// rehydration keeps the stable identity and surfaces explicit recovery
     /// evidence; it never mints a fresh thread id.
-    fn ensure_runtime_with<Init, Load>(
+    fn ensure_runtime_generation_with<Init, Load>(
         &mut self,
+        expected_settings_snapshot_digest: &SettingsSnapshotDigest,
         initialize_runtime: Init,
         load_persisted_history: Load,
     ) -> Result<(&mut AgentRuntime, bool)>
@@ -198,9 +206,55 @@ impl AgentRuntimeState {
         Init: FnOnce() -> Result<AgentRuntime>,
         Load: FnOnce(&str) -> Result<Option<Vec<Message>>>,
     {
+        if self.runtime.as_ref().is_some_and(|runtime| {
+            &runtime.settings_snapshot_digest == expected_settings_snapshot_digest
+        }) {
+            let runtime = self
+                .runtime
+                .as_mut()
+                .context("Agent runtime was not initialized")?;
+            return Ok((runtime, false));
+        }
+
+        // Reaching this point with a runtime means its provider belongs to an
+        // older settings generation. Preserve the authoritative in-memory
+        // history before constructing the current generation; disk may lag the
+        // completed turns already held by this session.
+        let rollover_context = self.runtime.as_ref().map(|runtime| {
+            let thread_store_id = self
+                .thread_store_id
+                .clone()
+                .unwrap_or_else(|| runtime.thread_store_id.clone());
+            (thread_store_id, runtime.session.messages().to_vec())
+        });
+
         let mut recovered_from_degraded = false;
-        if self.runtime.is_none() {
-            let mut runtime = initialize_runtime()?;
+        let mut runtime = initialize_runtime()?;
+        anyhow::ensure!(
+            &runtime.settings_snapshot_digest == expected_settings_snapshot_digest,
+            "Agent runtime initializer produced settings generation {} instead of expected {}",
+            runtime.settings_snapshot_digest.as_str(),
+            expected_settings_snapshot_digest.as_str()
+        );
+
+        if let Some((thread_store_id, messages)) = rollover_context {
+            let preserved_message_count = messages.len();
+            runtime.thread_store_id = thread_store_id.clone();
+            // This intentionally replaces any provisional session history and
+            // clears the new provider's response chain before the next send.
+            runtime.session.restore_messages(messages);
+            runtime
+                .session
+                .bind_execution_thread(thread_store_id.clone());
+            self.thread_store_id = Some(thread_store_id.clone());
+            info!(
+                thread_store_id = %thread_store_id,
+                recovery_class = "settings_generation_rollover",
+                preserved_message_count,
+                settings_snapshot_digest = %expected_settings_snapshot_digest.as_str(),
+                "Agent runtime rolled onto the selected settings generation"
+            );
+        } else {
             match self.thread_store_id.clone() {
                 Some(thread_store_id) => {
                     runtime.thread_store_id = thread_store_id.clone();
@@ -252,12 +306,13 @@ impl AgentRuntimeState {
                     .session
                     .bind_execution_thread(thread_store_id.clone());
             }
-            self.runtime = Some(runtime);
             if self.runtime_degraded {
                 self.runtime_degraded = false;
                 recovered_from_degraded = true;
             }
         }
+
+        self.runtime = Some(runtime);
         let runtime = self
             .runtime
             .as_mut()
@@ -429,7 +484,8 @@ fn load_thread_messages_from(
 
 /// Build a fresh agent runtime: full tool registry under the live permission
 /// policy (with hot reload), the configured default provider, and a bounded UI
-/// channel. The thread id minted here is provisional — `ensure_runtime_with`
+/// channel. The thread id minted here is provisional —
+/// `ensure_runtime_generation_with`
 /// overwrites it with the durable identity whenever one already exists.
 fn initialize_agent_runtime(
     runtime_settings: &Arc<RuntimeSettingsSnapshot>,
@@ -453,6 +509,7 @@ fn initialize_agent_runtime(
         session,
         ui_rx,
         thread_store_id: ThreadStore::generate_id(),
+        settings_snapshot_digest: runtime_settings.digest().clone(),
         reset_chain_on_next_send: false,
     })
 }
@@ -845,6 +902,7 @@ async fn run_agent_send_path(
         runtime_state,
         text,
         stream_options,
+        runtime_settings.digest(),
         || initialize_agent_runtime(runtime_settings),
         |runtime| deliver_runtime_thread(runtime, assistive_lane),
     )
@@ -871,6 +929,7 @@ async fn run_agent_send_path_with_persist<Init, P, Delivery>(
     runtime_state: &mut AgentRuntimeState,
     text: String,
     mut stream_options: StreamOptions,
+    expected_settings_snapshot_digest: &SettingsSnapshotDigest,
     initialize_runtime: Init,
     persist_runtime: P,
 ) -> Result<AgentSendOutcome>
@@ -878,14 +937,17 @@ where
     Init: FnOnce() -> Result<AgentRuntime>,
     P: FnOnce(&AgentRuntime) -> Result<Delivery>,
 {
-    let (runtime, recovered_from_degraded) =
-        match runtime_state.ensure_runtime_with(initialize_runtime, rehydrate_thread_messages) {
-            Ok(state) => state,
-            Err(error) => {
-                runtime_state.mark_runtime_degraded("runtime_init_failed");
-                return Err(error).context("Agent runtime unavailable");
-            }
-        };
+    let (runtime, recovered_from_degraded) = match runtime_state.ensure_runtime_generation_with(
+        expected_settings_snapshot_digest,
+        initialize_runtime,
+        rehydrate_thread_messages,
+    ) {
+        Ok(state) => state,
+        Err(error) => {
+            runtime_state.mark_runtime_degraded("runtime_init_failed");
+            return Err(error).context("Agent runtime unavailable");
+        }
+    };
     let _ = recovered_from_degraded;
 
     if runtime.reset_chain_on_next_send {
@@ -1590,9 +1652,17 @@ mod tests {
         }
     }
 
-    /// A runtime bound to an explicit thread id and backed by the no-op
-    /// provider, for lifecycle tests that only care about identity handling.
-    fn runtime_with_thread_id(thread_store_id: &str) -> AgentRuntime {
+    /// Deterministic, valid-looking digest evidence for test runtime generations.
+    fn test_settings_snapshot_digest(marker: u8) -> SettingsSnapshotDigest {
+        SettingsSnapshotDigest::from_hex(format!("{marker:02x}").repeat(32))
+    }
+
+    /// A runtime bound to an explicit thread id and settings generation, backed
+    /// by the no-op provider for lifecycle tests.
+    fn runtime_with_thread_id_and_digest(
+        thread_store_id: &str,
+        settings_snapshot_digest: SettingsSnapshotDigest,
+    ) -> AgentRuntime {
         let (ui_tx, ui_rx) = mpsc::channel(8);
         let session = AgentSession::new(
             Box::new(NoopTestProvider),
@@ -1603,8 +1673,15 @@ mod tests {
             session,
             ui_rx,
             thread_store_id: thread_store_id.to_string(),
+            settings_snapshot_digest,
             reset_chain_on_next_send: false,
         }
+    }
+
+    /// Default test generation for lifecycle cases that do not exercise
+    /// rollover explicitly.
+    fn runtime_with_thread_id(thread_store_id: &str) -> AgentRuntime {
+        runtime_with_thread_id_and_digest(thread_store_id, test_settings_snapshot_digest(1))
     }
 
     /// Every `Stats` counter must survive the fold field-for-field — the
@@ -1937,24 +2014,36 @@ mod tests {
         );
     }
 
-    /// The per-turn generation machinery is removed: ordinary consecutive
-    /// ensures reuse the live runtime as-is — no identity rotation, no history
-    /// reset, no rehydration attempt.
+    /// Equal settings generation reuses the exact installed provider/session:
+    /// no initialization, identity rotation, history reset or rehydration.
     #[test]
-    fn test_runtime_generation_machinery_removed_ordinary_ensures_reuse_runtime() {
+    fn equal_settings_digest_reuses_initialized_runtime() {
+        let expected_digest = test_settings_snapshot_digest(1);
         let mut runtime_state = AgentRuntimeState {
-            runtime: Some(runtime_with_thread_id("thread_existing")),
+            runtime: Some(runtime_with_thread_id_and_digest(
+                "thread_existing",
+                expected_digest.clone(),
+            )),
             thread_store_id: Some("thread_existing".to_string()),
             runtime_degraded: false,
         };
+        let installed_session = runtime_state
+            .runtime
+            .as_ref()
+            .map(|runtime| &runtime.session as *const AgentSession)
+            .expect("runtime should be installed");
         let init_calls = AtomicUsize::new(0);
 
         for _ in 0..2 {
             let (runtime, recovered) = runtime_state
-                .ensure_runtime_with(
+                .ensure_runtime_generation_with(
+                    &expected_digest,
                     || {
                         init_calls.fetch_add(1, Ordering::SeqCst);
-                        Ok(runtime_with_thread_id("thread_should_not_be_used"))
+                        Ok(runtime_with_thread_id_and_digest(
+                            "thread_should_not_be_used",
+                            expected_digest.clone(),
+                        ))
                     },
                     |_| -> Result<Option<Vec<Message>>> {
                         panic!("a live runtime must never trigger rehydration")
@@ -1962,6 +2051,14 @@ mod tests {
                 )
                 .expect("live runtime should be reused on ordinary consecutive sends");
             assert_eq!(runtime.thread_store_id, "thread_existing");
+            assert_eq!(
+                &runtime.settings_snapshot_digest, &expected_digest,
+                "cached runtime must carry the selected generation"
+            );
+            assert_eq!(
+                &runtime.session as *const AgentSession, installed_session,
+                "equal generation must reuse the exact installed session"
+            );
             assert!(!recovered);
         }
 
@@ -1972,11 +2069,72 @@ mod tests {
         );
     }
 
+    /// A later selected generation rebuilds exactly once before send, keeps the
+    /// complete in-memory conversation and durable thread identity, and clears
+    /// the provider response chain through `restore_messages`.
+    #[test]
+    fn changed_settings_digest_rolls_runtime_preserving_history_and_thread() {
+        let old_digest = test_settings_snapshot_digest(2);
+        let expected_digest = test_settings_snapshot_digest(3);
+        let old_runtime = seed_completed_runtime_with_digest(
+            "thread_existing",
+            old_digest.clone(),
+        );
+        let expected_messages = old_runtime.session.messages().to_vec();
+        assert_eq!(old_runtime.session.thread_id(), Some("resp_seed"));
+        let mut runtime_state = AgentRuntimeState {
+            runtime: Some(old_runtime),
+            thread_store_id: Some("thread_existing".to_string()),
+            runtime_degraded: false,
+        };
+        let init_calls = AtomicUsize::new(0);
+
+        {
+            let (runtime, recovered) = runtime_state
+                .ensure_runtime_generation_with(
+                    &expected_digest,
+                    || {
+                        init_calls.fetch_add(1, Ordering::SeqCst);
+                        Ok(seed_completed_runtime_with_digest(
+                            "thread_provisional",
+                            expected_digest.clone(),
+                        ))
+                    },
+                    |_| -> Result<Option<Vec<Message>>> {
+                        panic!("generation rollover must preserve in-memory history")
+                    },
+                )
+                .expect("changed generation should roll the runtime before send");
+
+            assert_eq!(init_calls.load(Ordering::SeqCst), 1);
+            assert_eq!(runtime.settings_snapshot_digest, expected_digest);
+            assert_ne!(runtime.settings_snapshot_digest, old_digest);
+            assert_eq!(runtime.thread_store_id, "thread_existing");
+            assert_eq!(runtime.session.messages(), expected_messages.as_slice());
+            assert_eq!(
+                runtime.session.thread_id(),
+                None,
+                "restoring preserved messages must clear the new provider chain"
+            );
+            assert!(
+                !recovered,
+                "normal generation rollover is not degradation recovery"
+            );
+        }
+
+        assert_eq!(
+            runtime_state.thread_store_id.as_deref(),
+            Some("thread_existing")
+        );
+        assert!(!runtime_state.runtime_degraded);
+    }
+
     /// Rebuilding after a degrade must rejoin the durable thread id and discard
     /// the id the fresh runtime minted — and it must clear the degraded flag,
     /// reporting `recovered = true` so the UI can retire the banner.
     #[test]
     fn test_runtime_recovery_clears_degraded_flag_on_reinit() {
+        let expected_digest = test_settings_snapshot_digest(1);
         let mut runtime_state = AgentRuntimeState {
             runtime: None,
             thread_store_id: Some("thread_stable".to_string()),
@@ -1985,7 +2143,8 @@ mod tests {
         let init_calls = AtomicUsize::new(0);
 
         let (runtime, recovered) = runtime_state
-            .ensure_runtime_with(
+            .ensure_runtime_generation_with(
+                &expected_digest,
                 || {
                     init_calls.fetch_add(1, Ordering::SeqCst);
                     Ok(runtime_with_thread_id("thread_freshly_minted"))
@@ -2077,7 +2236,10 @@ mod tests {
     /// from real state: non-empty history AND a set provider chain. Drives the
     /// seed turn on its own current-thread runtime so the helper stays callable
     /// from sync `#[test]` fns.
-    fn seed_completed_runtime(thread_store_id: &str) -> AgentRuntime {
+    fn seed_completed_runtime_with_digest(
+        thread_store_id: &str,
+        settings_snapshot_digest: SettingsSnapshotDigest,
+    ) -> AgentRuntime {
         let (ui_tx, ui_rx) = mpsc::channel(8);
         let mut session = AgentSession::new(
             Box::new(CompletingTestProvider),
@@ -2101,8 +2263,14 @@ mod tests {
             session,
             ui_rx,
             thread_store_id: thread_store_id.to_string(),
+            settings_snapshot_digest,
             reset_chain_on_next_send: false,
         }
+    }
+
+    /// Seed a completed runtime on the default non-rollover test generation.
+    fn seed_completed_runtime(thread_store_id: &str) -> AgentRuntime {
+        seed_completed_runtime_with_digest(thread_store_id, test_settings_snapshot_digest(1))
     }
 
     /// P1.7: a transient in-conversation failure must SOFT-degrade — keep the
@@ -2475,6 +2643,7 @@ mod tests {
 
         let _broadcast_guard = SEND_PATH_BROADCAST_LOCK.lock().await;
         let thread_id = "controller_voice_cancel_recovery";
+        let settings_snapshot_digest = test_settings_snapshot_digest(1);
         let tool_started = Arc::new(AtomicBool::new(false));
         let side_effect = Arc::new(AtomicBool::new(false));
         let reset_chain_flags = Arc::new(StdMutex::new(Vec::new()));
@@ -2548,6 +2717,7 @@ mod tests {
                 session,
                 ui_rx,
                 thread_store_id: thread_id.to_string(),
+                settings_snapshot_digest: settings_snapshot_digest.clone(),
                 reset_chain_on_next_send: false,
             }),
             thread_store_id: Some(thread_id.to_string()),
@@ -2557,11 +2727,13 @@ mod tests {
         let first_persist_count = Arc::clone(&persist_count);
         let mut delivery = subscribe_agent_delivery();
 
+        let driven_settings_snapshot_digest = settings_snapshot_digest.clone();
         let driven = tokio::spawn(async move {
             let result = run_agent_send_path_with_persist(
                 &mut state,
                 "cancel this".to_string(),
                 test_stream_options(),
+                &driven_settings_snapshot_digest,
                 unexpected_runtime_initialization,
                 move |_runtime| {
                     first_persist_count.fetch_add(1, Ordering::SeqCst);
@@ -2632,6 +2804,7 @@ mod tests {
             &mut state,
             "try again".to_string(),
             test_stream_options(),
+            &settings_snapshot_digest,
             unexpected_runtime_initialization,
             move |_runtime| {
                 second_persist_count.fetch_add(1, Ordering::SeqCst);
@@ -2702,6 +2875,7 @@ mod tests {
             session,
             ui_rx,
             thread_store_id: thread_store_id.to_string(),
+            settings_snapshot_digest: test_settings_snapshot_digest(1),
             reset_chain_on_next_send: false,
         }
     }
@@ -2832,6 +3006,7 @@ mod tests {
     #[tokio::test]
     async fn voice_runtime_continuity() {
         let _broadcast_guard = SEND_PATH_BROADCAST_LOCK.lock().await;
+        let settings_snapshot_digest = test_settings_snapshot_digest(1);
         let tmp = tempfile::TempDir::new().expect("temp dir should initialize");
         let threads_dir = tmp.path().join("threads");
         let gateway =
@@ -2858,6 +3033,7 @@ mod tests {
                 &mut state,
                 text.to_string(),
                 test_stream_options(),
+                &settings_snapshot_digest,
                 unexpected_runtime_initialization,
                 |runtime| {
                     let receipt = gateway.deliver(runtime_delivery_input(
@@ -2915,6 +3091,7 @@ mod tests {
     #[tokio::test]
     async fn hard_degrade_rehydrates_same_thread() {
         let _broadcast_guard = SEND_PATH_BROADCAST_LOCK.lock().await;
+        let settings_snapshot_digest = test_settings_snapshot_digest(1);
         let tmp = tempfile::TempDir::new().expect("temp dir should initialize");
         let threads_dir = tmp.path().join("threads");
         let gateway =
@@ -2931,7 +3108,8 @@ mod tests {
             runtime_degraded: false,
         };
         state
-            .ensure_runtime_with(
+            .ensure_runtime_generation_with(
+                &settings_snapshot_digest,
                 || {
                     Ok(scripted_runtime(
                         "t_test_stable",
@@ -2953,6 +3131,7 @@ mod tests {
             &mut state,
             "first question".to_string(),
             test_stream_options(),
+            &settings_snapshot_digest,
             unexpected_runtime_initialization,
             |runtime| {
                 let receipt = gateway.deliver(runtime_delivery_input(
@@ -2984,7 +3163,8 @@ mod tests {
         let second_inputs = Arc::new(StdMutex::new(Vec::new()));
         {
             let (runtime, recovered) = state
-                .ensure_runtime_with(
+                .ensure_runtime_generation_with(
+                    &settings_snapshot_digest,
                     || {
                         Ok(scripted_runtime(
                             "t_test_freshly_minted",
@@ -3011,6 +3191,7 @@ mod tests {
             &mut state,
             "second question".to_string(),
             test_stream_options(),
+            &settings_snapshot_digest,
             unexpected_runtime_initialization,
             |runtime| {
                 let receipt = gateway.deliver(runtime_delivery_input(
@@ -3089,6 +3270,7 @@ mod tests {
     /// never prompt/transcript content.
     #[test]
     fn rehydrate_failure_keeps_identity_and_logs_privacy_safe_recovery() {
+        let settings_snapshot_digest = test_settings_snapshot_digest(1);
         /// Tracing writer that appends into a shared buffer, so the test can
         /// read back what the lifecycle actually logged.
         struct SharedWriter(Arc<StdMutex<Vec<u8>>>);
@@ -3144,7 +3326,8 @@ mod tests {
         tracing::subscriber::with_default(subscriber, || {
             state.mark_runtime_degraded("test_hard_failure");
             let (runtime, recovered) = state
-                .ensure_runtime_with(
+                .ensure_runtime_generation_with(
+                    &settings_snapshot_digest,
                     || Ok(runtime_with_thread_id("t_test_should_be_overridden")),
                     |thread_store_id| load_thread_messages_from(&store, thread_store_id),
                 )
