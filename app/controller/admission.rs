@@ -21,6 +21,7 @@ use std::path::PathBuf;
 use std::sync::Arc;
 
 use codescribe_core::audio::capture_receipt::CapturePathMeta;
+use codescribe_core::config::energy_calibration::calibration_now_unix_ms;
 use codescribe_core::config::{
     EnergyCalibrationRefusal, EnergyCalibrationStatus, RuntimeSettingsSnapshot,
 };
@@ -188,8 +189,34 @@ pub fn evaluate_admission_readiness(
 ) -> Result<AdmissionGrant, AdmissionBlocker> {
     let capture =
         capture.map_err(|reason| AdmissionBlocker::CaptureDeviceUnavailable { reason })?;
+    let now_unix_ms = calibration_now_unix_ms().map_err(|refusal| {
+        AdmissionBlocker::from_calibration_refusal(&capture.device_name, refusal)
+    })?;
+    evaluate_probed_admission_at(snapshot, capture, seal_lane, now_unix_ms)
+}
+
+/// Deterministic clock-injected admission used by focused tests and offline
+/// falsifiers. Production calls [`evaluate_admission_readiness`].
+pub fn evaluate_admission_readiness_at(
+    snapshot: &RuntimeSettingsSnapshot,
+    capture: Result<CapturePathMeta, String>,
+    seal_lane: SealLaneProbe,
+    now_unix_ms: u64,
+) -> Result<AdmissionGrant, AdmissionBlocker> {
+    let capture =
+        capture.map_err(|reason| AdmissionBlocker::CaptureDeviceUnavailable { reason })?;
+    evaluate_probed_admission_at(snapshot, capture, seal_lane, now_unix_ms)
+}
+
+fn evaluate_probed_admission_at(
+    snapshot: &RuntimeSettingsSnapshot,
+    capture: CapturePathMeta,
+    seal_lane: SealLaneProbe,
+    now_unix_ms: u64,
+) -> Result<AdmissionGrant, AdmissionBlocker> {
     let calibration = snapshot
-        .energy_calibration_for_capture(&capture.device_name, capture.sample_rate)
+        .energy_calibration()
+        .for_capture_at(&capture, now_unix_ms)
         .map_err(|refusal| {
             AdmissionBlocker::from_calibration_refusal(&capture.device_name, refusal)
         })?;
@@ -282,8 +309,8 @@ mod tests {
     };
     use codescribe_core::config::Config;
     use codescribe_core::config::energy_calibration::{
-        EnergyCalibrationArtifact, EnergyCalibrationProfile, SOURCE_SYNTHETIC_FIXTURE,
-        energy_calibration_path,
+        ENERGY_CALIBRATION_MAX_AGE_MS, EnergyCalibrationArtifact, EnergyCalibrationProfile,
+        SOURCE_SYNTHETIC_FIXTURE, energy_calibration_path,
     };
     use serial_test::serial;
     use tempfile::TempDir;
@@ -319,10 +346,18 @@ mod tests {
     }
 
     fn capture(device: &str) -> Result<CapturePathMeta, String> {
+        capture_with(device, 48_000, 1)
+    }
+
+    fn capture_with(
+        device: &str,
+        sample_rate: u32,
+        channels: u16,
+    ) -> Result<CapturePathMeta, String> {
         Ok(CapturePathMeta {
             device_name: device.to_string(),
-            sample_rate: 48_000,
-            channels: 1,
+            sample_rate,
+            channels,
         })
     }
 
@@ -339,8 +374,8 @@ mod tests {
     #[serial]
     fn device_failure_is_the_first_blocker() {
         let _tmp = isolated_data_dir();
-        let blocker =
-            evaluate_admission_readiness(&snapshot(), Err("no host".into()), ARMED).unwrap_err();
+        let blocker = evaluate_admission_readiness_at(&snapshot(), Err("no host".into()), ARMED, 7)
+            .unwrap_err();
         assert_eq!(blocker.code(), "admission_capture_device_unavailable");
         assert!(
             blocker
@@ -357,8 +392,9 @@ mod tests {
             armed: false,
             vad_available: false,
         };
-        let blocker = evaluate_admission_readiness(&snapshot(), capture("Fixture Mic"), disarmed)
-            .unwrap_err();
+        let blocker =
+            evaluate_admission_readiness_at(&snapshot(), capture("Fixture Mic"), disarmed, 7)
+                .unwrap_err();
         assert_eq!(blocker.code(), "admission_calibration_missing");
         assert!(blocker.action().contains("Calibrate microphone"));
     }
@@ -381,37 +417,41 @@ mod tests {
             vec!["Fixture Mic".to_string()]
         );
 
-        let other = evaluate_admission_readiness(&snap, capture("Other Mic"), ARMED).unwrap_err();
+        let other =
+            evaluate_admission_readiness_at(&snap, capture("Other Mic"), ARMED, 7).unwrap_err();
         assert_eq!(other.code(), "admission_calibration_no_profile");
         assert!(other.explanation().contains("Fixture Mic"));
 
-        let disarmed = evaluate_admission_readiness(
+        let disarmed = evaluate_admission_readiness_at(
             &snap,
             capture("Fixture Mic"),
             SealLaneProbe {
                 armed: false,
                 vad_available: true,
             },
+            7,
         )
         .unwrap_err();
         assert_eq!(disarmed.code(), "admission_seal_lane_disarmed");
         assert!(disarmed.action().contains(SILERO_FUSION_ENV));
 
-        let no_vad = evaluate_admission_readiness(
+        let no_vad = evaluate_admission_readiness_at(
             &snap,
             capture("Fixture Mic"),
             SealLaneProbe {
                 armed: true,
                 vad_available: false,
             },
+            7,
         )
         .unwrap_err();
         assert_eq!(no_vad.code(), "admission_seal_vad_unavailable");
 
-        let grant = evaluate_admission_readiness(&snap, capture("Fixture Mic"), ARMED).unwrap();
+        let grant =
+            evaluate_admission_readiness_at(&snap, capture("Fixture Mic"), ARMED, 7).unwrap();
         assert_eq!(grant.device_name, "Fixture Mic");
         assert_eq!(grant.sample_rate, 48_000);
-        assert_eq!(grant.calibration_version, "cal1-fixture-mic-7@48000hz");
+        assert_eq!(grant.calibration_version, "cal2-fixture-mic-7@48000hz");
     }
 
     #[test]
@@ -423,7 +463,129 @@ mod tests {
         let snap = snapshot();
         assert_eq!(calibration_status_view(&snap).code, "refused");
         let blocker =
-            evaluate_admission_readiness(&snap, capture("Fixture Mic"), ARMED).unwrap_err();
+            evaluate_admission_readiness_at(&snap, capture("Fixture Mic"), ARMED, 7).unwrap_err();
         assert_eq!(blocker.code(), "admission_calibration_refused");
+    }
+
+    #[test]
+    #[serial]
+    fn calibration_is_admitted_at_the_exact_validity_boundary() {
+        let _tmp = isolated_data_dir();
+        let measured_at = 10_000;
+        let profile = EnergyCalibrationProfile::derive(
+            &fixture_receipt("Fixture Mic"),
+            measured_at,
+            SOURCE_SYNTHETIC_FIXTURE,
+        )
+        .unwrap();
+        EnergyCalibrationArtifact::record_profile(&energy_calibration_path(), profile, measured_at)
+            .unwrap();
+        let grant = evaluate_admission_readiness_at(
+            &snapshot(),
+            capture("Fixture Mic"),
+            ARMED,
+            measured_at + ENERGY_CALIBRATION_MAX_AGE_MS,
+        )
+        .expect("exactly 30 days remains valid");
+        assert_eq!(grant.device_name, "Fixture Mic");
+    }
+
+    #[test]
+    #[serial]
+    fn expired_calibration_refuses_with_recalibration_as_the_only_action() {
+        let _tmp = isolated_data_dir();
+        let measured_at = 10_000;
+        let profile = EnergyCalibrationProfile::derive(
+            &fixture_receipt("Fixture Mic"),
+            measured_at,
+            SOURCE_SYNTHETIC_FIXTURE,
+        )
+        .unwrap();
+        EnergyCalibrationArtifact::record_profile(&energy_calibration_path(), profile, measured_at)
+            .unwrap();
+        let blocker = evaluate_admission_readiness_at(
+            &snapshot(),
+            capture("Fixture Mic"),
+            ARMED,
+            measured_at + ENERGY_CALIBRATION_MAX_AGE_MS + 1,
+        )
+        .unwrap_err();
+        assert_eq!(blocker.code(), "admission_calibration_unusable");
+        assert!(blocker.explanation().contains("expired"));
+        assert!(blocker.action().starts_with("Re-run Calibrate microphone"));
+    }
+
+    #[test]
+    #[serial]
+    fn future_dated_calibration_refuses_on_clock_anomaly() {
+        let _tmp = isolated_data_dir();
+        let measured_at = 10_000;
+        let profile = EnergyCalibrationProfile::derive(
+            &fixture_receipt("Fixture Mic"),
+            measured_at,
+            SOURCE_SYNTHETIC_FIXTURE,
+        )
+        .unwrap();
+        EnergyCalibrationArtifact::record_profile(&energy_calibration_path(), profile, measured_at)
+            .unwrap();
+        let blocker = evaluate_admission_readiness_at(
+            &snapshot(),
+            capture("Fixture Mic"),
+            ARMED,
+            measured_at - 1,
+        )
+        .unwrap_err();
+        assert_eq!(blocker.code(), "admission_calibration_unusable");
+        assert!(blocker.explanation().contains("in the future"));
+    }
+
+    #[test]
+    #[serial]
+    fn same_display_name_with_changed_capture_generation_refuses() {
+        let _tmp = isolated_data_dir();
+        let profile = EnergyCalibrationProfile::derive(
+            &fixture_receipt("Fixture Mic"),
+            10_000,
+            SOURCE_SYNTHETIC_FIXTURE,
+        )
+        .unwrap();
+        EnergyCalibrationArtifact::record_profile(&energy_calibration_path(), profile, 10_000)
+            .unwrap();
+        let blocker = evaluate_admission_readiness_at(
+            &snapshot(),
+            capture_with("Fixture Mic", 48_000, 2),
+            ARMED,
+            10_000,
+        )
+        .unwrap_err();
+        assert_eq!(blocker.code(), "admission_calibration_unusable");
+        assert!(blocker.explanation().contains("capture generation changed"));
+    }
+
+    #[test]
+    #[serial]
+    fn recalibration_generation_changes_the_loader_sealed_snapshot_digest() {
+        let _tmp = isolated_data_dir();
+        let first = EnergyCalibrationProfile::derive(
+            &fixture_receipt("Fixture Mic"),
+            10_000,
+            SOURCE_SYNTHETIC_FIXTURE,
+        )
+        .unwrap();
+        EnergyCalibrationArtifact::record_profile(&energy_calibration_path(), first, 10_000)
+            .unwrap();
+        let first_digest = snapshot().digest().as_str().to_string();
+
+        let second = EnergyCalibrationProfile::derive(
+            &fixture_receipt("Fixture Mic"),
+            10_001,
+            SOURCE_SYNTHETIC_FIXTURE,
+        )
+        .unwrap();
+        EnergyCalibrationArtifact::record_profile(&energy_calibration_path(), second, 10_001)
+            .unwrap();
+        let second_digest = snapshot().digest().as_str().to_string();
+
+        assert_ne!(first_digest, second_digest);
     }
 }

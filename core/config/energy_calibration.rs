@@ -24,18 +24,26 @@
 use std::fmt;
 use std::fs;
 use std::path::{Path, PathBuf};
+use std::time::{SystemTime, UNIX_EPOCH};
 
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 
-use crate::audio::capture_receipt::{CaptureLevelReceipt, db_to_linear};
+use crate::audio::capture_receipt::{CaptureLevelReceipt, CapturePathMeta, db_to_linear};
 use crate::pipeline::acoustic_ledger::EnergyCalibration;
 use crate::vad::config::{SILERO_DEFAULT_MAX_SILENCE_SEC, SILERO_DEFAULT_MIN_SPEECH_SEC};
 
 use super::settings::UserSettings;
 
 /// On-disk schema tag. Bump on any incompatible shape change.
-pub const ENERGY_CALIBRATION_SCHEMA: &str = "codescribe.energy-calibration.v1";
+pub const ENERGY_CALIBRATION_SCHEMA: &str = "codescribe.energy-calibration.v2";
+/// Validity policy stored in every v2 profile. A schema/policy change makes
+/// old evidence inadmissible instead of silently assigning it new semantics.
+pub const ENERGY_CALIBRATION_VALIDITY_POLICY: &str = "monthly-capture-path-v1";
+/// Product policy: a measured capture profile is valid for at most 30 days.
+/// Thirty days keeps calibration an intentional maintenance action without
+/// pretending that gain, microphone mode, or room conditions are permanent.
+pub const ENERGY_CALIBRATION_MAX_AGE_MS: u64 = 30 * 24 * 60 * 60 * 1_000;
 /// File name beside `settings.json`.
 pub const ENERGY_CALIBRATION_FILE_NAME: &str = "energy-calibration.json";
 /// ITU-T P.56 method B: the activity threshold sits this far below the
@@ -59,12 +67,48 @@ pub fn energy_calibration_path() -> PathBuf {
     UserSettings::settings_dir().join(ENERGY_CALIBRATION_FILE_NAME)
 }
 
+/// Production clock used only at admission/serving. Tests inject their clock
+/// through `for_capture_at`; no test sleeps or depends on wall time.
+pub fn calibration_now_unix_ms() -> Result<u64, EnergyCalibrationRefusal> {
+    let duration = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map_err(|error| EnergyCalibrationRefusal::ClockUnavailable {
+            reason: error.to_string(),
+        })?;
+    u64::try_from(duration.as_millis()).map_err(|_| EnergyCalibrationRefusal::ClockUnavailable {
+        reason: "system timestamp exceeds u64 milliseconds".to_string(),
+    })
+}
+
 /// Identity of the capture path a profile was measured on.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct CalibrationCapturePath {
     pub device_name: String,
     pub sample_rate: u32,
     pub channels: u16,
+}
+
+impl CalibrationCapturePath {
+    fn from_live(meta: &CapturePathMeta) -> Self {
+        Self {
+            device_name: meta.device_name.clone(),
+            sample_rate: meta.sample_rate,
+            channels: meta.channels,
+        }
+    }
+
+    /// Stable generation evidence available from the same cpal path that will
+    /// open the microphone. A display name alone is not a generation: native
+    /// rate or channel-count drift invalidates the measurement too.
+    fn fingerprint(&self) -> String {
+        let mut hasher = Sha256::new();
+        hasher.update(b"codescribe.capture-path.v1\0");
+        hasher.update(self.device_name.as_bytes());
+        hasher.update(b"\0");
+        hasher.update(self.sample_rate.to_le_bytes());
+        hasher.update(self.channels.to_le_bytes());
+        format!("{:x}", hasher.finalize())
+    }
 }
 
 /// What was measured (counts and levels only — never audio, never text).
@@ -97,6 +141,14 @@ pub struct CalibrationFloors {
     pub existence_threshold_dbfs: f32,
 }
 
+/// Validity and capture-generation evidence for one measured profile.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct CalibrationValidity {
+    pub policy: String,
+    pub max_age_ms: u64,
+    pub capture_path_fingerprint: String,
+}
+
 /// One measured device profile.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct EnergyCalibrationProfile {
@@ -108,6 +160,7 @@ pub struct EnergyCalibrationProfile {
     pub measurement: CalibrationMeasurement,
     pub derivation: CalibrationDerivation,
     pub floors: CalibrationFloors,
+    pub validity: CalibrationValidity,
 }
 
 /// The persisted artifact: every measured profile plus an integrity digest.
@@ -139,6 +192,34 @@ pub enum EnergyCalibrationRefusal {
     NonFinite(&'static str),
     /// The capture path reported a zero sample rate.
     InvalidSampleRate(u32),
+    /// The system clock cannot provide an admission timestamp.
+    ClockUnavailable { reason: String },
+    /// Stored evidence appears to come from the future under this clock.
+    ClockAnomaly {
+        evidence: &'static str,
+        evidence_unix_ms: u64,
+        now_unix_ms: u64,
+    },
+    /// The measured profile exceeded its explicit product lifetime.
+    Stale {
+        measured_at_unix_ms: u64,
+        now_unix_ms: u64,
+        max_age_ms: u64,
+    },
+    /// Artifact generation predates a measurement it claims to contain.
+    TimelineRollback {
+        device_name: String,
+        measured_at_unix_ms: u64,
+        artifact_updated_at_unix_ms: u64,
+    },
+    /// The current cpal path is not the generation that was measured.
+    CapturePathGenerationMismatch {
+        device_name: String,
+        expected_sample_rate: u32,
+        actual_sample_rate: u32,
+        expected_channels: u16,
+        actual_channels: u16,
+    },
     /// The artifact file exists but could not be read.
     Unreadable { path: PathBuf, reason: String },
     /// The artifact file is not the documented JSON shape.
@@ -182,6 +263,43 @@ impl fmt::Display for EnergyCalibrationRefusal {
             ),
             Self::NonFinite(field) => write!(f, "measured `{field}` is not finite"),
             Self::InvalidSampleRate(rate) => write!(f, "invalid capture sample rate {rate}"),
+            Self::ClockUnavailable { reason } => {
+                write!(f, "admission clock unavailable: {reason}")
+            }
+            Self::ClockAnomaly {
+                evidence,
+                evidence_unix_ms,
+                now_unix_ms,
+            } => write!(
+                f,
+                "{evidence} timestamp {evidence_unix_ms} is in the future relative to admission clock {now_unix_ms}"
+            ),
+            Self::Stale {
+                measured_at_unix_ms,
+                now_unix_ms,
+                max_age_ms,
+            } => write!(
+                f,
+                "calibration expired: measured at {measured_at_unix_ms}, admission clock {now_unix_ms}, maximum age {max_age_ms}ms"
+            ),
+            Self::TimelineRollback {
+                device_name,
+                measured_at_unix_ms,
+                artifact_updated_at_unix_ms,
+            } => write!(
+                f,
+                "calibration timeline rollback for `{device_name}`: measurement {measured_at_unix_ms} is newer than artifact generation {artifact_updated_at_unix_ms}"
+            ),
+            Self::CapturePathGenerationMismatch {
+                device_name,
+                expected_sample_rate,
+                actual_sample_rate,
+                expected_channels,
+                actual_channels,
+            } => write!(
+                f,
+                "capture generation changed for `{device_name}`: measured {expected_sample_rate}Hz/{expected_channels}ch, current {actual_sample_rate}Hz/{actual_channels}ch"
+            ),
             Self::Unreadable { path, reason } => {
                 write!(f, "cannot read {}: {reason}", path.display())
             }
@@ -326,17 +444,23 @@ impl EnergyCalibrationProfile {
             });
         }
         let version = format!(
-            "cal1-{}-{measured_at_unix_ms}",
+            "cal2-{}-{measured_at_unix_ms}",
             slugify(&receipt.device_name)
         );
+        let capture_path = CalibrationCapturePath {
+            device_name: receipt.device_name.clone(),
+            sample_rate: receipt.sample_rate,
+            channels: receipt.channels,
+        };
+        let validity = CalibrationValidity {
+            policy: ENERGY_CALIBRATION_VALIDITY_POLICY.to_string(),
+            max_age_ms: ENERGY_CALIBRATION_MAX_AGE_MS,
+            capture_path_fingerprint: capture_path.fingerprint(),
+        };
         Ok(Self {
             version,
             measured_at_unix_ms,
-            capture_path: CalibrationCapturePath {
-                device_name: receipt.device_name.clone(),
-                sample_rate: receipt.sample_rate,
-                channels: receipt.channels,
-            },
+            capture_path,
             measurement: CalibrationMeasurement {
                 source: source.to_string(),
                 sample_count: receipt.sample_count,
@@ -354,6 +478,7 @@ impl EnergyCalibrationProfile {
             floors: CalibrationFloors {
                 existence_threshold_dbfs: threshold,
             },
+            validity,
         })
     }
 
@@ -362,11 +487,29 @@ impl EnergyCalibrationProfile {
         if self.version.trim().is_empty() {
             return Err("empty version".into());
         }
+        if !self.version.starts_with("cal2-") {
+            return Err("profile version does not carry the v2 validity contract".into());
+        }
+        if self.measured_at_unix_ms == 0 {
+            return Err("zero measurement timestamp".into());
+        }
         if self.capture_path.device_name.trim().is_empty() {
             return Err("empty device name".into());
         }
         if self.capture_path.sample_rate == 0 {
             return Err("zero sample rate".into());
+        }
+        if self.capture_path.channels == 0 {
+            return Err("zero channel count".into());
+        }
+        if self.validity.policy != ENERGY_CALIBRATION_VALIDITY_POLICY {
+            return Err("unknown validity policy".into());
+        }
+        if self.validity.max_age_ms != ENERGY_CALIBRATION_MAX_AGE_MS {
+            return Err("validity lifetime differs from the product policy".into());
+        }
+        if self.validity.capture_path_fingerprint != self.capture_path.fingerprint() {
+            return Err("capture-path fingerprint mismatch".into());
         }
         let t = self.floors.existence_threshold_dbfs;
         let s = self.measurement.active_speech_median_dbfs;
@@ -383,6 +526,42 @@ impl EnergyCalibrationProfile {
         }
         if self.derivation.min_region_ms == 0 || self.derivation.min_valley_ms == 0 {
             return Err("zero region/valley duration".into());
+        }
+        Ok(())
+    }
+
+    fn validate_time(&self, now_unix_ms: u64) -> Result<(), EnergyCalibrationRefusal> {
+        if self.measured_at_unix_ms > now_unix_ms {
+            return Err(EnergyCalibrationRefusal::ClockAnomaly {
+                evidence: "calibration measurement",
+                evidence_unix_ms: self.measured_at_unix_ms,
+                now_unix_ms,
+            });
+        }
+        let age_ms = now_unix_ms - self.measured_at_unix_ms;
+        if age_ms > self.validity.max_age_ms {
+            return Err(EnergyCalibrationRefusal::Stale {
+                measured_at_unix_ms: self.measured_at_unix_ms,
+                now_unix_ms,
+                max_age_ms: self.validity.max_age_ms,
+            });
+        }
+        Ok(())
+    }
+
+    fn validate_capture_path(
+        &self,
+        capture: &CapturePathMeta,
+    ) -> Result<(), EnergyCalibrationRefusal> {
+        let actual = CalibrationCapturePath::from_live(capture);
+        if actual.fingerprint() != self.validity.capture_path_fingerprint {
+            return Err(EnergyCalibrationRefusal::CapturePathGenerationMismatch {
+                device_name: capture.device_name.clone(),
+                expected_sample_rate: self.capture_path.sample_rate,
+                actual_sample_rate: capture.sample_rate,
+                expected_channels: self.capture_path.channels,
+                actual_channels: capture.channels,
+            });
         }
         Ok(())
     }
@@ -498,6 +677,13 @@ impl EnergyCalibrationArtifact {
                     device_name: profile.capture_path.device_name.clone(),
                     reason,
                 })?;
+            if profile.measured_at_unix_ms > artifact.updated_at_unix_ms {
+                return Err(EnergyCalibrationRefusal::TimelineRollback {
+                    device_name: profile.capture_path.device_name.clone(),
+                    measured_at_unix_ms: profile.measured_at_unix_ms,
+                    artifact_updated_at_unix_ms: artifact.updated_at_unix_ms,
+                });
+            }
             if !seen.insert(profile.capture_path.device_name.clone()) {
                 return Err(EnergyCalibrationRefusal::InvalidProfile {
                     path: path.to_path_buf(),
@@ -541,6 +727,20 @@ impl EnergyCalibrationArtifact {
         profile: EnergyCalibrationProfile,
         updated_at_unix_ms: u64,
     ) -> Result<Self, EnergyCalibrationRefusal> {
+        profile
+            .validate()
+            .map_err(|reason| EnergyCalibrationRefusal::InvalidProfile {
+                path: path.to_path_buf(),
+                device_name: profile.capture_path.device_name.clone(),
+                reason,
+            })?;
+        if profile.measured_at_unix_ms > updated_at_unix_ms {
+            return Err(EnergyCalibrationRefusal::TimelineRollback {
+                device_name: profile.capture_path.device_name.clone(),
+                measured_at_unix_ms: profile.measured_at_unix_ms,
+                artifact_updated_at_unix_ms: updated_at_unix_ms,
+            });
+        }
         let mut artifact = match Self::load(path) {
             Ok(Some(existing)) => existing,
             Ok(None) => Self::empty(updated_at_unix_ms),
@@ -645,12 +845,11 @@ impl SealedEnergyCalibration {
         }
     }
 
-    /// The ledger calibration for one capture path, or the precise refusal.
-    pub fn for_capture(
+    fn profile_at(
         &self,
         device_name: &str,
-        sample_rate: u32,
-    ) -> Result<EnergyCalibration, EnergyCalibrationRefusal> {
+        now_unix_ms: u64,
+    ) -> Result<&EnergyCalibrationProfile, EnergyCalibrationRefusal> {
         let artifact = match (&self.status, &self.artifact) {
             (EnergyCalibrationStatus::Sealed { .. }, Some(artifact)) => artifact,
             (EnergyCalibrationStatus::Missing { path }, _) => {
@@ -666,13 +865,55 @@ impl SealedEnergyCalibration {
                 return Err(EnergyCalibrationRefusal::Missing { path: path.clone() });
             }
         };
+        if artifact.updated_at_unix_ms > now_unix_ms {
+            return Err(EnergyCalibrationRefusal::ClockAnomaly {
+                evidence: "calibration artifact",
+                evidence_unix_ms: artifact.updated_at_unix_ms,
+                now_unix_ms,
+            });
+        }
         let profile = artifact.profile_for_device(device_name).ok_or_else(|| {
             EnergyCalibrationRefusal::NoProfileForDevice {
                 device_name: device_name.to_string(),
                 known_devices: artifact.device_names(),
             }
         })?;
+        profile.validate_time(now_unix_ms)?;
+        Ok(profile)
+    }
+
+    /// The ledger calibration for one capture path, or the precise refusal.
+    /// Production session consumers use the wall clock and check every path
+    /// fact available at their boundary. Pre-mic admission uses
+    /// [`Self::for_capture_at`] to additionally bind native channel count.
+    pub fn for_capture(
+        &self,
+        device_name: &str,
+        sample_rate: u32,
+    ) -> Result<EnergyCalibration, EnergyCalibrationRefusal> {
+        let now_unix_ms = calibration_now_unix_ms()?;
+        let profile = self.profile_at(device_name, now_unix_ms)?;
+        if sample_rate != profile.capture_path.sample_rate {
+            return Err(EnergyCalibrationRefusal::CapturePathGenerationMismatch {
+                device_name: device_name.to_string(),
+                expected_sample_rate: profile.capture_path.sample_rate,
+                actual_sample_rate: sample_rate,
+                expected_channels: profile.capture_path.channels,
+                actual_channels: profile.capture_path.channels,
+            });
+        }
         profile.ledger_calibration(sample_rate)
+    }
+
+    /// Deterministic pre-mic admission against the complete live cpal path.
+    pub fn for_capture_at(
+        &self,
+        capture: &CapturePathMeta,
+        now_unix_ms: u64,
+    ) -> Result<EnergyCalibration, EnergyCalibrationRefusal> {
+        let profile = self.profile_at(&capture.device_name, now_unix_ms)?;
+        profile.validate_capture_path(capture)?;
+        profile.ledger_calibration(capture.sample_rate)
     }
 }
 
@@ -728,6 +969,14 @@ mod tests {
         }
     }
 
+    fn capture_path(receipt: &CaptureLevelReceipt) -> CapturePathMeta {
+        CapturePathMeta {
+            device_name: receipt.device_name.clone(),
+            sample_rate: receipt.sample_rate,
+            channels: receipt.channels,
+        }
+    }
+
     #[test]
     fn derive_applies_p56_margin_to_measured_speech() {
         let profile =
@@ -738,7 +987,9 @@ mod tests {
         assert_eq!(profile.derivation.min_region_ms, 64);
         assert_eq!(profile.derivation.min_valley_ms, 300);
         assert_eq!(profile.measurement.noise_floor_dbfs, None);
-        assert_eq!(profile.version, "cal1-macbook-pro-microphone-1000");
+        assert_eq!(profile.version, "cal2-macbook-pro-microphone-1000");
+        assert_eq!(profile.validity.policy, ENERGY_CALIBRATION_VALIDITY_POLICY);
+        assert_eq!(profile.validity.max_age_ms, ENERGY_CALIBRATION_MAX_AGE_MS);
         profile.validate().expect("derived profile validates");
     }
 
@@ -771,8 +1022,8 @@ mod tests {
                 .unwrap();
         let at_16k = profile.ledger_calibration(16_000).unwrap();
         let at_88k = profile.ledger_calibration(88_200).unwrap();
-        assert_eq!(at_16k.version, "cal1-macbook-pro-microphone-7@16000hz");
-        assert_eq!(at_88k.version, "cal1-macbook-pro-microphone-7@88200hz");
+        assert_eq!(at_16k.version, "cal2-macbook-pro-microphone-7@16000hz");
+        assert_eq!(at_88k.version, "cal2-macbook-pro-microphone-7@88200hz");
         let ratio = at_88k.min_energy_integral / at_16k.min_energy_integral;
         assert!((ratio - 88_200.0 / 16_000.0).abs() < 0.01, "ratio={ratio}");
         assert_eq!(at_16k.min_valley_samples, 4_800);
@@ -819,27 +1070,55 @@ mod tests {
     }
 
     #[test]
+    fn artifact_refuses_timeline_rollback_and_permissive_policy() {
+        let path = PathBuf::from("fixture-energy-calibration.json");
+        let profile =
+            EnergyCalibrationProfile::derive(&operator_receipt(), 100, SOURCE_GUIDED_CAPTURE)
+                .unwrap();
+        let mut rollback = EnergyCalibrationArtifact::empty(99);
+        rollback.profiles.push(profile.clone());
+        rollback.seal();
+        let bytes = serde_json::to_vec(&rollback).unwrap();
+        assert!(matches!(
+            EnergyCalibrationArtifact::from_bytes(&bytes, &path).unwrap_err(),
+            EnergyCalibrationRefusal::TimelineRollback { .. }
+        ));
+
+        let mut permissive = EnergyCalibrationArtifact::empty(100);
+        let mut profile = profile;
+        let original_fingerprint = profile.validity.capture_path_fingerprint.clone();
+        profile.validity.max_age_ms += 1;
+        permissive.profiles.push(profile);
+        permissive.seal();
+        assert!(
+            permissive
+                .canonical_material()
+                .contains(&original_fingerprint)
+        );
+        let bytes = serde_json::to_vec(&permissive).unwrap();
+        assert!(matches!(
+            EnergyCalibrationArtifact::from_bytes(&bytes, &path).unwrap_err(),
+            EnergyCalibrationRefusal::InvalidProfile { .. }
+        ));
+    }
+
+    #[test]
     fn sealed_calibration_names_missing_refused_and_unknown_device() {
         let tmp = TempDir::new().unwrap();
         let path = tmp.path().join(ENERGY_CALIBRATION_FILE_NAME);
 
         let missing = SealedEnergyCalibration::load(&path);
         assert_eq!(missing.status().code(), "missing");
+        let operator_path = capture_path(&operator_receipt());
         assert!(matches!(
-            missing
-                .for_capture("MacBook Pro Microphone", 88_200)
-                .unwrap_err(),
+            missing.for_capture_at(&operator_path, 1).unwrap_err(),
             EnergyCalibrationRefusal::Missing { .. }
         ));
 
         fs::write(&path, b"{\"schema\":\"other\"}").unwrap();
         let refused = SealedEnergyCalibration::load(&path);
         assert_eq!(refused.status().code(), "refused");
-        assert!(
-            refused
-                .for_capture("MacBook Pro Microphone", 88_200)
-                .is_err()
-        );
+        assert!(refused.for_capture_at(&operator_path, 1).is_err());
 
         let profile =
             EnergyCalibrationProfile::derive(&operator_receipt(), 1, SOURCE_GUIDED_CAPTURE)
@@ -848,8 +1127,13 @@ mod tests {
         let sealed = SealedEnergyCalibration::load(&path);
         assert_eq!(sealed.status().code(), "sealed");
         assert!(sealed.sha256().is_some());
-        assert!(sealed.for_capture("MacBook Pro Microphone", 88_200).is_ok());
-        match sealed.for_capture("AirPods Pro", 48_000).unwrap_err() {
+        assert!(sealed.for_capture_at(&operator_path, 1).is_ok());
+        let other_path = CapturePathMeta {
+            device_name: "AirPods Pro".to_string(),
+            sample_rate: 48_000,
+            channels: 1,
+        };
+        match sealed.for_capture_at(&other_path, 1).unwrap_err() {
             EnergyCalibrationRefusal::NoProfileForDevice { known_devices, .. } => {
                 assert_eq!(known_devices, vec!["MacBook Pro Microphone".to_string()]);
             }

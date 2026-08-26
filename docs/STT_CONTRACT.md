@@ -319,7 +319,7 @@ selected settings generation, in this order, and stops at the first blocker:
 | Order | Blocker code | Cause | Operator action |
 | --- | --- | --- | --- |
 | 1 | `admission_capture_device_unavailable` | cpal cannot resolve the configured/default input | plug/select an input device |
-| 2 | `admission_calibration_missing` / `_refused` / `_no_profile` / `_unusable` | `energy-calibration.json` absent, tampered, or has no profile for this device | Settings › Audio › **Calibrate microphone** (~10 s of normal speech) |
+| 2 | `admission_calibration_missing` / `_refused` / `_no_profile` / `_unusable` | `energy-calibration.json` absent, tampered, expired/future-dated, internally rollbacked, or not measured on this capture generation | Settings › Audio › **Calibrate microphone** (~10 s of normal speech) |
 | 3 | `admission_seal_lane_disarmed` | `CODESCRIBE_SILERO_FUSION` off → no occurrence can qualify, no utterance can commit | set `CODESCRIBE_SILERO_FUSION=1` |
 | 4 | `admission_seal_vad_unavailable` | Silero ORT session refused to load | reinstall / check the embedded VAD asset |
 
@@ -331,6 +331,18 @@ Settings › Audio; `calibrateEnergy(seconds:)` performs the guided measurement
 through the real recorder path and stores the profile via
 `EnergyCalibrationArtifact::record_profile`. Nothing on this path invents a
 threshold; `EnergyCalibration` has no default.
+
+Calibration validity is part of the one profile authority, not an environment
+or Settings override. Schema `codescribe.energy-calibration.v2` stores and
+digest-covers policy `monthly-capture-path-v1`: a profile is valid through
+exactly 30 days after `measured_at_unix_ms` and expires one millisecond later.
+Admission also refuses evidence dated after its injected clock, an artifact
+whose `updated_at_unix_ms` predates a contained measurement, and a live capture
+path whose SHA-256 generation fingerprint differs. That fingerprint covers the
+exact cpal device display name, native sample rate, and native channel count,
+so the same display name at a changed rate/channel layout is not the same
+calibration generation. Older schemas receive no permissive defaults; the one
+remediation for every validity refusal is to re-calibrate.
 
 ## 4. Labels vs truth
 
