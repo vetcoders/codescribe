@@ -502,6 +502,7 @@ pub(crate) async fn apple_stream_transcription_session(
         runtime_settings,
         acoustic_ledger,
         sample_rate,
+        capture_device_name,
         language,
         stream_log_path,
         utterance_silence_sec,
@@ -612,6 +613,7 @@ pub(crate) async fn apple_stream_transcription_session(
             formatter_done_rx,
             AppleWorkerConfig {
                 sample_rate,
+                capture_device_name,
                 language: language.as_deref(),
                 session_id: worker_session_id,
                 capture_epoch,
@@ -2655,6 +2657,8 @@ fn seal_open_partial(
 /// Everything the blocking worker needs that is not a channel.
 struct AppleWorkerConfig<'a> {
     sample_rate: u32,
+    /// Device the recorder opened; selects the measured calibration profile.
+    capture_device_name: Option<String>,
     language: Option<&'a str>,
     session_id: String,
     capture_epoch: u64,
@@ -2678,6 +2682,7 @@ fn apple_stream_worker(
 ) -> anyhow::Result<AppleStreamOutcome> {
     let AppleWorkerConfig {
         sample_rate,
+        capture_device_name,
         language,
         session_id,
         capture_epoch,
@@ -2687,7 +2692,46 @@ fn apple_stream_worker(
         utterance_silence_sec,
     } = config;
     debug_assert_eq!(settings_digest, runtime_settings.digest().as_str());
-    let energy_calibration = runtime_settings.energy_calibration().cloned();
+    // The one read of calibration truth for this session: the measured profile
+    // of the device actually opened, converted to Σx² at the actual capture
+    // rate. Any refusal keeps the worker fail-closed (no floor is invented);
+    // the controller admission gate is expected to have refused earlier, so a
+    // refusal here is logged as the anomaly it is.
+    let energy_calibration = match capture_device_name.as_deref() {
+        Some(device) => {
+            match runtime_settings.energy_calibration_for_capture(device, sample_rate) {
+                Ok(calibration) => {
+                    info!(
+                        session = %session_id,
+                        device,
+                        sample_rate,
+                        calibration_version = %calibration.version,
+                        min_energy_integral = calibration.min_energy_integral,
+                        min_valley_samples = calibration.min_valley_samples,
+                        "acoustic admission calibration sealed for session"
+                    );
+                    Some(calibration)
+                }
+                Err(refusal) => {
+                    warn!(
+                        session = %session_id,
+                        device,
+                        sample_rate,
+                        %refusal,
+                        "acoustic admission calibration refused; session cannot qualify occurrences"
+                    );
+                    None
+                }
+            }
+        }
+        None => {
+            warn!(
+                session = %session_id,
+                "no capture device bound to session; acoustic admission stays fail-closed"
+            );
+            None
+        }
+    };
     let mut state = match tail_patch {
         Some(tx) => AppleSealState::new_with_tail_patch_for_session(
             sample_rate,

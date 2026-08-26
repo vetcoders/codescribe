@@ -55,33 +55,6 @@ pub struct ProductionSessionReplay {
     pub tail_patch_receipt: Option<TailPatchSessionReceipt>,
 }
 
-/// Build the exact engine session configuration consumed by live capture.
-fn recording_session_config(
-    session_id: String,
-    capture_epoch: u64,
-    runtime_settings: Arc<RuntimeSettingsSnapshot>,
-    acoustic_ledger: Arc<StdMutex<AcousticLedger>>,
-    sample_rate: u32,
-    language: Option<String>,
-    stream_log_path: Option<std::path::PathBuf>,
-    utterance_silence_sec: Option<f32>,
-    layer1: Layer1Decision,
-    lifecycle_events: Option<RecorderLifecycleEvents>,
-) -> SessionConfig {
-    SessionConfig {
-        session_id,
-        capture_epoch,
-        runtime_settings,
-        acoustic_ledger,
-        sample_rate,
-        language,
-        stream_log_path,
-        utterance_silence_sec,
-        layer1,
-        lifecycle_events,
-    }
-}
-
 /// Replay fixture PCM through the production recording-session cone.
 ///
 /// The only differing boundary is PCM ingress: 100 ms in-memory chunks replace
@@ -106,18 +79,19 @@ pub async fn replay_production_session(
     // deleted global engine selector.
     let streaming_engine_label = "live_apple".to_string();
     let utterance_silence_sec = settings.toggle_silence_sec.filter(|&sec| sec >= 0.5);
-    let config = recording_session_config(
-        uuid::Uuid::new_v4().to_string(),
-        1,
+    let config = SessionConfig {
+        session_id: uuid::Uuid::new_v4().to_string(),
+        capture_epoch: 1,
         runtime_settings,
-        acoustic_ledger.clone(),
+        acoustic_ledger: acoustic_ledger.clone(),
         sample_rate,
+        capture_device_name: None,
         language,
-        None,
+        stream_log_path: None,
         utterance_silence_sec,
         layer1,
-        None,
-    );
+        lifecycle_events: None,
+    };
     let events = collect_buffered_engine_events_with_config(samples, config).await?;
     let tail_patch_receipt = TailPatchSessionReceipt::from_events(&events);
     Ok(ProductionSessionReplay {
@@ -352,6 +326,7 @@ impl StreamingRecorder {
 
         // Update sample rate to match real input stream
         let actual_sample_rate = self.recorder.actual_sample_rate();
+        let capture_device_name = self.recorder.last_input_device().map(str::to_owned);
         crate::audio::capture_receipt::publish_open_capture_path(
             crate::audio::capture_receipt::CapturePathMeta::from_open_path(
                 actual_sample_rate,
@@ -381,18 +356,19 @@ impl StreamingRecorder {
             transcription_session(
                 rx,
                 event_sink,
-                recording_session_config(
+                SessionConfig {
                     session_id,
-                    next_capture_epoch,
+                    capture_epoch: next_capture_epoch,
                     runtime_settings,
                     acoustic_ledger,
-                    actual_sample_rate,
+                    sample_rate: actual_sample_rate,
+                    capture_device_name,
                     language,
-                    log_path,
+                    stream_log_path: log_path,
                     utterance_silence_sec,
                     layer1,
-                    Some(lifecycle_events),
-                ),
+                    lifecycle_events: Some(lifecycle_events),
+                },
             )
             .await;
         }));

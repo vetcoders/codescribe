@@ -29,8 +29,12 @@ use std::time::Duration;
 use tracing::{debug, info, warn};
 use uuid::Uuid;
 
-use crate::pipeline::acoustic_ledger::EnergyCalibration;
 use crate::llm::provider::{ProviderKind, WireFamily};
+use crate::pipeline::acoustic_ledger::EnergyCalibration;
+
+use super::energy_calibration::{
+    EnergyCalibrationRefusal, EnergyCalibrationStatus, SealedEnergyCalibration,
+};
 
 /// Serialize settings read/migrate/write transactions. A V1 load writes a
 /// backup and a V3 replacement, so it is a writer even though the public API is
@@ -387,6 +391,10 @@ pub struct SettingsSnapshotProvenance {
     pub defaults_applied: bool,
     /// Unix epoch milliseconds when the loader sealed this provenance.
     pub loaded_at_unix_ms: u64,
+    /// Path the loader consulted for the acoustic calibration artifact.
+    pub energy_calibration_path: PathBuf,
+    /// SHA-256 of the sealed calibration artifact; `None` when missing/refused.
+    pub energy_calibration_sha256: Option<String>,
 }
 
 /// Integrity fingerprint of one immutable runtime settings snapshot — W1-A part.
@@ -941,23 +949,41 @@ pub struct RuntimeSettingsSnapshot {
     provenance: SettingsSnapshotProvenance,
     /// Integrity fingerprint for session evidence.
     digest: SettingsSnapshotDigest,
-    /// Named, measured acoustic calibration for this snapshot. `None` is an
-    /// explicit fail-closed W2 state; W4 supplies measured production values.
-    energy_calibration: Option<EnergyCalibration>,
+    /// Measured acoustic calibration truth read by the same loader pass.
+    /// `Missing`/`Refused` are explicit fail-closed states the admission gate
+    /// names before any microphone opens; nothing here invents a floor.
+    energy_calibration: SealedEnergyCalibration,
+}
+
+/// Everything one loader pass resolved, handed to [`RuntimeSettingsSnapshot::seal_loaded`]
+/// as a unit so no part can be sealed from a different pass.
+pub(crate) struct RuntimeSnapshotParts {
+    pub(crate) values: Config,
+    pub(crate) user_settings: UserSettings,
+    pub(crate) llm_lanes: RuntimeLlmLanes,
+    pub(crate) formatting_policy: FormattingPolicy,
+    pub(crate) ai_execution: RuntimeAiExecution,
+    pub(crate) provenance: SettingsSnapshotProvenance,
+    pub(crate) digest: SettingsSnapshotDigest,
+    pub(crate) energy_calibration: SealedEnergyCalibration,
 }
 
 impl RuntimeSettingsSnapshot {
-    /// Seal values plus persisted intent and AI execution facts in the sole
-    /// settings-loader writer.
+    /// Seal values plus persisted intent, AI execution facts, and measured
+    /// acoustic calibration truth in the sole settings-loader writer.
     pub(crate) fn seal_loaded(
-        values: Config,
-        user_settings: UserSettings,
-        llm_lanes: RuntimeLlmLanes,
-        formatting_policy: FormattingPolicy,
-        ai_execution: RuntimeAiExecution,
-        provenance: SettingsSnapshotProvenance,
-        digest: SettingsSnapshotDigest,
+        parts: RuntimeSnapshotParts,
     ) -> Result<Self, SettingsSnapshotValidationError> {
+        let RuntimeSnapshotParts {
+            values,
+            user_settings,
+            llm_lanes,
+            formatting_policy,
+            ai_execution,
+            provenance,
+            digest,
+            energy_calibration,
+        } = parts;
         SettingsSnapshotValidation::admit(&values, &provenance, &digest)?;
         Ok(Self {
             values,
@@ -967,7 +993,7 @@ impl RuntimeSettingsSnapshot {
             ai_execution,
             provenance,
             digest,
-            energy_calibration: None,
+            energy_calibration,
         })
     }
 
@@ -1006,9 +1032,27 @@ impl RuntimeSettingsSnapshot {
         &self.digest
     }
 
-    /// Calibration captured by the loader for this immutable session.
-    pub fn energy_calibration(&self) -> Option<&EnergyCalibration> {
-        self.energy_calibration.as_ref()
+    /// Loader verdict on the acoustic calibration artifact (sealed / missing /
+    /// refused) for status surfaces and the admission gate.
+    pub fn energy_calibration_status(&self) -> &EnergyCalibrationStatus {
+        self.energy_calibration.status()
+    }
+
+    /// The sealed calibration truth (artifact + status) for this generation.
+    pub fn energy_calibration(&self) -> &SealedEnergyCalibration {
+        &self.energy_calibration
+    }
+
+    /// The ledger calibration for one live capture path at its actual rate,
+    /// or the precise refusal. This is the only way a session obtains an
+    /// [`EnergyCalibration`]; there is no default.
+    pub fn energy_calibration_for_capture(
+        &self,
+        device_name: &str,
+        sample_rate: u32,
+    ) -> Result<EnergyCalibration, EnergyCalibrationRefusal> {
+        self.energy_calibration
+            .for_capture(device_name, sample_rate)
     }
 }
 

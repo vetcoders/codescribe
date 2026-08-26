@@ -38,6 +38,10 @@ pub struct SessionConfig {
     /// The single PCM/evidence/admission owner shared by capture and engines.
     pub acoustic_ledger: Arc<StdMutex<AcousticLedger>>,
     pub sample_rate: u32,
+    /// Name of the live input device the recorder actually opened. The
+    /// session resolves its `EnergyCalibration` profile by this name; `None`
+    /// (offline/buffered harnesses) can never qualify an occurrence.
+    pub capture_device_name: Option<String>,
     pub language: Option<String>,
     pub stream_log_path: Option<std::path::PathBuf>,
     /// VAD silence threshold for utterance boundary (None = use default).
@@ -570,6 +574,7 @@ pub async fn collect_buffered_engine_events(
             runtime_settings,
             acoustic_ledger: Arc::new(StdMutex::new(AcousticLedger::new())),
             sample_rate,
+            capture_device_name: None,
             language,
             stream_log_path: None,
             utterance_silence_sec: None,

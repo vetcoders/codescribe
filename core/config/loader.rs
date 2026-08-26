@@ -24,12 +24,13 @@ use super::defaults::{
     default_assistive_model, default_assistive_provider, default_formatting_model,
     default_formatting_provider, default_llm_endpoint, default_llm_model,
 };
+use super::energy_calibration::{SealedEnergyCalibration, energy_calibration_path};
 use super::settings::{
     DEFAULT_AGENT_WORKSPACE_ROOT, FormattingPolicy, RuntimeAiExecution, RuntimeAiRequestTiming,
     RuntimeFormatterExecution, RuntimeLlmCredential, RuntimeLlmLane, RuntimeLlmLaneKind,
-    RuntimeLlmLanes, RuntimeSettingsSnapshot, SettingsLoaderInput, SettingsSnapshotDigest,
-    SettingsSnapshotProvenance, SettingsSnapshotValidationError, UserSettings,
-    normalize_agent_workspace_roots, parse_agent_workspace_roots,
+    RuntimeLlmLanes, RuntimeSettingsSnapshot, RuntimeSnapshotParts, SettingsLoaderInput,
+    SettingsSnapshotDigest, SettingsSnapshotProvenance, SettingsSnapshotValidationError,
+    UserSettings, normalize_agent_workspace_roots, parse_agent_workspace_roots,
 };
 use super::types::{
     Config, DeferredInsertShortcut, Language, OverlayPositionMode, TranscriptSendMode,
@@ -132,12 +133,19 @@ impl Config {
             .duration_since(UNIX_EPOCH)
             .map(|duration| duration.as_millis() as u64)
             .unwrap_or_default();
+        // Same loader pass, same data dir: the measured acoustic calibration is
+        // read once here and frozen with the snapshot. Absence/refusal seal as
+        // explicit states — the admission gate names them, nothing repairs them.
+        let energy_calibration_path = energy_calibration_path();
+        let energy_calibration = SealedEnergyCalibration::load(&energy_calibration_path);
         let provenance = SettingsSnapshotProvenance {
             settings_json_path: settings_bytes.as_ref().map(|_| input.settings_path.clone()),
             settings_json_sha256,
             env_overlay_keys,
             defaults_applied: true,
             loaded_at_unix_ms,
+            energy_calibration_path,
+            energy_calibration_sha256: energy_calibration.sha256().map(str::to_owned),
         };
         let runtime_formatting_policy = Self::config_runtime_env_var("FORMATTING_LEVEL").ok();
         let formatting_policy = FormattingPolicy::resolve(
@@ -160,13 +168,14 @@ impl Config {
             .as_ref()
             .map(|_| "<redacted:present>".to_string());
         let digest_material = format!(
-            "{digest_values:?}\n{user_settings:?}\n{provenance:?}\nformatting_policy={}\n{}\n{}",
+            "{digest_values:?}\n{user_settings:?}\n{provenance:?}\nformatting_policy={}\n{}\n{}\n{}",
             formatting_policy.as_str(),
             llm_lanes.digest_material(),
             ai_execution.digest_material(),
+            energy_calibration.digest_material(),
         );
         let digest = SettingsSnapshotDigest::from_hex(sha256_hex(digest_material.as_bytes()));
-        RuntimeSettingsSnapshot::seal_loaded(
+        RuntimeSettingsSnapshot::seal_loaded(RuntimeSnapshotParts {
             values,
             user_settings,
             llm_lanes,
@@ -174,7 +183,8 @@ impl Config {
             ai_execution,
             provenance,
             digest,
-        )
+            energy_calibration,
+        })
     }
 
     /// Resolve prompt, retry, and shared Agent/formatter timing once for the

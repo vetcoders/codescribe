@@ -21,6 +21,9 @@
 pub mod cloud_asr;
 /// Serde default helpers and default model/endpoint constants.
 mod defaults;
+/// Measured, versioned acoustic calibration artifact (the `EnergyCalibration`
+/// source of the runtime settings throne).
+pub mod energy_calibration;
 /// macOS Keychain storage for API keys (not plaintext `.env`).
 pub mod keychain;
 /// Load/save: defaults, settings.json, optional `.env`, process env overrides.
@@ -55,6 +58,11 @@ pub use types::{
 pub use cloud_asr::{
     AsrProductMode, AudioEgressConsent, ConsentSource, GatewayMintError, GatewaySessionMint,
     ModeDerivation, ResolvedAsrMode, resolve_asr_product_mode,
+};
+pub use energy_calibration::{
+    ENERGY_CALIBRATION_FILE_NAME, ENERGY_CALIBRATION_SCHEMA, EnergyCalibrationArtifact,
+    EnergyCalibrationProfile, EnergyCalibrationRefusal, EnergyCalibrationStatus,
+    SealedEnergyCalibration, energy_calibration_path,
 };
 pub use portable::{
     ImportPlan, PortableProfile, export_portable, import_portable_apply, import_portable_dry_run,
