@@ -1122,7 +1122,8 @@ final class OverlayStateTests: XCTestCase {
 
   func testAdmissionWarningEnvelopeUnwrapsInnerCode() {
     let notice = OverlayState.admissionNotice(
-      from: "admission_refused: admission_seal_lane_disarmed: seal lane disarmed (CODESCRIBE_SILERO_FUSION is off), so no utterance can commit — Set CODESCRIBE_SILERO_FUSION=1 in ~/.codescribe/.env (the Silero seal lane bounds every committed utterance)."
+      from:
+        "admission_refused: admission_seal_lane_disarmed: seal lane disarmed (CODESCRIBE_SILERO_FUSION is off), so no utterance can commit — Set CODESCRIBE_SILERO_FUSION=1 in ~/.codescribe/.env (the Silero seal lane bounds every committed utterance)."
     )
     XCTAssertNotNil(notice)
     XCTAssertTrue(notice?.headline.contains("CODESCRIBE_SILERO_FUSION=1") == true)

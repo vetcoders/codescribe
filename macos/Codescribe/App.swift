@@ -190,7 +190,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         "Application runtime started with \(runtime.workerCount, privacy: .public) workers: \(runtime.workerNames.joined(separator: ","), privacy: .public)"
       )
     } catch {
-      appLogger.fault("Application runtime failed to start: \(error.localizedDescription, privacy: .public)")
+      appLogger.fault(
+        "Application runtime failed to start: \(error.localizedDescription, privacy: .public)")
       NSApp.terminate(nil)
       return
     }

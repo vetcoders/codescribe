@@ -197,7 +197,11 @@ final class AcousticAdmissionPanelTests: XCTestCase {
     var engine = MockSettingsEngine()
     engine.admissionReadiness = .sampleMissing
     engine.calibrateEnergyObserver = { _ in
-      throw NSError(domain: "Calibration", code: 1, userInfo: [NSLocalizedDescriptionKey: "calibration_refused: only 0.4s of active speech measured"])
+      throw NSError(
+        domain: "Calibration", code: 1,
+        userInfo: [
+          NSLocalizedDescriptionKey: "calibration_refused: only 0.4s of active speech measured"
+        ])
     }
     let model = SettingsViewModel(engine: engine, permissionProbe: MockPermissionProbe(.allGranted))
 

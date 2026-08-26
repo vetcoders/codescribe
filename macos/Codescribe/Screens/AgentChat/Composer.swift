@@ -347,7 +347,7 @@ struct Composer: View {
   private var liveAgentCapture: some View {
     let live = overlay.activeText.trimmingCharacters(in: .whitespacesAndNewlines)
     if store.dictationOwnsSelectedThread,
-      (store.dictationPhase == .preparing || store.dictationPhase == .recording),
+      store.dictationPhase == .preparing || store.dictationPhase == .recording,
       !live.isEmpty
     {
       Text(live)

@@ -174,7 +174,7 @@ final class RealAgentBridgeInstaller: AgentBridgeInstalling {
           ).standardizedFileURL
       }
       ?? homeDirectory
-        .appendingPathComponent(".codescribe/agent-bridge", isDirectory: true)
+      .appendingPathComponent(".codescribe/agent-bridge", isDirectory: true)
     self.runtimeDirectory = bridgeRoot.appendingPathComponent("runtime", isDirectory: true)
     self.receiptURL = bridgeRoot.appendingPathComponent("receipt.json")
   }
