@@ -12,10 +12,8 @@ use reqwest::blocking::multipart::{Form, Part};
 use reqwest::blocking::{Client, Response};
 use serde_json::json;
 
-use crate::config::{Config, RuntimeLlmLane, RuntimeSettingsSnapshot};
 use crate::config::keychain::KEYCHAIN_ACCOUNTS;
-#[cfg(test)]
-use crate::llm::provider::ProviderKind;
+use crate::config::{Config, RuntimeLlmLane, RuntimeSettingsSnapshot};
 use crate::llm::provider::WireFamily;
 
 /// Wall-clock budget for connect and request; probes must stay cheap for Settings.
@@ -104,7 +102,11 @@ pub fn probe_api_key_liveness(
     .find(|lane| lane.credential().key_account() == account);
     let api_key = llm_lane
         .and_then(|lane| lane.credential().api_key().map(str::to_string))
-        .or_else(|| (account == "STT_API_KEY").then(|| config.stt_api_key.clone()).flatten())
+        .or_else(|| {
+            (account == "STT_API_KEY")
+                .then(|| config.stt_api_key.clone())
+                .flatten()
+        })
         .or_else(|| {
             (account == "GITHUB_TOKEN")
                 .then(|| crate::config::keychain::cached_runtime_key(account))
@@ -142,7 +144,7 @@ pub fn probe_api_key_liveness(
     };
 
     if account == "STT_API_KEY" {
-        return probe_stt_key(&client, &config, account, &api_key);
+        return probe_stt_key(&client, config, account, &api_key);
     }
 
     if account == "GITHUB_TOKEN" {
@@ -160,9 +162,7 @@ pub fn probe_api_key_liveness(
     // Probe shape follows the protocol, not the vendor: xAI answers the same
     // Responses ping as OpenAI.
     match lane.wire_family() {
-        WireFamily::OpenAiResponses => {
-            probe_responses_key(&client, lane, account, &api_key)
-        }
+        WireFamily::OpenAiResponses => probe_responses_key(&client, lane, account, &api_key),
         WireFamily::AnthropicMessages => probe_anthropic_key(&client, lane, account, &api_key),
     }
 }

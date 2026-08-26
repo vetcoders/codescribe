@@ -368,19 +368,17 @@ pub async fn run(config: QualityReportConfig) -> Result<PathBuf> {
     let mut entries = Vec::new();
     let mut totals = Totals::default();
     let mut cloud_jobs = prepare_cloud_jobs(&pairs, &config, &input_root);
+    let ctx = ProcessPairContext {
+        config: &config,
+        input_root: &input_root,
+        output_root: &output_root,
+        artifacts_dir: &artifacts_dir,
+        audio_dir: &audio_dir,
+        runtime_settings: &runtime_settings,
+    };
 
     for pair in &pairs {
-        let entry = process_pair(
-            pair,
-            &config,
-            &input_root,
-            &output_root,
-            &artifacts_dir,
-            &audio_dir,
-            &mut cloud_jobs,
-            &runtime_settings,
-        )
-        .await?;
+        let entry = process_pair(pair, &ctx, &mut cloud_jobs).await?;
         totals.accumulate(&entry);
         entries.push(entry);
     }
@@ -474,6 +472,16 @@ fn cloud_reference_credentials(app_config: &Config) -> Option<(String, String)> 
     Some((endpoint.to_string(), api_key.to_string()))
 }
 
+/// Typed context for pair processing to keep function argument counts bounded.
+struct ProcessPairContext<'a> {
+    config: &'a QualityReportConfig,
+    input_root: &'a Path,
+    output_root: &'a Path,
+    artifacts_dir: &'a Path,
+    audio_dir: &'a Path,
+    runtime_settings: &'a RuntimeSettingsSnapshot,
+}
+
 /// Carry one corpus pair through every stage and build its report entry.
 ///
 /// Order: canonicalize both paths inside the input root, publish the audio asset,
@@ -487,23 +495,18 @@ fn cloud_reference_credentials(app_config: &Config) -> Option<(String, String)> 
 /// abort a long run.
 async fn process_pair(
     pair: &CorpusPair,
-    config: &QualityReportConfig,
-    input_root: &Path,
-    output_root: &Path,
-    artifacts_dir: &Path,
-    audio_dir: &Path,
+    ctx: &ProcessPairContext<'_>,
     cloud_jobs: &mut CloudJobSet,
-    runtime_settings: &RuntimeSettingsSnapshot,
 ) -> Result<ReportEntry> {
     let audio_path = pair.audio_path.clone();
     let reference_path = pair.reference_path.clone();
     let id = pair.id.clone();
 
-    let audio_canon = safe_canonicalize_bounded(&audio_path, input_root)
+    let audio_canon = safe_canonicalize_bounded(&audio_path, ctx.input_root)
         .with_context(|| format!("Audio path escapes input root: {}", audio_path.display()))?;
     let reference_canon = if reference_path.exists() {
         Some(
-            safe_canonicalize_bounded(&reference_path, input_root).with_context(|| {
+            safe_canonicalize_bounded(&reference_path, ctx.input_root).with_context(|| {
                 format!(
                     "Reference path escapes input root: {}",
                     reference_path.display()
@@ -516,16 +519,16 @@ async fn process_pair(
 
     let audio_rel_path = ensure_audio_asset(
         &audio_canon,
-        audio_dir,
+        ctx.audio_dir,
         &id,
-        input_root,
-        output_root,
-        config.copy_audio,
+        ctx.input_root,
+        ctx.output_root,
+        ctx.config.copy_audio,
     )?;
 
     let mut errors = Vec::new();
     let reference = if let Some(reference_canon) = reference_canon.as_ref() {
-        match safe_read_to_string_bounded(reference_canon, input_root) {
+        match safe_read_to_string_bounded(reference_canon, ctx.input_root) {
             Ok(content) => {
                 let trimmed = content.trim().to_string();
                 if trimmed.is_empty() {
@@ -551,7 +554,7 @@ async fn process_pair(
     let (_speech_only, vad_stats) = crate::vad::extract_speech(&samples, sample_rate);
 
     let raw_transcript =
-        transcribe_raw_for_report(&samples, sample_rate, config, &mut errors).await;
+        transcribe_raw_for_report(&samples, sample_rate, ctx.config, &mut errors).await;
     let raw_semantics = classify_raw_semantics(
         raw_transcript.as_ref(),
         vad_stats.no_speech_reason.as_deref(),
@@ -570,11 +573,10 @@ async fn process_pair(
     // The retired transcript postprocessor no longer authors a second text.
     let post = raw.clone();
 
-    let ai_formatted = if config.skip_formatting {
+    let ai_formatted = if ctx.config.skip_formatting {
         None
-    } else if !ai_formatting::is_formatting_available(
-        runtime_settings.llm_lanes().formatting(),
-    ) {
+    } else if !ai_formatting::is_formatting_available(ctx.runtime_settings.llm_lanes().formatting())
+    {
         errors.push("AI formatting skipped: missing endpoint/model/key".into());
         None
     } else if let Some(post_text) = post.as_deref() {
@@ -582,9 +584,9 @@ async fn process_pair(
         reset_conversation_for_mode(AiMode::Formatting);
         let ai_result = ai_formatting::format_text(
             post_text,
-            config.language.as_deref(),
+            ctx.config.language.as_deref(),
             false,
-            runtime_settings,
+            ctx.runtime_settings,
         )
         .await;
         info!(
@@ -602,15 +604,17 @@ async fn process_pair(
 
     let cloud = cloud_jobs.take_for(&id, &mut errors).await;
 
-    let metrics_reference = match config.metrics_reference {
+    let metrics_reference = match ctx.config.metrics_reference {
         MetricsReference::Corpus => reference.as_deref(),
         MetricsReference::Cloud => cloud.as_deref(),
         MetricsReference::AiFormatted => ai_formatted.as_deref(),
     };
-    if matches!(config.metrics_reference, MetricsReference::Cloud) && cloud.is_none() {
+    if matches!(ctx.config.metrics_reference, MetricsReference::Cloud) && cloud.is_none() {
         errors.push("Metrics reference missing: cloud transcript unavailable".into());
     }
-    if matches!(config.metrics_reference, MetricsReference::AiFormatted) && ai_formatted.is_none() {
+    if matches!(ctx.config.metrics_reference, MetricsReference::AiFormatted)
+        && ai_formatted.is_none()
+    {
         errors.push("Metrics reference missing: AI formatted transcript unavailable".into());
     }
     let metrics = compute_metrics(
@@ -629,7 +633,7 @@ async fn process_pair(
         reference: reference.clone(),
     };
 
-    write_artifacts(&id, artifacts_dir, output_root, &transcripts)?;
+    write_artifacts(&id, ctx.artifacts_dir, ctx.output_root, &transcripts)?;
 
     Ok(ReportEntry {
         id,
@@ -850,8 +854,7 @@ fn render_markdown(report: &QualityReport) -> String {
     ));
     out.push_str(&format!(
         "- Raw transcript semantics: text_committed={}, no_speech_detected={}\n",
-        report.summary.raw_text_committed,
-        report.summary.raw_no_speech_detected,
+        report.summary.raw_text_committed, report.summary.raw_no_speech_detected,
     ));
 
     out
@@ -1883,8 +1886,8 @@ mod tests {
         assert_eq!(no_speech.state, ReportTranscriptState::NoSpeechDetected);
         assert_eq!(no_speech.reason.as_deref(), Some("vad_no_speech_detected"));
 
-        let empty = classify_raw_semantics(Some(&RawTranscript::default()), None)
-            .expect("semantics");
+        let empty =
+            classify_raw_semantics(Some(&RawTranscript::default()), None).expect("semantics");
         assert_eq!(empty.state, ReportTranscriptState::EmptyTranscript);
 
         let committed = classify_raw_semantics(

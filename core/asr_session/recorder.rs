@@ -319,7 +319,6 @@ impl Layer1SessionOutcome {
     pub fn degrade_reason(&self) -> Option<Layer1DegradeReason> {
         self.degrade
     }
-
 }
 
 /// The per-recording Layer 1 lane: open at start, fan out, drain at stop.
@@ -571,8 +570,7 @@ impl RecorderLayer1Lane {
             IngestVerdict::Accepted => match event {
                 AsrSessionEvent::Partial(transcript) => {
                     self.telemetry.partials_applied += 1;
-                    self.draft
-                        .insert(transcript.utterance_id, transcript.text);
+                    self.draft.insert(transcript.utterance_id, transcript.text);
                 }
                 AsrSessionEvent::Final(transcript) => {
                     self.telemetry.finals_accepted += 1;
@@ -653,7 +651,6 @@ mod tests {
     use super::super::events::{ErrorEvent, SessionId, TranscriptEvent as Transcript};
     use super::super::fake::FakeAsrSessionProvider;
     use super::*;
-    use crate::quality::Layer1MergeMode;
 
     /// Session identity every fixture in this module records under.
     fn session_id() -> SessionId {

@@ -16,8 +16,6 @@
 //! Optional `backend` field is additive.
 
 mod live_stream;
-#[cfg(test)]
-pub(crate) use live_stream::parse_stream_stdout_line;
 pub use live_stream::{LiveStreamEvent, LiveStreamSession, progressive_live_enabled};
 
 use std::fs;
@@ -1926,5 +1924,4 @@ mod tests {
             SpeechAuthInitDecision::NotRequired
         );
     }
-
 }

@@ -876,18 +876,6 @@ impl LocalWhisperEngine {
         Ok(best_lang)
     }
 
-    /// Text-only wrapper over [`Self::transcribe_samples_16k_raw`].
-    fn transcribe_samples_16k(
-        &mut self,
-        samples_16k: &[f32],
-        language: Option<&str>,
-        debug_tokens: bool,
-    ) -> Result<String> {
-        Ok(self
-            .transcribe_samples_16k_raw(samples_16k, language, debug_tokens)?
-            .text)
-    }
-
     /// The decode loop: mel spectrogram, encoder pass, then greedy decoding of
     /// one audio window into text, segments and quality signals.
     ///
@@ -2146,9 +2134,11 @@ mod stt_live_first_v2_red {
         let error = merge_chunk_transcripts(&mut out, next, 2.0)
             .expect_err("segmentless non-empty decode must fail closed");
 
-        assert!(error.to_string().contains(
-            "overlap assembly refused non-empty decode without timestamped segments"
-        ));
+        assert!(
+            error
+                .to_string()
+                .contains("overlap assembly refused non-empty decode without timestamped segments")
+        );
         assert_eq!(out.text, "one two");
         assert_eq!(out.segments.len(), 1);
         assert_eq!(out.segments[0].text, "one two");
@@ -2176,9 +2166,11 @@ mod stt_live_first_v2_red {
         let error = merge_chunk_transcripts(&mut out, next, 3.0)
             .expect_err("accumulated text without segments must fail closed");
 
-        assert!(error
-            .to_string()
-            .contains("overlap assembly requires segment provenance for accumulated text"));
+        assert!(
+            error
+                .to_string()
+                .contains("overlap assembly requires segment provenance for accumulated text")
+        );
         assert_eq!(out.text, "one two three");
         assert!(out.segments.is_empty());
     }
@@ -2218,9 +2210,11 @@ mod stt_live_first_v2_red {
 
         let error = merge_chunk_transcripts(&mut out, middle, 2.0)
             .expect_err("segmentless middle decode must fail closed");
-        assert!(error.to_string().contains(
-            "overlap assembly refused non-empty decode without timestamped segments"
-        ));
+        assert!(
+            error
+                .to_string()
+                .contains("overlap assembly refused non-empty decode without timestamped segments")
+        );
         assert_eq!(out.text, "one two");
         assert_eq!(out.segments.len(), 1);
         assert_eq!(out.segments[0].text, "one two");

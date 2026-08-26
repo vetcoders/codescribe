@@ -13,7 +13,7 @@
 //! tail of the delivered text.
 
 use crate::asr_session::recorder::{
-    Layer1Decision, RecorderLifecycleEvents, RecorderLifecycleHandle, recorder_lifecycle_channel,
+    Layer1Decision, RecorderLifecycleHandle, recorder_lifecycle_channel,
 };
 use crate::audio::recorder::{Recorder, RecorderConfig};
 use crate::config::{RuntimeSettingsSnapshot, UserSettings};
@@ -508,7 +508,6 @@ mod tests {
     use super::*;
     use crate::audio::chunker::{SpeechEvent, SpeechSession, VadGateMode};
     use crate::audio::load_audio_file;
-    use crate::stt::whisper;
     use crate::vad;
     use serial_test::serial;
     use std::fs;
@@ -881,18 +880,14 @@ mod tests {
                 accounted_speech_vad_samples =
                     accounted_speech_vad_samples.saturating_add(event_speech);
                 match event {
-                    SpeechEvent::Utterance(samples) => {
+                    SpeechEvent::Utterance => {
                         interim_events = interim_events.saturating_add(1);
-                        assert!(
-                            !samples.is_empty(),
-                            "busy interim event should never carry empty audio"
-                        );
                         assert!(
                             event_speech > 0,
                             "busy interim event should carry positive speech sample accounting"
                         );
                     }
-                    SpeechEvent::UtteranceFinal(_) => {
+                    SpeechEvent::UtteranceFinal => {
                         panic!("unexpected UtteranceFinal before flush in long-silence test")
                     }
                     SpeechEvent::Chunk(_) => {
@@ -911,9 +906,9 @@ mod tests {
         let flush_speech = session.take_event_speech_vad_samples();
         accounted_speech_vad_samples = accounted_speech_vad_samples.saturating_add(flush_speech);
 
-        let flush_len = match flush {
-            Some(SpeechEvent::UtteranceFinal(samples)) => samples.len(),
-            Some(SpeechEvent::Utterance(_)) => {
+        match flush {
+            Some(SpeechEvent::UtteranceFinal) => (),
+            Some(SpeechEvent::Utterance) => {
                 panic!("flush should emit final utterance event")
             }
             Some(SpeechEvent::Chunk(_)) => {
@@ -921,7 +916,6 @@ mod tests {
             }
             None => panic!("flush should preserve active Supervisor boundary under busy load"),
         };
-        assert!(flush_len > 0, "flush final event should include audio");
         assert!(
             flush_speech > 0,
             "flush final event should carry pending speech sample accounting"
@@ -1086,9 +1080,8 @@ mod tests {
             let speech_samples: usize = events
                 .iter()
                 .map(|e| match e {
-                    SpeechEvent::Utterance(s)
-                    | SpeechEvent::UtteranceFinal(s)
-                    | SpeechEvent::Chunk(s) => s.len(),
+                    SpeechEvent::Utterance | SpeechEvent::UtteranceFinal => 0,
+                    SpeechEvent::Chunk(s) => s.len(),
                 })
                 .sum();
             let speech_sec = speech_samples as f32 / sample_rate as f32;
@@ -1147,5 +1140,4 @@ mod tests {
 
         assert!(all_pass, "Some files had zero speech detection");
     }
-
 }

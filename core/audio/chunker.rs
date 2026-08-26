@@ -62,11 +62,11 @@ pub(crate) enum SpeechEvent {
     /// path. Never produced while buffered (utterance) mode is the only wiring.
     Chunk(Vec<f32>),
     /// Interim utterance slice emitted during long continuous speech to keep streaming responsive.
-    Utterance(Vec<f32>),
+    Utterance,
     /// Final utterance slice emitted when VAD determines the segment ended (or on flush).
     ///
     /// Consumers can use this to distinguish "preview" from "commit" boundaries.
-    UtteranceFinal(Vec<f32>),
+    UtteranceFinal,
 }
 
 // FORGOTTEN-GEM(vc-prune 2026-06-10): parked code, intentionally kept —
@@ -133,18 +133,14 @@ pub(crate) struct GateConfig {
     pub mode: VadGateMode,
 }
 
-/// VAD failure telemetry drained by the caller.
-///
-/// Split into pending (since last drain) and total (session lifetime) counters
-/// so a consumer can both rate-limit warnings and report a session summary.
+/// VAD failure telemetry drained by tests.
+#[cfg(test)]
 #[derive(Debug, Clone, Copy, Default)]
 pub(crate) struct VadErrorStats {
     /// `predict()` failures since the last drain.
     pub predict_errors: u64,
     /// Frames processed with no VAD model loaded, since the last drain.
     pub unavailable_frames: u64,
-    /// `predict()` failures over the whole session.
-    pub total_predict_errors: u64,
     /// Frames processed with no VAD model loaded, over the whole session.
     pub total_unavailable_frames: u64,
 }
@@ -235,8 +231,6 @@ pub(crate) struct SpeechSession {
     /// Boundary observations waiting for the session-level Silero ingress.
     /// FIFO order is the PCM order in which the iterator produced them.
     vad_boundaries: VecDeque<VadBoundaryEvidence>,
-    /// Wall-clock instant when this session was created.
-    session_start: Instant,
     /// Total number of Silero predict() errors in this session.
     vad_predict_errors_total: u64,
     /// Predict errors since last telemetry drain.
@@ -343,7 +337,6 @@ impl SpeechSession {
             segment_peak_prob: 0.0,
             last_boundary_prob: 0.0,
             vad_boundaries: VecDeque::new(),
-            session_start: Instant::now(),
             vad_predict_errors_total: 0,
             vad_predict_errors_pending: 0,
             vad_unavailable_frames_total: 0,
@@ -364,6 +357,7 @@ impl SpeechSession {
     /// Same as [`Self::new_utterance`] but with the closing-silence threshold
     /// pinned by the caller (clamped to 0.1–10 s), so a lane that knows its own
     /// pause cadence is not bound to the global default.
+    #[cfg(test)]
     pub fn new_utterance_with_silence(sample_rate: u32, max_silence_sec: f32) -> Self {
         let interim_sec = utterance_interim_sec();
         Self::new_utterance_with_interim_and_silence(
@@ -472,7 +466,6 @@ impl SpeechSession {
             segment_peak_prob: 0.0,
             last_boundary_prob: 0.0,
             vad_boundaries: VecDeque::new(),
-            session_start: Instant::now(),
             vad_predict_errors_total: 0,
             vad_predict_errors_pending: 0,
             vad_unavailable_frames_total: 0,
@@ -542,9 +535,9 @@ impl SpeechSession {
                     if self.pending_samples.len() >= max_utterance_samples {
                         events.push(self.emit_final());
                     } else if self.pending_samples.len() >= interim_limit {
-                        let chunk = std::mem::take(&mut self.pending_samples);
+                        let _chunk = std::mem::take(&mut self.pending_samples);
                         self.last_append_at = Instant::now();
-                        events.push(SpeechEvent::Utterance(chunk));
+                        events.push(SpeechEvent::Utterance);
                     }
                 }
             }
@@ -700,10 +693,7 @@ impl SpeechSession {
                         chunk.len(),
                         chunk.len() as f32 / self.output_sample_rate as f32
                     );
-                    self.push_event_with_speech_vad_samples(
-                        &mut events,
-                        SpeechEvent::Utterance(chunk),
-                    );
+                    self.push_event_with_speech_vad_samples(&mut events, SpeechEvent::Utterance);
                 }
                 self.last_emit_raw = end;
                 self.trim_raw_buffer(end.saturating_sub(self.pre_roll_raw));
@@ -748,7 +738,7 @@ impl SpeechSession {
                         .push_event_with_speech_vad_samples(&mut events, SpeechEvent::Chunk(chunk)),
                     SpeechMode::Utterance { .. } => self.push_event_with_speech_vad_samples(
                         &mut events,
-                        SpeechEvent::UtteranceFinal(chunk),
+                        SpeechEvent::UtteranceFinal,
                     ),
                 }
             }
@@ -833,7 +823,7 @@ impl SpeechSession {
                     self.last_emit_raw = emit_end;
                     return Some(match self.mode {
                         SpeechMode::Stream { .. } => SpeechEvent::Chunk(chunk),
-                        SpeechMode::Utterance { .. } => SpeechEvent::UtteranceFinal(chunk),
+                        SpeechMode::Utterance { .. } => SpeechEvent::UtteranceFinal,
                     });
                 }
                 self.last_emit_raw = end;
@@ -884,7 +874,7 @@ impl SpeechSession {
         self.last_append_at = Instant::now();
         match self.mode {
             SpeechMode::Stream { .. } => SpeechEvent::Chunk(chunk),
-            SpeechMode::Utterance { .. } => SpeechEvent::UtteranceFinal(chunk),
+            SpeechMode::Utterance { .. } => SpeechEvent::UtteranceFinal,
         }
     }
 
@@ -1145,12 +1135,6 @@ impl SpeechSession {
         }
     }
 
-    /// Sample rate of the audio carried by emitted events. In Supervisor mode
-    /// this is the capture rate, not Silero's 16 kHz working rate.
-    pub fn output_sample_rate(&self) -> u32 {
-        self.output_sample_rate
-    }
-
     /// Whether Silero actually loaded for this session.
     ///
     /// A missing model is not fatal here — [`Self::predict_speech_prob`] reads
@@ -1161,33 +1145,15 @@ impl SpeechSession {
         self.vad.is_some()
     }
 
-    /// Speech probability at the last VAD Start/End boundary.
-    pub(crate) fn boundary_prob(&self) -> f32 {
-        self.last_boundary_prob
-    }
-
-    /// Milliseconds elapsed since session creation (wall-clock).
-    pub(crate) fn session_elapsed_ms(&self) -> u64 {
-        self.session_start.elapsed().as_millis() as u64
-    }
-
-    /// Peak speech probability for the current utterance/segment.
-    pub(crate) fn segment_speech_prob(&self) -> f32 {
-        let prob = self.segment_peak_prob.max(self.last_boundary_prob);
-        if prob > 0.0 {
-            prob
-        } else {
-            self.max_speech_prob
-        }
-    }
-
     /// Silero-positive speech samples (16k domain) for the next emitted speech event.
+    #[cfg(test)]
     pub(crate) fn take_event_speech_vad_samples(&mut self) -> u64 {
         self.event_speech_vad_samples.pop_front().unwrap_or(0)
     }
 
     /// Drain VAD failure telemetry, or `None` when nothing failed since the last
     /// call. The pending counters reset; the totals do not.
+    #[cfg(test)]
     pub(crate) fn take_vad_error_stats(&mut self) -> Option<VadErrorStats> {
         let predict_errors = std::mem::take(&mut self.vad_predict_errors_pending);
         let unavailable_frames = std::mem::take(&mut self.vad_unavailable_frames_pending);
@@ -1197,7 +1163,6 @@ impl SpeechSession {
         Some(VadErrorStats {
             predict_errors,
             unavailable_frames,
-            total_predict_errors: self.vad_predict_errors_total,
             total_unavailable_frames: self.vad_unavailable_frames_total,
         })
     }
@@ -1899,17 +1864,17 @@ mod tests {
         );
     }
 
-    /// Chunk, Utterance, and UtteranceFinal carry sample vectors as constructed.
+    /// Chunk carries sample vector, Utterance and UtteranceFinal are unit boundary discriminants.
     #[test]
     fn speech_event_variants() {
         let chunk = SpeechEvent::Chunk(vec![1.0, 2.0]);
         assert!(matches!(chunk, SpeechEvent::Chunk(v) if v.len() == 2));
 
-        let utt = SpeechEvent::Utterance(vec![3.0]);
-        assert!(matches!(utt, SpeechEvent::Utterance(v) if v.len() == 1));
+        let utt = SpeechEvent::Utterance;
+        assert!(matches!(utt, SpeechEvent::Utterance));
 
-        let final_utt = SpeechEvent::UtteranceFinal(vec![4.0, 5.0, 6.0]);
-        assert!(matches!(final_utt, SpeechEvent::UtteranceFinal(v) if v.len() == 3));
+        let final_utt = SpeechEvent::UtteranceFinal;
+        assert!(matches!(final_utt, SpeechEvent::UtteranceFinal));
     }
 
     /// Verify that raw_buffer is trimmed during long continuous speech in stream mode.
@@ -2040,7 +2005,7 @@ mod tests {
         // feed() requires non-empty input to run supervisor bookkeeping.
         let events = session.feed(&[0.0], sr);
         assert!(
-            matches!(events.as_slice(), [SpeechEvent::UtteranceFinal(_)]),
+            matches!(events.as_slice(), [SpeechEvent::UtteranceFinal]),
             "Expected completed segment emission, got {} events",
             events.len()
         );
@@ -2076,7 +2041,7 @@ mod tests {
 
         let flush = session.flush();
         assert!(
-            matches!(flush, Some(SpeechEvent::UtteranceFinal(_))),
+            matches!(flush, Some(SpeechEvent::UtteranceFinal)),
             "flush should emit the open Supervisor segment"
         );
         assert_eq!(
@@ -2114,18 +2079,13 @@ mod tests {
         session.pending_event_speech_vad_samples = vad::VAD_SAMPLE_RATE as u64 * 2;
 
         let flush = session.flush();
-        let tail_len = match flush {
-            Some(SpeechEvent::UtteranceFinal(samples)) => samples.len(),
-            Some(SpeechEvent::Utterance(_)) | Some(SpeechEvent::Chunk(_)) => {
+        match flush {
+            Some(SpeechEvent::UtteranceFinal) => (),
+            Some(SpeechEvent::Utterance) | Some(SpeechEvent::Chunk(_)) => {
                 panic!("flush must emit UtteranceFinal in utterance mode")
             }
             None => panic!("flush should emit the active Supervisor segment"),
         };
-        assert_eq!(
-            tail_len,
-            total_samples - already_emitted,
-            "flush should emit only the previously un-emitted tail"
-        );
         assert_eq!(
             session.take_event_speech_vad_samples(),
             vad::VAD_SAMPLE_RATE as u64,
@@ -2165,18 +2125,13 @@ mod tests {
         session.pending_event_speech_vad_samples = vad::VAD_SAMPLE_RATE as u64;
 
         let flush = session.flush();
-        let len = match flush {
-            Some(SpeechEvent::UtteranceFinal(samples)) => samples.len(),
-            Some(SpeechEvent::Utterance(_)) | Some(SpeechEvent::Chunk(_)) => {
+        match flush {
+            Some(SpeechEvent::UtteranceFinal) => (),
+            Some(SpeechEvent::Utterance) | Some(SpeechEvent::Chunk(_)) => {
                 panic!("flush must emit UtteranceFinal in utterance mode")
             }
             None => panic!("flush should emit tail even when segment start is trimmed"),
         };
-        assert_eq!(
-            len,
-            session.raw_cursor - tail_start,
-            "flush should emit from last emitted boundary to raw_cursor"
-        );
         assert_eq!(
             session.take_event_speech_vad_samples(),
             vad::VAD_SAMPLE_RATE as u64,
@@ -2210,17 +2165,13 @@ mod tests {
         session.pending_event_speech_vad_samples = 0;
 
         let flush = session.flush();
-        let len = match flush {
-            Some(SpeechEvent::UtteranceFinal(samples)) => samples.len(),
-            Some(SpeechEvent::Utterance(_)) | Some(SpeechEvent::Chunk(_)) => {
+        match flush {
+            Some(SpeechEvent::UtteranceFinal) => (),
+            Some(SpeechEvent::Utterance) | Some(SpeechEvent::Chunk(_)) => {
                 panic!("flush must emit UtteranceFinal in utterance mode")
             }
             None => panic!("flush should emit a final boundary window"),
         };
-        assert_eq!(
-            len, preroll,
-            "flush should emit preroll-sized context when no unseen tail remains"
-        );
         assert_eq!(
             session.take_event_speech_vad_samples(),
             0,

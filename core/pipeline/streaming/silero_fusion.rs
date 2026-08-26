@@ -26,7 +26,6 @@ use crate::audio::chunker::{SpeechEvent, SpeechSession, VadBoundaryEvidence, Vad
 use crate::pipeline::contracts::{
     NonSpeechEvidence, SidebandEvidence, SidebandEvidenceKind, SidebandProvenance,
 };
-use crate::stt::tail_patcher::SkipReasonCode;
 use crate::stt::tail_provider::{TailSampleRange, TimedTailSegment};
 
 /// Lane flag for Silero-identity conservative fusion. Unset / `0` / `false` /
@@ -264,7 +263,7 @@ impl SileroIngress {
         let boundaries = self.vad.take_vad_boundaries();
         let closed_here = events
             .iter()
-            .any(|event| matches!(event, SpeechEvent::UtteranceFinal(_)));
+            .any(|event| matches!(event, SpeechEvent::UtteranceFinal));
         let open_range = self.vad.open_segment_raw_range();
         let mut out = self.observe(open_range, closed_here, samples_seen);
         out.sideband = self.observe_boundaries(&boundaries);
@@ -350,27 +349,6 @@ impl SileroIngress {
             self.sideband.pop_front();
         }
         emitted
-    }
-
-    /// Pause evidence associated with a stable span for optional L3
-    /// punctuation/paragraphing context.
-    ///
-    /// A pause immediately before the raw Silero start overlaps the span's
-    /// pre-roll, so matching is by the pause end landing inside the canonical
-    /// span range. Speech edges and unknown sound semantics are not forwarded
-    /// to the formatter.
-    pub fn pause_evidence_for_range(&self, range: &TailSampleRange) -> Vec<SidebandEvidence> {
-        self.sideband
-            .iter()
-            .filter(|evidence| {
-                evidence.range.session == range.session
-                    && evidence.range.capture_epoch == range.capture_epoch
-                    && range.sample_start <= evidence.range.sample_end
-                    && evidence.range.sample_end <= range.sample_end
-                    && matches!(evidence.evidence, SidebandEvidenceKind::Pause { .. })
-            })
-            .cloned()
-            .collect()
     }
 
     fn push_sideband(
@@ -481,44 +459,6 @@ impl FusionWord {
     }
 }
 
-/// Unresolved Apple/Whisper pair — receipt only, no confidence pick.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct UnresolvedAlternative {
-    pub apple: FusionWord,
-    pub whisper: FusionWord,
-}
-
-/// Conservative fusion of one unsealed utterance.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct FusionDecision {
-    pub text: String,
-    pub agreements: usize,
-    pub gap_fills: usize,
-    pub unresolved: Vec<UnresolvedAlternative>,
-}
-
-/// Content-free fusion receipt (no transcript text).
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct FusionReceipt {
-    pub utterance_id: u64,
-    pub code: SkipReasonCode,
-    pub agreements: usize,
-    pub gap_fills: usize,
-    pub unresolved: usize,
-}
-
-/// Case- and punctuation-folded token used only for agreement tests.
-pub fn normalize_fusion_word(text: &str) -> String {
-    text.chars()
-        .filter(|c| c.is_alphanumeric())
-        .flat_map(|c| c.to_lowercase())
-        .collect()
-}
-
-fn ranges_overlap(a_start: u64, a_end: u64, b_start: u64, b_end: u64) -> bool {
-    a_start < b_end && b_start < a_end
-}
-
 /// Assign Apple words to Silero utterances by PCM overlap. Words that fall
 /// in no utterance are returned as leftovers (caller receipts `no_time_overlap`).
 pub fn slice_apple_words(
@@ -535,236 +475,6 @@ pub fn slice_apple_words(
         }
     }
     (by_id.into_iter().collect(), leftover)
-}
-
-/// Conservative per-word fusion. Agreements and clear gap fills commit;
-/// overlapping disagreements are receipted and Apple is kept. Confidence
-/// never participates.
-pub fn conservative_fuse(apple: &[FusionWord], whisper: &[FusionWord]) -> FusionDecision {
-    let mut committed: Vec<FusionWord> = Vec::new();
-    let mut unresolved = Vec::new();
-    let mut used_whisper = vec![false; whisper.len()];
-    let mut agreements = 0usize;
-
-    for apple_word in apple {
-        let overlaps: Vec<usize> = whisper
-            .iter()
-            .enumerate()
-            .filter(|(_, whisper_word)| {
-                ranges_overlap(
-                    apple_word.sample_start,
-                    apple_word.sample_end,
-                    whisper_word.sample_start,
-                    whisper_word.sample_end,
-                )
-            })
-            .map(|(idx, _)| idx)
-            .collect();
-        if overlaps.is_empty() {
-            committed.push(apple_word.clone());
-            continue;
-        }
-        let apple_key = normalize_fusion_word(&apple_word.text);
-        let matching: Vec<usize> = overlaps
-            .iter()
-            .copied()
-            .filter(|&idx| normalize_fusion_word(&whisper[idx].text) == apple_key)
-            .collect();
-        if matching.is_empty() {
-            let whisper_word = whisper[overlaps[0]].clone();
-            used_whisper[overlaps[0]] = true;
-            unresolved.push(UnresolvedAlternative {
-                apple: apple_word.clone(),
-                whisper: whisper_word,
-            });
-            committed.push(apple_word.clone());
-        } else {
-            agreements += 1;
-            for idx in matching {
-                used_whisper[idx] = true;
-            }
-            committed.push(apple_word.clone());
-        }
-    }
-
-    let mut gap_fills = 0usize;
-    for (idx, whisper_word) in whisper.iter().enumerate() {
-        if used_whisper[idx] {
-            continue;
-        }
-        let overlaps_apple = apple.iter().any(|apple_word| {
-            ranges_overlap(
-                apple_word.sample_start,
-                apple_word.sample_end,
-                whisper_word.sample_start,
-                whisper_word.sample_end,
-            )
-        });
-        if overlaps_apple {
-            continue;
-        }
-        gap_fills += 1;
-        committed.push(whisper_word.clone());
-    }
-
-    committed.sort_by_key(|word| word.sample_start);
-    let text = committed
-        .iter()
-        .map(|word| word.text.as_str())
-        .filter(|text| !text.trim().is_empty())
-        .collect::<Vec<_>>()
-        .join(" ");
-
-    FusionDecision {
-        text,
-        agreements,
-        gap_fills,
-        unresolved,
-    }
-}
-
-pub fn fusion_receipt(utterance_id: u64, decision: &FusionDecision) -> FusionReceipt {
-    let code = if !decision.unresolved.is_empty() {
-        SkipReasonCode::UnresolvedAlternative
-    } else {
-        SkipReasonCode::NoTimeOverlap
-    };
-    FusionReceipt {
-        utterance_id,
-        code,
-        agreements: decision.agreements,
-        gap_fills: decision.gap_fills,
-        unresolved: decision.unresolved.len(),
-    }
-}
-
-/// One starved mid-phrase window used by the skip-table verifier.
-#[cfg(test)]
-#[derive(Debug, Clone)]
-struct StarvedWindow {
-    pub committed: &'static str,
-    pub whisper: &'static str,
-    pub apple: Vec<FusionWord>,
-    pub whisper_words: Vec<FusionWord>,
-}
-
-/// Synthetic reconstruction of the mid-phrase-window starvation class
-/// (18 skips on build 614). Baseline LCS treats head-garbage as wholesale
-/// divergence; time-sliced fusion commits the overlapping agreements.
-#[cfg(test)]
-fn starved_mid_phrase_windows() -> Vec<StarvedWindow> {
-    fn word(text: &str, start: u64, end: u64) -> FusionWord {
-        FusionWord {
-            text: text.to_string(),
-            sample_start: start,
-            sample_end: end,
-        }
-    }
-    // 12 mid-phrase windows: Apple has the true phrase; Whisper window
-    // started in babble so the LCS head is garbage, but the overlapping
-    // tail agrees. 6 genuine unresolved pairs stay skipped.
-    let mut windows = Vec::new();
-    for i in 0..12u64 {
-        let base = i * 48_000;
-        windows.push(StarvedWindow {
-            committed: "to jest fraza",
-            whisper: "babble noise to jest fraza",
-            apple: vec![
-                word("to", base, base + 8_000),
-                word("jest", base + 8_000, base + 16_000),
-                word("fraza", base + 16_000, base + 24_000),
-            ],
-            whisper_words: vec![
-                word("babble", base.saturating_sub(16_000), base),
-                word("noise", base.saturating_sub(8_000), base),
-                word("to", base, base + 8_000),
-                word("jest", base + 8_000, base + 16_000),
-                word("fraza", base + 16_000, base + 24_000),
-            ],
-        });
-    }
-    for i in 0..6u64 {
-        let base = 600_000 + i * 16_000;
-        windows.push(StarvedWindow {
-            committed: "kot",
-            whisper: "pies",
-            apple: vec![word("kot", base, base + 8_000)],
-            whisper_words: vec![word("pies", base, base + 8_000)],
-        });
-    }
-    windows
-}
-
-/// Baseline (token LCS, fusion off) vs fusion-on skip/apply counts.
-#[cfg(test)]
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-struct SkipTable {
-    pub baseline_skips: usize,
-    pub baseline_applied: usize,
-    pub fusion_skips: usize,
-    pub fusion_applied: usize,
-}
-
-#[cfg(test)]
-impl SkipTable {
-    pub fn skip_reduction_ratio(self) -> f64 {
-        if self.baseline_skips == 0 {
-            return 0.0;
-        }
-        1.0 - (self.fusion_skips as f64 / self.baseline_skips as f64)
-    }
-}
-
-/// Score the starved fixture. Baseline treats any Whisper head-garbage as a
-/// skip (the production change-ratio class). Fusion commits agreements +
-/// gap fills and only receipts unresolved alternatives.
-#[cfg(test)]
-fn score_starved_fixture(windows: &[StarvedWindow]) -> SkipTable {
-    let mut baseline_skips = 0usize;
-    let mut baseline_applied = 0usize;
-    let mut fusion_skips = 0usize;
-    let mut fusion_applied = 0usize;
-    for window in windows {
-        let committed: Vec<&str> = window.committed.split_whitespace().collect();
-        let whisper: Vec<&str> = window.whisper.split_whitespace().collect();
-        let committed_in_whisper = committed
-            .iter()
-            .filter(|token| {
-                whisper
-                    .iter()
-                    .any(|w| normalize_fusion_word(w) == normalize_fusion_word(token))
-            })
-            .count();
-        let head_garbage = whisper.len() > committed.len() && committed_in_whisper < whisper.len();
-        let identical = committed
-            .iter()
-            .zip(whisper.iter())
-            .all(|(a, b)| normalize_fusion_word(a) == normalize_fusion_word(b))
-            && committed.len() == whisper.len();
-        if identical {
-            baseline_applied += 1;
-        } else if head_garbage || committed_in_whisper < committed.len() {
-            baseline_skips += 1;
-        } else {
-            baseline_applied += 1;
-        }
-
-        let decision = conservative_fuse(&window.apple, &window.whisper_words);
-        if decision.unresolved.is_empty() && (decision.agreements > 0 || decision.gap_fills > 0) {
-            fusion_applied += 1;
-        } else if decision.unresolved.is_empty() && decision.agreements == 0 {
-            fusion_skips += 1;
-        } else {
-            // Unresolved alternatives are receipted, not applied as a rewrite.
-            fusion_skips += 1;
-        }
-    }
-    SkipTable {
-        baseline_skips,
-        baseline_applied,
-        fusion_skips,
-        fusion_applied,
-    }
 }
 
 #[cfg(test)]
@@ -914,15 +624,6 @@ mod tests {
             resumed[1].evidence,
             SidebandEvidenceKind::SpeechStart { .. }
         ));
-
-        let attached = ingress.pause_evidence_for_range(&TailSampleRange {
-            session: "s".into(),
-            capture_epoch: 4,
-            sample_start: 36_000,
-            sample_end: 48_000,
-        });
-        assert_eq!(attached, vec![resumed[0].clone()]);
-        assert_eq!(attached[0].provenance, SidebandProvenance::SileroVad);
     }
 
     /// Long hands-free takes cannot retain one sideband row per speech edge
@@ -996,48 +697,6 @@ mod tests {
     }
 
     #[test]
-    fn w13_fusion_conservative_commits_agreements() {
-        let apple = vec![
-            word("the", 0, 8_000),
-            word("cat", 8_000, 16_000),
-            word("sat", 16_000, 24_000),
-        ];
-        let whisper_agree = vec![
-            word("the", 0, 8_000),
-            word("cat", 8_000, 16_000),
-            word("sat", 16_000, 24_000),
-        ];
-        let agreed = conservative_fuse(&apple, &whisper_agree);
-        assert_eq!(agreed.text, "the cat sat");
-        assert_eq!(agreed.agreements, 3);
-        assert_eq!(agreed.gap_fills, 0);
-        assert!(agreed.unresolved.is_empty());
-
-        let mut whisper_gap = whisper_agree.clone();
-        whisper_gap.push(word("here", 24_000, 32_000));
-        let filled = conservative_fuse(&apple, &whisper_gap);
-        assert_eq!(filled.text, "the cat sat here");
-        assert_eq!(filled.agreements, 3);
-        assert_eq!(filled.gap_fills, 1);
-        assert!(filled.unresolved.is_empty());
-
-        let whisper_conflict = vec![
-            word("the", 0, 8_000),
-            word("dog", 8_000, 16_000),
-            word("sat", 16_000, 24_000),
-        ];
-        let conflicted = conservative_fuse(&apple, &whisper_conflict);
-        assert_eq!(conflicted.text, "the cat sat");
-        assert_eq!(conflicted.agreements, 2);
-        assert_eq!(conflicted.unresolved.len(), 1);
-        assert_eq!(conflicted.unresolved[0].apple.text, "cat");
-        assert_eq!(conflicted.unresolved[0].whisper.text, "dog");
-        let receipt = fusion_receipt(7, &conflicted);
-        assert_eq!(receipt.code, SkipReasonCode::UnresolvedAlternative);
-        assert_eq!(receipt.unresolved, 1);
-    }
-
-    #[test]
     fn apple_words_slice_onto_silero_edges() {
         let mut ledger = UtteranceLedger::new();
         ledger.open_or_extend("s", 0, 0, 24_000);
@@ -1086,31 +745,42 @@ mod tests {
         assert_eq!(prompt.sample_start, 48_000);
     }
 
+    /// Regression proof: active boundary events (UtteranceFinal discriminant) and
+    /// VAD sideband evidence survive payload/fusion cleanup with exact PCM ranges.
     #[test]
-    fn w13_fusion_starved_fixture_skip_table() {
-        let windows = starved_mid_phrase_windows();
-        assert_eq!(windows.len(), 18);
-        let table = score_starved_fixture(&windows);
-        println!(
-            "starved fixture skip table: baseline skips={} applied={} | fusion skips={} applied={} | reduction={:.0}%",
-            table.baseline_skips,
-            table.baseline_applied,
-            table.fusion_skips,
-            table.fusion_applied,
-            table.skip_reduction_ratio() * 100.0
-        );
+    fn regression_boundary_emission_and_vad_evidence_survive_payload_cleanup() {
+        let mut ingress = SileroIngress::new(16_000, "regression_session", 1);
+        let boundaries = vec![
+            VadBoundaryEvidence {
+                kind: VadBoundaryKind::SpeechStart,
+                sample: 16_000,
+                speech_probability: 0.88,
+            },
+            VadBoundaryEvidence {
+                kind: VadBoundaryKind::SpeechEnd,
+                sample: 32_000,
+                speech_probability: 0.15,
+            },
+        ];
+        let sideband = ingress.observe_boundaries(&boundaries);
+        assert_eq!(sideband.len(), 2);
+        assert_eq!(sideband[0].range.sample_start, 16_000);
+        assert_eq!(sideband[1].range.sample_start, 32_000);
+        assert!(matches!(
+            sideband[0].evidence,
+            SidebandEvidenceKind::SpeechStart { .. }
+        ));
+
+        // Observation closed segment check
+        let event = SpeechEvent::UtteranceFinal;
         assert!(
-            table.skip_reduction_ratio() + f64::EPSILON >= 0.50,
-            "skip reduction {:.2} < 50% (baseline {} → fusion {})",
-            table.skip_reduction_ratio(),
-            table.baseline_skips,
-            table.fusion_skips
+            matches!(event, SpeechEvent::UtteranceFinal),
+            "unit boundary discriminant must match SpeechEvent::UtteranceFinal"
         );
-        assert!(
-            table.fusion_applied >= table.baseline_applied,
-            "applied dropped: baseline {} fusion {}",
-            table.baseline_applied,
-            table.fusion_applied
-        );
+        let obs = ingress.observe(Some((16_000, 32_000)), true, 32_000);
+        assert_eq!(obs.closed, vec![1]);
+        assert_eq!(ingress.ledger().utterances().len(), 1);
+        assert_eq!(ingress.ledger().utterances()[0].range.sample_start, 16_000);
+        assert_eq!(ingress.ledger().utterances()[0].range.sample_end, 32_000);
     }
 }

@@ -401,12 +401,6 @@ pub fn init() -> Result<()> {
 }
 
 #[cfg(test)]
-pub(crate) fn reset_test_init_calls() {
-    TEST_INIT_CALLS.store(0, std::sync::atomic::Ordering::SeqCst);
-    TEST_LOAD_CALLS.store(0, std::sync::atomic::Ordering::SeqCst);
-}
-
-#[cfg(test)]
 pub(crate) fn test_init_calls() -> usize {
     TEST_INIT_CALLS.load(std::sync::atomic::Ordering::SeqCst)
 }
@@ -532,17 +526,13 @@ mod tests {
     fn file_transcription_initial_prompt_defaults_off() {
         let _data_dir = EnvRestore::capture("CODESCRIBE_DATA_DIR");
         let _env_path = EnvRestore::capture("CODESCRIBE_ENV_PATH");
-        let _prompt_enabled = EnvRestore::capture(
-            "CODESCRIBE_STT_INITIAL_PROMPT_ENABLED",
-        );
+        let _prompt_enabled = EnvRestore::capture("CODESCRIBE_STT_INITIAL_PROMPT_ENABLED");
         let temp_dir = tempfile::tempdir().expect("temp data dir");
 
         unsafe {
             std::env::set_var("CODESCRIBE_DATA_DIR", temp_dir.path());
             std::env::remove_var("CODESCRIBE_ENV_PATH");
-            std::env::remove_var(
-                "CODESCRIBE_STT_INITIAL_PROMPT_ENABLED",
-            );
+            std::env::remove_var("CODESCRIBE_STT_INITIAL_PROMPT_ENABLED");
         }
 
         assert_eq!(file_transcription_initial_prompt(), None);
@@ -554,18 +544,13 @@ mod tests {
     fn file_transcription_initial_prompt_stays_off_when_window_prompt_is_opted_in() {
         let _data_dir = EnvRestore::capture("CODESCRIBE_DATA_DIR");
         let _env_path = EnvRestore::capture("CODESCRIBE_ENV_PATH");
-        let _prompt_enabled = EnvRestore::capture(
-            "CODESCRIBE_STT_INITIAL_PROMPT_ENABLED",
-        );
+        let _prompt_enabled = EnvRestore::capture("CODESCRIBE_STT_INITIAL_PROMPT_ENABLED");
         let temp_dir = tempfile::tempdir().expect("temp data dir");
 
         unsafe {
             std::env::set_var("CODESCRIBE_DATA_DIR", temp_dir.path());
             std::env::remove_var("CODESCRIBE_ENV_PATH");
-            std::env::set_var(
-                "CODESCRIBE_STT_INITIAL_PROMPT_ENABLED",
-                "1",
-            );
+            std::env::set_var("CODESCRIBE_STT_INITIAL_PROMPT_ENABLED", "1");
         }
 
         assert_eq!(
