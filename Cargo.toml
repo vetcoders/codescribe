@@ -3,7 +3,7 @@ resolver = "2"
 members = [".", "core", "bridge"]
 
 [workspace.package]
-version = "0.14.1"
+version = "0.15.0"
 edition = "2024"
 rust-version = "1.88"
 authors = ["Vetcoders <hello@vetcoders.io>"]
@@ -19,7 +19,7 @@ tracing = "0.1"
 
 [package]
 name = "codescribe"
-version = "0.14.1"
+version = "0.15.0"
 edition = "2024"
 rust-version.workspace = true
 description = "Speech-to-text for macOS — SwiftUI front-end over a Rust engine (UniFFI bridge)"

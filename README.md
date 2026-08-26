@@ -1,6 +1,6 @@
 # ⌜ Codescribe ⌟
 
-[![Version](https://img.shields.io/badge/version-0.14.1-6a9bcc)](Cargo.toml)
+[![Version](https://img.shields.io/badge/version-0.15.0-6a9bcc)](Cargo.toml)
 [![License: FSL-1.1-ALv2](https://img.shields.io/badge/license-FSL--1.1--ALv2-d97757)](LICENSE)
 [![CI](https://github.com/vetcoders/codescribe/actions/workflows/rust.yml/badge.svg)](https://github.com/vetcoders/codescribe/actions/workflows/rust.yml)
 [![Landing](https://img.shields.io/badge/site-vetcoders.github.io%2Fcodescribe-788c5d)](https://vetcoders.github.io/codescribe/)
@@ -64,7 +64,7 @@ flowchart TB
 > Full-file local/cloud Retranscribe is a separate operator action and is never
 > the automatic stop authority.
 
-> **Release status:** current source version is `0.14.1` (see `Cargo.toml`),
+> **Release status:** current source version is `0.15.0` (see `Cargo.toml`),
 > while the latest published GitHub Release is `v0.13.3`. No `v0.14.0` or
 > `v0.14.1` tag/Release exists yet. Source builds are candidates, not published
 > distribution artifacts.
