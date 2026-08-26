@@ -532,10 +532,16 @@ to the resolved defects; this section is not a work queue.
   generic provider error. Reproduction: the module's own
   `flushes_after_five_segments` fixture yields a declared 70 400 samples
   against 31 999 carried samples. A single-piece window is unaffected.
-- **The window map back to member utterances is char-offset, not PCM.**
-  `ConcatSpan { utterance_id, start, end }` addresses the concatenated
-  committed _string_; `remap_concat_events` and `split_outcome_for_members`
-  redistribute Layer 1 output on those character positions.
+- **Resolved: the window map back to member utterances is PCM, not char-offset.**
+  `ConcatSpan { utterance_id, start, end }` addressed the concatenated committed
+  _string_, and `remap_concat_events` / `split_outcome_for_members`
+  redistributed Layer 1 output on those character positions. Both the type and
+  the remap island are gone (W3B). A coalesced window now carries
+  `member_occurrences: Vec<(u64, OccurrenceIdentity)>`, and
+  `complete_whisper_window` (`core/pipeline/streaming/apple_live_session.rs`)
+  keeps only provider segments whose sample range lies wholly inside one
+  member's occurrence. A candidate that straddles a join is admitted to neither
+  member instead of being rewritten into the first span.
 - **The cadence constant and the runtime disagree.**
   `ENGINE_CONTRACT.whisper_window` says `approximately_4s_with_approximately_1s_overlap`.
   `Layer1Coalesce` flushes on `TARGET_SEGMENTS = 5`, `MAX_AUDIO_SECS = 16.0`,
