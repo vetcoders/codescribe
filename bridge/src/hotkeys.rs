@@ -441,9 +441,8 @@ fn forward_event_to_listener(payload: IpcEventPayload, listener: Arc<dyn CsTrans
                 codescribe::presentation::transcript_bus::TranscriptBusEvidenceEvent,
             >(&json)
             {
-                Ok(event) => {
-                    listener.on_transcript_projection(CsTranscriptProjectionEvent::from(&event))
-                }
+                Ok(event) => listener
+                    .on_transcript_projection(CsTranscriptProjectionEvent::from_bus_event(&event)),
                 Err(error) => tracing::warn!(
                     %error,
                     "transcript projection transport rejected invalid Bus schema"

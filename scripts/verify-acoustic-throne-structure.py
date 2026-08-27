@@ -115,8 +115,10 @@ REQUIRED_RECEIPT_KEYS = {
     "observed_owners",
     "forbidden_symbols",
     "forbidden_hits",
+    "forbidden_literal_hits",
     "residue_by_substring",
     "consumer_paths",
+    "corridor_paths",
     "bypass_paths",
     "unwired_paths",
     "dangling_references",
@@ -170,6 +172,8 @@ class StructuralVerifier:
         self.command_inventory: list[list[str]] = []
         self._occurrences: dict[str, dict[str, Any]] = {}
         self._substring_occurrences: dict[str, dict[str, Any]] = {}
+        self._literal_occurrences: dict[str, dict[str, Any]] = {}
+        self._bodies: dict[tuple[str, str], dict[str, Any]] = {}
 
     def _run_loct_json(self, command: list[str]) -> LoctResult:
         if command[0] != ALLOWED_EXECUTABLE:
@@ -204,7 +208,7 @@ class StructuralVerifier:
         return self._run_loct_json([ALLOWED_EXECUTABLE, expression])
 
     def context(self) -> dict[str, Any]:
-        return self.run_loct("context").payload
+        return self.run_loct("context", "--full", "--no-aicx").payload
 
     def occurrences(self, symbol: str) -> dict[str, Any]:
         if symbol not in self._occurrences:
@@ -218,6 +222,21 @@ class StructuralVerifier:
                 "find", "--regex", pattern
             ).payload
         return self._substring_occurrences[needle]
+
+    def literal_occurrences(self, literal: str) -> dict[str, Any]:
+        if literal not in self._literal_occurrences:
+            self._literal_occurrences[literal] = self.run_loct(
+                "find", "--literal", literal, "--all"
+            ).payload
+        return self._literal_occurrences[literal]
+
+    def body(self, symbol: str, file: str) -> dict[str, Any]:
+        key = (symbol, file)
+        if key not in self._bodies:
+            self._bodies[key] = self.run_loct(
+                "body", symbol, "--file", file, "--line-cap", "1000"
+            ).payload
+        return self._bodies[key]
 
 
 def load_json(path: Path) -> Any:
@@ -774,6 +793,317 @@ def observed_files(
     return sorted({str(hit.get("file")) for hit in occurrences if hit.get("file")})
 
 
+def require_complete_literal_evidence(
+    payload: Any, literal: str
+) -> list[dict[str, Any]]:
+    if not isinstance(payload, dict) or payload.get("mode") != "literal":
+        raise RuntimeError(f"Loctree evidence for {literal!r} is not in literal mode")
+    if payload.get("query") != literal:
+        raise RuntimeError(f"Loctree literal query for {literal!r} is incoherent")
+    matches = payload.get("matches")
+    if (
+        not isinstance(matches, dict)
+        or matches.get("query") != literal
+        or matches.get("source") != "literal"
+    ):
+        raise RuntimeError(f"Loctree literal matches for {literal!r} are malformed")
+    occurrences = matches.get("occurrences")
+    if not isinstance(occurrences, list) or any(
+        not isinstance(row, dict) for row in occurrences
+    ):
+        raise RuntimeError(f"Loctree literal rows for {literal!r} are malformed")
+    offset = matches.get("offset")
+    total = matches.get("total")
+    emitted = matches.get("emitted")
+    if (
+        isinstance(offset, bool)
+        or offset != 0
+        or isinstance(total, bool)
+        or not isinstance(total, int)
+        or total < 0
+        or isinstance(emitted, bool)
+        or not isinstance(emitted, int)
+        or emitted != total
+        or emitted != len(occurrences)
+        or matches.get("truncated") is not False
+    ):
+        raise RuntimeError(
+            f"Loctree literal evidence for {literal!r} is incomplete: "
+            f"offset={offset!r}, emitted={emitted!r}, total={total!r}, "
+            f"rows={len(occurrences)}"
+        )
+    universe = matches.get("universe")
+    indexed_files = universe.get("indexed_files") if isinstance(universe, dict) else None
+    scanned_files = universe.get("scanned_files") if isinstance(universe, dict) else None
+    if (
+        not isinstance(universe, dict)
+        or universe.get("scan_complete") is not True
+        or isinstance(indexed_files, bool)
+        or not isinstance(indexed_files, int)
+        or indexed_files <= 0
+        or isinstance(scanned_files, bool)
+        or scanned_files != indexed_files
+    ):
+        raise RuntimeError(f"Loctree literal universe for {literal!r} is incomplete")
+    trust = payload.get("literal_trust")
+    required_trust = (
+        "absence_trustworthy_for_scanned",
+        "file_scope_resolved",
+        "matched_as_exact_string",
+    )
+    if not isinstance(trust, dict) or any(trust.get(key) is not True for key in required_trust):
+        raise RuntimeError(f"Loctree literal evidence for {literal!r} lacks trust metadata")
+    if trust.get("multi_literal") is not False:
+        raise RuntimeError(f"Loctree literal evidence for {literal!r} is multi-literal")
+    for row in occurrences:
+        file = row.get("file")
+        line = row.get("line")
+        column = row.get("column")
+        if (
+            not isinstance(file, str)
+            or not file
+            or Path(file).is_absolute()
+            or isinstance(line, bool)
+            or not isinstance(line, int)
+            or line <= 0
+            or isinstance(column, bool)
+            or not isinstance(column, int)
+            or column <= 0
+            or row.get("matched_text") != literal
+        ):
+            raise RuntimeError(f"Loctree literal row for {literal!r} is malformed: {row}")
+    return occurrences
+
+
+def verify_forbidden_executable_literals(
+    verifier: StructuralVerifier, literals: Any
+) -> tuple[dict[str, list[str]], list[str]]:
+    if literals is None:
+        return {}, []
+    if not isinstance(literals, list) or any(
+        not isinstance(literal, str) or not literal for literal in literals
+    ):
+        raise RuntimeError("forbidden_executable_literals must be non-empty strings")
+    hits: dict[str, list[str]] = {}
+    failures: list[str] = []
+    for literal in literals:
+        rows = production_occurrences(
+            {
+                "occurrences": require_complete_literal_evidence(
+                    verifier.literal_occurrences(literal), literal
+                )
+            }
+        )
+        files = sorted({str(row["file"]) for row in rows})
+        hits[literal] = files
+        if files:
+            failures.append(
+                f"forbidden executable literal {literal!r} remains in {files}"
+            )
+    return hits, failures
+
+
+def code_without_comments_or_strings(source: str) -> str:
+    """Return code tokens while refusing comments and string literals as evidence."""
+    rendered: list[str] = []
+    index = 0
+    state = "code"
+    block_depth = 0
+    while index < len(source):
+        char = source[index]
+        next_char = source[index + 1] if index + 1 < len(source) else ""
+        if state == "code":
+            if char == "/" and next_char == "/":
+                rendered.extend("  ")
+                index += 2
+                state = "line_comment"
+                continue
+            if char == "/" and next_char == "*":
+                rendered.extend("  ")
+                index += 2
+                state = "block_comment"
+                block_depth = 1
+                continue
+            if char == '"':
+                rendered.append(" ")
+                index += 1
+                state = "string"
+                continue
+            rendered.append(char)
+            index += 1
+            continue
+        if state == "line_comment":
+            rendered.append("\n" if char == "\n" else " ")
+            index += 1
+            if char == "\n":
+                state = "code"
+            continue
+        if state == "block_comment":
+            if char == "/" and next_char == "*":
+                rendered.extend("  ")
+                index += 2
+                block_depth += 1
+                continue
+            if char == "*" and next_char == "/":
+                rendered.extend("  ")
+                index += 2
+                block_depth -= 1
+                if block_depth == 0:
+                    state = "code"
+                continue
+            rendered.append("\n" if char == "\n" else " ")
+            index += 1
+            continue
+        if state == "string":
+            if char == "\\" and next_char:
+                rendered.extend("  ")
+                index += 2
+                continue
+            rendered.append("\n" if char == "\n" else " ")
+            index += 1
+            if char == '"':
+                state = "code"
+            continue
+    if state in {"block_comment", "string"}:
+        raise RuntimeError(f"unterminated {state} in Loctree body evidence")
+    return "".join("".join(rendered).split())
+
+
+def corridor_body_rows(
+    payload: Any,
+    *,
+    symbol: str,
+    file: str,
+    signature_contains: str | None,
+) -> list[dict[str, Any]]:
+    if not isinstance(payload, dict) or payload.get("symbol") != symbol:
+        raise RuntimeError(f"Loctree body payload for {symbol} is malformed")
+    bodies = payload.get("bodies")
+    if not isinstance(bodies, list) or any(not isinstance(row, dict) for row in bodies):
+        raise RuntimeError(f"Loctree bodies for {symbol} must be a list of objects")
+    rows: list[dict[str, Any]] = []
+    for row in bodies:
+        if row.get("file") != file:
+            continue
+        source = row.get("source")
+        start_line = row.get("start_line")
+        end_line = row.get("end_line")
+        if (
+            not isinstance(source, str)
+            or not source
+            or isinstance(start_line, bool)
+            or not isinstance(start_line, int)
+            or start_line <= 0
+            or isinstance(end_line, bool)
+            or not isinstance(end_line, int)
+            or end_line < start_line
+            or row.get("truncated") is not False
+        ):
+            raise RuntimeError(f"Loctree body for {symbol} is incomplete: {row}")
+        if signature_contains is None or signature_contains in source:
+            rows.append(row)
+    return rows
+
+
+def verify_code_corridors(
+    verifier: StructuralVerifier,
+    contracts: Any,
+) -> tuple[dict[str, Any], list[str]]:
+    if contracts is None:
+        return {}, []
+    if not isinstance(contracts, list) or any(not isinstance(row, dict) for row in contracts):
+        raise RuntimeError("required_corridors must be a list of objects")
+    observations: dict[str, Any] = {}
+    failures: list[str] = []
+    seen_names: set[str] = set()
+    for corridor in contracts:
+        name = corridor.get("name")
+        hops = corridor.get("hops")
+        if not isinstance(name, str) or not name or name in seen_names:
+            raise RuntimeError(f"corridor name is missing or duplicated: {name!r}")
+        if not isinstance(hops, list) or not hops or any(not isinstance(hop, dict) for hop in hops):
+            raise RuntimeError(f"corridor {name} must declare non-empty hops")
+        seen_names.add(name)
+        observed_hops: list[dict[str, Any]] = []
+        for hop in hops:
+            symbol = hop.get("symbol")
+            file = hop.get("file")
+            signature = hop.get("signature_contains")
+            required_code = hop.get("required_code")
+            if (
+                not isinstance(symbol, str)
+                or not symbol
+                or not isinstance(file, str)
+                or not file
+                or Path(file).is_absolute()
+                or (signature is not None and not isinstance(signature, str))
+                or not isinstance(required_code, list)
+                or not required_code
+                or any(not isinstance(item, str) or not item for item in required_code)
+            ):
+                raise RuntimeError(f"corridor {name} has malformed hop: {hop}")
+            rows = corridor_body_rows(
+                verifier.body(symbol, file),
+                symbol=symbol,
+                file=file,
+                signature_contains=signature,
+            )
+            missing_code: list[str] = []
+            production_definition = False
+            start_line: int | None = None
+            if len(rows) == 1:
+                body = rows[0]
+                start_line = int(body["start_line"])
+                code = code_without_comments_or_strings(str(body["source"]))
+                missing_code = [
+                    snippet
+                    for snippet in required_code
+                    if code_without_comments_or_strings(snippet) not in code
+                ]
+                production_definition = any(
+                    row.get("file") == file
+                    and row.get("line") == start_line
+                    and (
+                        row.get("match_role") == "definition"
+                        or (
+                            row.get("match_role") == "local_binding"
+                            and isinstance(row.get("enclosing_symbol"), dict)
+                            and row["enclosing_symbol"].get("name") == symbol
+                            and row["enclosing_symbol"].get("file") == file
+                            and row["enclosing_symbol"].get("line") == start_line
+                            and row["enclosing_symbol"].get("kind") == "function"
+                        )
+                    )
+                    for row in production_occurrences(verifier.occurrences(symbol))
+                )
+            observed_hops.append(
+                {
+                    "symbol": symbol,
+                    "file": file,
+                    "signature_contains": signature,
+                    "body_count": len(rows),
+                    "start_line": start_line,
+                    "production_definition": production_definition,
+                    "required_code": required_code,
+                    "missing_code": missing_code,
+                }
+            )
+            if len(rows) != 1:
+                failures.append(
+                    f"corridor {name} hop {symbol} expected one body in {file}; observed {len(rows)}"
+                )
+            elif not production_definition:
+                failures.append(
+                    f"corridor {name} hop {symbol} is not a production definition in {file}"
+                )
+            elif missing_code:
+                failures.append(
+                    f"corridor {name} hop {symbol} is missing executable code {missing_code}"
+                )
+        observations[name] = {"hops": observed_hops}
+    return observations, failures
+
+
 def normalized_repo_path(path: Path) -> str:
     """Normalize a Loctree-owned repo path without consulting the filesystem."""
     if path.is_absolute():
@@ -1004,6 +1334,12 @@ def verify_stage(
         if files:
             forbidden_hits[symbol] = files
             failures.append(f"forbidden symbol {symbol} remains in {files}")
+    forbidden_literal_hits, forbidden_literal_failures = (
+        verify_forbidden_executable_literals(
+            verifier, manifest.get("forbidden_executable_literals")
+        )
+    )
+    failures.extend(forbidden_literal_failures)
     residue_by_substring = build_residue_by_substring(verifier, forbidden_symbols)
     residue_gate = residue_by_substring["summary"]
     if residue_gate["unclassified_count"] or residue_gate["review_required_count"]:
@@ -1092,6 +1428,11 @@ def verify_stage(
             bypass_paths[symbol] = forbidden
             failures.append(f"symbol {symbol} reaches forbidden bypass paths {forbidden}")
 
+    corridor_paths, corridor_failures = verify_code_corridors(
+        verifier, stage_contract.get("required_corridors")
+    )
+    failures.extend(corridor_failures)
+
     canary_rows, unclassified_canary = read_canary(canary_path)
     if stage_contract.get("require_canary_classification"):
         if unclassified_canary == "NOT_PROVIDED":
@@ -1151,8 +1492,10 @@ def verify_stage(
         "observed_owners": observed_owners,
         "forbidden_symbols": forbidden_symbols,
         "forbidden_hits": forbidden_hits,
+        "forbidden_literal_hits": forbidden_literal_hits,
         "residue_by_substring": residue_by_substring,
         "consumer_paths": consumer_paths,
+        "corridor_paths": corridor_paths,
         "bypass_paths": bypass_paths,
         "unwired_paths": unwired_paths,
         "dangling_references": dangling,

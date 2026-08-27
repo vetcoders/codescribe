@@ -153,8 +153,10 @@
     "observed_owners",
     "forbidden_symbols",
     "forbidden_hits",
+    "forbidden_literal_hits",
     "residue_by_substring",
     "consumer_paths",
+    "corridor_paths",
     "bypass_paths",
     "unwired_paths",
     "dangling_references",
@@ -210,6 +212,13 @@
     },
     "forbidden_symbols": { "type": "array", "items": { "type": "string" } },
     "forbidden_hits": { "type": "object" },
+    "forbidden_literal_hits": {
+      "type": "object",
+      "additionalProperties": {
+        "type": "array",
+        "items": { "type": "string", "minLength": 1 }
+      }
+    },
     "residue_by_substring": {
       "type": "object",
       "required": ["summary"],
@@ -219,6 +228,51 @@
       "additionalProperties": { "$ref": "#/$defs/residueRows" }
     },
     "consumer_paths": { "type": "object" },
+    "corridor_paths": {
+      "type": "object",
+      "additionalProperties": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["hops"],
+        "properties": {
+          "hops": {
+            "type": "array",
+            "minItems": 1,
+            "items": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": [
+                "symbol",
+                "file",
+                "signature_contains",
+                "body_count",
+                "start_line",
+                "production_definition",
+                "required_code",
+                "missing_code"
+              ],
+              "properties": {
+                "symbol": { "type": "string", "minLength": 1 },
+                "file": { "type": "string", "minLength": 1 },
+                "signature_contains": { "type": ["string", "null"] },
+                "body_count": { "type": "integer", "minimum": 0 },
+                "start_line": { "type": ["integer", "null"], "minimum": 1 },
+                "production_definition": { "type": "boolean" },
+                "required_code": {
+                  "type": "array",
+                  "minItems": 1,
+                  "items": { "type": "string", "minLength": 1 }
+                },
+                "missing_code": {
+                  "type": "array",
+                  "items": { "type": "string", "minLength": 1 }
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "bypass_paths": { "type": "object" },
     "unwired_paths": { "type": "object" },
     "dangling_references": {
@@ -247,7 +301,7 @@
       "minItems": 1,
       "items": {
         "type": "string",
-        "pattern": "^loct (context|occurrences|find)"
+        "pattern": "^loct (context|occurrences|find|body)"
       }
     },
     "command_policy": {

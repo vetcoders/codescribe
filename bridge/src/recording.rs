@@ -70,8 +70,8 @@ pub struct CsTranscriptProjectionEvent {
     pub acoustic_receipts: Vec<CsProjectedAcousticReceipt>,
 }
 
-impl From<&ProjectedAcousticReceipt> for CsProjectedAcousticReceipt {
-    fn from(receipt: &ProjectedAcousticReceipt) -> Self {
+impl CsProjectedAcousticReceipt {
+    pub(crate) fn from_bus_receipt(receipt: &ProjectedAcousticReceipt) -> Self {
         Self {
             acoustic_serial_version: receipt.acoustic_serial_version,
             acoustic_serial: receipt.acoustic_serial.clone(),
@@ -94,8 +94,8 @@ impl From<&ProjectedAcousticReceipt> for CsProjectedAcousticReceipt {
     }
 }
 
-impl From<&TranscriptBusEvidenceEvent> for CsTranscriptProjectionEvent {
-    fn from(event: &TranscriptBusEvidenceEvent) -> Self {
+impl CsTranscriptProjectionEvent {
+    pub(crate) fn from_bus_event(event: &TranscriptBusEvidenceEvent) -> Self {
         Self {
             schema: event.schema.clone(),
             sequence: event.sequence,
@@ -114,7 +114,7 @@ impl From<&TranscriptBusEvidenceEvent> for CsTranscriptProjectionEvent {
             acoustic_receipts: event
                 .acoustic_receipts
                 .iter()
-                .map(CsProjectedAcousticReceipt::from)
+                .map(CsProjectedAcousticReceipt::from_bus_receipt)
                 .collect(),
         }
     }
@@ -656,6 +656,87 @@ pub fn request_mic_permission() -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use codescribe::presentation::transcript_bus::TranscriptMode;
+
+    #[test]
+    fn bus_projection_conversion_preserves_every_authority_field() {
+        let event = TranscriptBusEvidenceEvent {
+            schema: "codescribe.transcript-evidence.v1".to_string(),
+            sequence: 7,
+            emitted_at: "2026-08-27T12:00:00Z".to_string(),
+            session_id: "bus-session".to_string(),
+            mode: TranscriptMode::Agent,
+            reducer_revision: 11,
+            reducer_action: "apply_ledger_decision".to_string(),
+            occurrence_session_id: "occurrence-session".to_string(),
+            capture_epoch: 13,
+            sample_start: 17,
+            sample_end: 23,
+            document_index: 29,
+            label: "Iwo".to_string(),
+            rendered_text: "Iwo".to_string(),
+            acoustic_receipts: vec![ProjectedAcousticReceipt {
+                acoustic_serial_version: 2,
+                acoustic_serial: "sha256:acoustic".to_string(),
+                session_id: "occurrence-session".to_string(),
+                capture_epoch: 13,
+                sample_start: 17,
+                sample_end: 23,
+                duration_ms: 31,
+                energy_integral: 37.5,
+                mean_rms_dbfs: -41.0,
+                peak_dbfs: -43.0,
+                vad_open_sample: 47,
+                vad_close_sample: 53,
+                evidence_calibration_version: "energy-calibration.v2".to_string(),
+                word_evidence_receipts: vec!["word-receipt".to_string()],
+                layer_decision_receipts: vec!["layer-receipt".to_string()],
+                seal_receipt: Some("seal-receipt".to_string()),
+                manual_edit_receipt: Some("manual-edit-receipt".to_string()),
+            }],
+        };
+
+        let projected = CsTranscriptProjectionEvent::from_bus_event(&event);
+
+        assert_eq!(
+            projected,
+            CsTranscriptProjectionEvent {
+                schema: "codescribe.transcript-evidence.v1".to_string(),
+                sequence: 7,
+                emitted_at: "2026-08-27T12:00:00Z".to_string(),
+                session_id: "bus-session".to_string(),
+                mode: "agent".to_string(),
+                reducer_revision: 11,
+                reducer_action: "apply_ledger_decision".to_string(),
+                occurrence_session_id: "occurrence-session".to_string(),
+                capture_epoch: 13,
+                sample_start: 17,
+                sample_end: 23,
+                document_index: 29,
+                label: "Iwo".to_string(),
+                rendered_text: "Iwo".to_string(),
+                acoustic_receipts: vec![CsProjectedAcousticReceipt {
+                    acoustic_serial_version: 2,
+                    acoustic_serial: "sha256:acoustic".to_string(),
+                    session_id: "occurrence-session".to_string(),
+                    capture_epoch: 13,
+                    sample_start: 17,
+                    sample_end: 23,
+                    duration_ms: 31,
+                    energy_integral: 37.5,
+                    mean_rms_dbfs: -41.0,
+                    peak_dbfs: -43.0,
+                    vad_open_sample: 47,
+                    vad_close_sample: 53,
+                    evidence_calibration_version: "energy-calibration.v2".to_string(),
+                    word_evidence_receipts: vec!["word-receipt".to_string()],
+                    layer_decision_receipts: vec!["layer-receipt".to_string()],
+                    seal_receipt: Some("seal-receipt".to_string()),
+                    manual_edit_receipt: Some("manual-edit-receipt".to_string()),
+                }],
+            }
+        );
+    }
 
     #[test]
     fn audio_input_resolution_reports_live_match_and_unavailable_fallback() {

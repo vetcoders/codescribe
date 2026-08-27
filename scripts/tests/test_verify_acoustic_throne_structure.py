@@ -69,14 +69,40 @@ def occurrence(
     }
 
 
-def regex_payload(*rows: dict[str, object]) -> dict[str, object]:
+def regex_payload(
+    *rows: dict[str, object],
+    query: str | None = None,
+    indexed_files: int = 1,
+) -> dict[str, object]:
+    if query is None:
+        matched = " ".join(str(row.get("matched_text", "")) for row in rows)
+        needle = (
+            "stream_postprocess"
+            if "stream_postprocess" in matched or "StreamPostProcessor" in matched
+            else "quality_gate"
+        )
+        query = VERIFIER.substring_identifier_pattern(needle)
     return {
+        "mode": "regex",
+        "query": query,
         "matches": {
+            "query": query,
+            "match_mode": "regex",
+            "source": "regex",
             "occurrences": list(rows),
             "offset": 0,
             "total": len(rows),
+            "emitted": len(rows),
             "truncated": False,
-            "universe": {"scan_complete": True},
+            "universe": {
+                "scan_complete": True,
+                "indexed_files": indexed_files,
+                "scanned_files": indexed_files,
+            },
+            "scope": {
+                "files_in_universe": indexed_files,
+                "files_scanned": indexed_files,
+            },
         },
         "regex_trust": {
             "pattern_compiled": True,
@@ -90,16 +116,77 @@ def exact_payload(*rows: dict[str, object]) -> dict[str, object]:
     return {"occurrences": list(rows)}
 
 
+def literal_payload(
+    literal: str, *rows: dict[str, object], indexed_files: int = 1
+) -> dict[str, object]:
+    return {
+        "mode": "literal",
+        "query": literal,
+        "matches": {
+            "query": literal,
+            "source": "literal",
+            "occurrences": list(rows),
+            "offset": 0,
+            "total": len(rows),
+            "emitted": len(rows),
+            "truncated": False,
+            "universe": {
+                "scan_complete": True,
+                "indexed_files": indexed_files,
+                "scanned_files": indexed_files,
+            },
+        },
+        "literal_trust": {
+            "absence_trustworthy_for_scanned": True,
+            "file_scope_resolved": True,
+            "matched_as_exact_string": True,
+            "multi_literal": False,
+        },
+    }
+
+
+def body_payload(
+    symbol: str,
+    file: str,
+    source: str,
+    *,
+    start_line: int = 1,
+    language: str = "rs",
+) -> dict[str, object]:
+    total_lines = source.count("\n") + 1
+    return {
+        "symbol": symbol,
+        "bodies": [
+            {
+                "symbol": symbol,
+                "file": file,
+                "start_line": start_line,
+                "end_line": start_line + total_lines - 1,
+                "language": language,
+                "source": source,
+                "truncated": False,
+                "total_lines": total_lines,
+                "line_cap": 1000,
+                "extent": "brace",
+            }
+        ],
+    }
+
+
 class StubVerifier:
     def __init__(
         self,
         repo: Path,
         *regex_rows: dict[str, object],
         regex_response: dict[str, object] | None = None,
+        literal_responses: dict[str, dict[str, object]] | None = None,
+        bodies: dict[tuple[str, str], dict[str, object]] | None = None,
     ) -> None:
         self.repo = repo
         self.regex_rows = regex_rows
         self.regex_response = regex_response
+        self.literal_responses = literal_responses or {}
+        self.bodies = bodies or {}
         self.command_inventory = [
             ["loct", "context", "--json"],
             ["loct", "occurrences", "quality_gate", "--json"],
@@ -120,12 +207,53 @@ class StubVerifier:
         }
 
     def occurrences(self, _symbol: str) -> dict[str, object]:
+        body_rows = [
+            row
+            for (symbol, _file), payload in self.bodies.items()
+            if symbol == _symbol
+            for row in payload.get("bodies", [])  # type: ignore[union-attr]
+        ]
+        if body_rows:
+            return exact_payload(
+                *(
+                    occurrence(
+                        _symbol,
+                        file=str(row["file"]),
+                        line=int(row["start_line"]),
+                        match_role="definition",
+                    )
+                    for row in body_rows
+                )
+            )
         return exact_payload()
 
     def substring_occurrences(self, _needle: str) -> dict[str, object]:
         if self.regex_response is not None:
             return self.regex_response
         return regex_payload(*self.regex_rows)
+
+    def run_loct(self, *args: str) -> object:
+        self.command_inventory.append(["loct", *args, "--json"])
+        if args[:2] == ("find", "--regex"):
+            query = args[2]
+            return VERIFIER.LoctResult(["loct", *args, "--json"], regex_payload(query=query))
+        if args[:2] == ("find", "--literal"):
+            literal = args[2]
+            payload = self.literal_responses.get(literal, literal_payload(literal))
+            return VERIFIER.LoctResult(["loct", *args, "--json"], payload)
+        raise AssertionError(f"unexpected stub Loctree command: {args}")
+
+    def run_loct_query(self, expression: str) -> object:
+        self.command_inventory.append(["loct", expression])
+        return VERIFIER.LoctResult(
+            ["loct", expression], [{"path": "core/live.rs", "imports": []}]
+        )
+
+    def body(self, symbol: str, file: str) -> dict[str, object]:
+        return self.bodies.get((symbol, file), {"symbol": symbol, "bodies": []})
+
+    def literal_occurrences(self, literal: str) -> dict[str, object]:
+        return self.literal_responses.get(literal, literal_payload(literal))
 
 
 def wired_manifest() -> dict[str, object]:
@@ -242,16 +370,18 @@ class SubstringResidueTests(unittest.TestCase):
         )
         self.assertEqual(residue[0]["class"], "verifier_self_literal")
 
-    def test_r11_residue_does_not_change_conformance(self) -> None:
+    def test_r11_executable_residue_changes_conformance(self) -> None:
         row = occurrence("should_drop_for_quality_gate", match_role="definition")
         with tempfile.TemporaryDirectory() as raw_repo:
             receipt, conformant = VERIFIER.verify_stage(
                 StubVerifier(Path(raw_repo), row), wired_manifest(), "wired", None, None
             )
         self.assertTrue(receipt["residue_by_substring"]["quality_gate"])
-        self.assertEqual(receipt["failures"], [])
-        self.assertTrue(conformant)
-        self.assertTrue(receipt["conformant"])
+        self.assertEqual(
+            receipt["failures"], ["forbidden residue retains 1 executable rows"]
+        )
+        self.assertFalse(conformant)
+        self.assertFalse(receipt["conformant"])
 
     def test_r12_empty_residue_is_shape_valid(self) -> None:
         with tempfile.TemporaryDirectory() as raw_repo:
@@ -440,34 +570,210 @@ class SubstringResidueTests(unittest.TestCase):
             VERIFIER.validate_receipt_shape(inconsistent)
 
 
+class CorridorProofTests(unittest.TestCase):
+    def contract(self) -> list[dict[str, object]]:
+        return [
+            {
+                "name": "projection",
+                "hops": [
+                    {
+                        "symbol": "publish_revision",
+                        "file": "app/presentation/transcript_bus.rs",
+                        "required_code": [
+                            "ledger.serial_of(&entry.occurrence)",
+                            "Self::project_serial(serial)",
+                        ],
+                    }
+                ],
+            }
+        ]
+
+    def verifier_for(self, source: str) -> StubVerifier:
+        file = "app/presentation/transcript_bus.rs"
+        return StubVerifier(
+            Path("/repo"),
+            bodies={
+                ("publish_revision", file): body_payload(
+                    "publish_revision", file, source, start_line=20
+                )
+            },
+        )
+
+    def test_c1_live_hop_is_proven(self) -> None:
+        verifier = self.verifier_for(
+            "fn publish_revision() {\n"
+            "  let serial = ledger.serial_of(&entry.occurrence);\n"
+            "  Self::project_serial(serial);\n"
+            "}\n"
+        )
+
+        observed, failures = VERIFIER.verify_code_corridors(verifier, self.contract())
+
+        self.assertEqual(failures, [])
+        self.assertTrue(
+            observed["projection"]["hops"][0]["production_definition"]
+        )
+        self.assertEqual(observed["projection"]["hops"][0]["missing_code"], [])
+
+    def test_c2_dropping_any_hop_code_is_red(self) -> None:
+        verifier = self.verifier_for(
+            "fn publish_revision() {\n"
+            "  let serial = ledger.serial_of(&entry.occurrence);\n"
+            "}\n"
+        )
+
+        observed, failures = VERIFIER.verify_code_corridors(verifier, self.contract())
+
+        self.assertEqual(
+            observed["projection"]["hops"][0]["missing_code"],
+            ["Self::project_serial(serial)"],
+        )
+        self.assertEqual(len(failures), 1)
+
+    def test_c3_comments_and_strings_cannot_fake_a_hop(self) -> None:
+        verifier = self.verifier_for(
+            "fn publish_revision() {\n"
+            "  // ledger.serial_of(&entry.occurrence)\n"
+            '  let lie = "Self::project_serial(serial)";\n'
+            "}\n"
+        )
+
+        observed, failures = VERIFIER.verify_code_corridors(verifier, self.contract())
+
+        self.assertEqual(
+            observed["projection"]["hops"][0]["missing_code"],
+            [
+                "ledger.serial_of(&entry.occurrence)",
+                "Self::project_serial(serial)",
+            ],
+        )
+        self.assertEqual(len(failures), 1)
+
+    def test_c4_test_scope_definition_cannot_fake_production(self) -> None:
+        verifier = self.verifier_for(
+            "fn publish_revision() {\n"
+            "  let serial = ledger.serial_of(&entry.occurrence);\n"
+            "  Self::project_serial(serial);\n"
+            "}\n"
+        )
+        verifier.occurrences = lambda _symbol: exact_payload(  # type: ignore[method-assign]
+            occurrence(
+                "publish_revision",
+                file="app/presentation/transcript_bus.rs",
+                line=20,
+                match_role="definition",
+                scope_classification="test",
+            )
+        )
+
+        _, failures = VERIFIER.verify_code_corridors(verifier, self.contract())
+
+        self.assertEqual(len(failures), 1)
+        self.assertIn("not a production definition", failures[0])
+
+    def test_c5_compile_disabled_production_witness_is_red(self) -> None:
+        literal = "#if false"
+        verifier = StubVerifier(
+            Path("/repo"),
+            literal_responses={
+                literal: literal_payload(
+                    literal,
+                    occurrence(
+                        literal,
+                        file="macos/Codescribe/Overlay.swift",
+                        match_role="unknown",
+                    ),
+                )
+            },
+        )
+
+        hits, failures = VERIFIER.verify_forbidden_executable_literals(
+            verifier, [literal]
+        )
+
+        self.assertEqual(hits[literal], ["macos/Codescribe/Overlay.swift"])
+        self.assertEqual(len(failures), 1)
+
+    def test_c6_literal_named_in_test_data_is_not_production_residue(self) -> None:
+        literal = "#if false"
+        verifier = StubVerifier(
+            Path("/repo"),
+            literal_responses={
+                literal: literal_payload(
+                    literal,
+                    occurrence(
+                        literal,
+                        file="scripts/tests/test_structure.py",
+                        match_role="string_literal",
+                        scope_classification="test",
+                    ),
+                )
+            },
+        )
+
+        hits, failures = VERIFIER.verify_forbidden_executable_literals(
+            verifier, [literal]
+        )
+
+        self.assertEqual(hits[literal], [])
+        self.assertEqual(failures, [])
+
+
 class RustModuleResolutionTests(unittest.TestCase):
     def test_reports_missing_module_and_accepts_standard_module_file(self) -> None:
-        with tempfile.TemporaryDirectory() as raw_repo:
-            repo = Path(raw_repo)
-            core = repo / "core"
-            core.mkdir()
-            (core / "mod.rs").write_text("mod present;\nmod missing;\n")
-            (core / "present.rs").write_text("pub fn marker() {}\n")
+        module_payload = regex_payload(
+            occurrence("mod present;", file="core/mod.rs", line=1),
+            occurrence("mod missing;", file="core/mod.rs", line=2),
+            query=VERIFIER.RUST_MODULE_DECLARATION_PATTERN,
+            indexed_files=2,
+        )
+        path_payload = regex_payload(
+            query=VERIFIER.RUST_PATH_ATTRIBUTE_PATTERN,
+            indexed_files=2,
+        )
+        inventory_payload = [
+            {
+                "path": "core/mod.rs",
+                "imports": [
+                    {
+                        "line": 1,
+                        "resolved_path": "core/present.rs",
+                        "symbols": [{"name": "present"}],
+                    }
+                ],
+            },
+            {"path": "core/present.rs", "imports": []},
+        ]
 
-            unresolved = VERIFIER.unresolved_module_declarations(repo)
+        unresolved = VERIFIER.unresolved_module_declarations(
+            module_payload, path_payload, inventory_payload
+        )
 
         self.assertEqual(len(unresolved), 1)
         self.assertEqual(unresolved[0]["module"], "missing")
         self.assertEqual(unresolved[0]["file"], "core/mod.rs")
 
     def test_honours_explicit_path_attribute(self) -> None:
-        with tempfile.TemporaryDirectory() as raw_repo:
-            repo = Path(raw_repo)
-            app = repo / "app"
-            shared = repo / "shared"
-            app.mkdir()
-            shared.mkdir()
-            (app / "lib.rs").write_text(
-                '#[path = "../shared/oracle.rs"]\n#[cfg(test)]\nmod oracle;\n'
-            )
-            (shared / "oracle.rs").write_text("pub fn marker() {}\n")
+        module_payload = regex_payload(
+            occurrence("mod oracle;", file="app/lib.rs", line=2),
+            query=VERIFIER.RUST_MODULE_DECLARATION_PATTERN,
+            indexed_files=2,
+        )
+        path_payload = regex_payload(
+            occurrence(
+                '#[path = "../shared/oracle.rs"]', file="app/lib.rs", line=1
+            ),
+            query=VERIFIER.RUST_PATH_ATTRIBUTE_PATTERN,
+            indexed_files=2,
+        )
+        inventory_payload = [
+            {"path": "app/lib.rs", "imports": []},
+            {"path": "shared/oracle.rs", "imports": []},
+        ]
 
-            unresolved = VERIFIER.unresolved_module_declarations(repo)
+        unresolved = VERIFIER.unresolved_module_declarations(
+            module_payload, path_payload, inventory_payload
+        )
 
         self.assertEqual(unresolved, [])
 

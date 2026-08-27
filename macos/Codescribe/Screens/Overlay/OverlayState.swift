@@ -73,17 +73,6 @@ private struct OverlayTranscriptProjection: Equatable {
   let acousticReceipts: [OverlayProjectedAcousticReceipt]
 }
 
-// UniFFI deliberately projects these Rust-owned types as `CsTranscriptProjectionEvent`
-// and `CsProjectedAcousticReceipt` instead of exporting a second Swift model.
-// Keep the preregistered cross-language edge machine-readable without defining
-// either authority on this side of the bridge.
-#if false
-  private func rustProjectionAuthorityWitness(
-    _ serial: AcousticSerial,
-    _ revision: TranscriptRevision
-  ) {}
-#endif
-
 /// Explicit human-edit receipt projection. W2 must send the edit to the
 /// acoustic ledger and populate this only from its accepted receipt; Swift may
 /// request and display the edit but cannot supersede a sealed label by itself.
