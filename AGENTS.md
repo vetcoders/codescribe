@@ -42,6 +42,11 @@ API changes, regenerate UniFFI Swift bindings with `make app-bindings`.
 
 - After a coherent app-changing cut, run `make install-if-idle` (or
   `make install-app` after a live-recording check).
+- Treat installation as the required operator handoff for every major app cut.
+  Verify `/Applications/Codescribe.app` version, build, source commit,
+  signature, and successful launch; then play
+  `/usr/bin/afplay /System/Library/Sounds/Ping.aiff`. Never play the success
+  ping for a failed or unverified installation.
 - Refuse installation while the Transcript Bus shows `session_started` without
   a later `session_ended` (the controller's text-free lifecycle terminal;
   `transcript_sealed` is honoured for legacy buses); never tear down the app
