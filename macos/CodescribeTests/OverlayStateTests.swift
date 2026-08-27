@@ -1347,36 +1347,43 @@ final class OverlayStateTests: XCTestCase {
     let macosDir = URL(fileURLWithPath: #filePath)
       .deletingLastPathComponent()
       .deletingLastPathComponent()
+    let overlayDir = macosDir.appendingPathComponent("Codescribe/Screens/Overlay")
     let overlaySource = try String(
-      contentsOf: macosDir.appendingPathComponent(
-        "Codescribe/Screens/Overlay/DictationOverlayView.swift"
-      ),
+      contentsOf: overlayDir.appendingPathComponent("DictationOverlayView.swift"),
+      encoding: .utf8
+    )
+    let splitSource = try String(
+      contentsOf: overlayDir.appendingPathComponent("OverlaySplitPrimaryAction.swift"),
       encoding: .utf8
     )
 
     XCTAssertFalse(
-      overlaySource.contains("primaryAction:"),
+      overlaySource.contains("primaryAction:") || splitSource.contains("primaryAction:"),
       "Menu.primaryAction swallows the chevron on macOS; the split control must not use it"
     )
     XCTAssertFalse(
-      overlaySource.contains("NSComboButton"),
+      overlaySource.contains("NSComboButton") || splitSource.contains("NSComboButton"),
       "HStack split is the sanctioned control; NSComboButton is the fallback not taken"
     )
     XCTAssertTrue(
-      overlaySource.contains("accessibilityIdentifier(\"overlay-primary-action\")"),
+      splitSource.contains("accessibilityIdentifier(\"overlay-primary-action\")"),
       "primary Finish/Insert button must keep overlay-primary-action"
     )
     XCTAssertTrue(
-      overlaySource.contains("accessibilityIdentifier(\"overlay-primary-action-menu\")"),
+      splitSource.contains("accessibilityIdentifier(\"overlay-primary-action-menu\")"),
       "chevron menu must be a separate hit target"
     )
     XCTAssertTrue(
-      overlaySource.contains("performPrimaryAction(kind)"),
+      splitSource.contains("performPrimaryAction(kind)"),
       "primary button must run the existing Finish/Insert action"
     )
     XCTAssertTrue(
-      overlaySource.contains("secondaryActionButtons(for: kind)"),
+      splitSource.contains("secondaryActionButtons(for: kind)"),
       "chevron menu must keep the secondary commands"
+    )
+    XCTAssertTrue(
+      overlaySource.contains("func performPrimaryAction(_ kind: OverlayPrimaryActionKind)"),
+      "seal_to_delivery hop stays one function body in DictationOverlayView.swift"
     )
     XCTAssertTrue(
       overlaySource.contains("CloseDot"),
