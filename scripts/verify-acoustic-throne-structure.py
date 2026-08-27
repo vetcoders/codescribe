@@ -11,6 +11,7 @@ cannot remain referenced by `mod name;` declarations.
 from __future__ import annotations
 
 import argparse
+import ast
 import json
 import re
 import subprocess
@@ -994,45 +995,83 @@ def collapse_code_whitespace(source: str) -> str:
     return "".join(collapsed)
 
 
+def constant_expression_value(expression: str) -> bool | int | None:
+    """Evaluate an allowlisted constant expression without executing source code."""
+    translated = re.sub(
+        r"(?<=\d)_?(?:u|i)(?:8|16|32|64|128|size)\b",
+        "",
+        expression,
+    )
+    translated = re.sub(r"\btrue\b", "True", translated)
+    translated = re.sub(r"\bfalse\b", "False", translated)
+    translated = translated.replace("&&", " and ").replace("||", " or ")
+    translated = re.sub(r"!(?!=)", " not ", translated).strip()
+    try:
+        node = ast.parse(translated, mode="eval").body
+    except (SyntaxError, ValueError):
+        return None
+
+    def evaluate(candidate: ast.AST) -> bool | int | None:
+        if isinstance(candidate, ast.Constant) and type(candidate.value) in {bool, int}:
+            return candidate.value
+        if isinstance(candidate, ast.UnaryOp):
+            operand = evaluate(candidate.operand)
+            if isinstance(candidate.op, ast.Not) and type(operand) is bool:
+                return not operand
+            if type(operand) is int and isinstance(candidate.op, ast.USub):
+                return -operand
+            if type(operand) is int and isinstance(candidate.op, ast.UAdd):
+                return operand
+            return None
+        if isinstance(candidate, ast.BinOp):
+            left = evaluate(candidate.left)
+            right = evaluate(candidate.right)
+            if type(left) is not int or type(right) is not int:
+                return None
+            if isinstance(candidate.op, ast.Add):
+                return left + right
+            if isinstance(candidate.op, ast.Sub):
+                return left - right
+            if isinstance(candidate.op, ast.Mult):
+                return left * right
+            if isinstance(candidate.op, ast.Mod) and right != 0:
+                return left % right
+            return None
+        if isinstance(candidate, ast.BoolOp):
+            values = [evaluate(value) for value in candidate.values]
+            if any(type(value) is not bool for value in values):
+                return None
+            if isinstance(candidate.op, ast.And):
+                return all(values)
+            if isinstance(candidate.op, ast.Or):
+                return any(values)
+            return None
+        if isinstance(candidate, ast.Compare) and len(candidate.ops) == 1:
+            left = evaluate(candidate.left)
+            right = evaluate(candidate.comparators[0])
+            if type(left) is not type(right) or type(left) not in {bool, int}:
+                return None
+            operator = candidate.ops[0]
+            if isinstance(operator, ast.Eq):
+                return left == right
+            if isinstance(operator, ast.NotEq):
+                return left != right
+            if type(left) is int and isinstance(operator, ast.Lt):
+                return left < right
+            if type(left) is int and isinstance(operator, ast.LtE):
+                return left <= right
+            if type(left) is int and isinstance(operator, ast.Gt):
+                return left > right
+            if type(left) is int and isinstance(operator, ast.GtE):
+                return left >= right
+        return None
+
+    return evaluate(node)
+
+
 def constant_false_predicate(condition: str) -> bool:
-    """Recognize a deliberately small set of language-independent false constants."""
-    expression = condition.strip()
-    while expression.startswith("(") and expression.endswith(")"):
-        depth = 0
-        closes_outer = False
-        for index, char in enumerate(expression):
-            if char == "(":
-                depth += 1
-            elif char == ")":
-                depth -= 1
-                if depth == 0:
-                    closes_outer = index == len(expression) - 1
-                    break
-        if not closes_outer:
-            break
-        expression = expression[1:-1].strip()
-    if expression in {"false", "!true"}:
-        return True
-    boolean_comparison = re.fullmatch(r"(true|false)(==|!=)(true|false)", expression)
-    if boolean_comparison:
-        left, operator, right = boolean_comparison.groups()
-        comparison_holds = left == right if operator == "==" else left != right
-        return not comparison_holds
-    integer_comparison = re.fullmatch(r"(-?\d+)(==|!=|<=|>=|<|>)(-?\d+)", expression)
-    if not integer_comparison:
-        return False
-    left_raw, operator, right_raw = integer_comparison.groups()
-    left = int(left_raw)
-    right = int(right_raw)
-    comparison_holds = {
-        "==": left == right,
-        "!=": left != right,
-        "<=": left <= right,
-        ">=": left >= right,
-        "<": left < right,
-        ">": left > right,
-    }[operator]
-    return not comparison_holds
+    """Recognize a bounded Rust/Swift predicate that is provably false."""
+    return constant_expression_value(condition) is False
 
 
 def corridor_false_block_ranges(code: str) -> list[tuple[int, int, str]]:
@@ -1065,6 +1104,29 @@ def corridor_false_block_ranges(code: str) -> list[tuple[int, int, str]]:
     return false_ranges
 
 
+def return_is_braceless_closure_body(
+    code: str,
+    *,
+    body_open: int,
+    return_index: int,
+) -> bool:
+    """Recognize Rust closure expressions whose `return` belongs to the closure."""
+    prefix = code[body_open + 1 : return_index]
+    boundary = max(
+        prefix.rfind(";"),
+        prefix.rfind("{"),
+        prefix.rfind("}"),
+    )
+    statement_prefix = prefix[boundary + 1 :]
+    return (
+        re.search(
+            r"(?:^|[=(:,])(?:move)?\|[^|]*\|[^;{}]*$",
+            statement_prefix,
+        )
+        is not None
+    )
+
+
 def top_level_return_offsets(code: str) -> list[int]:
     """Locate unconditional returns owned directly by the function body."""
     body_open = code.find("{")
@@ -1086,7 +1148,12 @@ def top_level_return_offsets(code: str) -> list[int]:
             if not (before.isalnum() or before == "_") and not (
                 after.isalnum() or after == "_"
             ):
-                offsets.append(index)
+                if not return_is_braceless_closure_body(
+                    code,
+                    body_open=body_open,
+                    return_index=index,
+                ):
+                    offsets.append(index)
                 index = after_index
                 continue
         index += 1

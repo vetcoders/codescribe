@@ -992,6 +992,58 @@ class CorridorProofTests(unittest.TestCase):
             unreachable_schema["items"]["required"], ["required_code", "reason"]
         )
 
+    def test_c18_typed_integer_false_condition_is_red(self) -> None:
+        verifier = self.verifier_for(
+            "fn publish_revision() {\n"
+            "  if 1u8 == 2u8 {\n"
+            "    let serial = ledger.serial_of(&entry.occurrence);\n"
+            "    Self::project_serial(serial);\n"
+            "  }\n"
+            "}\n"
+        )
+
+        observed, failures = VERIFIER.verify_code_corridors(verifier, self.contract())
+
+        unreachable = observed["projection"]["hops"][0][
+            "unreachable_required_code"
+        ]
+        self.assertEqual(len(unreachable), 2)
+        self.assertTrue(any("unreachable required code" in failure for failure in failures))
+
+    def test_c19_false_arithmetic_condition_is_red(self) -> None:
+        verifier = self.verifier_for(
+            "fn publish_revision() {\n"
+            "  if 1 + 0 == 2 {\n"
+            "    let serial = ledger.serial_of(&entry.occurrence);\n"
+            "    Self::project_serial(serial);\n"
+            "  }\n"
+            "}\n"
+        )
+
+        observed, failures = VERIFIER.verify_code_corridors(verifier, self.contract())
+
+        unreachable = observed["projection"]["hops"][0][
+            "unreachable_required_code"
+        ]
+        self.assertEqual(len(unreachable), 2)
+        self.assertTrue(any("unreachable required code" in failure for failure in failures))
+
+    def test_c20_return_inside_braceless_closure_does_not_kill_function(self) -> None:
+        verifier = self.verifier_for(
+            "fn publish_revision() {\n"
+            "  let callback = || return;\n"
+            "  let serial = ledger.serial_of(&entry.occurrence);\n"
+            "  Self::project_serial(serial);\n"
+            "}\n"
+        )
+
+        observed, failures = VERIFIER.verify_code_corridors(verifier, self.contract())
+
+        self.assertEqual(failures, [])
+        self.assertEqual(
+            observed["projection"]["hops"][0]["unreachable_required_code"], []
+        )
+
 
 class RustModuleResolutionTests(unittest.TestCase):
     def test_reports_missing_module_and_accepts_standard_module_file(self) -> None:
