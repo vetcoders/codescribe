@@ -4,7 +4,7 @@ import SwiftUI
 //
 // Layout (top → bottom):
 //   header   brand · ONE status pill · compact waveform · timer · Auto Paste ·
-//            placement · primary action combo (Finish/Insert + secondary menu)
+//            placement · split primary (Finish/Insert + chevron menu)
 //   body     transcript is the product surface (listening / formatted / terminal)
 //   footer   ● engine chip · optional canvas honesty · toast
 //
@@ -372,28 +372,64 @@ struct DictationOverlayView: View {
 
   // MARK: Compact primary action
 
-  /// HIG-shaped combo control: click runs the primary act; menu holds related
-  /// secondary commands. CloseDot stays the always-visible dismiss path; Close
-  /// remains available in the menu as an explicit secondary.
+  /// Split chrome control: the title runs the primary act; the chevron is a
+  /// separate menu. One capsule, two hit targets. macOS Menu with a primary
+  /// action treats the whole control as that action, so the chevron never opens.
+  /// CloseDot stays the always-visible dismiss path; Close remains in the menu.
   @ViewBuilder
   private var compactPrimaryAction: some View {
     if let kind = state.primaryActionKind {
+      splitPrimaryAction(kind: kind)
+    }
+  }
+
+  private func splitPrimaryAction(kind: OverlayPrimaryActionKind) -> some View {
+    let shape = RoundedRectangle(cornerRadius: buttonRadius, style: .continuous)
+    return HStack(spacing: 0) {
+      Button {
+        performPrimaryAction(kind)
+      } label: {
+        Text(state.primaryActionTitle)
+          .font(CSFont.ui(12, .semibold))
+          .lineLimit(1)
+          .padding(.leading, 10)
+          .padding(.trailing, 8)
+          .frame(height: primaryActionHeight)
+          .contentShape(Rectangle())
+      }
+      .csFocusRing(cornerRadius: buttonRadius)
+      .help(state.primaryActionHelp)
+      .accessibilityLabel(state.primaryActionTitle)
+      .accessibilityHint(state.primaryActionHelp)
+      .accessibilityIdentifier("overlay-primary-action")
+
+      Rectangle()
+        .fill(CSColor.hairline(0.14))
+        .frame(width: 1, height: 14)
+
       Menu {
         secondaryActionButtons(for: kind)
         Divider()
         Button("Close", role: .destructive) { state.close() }
       } label: {
-        primaryActionLabel(title: state.primaryActionTitle)
-      } primaryAction: {
-        performPrimaryAction(kind)
+        Image(systemName: "chevron.down")
+          .font(.system(size: 9, weight: .semibold))
+          .frame(width: 22, height: primaryActionHeight)
+          .contentShape(Rectangle())
       }
-      .menuStyle(.button)
+      .menuStyle(.borderlessButton)
+      .menuIndicator(.hidden)
+      .frame(width: 22, height: primaryActionHeight)
       .csFocusRing(cornerRadius: 8)
-      .help(state.primaryActionHelp)
-      .accessibilityLabel(state.primaryActionTitle)
-      .accessibilityHint(state.primaryActionHelp)
-      .accessibilityIdentifier("overlay-primary-action")
+      .help("More actions")
+      .accessibilityLabel("More actions")
+      .accessibilityIdentifier("overlay-primary-action-menu")
     }
+    .foregroundStyle(CSColor.textBody)
+    .background(CSColor.surfaceRaised(0.06))
+    .overlay(shape.strokeBorder(CSColor.hairline(0.14), lineWidth: 1))
+    .clipShape(shape)
+    .fixedSize()
   }
 
   @ViewBuilder
@@ -416,23 +452,6 @@ struct DictationOverlayView: View {
     case .finish: state.stop()
     case .insert: state.pasteToPreviousApp()
     }
-  }
-
-  private func primaryActionLabel(title: String) -> some View {
-    let shape = RoundedRectangle(cornerRadius: buttonRadius, style: .continuous)
-    return HStack(spacing: 4) {
-      Text(title)
-        .font(CSFont.ui(12, .semibold))
-        .lineLimit(1)
-      Image(systemName: "chevron.down")
-        .font(.system(size: 9, weight: .semibold))
-    }
-    .foregroundStyle(CSColor.textBody)
-    .padding(.horizontal, 10)
-    .frame(height: primaryActionHeight)
-    .background(CSColor.surfaceRaised(0.06))
-    .overlay(shape.strokeBorder(CSColor.hairline(0.14), lineWidth: 1))
-    .clipShape(shape)
   }
 
   // MARK: Footer

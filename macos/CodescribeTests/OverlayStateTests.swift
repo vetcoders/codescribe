@@ -1340,6 +1340,58 @@ final class OverlayStateTests: XCTestCase {
     XCTAssertNil(silent.primaryActionKind)
   }
 
+  /// macOS `Menu` + `primaryAction` treats the whole control as the primary, so
+  /// the painted chevron never opens. The slim chrome must be a true split:
+  /// a Button for Finish/Insert and a separate Menu on the chevron.
+  func testCompactPrimaryActionIsSplitControlNotMenuPrimaryAction() throws {
+    let macosDir = URL(fileURLWithPath: #filePath)
+      .deletingLastPathComponent()
+      .deletingLastPathComponent()
+    let overlaySource = try String(
+      contentsOf: macosDir.appendingPathComponent(
+        "Codescribe/Screens/Overlay/DictationOverlayView.swift"
+      ),
+      encoding: .utf8
+    )
+
+    XCTAssertFalse(
+      overlaySource.contains("primaryAction:"),
+      "Menu.primaryAction swallows the chevron on macOS; the split control must not use it"
+    )
+    XCTAssertFalse(
+      overlaySource.contains("NSComboButton"),
+      "HStack split is the sanctioned control; NSComboButton is the fallback not taken"
+    )
+    XCTAssertTrue(
+      overlaySource.contains("accessibilityIdentifier(\"overlay-primary-action\")"),
+      "primary Finish/Insert button must keep overlay-primary-action"
+    )
+    XCTAssertTrue(
+      overlaySource.contains("accessibilityIdentifier(\"overlay-primary-action-menu\")"),
+      "chevron menu must be a separate hit target"
+    )
+    XCTAssertTrue(
+      overlaySource.contains("performPrimaryAction(kind)"),
+      "primary button must run the existing Finish/Insert action"
+    )
+    XCTAssertTrue(
+      overlaySource.contains("secondaryActionButtons(for: kind)"),
+      "chevron menu must keep the secondary commands"
+    )
+    XCTAssertTrue(
+      overlaySource.contains("CloseDot"),
+      "CloseDot stays the always-visible dismiss control"
+    )
+    XCTAssertTrue(
+      overlaySource.contains("chromeWaveform"),
+      "waveform stays in the primary chrome"
+    )
+    XCTAssertFalse(
+      overlaySource.contains("private var actionRow"),
+      "do not restore the fat bottom Finish/Close row"
+    )
+  }
+
   @MainActor
   func testSlimOverlayListeningChromeRendersWithoutBottomActionMass() throws {
     let state = OverlayState.previewListening()
