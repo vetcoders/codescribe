@@ -654,7 +654,10 @@ class CorridorProofTests(unittest.TestCase):
                 "caller_file": "app/presentation/transcript_bus.rs",
                 "before": {"corridor": "projection", "callee": "project_serial"},
                 "after": {"corridor": "projection", "callee": "publish_event"},
-                "barrier": {"callee": "lock", "selection": "last_before_after"},
+                "barrier": {
+                    "required_code": "let _guard = self.recorder.lock().await",
+                    "selection": "last_before_after",
+                },
             }
         ]
         return contract
@@ -663,28 +666,30 @@ class CorridorProofTests(unittest.TestCase):
         self,
         *,
         before_line: int = 22,
-        barrier_line: int = 23,
         after_line: int = 24,
         include_before: bool = True,
+        before_lines: tuple[int, ...] | None = None,
     ) -> StubVerifier:
         file = "app/presentation/transcript_bus.rs"
         verifier = self.verifier_for(
             "fn publish_revision() {\n"
             "  let serial = ledger.serial_of(&entry.occurrence);\n"
             "  Self::project_serial(serial);\n"
+            "  let _guard = self.recorder.lock().await;\n"
             "  Self::publish_event(event);\n"
             "}\n"
         )
         before_rows = []
         if include_before:
-            before_rows.append(
-                occurrence(
-                    "project_serial",
-                    file=file,
-                    line=before_line,
-                    enclosing_symbol="publish_revision",
+            for line in before_lines or (before_line,):
+                before_rows.append(
+                    occurrence(
+                        "project_serial",
+                        file=file,
+                        line=line,
+                        enclosing_symbol="publish_revision",
+                    )
                 )
-            )
         verifier.occurrence_responses["project_serial"] = exact_payload(
             *before_rows,
             occurrence(
@@ -710,15 +715,133 @@ class CorridorProofTests(unittest.TestCase):
                 enclosing_symbol="publish_event",
             ),
         )
-        verifier.occurrence_responses["lock"] = exact_payload(
-            occurrence(
-                "lock",
-                file=file,
-                line=barrier_line,
-                enclosing_symbol="publish_revision",
-            )
-        )
         return verifier
+
+    def verify_admission_ordering_mutant(
+        self,
+        *,
+        caller: str,
+        before_callee: str,
+        barrier_required_code: str,
+        source: str,
+        before_lines: tuple[int, ...],
+        after_line: int,
+    ) -> tuple[dict[str, object], list[str]]:
+        caller_file = "app/controller/mod.rs"
+        before_callee_file = (
+            caller_file
+            if before_callee == "admission_readiness"
+            else "app/controller/admission.rs"
+        )
+        after_callee = "bind_session_authority"
+        after_callee_file = "core/audio/streaming_recorder.rs"
+        contract = [
+            {
+                "name": "settings_to_capture_admission",
+                "hops": [
+                    {
+                        "symbol": caller,
+                        "file": caller_file,
+                        "required_code": [barrier_required_code],
+                    }
+                ],
+                "required_invocations": [
+                    {
+                        "callee": before_callee,
+                        "callee_file": before_callee_file,
+                        "caller": caller,
+                        "caller_file": caller_file,
+                    },
+                    {
+                        "callee": after_callee,
+                        "callee_file": after_callee_file,
+                        "caller": caller,
+                        "caller_file": caller_file,
+                    },
+                ],
+                "ordering": [
+                    {
+                        "caller": caller,
+                        "caller_file": caller_file,
+                        "before": {
+                            "corridor": "settings_to_capture_admission",
+                            "callee": before_callee,
+                        },
+                        "after": {
+                            "corridor": "settings_to_capture_admission",
+                            "callee": after_callee,
+                        },
+                        "barrier": {
+                            "required_code": barrier_required_code,
+                            "selection": "last_before_after",
+                        },
+                    }
+                ],
+            }
+        ]
+        before_rows = [
+            occurrence(
+                before_callee,
+                file=caller_file,
+                line=line,
+                enclosing_symbol=caller,
+            )
+            for line in before_lines
+        ]
+        verifier = StubVerifier(
+            Path("/repo"),
+            bodies={
+                (caller, caller_file): body_payload(
+                    caller, caller_file, source, start_line=20
+                )
+            },
+            occurrence_responses={
+                before_callee: exact_payload(
+                    *before_rows,
+                    occurrence(
+                        before_callee,
+                        file=before_callee_file,
+                        line=10,
+                        match_role="definition",
+                    ),
+                ),
+                after_callee: exact_payload(
+                    occurrence(
+                        after_callee,
+                        file=caller_file,
+                        line=after_line,
+                        enclosing_symbol=caller,
+                    ),
+                    occurrence(
+                        after_callee,
+                        file=after_callee_file,
+                        line=10,
+                        match_role="definition",
+                    ),
+                ),
+            },
+        )
+        return VERIFIER.verify_code_corridors(verifier, contract)
+
+    def assert_admission_mutant_is_caller_red(
+        self,
+        observed: dict[str, object],
+        failures: list[str],
+        caller: str,
+    ) -> None:
+        corridor = observed["settings_to_capture_admission"]
+        assert isinstance(corridor, dict)
+        ordering = corridor["ordering"]
+        assert isinstance(ordering, list)
+        self.assertEqual(ordering[0]["verdict"], "RED")
+        self.assertTrue(
+            any(
+                f"corridor settings_to_capture_admission ordering {caller}" in failure
+                and "required-code barrier" in failure
+                for failure in failures
+            ),
+            failures,
+        )
 
     def test_c1_live_hop_is_proven(self) -> None:
         verifier = self.verifier_for(
@@ -1242,7 +1365,7 @@ class CorridorProofTests(unittest.TestCase):
                         "callee": "publish_event",
                     },
                     "barrier": {
-                        "callee": "lock",
+                        "required_code": "let _guard = self.recorder.lock().await",
                         "selection": "last_before_after",
                     },
                     "barrier_observed_lines": [23],
@@ -1257,7 +1380,7 @@ class CorridorProofTests(unittest.TestCase):
         self,
     ) -> None:
         observed, failures = VERIFIER.verify_code_corridors(
-            self.verifier_for_ordering(before_line=25, barrier_line=23, after_line=24),
+            self.verifier_for_ordering(before_line=25, after_line=24),
             self.ordering_contract(),
         )
 
@@ -1268,15 +1391,15 @@ class CorridorProofTests(unittest.TestCase):
 
     def test_c28_before_relocated_past_barrier_is_red(self) -> None:
         observed, failures = VERIFIER.verify_code_corridors(
-            self.verifier_for_ordering(before_line=23, barrier_line=22, after_line=24),
+            self.verifier_for_ordering(before_line=24, after_line=25),
             self.ordering_contract(),
         )
 
         ordering = observed["projection"]["ordering"][0]
         self.assertEqual(ordering["verdict"], "RED")
-        self.assertEqual(ordering["barrier_observed_lines"], [22])
+        self.assertEqual(ordering["barrier_observed_lines"], [23])
         self.assertEqual(len(failures), 1)
-        self.assertIn("before lock barrier", failures[0])
+        self.assertIn("before required-code barrier", failures[0])
 
     def test_c29_missing_before_invocation_is_ordering_red(self) -> None:
         observed, failures = VERIFIER.verify_code_corridors(
@@ -1307,6 +1430,254 @@ class CorridorProofTests(unittest.TestCase):
         ]
 
         with self.assertRaisesRegex(RuntimeError, "malformed ordering entry"):
+            VERIFIER.verify_code_corridors(
+                self.verifier_for_ordering(), contract
+            )
+
+    def test_c31_fn1_discarded_toggle_decoy_cannot_hide_late_gate(self) -> None:
+        caller = "start_toggle_recording"
+        observed, failures = self.verify_admission_ordering_mutant(
+            caller=caller,
+            before_callee="admission_readiness",
+            barrier_required_code="let mut recorder_guard = self.recorder.lock().await",
+            source=(
+                "async fn start_toggle_recording() {\n"
+                "  let _ = self.admission_readiness().await;\n"
+                "  let mut recorder_guard = self.recorder.lock().await;\n"
+                "  match self.admission_readiness().await {\n"
+                "    Err(_) => return,\n"
+                "    Ok(_) => {}\n"
+                "  }\n"
+                "  recorder.bind_session_authority();\n"
+                "}\n"
+            ),
+            before_lines=(21, 23),
+            after_line=27,
+        )
+
+        self.assert_admission_mutant_is_caller_red(observed, failures, caller)
+        self.assertIn("observed before lines [21, 23], barrier lines [22]", failures[-1])
+
+    def test_c32_fn2_serial_lock_decoy_cannot_move_recorder_barrier(self) -> None:
+        caller = "start_toggle_recording"
+        observed, failures = self.verify_admission_ordering_mutant(
+            caller=caller,
+            before_callee="admission_readiness",
+            barrier_required_code="let mut recorder_guard = self.recorder.lock().await",
+            source=(
+                "async fn start_toggle_recording() {\n"
+                "  let mut recorder_guard = self.recorder.lock().await;\n"
+                "  match self.admission_readiness().await {\n"
+                "    Err(_) => return,\n"
+                "    Ok(_) => {}\n"
+                "  }\n"
+                "  let _decoy = self.serial_lock.lock().await;\n"
+                "  recorder.bind_session_authority();\n"
+                "}\n"
+            ),
+            before_lines=(22,),
+            after_line=27,
+        )
+
+        self.assert_admission_mutant_is_caller_red(observed, failures, caller)
+        self.assertIn("observed before lines [22], barrier lines [21]", failures[-1])
+
+    def test_c33_fn5_dead_branch_decoy_cannot_hide_late_gate(self) -> None:
+        caller = "start_toggle_recording"
+        observed, failures = self.verify_admission_ordering_mutant(
+            caller=caller,
+            before_callee="admission_readiness",
+            barrier_required_code="let mut recorder_guard = self.recorder.lock().await",
+            source=(
+                "async fn start_toggle_recording() {\n"
+                "  if 1 == 2 {\n"
+                "    let _ = self.admission_readiness().await;\n"
+                "  }\n"
+                "  let mut recorder_guard = self.recorder.lock().await;\n"
+                "  match self.admission_readiness().await {\n"
+                "    Err(_) => return,\n"
+                "    Ok(_) => {}\n"
+                "  }\n"
+                "  recorder.bind_session_authority();\n"
+                "}\n"
+            ),
+            before_lines=(22, 25),
+            after_line=29,
+        )
+
+        self.assert_admission_mutant_is_caller_red(observed, failures, caller)
+        self.assertIn("observed before lines [22, 25], barrier lines [24]", failures[-1])
+
+    def test_c34_fn6_discarded_hold_decoy_cannot_hide_late_gate(self) -> None:
+        caller = "schedule_hold_start"
+        observed, failures = self.verify_admission_ordering_mutant(
+            caller=caller,
+            before_callee="evaluate_live_admission_arc",
+            barrier_required_code="let mut rec_guard = recorder.lock().await",
+            source=(
+                "async fn schedule_hold_start() {\n"
+                "  let _ = admission::evaluate_live_admission_arc(&settings);\n"
+                "  let mut rec_guard = recorder.lock().await;\n"
+                "  let verdict = admission::evaluate_live_admission_arc(&settings);\n"
+                "  if verdict.is_err() {\n"
+                "    return;\n"
+                "  }\n"
+                "  rec.bind_session_authority();\n"
+                "}\n"
+            ),
+            before_lines=(21, 23),
+            after_line=27,
+        )
+
+        self.assert_admission_mutant_is_caller_red(observed, failures, caller)
+        self.assertIn("observed before lines [21, 23], barrier lines [22]", failures[-1])
+
+    def test_c35_m8b_m9_p7_and_fn3_controls_stay_red(self) -> None:
+        relocation_cases = (
+            (
+                "M8b",
+                "start_toggle_recording",
+                "admission_readiness",
+                "let mut recorder_guard = self.recorder.lock().await",
+                "async fn start_toggle_recording() {\n"
+                "  let mut recorder_guard = self.recorder.lock().await;\n"
+                "  match self.admission_readiness().await {\n"
+                "    Err(_) => return,\n"
+                "    Ok(_) => {}\n"
+                "  }\n"
+                "  recorder.bind_session_authority();\n"
+                "}\n",
+                (22,),
+                26,
+            ),
+            (
+                "M9",
+                "schedule_hold_start",
+                "evaluate_live_admission_arc",
+                "let mut rec_guard = recorder.lock().await",
+                "async fn schedule_hold_start() {\n"
+                "  let mut rec_guard = recorder.lock().await;\n"
+                "  let verdict = admission::evaluate_live_admission_arc(&settings);\n"
+                "  if verdict.is_err() {\n"
+                "    return;\n"
+                "  }\n"
+                "  rec.bind_session_authority();\n"
+                "}\n",
+                (22,),
+                26,
+            ),
+        )
+        for (
+            name,
+            caller,
+            before_callee,
+            barrier_required_code,
+            source,
+            before_lines,
+            after_line,
+        ) in relocation_cases:
+            with self.subTest(name=name):
+                observed, failures = self.verify_admission_ordering_mutant(
+                    caller=caller,
+                    before_callee=before_callee,
+                    barrier_required_code=barrier_required_code,
+                    source=source,
+                    before_lines=before_lines,
+                    after_line=after_line,
+                )
+                self.assert_admission_mutant_is_caller_red(
+                    observed, failures, caller
+                )
+
+        absent_cases = (
+            (
+                "P7",
+                "async fn start_toggle_recording() {\n"
+                "  let mut recorder_guard = self.recorder.lock().await;\n"
+                "  recorder.bind_session_authority();\n"
+                "}\n",
+            ),
+            (
+                "FN3",
+                "async fn start_toggle_recording() {\n"
+                "  // self.admission_readiness().await\n"
+                "  let mut recorder_guard = self.recorder.lock().await;\n"
+                "  recorder.bind_session_authority();\n"
+                "}\n",
+            ),
+        )
+        for name, source in absent_cases:
+            with self.subTest(name=name):
+                observed, failures = self.verify_admission_ordering_mutant(
+                    caller="start_toggle_recording",
+                    before_callee="admission_readiness",
+                    barrier_required_code=(
+                        "let mut recorder_guard = self.recorder.lock().await"
+                    ),
+                    source=source,
+                    before_lines=(),
+                    after_line=22 if name == "P7" else 23,
+                )
+                ordering = observed["settings_to_capture_admission"]["ordering"][0]
+                self.assertEqual(ordering["verdict"], "RED")
+                self.assertTrue(
+                    any(
+                        "ordering start_toggle_recording has no observed production "
+                        "callsite(s)" in failure
+                        for failure in failures
+                    ),
+                    failures,
+                )
+
+    def test_c36_mcard_second_recording_controller_stays_cardinality_red(self) -> None:
+        manifest = wired_manifest()
+        manifest["stages"]["wired"]["required_present"] = [
+            {
+                "symbol": "RecordingController",
+                "owner": "app/controller/mod.rs",
+                "cardinality": 1,
+            }
+        ]
+        verifier = StubVerifier(
+            Path("/repo"),
+            occurrence_responses={
+                "RecordingController": exact_payload(
+                    occurrence(
+                        "RecordingController",
+                        file="app/controller/mod.rs",
+                        line=100,
+                        match_role="definition",
+                    ),
+                    occurrence(
+                        "RecordingController",
+                        file="app/controller/decoy.rs",
+                        line=1,
+                        match_role="definition",
+                    ),
+                )
+            },
+        )
+
+        receipt, conformant = VERIFIER.verify_stage(
+            verifier, manifest, "wired", None, None
+        )
+
+        self.assertFalse(conformant)
+        self.assertIn(
+            "part RecordingController expected 1 definition(s) in "
+            "app/controller/mod.rs; observed 2 total in "
+            "['app/controller/decoy.rs', 'app/controller/mod.rs']",
+            receipt["failures"],
+        )
+
+    def test_c37_name_only_lock_barrier_is_schema_red(self) -> None:
+        contract = self.ordering_contract()
+        contract[0]["ordering"][0]["barrier"] = {  # type: ignore[index]
+            "callee": "lock",
+            "selection": "last_before_after",
+        }
+
+        with self.assertRaisesRegex(RuntimeError, "malformed ordering barrier"):
             VERIFIER.verify_code_corridors(
                 self.verifier_for_ordering(), contract
             )

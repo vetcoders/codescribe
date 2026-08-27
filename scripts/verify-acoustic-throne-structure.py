@@ -1249,7 +1249,7 @@ def parse_corridor_ordering(name: str, ordering: Any) -> list[dict[str, Any]]:
 
     expected_row_keys = {"caller", "caller_file", "before", "after"}
     expected_selector_keys = {"corridor", "callee"}
-    expected_barrier_keys = {"callee", "selection"}
+    expected_barrier_keys = {"required_code", "selection"}
     seen: set[tuple[str, ...]] = set()
     validated: list[dict[str, Any]] = []
     for row in ordering:
@@ -1285,8 +1285,8 @@ def parse_corridor_ordering(name: str, ordering: Any) -> list[dict[str, Any]]:
         if barrier is not None and (
             not isinstance(barrier, dict)
             or set(barrier) != expected_barrier_keys
-            or not isinstance(barrier.get("callee"), str)
-            or not barrier["callee"]
+            or not isinstance(barrier.get("required_code"), str)
+            or not barrier["required_code"]
             or barrier.get("selection") != "last_before_after"
         ):
             raise RuntimeError(f"corridor {name} has malformed ordering barrier: {row}")
@@ -1297,7 +1297,7 @@ def parse_corridor_ordering(name: str, ordering: Any) -> list[dict[str, Any]]:
             str(before["callee"]),
             str(after["corridor"]),
             str(after["callee"]),
-            str(barrier["callee"]) if barrier is not None else "",
+            str(barrier["required_code"]) if barrier is not None else "",
             str(barrier["selection"]) if barrier is not None else "",
         )
         if identity in seen:
@@ -1338,20 +1338,27 @@ def barrier_lines_for_ordering(
     caller_file: str,
     after_lines: list[int],
 ) -> list[int]:
-    """Select the last declared barrier invocation before the downstream call."""
+    """Select the caller-body offset of the declared barrier fragment."""
     if not after_lines:
         return []
-    candidates = sorted(
-        int(row["line"])
-        for row in production_occurrences(verifier.occurrences(barrier["callee"]))
-        if row.get("file") == caller_file
-        and row.get("match_role") == "reference"
-        and isinstance(row.get("enclosing_symbol"), dict)
-        and row["enclosing_symbol"].get("name") == caller
-        and row["enclosing_symbol"].get("file") == caller_file
-        and type(row.get("line")) is int
-        and int(row["line"]) < min(after_lines)
+    bodies = corridor_body_rows(
+        verifier.body(caller, caller_file),
+        symbol=caller,
+        file=caller_file,
+        signature_contains=None,
     )
+    if len(bodies) != 1:
+        return []
+    body = bodies[0]
+    fragment = code_without_comments_or_strings(barrier["required_code"])
+    if not fragment:
+        return []
+    candidates = [
+        int(body["start_line"]) + offset
+        for offset, line in enumerate(str(body["source"]).splitlines())
+        if fragment in code_without_comments_or_strings(line)
+        and int(body["start_line"]) + offset < min(after_lines)
+    ]
     return candidates[-1:] if barrier["selection"] == "last_before_after" else []
 
 
@@ -1615,7 +1622,7 @@ def verify_code_corridors(
             ordered = bool(
                 before_lines
                 and after_lines
-                and any(line < min(after_lines) for line in before_lines)
+                and all(line < min(after_lines) for line in before_lines)
             )
             barrier_lines = (
                 barrier_lines_for_ordering(
@@ -1631,7 +1638,7 @@ def verify_code_corridors(
             barrier_ordered = barrier is None or bool(
                 before_lines
                 and barrier_lines
-                and any(line < min(barrier_lines) for line in before_lines)
+                and all(line < min(barrier_lines) for line in before_lines)
             )
             verdict = "GREEN" if ordered and barrier_ordered else "RED"
             observed_row = {
@@ -1674,14 +1681,14 @@ def verify_code_corridors(
             elif barrier is not None and not barrier_lines:
                 failures.append(
                     f"corridor {name} ordering {caller} has no observed "
-                    f"{barrier['callee']} barrier selected as "
+                    f"required-code barrier {barrier['required_code']!r} selected as "
                     f"{barrier['selection']}"
                 )
             elif not barrier_ordered:
                 failures.append(
                     f"corridor {name} ordering {caller} requires "
                     f"{before['corridor']}:{before['callee']} before "
-                    f"{barrier['callee']} barrier and "
+                    f"required-code barrier {barrier['required_code']!r} and "
                     f"{after['corridor']}:{after['callee']}; observed before "
                     f"lines {before_lines}, barrier lines {barrier_lines}, after "
                     f"lines {after_lines}"
