@@ -7,7 +7,7 @@
 .PHONY: all build release release-codescribe release-codescribe-embedded release-qube app app-bindings install install-no-embed config install-app install-if-idle install-voice-lab \
         start stop restart status logs logs-follow \
         bump bump-patch bump-minor bump-major version \
-        lint format test test-quick test-e2e test-e2e-real test-sse test-sse-release test-responses-live test-sse-heavy test-formatting test-structural-verifier test-all \
+        lint format test test-quick test-e2e test-e2e-real test-sse test-sse-release test-responses-live test-sse-heavy test-formatting test-structural-verifier test-transcript-bus-path test-all \
         test-engine test-engine-apple test-engine-candle test-teacher \
         demo demo-raw demo-assistive check verify semgrep fix clean help corpus-census test-corpus-parity \
         dist-preflight dist-preflight-signed verify-canaries smoke-canaries \
@@ -339,8 +339,9 @@ bump-major:
 # gate: check class=static ci=no -- cargo fmt, prettier, clippy, semgrep, validate-envs, validate-gates; executes ZERO tests
 # gate: lint class=static ci=no -- cargo fmt --check + clippy on the workspace + verify-swift-format; no tests
 # gate: semgrep class=static ci=no -- semgrep scan --config auto (semgrep.yml runs semgrep directly, not this target)
-# gate: verify class=hermetic ci=yes -- structural-verifier instrument, workspace tests, doctests, model-promotion regression, env registry + this ledger; rust.yml runs it
+# gate: verify class=hermetic ci=yes -- structural-verifier + Bus-path/install-guard instruments, workspace tests, doctests, model-promotion regression, env registry + this ledger; rust.yml runs it
 # gate: test-structural-verifier class=hermetic ci=no -- Python unit/mutant suite for the Loctree-only acoustic structural instrument; reads repo files only, no runtime
+# gate: test-transcript-bus-path class=hermetic ci=no -- shell/Python path-precedence and install-guard fail-closed tests in an isolated HOME; never installs the app
 # gate: verify-canaries class=hermetic ci=no -- claim-vs-execution canaries that read repo files only (scripts/canaries.sh); each row is born from a named incident
 # gate: verify-swift-format class=static ci=no -- swift-format lint --strict over macos/Codescribe + macos/CodescribeTests; skips the generated UniFFI binding; no Swift tests (that is test-swift)
 # gate: smoke-canaries class=operator ci=no -- verify-canaries + host rows: dist inputs, appcast feed, live-store purity, Sparkle key parity, keychain domain cleanliness (scripts/canaries.sh --host)
@@ -1114,6 +1115,8 @@ verify:
 	$(TEST_DATA_DIR_SETUP); \
 	echo "=== Verify (structural verifier instrument) ==="; \
 	python3 -m unittest scripts/tests/test_verify_acoustic_throne_structure.py; \
+	echo "=== Verify (Transcript Bus path + install guard) ==="; \
+	bash scripts/tests/transcript-bus-path-test.sh; \
 	echo "=== Verify (hermetic: workspace tests) ==="; \
 	CODESCRIBE_NO_EMBED=1 CODESCRIBE_DISABLE_KEYCHAIN=1 \
 	  cargo test --workspace --all-targets; \
@@ -1133,6 +1136,9 @@ verify:
 
 test-structural-verifier:
 	@python3 -m unittest scripts/tests/test_verify_acoustic_throne_structure.py
+
+test-transcript-bus-path:
+	@bash scripts/tests/transcript-bus-path-test.sh
 
 # Print the classified verification surface. Asserts nothing, so it carries no
 # ledger row of its own — it only shows the ledger `check` and `verify` enforce.

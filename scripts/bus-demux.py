@@ -44,13 +44,15 @@ SAFE_LEASE_RE = re.compile(r"^[a-zA-Z0-9_-]{8,80}$")
 
 
 def bus_path() -> Path:
-    for key in ("CODESCRIBE_TRANSCRIPT_BUS_PATH", "CODESCRIBE_TRANSCRIPT_BUS"):
-        raw = os.environ.get(key, "").strip()
-        if raw:
-            return Path(os.path.expanduser(raw))
+    explicit = os.environ.get("CODESCRIBE_TRANSCRIPT_BUS_PATH", "").strip()
+    if explicit:
+        return Path(os.path.expanduser(explicit))
     xdg = os.environ.get("XDG_STATE_HOME", "").strip()
     if xdg:
         return Path(os.path.expanduser(xdg)) / "codescribe" / BUS_FILENAME
+    data_dir = os.environ.get("CODESCRIBE_DATA_DIR", "").strip()
+    if data_dir:
+        return Path(os.path.expanduser(data_dir)) / BUS_FILENAME
     return Path.home() / ".codescribe" / BUS_FILENAME
 
 
@@ -586,6 +588,11 @@ def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--bus", type=Path, default=None, help="override bus path")
     parser.add_argument(
+        "--print-bus-path",
+        action="store_true",
+        help="print the canonical runtime-equivalent bus path and exit",
+    )
+    parser.add_argument(
         "--name", default=None, help="bound agent name (kielbasa filter)"
     )
     parser.add_argument("--all", action="store_true", help="promiscuous: every seal")
@@ -625,6 +632,9 @@ def main() -> int:
     args = parser.parse_args()
     if args.bus is None:
         args.bus = bus_path()
+    if args.print_bus_path:
+        print(args.bus)
+        return 0
     if args.bridge_home is None:
         args.bridge_home = bridge_home()
     if bool(args.provider) != bool(args.session):
