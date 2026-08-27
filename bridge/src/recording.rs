@@ -694,6 +694,8 @@ mod tests {
                 seal_receipt: Some("seal-receipt".to_string()),
                 manual_edit_receipt: Some("manual-edit-receipt".to_string()),
             }],
+            seal_coverage: None,
+            comparison: None,
         };
 
         let projected = CsTranscriptProjectionEvent::from_bus_event(&event);

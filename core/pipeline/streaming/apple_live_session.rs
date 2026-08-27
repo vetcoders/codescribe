@@ -49,7 +49,7 @@ use crate::asr_session::recorder::{
 use crate::asr_session::{SessionId as Layer1SessionId, SessionInput as Layer1SessionInput};
 use crate::audio::capture_receipt::{
     CaptureLevelAccumulator, CapturePathMeta, begin_session_energy_clock,
-    emit_capture_level_receipt,
+    emit_capture_level_receipt, session_active_speech_ranges,
 };
 use crate::config::{FormattingPolicy, RuntimeSettingsSnapshot};
 use crate::llm::ai_formatting::{
@@ -59,14 +59,15 @@ use crate::llm::inline_format::{LabelProposalDisposition, OccurrenceLabelProposa
 use crate::pipeline::acoustic_ledger::{
     AcousticEvidence, AcousticLedger, EnergyCalibration, MutationReceipt,
     ObservationIdentity as LedgerObservationIdentity,
-    ObservationProducer as LedgerObservationProducer, OccurrenceIdentity, SealRefusal,
+    ObservationProducer as LedgerObservationProducer, OccurrenceIdentity, SealCoverageReceipt,
+    SealCoverageStatus, SealRefusal, TranscriptComparisonReceipt,
 };
 use crate::pipeline::contracts::{EngineEvent, EventSink, TranscriptSegment};
 use crate::stt::apple_stt::{LiveStreamEvent, LiveStreamSession};
 use crate::stt::tail_patcher::{SkipReasonCode, TailPatchConfig, TailPatchOutcome};
 use crate::stt::tail_provider::{
-    TailProviderPayload, TailProviderRequest, TailRequestIdentity, TailSampleRange,
-    TimedTailSegment,
+    InProcessTailProvider, TailProvider, TailProviderPayload, TailProviderRequest,
+    TailRequestIdentity, TailSampleRange, TimedTailSegment,
 };
 
 use super::layer1_window::{CoalesceFlush, CoalescedPiece, Layer1Coalesce};
@@ -105,6 +106,10 @@ const FORMATTER_QUEUE_CAP: usize = 8;
 /// 2026-08-12, when a stop that owed nothing at all still paid the full 30s
 /// because the loop was waiting on the wrong condition.
 const TAIL_PATCH_CLOSURE_TIMEOUT: Duration = Duration::from_secs(5);
+
+/// A 200 ms VAD/energy edge is ordinary quantisation; an uncovered span over
+/// 250 ms is not allowed to become terminal transcript truth.
+pub const SEAL_COVERAGE_INCOMPLETE_MS: u64 = 250;
 
 /// Stable outward receipt when accepted Layer 1 work cannot land before the
 /// Apple seal worker closes. The Apple canvas remains authoritative.
@@ -1665,12 +1670,13 @@ fn resolve_sealed_audio_window(
             // small Apple overshoot is intentionally clamped there; carrying
             // the *requested* `end_ts` forward would make the next window
             // start beyond captured audio even though this window resolved.
-            let pcm_start_secs = window.sample_start as f32 / state.sample_rate.max(1) as f32;
             let pcm_end_secs = window.sample_end as f32 / state.sample_rate.max(1) as f32;
             state.last_sealed_end = pcm_end_secs;
-            // Everything before this utterance is committed canvas; no future
-            // patch reaches back past it.
-            state.audio.committed_through(pcm_start_secs);
+            // Keep the bounded session tail until terminal coverage has been
+            // checked. A later occurrence can expose an earlier speech hole;
+            // releasing everything before this boundary would destroy the PCM
+            // needed to admit that hole through the ledger corridor. The ring
+            // still enforces DEFAULT_RETENTION_SECS.
             if window.samples.is_empty() {
                 // A cumulative final may assert novel text after the PCM clock
                 // has reached EOF. Content still seals, but zero samples are
@@ -2043,6 +2049,10 @@ fn seal_sliced_by_silero(
 enum EnergyAdmission {
     /// Measure the owned capture window and qualify it through the calibration.
     QualifyFromOwnedPcm,
+    /// A terminal final-pass job owns an uncovered measured speech range. It
+    /// qualifies that PCM and schedules only the Whisper observer that
+    /// actually ran; Apple/Lexicon never observed this occurrence.
+    QualifyFinalPassGap,
     /// Refuse unless the ledger already qualified this exact occurrence.
     RequireExistingQualification,
 }
@@ -2080,7 +2090,10 @@ fn admit_ledger_label(
         .lock()
         .unwrap_or_else(std::sync::PoisonError::into_inner);
     if !ledger.is_qualified(&occurrence) {
-        if energy != EnergyAdmission::QualifyFromOwnedPcm {
+        if !matches!(
+            energy,
+            EnergyAdmission::QualifyFromOwnedPcm | EnergyAdmission::QualifyFinalPassGap
+        ) {
             return None;
         }
         let window = state
@@ -2122,13 +2135,15 @@ fn admit_ledger_label(
         }
     }
     if ledger.frontier_of(&occurrence).is_none() {
-        ledger.schedule_frontier(
-            occurrence.clone(),
-            [
+        let producers = if energy == EnergyAdmission::QualifyFinalPassGap {
+            vec![LedgerObservationProducer::Whisper]
+        } else {
+            vec![
                 LedgerObservationProducer::Apple,
                 LedgerObservationProducer::Lexicon,
-            ],
-        );
+            ]
+        };
+        ledger.schedule_frontier(occurrence.clone(), producers);
     }
     let receipt = ledger.admit(&observation, label);
     let _ = ev_tx.send(EngineEvent::LedgerMutation {
@@ -2151,6 +2166,185 @@ fn admit_ledger_label(
         state.formatter_awaiting_completion = state.formatter_awaiting_completion.saturating_add(1);
     }
     Some(receipt)
+}
+
+/// Compare committed occurrence coverage with the existing Silero speech
+/// ledger (or the capture energy ladder when Silero produced no spans), then
+/// offer every material hole to Whisper on its exact PCM range. The
+/// whole-session pass is retained only as comparison evidence; gap text enters
+/// exclusively through `admit_ledger_label` below.
+fn repair_terminal_seal_coverage(
+    state: &mut AppleSealState,
+    ev_tx: &mpsc::UnboundedSender<EngineEvent>,
+    language: Option<&str>,
+) -> SealCoverageReceipt {
+    let threshold_samples =
+        u64::from(state.sample_rate).saturating_mul(SEAL_COVERAGE_INCOMPLETE_MS) / 1_000;
+    let vad_ranges = state
+        .fusion
+        .as_ref()
+        .map(|fusion| {
+            fusion
+                .ledger()
+                .utterances()
+                .iter()
+                .filter(|utterance| utterance.closed)
+                .map(|utterance| utterance.range.clone())
+                .collect::<Vec<_>>()
+        })
+        .unwrap_or_default();
+    let speech_ranges = if vad_ranges.is_empty() {
+        session_active_speech_ranges(&state.session_id, state.capture_epoch, state.sample_rate)
+    } else {
+        vad_ranges
+    };
+    let (initial, apple_text) = {
+        let ledger = state
+            .acoustic_ledger
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        (
+            ledger.assess_seal_coverage(
+                &state.session_id,
+                state.capture_epoch,
+                &speech_ranges,
+                threshold_samples,
+            ),
+            ledger.rendered_text(),
+        )
+    };
+
+    let full_range = speech_ranges
+        .first()
+        .zip(speech_ranges.last())
+        .map(|(first, last)| TailSampleRange {
+            session: state.session_id.clone(),
+            capture_epoch: state.capture_epoch,
+            sample_start: first.sample_start,
+            sample_end: last.sample_end,
+        });
+    let comparison = full_range.and_then(|range| {
+        let window = state
+            .audio
+            .window_by_samples(range.sample_start, range.sample_end)?;
+        let request = TailProviderRequest {
+            identity: TailRequestIdentity {
+                request_id: u64::MAX,
+                range,
+            },
+            sample_rate: state.sample_rate,
+            language: language.map(str::to_owned),
+        };
+        match InProcessTailProvider.transcribe(&request, &window.samples) {
+            Ok(payload) if !payload.text.trim().is_empty() => {
+                Some(TranscriptComparisonReceipt::new(
+                    apple_text.clone(),
+                    payload.text.trim().to_string(),
+                ))
+            }
+            Ok(_) => {
+                let _ = ev_tx.send(EngineEvent::Warning {
+                    code: "seal_coverage_final_pass_empty".to_string(),
+                    message: "whole-session final pass returned no rendered text".to_string(),
+                });
+                None
+            }
+            Err(error) => {
+                let _ = ev_tx.send(EngineEvent::Warning {
+                    code: "seal_coverage_final_pass_failed".to_string(),
+                    message: error.to_string(),
+                });
+                None
+            }
+        }
+    });
+
+    state
+        .acoustic_ledger
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .record_seal_coverage(initial.clone());
+    let _ = ev_tx.send(EngineEvent::SealCoverage {
+        receipt: initial.clone(),
+        comparison: comparison.clone(),
+    });
+    if initial.status == SealCoverageStatus::Complete {
+        return initial;
+    }
+
+    for (ordinal, range) in initial
+        .uncovered_speech_ranges
+        .iter()
+        .filter(|range| range.sample_end.saturating_sub(range.sample_start) > threshold_samples)
+        .cloned()
+        .enumerate()
+    {
+        let Some(window) = state
+            .audio
+            .window_by_samples(range.sample_start, range.sample_end)
+        else {
+            let _ = ev_tx.send(EngineEvent::Warning {
+                code: "seal_coverage_gap_pcm_unavailable".to_string(),
+                message: format!("{}..{}", range.sample_start, range.sample_end),
+            });
+            continue;
+        };
+        let request_id = u64::MAX.saturating_sub(ordinal as u64 + 1);
+        let request = TailProviderRequest {
+            identity: TailRequestIdentity {
+                request_id,
+                range: range.clone(),
+            },
+            sample_rate: state.sample_rate,
+            language: language.map(str::to_owned),
+        };
+        let label = match InProcessTailProvider.transcribe(&request, &window.samples) {
+            Ok(payload) if !payload.text.trim().is_empty() => payload.text.trim().to_string(),
+            Ok(_) => continue,
+            Err(error) => {
+                let _ = ev_tx.send(EngineEvent::Warning {
+                    code: "seal_coverage_gap_recovery_failed".to_string(),
+                    message: format!("{}..{}: {error}", range.sample_start, range.sample_end),
+                });
+                continue;
+            }
+        };
+        let _ = admit_ledger_label(
+            state,
+            ev_tx,
+            LabelAdmission {
+                observation: LedgerObservationIdentity::new(
+                    LedgerObservationProducer::Whisper,
+                    request_id,
+                    0,
+                    OccurrenceIdentity::from(&range),
+                ),
+                label: &label,
+                energy: EnergyAdmission::QualifyFinalPassGap,
+            },
+        );
+    }
+
+    let final_receipt = state
+        .acoustic_ledger
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .assess_seal_coverage(
+            &state.session_id,
+            state.capture_epoch,
+            &speech_ranges,
+            threshold_samples,
+        );
+    state
+        .acoustic_ledger
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .record_seal_coverage(final_receipt.clone());
+    let _ = ev_tx.send(EngineEvent::SealCoverage {
+        receipt: final_receipt.clone(),
+        comparison,
+    });
+    final_receipt
 }
 
 /// Hand one exact occurrence to Formatter only when the returning producer is
@@ -2973,6 +3167,30 @@ fn apple_stream_worker(
     // path — the machine's own span timestamps are the clock, because the audio
     // clock is frozen at EOF and can sit milliseconds behind them.
     state.seal_remaining_at_session_end(&ev_tx);
+    let seal_coverage = repair_terminal_seal_coverage(&mut state, &ev_tx, language);
+    if seal_coverage.status == SealCoverageStatus::Incomplete {
+        let _ = ev_tx.send(EngineEvent::Warning {
+            code: "terminal_seal_coverage_incomplete".to_string(),
+            message: format!(
+                "covered={}/{} max_uncovered={} threshold={}",
+                seal_coverage.covered_samples,
+                seal_coverage.speech_samples,
+                seal_coverage.max_uncovered_samples,
+                seal_coverage.incomplete_threshold_samples,
+            ),
+        });
+        return Ok(AppleStreamOutcome {
+            sealed: state.sealed_count,
+            filtered_empty_drops: state.filtered_empty_drops,
+            unresolved_windows: state.unresolved_windows,
+            under_commit_escalations: state.under_commit_escalations,
+            tail_patch_replacements: state.tail_patch_replacements,
+            tail_patch_refusals: state.tail_patch_refusals,
+            tail_patch_jobs_applied: state.tail_patch_jobs_applied,
+            tail_patch_jobs_skipped: state.tail_patch_jobs_skipped,
+            tail_patch_timeout_residue,
+        });
+    }
     let terminal = state
         .acoustic_ledger
         .lock()

@@ -414,6 +414,7 @@ pub struct AcousticLedger {
     trail: Vec<LayerDecisionReceipt>,
     manual_edits: Vec<ManualEditReceipt>,
     derivations: Vec<OccurrenceDerivation>,
+    latest_seal_coverage: Option<SealCoverageReceipt>,
 }
 
 impl AcousticLedger {
@@ -442,6 +443,141 @@ impl AcousticLedger {
     /// Occurrences held, in capture order.
     pub fn occurrences(&self) -> impl Iterator<Item = &OccurrenceIdentity> {
         self.committed.keys()
+    }
+
+    /// Render the current committed labels in capture order. This is a
+    /// comparison input only; callers cannot feed it back as a mutation.
+    pub fn rendered_text(&self) -> String {
+        self.committed
+            .values()
+            .map(|held| held.text.trim())
+            .filter(|text| !text.is_empty())
+            .collect::<Vec<_>>()
+            .join(" ")
+    }
+
+    /// Store the latest capture-clock coverage fact for terminal admission.
+    /// A receipt for another session/epoch cannot poison this ledger.
+    pub fn record_seal_coverage(&mut self, receipt: SealCoverageReceipt) -> bool {
+        let binds_this_ledger = self.committed.keys().any(|occurrence| {
+            occurrence.session == receipt.session_id
+                && occurrence.capture_epoch == receipt.capture_epoch
+        }) || self.committed.is_empty();
+        if !binds_this_ledger
+            || receipt.uncovered_speech_ranges.iter().any(|range| {
+                range.session != receipt.session_id || range.capture_epoch != receipt.capture_epoch
+            })
+        {
+            return false;
+        }
+        self.latest_seal_coverage = Some(receipt);
+        true
+    }
+
+    pub fn latest_seal_coverage(&self) -> Option<&SealCoverageReceipt> {
+        self.latest_seal_coverage.as_ref()
+    }
+
+    /// Compare committed occurrence ranges with measured speech ranges on the
+    /// same capture clock. Ranges are unioned before subtraction, so overlap or
+    /// repeated labels can neither inflate nor erase coverage.
+    pub fn assess_seal_coverage(
+        &self,
+        session: &str,
+        capture_epoch: u64,
+        speech_ranges: &[TailSampleRange],
+        incomplete_threshold_samples: u64,
+    ) -> SealCoverageReceipt {
+        fn merged_ranges(mut ranges: Vec<(u64, u64)>) -> Vec<(u64, u64)> {
+            ranges.retain(|(start, end)| end > start);
+            ranges.sort_unstable();
+            let mut merged: Vec<(u64, u64)> = Vec::with_capacity(ranges.len());
+            for (start, end) in ranges {
+                if let Some((_, previous_end)) = merged.last_mut()
+                    && start <= *previous_end
+                {
+                    *previous_end = (*previous_end).max(end);
+                } else {
+                    merged.push((start, end));
+                }
+            }
+            merged
+        }
+
+        let speech = merged_ranges(
+            speech_ranges
+                .iter()
+                .filter(|range| range.session == session && range.capture_epoch == capture_epoch)
+                .map(|range| (range.sample_start, range.sample_end))
+                .collect(),
+        );
+        let committed = merged_ranges(
+            self.committed
+                .keys()
+                .filter(|occurrence| {
+                    occurrence.session == session && occurrence.capture_epoch == capture_epoch
+                })
+                .map(|occurrence| (occurrence.sample_start, occurrence.sample_end))
+                .collect(),
+        );
+
+        let speech_samples = speech
+            .iter()
+            .map(|(start, end)| end.saturating_sub(*start))
+            .sum::<u64>();
+        let mut uncovered = Vec::new();
+        for (speech_start, speech_end) in speech {
+            let mut cursor = speech_start;
+            for (covered_start, covered_end) in &committed {
+                if *covered_end <= cursor || *covered_start >= speech_end {
+                    continue;
+                }
+                if *covered_start > cursor {
+                    uncovered.push(TailSampleRange {
+                        session: session.to_string(),
+                        capture_epoch,
+                        sample_start: cursor,
+                        sample_end: (*covered_start).min(speech_end),
+                    });
+                }
+                cursor = cursor.max(*covered_end).min(speech_end);
+                if cursor >= speech_end {
+                    break;
+                }
+            }
+            if cursor < speech_end {
+                uncovered.push(TailSampleRange {
+                    session: session.to_string(),
+                    capture_epoch,
+                    sample_start: cursor,
+                    sample_end: speech_end,
+                });
+            }
+        }
+        let uncovered_samples = uncovered
+            .iter()
+            .map(|range| range.sample_end.saturating_sub(range.sample_start))
+            .sum::<u64>();
+        let max_uncovered_samples = uncovered
+            .iter()
+            .map(|range| range.sample_end.saturating_sub(range.sample_start))
+            .max()
+            .unwrap_or(0);
+        let status = if max_uncovered_samples > incomplete_threshold_samples {
+            SealCoverageStatus::Incomplete
+        } else {
+            SealCoverageStatus::Complete
+        };
+        SealCoverageReceipt {
+            session_id: session.to_string(),
+            capture_epoch,
+            speech_samples,
+            covered_samples: speech_samples.saturating_sub(uncovered_samples),
+            uncovered_speech_ranges: uncovered,
+            max_uncovered_samples,
+            incomplete_threshold_samples,
+            status,
+        }
     }
 
     /// Offer one observation and receive exactly one receipt.
@@ -811,6 +947,13 @@ impl AcousticLedger {
         session: &str,
         capture_epoch: u64,
     ) -> Result<LedgerSealReceipt, SealRefusal> {
+        if self.latest_seal_coverage.as_ref().is_some_and(|coverage| {
+            coverage.session_id == session
+                && coverage.capture_epoch == capture_epoch
+                && coverage.status == SealCoverageStatus::Incomplete
+        }) {
+            return Err(SealRefusal::CoverageIncomplete);
+        }
         let in_epoch: Vec<OccurrenceIdentity> = self
             .evidence
             .keys()
@@ -1759,6 +1902,8 @@ pub enum SealRefusal {
     /// The terminal seal was asked for while an occurrence in the epoch is
     /// still unsealed.
     OccurrenceStillOpen,
+    /// Measured speech still contains a material uncovered range.
+    CoverageIncomplete,
 }
 
 impl SealRefusal {
@@ -1771,6 +1916,7 @@ impl SealRefusal {
             Self::FrontierUnknown => "frontier_unknown",
             Self::ObservationsWithoutReceipts => "observations_without_receipts",
             Self::OccurrenceStillOpen => "occurrence_still_open",
+            Self::CoverageIncomplete => "coverage_incomplete",
         }
     }
 }
@@ -1804,6 +1950,72 @@ pub struct LedgerSealReceipt {
     pub frontier: ObservationFrontier,
     /// Ordinals of the decision trail entries the seal makes final.
     pub layer_trail_ordinals: Vec<usize>,
+}
+
+/// Whether the committed occurrence union covers the measured speech span
+/// closely enough to become terminal transcript truth.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SealCoverageStatus {
+    Complete,
+    Incomplete,
+}
+
+impl SealCoverageStatus {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Complete => "complete",
+            Self::Incomplete => "incomplete",
+        }
+    }
+}
+
+/// Ledger-owned comparison of committed occurrence coverage against the
+/// capture energy clock. Text never participates in this calculation.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SealCoverageReceipt {
+    pub session_id: String,
+    pub capture_epoch: u64,
+    pub speech_samples: u64,
+    pub covered_samples: u64,
+    pub uncovered_speech_ranges: Vec<TailSampleRange>,
+    pub max_uncovered_samples: u64,
+    pub incomplete_threshold_samples: u64,
+    pub status: SealCoverageStatus,
+}
+
+impl SealCoverageReceipt {
+    pub fn coverage_ratio(&self) -> f64 {
+        if self.speech_samples == 0 {
+            return 1.0;
+        }
+        self.covered_samples as f64 / self.speech_samples as f64
+    }
+}
+
+/// Self-reporting whole-session text comparison. Both rendered values remain
+/// evidence only; only occurrence-authenticated mutations can change text.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct TranscriptComparisonReceipt {
+    pub apple_sha256: String,
+    pub apple_char_count: u64,
+    pub apple_rendered_text: String,
+    pub final_pass_sha256: String,
+    pub final_pass_char_count: u64,
+    pub final_pass_rendered_text: String,
+}
+
+impl TranscriptComparisonReceipt {
+    pub fn new(apple_rendered_text: String, final_pass_rendered_text: String) -> Self {
+        let digest = |text: &str| format!("{:x}", Sha256::digest(text.as_bytes()));
+        Self {
+            apple_sha256: digest(&apple_rendered_text),
+            apple_char_count: apple_rendered_text.chars().count() as u64,
+            apple_rendered_text,
+            final_pass_sha256: digest(&final_pass_rendered_text),
+            final_pass_char_count: final_pass_rendered_text.chars().count() as u64,
+            final_pass_rendered_text,
+        }
+    }
 }
 
 impl LedgerSealReceipt {
@@ -2504,5 +2716,111 @@ mod tests {
             sample_end: 32_000,
         };
         assert_eq!(OccurrenceIdentity::from(&range), occ(16_000, 32_000));
+    }
+
+    /// Recorded W5-A fixture from session b2b3b95e. The replay harness cannot
+    /// inject historical Apple callbacks, so this pins their exact admitted
+    /// occurrence receipts and proves gap recovery at the ledger boundary.
+    #[test]
+    fn recorded_b2b3b95e_gaps_refuse_terminal_truth_until_pcm_occurrences_land() {
+        const SESSION: &str = "b2b3b95e-4ddc-4845-a5ce-149b21eec166";
+        const EPOCH: u64 = 1;
+        const RATE: u64 = 88_200;
+        const THRESHOLD: u64 = RATE * 250 / 1_000;
+
+        fn admit_receipted(
+            ledger: &mut AcousticLedger,
+            range: OccurrenceIdentity,
+            producer: ObservationProducer,
+            request: u64,
+            label: &str,
+        ) {
+            let calibration = EnergyCalibration::new("recorded-calibration", 1.0, 1);
+            let evidence = AcousticEvidence {
+                occurrence: range.clone(),
+                duration_ms: range.sample_len() as f64 * 1_000.0 / RATE as f64,
+                energy_integral: range.sample_len() as f64,
+                mean_rms_dbfs: -35.0,
+                peak_dbfs: -19.0,
+                vad_open_sample: Some(range.sample_start),
+                vad_close_sample: Some(range.sample_end),
+                evidence_calibration_version: calibration.version.clone(),
+            };
+            assert!(ledger.qualify(&evidence, &calibration).is_qualified());
+            ledger.schedule_frontier(range.clone(), [producer]);
+            let observation = ObservationIdentity::new(producer, request, 0, range.clone());
+            assert!(ledger.admit(&observation, label).grants_mutation());
+            assert!(ledger.note_frontier_return(&range, producer));
+            ledger.seal(&range).expect("recorded occurrence seals");
+        }
+
+        let mut ledger = AcousticLedger::new();
+        admit_receipted(
+            &mut ledger,
+            OccurrenceIdentity::new(SESSION, EPOCH, 304_819, 869_376),
+            ObservationProducer::Apple,
+            1,
+            "Kurde powiem ci że dość fajne mechanizmy nam",
+        );
+        admit_receipted(
+            &mut ledger,
+            OccurrenceIdentity::new(SESSION, EPOCH, 1_196_697, 1_558_528),
+            ObservationProducer::Apple,
+            2,
+            "Dość śmiesznym i ciekawym linie",
+        );
+        let speech = vec![TailSampleRange {
+            session: SESSION.to_string(),
+            capture_epoch: EPOCH,
+            sample_start: 304_819,
+            sample_end: 1_602_560,
+        }];
+
+        let incomplete = ledger.assess_seal_coverage(SESSION, EPOCH, &speech, THRESHOLD);
+        assert_eq!(incomplete.status, SealCoverageStatus::Incomplete);
+        assert_eq!(incomplete.speech_samples, 1_297_741);
+        assert_eq!(incomplete.covered_samples, 926_388);
+        assert_eq!(incomplete.max_uncovered_samples, 327_321);
+        assert_eq!(
+            incomplete
+                .uncovered_speech_ranges
+                .iter()
+                .map(|range| (range.sample_start, range.sample_end))
+                .collect::<Vec<_>>(),
+            vec![(869_376, 1_196_697), (1_558_528, 1_602_560)]
+        );
+        assert!(ledger.record_seal_coverage(incomplete.clone()));
+        assert_eq!(
+            ledger.seal_terminal(SESSION, EPOCH),
+            Err(SealRefusal::CoverageIncomplete),
+            "incomplete measured speech must not become terminal truth"
+        );
+
+        admit_receipted(
+            &mut ledger,
+            OccurrenceIdentity::new(SESSION, EPOCH, 869_376, 1_196_697),
+            ObservationProducer::Whisper,
+            3,
+            "wychodzą spontanicznie w tym",
+        );
+        admit_receipted(
+            &mut ledger,
+            OccurrenceIdentity::new(SESSION, EPOCH, 1_558_528, 1_602_560),
+            ObservationProducer::Whisper,
+            4,
+            "pipeline'ie. Nie sądzisz?",
+        );
+
+        let complete = ledger.assess_seal_coverage(SESSION, EPOCH, &speech, THRESHOLD);
+        assert_eq!(complete.status, SealCoverageStatus::Complete);
+        assert_eq!(complete.covered_samples, complete.speech_samples);
+        assert!(complete.uncovered_speech_ranges.is_empty());
+        let rendered = ledger.rendered_text();
+        assert!(rendered.contains("wychodzą spontanicznie w tym"));
+        assert!(rendered.ends_with("Nie sądzisz?"));
+        assert!(ledger.record_seal_coverage(complete));
+        ledger
+            .seal_terminal(SESSION, EPOCH)
+            .expect("complete recorded coverage may become terminal truth");
     }
 }

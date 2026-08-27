@@ -8,7 +8,10 @@
 use serde::{Deserialize, Serialize};
 
 use crate::llm::inline_format::OccurrenceLabelProposal;
-use crate::pipeline::acoustic_ledger::{LedgerSealReceipt, MutationReceipt, ObservationIdentity};
+use crate::pipeline::acoustic_ledger::{
+    LedgerSealReceipt, MutationReceipt, ObservationIdentity, SealCoverageReceipt,
+    TranscriptComparisonReceipt,
+};
 use crate::stt::tail_provider::TailSampleRange;
 
 // ═══════════════════════════════════════════════════════════
@@ -629,6 +632,13 @@ pub enum EngineEvent {
     /// Ledger-owned finality. Reducer, Bus, bridge, and Swift only project it.
     #[serde(skip)]
     LedgerSeal { receipt: LedgerSealReceipt },
+    /// Ledger coverage compared with the measured capture speech span. This is
+    /// evidence, not a free-form transcript mutation.
+    #[serde(skip)]
+    SealCoverage {
+        receipt: SealCoverageReceipt,
+        comparison: Option<TranscriptComparisonReceipt>,
+    },
     /// Proposal-only output from the sole automatic post-ASR author. The
     /// reducer may admit it only through the ledger and only for coordinates
     /// of an occurrence that already exists.

@@ -157,6 +157,7 @@ impl TryFrom<&EngineEvent> for EngineEventWire {
         let wire = match value {
             EngineEvent::LedgerMutation { .. }
             | EngineEvent::LedgerSeal { .. }
+            | EngineEvent::SealCoverage { .. }
             | EngineEvent::OccurrenceLabelProposal { .. } => {
                 return Err(IpcIneligibleEngineEvent);
             }

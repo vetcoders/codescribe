@@ -10,7 +10,9 @@ use std::path::{Path, PathBuf};
 use std::sync::Mutex;
 
 use chrono::{SecondsFormat, Utc};
-use codescribe_core::pipeline::acoustic_ledger::{AcousticLedger, AcousticSerial};
+use codescribe_core::pipeline::acoustic_ledger::{
+    AcousticLedger, AcousticSerial, SealCoverageReceipt, TranscriptComparisonReceipt,
+};
 use codescribe_core::pipeline::contracts::TranscriptSegment;
 use serde::{Deserialize, Serialize};
 
@@ -111,6 +113,71 @@ pub struct ProjectedAcousticReceipt {
     pub manual_edit_receipt: Option<String>,
 }
 
+/// One uncovered speech span on the canonical capture PCM clock.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ProjectedSealCoverageRange {
+    pub sample_start: u64,
+    pub sample_end: u64,
+}
+
+/// Additive coverage evidence attached to `codescribe.transcript-evidence.v1`.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct ProjectedSealCoverageReceipt {
+    pub status: String,
+    pub speech_samples: u64,
+    pub covered_samples: u64,
+    pub uncovered_speech_ranges: Vec<ProjectedSealCoverageRange>,
+    pub max_uncovered_samples: u64,
+    pub incomplete_threshold_samples: u64,
+    pub coverage_ratio: f64,
+}
+
+impl From<&SealCoverageReceipt> for ProjectedSealCoverageReceipt {
+    fn from(receipt: &SealCoverageReceipt) -> Self {
+        Self {
+            status: receipt.status.as_str().to_string(),
+            speech_samples: receipt.speech_samples,
+            covered_samples: receipt.covered_samples,
+            uncovered_speech_ranges: receipt
+                .uncovered_speech_ranges
+                .iter()
+                .map(|range| ProjectedSealCoverageRange {
+                    sample_start: range.sample_start,
+                    sample_end: range.sample_end,
+                })
+                .collect(),
+            max_uncovered_samples: receipt.max_uncovered_samples,
+            incomplete_threshold_samples: receipt.incomplete_threshold_samples,
+            coverage_ratio: receipt.coverage_ratio(),
+        }
+    }
+}
+
+/// Whole-session Apple-lane/final-pass evidence. Neither rendered string is a
+/// Bus mutation input; both are retained so divergence is self-diagnosing.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ProjectedTranscriptComparisonReceipt {
+    pub apple_sha256: String,
+    pub apple_char_count: u64,
+    pub apple_rendered_text: String,
+    pub final_pass_sha256: String,
+    pub final_pass_char_count: u64,
+    pub final_pass_rendered_text: String,
+}
+
+impl From<&TranscriptComparisonReceipt> for ProjectedTranscriptComparisonReceipt {
+    fn from(receipt: &TranscriptComparisonReceipt) -> Self {
+        Self {
+            apple_sha256: receipt.apple_sha256.clone(),
+            apple_char_count: receipt.apple_char_count,
+            apple_rendered_text: receipt.apple_rendered_text.clone(),
+            final_pass_sha256: receipt.final_pass_sha256.clone(),
+            final_pass_char_count: receipt.final_pass_char_count,
+            final_pass_rendered_text: receipt.final_pass_rendered_text.clone(),
+        }
+    }
+}
+
 /// Append-only Bus observation of one reducer revision entry. Every truth
 /// field is supplied by the reducer/ledger; sequence and emission time are the
 /// only Bus-owned metadata.
@@ -134,6 +201,10 @@ pub struct TranscriptBusEvidenceEvent {
     pub label: String,
     pub rendered_text: String,
     pub acoustic_receipts: Vec<ProjectedAcousticReceipt>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub seal_coverage: Option<ProjectedSealCoverageReceipt>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub comparison: Option<ProjectedTranscriptComparisonReceipt>,
 }
 
 /// Why the controller left a Bus session. Typed on purpose: the terminal
@@ -248,6 +319,7 @@ impl TranscriptBus {
             ReducerAction::RecordLedgerSeal {
                 terminal: false, ..
             } => "record_ledger_seal",
+            ReducerAction::RecordSealCoverage { .. } => "seal_coverage",
             ReducerAction::ApplyManualEdit { .. } => "apply_manual_edit",
         };
         let mut writer = self
@@ -284,6 +356,14 @@ impl TranscriptBus {
                     entry.seal_receipt.clone(),
                     entry.manual_edit_receipt.clone(),
                 )],
+                seal_coverage: revision
+                    .seal_coverage
+                    .as_ref()
+                    .map(ProjectedSealCoverageReceipt::from),
+                comparison: revision
+                    .comparison
+                    .as_ref()
+                    .map(ProjectedTranscriptComparisonReceipt::from),
             };
             if let Err(error) = self.write_evidence_event_locked(&mut writer, &event) {
                 self.log_write_error(error);
@@ -531,6 +611,30 @@ fn expand_tilde(path: &str) -> PathBuf {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn evidence_v1_without_additive_seal_receipts_still_decodes() {
+        let legacy = serde_json::json!({
+            "schema": "codescribe.transcript-evidence.v1",
+            "sequence": 12,
+            "emitted_at": "2026-08-27T22:36:00Z",
+            "session_id": "b2b3b95e-4ddc-4845-a5ce-149b21eec166",
+            "mode": "dictation",
+            "reducer_revision": 7,
+            "reducer_action": "record_ledger_terminal_seal",
+            "occurrence_session_id": "b2b3b95e-4ddc-4845-a5ce-149b21eec166",
+            "capture_epoch": 1,
+            "sample_start": 304819,
+            "sample_end": 869376,
+            "document_index": 0,
+            "label": "Kurde",
+            "rendered_text": "Kurde",
+            "acoustic_receipts": []
+        });
+        let decoded: TranscriptBusEvidenceEvent = serde_json::from_value(legacy).unwrap();
+        assert!(decoded.seal_coverage.is_none());
+        assert!(decoded.comparison.is_none());
+    }
 
     #[test]
     fn bus_flushes_session_lifecycle_privately_without_text_authority() {

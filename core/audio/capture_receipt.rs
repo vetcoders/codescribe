@@ -14,6 +14,7 @@ use std::sync::{Mutex, OnceLock};
 use tracing::{info, warn};
 
 use crate::pipeline::contracts::{EngineEvent, EventSink};
+use crate::stt::tail_provider::TailSampleRange;
 
 /// Session-end receipt code (log line + last-snapshot key).
 pub const CAPTURE_LEVEL_RECEIPT_CODE: &str = "capture_level_receipt";
@@ -27,6 +28,10 @@ pub const DEFAULT_CAPTURE_LEVEL_LOW_DB: f32 = -52.0;
 pub const DIGITAL_ZERO_ABS: f32 = 1.0e-8;
 /// Linear RMS below this is not active speech (~−80 dBFS).
 pub const ACTIVE_SPEECH_LINEAR_FLOOR: f32 = 1.0e-4;
+/// Adjacent active hops separated only by an ordinary word-edge pause stay one
+/// measured speech span. Seal coverage separately tolerates a smaller 250 ms
+/// uncovered edge; this merge is not transcript-dependent.
+pub const ACTIVE_SPEECH_MERGE_GAP_MS: u64 = 200;
 /// Near-full-scale samples count as clipping.
 pub const CLIP_ABS: f32 = 0.99;
 
@@ -109,6 +114,43 @@ pub fn session_energy_db(sample_start: u64, sample_end: u64) -> Option<f32> {
     }
     let db = linear_to_db((weighted / covered) as f32);
     db.is_finite().then_some(db)
+}
+
+/// Active-speech ranges already measured by the streaming capture energy
+/// ladder. This exposes the existing detector on the canonical PCM clock; it
+/// does not run a second VAD or inspect transcript text.
+pub fn session_active_speech_ranges(
+    session: &str,
+    capture_epoch: u64,
+    sample_rate: u32,
+) -> Vec<TailSampleRange> {
+    let merge_gap = u64::from(sample_rate).saturating_mul(ACTIVE_SPEECH_MERGE_GAP_MS) / 1_000;
+    let hops = session_energy_slot()
+        .lock()
+        .unwrap_or_else(|e| e.into_inner());
+    let mut ranges: Vec<(u64, u64)> = Vec::new();
+    for hop in hops
+        .hops
+        .iter()
+        .filter(|hop| hop.rms >= ACTIVE_SPEECH_LINEAR_FLOOR)
+    {
+        if let Some((_, previous_end)) = ranges.last_mut()
+            && hop.sample_start <= previous_end.saturating_add(merge_gap)
+        {
+            *previous_end = (*previous_end).max(hop.sample_end);
+        } else {
+            ranges.push((hop.sample_start, hop.sample_end));
+        }
+    }
+    ranges
+        .into_iter()
+        .map(|(sample_start, sample_end)| TailSampleRange {
+            session: session.to_string(),
+            capture_epoch,
+            sample_start,
+            sample_end,
+        })
+        .collect()
 }
 
 /// Remember the live capture path (device / rate / channels) without a new TCC prompt.

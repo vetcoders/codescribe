@@ -6,8 +6,10 @@ it does not own a transcript document and accepts no arbitrary product text.
 Dictation, Agent, and Assistive share the same capture and ledger authority.
 Mode changes only the downstream delivery consumer.
 
-This Bus never opens a microphone, scrapes SwiftUI, re-transcribes saved audio,
-folds raw engine events, or reconstructs text from overlay deltas.
+This Bus never opens a microphone, scrapes SwiftUI, re-transcribes audio,
+folds raw engine events, or reconstructs text from overlay deltas. It can copy
+the ledger's seal-coverage receipt and the engine's local final-pass comparison
+receipt; neither gives the Bus mutation authority.
 
 ## Path contract
 
@@ -63,11 +65,18 @@ contains:
 - exact occurrence identity: session, capture epoch, sample start, sample end;
 - the matching acoustic serial plus word-evidence, layer-decision, seal, and
   manual-edit receipts copied from the ledger-owned reducer entry.
+- optional additive `seal_coverage` evidence: measured speech/covered sample
+  counts, uncovered PCM ranges, ratio, threshold, and `complete|incomplete`;
+- optional additive `comparison`: SHA-256, character count, and rendered text
+  for the pre-repair Apple-lane document and the whole-session local Whisper
+  pass. These fields remain inside `codescribe.transcript-evidence.v1`; older
+  readers may ignore them and Rust decoding defaults them to absent.
 
 The Bus skips entries the ledger cannot authenticate. It cannot admit an
 occurrence, choose a label, infer identity, perform text-tail matching, or mint
-a seal. A terminal `LedgerSeal` reducer action marks the writer sealed. No
-arbitrary string can close committed Bus truth.
+a seal. `seal_coverage` is emitted before terminal finality. A terminal
+`LedgerSeal` reducer action marks the writer sealed only when the latest
+coverage is not incomplete. No arbitrary string can close committed Bus truth.
 
 ## Authority boundary
 

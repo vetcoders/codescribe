@@ -143,6 +143,7 @@ impl LiveAudioBuffer {
 
     /// Release everything before `secs` — audio already committed downstream
     /// can never be re-cut, so holding it is pure footprint.
+    #[cfg(test)]
     pub(crate) fn committed_through(&mut self, secs: f32) {
         let Some(index) = self.index_for(secs) else {
             return;

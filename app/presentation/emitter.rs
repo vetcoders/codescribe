@@ -12,7 +12,8 @@ use std::{collections::BTreeMap, io::Write as _, sync::Arc};
 use codescribe_core::llm::inline_format::{LabelProposalDisposition, OccurrenceLabelProposal};
 use codescribe_core::pipeline::acoustic_ledger::{
     AcousticLedger, AcousticSerial, LedgerSealReceipt, MutationReceipt, ObservationIdentity,
-    ObservationProducer, OccurrenceIdentity,
+    ObservationProducer, OccurrenceIdentity, SealCoverageReceipt, SealCoverageStatus,
+    TranscriptComparisonReceipt,
 };
 use codescribe_core::pipeline::contracts::{DeltaSink, EngineEvent, EventSink, TranscriptDelta};
 use tokio::sync::Mutex;
@@ -79,6 +80,10 @@ pub enum ReducerAction {
         seal_receipt: String,
         terminal: bool,
     },
+    RecordSealCoverage {
+        receipt: SealCoverageReceipt,
+        comparison: Option<TranscriptComparisonReceipt>,
+    },
     ApplyManualEdit {
         entry: TranscriptDocumentEntry,
     },
@@ -97,6 +102,8 @@ pub struct TranscriptRevision {
     pub action: ReducerAction,
     pub entries: Vec<TranscriptDocumentEntry>,
     pub rendered_text: String,
+    pub seal_coverage: Option<SealCoverageReceipt>,
+    pub comparison: Option<TranscriptComparisonReceipt>,
 }
 
 /// The one committed Rust document plus explicitly non-authoritative UI paint.
@@ -110,6 +117,8 @@ pub struct TranscriptReducer {
     document_by_occurrence: BTreeMap<OccurrenceIdentity, TranscriptDocumentEntry>,
     revision: u64,
     ephemeral_preview: String,
+    latest_seal_coverage: Option<SealCoverageReceipt>,
+    latest_comparison: Option<TranscriptComparisonReceipt>,
 }
 
 /// Trim a fragment's outer edges. Interior whitespace and newlines survive —
@@ -160,6 +169,8 @@ impl TranscriptReducer {
             action,
             entries,
             rendered_text,
+            seal_coverage: self.latest_seal_coverage.clone(),
+            comparison: self.latest_comparison.clone(),
         }
     }
 
@@ -232,6 +243,14 @@ impl TranscriptReducer {
     /// Project ledger-owned finality; the reducer does not decide whether the
     /// frontier is closed and cannot lift the seal later.
     pub fn apply_ledger_seal(&mut self, receipt: &LedgerSealReceipt) -> Option<TranscriptRevision> {
+        if !receipt.is_occurrence_seal()
+            && self
+                .latest_seal_coverage
+                .as_ref()
+                .is_some_and(|coverage| coverage.status == SealCoverageStatus::Incomplete)
+        {
+            return None;
+        }
         for occurrence in &receipt.sealed_occurrences {
             if let Some(entry) = self.document_by_occurrence.get_mut(occurrence) {
                 entry.seal_receipt = Some(receipt.receipt_id.clone());
@@ -243,6 +262,24 @@ impl TranscriptReducer {
             seal_receipt: receipt.receipt_id.clone(),
             terminal: !receipt.is_occurrence_seal(),
         }))
+    }
+
+    /// Record ledger-computed session coverage without changing a single
+    /// document entry. The next terminal seal projects the same immutable
+    /// receipt and is refused above while it remains incomplete.
+    pub fn apply_seal_coverage(
+        &mut self,
+        receipt: &SealCoverageReceipt,
+        comparison: Option<&TranscriptComparisonReceipt>,
+    ) -> TranscriptRevision {
+        self.latest_seal_coverage = Some(receipt.clone());
+        if let Some(comparison) = comparison {
+            self.latest_comparison = Some(comparison.clone());
+        }
+        self.revision_for_action(ReducerAction::RecordSealCoverage {
+            receipt: receipt.clone(),
+            comparison: comparison.cloned(),
+        })
     }
 
     /// The sole automatic author may relabel only an occurrence the ledger
@@ -526,6 +563,28 @@ impl EventSink for PresentationEmitter {
                     .unwrap_or_else(|error| error.into_inner())
                     .apply_ledger_seal(receipt);
                 if let (Some(bus), Some(revision)) = (&self.transcript_bus, revision) {
+                    let events = bus.publish_revision(&revision, &ledger);
+                    if let Some(callback) = &self.projection_callback {
+                        for event in &events {
+                            callback(event);
+                        }
+                    }
+                }
+            }
+            EngineEvent::SealCoverage {
+                receipt,
+                comparison,
+            } => {
+                let Some(ledger) = &self.acoustic_ledger else {
+                    return;
+                };
+                let ledger = ledger.lock().unwrap_or_else(|error| error.into_inner());
+                let revision = self
+                    .session_state
+                    .lock()
+                    .unwrap_or_else(|error| error.into_inner())
+                    .apply_seal_coverage(receipt, comparison.as_ref());
+                if let Some(bus) = &self.transcript_bus {
                     let events = bus.publish_revision(&revision, &ledger);
                     if let Some(callback) = &self.projection_callback {
                         for event in &events {

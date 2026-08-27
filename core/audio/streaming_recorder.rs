@@ -17,7 +17,7 @@ use crate::asr_session::recorder::{
 };
 use crate::audio::recorder::{Recorder, RecorderConfig};
 use crate::config::{RuntimeSettingsSnapshot, UserSettings};
-use crate::pipeline::acoustic_ledger::AcousticLedger;
+use crate::pipeline::acoustic_ledger::{AcousticLedger, SealCoverageStatus};
 use crate::pipeline::contracts::{EngineEvent, EventSink};
 use crate::pipeline::streaming::{
     SessionConfig, TailPatchSessionReceipt, collect_buffered_engine_events_with_config,
@@ -423,6 +423,24 @@ impl StreamingRecorder {
         }
         self.event_sink = None;
 
+        let incomplete_coverage = self.acoustic_ledger.as_ref().and_then(|ledger| {
+            ledger
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .latest_seal_coverage()
+                .filter(|receipt| receipt.status == SealCoverageStatus::Incomplete)
+                .cloned()
+        });
+        if let Some(receipt) = incomplete_coverage {
+            return Err(anyhow!(
+                "terminal transcript refused: seal coverage incomplete ({}/{} samples covered; max gap {} > threshold {})",
+                receipt.covered_samples,
+                receipt.speech_samples,
+                receipt.max_uncovered_samples,
+                receipt.incomplete_threshold_samples,
+            ));
+        }
+
         // 4. Return collected transcript
         let transcript = self.transcript_buffer.lock().await.clone();
         Ok((transcript, audio_path))
@@ -440,44 +458,7 @@ impl StreamingRecorder {
     /// The file itself is still written by the recorder — this discards the
     /// handle, it does not suppress the write.
     pub async fn stop_and_discard_path(&mut self) -> Result<String> {
-        info!("Stopping streaming recorder (discarding audio path)...");
-
-        // Report any dropped audio chunks
-        let drops = self.dropped_chunks.load(Ordering::Relaxed);
-        if drops > 0 {
-            warn!(
-                "Recording session: dropped {} audio chunk(s) due to backpressure",
-                drops
-            );
-        }
-
-        // 1. Stop recording (discard WAV path)
-        let _ = self.recorder.stop().await?;
-        self.lifecycle_handle = None;
-
-        // 2. Wait for worker to finish processing remaining chunks
-        if let Some(handle) = self.transcription_handle.take() {
-            debug!("Waiting for transcription session task to finish...");
-            handle.await.context("Transcription session task failed")?;
-        }
-
-        // 3. Drain presentation layer (same as stop() — see comment there).
-        if self.event_sink.is_some() {
-            let drain_deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(3);
-            loop {
-                let snapshot = self.transcript_buffer.lock().await.len();
-                tokio::time::sleep(std::time::Duration::from_millis(100)).await;
-                if self.transcript_buffer.lock().await.len() == snapshot
-                    || tokio::time::Instant::now() >= drain_deadline
-                {
-                    break;
-                }
-            }
-        }
-        self.event_sink = None;
-
-        // 4. Return collected transcript
-        let transcript = self.transcript_buffer.lock().await.clone();
+        let (transcript, _audio_path) = self.stop().await?;
         Ok(transcript)
     }
 }

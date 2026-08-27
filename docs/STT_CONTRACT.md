@@ -20,8 +20,8 @@
 > `FINAL_PASS_MODE` no longer owns any normal-stop inference.
 > C11 makes `publish_revision` the sole committed Bus writer: raw final,
 > correction, replacement, annotation, and preview events cannot write product
-> text. A terminal ledger seal closes Bus truth; compiler/runtime behavior is
-> `NOT_ASSESSED` in this structural cut.
+> text. A terminal ledger seal closes Bus truth only after measured speech-span
+> coverage is complete within the 250 ms edge tolerance.
 > Planning report: internal plan `stt-apple-must-have` (operator artifact store, 2026-07-24).
 
 ---
@@ -103,8 +103,13 @@ to remapped loopback `:8444` (`/v1/audio/transcriptions`) are product file
 takes. They attach `vocabulary=programming` so Polish+tech speech can prefer
 `Rust` over `raz`. Dictionary binds the archived row audio; it never invents
 `last_session.wav`. Voice Lab and CLI file passes remain diagnostic surfaces.
-The daily Overlay has no full-file transcription action: it renders Bus
-projections and explicit human edits, never raw `transcribeFile` output.
+The daily Overlay has no user-invoked full-file transcription action: it renders
+Bus projections and explicit human edits, never raw `transcribeFile` output.
+At terminal coverage time the live engine does run a local, in-process Whisper
+pass over retained PCM. Its whole-session string is comparison evidence only.
+When measured active speech is not covered by committed occurrences, each
+material uncovered PCM range is transcribed separately and can enter the
+document only as a qualified Whisper occurrence through `AcousticLedger`.
 
 **Legacy Overlay Format is removed (2026-08-25).** The former raw LLM
 replacement / delivery-style path no longer exists. Automatic formatting is
@@ -188,12 +193,14 @@ Code: `core/config/loader.rs` · `core/stt/mod.rs::selected_engine()` · `reconc
 
 | Setting               | Env                                | Default    | Role                                                                                                                          |
 | --------------------- | ---------------------------------- | ---------- | ----------------------------------------------------------------------------------------------------------------------------- |
-| Final pass            | `FINAL_PASS_MODE`                  | legacy     | No effect on normal stop; retained only for settings migration; explicit non-Overlay file surfaces own whole-file inference   |
+| Final pass            | `FINAL_PASS_MODE`                  | legacy     | No routing effect on normal stop; terminal coverage always uses local retained-PCM Whisper evidence; explicit file surfaces keep their own actions |
 | Layered compatibility | `CODESCRIBE_LAYERED_TRANSCRIPTION` | mode-owned | Local Power + Apple/Auto: unset or `phase1` arms; explicit off/invalid degrades. No parallel VAD/scheduler live route remains |
 
-Normal capture ignores legacy final-pass routing and never decodes/uploads the
-completed WAV. Layered phase tokens (`phase1`…) select live refinement;
-whole-file inference stays outside the daily Overlay on explicit file surfaces.
+Normal capture ignores legacy final-pass routing and never uploads the
+completed WAV for seal coverage. At stop, the engine compares the Apple-lane
+document with local Whisper over retained PCM, then transcribes only uncovered
+speech ranges for ledger admission. Layered phase tokens (`phase1`…) select live
+refinement; explicit file actions remain separate product surfaces.
 
 ---
 
@@ -207,9 +214,11 @@ whole-file inference stays outside the daily Overlay on explicit file surfaces.
 | Double Left Option (formatting) | `formatting = double_left_option`   | same                             | hold/toggle + force AI format path                               | STT same, then `core/llm` formatting         |
 | Double Right Option (assistive) | `assistive = double_right_option`   | same                             | assistive session                                                | STT same, then agent lane                    |
 
-**Stop** drains the live recorder/session and delivers its committed transcript
-(paste / overlay / agent). It does not upload the completed WAV. Whole-file
-file-pass belongs only to explicit non-Overlay file surfaces.
+**Stop** drains the live recorder/session, calculates occurrence-union coverage
+against the capture energy ladder, and delivers only the committed transcript
+(paste / overlay / agent). A gap over 250 ms blocks terminal truth until local
+Whisper supplies a qualified exact-range occurrence. The comparison pass never
+writes a whole string into the document and never uploads the completed WAV.
 
 ### 3.2 Settings UI → config
 
