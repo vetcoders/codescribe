@@ -637,6 +637,89 @@ class CorridorProofTests(unittest.TestCase):
             },
         )
 
+    def ordering_contract(self) -> list[dict[str, object]]:
+        contract = copy.deepcopy(self.contract())
+        corridor = contract[0]
+        corridor["required_invocations"].append(  # type: ignore[union-attr]
+            {
+                "callee": "publish_event",
+                "callee_file": "app/presentation/transcript_bus.rs",
+                "caller": "publish_revision",
+                "caller_file": "app/presentation/transcript_bus.rs",
+            }
+        )
+        corridor["ordering"] = [
+            {
+                "caller": "publish_revision",
+                "caller_file": "app/presentation/transcript_bus.rs",
+                "before": {"corridor": "projection", "callee": "project_serial"},
+                "after": {"corridor": "projection", "callee": "publish_event"},
+                "barrier": {"callee": "lock", "selection": "last_before_after"},
+            }
+        ]
+        return contract
+
+    def verifier_for_ordering(
+        self,
+        *,
+        before_line: int = 22,
+        barrier_line: int = 23,
+        after_line: int = 24,
+        include_before: bool = True,
+    ) -> StubVerifier:
+        file = "app/presentation/transcript_bus.rs"
+        verifier = self.verifier_for(
+            "fn publish_revision() {\n"
+            "  let serial = ledger.serial_of(&entry.occurrence);\n"
+            "  Self::project_serial(serial);\n"
+            "  Self::publish_event(event);\n"
+            "}\n"
+        )
+        before_rows = []
+        if include_before:
+            before_rows.append(
+                occurrence(
+                    "project_serial",
+                    file=file,
+                    line=before_line,
+                    enclosing_symbol="publish_revision",
+                )
+            )
+        verifier.occurrence_responses["project_serial"] = exact_payload(
+            *before_rows,
+            occurrence(
+                "project_serial",
+                file=file,
+                line=10,
+                match_role="local_binding",
+                enclosing_symbol="project_serial",
+            ),
+        )
+        verifier.occurrence_responses["publish_event"] = exact_payload(
+            occurrence(
+                "publish_event",
+                file=file,
+                line=after_line,
+                enclosing_symbol="publish_revision",
+            ),
+            occurrence(
+                "publish_event",
+                file=file,
+                line=11,
+                match_role="local_binding",
+                enclosing_symbol="publish_event",
+            ),
+        )
+        verifier.occurrence_responses["lock"] = exact_payload(
+            occurrence(
+                "lock",
+                file=file,
+                line=barrier_line,
+                enclosing_symbol="publish_revision",
+            )
+        )
+        return verifier
+
     def test_c1_live_hop_is_proven(self) -> None:
         verifier = self.verifier_for(
             "fn publish_revision() {\n"
@@ -1137,6 +1220,96 @@ class CorridorProofTests(unittest.TestCase):
 
         self.assertIsNone(VERIFIER.constant_expression_value("1 / 0"))
         self.assertIsNone(VERIFIER.constant_expression_value("1 % 0"))
+
+    def test_c26_same_caller_ordering_is_green(self) -> None:
+        observed, failures = VERIFIER.verify_code_corridors(
+            self.verifier_for_ordering(), self.ordering_contract()
+        )
+
+        self.assertEqual(failures, [])
+        self.assertEqual(
+            observed["projection"]["ordering"],
+            [
+                {
+                    "caller": "publish_revision",
+                    "caller_file": "app/presentation/transcript_bus.rs",
+                    "before": {
+                        "corridor": "projection",
+                        "callee": "project_serial",
+                    },
+                    "after": {
+                        "corridor": "projection",
+                        "callee": "publish_event",
+                    },
+                    "barrier": {
+                        "callee": "lock",
+                        "selection": "last_before_after",
+                    },
+                    "barrier_observed_lines": [23],
+                    "before_observed_lines": [22],
+                    "after_observed_lines": [24],
+                    "verdict": "GREEN",
+                }
+            ],
+        )
+
+    def test_c27_before_relocated_after_is_red_and_names_corridor_and_caller(
+        self,
+    ) -> None:
+        observed, failures = VERIFIER.verify_code_corridors(
+            self.verifier_for_ordering(before_line=25, barrier_line=23, after_line=24),
+            self.ordering_contract(),
+        )
+
+        self.assertEqual(observed["projection"]["ordering"][0]["verdict"], "RED")
+        self.assertEqual(len(failures), 1)
+        self.assertIn("corridor projection ordering publish_revision", failures[0])
+        self.assertIn("observed before lines [25], after lines [24]", failures[0])
+
+    def test_c28_before_relocated_past_barrier_is_red(self) -> None:
+        observed, failures = VERIFIER.verify_code_corridors(
+            self.verifier_for_ordering(before_line=23, barrier_line=22, after_line=24),
+            self.ordering_contract(),
+        )
+
+        ordering = observed["projection"]["ordering"][0]
+        self.assertEqual(ordering["verdict"], "RED")
+        self.assertEqual(ordering["barrier_observed_lines"], [22])
+        self.assertEqual(len(failures), 1)
+        self.assertIn("before lock barrier", failures[0])
+
+    def test_c29_missing_before_invocation_is_ordering_red(self) -> None:
+        observed, failures = VERIFIER.verify_code_corridors(
+            self.verifier_for_ordering(include_before=False),
+            self.ordering_contract(),
+        )
+
+        ordering = observed["projection"]["ordering"][0]
+        self.assertEqual(ordering["before_observed_lines"], [])
+        self.assertEqual(ordering["verdict"], "RED")
+        self.assertTrue(
+            any(
+                "corridor projection ordering publish_revision has no observed "
+                "production callsite(s)" in failure
+                for failure in failures
+            )
+        )
+
+    def test_c30_malformed_ordering_entry_is_schema_red(self) -> None:
+        contract = self.ordering_contract()
+        contract[0]["ordering"] = [  # type: ignore[index]
+            {
+                "caller": "publish_revision",
+                "caller_file": "app/presentation/transcript_bus.rs",
+                "before": {"callee": "project_serial"},
+                "after": {"corridor": "projection", "callee": "publish_event"},
+            }
+        ]
+
+        with self.assertRaisesRegex(RuntimeError, "malformed ordering entry"):
+            VERIFIER.verify_code_corridors(
+                self.verifier_for_ordering(), contract
+            )
 
 
 class RustModuleResolutionTests(unittest.TestCase):

@@ -1238,6 +1238,123 @@ def corridor_body_rows(
     return rows
 
 
+def parse_corridor_ordering(name: str, ordering: Any) -> list[dict[str, Any]]:
+    """Validate declarative same-caller invocation ordering constraints."""
+    if ordering is None:
+        return []
+    if not isinstance(ordering, list) or any(
+        not isinstance(row, dict) for row in ordering
+    ):
+        raise RuntimeError(f"corridor {name} ordering must be a list of objects")
+
+    expected_row_keys = {"caller", "caller_file", "before", "after"}
+    expected_selector_keys = {"corridor", "callee"}
+    expected_barrier_keys = {"callee", "selection"}
+    seen: set[tuple[str, ...]] = set()
+    validated: list[dict[str, Any]] = []
+    for row in ordering:
+        if set(row) not in (expected_row_keys, expected_row_keys | {"barrier"}):
+            raise RuntimeError(f"corridor {name} has malformed ordering entry: {row}")
+        caller = row.get("caller")
+        caller_file = row.get("caller_file")
+        before = row.get("before")
+        after = row.get("after")
+        barrier = row.get("barrier")
+        if (
+            not isinstance(caller, str)
+            or not caller
+            or not isinstance(caller_file, str)
+            or not caller_file
+            or Path(caller_file).is_absolute()
+            or not isinstance(before, dict)
+            or set(before) != expected_selector_keys
+            or not isinstance(after, dict)
+            or set(after) != expected_selector_keys
+        ):
+            raise RuntimeError(f"corridor {name} has malformed ordering entry: {row}")
+        if any(
+            not isinstance(selector.get(key), str) or not selector[key]
+            for selector in (before, after)
+            for key in expected_selector_keys
+        ):
+            raise RuntimeError(f"corridor {name} has malformed ordering entry: {row}")
+        if before == after:
+            raise RuntimeError(
+                f"corridor {name} ordering entry compares one invocation to itself: {row}"
+            )
+        if barrier is not None and (
+            not isinstance(barrier, dict)
+            or set(barrier) != expected_barrier_keys
+            or not isinstance(barrier.get("callee"), str)
+            or not barrier["callee"]
+            or barrier.get("selection") != "last_before_after"
+        ):
+            raise RuntimeError(f"corridor {name} has malformed ordering barrier: {row}")
+        identity = (
+            caller,
+            caller_file,
+            str(before["corridor"]),
+            str(before["callee"]),
+            str(after["corridor"]),
+            str(after["callee"]),
+            str(barrier["callee"]) if barrier is not None else "",
+            str(barrier["selection"]) if barrier is not None else "",
+        )
+        if identity in seen:
+            raise RuntimeError(f"corridor {name} duplicates ordering entry: {row}")
+        seen.add(identity)
+        validated.append(row)
+    return validated
+
+
+def invocation_receipts_for_ordering(
+    observations: dict[str, Any],
+    selector: dict[str, str],
+    *,
+    caller: str,
+    caller_file: str,
+) -> list[dict[str, Any]]:
+    corridor = observations.get(selector["corridor"])
+    if not isinstance(corridor, dict):
+        return []
+    invocations = corridor.get("invocations")
+    if not isinstance(invocations, list):
+        return []
+    return [
+        row
+        for row in invocations
+        if isinstance(row, dict)
+        and row.get("caller") == caller
+        and row.get("caller_file") == caller_file
+        and row.get("callee") == selector["callee"]
+    ]
+
+
+def barrier_lines_for_ordering(
+    verifier: StructuralVerifier,
+    barrier: dict[str, str],
+    *,
+    caller: str,
+    caller_file: str,
+    after_lines: list[int],
+) -> list[int]:
+    """Select the last declared barrier invocation before the downstream call."""
+    if not after_lines:
+        return []
+    candidates = sorted(
+        int(row["line"])
+        for row in production_occurrences(verifier.occurrences(barrier["callee"]))
+        if row.get("file") == caller_file
+        and row.get("match_role") == "reference"
+        and isinstance(row.get("enclosing_symbol"), dict)
+        and row["enclosing_symbol"].get("name") == caller
+        and row["enclosing_symbol"].get("file") == caller_file
+        and type(row.get("line")) is int
+        and int(row["line"]) < min(after_lines)
+    )
+    return candidates[-1:] if barrier["selection"] == "last_before_after" else []
+
+
 def verify_code_corridors(
     verifier: StructuralVerifier,
     contracts: Any,
@@ -1249,6 +1366,7 @@ def verify_code_corridors(
     observations: dict[str, Any] = {}
     failures: list[str] = []
     seen_names: set[str] = set()
+    ordering_contracts: dict[str, list[dict[str, Any]]] = {}
     for corridor in contracts:
         name = corridor.get("name")
         hops = corridor.get("hops")
@@ -1266,6 +1384,9 @@ def verify_code_corridors(
                 f"corridor {name} must declare non-empty required_invocations"
             )
         seen_names.add(name)
+        ordering_contracts[name] = parse_corridor_ordering(
+            name, corridor.get("ordering")
+        )
         observed_hops: list[dict[str, Any]] = []
         for hop in hops:
             symbol = hop.get("symbol")
@@ -1464,6 +1585,108 @@ def verify_code_corridors(
             "hops": observed_hops,
             "invocations": observed_invocations,
         }
+
+    for name, ordering in ordering_contracts.items():
+        if not ordering:
+            continue
+        observed_ordering: list[dict[str, Any]] = []
+        for constraint in ordering:
+            caller = str(constraint["caller"])
+            caller_file = str(constraint["caller_file"])
+            before = constraint["before"]
+            after = constraint["after"]
+            barrier = constraint.get("barrier")
+            before_receipts = invocation_receipts_for_ordering(
+                observations, before, caller=caller, caller_file=caller_file
+            )
+            after_receipts = invocation_receipts_for_ordering(
+                observations, after, caller=caller, caller_file=caller_file
+            )
+            before_lines = (
+                list(before_receipts[0].get("observed_lines", []))
+                if len(before_receipts) == 1
+                else []
+            )
+            after_lines = (
+                list(after_receipts[0].get("observed_lines", []))
+                if len(after_receipts) == 1
+                else []
+            )
+            ordered = bool(
+                before_lines
+                and after_lines
+                and any(line < min(after_lines) for line in before_lines)
+            )
+            barrier_lines = (
+                barrier_lines_for_ordering(
+                    verifier,
+                    barrier,
+                    caller=caller,
+                    caller_file=caller_file,
+                    after_lines=after_lines,
+                )
+                if barrier is not None
+                else []
+            )
+            barrier_ordered = barrier is None or bool(
+                before_lines
+                and barrier_lines
+                and any(line < min(barrier_lines) for line in before_lines)
+            )
+            verdict = "GREEN" if ordered and barrier_ordered else "RED"
+            observed_row = {
+                "caller": caller,
+                "caller_file": caller_file,
+                "before": before,
+                "after": after,
+                "before_observed_lines": before_lines,
+                "after_observed_lines": after_lines,
+                "verdict": verdict,
+            }
+            if barrier is not None:
+                observed_row["barrier"] = barrier
+                observed_row["barrier_observed_lines"] = barrier_lines
+            observed_ordering.append(observed_row)
+            if len(before_receipts) != 1 or len(after_receipts) != 1:
+                failures.append(
+                    f"corridor {name} ordering {caller} expected one declared "
+                    f"invocation receipt for {before['corridor']}:{before['callee']} "
+                    f"before {after['corridor']}:{after['callee']}; observed "
+                    f"before {len(before_receipts)}, after {len(after_receipts)}"
+                )
+            elif not before_lines or not after_lines:
+                missing = []
+                if not before_lines:
+                    missing.append(f"before {before['corridor']}:{before['callee']}")
+                if not after_lines:
+                    missing.append(f"after {after['corridor']}:{after['callee']}")
+                failures.append(
+                    f"corridor {name} ordering {caller} has no observed production "
+                    f"callsite(s) for {', '.join(missing)}"
+                )
+            elif not ordered:
+                failures.append(
+                    f"corridor {name} ordering {caller} requires "
+                    f"{before['corridor']}:{before['callee']} before "
+                    f"{after['corridor']}:{after['callee']}; observed before lines "
+                    f"{before_lines}, after lines {after_lines}"
+                )
+            elif barrier is not None and not barrier_lines:
+                failures.append(
+                    f"corridor {name} ordering {caller} has no observed "
+                    f"{barrier['callee']} barrier selected as "
+                    f"{barrier['selection']}"
+                )
+            elif not barrier_ordered:
+                failures.append(
+                    f"corridor {name} ordering {caller} requires "
+                    f"{before['corridor']}:{before['callee']} before "
+                    f"{barrier['callee']} barrier and "
+                    f"{after['corridor']}:{after['callee']}; observed before "
+                    f"lines {before_lines}, barrier lines {barrier_lines}, after "
+                    f"lines {after_lines}"
+                )
+        observations[name]["ordering"] = observed_ordering
     return observations, failures
 
 
