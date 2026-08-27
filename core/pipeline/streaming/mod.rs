@@ -16,7 +16,7 @@ pub(crate) mod layer1_window;
 pub(crate) mod live_audio_buffer;
 /// Event-based transcription session and buffered production-replay seams.
 pub(crate) mod session;
-/// W13-3B Silero identity + conservative per-word fusion (lane flag default OFF).
+/// W13-3B Silero identity + conservative per-word fusion (product-owned arming).
 pub(crate) mod silero_fusion;
 /// Session stream-log sink (`CODESCRIBE_STREAM_LOG*` env contract).
 pub(crate) mod stream_log;

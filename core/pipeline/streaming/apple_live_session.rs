@@ -77,8 +77,7 @@ use super::session::{
     compute_tail_patch_job, emit_session_finalised, log_tail_patch_session_receipt,
 };
 use super::silero_fusion::{
-    FusionContextMode, FusionWord, SileroIngress, bound_context_range, lane_enabled,
-    slice_apple_words,
+    FusionContextMode, FusionWord, SileroIngress, bound_context_range, slice_apple_words,
 };
 use super::stream_log::append_to_stream_log;
 
@@ -2941,7 +2940,7 @@ fn apple_stream_worker(
     // utterance ledger (identity, ranges) and the engine lifecycle (wake/sleep).
     // It is built whenever either consumer wants it — the fusion flag decides
     // whether identity reaches the seal, not whether the VAD exists.
-    state.fusion_seal_armed = lane_enabled();
+    state.fusion_seal_armed = runtime_settings.seal_lane_armed();
     if state.fusion_seal_armed || utterance_silence_sec.is_some() {
         let ingress =
             SileroIngress::new(sample_rate, state.session_id.clone(), state.capture_epoch);

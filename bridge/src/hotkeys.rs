@@ -1672,7 +1672,6 @@ fn project_admission_readiness(
     verdict: Result<admission::AdmissionGrant, admission::AdmissionBlocker>,
 ) -> CsAdmissionReadiness {
     let calibration = admission::calibration_status_view(snapshot);
-    let seal_lane_armed = codescribe_core::pipeline::streaming::seal_lane_probe().armed;
     let base = CsAdmissionReadiness {
         ready: false,
         code: String::new(),
@@ -1683,7 +1682,7 @@ fn project_admission_readiness(
         calibration_status: calibration.code.to_string(),
         calibration_path: calibration.path.display().to_string(),
         calibrated_devices: calibration.devices,
-        seal_lane_armed,
+        seal_lane_armed: snapshot.seal_lane_armed(),
         seal_lane_env: codescribe_core::pipeline::streaming::SILERO_FUSION_ENV.to_string(),
     };
     match verdict {

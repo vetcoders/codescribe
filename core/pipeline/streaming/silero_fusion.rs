@@ -1,6 +1,7 @@
 //! W13-3B — Silero utterance identity + conservative per-word fusion.
 //!
-//! Lane flag [`SILERO_FUSION_ENV`] is **default OFF**. When armed:
+//! The product-owned settings snapshot arms this mandatory lane by default;
+//! [`SILERO_FUSION_ENV`] remains an optional power-user override. When armed:
 //! Silero Supervisor edges supply boundary, time, and energy evidence on the
 //! PCM sample clock; Apple cumulative finals are sliced onto those ranges by
 //! time; Whisper and Apple then fuse conservatively (agreements + clear gap
@@ -23,14 +24,15 @@
 use std::collections::VecDeque;
 
 use crate::audio::chunker::{SpeechEvent, SpeechSession, VadBoundaryEvidence, VadBoundaryKind};
+use crate::config::RuntimeSettingsSnapshot;
 use crate::pipeline::contracts::{
     NonSpeechEvidence, SidebandEvidence, SidebandEvidenceKind, SidebandProvenance,
 };
 use crate::stt::tail_provider::{TailSampleRange, TimedTailSegment};
 
-/// Lane flag for Silero-identity conservative fusion. Unset / `0` / `false` /
-/// `off` / `no` keep the existing production path bit-identical.
-pub const SILERO_FUSION_ENV: &str = "CODESCRIBE_SILERO_FUSION";
+/// Stable name of the optional power-user override. Its value is resolved by
+/// the canonical settings loader, never in this pipeline module.
+pub use crate::config::settings::SILERO_FUSION_ENV;
 
 /// Bounded-context A/B selector. Never crosses a long-silence cut.
 pub const SILERO_FUSION_CONTEXT_ENV: &str = "CODESCRIBE_SILERO_FUSION_CONTEXT";
@@ -47,21 +49,14 @@ pub const DEFAULT_LEFT_PAD_SECS: f32 = 0.40;
 /// bounded.
 const MAX_RETAINED_SIDEBAND_EVIDENCE: usize = 512;
 
-/// Whether the W13-3B fusion lane is armed. Default OFF pending the operator's
-/// live A/B decision required by the original engine roadmap.
-pub fn lane_enabled() -> bool {
-    let raw = std::env::var(SILERO_FUSION_ENV).ok();
-    lane_enabled_from_raw(raw.as_deref())
-}
-
 /// Whether the seal lane can bound existence for a product take, probed with
-/// no session open: the lane flag and whether the shared Silero graph loads.
+/// no session open: the sealed product setting and whether the shared Silero graph loads.
 /// `seal_utterance_final` passes `may_qualify = silero_bound`, so without
 /// both no occurrence can ever qualify — admission readiness must ask first
 /// instead of letting a take record into a ledger that cannot seal.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct SealLaneProbe {
-    /// [`SILERO_FUSION_ENV`] is set to an enabling value.
+    /// The immutable runtime settings generation resolved the lane as armed.
     pub armed: bool,
     /// The embedded Silero model actually loaded in this process.
     pub vad_available: bool,
@@ -69,22 +64,13 @@ pub struct SealLaneProbe {
 
 /// Probe the seal lane. Cheap after the first call: the Silero session is a
 /// process-wide `OnceLock`.
-pub fn seal_lane_probe() -> SealLaneProbe {
-    let armed = lane_enabled();
+pub fn seal_lane_probe(snapshot: &RuntimeSettingsSnapshot) -> SealLaneProbe {
+    let armed = snapshot.seal_lane_armed();
     let vad_available = SileroIngress::new(16_000, "admission-probe", 0).vad_available();
     SealLaneProbe {
         armed,
         vad_available,
     }
-}
-
-fn lane_enabled_from_raw(raw: Option<&str>) -> bool {
-    raw.is_some_and(|raw| {
-        matches!(
-            raw.trim().to_ascii_lowercase().as_str(),
-            "1" | "true" | "yes" | "on"
-        )
-    })
 }
 
 /// One Silero-bounded utterance on the session PCM clock.
@@ -495,26 +481,6 @@ mod tests {
             capture_epoch: 0,
             sample_start: start,
             sample_end: end,
-        }
-    }
-
-    #[test]
-    fn lane_defaults_off_until_operator_flip() {
-        assert!(
-            !lane_enabled_from_raw(None),
-            "unset must keep the experimental lane off"
-        );
-        for off in ["0", "false", "no", "off", " OFF "] {
-            assert!(
-                !lane_enabled_from_raw(Some(off)),
-                "{off:?} must disarm the lane"
-            );
-        }
-        for on in ["1", "true", "yes", "on"] {
-            assert!(
-                lane_enabled_from_raw(Some(on)),
-                "{on:?} must explicitly arm the lane"
-            );
         }
     }
 

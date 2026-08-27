@@ -9,7 +9,7 @@
 //!    would open (`RuntimeSettingsSnapshot::energy_calibration_for_capture`);
 //! 2. the **seal lane** — `seal_utterance_final` only lets Silero-bounded
 //!    regions qualify (`may_qualify = silero_bound`), so the lane must be
-//!    armed (`CODESCRIBE_SILERO_FUSION`) and the Silero graph must load.
+//!    armed by the runtime settings snapshot and the Silero graph must load.
 //!
 //! This module evaluates both and returns one precise, actionable blocker or
 //! a grant. It opens no stream, invents no floor, and owns no state: the
@@ -22,6 +22,7 @@ use std::sync::Arc;
 
 use codescribe_core::audio::capture_receipt::CapturePathMeta;
 use codescribe_core::config::energy_calibration::calibration_now_unix_ms;
+use codescribe_core::config::settings::SealLaneSource;
 use codescribe_core::config::{
     EnergyCalibrationRefusal, EnergyCalibrationStatus, RuntimeSettingsSnapshot,
 };
@@ -44,7 +45,7 @@ pub enum AdmissionBlocker {
     /// A profile exists but cannot serve this capture path.
     CalibrationUnusable { device_name: String, reason: String },
     /// The seal lane is not armed, so no region can ever qualify.
-    SealLaneDisarmed { env: &'static str },
+    SealLaneDisarmed { source: SealLaneSource },
     /// The seal lane is armed but Silero did not load in this process.
     SealVadUnavailable,
 }
@@ -77,8 +78,13 @@ impl AdmissionBlocker {
                 "Re-run Calibrate microphone in Settings › Audio; the stored measurement cannot be used."
                     .to_string()
             }
-            Self::SealLaneDisarmed { env } => format!(
-                "Set {env}=1 in ~/.codescribe/.env (the Silero seal lane bounds every committed utterance)."
+            Self::SealLaneDisarmed {
+                source: SealLaneSource::Settings,
+            } => "Enable Seal lane in Settings › Audio.".to_string(),
+            Self::SealLaneDisarmed {
+                source: SealLaneSource::EnvOverride,
+            } => format!(
+                "{SILERO_FUSION_ENV} power-user override is off; remove the override or set it to 1."
             ),
             Self::SealVadUnavailable => {
                 "Silero VAD failed to load; check the app log and reinstall the build.".to_string()
@@ -114,9 +120,14 @@ impl AdmissionBlocker {
                 device_name,
                 reason,
             } => format!("calibration for `{device_name}` cannot serve this take: {reason}"),
-            Self::SealLaneDisarmed { env } => {
-                format!("seal lane disarmed ({env} is off), so no utterance can commit")
-            }
+            Self::SealLaneDisarmed {
+                source: SealLaneSource::Settings,
+            } => "seal lane is off in Settings › Audio, so no utterance can commit".to_string(),
+            Self::SealLaneDisarmed {
+                source: SealLaneSource::EnvOverride,
+            } => format!(
+                "seal lane is disarmed by the {SILERO_FUSION_ENV} override, so no utterance can commit"
+            ),
             Self::SealVadUnavailable => "Silero VAD is not available in this process".to_string(),
         }
     }
@@ -222,7 +233,7 @@ fn evaluate_probed_admission_at(
         })?;
     if !seal_lane.armed {
         return Err(AdmissionBlocker::SealLaneDisarmed {
-            env: SILERO_FUSION_ENV,
+            source: snapshot.seal_lane_source(),
         });
     }
     if !seal_lane.vad_available {
@@ -243,7 +254,7 @@ pub fn evaluate_live_admission(
 ) -> Result<AdmissionGrant, AdmissionBlocker> {
     let capture = codescribe_core::audio::recorder::probe_input_capture_path()
         .map_err(|error| format!("{error:#}"));
-    let seal_lane = codescribe_core::pipeline::streaming::seal_lane_probe();
+    let seal_lane = codescribe_core::pipeline::streaming::seal_lane_probe(snapshot);
     evaluate_admission_readiness(snapshot, capture, seal_lane)
 }
 
@@ -433,7 +444,7 @@ mod tests {
         )
         .unwrap_err();
         assert_eq!(disarmed.code(), "admission_seal_lane_disarmed");
-        assert!(disarmed.action().contains(SILERO_FUSION_ENV));
+        assert_eq!(disarmed.action(), "Enable Seal lane in Settings › Audio.");
 
         let no_vad = evaluate_admission_readiness_at(
             &snap,
@@ -587,5 +598,21 @@ mod tests {
         let second_digest = snapshot().digest().as_str().to_string();
 
         assert_ne!(first_digest, second_digest);
+    }
+
+    #[test]
+    fn seal_lane_actions_name_the_product_setting_or_override_honestly() {
+        let settings = AdmissionBlocker::SealLaneDisarmed {
+            source: SealLaneSource::Settings,
+        };
+        assert!(settings.action().contains("Settings › Audio"));
+        assert!(!settings.action().contains(".env"));
+
+        let override_blocker = AdmissionBlocker::SealLaneDisarmed {
+            source: SealLaneSource::EnvOverride,
+        };
+        assert!(override_blocker.action().contains(SILERO_FUSION_ENV));
+        assert!(override_blocker.action().contains("override"));
+        assert!(!override_blocker.action().contains(".env"));
     }
 }
