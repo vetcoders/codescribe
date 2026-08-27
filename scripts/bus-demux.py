@@ -29,6 +29,7 @@ from pathlib import Path
 from typing import Any, Iterator
 
 BUS_FILENAME = "transcript-events.jsonl"
+INSTALL_INTERLOCK_FILENAME = "install-runtime.lock"
 SEALED = "transcript_sealed"
 LIVE_STATUSES = ("utterance_draft", "utterance_revised")
 LEASE_SCHEMA = "codescribe.agent-bridge.lease.v1"
@@ -109,6 +110,47 @@ def bus_path() -> Path:
     if xdg:
         return Path(os.path.expanduser(xdg)) / "codescribe" / BUS_FILENAME
     return _config_dir(env) / BUS_FILENAME
+
+
+def install_interlock_path() -> Path:
+    # The app acquires this before dotenv bootstrap. Keep the lease at one
+    # process-independent per-user path so data-dir overrides cannot split the
+    # installer and runtime onto different lock files.
+    return Path.home() / ".codescribe" / INSTALL_INTERLOCK_FILENAME
+
+
+def installation_idle(path: Path) -> bool:
+    if not path.exists():
+        return True
+    if not path.is_file():
+        return False
+    open_sessions: set[str] = set()
+    try:
+        with path.open(encoding="utf-8", errors="strict") as handle:
+            for raw in handle:
+                raw = raw.strip()
+                if not raw:
+                    continue
+                try:
+                    event = json.loads(raw)
+                except json.JSONDecodeError:
+                    return False
+                if not isinstance(event, dict):
+                    return False
+                status = event.get("status")
+                if status == "session_started":
+                    session_id = event.get("session_id")
+                    if not isinstance(session_id, str) or not session_id:
+                        return False
+                    open_sessions.add(session_id)
+                elif status in ("session_ended", "transcript_sealed"):
+                    session_id = event.get("session_id")
+                    if not isinstance(session_id, str) or not session_id:
+                        return False
+                    open_sessions.discard(session_id)
+    except (OSError, UnicodeDecodeError):
+        return False
+    return not open_sessions
 
 
 def bridge_home() -> Path:
@@ -642,10 +684,21 @@ def run(args: argparse.Namespace) -> int:
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--bus", type=Path, default=None, help="override bus path")
-    parser.add_argument(
+    authority = parser.add_mutually_exclusive_group()
+    authority.add_argument(
         "--print-bus-path",
         action="store_true",
         help="print the canonical runtime-equivalent bus path and exit",
+    )
+    authority.add_argument(
+        "--print-install-interlock-path",
+        action="store_true",
+        help="print the runtime-equivalent app/install interlock path and exit",
+    )
+    authority.add_argument(
+        "--assert-install-idle",
+        action="store_true",
+        help="exit zero only when the whole canonical Bus proves installation-safe",
     )
     parser.add_argument(
         "--name", default=None, help="bound agent name (kielbasa filter)"
@@ -690,6 +743,11 @@ def main() -> int:
     if args.print_bus_path:
         print(args.bus)
         return 0
+    if args.print_install_interlock_path:
+        print(install_interlock_path())
+        return 0
+    if args.assert_install_idle:
+        return 0 if installation_idle(args.bus) else 2
     if args.bridge_home is None:
         args.bridge_home = bridge_home()
     if bool(args.provider) != bool(args.session):

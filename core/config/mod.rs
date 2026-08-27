@@ -24,6 +24,8 @@ mod defaults;
 /// Measured, versioned acoustic calibration artifact (the `EnergyCalibration`
 /// source of the runtime settings throne).
 pub mod energy_calibration;
+/// Process/install interlock preventing runtime and bundle replacement overlap.
+mod install_interlock;
 /// macOS Keychain storage for API keys (not plaintext `.env`).
 pub mod keychain;
 /// Load/save: defaults, settings.json, optional `.env`, process env overrides.
@@ -63,6 +65,10 @@ pub use energy_calibration::{
     ENERGY_CALIBRATION_FILE_NAME, ENERGY_CALIBRATION_SCHEMA, EnergyCalibrationArtifact,
     EnergyCalibrationProfile, EnergyCalibrationRefusal, EnergyCalibrationStatus,
     SealedEnergyCalibration, energy_calibration_path,
+};
+pub use install_interlock::{
+    AppRuntimeInstallLease, INSTALL_INTERLOCK_FILE_NAME, acquire_app_runtime_install_lease,
+    acquire_app_runtime_install_lease_at, install_interlock_path,
 };
 pub use portable::{
     ImportPlan, PortableProfile, export_portable, import_portable_apply, import_portable_dry_run,

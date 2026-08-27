@@ -6,7 +6,14 @@ ROOT="$(cd "$(dirname "$0")/../.." && pwd)"
 DEMUX="$ROOT/scripts/bus-demux.py"
 INSTALL_GUARD="$ROOT/scripts/install-if-idle.sh"
 TEST_ROOT="$(mktemp -d)"
-trap 'rm -rf "$TEST_ROOT"' EXIT
+LOCK_HOLDER_PID=""
+GUARD_PID=""
+cleanup() {
+  [[ -z "$LOCK_HOLDER_PID" ]] || kill "$LOCK_HOLDER_PID" 2>/dev/null || true
+  [[ -z "$GUARD_PID" ]] || kill "$GUARD_PID" 2>/dev/null || true
+  rm -rf "$TEST_ROOT"
+}
+trap cleanup EXIT
 
 TEST_HOME="$TEST_ROOT/home"
 mkdir -p "$TEST_HOME"
@@ -21,6 +28,18 @@ resolve_bus() {
     HOME="$TEST_HOME" \
     "$@" \
     python3 "$DEMUX" --print-bus-path
+}
+
+resolve_interlock() {
+  env \
+    -u CODESCRIBE_TRANSCRIPT_BUS_PATH \
+    -u CODESCRIBE_TRANSCRIPT_BUS \
+    -u CODESCRIBE_ENV_PATH \
+    -u XDG_STATE_HOME \
+    -u CODESCRIBE_DATA_DIR \
+    HOME="$TEST_HOME" \
+    "$@" \
+    python3 "$DEMUX" --print-install-interlock-path
 }
 
 assert_path() {
@@ -82,6 +101,18 @@ CANONICAL_DATA="$(cd "$TEST_ROOT/canonical-data" && pwd -P)"
 assert_path \
   "$CANONICAL_DATA/transcript-events.jsonl" \
   CODESCRIBE_DATA_DIR="$TEST_ROOT/data-link"
+if [[ "$(resolve_interlock)" != "$TEST_HOME/.codescribe/install-runtime.lock" ]]; then
+  echo "transcript-bus-path: default interlock path diverged" >&2
+  exit 1
+fi
+if [[ "$(resolve_interlock CODESCRIBE_DATA_DIR="$TEST_ROOT/data-link")" != "$TEST_HOME/.codescribe/install-runtime.lock" ]]; then
+  echo "transcript-bus-path: data-dir override relocated invariant interlock" >&2
+  exit 1
+fi
+if [[ "$(resolve_interlock CODESCRIBE_ENV_PATH="$CUSTOM_ENV")" != "$TEST_HOME/.codescribe/install-runtime.lock" ]]; then
+  echo "transcript-bus-path: dotenv bootstrap relocated invariant interlock" >&2
+  exit 1
+fi
 
 OPEN_BUS="$TEST_ROOT/open/transcript-events.jsonl"
 mkdir -p "$(dirname "$OPEN_BUS")"
@@ -107,6 +138,10 @@ FAKE_MAKE_LOG="$TEST_ROOT/fake-make.log"
 mkdir -p "$FAKE_BIN"
 printf '%s\n' \
   '#!/usr/bin/env bash' \
+  'if [[ -n "${FAKE_MAKE_READY:-}" ]]; then' \
+  '  : >"$FAKE_MAKE_READY"' \
+  '  while [[ ! -e "$FAKE_MAKE_RELEASE" ]]; do sleep 0.01; done' \
+  'fi' \
   'printf "%s\n" "$*" >"$FAKE_MAKE_LOG"' \
   >"$FAKE_BIN/make"
 chmod +x "$FAKE_BIN/make"
@@ -213,6 +248,40 @@ with open(sys.argv[1], "w", encoding="utf-8") as handle:
     for status in ("session_started", "session_ended"):
         handle.write(json.dumps({"session_id": "closed", "status": status}) + "\n")
 PY
+
+# A running app holds a shared process-lifetime lease. The installer cannot
+# acquire its exclusive lease even when the Bus itself is closed.
+INTERLOCK_PATH="$(resolve_interlock)"
+LOCK_READY="$TEST_ROOT/app-lock.ready"
+LOCK_RELEASE="$TEST_ROOT/app-lock.release"
+python3 - "$INTERLOCK_PATH" "$LOCK_READY" "$LOCK_RELEASE" <<'PY' &
+import fcntl
+from pathlib import Path
+import sys
+import time
+
+path = Path(sys.argv[1])
+path.parent.mkdir(parents=True, exist_ok=True)
+with path.open("a+") as handle:
+    fcntl.flock(handle.fileno(), fcntl.LOCK_SH)
+    Path(sys.argv[2]).touch()
+    while not Path(sys.argv[3]).exists():
+        time.sleep(0.01)
+PY
+LOCK_HOLDER_PID=$!
+for _ in {1..500}; do
+  [[ ! -e "$LOCK_READY" ]] || break
+  sleep 0.01
+done
+if [[ ! -e "$LOCK_READY" ]]; then
+  echo "transcript-bus-path: app lock holder did not start" >&2
+  exit 1
+fi
+assert_guard_refuses "$CLOSED_BUS" "runtime-active"
+touch "$LOCK_RELEASE"
+wait "$LOCK_HOLDER_PID"
+LOCK_HOLDER_PID=""
+
 rm -f "$FAKE_MAKE_LOG"
 env \
   -u XDG_STATE_HOME \
@@ -231,6 +300,8 @@ fi
 # live file reachable only through the retired alias must not redirect it.
 cp "$OPEN_BUS" "$TEST_ROOT/legacy.jsonl"
 rm -f "$FAKE_MAKE_LOG"
+MAKE_READY="$TEST_ROOT/make.ready"
+MAKE_RELEASE="$TEST_ROOT/make.release"
 env \
   -u CODESCRIBE_TRANSCRIPT_BUS_PATH \
   -u XDG_STATE_HOME \
@@ -238,8 +309,41 @@ env \
   HOME="$TEST_HOME" \
   PATH="$FAKE_BIN:$PATH" \
   FAKE_MAKE_LOG="$FAKE_MAKE_LOG" \
+  FAKE_MAKE_READY="$MAKE_READY" \
+  FAKE_MAKE_RELEASE="$MAKE_RELEASE" \
   CODESCRIBE_TRANSCRIPT_BUS="$TEST_ROOT/legacy.jsonl" \
-  "$INSTALL_GUARD" >"$TEST_ROOT/idle.out" 2>"$TEST_ROOT/idle.err"
+  "$INSTALL_GUARD" >"$TEST_ROOT/idle.out" 2>"$TEST_ROOT/idle.err" &
+GUARD_PID=$!
+for _ in {1..500}; do
+  [[ ! -e "$MAKE_READY" ]] || break
+  sleep 0.01
+done
+if [[ ! -e "$MAKE_READY" ]]; then
+  echo "transcript-bus-path: fake make did not start under install lease" >&2
+  exit 1
+fi
+set +e
+python3 - "$INTERLOCK_PATH" <<'PY'
+import fcntl
+from pathlib import Path
+import sys
+
+with Path(sys.argv[1]).open("a+") as handle:
+    try:
+        fcntl.flock(handle.fileno(), fcntl.LOCK_SH | fcntl.LOCK_NB)
+    except BlockingIOError:
+        raise SystemExit(3)
+raise SystemExit(0)
+PY
+shared_during_install_status=$?
+set -e
+if [[ "$shared_during_install_status" -ne 3 ]]; then
+  echo "transcript-bus-path: app lease was admitted during install" >&2
+  exit 1
+fi
+touch "$MAKE_RELEASE"
+wait "$GUARD_PID"
+GUARD_PID=""
 
 expected_make="-C $ROOT install-app"
 observed_make="$(<"$FAKE_MAKE_LOG")"

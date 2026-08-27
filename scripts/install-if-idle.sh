@@ -6,56 +6,54 @@
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
-# Keep the guard on the same path authority as the Rust runtime and diagnostic
-# consumers. A guard that inspects a different file is fail-open by definition.
-BUS="$(python3 "$ROOT/scripts/bus-demux.py" --print-bus-path)"
+exec python3 - "$ROOT" <<'PY'
+import errno
+import fcntl
+import os
+from pathlib import Path
+import subprocess
+import sys
 
-installation_unsafe() {
-  [[ ! -e "$BUS" ]] || [[ -f "$BUS" ]] || return 0
-  [[ -f "$BUS" ]] || return 1
-  local bus_status=0
-  python3 - "$BUS" <<'PY' || bus_status=$?
-import json, sys
-path = sys.argv[1]
-open_sessions = set()
+root = Path(sys.argv[1])
+demux = root / "scripts" / "bus-demux.py"
+
+def resolved_path(flag: str) -> Path:
+    result = subprocess.run(
+        [sys.executable, str(demux), flag],
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+    return Path(result.stdout.strip())
+
 try:
-    with open(path, encoding="utf-8", errors="strict") as handle:
-        for raw in handle:
-            raw = raw.strip()
-            if not raw:
-                continue
-            try:
-                event = json.loads(raw)
-            except json.JSONDecodeError:
-                raise SystemExit(0)
-            if not isinstance(event, dict):
-                raise SystemExit(0)
-            status = event.get("status")
-            if status == "session_started":
-                candidate = event.get("session_id")
-                if not isinstance(candidate, str) or not candidate:
-                    raise SystemExit(0)
-                open_sessions.add(candidate)
-                continue
-            if status in ("session_ended", "transcript_sealed"):
-                candidate = event.get("session_id")
-                if not isinstance(candidate, str) or not candidate:
-                    raise SystemExit(0)
-                open_sessions.discard(candidate)
-except (OSError, UnicodeDecodeError):
-    raise SystemExit(0)
-# 0 means unsafe. 3 is the only affirmative idle proof; every unexpected
-# interpreter failure is therefore also unsafe to install through.
-raise SystemExit(0 if open_sessions else 3)
+    interlock_path = resolved_path("--print-install-interlock-path")
+    if interlock_path.parent != Path("."):
+        interlock_path.parent.mkdir(parents=True, exist_ok=True)
+    descriptor = os.open(interlock_path, os.O_RDWR | os.O_CREAT, 0o600)
+    try:
+        fcntl.flock(descriptor, fcntl.LOCK_EX | fcntl.LOCK_NB)
+    except OSError as error:
+        if error.errno in (errno.EACCES, errno.EAGAIN):
+            print(
+                "install-if-idle: refuse — Codescribe application runtime is active",
+                file=sys.stderr,
+            )
+            raise SystemExit(2)
+        raise
+
+    bus_check = subprocess.run([sys.executable, str(demux), "--assert-install-idle"])
+    if bus_check.returncode != 0:
+        print(
+            "install-if-idle: refuse — Transcript Bus is live or unreadable",
+            file=sys.stderr,
+        )
+        raise SystemExit(2)
+
+    print("install-if-idle: exclusive lease + idle Bus — make install-app")
+    completed = subprocess.run(["make", "-C", str(root), "install-app"])
+    raise SystemExit(completed.returncode)
+except (OSError, subprocess.SubprocessError) as error:
+    print(f"install-if-idle: refuse — interlock check failed: {error}", file=sys.stderr)
+    raise SystemExit(2)
 PY
-  [[ "$bus_status" -eq 3 ]] && return 1
-  return 0
-}
-
-if installation_unsafe; then
-  echo "install-if-idle: refuse — Transcript Bus is live or unreadable" >&2
-  exit 2
-fi
-
-echo "install-if-idle: idle — make install-app"
-exec make -C "$ROOT" install-app

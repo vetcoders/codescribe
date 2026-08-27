@@ -23,6 +23,19 @@ const WORKER_PREFIX: &str = "codescribe-app-worker-";
 const WORKER_START_TIMEOUT: Duration = Duration::from_secs(2);
 const RUNTIME_SHUTDOWN_TIMEOUT: Duration = Duration::from_secs(5);
 
+#[cfg(not(test))]
+fn application_runtime_install_interlock_path() -> std::path::PathBuf {
+    codescribe_core::config::install_interlock_path()
+}
+
+#[cfg(test)]
+fn application_runtime_install_interlock_path() -> std::path::PathBuf {
+    std::env::temp_dir().join(format!(
+        "codescribe-application-runtime-test-{}.lock",
+        std::process::id()
+    ))
+}
+
 /// Observable, content-free runtime lifecycle evidence for Swift and probes.
 #[derive(Clone, Debug, Eq, PartialEq, uniffi::Record)]
 pub struct CsApplicationRuntimeSnapshot {
@@ -41,6 +54,7 @@ pub struct CsApplicationRuntimeSnapshot {
 #[derive(Default)]
 struct RuntimeState {
     runtime: Option<Runtime>,
+    install_interlock: Option<codescribe_core::config::AppRuntimeInstallLease>,
     permanently_stopped: bool,
 }
 
@@ -164,6 +178,14 @@ impl ApplicationRuntime {
             return Ok(self.snapshot_for(&state));
         }
 
+        let install_interlock_path = application_runtime_install_interlock_path();
+        let install_interlock =
+            codescribe_core::config::acquire_app_runtime_install_lease_at(&install_interlock_path)
+                .map_err(|error| {
+                    runtime_error(format!(
+                        "application runtime cannot overlap Codescribe installation: {error:#}"
+                    ))
+                })?;
         self.metrics.reset_worker_lifecycle();
         let name_counter = Arc::new(AtomicUsize::new(0));
         let name_counter_for_runtime = Arc::clone(&name_counter);
@@ -191,6 +213,7 @@ impl ApplicationRuntime {
             }
             return Err(error);
         }
+        state.install_interlock = Some(install_interlock);
         let snapshot = self.snapshot_for(&state);
         tracing::info!(
             worker_count = snapshot.worker_count,
@@ -266,7 +289,7 @@ impl ApplicationRuntime {
     }
 
     fn shutdown(&self) -> Result<CsApplicationRuntimeSnapshot, CsError> {
-        let runtime = {
+        let (runtime, install_interlock) = {
             let mut state = self.state.lock().map_err(|_| {
                 runtime_error("application runtime lifecycle lock poisoned".to_string())
             })?;
@@ -274,12 +297,13 @@ impl ApplicationRuntime {
                 return Ok(self.snapshot_for(&state));
             }
             state.permanently_stopped = true;
-            state.runtime.take()
+            (state.runtime.take(), state.install_interlock.take())
         };
 
         if let Some(runtime) = runtime {
             runtime.shutdown_timeout(RUNTIME_SHUTDOWN_TIMEOUT);
         }
+        drop(install_interlock);
         let state = self.state.lock().map_err(|_| {
             runtime_error("application runtime lifecycle lock poisoned".to_string())
         })?;
