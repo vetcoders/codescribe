@@ -38,6 +38,7 @@ temp/
 /.archive
 /.codescribe
 /.codex
+/.grok
 /.gemini
 /extracted_frames
 /.gemini-clipboard
