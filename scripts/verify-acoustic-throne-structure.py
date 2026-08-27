@@ -158,6 +158,7 @@ ASSEMBLY_SCOPE_SYMBOLS = {
     "text-delivery": {"OccurrenceLabelProposal", "DeliveryRoute"},
 }
 ASSEMBLY_SCOPES = set(ASSEMBLY_SCOPE_SYMBOLS)
+CORRIDOR_DEAD_CODE_MARKERS = ("if false", "if(false)", "cfg!", "stringify!", "#if")
 
 
 @dataclass(frozen=True)
@@ -1019,10 +1020,19 @@ def verify_code_corridors(
     for corridor in contracts:
         name = corridor.get("name")
         hops = corridor.get("hops")
+        required_invocations = corridor.get("required_invocations")
         if not isinstance(name, str) or not name or name in seen_names:
             raise RuntimeError(f"corridor name is missing or duplicated: {name!r}")
         if not isinstance(hops, list) or not hops or any(not isinstance(hop, dict) for hop in hops):
             raise RuntimeError(f"corridor {name} must declare non-empty hops")
+        if (
+            not isinstance(required_invocations, list)
+            or not required_invocations
+            or any(not isinstance(row, dict) for row in required_invocations)
+        ):
+            raise RuntimeError(
+                f"corridor {name} must declare non-empty required_invocations"
+            )
         seen_names.add(name)
         observed_hops: list[dict[str, Any]] = []
         for hop in hops:
@@ -1051,14 +1061,35 @@ def verify_code_corridors(
             missing_code: list[str] = []
             production_definition = False
             start_line: int | None = None
+            required_code_in_order = False
+            dead_code_markers: list[str] = []
             if len(rows) == 1:
                 body = rows[0]
                 start_line = int(body["start_line"])
                 code = code_without_comments_or_strings(str(body["source"]))
+                normalized_required_code = [
+                    code_without_comments_or_strings(snippet)
+                    for snippet in required_code
+                ]
                 missing_code = [
                     snippet
-                    for snippet in required_code
-                    if code_without_comments_or_strings(snippet) not in code
+                    for snippet, normalized in zip(
+                        required_code, normalized_required_code, strict=True
+                    )
+                    if normalized not in code
+                ]
+                cursor = 0
+                required_code_in_order = True
+                for normalized in normalized_required_code:
+                    position = code.find(normalized, cursor)
+                    if position < 0:
+                        required_code_in_order = False
+                        break
+                    cursor = position + len(normalized)
+                dead_code_markers = [
+                    marker
+                    for marker in CORRIDOR_DEAD_CODE_MARKERS
+                    if code_without_comments_or_strings(marker) in code
                 ]
                 production_definition = any(
                     row.get("file") == file
@@ -1086,6 +1117,8 @@ def verify_code_corridors(
                     "production_definition": production_definition,
                     "required_code": required_code,
                     "missing_code": missing_code,
+                    "required_code_in_order": required_code_in_order,
+                    "dead_code_markers": dead_code_markers,
                 }
             )
             if len(rows) != 1:
@@ -1100,7 +1133,90 @@ def verify_code_corridors(
                 failures.append(
                     f"corridor {name} hop {symbol} is missing executable code {missing_code}"
                 )
-        observations[name] = {"hops": observed_hops}
+            elif not required_code_in_order:
+                failures.append(
+                    f"corridor {name} hop {symbol} has executable code out of required order"
+                )
+            elif dead_code_markers:
+                failures.append(
+                    f"corridor {name} hop {symbol} contains dead-code markers {dead_code_markers}"
+                )
+
+        observed_invocations: list[dict[str, Any]] = []
+        for invocation in required_invocations:
+            callee = invocation.get("callee")
+            callee_file = invocation.get("callee_file")
+            caller = invocation.get("caller")
+            caller_file = invocation.get("caller_file")
+            minimum_count = invocation.get("minimum_count", 1)
+            if (
+                not isinstance(callee, str)
+                or not callee
+                or not isinstance(callee_file, str)
+                or not callee_file
+                or Path(callee_file).is_absolute()
+                or not isinstance(caller, str)
+                or not caller
+                or not isinstance(caller_file, str)
+                or not caller_file
+                or Path(caller_file).is_absolute()
+                or type(minimum_count) is not int
+                or minimum_count < 1
+            ):
+                raise RuntimeError(
+                    f"corridor {name} has malformed required invocation: {invocation}"
+                )
+            occurrence_rows = production_occurrences(verifier.occurrences(callee))
+            callee_definition_in_file = any(
+                row.get("file") == callee_file
+                and (
+                    row.get("match_role") == "definition"
+                    or (
+                        row.get("match_role") == "local_binding"
+                        and isinstance(row.get("enclosing_symbol"), dict)
+                        and row["enclosing_symbol"].get("name") == callee
+                        and row["enclosing_symbol"].get("file") == callee_file
+                    )
+                )
+                for row in occurrence_rows
+            )
+            matching_rows = [
+                row
+                for row in occurrence_rows
+                if row.get("file") == caller_file
+                and row.get("match_role") == "reference"
+                and isinstance(row.get("enclosing_symbol"), dict)
+                and row["enclosing_symbol"].get("name") == caller
+                and row["enclosing_symbol"].get("file") == caller_file
+            ]
+            observed_invocations.append(
+                {
+                    "callee": callee,
+                    "callee_file": callee_file,
+                    "caller": caller,
+                    "caller_file": caller_file,
+                    "minimum_count": minimum_count,
+                    "callee_definition_in_file": callee_definition_in_file,
+                    "observed_count": len(matching_rows),
+                    "observed_lines": sorted(
+                        int(row["line"])
+                        for row in matching_rows
+                        if type(row.get("line")) is int
+                    ),
+                }
+            )
+            if not callee_definition_in_file:
+                failures.append(
+                    f"corridor {name} invocation {caller} -> {callee} has no production callee definition in {callee_file}"
+                )
+            if len(matching_rows) < minimum_count:
+                failures.append(
+                    f"corridor {name} invocation {caller} -> {callee} expected at least {minimum_count} production callsite(s) in {caller_file}; observed {len(matching_rows)}"
+                )
+        observations[name] = {
+            "hops": observed_hops,
+            "invocations": observed_invocations,
+        }
     return observations, failures
 
 

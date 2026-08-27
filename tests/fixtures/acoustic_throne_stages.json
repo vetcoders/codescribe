@@ -19,7 +19,7 @@
     "projection_authority_witness",
     "rustProjectionAuthorityWitness"
   ],
-  "forbidden_executable_literals": ["#if false"],
+  "forbidden_executable_literals": ["#if false", "if false"],
   "stages": {
     "demolished": {
       "required_absent": [
@@ -359,6 +359,32 @@
                 "emitted.push(event)"
               ]
             }
+          ],
+          "required_invocations": [
+            {
+              "callee": "revision_for_action",
+              "callee_file": "app/presentation/emitter.rs",
+              "caller": "apply_ledger_mutation",
+              "caller_file": "app/presentation/emitter.rs"
+            },
+            {
+              "callee": "revision_for_action",
+              "callee_file": "app/presentation/emitter.rs",
+              "caller": "apply_ledger_seal",
+              "caller_file": "app/presentation/emitter.rs"
+            },
+            {
+              "callee": "publish_revision",
+              "callee_file": "app/presentation/transcript_bus.rs",
+              "caller": "on_event",
+              "caller_file": "app/presentation/emitter.rs"
+            },
+            {
+              "callee": "project_serial",
+              "callee_file": "app/presentation/transcript_bus.rs",
+              "caller": "publish_revision",
+              "caller_file": "app/presentation/transcript_bus.rs"
+            }
           ]
         },
         {
@@ -463,6 +489,26 @@
                 "formattedText = projection.renderedText",
                 "finishTerminalPresentation("
               ]
+            }
+          ],
+          "required_invocations": [
+            {
+              "callee": "from_bus_event",
+              "callee_file": "bridge/src/recording.rs",
+              "caller": "forward_event_to_listener",
+              "caller_file": "bridge/src/hotkeys.rs"
+            },
+            {
+              "callee": "from_bus_receipt",
+              "callee_file": "bridge/src/recording.rs",
+              "caller": "from_bus_event",
+              "caller_file": "bridge/src/recording.rs"
+            },
+            {
+              "callee": "applyTranscriptProjection",
+              "callee_file": "macos/Codescribe/Screens/Overlay/OverlayState.swift",
+              "caller": "onTranscriptProjection",
+              "caller_file": "macos/Codescribe/Screens/Overlay/OverlayState.swift"
             }
           ]
         }

@@ -233,7 +233,7 @@
       "additionalProperties": {
         "type": "object",
         "additionalProperties": false,
-        "required": ["hops"],
+        "required": ["hops", "invocations"],
         "properties": {
           "hops": {
             "type": "array",
@@ -249,7 +249,9 @@
                 "start_line",
                 "production_definition",
                 "required_code",
-                "missing_code"
+                "missing_code",
+                "required_code_in_order",
+                "dead_code_markers"
               ],
               "properties": {
                 "symbol": { "type": "string", "minLength": 1 },
@@ -266,6 +268,42 @@
                 "missing_code": {
                   "type": "array",
                   "items": { "type": "string", "minLength": 1 }
+                },
+                "required_code_in_order": { "type": "boolean" },
+                "dead_code_markers": {
+                  "type": "array",
+                  "items": { "type": "string", "minLength": 1 }
+                }
+              }
+            }
+          },
+          "invocations": {
+            "type": "array",
+            "minItems": 1,
+            "items": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": [
+                "callee",
+                "callee_file",
+                "caller",
+                "caller_file",
+                "minimum_count",
+                "callee_definition_in_file",
+                "observed_count",
+                "observed_lines"
+              ],
+              "properties": {
+                "callee": { "type": "string", "minLength": 1 },
+                "callee_file": { "type": "string", "minLength": 1 },
+                "caller": { "type": "string", "minLength": 1 },
+                "caller_file": { "type": "string", "minLength": 1 },
+                "minimum_count": { "type": "integer", "minimum": 1 },
+                "callee_definition_in_file": { "type": "boolean" },
+                "observed_count": { "type": "integer", "minimum": 0 },
+                "observed_lines": {
+                  "type": "array",
+                  "items": { "type": "integer", "minimum": 1 }
                 }
               }
             }

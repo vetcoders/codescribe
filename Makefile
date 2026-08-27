@@ -1115,6 +1115,8 @@ verify:
 	$(TEST_DATA_DIR_SETUP); \
 	echo "=== Verify (structural verifier instrument) ==="; \
 	python3 -m unittest scripts/tests/test_verify_acoustic_throne_structure.py; \
+	echo "=== Verify (live Loctree acoustic throne receipt) ==="; \
+	python3 scripts/verify-acoustic-throne-structure.py wired; \
 	echo "=== Verify (Transcript Bus path + install guard) ==="; \
 	bash scripts/tests/transcript-bus-path-test.sh; \
 	echo "=== Verify (hermetic: workspace tests) ==="; \

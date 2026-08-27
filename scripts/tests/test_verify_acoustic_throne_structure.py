@@ -57,8 +57,10 @@ def occurrence(
     column: int = 1,
     match_role: str = "reference",
     scope_classification: str = "production",
+    enclosing_symbol: str | None = None,
+    enclosing_file: str | None = None,
 ) -> dict[str, object]:
-    return {
+    row: dict[str, object] = {
         "file": file,
         "line": line,
         "column": column,
@@ -67,6 +69,13 @@ def occurrence(
         "match_role": match_role,
         "scope_classification": scope_classification,
     }
+    if enclosing_symbol is not None:
+        row["enclosing_symbol"] = {
+            "name": enclosing_symbol,
+            "file": enclosing_file or file,
+            "kind": "function",
+        }
+    return row
 
 
 def regex_payload(
@@ -181,12 +190,14 @@ class StubVerifier:
         regex_response: dict[str, object] | None = None,
         literal_responses: dict[str, dict[str, object]] | None = None,
         bodies: dict[tuple[str, str], dict[str, object]] | None = None,
+        occurrence_responses: dict[str, dict[str, object]] | None = None,
     ) -> None:
         self.repo = repo
         self.regex_rows = regex_rows
         self.regex_response = regex_response
         self.literal_responses = literal_responses or {}
         self.bodies = bodies or {}
+        self.occurrence_responses = occurrence_responses or {}
         self.command_inventory = [
             ["loct", "context", "--json"],
             ["loct", "occurrences", "quality_gate", "--json"],
@@ -207,6 +218,8 @@ class StubVerifier:
         }
 
     def occurrences(self, _symbol: str) -> dict[str, object]:
+        if _symbol in self.occurrence_responses:
+            return self.occurrence_responses[_symbol]
         body_rows = [
             row
             for (symbol, _file), payload in self.bodies.items()
@@ -585,6 +598,14 @@ class CorridorProofTests(unittest.TestCase):
                         ],
                     }
                 ],
+                "required_invocations": [
+                    {
+                        "callee": "project_serial",
+                        "callee_file": "app/presentation/transcript_bus.rs",
+                        "caller": "publish_revision",
+                        "caller_file": "app/presentation/transcript_bus.rs",
+                    }
+                ],
             }
         ]
 
@@ -595,6 +616,23 @@ class CorridorProofTests(unittest.TestCase):
             bodies={
                 ("publish_revision", file): body_payload(
                     "publish_revision", file, source, start_line=20
+                )
+            },
+            occurrence_responses={
+                "project_serial": exact_payload(
+                    occurrence(
+                        "project_serial",
+                        file=file,
+                        line=23,
+                        enclosing_symbol="publish_revision",
+                    ),
+                    occurrence(
+                        "project_serial",
+                        file=file,
+                        line=10,
+                        match_role="local_binding",
+                        enclosing_symbol="project_serial",
+                    ),
                 )
             },
         )
@@ -668,8 +706,9 @@ class CorridorProofTests(unittest.TestCase):
 
         _, failures = VERIFIER.verify_code_corridors(verifier, self.contract())
 
-        self.assertEqual(len(failures), 1)
-        self.assertIn("not a production definition", failures[0])
+        self.assertTrue(
+            any("not a production definition" in failure for failure in failures)
+        )
 
     def test_c5_compile_disabled_production_witness_is_red(self) -> None:
         literal = "#if false"
@@ -717,6 +756,95 @@ class CorridorProofTests(unittest.TestCase):
 
         self.assertEqual(hits[literal], [])
         self.assertEqual(failures, [])
+
+    def test_c7_callsite_in_wrong_caller_is_red(self) -> None:
+        verifier = self.verifier_for(
+            "fn publish_revision() {\n"
+            "  let serial = ledger.serial_of(&entry.occurrence);\n"
+            "  Self::project_serial(serial);\n"
+            "}\n"
+        )
+        verifier.occurrence_responses["project_serial"] = exact_payload(
+            occurrence(
+                "project_serial",
+                file="app/presentation/transcript_bus.rs",
+                line=23,
+                enclosing_symbol="disconnected_helper",
+            ),
+            occurrence(
+                "project_serial",
+                file="app/presentation/transcript_bus.rs",
+                line=10,
+                match_role="local_binding",
+                enclosing_symbol="project_serial",
+            ),
+        )
+
+        observed, failures = VERIFIER.verify_code_corridors(verifier, self.contract())
+
+        self.assertEqual(observed["projection"]["invocations"][0]["observed_count"], 0)
+        self.assertTrue(any("production callsite" in failure for failure in failures))
+
+    def test_c8_unreachable_if_false_body_is_red(self) -> None:
+        verifier = self.verifier_for(
+            "fn publish_revision() {\n"
+            "  return;\n"
+            "  if false {\n"
+            "    let serial = ledger.serial_of(&entry.occurrence);\n"
+            "    Self::project_serial(serial);\n"
+            "  }\n"
+            "}\n"
+        )
+
+        observed, failures = VERIFIER.verify_code_corridors(verifier, self.contract())
+
+        self.assertEqual(
+            observed["projection"]["hops"][0]["dead_code_markers"], ["if false"]
+        )
+        self.assertTrue(any("dead-code markers" in failure for failure in failures))
+
+    def test_c9_required_code_out_of_order_is_red(self) -> None:
+        verifier = self.verifier_for(
+            "fn publish_revision() {\n"
+            "  Self::project_serial(serial);\n"
+            "  let serial = ledger.serial_of(&entry.occurrence);\n"
+            "}\n"
+        )
+
+        observed, failures = VERIFIER.verify_code_corridors(verifier, self.contract())
+
+        self.assertFalse(
+            observed["projection"]["hops"][0]["required_code_in_order"]
+        )
+        self.assertTrue(any("required order" in failure for failure in failures))
+
+    def test_c10_test_scope_callsite_is_red(self) -> None:
+        verifier = self.verifier_for(
+            "fn publish_revision() {\n"
+            "  let serial = ledger.serial_of(&entry.occurrence);\n"
+            "  Self::project_serial(serial);\n"
+            "}\n"
+        )
+        verifier.occurrence_responses["project_serial"] = exact_payload(
+            occurrence(
+                "project_serial",
+                file="app/presentation/transcript_bus.rs",
+                line=23,
+                scope_classification="test",
+                enclosing_symbol="publish_revision",
+            ),
+            occurrence(
+                "project_serial",
+                file="app/presentation/transcript_bus.rs",
+                line=10,
+                match_role="local_binding",
+                enclosing_symbol="project_serial",
+            ),
+        )
+
+        _, failures = VERIFIER.verify_code_corridors(verifier, self.contract())
+
+        self.assertTrue(any("production callsite" in failure for failure in failures))
 
 
 class RustModuleResolutionTests(unittest.TestCase):
