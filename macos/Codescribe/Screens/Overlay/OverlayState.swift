@@ -1381,7 +1381,10 @@ final class OverlayState: ObservableObject {
     case "admission_calibration_refused", "admission_calibration_unusable":
       headline = "Stored calibration can't be used — recalibrate in Settings › Audio"
     case "admission_seal_lane_disarmed":
-      headline = "Seal lane is off — set CODESCRIBE_SILERO_FUSION=1"
+      headline =
+        detail.contains("CODESCRIBE_SILERO_FUSION")
+        ? "Seal lane is off — CODESCRIBE_SILERO_FUSION override"
+        : "Seal lane is off — enable it in Settings › Audio"
     case "admission_seal_vad_unavailable":
       headline = "Silero VAD did not load — recording refused"
     case "admission_capture_device_unavailable":

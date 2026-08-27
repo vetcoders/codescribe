@@ -12,6 +12,39 @@ struct AudioInputDisplayState: Equatable {
   let detail: String
 }
 
+struct SealLaneControlState: Equatable {
+  let isOn: Bool
+  let isEnabled: Bool
+  let detail: String
+}
+
+/// Present the persisted product choice independently from its effective
+/// value. An env override stays visible and read-only instead of making the
+/// Settings toggle lie about which authority currently wins.
+func sealLaneControlState(_ readiness: CsAdmissionReadiness?) -> SealLaneControlState {
+  guard let readiness else {
+    return SealLaneControlState(
+      isOn: true,
+      isEnabled: false,
+      detail: "Reading the product setting and any power-user override."
+    )
+  }
+  guard readiness.sealLaneSource == "env_override" else {
+    return SealLaneControlState(
+      isOn: readiness.sealLaneSettingArmed,
+      isEnabled: true,
+      detail: "Required for committed utterances; stored in Settings."
+    )
+  }
+  let state = readiness.sealLaneArmed ? "armed" : "disarmed"
+  return SealLaneControlState(
+    isOn: readiness.sealLaneSettingArmed,
+    isEnabled: false,
+    detail:
+      "Product setting is read-only while \(readiness.sealLaneEnv) keeps the lane \(state). Remove the power-user override to edit here."
+  )
+}
+
 /// Pure UI projection of the controller's admission verdict for XCTest. The
 /// bridge record already carries the one blocker the controller would apply;
 /// this function only words it — it never decides readiness itself.
@@ -41,7 +74,10 @@ func admissionDisplayState(_ readiness: CsAdmissionReadiness?) -> AudioInputDisp
   case "admission_calibration_refused", "admission_calibration_unusable":
     title = "Stored calibration cannot be used"
   case "admission_seal_lane_disarmed":
-    title = "Seal lane is off (\(readiness.sealLaneEnv))"
+    title =
+      readiness.sealLaneSource == "env_override"
+      ? "Seal lane is disarmed by \(readiness.sealLaneEnv) override"
+      : "Seal lane is off in Settings › Audio"
   case "admission_seal_vad_unavailable":
     title = "Silero VAD did not load"
   case "admission_capture_device_unavailable":
@@ -201,6 +237,25 @@ struct AudioPanel: View {
     VStack(alignment: .leading, spacing: 14) {
       admissionStatus
 
+      let sealLane = sealLaneControlState(model.admission)
+      SettingsControlRow(
+        title: "Seal lane",
+        subtitle: sealLane.detail
+      ) {
+        Toggle("", isOn: sealLaneBinding)
+          .toggleStyle(.switch)
+          .labelsHidden()
+          .tint(CSColor.chromeAccent)
+          .disabled(!sealLane.isEnabled)
+          .accessibilityLabel("Seal lane")
+          .accessibilityValue(sealLaneAccessibilityValue(sealLane))
+          .accessibilityHint(
+            sealLane.isEnabled
+              ? "Controls whether committed utterances can be sealed."
+              : sealLane.detail
+          )
+      }
+
       HStack(alignment: .top) {
         Text(
           "Calibration measures your normal speech level on this microphone and derives the existence floor (ITU-T P.56 margin). Audio is not kept."
@@ -338,6 +393,16 @@ struct AudioPanel: View {
     )
   }
 
+  private var sealLaneBinding: Binding<Bool> {
+    Binding(
+      get: { sealLaneControlState(model.admission).isOn },
+      set: { armed in
+        model.setSealLaneArmed(armed)
+        Task { await model.refreshAdmission() }
+      }
+    )
+  }
+
   private var soundVolumeBinding: Binding<Double> {
     Binding(
       get: { Double(model.settings.soundVolume) },
@@ -347,6 +412,11 @@ struct AudioPanel: View {
 
   private var inputDeviceAccessibilityValue: String {
     model.settings.audioInputDevice ?? "System default"
+  }
+
+  private func sealLaneAccessibilityValue(_ state: SealLaneControlState) -> String {
+    let value = state.isOn ? "On" : "Off"
+    return state.isEnabled ? value : "\(value), overridden"
   }
 
   private func statusRow(color: Color, title: String, detail: String) -> some View {

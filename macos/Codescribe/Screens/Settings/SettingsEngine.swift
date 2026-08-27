@@ -431,6 +431,8 @@ extension CsAdmissionReadiness {
     calibrationPath: "~/Library/Application Support/Codescribe/energy-calibration.json",
     calibratedDevices: ["MacBook Pro Microphone"],
     sealLaneArmed: true,
+    sealLaneSettingArmed: true,
+    sealLaneSource: "settings",
     sealLaneEnv: "CODESCRIBE_SILERO_FUSION"
   )
 
@@ -445,7 +447,9 @@ extension CsAdmissionReadiness {
     calibrationStatus: "missing",
     calibrationPath: "~/Library/Application Support/Codescribe/energy-calibration.json",
     calibratedDevices: [],
-    sealLaneArmed: false,
+    sealLaneArmed: true,
+    sealLaneSettingArmed: true,
+    sealLaneSource: "settings",
     sealLaneEnv: "CODESCRIBE_SILERO_FUSION"
   )
 }

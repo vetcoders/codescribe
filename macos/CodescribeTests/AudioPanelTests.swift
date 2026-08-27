@@ -148,6 +148,29 @@ final class AudioPanelTests: XCTestCase {
 
 @MainActor
 final class AcousticAdmissionPanelTests: XCTestCase {
+  private func readiness(
+    armed: Bool,
+    settingArmed: Bool,
+    source: String,
+    message: String = "seal lane disarmed"
+  ) -> CsAdmissionReadiness {
+    CsAdmissionReadiness(
+      ready: false,
+      code: "admission_seal_lane_disarmed",
+      message: message,
+      deviceName: "Fixture Mic",
+      sampleRate: 48_000,
+      calibrationVersion: "cal2-fixture",
+      calibrationStatus: "sealed",
+      calibrationPath: "/tmp/calibration.json",
+      calibratedDevices: ["Fixture Mic"],
+      sealLaneArmed: armed,
+      sealLaneSettingArmed: settingArmed,
+      sealLaneSource: source,
+      sealLaneEnv: "CODESCRIBE_SILERO_FUSION"
+    )
+  }
+
   func testAdmissionRowWordsTheControllerBlockerWithoutDeciding() {
     let missing = admissionDisplayState(.sampleMissing)
     XCTAssertEqual(missing.tone, .unavailable)
@@ -173,6 +196,45 @@ final class AcousticAdmissionPanelTests: XCTestCase {
 
     XCTAssertEqual(model.admission?.code, "admission_calibration_missing")
     XCTAssertFalse(model.admission?.ready ?? true)
+  }
+
+  func testSealLaneControlDistinguishesSettingsFromReadOnlyOverride() {
+    let settingsOff = readiness(armed: false, settingArmed: false, source: "settings")
+    XCTAssertEqual(
+      sealLaneControlState(settingsOff),
+      SealLaneControlState(
+        isOn: false,
+        isEnabled: true,
+        detail: "Required for committed utterances; stored in Settings."
+      )
+    )
+    XCTAssertEqual(
+      admissionDisplayState(settingsOff).title,
+      "Seal lane is off in Settings › Audio"
+    )
+
+    let overrideOff = readiness(armed: false, settingArmed: true, source: "env_override")
+    let overrideState = sealLaneControlState(overrideOff)
+    XCTAssertTrue(overrideState.isOn, "toggle shows the stored product setting")
+    XCTAssertFalse(overrideState.isEnabled, "env override makes Settings read-only")
+    XCTAssertTrue(overrideState.detail.contains("CODESCRIBE_SILERO_FUSION"))
+    XCTAssertTrue(admissionDisplayState(overrideOff).title.contains("override"))
+  }
+
+  func testSealLaneActionUsesTheCanonicalConfigWriter() {
+    var writes: [(String, String)] = []
+    let model = SettingsViewModel(
+      engine: MockSettingsEngine(
+        updateConfigObserver: { key, value in writes.append((key, value)) }
+      ),
+      permissionProbe: MockPermissionProbe(.allGranted)
+    )
+
+    model.setSealLaneArmed(false)
+    model.setSealLaneArmed(true)
+
+    XCTAssertEqual(writes.map(\.0), ["CODESCRIBE_SILERO_FUSION", "CODESCRIBE_SILERO_FUSION"])
+    XCTAssertEqual(writes.map(\.1), ["0", "1"])
   }
 
   func testRunCalibrationStoresNoticeAndRereadsAdmission() async {

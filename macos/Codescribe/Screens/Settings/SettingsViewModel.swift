@@ -1794,6 +1794,13 @@ final class SettingsViewModel: ObservableObject {
     }
   }
 
+  /// Persist the product's mandatory-lane policy through the existing config
+  /// router. The bridge resolves any power-user env override separately; this
+  /// action never creates, edits, or clears that override.
+  func setSealLaneArmed(_ armed: Bool) {
+    persist("CODESCRIBE_SILERO_FUSION", armed ? "1" : "0")
+  }
+
   /// Run the guided calibration through the real recorder path, then re-read
   /// admission so the row reflects the controller's verdict, not a guess.
   func runCalibration() async {

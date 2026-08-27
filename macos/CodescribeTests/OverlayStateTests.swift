@@ -1120,14 +1120,27 @@ final class OverlayStateTests: XCTestCase {
     XCTAssertFalse(notice?.headline.contains("admission_") == true)
   }
 
-  func testAdmissionWarningEnvelopeUnwrapsInnerCode() {
+  func testAdmissionWarningEnvelopePointsSettingsOwnedRefusalToAudio() {
     let notice = OverlayState.admissionNotice(
       from:
-        "admission_refused: admission_seal_lane_disarmed: seal lane disarmed (CODESCRIBE_SILERO_FUSION is off), so no utterance can commit — Set CODESCRIBE_SILERO_FUSION=1 in ~/.codescribe/.env (the Silero seal lane bounds every committed utterance)."
+        "admission_refused: admission_seal_lane_disarmed: seal lane is off in Settings › Audio, so no utterance can commit — Enable Seal lane in Settings › Audio."
     )
     XCTAssertNotNil(notice)
-    XCTAssertTrue(notice?.headline.contains("CODESCRIBE_SILERO_FUSION=1") == true)
+    XCTAssertTrue(notice?.headline.contains("Settings › Audio") == true)
     XCTAssertTrue(notice?.detail.contains("no utterance can commit") == true)
+    XCTAssertFalse(notice?.headline.contains(".env") == true)
+    XCTAssertFalse(notice?.detail.contains(".env") == true)
+  }
+
+  func testAdmissionEnvOverrideNamesTheOverrideWithoutEnvFileInstructions() {
+    let notice = OverlayState.admissionNotice(
+      from:
+        "admission_seal_lane_disarmed: seal lane is disarmed by the CODESCRIBE_SILERO_FUSION override, so no utterance can commit — CODESCRIBE_SILERO_FUSION power-user override is off; remove the override or set it to 1."
+    )
+    XCTAssertTrue(notice?.headline.contains("CODESCRIBE_SILERO_FUSION override") == true)
+    XCTAssertTrue(notice?.detail.contains("power-user override") == true)
+    XCTAssertFalse(notice?.headline.contains(".env") == true)
+    XCTAssertFalse(notice?.detail.contains(".env") == true)
   }
 
   func testNonAdmissionErrorsAreNotRewrittenAsAdmission() {
