@@ -112,6 +112,37 @@ impl FormattingPolicy {
 /// chosen contract (removed 2026-08-09).
 pub const DEFAULT_AGENT_WORKSPACE_ROOT: &str = "~/.codescribe";
 
+/// Power-user override for the product-owned Silero seal lane.
+///
+/// The durable field lives at `audio.seal_lane_armed` in `settings.json` and
+/// defaults to armed. This environment token is deliberately the exception to
+/// the normal promoted-key rule: when present in `.env` or process env it still
+/// wins in either direction, but Settings writes never create or rewrite it.
+pub const SILERO_FUSION_ENV: &str = "CODESCRIBE_SILERO_FUSION";
+
+/// Supported production default for the mandatory committed-utterance lane.
+pub const DEFAULT_SEAL_LANE_ARMED: bool = true;
+
+/// Source of the effective seal-lane verdict in one immutable settings generation.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SealLaneSource {
+    Settings,
+    EnvOverride,
+}
+
+impl SealLaneSource {
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Settings => "settings",
+            Self::EnvOverride => "env_override",
+        }
+    }
+}
+
+fn default_seal_lane_armed() -> Option<bool> {
+    Some(DEFAULT_SEAL_LANE_ARMED)
+}
+
 /// Trim workspace-root entries and discard empty rows while preserving the
 /// operator's order. This is the canonical normalization boundary shared by
 /// persistence, the agent tools, and readiness.
@@ -240,6 +271,15 @@ pub struct UserSettings {
     pub transcript_send_mode: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub audio_input_device: Option<String>,
+    /// Product-owned arming of the mandatory Silero seal lane. Missing legacy
+    /// values migrate to the supported production default (`true`). The
+    /// `CODESCRIBE_SILERO_FUSION` power-user override is resolved only by the
+    /// immutable snapshot loader and always wins when present.
+    #[serde(
+        default = "default_seal_lane_armed",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub seal_lane_armed: Option<bool>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub sound_name: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -945,6 +985,9 @@ pub struct RuntimeSettingsSnapshot {
     /// `Missing`/`Refused` are explicit fail-closed states the admission gate
     /// names before any microphone opens; nothing here invents a floor.
     energy_calibration: SealedEnergyCalibration,
+    /// Effective mandatory-lane verdict after `settings.json` plus the optional
+    /// power-user env override. Consumers never re-read either source.
+    seal_lane_armed: bool,
 }
 
 /// Everything one loader pass resolved, handed to [`RuntimeSettingsSnapshot::seal_loaded`]
@@ -958,6 +1001,7 @@ pub(crate) struct RuntimeSnapshotParts {
     pub(crate) provenance: SettingsSnapshotProvenance,
     pub(crate) digest: SettingsSnapshotDigest,
     pub(crate) energy_calibration: SealedEnergyCalibration,
+    pub(crate) seal_lane_armed: bool,
 }
 
 impl RuntimeSettingsSnapshot {
@@ -975,6 +1019,7 @@ impl RuntimeSettingsSnapshot {
             provenance,
             digest,
             energy_calibration,
+            seal_lane_armed,
         } = parts;
         SettingsSnapshotValidation::admit(&values, &provenance, &digest)?;
         Ok(Self {
@@ -986,6 +1031,7 @@ impl RuntimeSettingsSnapshot {
             provenance,
             digest,
             energy_calibration,
+            seal_lane_armed,
         })
     }
 
@@ -1033,6 +1079,33 @@ impl RuntimeSettingsSnapshot {
     /// The sealed calibration truth (artifact + status) for this generation.
     pub fn energy_calibration(&self) -> &SealedEnergyCalibration {
         &self.energy_calibration
+    }
+
+    /// Effective mandatory-lane truth selected by this immutable generation.
+    pub const fn seal_lane_armed(&self) -> bool {
+        self.seal_lane_armed
+    }
+
+    /// Product setting behind the effective value, before an env override.
+    pub fn seal_lane_setting_armed(&self) -> bool {
+        self.user_settings
+            .seal_lane_armed
+            .unwrap_or(DEFAULT_SEAL_LANE_ARMED)
+    }
+
+    /// Whether the effective value came from Settings or the power-user env
+    /// override. Provenance records names only; no env value is exposed.
+    pub fn seal_lane_source(&self) -> SealLaneSource {
+        if self
+            .provenance
+            .env_overlay_keys
+            .iter()
+            .any(|key| key == SILERO_FUSION_ENV)
+        {
+            SealLaneSource::EnvOverride
+        } else {
+            SealLaneSource::Settings
+        }
     }
 
     /// The ledger calibration for one live capture path at its actual rate,
@@ -1270,6 +1343,11 @@ struct EmissionV2 {
 struct AudioV2 {
     #[serde(skip_serializing_if = "Option::is_none")]
     input_device_id: Option<String>,
+    #[serde(
+        default = "default_seal_lane_armed",
+        skip_serializing_if = "Option::is_none"
+    )]
+    seal_lane_armed: Option<bool>,
     #[serde(skip_serializing_if = "Option::is_none")]
     feedback: Option<FeedbackV2>,
 }
@@ -1411,6 +1489,7 @@ pub const PROMOTED_SETTINGS_KEYS: &[&str] = &[
     "STT_ENDPOINT",
     "TRANSCRIPT_SEND_MODE",
     "AUDIO_INPUT_DEVICE",
+    SILERO_FUSION_ENV,
     "HISTORY_ENABLED",
     "QUICK_NOTES_ENABLED",
     "QUICK_NOTES_SAVE_ONLY",
@@ -1521,6 +1600,7 @@ impl UserSettings {
             }),
             audio: Some(AudioV2 {
                 input_device_id: self.audio_input_device.clone(),
+                seal_lane_armed: self.seal_lane_armed,
                 feedback: Some(FeedbackV2 {
                     beep_on_start: self.beep_on_start,
                     sound_name: self.sound_name.clone(),
@@ -1708,6 +1788,11 @@ impl UserSettings {
                 .and_then(|e| e.cloud_transcription_endpoint.clone()),
             transcript_send_mode: v2.interaction.as_ref().and_then(|i| i.send_mode.clone()),
             audio_input_device: v2.audio.as_ref().and_then(|a| a.input_device_id.clone()),
+            seal_lane_armed: v2
+                .audio
+                .as_ref()
+                .and_then(|audio| audio.seal_lane_armed)
+                .or(Some(DEFAULT_SEAL_LANE_ARMED)),
             sound_name: v2
                 .audio
                 .as_ref()
@@ -2369,6 +2454,7 @@ impl UserSettings {
             "RESTORE_CLIPBOARD" => self.restore_clipboard = Some(value),
             "HOLD_EXCLUSIVE" => self.hold_exclusive = Some(value),
             "USE_LOCAL_STT" => self.use_local_stt = Some(value),
+            SILERO_FUSION_ENV => self.seal_lane_armed = Some(value),
             "HISTORY_ENABLED" => self.history_enabled = Some(value),
             "QUICK_NOTES_ENABLED" => self.quick_notes_enabled = Some(value),
             "QUICK_NOTES_SAVE_ONLY" => self.quick_notes_save_only = Some(value),
@@ -2460,7 +2546,9 @@ fn remove_json_keys_at(
 /// disk. All tests are `#[serial]`: the data dir is selected by process env.
 #[cfg(test)]
 mod tests {
-    use super::{FormattingPolicy, UserSettings, is_promoted_key};
+    use super::{
+        DEFAULT_SEAL_LANE_ARMED, FormattingPolicy, SILERO_FUSION_ENV, UserSettings, is_promoted_key,
+    };
     use crate::config::{ShortcutBinding, WorkMode};
     use serial_test::serial;
     use std::fs;
@@ -2478,6 +2566,37 @@ mod tests {
             std::env::remove_var("TOGGLE_TRIGGER");
         }
         tmp
+    }
+
+    /// Legacy schema-v3 files have no seal-lane field. Loading them performs
+    /// the semantic migration to the armed product default, and the next
+    /// canonical write materializes that value under `audio`.
+    #[test]
+    #[serial]
+    fn seal_lane_field_migrates_and_round_trips_through_v2_schema() {
+        let _tmp = setup_isolated_data_dir();
+        let path = UserSettings::settings_path();
+        fs::write(&path, r#"{"schema_version":3,"audio":{}}"#)
+            .expect("write legacy schema-v3 settings");
+
+        let mut loaded = UserSettings::load();
+        assert_eq!(loaded.seal_lane_armed, Some(DEFAULT_SEAL_LANE_ARMED));
+        assert!(is_promoted_key(SILERO_FUSION_ENV));
+
+        loaded.save().expect("materialize migrated seal-lane field");
+        let migrated: serde_json::Value =
+            serde_json::from_str(&fs::read_to_string(&path).expect("read migrated settings"))
+                .expect("parse migrated settings");
+        assert_eq!(
+            migrated
+                .pointer("/audio/seal_lane_armed")
+                .and_then(serde_json::Value::as_bool),
+            Some(true)
+        );
+
+        loaded.set_bool(SILERO_FUSION_ENV, false);
+        let reloaded = UserSettings::load();
+        assert_eq!(reloaded.seal_lane_armed, Some(false));
     }
 
     #[test]

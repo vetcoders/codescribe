@@ -26,12 +26,12 @@ use super::defaults::{
 };
 use super::energy_calibration::{SealedEnergyCalibration, energy_calibration_path};
 use super::settings::{
-    DEFAULT_AGENT_WORKSPACE_ROOT, FormattingPolicy, RuntimeAiExecution, RuntimeAiRequestTiming,
-    RuntimeFormatterExecution, RuntimeLlmCredential, RuntimeLlmLane, RuntimeLlmLaneKind,
-    RuntimeLlmLanes, RuntimeSettingsSnapshot, RuntimeSnapshotParts, SettingsLoaderInput,
-    SettingsSnapshotDigest, SettingsSnapshotProvenance, SettingsSnapshotValidationError,
-    UserSettings, normalize_agent_workspace_roots, normalize_stt_engine,
-    parse_agent_workspace_roots,
+    DEFAULT_AGENT_WORKSPACE_ROOT, DEFAULT_SEAL_LANE_ARMED, FormattingPolicy, RuntimeAiExecution,
+    RuntimeAiRequestTiming, RuntimeFormatterExecution, RuntimeLlmCredential, RuntimeLlmLane,
+    RuntimeLlmLaneKind, RuntimeLlmLanes, RuntimeSettingsSnapshot, RuntimeSnapshotParts,
+    SILERO_FUSION_ENV, SettingsLoaderInput, SettingsSnapshotDigest, SettingsSnapshotProvenance,
+    SettingsSnapshotValidationError, UserSettings, normalize_agent_workspace_roots,
+    normalize_stt_engine, parse_agent_workspace_roots,
 };
 use super::types::{
     Config, DeferredInsertShortcut, Language, OverlayPositionMode, TranscriptSendMode,
@@ -123,13 +123,19 @@ impl Config {
         };
         let values = Self::load_with_keychain_population(populate_keychain);
         let user_settings = UserSettings::load();
+        let (seal_lane_armed, seal_lane_env_override) =
+            Self::resolve_seal_lane_armed(&user_settings);
         let settings_bytes = fs::read(&input.settings_path).ok();
         let settings_json_sha256 = settings_bytes.as_deref().map(sha256_hex);
         let mut env_overlay_keys = Self::seeded_env_keys()
             .lock()
             .map(|keys| keys.iter().cloned().collect::<Vec<_>>())
             .unwrap_or_default();
+        if seal_lane_env_override {
+            env_overlay_keys.push(SILERO_FUSION_ENV.to_string());
+        }
         env_overlay_keys.sort_unstable();
+        env_overlay_keys.dedup();
         let loaded_at_unix_ms = SystemTime::now()
             .duration_since(UNIX_EPOCH)
             .map(|duration| duration.as_millis() as u64)
@@ -169,7 +175,7 @@ impl Config {
             .as_ref()
             .map(|_| "<redacted:present>".to_string());
         let digest_material = format!(
-            "{digest_values:?}\n{user_settings:?}\n{provenance:?}\nformatting_policy={}\n{}\n{}\n{}",
+            "{digest_values:?}\n{user_settings:?}\n{provenance:?}\nformatting_policy={}\nseal_lane_armed={seal_lane_armed}\n{}\n{}\n{}",
             formatting_policy.as_str(),
             llm_lanes.digest_material(),
             ai_execution.digest_material(),
@@ -185,7 +191,26 @@ impl Config {
             provenance,
             digest,
             energy_calibration,
+            seal_lane_armed,
         })
+    }
+
+    /// Resolve the one product-owned arming value for this immutable settings
+    /// generation. The process value may be either an explicit shell override
+    /// or the optional `.env` value injected during bootstrap; for this one
+    /// documented power-user key both forms deliberately outrank Settings.
+    fn resolve_seal_lane_armed(settings: &UserSettings) -> (bool, bool) {
+        let configured = settings.seal_lane_armed.unwrap_or(DEFAULT_SEAL_LANE_ARMED);
+        match std::env::var(SILERO_FUSION_ENV) {
+            Ok(raw) => (
+                matches!(
+                    raw.trim().to_ascii_lowercase().as_str(),
+                    "1" | "true" | "yes" | "on"
+                ),
+                true,
+            ),
+            Err(_) => (configured, false),
+        }
     }
 
     /// Resolve prompt, retry, and shared Agent/formatter timing once for the
@@ -608,9 +633,11 @@ impl Config {
 
     /// Inject optional .env values into the process environment without allowing
     /// legacy file overrides to shadow promoted settings.json-backed keys.
+    /// `CODESCRIBE_SILERO_FUSION` is the deliberate exception: it remains a
+    /// documented power-user override of the product-owned settings field.
     fn inject_file_env_for_runtime(file_env: &HashMap<String, String>) {
         for (key, value) in file_env {
-            if super::settings::is_promoted_key(key) {
+            if super::settings::is_promoted_key(key) && key != SILERO_FUSION_ENV {
                 debug_assert!(
                     !super::settings::is_promoted_key(key) || !key.is_empty(),
                     "promoted key bookkeeping should never see empty names"
@@ -1308,7 +1335,8 @@ impl Config {
                 | "AGENT_ENTER_SENDS"
                 | "CODESCRIBE_STT_INITIAL_PROMPT_ENABLED"
                 | "HOLD_INDICATOR"
-                | "RESTORE_CLIPBOARD" => {
+                | "RESTORE_CLIPBOARD"
+                | SILERO_FUSION_ENV => {
                     let bool_val = matches!(value, "1" | "true" | "yes" | "on");
                     settings.set_bool(key, bool_val);
                 }
@@ -1530,7 +1558,8 @@ impl Config {
                     | "AGENT_ENTER_SENDS"
                     | "CODESCRIBE_STT_INITIAL_PROMPT_ENABLED"
                     | "HOLD_INDICATOR"
-                    | "RESTORE_CLIPBOARD" => {
+                    | "RESTORE_CLIPBOARD"
+                    | SILERO_FUSION_ENV => {
                         let bv = matches!(*value, "1" | "true" | "yes" | "on");
                         match *key {
                             "AI_FORMATTING_ENABLED" => {
@@ -1560,6 +1589,7 @@ impl Config {
                             }
                             "HOLD_INDICATOR" => settings_ref.hold_indicator = Some(bv),
                             "RESTORE_CLIPBOARD" => settings_ref.restore_clipboard = Some(bv),
+                            SILERO_FUSION_ENV => settings_ref.seal_lane_armed = Some(bv),
                             _ => {}
                         }
                     }
@@ -2032,7 +2062,99 @@ mod tests {
         remove_env_for_test("CODESCRIBE_ENV_PATH");
         remove_env_for_test("USE_LOCAL_STT");
         remove_env_for_test("CODESCRIBE_STT_INITIAL_PROMPT_ENABLED");
+        remove_env_for_test(SILERO_FUSION_ENV);
         tmp
+    }
+
+    #[test]
+    #[serial]
+    fn seal_lane_missing_settings_defaults_armed_from_product_settings() {
+        let _tmp = setup_isolated_data_dir();
+        let snapshot =
+            Config::load_runtime_snapshot_without_keychain().expect("seal runtime settings");
+
+        assert!(snapshot.seal_lane_armed());
+        assert!(snapshot.seal_lane_setting_armed());
+        assert_eq!(snapshot.seal_lane_source().as_str(), "settings");
+        assert!(!UserSettings::settings_path().exists());
+    }
+
+    #[test]
+    #[serial]
+    fn seal_lane_settings_only_supports_both_product_values() {
+        let _tmp = setup_isolated_data_dir();
+        let mut settings = UserSettings {
+            seal_lane_armed: Some(false),
+            ..Default::default()
+        };
+        settings.save().expect("save disarmed setting");
+        let disarmed =
+            Config::load_runtime_snapshot_without_keychain().expect("seal disarmed snapshot");
+        assert!(!disarmed.seal_lane_armed());
+        assert!(!disarmed.seal_lane_setting_armed());
+        assert_eq!(disarmed.seal_lane_source().as_str(), "settings");
+
+        settings.seal_lane_armed = Some(true);
+        settings.save().expect("save armed setting");
+        let armed = Config::load_runtime_snapshot_without_keychain().expect("seal armed snapshot");
+        assert!(armed.seal_lane_armed());
+        assert!(armed.seal_lane_setting_armed());
+        assert_eq!(armed.seal_lane_source().as_str(), "settings");
+        assert_ne!(disarmed.digest(), armed.digest());
+    }
+
+    #[test]
+    #[serial]
+    fn seal_lane_process_env_override_wins_in_both_directions() {
+        let _tmp = setup_isolated_data_dir();
+        let _override = TestEnvGuard::unset(SILERO_FUSION_ENV);
+        let mut settings = UserSettings {
+            seal_lane_armed: Some(true),
+            ..Default::default()
+        };
+        settings.save().expect("save armed setting");
+
+        set_env_for_test(SILERO_FUSION_ENV, "0");
+        let forced_off =
+            Config::load_runtime_snapshot_without_keychain().expect("seal forced-off snapshot");
+        assert!(!forced_off.seal_lane_armed());
+        assert!(forced_off.seal_lane_setting_armed());
+        assert_eq!(forced_off.seal_lane_source().as_str(), "env_override");
+
+        settings.seal_lane_armed = Some(false);
+        settings.save().expect("save disarmed setting");
+        set_env_for_test(SILERO_FUSION_ENV, "1");
+        let forced_on =
+            Config::load_runtime_snapshot_without_keychain().expect("seal forced-on snapshot");
+        assert!(forced_on.seal_lane_armed());
+        assert!(!forced_on.seal_lane_setting_armed());
+        assert_eq!(forced_on.seal_lane_source().as_str(), "env_override");
+        assert_ne!(forced_off.digest(), forced_on.digest());
+    }
+
+    #[test]
+    #[serial]
+    fn seal_lane_env_file_override_survives_canonical_settings_write() {
+        let _tmp = setup_isolated_data_dir();
+        let _override = TestEnvGuard::unset(SILERO_FUSION_ENV);
+        fs::write(Config::env_path(), format!("{SILERO_FUSION_ENV}=0\n"))
+            .expect("write power-user env override");
+
+        Config::default()
+            .save_to_env(SILERO_FUSION_ENV, "1")
+            .expect("persist product setting through canonical writer");
+        let persisted = UserSettings::load();
+        assert_eq!(persisted.seal_lane_armed, Some(true));
+        assert_eq!(
+            fs::read_to_string(Config::env_path()).expect("read untouched env override"),
+            format!("{SILERO_FUSION_ENV}=0\n")
+        );
+
+        let snapshot =
+            Config::load_runtime_snapshot_without_keychain().expect("seal overridden snapshot");
+        assert!(!snapshot.seal_lane_armed());
+        assert!(snapshot.seal_lane_setting_armed());
+        assert_eq!(snapshot.seal_lane_source().as_str(), "env_override");
     }
 
     /// Distinct UI writes are one read-modify-write transaction each. Start two
