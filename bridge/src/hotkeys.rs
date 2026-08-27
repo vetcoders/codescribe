@@ -1705,6 +1705,124 @@ fn project_admission_readiness(
     }
 }
 
+/// Product-owned seal-lane provenance as exposed by the admission bridge.
+#[cfg(test)]
+mod admission_readiness_source_tests {
+    use super::*;
+    use serial_test::serial;
+    use std::ffi::{OsStr, OsString};
+
+    /// Restore one process environment variable, including its absent state.
+    struct EnvGuard {
+        key: &'static str,
+        previous: Option<OsString>,
+    }
+
+    impl EnvGuard {
+        /// Set `key` for this serialized test and remember the prior value.
+        fn set(key: &'static str, value: impl AsRef<OsStr>) -> Self {
+            let guard = Self {
+                key,
+                previous: std::env::var_os(key),
+            };
+            // SAFETY: the only test in this module that mutates process env is
+            // serialized and starts no background workers.
+            unsafe { std::env::set_var(key, value) };
+            guard
+        }
+
+        /// Clear `key` for this serialized test and remember the prior value.
+        fn unset(key: &'static str) -> Self {
+            let guard = Self {
+                key,
+                previous: std::env::var_os(key),
+            };
+            // SAFETY: same serialization invariant as `set` above.
+            unsafe { std::env::remove_var(key) };
+            guard
+        }
+    }
+
+    impl Drop for EnvGuard {
+        fn drop(&mut self) {
+            // SAFETY: restoration occurs before the serialized test releases
+            // its global serial_test lock.
+            unsafe {
+                match self.previous.take() {
+                    Some(value) => std::env::set_var(self.key, value),
+                    None => std::env::remove_var(self.key),
+                }
+            }
+        }
+    }
+
+    /// Scratch product settings own the bridge source until process env
+    /// explicitly overrides the same immutable snapshot input.
+    #[test]
+    #[serial]
+    fn scratch_settings_and_env_override_project_honest_admission_source() {
+        const SEAL_LANE_ENV: &str = codescribe_core::pipeline::streaming::SILERO_FUSION_ENV;
+
+        let scratch = tempfile::tempdir().expect("create scratch settings root");
+        let _data_dir = EnvGuard::set("CODESCRIBE_DATA_DIR", scratch.path());
+        let _env_path = EnvGuard::unset("CODESCRIBE_ENV_PATH");
+        let _seal_lane_override = EnvGuard::unset(SEAL_LANE_ENV);
+
+        UserSettings {
+            seal_lane_armed: Some(true),
+            ..Default::default()
+        }
+        .save()
+        .expect("write scratch product settings");
+
+        let settings_path = UserSettings::settings_path();
+        let settings_root = settings_path
+            .parent()
+            .expect("settings path has a parent")
+            .canonicalize()
+            .expect("canonical persisted settings root");
+        assert_eq!(
+            settings_root,
+            scratch
+                .path()
+                .canonicalize()
+                .expect("canonical scratch settings root"),
+            "settings write must remain inside the scratch data root"
+        );
+        let persisted: serde_json::Value = serde_json::from_slice(
+            &std::fs::read(&settings_path).expect("read scratch settings.json"),
+        )
+        .expect("parse scratch settings.json");
+        assert_eq!(
+            persisted.pointer("/audio/seal_lane_armed"),
+            Some(&serde_json::Value::Bool(true))
+        );
+
+        let settings_snapshot = Config::load_runtime_snapshot_without_keychain()
+            .expect("load settings-owned runtime snapshot");
+        let settings_readiness = project_admission_readiness(
+            &settings_snapshot,
+            Err(admission::AdmissionBlocker::SealVadUnavailable),
+        );
+        assert!(settings_readiness.seal_lane_armed);
+        assert!(settings_readiness.seal_lane_setting_armed);
+        assert_eq!(settings_readiness.seal_lane_source, "settings");
+
+        // SAFETY: the test remains under the same global serial_test lock and
+        // `_seal_lane_override` restores the inherited value on every exit.
+        unsafe { std::env::set_var(SEAL_LANE_ENV, "0") };
+        let override_snapshot = Config::load_runtime_snapshot_without_keychain()
+            .expect("load env-overridden runtime snapshot");
+        let override_readiness = project_admission_readiness(
+            &override_snapshot,
+            Err(admission::AdmissionBlocker::SealVadUnavailable),
+        );
+        assert!(!override_readiness.seal_lane_armed);
+        assert!(override_readiness.seal_lane_setting_armed);
+        assert_eq!(override_readiness.seal_lane_source, "env_override");
+    }
+}
+
 #[uniffi::export]
 impl CodescribeHotkeys {
     /// Re-arm the global CGEventTap after a first-run permission grant, without
