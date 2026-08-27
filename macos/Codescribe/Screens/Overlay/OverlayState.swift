@@ -115,17 +115,27 @@ struct OverlayPolicySnapshot: Equatable {
 }
 
 enum OverlayActionPresentation {
+  static let menuTitle = "Actions"
+  static let menuSymbolName = "chevron.down"
+  static let menuHelp = "Open available actions for the current recording state"
+  static let menuAccessibilityLabel = "Dictation actions menu"
+  static let menuAccessibilityHint = "Opens the available actions for the current recording state"
   static let sendTitle = "To Agent"
   static let sendHelp = "Send transcript to the agent"
   static let finishTitle = "Finish"
-  static let finishHelp = "Stop capture and seal the take"
 }
 
-/// Compact chrome primary act for the slim overlay. Secondary actions live in
-/// the attached menu; CloseDot remains the always-visible dismiss control.
-enum OverlayPrimaryActionKind: Equatable {
+/// State-aware commands projected into the overlay's one stable action menu.
+/// The menu identity never changes; only commands that are possible in the
+/// current mode participate.
+enum OverlayActionMenuItem: String, Equatable, Identifiable {
   case finish
+  case copy
   case insert
+  case sendToAgent
+  case close
+
+  var id: String { rawValue }
 }
 
 /// Dictionary/history helper follows Settings `asr_mode`. Apple-only has no helper.
@@ -263,7 +273,7 @@ final class OverlayState: ObservableObject {
   /// Assistive sessions never expose delivery controls. The controller owns
   /// that authoritative session gate and updates this presentation fence.
   @Published private(set) var autoPasteControlAvailable = true
-  /// Destination name latched once at overlay session entry. The action row
+  /// Destination name latched once at overlay session entry. The action menu
   /// reads this snapshot; it never polls the bridge during rendering.
   @Published private(set) var pasteTargetAppName: String?
   /// Final pass phase (AI formatting / authoritative assembly after stop).
@@ -632,29 +642,42 @@ final class OverlayState: ObservableObject {
     autoPasteEnabled ? "On" : "Off"
   }
 
-  /// One primary act for the slim chrome combo control. `nil` for terminal
-  /// outcomes that only need Close (no-speech / error).
-  var primaryActionKind: OverlayPrimaryActionKind? {
+  /// Stable identity of the one pull-down control. Recording state changes
+  /// menu contents, never the title or symbol rendered in the header.
+  var actionMenuTitle: String { OverlayActionPresentation.menuTitle }
+
+  var actionMenuSymbolName: String { OverlayActionPresentation.menuSymbolName }
+
+  /// Commands exposed by the stable pull-down. Impossible actions are omitted
+  /// instead of rendered disabled: empty listening has no Copy; terminal
+  /// no-speech/error states have only the valid Close command.
+  var actionMenuItems: [OverlayActionMenuItem] {
     switch mode {
-    case .listening: return .finish
-    case .formatted: return .insert
-    case .noSpeech, .error: return nil
+    case .listening:
+      var items: [OverlayActionMenuItem] = [.finish]
+      if canCopy { items.append(.copy) }
+      items.append(.close)
+      return items
+    case .formatted:
+      guard canCopy else { return [.close] }
+      return [.insert, .copy, .sendToAgent, .close]
+    case .noSpeech, .error:
+      return [.close]
     }
   }
 
-  var primaryActionTitle: String {
-    switch primaryActionKind {
-    case .finish: return OverlayActionPresentation.finishTitle
-    case .insert: return insertActionPresentation.title
-    case nil: return ""
-    }
-  }
-
-  var primaryActionHelp: String {
-    switch primaryActionKind {
-    case .finish: return OverlayActionPresentation.finishHelp
-    case .insert: return insertActionPresentation.help
-    case nil: return ""
+  /// VoiceOver value names the current phase while the accessibility label and
+  /// hint keep describing a menu. This is presentation-only state.
+  var actionMenuAccessibilityValue: String {
+    switch mode {
+    case .listening:
+      if isFinalPass { return "Final pass" }
+      if transcribing { return "Transcribing" }
+      if warmingUp { return "Starting recording" }
+      return "Recording in progress"
+    case .formatted: return "Transcript ready"
+    case .noSpeech: return "No speech"
+    case .error: return "Recording failed"
     }
   }
 
@@ -798,7 +821,7 @@ final class OverlayState: ObservableObject {
     }
   }
 
-  // MARK: Action row
+  // MARK: Action menu commands
 
   func copyToPasteboard(_ pasteboard: NSPasteboard = .general) {
     // P0-D: capture user correction on FINAL for quality loop + lexicon learning.

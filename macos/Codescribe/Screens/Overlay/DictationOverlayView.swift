@@ -4,7 +4,7 @@ import SwiftUI
 //
 // Layout (top → bottom):
 //   header   brand · ONE status pill · compact waveform · timer · Auto Paste ·
-//            placement · primary action combo (Finish/Insert + secondary menu)
+//            placement · one stable action menu
 //   body     transcript is the product surface (listening / formatted / terminal)
 //   footer   ● engine chip · optional canvas honesty · toast
 //
@@ -88,6 +88,8 @@ struct DictationOverlayView: View {
           .font(CSFont.ui(15, .bold))
           .tracking(-0.3)
           .foregroundStyle(CSColor.textHigh)
+          .lineLimit(1)
+          .fixedSize(horizontal: true, vertical: false)
           .allowsHitTesting(false)
       }
       // One phase pill only — do not also paint RECORDING/tag/meta rows.
@@ -99,16 +101,18 @@ struct DictationOverlayView: View {
           color: state.statusColor,
           rippling: true
         )
+        .fixedSize(horizontal: true, vertical: false)
         .allowsHitTesting(false)
         .accessibilityIdentifier("overlay-phase-status")
       } else {
         StaticStatusPill(text: state.statusText, color: state.statusColor)
+          .fixedSize(horizontal: true, vertical: false)
           .allowsHitTesting(false)
           .accessibilityIdentifier("overlay-phase-status")
       }
 
       if state.mode == .listening {
-        chromeWaveform
+        responsiveChromeWaveform
       }
 
       Spacer(minLength: 4)
@@ -120,7 +124,7 @@ struct DictationOverlayView: View {
       }
       placementMenu
         .foregroundStyle(CSColor.textFaint)
-      compactPrimaryAction
+      compactActionMenu
     }
     .padding(.horizontal, 16)
     .padding(.vertical, 10)
@@ -142,6 +146,18 @@ struct DictationOverlayView: View {
     .accessibilityIdentifier("overlay-chrome-waveform")
     .accessibilityLabel("Live audio level")
     .allowsHitTesting(false)
+  }
+
+  /// Preserve the phase and action menu at compact widths. The acoustic strip
+  /// participates when its full intrinsic width fits; it never compresses the
+  /// truthful phase pill into a stack of letters.
+  private var responsiveChromeWaveform: some View {
+    ViewThatFits(in: .horizontal) {
+      chromeWaveform.fixedSize()
+      Color.clear
+        .frame(width: 0, height: 0)
+        .accessibilityHidden(true)
+    }
   }
 
   /// Compact persisted delivery control. `ViewThatFits` keeps the literal label
@@ -370,61 +386,74 @@ struct DictationOverlayView: View {
     .frame(maxWidth: .infinity, minHeight: bodyMinHeight, alignment: .leading)
   }
 
-  // MARK: Compact primary action
+  // MARK: Stable action menu
 
-  /// HIG-shaped combo control: click runs the primary act; menu holds related
-  /// secondary commands. CloseDot stays the always-visible dismiss path; Close
-  /// remains available in the menu as an explicit secondary.
-  @ViewBuilder
-  private var compactPrimaryAction: some View {
-    if let kind = state.primaryActionKind {
-      Menu {
-        secondaryActionButtons(for: kind)
-        Divider()
-        Button("Close", role: .destructive) { state.close() }
-      } label: {
-        primaryActionLabel(title: state.primaryActionTitle)
-      } primaryAction: {
-        performPrimaryAction(kind)
+  /// One honest pull-down across capture and post-seal review. Clicking any
+  /// part of the control opens this menu; terminal work happens only after the
+  /// operator chooses a menu item. CloseDot remains the sole immediate header
+  /// terminal action.
+  private var compactActionMenu: some View {
+    Menu {
+      ForEach(state.actionMenuItems) { item in
+        if item == .close {
+          Divider()
+        }
+        Button(role: item == .close ? .destructive : nil) {
+          performPrimaryAction(item)
+        } label: {
+          Text(actionMenuItemTitle(item))
+        }
       }
-      .menuStyle(.button)
-      .csFocusRing(cornerRadius: 8)
-      .help(state.primaryActionHelp)
-      .accessibilityLabel(state.primaryActionTitle)
-      .accessibilityHint(state.primaryActionHelp)
-      .accessibilityIdentifier("overlay-primary-action")
+    } label: {
+      actionMenuLabel(
+        title: state.actionMenuTitle,
+        symbolName: state.actionMenuSymbolName
+      )
+    }
+    .menuStyle(.button)
+    // A custom Menu label does not reliably paint the native indicator on
+    // macOS. The label carries its own chevron, so hide the optional system
+    // copy and keep exactly one honest menu affordance.
+    .menuIndicator(.hidden)
+    .fixedSize()
+    .csFocusRing(cornerRadius: 8)
+    .help(OverlayActionPresentation.menuHelp)
+    .accessibilityLabel(OverlayActionPresentation.menuAccessibilityLabel)
+    .accessibilityValue(state.actionMenuAccessibilityValue)
+    .accessibilityHint(OverlayActionPresentation.menuAccessibilityHint)
+    .accessibilityIdentifier("overlay-primary-action")
+  }
+
+  private func actionMenuItemTitle(_ item: OverlayActionMenuItem) -> String {
+    switch item {
+    case .finish: return OverlayActionPresentation.finishTitle
+    case .copy: return "Copy"
+    case .insert: return state.insertActionPresentation.title
+    case .sendToAgent: return OverlayActionPresentation.sendTitle
+    case .close: return "Close"
     }
   }
 
-  @ViewBuilder
-  private func secondaryActionButtons(for kind: OverlayPrimaryActionKind) -> some View {
-    switch kind {
-    case .finish:
-      if state.canCopy {
-        Button("Copy") { state.copyToPasteboard() }
-      }
-    case .insert:
-      if state.canCopy {
-        Button("Copy") { state.copyToPasteboard() }
-      }
-      Button(OverlayActionPresentation.sendTitle) { state.sendToAgent() }
-    }
-  }
-
-  private func performPrimaryAction(_ kind: OverlayPrimaryActionKind) {
-    switch kind {
+  /// The structural delivery corridor names this dispatcher
+  /// `performPrimaryAction`. It now runs only after an explicit menu choice;
+  /// the menu label itself has no primary-action handler.
+  private func performPrimaryAction(_ item: OverlayActionMenuItem) {
+    switch item {
     case .finish: state.stop()
+    case .copy: state.copyToPasteboard()
     case .insert: state.pasteToPreviousApp()
+    case .sendToAgent: state.sendToAgent()
+    case .close: state.close()
     }
   }
 
-  private func primaryActionLabel(title: String) -> some View {
+  private func actionMenuLabel(title: String, symbolName: String) -> some View {
     let shape = RoundedRectangle(cornerRadius: buttonRadius, style: .continuous)
     return HStack(spacing: 4) {
       Text(title)
         .font(CSFont.ui(12, .semibold))
         .lineLimit(1)
-      Image(systemName: "chevron.down")
+      Image(systemName: symbolName)
         .font(.system(size: 9, weight: .semibold))
     }
     .foregroundStyle(CSColor.textBody)
