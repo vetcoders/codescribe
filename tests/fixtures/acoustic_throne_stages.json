@@ -97,6 +97,16 @@
           "cardinality": 1
         },
         {
+          "symbol": "SealCoverageReceipt",
+          "owner": "core/pipeline/acoustic_ledger.rs",
+          "cardinality": 1
+        },
+        {
+          "symbol": "TranscriptComparisonReceipt",
+          "owner": "core/pipeline/acoustic_ledger.rs",
+          "cardinality": 1
+        },
+        {
           "symbol": "RuntimeSettingsSnapshot",
           "owner": "core/config/settings.rs",
           "cardinality": 1
@@ -138,6 +148,11 @@
         },
         {
           "symbol": "TranscriptBusEvidenceEvent",
+          "owner": "app/presentation/transcript_bus.rs",
+          "cardinality": 1
+        },
+        {
+          "symbol": "ProjectedSealCoverageReceipt",
           "owner": "app/presentation/transcript_bus.rs",
           "cardinality": 1
         },
@@ -208,6 +223,16 @@
           "cardinality": 1
         },
         {
+          "symbol": "SealCoverageReceipt",
+          "owner": "core/pipeline/acoustic_ledger.rs",
+          "cardinality": 1
+        },
+        {
+          "symbol": "TranscriptComparisonReceipt",
+          "owner": "core/pipeline/acoustic_ledger.rs",
+          "cardinality": 1
+        },
+        {
           "symbol": "RuntimeSettingsSnapshot",
           "owner": "core/config/settings.rs",
           "cardinality": 1
@@ -229,6 +254,11 @@
         },
         {
           "symbol": "TranscriptBusEvidenceEvent",
+          "owner": "app/presentation/transcript_bus.rs",
+          "cardinality": 1
+        },
+        {
+          "symbol": "ProjectedSealCoverageReceipt",
           "owner": "app/presentation/transcript_bus.rs",
           "cardinality": 1
         },
@@ -1234,6 +1264,112 @@
               "callee_file": "app/presentation/transcript_bus.rs",
               "caller": "publish_revision",
               "caller_file": "app/presentation/transcript_bus.rs"
+            }
+          ]
+        },
+        {
+          "name": "speech_coverage_to_terminal_truth",
+          "hops": [
+            {
+              "symbol": "repair_terminal_seal_coverage",
+              "file": "core/pipeline/streaming/apple_live_session.rs",
+              "required_code": [
+                "session_active_speech_ranges(&state.session_id, state.capture_epoch, state.sample_rate)",
+                "ledger.assess_seal_coverage(",
+                "InProcessTailProvider.transcribe(&request, &window.samples)",
+                "EngineEvent::SealCoverage {",
+                "EnergyAdmission::QualifyFinalPassGap",
+                "record_seal_coverage(final_receipt.clone())"
+              ]
+            },
+            {
+              "symbol": "assess_seal_coverage",
+              "file": "core/pipeline/acoustic_ledger.rs",
+              "required_code": [
+                "speech_ranges: &[TailSampleRange]",
+                "self.committed.keys()",
+                "SealCoverageStatus::Incomplete",
+                "speech_samples.saturating_sub(uncovered_samples)",
+                "uncovered_speech_ranges: uncovered"
+              ]
+            },
+            {
+              "symbol": "seal_terminal",
+              "file": "core/pipeline/acoustic_ledger.rs",
+              "required_code": [
+                "coverage.status == SealCoverageStatus::Incomplete",
+                "return Err(SealRefusal::CoverageIncomplete)",
+                "self.seal(occurrence)?"
+              ]
+            },
+            {
+              "symbol": "on_event",
+              "file": "app/presentation/emitter.rs",
+              "required_code": [
+                "EngineEvent::SealCoverage {",
+                ".apply_seal_coverage(receipt, comparison.as_ref())",
+                "bus.publish_revision(&revision, &ledger)"
+              ]
+            },
+            {
+              "symbol": "apply_seal_coverage",
+              "file": "app/presentation/emitter.rs",
+              "required_code": [
+                "self.latest_seal_coverage = Some(receipt.clone())",
+                "self.latest_comparison = Some(comparison.clone())",
+                "ReducerAction::RecordSealCoverage {"
+              ]
+            },
+            {
+              "symbol": "publish_revision",
+              "file": "app/presentation/transcript_bus.rs",
+              "required_code": [
+                "ReducerAction::RecordSealCoverage { .. } => \"seal_coverage\"",
+                "seal_coverage: revision.seal_coverage.as_ref().map(ProjectedSealCoverageReceipt::from)",
+                "comparison: revision.comparison.as_ref().map(ProjectedTranscriptComparisonReceipt::from)"
+              ]
+            },
+            {
+              "symbol": "stop",
+              "file": "core/audio/streaming_recorder.rs",
+              "required_code": [
+                ".latest_seal_coverage()",
+                "receipt.status == SealCoverageStatus::Incomplete",
+                "return Err(anyhow!(",
+                "receipt.covered_samples"
+              ]
+            }
+          ],
+          "required_invocations": [
+            {
+              "callee": "repair_terminal_seal_coverage",
+              "callee_file": "core/pipeline/streaming/apple_live_session.rs",
+              "caller": "apple_stream_worker",
+              "caller_file": "core/pipeline/streaming/apple_live_session.rs"
+            },
+            {
+              "callee": "assess_seal_coverage",
+              "callee_file": "core/pipeline/acoustic_ledger.rs",
+              "caller": "repair_terminal_seal_coverage",
+              "caller_file": "core/pipeline/streaming/apple_live_session.rs"
+            },
+            {
+              "callee": "apply_seal_coverage",
+              "callee_file": "app/presentation/emitter.rs",
+              "caller": "on_event",
+              "caller_file": "app/presentation/emitter.rs"
+            },
+            {
+              "callee": "publish_revision",
+              "callee_file": "app/presentation/transcript_bus.rs",
+              "caller": "on_event",
+              "caller_file": "app/presentation/emitter.rs"
+            },
+            {
+              "callee": "latest_seal_coverage",
+              "callee_file": "core/pipeline/acoustic_ledger.rs",
+              "caller": "stop",
+              "caller_file": "core/audio/streaming_recorder.rs"
             }
           ]
         },
