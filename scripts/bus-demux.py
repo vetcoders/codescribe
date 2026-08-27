@@ -41,19 +41,74 @@ ASSIGN_RE = re.compile(
     r"you(?:['’]re|\s+are)|cześć|hello)\s+([A-Za-zĄĆĘŁŃÓŚŹŻąćęłńóśźż]{2,32})"
 )
 SAFE_LEASE_RE = re.compile(r"^[a-zA-Z0-9_-]{8,80}$")
+BUS_PATH_ENV_KEYS = (
+    "CODESCRIBE_TRANSCRIPT_BUS_PATH",
+    "XDG_STATE_HOME",
+    "CODESCRIBE_DATA_DIR",
+)
+
+
+def _config_dir(env: dict[str, str]) -> Path:
+    if "CODESCRIBE_DATA_DIR" in env:
+        raw = env["CODESCRIBE_DATA_DIR"]
+        path = Path(os.path.expanduser(raw))
+        # Rust's canonicalize rejects an empty PathBuf instead of treating it
+        # as cwd. Preserve that relative-path edge case exactly.
+        if raw:
+            try:
+                return path.resolve(strict=True)
+            except OSError:
+                pass
+        return path
+    return Path.home() / ".codescribe"
+
+
+def _env_path(seed_env: dict[str, str]) -> Path:
+    if "CODESCRIBE_ENV_PATH" in seed_env:
+        return Path(os.path.expanduser(seed_env["CODESCRIBE_ENV_PATH"]))
+    return _config_dir(seed_env) / ".env"
+
+
+def _parse_env_file(path: Path) -> dict[str, str]:
+    try:
+        canonical = path.resolve(strict=True)
+        contents = canonical.read_text(encoding="utf-8")
+    except (OSError, UnicodeDecodeError):
+        return {}
+
+    parsed: dict[str, str] = {}
+    for raw in contents.splitlines():
+        line = raw.strip()
+        if not line or line.startswith("#") or "=" not in line:
+            continue
+        key, value = line.split("=", 1)
+        parsed[key.strip()] = value.strip().strip('"').strip("'")
+    return parsed
+
+
+def _runtime_path_env() -> dict[str, str]:
+    # Config::load_with_keychain_population derives the dotenv path from the
+    # process environment first, then injects non-promoted keys only when the
+    # process did not already define them (an explicit empty value still wins).
+    runtime_env = dict(os.environ)
+    env_path = _env_path(runtime_env)
+    if env_path.exists():
+        file_env = _parse_env_file(env_path)
+        for key in BUS_PATH_ENV_KEYS:
+            if key not in runtime_env and key in file_env:
+                runtime_env[key] = file_env[key]
+    return runtime_env
 
 
 def bus_path() -> Path:
-    explicit = os.environ.get("CODESCRIBE_TRANSCRIPT_BUS_PATH", "").strip()
+    env = _runtime_path_env()
+    explicit = env.get("CODESCRIBE_TRANSCRIPT_BUS_PATH", "").strip()
     if explicit:
         return Path(os.path.expanduser(explicit))
-    xdg = os.environ.get("XDG_STATE_HOME", "").strip()
+    xdg = env.get("XDG_STATE_HOME", "").strip()
     if xdg:
         return Path(os.path.expanduser(xdg)) / "codescribe" / BUS_FILENAME
-    data_dir = os.environ.get("CODESCRIBE_DATA_DIR", "").strip()
-    if data_dir:
-        return Path(os.path.expanduser(data_dir)) / BUS_FILENAME
-    return Path.home() / ".codescribe" / BUS_FILENAME
+    return _config_dir(env) / BUS_FILENAME
 
 
 def bridge_home() -> Path:

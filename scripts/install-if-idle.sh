@@ -17,8 +17,7 @@ installation_unsafe() {
   python3 - "$BUS" <<'PY' || bus_status=$?
 import json, sys
 path = sys.argv[1]
-session = None
-sealed = True
+open_sessions = set()
 try:
     with open(path, encoding="utf-8", errors="strict") as handle:
         for raw in handle:
@@ -36,18 +35,18 @@ try:
                 candidate = event.get("session_id")
                 if not isinstance(candidate, str) or not candidate:
                     raise SystemExit(0)
-                session = candidate
-                sealed = False
-                continue
-            if session is None or event.get("session_id") != session:
+                open_sessions.add(candidate)
                 continue
             if status in ("session_ended", "transcript_sealed"):
-                sealed = True
+                candidate = event.get("session_id")
+                if not isinstance(candidate, str) or not candidate:
+                    raise SystemExit(0)
+                open_sessions.discard(candidate)
 except (OSError, UnicodeDecodeError):
     raise SystemExit(0)
 # 0 means unsafe. 3 is the only affirmative idle proof; every unexpected
 # interpreter failure is therefore also unsafe to install through.
-raise SystemExit(0 if (session is not None and not sealed) else 3)
+raise SystemExit(0 if open_sessions else 3)
 PY
   [[ "$bus_status" -eq 3 ]] && return 1
   return 0
