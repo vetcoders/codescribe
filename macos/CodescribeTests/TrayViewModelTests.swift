@@ -222,6 +222,33 @@ final class TrayViewModelTests: XCTestCase {
     )
   }
 
+  /// The header pill already paints idle / success / listening / processing.
+  /// A second "Status: Idle" row is the duplicate the operator saw; keep the
+  /// extra row only for warning / critical kinds that need an attention banner.
+  func testDetailStatusRowShowsOnlyForWarningAndCriticalKinds() {
+    let cases: [(CsTrayStatusKind, Bool)] = [
+      (.starting, false),
+      (.idle, false),
+      (.listening, false),
+      (.processing, false),
+      (.success, false),
+      (.error, true),
+      (.thermal, true),
+      (.hotkeyConflict, true),
+    ]
+    for (kind, expected) in cases {
+      XCTAssertEqual(
+        TrayStatusStore.preview(kind: kind).showsDetailStatusRow,
+        expected,
+        "showsDetailStatusRow for \(String(describing: kind))"
+      )
+    }
+
+    let idle = TrayStatusStore.preview(kind: .idle, label: "Status: Idle")
+    XCTAssertEqual(idle.compactLabel, "Idle")
+    XCTAssertFalse(idle.showsDetailStatusRow)
+  }
+
   func testRefreshStatusReadsEntirePersistedTraySnapshot() {
     let engine = TrackingTrayEngine(
       showDockIcon: true,

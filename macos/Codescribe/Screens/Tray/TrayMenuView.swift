@@ -21,7 +21,9 @@ struct TrayMenuView: View {
     GlassPanel(cornerRadius: CSRadius.tray) {
       VStack(spacing: 0) {
         statusHeader
-        trayStatusRow
+        if trayStatus.showsDetailStatusRow {
+          trayStatusRow
+        }
         TrayDivider(top: 3, bottom: 5)
 
         primaryActions

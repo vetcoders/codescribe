@@ -141,6 +141,18 @@ final class TrayStatusStore: ObservableObject {
     }
   }
 
+  /// Compact extra row under the wordmark + pill. The pill already carries
+  /// idle / success / listening / processing (and starting); only
+  /// warning / critical kinds keep a detail row.
+  var showsDetailStatusRow: Bool {
+    switch status.kind {
+    case .error, .thermal, .hotkeyConflict:
+      return true
+    case .starting, .idle, .listening, .processing, .success:
+      return false
+    }
+  }
+
   /// Colored status dot composited into the (always-static) menu bar glyph's
   /// bottom-right corner. The glyph never changes; only this dot signals the
   /// mode, 1:1 with the Rust tray-status feed: green = ready (idle/success,
