@@ -311,6 +311,8 @@ final class OverlayStateTests: XCTestCase {
   }
 
   func testApprovedOverlayActionPresentationIsLiteral() {
+    XCTAssertEqual(OverlayActionPresentation.menuTitle, "Actions")
+    XCTAssertEqual(OverlayActionPresentation.menuSymbolName, "chevron.down")
     XCTAssertEqual(OverlayActionPresentation.sendTitle, "To Agent")
     XCTAssertEqual(OverlayActionPresentation.sendHelp, "Send transcript to the agent")
   }
@@ -1318,11 +1320,45 @@ final class OverlayStateTests: XCTestCase {
     )
   }
 
-  func testSlimChromePrimaryActionAndFooterHonesty() {
+  func testUnifiedActionMenuItemsFollowModeTable() {
     let listening = OverlayState()
     listening.handleRecordingPreparing()
-    XCTAssertEqual(listening.primaryActionKind, .finish)
-    XCTAssertEqual(listening.primaryActionTitle, OverlayActionPresentation.finishTitle)
+    projectText("hello", to: listening)
+
+    let formatted = OverlayState.previewFormatted()
+    let silent = OverlayState.previewNoSpeech()
+    let failed = OverlayState()
+    failed.handleError(message: "engine unavailable")
+
+    let rows: [(String, [OverlayActionMenuItem], [OverlayActionMenuItem])] = [
+      ("listening", listening.actionMenuItems, [.finish, .copy, .close]),
+      ("formatted", formatted.actionMenuItems, [.insert, .copy, .sendToAgent, .close]),
+      ("noSpeech", silent.actionMenuItems, [.close]),
+      ("error", failed.actionMenuItems, [.close]),
+    ]
+    for (mode, actual, expected) in rows {
+      XCTAssertEqual(actual, expected, mode)
+    }
+
+    let emptyListening = OverlayState()
+    XCTAssertEqual(emptyListening.actionMenuItems, [.finish, .close])
+  }
+
+  func testUnifiedActionMenuKeepsStableIdentityAcrossRecordingAndSeal() {
+    let listening = OverlayState()
+    let formatted = OverlayState.previewFormatted()
+
+    XCTAssertEqual(listening.actionMenuTitle, formatted.actionMenuTitle)
+    XCTAssertEqual(listening.actionMenuTitle, OverlayActionPresentation.menuTitle)
+    XCTAssertEqual(listening.actionMenuSymbolName, formatted.actionMenuSymbolName)
+    XCTAssertEqual(listening.actionMenuSymbolName, OverlayActionPresentation.menuSymbolName)
+    XCTAssertEqual(listening.actionMenuAccessibilityValue, "Recording in progress")
+    XCTAssertEqual(formatted.actionMenuAccessibilityValue, "Transcript ready")
+  }
+
+  func testSlimChromeFooterHonesty() {
+    let listening = OverlayState()
+    listening.handleRecordingPreparing()
     XCTAssertTrue(listening.showsFooterHonesty)
     XCTAssertEqual(listening.footerHonestyText, "waiting for audio")
 
@@ -1332,12 +1368,7 @@ final class OverlayStateTests: XCTestCase {
     projectText("hello", to: listening)
     XCTAssertFalse(listening.showsFooterHonesty)
 
-    let formatted = OverlayState.previewFormatted()
-    XCTAssertEqual(formatted.primaryActionKind, .insert)
-    XCTAssertFalse(formatted.showsFooterHonesty)
-
-    let silent = OverlayState.previewNoSpeech()
-    XCTAssertNil(silent.primaryActionKind)
+    XCTAssertFalse(OverlayState.previewFormatted().showsFooterHonesty)
   }
 
   @MainActor
