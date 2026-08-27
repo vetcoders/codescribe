@@ -107,22 +107,25 @@ Example pause event (JSON field names match the serialized contract):
 ```
 
 The Apple lane emits this evidence whenever its existing single
-`SileroIngress` is present (`CODESCRIBE_SILERO_FUSION=1` or the configured
-hands-free epoch lifecycle needs speech edges). There is no second VAD and no
-new sideband flag. If Silero cannot load, `EpochGate` disarms and Apple runs as
-one continuous stream with no sideband events.
+`SileroIngress` is present (the immutable settings snapshot resolves the seal
+lane armed, or the configured hands-free epoch lifecycle needs speech edges).
+There is no second VAD and no new sideband flag. If Silero cannot load,
+`EpochGate` disarms and Apple runs as one continuous stream with no sideband events.
 
-`CODESCRIBE_SILERO_FUSION` is still default-OFF in `ENV_REGISTRY.toml`, but it
-is no longer a diagnostic-only lane: under the one-throne corridor an
-occurrence exists only when calibrated energy **and** a Silero-bounded region
-agree, and `seal_utterance_final` lets a region qualify only when it was
-Silero-bound (`may_qualify = silero_bound`). With the lane off, no occurrence
-can ever qualify and no utterance can commit. The controller therefore treats
-a disarmed lane as an admission blocker (`admission_seal_lane_disarmed`) and
-refuses to open the microphone rather than recording into a ledger that
-cannot seal. Flipping the registry default is an operator decision; the
-earlier enclosing-range concern (fusion widening a pending Apple range beyond
-the Layer 1 request identity) still needs its falsifier before that flip.
+`audio.seal_lane_armed` is the canonical product setting and ships `true` for
+fresh and migrated settings. `CODESCRIBE_SILERO_FUSION` is only the optional
+power-user override; when present in `.env` or process env it still wins in
+both directions. The canonical loader resolves that precedence once and
+digest-binds the effective value into the immutable generation. Pipeline,
+admission, bridge, and Apple worker consumers never reconstruct it.
+
+Under the one-throne corridor an occurrence exists only when calibrated energy
+**and** a Silero-bounded region agree, and `seal_utterance_final` lets a region
+qualify only when it was Silero-bound (`may_qualify = silero_bound`). With the
+effective lane off, no occurrence can ever qualify and no utterance can commit.
+The controller therefore treats a disarmed lane as an admission blocker
+(`admission_seal_lane_disarmed`) and refuses to open the microphone rather than
+recording into a ledger that cannot seal.
 
 Final BAM is superseded and has no automatic content producer. Normal stop
 drains already admitted work and assembles the ordered span ledger; it does not

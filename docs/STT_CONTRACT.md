@@ -322,12 +322,12 @@ Before the controller opens a microphone (`start_toggle_recording`, hold-start
 task) it evaluates `controller::admission::evaluate_live_admission` on the
 selected settings generation, in this order, and stops at the first blocker:
 
-| Order | Blocker code                                                               | Cause                                                                                                                               | Operator action                                                      |
-| ----- | -------------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------- | -------------------------------------------------------------------- |
-| 1     | `admission_capture_device_unavailable`                                     | cpal cannot resolve the configured/default input                                                                                    | plug/select an input device                                          |
-| 2     | `admission_calibration_missing` / `_refused` / `_no_profile` / `_unusable` | `energy-calibration.json` absent, tampered, expired/future-dated, internally rollbacked, or not measured on this capture generation | Settings › Audio › **Calibrate microphone** (~10 s of normal speech) |
-| 3     | `admission_seal_lane_disarmed`                                             | `CODESCRIBE_SILERO_FUSION` off → no occurrence can qualify, no utterance can commit                                                 | set `CODESCRIBE_SILERO_FUSION=1`                                     |
-| 4     | `admission_seal_vad_unavailable`                                           | Silero ORT session refused to load                                                                                                  | reinstall / check the embedded VAD asset                             |
+| Order | Blocker code                                                               | Cause                                                                                                                               | Operator action                                                                               |
+| ----- | -------------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------- |
+| 1     | `admission_capture_device_unavailable`                                     | cpal cannot resolve the configured/default input                                                                                    | plug/select an input device                                                                   |
+| 2     | `admission_calibration_missing` / `_refused` / `_no_profile` / `_unusable` | `energy-calibration.json` absent, tampered, expired/future-dated, internally rollbacked, or not measured on this capture generation | Settings › Audio › **Calibrate microphone** (~10 s of normal speech)                          |
+| 3     | `admission_seal_lane_disarmed`                                             | `audio.seal_lane_armed=false`, or the `CODESCRIBE_SILERO_FUSION=0` power-user override → no occurrence can qualify or commit        | enable **Seal lane** in Settings › Audio; if overridden, remove the override or set it to `1` |
+| 4     | `admission_seal_vad_unavailable`                                           | Silero ORT session refused to load                                                                                                  | reinstall / check the embedded VAD asset                                                      |
 
 A refusal writes nothing to the Transcript Bus, opens no stream, resets the
 session to Idle and reaches the overlay as one `admission_refused` warning
@@ -337,6 +337,14 @@ Settings › Audio; `calibrateEnergy(seconds:)` performs the guided measurement
 through the real recorder path and stores the profile via
 `EnergyCalibrationArtifact::record_profile`. Nothing on this path invents a
 threshold; `EnergyCalibration` has no default.
+
+The immutable settings generation owns seal-lane arming. Fresh and legacy
+settings without `audio.seal_lane_armed` resolve to the supported production
+default `true`. An optional `.env` or process
+`CODESCRIBE_SILERO_FUSION` value remains the power-user override and wins in
+both directions (`0` and `1`); its presence is reported as `env_override` to
+Settings and refusal copy. No pipeline or admission consumer re-reads either
+source after the snapshot is sealed.
 
 Calibration validity is part of the one profile authority, not an environment
 or Settings override. Schema `codescribe.energy-calibration.v2` stores and

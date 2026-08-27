@@ -50,8 +50,10 @@ controller resolves the input device without opening it, requires a measured
 `EnergyCalibration` profile for that device from the immutable settings
 snapshot (`energy-calibration.json` beside `settings.json`, see
 `core/config/energy_calibration.rs`) and an armed Silero seal lane
-(`CODESCRIBE_SILERO_FUSION`). A refused start writes nothing to the Bus and
-opens no microphone; the refusal reaches the overlay as an
+(`audio.seal_lane_armed`, default `true`). The optional power-user
+`CODESCRIBE_SILERO_FUSION` env value overrides that field when present in
+either direction. A refused start writes nothing to the Bus and opens no
+microphone; the refusal reaches the overlay as an
 `admission_refused` warning with one actionable `admission_*` code.
 
 `codescribe.transcript-evidence.v1` is the committed projection family. Every
