@@ -511,7 +511,7 @@
                 "callee": "bind_session_authority"
               },
               "barrier": {
-                "callee": "lock",
+                "required_code": "let mut recorder_guard = self.recorder.lock().await",
                 "selection": "last_before_after"
               }
             },
@@ -527,7 +527,7 @@
                 "callee": "start_event_session"
               },
               "barrier": {
-                "callee": "lock",
+                "required_code": "let mut recorder_guard = self.recorder.lock().await",
                 "selection": "last_before_after"
               }
             },
@@ -543,7 +543,7 @@
                 "callee": "bind_session_authority"
               },
               "barrier": {
-                "callee": "lock",
+                "required_code": "let mut rec_guard = recorder.lock().await",
                 "selection": "last_before_after"
               }
             },
@@ -559,7 +559,7 @@
                 "callee": "start_event_session"
               },
               "barrier": {
-                "callee": "lock",
+                "required_code": "let mut rec_guard = recorder.lock().await",
                 "selection": "last_before_after"
               }
             }
