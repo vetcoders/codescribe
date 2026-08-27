@@ -251,7 +251,8 @@
                 "required_code",
                 "missing_code",
                 "required_code_in_order",
-                "dead_code_markers"
+                "dead_code_markers",
+                "unreachable_required_code"
               ],
               "properties": {
                 "symbol": { "type": "string", "minLength": 1 },
@@ -273,6 +274,18 @@
                 "dead_code_markers": {
                   "type": "array",
                   "items": { "type": "string", "minLength": 1 }
+                },
+                "unreachable_required_code": {
+                  "type": "array",
+                  "items": {
+                    "type": "object",
+                    "additionalProperties": false,
+                    "required": ["required_code", "reason"],
+                    "properties": {
+                      "required_code": { "type": "string", "minLength": 1 },
+                      "reason": { "type": "string", "minLength": 1 }
+                    }
+                  }
                 }
               }
             }

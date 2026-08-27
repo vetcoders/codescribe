@@ -846,6 +846,152 @@ class CorridorProofTests(unittest.TestCase):
 
         self.assertTrue(any("production callsite" in failure for failure in failures))
 
+    def test_c11_required_code_after_top_level_return_is_red(self) -> None:
+        verifier = self.verifier_for(
+            "fn publish_revision() {\n"
+            "  return;\n"
+            "  let serial = ledger.serial_of(&entry.occurrence);\n"
+            "  Self::project_serial(serial);\n"
+            "}\n"
+        )
+
+        observed, failures = VERIFIER.verify_code_corridors(verifier, self.contract())
+
+        unreachable = observed["projection"]["hops"][0][
+            "unreachable_required_code"
+        ]
+        self.assertEqual(len(unreachable), 2)
+        self.assertTrue(
+            all(
+                row["reason"] == "after unconditional top-level return"
+                for row in unreachable
+            )
+        )
+        self.assertTrue(any("unreachable required code" in failure for failure in failures))
+
+    def test_c12_required_code_inside_while_false_is_red(self) -> None:
+        verifier = self.verifier_for(
+            "fn publish_revision() {\n"
+            "  while false {\n"
+            "    let serial = ledger.serial_of(&entry.occurrence);\n"
+            "    Self::project_serial(serial);\n"
+            "  }\n"
+            "}\n"
+        )
+
+        observed, failures = VERIFIER.verify_code_corridors(verifier, self.contract())
+
+        unreachable = observed["projection"]["hops"][0][
+            "unreachable_required_code"
+        ]
+        self.assertEqual(len(unreachable), 2)
+        self.assertTrue(
+            all("statically false while" in row["reason"] for row in unreachable)
+        )
+        self.assertTrue(any("unreachable required code" in failure for failure in failures))
+
+    def test_c13_required_code_inside_false_integer_comparison_is_red(self) -> None:
+        verifier = self.verifier_for(
+            "fn publish_revision() {\n"
+            "  if 1 == 2 {\n"
+            "    let serial = ledger.serial_of(&entry.occurrence);\n"
+            "    Self::project_serial(serial);\n"
+            "  }\n"
+            "}\n"
+        )
+
+        observed, failures = VERIFIER.verify_code_corridors(verifier, self.contract())
+
+        unreachable = observed["projection"]["hops"][0][
+            "unreachable_required_code"
+        ]
+        self.assertEqual(len(unreachable), 2)
+        self.assertTrue(
+            all("statically false if" in row["reason"] for row in unreachable)
+        )
+        self.assertTrue(any("unreachable required code" in failure for failure in failures))
+
+    def test_c14_nested_conditional_return_preserves_reachable_hop(self) -> None:
+        verifier = self.verifier_for(
+            "fn publish_revision(stop: bool) {\n"
+            "  if stop { return; }\n"
+            "  let serial = ledger.serial_of(&entry.occurrence);\n"
+            "  Self::project_serial(serial);\n"
+            "}\n"
+        )
+
+        observed, failures = VERIFIER.verify_code_corridors(verifier, self.contract())
+
+        self.assertEqual(failures, [])
+        self.assertEqual(
+            observed["projection"]["hops"][0]["unreachable_required_code"], []
+        )
+
+    def test_c15_return_identifier_is_not_a_terminator(self) -> None:
+        verifier = self.verifier_for(
+            "fn publish_revision() {\n"
+            "  let return_value = true;\n"
+            "  let serial = ledger.serial_of(&entry.occurrence);\n"
+            "  Self::project_serial(serial);\n"
+            "}\n"
+        )
+
+        observed, failures = VERIFIER.verify_code_corridors(verifier, self.contract())
+
+        self.assertEqual(failures, [])
+        self.assertEqual(
+            observed["projection"]["hops"][0]["unreachable_required_code"], []
+        )
+
+    def test_c16_true_integer_condition_preserves_reachable_hop(self) -> None:
+        verifier = self.verifier_for(
+            "fn publish_revision() {\n"
+            "  if 1 == 1 {\n"
+            "    let serial = ledger.serial_of(&entry.occurrence);\n"
+            "    Self::project_serial(serial);\n"
+            "  }\n"
+            "}\n"
+        )
+
+        observed, failures = VERIFIER.verify_code_corridors(verifier, self.contract())
+
+        self.assertEqual(failures, [])
+        self.assertEqual(
+            observed["projection"]["hops"][0]["unreachable_required_code"], []
+        )
+
+    def test_c17_return_after_required_hop_does_not_retroactively_kill_it(self) -> None:
+        verifier = self.verifier_for(
+            "fn publish_revision() {\n"
+            "  let serial = ledger.serial_of(&entry.occurrence);\n"
+            "  Self::project_serial(serial);\n"
+            "  return;\n"
+            "}\n"
+        )
+
+        observed, failures = VERIFIER.verify_code_corridors(verifier, self.contract())
+
+        self.assertEqual(failures, [])
+        self.assertEqual(
+            observed["projection"]["hops"][0]["unreachable_required_code"], []
+        )
+
+    def test_receipt_schema_requires_bounded_reachability_evidence(self) -> None:
+        schema_path = (
+            SCRIPT.parents[1] / "tests/fixtures/acoustic_structure_receipt.schema.json"
+        )
+        schema = json.loads(schema_path.read_text())
+        hop_schema = schema["properties"]["corridor_paths"][
+            "additionalProperties"
+        ]["properties"]["hops"]["items"]
+
+        self.assertIn("unreachable_required_code", hop_schema["required"])
+        unreachable_schema = hop_schema["properties"]["unreachable_required_code"]
+        self.assertEqual(unreachable_schema["type"], "array")
+        self.assertEqual(
+            unreachable_schema["items"]["required"], ["required_code", "reason"]
+        )
+
 
 class RustModuleResolutionTests(unittest.TestCase):
     def test_reports_missing_module_and_accepts_standard_module_file(self) -> None:

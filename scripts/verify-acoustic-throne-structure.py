@@ -967,7 +967,159 @@ def code_without_comments_or_strings(source: str) -> str:
             continue
     if state in {"block_comment", "string"}:
         raise RuntimeError(f"unterminated {state} in Loctree body evidence")
-    return "".join("".join(rendered).split())
+    return collapse_code_whitespace("".join(rendered))
+
+
+def collapse_code_whitespace(source: str) -> str:
+    """Drop layout whitespace while preserving identifier-token boundaries."""
+    collapsed: list[str] = []
+    index = 0
+    while index < len(source):
+        char = source[index]
+        if not char.isspace():
+            collapsed.append(char)
+            index += 1
+            continue
+        next_index = index + 1
+        while next_index < len(source) and source[next_index].isspace():
+            next_index += 1
+        previous = collapsed[-1] if collapsed else ""
+        following = source[next_index] if next_index < len(source) else ""
+        if (
+            (previous.isalnum() or previous == "_")
+            and (following.isalnum() or following == "_")
+        ):
+            collapsed.append(" ")
+        index = next_index
+    return "".join(collapsed)
+
+
+def constant_false_predicate(condition: str) -> bool:
+    """Recognize a deliberately small set of language-independent false constants."""
+    expression = condition.strip()
+    while expression.startswith("(") and expression.endswith(")"):
+        depth = 0
+        closes_outer = False
+        for index, char in enumerate(expression):
+            if char == "(":
+                depth += 1
+            elif char == ")":
+                depth -= 1
+                if depth == 0:
+                    closes_outer = index == len(expression) - 1
+                    break
+        if not closes_outer:
+            break
+        expression = expression[1:-1].strip()
+    if expression in {"false", "!true"}:
+        return True
+    boolean_comparison = re.fullmatch(r"(true|false)(==|!=)(true|false)", expression)
+    if boolean_comparison:
+        left, operator, right = boolean_comparison.groups()
+        comparison_holds = left == right if operator == "==" else left != right
+        return not comparison_holds
+    integer_comparison = re.fullmatch(r"(-?\d+)(==|!=|<=|>=|<|>)(-?\d+)", expression)
+    if not integer_comparison:
+        return False
+    left_raw, operator, right_raw = integer_comparison.groups()
+    left = int(left_raw)
+    right = int(right_raw)
+    comparison_holds = {
+        "==": left == right,
+        "!=": left != right,
+        "<=": left <= right,
+        ">=": left >= right,
+        "<": left < right,
+        ">": left > right,
+    }[operator]
+    return not comparison_holds
+
+
+def corridor_false_block_ranges(code: str) -> list[tuple[int, int, str]]:
+    """Return block spans whose `if` or `while` predicate is provably false."""
+    open_blocks: list[tuple[int, str | None]] = []
+    false_ranges: list[tuple[int, int, str]] = []
+    for index, char in enumerate(code):
+        if char == "{":
+            boundary = max(
+                code.rfind(";", 0, index),
+                code.rfind("{", 0, index),
+                code.rfind("}", 0, index),
+            )
+            header = code[boundary + 1 : index]
+            control = re.search(
+                r"(?<![A-Za-z0-9_])(?:else)?(if|while)\s*(.+)$",
+                header,
+            )
+            reason: str | None = None
+            if control and constant_false_predicate(control.group(2)):
+                reason = (
+                    f"inside statically false {control.group(1)} condition "
+                    f"{control.group(2)!r}"
+                )
+            open_blocks.append((index, reason))
+        elif char == "}" and open_blocks:
+            open_index, reason = open_blocks.pop()
+            if reason is not None:
+                false_ranges.append((open_index, index, reason))
+    return false_ranges
+
+
+def top_level_return_offsets(code: str) -> list[int]:
+    """Locate unconditional returns owned directly by the function body."""
+    body_open = code.find("{")
+    if body_open < 0:
+        return []
+    depth = 0
+    offsets: list[int] = []
+    index = body_open
+    while index < len(code):
+        char = code[index]
+        if char == "{":
+            depth += 1
+        elif char == "}":
+            depth -= 1
+        elif depth == 1 and code.startswith("return", index):
+            before = code[index - 1] if index > 0 else ""
+            after_index = index + len("return")
+            after = code[after_index] if after_index < len(code) else ""
+            if not (before.isalnum() or before == "_") and not (
+                after.isalnum() or after == "_"
+            ):
+                offsets.append(index)
+                index = after_index
+                continue
+        index += 1
+    return offsets
+
+
+def corridor_unreachable_required_code(
+    code: str,
+    required_occurrences: list[tuple[str, int]],
+) -> list[dict[str, Any]]:
+    """Apply bounded reachability checks to ordered required-code witnesses."""
+    top_level_returns = top_level_return_offsets(code)
+    false_ranges = corridor_false_block_ranges(code)
+    unreachable: list[dict[str, Any]] = []
+    for required_code, position in required_occurrences:
+        reasons = [
+            "after unconditional top-level return"
+            for return_position in top_level_returns
+            if return_position < position
+        ]
+        reasons.extend(
+            reason
+            for start, end, reason in false_ranges
+            if start < position < end
+        )
+        if reasons:
+            unreachable.append(
+                {
+                    "required_code": required_code,
+                    "reason": reasons[0],
+                }
+            )
+    return unreachable
 
 
 def corridor_body_rows(
@@ -1063,6 +1215,7 @@ def verify_code_corridors(
             start_line: int | None = None
             required_code_in_order = False
             dead_code_markers: list[str] = []
+            unreachable_required_code: list[dict[str, Any]] = []
             if len(rows) == 1:
                 body = rows[0]
                 start_line = int(body["start_line"])
@@ -1080,17 +1233,25 @@ def verify_code_corridors(
                 ]
                 cursor = 0
                 required_code_in_order = True
-                for normalized in normalized_required_code:
+                required_occurrences: list[tuple[str, int]] = []
+                for snippet, normalized in zip(
+                    required_code, normalized_required_code, strict=True
+                ):
                     position = code.find(normalized, cursor)
                     if position < 0:
                         required_code_in_order = False
                         break
+                    required_occurrences.append((snippet, position))
                     cursor = position + len(normalized)
                 dead_code_markers = [
                     marker
                     for marker in CORRIDOR_DEAD_CODE_MARKERS
                     if code_without_comments_or_strings(marker) in code
                 ]
+                if required_code_in_order:
+                    unreachable_required_code = corridor_unreachable_required_code(
+                        code, required_occurrences
+                    )
                 production_definition = any(
                     row.get("file") == file
                     and row.get("line") == start_line
@@ -1119,6 +1280,7 @@ def verify_code_corridors(
                     "missing_code": missing_code,
                     "required_code_in_order": required_code_in_order,
                     "dead_code_markers": dead_code_markers,
+                    "unreachable_required_code": unreachable_required_code,
                 }
             )
             if len(rows) != 1:
@@ -1140,6 +1302,11 @@ def verify_code_corridors(
             elif dead_code_markers:
                 failures.append(
                     f"corridor {name} hop {symbol} contains dead-code markers {dead_code_markers}"
+                )
+            elif unreachable_required_code:
+                failures.append(
+                    f"corridor {name} hop {symbol} has unreachable required code "
+                    f"{unreachable_required_code}"
                 )
 
         observed_invocations: list[dict[str, Any]] = []
