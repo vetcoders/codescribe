@@ -413,7 +413,7 @@
               "file": "app/controller/admission.rs",
               "required_code": [
                 "codescribe_core::audio::recorder::probe_input_capture_path()",
-                "codescribe_core::pipeline::streaming::seal_lane_probe()",
+                "codescribe_core::pipeline::streaming::seal_lane_probe(snapshot)",
                 "evaluate_admission_readiness(snapshot, capture, seal_lane)"
               ]
             },
