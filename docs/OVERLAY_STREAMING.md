@@ -63,9 +63,13 @@ identity from text, or rebuild the transcript in Swift.
 | L2 — Lexicon + Light+    | Deterministic retained-text relabeling            | May relabel an authorized occurrence; equal strings are not identity         |
 | L3 — Responses formatter | Configured formatting observation                 | May format authorized text; may not add physical occurrences                 |
 
-Silero is outside the text-layer stack. It supplies time, energy, pause, and
-boundary evidence to the Apple session. It owns neither text nor a microphone.
-`SessionFinalised` is lifecycle only.
+These are the four machine layers. The Responses formatter is a proposal/repair
+observer constrained by occurrence-authenticated ledger admission; it cannot
+commit text directly or dispatch delivery. Silero is orthogonal to the
+text-layer stack. It supplies time, energy, pause, and boundary evidence to the
+Apple session and owns neither text nor a microphone. Final BAM is superseded
+and has no producer. `SessionFinalised` closes lifecycle only; it is neither a
+text layer nor arbitrary string finality.
 
 ## Stage 1: operator intent and microphone ownership
 
@@ -114,6 +118,10 @@ Lexicon/Light+, and Responses formatting all offer observations about an
 already-identifiable occurrence. A later, higher-authority observation may
 relabel that occurrence; it cannot increase or decrease the number of physical
 speech events.
+
+Formatter staging itself does not dispatch. Only closure of the prior machine
+frontier may enqueue the exact occurrence-bound Responses request; its result
+must return through the ledger before the reducer can commit it.
 
 ## Stage 4: occurrence admission and seal
 

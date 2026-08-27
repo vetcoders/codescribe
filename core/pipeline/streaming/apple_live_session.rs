@@ -3413,12 +3413,19 @@ mod c13a_lifecycle_tests {
 
         for (index, occurrence) in occurrences.iter().enumerate() {
             let utterance_id = index as u64 + 1;
+            let queued_before_stage = formatter_rx.len();
             stage_pending_occurrence(&mut state, &ev_tx, utterance_id, occurrence.clone(), "Iwo");
-            assert!(matches!(
-                formatter_rx.try_recv(),
-                Err(mpsc::error::TryRecvError::Empty),
-            ));
+            assert_eq!(
+                formatter_rx.len(),
+                queued_before_stage,
+                "staging occurrence {utterance_id} must not dispatch formatting",
+            );
             return_lexicon(&mut state, &ev_tx, utterance_id, occurrence);
+            assert_eq!(
+                formatter_rx.len(),
+                queued_before_stage + 1,
+                "returning Lexicon for occurrence {utterance_id} must enqueue exactly one request",
+            );
         }
 
         // Normal sender closure cannot discard accepted work: Tokio drains

@@ -27,6 +27,9 @@ it; it is not a continuation of live capture or automatic Transcript Bus truth.
 The contract has exactly four machine layers. Silero remains orthogonal VAD/time
 evidence, with richer annotations optional and provider-bound. Final BAM is
 superseded and has no automatic producer; `SessionFinalised` is lifecycle-only.
+The Responses formatter is the fourth layer: an occurrence-bound proposal/repair
+observer constrained by ledger admission, never a second reducer or delivery
+dispatcher.
 
 **Hard invariant that gates every Whisper write:** _NEVER REWRITE FROM ZERO._
 Whisper may relabel only a proven occurrence identity. Text alignment and

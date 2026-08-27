@@ -59,10 +59,14 @@ transcript.
 | L2 — Lexicon + Light+    | Deterministic retained-text relabeling            | May relabel an authorized occurrence; equal strings are never identity                  |
 | L3 — Responses formatter | Configured Formatting-lane observation            | May format authorized text; may not mint physical speech                                |
 
-Silero is outside the numbered text layers. Its single session ingress supplies
-speech edges, range, energy, and pause evidence to the Apple session. It cannot
-admit text, seal a document, or select delivery. `SessionFinalised` is lifecycle
-only.
+These are the four machine layers. The Responses formatter is a proposal/repair
+observer constrained by the same occurrence-authenticated ledger as the other
+layers; it cannot mint speech, commit text directly, or dispatch delivery.
+Silero is orthogonal to the numbered text layers. Its single session ingress
+supplies speech edges, range, energy, and pause evidence to the Apple session.
+It cannot admit text, seal a document, or select delivery. Final BAM is
+superseded and has no producer. `SessionFinalised` closes lifecycle only; it is
+not a text layer or an arbitrary string-finality event.
 
 ## 2. Normal live capture
 
@@ -135,6 +139,12 @@ settings, endpoint, model, provider, or credential resolution during a take.
 L3 uses the resolved Formatting lane. Inline formatting describes scheduling
 over stable authorized spans; it does not create another model, client, or
 transcript reducer. Formatting and Assistive chains remain distinct.
+
+Staging an occurrence does not dispatch formatting. When `return_lexicon`
+closes the prior machine frontier, it may enqueue the exact formatter request
+for that occurrence. The returned proposal must carry the same occurrence and
+re-enter ledger admission; it never writes committed text or triggers delivery
+on its own.
 
 ## 6. Projection and delivery
 
