@@ -394,3 +394,30 @@ executable checks remain authoritative.
   but could not prove complete finding-by-finding disposition.
 - **Purpose:** Make review closure mechanically auditable without pretending
   that accepted or deferred low-risk debt was fixed in this candidate.
+
+## 2026-08-27 — overlay mass and live-evidence convergence
+
+- **What:** Remove duplicated recording and status presentation from the
+  overlay; retire the full lower button layer in favour of one compact action
+  button with a dropdown menu; move the spectrometer into the primary rail or
+  a restrained full-surface Dictation background. The preferred target is a
+  horizontally moving waveform/spectrum synchronized with word timing, so the
+  operator sees live acoustic evidence beside the words it supports. Add an
+  Agent AoT mode to chat and connect it to the main chat window instead of
+  growing another oversized parallel surface.
+- **Where:** The macOS overlay, its action/status chrome, acoustic-evidence
+  projection, and the main Agent chat/window integration. Exact runtime owners
+  must be mapped before implementation.
+- **Why:** The current overlay repeats recording truth, repeats status, and
+  spends too much vertical mass on secondary buttons. The agent experience is
+  also split across heavyweight windows instead of sharing one coherent chat
+  surface.
+- **Purpose:** Converge on one recording/status presentation, one compact
+  action grammar, one evidence-first audio visualization, and one chat surface
+  that can host both regular Agent interaction and AoT.
+- **Runtime boundary:** The waveform may visualize timestamped acoustic and
+  word evidence, but it must not become another microphone owner, transcript
+  reducer, seal authority, or source of inferred text truth.
+- **Evidence note:** This entry records the operator's written visual review;
+  the referenced screenshot was not available to the writing agent in this
+  session.
