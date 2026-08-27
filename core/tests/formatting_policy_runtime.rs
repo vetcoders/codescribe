@@ -64,6 +64,8 @@ fn runtime_ai_execution_uses_registered_defaults() {
 fn formatting_policy_selects_exact_prompt() {
     let sandbox = tempfile::TempDir::new().expect("isolated prompt data");
     let _data_dir = EnvGuard::set("CODESCRIBE_DATA_DIR", sandbox.path());
+    let _runtime_policy = EnvGuard::unset("FORMATTING_LEVEL");
+    let config = Config::default();
     let fixtures = [
         (
             FormattingPolicy::Correction,
@@ -92,7 +94,9 @@ fn formatting_policy_selects_exact_prompt() {
     .expect("seed common tuning");
 
     for (policy, _, content) in fixtures {
-        let _runtime_policy = EnvGuard::set("FORMATTING_LEVEL", policy.as_str());
+        config
+            .save_to_env("FORMATTING_LEVEL", policy.as_str())
+            .expect("persist selected formatting policy");
         let runtime_settings = Config::load_runtime_snapshot().expect("seal runtime settings");
         let expected = format!("{content}\n\nshared tuning fixture");
         assert_eq!(
@@ -105,7 +109,9 @@ fn formatting_policy_selects_exact_prompt() {
             "provider seam selected the wrong prompt for {policy:?}"
         );
     }
-    let _runtime_policy = EnvGuard::set("FORMATTING_LEVEL", FormattingPolicy::Off.as_str());
+    config
+        .save_to_env("FORMATTING_LEVEL", FormattingPolicy::Off.as_str())
+        .expect("persist Off formatting policy");
     let runtime_settings = Config::load_runtime_snapshot().expect("seal Off runtime settings");
     assert_eq!(
         runtime_settings
@@ -211,6 +217,8 @@ fn formatting_policy_walkaround_receipt() {
 #[tokio::test]
 #[serial]
 async fn formatting_off_bypasses_llm() {
+    let sandbox = tempfile::TempDir::new().expect("isolated formatting data");
+    let _data_dir = EnvGuard::set("CODESCRIBE_DATA_DIR", sandbox.path());
     let mut server = mockito::Server::new_async().await;
     let provider = server
         .mock("POST", "/v1/responses")
@@ -220,8 +228,12 @@ async fn formatting_off_bypasses_llm() {
     let _endpoint = EnvGuard::set("LLM_FORMATTING_ENDPOINT", server.url());
     let _model = EnvGuard::set("LLM_FORMATTING_MODEL", "test-model");
     let _key = EnvGuard::set("LLM_FORMATTING_API_KEY", "test-key");
-    let _policy = EnvGuard::set("FORMATTING_LEVEL", FormattingPolicy::Off.as_str());
+    let _policy = EnvGuard::unset("FORMATTING_LEVEL");
+    Config::default()
+        .save_to_env("FORMATTING_LEVEL", FormattingPolicy::Off.as_str())
+        .expect("persist Off formatting policy");
     let runtime_settings = Config::load_runtime_snapshot().expect("seal runtime settings");
+    assert_eq!(runtime_settings.formatting_policy(), FormattingPolicy::Off);
 
     let input = "This transcript is intentionally long enough to reach the provider path.";
     let result = format_text_with_status_for_policy(input, Some("en"), &runtime_settings).await;
