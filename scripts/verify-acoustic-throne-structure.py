@@ -995,6 +995,14 @@ def collapse_code_whitespace(source: str) -> str:
     return "".join(collapsed)
 
 
+def truncating_integer_quotient(left: int, right: int) -> int | None:
+    """Divide integers with the truncation-toward-zero used by Rust and Swift."""
+    if right == 0:
+        return None
+    magnitude = abs(left) // abs(right)
+    return -magnitude if (left < 0) != (right < 0) else magnitude
+
+
 def constant_expression_value(expression: str) -> bool | int | None:
     """Evaluate an allowlisted constant expression without executing source code."""
     translated = re.sub(
@@ -1034,8 +1042,13 @@ def constant_expression_value(expression: str) -> bool | int | None:
                 return left - right
             if isinstance(candidate.op, ast.Mult):
                 return left * right
-            if isinstance(candidate.op, ast.Mod) and right != 0:
-                return left % right
+            if isinstance(candidate.op, (ast.Div, ast.Mod)):
+                quotient = truncating_integer_quotient(left, right)
+                if quotient is None:
+                    return None
+                if isinstance(candidate.op, ast.Div):
+                    return quotient
+                return left - quotient * right
             return None
         if isinstance(candidate, ast.BoolOp):
             values = [evaluate(value) for value in candidate.values]

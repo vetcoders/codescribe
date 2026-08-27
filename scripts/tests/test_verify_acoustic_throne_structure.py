@@ -1044,6 +1044,100 @@ class CorridorProofTests(unittest.TestCase):
             observed["projection"]["hops"][0]["unreachable_required_code"], []
         )
 
+    def test_c21_true_negative_remainder_condition_preserves_reachable_hop(
+        self,
+    ) -> None:
+        verifier = self.verifier_for(
+            "fn publish_revision() {\n"
+            "  if -5i32 % 3i32 == -2i32 {\n"
+            "    let serial = ledger.serial_of(&entry.occurrence);\n"
+            "    Self::project_serial(serial);\n"
+            "  }\n"
+            "}\n"
+        )
+
+        observed, failures = VERIFIER.verify_code_corridors(verifier, self.contract())
+
+        self.assertEqual(failures, [])
+        self.assertEqual(
+            observed["projection"]["hops"][0]["unreachable_required_code"], []
+        )
+
+    def test_c22_false_negative_remainder_condition_is_red(self) -> None:
+        verifier = self.verifier_for(
+            "fn publish_revision() {\n"
+            "  if -5i32 % 3i32 == 1i32 {\n"
+            "    let serial = ledger.serial_of(&entry.occurrence);\n"
+            "    Self::project_serial(serial);\n"
+            "  }\n"
+            "}\n"
+        )
+
+        observed, failures = VERIFIER.verify_code_corridors(verifier, self.contract())
+
+        unreachable = observed["projection"]["hops"][0][
+            "unreachable_required_code"
+        ]
+        self.assertEqual(len(unreachable), 2)
+        self.assertTrue(any("unreachable required code" in failure for failure in failures))
+
+    def test_c23_true_negative_division_condition_preserves_reachable_hop(
+        self,
+    ) -> None:
+        verifier = self.verifier_for(
+            "fn publish_revision() {\n"
+            "  if -5i32 / 3i32 == -1i32 {\n"
+            "    let serial = ledger.serial_of(&entry.occurrence);\n"
+            "    Self::project_serial(serial);\n"
+            "  }\n"
+            "}\n"
+        )
+
+        observed, failures = VERIFIER.verify_code_corridors(verifier, self.contract())
+
+        self.assertEqual(failures, [])
+        self.assertEqual(
+            observed["projection"]["hops"][0]["unreachable_required_code"], []
+        )
+
+    def test_c24_false_negative_division_condition_is_red(self) -> None:
+        verifier = self.verifier_for(
+            "fn publish_revision() {\n"
+            "  if -5i32 / 3i32 == -2i32 {\n"
+            "    let serial = ledger.serial_of(&entry.occurrence);\n"
+            "    Self::project_serial(serial);\n"
+            "  }\n"
+            "}\n"
+        )
+
+        observed, failures = VERIFIER.verify_code_corridors(verifier, self.contract())
+
+        unreachable = observed["projection"]["hops"][0][
+            "unreachable_required_code"
+        ]
+        self.assertEqual(len(unreachable), 2)
+        self.assertTrue(any("unreachable required code" in failure for failure in failures))
+
+    def test_c25_integer_division_and_remainder_follow_rust_sign_rules(self) -> None:
+        cases = {
+            "5 % 3": 2,
+            "5 % -3": 2,
+            "-5 % 3": -2,
+            "-5 % -3": -2,
+            "5 / 3": 1,
+            "5 / -3": -1,
+            "-5 / 3": -1,
+            "-5 / -3": 1,
+        }
+        for expression, expected in cases.items():
+            with self.subTest(expression=expression):
+                self.assertEqual(
+                    VERIFIER.constant_expression_value(expression), expected
+                )
+
+        self.assertIsNone(VERIFIER.constant_expression_value("1 / 0"))
+        self.assertIsNone(VERIFIER.constant_expression_value("1 % 0"))
+
 
 class RustModuleResolutionTests(unittest.TestCase):
     def test_reports_missing_module_and_accepts_standard_module_file(self) -> None:
