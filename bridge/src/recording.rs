@@ -154,7 +154,12 @@ pub struct CsAdmissionReadiness {
     pub calibration_status: String,
     pub calibration_path: String,
     pub calibrated_devices: Vec<String>,
+    /// Effective value after the optional power-user override.
     pub seal_lane_armed: bool,
+    /// Persisted Settings › Audio value before an override.
+    pub seal_lane_setting_armed: bool,
+    /// `settings` or `env_override`.
+    pub seal_lane_source: String,
     pub seal_lane_env: String,
 }
 

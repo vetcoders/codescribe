@@ -6704,7 +6704,18 @@ public struct CsAdmissionReadiness: Equatable, Hashable {
     public var calibrationStatus: String
     public var calibrationPath: String
     public var calibratedDevices: [String]
+    /**
+     * Effective value after the optional power-user override.
+     */
     public var sealLaneArmed: Bool
+    /**
+     * Persisted Settings › Audio value before an override.
+     */
+    public var sealLaneSettingArmed: Bool
+    /**
+     * `settings` or `env_override`.
+     */
+    public var sealLaneSource: String
     public var sealLaneEnv: String
 
     // Default memberwise initializers are never public by default, so we
@@ -6718,7 +6729,16 @@ public struct CsAdmissionReadiness: Equatable, Hashable {
          */message: String, deviceName: String?, sampleRate: UInt32?, calibrationVersion: String?,
         /**
          * Loader verdict on the calibration artifact: `sealed` / `missing` / `refused`.
-         */calibrationStatus: String, calibrationPath: String, calibratedDevices: [String], sealLaneArmed: Bool, sealLaneEnv: String) {
+         */calibrationStatus: String, calibrationPath: String, calibratedDevices: [String],
+        /**
+         * Effective value after the optional power-user override.
+         */sealLaneArmed: Bool,
+        /**
+         * Persisted Settings › Audio value before an override.
+         */sealLaneSettingArmed: Bool,
+        /**
+         * `settings` or `env_override`.
+         */sealLaneSource: String, sealLaneEnv: String) {
         self.ready = ready
         self.code = code
         self.message = message
@@ -6729,6 +6749,8 @@ public struct CsAdmissionReadiness: Equatable, Hashable {
         self.calibrationPath = calibrationPath
         self.calibratedDevices = calibratedDevices
         self.sealLaneArmed = sealLaneArmed
+        self.sealLaneSettingArmed = sealLaneSettingArmed
+        self.sealLaneSource = sealLaneSource
         self.sealLaneEnv = sealLaneEnv
     }
 
@@ -6756,6 +6778,8 @@ public struct FfiConverterTypeCsAdmissionReadiness: FfiConverterRustBuffer {
                 calibrationPath: FfiConverterString.read(from: &buf),
                 calibratedDevices: FfiConverterSequenceString.read(from: &buf),
                 sealLaneArmed: FfiConverterBool.read(from: &buf),
+                sealLaneSettingArmed: FfiConverterBool.read(from: &buf),
+                sealLaneSource: FfiConverterString.read(from: &buf),
                 sealLaneEnv: FfiConverterString.read(from: &buf)
         )
     }
@@ -6771,6 +6795,8 @@ public struct FfiConverterTypeCsAdmissionReadiness: FfiConverterRustBuffer {
         FfiConverterString.write(value.calibrationPath, into: &buf)
         FfiConverterSequenceString.write(value.calibratedDevices, into: &buf)
         FfiConverterBool.write(value.sealLaneArmed, into: &buf)
+        FfiConverterBool.write(value.sealLaneSettingArmed, into: &buf)
+        FfiConverterString.write(value.sealLaneSource, into: &buf)
         FfiConverterString.write(value.sealLaneEnv, into: &buf)
     }
 }

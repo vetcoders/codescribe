@@ -1683,6 +1683,8 @@ fn project_admission_readiness(
         calibration_path: calibration.path.display().to_string(),
         calibrated_devices: calibration.devices,
         seal_lane_armed: snapshot.seal_lane_armed(),
+        seal_lane_setting_armed: snapshot.seal_lane_setting_armed(),
+        seal_lane_source: snapshot.seal_lane_source().as_str().to_string(),
         seal_lane_env: codescribe_core::pipeline::streaming::SILERO_FUSION_ENV.to_string(),
     };
     match verdict {
