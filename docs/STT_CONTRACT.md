@@ -191,10 +191,10 @@ Code: `core/config/loader.rs` · `core/stt/mod.rs::selected_engine()` · `reconc
 
 **Final pass vs layered (orthogonal):**
 
-| Setting               | Env                                | Default    | Role                                                                                                                          |
-| --------------------- | ---------------------------------- | ---------- | ----------------------------------------------------------------------------------------------------------------------------- |
+| Setting               | Env                                | Default    | Role                                                                                                                                               |
+| --------------------- | ---------------------------------- | ---------- | -------------------------------------------------------------------------------------------------------------------------------------------------- |
 | Final pass            | `FINAL_PASS_MODE`                  | legacy     | No routing effect on normal stop; terminal coverage always uses local retained-PCM Whisper evidence; explicit file surfaces keep their own actions |
-| Layered compatibility | `CODESCRIBE_LAYERED_TRANSCRIPTION` | mode-owned | Local Power + Apple/Auto: unset or `phase1` arms; explicit off/invalid degrades. No parallel VAD/scheduler live route remains |
+| Layered compatibility | `CODESCRIBE_LAYERED_TRANSCRIPTION` | mode-owned | Local Power + Apple/Auto: unset or `phase1` arms; explicit off/invalid degrades. No parallel VAD/scheduler live route remains                      |
 
 Normal capture ignores legacy final-pass routing and never uploads the
 completed WAV for seal coverage. At stop, the engine compares the Apple-lane
