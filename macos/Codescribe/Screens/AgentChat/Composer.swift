@@ -49,7 +49,7 @@ struct Composer: View {
   private var isDragging: Bool { overOuter || overInner }
 
   var body: some View {
-    VStack(alignment: .leading, spacing: 9) {
+    VStack(alignment: .leading, spacing: 6) {
       agenticGate
 
       // Palette sits ABOVE the field: the list grows upward from the
@@ -121,7 +121,7 @@ struct Composer: View {
       }
       .padding(.leading, 13)
       .padding(.trailing, 11)
-      .padding(.vertical, 9)
+      .padding(.vertical, 6)
       .background(CSColor.surfaceRaised(isDragging ? 0.07 : 0.04))
       .overlay(
         RoundedRectangle(cornerRadius: 13, style: .continuous)
@@ -149,8 +149,8 @@ struct Composer: View {
         }
       }
     }
-    .padding(.horizontal, 18)
-    .padding(.vertical, 14)
+    .padding(.horizontal, 14)
+    .padding(.vertical, 8)
     .overlay(alignment: .top) {
       Rectangle().fill(CSColor.hairline(0.06)).frame(height: 1)
     }

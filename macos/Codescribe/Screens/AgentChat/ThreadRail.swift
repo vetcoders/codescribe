@@ -54,8 +54,8 @@ struct ThreadRail: View {
   private var compactRail: some View {
     VStack(spacing: 0) {
       ModeDot(color: CSColor.terracotta, size: 9)
-        .padding(.top, 18)
-        .padding(.bottom, 14)
+        .padding(.top, 10)
+        .padding(.bottom, 8)
 
       ScrollView {
         LazyVStack(spacing: 6) {
@@ -119,7 +119,7 @@ struct ThreadRail: View {
       .csFocusRing(cornerRadius: 8)
       .help("New thread")
       .accessibilityLabel("New thread")
-      .padding(.vertical, 12)
+      .padding(.vertical, 8)
       .overlay(alignment: .top) {
         Rectangle().fill(CSColor.hairline(0.06)).frame(height: 1)
       }
@@ -131,12 +131,12 @@ struct ThreadRail: View {
     VStack(spacing: 0) {
       // Wordmark header
       HStack(spacing: 9) {
-        Wordmark(size: 15)
+        Wordmark(size: 14)
       }
       .frame(maxWidth: .infinity, alignment: .leading)
-      .padding(.horizontal, 16)
-      .padding(.top, 16)
-      .padding(.bottom, 12)
+      .padding(.horizontal, 12)
+      .padding(.top, 10)
+      .padding(.bottom, 8)
 
       // Search field
       HStack(spacing: 8) {
@@ -153,7 +153,7 @@ struct ThreadRail: View {
         .foregroundStyle(CSColor.textBody)
       }
       .padding(.horizontal, 11)
-      .padding(.vertical, 8)
+      .padding(.vertical, 6)
       .background(CSColor.surfaceRaised(0.04))
       .overlay(
         RoundedRectangle(cornerRadius: CSRadius.input, style: .continuous)
@@ -161,7 +161,7 @@ struct ThreadRail: View {
       )
       .clipShape(RoundedRectangle(cornerRadius: CSRadius.input, style: .continuous))
       .padding(.horizontal, 12)
-      .padding(.bottom, 10)
+      .padding(.bottom, 8)
 
       // Section eyebrow
       HStack {
@@ -172,8 +172,8 @@ struct ThreadRail: View {
         Spacer()
       }
       .padding(.horizontal, 12)
-      .padding(.top, 6)
-      .padding(.bottom, 4)
+      .padding(.top, 4)
+      .padding(.bottom, 2)
 
       // Thread list — search-filtered first, then grouped by recency
       ScrollView {
@@ -232,7 +232,7 @@ struct ThreadRail: View {
         }
         .csFocusRing(cornerRadius: 8)
       }
-      .padding(12)
+      .padding(8)
       .overlay(alignment: .top) {
         Rectangle().fill(CSColor.hairline(0.06)).frame(height: 1)
       }

@@ -46,10 +46,15 @@ struct AgentChatView: View {
     }
     .navigationSplitViewStyle(.balanced)
     .csFocusPolicy()
-    .developerPowerCorner(padding: 12)
+    .developerPowerCorner(padding: 8)
     .background(CSColor.glassBase)
     .background(AgentWindowCapabilities(isPinned: isPinned))
-    .frame(minWidth: 760, idealWidth: 960, minHeight: 560, idealHeight: 600)
+    .frame(
+      minWidth: AgentWindowMetrics.minWidth,
+      idealWidth: AgentWindowMetrics.idealWidth,
+      minHeight: AgentWindowMetrics.minHeight,
+      idealHeight: AgentWindowMetrics.idealHeight
+    )
     .task {
       // Point-in-time marker: correlate with the adjacent "thread index
       // load" / "selected thread load" durations in the same log stream.
@@ -66,6 +71,19 @@ struct AgentChatView: View {
       columnVisibility = sidebarExpanded ? .all : .detailOnly
     }
   }
+}
+
+/// Desktop-utility window floor for Agent. Named so the split-view rail
+/// (expanded min 200) plus a usable detail column stay a single invariant.
+enum AgentWindowMetrics {
+  static let minWidth: CGFloat = 640
+  static let minHeight: CGFloat = 440
+  static let idealWidth: CGFloat = 840
+  static let idealHeight: CGFloat = 520
+  /// Traffic-light cluster when the rail is `.detailOnly` under
+  /// `fullSizeContentView` — the sidebar toggle lives in the detail chrome
+  /// and must stay clickable after native collapse.
+  static let collapsedTrafficLightClearance: CGFloat = 70
 }
 
 /// The rail's two presentation states and the column geometry each owns. Pure,
@@ -113,7 +131,7 @@ private struct AgentWindowCapabilities: NSViewRepresentable {
   }
 }
 
-// MARK: - Detail (header · title bar · messages · composer)
+// MARK: - Detail (chrome · messages · composer)
 
 private struct ThreadDetail: View {
   @ObservedObject var store: AgentChatStore
@@ -133,8 +151,7 @@ private struct ThreadDetail: View {
 
   var body: some View {
     VStack(spacing: 0) {
-      header
-      titleBar
+      chrome
       if let thread = store.currentThread {
         MessageList(threadID: thread.id, messages: thread.messages) { messageID in
           store.toggleRenderMode(messageID: messageID, in: thread.id)
@@ -149,8 +166,8 @@ private struct ThreadDetail: View {
             save: { store.editQueuedTurn(queued.id, text: $0) },
             cancel: { store.cancelQueuedTurn(queued.id) }
           )
-          .padding(.horizontal, 20)
-          .padding(.bottom, 6)
+          .padding(.horizontal, 14)
+          .padding(.bottom, 4)
         }
       }
       ForEach(store.currentToolApprovals) { request in
@@ -162,8 +179,8 @@ private struct ThreadDetail: View {
             store.resolveToolApproval(request, approved: true, remember: true)
           }
         )
-        .padding(.horizontal, 20)
-        .padding(.bottom, 10)
+        .padding(.horizontal, 14)
+        .padding(.bottom, 6)
       }
       Composer(store: store, overlay: AppModel.shared.overlay.state)
     }
@@ -178,30 +195,46 @@ private struct ThreadDetail: View {
     }
   }
 
-  // Header: sidebar toggle · live status pill · width density · Settings · thread menu
-  private var header: some View {
-    HStack(spacing: 12) {
+  // One compact chrome row: sidebar · title · live pill · pin / settings / thread.
+  private var chrome: some View {
+    HStack(spacing: 8) {
       Button(action: toggleSidebar) {
         Image(systemName: "sidebar.leading")
-          .font(.system(size: 14, weight: .medium))
+          .font(.system(size: 13, weight: .medium))
       }
       .csFocusRing(cornerRadius: 8)
-      .foregroundStyle(isSidebarExpanded ? CSColor.textBody : CSColor.textFaint)
+      .foregroundStyle(isSidebarExpanded ? CSColor.chromeAccent : CSColor.textFaint)
       .keyboardShortcut("s", modifiers: [.command, .control])
       .help(isSidebarExpanded ? "Collapse sidebar (⌃⌘S)" : "Expand sidebar (⌃⌘S)")
       .accessibilityLabel("Toggle Sidebar")
       .accessibilityValue(isSidebarExpanded ? "Expanded" : "Compact")
 
-      StaticStatusPill(text: status.label, color: status.color)
-      Spacer()
-      HStack(spacing: 14) {
+      Text(store.currentThread?.title ?? "—")
+        .font(CSFont.ui(13, .semibold))
+        .foregroundStyle(ChatPalette.nameActive)
+        .lineLimit(1)
+        .truncationMode(.tail)
+        .layoutPriority(1)
+
+      if turnCount > 0 {
+        Text("· \(turnCount)")
+          .font(CSFont.mono(10, .medium))
+          .foregroundStyle(CSColor.textFaintAlt)
+          .fixedSize()
+      }
+
+      liveStatusPill
+
+      Spacer(minLength: 8)
+
+      HStack(spacing: 10) {
         widthModeMenu
 
         Button {
           isPinned.toggle()
         } label: {
           Image(systemName: isPinned ? "pin.fill" : "pin")
-            .font(.system(size: 14, weight: .medium))
+            .font(.system(size: 13, weight: .medium))
             .foregroundStyle(isPinned ? CSColor.chromeAccent : CSColor.textFaint)
         }
         .csFocusRing(cornerRadius: 8)
@@ -212,17 +245,21 @@ private struct ThreadDetail: View {
         .accessibilityValue(isPinned ? "Pinned" : "Unpinned")
 
         Button(action: { openSettings() }) {
-          CSIconView(icon: .settings, size: 16)
+          CSIconView(icon: .settings, size: 14)
         }
         .csFocusRing(cornerRadius: 8)
         .help("Settings")
 
         threadMenu
       }
-      .foregroundStyle(CSColor.textFaint)
+      .foregroundStyle(CSColor.chromeAccent)
     }
-    .padding(.horizontal, 18)
-    .padding(.vertical, 14)
+    .padding(
+      .leading,
+      isSidebarExpanded ? 12 : AgentWindowMetrics.collapsedTrafficLightClearance
+    )
+    .padding(.trailing, 12)
+    .padding(.vertical, 6)
     .overlay(alignment: .bottom) {
       Rectangle().fill(CSColor.hairline(0.06)).frame(height: 1)
     }
@@ -272,7 +309,7 @@ private struct ThreadDetail: View {
         Button("Delete Thread", role: .destructive) { store.delete(thread) }
       }
     } label: {
-      CSIconView(icon: .more, size: 16, weight: .bold)
+      CSIconView(icon: .more, size: 14, weight: .bold)
     }
     .menuStyle(.borderlessButton)
     .menuIndicator(.hidden)
@@ -292,29 +329,16 @@ private struct ThreadDetail: View {
     NSWorkspace.shared.activateFileViewerSelecting([URL(fileURLWithPath: path)])
   }
 
-  // Live status: Idle → Thinking → Streaming → Stopping.
-  private var status: (label: String, color: Color) {
-    if store.isCancelling { return ("Stopping", CSColor.textFaintAlt) }
-    if store.isStreaming { return ("Streaming", CSColor.terracottaLight) }
-    if store.isThinking { return ("Thinking", CSColor.amber) }
-    return ("Idle", CSColor.oliveLight)
-  }
-
-  // Title bar: thread title · turn count
-  private var titleBar: some View {
-    HStack(spacing: 10) {
-      Text(store.currentThread?.title ?? "—")
-        .font(CSFont.ui(14, .semibold))
-        .foregroundStyle(ChatPalette.nameActive)
-      Text("· \(turnCount) turns")
-        .font(CSFont.mono(11, .medium))
-        .foregroundStyle(CSColor.textFaintAlt)
-      Spacer()
-    }
-    .padding(.horizontal, 20)
-    .padding(.vertical, 12)
-    .overlay(alignment: .bottom) {
-      Rectangle().fill(CSColor.hairline(0.04)).frame(height: 1)
+  /// Live status only. Idle is silent chrome — the always-on olive pill was
+  /// a second title row's worth of empty studio.
+  @ViewBuilder
+  private var liveStatusPill: some View {
+    if store.isCancelling {
+      StaticStatusPill(text: "Stopping", color: CSColor.textFaintAlt)
+    } else if store.isStreaming {
+      StatusPill(text: "Streaming", color: CSColor.terracottaLight, rippling: true)
+    } else if store.isThinking {
+      StatusPill(text: "Thinking", color: CSColor.amber, rippling: true)
     }
   }
 
@@ -469,7 +493,7 @@ private struct ToolApprovalCard: View {
 #if DEBUG
   #Preview("Agent Chat") {
     AgentChatView(store: AgentChatStore(engine: MockChatEngine()))
-      .frame(width: 960, height: 600)
+      .frame(width: 840, height: 520)
       .preferredColorScheme(.dark)
   }
 #endif
