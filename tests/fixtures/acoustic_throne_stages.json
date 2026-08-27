@@ -213,6 +213,11 @@
           "cardinality": 1
         },
         {
+          "symbol": "RecordingController",
+          "owner": "app/controller/mod.rs",
+          "cardinality": 1
+        },
+        {
           "symbol": "TranscriptReducer",
           "owner": "app/presentation/emitter.rs",
           "cardinality": 1
@@ -389,6 +394,15 @@
                                 "snapshot: &Arc<RuntimeSettingsSnapshot>",
                                 "evaluate_live_admission(snapshot)"
                             ]
+                        },
+                        {
+                            "symbol": "admission_readiness",
+                            "file": "app/controller/mod.rs",
+                            "signature_contains": "pub async fn admission_readiness(",
+                            "required_code": [
+                                "let snapshot = self.runtime_settings_arc().await",
+                                "tokio::task::spawn_blocking(move || admission::evaluate_live_admission_arc(&snapshot))"
+                            ]
                         }
                     ],
                     "required_invocations": [
@@ -466,6 +480,20 @@
                             "callee": "evaluate_live_admission_arc",
                             "callee_file": "app/controller/admission.rs",
                             "caller": "schedule_hold_start",
+                            "caller_file": "app/controller/mod.rs",
+                            "min_calls": 1
+                        },
+                        {
+                            "callee": "evaluate_live_admission_arc",
+                            "callee_file": "app/controller/admission.rs",
+                            "caller": "admission_readiness",
+                            "caller_file": "app/controller/mod.rs",
+                            "min_calls": 1
+                        },
+                        {
+                            "callee": "admission_readiness",
+                            "callee_file": "app/controller/mod.rs",
+                            "caller": "start_toggle_recording",
                             "caller_file": "app/controller/mod.rs",
                             "min_calls": 1
                         }
@@ -700,6 +728,20 @@
                             "callee_file": "core/pipeline/acoustic_ledger.rs",
                             "caller": "qualify",
                             "caller_file": "core/pipeline/acoustic_ledger.rs",
+                            "min_calls": 1
+                        },
+                        {
+                            "callee": "bind_session_authority",
+                            "callee_file": "core/audio/streaming_recorder.rs",
+                            "caller": "start_toggle_recording",
+                            "caller_file": "app/controller/mod.rs",
+                            "min_calls": 1
+                        },
+                        {
+                            "callee": "start_event_session",
+                            "callee_file": "core/audio/streaming_recorder.rs",
+                            "caller": "start_toggle_recording",
+                            "caller_file": "app/controller/mod.rs",
                             "min_calls": 1
                         }
                     ]
