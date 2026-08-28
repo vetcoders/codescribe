@@ -1439,4 +1439,132 @@ final class OverlayStateTests: XCTestCase {
     XCTAssertEqual(DictationOverlayWindow.minSize.height, 260)
   }
 
+  /// Project one event for an explicitly named session, so a test can replay
+  /// two Bus sessions whose sequences both restart at 1 — the production shape
+  /// `projectText` cannot express because it pins a single session id.
+  private func projectSessionText(
+    _ text: String,
+    sessionId: String,
+    sequence: UInt64,
+    to state: OverlayState,
+    terminal: Bool = false
+  ) {
+    let sampleStart = (sequence - 1) * 16_000
+    let sampleEnd = sequence * 16_000
+    let receipt = CsProjectedAcousticReceipt(
+      acousticSerialVersion: 1,
+      acousticSerial: "\(sessionId)-acoustic-\(sequence)",
+      sessionId: sessionId,
+      captureEpoch: 1,
+      sampleStart: sampleStart,
+      sampleEnd: sampleEnd,
+      durationMs: 1_000,
+      energyIntegral: 1,
+      meanRmsDbfs: -20,
+      peakDbfs: -6,
+      vadOpenSample: sampleStart,
+      vadCloseSample: sampleEnd,
+      evidenceCalibrationVersion: "test-v1",
+      wordEvidenceReceipts: ["\(sessionId)-word-\(sequence)"],
+      layerDecisionReceipts: ["\(sessionId)-layer-\(sequence)"],
+      sealReceipt: terminal ? "\(sessionId)-seal-\(sequence)" : nil,
+      manualEditReceipt: nil
+    )
+    state.applyTranscriptProjection(
+      CsTranscriptProjectionEvent(
+        schema: "codescribe.transcript_projection.v1",
+        sequence: sequence,
+        emittedAt: "2026-08-28T00:00:00Z",
+        sessionId: sessionId,
+        mode: "dictation",
+        reducerRevision: sequence,
+        reducerAction: terminal
+          ? "record_ledger_terminal_seal"
+          : "record_ledger_projection",
+        occurrenceSessionId: sessionId,
+        captureEpoch: 1,
+        sampleStart: sampleStart,
+        sampleEnd: sampleEnd,
+        documentIndex: sequence - 1,
+        label: terminal ? "terminal" : "live",
+        renderedText: text,
+        acousticReceipts: [receipt]
+      )
+    )
+  }
+
+  /// Regression, div0 2026-08-28: three takes in one app process, sessions
+  /// `5567c17a` → `f15f4ad3`. Rust sealed both correctly, but the overlay kept
+  /// painting the first take's text over the second and then raised
+  /// "Recording ended before a sealed transcript was committed". Bus sequences
+  /// restart at 1 per session, so a terminal-seal latch and a monotonic
+  /// sequence guard held across sessions drop every projection of take 2.
+  func testSecondSessionProjectionsAreNotLatchedByTheFirstSessionSeal() {
+    let clock = OverlayStateTestClock()
+    let state = OverlayState(nowProvider: { clock.now })
+
+    state.handleRecordingPreparing()
+    state.handleRecordingStarted()
+    projectSessionText(
+      "Panie agenci masz brzydkie pięty",
+      sessionId: "5567c17a",
+      sequence: 42,
+      to: state,
+      terminal: true
+    )
+    XCTAssertEqual(state.formattedText, "Panie agenci masz brzydkie pięty")
+
+    // Take 2 in the same process: a fresh session whose sequences start at 1.
+    state.handleRecordingPreparing()
+    state.handleRecordingStarted()
+    projectSessionText(
+      "Jestem naprawdę na skraju",
+      sessionId: "f15f4ad3",
+      sequence: 1,
+      to: state
+    )
+    projectSessionText(
+      "Jestem naprawdę na skraju wytrzymałości",
+      sessionId: "f15f4ad3",
+      sequence: 2,
+      to: state,
+      terminal: true
+    )
+
+    XCTAssertEqual(state.formattedText, "Jestem naprawdę na skraju wytrzymałości")
+    XCTAssertEqual(state.mode, .formatted)
+    state.finishControllerRecording()
+    XCTAssertNil(state.errorMessage)
+  }
+
+  /// The guards still do their job inside one session: a stale, out-of-order
+  /// projection and any projection after that session's terminal seal are
+  /// refused. Without this, the session-scoping above would be a hole.
+  func testWithinOneSessionTheSealAndSequenceGuardsStillRefuse() {
+    let clock = OverlayStateTestClock()
+    let state = OverlayState(nowProvider: { clock.now })
+    state.handleRecordingPreparing()
+    state.handleRecordingStarted()
+
+    projectSessionText("pierwsza", sessionId: "same-session", sequence: 5, to: state)
+    XCTAssertEqual(state.formattedText, "pierwsza")
+
+    // Out of order inside the same session — refused.
+    projectSessionText("spóźniona", sessionId: "same-session", sequence: 3, to: state)
+    XCTAssertEqual(state.formattedText, "pierwsza")
+
+    projectSessionText(
+      "zapieczętowana",
+      sessionId: "same-session",
+      sequence: 6,
+      to: state,
+      terminal: true
+    )
+    XCTAssertEqual(state.formattedText, "zapieczętowana")
+
+    // After the terminal seal of the same session — refused.
+    projectSessionText("po pieczęci", sessionId: "same-session", sequence: 7, to: state)
+    XCTAssertEqual(state.formattedText, "zapieczętowana")
+  }
+
 }

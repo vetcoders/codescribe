@@ -1084,7 +1084,6 @@ final class OverlayState: ObservableObject {
     levelMeter.reset()
     if !recording {
       resetTranscript()
-      formattedText = ""
       errorMessage = nil
       beginCaptureClock()
     }
@@ -1105,10 +1104,11 @@ final class OverlayState: ObservableObject {
     if !recording {
       hasMeasuredAudioLevel = false
       levelMeter.reset()
-      if liveText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
-        resetTranscript()
-      }
-      formattedText = ""
+      // The old guard ran the reset only when `liveText` was ALREADY empty,
+      // i.e. exactly when there was nothing to clear — and skipped it whenever
+      // the previous take's text was still on the canvas, which is the only
+      // case that needed it. A new take always starts from an empty canvas.
+      resetTranscript()
       errorMessage = nil
       beginCaptureClock()
     }
@@ -1456,10 +1456,15 @@ final class OverlayState: ObservableObject {
   /// projected evidence is present, then displays Rust-owned rendered bytes;
   /// it never admits a label or decides whether a seal exists.
   func applyTranscriptProjection(_ event: CsTranscriptProjectionEvent) {
-    guard latestTranscriptProjection?.reducerAction != "record_ledger_terminal_seal" else {
-      return
+    // Bus sequences restart at 1 for every session, so both the terminal-seal
+    // latch and the monotonic-sequence guard are only meaningful *within* one
+    // session. Applied across sessions they silently drop every projection of
+    // the next take and leave the previous take's sealed text on screen.
+    let remembered = latestTranscriptProjection
+    if let remembered, remembered.sessionId == event.sessionId {
+      guard remembered.reducerAction != "record_ledger_terminal_seal" else { return }
+      guard event.sequence > remembered.sequence else { return }
     }
-    guard event.sequence > (latestTranscriptProjection?.sequence ?? 0) else { return }
     let acousticReceipts = event.acousticReceipts.map { receipt in
       OverlayProjectedAcousticReceipt(
         acousticSerialVersion: receipt.acousticSerialVersion,
@@ -1564,6 +1569,15 @@ final class OverlayState: ObservableObject {
   }
 
   private func resetTranscript() {
+    // The canvas reads `rawLiveText`, which returns the projection's rendered
+    // text whenever one exists and only falls back to the local arrays. Clearing
+    // the arrays without clearing the projection therefore resets nothing the
+    // user can see: the previous take stayed painted through the whole next
+    // one until its first projection landed. `formattedText` lived at the call
+    // sites for the same reason and was missed by every caller that forgot it —
+    // both now belong to the single reset so no start path can be half-clean.
+    latestTranscriptProjection = nil
+    formattedText = ""
     preview = ""
     committedUtterances = []
     contextMarkers = []
