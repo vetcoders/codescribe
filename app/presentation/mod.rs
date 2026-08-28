@@ -4,8 +4,10 @@
 //! delta encoding for overlays, etc. The engine emits `EngineEvent`s (what happened),
 //! and this module decides how to show them.
 
+pub mod cli_transcript_lane;
 pub mod emitter;
 pub mod transcript_bus;
 
+pub use cli_transcript_lane::CliTranscriptLane;
 pub use emitter::PresentationEmitter;
 pub use transcript_bus::{TranscriptBus, TranscriptMode, TranscriptSession};

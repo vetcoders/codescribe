@@ -250,6 +250,13 @@ pub struct CleanTranscriptEvent {
     /// Present only on `session_ended`: why the controller left the session.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub end_reason: Option<TranscriptSessionEndReason>,
+    /// Who authored this event. **Absent means the app** — a ledger-observing
+    /// [`TranscriptBus`] never sets it, and no app path may. It is set only by
+    /// writers that publish text they did not receive from the ledger, today
+    /// just [`super::cli_transcript_lane`] with `"cli_file_verdict"`. A reader
+    /// that requires occurrence-authenticated truth filters on its absence.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub source: Option<String>,
 }
 
 /// Synchronous low-frequency observer. Each lifecycle or authenticated ledger
@@ -485,6 +492,8 @@ impl TranscriptBus {
             coverage: None,
             pipeline_session_id: None,
             end_reason: Some(reason),
+            // Ledger-observed: authorship is the app, expressed by absence.
+            source: None,
         };
         match self.write_event_locked(&mut writer, event) {
             Ok(()) => {
@@ -526,6 +535,8 @@ impl TranscriptBus {
                 coverage: None,
                 pipeline_session_id: None,
                 end_reason: None,
+                // Ledger-observed: authorship is the app, expressed by absence.
+                source: None,
             },
         )?;
         writer.started = true;
