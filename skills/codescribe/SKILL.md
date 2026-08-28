@@ -1,6 +1,6 @@
 ---
 name: codescribe
-version: 0.3.0
+version: 0.4.0
 description: >-
   This skill should be used when the user asks to "codescribe", "wpięcie w bus",
   "Hej James", "Bus Demux", "named agent on the transcript bus", or runs
@@ -123,25 +123,38 @@ python3 ~/.codescribe/agent-bridge/runtime/bin/bus-demux.py \
 The old handle must be closed before this command; the lease lock correctly
 refuses two live followers. Unnamed agents do not pass (exit 2).
 
-## Known-broken: the follower is deaf to app takes (measured 2026-08-28)
+## Check your follower before you claim to hear (2026-08-28)
 
-`bus-demux.py` accepts one schema, `codescribe.transcript.v1`. Since
-2026-08-27 22:36 the app has written its words on
-`codescribe.transcript-evidence.v1`, whose text lives in `rendered_text` and
-whose terminal state is `reducer_action: "record_ledger_terminal_seal"` — there
-is no `status` field to match at all. The follower therefore sees lifecycle
-rows only and emits nothing for a real take, whatever the lease, name or
-`--drafts` say.
+Until today `bus-demux.py` accepted one schema, `codescribe.transcript.v1`.
+The app has written its words on `codescribe.transcript-evidence.v1` since
+2026-08-27 22:36 — text in `rendered_text`, terminal state
+`reducer_action: "record_ledger_terminal_seal"`, no `status` field to match at
+all. Replayed against a real 126-line take, the old follower emitted exactly
+one envelope: its own attach receipt. Deaf, while looking healthy.
 
-Prove which schema is live before claiming you hear anything:
+The repo copy now speaks both. **The installed copy may not.** Staging happens
+during an app build, so `~/.codescribe/agent-bridge/runtime/bin/bus-demux.py`
+lags the checkout until then. Check the one you are about to run:
+
+```bash
+grep -c transcript-evidence ~/.codescribe/agent-bridge/runtime/bin/bus-demux.py
+```
+
+`0` means that helper is deaf to every app take. Run the checkout copy
+(`<checkout>/scripts/bus-demux.py`, same flags) or reinstall, and say which one
+you used. Never narrate hearing from a follower that cannot read the rows.
+
+To see which schema is live right now:
 
 ```bash
 tail -200 ~/.codescribe/transcript-events.jsonl | jq -r .schema | sort | uniq -c
 ```
 
-Recent rows on `transcript-evidence.v1` mean §1 cannot work. Say so plainly.
-Do not narrate hearing you cannot have. `codescribe transcribe live` (§6) does
-speak both schemas and is the working way to watch a take today.
+Evidence rows restate the WHOLE document on every revision. The fixed follower
+restores the utterance grain — `text` is what changed — and reports the
+terminal seal once, though the reducer writes one row per document entry.
+Addressing reads the full document, so a delta cut mid-sentence still reaches
+you when the take names you.
 
 ## Workflow
 

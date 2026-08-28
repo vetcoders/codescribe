@@ -299,4 +299,74 @@ assert o["schema"] == "codescribe.agent-bridge.active-names.v1", o
 assert o["names"] == [], o
 PY
 
+
+# --- Evidence schema: the app's real lane since 2026-08-27 22:36 ------------
+# The follower knew only codescribe.transcript.v1 and therefore reported
+# NOTHING for a real take while looking healthy. One take proves four things at
+# once: the rows are heard; a draft carries what CHANGED and not the growing
+# document; the terminal seal is one event though the reducer writes many; and
+# a delta cut mid-sentence is still addressed because the whole document is
+# what name-matching reads.
+evidence() {
+  local rendered="$1" action="${2:-apply_ledger_decision}" sequence="${3:-1}"
+  python3 - "$BUS" "$rendered" "$action" "$sequence" <<'PY'
+import json, sys
+path, rendered, action, sequence = sys.argv[1], sys.argv[2], sys.argv[3], int(sys.argv[4])
+with open(path, "a", encoding="utf-8") as handle:
+    handle.write(json.dumps({
+        "schema": "codescribe.transcript-evidence.v1",
+        "sequence": sequence,
+        "session_id": "evidence-session",
+        "mode": "dictation",
+        "reducer_action": action,
+        "reducer_revision": sequence,
+        "rendered_text": rendered,
+        "emitted_at": "2026-08-28T15:00:00Z",
+    }, ensure_ascii=False) + "\n")
+PY
+}
+
+: >"$BUS"
+evidence "James sprawdź"            apply_ledger_decision 1
+evidence "James sprawdź plik"       apply_ledger_decision 2
+evidence "James sprawdź plik alfa"  apply_ledger_decision 3
+evidence "James sprawdź plik beta"  apply_ledger_decision 4
+evidence "James sprawdź plik beta"  record_ledger_terminal_seal 5
+evidence "James sprawdź plik beta"  record_ledger_terminal_seal 6
+evidence "James sprawdź plik beta"  record_ledger_terminal_seal 7
+
+ev="$WORKDIR/evidence.jsonl"
+python3 "$DEMUX" \
+  --bus "$BUS" --bridge-home "$BRIDGE_HOME" \
+  --provider codex --session codex-session-ev --name james \
+  --drafts --from-start >"$ev"
+python3 - "$ev" <<'PY'
+import json, sys
+rows = [json.loads(line) for line in open(sys.argv[1], encoding="utf-8")]
+kinds = [row["kind"] for row in rows]
+
+# 1. Heard at all. A follower filtering on the clean schema emits only `attach`.
+assert len(kinds) > 1, f"deaf to the evidence schema: {kinds}"
+
+# 2. One seal, though the reducer wrote three terminal rows.
+assert kinds == ["attach", "draft", "draft", "draft", "revised", "seal"], kinds
+
+texts = [row["text"] for row in rows[1:]]
+# 3. Drafts carry what changed. The document is 23 chars; a draft as long as it
+#    means the reader handed the whole document over once per revision.
+assert texts[:4] == ["James sprawdź", "plik", "alfa", "beta"], texts
+
+# 4. "plik" / "alfa" / "beta" do not contain the name, yet were delivered:
+#    addressing read the document the delta was cut from.
+assert not any("james" in t.lower() for t in texts[1:4]), texts
+
+seal = rows[-1]
+assert seal["text"] == "James sprawdź plik beta", seal
+assert seal["state_change_allowed"] is True, seal
+assert all(row["state_change_allowed"] is False for row in rows[1:-1]), rows
+
+# The document rides along internally and must never reach an envelope.
+assert all("__document" not in row for row in rows), rows
+PY
+
 echo "bus-demux: ok"

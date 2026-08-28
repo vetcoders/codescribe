@@ -29,6 +29,15 @@ from pathlib import Path
 from typing import Any, Iterator
 
 BUS_FILENAME = "transcript-events.jsonl"
+CLEAN_SCHEMA = "codescribe.transcript.v1"
+#: The app has written its words here since 2026-08-27 22:36. A follower that
+#: knows only CLEAN_SCHEMA sees lifecycle rows and reports nothing for a real
+#: take — deaf, while looking healthy.
+EVIDENCE_SCHEMA = "codescribe.transcript-evidence.v1"
+TERMINAL_SEAL = "record_ledger_terminal_seal"
+#: Full ledger document carried beside a delta, for addressing only. Internal:
+#: `slim` builds envelopes from a fixed key set, so this never leaves here.
+DOCUMENT_KEY = "__document"
 INSTALL_INTERLOCK_FILENAME = "install-runtime.lock"
 SEALED = "transcript_sealed"
 LIVE_STATUSES = ("utterance_draft", "utterance_revised")
@@ -215,9 +224,84 @@ def parse_line(raw: str) -> dict[str, Any] | None:
         return None
     if not isinstance(event, dict):
         return None
-    if event.get("schema") != "codescribe.transcript.v1":
+    if event.get("schema") not in (CLEAN_SCHEMA, EVIDENCE_SCHEMA):
         return None
     return event
+
+
+def document_delta(previous: str, current: str) -> str:
+    """What a reader that already saw ``previous`` has not seen yet.
+
+    Python indexes strings by character, so the byte/codepoint trap the Rust
+    reader must dodge does not exist here; the shared-prefix rule is the same.
+    """
+    if current == previous:
+        return ""
+    shared = 0
+    for left, right in zip(previous, current):
+        if left != right:
+            break
+        shared += 1
+    return current[shared:].strip()
+
+
+class EvidenceNormalizer:
+    """Translate ``transcript-evidence.v1`` rows into the shape the bridge speaks.
+
+    Evidence rows restate the WHOLE ledger document on every revision. Handing
+    that to an agent as an utterance would deliver the same words once per
+    revision, so the grain is restored here: ``text`` is what changed, and the
+    full document rides along under :data:`DOCUMENT_KEY` so name-addressing
+    still sees the sentence the delta was cut from.
+
+    The terminal seal is one event to a reader even though the reducer writes
+    one row per document entry — eight on a real take.
+    """
+
+    def __init__(self) -> None:
+        self._documents: dict[str, str] = {}
+        self._sealed: set[str] = set()
+        self._utterances: dict[str, int] = {}
+
+    def normalize(self, event: dict[str, Any] | None) -> dict[str, Any] | None:
+        if event is None or event.get("schema") != EVIDENCE_SCHEMA:
+            return event
+        session = str(event.get("session_id") or "")
+        document = str(event.get("rendered_text") or "").strip()
+        if not document:
+            return None
+        if str(event.get("reducer_action") or "") == TERMINAL_SEAL:
+            if session in self._sealed:
+                return None
+            self._sealed.add(session)
+            self._documents[session] = document
+            return self._as_clean(event, SEALED, document, document)
+        # A session that speaks again after a seal is a new take on the same id.
+        self._sealed.discard(session)
+        delta = document_delta(self._documents.get(session, ""), document)
+        if not delta:
+            return None
+        grew = document.startswith(self._documents.get(session, ""))
+        self._documents[session] = document
+        status = LIVE_STATUSES[0] if grew else LIVE_STATUSES[1]
+        return self._as_clean(event, status, delta, document)
+
+    def _as_clean(
+        self, event: dict[str, Any], status: str, text: str, document: str
+    ) -> dict[str, Any]:
+        session = str(event.get("session_id") or "")
+        self._utterances[session] = self._utterances.get(session, 0) + 1
+        return {
+            "schema": CLEAN_SCHEMA,
+            "sequence": event.get("sequence"),
+            "session_id": event.get("session_id"),
+            "mode": event.get("mode"),
+            "utterance_id": f"evidence-{self._utterances[session]}",
+            "emitted_at": event.get("emitted_at"),
+            "status": status,
+            "text": text,
+            DOCUMENT_KEY: document,
+        }
 
 
 def emit(payload: dict[str, Any]) -> None:
@@ -237,6 +321,10 @@ def consider(
     if status != SEALED and not (drafts and status in LIVE_STATUSES):
         return None
     text = event.get("text") or ""
+    # Name assignment is a thing just said, so it reads the delta. Being
+    # addressed is a property of the whole sentence, so that reads the document
+    # when one exists — a delta cut mid-sentence rarely carries the name.
+    addressable = event.get(DOCUMENT_KEY) or text
     claimed = assigned_name(text)
     if claimed:
         payload = slim(event, claimed, kind="name_assignment")
@@ -244,7 +332,7 @@ def consider(
         if (
             hear_all
             or (name and claimed == name.casefold())
-            or addressed_to(text, name or "")
+            or addressed_to(addressable, name or "")
         ):
             return payload
         if debug:
@@ -252,7 +340,7 @@ def consider(
         return None
     if hear_all:
         return slim(event, "*")
-    if name and addressed_to(text, name):
+    if name and addressed_to(addressable, name):
         return slim(event, name.casefold())
     if debug and status == SEALED:
         sys.stderr.write("bus-demux: drop unnamed-or-other seal\n")
@@ -582,9 +670,14 @@ def run(args: argparse.Namespace) -> int:
             hear_all = False
         emit(lease.attach_receipt())
 
+    # One normalizer for the whole run: the evidence grain is stateful (it
+    # remembers each session's document and whether its seal was reported), and
+    # a fresh one per line would re-emit the entire document every time.
+    normalizer = EvidenceNormalizer()
+
     def handle(raw: str, next_cursor: int | None = None) -> None:
         nonlocal name, hear_all
-        event = parse_line(raw)
+        event = normalizer.normalize(parse_line(raw))
         if event is None:
             if lease and next_cursor is not None:
                 lease.persist(active=True, cursor=next_cursor)
@@ -627,7 +720,7 @@ def run(args: argparse.Namespace) -> int:
         if args.once:
             last = None
             for raw in replay(path):
-                event = parse_line(raw)
+                event = normalizer.normalize(parse_line(raw))
                 if event is None:
                     continue
                 payload = consider(
