@@ -702,11 +702,11 @@ final class SettingsTruthTests: XCTestCase {
 
   func testHealthStateMatrix() {
     XCTAssertEqual(
-      healthState(stt: true, keys: .available, agent: true),
+      healthState(stt: true, recording: true, keys: .available, agent: true),
       SettingsHealthState(level: .healthy, message: "systems ready", targetSection: nil)
     )
     XCTAssertEqual(
-      healthState(stt: true, keys: .missing, agent: false),
+      healthState(stt: true, recording: true, keys: .missing, agent: false),
       SettingsHealthState(
         level: .degraded,
         message: "assistive lane: no key",
@@ -714,7 +714,7 @@ final class SettingsTruthTests: XCTestCase {
       )
     )
     XCTAssertEqual(
-      healthState(stt: false, keys: .available, agent: true),
+      healthState(stt: false, recording: true, keys: .available, agent: true),
       SettingsHealthState(
         level: .offline,
         message: "speech engine: unavailable",
@@ -722,7 +722,7 @@ final class SettingsTruthTests: XCTestCase {
       )
     )
     XCTAssertEqual(
-      healthState(stt: true, keys: .available, agent: false),
+      healthState(stt: true, recording: true, keys: .available, agent: false),
       SettingsHealthState(
         level: .offline,
         message: "assistive lane: not ready",
@@ -730,11 +730,27 @@ final class SettingsTruthTests: XCTestCase {
       )
     )
     XCTAssertEqual(
-      healthState(stt: nil, keys: .available, agent: true),
+      healthState(stt: nil, recording: true, keys: .available, agent: true),
       SettingsHealthState(
         level: .unknown,
         message: "system health: unknown",
         targetSection: .engine
+      )
+    )
+    XCTAssertEqual(
+      healthState(stt: true, recording: false, keys: .available, agent: true),
+      SettingsHealthState(
+        level: .offline,
+        message: "recording setup: action needed",
+        targetSection: .audio
+      )
+    )
+    XCTAssertEqual(
+      healthState(stt: true, recording: nil, keys: .available, agent: true),
+      SettingsHealthState(
+        level: .unknown,
+        message: "recording setup: checking",
+        targetSection: .audio
       )
     )
   }

@@ -18,6 +18,89 @@ struct SealLaneControlState: Equatable {
   let detail: String
 }
 
+enum AudioReadinessStepID: Int, CaseIterable, Identifiable {
+  case microphone
+  case calibration
+  case sealLane
+
+  var id: Int { rawValue }
+}
+
+struct AudioReadinessStep: Identifiable, Equatable {
+  let id: AudioReadinessStepID
+  let tone: AudioInputDisplayTone
+  let title: String
+  let detail: String
+}
+
+/// Stable three-step projection of recording readiness. The bridge verdict is
+/// still authoritative; this only makes its prerequisites visible together so
+/// users do not discover them one failed take at a time.
+func audioReadinessSteps(
+  input: CsAudioInputSnapshot,
+  admission: CsAdmissionReadiness?
+) -> [AudioReadinessStep] {
+  let microphone = audioInputDisplayState(input)
+
+  let calibration: AudioReadinessStep
+  if let admission {
+    if let version = admission.calibrationVersion, admission.calibrationStatus == "sealed" {
+      calibration = AudioReadinessStep(
+        id: .calibration,
+        tone: .healthy,
+        title: "Microphone calibrated",
+        detail: version
+      )
+    } else {
+      calibration = AudioReadinessStep(
+        id: .calibration,
+        tone: .unavailable,
+        title: "Calibration required",
+        detail: "Measure about 10 seconds of normal speech on the current microphone."
+      )
+    }
+  } else {
+    calibration = AudioReadinessStep(
+      id: .calibration,
+      tone: .fallback,
+      title: "Checking calibration…",
+      detail: "Reading the controller's measured profile."
+    )
+  }
+
+  let sealLane: AudioReadinessStep
+  if let admission {
+    let source =
+      admission.sealLaneSource == "env_override"
+      ? "Controlled by \(admission.sealLaneEnv) override."
+      : "Controlled by the product setting below."
+    sealLane = AudioReadinessStep(
+      id: .sealLane,
+      tone: admission.sealLaneArmed ? .healthy : .unavailable,
+      title: admission.sealLaneArmed ? "Seal lane armed" : "Seal lane must be enabled",
+      detail: source
+    )
+  } else {
+    sealLane = AudioReadinessStep(
+      id: .sealLane,
+      tone: .fallback,
+      title: "Checking seal lane…",
+      detail: "Reading the effective product setting and override."
+    )
+  }
+
+  return [
+    AudioReadinessStep(
+      id: .microphone,
+      tone: microphone.tone,
+      title: microphone.title,
+      detail: microphone.detail
+    ),
+    calibration,
+    sealLane,
+  ]
+}
+
 /// Present the persisted product choice independently from its effective
 /// value. An env override stays visible and read-only instead of making the
 /// Settings toggle lie about which authority currently wins.
@@ -169,7 +252,7 @@ struct AudioPanel: View {
       inputDeviceSection
         .padding(.top, 11)
 
-      SettingsSectionLabel("Acoustic admission")
+      SettingsSectionLabel("Recording readiness")
         .padding(.top, 24)
       admissionSection
         .padding(.top, 11)
@@ -208,8 +291,6 @@ struct AudioPanel: View {
         .accessibilityValue(inputDeviceAccessibilityValue)
       }
 
-      runtimeInputStatus
-
       HStack {
         Text("Reset removes the preference; it never writes an empty device name.")
           .font(CSFont.mono(10, .medium))
@@ -235,7 +316,7 @@ struct AudioPanel: View {
   /// recorder path. No value is ever invented here.
   private var admissionSection: some View {
     VStack(alignment: .leading, spacing: 14) {
-      admissionStatus
+      readinessCockpit
 
       let sealLane = sealLaneControlState(model.admission)
       SettingsControlRow(
@@ -283,6 +364,58 @@ struct AudioPanel: View {
     .padding(15)
     .background(card)
     .overlay(cardBorder)
+  }
+
+  private var readinessCockpit: some View {
+    VStack(alignment: .leading, spacing: 0) {
+      admissionStatus
+        .padding(.bottom, 4)
+
+      ForEach(audioReadinessSteps(input: model.audioInput, admission: model.admission)) { step in
+        readinessStep(step)
+        if step.id != .sealLane {
+          Divider().overlay(CSColor.hairline(0.06))
+        }
+      }
+    }
+    .padding(12)
+    .background(CSColor.surfaceRaised(0.03))
+    .clipShape(RoundedRectangle(cornerRadius: CSRadius.input, style: .continuous))
+    .accessibilityElement(children: .contain)
+    .accessibilityLabel("Recording readiness")
+  }
+
+  private func readinessStep(_ step: AudioReadinessStep) -> some View {
+    HStack(alignment: .top, spacing: 10) {
+      ZStack {
+        Circle()
+          .fill(statusColor(step.tone).opacity(0.14))
+          .frame(width: 24, height: 24)
+        if step.tone == .healthy {
+          Image(systemName: "checkmark")
+            .font(.system(size: 10, weight: .bold))
+            .foregroundStyle(statusColor(step.tone))
+        } else {
+          Text("\(step.id.rawValue + 1)")
+            .font(CSFont.mono(10, .semibold))
+            .foregroundStyle(statusColor(step.tone))
+        }
+      }
+      VStack(alignment: .leading, spacing: 3) {
+        Text(step.title)
+          .font(CSFont.ui(12.5, .semibold))
+          .foregroundStyle(CSColor.textBody)
+        Text(step.detail)
+          .font(CSFont.ui(11.5))
+          .lineSpacing(2)
+          .foregroundStyle(CSColor.textMutedAlt)
+      }
+      Spacer(minLength: 0)
+    }
+    .padding(.vertical, 9)
+    .accessibilityElement(children: .ignore)
+    .accessibilityLabel("Step \(step.id.rawValue + 1), \(step.title)")
+    .accessibilityValue(step.detail)
   }
 
   @ViewBuilder

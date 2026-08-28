@@ -245,6 +245,9 @@ final class OverlayState: ObservableObject {
   @Published var transcribing: Bool = false
   @Published var toast: String?  // transient error notice
   @Published var errorMessage: String?
+  /// Settings destination that can resolve the current terminal error. This is
+  /// presentation routing only; the controller remains the admission authority.
+  @Published private(set) var recoverySettingsSection: SettingsSection?
   /// W13-6B highlight layer. Default follows the OFF flag; tests inject `true`.
   @Published var highlightsEnabled = false
   /// Span highlights (lexicon-corrected words + speech-gap pustki).
@@ -400,7 +403,7 @@ final class OverlayState: ObservableObject {
     if isFinalPass { return "final pass" }
     if transcribing { return "transcribing" }
     if warmingUp { return "starting" }
-    return hasMeasuredAudioLevel ? "recording" : "recording · ambient"
+    return hasMeasuredAudioLevel ? "recording" : "recording · level pending"
   }
   var statusColor: Color {
     switch mode {
@@ -1410,6 +1413,7 @@ final class OverlayState: ObservableObject {
     formattedText = ""
     isFinalPass = false
     errorMessage = message
+    recoverySettingsSection = admissionNotice == nil ? nil : .audio
     mode = .error
     finalized = true
     showToast(toast)
@@ -1577,6 +1581,7 @@ final class OverlayState: ObservableObject {
     manualHumanEditPending = false
     pendingNoSpeechMessage = nil
     noSpeechNotice = OverlayState.defaultNoSpeechNotice
+    recoverySettingsSection = nil
     finalized = false
     agentFinalTranscriptAppeared = false
     agentAutoSendCancelled = false

@@ -101,6 +101,21 @@ final class AudioPanelTests: XCTestCase {
     )
   }
 
+  func testReadinessCockpitShowsEveryPrerequisiteAtOnce() {
+    let ready = audioReadinessSteps(input: .sample, admission: .sampleGranted)
+    XCTAssertEqual(ready.map(\.id), [.microphone, .calibration, .sealLane])
+    XCTAssertEqual(ready.map(\.tone), [.healthy, .healthy, .healthy])
+
+    let missing = audioReadinessSteps(input: .sample, admission: .sampleMissing)
+    XCTAssertEqual(missing[0].tone, .healthy)
+    XCTAssertEqual(missing[1].tone, .unavailable)
+    XCTAssertEqual(missing[2].tone, .healthy)
+    XCTAssertTrue(missing[1].title.contains("Calibration"))
+
+    let checking = audioReadinessSteps(input: .sample, admission: nil)
+    XCTAssertEqual(checking.map(\.tone), [.healthy, .fallback, .fallback])
+  }
+
   func testResetUsesDedicatedUnsetContractNotEmptyStringWrite() {
     var resetCalls = 0
     var writes: [(String, String)] = []
