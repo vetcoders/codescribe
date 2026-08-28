@@ -1591,5 +1591,4 @@ final class OverlayStateTests: XCTestCase {
     XCTAssertTrue(state.liveText.isEmpty)
     XCTAssertTrue(state.formattedText.isEmpty)
   }
-
 }
