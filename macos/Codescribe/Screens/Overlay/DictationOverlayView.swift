@@ -16,6 +16,7 @@ import SwiftUI
 // attaches to AgentChatStore (same thread owner) via existing sendToAgent — not
 // a parallel chat window.
 struct DictationOverlayView: View {
+  @Environment(\.openSettings) private var openSettings
   @ObservedObject var state: OverlayState
 
   // Geometry constants local to this surface. The window is user-resizable;
@@ -353,19 +354,32 @@ struct DictationOverlayView: View {
   /// persists after the session aborts so the overlay does not falsely report
   /// "no speech" when the engine actually failed.
   private var errorBody: some View {
-    HStack(spacing: 12) {
-      CSIconView(icon: .error, size: 18, weight: .regular)
-        .foregroundStyle(CSColor.terracotta)
-      VStack(alignment: .leading, spacing: 2) {
-        Text(state.errorMessage ?? "Transcription failed")
-          .csFont(15, .medium)
-          .foregroundStyle(CSColor.textBody)
-          .fixedSize(horizontal: false, vertical: true)
-        Text("Recording stopped before a transcript was available.")
-          .csMono(11, .medium)
-          .foregroundStyle(CSColor.textFaint)
+    VStack(alignment: .leading, spacing: 12) {
+      HStack(spacing: 12) {
+        CSIconView(icon: .error, size: 18, weight: .regular)
+          .foregroundStyle(CSColor.terracotta)
+        VStack(alignment: .leading, spacing: 2) {
+          Text(state.errorMessage ?? "Transcription failed")
+            .csFont(15, .medium)
+            .foregroundStyle(CSColor.textBody)
+            .fixedSize(horizontal: false, vertical: true)
+          Text("Recording stopped before a transcript was available.")
+            .csMono(11, .medium)
+            .foregroundStyle(CSColor.textFaint)
+        }
+        Spacer(minLength: 0)
       }
-      Spacer(minLength: 0)
+      if let target = state.recoverySettingsSection {
+        Button("Open \(target.title) Settings") {
+          SettingsDeepLink.pendingSection = target
+          openSettings()
+        }
+        .buttonStyle(.borderedProminent)
+        .controlSize(.small)
+        .tint(CSColor.chromeAccent)
+        .accessibilityHint("Opens the settings section that can resolve this error")
+        .accessibilityIdentifier("overlay-error-recovery")
+      }
     }
     .frame(maxWidth: .infinity, minHeight: bodyMinHeight, alignment: .leading)
   }

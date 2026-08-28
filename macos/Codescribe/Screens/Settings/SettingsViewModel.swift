@@ -531,6 +531,7 @@ struct SettingsHealthState: Equatable {
 /// muted "unknown" state.
 func healthState(
   stt: Bool?,
+  recording: Bool?,
   keys: SettingsKeyState,
   agent: Bool?
 ) -> SettingsHealthState {
@@ -539,6 +540,13 @@ func healthState(
       level: .offline,
       message: "speech engine: unavailable",
       targetSection: .engine
+    )
+  }
+  if recording == false {
+    return SettingsHealthState(
+      level: .offline,
+      message: "recording setup: action needed",
+      targetSection: .audio
     )
   }
   if keys == .missing {
@@ -555,11 +563,11 @@ func healthState(
       targetSection: .engine
     )
   }
-  if stt == nil || keys == .unknown || agent == nil {
+  if stt == nil || recording == nil || keys == .unknown || agent == nil {
     return SettingsHealthState(
       level: .unknown,
-      message: "system health: unknown",
-      targetSection: .engine
+      message: recording == nil ? "recording setup: checking" : "system health: unknown",
+      targetSection: recording == nil ? .audio : .engine
     )
   }
   return SettingsHealthState(
@@ -1608,6 +1616,7 @@ final class SettingsViewModel: ObservableObject {
   var settingsHealth: SettingsHealthState {
     healthState(
       stt: sttHealthy,
+      recording: admissionReadError == nil ? admission?.ready : nil,
       keys: assistiveKeyState,
       agent: agentReadiness.ready
     )

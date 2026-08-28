@@ -422,14 +422,14 @@ final class OverlayStateTests: XCTestCase {
     XCTAssertNil(meter.gain)
   }
 
-  func testNoLevelFallbackRemainsExplicitlyAmbient() {
+  func testNoMeasuredLevelRemainsExplicitAndDoesNotClaimAudioEvidence() {
     let state = OverlayState()
     state.handleRecordingPreparing()
     state.handleRecordingStarted()
 
     XCTAssertNil(state.levelMeter.gain)
     XCTAssertFalse(state.hasMeasuredAudioLevel)
-    XCTAssertEqual(state.statusText, "recording · ambient")
+    XCTAssertEqual(state.statusText, "recording · level pending")
   }
 
   func testSuccessfulDictationSignalFiresOnceAndNeverForNoSpeech() {
@@ -480,7 +480,7 @@ final class OverlayStateTests: XCTestCase {
     state.handleRecordingPreparing()
     state.handleRecordingStarted()
     XCTAssertNil(state.levelMeter.gain, "a new session must not inherit old amplitude")
-    XCTAssertEqual(state.statusText, "recording · ambient")
+    XCTAssertEqual(state.statusText, "recording · level pending")
   }
 
   func testControllerStopWithoutTerminalProjectionCannotLeaveZombieRecordingUI() {
@@ -1155,6 +1155,21 @@ final class OverlayStateTests: XCTestCase {
     XCTAssertEqual(state.mode, .error)
     XCTAssertTrue(state.errorMessage?.contains("Speech Recognition") == true)
     XCTAssertFalse(state.toast?.contains("speech_auth") == true)
+    XCTAssertNil(state.recoverySettingsSection)
+  }
+
+  func testAdmissionErrorRoutesRecoveryToAudioSettingsAndResetClearsIt() {
+    let state = OverlayState()
+    state.handleError(
+      message:
+        "admission_calibration_missing: no acoustic calibration measured yet — Run Calibrate microphone in Settings › Audio."
+    )
+
+    XCTAssertEqual(state.mode, .error)
+    XCTAssertEqual(state.recoverySettingsSection, .audio)
+
+    state.handleRecordingPreparing()
+    XCTAssertNil(state.recoverySettingsSection)
   }
 
   /// Born from the 2026-08-12 operator report: a routine
@@ -1309,11 +1324,14 @@ final class OverlayStateTests: XCTestCase {
     try png.write(to: dest)
     XCTAssertGreaterThan(png.count, 800)
 
-    // Slim chrome: the bottom action layer is gone. Bright glyphs in the footer
-    // band mean the native TextEditor escaped its clipped body and painted into
-    // the engine whisper row. Hairlines and glass stay below this threshold.
+    // Slim chrome: the bottom action layer is gone. Measure the empty center of
+    // the footer — excluding its truthful engine label on the left and the
+    // developer-power mark on the right. Bright glyphs in this corridor mean
+    // the native TextEditor escaped its clipped body. The previous 40..<580
+    // range counted both legitimate footer labels and failed while the rendered
+    // screenshot was visually correct.
     var leakedBrightPixels = 0
-    for x in 40..<580 {
+    for x in 140..<500 {
       for y in 6..<28 {
         guard let color = bitmap.colorAt(x: x, y: y)?.usingColorSpace(.deviceRGB) else {
           continue
