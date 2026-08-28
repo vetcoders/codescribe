@@ -588,11 +588,13 @@ to the resolved defects; this section is not a work queue.
   `AcousticLedger::admit` records the decision, `decide_observation` refuses a
   repeated observation identity, and ledger mutation/seal events reach the
   reducer.
-- **`TailTimingQuality::CompactedSpeechRelative` is never constructed.** Only
-  `ExactSampleRange` is emitted, including for the in-process path that decodes
-  VAD-compacted audio and maps back through `map_compacted_sample_range`. When
-  that mapping returns `None` the segment is dropped by `filter_map` with no
-  receipt.
+- **Resolved: in-process timing admits its compacted grain.** The local Whisper
+  provider emits `CompactedSpeechRelative`, not `ExactSampleRange`, because it
+  decodes VAD-compacted audio before mapping segments back through
+  `map_compacted_sample_range`. If long-window seams make that fine segment
+  clock overlap or regress, the provider retains the transcript under one exact
+  request-range segment and emits `tail_provider_segment_clock_coarsened`; it no
+  longer throws away the entire final-pass or gap-recovery result.
 - **The executable mirror is missing five prose forbiddens.**
   `ENGINE_CONTRACT.forbidden` did not carry
   `treat_apple_text_as_immutable_floor`,

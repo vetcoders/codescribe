@@ -423,6 +423,41 @@ pub trait TailProvider: Send + Sync {
 #[derive(Debug, Default)]
 pub struct InProcessTailProvider;
 
+/// In-process Whisper decodes VAD-compacted speech. Its long-window decoder
+/// can return timestamp segments that overlap at a decode seam even though the
+/// complete transcript is still a valid observation of the bounded request.
+/// Do not promote that broken fine clock to exact PCM evidence, and do not
+/// discard the whole transcript. Fall back to one request-grain segment whose
+/// identity is the exact PCM range actually supplied to the provider.
+fn coarsen_invalid_in_process_segments(
+    request_range: &TailSampleRange,
+    text: &str,
+    segments: Vec<TimedTailSegment>,
+) -> Vec<TimedTailSegment> {
+    let mut previous_end = request_range.sample_start;
+    let fine_clock_is_valid = !segments.is_empty()
+        && segments.iter().all(|segment| {
+            let non_empty = segment.range.sample_end > segment.range.sample_start;
+            let ordered = segment.range.sample_start >= previous_end;
+            previous_end = segment.range.sample_end;
+            non_empty && ordered && request_range.contains(&segment.range)
+        });
+    if fine_clock_is_valid || segments.is_empty() || text.trim().is_empty() {
+        return segments;
+    }
+
+    tracing::warn!(
+        segment_count = segments.len(),
+        sample_start = request_range.sample_start,
+        sample_end = request_range.sample_end,
+        "tail_provider_segment_clock_coarsened"
+    );
+    vec![TimedTailSegment {
+        text: text.trim().to_string(),
+        range: request_range.clone(),
+    }]
+}
+
 impl TailProvider for InProcessTailProvider {
     fn provider_id(&self) -> TailProviderId {
         TailProviderId::InProcess
@@ -477,6 +512,7 @@ impl TailProvider for InProcessTailProvider {
                 })
             })
             .collect();
+        let segments = coarsen_invalid_in_process_segments(request_range, &raw.text, segments);
         let payload = TailProviderPayload {
             identity: request.identity.clone(),
             text: raw.text,
@@ -489,7 +525,7 @@ impl TailProvider for InProcessTailProvider {
                 source: TailEvidenceSource::Whisper,
                 revision: None,
                 stability: TailEvidenceStability::Final,
-                timing_quality: TailTimingQuality::ExactSampleRange,
+                timing_quality: TailTimingQuality::CompactedSpeechRelative,
                 avg_logprob: raw.avg_logprob,
             },
         };
@@ -1369,6 +1405,96 @@ mod tests {
                 "https://api.openai.com/v1/audio/transcriptions"
             ),
             None
+        );
+    }
+
+    #[test]
+    fn invalid_in_process_segment_clock_coarsens_without_losing_text() {
+        let range = TailSampleRange {
+            session: "gap-recovery".into(),
+            capture_epoch: 7,
+            sample_start: 1_265_152,
+            sample_end: 8_838_144,
+        };
+        let segments = vec![
+            TimedTailSegment {
+                text: "pierwszy przebieg".into(),
+                range: TailSampleRange {
+                    sample_start: 1_265_152,
+                    sample_end: 3_000_000,
+                    ..range.clone()
+                },
+            },
+            TimedTailSegment {
+                text: "poprawiony przebieg".into(),
+                range: TailSampleRange {
+                    sample_start: 2_900_000,
+                    sample_end: 4_200_000,
+                    ..range.clone()
+                },
+            },
+        ];
+
+        let coarsened =
+            coarsen_invalid_in_process_segments(&range, "pełny poprawny tekst", segments);
+
+        assert_eq!(coarsened.len(), 1);
+        assert_eq!(coarsened[0].range, range);
+        assert_eq!(coarsened[0].text, "pełny poprawny tekst");
+        let payload = TailProviderPayload {
+            identity: TailRequestIdentity {
+                request_id: u64::MAX,
+                range: range.clone(),
+            },
+            text: "pełny poprawny tekst".into(),
+            segments: coarsened,
+            avg_logprob: None,
+            compression_ratio: None,
+            provider_id: TailProviderId::InProcess,
+            elapsed_ms: 0,
+            evidence: TailProviderEvidence {
+                source: TailEvidenceSource::Whisper,
+                revision: None,
+                stability: TailEvidenceStability::Final,
+                timing_quality: TailTimingQuality::CompactedSpeechRelative,
+                avg_logprob: None,
+            },
+        };
+        payload
+            .validate()
+            .expect("request-grain evidence validates");
+    }
+
+    #[test]
+    fn valid_in_process_segment_clock_keeps_its_granularity() {
+        let range = TailSampleRange {
+            session: "ordered".into(),
+            capture_epoch: 2,
+            sample_start: 100,
+            sample_end: 500,
+        };
+        let segments = vec![
+            TimedTailSegment {
+                text: "jeden".into(),
+                range: TailSampleRange {
+                    sample_start: 120,
+                    sample_end: 240,
+                    ..range.clone()
+                },
+            },
+            TimedTailSegment {
+                text: "dwa".into(),
+                range: TailSampleRange {
+                    sample_start: 260,
+                    sample_end: 480,
+                    ..range.clone()
+                },
+            },
+        ];
+
+        assert_eq!(
+            coarsen_invalid_in_process_segments(&range, "jeden dwa", segments.clone()),
+            segments
         );
     }
 
