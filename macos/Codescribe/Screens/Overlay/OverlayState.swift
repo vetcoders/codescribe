@@ -727,7 +727,6 @@ final class OverlayState: ObservableObject {
     mode = .listening
     warmingUp = true
     resetTranscript()
-    formattedText = ""
     errorMessage = nil
     beginCaptureClock()
     recording = true
@@ -1084,7 +1083,6 @@ final class OverlayState: ObservableObject {
     levelMeter.reset()
     if !recording {
       resetTranscript()
-      formattedText = ""
       errorMessage = nil
       beginCaptureClock()
     }
@@ -1105,10 +1103,7 @@ final class OverlayState: ObservableObject {
     if !recording {
       hasMeasuredAudioLevel = false
       levelMeter.reset()
-      if liveText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
-        resetTranscript()
-      }
-      formattedText = ""
+      resetTranscript()
       errorMessage = nil
       beginCaptureClock()
     }
@@ -1456,10 +1451,15 @@ final class OverlayState: ObservableObject {
   /// projected evidence is present, then displays Rust-owned rendered bytes;
   /// it never admits a label or decides whether a seal exists.
   func applyTranscriptProjection(_ event: CsTranscriptProjectionEvent) {
-    guard latestTranscriptProjection?.reducerAction != "record_ledger_terminal_seal" else {
-      return
+    // Bus sequences restart at 1 for every session, so both the terminal-seal
+    // latch and the monotonic-sequence guard are only meaningful *within* one
+    // session. Applied across sessions they silently drop every projection of
+    // the next take and leave the previous take's sealed text on screen.
+    let remembered = latestTranscriptProjection
+    if let remembered, remembered.sessionId == event.sessionId {
+      guard remembered.reducerAction != "record_ledger_terminal_seal" else { return }
+      guard event.sequence > remembered.sequence else { return }
     }
-    guard event.sequence > (latestTranscriptProjection?.sequence ?? 0) else { return }
     let acousticReceipts = event.acousticReceipts.map { receipt in
       OverlayProjectedAcousticReceipt(
         acousticSerialVersion: receipt.acousticSerialVersion,
@@ -1564,8 +1564,10 @@ final class OverlayState: ObservableObject {
   }
 
   private func resetTranscript() {
+    latestTranscriptProjection = nil
     preview = ""
     committedUtterances = []
+    formattedText = ""
     contextMarkers = []
     highlights = []
     selectedHighlightId = nil
