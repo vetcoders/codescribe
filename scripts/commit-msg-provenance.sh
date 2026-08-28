@@ -9,6 +9,12 @@
 #   [ok-commit] fix: example
 #   Merge branch 'feature' into develop
 #   Squashed commit of the following:
+#   Revert "[claude/vc-workflow] fix: example"
+#
+# A revert INHERITS the provenance of what it reverts: `git revert` writes the
+# original subject into its own first line, so the wrapper is stripped and the
+# core is checked by the same rules. Reverting an untagged commit still blocks —
+# a revert cannot invent provenance that never existed.
 
 set -eu
 
@@ -34,7 +40,16 @@ human_commit_pattern='^\[ok-commit\] .+'
 merge_commit_pattern='^Merge .+'
 squash_commit_pattern='^Squashed commit of the following:.*'
 
-if printf '%s\n' "$first_line" | grep -Eq "$agent_commit_pattern|$human_commit_pattern|$merge_commit_pattern|$squash_commit_pattern"; then
+# `git revert` generates `Revert "<original subject>"` on its own, and a revert
+# of a revert nests. Peel every wrapper, then judge what is inside. Without this
+# the hook blocks a message git wrote itself, which invites --no-verify — the
+# one habit this gate exists to prevent.
+core=$first_line
+while printf '%s' "$core" | grep -Eq '^Revert "..*"$'; do
+  core=$(printf '%s' "$core" | sed -E 's/^Revert "(.*)"$/\1/')
+done
+
+if printf '%s\n' "$core" | grep -Eq "$agent_commit_pattern|$human_commit_pattern|$merge_commit_pattern|$squash_commit_pattern"; then
   exit 0
 fi
 
@@ -46,6 +61,7 @@ echo "  Human commit:     [reviewer/vc-manual] chore: normalize docs" >&2
 echo "  Human quick:      [ok-commit] fix: overlay crash" >&2
 echo "  Merge commit:     Merge branch 'feature' into develop" >&2
 echo "  Squash commit:    Squashed commit of the following:" >&2
+echo "  Revert:           Revert \"[claude/vc-workflow] fix: overlay crash\"" >&2
 echo "" >&2
 echo "  Format: [<agent>/vc-<workflow>] <description>" >&2
 echo "  Authors: claude, codex, gemini, grok, operator, reviewer" >&2
