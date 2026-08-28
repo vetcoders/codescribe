@@ -27,10 +27,15 @@ assert manifest["helper"] == "bin/bus-demux.py", manifest
 assert manifest["skill"] == "skills/codescribe", manifest
 
 source_skill = root / "skills" / "codescribe"
+# Staging deliberately drops these. Naming them here, rather than mirroring the
+# source wholesale, is the point: an expectation derived from the source tree
+# DEMANDS whatever junk the tree happens to hold, which is how a Finder dropping
+# came to ship with a checksum in a signed manifest.
+EXCLUDED_NAMES = {".DS_Store"}
 expected = {
     f"skills/codescribe/{path.relative_to(source_skill).as_posix()}"
     for path in source_skill.rglob("*")
-    if path.is_file()
+    if path.is_file() and path.name not in EXCLUDED_NAMES
 }
 expected.add("bin/bus-demux.py")
 listed = {entry["path"] for entry in manifest["files"]}
@@ -40,6 +45,12 @@ actual = {
     if path.is_file() and path.name != "manifest.json"
 }
 assert listed == expected == actual, (listed ^ expected, actual ^ expected)
+
+# Independent of every mirror above: no Finder dropping may reach the payload or
+# earn a checksum in the manifest, whatever the source tree holds. Falsified by
+# removing the ignore filter from stage_agent_bridge — it comes straight back.
+assert not [p for p in listed if p.rsplit("/", 1)[-1] in EXCLUDED_NAMES], listed
+assert not list(payload.rglob(".DS_Store")), "Finder dropping staged into payload"
 for entry in manifest["files"]:
     path = payload / entry["path"]
     assert hashlib.sha256(path.read_bytes()).hexdigest() == entry["sha256"], entry

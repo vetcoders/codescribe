@@ -69,7 +69,15 @@ for scratch in (stage, backup):
     if scratch.exists():
         shutil.rmtree(scratch)
 stage.mkdir(parents=True, mode=0o755)
-shutil.copytree(skill_source, stage / "skills" / "codescribe", symlinks=True)
+# Finder droppings are not payload. Unfiltered, `.DS_Store` lands in the
+# signed bundle WITH a sha256 in the manifest, so it reads as shipped
+# content. Observed at bundle 0.14.1 and reproduced at 0.15.0.
+shutil.copytree(
+    skill_source,
+    stage / "skills" / "codescribe",
+    symlinks=True,
+    ignore=shutil.ignore_patterns(".DS_Store"),
+)
 (stage / "bin").mkdir(mode=0o755)
 shutil.copy2(helper_source, stage / "bin" / "bus-demux.py")
 (stage / "bin" / "bus-demux.py").chmod(0o755)
