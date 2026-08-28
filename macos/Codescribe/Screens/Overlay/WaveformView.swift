@@ -44,6 +44,7 @@ final class AudioLevelMeter {
 }
 
 struct WaveformView: View {
+  @Environment(\.accessibilityReduceMotion) private var reduceMotion
   var barCount: Int = 34
   var active: Bool = true
   /// Post-capture "transcribing" phase. Overrides `active`: instead of the
@@ -52,7 +53,7 @@ struct WaveformView: View {
   /// unmistakably "processing", not "listening", and not a hung freeze either.
   var transcribing: Bool = false
   var indicatorMode: CsIndicatorMode = .hold
-  /// Real capture level, when the engine streams it. nil → ambient animation.
+  /// Real capture level, when the engine streams it. nil → neutral flat bars.
   var meter: AudioLevelMeter? = nil
   /// Chrome placement uses a tighter strip so the waveform can live in the
   /// primary bar without competing with transcript words.
@@ -69,30 +70,51 @@ struct WaveformView: View {
   }
 
   var body: some View {
-    TimelineView(.animation(minimumInterval: 1.0 / 60.0, paused: !(active || transcribing))) {
-      timeline in
-      Canvas { ctx, size in
-        let now = timeline.date.timeIntervalSinceReferenceDate
-        for i in 0..<barCount {
-          let scale = barScale(index: i, now: now)
-          let h = maxBarHeight * scale
-          let x = CGFloat(i) * (barWidth + gap)
-          let y = (size.height - h) / 2  // transform-origin: center
-          let rect = CGRect(x: x, y: y, width: barWidth, height: h)
-          ctx.fill(
-            Path(roundedRect: rect, cornerRadius: 2),
-            with: .color(color(for: i))
-          )
+    Group {
+      if reduceMotion, active, meter?.gain != nil {
+        // Essential data feedback still updates, but at a calm 5 Hz with no
+        // decorative phase sweep. Shape changes only with measured RMS.
+        TimelineView(.periodic(from: .now, by: 0.2)) { timeline in
+          waveform(at: timeline.date.timeIntervalSinceReferenceDate, reducedMotion: true)
+        }
+      } else if reduceMotion {
+        waveform(at: 0, reducedMotion: true)
+      } else {
+        TimelineView(.animation(minimumInterval: 1.0 / 60.0, paused: !(active || transcribing))) {
+          timeline in
+          waveform(at: timeline.date.timeIntervalSinceReferenceDate, reducedMotion: false)
         }
       }
-      .frame(width: contentWidth, height: trackHeight)
     }
     .frame(width: contentWidth, height: trackHeight, alignment: .leading)
   }
 
-  private func barScale(index i: Int, now: TimeInterval) -> CGFloat {
-    if transcribing { return transcribingScale(index: i, now: now) }
+  private func waveform(at now: TimeInterval, reducedMotion: Bool) -> some View {
+    Canvas { ctx, size in
+      for i in 0..<barCount {
+        let scale = barScale(index: i, now: now, reducedMotion: reducedMotion)
+        let height = maxBarHeight * scale
+        let x = CGFloat(i) * (barWidth + gap)
+        let y = (size.height - height) / 2
+        let rect = CGRect(x: x, y: y, width: barWidth, height: height)
+        ctx.fill(
+          Path(roundedRect: rect, cornerRadius: 2),
+          with: .color(color(for: i))
+        )
+      }
+    }
+    .frame(width: contentWidth, height: trackHeight)
+  }
+
+  private func barScale(index i: Int, now: TimeInterval, reducedMotion: Bool) -> CGFloat {
+    if transcribing {
+      return transcribingScale(index: i, now: now, reducedMotion: reducedMotion)
+    }
     guard active, let gain = meter?.gain else { return minScale }
+    if reducedMotion {
+      let silhouette = 0.55 + 0.45 * abs(sin(Double(i) * 0.9))
+      return minScale + (CGFloat(silhouette) - minScale) * CGFloat(gain)
+    }
     let duration = 0.7 + Double((i * 7) % 9) / 10.0
     let delay = Double((i * 13) % 11) / 14.0
     let phase = (now + delay) / duration
@@ -109,8 +131,13 @@ struct WaveformView: View {
   /// waveform is itself synthetic) modulated by ONE slow synchronous breath, so
   /// the whole shape rises and falls together instead of the per-bar sweep. The
   /// breath is subtle (~0.86–1.0) and never reaches the capture amplitude.
-  private func transcribingScale(index i: Int, now: TimeInterval) -> CGFloat {
+  private func transcribingScale(
+    index i: Int,
+    now: TimeInterval,
+    reducedMotion: Bool
+  ) -> CGFloat {
     let silhouette = 0.30 + 0.34 * abs(sin(Double(i) * 0.9))  // fixed, in ~0.30–0.64
+    if reducedMotion { return CGFloat(silhouette) }
     let breathPeriod = 1.7
     let breath = 0.93 - 0.07 * cos(now * 2 * .pi / breathPeriod)  // ~0.86–1.0
     return CGFloat(silhouette * breath)

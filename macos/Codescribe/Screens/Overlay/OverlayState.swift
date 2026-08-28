@@ -245,9 +245,12 @@ final class OverlayState: ObservableObject {
   @Published var transcribing: Bool = false
   @Published var toast: String?  // transient error notice
   @Published var errorMessage: String?
+  @Published private(set) var errorLifecycleDetail =
+    "Recording stopped before a transcript was available."
   /// Settings destination that can resolve the current terminal error. This is
   /// presentation routing only; the controller remains the admission authority.
   @Published private(set) var recoverySettingsSection: SettingsSection?
+  @Published private(set) var recoverySettingsAnchor: SettingsAnchor?
   /// W13-6B highlight layer. Default follows the OFF flag; tests inject `true`.
   @Published var highlightsEnabled = false
   /// Span highlights (lexicon-corrected words + speech-gap pustki).
@@ -405,6 +408,14 @@ final class OverlayState: ObservableObject {
     if warmingUp { return "starting" }
     return hasMeasuredAudioLevel ? "recording" : "recording · level pending"
   }
+
+  /// Narrow-window projection of the same single phase truth. The full status
+  /// keeps level honesty at normal widths; the live waveform carries that
+  /// evidence at the 320 pt floor without forcing the pill into a vertical
+  /// capsule.
+  var compactStatusText: String {
+    statusText == "recording · level pending" ? "recording" : statusText
+  }
   var statusColor: Color {
     switch mode {
     case .listening: return CSColor.terracotta
@@ -423,59 +434,6 @@ final class OverlayState: ObservableObject {
       && !transcribing
       && !isFinalPass
       && (audioReady || vadActive)
-  }
-
-  var tagText: String {
-    if isFinalPass || transcribing { return "PROCESSING" }
-    switch mode {
-    case .listening:
-      return indicatorMode == .assistive ? "AGENT" : "RECORDING"
-    case .formatted: return "READY"
-    case .noSpeech: return "NO SPEECH"
-    case .error: return "ERROR"
-    }
-  }
-  var tagColor: Color {
-    if isFinalPass || transcribing {
-      return CSColor.modeProcessing
-    }
-    switch mode {
-    case .listening:
-      return indicatorMode == .assistive ? CSColor.modeAgent : CSColor.modeRecording
-    case .formatted: return CSColor.modeReady
-    case .noSpeech: return CSColor.textMuted
-    case .error: return CSColor.danger
-    }
-  }
-
-  var metaText: String {
-    if isFinalPass { return "final pass · formatting" }
-    switch mode {
-    case .listening:
-      if transcribing { return "finalizing · transcript" }
-      // Honesty (operator 2026-07-27 / mission B): never claim streaming
-      // text the user cannot see. Apple may be shy (letter-level confidence)
-      // or Previews may not have drained yet. Empty canvas = waiting cadence,
-      // not "live preview · raw". Engine chip still reports Apple when live.
-      let canvas = liveText.trimmingCharacters(in: .whitespacesAndNewlines)
-      if canvas.isEmpty { return "live preview · waiting" }
-      return "live preview · raw"
-    case .formatted: return "final · transcript"
-    case .noSpeech: return "no speech · nothing captured"
-    case .error: return "error · recording stopped"
-    }
-  }
-  var footerRight: String {
-    if isFinalPass { return "final pass" }
-    if mode == .noSpeech { return "no speech" }
-    if mode == .error { return "error" }
-    if mode == .listening && transcribing { return "transcribing" }
-    if mode == .listening && warmingUp { return "warming up" }
-    if mode == .listening && liveText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
-      // Empty canvas: do not imply a visible preview stream.
-      return audioReady ? "audio live · waiting" : "waiting for audio"
-    }
-    return mode == .listening ? "vad-gated preview" : "editable"
   }
 
   /// Footer left engine chip — last stop serving label when available, else
@@ -635,6 +593,16 @@ final class OverlayState: ObservableObject {
     autoPasteEnabled ? "On" : "Off"
   }
 
+  var audioLevelAccessibilityValue: String {
+    guard let gain = levelMeter.gain else { return "Waiting for measured level" }
+    switch gain {
+    case ..<0.12: return "Very quiet"
+    case ..<0.35: return "Quiet"
+    case ..<0.68: return "Good level"
+    default: return "Strong level"
+    }
+  }
+
   /// One primary act for the slim chrome combo control. `nil` for terminal
   /// outcomes that only need Close (no-speech / error).
   var primaryActionKind: OverlayPrimaryActionKind? {
@@ -653,25 +621,20 @@ final class OverlayState: ObservableObject {
     }
   }
 
+  var primaryActionCompactTitle: String {
+    switch primaryActionKind {
+    case .finish: return OverlayActionPresentation.finishTitle
+    case .insert: return "Insert"
+    case nil: return ""
+    }
+  }
+
   var primaryActionHelp: String {
     switch primaryActionKind {
     case .finish: return OverlayActionPresentation.finishHelp
     case .insert: return insertActionPresentation.help
     case nil: return ""
     }
-  }
-
-  /// Footer may whisper canvas honesty only when it adds information the
-  /// single status pill does not already carry (avoids recording/waiting stacks).
-  var showsFooterHonesty: Bool {
-    mode == .listening
-      && !transcribing
-      && !isFinalPass
-      && liveText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
-  }
-
-  var footerHonestyText: String {
-    audioReady ? "waiting for words" : "waiting for audio"
   }
 
   // MARK: Recording lifecycle (engine-backed; no-op when engine is absent)
@@ -723,7 +686,11 @@ final class OverlayState: ObservableObject {
   private func runStart(language: CsLanguage?) async {
     guard let engine else { return }
     guard micPermissionGranted() || requestMicPermission() else {
-      showToast("Microphone access denied")
+      presentTerminalError(
+        message:
+          "Microphone access is off for Codescribe. Enable it in System Settings › Privacy & Security › Microphone.",
+        toast: "Microphone access denied"
+      )
       return
     }
     engine.setListener(listener)
@@ -1397,9 +1364,64 @@ final class OverlayState: ObservableObject {
     return (headline, detailText)
   }
 
+  /// Route a repairable terminal error to the closest product surface. The
+  /// destination is presentation-only: it never changes controller admission.
+  static func recoverySettingsSection(from message: String) -> SettingsSection? {
+    if speechAuthNotice(from: message) != nil { return .creator }
+    let lowered = message.lowercased()
+    if lowered.contains("microphone access") || lowered.contains("microphone permission") {
+      return .audio
+    }
+    guard let range = message.range(of: "admission_") else {
+      if lowered.contains("transcription_failed") || lowered.contains("stt model") {
+        return .engine
+      }
+      return nil
+    }
+    let tail = String(message[range.lowerBound...])
+    let code = tail.prefix { $0 == "_" || $0.isLetter }
+    if code == "admission_refused" {
+      let detail = tail.dropFirst(code.count).drop { $0 == ":" || $0 == " " }
+      return recoverySettingsSection(from: String(detail))
+    }
+    switch code {
+    case "admission_seal_vad_unavailable": return .engine
+    case "admission_calibration_missing", "admission_calibration_no_profile",
+      "admission_calibration_refused", "admission_calibration_unusable",
+      "admission_seal_lane_disarmed", "admission_capture_device_unavailable":
+      return .audio
+    default: return nil
+    }
+  }
+
+  static func recoverySettingsAnchor(from message: String) -> SettingsAnchor? {
+    let lowered = message.lowercased()
+    if lowered.contains("microphone access") || lowered.contains("microphone permission") {
+      return .audioReadiness
+    }
+    guard let range = message.range(of: "admission_") else { return nil }
+    let tail = String(message[range.lowerBound...])
+    let code = tail.prefix { $0 == "_" || $0.isLetter }
+    if code == "admission_refused" {
+      let detail = tail.dropFirst(code.count).drop { $0 == ":" || $0 == " " }
+      return recoverySettingsAnchor(from: String(detail))
+    }
+    switch code {
+    case "admission_capture_device_unavailable": return .audioInput
+    case "admission_calibration_missing", "admission_calibration_no_profile",
+      "admission_calibration_refused", "admission_calibration_unusable",
+      "admission_seal_lane_disarmed":
+      return .audioReadiness
+    default: return nil
+    }
+  }
+
   private func presentTerminalError(message: String, toast: String) {
     let speechNotice = OverlayState.speechAuthNotice(from: message)
     let admissionNotice = OverlayState.admissionNotice(from: message)
+    let recoverySection = OverlayState.recoverySettingsSection(from: message)
+    let recoveryAnchor = OverlayState.recoverySettingsAnchor(from: message)
+    let captureHadStarted = recording
     let message = speechNotice ?? admissionNotice?.detail ?? message
     let toast = speechNotice ?? admissionNotice?.headline ?? toast
     abortRecordingSession()
@@ -1413,7 +1435,12 @@ final class OverlayState: ObservableObject {
     formattedText = ""
     isFinalPass = false
     errorMessage = message
-    recoverySettingsSection = admissionNotice == nil ? nil : .audio
+    recoverySettingsSection = recoverySection
+    recoverySettingsAnchor = recoveryAnchor
+    errorLifecycleDetail =
+      captureHadStarted
+      ? "Recording stopped before a transcript was available."
+      : "Recording did not start."
     mode = .error
     finalized = true
     showToast(toast)
@@ -1582,6 +1609,8 @@ final class OverlayState: ObservableObject {
     pendingNoSpeechMessage = nil
     noSpeechNotice = OverlayState.defaultNoSpeechNotice
     recoverySettingsSection = nil
+    recoverySettingsAnchor = nil
+    errorLifecycleDetail = "Recording stopped before a transcript was available."
     finalized = false
     agentFinalTranscriptAppeared = false
     agentAutoSendCancelled = false

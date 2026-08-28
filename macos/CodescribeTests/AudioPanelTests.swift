@@ -102,18 +102,72 @@ final class AudioPanelTests: XCTestCase {
   }
 
   func testReadinessCockpitShowsEveryPrerequisiteAtOnce() {
-    let ready = audioReadinessSteps(input: .sample, admission: .sampleGranted)
-    XCTAssertEqual(ready.map(\.id), [.microphone, .calibration, .sealLane])
-    XCTAssertEqual(ready.map(\.tone), [.healthy, .healthy, .healthy])
+    let ready = audioReadinessSteps(
+      input: .sample,
+      microphonePermission: .granted,
+      admission: .sampleGranted,
+      dictationShortcut: "Hold Fn/Globe"
+    )
+    XCTAssertEqual(ready.map(\.id), [.microphone, .calibration, .sealLane, .recording])
+    XCTAssertEqual(ready.map(\.tone), [.healthy, .healthy, .healthy, .healthy])
+    XCTAssertEqual(ready.last?.title, "Ready to record")
+    XCTAssertTrue(ready.last?.detail.contains("Hold Fn/Globe") == true)
 
-    let missing = audioReadinessSteps(input: .sample, admission: .sampleMissing)
+    let missing = audioReadinessSteps(
+      input: .sample,
+      microphonePermission: .granted,
+      admission: .sampleMissing,
+      dictationShortcut: "Hold Fn/Globe"
+    )
     XCTAssertEqual(missing[0].tone, .healthy)
     XCTAssertEqual(missing[1].tone, .unavailable)
     XCTAssertEqual(missing[2].tone, .healthy)
+    XCTAssertEqual(missing[3].tone, .unavailable)
     XCTAssertTrue(missing[1].title.contains("Calibration"))
 
-    let checking = audioReadinessSteps(input: .sample, admission: nil)
-    XCTAssertEqual(checking.map(\.tone), [.healthy, .fallback, .fallback])
+    let checking = audioReadinessSteps(
+      input: .sample,
+      microphonePermission: .granted,
+      admission: nil,
+      dictationShortcut: "Hold Fn/Globe"
+    )
+    XCTAssertEqual(checking.map(\.tone), [.healthy, .fallback, .fallback, .fallback])
+
+    let denied = audioReadinessSteps(
+      input: .sample,
+      microphonePermission: .denied,
+      admission: .sampleGranted,
+      dictationShortcut: "Hold Fn/Globe"
+    )
+    XCTAssertEqual(denied[0].tone, .unavailable)
+    XCTAssertEqual(denied[1].tone, .fallback)
+    XCTAssertEqual(denied[2].tone, .fallback)
+    XCTAssertEqual(denied[3].tone, .unavailable)
+    XCTAssertTrue(denied[0].detail.contains("Privacy & Security"))
+
+    let vadUnavailable = CsAdmissionReadiness(
+      ready: false,
+      code: "admission_seal_vad_unavailable",
+      message: "Silero VAD failed to load",
+      deviceName: "Fixture Mic",
+      sampleRate: 48_000,
+      calibrationVersion: "cal-fixture",
+      calibrationStatus: "sealed",
+      calibrationPath: "/tmp/calibration.json",
+      calibratedDevices: ["Fixture Mic"],
+      sealLaneArmed: true,
+      sealLaneSettingArmed: true,
+      sealLaneSource: "settings",
+      sealLaneEnv: "CODESCRIBE_SILERO_FUSION"
+    )
+    let vadSteps = audioReadinessSteps(
+      input: .sample,
+      microphonePermission: .granted,
+      admission: vadUnavailable,
+      dictationShortcut: "Hold Fn/Globe"
+    )
+    XCTAssertEqual(vadSteps[2].tone, .unavailable)
+    XCTAssertEqual(vadSteps[2].title, "Silero VAD did not load")
   }
 
   func testResetUsesDedicatedUnsetContractNotEmptyStringWrite() {
@@ -266,8 +320,19 @@ final class AcousticAdmissionPanelTests: XCTestCase {
 
     XCTAssertEqual(requestedSeconds, [SettingsViewModel.calibrationCaptureSeconds])
     XCTAssertFalse(model.calibrationPending)
+    XCTAssertNil(model.calibrationStartedAt)
     XCTAssertTrue(model.calibrationNotice?.contains("-54.3 dBFS") == true)
+    XCTAssertTrue(model.calibrationNotice?.contains("peak -12.5 dBFS") == true)
     XCTAssertEqual(model.admission?.code, "admission_granted")
+  }
+
+  func testCalibrationProgressIsBoundedAndCountsDownHonestly() {
+    XCTAssertEqual(SettingsViewModel.calibrationProgress(elapsedSeconds: -1), 0)
+    XCTAssertEqual(SettingsViewModel.calibrationProgress(elapsedSeconds: 5), 0.5)
+    XCTAssertEqual(SettingsViewModel.calibrationProgress(elapsedSeconds: 20), 1)
+    XCTAssertEqual(SettingsViewModel.calibrationRemainingSeconds(elapsedSeconds: 0), 10)
+    XCTAssertEqual(SettingsViewModel.calibrationRemainingSeconds(elapsedSeconds: 9.2), 1)
+    XCTAssertEqual(SettingsViewModel.calibrationRemainingSeconds(elapsedSeconds: 12), 0)
   }
 
   func testRunCalibrationRefusalIsSurfacedNotHidden() async {

@@ -21,6 +21,7 @@ struct SettingsView: View {
   @StateObject private var model: SettingsViewModel
   @State private var columnVisibility: NavigationSplitViewVisibility = .all
   @State private var search: String = ""
+  @State private var pendingScrollAnchor: SettingsAnchor?
 
   init(model: SettingsViewModel? = nil) {
     _model = StateObject(wrappedValue: model ?? SettingsViewModel())
@@ -166,41 +167,51 @@ struct SettingsView: View {
 
   private func consumePendingDeepLink() {
     guard let target = SettingsDeepLink.consume() else { return }
-    model.select(target)
+    model.select(target.section)
+    pendingScrollAnchor = target.anchor
   }
 
   @ViewBuilder
   private var detail: some View {
-    ScrollView {
-      Group {
-        switch model.section.destination {
-        case .dictation:
-          EnginePanel(model: model)
-        case .shortcuts:
-          ShortcutsPanel(model: model)
-        case .providers:
-          KeysPanel(model: model)
-        case .agent:
-          AgentPanel(model: model)
-        case .prompts:
-          PromptPanel(model: model)
-        case .user:
-          UserPanel(model: model)
-        case .dictionary:
-          VoiceLabPanel(model: model)
-        case .audio:
-          AudioPanel(model: model)
-        case .license:
-          LicensePanel(model: model)
-        case .creator:
-          CreatorPanel(model: model)
-        case .lab:
-          LabPanel()
+    ScrollViewReader { proxy in
+      ScrollView {
+        Group {
+          switch model.section.destination {
+          case .dictation:
+            EnginePanel(model: model)
+          case .shortcuts:
+            ShortcutsPanel(model: model)
+          case .providers:
+            KeysPanel(model: model)
+          case .agent:
+            AgentPanel(model: model)
+          case .prompts:
+            PromptPanel(model: model)
+          case .user:
+            UserPanel(model: model)
+          case .dictionary:
+            VoiceLabPanel(model: model)
+          case .audio:
+            AudioPanel(model: model)
+          case .license:
+            LicensePanel(model: model)
+          case .creator:
+            CreatorPanel(model: model)
+          case .lab:
+            LabPanel()
+          }
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+      }
+      .scrollContentBackground(.hidden)
+      .onChange(of: pendingScrollAnchor) { _, anchor in
+        guard let anchor else { return }
+        DispatchQueue.main.async {
+          proxy.scrollTo(anchor, anchor: .top)
+          pendingScrollAnchor = nil
         }
       }
-      .frame(maxWidth: .infinity, alignment: .leading)
     }
-    .scrollContentBackground(.hidden)
     .background(Self.windowGradient)
   }
 

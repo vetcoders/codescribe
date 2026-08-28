@@ -622,28 +622,48 @@ func resetImpactSummary(_ preview: CsResetPreview) -> String {
     + "\(preview.threads) \(threads) (\(String(format: "%.1f", megabytes)) MB)"
 }
 
+enum SettingsAnchor: String, Hashable {
+  case audioInput
+  case audioReadiness
+}
+
+struct SettingsDeepLinkTarget: Equatable {
+  let section: SettingsSection
+  let anchor: SettingsAnchor?
+}
+
 /// One-shot deep-link target for the Settings window. A surface outside Settings
-/// (e.g. the onboarding wizard routing the user to MCP setup) sets this before
-/// opening or focusing the window; `SettingsView` consumes it once on appear and
-/// whenever an already-open window receives a new target. Nil means "open on the
-/// last/default section".
+/// can name both the owning section and an exact repair surface inside it.
 @MainActor
 enum SettingsDeepLink {
   static let pendingSectionDidChange = Notification.Name(
     "codescribe.settingsDeepLink.pendingSectionDidChange")
   static let agentConfigurationSection: SettingsSection = .agent
 
-  static var pendingSection: SettingsSection? {
+  private static var pendingTarget: SettingsDeepLinkTarget? {
     didSet {
-      guard pendingSection != nil else { return }
+      guard pendingTarget != nil else { return }
       NotificationCenter.default.post(name: pendingSectionDidChange, object: nil)
     }
   }
 
+  /// Compatibility surface for section-only callers. Assigning it deliberately
+  /// clears any older anchor so unrelated deep links cannot inherit one.
+  static var pendingSection: SettingsSection? {
+    get { pendingTarget?.section }
+    set {
+      pendingTarget = newValue.map { SettingsDeepLinkTarget(section: $0, anchor: nil) }
+    }
+  }
+
+  static func present(_ section: SettingsSection, anchor: SettingsAnchor? = nil) {
+    pendingTarget = SettingsDeepLinkTarget(section: section, anchor: anchor)
+  }
+
   /// Take the pending target (if any), clearing it so a later open is unaffected.
-  static func consume() -> SettingsSection? {
-    guard let target = pendingSection else { return nil }
-    pendingSection = nil
+  static func consume() -> SettingsDeepLinkTarget? {
+    guard let target = pendingTarget else { return nil }
+    pendingTarget = nil
     return target
   }
 }
@@ -1008,6 +1028,7 @@ final class SettingsViewModel: ObservableObject {
   @Published private(set) var admissionReadError: String?
   /// A guided calibration capture is in flight (the mic is open ~10 s).
   @Published private(set) var calibrationPending: Bool = false
+  @Published private(set) var calibrationStartedAt: Date?
   /// Last calibration outcome, success or refusal, for the Audio row.
   @Published private(set) var calibrationNotice: String?
   @Published private(set) var resetPreview: CsResetPreview
@@ -1793,6 +1814,14 @@ final class SettingsViewModel: ObservableObject {
   /// Seconds of normal speech the guided calibration captures.
   static let calibrationCaptureSeconds: UInt32 = 10
 
+  static func calibrationProgress(elapsedSeconds: TimeInterval) -> Double {
+    min(max(elapsedSeconds / Double(calibrationCaptureSeconds), 0), 1)
+  }
+
+  static func calibrationRemainingSeconds(elapsedSeconds: TimeInterval) -> Int {
+    max(Int(ceil(Double(calibrationCaptureSeconds) - elapsedSeconds)), 0)
+  }
+
   func refreshAdmission() async {
     guard let engine else { return }
     do {
@@ -1815,8 +1844,12 @@ final class SettingsViewModel: ObservableObject {
   func runCalibration() async {
     guard let engine, !calibrationPending else { return }
     calibrationPending = true
+    calibrationStartedAt = Date()
     calibrationNotice = nil
-    defer { calibrationPending = false }
+    defer {
+      calibrationPending = false
+      calibrationStartedAt = nil
+    }
     do {
       let report = try await engine.calibrateEnergy(
         seconds: Self.calibrationCaptureSeconds)
@@ -1830,10 +1863,11 @@ final class SettingsViewModel: ObservableObject {
   /// One-line, number-honest summary of a stored calibration profile.
   static func calibrationSummary(_ report: CsEnergyCalibrationReport) -> String {
     let speech = String(format: "%.1f", report.activeSpeechMedianDbfs)
+    let peak = String(format: "%.1f", report.peakDbfs)
     let floor = String(format: "%.1f", report.existenceThresholdDbfs)
     let seconds = String(format: "%.1f", report.measuredSeconds)
     return
-      "Calibrated \(report.deviceName): speech \(speech) dBFS over \(seconds) s → existence floor \(floor) dBFS"
+      "Calibrated \(report.deviceName): speech \(speech) dBFS, peak \(peak) dBFS over \(seconds) s → existence floor \(floor) dBFS"
   }
 
   func resetAudioInputDevice() {

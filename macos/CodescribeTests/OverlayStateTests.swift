@@ -430,6 +430,20 @@ final class OverlayStateTests: XCTestCase {
     XCTAssertNil(state.levelMeter.gain)
     XCTAssertFalse(state.hasMeasuredAudioLevel)
     XCTAssertEqual(state.statusText, "recording · level pending")
+    XCTAssertEqual(state.audioLevelAccessibilityValue, "Waiting for measured level")
+  }
+
+  func testMeasuredAudioLevelHasAnHonestAccessibilityValue() {
+    let state = OverlayState()
+    state.handleRecordingPreparing()
+    state.handleRecordingStarted()
+
+    state.applyAudioLevel(0.0001)
+    XCTAssertEqual(state.audioLevelAccessibilityValue, "Very quiet")
+
+    state.applyAudioLevel(0.8)
+    state.applyAudioLevel(0.8)
+    XCTAssertEqual(state.audioLevelAccessibilityValue, "Strong level")
   }
 
   func testSuccessfulDictationSignalFiresOnceAndNeverForNoSpeech() {
@@ -497,7 +511,6 @@ final class OverlayStateTests: XCTestCase {
 
     XCTAssertEqual(state.mode, .error)
     XCTAssertEqual(state.statusText, "failed")
-    XCTAssertEqual(state.tagText, "ERROR")
     XCTAssertEqual(
       state.errorMessage,
       "Recording ended before a sealed transcript was committed"
@@ -526,31 +539,6 @@ final class OverlayStateTests: XCTestCase {
     XCTAssertEqual(state.mode, .noSpeech)
     XCTAssertEqual(state.statusText, "no speech")
     XCTAssertEqual(state.noSpeechNotice, OverlayState.defaultNoSpeechNotice)
-  }
-
-  /// Product honesty: badge must not say "live preview · raw" while the body
-  /// is only the empty-canvas placeholder ("listening…"). Claim live preview
-  /// only after an admitted projection puts text on the canvas.
-  func testMetaTextClaimsLivePreviewOnlyWhenCanvasHasText() {
-    let state = OverlayState()
-    state.handleRecordingPreparing()
-    state.handleRecordingStarted()
-
-    XCTAssertEqual(state.metaText, "live preview · waiting")
-    XCTAssertTrue(state.liveText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
-    XCTAssertTrue(
-      state.footerRight.contains("waiting"),
-      "empty canvas footer must not claim vad-gated preview: \(state.footerRight)"
-    )
-
-    projectText("apple partial", to: state)
-    XCTAssertEqual(state.metaText, "live preview · raw")
-    XCTAssertEqual(state.liveText, "apple partial")
-
-    projectText("apple partial sealed", to: state)
-    // Canvas still reflects the latest admitted Rust projection.
-    XCTAssertEqual(state.metaText, "live preview · raw")
-    XCTAssertEqual(state.liveText, "apple partial sealed")
   }
 
   func testSessionFinalisedStartsFinalPassUntilControllerStops() {
@@ -1155,7 +1143,7 @@ final class OverlayStateTests: XCTestCase {
     XCTAssertEqual(state.mode, .error)
     XCTAssertTrue(state.errorMessage?.contains("Speech Recognition") == true)
     XCTAssertFalse(state.toast?.contains("speech_auth") == true)
-    XCTAssertNil(state.recoverySettingsSection)
+    XCTAssertEqual(state.recoverySettingsSection, .creator)
   }
 
   func testAdmissionErrorRoutesRecoveryToAudioSettingsAndResetClearsIt() {
@@ -1167,9 +1155,63 @@ final class OverlayStateTests: XCTestCase {
 
     XCTAssertEqual(state.mode, .error)
     XCTAssertEqual(state.recoverySettingsSection, .audio)
+    XCTAssertEqual(state.recoverySettingsAnchor, .audioReadiness)
+    XCTAssertEqual(state.errorLifecycleDetail, "Recording did not start.")
 
     state.handleRecordingPreparing()
     XCTAssertNil(state.recoverySettingsSection)
+    XCTAssertNil(state.recoverySettingsAnchor)
+  }
+
+  func testRecoveryRoutingUsesTheClosestSettingsOwner() {
+    XCTAssertEqual(
+      OverlayState.recoverySettingsSection(
+        from: "admission_seal_vad_unavailable: Silero VAD failed to load"
+      ),
+      .engine
+    )
+    XCTAssertEqual(
+      OverlayState.recoverySettingsSection(
+        from: "admission_capture_device_unavailable: no input device"
+      ),
+      .audio
+    )
+    XCTAssertEqual(
+      OverlayState.recoverySettingsSection(
+        from: "speech_auth_denied: Apple speech recognition is off"
+      ),
+      .creator
+    )
+    XCTAssertEqual(
+      OverlayState.recoverySettingsSection(from: "Microphone access denied"),
+      .audio
+    )
+    XCTAssertEqual(
+      OverlayState.recoverySettingsSection(
+        from: "admission_refused: admission_calibration_unusable: stale profile"
+      ),
+      .audio
+    )
+    XCTAssertEqual(
+      OverlayState.recoverySettingsAnchor(
+        from: "admission_refused: admission_calibration_unusable: stale profile"
+      ),
+      .audioReadiness
+    )
+    XCTAssertEqual(
+      OverlayState.recoverySettingsAnchor(
+        from: "admission_capture_device_unavailable: no input device"
+      ),
+      .audioInput
+    )
+    XCTAssertEqual(
+      OverlayState.recoverySettingsSection(from: "transcription_failed: model unavailable"),
+      .engine
+    )
+    XCTAssertEqual(
+      OverlayState.recoverySettingsSection(from: "STT model could not load"),
+      .engine
+    )
   }
 
   /// Born from the 2026-08-12 operator report: a routine
@@ -1329,7 +1371,8 @@ final class OverlayStateTests: XCTestCase {
     // developer-power mark on the right. Bright glyphs in this corridor mean
     // the native TextEditor escaped its clipped body. The previous 40..<580
     // range counted both legitimate footer labels and failed while the rendered
-    // screenshot was visually correct.
+    // screenshot was visually correct. A small allowance covers antialiased
+    // footer/border pixels; a real escaped transcript produces hundreds.
     var leakedBrightPixels = 0
     for x in 140..<500 {
       for y in 6..<28 {
@@ -1344,28 +1387,27 @@ final class OverlayStateTests: XCTestCase {
       }
     }
     XCTAssertLessThan(
-      leakedBrightPixels, 5,
+      leakedBrightPixels, 20,
       "formatted transcript painted into the footer band"
     )
   }
 
-  func testSlimChromePrimaryActionAndFooterHonesty() {
+  func testSlimChromeHasOnePrimaryStatusAndOnePrimaryAction() {
     let listening = OverlayState()
     listening.handleRecordingPreparing()
     XCTAssertEqual(listening.primaryActionKind, .finish)
     XCTAssertEqual(listening.primaryActionTitle, OverlayActionPresentation.finishTitle)
-    XCTAssertTrue(listening.showsFooterHonesty)
-    XCTAssertEqual(listening.footerHonestyText, "waiting for audio")
+    XCTAssertEqual(listening.primaryActionCompactTitle, OverlayActionPresentation.finishTitle)
+    XCTAssertEqual(listening.statusText, "starting")
 
     listening.handleRecordingStarted()
-    XCTAssertEqual(listening.footerHonestyText, "waiting for words")
+    XCTAssertEqual(listening.statusText, "recording · level pending")
 
     projectText("hello", to: listening)
-    XCTAssertFalse(listening.showsFooterHonesty)
 
     let formatted = OverlayState.previewFormatted()
     XCTAssertEqual(formatted.primaryActionKind, .insert)
-    XCTAssertFalse(formatted.showsFooterHonesty)
+    XCTAssertEqual(formatted.primaryActionCompactTitle, "Insert")
 
     let silent = OverlayState.previewNoSpeech()
     XCTAssertNil(silent.primaryActionKind)
@@ -1433,7 +1475,10 @@ final class OverlayStateTests: XCTestCase {
   @MainActor
   func testSlimOverlayListeningChromeRendersWithoutBottomActionMass() throws {
     let state = OverlayState.previewListening()
-    let size = CGSize(width: 470, height: DictationOverlayWindow.minSize.height)
+    let size = CGSize(
+      width: DictationOverlayWindow.minSize.width,
+      height: DictationOverlayWindow.minSize.height
+    )
     let hostingView = NSHostingView(
       rootView: DictationOverlayView(state: state)
         .frame(width: size.width, height: size.height)
@@ -1451,9 +1496,10 @@ final class OverlayStateTests: XCTestCase {
       return
     }
     let dest = FileManager.default.temporaryDirectory
-      .appendingPathComponent("codescribe-slim-listening-overlay.png")
+      .appendingPathComponent("codescribe-slim-listening-overlay-min-width.png")
     try png.write(to: dest)
     XCTAssertGreaterThan(png.count, 800)
+    XCTAssertEqual(DictationOverlayWindow.minSize.width, 320)
     XCTAssertEqual(DictationOverlayWindow.minSize.height, 260)
   }
 

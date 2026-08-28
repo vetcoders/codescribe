@@ -22,6 +22,7 @@ enum AudioReadinessStepID: Int, CaseIterable, Identifiable {
   case microphone
   case calibration
   case sealLane
+  case recording
 
   var id: Int { rawValue }
 }
@@ -33,17 +34,42 @@ struct AudioReadinessStep: Identifiable, Equatable {
   let detail: String
 }
 
-/// Stable three-step projection of recording readiness. The bridge verdict is
+/// Stable four-step projection of recording readiness. The bridge verdict is
 /// still authoritative; this only makes its prerequisites visible together so
 /// users do not discover them one failed take at a time.
 func audioReadinessSteps(
   input: CsAudioInputSnapshot,
-  admission: CsAdmissionReadiness?
+  microphonePermission: PermissionState,
+  admission: CsAdmissionReadiness?,
+  dictationShortcut: String
 ) -> [AudioReadinessStep] {
-  let microphone = audioInputDisplayState(input)
+  let microphone: AudioInputDisplayState
+  switch microphonePermission {
+  case .granted:
+    microphone = audioInputDisplayState(input)
+  case .notDetermined:
+    microphone = AudioInputDisplayState(
+      tone: .fallback,
+      title: "Allow microphone access",
+      detail: "macOS has not granted Codescribe access to the selected input yet."
+    )
+  case .denied:
+    microphone = AudioInputDisplayState(
+      tone: .unavailable,
+      title: "Microphone access is off",
+      detail: "Enable Codescribe in System Settings › Privacy & Security › Microphone."
+    )
+  }
 
   let calibration: AudioReadinessStep
-  if let admission {
+  if microphonePermission != .granted {
+    calibration = AudioReadinessStep(
+      id: .calibration,
+      tone: .fallback,
+      title: "Calibration waits for microphone access",
+      detail: "Complete step 1 before measuring this input."
+    )
+  } else if let admission {
     if let version = admission.calibrationVersion, admission.calibrationStatus == "sealed" {
       calibration = AudioReadinessStep(
         id: .calibration,
@@ -69,23 +95,65 @@ func audioReadinessSteps(
   }
 
   let sealLane: AudioReadinessStep
-  if let admission {
+  if microphonePermission != .granted {
+    sealLane = AudioReadinessStep(
+      id: .sealLane,
+      tone: .fallback,
+      title: "Seal check waits for microphone access",
+      detail: "Complete step 1 before validating the acoustic lane."
+    )
+  } else if let admission {
     let source =
       admission.sealLaneSource == "env_override"
       ? "Controlled by \(admission.sealLaneEnv) override."
       : "Controlled by the product setting below."
-    sealLane = AudioReadinessStep(
-      id: .sealLane,
-      tone: admission.sealLaneArmed ? .healthy : .unavailable,
-      title: admission.sealLaneArmed ? "Seal lane armed" : "Seal lane must be enabled",
-      detail: source
-    )
+    if admission.code == "admission_seal_vad_unavailable" {
+      sealLane = AudioReadinessStep(
+        id: .sealLane,
+        tone: .unavailable,
+        title: "Silero VAD did not load",
+        detail: admission.message
+      )
+    } else {
+      sealLane = AudioReadinessStep(
+        id: .sealLane,
+        tone: admission.sealLaneArmed ? .healthy : .unavailable,
+        title: admission.sealLaneArmed ? "Seal lane armed" : "Seal lane must be enabled",
+        detail: source
+      )
+    }
   } else {
     sealLane = AudioReadinessStep(
       id: .sealLane,
       tone: .fallback,
       title: "Checking seal lane…",
       detail: "Reading the effective product setting and override."
+    )
+  }
+
+  let recording: AudioReadinessStep
+  if microphonePermission != .granted {
+    recording = AudioReadinessStep(
+      id: .recording,
+      tone: .unavailable,
+      title: "Grant microphone access first",
+      detail: "Recording stays disabled until step 1 is complete."
+    )
+  } else if let admission {
+    recording = AudioReadinessStep(
+      id: .recording,
+      tone: admission.ready ? .healthy : .unavailable,
+      title: admission.ready ? "Ready to record" : "Finish setup above",
+      detail: admission.ready
+        ? "Use \(dictationShortcut) or choose Start recording."
+        : admission.message
+    )
+  } else {
+    recording = AudioReadinessStep(
+      id: .recording,
+      tone: .fallback,
+      title: "Checking recording readiness…",
+      detail: "Waiting for the controller's admission verdict."
     )
   }
 
@@ -98,6 +166,7 @@ func audioReadinessSteps(
     ),
     calibration,
     sealLane,
+    recording,
   ]
 }
 
@@ -249,11 +318,13 @@ struct AudioPanel: View {
 
       SettingsSectionLabel("Input device")
         .padding(.top, 24)
+        .id(SettingsAnchor.audioInput)
       inputDeviceSection
         .padding(.top, 11)
 
       SettingsSectionLabel("Recording readiness")
         .padding(.top, 24)
+        .id(SettingsAnchor.audioReadiness)
       admissionSection
         .padding(.top, 11)
         .task { await model.refreshAdmission() }
@@ -318,42 +389,6 @@ struct AudioPanel: View {
     VStack(alignment: .leading, spacing: 14) {
       readinessCockpit
 
-      let sealLane = sealLaneControlState(model.admission)
-      SettingsControlRow(
-        title: "Seal lane",
-        subtitle: sealLane.detail
-      ) {
-        Toggle("", isOn: sealLaneBinding)
-          .toggleStyle(.switch)
-          .labelsHidden()
-          .tint(CSColor.chromeAccent)
-          .disabled(!sealLane.isEnabled)
-          .accessibilityLabel("Seal lane")
-          .accessibilityValue(sealLaneAccessibilityValue(sealLane))
-          .accessibilityHint(
-            sealLane.isEnabled
-              ? "Controls whether committed utterances can be sealed."
-              : sealLane.detail
-          )
-      }
-
-      HStack(alignment: .top) {
-        Text(
-          "Calibration measures your normal speech level on this microphone and derives the existence floor (ITU-T P.56 margin). Audio is not kept."
-        )
-        .font(CSFont.mono(10, .medium))
-        .foregroundStyle(CSColor.textFaint)
-        Spacer(minLength: 12)
-        Button(model.calibrationPending ? "Listening…" : "Calibrate microphone") {
-          Task { await model.runCalibration() }
-        }
-        .csFocusRing(cornerRadius: 8)
-        .font(CSFont.mono(10.5, .semibold))
-        .foregroundStyle(CSColor.chromeAccent)
-        .disabled(model.calibrationPending)
-        .accessibilityLabel("Calibrate microphone")
-      }
-
       if let notice = model.calibrationNotice {
         Text(notice)
           .font(CSFont.ui(11.5))
@@ -368,12 +403,25 @@ struct AudioPanel: View {
 
   private var readinessCockpit: some View {
     VStack(alignment: .leading, spacing: 0) {
-      admissionStatus
-        .padding(.bottom, 4)
+      if let error = model.admissionReadError {
+        statusRow(
+          color: CSColor.terracottaLight,
+          title: "Readiness check unavailable",
+          detail: error
+        )
+        .padding(.bottom, 6)
+      }
 
-      ForEach(audioReadinessSteps(input: model.audioInput, admission: model.admission)) { step in
+      ForEach(
+        audioReadinessSteps(
+          input: model.audioInput,
+          microphonePermission: model.permissions.microphone,
+          admission: model.admission,
+          dictationShortcut: dictationShortcutLabel
+        )
+      ) { step in
         readinessStep(step)
-        if step.id != .sealLane {
+        if step.id != .recording {
           Divider().overlay(CSColor.hairline(0.06))
         }
       }
@@ -401,6 +449,7 @@ struct AudioPanel: View {
             .foregroundStyle(statusColor(step.tone))
         }
       }
+      .accessibilityHidden(true)
       VStack(alignment: .leading, spacing: 3) {
         Text(step.title)
           .font(CSFont.ui(12.5, .semibold))
@@ -410,53 +459,106 @@ struct AudioPanel: View {
           .lineSpacing(2)
           .foregroundStyle(CSColor.textMutedAlt)
       }
-      Spacer(minLength: 0)
+      .frame(maxWidth: .infinity, alignment: .leading)
+      .accessibilityElement(children: .ignore)
+      .accessibilityLabel("Step \(step.id.rawValue + 1), \(step.title)")
+      .accessibilityValue(step.detail)
+      readinessControl(for: step)
     }
     .padding(.vertical, 9)
-    .accessibilityElement(children: .ignore)
-    .accessibilityLabel("Step \(step.id.rawValue + 1), \(step.title)")
-    .accessibilityValue(step.detail)
+    .accessibilityElement(children: .contain)
   }
 
   @ViewBuilder
-  private var admissionStatus: some View {
-    if let error = model.admissionReadError {
-      statusRow(
-        color: CSColor.terracottaLight,
-        title: "Admission check unavailable",
-        detail: error
-      )
-    } else {
-      let state = admissionDisplayState(model.admission)
-      statusRow(
-        color: statusColor(state.tone),
-        title: state.title,
-        detail: state.detail
-      )
-      .accessibilityElement(children: .ignore)
-      .accessibilityLabel("Acoustic admission")
-      .accessibilityValue("\(state.title). \(state.detail)")
+  private func readinessControl(for step: AudioReadinessStep) -> some View {
+    switch step.id {
+    case .microphone:
+      if model.permissions.microphone != .granted {
+        Button(microphonePermissionActionTitle) {
+          resolveMicrophonePermission()
+        }
+        .buttonStyle(.bordered)
+        .controlSize(.small)
+        .accessibilityHint("Grants Codescribe access to the microphone selected above")
+      }
+    case .calibration:
+      VStack(alignment: .trailing, spacing: 5) {
+        if model.calibrationPending, let startedAt = model.calibrationStartedAt {
+          TimelineView(.periodic(from: .now, by: 0.2)) { context in
+            let elapsed = context.date.timeIntervalSince(startedAt)
+            VStack(alignment: .trailing, spacing: 3) {
+              ProgressView(
+                value: SettingsViewModel.calibrationProgress(elapsedSeconds: elapsed)
+              )
+              .progressViewStyle(.linear)
+              .frame(width: 92)
+              Text(
+                "\(SettingsViewModel.calibrationRemainingSeconds(elapsedSeconds: elapsed)) s left"
+              )
+              .font(CSFont.mono(9.5, .medium))
+              .foregroundStyle(CSColor.textFaint)
+            }
+          }
+          .accessibilityLabel("Calibration capture progress")
+        }
+        Button(model.calibrationPending ? "Measuring…" : "Calibrate") {
+          Task { await model.runCalibration() }
+        }
+        .buttonStyle(.bordered)
+        .controlSize(.small)
+        .disabled(
+          model.calibrationPending
+            || model.permissions.microphone != .granted
+            || model.audioInput.runtimeDevice == nil
+        )
+        .accessibilityLabel("Calibrate microphone")
+        .accessibilityHint("Measures about ten seconds of normal speech; audio is not kept")
+      }
+    case .sealLane:
+      let sealLane = sealLaneControlState(model.admission)
+      Toggle("Seal lane", isOn: sealLaneBinding)
+        .toggleStyle(.switch)
+        .labelsHidden()
+        .tint(CSColor.chromeAccent)
+        .disabled(!sealLane.isEnabled)
+        .accessibilityLabel("Seal lane")
+        .accessibilityValue(sealLaneAccessibilityValue(sealLane))
+        .accessibilityHint(
+          sealLane.isEnabled
+            ? "Controls whether committed utterances can be sealed."
+            : sealLane.detail
+        )
+    case .recording:
+      Button("Start recording") {
+        model.performQuickStart(.openOverlay)
+      }
+      .buttonStyle(.borderedProminent)
+      .controlSize(.small)
+      .tint(CSColor.chromeAccent)
+      .disabled(!canStartRecording)
+      .accessibilityHint("Starts a real dictation session in the shared recorder")
+      .accessibilityIdentifier("audio-readiness-start-recording")
     }
   }
 
-  @ViewBuilder
-  private var runtimeInputStatus: some View {
-    if let error = model.audioInputReadError {
-      statusRow(
-        color: CSColor.terracottaLight,
-        title: "Audio hardware unavailable",
-        detail: error
-      )
+  private var canStartRecording: Bool {
+    model.permissions.microphone == .granted && model.admission?.ready == true
+  }
+
+  private var dictationShortcutLabel: String {
+    model.modeBindings.first { $0.mode == .dictation }?.bindingLabel ?? "your Dictation shortcut"
+  }
+
+  private var microphonePermissionActionTitle: String {
+    model.permissions.microphone == .notDetermined ? "Allow" : "System Settings"
+  }
+
+  private func resolveMicrophonePermission() {
+    let kind = PermissionKind.microphone
+    if model.permissions.microphone == .notDetermined {
+      kind.requestInApp { _ in model.refresh() }
     } else {
-      let state = audioInputDisplayState(model.audioInput)
-      statusRow(
-        color: statusColor(state.tone),
-        title: state.title,
-        detail: state.detail
-      )
-      .accessibilityElement(children: .ignore)
-      .accessibilityLabel("Runtime audio input")
-      .accessibilityValue("\(state.title). \(state.detail)")
+      kind.openSystemSettings()
     }
   }
 

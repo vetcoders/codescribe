@@ -219,6 +219,7 @@ struct ModeDot: View {
 
 /// Status pill with a softpulsing dot and an optional expanding ripple ring.
 struct StatusPill: View {
+  @Environment(\.accessibilityReduceMotion) private var reduceMotion
   let text: String
   var color: Color = CSColor.oliveLight
   var rippling: Bool = false
@@ -229,7 +230,7 @@ struct StatusPill: View {
   var body: some View {
     HStack(spacing: 6) {
       ZStack {
-        if rippling {
+        if rippling && !reduceMotion {
           Circle().strokeBorder(color, lineWidth: 1)
             .frame(width: 9, height: 9)
             .scaleEffect(ripple ? 2.7 : 0.5)
@@ -258,6 +259,7 @@ struct StatusPill: View {
     .clipShape(Capsule())
     .onAppear { syncStatusAnimations() }
     .onChange(of: rippling) { _, _ in syncStatusAnimations() }
+    .onChange(of: reduceMotion) { _, _ in syncStatusAnimations() }
   }
 
   /// `pulse` and `ripple` drive `.repeatForever` animations. They must run ONLY
@@ -269,7 +271,7 @@ struct StatusPill: View {
   /// Gate it on `rippling` and, when inactive, snap the state back with animation
   /// disabled so the in-flight repeatForever is torn down rather than left running.
   private func syncStatusAnimations() {
-    if rippling {
+    if rippling && !reduceMotion {
       withAnimation(CSMotion.softpulse) { pulse = true }
       withAnimation(CSMotion.ripple) { ripple = true }
     } else {

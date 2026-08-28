@@ -281,13 +281,19 @@ final class SettingsTruthTests: XCTestCase {
     defer { SettingsDeepLink.pendingSection = nil }
 
     SettingsDeepLink.pendingSection = .keys
-    XCTAssertEqual(SettingsDeepLink.consume()?.destination, .providers)
+    XCTAssertEqual(SettingsDeepLink.consume()?.section.destination, .providers)
     XCTAssertNil(SettingsDeepLink.consume())
 
     XCTAssertEqual(SettingsDeepLink.agentConfigurationSection, .agent)
     SettingsDeepLink.pendingSection = SettingsDeepLink.agentConfigurationSection
-    XCTAssertEqual(SettingsDeepLink.consume()?.destination, .agent)
+    XCTAssertEqual(SettingsDeepLink.consume()?.section.destination, .agent)
     XCTAssertNil(SettingsDeepLink.consume())
+
+    SettingsDeepLink.present(.audio, anchor: .audioReadiness)
+    XCTAssertEqual(
+      SettingsDeepLink.consume(),
+      SettingsDeepLinkTarget(section: .audio, anchor: .audioReadiness)
+    )
   }
 
   /// The Rust core decides "am I a test?" partly from this process's environment

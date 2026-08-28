@@ -6,7 +6,7 @@ import SwiftUI
 //   header   brand · ONE status pill · compact waveform · timer · Auto Paste ·
 //            placement · split primary (Finish/Insert + chevron menu)
 //   body     transcript is the product surface (listening / formatted / terminal)
-//   footer   ● engine chip · optional canvas honesty · toast
+//   footer   ● engine chip · transient actionable notice
 //
 // Removed on purpose: duplicate RECORDING/modeMeta row, full bottom Finish/Close
 // action layer, and decorative body-top waveform competing with words.
@@ -17,6 +17,7 @@ import SwiftUI
 // a parallel chat window.
 struct DictationOverlayView: View {
   @Environment(\.openSettings) private var openSettings
+  @Environment(\.accessibilityReduceMotion) private var reduceMotion
   @ObservedObject var state: OverlayState
 
   // Geometry constants local to this surface. The window is user-resizable;
@@ -61,7 +62,7 @@ struct DictationOverlayView: View {
     // clip costs nothing visually.
     .clipShape(RoundedRectangle(cornerRadius: CSRadius.window, style: .continuous))
     .developerPowerCorner(padding: 10)
-    .animation(CSMotion.floatIn, value: state.toast)
+    .animation(reduceMotion ? nil : CSMotion.floatIn, value: state.toast)
     .onHover { inside in
       state.setPointerHovering(inside)
     }
@@ -78,6 +79,17 @@ struct DictationOverlayView: View {
   // MARK: Header
 
   private var header: some View {
+    ViewThatFits(in: .horizontal) {
+      fullHeader
+      narrowHeader
+    }
+    .frame(maxWidth: .infinity, alignment: .leading)
+    .padding(.horizontal, 16)
+    .padding(.vertical, 10)
+    .background(OverlayDragHandle())
+  }
+
+  private var fullHeader: some View {
     HStack(spacing: 10) {
       // Brand block with a LIVE dot: the orange dot sits in the window's
       // traffic-light zone and reads as a control, so it IS one — click
@@ -91,25 +103,10 @@ struct DictationOverlayView: View {
           .foregroundStyle(CSColor.textHigh)
           .allowsHitTesting(false)
       }
-      // One phase pill only — do not also paint RECORDING/tag/meta rows.
-      // Swap the whole VIEW TYPE on live vs idle so the rippling animation
-      // tears down instead of ticking after capture ends.
-      if state.statusRippling {
-        StatusPill(
-          text: state.statusText,
-          color: state.statusColor,
-          rippling: true
-        )
-        .allowsHitTesting(false)
-        .accessibilityIdentifier("overlay-phase-status")
-      } else {
-        StaticStatusPill(text: state.statusText, color: state.statusColor)
-          .allowsHitTesting(false)
-          .accessibilityIdentifier("overlay-phase-status")
-      }
+      phaseStatus(text: state.statusText)
 
       if state.mode == .listening {
-        chromeWaveform
+        chromeWaveform(barCount: 18)
       }
 
       Spacer(minLength: 4)
@@ -123,17 +120,52 @@ struct DictationOverlayView: View {
         .foregroundStyle(CSColor.textFaint)
       compactPrimaryAction
     }
-    .padding(.horizontal, 16)
-    .padding(.vertical, 10)
-    .background(OverlayDragHandle())
+    .fixedSize(horizontal: true, vertical: false)
+  }
+
+  /// Essential chrome only at the supported 320 pt window floor. Secondary
+  /// policy and placement controls remain available as soon as the window has
+  /// room; Close, one phase, real level evidence, time, and the primary action
+  /// never disappear or collapse vertically.
+  private var narrowHeader: some View {
+    HStack(spacing: 7) {
+      CloseDot { state.close() }
+      phaseStatus(text: state.compactStatusText)
+      if state.mode == .listening {
+        chromeWaveform(barCount: 10)
+      }
+      Spacer(minLength: 0)
+      sessionTimer
+      compactPrimaryAction(forceCompactTitle: true)
+    }
+    .fixedSize(horizontal: true, vertical: false)
+  }
+
+  @ViewBuilder
+  private func phaseStatus(text: String) -> some View {
+    // One phase pill only — do not also paint RECORDING/tag/meta rows. Swap the
+    // whole view type on live vs idle so repeatForever tears down after capture.
+    if state.statusRippling {
+      StatusPill(text: text, color: state.statusColor, rippling: true)
+        .fixedSize(horizontal: true, vertical: false)
+        .allowsHitTesting(false)
+        .accessibilityLabel(state.statusText)
+        .accessibilityIdentifier("overlay-phase-status")
+    } else {
+      StaticStatusPill(text: text, color: state.statusColor)
+        .fixedSize(horizontal: true, vertical: false)
+        .allowsHitTesting(false)
+        .accessibilityLabel(state.statusText)
+        .accessibilityIdentifier("overlay-phase-status")
+    }
   }
 
   /// Audio-evidence strip in the primary bar. Amplitude/VAD only — word/PCM
   /// synchronized scrolling needs authenticated sample spans from projection
   /// receipts and is intentionally not invented here.
-  private var chromeWaveform: some View {
+  private func chromeWaveform(barCount: Int) -> some View {
     WaveformView(
-      barCount: 18,
+      barCount: barCount,
       active: !state.transcribing && !state.isFinalPass && (state.audioReady || state.vadActive),
       transcribing: state.transcribing || state.isFinalPass,
       indicatorMode: state.indicatorMode,
@@ -142,6 +174,7 @@ struct DictationOverlayView: View {
     )
     .accessibilityIdentifier("overlay-chrome-waveform")
     .accessibilityLabel("Live audio level")
+    .accessibilityValue(state.audioLevelAccessibilityValue)
     .allowsHitTesting(false)
   }
 
@@ -236,7 +269,7 @@ struct DictationOverlayView: View {
       switch state.mode {
       case .listening:
         listeningBody
-          .transition(.opacity.combined(with: .offset(y: 8)))
+          .transition(reduceMotion ? .identity : .opacity.combined(with: .offset(y: 8)))
       case .formatted:
         // TextEditor is an AppKit-backed platform view. Moving it with a SwiftUI
         // transition can leave its native text layer painting at the old frame
@@ -246,10 +279,10 @@ struct DictationOverlayView: View {
         formattedBody
       case .noSpeech:
         noSpeechBody
-          .transition(.opacity.combined(with: .offset(y: 8)))
+          .transition(reduceMotion ? .identity : .opacity.combined(with: .offset(y: 8)))
       case .error:
         errorBody
-          .transition(.opacity.combined(with: .offset(y: 8)))
+          .transition(reduceMotion ? .identity : .opacity.combined(with: .offset(y: 8)))
       }
     }
     .frame(
@@ -261,7 +294,7 @@ struct DictationOverlayView: View {
     // Platform-backed TextEditor content must never paint into the action/footer
     // siblings, including the mode-transition and live-resize frames.
     .clipped()
-    .animation(CSMotion.floatIn, value: state.mode)
+    .animation(reduceMotion ? nil : CSMotion.floatIn, value: state.mode)
   }
 
   private var listeningBody: some View {
@@ -315,15 +348,22 @@ struct DictationOverlayView: View {
         .frame(minHeight: bodyMinHeight)
         .accessibilityIdentifier("overlay-transcript-formatted")
       } else {
-        Text(state.formattedText)
-          .csFont(19, .medium)
-          .foregroundStyle(CSColor.textHigh)
-          .lineSpacing(6)
-          .frame(maxWidth: .infinity, minHeight: bodyMinHeight, alignment: .topLeading)
-          .contentShape(Rectangle())
-          .onTapGesture { state.beginTranscriptEdit() }
-          .accessibilityIdentifier("overlay-transcript-formatted")
-          .help("Click to edit. The caret stays in the other app until you do.")
+        Button {
+          state.beginTranscriptEdit()
+        } label: {
+          Text(state.formattedText)
+            .csFont(19, .medium)
+            .foregroundStyle(CSColor.textHigh)
+            .lineSpacing(6)
+            .frame(maxWidth: .infinity, minHeight: bodyMinHeight, alignment: .topLeading)
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .accessibilityLabel("Final transcript")
+        .accessibilityValue(state.formattedText)
+        .accessibilityHint("Edit transcript")
+        .accessibilityIdentifier("overlay-transcript-formatted")
+        .help("Click to edit. The caret stays in the other app until you do.")
       }
     }
   }
@@ -363,7 +403,7 @@ struct DictationOverlayView: View {
             .csFont(15, .medium)
             .foregroundStyle(CSColor.textBody)
             .fixedSize(horizontal: false, vertical: true)
-          Text("Recording stopped before a transcript was available.")
+          Text(state.errorLifecycleDetail)
             .csMono(11, .medium)
             .foregroundStyle(CSColor.textFaint)
         }
@@ -371,7 +411,7 @@ struct DictationOverlayView: View {
       }
       if let target = state.recoverySettingsSection {
         Button("Open \(target.title) Settings") {
-          SettingsDeepLink.pendingSection = target
+          SettingsDeepLink.present(target, anchor: state.recoverySettingsAnchor)
           openSettings()
         }
         .buttonStyle(.borderedProminent)
@@ -392,8 +432,13 @@ struct DictationOverlayView: View {
   /// CloseDot stays the always-visible dismiss path; Close remains in the menu.
   @ViewBuilder
   private var compactPrimaryAction: some View {
+    compactPrimaryAction(forceCompactTitle: false)
+  }
+
+  @ViewBuilder
+  private func compactPrimaryAction(forceCompactTitle: Bool) -> some View {
     if let kind = state.primaryActionKind {
-      splitPrimaryAction(kind: kind)
+      splitPrimaryAction(kind: kind, compact: forceCompactTitle)
     }
   }
 
@@ -426,11 +471,6 @@ struct DictationOverlayView: View {
         }
       }
       Spacer(minLength: 0)
-      if state.showsFooterHonesty {
-        Text(state.footerHonestyText)
-          .foregroundStyle(CSColor.textFaintAlt)
-          .accessibilityIdentifier("overlay-phase-footer")
-      }
     }
     .csMono(10, .medium)
     .padding(.horizontal, 16)
@@ -448,7 +488,27 @@ struct DictationOverlayView: View {
 
 /// Word-reveal caret: 8×18 terracotta block, softpulsing on a 1s cycle (mock).
 private struct BlinkingCaret: View {
+  @Environment(\.accessibilityReduceMotion) private var reduceMotion
+
+  var body: some View {
+    if reduceMotion {
+      caret.opacity(1)
+    } else {
+      AnimatedOverlayCaret()
+    }
+  }
+
+  private var caret: some View {
+    RoundedRectangle(cornerRadius: 1, style: .continuous)
+      .fill(CSColor.terracotta)
+      .frame(width: 7, height: 15)
+      .padding(.bottom, 3)
+  }
+}
+
+private struct AnimatedOverlayCaret: View {
   @State private var on = false
+
   var body: some View {
     RoundedRectangle(cornerRadius: 1, style: .continuous)
       .fill(CSColor.terracotta)
