@@ -1,12 +1,15 @@
 ---
 name: codescribe
-version: 0.2.0
+version: 0.3.0
 description: >-
   This skill should be used when the user asks to "codescribe", "wpięcie w bus",
   "Hej James", "Bus Demux", "named agent on the transcript bus", or runs
   /codescribe. It teaches an agent to attach to Codescribe.app's clean
   transcript bus, ask the human for a name, hear live utterances, and act only
-  on the seal. Outcome: one mic, one jsonl, named mailbox, no second recorder.
+  on the seal. Also covers the `codescribe` CLI client — "transcribe last",
+  "transcribe live", dictation into the shell line — for "wklej do terminala",
+  "dyktowanie do CLI", "gadanie do agenta bez apki". Outcome: one mic, one
+  jsonl, named mailbox, no second recorder.
 loctree_value: "primary repo map for structural/literal repository work"
 aicx_value: "intent, session, and decision-context retrieval"
 dogfooding: "required for repo-impacting work"
@@ -120,6 +123,26 @@ python3 ~/.codescribe/agent-bridge/runtime/bin/bus-demux.py \
 The old handle must be closed before this command; the lease lock correctly
 refuses two live followers. Unnamed agents do not pass (exit 2).
 
+## Known-broken: the follower is deaf to app takes (measured 2026-08-28)
+
+`bus-demux.py` accepts one schema, `codescribe.transcript.v1`. Since
+2026-08-27 22:36 the app has written its words on
+`codescribe.transcript-evidence.v1`, whose text lives in `rendered_text` and
+whose terminal state is `reducer_action: "record_ledger_terminal_seal"` — there
+is no `status` field to match at all. The follower therefore sees lifecycle
+rows only and emits nothing for a real take, whatever the lease, name or
+`--drafts` say.
+
+Prove which schema is live before claiming you hear anything:
+
+```bash
+tail -200 ~/.codescribe/transcript-events.jsonl | jq -r .schema | sort | uniq -c
+```
+
+Recent rows on `transcript-evidence.v1` mean §1 cannot work. Say so plainly.
+Do not narrate hearing you cannot have. `codescribe transcribe live` (§6) does
+speak both schemas and is the working way to watch a take today.
+
 ## Workflow
 
 ### 1. Hear live, act on seal
@@ -138,8 +161,14 @@ Detail: [`references/live-vs-seal.md`](references/live-vs-seal.md).
 
 ### 2. Dual-use Fn
 
-When nobody is on the demux, Fn is ordinary paste. That is most of the time.
-The bus still writes. You simply are not listening.
+When nobody is on the demux the bus still writes; you simply are not listening.
+That is most of the time.
+
+Fn is **not** an automatic paste. `docs/HOTKEYS_CONTRACT.md` states the hotkey
+picks the _intent_ and does not paste into the frontmost app, and no
+`DeliveryIntent` exists for a Hold-Fn route — every production caller of
+`resolve_delivery_route` is an overlay or agent click. What actually reaches a
+terminal today is §6.
 
 ### 3. Mailbox
 
@@ -170,11 +199,50 @@ Then `AGENTS.md`: Living Tree, loctree first, `install-if-idle` when idle,
 `release-stable` is the product SKU. Do not start Voice Lab. Do not rewrite
 format prompts.
 
+### 6. CLI surface — hearing and pasting without the app UI
+
+The `codescribe` binary is a first-class client of the same bus. It never opens
+a second microphone.
+
+| Need                                            | Command                          |
+| ----------------------------------------------- | -------------------------------- |
+| Watch a take as it is spoken                    | `codescribe transcribe live`     |
+| The last completed transcript, on stdout        | `codescribe transcribe last`     |
+| A file through the product pipeline, onto the bus | `codescribe transcribe <file>` |
+
+`transcribe live` dispatches on `schema`, so it hears both families, and prints
+only what changed — a reducer replacement is reported on stderr by character
+offset instead of reprinting the whole document. `transcribe last` prints the
+words and nothing else, with **no trailing newline**: pasted into a prompt a
+newline is Enter.
+
+Dictation into the shell line is a line-editor widget, not a synthetic paste:
+
+```bash
+source <checkout>/scripts/codescribe.zsh   # binds Ctrl-X Ctrl-V
+```
+
+A synthetic Cmd+V targets the frontmost application — which is the terminal
+running the command. The delivery throne already refuses that case as
+`refuse_paste_into_self`, and attempting it needs an Accessibility grant. The
+widget inserts under a key the human presses: no permission, no synthetic event
+in the trust path, identical behaviour in tmux, zellij and a bare tty. It
+refuses an empty bus with a message rather than inserting nothing silently.
+
+Compose everything else from stdout rather than asking for another flag:
+
+```bash
+codescribe transcribe last | pbcopy
+tmux send-keys -t %3 -l -- "$(codescribe transcribe last)"
+```
+
 ## Acceptance Criteria
 
 The attach run is **done** when:
 
-- [ ] Bus file exists, schema `codescribe.transcript.v1`
+- [ ] Bus file exists, and you named which schema its RECENT rows carry —
+      `codescribe.transcript.v1` or `codescribe.transcript-evidence.v1`. On the
+      evidence schema the follower is deaf; report that instead of attaching
 - [ ] Follower is the installed `~/.codescribe/agent-bridge/runtime/bin/bus-demux.py`, not a second mic
 - [ ] You asked for a name in chat and bound `--name <stem>`
 - [ ] Attach receipt names provider/session/lease and the running handle is preserved
@@ -190,6 +258,8 @@ The attach run is **done** when:
 - Treating overlay as the chat
 - Pasting ERi / `vc-workflow` rails into this skill
 - Assigning yourself Darek
+- Reporting that you hear the human while the follower's schema filter cannot
+  see the rows the app is actually writing
 
 ## Examples
 
