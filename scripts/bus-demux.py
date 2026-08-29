@@ -54,6 +54,7 @@ ASSIGN_RE = re.compile(
     r"you(?:['’]re|\s+are)|cześć|hello)\s+([A-Za-zĄĆĘŁŃÓŚŹŻąćęłńóśźż]{2,32})"
 )
 SAFE_LEASE_RE = re.compile(r"^[a-zA-Z0-9_-]{8,80}$")
+LAST_SESSION_WAV = "last_session.wav"
 BUS_PATH_ENV_KEYS = (
     "CODESCRIBE_TRANSCRIPT_BUS_PATH",
     "XDG_STATE_HOME",
@@ -198,6 +199,33 @@ def event_kind(status: Any) -> str:
     }.get(str(status), "event")
 
 
+def valid_session_audio_id(session_id: Any) -> str | None:
+    """Same alphabet as the controller retain path. Never a filesystem path."""
+    if not isinstance(session_id, str):
+        return None
+    if not SAFE_LEASE_RE.fullmatch(session_id):
+        return None
+    return session_id
+
+
+def assigned_session_wav(
+    event: dict[str, Any], env: dict[str, str] | None = None
+) -> str | None:
+    """Map a Bus take to its own wav. ``last_session.wav`` is never identity."""
+    env = env if env is not None else dict(os.environ)
+    sid = valid_session_audio_id(
+        event.get("session_id") or event.get("occurrence_session_id")
+    )
+    if not sid:
+        return None
+    explicit = event.get("wav")
+    if isinstance(explicit, str) and explicit.strip():
+        path = Path(os.path.expanduser(explicit.strip()))
+        if path.name != LAST_SESSION_WAV:
+            return str(path)
+    return str(_config_dir(env) / "sessions" / f"{sid}.wav")
+
+
 def slim(
     event: dict[str, Any], audience: str, kind: str | None = None
 ) -> dict[str, Any]:
@@ -221,6 +249,9 @@ def slim(
         "text": event.get("text") if isinstance(event.get("text"), str) else "",
         "state_change_allowed": status == SEALED,
     }
+    wav = assigned_session_wav(event)
+    if wav:
+        payload["wav"] = wav
     if producer_schema == EVIDENCE_SCHEMA:
         payload.update(
             {

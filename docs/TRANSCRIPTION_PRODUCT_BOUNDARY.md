@@ -99,7 +99,8 @@ ani żadnego silnika STT.
 ## Kryteria zakończenia
 
 - pełny WAV jest promowany do recovery przed ryzykowną terminalizacją tekstu;
-- `last_session.wav` albo jawny recovery artifact wskazuje najnowszy take;
+- `~/.codescribe/sessions/<session_id>.wav` is the Bus take's own audio;
+  `last_session.wav` is only a latest-take alias and is never demux identity;
 - niepełny seal nie jest raportowany jako awaria recordera;
 - Bus zawsze domyka lifecycle i zachowuje prawdziwy producer source;
 - Retranscribe potrafi użyć recovery artifact bez ręcznego szukania w `/tmp`;

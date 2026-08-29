@@ -119,6 +119,12 @@ never opens audio or changes transcript text. State change is permitted only by
 the downstream consumer of a ledger-authenticated projection, never by a draft
 or preview envelope.
 
+Each Bus `session_id` owns one wav at `~/.codescribe/sessions/<session_id>.wav`
+(or `$CODESCRIBE_DATA_DIR/sessions/<session_id>.wav`). The controller copies
+the take there at stop. `bus-demux` assigns that path onto every envelope for
+the session. It must not read or emit `last_session.wav`: that file is only the
+latest-take alias for overlay Retranscribe and `codescribe transcribe last`.
+
 `codescribe transcribe live` uses the shared Rust projection reader and writes
 `codescribe.transcript-projection.v1` JSONL to stdout. Every output row is an
 exact full `rendered_text` snapshot with `kind=live_revision|terminal_seal` and

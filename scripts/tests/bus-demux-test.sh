@@ -488,4 +488,45 @@ finally:
     lumen.close()
 PY
 
+# Per-take wav identity: demux assigns ~/.codescribe/sessions/<session_id>.wav
+# (or $CODESCRIBE_DATA_DIR/sessions/...). last_session.wav is never the id.
+WAV_HOME="$WORKDIR/codescribe-home"
+mkdir -p "$WAV_HOME/sessions"
+printf 'session-take' >"$WAV_HOME/sessions/test-session.wav"
+printf 'stale-alias' >"$WAV_HOME/last_session.wav"
+: >"$BUS"
+CODESCRIBE_DATA_DIR="$WAV_HOME" seal "James, ten take ma własne audio."
+got="$(CODESCRIBE_DATA_DIR="$WAV_HOME" run_once --name james)"
+python3 - "$got" "$WAV_HOME" <<'PY'
+import json, sys
+from pathlib import Path
+o = json.loads(sys.argv[1])
+home = Path(sys.argv[2]).resolve()
+assigned = Path(o["wav"]).resolve()
+assert assigned == home / "sessions" / "test-session.wav", o
+assert assigned.name != "last_session.wav", o
+assert "last_session.wav" not in o["wav"], o
+PY
+
+python3 - "$DEMUX" "$WAV_HOME" <<'PY'
+import importlib.util, os, sys
+from pathlib import Path
+
+spec = importlib.util.spec_from_file_location("bus_demux", sys.argv[1])
+module = importlib.util.module_from_spec(spec)
+assert spec.loader is not None
+spec.loader.exec_module(module)
+home = Path(sys.argv[2]).resolve()
+env = {"CODESCRIBE_DATA_DIR": str(home)}
+event = {
+    "session_id": "test-session",
+    "wav": str(home / "last_session.wav"),
+}
+wav = module.assigned_session_wav(event, env)
+assert Path(wav).name != module.LAST_SESSION_WAV, wav
+assert Path(wav).resolve() == home / "sessions" / "test-session.wav", wav
+assert module.assigned_session_wav({"session_id": "../etc"}, env) is None
+assert module.assigned_session_wav({"session_id": "short"}, env) is None
+PY
+
 echo "bus-demux: ok"

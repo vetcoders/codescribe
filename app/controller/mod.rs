@@ -210,14 +210,77 @@ struct HoldStartSession {
     pre_overlay_frontmost_app: Arc<RwLock<Option<String>>>,
 }
 
-/// Keep the last session WAV at a stable path so overlay Retranscribe
-/// (Full HQ / Cloud) can re-run without depending on a temp file still
-/// being there after stop.
-fn retain_last_session_audio(path: &std::path::Path) {
-    let dest = crate::config::Config::config_dir().join("last_session.wav");
-    match std::fs::copy(path, &dest) {
-        Ok(_) => info!("last_session.wav retained at {}", dest.display()),
-        Err(err) => warn!("last_session.wav retain failed: {err:#}"),
+/// Safe filename fragment for a controller session id. Rejects path
+/// traversal; UUIDs and the bus-demux lease alphabet pass.
+fn valid_session_audio_id(session_id: &str) -> Option<&str> {
+    let ok = (8..=80).contains(&session_id.len())
+        && session_id
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_');
+    ok.then_some(session_id)
+}
+
+/// Canonical wav for one Bus take: `~/.codescribe/sessions/<session_id>.wav`.
+/// Bus-demux assigns this path to attached followers. `last_session.wav` is
+/// only a latest-take alias for overlay / `codescribe transcribe last`.
+fn session_audio_path(session_id: &str) -> Option<std::path::PathBuf> {
+    valid_session_audio_id(session_id).map(|id| {
+        crate::config::Config::config_dir()
+            .join("sessions")
+            .join(format!("{id}.wav"))
+    })
+}
+
+/// Keep the take WAV under its Bus `session_id` so named followers never
+/// share or overwrite a single slot. Also refresh the latest-take alias.
+fn retain_session_audio(session_id: Option<&str>, path: &std::path::Path) {
+    if let Some(dest) = session_id.and_then(session_audio_path) {
+        if let Some(parent) = dest.parent() {
+            if let Err(err) = std::fs::create_dir_all(parent) {
+                warn!("session wav dir failed: {err:#}");
+            }
+        }
+        match std::fs::copy(path, &dest) {
+            Ok(_) => info!("session wav retained at {}", dest.display()),
+            Err(err) => warn!("session wav retain failed: {err:#}"),
+        }
+    } else {
+        warn!("session wav skipped: missing or unsafe session_id");
+    }
+    let alias = crate::config::Config::config_dir().join("last_session.wav");
+    match std::fs::copy(path, &alias) {
+        Ok(_) => info!("last_session.wav alias updated at {}", alias.display()),
+        Err(err) => warn!("last_session.wav alias failed: {err:#}"),
+    }
+}
+
+#[cfg(test)]
+mod session_audio_id_tests {
+    use super::{session_audio_path, valid_session_audio_id};
+
+    #[test]
+    fn uuid_session_ids_are_assigned_under_sessions_not_last_session() {
+        let id = "fa3fd371-db9b-4bd5-8fc2-3a5940fa62a3";
+        assert_eq!(valid_session_audio_id(id), Some(id));
+        let path = session_audio_path(id).expect("path");
+        assert_eq!(
+            path.file_name().and_then(|name| name.to_str()),
+            Some("fa3fd371-db9b-4bd5-8fc2-3a5940fa62a3.wav")
+        );
+        assert_eq!(
+            path.parent()
+                .and_then(|parent| parent.file_name())
+                .and_then(|name| name.to_str()),
+            Some("sessions")
+        );
+    }
+
+    #[test]
+    fn traversal_and_short_ids_are_refused() {
+        assert!(valid_session_audio_id("../etc").is_none());
+        assert!(valid_session_audio_id("short").is_none());
+        assert!(valid_session_audio_id("").is_none());
+        assert!(session_audio_path("../etc").is_none());
     }
 }
 
@@ -2848,7 +2911,8 @@ impl RecordingController {
             let phase3 = std::time::Instant::now();
             info!("stop_toggle_inner: PHASE 3 — reducer-owned transcript already delivered");
             if let Some(path) = raw_audio_path_opt.as_deref() {
-                retain_last_session_audio(path);
+                let take_id = self.session_id.read().await.clone();
+                retain_session_audio(take_id.as_deref(), path);
             }
             let r = Ok(ProcessRecordingOutcome {
                 transcript_present: !streaming_text.trim().is_empty(),
@@ -2993,7 +3057,7 @@ impl RecordingController {
     /// - Neither: Toggle mode - respects AI_FORMATTING_ENABLED setting
     async fn process_recording(
         &self,
-        _session_id: Option<String>,
+        session_id: Option<String>,
         assistive: bool,
         hold_mode: HoldMode,
         force_raw: bool,
@@ -3016,7 +3080,8 @@ impl RecordingController {
         drop(recorder_guard); // Release lock
 
         if let Some(path) = raw_audio_path_opt.as_deref() {
-            retain_last_session_audio(path);
+            let take_id = session_id.clone().or(self.session_id.read().await.clone());
+            retain_session_audio(take_id.as_deref(), path);
         }
         let _ = (assistive, hold_mode, force_raw, force_ai);
         Ok(ProcessRecordingOutcome {
