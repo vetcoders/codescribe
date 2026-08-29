@@ -7,6 +7,7 @@
 pub mod cli_transcript_lane;
 pub mod emitter;
 pub mod transcript_bus;
+pub mod transcript_projection;
 
 pub use cli_transcript_lane::CliTranscriptLane;
 pub use emitter::PresentationEmitter;

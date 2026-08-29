@@ -100,25 +100,33 @@ fn main() -> anyhow::Result<()> {
 }
 
 fn transcribe_live(language: Option<String>) -> anyhow::Result<()> {
-    use codescribe::presentation::transcript_bus::{CleanTranscriptEvent, transcript_bus_path};
+    use codescribe::presentation::transcript_bus::transcript_bus_path;
+    use codescribe::presentation::transcript_projection::{
+        TranscriptBusFileWake, TranscriptProjectionReader,
+    };
     use std::io::{Read, Seek, SeekFrom, Write as _};
+    #[cfg(unix)]
+    use std::os::unix::fs::MetadataExt as _;
 
     let path = transcript_bus_path();
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent)?;
+    }
     let mut offset = std::fs::metadata(&path)
         .map(|metadata| metadata.len())
         .unwrap_or(0);
-    let mut pending = Vec::<u8>::new();
-    // The ledger document as this reader last printed it, and whose session it
-    // belongs to. Both live across lines, not across sessions.
-    let mut document = String::new();
-    let mut document_session: Option<String> = None;
-    let mut seal_reported = false;
+    #[cfg(unix)]
+    let mut file_identity = std::fs::metadata(&path)
+        .ok()
+        .map(|metadata| (metadata.dev(), metadata.ino()));
+    let mut reader = TranscriptProjectionReader::new();
+    let mut wake = TranscriptBusFileWake::new(&path)?;
     let runtime = tokio::runtime::Builder::new_current_thread()
         .enable_all()
         .build()?;
 
     runtime.block_on(async move {
-        eprintln!("codescribe live: app transcript bus -> live draft stdout");
+        eprintln!("codescribe live: app transcript bus -> full projection JSONL stdout");
         eprintln!("bus={} start=end stop=Ctrl-C", path.display());
         eprintln!(
             "language_hint={} owner=Codescribe.app",
@@ -126,13 +134,21 @@ fn transcribe_live(language: Option<String>) -> anyhow::Result<()> {
         );
 
         loop {
+            let wait = tokio::task::spawn_blocking(move || {
+                let result = wake.wait(std::time::Duration::from_secs(2));
+                (wake, result)
+            });
             tokio::select! {
                 signal = tokio::signal::ctrl_c() => {
                     signal?;
                     eprintln!("codescribe live: stopped");
                     return Ok(());
                 }
-                () = tokio::time::sleep(std::time::Duration::from_millis(100)) => {}
+                result = wait => {
+                    let (returned_wake, wait_result) = result?;
+                    wake = returned_wake;
+                    wait_result?;
+                }
             }
 
             let mut file = match std::fs::File::open(&path) {
@@ -140,196 +156,55 @@ fn transcribe_live(language: Option<String>) -> anyhow::Result<()> {
                 Err(error) if error.kind() == std::io::ErrorKind::NotFound => continue,
                 Err(error) => return Err(error.into()),
             };
-            let file_len = file.metadata()?.len();
-            if file_len < offset {
+            let metadata = file.metadata()?;
+            let file_len = metadata.len();
+            #[cfg(unix)]
+            let identity_changed =
+                file_identity.is_some_and(|identity| identity != (metadata.dev(), metadata.ino()));
+            #[cfg(not(unix))]
+            let identity_changed = false;
+            if identity_changed || file_len < offset {
                 offset = 0;
-                pending.clear();
+                reader.reset_authority();
+                eprintln!("codescribe live: Bus rotation/truncation opened a new authority domain");
+            }
+            #[cfg(unix)]
+            {
+                file_identity = Some((metadata.dev(), metadata.ino()));
             }
             file.seek(SeekFrom::Start(offset))?;
             let mut chunk = Vec::new();
             file.read_to_end(&mut chunk)?;
             offset = offset.saturating_add(u64::try_from(chunk.len()).unwrap_or(u64::MAX));
-            pending.extend_from_slice(&chunk);
-
-            while let Some(newline) = pending.iter().position(|byte| *byte == b'\n') {
-                let line: Vec<u8> = pending.drain(..=newline).collect();
-                let line = &line[..line.len().saturating_sub(1)];
-                if line.is_empty() {
-                    continue;
+            if !chunk.is_empty() {
+                let (lines, errors) = live_projection_lines(&mut reader, &chunk)?;
+                let stdout = std::io::stdout();
+                let mut out = stdout.lock();
+                for line in lines {
+                    writeln!(out, "{line}")?;
                 }
-                // ONE FILE, TWO SCHEMAS. Deserializing every line straight into
-                // `CleanTranscriptEvent` made this reader both deaf and loud:
-                // app sessions have written their text only on
-                // `codescribe.transcript-evidence.v1` since 2026-08-27, so the
-                // clean lane carried nothing but lifecycle, and every evidence
-                // row printed a parse error. Dispatch on the schema instead.
-                let value: serde_json::Value = match serde_json::from_slice(line) {
-                    Ok(value) => value,
-                    Err(error) => {
-                        eprintln!("codescribe live: unreadable bus line: {error}");
-                        continue;
-                    }
-                };
-                let schema = value
-                    .get("schema")
-                    .and_then(serde_json::Value::as_str)
-                    .unwrap_or_default();
-
-                if schema == EVIDENCE_SCHEMA {
-                    let Ok(event) = serde_json::from_value::<LiveEvidenceEvent>(value) else {
-                        continue;
-                    };
-                    // A new session restarts the document; carrying the previous
-                    // one over would report the whole next take as a revision.
-                    if document_session.as_deref() != Some(event.session_id.as_str()) {
-                        document_session = Some(event.session_id.clone());
-                        document.clear();
-                        seal_reported = false;
-                    }
-                    match document_change(&document, &event.rendered_text) {
-                        LiveDocumentChange::Unchanged => {}
-                        LiveDocumentChange::Appended(tail) => {
-                            let stdout = std::io::stdout();
-                            let mut out = stdout.lock();
-                            writeln!(out, "{tail}")?;
-                            out.flush()?;
-                        }
-                        LiveDocumentChange::Revised { from_char, tail } => {
-                            // stdout is append-only, so a replacement cannot be
-                            // unprinted. Say on stderr where it landed and print
-                            // the corrected tail, rather than silently repeating
-                            // the whole document.
-                            eprintln!(
-                                "codescribe live: revision replaced from char {from_char} ({} chars) session={}",
-                                document.chars().count().saturating_sub(from_char),
-                                &event.session_id[..8.min(event.session_id.len())],
-                            );
-                            let stdout = std::io::stdout();
-                            let mut out = stdout.lock();
-                            writeln!(out, "{tail}")?;
-                            out.flush()?;
-                        }
-                    }
-                    document = event.rendered_text;
-                    // A terminal seal emits one row per document entry — eight
-                    // on a real take — all carrying the same finished text. The
-                    // seal is one event to a reader, so announce it once.
-                    if event.reducer_action == "record_ledger_terminal_seal" {
-                        if !seal_reported {
-                            seal_reported = true;
-                            eprintln!(
-                                "codescribe live: terminal seal session={} chars={}",
-                                &event.session_id[..8.min(event.session_id.len())],
-                                document.chars().count()
-                            );
-                        }
-                    } else {
-                        seal_reported = false;
-                    }
-                    continue;
+                for error in errors {
+                    eprintln!("codescribe live: unreadable bus line: {error}");
                 }
-
-                let Ok(event) = serde_json::from_value::<CleanTranscriptEvent>(value) else {
-                    continue;
-                };
-                if let Some(text) = live_event_text(&event.status, &event.text) {
-                    let stdout = std::io::stdout();
-                    let mut out = stdout.lock();
-                    writeln!(out, "{text}")?;
-                    out.flush()?;
-                } else if event.status == "utterance_revised" {
-                    eprintln!(
-                        "codescribe live: revision available session={} utterance={}",
-                        event.session_id,
-                        event
-                            .utterance_id
-                            .map(|id| id.to_string())
-                            .unwrap_or_else(|| "unknown".to_string())
-                    );
-                } else if event.status == "transcript_sealed" {
-                    eprintln!(
-                        "codescribe live: transcript sealed session={} chars={}",
-                        event.session_id,
-                        event.text.chars().count()
-                    );
-                }
+                out.flush()?;
             }
         }
     })
 }
 
-/// The committed-projection family the app actually writes its words to.
-const EVIDENCE_SCHEMA: &str = "codescribe.transcript-evidence.v1";
-
-/// The few evidence fields a live reader needs. Deliberately narrow: the full
-/// event carries acoustic receipts and coverage that a text follower must not
-/// depend on, and that would break this reader every time they change shape.
-#[derive(serde::Deserialize)]
-struct LiveEvidenceEvent {
-    session_id: String,
-    reducer_action: String,
-    #[serde(default)]
-    rendered_text: String,
-}
-
-/// How the ledger document moved, from the point of view of a reader that has
-/// already printed `previous` and can never take it back.
-#[derive(Debug, PartialEq, Eq)]
-enum LiveDocumentChange<'a> {
-    Unchanged,
-    /// The document only grew: print the new tail.
-    Appended(&'a str),
-    /// The document was rewritten from `from_char` onward. `tail` is the
-    /// corrected remainder; the characters before it still stand.
-    Revised {
-        from_char: usize,
-        tail: &'a str,
-    },
-}
-
-/// Classify a ledger document transition for an append-only stream.
-///
-/// The reducer both appends and replaces (measured on a real take: three
-/// replacements among eight revisions), so a reader that assumes growth prints
-/// the whole document again on every correction. Splitting on the first
-/// differing character keeps stdout to the words themselves.
-fn document_change<'a>(previous: &str, current: &'a str) -> LiveDocumentChange<'a> {
-    if current == previous {
-        return LiveDocumentChange::Unchanged;
-    }
-    // Char-wise, not byte-wise: a Polish diacritic is multi-byte and slicing a
-    // byte offset would panic.
-    let mut shared_bytes = 0usize;
-    let mut shared_chars = 0usize;
-    for (left, right) in previous.chars().zip(current.chars()) {
-        if left != right {
-            break;
+fn live_projection_lines(
+    reader: &mut codescribe::presentation::transcript_projection::TranscriptProjectionReader,
+    bytes: &[u8],
+) -> Result<(Vec<String>, Vec<String>), serde_json::Error> {
+    let mut lines = Vec::new();
+    let mut errors = Vec::new();
+    for result in reader.push_bytes(bytes) {
+        match result {
+            Ok(projection) => lines.push(projection.normalized_json()?),
+            Err(error) => errors.push(error.to_string()),
         }
-        shared_bytes += left.len_utf8();
-        shared_chars += 1;
     }
-    let tail = current[shared_bytes..].trim();
-    if shared_chars == previous.chars().count() {
-        if tail.is_empty() {
-            return LiveDocumentChange::Unchanged;
-        }
-        return LiveDocumentChange::Appended(tail);
-    }
-    LiveDocumentChange::Revised {
-        from_char: shared_chars,
-        tail,
-    }
-}
-
-/// Plain stdout is intentionally append-only and therefore shows each new draft
-/// slot once. Revisions and the final seal remain machine-readable in the
-/// canonical NDJSON bus and are announced on stderr without transcript content.
-fn live_event_text<'a>(status: &str, text: &'a str) -> Option<&'a str> {
-    if status != "utterance_draft" {
-        return None;
-    }
-    let text = text.trim();
-    (!text.is_empty()).then_some(text)
+    Ok((lines, errors))
 }
 
 /// Read the bus once and hand the last completed transcript to stdout.
@@ -389,7 +264,7 @@ fn tail_text(value: &serde_json::Value) -> Option<&str> {
         .get("schema")
         .and_then(serde_json::Value::as_str)
         .unwrap_or_default();
-    if schema == EVIDENCE_SCHEMA {
+    if schema == codescribe::presentation::transcript_projection::EVIDENCE_SCHEMA {
         let text = value
             .get("rendered_text")
             .and_then(serde_json::Value::as_str)?
@@ -558,88 +433,35 @@ mod tests {
         assert!(matches!(mode, Some(TranscribeMode::Live)));
     }
 
-    /// The witness is what an append-only stream would PRINT, replayed over a
-    /// real revision trace (session `2bf9343a`: appends at revisions 1/5/12/18,
-    /// replacements at 23/25/27, append at 29). A reader that treats every
-    /// revision as growth reprints the whole document each time; joining what
-    /// this classifier emits must reproduce the final document exactly once.
     #[test]
-    fn replaying_a_ledger_never_prints_the_document_twice() {
-        let revisions = [
-            "alfa",
-            "alfa beta",
-            "alfa beta gamma",
-            "alfa beta gama",       // replacement: the reducer rewrote the tail
-            "alfa beta gama delta", // append onto the replacement
-        ];
-        let mut document = String::new();
-        let mut printed: Vec<String> = Vec::new();
-        let mut revisions_seen = 0;
-        for revision in revisions {
-            match document_change(&document, revision) {
-                LiveDocumentChange::Unchanged => {}
-                LiveDocumentChange::Appended(tail) => printed.push(tail.to_string()),
-                LiveDocumentChange::Revised { tail, .. } => {
-                    revisions_seen += 1;
-                    printed.push(tail.to_string());
-                }
-            }
-            document = revision.to_string();
-        }
+    fn live_consumer_stdout_is_exact_full_snapshot_jsonl() {
+        use codescribe::presentation::transcript_projection::TranscriptProjectionReader;
 
-        assert_eq!(revisions_seen, 1, "the replacement must be reported as one");
-        // Every printed piece is short: nothing reprinted the whole document.
-        assert!(
-            printed.iter().all(|piece| piece.len() < document.len()),
-            "a piece as long as the document means the reader reprinted it: {printed:?}"
-        );
-        // And the final line carries the correction, not the superseded text.
-        assert_eq!(printed.last().map(String::as_str), Some("delta"));
-    }
-
-    #[test]
-    fn a_document_that_only_grows_prints_only_its_new_tail() {
-        assert_eq!(
-            document_change("alfa beta", "alfa beta gamma"),
-            LiveDocumentChange::Appended("gamma")
-        );
-        assert_eq!(
-            document_change("alfa", "alfa"),
-            LiveDocumentChange::Unchanged
-        );
-        assert_eq!(
-            document_change("alfa", "alfa   "),
-            LiveDocumentChange::Unchanged
-        );
-    }
-
-    /// Polish text is multi-byte. The shared prefix here spans 8 characters but
-    /// 12 bytes, so an implementation that slices at the character count lands
-    /// mid-codepoint and panics — that gap is the whole point of the test.
-    #[test]
-    fn a_revision_inside_a_diacritic_splits_on_a_character_not_a_byte() {
-        let change = document_change("zażółć gesla jazn", "zażółć gęślą jaźń");
-        let LiveDocumentChange::Revised { from_char, tail } = change else {
-            panic!("expected a revision, got {change:?}");
-        };
-        assert_eq!(from_char, 8, "diverges at the ninth character");
-        assert_ne!(
-            from_char,
-            "zażółć g".len(),
-            "byte and char offsets must differ"
-        );
-        assert_eq!(tail, "ęślą jaźń");
-    }
-
-    #[test]
-    fn live_plain_text_emits_only_nonempty_new_drafts() {
-        assert_eq!(
-            live_event_text("utterance_draft", "  instrukcja  "),
-            Some("instrukcja")
-        );
-        assert_eq!(live_event_text("utterance_draft", "  "), None);
-        assert_eq!(live_event_text("utterance_revised", "poprawka"), None);
-        assert_eq!(live_event_text("transcript_sealed", "całość"), None);
+        let input = serde_json::json!({
+            "schema": "codescribe.transcript-evidence.v1",
+            "sequence": 9,
+            "session_id": "session-a",
+            "reducer_revision": 4,
+            "reducer_action": "apply_ledger_decision",
+            "occurrence_session_id": "session-a",
+            "capture_epoch": 2,
+            "sample_start": 100,
+            "sample_end": 200,
+            "document_index": 1,
+            "rendered_text": "całkowicie przepisany dokument"
+        })
+        .to_string()
+            + "\n";
+        let mut reader = TranscriptProjectionReader::new();
+        let (lines, errors) =
+            live_projection_lines(&mut reader, input.as_bytes()).expect("projection serialization");
+        assert!(errors.is_empty());
+        assert_eq!(lines.len(), 1);
+        let output: serde_json::Value =
+            serde_json::from_str(&lines[0]).expect("normalized projection JSON");
+        assert_eq!(output["kind"], "live_revision");
+        assert_eq!(output["reducer_revision"], 4);
+        assert_eq!(output["rendered_text"], "całkowicie przepisany dokument");
     }
 
     /// One evidence row as the app writes it. `session_ended` really does carry

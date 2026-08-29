@@ -119,6 +119,16 @@ never opens audio or changes transcript text. State change is permitted only by
 the downstream consumer of a ledger-authenticated projection, never by a draft
 or preview envelope.
 
+`codescribe transcribe live` uses the shared Rust projection reader and writes
+`codescribe.transcript-projection.v1` JSONL to stdout. Every output row is an
+exact full `rendered_text` snapshot with `kind=live_revision|terminal_seal` and
+the source session, sequence, reducer revision/action, occurrence coordinates,
+and document index. Consumers replace their displayed snapshot when metadata is
+newer; stdout never pretends that a textual suffix can encode a replacement.
+Lifecycle rows remain text-free control observations and produce no projection.
+On macOS the follower wakes from kqueue vnode events; a bounded timeout exists
+only to recover from a missed rotation/replacement watch.
+
 ## C11 evidence boundary
 
 `484095ce` was the last executable-code cut before documentation successor
