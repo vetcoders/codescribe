@@ -23,6 +23,7 @@ import hashlib
 import json
 import os
 import re
+import select
 import sys
 import time
 from pathlib import Path
@@ -372,6 +373,79 @@ def iter_new_lines(path: Path, offset: int) -> tuple[list[tuple[str, int]], int]
     return entries, entries[-1][1] if entries else offset
 
 
+class BusEventTrigger:
+    """Block on an OS file event; interval sleep is a non-macOS fallback only."""
+
+    def __init__(self, path: Path, fallback_interval: float) -> None:
+        self.path = path
+        self.fallback_interval = max(0.01, fallback_interval)
+        self.mode = "interval-fallback"
+        self._queue: Any | None = None
+        self._descriptor: int | None = None
+        self._arm_kqueue()
+
+    def _arm_kqueue(self) -> None:
+        if not hasattr(select, "kqueue") or self._queue is not None:
+            return
+        descriptor: int | None = None
+        queue: Any | None = None
+        try:
+            descriptor = os.open(self.path, os.O_RDONLY)
+            queue = select.kqueue()
+            notes = (
+                select.KQ_NOTE_WRITE
+                | select.KQ_NOTE_EXTEND
+                | select.KQ_NOTE_RENAME
+                | select.KQ_NOTE_DELETE
+                | select.KQ_NOTE_REVOKE
+            )
+            change = select.kevent(
+                descriptor,
+                filter=select.KQ_FILTER_VNODE,
+                flags=select.KQ_EV_ADD | select.KQ_EV_CLEAR,
+                fflags=notes,
+            )
+            queue.control([change], 0, 0)
+        except OSError:
+            if queue is not None:
+                queue.close()
+            if descriptor is not None:
+                os.close(descriptor)
+            return
+        self._descriptor = descriptor
+        self._queue = queue
+        self.mode = "kqueue-vnode"
+
+    def wait(self, timeout: float) -> bool:
+        """Return true when the bus emitted a filesystem event."""
+
+        if self._queue is None:
+            time.sleep(min(self.fallback_interval, timeout))
+            self._arm_kqueue()
+            return False
+        try:
+            events = self._queue.control(None, 1, timeout)
+        except OSError:
+            self.close()
+            self._arm_kqueue()
+            return False
+        if events and events[0].fflags & (
+            select.KQ_NOTE_RENAME | select.KQ_NOTE_DELETE | select.KQ_NOTE_REVOKE
+        ):
+            self.close()
+            self._arm_kqueue()
+        return bool(events)
+
+    def close(self) -> None:
+        if self._queue is not None:
+            self._queue.close()
+            self._queue = None
+        if self._descriptor is not None:
+            os.close(self._descriptor)
+            self._descriptor = None
+        self.mode = "interval-fallback"
+
+
 def replay(path: Path) -> Iterator[str]:
     try:
         raw = path.read_text(encoding="utf-8", errors="replace")
@@ -675,6 +749,7 @@ def run(args: argparse.Namespace) -> int:
     # remembers each session's document and whether its seal was reported), and
     # a fresh one per line would re-emit the entire document every time.
     normalizer = EvidenceNormalizer()
+    event_trigger: BusEventTrigger | None = None
 
     def handle(raw: str, next_cursor: int | None = None) -> None:
         nonlocal name, hear_all
@@ -752,8 +827,12 @@ def run(args: argparse.Namespace) -> int:
 
         sys.stderr.write(
             f"bus-demux: bus={path} name={name or '*'} follow={int(args.follow)}"
-            f" lease={lease.lease_id if lease else '-'}\n"
+            f" lease={lease.lease_id if lease else '-'}"
         )
+        if args.follow:
+            event_trigger = BusEventTrigger(path, args.interval)
+            sys.stderr.write(f" trigger={event_trigger.mode}")
+        sys.stderr.write("\n")
         last_heartbeat = time.monotonic()
         while True:
             previous_offset = offset
@@ -767,10 +846,13 @@ def run(args: argparse.Namespace) -> int:
             if lease and time.monotonic() - last_heartbeat >= 1.0:
                 lease.persist(active=True, cursor=offset)
                 last_heartbeat = time.monotonic()
-            time.sleep(args.interval)
+            assert event_trigger is not None
+            event_trigger.wait(timeout=1.0)
     except KeyboardInterrupt:
         return 130
     finally:
+        if event_trigger:
+            event_trigger.close()
         if lease:
             lease.close()
 

@@ -68,6 +68,48 @@ o = json.loads(sys.argv[1])
 assert o["audience"] == "*", o
 PY
 
+# Normal macOS follow is driven by a vnode event, not interval polling. The
+# interval remains only as a portability/recovery fallback when kqueue is not
+# available.
+python3 - "$DEMUX" "$WORKDIR/event-trigger.jsonl" <<'PY'
+import importlib.util
+import select
+import sys
+import threading
+import time
+from pathlib import Path
+
+spec = importlib.util.spec_from_file_location("bus_demux_event_test", sys.argv[1])
+module = importlib.util.module_from_spec(spec)
+assert spec.loader is not None
+spec.loader.exec_module(module)
+
+bus = Path(sys.argv[2])
+bus.write_text("", encoding="utf-8")
+trigger = module.BusEventTrigger(bus, fallback_interval=0.05)
+
+def append_event():
+    time.sleep(0.05)
+    with bus.open("a", encoding="utf-8") as handle:
+        handle.write("event\n")
+        handle.flush()
+
+writer = threading.Thread(target=append_event)
+writer.start()
+started = time.monotonic()
+fired = trigger.wait(timeout=1.0)
+elapsed = time.monotonic() - started
+writer.join()
+
+if hasattr(select, "kqueue"):
+    assert trigger.mode == "kqueue-vnode", trigger.mode
+    assert fired is True, "kqueue did not report the append"
+    assert elapsed < 0.8, elapsed
+else:
+    assert trigger.mode == "interval-fallback", trigger.mode
+trigger.close()
+PY
+
 : >"$BUS"
 seal "Cześć James. Będziesz od teraz James."
 got="$(run_once --become)"

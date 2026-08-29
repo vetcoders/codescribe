@@ -51,12 +51,18 @@ Wymagany kontrakt:
    `CODESCRIBE_BUS_ENVELOPE_BEGIN/END`.
 4. Koperta zachowuje co najmniej `source`, `kind`, `audience`, `session_id`,
    `delivery_id`, `state_change_allowed` i `text`.
-5. Zmiany stanu są dozwolone tylko dla `kind=seal` oraz
+5. Pierwszy adresowany `draft` natychmiast budzi thread, nawet jeśli późniejszy
+   seal zawiedzie. Kolejne rewizje aktualizują bufor i nie tworzą osobnych
+   turnów.
+6. Końcowy `seal` trafia jako druga koperta tej samej sesji. Zmiany stanu są
+   dozwolone tylko dla `kind=seal` oraz
    `state_change_allowed=true`.
-6. Nazwa agenta może wystąpić w dowolnym miejscu wypowiedzi i pozostaje filtrem
+7. Nazwa agenta może wystąpić w dowolnym miejscu wypowiedzi i pozostaje filtrem
    skrzynki, a nie mechanizmem transportu.
-7. `source=cli_file_verdict` nie może udawać live take'a aplikacji. Producent
+8. `source=cli_file_verdict` nie może udawać live take'a aplikacji. Producent
    zdarzenia jest zachowywany end-to-end.
+9. Odpowiedź głosowa zawsze ma równoległy tekstowy receipt w threadzie. Audio
+   jest dodatkowym kanałem, nigdy jedynym nośnikiem odpowiedzi.
 
 Obecny `bus-demux.py --follow` utrzymuje cursor i filtruje koperty poprawnie,
 ale jego interval-based follow nie spełnia zasady Event triggered. Jest
@@ -98,5 +104,7 @@ ani żadnego silnika STT.
 - Bus zawsze domyka lifecycle i zachowuje prawdziwy producer source;
 - Retranscribe potrafi użyć recovery artifact bez ręcznego szukania w `/tmp`;
 - event-triggered monitor sam budzi właściwy thread po adresowanym sealu;
+- pierwszy adresowany draft budzi thread także wtedy, gdy seal później zawiedzie;
+- każda odpowiedź audio jest równocześnie dostępna jako tekst;
 - test end-to-end nie wymaga ręcznego `codescribe transcribe <file>`;
 - jakość i tekst transkrypcji pozostają bez zmian.
