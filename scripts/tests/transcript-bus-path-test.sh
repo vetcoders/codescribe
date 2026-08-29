@@ -208,21 +208,51 @@ with open(sys.argv[1], "w", encoding="utf-8") as handle:
 PY
 assert_guard_refuses "$DEEP_OPEN_BUS" "deep-live"
 
-# Closing the newest nested session must not hide an older still-open take.
+# Closing a nested CLI file-verdict must not hide an older still-open app take.
+# The CLI does not hold the install flock; the app session is the live mic.
 NESTED_OPEN_BUS="$TEST_ROOT/nested-open.jsonl"
 python3 - "$NESTED_OPEN_BUS" <<'PY'
 import json
 import sys
 
 with open(sys.argv[1], "w", encoding="utf-8") as handle:
-    for session_id, status in (
-        ("outer", "session_started"),
-        ("inner", "session_started"),
-        ("inner", "session_ended"),
+    for session_id, status, source in (
+        ("outer", "session_started", None),
+        ("inner", "session_started", "cli_file_verdict"),
+        ("inner", "session_ended", "cli_file_verdict"),
     ):
-        handle.write(json.dumps({"session_id": session_id, "status": status}) + "\n")
+        event = {"session_id": session_id, "status": status}
+        if source is not None:
+            event["source"] = source
+        handle.write(json.dumps(event) + "\n")
 PY
 assert_guard_refuses "$NESTED_OPEN_BUS" "nested-live"
+
+# Historical unpaired starts plus a later completed app take are idle.
+# One microphone: those old rows are abandoned, not a live recording.
+ABANDONED_BUS="$TEST_ROOT/abandoned.jsonl"
+python3 - "$ABANDONED_BUS" <<'PY'
+import json
+import sys
+
+with open(sys.argv[1], "w", encoding="utf-8") as handle:
+    for session_id in ("abandoned-a", "abandoned-b", "abandoned-c"):
+        handle.write(json.dumps({"session_id": session_id, "status": "session_started"}) + "\n")
+    handle.write(json.dumps({"session_id": "current", "status": "session_started"}) + "\n")
+    handle.write(json.dumps({"session_id": "current", "status": "session_ended"}) + "\n")
+PY
+set +e
+env \
+  -u XDG_STATE_HOME \
+  -u CODESCRIBE_DATA_DIR \
+  HOME="$TEST_HOME" \
+  python3 "$DEMUX" --bus "$ABANDONED_BUS" --assert-install-idle
+abandoned_idle_status=$?
+set -e
+if [[ "$abandoned_idle_status" -ne 0 ]]; then
+  echo "transcript-bus-path: abandoned historical starts still looked live" >&2
+  exit 1
+fi
 
 # A malformed authority file is not evidence of idle.
 MALFORMED_BUS="$TEST_ROOT/malformed.jsonl"

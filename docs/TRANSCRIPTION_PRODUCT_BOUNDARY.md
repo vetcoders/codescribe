@@ -60,7 +60,9 @@ Wymagany kontrakt:
 7. Nazwa agenta może wystąpić w dowolnym miejscu wypowiedzi i pozostaje filtrem
    skrzynki, a nie mechanizmem transportu.
 8. `source=cli_file_verdict` nie może udawać live take'a aplikacji. Producent
-   zdarzenia jest zachowywany end-to-end.
+   zdarzenia jest zachowywany end-to-end. CLI kopiuje źródłowy plik do
+   `sessions/<session_id>.wav` i nigdy nie używa `last_session.wav` jako
+   tożsamości demuxa.
 9. Odpowiedź głosowa zawsze ma równoległy tekstowy receipt w threadzie. Audio
    jest dodatkowym kanałem, nigdy jedynym nośnikiem odpowiedzi.
 

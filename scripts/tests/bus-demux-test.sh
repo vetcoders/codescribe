@@ -529,4 +529,74 @@ assert module.assigned_session_wav({"session_id": "../etc"}, env) is None
 assert module.assigned_session_wav({"session_id": "short"}, env) is None
 PY
 
+# One-mic idle: abandoned historical starts must not poison install.
+python3 - "$DEMUX" "$WORKDIR" <<'PY'
+import importlib.util, json, sys
+from pathlib import Path
+
+spec = importlib.util.spec_from_file_location("bus_demux", sys.argv[1])
+module = importlib.util.module_from_spec(spec)
+assert spec.loader is not None
+spec.loader.exec_module(module)
+root = Path(sys.argv[2])
+
+def write(name, rows):
+    path = root / name
+    path.write_text("".join(json.dumps(row) + "\n" for row in rows), encoding="utf-8")
+    return path
+
+live = write("idle-live.jsonl", [{"session_id": "live", "status": "session_started"}])
+assert module.installation_idle(live) is False
+
+closed = write(
+    "idle-closed.jsonl",
+    [
+        {"session_id": "closed", "status": "session_started"},
+        {"session_id": "closed", "status": "session_ended"},
+    ],
+)
+assert module.installation_idle(closed) is True
+
+abandoned = write(
+    "idle-abandoned.jsonl",
+    [
+        {"session_id": "old-a", "status": "session_started"},
+        {"session_id": "old-b", "status": "session_started"},
+        {"session_id": "now", "status": "session_started"},
+        {"session_id": "now", "status": "session_ended"},
+    ],
+)
+assert module.installation_idle(abandoned) is True
+
+nested_cli = write(
+    "idle-nested-cli.jsonl",
+    [
+        {"session_id": "app", "status": "session_started"},
+        {
+            "session_id": "cli",
+            "status": "session_started",
+            "source": module.CLI_FILE_VERDICT_SOURCE,
+        },
+        {
+            "session_id": "cli",
+            "status": "session_ended",
+            "source": module.CLI_FILE_VERDICT_SOURCE,
+        },
+    ],
+)
+assert module.installation_idle(nested_cli) is False
+
+cli_live = write(
+    "idle-cli-live.jsonl",
+    [
+        {
+            "session_id": "cli-open",
+            "status": "session_started",
+            "source": module.CLI_FILE_VERDICT_SOURCE,
+        }
+    ],
+)
+assert module.installation_idle(cli_live) is False
+PY
+
 echo "bus-demux: ok"

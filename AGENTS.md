@@ -47,10 +47,11 @@ API changes, regenerate UniFFI Swift bindings with `make app-bindings`.
   signature, and successful launch; then play
   `/usr/bin/afplay /System/Library/Sounds/Ping.aiff`. Never play the success
   ping for a failed or unverified installation.
-- Refuse installation while the Transcript Bus shows `session_started` without
-  a later `session_ended` (the controller's text-free lifecycle terminal;
-  `transcript_sealed` is honoured for legacy buses); never tear down the app
-  mid-take.
+- Refuse installation while a current take is live: the most recently started
+  app session has no later `session_ended` (legacy `transcript_sealed` still
+  counts), any unpaired `cli_file_verdict` session is open, or the app holds
+  the install-runtime lock. Historical unpaired starts are abandoned, not
+  live. Never tear down the app mid-take.
 - Cut at most one `make release-standard` notarized slim DMG per calendar day
   when the bus is idle. Recut only when the operator asks.
 - An ad-hoc `/Applications` build is not a distribution DMG. Production DMGs

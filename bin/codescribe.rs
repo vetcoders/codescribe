@@ -343,6 +343,12 @@ fn transcribe(
     if publish_bus && lane.is_none() {
         eprintln!("bus=unavailable (transcription continues; nothing published)");
     }
+    if let Some(lane) = lane.as_mut() {
+        match lane.retain_source_wav(file) {
+            Ok(wav) => eprintln!("wav={}", wav.display()),
+            Err(error) => eprintln!("session wav retain failed: {error}"),
+        }
+    }
 
     let started = std::time::Instant::now();
     // The one legal file route — identical to the GUI's stop-path final pass.

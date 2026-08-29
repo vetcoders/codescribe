@@ -43,6 +43,7 @@ EVIDENCE_SCHEMA = "codescribe.transcript-evidence.v1"
 TERMINAL_SEAL = "record_ledger_terminal_seal"
 INSTALL_INTERLOCK_FILENAME = "install-runtime.lock"
 SEALED = "transcript_sealed"
+CLI_FILE_VERDICT_SOURCE = "cli_file_verdict"
 LIVE_STATUSES = ("utterance_draft", "utterance_revised")
 LEASE_SCHEMA = "codescribe.agent-bridge.lease.v1"
 ATTACH_SCHEMA = "codescribe.agent-bridge.attach.v1"
@@ -133,11 +134,23 @@ def install_interlock_path() -> Path:
 
 
 def installation_idle(path: Path) -> bool:
+    """True when no current take is in flight.
+
+    One microphone: the live app take is the most recently started app
+    session that has not ended or sealed. Historical ``session_started``
+    rows without terminals are abandoned (crash / pre-lifecycle-terminal
+    buses), not a live recording — treating them as live makes
+    ``install-if-idle`` refuse forever after the first missing end.
+
+    CLI ``cli_file_verdict`` sessions may run while the app records and
+    do not hold the install flock. Any unpaired CLI session is live.
+    """
     if not path.exists():
         return True
     if not path.is_file():
         return False
-    open_sessions: set[str] = set()
+    open_cli: set[str] = set()
+    live_app: str | None = None
     try:
         with path.open(encoding="utf-8", errors="strict") as handle:
             for raw in handle:
@@ -151,19 +164,24 @@ def installation_idle(path: Path) -> bool:
                 if not isinstance(event, dict):
                     return False
                 status = event.get("status")
+                if status not in ("session_started", "session_ended", SEALED):
+                    continue
+                session_id = event.get("session_id")
+                if not isinstance(session_id, str) or not session_id:
+                    return False
+                is_cli = event.get("source") == CLI_FILE_VERDICT_SOURCE
                 if status == "session_started":
-                    session_id = event.get("session_id")
-                    if not isinstance(session_id, str) or not session_id:
-                        return False
-                    open_sessions.add(session_id)
-                elif status in ("session_ended", "transcript_sealed"):
-                    session_id = event.get("session_id")
-                    if not isinstance(session_id, str) or not session_id:
-                        return False
-                    open_sessions.discard(session_id)
+                    if is_cli:
+                        open_cli.add(session_id)
+                    else:
+                        live_app = session_id
+                elif is_cli:
+                    open_cli.discard(session_id)
+                elif session_id == live_app:
+                    live_app = None
     except (OSError, UnicodeDecodeError):
         return False
-    return not open_sessions
+    return live_app is None and not open_cli
 
 
 def bridge_home() -> Path:

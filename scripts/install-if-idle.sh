@@ -1,8 +1,11 @@
 #!/usr/bin/env bash
 # Install the local app only when no Codescribe take is in flight.
-# Bus authority: session_started without a later session_ended (lifecycle
-# terminal written by the controller on every path back to Idle) → refuse.
-# The legacy transcript_sealed marker is still honoured for older buses.
+# Bus authority: the live app take is the most recently started app
+# session without a later session_ended (or legacy transcript_sealed).
+# Historical unpaired starts are abandoned, not live. An unpaired
+# cli_file_verdict session is live because the CLI does not hold the
+# install flock. The runtime lock covers an app process that still owns
+# the microphone.
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"

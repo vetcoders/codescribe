@@ -161,6 +161,45 @@ impl CliTranscriptLane {
         self.write(event)
     }
 
+    /// Copy the file this lane decoded to `sessions/<session_id>.wav`.
+    ///
+    /// Demux identity is that path. `last_session.wav` is a latest-app-take
+    /// alias and is never written here — a CLI re-decode of an old file must
+    /// not pretend to be the last live take.
+    pub fn retain_source_wav(&self, source: &Path) -> io::Result<PathBuf> {
+        self.retain_source_wav_at(
+            source,
+            &codescribe_core::config::Config::config_dir().join("sessions"),
+        )
+    }
+
+    pub fn retain_source_wav_at(&self, source: &Path, sessions_dir: &Path) -> io::Result<PathBuf> {
+        let id = self.session_id.as_str();
+        let safe = (8..=80).contains(&id.len())
+            && id
+                .chars()
+                .all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_');
+        if !safe {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "session id is not a safe wav filename",
+            ));
+        }
+        std::fs::create_dir_all(sessions_dir)?;
+        let dest = sessions_dir.join(format!("{id}.wav"));
+        if dest.file_name().and_then(|name| name.to_str()) == Some("last_session.wav") {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "CLI file verdict must not retain last_session.wav as identity",
+            ));
+        }
+        if source == dest {
+            return Ok(dest);
+        }
+        std::fs::copy(source, &dest)?;
+        Ok(dest)
+    }
+
     /// Close the session. Like the app's bus, this never writes a terminal line
     /// for a session that never started, so `session_started` without
     /// `session_ended` still means "this run did not finish".
@@ -364,6 +403,24 @@ mod tests {
             .find(|event| event.status == "transcript_sealed")
             .expect("sealed event");
         assert_eq!(sealed.text, spoken.join(" "));
+    }
+
+    #[test]
+    fn file_verdict_keeps_its_own_session_wav_never_last_session_identity() {
+        let temp = tempfile::tempdir().unwrap();
+        let sessions = temp.path().join("sessions");
+        let source = temp.path().join("last_session.wav");
+        std::fs::write(&source, b"pcm-bytes").unwrap();
+        let bus = temp.path().join("events.jsonl");
+        let lane = CliTranscriptLane::open_at("cli-wav-01".into(), TranscriptMode::Dictation, bus)
+            .unwrap();
+
+        let dest = lane.retain_source_wav_at(&source, &sessions).unwrap();
+        assert_eq!(dest, sessions.join("cli-wav-01.wav"));
+        assert_eq!(dest.file_name().unwrap(), "cli-wav-01.wav");
+        assert_ne!(dest.file_name().unwrap(), "last_session.wav");
+        assert_eq!(std::fs::read(&dest).unwrap(), b"pcm-bytes");
+        assert!(!sessions.join("last_session.wav").exists());
     }
 
     /// Same rule the app's bus holds: no terminal line for a session that never

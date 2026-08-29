@@ -31,9 +31,15 @@ one empty `session_started` event for the controller-owned session, and
 `publish_ended` emits one empty `session_ended` event when the controller
 leaves that session (every path back to Idle, including zero-seal takes and
 stop-timeout recovery). Neither can publish document text. A
-`session_started` without a later `session_ended` for the same `session_id`
-means the take is still live; `scripts/install-if-idle.sh` keys on exactly
-that pair.
+One microphone: the live app take is the most recently started app session
+that has no later `session_ended` (or legacy `transcript_sealed`) for that
+same `session_id`. Historical `session_started` rows without terminals are
+abandoned takes — crash residue or buses written before the controller
+always published an end — not a live recording.
+`scripts/install-if-idle.sh` keys on that current pair, plus any unpaired
+`source=cli_file_verdict` session (the CLI does not hold the install flock)
+and the process-lifetime runtime lock. Never tear down the app mid-take;
+never refuse install forever because an old session lacked an end line.
 
 `session_ended` carries one typed `end_reason` (`TranscriptSessionEndReason`):
 `completed` for a take that reached the serialized stop path,
