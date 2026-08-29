@@ -13,6 +13,11 @@ and byte cursor. Re-running the same command resumes after the last consumed
 bus line, including lines appended while the provider session was recovering.
 Drafts are useful for live replies; only a ``transcript_sealed`` envelope sets
 ``state_change_allowed`` to true.
+
+Named routing requires an exact name in the immutable snapshot. When it is
+absent, this bridge deliberately does not guess an audience; whether unnamed
+sealed speech should later broadcast or await a human routing choice remains a
+product decision outside this consumer.
 """
 
 from __future__ import annotations
@@ -36,9 +41,6 @@ CLEAN_SCHEMA = "codescribe.transcript.v1"
 #: take — deaf, while looking healthy.
 EVIDENCE_SCHEMA = "codescribe.transcript-evidence.v1"
 TERMINAL_SEAL = "record_ledger_terminal_seal"
-#: Full ledger document carried beside a delta, for addressing only. Internal:
-#: `slim` builds envelopes from a fixed key set, so this never leaves here.
-DOCUMENT_KEY = "__document"
 INSTALL_INTERLOCK_FILENAME = "install-runtime.lock"
 SEALED = "transcript_sealed"
 LIVE_STATUSES = ("utterance_draft", "utterance_revised")
@@ -200,7 +202,8 @@ def slim(
     event: dict[str, Any], audience: str, kind: str | None = None
 ) -> dict[str, Any]:
     status = event.get("status")
-    return {
+    producer_schema = event.get("producer_schema") or event.get("schema")
+    payload = {
         "schema": EVENT_SCHEMA,
         "audience": audience,
         "kind": kind or event_kind(status),
@@ -210,10 +213,27 @@ def slim(
         "utterance_id": event.get("utterance_id"),
         "emitted_at": event.get("emitted_at"),
         "mode": event.get("mode"),
+        # Keep producer provenance and reducer coordinates observable.  This
+        # bridge is a consumer: neither field is ours to rewrite.
         "source": event.get("source"),
-        "text": event.get("text") or "",
+        "producer_schema": producer_schema,
+        "source_event_id": event.get("source_event_id") or source_event_identity(event),
+        "text": event.get("text") if isinstance(event.get("text"), str) else "",
         "state_change_allowed": status == SEALED,
     }
+    if producer_schema == EVIDENCE_SCHEMA:
+        payload.update(
+            {
+                "reducer_revision": event.get("reducer_revision"),
+                "reducer_action": event.get("reducer_action"),
+                "occurrence_session_id": event.get("occurrence_session_id"),
+                "capture_epoch": event.get("capture_epoch"),
+                "sample_start": event.get("sample_start"),
+                "sample_end": event.get("sample_end"),
+                "document_index": event.get("document_index"),
+            }
+        )
+    return payload
 
 
 def parse_line(raw: str) -> dict[str, Any] | None:
@@ -231,78 +251,101 @@ def parse_line(raw: str) -> dict[str, Any] | None:
     return event
 
 
-def document_delta(previous: str, current: str) -> str:
-    """What a reader that already saw ``previous`` has not seen yet.
+def _identity(parts: tuple[Any, ...]) -> str:
+    """Stable opaque identity from authoritative metadata, never transcript text."""
+    encoded = "\0".join("" if part is None else str(part) for part in parts)
+    return hashlib.sha256(encoded.encode("utf-8")).hexdigest()[:24]
 
-    Python indexes strings by character, so the byte/codepoint trap the Rust
-    reader must dodge does not exist here; the shared-prefix rule is the same.
-    """
-    if current == previous:
-        return ""
-    shared = 0
-    for left, right in zip(previous, current):
-        if left != right:
-            break
-        shared += 1
-    return current[shared:].strip()
+
+def source_event_identity(event: dict[str, Any]) -> str:
+    """Identify one Bus observation without comparing its rendered payload."""
+    if event.get("schema") == EVIDENCE_SCHEMA:
+        return _identity(
+            (
+                "evidence",
+                event.get("session_id"),
+                event.get("sequence"),
+                event.get("reducer_revision"),
+                event.get("reducer_action"),
+                event.get("occurrence_session_id"),
+                event.get("capture_epoch"),
+                event.get("sample_start"),
+                event.get("sample_end"),
+                event.get("document_index"),
+            )
+        )
+    return _identity(
+        (
+            "clean",
+            event.get("session_id"),
+            event.get("sequence"),
+            event.get("utterance_id"),
+            event.get("status"),
+        )
+    )
+
+
+def terminal_seal_identity(event: dict[str, Any]) -> str:
+    """One terminal reducer phase, even when its receipt projects many rows."""
+    return _identity(
+        (
+            "terminal-seal",
+            event.get("session_id"),
+            event.get("reducer_revision"),
+            event.get("reducer_action"),
+        )
+    )
 
 
 class EvidenceNormalizer:
     """Translate ``transcript-evidence.v1`` rows into the shape the bridge speaks.
 
-    Evidence rows restate the WHOLE ledger document on every revision. Handing
-    that to an agent as an utterance would deliver the same words once per
-    revision, so the grain is restored here: ``text`` is what changed, and the
-    full document rides along under :data:`DOCUMENT_KEY` so name-addressing
-    still sees the sentence the delta was cut from.
-
-    The terminal seal is one event to a reader even though the reducer writes
-    one row per document entry — eight on a real take.
+    ``rendered_text`` is an immutable full snapshot from the reducer.  The
+    bridge forwards it verbatim; it never infers a delta, ordering, revision,
+    or finality from characters.  Terminal rows are coalesced only by the
+    reducer's stable terminal phase identity, because one terminal receipt can
+    project once per document entry.
     """
 
     def __init__(self) -> None:
-        self._documents: dict[str, str] = {}
-        self._sealed: set[str] = set()
-        self._utterances: dict[str, int] = {}
+        self._terminal_seals: set[str] = set()
 
     def normalize(self, event: dict[str, Any] | None) -> dict[str, Any] | None:
         if event is None or event.get("schema") != EVIDENCE_SCHEMA:
             return event
-        session = str(event.get("session_id") or "")
-        document = str(event.get("rendered_text") or "").strip()
-        if not document:
+        document = event.get("rendered_text")
+        if not isinstance(document, str):
             return None
         if str(event.get("reducer_action") or "") == TERMINAL_SEAL:
-            if session in self._sealed:
+            seal_id = terminal_seal_identity(event)
+            if seal_id in self._terminal_seals:
                 return None
-            self._sealed.add(session)
-            self._documents[session] = document
-            return self._as_clean(event, SEALED, document, document)
-        # A session that speaks again after a seal is a new take on the same id.
-        self._sealed.discard(session)
-        delta = document_delta(self._documents.get(session, ""), document)
-        if not delta:
-            return None
-        grew = document.startswith(self._documents.get(session, ""))
-        self._documents[session] = document
-        status = LIVE_STATUSES[0] if grew else LIVE_STATUSES[1]
-        return self._as_clean(event, status, delta, document)
+            self._terminal_seals.add(seal_id)
+            return self._as_clean(event, SEALED, document)
+        return self._as_clean(event, LIVE_STATUSES[1], document)
 
     def _as_clean(
-        self, event: dict[str, Any], status: str, text: str, document: str
+        self, event: dict[str, Any], status: str, text: str
     ) -> dict[str, Any]:
-        session = str(event.get("session_id") or "")
-        self._utterances[session] = self._utterances.get(session, 0) + 1
         return {
             "schema": CLEAN_SCHEMA,
             "sequence": event.get("sequence"),
             "session_id": event.get("session_id"),
             "mode": event.get("mode"),
-            "utterance_id": f"evidence-{self._utterances[session]}",
+            "utterance_id": source_event_identity(event),
             "emitted_at": event.get("emitted_at"),
             "status": status,
             "text": text,
-            DOCUMENT_KEY: document,
+            "source": event.get("source"),
+            "producer_schema": event.get("schema"),
+            "source_event_id": source_event_identity(event),
+            "reducer_revision": event.get("reducer_revision"),
+            "reducer_action": event.get("reducer_action"),
+            "occurrence_session_id": event.get("occurrence_session_id"),
+            "capture_epoch": event.get("capture_epoch"),
+            "sample_start": event.get("sample_start"),
+            "sample_end": event.get("sample_end"),
+            "document_index": event.get("document_index"),
         }
 
 
@@ -323,10 +366,10 @@ def consider(
     if status != SEALED and not (drafts and status in LIVE_STATUSES):
         return None
     text = event.get("text") or ""
-    # Name assignment is a thing just said, so it reads the delta. Being
-    # addressed is a property of the whole sentence, so that reads the document
-    # when one exists — a delta cut mid-sentence rarely carries the name.
-    addressable = event.get(DOCUMENT_KEY) or text
+    # Recognition can classify a destination, but never rewrites transcript
+    # state.  Exact-name omission intentionally means no named route: there is
+    # no heuristic or LLM fallback hidden in this consumer.
+    addressable = text
     claimed = assigned_name(text)
     if claimed:
         payload = slim(event, claimed, kind="name_assignment")
@@ -563,7 +606,12 @@ class SessionLease:
         self.name = name.casefold() if name else None
         self.bus = str(bus.expanduser().resolve(strict=False))
         self.ttl_seconds = ttl_seconds
-        self.lease_id = requested_id or lease_identifier(provider, provider_session_id)
+        canonical_lease_id = lease_identifier(provider, provider_session_id)
+        if requested_id and requested_id != canonical_lease_id:
+            raise ValueError(
+                "explicit lease id does not belong to this provider session"
+            )
+        self.lease_id = canonical_lease_id
         if not SAFE_LEASE_RE.fullmatch(self.lease_id):
             raise ValueError("lease id must be 8-80 letters, digits, '_' or '-'")
         self.path = root / "leases" / f"{self.lease_id}.json"
@@ -678,13 +726,24 @@ class SessionLease:
         payload["lease_id"] = self.lease_id
         payload["provider"] = self.provider
         payload["provider_session_id"] = self.provider_session_id
-        identity = "\0".join(
-            str(payload.get(key) or "")
-            for key in ("session_id", "utterance_id", "sequence", "status", "audience")
+        # A delivery belongs to one lease owner and one source-event phase.
+        # This namespaces native bridge output away from a manual rail while
+        # the lease lock refuses a simultaneous second native owner.
+        payload["delivery_owner"] = {
+            "rail": "native_bus_demux",
+            "lease_id": self.lease_id,
+            "provider": self.provider,
+            "provider_session_id": self.provider_session_id,
+        }
+        payload["delivery_id"] = _identity(
+            (
+                "native_bus_demux",
+                self.lease_id,
+                payload.get("source_event_id"),
+                payload.get("kind"),
+                payload.get("audience"),
+            )
         )
-        payload["delivery_id"] = hashlib.sha256(identity.encode("utf-8")).hexdigest()[
-            :24
-        ]
 
     def attach_receipt(self) -> dict[str, Any]:
         names = sorted(
@@ -877,7 +936,7 @@ def main() -> int:
         help="exit zero only when the whole canonical Bus proves installation-safe",
     )
     parser.add_argument(
-        "--name", default=None, help="bound agent name (kielbasa filter)"
+        "--name", default=None, help="bound agent name; exact snapshot match required"
     )
     parser.add_argument("--all", action="store_true", help="promiscuous: every seal")
     parser.add_argument(

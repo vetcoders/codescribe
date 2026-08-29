@@ -345,17 +345,14 @@ PY
 
 
 # --- Evidence schema: the app's real lane since 2026-08-27 22:36 ------------
-# The follower knew only codescribe.transcript.v1 and therefore reported
-# NOTHING for a real take while looking healthy. One take proves four things at
-# once: the rows are heard; a draft carries what CHANGED and not the growing
-# document; the terminal seal is one event though the reducer writes many; and
-# a delta cut mid-sentence is still addressed because the whole document is
-# what name-matching reads.
+# A full reducer snapshot is payload, not bridge control input. These rows
+# prove exact forwarding, metadata-only seal coalescing, and draft authority.
 evidence() {
   local rendered="$1" action="${2:-apply_ledger_decision}" sequence="${3:-1}"
-  python3 - "$BUS" "$rendered" "$action" "$sequence" <<'PY'
+  local revision="${4:-$sequence}"
+  python3 - "$BUS" "$rendered" "$action" "$sequence" "$revision" <<'PY'
 import json, sys
-path, rendered, action, sequence = sys.argv[1], sys.argv[2], sys.argv[3], int(sys.argv[4])
+path, rendered, action, sequence, revision = sys.argv[1], sys.argv[2], sys.argv[3], int(sys.argv[4]), int(sys.argv[5])
 with open(path, "a", encoding="utf-8") as handle:
     handle.write(json.dumps({
         "schema": "codescribe.transcript-evidence.v1",
@@ -363,7 +360,7 @@ with open(path, "a", encoding="utf-8") as handle:
         "session_id": "evidence-session",
         "mode": "dictation",
         "reducer_action": action,
-        "reducer_revision": sequence,
+        "reducer_revision": revision,
         "rendered_text": rendered,
         "emitted_at": "2026-08-28T15:00:00Z",
     }, ensure_ascii=False) + "\n")
@@ -375,9 +372,9 @@ evidence "James sprawdź"            apply_ledger_decision 1
 evidence "James sprawdź plik"       apply_ledger_decision 2
 evidence "James sprawdź plik alfa"  apply_ledger_decision 3
 evidence "James sprawdź plik beta"  apply_ledger_decision 4
-evidence "James sprawdź plik beta"  record_ledger_terminal_seal 5
-evidence "James sprawdź plik beta"  record_ledger_terminal_seal 6
-evidence "James sprawdź plik beta"  record_ledger_terminal_seal 7
+evidence "James sprawdź plik beta"  record_ledger_terminal_seal 5 5
+evidence "James sprawdź plik beta"  record_ledger_terminal_seal 6 5
+evidence "James sprawdź plik beta"  record_ledger_terminal_seal 7 5
 
 ev="$WORKDIR/evidence.jsonl"
 python3 "$DEMUX" \
@@ -392,25 +389,103 @@ kinds = [row["kind"] for row in rows]
 # 1. Heard at all. A follower filtering on the clean schema emits only `attach`.
 assert len(kinds) > 1, f"deaf to the evidence schema: {kinds}"
 
-# 2. One seal, though the reducer wrote three terminal rows.
-assert kinds == ["attach", "draft", "draft", "draft", "revised", "seal"], kinds
+# 2. One seal, though the reducer wrote three rows for the same terminal phase.
+assert kinds == ["attach", "revised", "revised", "revised", "revised", "seal"], kinds
 
 texts = [row["text"] for row in rows[1:]]
-# 3. Drafts carry what changed. The document is 23 chars; a draft as long as it
-#    means the reader handed the whole document over once per revision.
-assert texts[:4] == ["James sprawdź", "plik", "alfa", "beta"], texts
-
-# 4. "plik" / "alfa" / "beta" do not contain the name, yet were delivered:
-#    addressing read the document the delta was cut from.
-assert not any("james" in t.lower() for t in texts[1:4]), texts
+# 3. Every live event preserves its exact full reducer snapshot. In particular,
+# the unrelated `beta` revision is not guessed as a suffix.
+assert texts[:4] == [
+    "James sprawdź",
+    "James sprawdź plik",
+    "James sprawdź plik alfa",
+    "James sprawdź plik beta",
+], texts
 
 seal = rows[-1]
 assert seal["text"] == "James sprawdź plik beta", seal
 assert seal["state_change_allowed"] is True, seal
 assert all(row["state_change_allowed"] is False for row in rows[1:-1]), rows
 
-# The document rides along internally and must never reach an envelope.
-assert all("__document" not in row for row in rows), rows
+assert all(row["producer_schema"] == "codescribe.transcript-evidence.v1" for row in rows[1:]), rows
+assert all(row["source_event_id"] for row in rows[1:]), rows
+PY
+
+# Identity is metadata-only: identical payloads from distinct observations are
+# distinct, while a terminal phase is coalesced by its reducer identity. Two
+# named provider leases remain independent and namespace their delivery IDs.
+python3 - "$DEMUX" "$BUS" "$BRIDGE_HOME" <<'PY'
+import importlib.util, sys
+from pathlib import Path
+
+spec = importlib.util.spec_from_file_location("bus_demux_identity", sys.argv[1])
+module = importlib.util.module_from_spec(spec)
+assert spec.loader is not None
+spec.loader.exec_module(module)
+
+def evidence(sequence, revision, action="apply_ledger_decision", sample_start=0):
+    return {
+        "schema": module.EVIDENCE_SCHEMA,
+        "session_id": "identity-session",
+        "sequence": sequence,
+        "reducer_revision": revision,
+        "reducer_action": action,
+        "occurrence_session_id": "identity-session",
+        "capture_epoch": 3,
+        "sample_start": sample_start,
+        "sample_end": sample_start + 100,
+        "document_index": 0,
+        "rendered_text": "Lumen and Kimi: identical words are valid twice.",
+    }
+
+normalizer = module.EvidenceNormalizer()
+first = normalizer.normalize(evidence(101, 1, sample_start=10))
+second = normalizer.normalize(evidence(102, 2, sample_start=110))
+assert first and second
+assert first["text"] == second["text"], (first, second)
+assert first["source_event_id"] != second["source_event_id"], (first, second)
+assert first["status"] == second["status"] == "utterance_revised", (first, second)
+
+seal_a = normalizer.normalize(evidence(103, 3, module.TERMINAL_SEAL, 10))
+seal_b = normalizer.normalize(evidence(104, 3, module.TERMINAL_SEAL, 110))
+assert seal_a and seal_a["status"] == module.SEALED, seal_a
+assert seal_b is None, seal_b
+
+root = Path(sys.argv[3]) / "lease-coexistence"
+bus = Path(sys.argv[2])
+lumen = module.SessionLease(
+    root=root, provider="codex", provider_session_id="lumen-thread", name="lumen",
+    bus=bus, requested_id=None, ttl_seconds=120, follow_from_end=True,
+)
+kimi = module.SessionLease(
+    root=root, provider="cursor", provider_session_id="kimi-thread", name="kimi",
+    bus=bus, requested_id=None, ttl_seconds=120, follow_from_end=True,
+)
+try:
+    assert lumen.lease_id != kimi.lease_id
+    assert {row["name"] for row in module.active_leases(root, 120)} == {"lumen", "kimi"}
+    try:
+        module.SessionLease(
+            root=root, provider="codex", provider_session_id="lumen-thread", name="lumen",
+            bus=bus, requested_id="different-lease-id", ttl_seconds=120, follow_from_end=True,
+        )
+    except ValueError as error:
+        assert "does not belong" in str(error)
+    else:
+        raise AssertionError("one provider session must not fork a second lease")
+    lumen_payload = module.slim(first, "lumen")
+    kimi_payload = module.slim(first, "kimi")
+    lumen.enrich(lumen_payload)
+    kimi.enrich(kimi_payload)
+    assert lumen_payload["delivery_id"] != kimi_payload["delivery_id"]
+    assert lumen_payload["delivery_owner"]["provider"] == "codex"
+    assert kimi_payload["delivery_owner"]["provider"] == "cursor"
+    replay = module.slim(first, "lumen")
+    lumen.enrich(replay)
+    assert replay["delivery_id"] == lumen_payload["delivery_id"]
+finally:
+    kimi.close()
+    lumen.close()
 PY
 
 echo "bus-demux: ok"
