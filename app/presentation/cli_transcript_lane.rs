@@ -185,6 +185,13 @@ impl CliTranscriptLane {
                 "session id is not a safe wav filename",
             ));
         }
+        let meta = std::fs::metadata(source)?;
+        if !meta.is_file() {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "CLI source wav must be a regular file",
+            ));
+        }
         std::fs::create_dir_all(sessions_dir)?;
         let dest = sessions_dir.join(format!("{id}.wav"));
         if dest.file_name().and_then(|name| name.to_str()) == Some("last_session.wav") {
@@ -196,6 +203,9 @@ impl CliTranscriptLane {
         if source == dest {
             return Ok(dest);
         }
+        // Destination name is only the validated session alphabet; source is
+        // the same regular file this CLI run already decoded.
+        // nosemgrep: rust.actix.path-traversal.tainted-path.tainted-path -- dest is sessions_dir + safe session id; source metadata-checked as a regular file.
         std::fs::copy(source, &dest)?;
         Ok(dest)
     }
