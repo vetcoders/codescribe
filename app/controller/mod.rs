@@ -220,6 +220,14 @@ fn valid_session_audio_id(session_id: &str) -> Option<&str> {
     ok.then_some(session_id)
 }
 
+/// Toggle stop rewrites the live slot to `{uuid}:stopping` so a second start
+/// cannot collide. That suffix is not a wav name — Lab lanes 2/3 (candle HQ
+/// and cloud :8444) judge the file, not a second mic. Strip it before retain.
+fn retainable_session_id(session_id: Option<&str>) -> Option<&str> {
+    let raw = session_id?;
+    valid_session_audio_id(raw.strip_suffix(":stopping").unwrap_or(raw))
+}
+
 /// Canonical wav for one Bus take: `~/.codescribe/sessions/<session_id>.wav`.
 /// Bus-demux assigns this path to attached followers. `last_session.wav` is
 /// only a latest-take alias for overlay / `codescribe transcribe last`.
@@ -245,7 +253,7 @@ fn retain_session_audio(
             session_id
         );
     }
-    if let Some(dest) = session_id.and_then(session_audio_path) {
+    if let Some(dest) = retainable_session_id(session_id).and_then(session_audio_path) {
         if let Some(parent) = dest.parent()
             && let Err(err) = std::fs::create_dir_all(parent)
         {
@@ -267,7 +275,7 @@ fn retain_session_audio(
 
 #[cfg(test)]
 mod session_audio_id_tests {
-    use super::{session_audio_path, valid_session_audio_id};
+    use super::{retainable_session_id, session_audio_path, valid_session_audio_id};
 
     #[test]
     fn uuid_session_ids_are_assigned_under_sessions_not_last_session() {
@@ -292,6 +300,22 @@ mod session_audio_id_tests {
         assert!(valid_session_audio_id("short").is_none());
         assert!(valid_session_audio_id("").is_none());
         assert!(session_audio_path("../etc").is_none());
+    }
+
+    #[test]
+    fn toggle_stopping_suffix_still_retains_the_bus_uuid_wav() {
+        let id = "c06528af-f156-4f05-a6e0-8f282d8b4a07";
+        let stopping = format!("{id}:stopping");
+        assert!(
+            valid_session_audio_id(&stopping).is_none(),
+            "colon is not a wav alphabet character"
+        );
+        assert_eq!(retainable_session_id(Some(&stopping)), Some(id));
+        let path = session_audio_path(id).expect("path");
+        assert_eq!(
+            path.file_name().and_then(|name| name.to_str()),
+            Some("c06528af-f156-4f05-a6e0-8f282d8b4a07.wav")
+        );
     }
 }
 
@@ -2886,7 +2910,7 @@ impl RecordingController {
         // never reached; watchdog forced recovery). Materialize the snapshot
         // first so the read guard drops at the semicolon.
         let session_id_snapshot = self.session_id.read().await.clone();
-        if let Some(session_id) = session_id_snapshot {
+        if let Some(ref session_id) = session_id_snapshot {
             *self.session_id.write().await = Some(format!("{session_id}:stopping"));
         }
 
@@ -2922,8 +2946,13 @@ impl RecordingController {
             let phase3 = std::time::Instant::now();
             info!("stop_toggle_inner: PHASE 3 — reducer-owned transcript already delivered");
             if let Some(path) = raw_audio_path_opt.as_deref() {
-                let take_id = self.session_id.read().await.clone();
-                retain_session_audio(take_id.as_deref(), path, Some(streaming_text.as_str()));
+                // The live slot is `{uuid}:stopping` here. File-lane identity
+                // is the Bus uuid snapped before that rewrite.
+                retain_session_audio(
+                    session_id_snapshot.as_deref(),
+                    path,
+                    Some(streaming_text.as_str()),
+                );
             }
             let r = Ok(ProcessRecordingOutcome {
                 transcript_present: !streaming_text.trim().is_empty(),
