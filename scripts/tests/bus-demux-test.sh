@@ -24,6 +24,7 @@ event = {
     "emitted_at": "2026-08-20T22:00:00Z",
     "status": status,
     "text": text,
+    "source": "test_fixture",
 }
 with open(path, "a", encoding="utf-8") as handle:
     handle.write(json.dumps(event, ensure_ascii=False) + "\n")
@@ -56,6 +57,7 @@ assert o["audience"] == "james", o
 assert "parkuje" in o["text"], o
 assert o["kind"] == "seal", o
 assert o["schema"] == "codescribe.agent-bridge.event.v1", o
+assert o["source"] == "test_fixture", o
 assert o["state_change_allowed"] is True, o
 PY
 

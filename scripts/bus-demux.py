@@ -209,6 +209,7 @@ def slim(
         "utterance_id": event.get("utterance_id"),
         "emitted_at": event.get("emitted_at"),
         "mode": event.get("mode"),
+        "source": event.get("source"),
         "text": event.get("text") or "",
         "state_change_allowed": status == SEALED,
     }
