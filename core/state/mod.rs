@@ -21,6 +21,7 @@ pub use conversation::{
 pub use history::{
     HistoryEntry,
     TranscriptKind,
+    archive_session_take,
     // Voice Drafts API (Mission Control)
     delete_draft,
     drafts_dir,

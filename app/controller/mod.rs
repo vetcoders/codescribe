@@ -233,7 +233,18 @@ fn session_audio_path(session_id: &str) -> Option<std::path::PathBuf> {
 
 /// Keep the take WAV under its Bus `session_id` so named followers never
 /// share or overwrite a single slot. Also refresh the latest-take alias.
-fn retain_session_audio(session_id: Option<&str>, path: &std::path::Path) {
+fn retain_session_audio(
+    session_id: Option<&str>,
+    path: &std::path::Path,
+    transcript: Option<&str>,
+) {
+    // Daily bag: wav/m4a + txt. Hold and double-tap/toggle share this folder.
+    if codescribe_core::state::archive_session_take(path, transcript).is_none() {
+        warn!(
+            "session transcription bag missed audio for {:?}",
+            session_id
+        );
+    }
     if let Some(dest) = session_id.and_then(session_audio_path) {
         if let Some(parent) = dest.parent()
             && let Err(err) = std::fs::create_dir_all(parent)
@@ -2912,7 +2923,7 @@ impl RecordingController {
             info!("stop_toggle_inner: PHASE 3 — reducer-owned transcript already delivered");
             if let Some(path) = raw_audio_path_opt.as_deref() {
                 let take_id = self.session_id.read().await.clone();
-                retain_session_audio(take_id.as_deref(), path);
+                retain_session_audio(take_id.as_deref(), path, Some(streaming_text.as_str()));
             }
             let r = Ok(ProcessRecordingOutcome {
                 transcript_present: !streaming_text.trim().is_empty(),
@@ -3081,7 +3092,7 @@ impl RecordingController {
 
         if let Some(path) = raw_audio_path_opt.as_deref() {
             let take_id = session_id.clone().or(self.session_id.read().await.clone());
-            retain_session_audio(take_id.as_deref(), path);
+            retain_session_audio(take_id.as_deref(), path, Some(streaming_text.as_str()));
         }
         let _ = (assistive, hold_mode, force_raw, force_ai);
         Ok(ProcessRecordingOutcome {

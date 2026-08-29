@@ -844,6 +844,20 @@ pub fn save_audio(
     }
 }
 
+/// Put one take — hold or toggle — into the daily transcriptions bag.
+///
+/// Writes paired `HHMMSS_slug_raw.{m4a,wav}` and `HHMMSS_slug_raw.txt` under
+/// `~/.codescribe/transcriptions/YYYY-MM-DD/`. This is the session archive;
+/// `sessions/<id>.wav` is demux identity, not a second product bag.
+pub fn archive_session_take(src_path: &Path, transcript: Option<&str>) -> Option<PathBuf> {
+    let now = Local::now();
+    let audio = save_audio(src_path, now, transcript, TranscriptKind::Raw);
+    if let Some(text) = transcript.map(str::trim).filter(|t| !t.is_empty()) {
+        let _ = save_entry_with_timestamp(text, Some(now), TranscriptKind::Raw);
+    }
+    audio
+}
+
 /// Legacy function for backwards compatibility - saves audio with current timestamp
 ///
 /// Prefer using save_audio() with explicit timestamp for proper pairing with transcripts
