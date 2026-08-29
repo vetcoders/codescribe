@@ -235,10 +235,10 @@ fn session_audio_path(session_id: &str) -> Option<std::path::PathBuf> {
 /// share or overwrite a single slot. Also refresh the latest-take alias.
 fn retain_session_audio(session_id: Option<&str>, path: &std::path::Path) {
     if let Some(dest) = session_id.and_then(session_audio_path) {
-        if let Some(parent) = dest.parent() {
-            if let Err(err) = std::fs::create_dir_all(parent) {
-                warn!("session wav dir failed: {err:#}");
-            }
+        if let Some(parent) = dest.parent()
+            && let Err(err) = std::fs::create_dir_all(parent)
+        {
+            warn!("session wav dir failed: {err:#}");
         }
         match std::fs::copy(path, &dest) {
             Ok(_) => info!("session wav retained at {}", dest.display()),
