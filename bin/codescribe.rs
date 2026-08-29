@@ -372,9 +372,12 @@ fn transcribe(
     } else {
         verdict.text.clone()
     };
+    // L2: previews/drafts stay raw; seal and delivery take the custom lexicon.
+    let delivered_text =
+        codescribe_core::quality::overlay_quality::apply_custom_lexicon(&transcript_text);
 
     if let Some(lane) = lane.as_mut()
-        && let Err(error) = lane.publish_sealed(&transcript_text, &verdict.raw.segments)
+        && let Err(error) = lane.publish_sealed(&delivered_text, &verdict.raw.segments)
     {
         eprintln!("bus seal write failed: {error}");
     }
@@ -384,7 +387,7 @@ fn transcribe(
     if stream {
         eprintln!("--- delivery ---");
     }
-    println!("{transcript_text}");
+    println!("{delivered_text}");
 
     // Provenance to stderr, GUI-truth style.
     eprintln!(
@@ -393,7 +396,7 @@ fn transcribe(
         verdict.engine.mode,
         decode_secs,
         verdict.raw.segments.len(),
-        transcript_text.chars().count(),
+        delivered_text.chars().count(),
         verdict
             .raw
             .avg_logprob

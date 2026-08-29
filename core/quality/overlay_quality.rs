@@ -441,6 +441,50 @@ pub fn custom_lexicon_entries() -> Result<Vec<CustomLexiconEntry>> {
     Ok(entries)
 }
 
+/// Rewrite `text` with every custom-lexicon `variant → canonical` rule.
+///
+/// Word-boundary, case-insensitive. Longer variants win first so a short
+/// mishearing cannot eat a longer phrase. Load failure is identity: STT text
+/// still ships. This is L2 — a later observer on already-heard words — not a
+/// second decoder.
+pub fn apply_custom_lexicon(text: &str) -> String {
+    if text.is_empty() {
+        return String::new();
+    }
+    let Ok(mut entries) = custom_lexicon_entries() else {
+        return text.to_string();
+    };
+    entries.sort_by(|left, right| {
+        right
+            .variant
+            .chars()
+            .count()
+            .cmp(&left.variant.chars().count())
+            .then_with(|| left.variant.cmp(&right.variant))
+    });
+    let mut rewritten = text.to_string();
+    let mut seen = HashSet::new();
+    for entry in entries {
+        let variant = entry.variant.trim();
+        let canonical = entry.canonical.trim();
+        if variant.is_empty() || canonical.is_empty() {
+            continue;
+        }
+        if unicode_casefold_eq(variant, canonical) {
+            continue;
+        }
+        let key = normalized_variant(variant);
+        if !seen.insert(key) {
+            continue;
+        }
+        let Ok(pattern) = regex::Regex::new(&format!(r"(?i)\b{}\b", regex::escape(variant))) else {
+            continue;
+        };
+        rewritten = pattern.replace_all(&rewritten, canonical).into_owned();
+    }
+    rewritten
+}
+
 /// Extract candidate lexicon pairs (variant → canonical) from a user correction.
 ///
 /// S4 / W11-A policy (operator 2026-07-22):
@@ -2278,6 +2322,36 @@ mod tests {
         assert!(
             custom_lexicon_entries().unwrap().is_empty(),
             "copy and close must not turn the second explicit teach into a rule"
+        );
+    }
+
+    /// Whisper's grog/Grok collision is a dictionary rewrite, not a decoder hint.
+    #[test]
+    #[serial]
+    fn apply_custom_lexicon_rewrites_grog_to_grok() {
+        let temp_dir = tempfile::tempdir().expect("temp");
+        let _guard = EnvRestore::capture("CODESCRIBE_DATA_DIR");
+        let temp_root = temp_dir.path().canonicalize().unwrap();
+        unsafe {
+            std::env::set_var("CODESCRIBE_DATA_DIR", &temp_root);
+        }
+        let lexicon_path = Config::config_dir().join("lexicon.custom.jsonl");
+        fs::create_dir_all(lexicon_path.parent().expect("lexicon parent")).expect("lexicon dir");
+        fs::write(
+            &lexicon_path,
+            r#"{"term":"Grok","mispronunciations":["grog"],"source":"manual"}
+"#,
+        )
+        .expect("write grok rule");
+
+        assert_eq!(
+            apply_custom_lexicon("grog. Wydaje mi się, że jesteś raczej w swoim natywnym grog.cli"),
+            "Grok. Wydaje mi się, że jesteś raczej w swoim natywnym Grok.cli"
+        );
+        assert_eq!(apply_custom_lexicon("Grog, daj znać"), "Grok, daj znać");
+        assert_eq!(
+            apply_custom_lexicon("agrog is not a word-boundary hit"),
+            "agrog is not a word-boundary hit"
         );
     }
 

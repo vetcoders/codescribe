@@ -2482,7 +2482,7 @@ fn seal_utterance_final(
     // the repetition cleanup is told rather than left to guess. A run of
     // identical words with one span per copy is speech; only a run longer than
     // the audio can account for is a decoder loop.
-    let after_lexicon = raw_text.trim().to_string();
+    let after_lexicon = crate::quality::overlay_quality::apply_custom_lexicon(raw_text.trim());
     if state.fusion_seal_armed && seal_sliced_by_silero(state, ev_tx, &disjoint) {
         return true;
     }
