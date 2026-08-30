@@ -38,10 +38,10 @@ struct AgentPanel: View {
         .padding(.top, 8)
 
       page
-        .padding(.top, 20)
+        .padding(.top, CSSpace.lg)
     }
-    .padding(.horizontal, 28)
-    .padding(.vertical, 24)
+    .padding(.horizontal, CSSpace.xl)
+    .padding(.vertical, CSSpace.section)
   }
 
   /// The nil route (a deep link that named no page) lands on lanes,
@@ -101,9 +101,9 @@ struct AgentPanel: View {
         // The answer to "which provider am I actually talking to",
         // placed after the editors as read-only proof of what resolved.
         SettingsSectionLabel("Resolved runtime truth")
-          .padding(.top, 24)
+          .padding(.top, CSSpace.section)
         runtimeRows
-          .padding(.top, 11)
+          .padding(.top, CSSpace.control)
       }
     }
   }
@@ -141,9 +141,9 @@ struct AgentPanel: View {
         }
       }
     }
-    .clipShape(RoundedRectangle(cornerRadius: 13, style: .continuous))
+    .clipShape(RoundedRectangle(cornerRadius: CSRadius.composer, style: .continuous))
     .overlay(
-      RoundedRectangle(cornerRadius: 13, style: .continuous)
+      RoundedRectangle(cornerRadius: CSRadius.composer, style: .continuous)
         .strokeBorder(CSColor.hairline(0.07), lineWidth: 1)
     )
   }
@@ -157,7 +157,7 @@ struct AgentPanel: View {
   #Preview("Agent panel") {
     ScrollView { AgentPanel(model: .preview(.agent)) }
       .frame(width: 720, height: 900)
-      .background(SettingsView.windowGradient)
+      .background(CSColor.windowWash)
       .preferredColorScheme(.dark)
   }
 #endif

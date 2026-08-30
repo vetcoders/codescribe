@@ -698,7 +698,7 @@ private struct ContextChip: View {
         }
         .contentShape(Rectangle())
       }
-      .csFocusRing(cornerRadius: 8)
+      .csFocusRing()
       .help("Selection and app captured with this voice turn")
 
       if expanded {
@@ -950,7 +950,7 @@ struct AttachmentPreviewSheet: View {
         .foregroundStyle(CSColor.textMuted)
         .fixedSize(horizontal: false, vertical: true)
     }
-    .padding(14)
+    .padding(CSSpace.card)
     .frame(maxWidth: .infinity, minHeight: 160, alignment: .leading)
     .background(CSColor.surfaceRaised(0.04))
     .overlay(
@@ -1045,8 +1045,8 @@ private struct ToolLineRow: View {
           if isRunning {
             PulseDot()
           }
-          (Text(line.verb).foregroundColor(rowColor)
-            + Text(" \(line.detail)\(isRunning ? " running..." : "")").foregroundColor(
+          (Text(line.verb).foregroundStyle(rowColor)
+            + Text(" \(line.detail)\(isRunning ? " running..." : "")").foregroundStyle(
               isQuiet ? CSColor.textFaintAlt : ChatPalette.toolBody))
             .font(CSFont.mono(11.5, .medium))
             .lineSpacing(4)
@@ -1069,7 +1069,7 @@ private struct ToolLineRow: View {
         }
         .contentShape(Rectangle())
       }
-      .csFocusRing(cornerRadius: 8)
+      .csFocusRing()
       .disabled(!canInspect)
 
       if canInspect, showInspect {
@@ -1232,7 +1232,7 @@ private struct FlatDisclosureStyle: DisclosureGroupStyle {
       } label: {
         configuration.label
       }
-      .csFocusRing(cornerRadius: 8)
+      .csFocusRing()
 
       if configuration.isExpanded {
         Rectangle().fill(CSColor.hairline(0.05)).frame(height: 1)
@@ -1470,7 +1470,7 @@ private struct RenderModeButton: View {
       }
       .foregroundStyle(hovering ? CSColor.textMuted : CSColor.textFaintAlt)
     }
-    .csFocusRing(cornerRadius: 8)
+    .csFocusRing()
     .onHover { hovering = $0 }
     .help(mode == .raw ? "Render as markdown" : "Show raw text")
   }
@@ -1513,7 +1513,7 @@ private struct CopyMessageButton: View {
       }
       .foregroundStyle(labelColor)
     }
-    .csFocusRing(cornerRadius: 8)
+    .csFocusRing()
     .disabled(text.isEmpty)
     .onHover { hovering = $0 }
     .help("Copy message")

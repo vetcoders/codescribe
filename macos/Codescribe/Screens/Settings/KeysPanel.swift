@@ -28,7 +28,7 @@ struct KeysPanel: View {
       .padding(.top, 8)
 
       SettingsSectionLabel("API keys")
-        .padding(.top, 22)
+        .padding(.top, CSSpace.section)
       VStack(spacing: 8) {
         ForEach(model.keyAccounts, id: \.self) { account in
           let provider = model.providerForKeyAccount(account)
@@ -52,7 +52,7 @@ struct KeysPanel: View {
           )
         }
       }
-      .padding(.top, 11)
+      .padding(.top, CSSpace.control)
 
       HStack(spacing: 8) {
         Text("●").font(CSFont.mono(11, .medium)).foregroundStyle(CSColor.olive)
@@ -63,8 +63,8 @@ struct KeysPanel: View {
       .padding(.top, 16)
 
     }
-    .padding(.horizontal, 28)
-    .padding(.vertical, 24)
+    .padding(.horizontal, CSSpace.xl)
+    .padding(.vertical, CSSpace.section)
   }
 
 }
@@ -304,7 +304,7 @@ private struct LLMLaneEditor: View {
     Button("Save", action: action)
       .font(CSFont.ui(11.5, .semibold))
       .foregroundStyle(draft.isEmpty ? CSColor.textFaint : CSColor.chromeAccent)
-      .csFocusRing(cornerRadius: 8)
+      .csFocusRing()
       .disabled(draft.isEmpty)
       .accessibilityLabel(accessibilityLabel)
   }
@@ -317,7 +317,7 @@ private struct LLMLaneEditor: View {
     Button("Reset", action: action)
       .font(CSFont.ui(11.5, .semibold))
       .foregroundStyle(CSColor.textMutedAlt)
-      .csFocusRing(cornerRadius: 8)
+      .csFocusRing()
       .help(help)
       .accessibilityLabel(accessibilityLabel)
   }
@@ -365,7 +365,7 @@ struct WorkspaceRootsSection: View {
           Label("Add root", systemImage: "plus")
             .font(CSFont.ui(12, .semibold))
         }
-        .csFocusRing(cornerRadius: 8)
+        .csFocusRing()
         .foregroundStyle(CSColor.textBody)
 
         Spacer()
@@ -378,7 +378,7 @@ struct WorkspaceRootsSection: View {
             .font(CSFont.ui(12, .semibold))
             .foregroundStyle(isDirty ? CSColor.textHigh : CSColor.textFaint)
         }
-        .csFocusRing(cornerRadius: 8)
+        .csFocusRing()
         .disabled(!isDirty)
       }
       .padding(.top, 12)
@@ -410,7 +410,7 @@ struct WorkspaceRootsSection: View {
       } label: {
         CSIconView(icon: .remove, size: 13, weight: .semibold, color: CSColor.textFaint)
       }
-      .csFocusRing(cornerRadius: 8)
+      .csFocusRing()
     }
     .padding(.horizontal, 11)
     .padding(.vertical, 9)
@@ -521,7 +521,7 @@ struct SttEndpointRow: View {
                   CSColor.chromeAccent.opacity(draft == current ? 0.1 : 0.28), lineWidth: 1)
             )
         }
-        .csFocusRing(cornerRadius: 8)
+        .csFocusRing()
         .disabled(draft == current)
       }
 
@@ -619,7 +619,7 @@ struct SettingsUrlRow: View {
                   CSColor.chromeAccent.opacity(draft == current ? 0.1 : 0.28), lineWidth: 1)
             )
         }
-        .csFocusRing(cornerRadius: 8)
+        .csFocusRing()
         .disabled(draft == current)
       }
 
@@ -713,7 +713,7 @@ private struct KeyRow: View {
                   CSColor.chromeAccent.opacity(draft.isEmpty ? 0.1 : 0.28), lineWidth: 1)
             )
         }
-        .csFocusRing(cornerRadius: 8)
+        .csFocusRing()
         .disabled(draft.isEmpty)
 
         Button(action: onTest) {
@@ -739,7 +739,7 @@ private struct KeyRow: View {
               .strokeBorder(CSColor.hairline(0.08), lineWidth: 1)
           )
         }
-        .csFocusRing(cornerRadius: 8)
+        .csFocusRing()
         .disabled(probePending || !isSet)
         .help(isSet ? "Test this key" : "Save a key first to test it")
 
@@ -760,7 +760,7 @@ private struct KeyRow: View {
               .strokeBorder(CSColor.hairline(0.08), lineWidth: 1)
           )
         }
-        .csFocusRing(cornerRadius: 8)
+        .csFocusRing()
         .disabled(!isSet)
         .help("Remove this key from the Keychain")
       }
@@ -963,7 +963,7 @@ private struct AccountLoginRow: View {
               .strokeBorder(CSColor.hairline(0.08), lineWidth: 1)
           )
         }
-        .csFocusRing(cornerRadius: 8)
+        .csFocusRing()
         .disabled(!provider.accountLoginEnabled || loginPending)
         .help(provider.accountStatusMessage)
       }
@@ -1061,7 +1061,7 @@ private struct AccountActionButton: View {
             .strokeBorder(CSColor.hairline(0.08), lineWidth: 1)
         )
     }
-    .csFocusRing(cornerRadius: 8)
+    .csFocusRing()
     .disabled(!enabled)
   }
 }
@@ -1070,7 +1070,7 @@ private struct AccountActionButton: View {
   #Preview("Providers panel") {
     ScrollView { KeysPanel(model: .preview(.keys)) }
       .frame(width: 720, height: 620)
-      .background(SettingsView.windowGradient)
+      .background(CSColor.windowWash)
       .preferredColorScheme(.dark)
   }
 #endif

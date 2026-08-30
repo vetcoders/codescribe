@@ -27,7 +27,7 @@ struct UserPanel: View {
         .padding(.top, 8)
 
       SettingsSectionLabel("Running build")
-        .padding(.top, 24)
+        .padding(.top, CSSpace.section)
       VStack(spacing: 0) {
         infoRow("Version", "\(model.buildInfo.version) (\(model.buildInfo.build))")
         divider
@@ -35,23 +35,19 @@ struct UserPanel: View {
         divider
         infoRow("Built", model.buildInfo.builtAt)
       }
-      .padding(.top, 11)
-      .background(card)
-      .overlay(cardBorder)
+      .csSettingsCard()
 
       SettingsSectionLabel("Local data")
-        .padding(.top, 24)
+        .padding(.top, CSSpace.section)
       VStack(spacing: 0) {
         pathRow("Config, logs & runtime data", model.configDir)
         divider
         pathRow("Transcripts", model.transcriptsPath)
       }
-      .padding(.top, 11)
-      .background(card)
-      .overlay(cardBorder)
+      .csSettingsCard()
 
       SettingsSectionLabel("Anonymous activation")
-        .padding(.top, 24)
+        .padding(.top, CSSpace.section)
       SettingsControlRow(
         title: "Share anonymous activation ping",
         subtitle: "Send one content-free event after your first successful dictation"
@@ -63,7 +59,7 @@ struct UserPanel: View {
           .accessibilityLabel("Share anonymous activation ping")
           .accessibilityValue(activationPingOptIn ? "On" : "Off")
       }
-      .padding(.top, 11)
+      .padding(.top, CSSpace.control)
 
       Text(
         "Off by default. The event contains only the app version and macOS version — never audio or transcript text."
@@ -73,7 +69,7 @@ struct UserPanel: View {
       .padding(.top, 7)
 
       SettingsSectionLabel("Agent transcript tagging")
-        .padding(.top, 24)
+        .padding(.top, CSSpace.section)
       SettingsControlRow(
         title: "Tag transcripts for AI agents",
         subtitle: "Wrap delivered dictation in an explicit source tag"
@@ -85,7 +81,7 @@ struct UserPanel: View {
           .accessibilityLabel("Tag transcripts for AI agents")
           .accessibilityValue(model.settings.transcriptTaggingEnabled ? "On" : "Off")
       }
-      .padding(.top, 11)
+      .padding(.top, CSSpace.control)
 
       Text("Template")
         .font(CSFont.mono(10, .semibold))
@@ -96,9 +92,7 @@ struct UserPanel: View {
         .foregroundStyle(CSColor.textBody)
         .textFieldStyle(.plain)
         .lineLimit(3...8)
-        .padding(12)
-        .background(card)
-        .overlay(cardBorder)
+        .csSettingsCard()
         .accessibilityLabel("Transcript tag template editor")
         .accessibilityValue(model.settings.transcriptTagTemplate)
 
@@ -131,7 +125,7 @@ struct UserPanel: View {
         Button("Restore default") {
           model.restoreDefaultTranscriptTagTemplate()
         }
-        .csFocusRing(cornerRadius: 8)
+        .csFocusRing()
         .font(CSFont.mono(10.5, .semibold))
         .foregroundStyle(CSColor.chromeAccent)
         .accessibilityLabel("Restore default transcript tag template")
@@ -147,14 +141,12 @@ struct UserPanel: View {
         .foregroundStyle(CSColor.textBodyAlt)
         .textSelection(.enabled)
         .frame(maxWidth: .infinity, alignment: .leading)
-        .padding(12)
-        .background(card)
-        .overlay(cardBorder)
+        .csSettingsCard()
         .accessibilityLabel("Transcript tag template preview")
         .accessibilityValue(model.transcriptTagPreview)
 
       SettingsSectionLabel("Legal & docs")
-        .padding(.top, 24)
+        .padding(.top, CSSpace.section)
       VStack(alignment: .leading, spacing: 10) {
         Link(destination: Self.privacyURL) {
           HStack(spacing: 6) {
@@ -186,16 +178,16 @@ struct UserPanel: View {
         }
         .accessibilityLabel("Open Codescribe documentation")
       }
-      .padding(.top, 11)
+      .padding(.top, CSSpace.control)
 
       ResetAgentSection(model: model)
-        .padding(.top, 24)
+        .padding(.top, CSSpace.section)
 
       ResetAppDataSection(model: model)
         .padding(.top, 30)
     }
-    .padding(.horizontal, 28)
-    .padding(.vertical, 24)
+    .padding(.horizontal, CSSpace.xl)
+    .padding(.vertical, CSSpace.section)
   }
 
   private var taggingBinding: Binding<Bool> {
@@ -226,8 +218,8 @@ struct UserPanel: View {
         .accessibilityValue(value)
       Spacer(minLength: 0)
     }
-    .padding(.horizontal, 15)
-    .padding(.vertical, 12)
+    .padding(.horizontal, CSSpace.card)
+    .padding(.vertical, CSSpace.md)
   }
 
   private func pathRow(_ label: String, _ path: String) -> some View {
@@ -245,23 +237,14 @@ struct UserPanel: View {
         .accessibilityValue(path.isEmpty ? "not loaded yet" : path)
     }
     .frame(maxWidth: .infinity, alignment: .leading)
-    .padding(.horizontal, 15)
-    .padding(.vertical, 12)
+    .padding(.horizontal, CSSpace.card)
+    .padding(.vertical, CSSpace.md)
   }
 
   private var divider: some View {
     Rectangle().fill(CSColor.hairline(0.06)).frame(height: 1)
   }
 
-  private var card: some View {
-    RoundedRectangle(cornerRadius: CSRadius.card, style: .continuous)
-      .fill(CSColor.surfaceRaised(0.025))
-  }
-
-  private var cardBorder: some View {
-    RoundedRectangle(cornerRadius: CSRadius.card, style: .continuous)
-      .strokeBorder(CSColor.hairline(0.08), lineWidth: 1)
-  }
 }
 
 // MARK: - Danger zone
@@ -307,7 +290,7 @@ private struct ResetAgentSection: View {
               .strokeBorder(CSColor.danger.opacity(0.42), lineWidth: 1)
           )
       }
-      .csFocusRing(cornerRadius: 8)
+      .csFocusRing()
       .padding(.top, 13)
       .accessibilityLabel("Reset Agent. Destructive action.")
       .accessibilityHint(
@@ -397,7 +380,7 @@ private struct ResetAppDataSection: View {
               .strokeBorder(CSColor.danger.opacity(0.42), lineWidth: 1)
           )
       }
-      .csFocusRing(cornerRadius: 8)
+      .csFocusRing()
       .padding(.top, 13)
       .accessibilityLabel("Reset app data. Destructive action.")
       .accessibilityHint(
@@ -434,7 +417,7 @@ private struct ResetAppDataSection: View {
   #Preview("User panel") {
     ScrollView { UserPanel(model: .preview(.user)) }
       .frame(width: 720, height: 720)
-      .background(SettingsView.windowGradient)
+      .background(CSColor.windowWash)
       .preferredColorScheme(.dark)
   }
 #endif

@@ -25,7 +25,7 @@ struct ShortcutsPanel: View {
         permissionNote.padding(.top, 18)
       }
 
-      bindingRows.padding(.top, 20)
+      bindingRows.padding(.top, CSSpace.lg)
       deferredInsertSection.padding(.top, 12)
       badgeLegend.padding(.top, 12)
 
@@ -33,11 +33,11 @@ struct ShortcutsPanel: View {
         conflictList.padding(.top, 16)
       }
 
-      actions.padding(.top, 22)
+      actions.padding(.top, CSSpace.section)
       hint.padding(.top, 14)
     }
-    .padding(.horizontal, 28)
-    .padding(.vertical, 24)
+    .padding(.horizontal, CSSpace.xl)
+    .padding(.vertical, CSSpace.section)
   }
 
   // MARK: Header
@@ -64,9 +64,9 @@ struct ShortcutsPanel: View {
         bindingRow(row)
       }
     }
-    .clipShape(RoundedRectangle(cornerRadius: 13, style: .continuous))
+    .clipShape(RoundedRectangle(cornerRadius: CSRadius.composer, style: .continuous))
     .overlay(
-      RoundedRectangle(cornerRadius: 13, style: .continuous)
+      RoundedRectangle(cornerRadius: CSRadius.composer, style: .continuous)
         .strokeBorder(CSColor.hairline(0.07), lineWidth: 1)
     )
   }
@@ -414,7 +414,7 @@ struct ShortcutsPanel: View {
           .font(CSFont.ui(12.5, .semibold))
           .foregroundStyle(CSColor.textMuted)
       }
-      .csFocusRing(cornerRadius: 8)
+      .csFocusRing()
 
       Spacer(minLength: 0)
 
@@ -434,7 +434,7 @@ struct ShortcutsPanel: View {
                   : CSColor.surfaceRaised(0.03))
           )
       }
-      .csFocusRing(cornerRadius: 8)
+      .csFocusRing()
       .disabled(!model.canSaveBindings)
     }
   }
@@ -470,7 +470,7 @@ enum ArmGestureCopy {
   #Preview("Shortcuts panel") {
     ScrollView { ShortcutsPanel(model: .preview(.shortcuts)) }
       .frame(width: 720, height: 620)
-      .background(SettingsView.windowGradient)
+      .background(CSColor.windowWash)
       .preferredColorScheme(.dark)
   }
 #endif

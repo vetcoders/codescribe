@@ -29,7 +29,7 @@ struct LabPanel: View {
       .font(CSFont.mono(11, .semibold))
       .foregroundStyle(CSColor.chromeAccent)
     }
-    .padding(28)
+    .padding(CSSpace.xl)
     .frame(maxWidth: .infinity, alignment: .leading)
   }
 }

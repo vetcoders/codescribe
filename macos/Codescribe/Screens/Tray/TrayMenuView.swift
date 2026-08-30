@@ -85,7 +85,7 @@ struct TrayMenuView: View {
       }
     }
     .padding(.horizontal, 12)
-    .padding(.top, 11)
+    .padding(.top, CSSpace.control)
     .padding(.bottom, 10)
   }
 
@@ -396,13 +396,8 @@ private struct TrayNoteStatusRow: View {
   #Preview("Tray · Idle") {
     let vm = TrayViewModel(engine: MockTrayEngine(recording: false), isRecording: false)
     TrayMenuView(viewModel: vm, trayStatus: .preview())
-      .padding(40)
-      .background(
-        LinearGradient(
-          colors: [Color(hex: 0x15110E), Color(hex: 0x0B0C10), Color(hex: 0x0D1012)],
-          startPoint: .topLeading, endPoint: .bottomTrailing
-        )
-      )
+      .padding(CSSpace.previewInset)
+      .background(CSColor.windowWash)
       .onAppear { FontLoader.register() }
   }
 
@@ -412,13 +407,8 @@ private struct TrayNoteStatusRow: View {
       viewModel: vm,
       trayStatus: .preview(kind: .listening, tone: .active, label: "Status: Recording...")
     )
-    .padding(40)
-    .background(
-      LinearGradient(
-        colors: [Color(hex: 0x15110E), Color(hex: 0x0B0C10), Color(hex: 0x0D1012)],
-        startPoint: .topLeading, endPoint: .bottomTrailing
-      )
-    )
+    .padding(CSSpace.previewInset)
+    .background(CSColor.windowWash)
     .onAppear { FontLoader.register() }
   }
 #endif

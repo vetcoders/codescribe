@@ -51,13 +51,13 @@ struct EnginePanel: View {
         .padding(.top, 6)
 
       runtimeRows
-        .padding(.top, 20)
+        .padding(.top, CSSpace.lg)
         .onAppear { model.refreshServingStatus() }
 
       SettingsSectionLabel("Engine controls")
-        .padding(.top, 22)
+        .padding(.top, CSSpace.section)
       engineControls
-        .padding(.top, 11)
+        .padding(.top, CSSpace.control)
 
       collapsibleSection(
         title: "Local Whisper model",
@@ -110,8 +110,8 @@ struct EnginePanel: View {
       }
       .padding(.top, 16)
     }
-    .padding(.horizontal, 28)
-    .padding(.vertical, 24)
+    .padding(.horizontal, CSSpace.xl)
+    .padding(.vertical, CSSpace.section)
   }
 
   /// Section chrome: label is the disclosure chevron host; body mounts only when open.
@@ -122,12 +122,12 @@ struct EnginePanel: View {
   ) -> some View {
     DisclosureGroup(isExpanded: isExpanded) {
       content()
-        .padding(.top, 11)
+        .padding(.top, CSSpace.control)
     } label: {
       SettingsSectionLabel(title)
     }
     .tint(CSColor.chromeAccent)
-    .padding(.top, 22)
+    .padding(.top, CSSpace.section)
   }
 
   // MARK: Runtime key/value rows (STT truth only — LLM truth lives in Providers)
@@ -146,9 +146,9 @@ struct EnginePanel: View {
         key: "Whisper language", value: model.whisperLanguageCode,
         tint: true, mono: true, trailing: .none)
     }
-    .clipShape(RoundedRectangle(cornerRadius: 13, style: .continuous))
+    .clipShape(RoundedRectangle(cornerRadius: CSRadius.composer, style: .continuous))
     .overlay(
-      RoundedRectangle(cornerRadius: 13, style: .continuous)
+      RoundedRectangle(cornerRadius: CSRadius.composer, style: .continuous)
         .strokeBorder(CSColor.hairline(0.07), lineWidth: 1)
     )
   }
@@ -466,9 +466,7 @@ struct EnginePanel: View {
       }
       .tint(CSColor.chromeAccent)
     }
-    .padding(15)
-    .background(card)
-    .overlay(cardBorder)
+    .csSettingsCard()
   }
 
   private var presetBinding: Binding<PreviewTimingPreset> {
@@ -583,9 +581,7 @@ struct EnginePanel: View {
         onSave: { model.setAsrGatewayUrl($0) }
       )
     }
-    .padding(15)
-    .background(card)
-    .overlay(cardBorder)
+    .csSettingsCard()
   }
 
   // MARK: Hands-free silence (Apple engine epoch — TOGGLE_SILENCE_SEC)
@@ -613,9 +609,7 @@ struct EnginePanel: View {
         .accessibilityLabel("Hands-free silence duration")
         .accessibilityValue(String(format: "%.1f seconds", model.settings.toggleSilenceSec))
     }
-    .padding(15)
-    .background(card)
-    .overlay(cardBorder)
+    .csSettingsCard()
   }
 
   private var silenceBinding: Binding<Double> {
@@ -625,14 +619,6 @@ struct EnginePanel: View {
     )
   }
 
-  private var card: some ShapeStyle {
-    CSColor.surfaceRaised(0.025)
-  }
-
-  private var cardBorder: some View {
-    RoundedRectangle(cornerRadius: CSRadius.card, style: .continuous)
-      .strokeBorder(CSColor.hairline(0.07), lineWidth: 1)
-  }
 }
 
 // MARK: - Permission matrix cell
@@ -691,7 +677,7 @@ private struct PermissionMatrixCell: View {
   #Preview("Dictation panel") {
     ScrollView { EnginePanel(model: .preview(.engine)) }
       .frame(width: 720, height: 620)
-      .background(SettingsView.windowGradient)
+      .background(CSColor.windowWash)
       .preferredColorScheme(.dark)
   }
 #endif

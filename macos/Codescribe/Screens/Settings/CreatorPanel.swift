@@ -18,7 +18,7 @@ struct CreatorPanel: View {
         .padding(.top, 6)
 
       SettingsSectionLabel("Permission checklist")
-        .padding(.top, 22)
+        .padding(.top, CSSpace.section)
       VStack(spacing: 8) {
         ForEach([
           PermissionKind.microphone,
@@ -34,10 +34,10 @@ struct CreatorPanel: View {
           )
         }
       }
-      .padding(.top, 11)
+      .padding(.top, CSSpace.control)
 
       SettingsSectionLabel("Voice & formatting")
-        .padding(.top, 24)
+        .padding(.top, CSSpace.section)
       VStack(spacing: 8) {
         LanguageIdentityRow(selection: languageBinding)
         SettingsControlRow(
@@ -64,10 +64,10 @@ struct CreatorPanel: View {
           .disabled(!model.settings.aiFormattingEnabled)
         }
       }
-      .padding(.top, 11)
+      .padding(.top, CSSpace.control)
 
       SettingsSectionLabel("Quick start")
-        .padding(.top, 24)
+        .padding(.top, CSSpace.section)
       HStack(spacing: 10) {
         QuickStartCard(
           icon: .mic,
@@ -88,10 +88,10 @@ struct CreatorPanel: View {
           accessibilityId: "settings-quickstart-tune-shortcuts"
         ) { model.performQuickStart(.tuneShortcuts) }
       }
-      .padding(.top, 11)
+      .padding(.top, CSSpace.control)
     }
-    .padding(.horizontal, 28)
-    .padding(.vertical, 24)
+    .padding(.horizontal, CSSpace.xl)
+    .padding(.vertical, CSSpace.section)
   }
 
   // MARK: - Bindings (read VM state, write through the router)
@@ -223,7 +223,7 @@ private struct LanguageIdentityPicker: View {
               )
           )
         }
-        .csFocusRing(cornerRadius: 8)
+        .csFocusRing()
         .accessibilityLabel(choice.accessibilityLabel)
         .accessibilityValue(choice.accessibilityValue(isSelected: isSelected))
         .accessibilityAddTraits(isSelected ? [.isSelected] : [])
@@ -305,7 +305,7 @@ private struct PermissionChecklistRow: View {
           .font(CSFont.mono(11, .semibold))
           .foregroundStyle(CSColor.terracottaLight)
         }
-        .csFocusRing(cornerRadius: 8)
+        .csFocusRing()
       }
     }
     .padding(.horizontal, 15)
@@ -390,7 +390,7 @@ private struct QuickStartCard: View {
   #Preview("Creator panel") {
     ScrollView { CreatorPanel(model: .preview) }
       .frame(width: 720, height: 620)
-      .background(SettingsView.windowGradient)
+      .background(CSColor.windowWash)
       .preferredColorScheme(.dark)
   }
 #endif

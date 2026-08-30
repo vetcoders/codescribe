@@ -22,7 +22,7 @@ struct LicensePanel: View {
       .padding(.top, 8)
 
       SettingsSectionLabel("License status")
-        .padding(.top, 24)
+        .padding(.top, CSSpace.section)
       VStack(spacing: 0) {
         RuntimeRow(
           key: "State", value: stateLabel, tint: model.licenseStatus.agenticEntitled,
@@ -36,26 +36,26 @@ struct LicensePanel: View {
           key: "Updates through", value: model.licenseStatus.updatesUntil ?? "—", tint: false,
           mono: true, trailing: .none)
       }
-      .padding(.top, 11)
-      .clipShape(RoundedRectangle(cornerRadius: 13, style: .continuous))
+      .padding(.top, CSSpace.control)
+      .clipShape(RoundedRectangle(cornerRadius: CSRadius.composer, style: .continuous))
       .overlay(
-        RoundedRectangle(cornerRadius: 13, style: .continuous)
+        RoundedRectangle(cornerRadius: CSRadius.composer, style: .continuous)
           .strokeBorder(CSColor.hairline(0.07), lineWidth: 1)
       )
 
       SettingsSectionLabel("Enter or restore key")
-        .padding(.top, 24)
+        .padding(.top, CSSpace.section)
       SecureField("CSK1.…", text: $key)
         .font(CSFont.mono(11.5, .regular))
         .textFieldStyle(.plain)
-        .padding(12)
+        .padding(CSSpace.md)
         .background(CSColor.surfaceRaised(0.04))
         .clipShape(RoundedRectangle(cornerRadius: CSRadius.input, style: .continuous))
         .overlay(
           RoundedRectangle(cornerRadius: CSRadius.input, style: .continuous)
             .strokeBorder(CSColor.hairline(0.10), lineWidth: 1)
         )
-        .padding(.top, 11)
+        .padding(.top, CSSpace.control)
         .accessibilityLabel("Codescribe license key")
 
       HStack(spacing: 12) {
@@ -83,7 +83,7 @@ struct LicensePanel: View {
           Button("Remove license", role: .destructive) {
             model.removeLicense()
           }
-          .csFocusRing(cornerRadius: 8)
+          .csFocusRing()
           .foregroundStyle(CSColor.dangerLight)
         }
       }
@@ -105,8 +105,8 @@ struct LicensePanel: View {
       .foregroundStyle(CSColor.textFaintAlt)
       .padding(.top, 18)
     }
-    .padding(.horizontal, 28)
-    .padding(.vertical, 24)
+    .padding(.horizontal, CSSpace.xl)
+    .padding(.vertical, CSSpace.section)
   }
 
   private var stateLabel: String {
@@ -128,7 +128,7 @@ struct LicensePanel: View {
   #Preview("License panel") {
     ScrollView { LicensePanel(model: .preview(.license)) }
       .frame(width: 720, height: 760)
-      .background(SettingsView.windowGradient)
+      .background(CSColor.windowWash)
       .preferredColorScheme(.dark)
   }
 #endif
