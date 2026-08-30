@@ -238,7 +238,7 @@ struct DictationOverlayView: View {
       CSIconView(icon: .more, size: 15, weight: .medium)
     }
     .menuStyle(.button)
-    .csFocusRing(cornerRadius: 8)
+    .csFocusRing()
     .menuIndicator(.hidden)
     .fixedSize()
     .accessibilityIdentifier("overlay-placement-menu")
@@ -524,90 +524,63 @@ private struct AnimatedOverlayCaret: View {
 }
 
 #if DEBUG
-  #Preview("Listening") {
-    DictationOverlayView(state: .previewListening())
-      .padding(44)
-      .background(
-        LinearGradient(
-          colors: [Color(hex: 0x15110E), CSColor.glassUnder],
-          startPoint: .topLeading, endPoint: .bottomTrailing
-        )
-      )
+  @ViewBuilder
+  private func overlayPreviewCanvas<Content: View>(
+    width: CGFloat? = nil,
+    height: CGFloat? = nil,
+    @ViewBuilder content: () -> Content
+  ) -> some View {
+    content()
+      .frame(width: width, height: height)
+      .padding(CSSpace.previewInset)
+      .background(CSColor.windowWash)
       .preferredColorScheme(.dark)
+  }
+
+  #Preview("Listening") {
+    overlayPreviewCanvas {
+      DictationOverlayView(state: .previewListening())
+    }
   }
 
   #Preview("Transcribing") {
     // Pinned to the window's min content size so this preview doubles as the
     // min-size regression check: "transcribing…" fills the main status slot and
     // the transcript reserves ~2–3 lines instead of collapsing at the floor.
-    DictationOverlayView(state: .previewTranscribing())
-      .frame(width: 320, height: 260)
-      .padding(44)
-      .background(
-        LinearGradient(
-          colors: [Color(hex: 0x15110E), CSColor.glassUnder],
-          startPoint: .topLeading, endPoint: .bottomTrailing
-        )
-      )
-      .preferredColorScheme(.dark)
+    overlayPreviewCanvas(width: 320, height: 260) {
+      DictationOverlayView(state: .previewTranscribing())
+    }
   }
 
   #Preview("No speech") {
     // Session ended without usable text: dedicated notice body, no
     // Copy/Format/Send, only Close. Pinned to the min content size so it also
     // guards the floor layout for this outcome.
-    DictationOverlayView(state: .previewNoSpeech())
-      .frame(width: 320, height: 260)
-      .padding(44)
-      .background(
-        LinearGradient(
-          colors: [Color(hex: 0x15110E), CSColor.glassUnder],
-          startPoint: .topLeading, endPoint: .bottomTrailing
-        )
-      )
-      .preferredColorScheme(.dark)
+    overlayPreviewCanvas(width: 320, height: 260) {
+      DictationOverlayView(state: .previewNoSpeech())
+    }
   }
 
   #Preview("Formatted") {
-    DictationOverlayView(state: .previewFormatted())
-      .padding(44)
-      .background(
-        LinearGradient(
-          colors: [Color(hex: 0x15110E), CSColor.glassUnder],
-          startPoint: .topLeading, endPoint: .bottomTrailing
-        )
-      )
-      .preferredColorScheme(.dark)
+    overlayPreviewCanvas {
+      DictationOverlayView(state: .previewFormatted())
+    }
   }
 
   #Preview("Formatted · compact chrome") {
-    DictationOverlayView(state: .previewFormatted())
-      .frame(width: 340, height: 260)
-      .padding(44)
-      .background(
-        LinearGradient(
-          colors: [Color(hex: 0x15110E), CSColor.glassUnder],
-          startPoint: .topLeading, endPoint: .bottomTrailing
-        )
-      )
-      .preferredColorScheme(.dark)
+    overlayPreviewCanvas(width: 340, height: 260) {
+      DictationOverlayView(state: .previewFormatted())
+    }
   }
 
   #Preview("Listening · scaled 1.4x") {
     // Exercises `\.csTextScale`: transcript + status render 40% larger while the
     // window chrome and paddings keep their intrinsic geometry (transcript scrolls
     // rather than forcing the panel taller).
-    DictationOverlayView(state: .previewListening())
-      .environment(\.csTextScale, 1.4)
-      .frame(width: 470, height: 280)
-      .padding(44)
-      .background(
-        LinearGradient(
-          colors: [Color(hex: 0x15110E), CSColor.glassUnder],
-          startPoint: .topLeading, endPoint: .bottomTrailing
-        )
-      )
-      .preferredColorScheme(.dark)
+    overlayPreviewCanvas(width: 470, height: 280) {
+      DictationOverlayView(state: .previewListening())
+        .environment(\.csTextScale, 1.4)
+    }
   }
 #endif
 
@@ -635,7 +608,7 @@ private struct CloseDot: View {
       .frame(width: 16, height: 16)
       .contentShape(Circle())
     }
-    .csFocusRing(cornerRadius: 8)
+    .csFocusRing()
     .onHover { inside in
       hovered = inside
     }

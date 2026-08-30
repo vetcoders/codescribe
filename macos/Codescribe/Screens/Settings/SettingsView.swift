@@ -212,19 +212,8 @@ struct SettingsView: View {
         }
       }
     }
-    .background(Self.windowGradient)
+    .background(CSColor.windowWash)
   }
-
-  /// linear-gradient(135deg,#15110e,#0b0c10 55%,#0d1012) from the mock.
-  static let windowGradient = LinearGradient(
-    stops: [
-      .init(color: Color(hex: 0x15110E), location: 0.0),
-      .init(color: Color(hex: 0x0B0C10), location: 0.55),
-      .init(color: Color(hex: 0x0D1012), location: 1.0),
-    ],
-    startPoint: .topLeading,
-    endPoint: .bottomTrailing
-  )
 }
 
 /// SwiftUI's Settings scene can silently keep the content-sized AppKit style
@@ -281,7 +270,7 @@ private struct SettingsHealthFooter: View {
         } label: {
           content(health)
         }
-        .csFocusRing(cornerRadius: 8)
+        .csFocusRing()
         .help("Open \(target.title) settings")
       } else {
         content(health)

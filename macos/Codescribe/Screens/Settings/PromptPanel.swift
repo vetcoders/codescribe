@@ -39,10 +39,10 @@ struct PromptPanel: View {
         .padding(.top, 8)
 
       editor
-        .padding(.top, 22)
+        .padding(.top, CSSpace.section)
     }
-    .padding(.horizontal, 28)
-    .padding(.vertical, 24)
+    .padding(.horizontal, CSSpace.xl)
+    .padding(.vertical, CSSpace.section)
     .onAppear {
       guard formattingSnapshot == nil, formattingSmartSnapshot == nil,
         formattingMaxSnapshot == nil, assistiveSnapshot == nil
@@ -216,7 +216,7 @@ private struct PromptEditor: View {
         .padding(.top, 7)
 
       content
-        .padding(.top, 11)
+        .padding(.top, CSSpace.control)
     }
     .alert("Restore \(title) to the built-in default?", isPresented: $confirmingRestore) {
       Button("Cancel", role: .cancel) {}
@@ -258,7 +258,7 @@ private struct PromptEditor: View {
             .strokeBorder(CSColor.chromeAccent.opacity(0.28), lineWidth: 1)
         )
     }
-    .csFocusRing(cornerRadius: 8)
+    .csFocusRing()
     .help(editing ? "Save the prompt" : "Edit the raw markdown")
   }
 
@@ -266,7 +266,7 @@ private struct PromptEditor: View {
     Button("Restore…") {
       confirmingRestore = true
     }
-    .csFocusRing(cornerRadius: 8)
+    .csFocusRing()
     .font(CSFont.ui(11.5, .semibold))
     .foregroundStyle(CSColor.textMutedAlt)
     .help("Restore only \(title.lowercased())")
@@ -302,31 +302,17 @@ private struct PromptEditor: View {
         .font(CSFont.mono(12.5, .regular))
         .foregroundStyle(CSColor.textBody)
         .scrollContentBackground(.hidden)
-        .padding(10)
         .frame(minHeight: 132)
-        .background(card)
-        .overlay(cardBorder)
+        .csSettingsCard(padding: CSSpace.md)
     } else {
       // Reuse the chat markdown renderer (MarkdownText, ChatComponents.swift):
       // it is dependency-free (DesignSystem tokens only) and carries headings,
       // bold/italic, lists, inline code, and fenced code blocks.
       MarkdownText(raw: text.isEmpty ? "_No prompt set._" : text, size: 13)
         .frame(maxWidth: .infinity, alignment: .leading)
-        .padding(12)
         .frame(minHeight: 132, alignment: .topLeading)
-        .background(card)
-        .overlay(cardBorder)
+        .csSettingsCard(padding: CSSpace.md)
     }
-  }
-
-  private var card: some View {
-    RoundedRectangle(cornerRadius: CSRadius.card, style: .continuous)
-      .fill(CSColor.surfaceRaised(0.025))
-  }
-
-  private var cardBorder: some View {
-    RoundedRectangle(cornerRadius: CSRadius.card, style: .continuous)
-      .strokeBorder(CSColor.hairline(0.08), lineWidth: 1)
   }
 }
 
@@ -343,7 +329,7 @@ func promptSourceLabel(_ source: String?) -> String {
   #Preview("Prompt panel") {
     ScrollView { PromptPanel(model: .preview(.prompts)) }
       .frame(width: 720, height: 620)
-      .background(SettingsView.windowGradient)
+      .background(CSColor.windowWash)
       .preferredColorScheme(.dark)
   }
 #endif

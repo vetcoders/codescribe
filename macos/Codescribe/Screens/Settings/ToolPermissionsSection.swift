@@ -31,7 +31,7 @@ struct ToolPermissionsSection: View {
       .padding(.top, 4)
 
       defaultsCard
-        .padding(.top, 11)
+        .padding(.top, CSSpace.control)
 
       if model.toolCapabilities.isEmpty {
         emptyCapabilities
@@ -116,14 +116,14 @@ struct ToolPermissionsSection: View {
         Button("Expand all") {
           expandedServers = Set(grouped.map(\.server))
         }
-        .csFocusRing(cornerRadius: 8)
+        .csFocusRing()
         .font(CSFont.mono(10.5, .semibold))
         .foregroundStyle(CSColor.oliveLight)
 
         Button("Collapse all") {
           expandedServers.removeAll()
         }
-        .csFocusRing(cornerRadius: 8)
+        .csFocusRing()
         .font(CSFont.mono(10.5, .semibold))
         .foregroundStyle(CSColor.textFaint)
 
@@ -173,7 +173,7 @@ struct ToolPermissionsSection: View {
         )
       }
     }
-    .padding(14)
+    .padding(CSSpace.card)
     .frame(maxWidth: .infinity, alignment: .leading)
     .background(
       RoundedRectangle(cornerRadius: 11, style: .continuous)

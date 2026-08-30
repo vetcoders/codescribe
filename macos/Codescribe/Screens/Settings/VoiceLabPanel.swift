@@ -255,7 +255,7 @@ struct VoiceLabPanel: View {
           }
           .font(CSFont.mono(11, .semibold))
           .foregroundStyle(CSColor.chromeAccent)
-          .csFocusRing(cornerRadius: 8)
+          .csFocusRing()
           .disabled(model.voiceLabTeachPending)
           .accessibilityLabel("Teach dictionary from corrections and proposed rules")
           Button("Refresh") {
@@ -263,23 +263,23 @@ struct VoiceLabPanel: View {
           }
           .font(CSFont.mono(11, .semibold))
           .foregroundStyle(CSColor.chromeAccent)
-          .csFocusRing(cornerRadius: 8)
+          .csFocusRing()
           .accessibilityLabel("Refresh \(SettingsSection.voiceLab.title) data")
         }
       }
 
       SettingsSectionLabel("Recent corrections · \(corrections.count)")
-        .padding(.top, 24)
+        .padding(.top, CSSpace.section)
       correctionsSection
-        .padding(.top, 11)
+        .padding(.top, CSSpace.control)
 
       SettingsSectionLabel("Custom dictionary · \(model.customLexiconEntries.count)")
-        .padding(.top, 24)
+        .padding(.top, CSSpace.section)
       lexiconSection
-        .padding(.top, 11)
+        .padding(.top, CSSpace.control)
     }
-    .padding(.horizontal, 28)
-    .padding(.vertical, 24)
+    .padding(.horizontal, CSSpace.xl)
+    .padding(.vertical, CSSpace.section)
     // The sound belongs to the visible row: navigating away from the row
     // or from the panel ends it. Without these, NSSound kept playing after
     // the Settings window was closed.
@@ -471,9 +471,7 @@ struct VoiceLabPanel: View {
           .font(CSFont.mono(10, .medium))
           .foregroundStyle(CSColor.textFaintAlt)
         }
-        .padding(14)
-        .background(card)
-        .overlay(cardBorder)
+        .csSettingsCard()
         .accessibilityElement(children: .contain)
         .accessibilityLabel(
           "Heard \(row.variant). Current correction \(row.editedText). Revision \(row.revision)."
@@ -586,10 +584,7 @@ struct VoiceLabPanel: View {
             .font(CSFont.mono(10, .medium))
             .foregroundStyle(CSColor.textFaintAlt)
         }
-        .padding(.horizontal, 14)
-        .padding(.vertical, 12)
-        .background(card)
-        .overlay(cardBorder)
+        .csSettingsCard()
         .accessibilityLabel("\(row.variant) to \(row.canonical), source \(row.source)")
         HStack {
           Button("Previous") { lexiconIndex = max(0, safeIndex - 1) }
@@ -614,9 +609,7 @@ struct VoiceLabPanel: View {
       .lineSpacing(2)
       .foregroundStyle(CSColor.textMutedAlt)
       .frame(maxWidth: .infinity, alignment: .leading)
-      .padding(15)
-      .background(card)
-      .overlay(cardBorder)
+      .csSettingsCard()
   }
 
   private func readError(_ error: String) -> some View {
@@ -624,9 +617,7 @@ struct VoiceLabPanel: View {
       .font(CSFont.ui(12.5))
       .foregroundStyle(CSColor.terracottaLight)
       .frame(maxWidth: .infinity, alignment: .leading)
-      .padding(15)
-      .background(card)
-      .overlay(cardBorder)
+      .csSettingsCard()
   }
 
   private func timestampLabel(_ timestampMs: UInt64) -> String {
@@ -634,14 +625,6 @@ struct VoiceLabPanel: View {
       .formatted(date: .abbreviated, time: .shortened)
   }
 
-  private var card: some ShapeStyle {
-    CSColor.surfaceRaised(0.025)
-  }
-
-  private var cardBorder: some View {
-    RoundedRectangle(cornerRadius: CSRadius.card, style: .continuous)
-      .strokeBorder(CSColor.hairline(0.07), lineWidth: 1)
-  }
 }
 
 #if DEBUG

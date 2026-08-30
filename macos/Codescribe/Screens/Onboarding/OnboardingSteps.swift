@@ -113,7 +113,7 @@ struct OnboardingChoiceCard: View {
           )
       )
     }
-    .csFocusRing(cornerRadius: 8)
+    .csFocusRing()
   }
 }
 
@@ -355,7 +355,7 @@ struct AgenticReadinessStepView: View {
         .foregroundStyle(CSColor.textFaint)
         .textSelection(.enabled)
     }
-    .padding(14)
+    .padding(CSSpace.card)
     .frame(maxWidth: .infinity, alignment: .leading)
     .background(
       RoundedRectangle(cornerRadius: 12, style: .continuous)
@@ -394,7 +394,7 @@ struct AgenticReadinessStepView: View {
         }
       }
     }
-    .padding(14)
+    .padding(CSSpace.card)
     .frame(maxWidth: .infinity, alignment: .leading)
     .background(
       RoundedRectangle(cornerRadius: 12, style: .continuous)

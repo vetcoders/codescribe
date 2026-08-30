@@ -76,7 +76,7 @@ struct Composer: View {
             height: ComposerControlMetrics.hitTargetSize
           )
         }
-        .csFocusRing(cornerRadius: 8)
+        .csFocusRing()
         .help("Attach an image (PNG, JPEG, GIF, WebP)")
 
         ComposerTextView(
@@ -112,7 +112,7 @@ struct Composer: View {
             height: ComposerControlMetrics.hitTargetSize
           )
         }
-        .csFocusRing(cornerRadius: 8)
+        .csFocusRing()
         .disabled(!primaryAction.isEnabled)
         .opacity(primaryAction == .stopping ? 0.72 : 1)
         .help(primaryAction.accessibilityLabel)
@@ -124,13 +124,13 @@ struct Composer: View {
       .padding(.vertical, 6)
       .background(CSColor.surfaceRaised(isDragging ? 0.07 : 0.04))
       .overlay(
-        RoundedRectangle(cornerRadius: 13, style: .continuous)
+        RoundedRectangle(cornerRadius: CSRadius.composer, style: .continuous)
           .strokeBorder(
             isDragging ? CSColor.chromeAccent : CSColor.hairline(0.09),
             lineWidth: isDragging ? 1.5 : 1
           )
       )
-      .clipShape(RoundedRectangle(cornerRadius: 13, style: .continuous))
+      .clipShape(RoundedRectangle(cornerRadius: CSRadius.composer, style: .continuous))
       // Sits above the NSTextField and swallows a drop that lands *on* the
       // field, so the field editor never pastes the path as text. Only
       // hit-testable mid-drag (isDragging) so typing/clicks pass through
@@ -193,7 +193,7 @@ struct Composer: View {
           SettingsDeepLink.pendingSection = .license
           openSettings()
         }
-        .csFocusRing(cornerRadius: 8)
+        .csFocusRing()
         .font(CSFont.mono(10.5, .semibold))
         .foregroundStyle(CSColor.chromeAccent)
       }
@@ -298,7 +298,7 @@ struct Composer: View {
       .frame(maxWidth: .infinity, alignment: .leading)
       .contentShape(Rectangle())
     }
-    .csFocusRing(cornerRadius: 8)
+    .csFocusRing()
   }
 
   private func performPrimaryAction() {
@@ -375,7 +375,7 @@ struct Composer: View {
         .contentShape(Rectangle())
         .opacity(micState == .blocked ? 0.35 : micState == .preparing ? 0.68 : 1)
     }
-    .csFocusRing(cornerRadius: 8)
+    .csFocusRing()
     .disabled(!micState.isEnabled)
     .help(micState.accessibilityLabel)
     .accessibilityIdentifier(ComposerAccessibility.micIdentifier)
@@ -463,12 +463,12 @@ struct Composer: View {
                   .frame(maxWidth: 160)
               }
             }
-            .csFocusRing(cornerRadius: 8)
+            .csFocusRing()
             .help("Preview attachment")
             Button(action: { store.removeAttachment(attachment.id) }) {
               CSIconView(icon: .close, size: 9, weight: .bold, color: CSColor.textFaint)
             }
-            .csFocusRing(cornerRadius: 8)
+            .csFocusRing()
             .help("Remove attachment")
           }
           .padding(.horizontal, 9)

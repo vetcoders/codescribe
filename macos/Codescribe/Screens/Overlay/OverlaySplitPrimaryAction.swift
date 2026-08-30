@@ -51,7 +51,7 @@ extension DictationOverlayView {
       .menuStyle(.borderlessButton)
       .menuIndicator(.hidden)
       .frame(width: 22, height: primaryActionHeight)
-      .csFocusRing(cornerRadius: 8)
+      .csFocusRing()
       .help("More actions")
       .accessibilityLabel("More actions")
       .accessibilityIdentifier("overlay-primary-action-menu")

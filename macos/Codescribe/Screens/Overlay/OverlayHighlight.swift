@@ -229,10 +229,10 @@ private struct FlowText: View {
   private func rendered(_ run: OverlayCanvasRun) -> Text {
     switch run {
     case .text(let text):
-      return Text(text).foregroundColor(CSColor.textBody)
+      return Text(text).foregroundStyle(CSColor.textBody)
     case .highlight(let highlight):
       return Text(highlight.after)
-        .foregroundColor(highlightColor(highlight))
+        .foregroundStyle(highlightColor(highlight))
         .underline(highlight.kind == .speechGap, color: CSColor.amber)
     }
   }

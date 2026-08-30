@@ -310,32 +310,32 @@ struct AudioPanel: View {
         Button("Refresh") {
           model.refreshAudioInput()
         }
-        .csFocusRing(cornerRadius: 8)
+        .csFocusRing()
         .font(CSFont.mono(11, .semibold))
         .foregroundStyle(CSColor.chromeAccent)
         .accessibilityLabel("Refresh audio input devices")
       }
 
       SettingsSectionLabel("Input device")
-        .padding(.top, 24)
+        .padding(.top, CSSpace.section)
         .id(SettingsAnchor.audioInput)
       inputDeviceSection
-        .padding(.top, 11)
+        .padding(.top, CSSpace.control)
 
       SettingsSectionLabel("Recording readiness")
-        .padding(.top, 24)
+        .padding(.top, CSSpace.section)
         .id(SettingsAnchor.audioReadiness)
       admissionSection
-        .padding(.top, 11)
+        .padding(.top, CSSpace.control)
         .task { await model.refreshAdmission() }
 
       SettingsSectionLabel("Sound feedback")
-        .padding(.top, 24)
+        .padding(.top, CSSpace.section)
       feedbackSection
-        .padding(.top, 11)
+        .padding(.top, CSSpace.control)
     }
-    .padding(.horizontal, 28)
-    .padding(.vertical, 24)
+    .padding(.horizontal, CSSpace.xl)
+    .padding(.vertical, CSSpace.section)
   }
 
   private var inputDeviceSection: some View {
@@ -370,16 +370,14 @@ struct AudioPanel: View {
         Button("Use system default") {
           model.resetAudioInputDevice()
         }
-        .csFocusRing(cornerRadius: 8)
+        .csFocusRing()
         .font(CSFont.mono(10.5, .semibold))
         .foregroundStyle(CSColor.chromeAccent)
         .disabled(model.settings.audioInputDevice == nil)
         .accessibilityLabel("Reset audio input to system default")
       }
     }
-    .padding(15)
-    .background(card)
-    .overlay(cardBorder)
+    .csSettingsCard()
   }
 
   /// The controller's precondition for any take, and the one operator step
@@ -396,9 +394,7 @@ struct AudioPanel: View {
           .accessibilityLabel("Calibration result")
       }
     }
-    .padding(15)
-    .background(card)
-    .overlay(cardBorder)
+    .csSettingsCard()
   }
 
   private var readinessCockpit: some View {
@@ -426,7 +422,7 @@ struct AudioPanel: View {
         }
       }
     }
-    .padding(12)
+    .padding(CSSpace.md)
     .background(CSColor.surfaceRaised(0.03))
     .clipShape(RoundedRectangle(cornerRadius: CSRadius.input, style: .continuous))
     .accessibilityElement(children: .contain)
@@ -593,9 +589,7 @@ struct AudioPanel: View {
           .accessibilityValue("\(Int((model.settings.soundVolume * 100).rounded())) percent")
       }
     }
-    .padding(15)
-    .background(card)
-    .overlay(cardBorder)
+    .csSettingsCard()
   }
 
   private var deviceOptions: [String] {
@@ -668,7 +662,7 @@ struct AudioPanel: View {
       }
       Spacer(minLength: 0)
     }
-    .padding(12)
+    .padding(CSSpace.md)
     .background(CSColor.surfaceRaised(0.03))
     .clipShape(RoundedRectangle(cornerRadius: CSRadius.input, style: .continuous))
   }
@@ -681,14 +675,6 @@ struct AudioPanel: View {
     }
   }
 
-  private var card: some ShapeStyle {
-    CSColor.surfaceRaised(0.025)
-  }
-
-  private var cardBorder: some View {
-    RoundedRectangle(cornerRadius: CSRadius.card, style: .continuous)
-      .strokeBorder(CSColor.hairline(0.08), lineWidth: 1)
-  }
 }
 
 #if DEBUG

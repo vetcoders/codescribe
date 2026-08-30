@@ -66,12 +66,45 @@ enum CSColor {
   static let textMutedAlt = Color(hex: 0x82857F)
   static let textFaint = Color(hex: 0x6F7268)  // mono meta
   static let textFaintAlt = Color(hex: 0x5D6058)  // timestamps
+
+  /// Mock wash origin (`#15110e` → `#0b0c10` → `#0d1012`). Shared by Settings
+  /// detail and overlay/tray previews so those surfaces cannot drift apart.
+  static let warmInk = Color(hex: 0x15110E)
+  static let warmDeep = Color(hex: 0x0D1012)
+
+  static let windowWash = LinearGradient(
+    stops: [
+      .init(color: warmInk, location: 0.0),
+      .init(color: glassUnder, location: 0.55),
+      .init(color: warmDeep, location: 1.0),
+    ],
+    startPoint: .topLeading,
+    endPoint: .bottomTrailing
+  )
 }
 
 enum CSRadius {
+  static let chip: CGFloat = 8
   static let input: CGFloat = 9
   static let card: CGFloat = 12
-  static let window: CGFloat = 22
+  static let composer: CGFloat = 13
   static let tray: CGFloat = 14
   static let pill: CGFloat = 20
+  static let window: CGFloat = 22
+}
+
+/// Layout rhythm. Screens were inventing 6/7/8/11/12/14/15/20/28/44 independently.
+/// Cluster onto this scale; overlay/tray preview inset stays 44 — that is hit-geometry, not page padding.
+enum CSSpace {
+  static let xxs: CGFloat = 4
+  static let xs: CGFloat = 6
+  static let sm: CGFloat = 8
+  static let control: CGFloat = 9
+  static let md: CGFloat = 12
+  static let card: CGFloat = 14
+  static let lg: CGFloat = 20
+  static let section: CGFloat = 24
+  static let xl: CGFloat = 28
+  static let page: CGFloat = 32
+  static let previewInset: CGFloat = 44
 }

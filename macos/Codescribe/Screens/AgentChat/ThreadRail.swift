@@ -92,7 +92,7 @@ struct ThreadRail: View {
                 )
                 .contentShape(Rectangle())
             }
-            .csFocusRing(cornerRadius: 8)
+            .csFocusRing()
             .help(title)
             .accessibilityLabel(title)
             .accessibilityAddTraits(isActive ? [.isSelected] : [])
@@ -116,7 +116,7 @@ struct ThreadRail: View {
           )
           .contentShape(Rectangle())
       }
-      .csFocusRing(cornerRadius: 8)
+      .csFocusRing()
       .help("New thread")
       .accessibilityLabel("New thread")
       .padding(.vertical, 8)
@@ -146,7 +146,7 @@ struct ThreadRail: View {
           prompt:
             Text("search threads")
             .font(CSFont.mono(12, .medium))
-            .foregroundColor(CSColor.textFaint)
+            .foregroundStyle(CSColor.textFaint)
         )
         .textFieldStyle(.plain)
         .font(CSFont.mono(12, .medium))
@@ -230,7 +230,7 @@ struct ThreadRail: View {
               )
           )
         }
-        .csFocusRing(cornerRadius: 8)
+        .csFocusRing()
       }
       .padding(8)
       .overlay(alignment: .top) {
@@ -384,7 +384,7 @@ private struct ThreadRow: View {
           .frame(width: 18, height: 18)
           .contentShape(Rectangle())
         }
-        .csFocusRing(cornerRadius: 8)
+        .csFocusRing()
         .opacity(thread.isFavorite || isActive ? 1 : 0.38)
         .help(thread.isFavorite ? "Unfavorite thread" : "Favorite thread")
       }

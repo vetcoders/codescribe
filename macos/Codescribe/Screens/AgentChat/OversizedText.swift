@@ -126,7 +126,7 @@ struct OversizedMessageBody<Head: View>: View {
       }
       .contentShape(Rectangle())
     }
-    .csFocusRing(cornerRadius: 8)
+    .csFocusRing()
     .help(
       showFull
         ? "Fold this message back to its head"

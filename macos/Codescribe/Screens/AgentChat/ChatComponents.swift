@@ -608,7 +608,7 @@ private struct CodeBlockView: View {
       .font(CSFont.mono(size - 1))
       // Base colour for runs the theme leaves unstyled; the highlighter's
       // per-token foreground colours win over this modifier.
-      .foregroundColor(CSColor.textBodyAlt)
+      .foregroundStyle(CSColor.textBodyAlt)
       .lineSpacing(4)
       .textSelection(.enabled)
       .fixedSize(horizontal: false, vertical: true)
@@ -686,7 +686,7 @@ private struct CodeBlockView: View {
           .strokeBorder(CSColor.hairline(0.10), lineWidth: 1)
       )
     }
-    .csFocusRing(cornerRadius: 8)
+    .csFocusRing()
     .help("Copy code")
   }
 }
