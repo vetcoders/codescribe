@@ -41,21 +41,30 @@ final class AgentSummonAction {
 
 /// UniFFI callbacks arrive off-main. This listener performs exactly one hop to
 /// the AppDelegate-owned action and carries no recording/model payload.
-final class AgentAppActionListener: CsAppActionListener, @unchecked Sendable {
-  private let summonAgent: @MainActor () -> Void
+final class AgentAppActionListener: CsAppActionListener, Sendable {
+  private let continuation: AsyncStream<Void>.Continuation
+  private let consumer: Task<Void, Never>
 
+  @MainActor
   init(
-    summonAgent: @escaping @MainActor () -> Void
+    summonAgent: @escaping @MainActor @Sendable () -> Void
   ) {
-    self.summonAgent = summonAgent
+    let channel = AsyncStream<Void>.makeStream()
+    continuation = channel.continuation
+    consumer = Task { @MainActor in
+      for await _ in channel.stream {
+        summonAgent()
+      }
+    }
   }
 
   func onShowAgent() {
-    DispatchQueue.main.async {
-      MainActor.assumeIsolated {
-        self.summonAgent()
-      }
-    }
+    continuation.yield(())
+  }
+
+  func invalidate() {
+    continuation.finish()
+    consumer.cancel()
   }
 }
 
@@ -262,7 +271,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
       NSApp.setActivationPolicy(.regular)
     }
     NSApp.activate(ignoringOtherApps: true)
-    SpeechRecognitionPermission.request { [weak self] state in
+    Task { @MainActor [weak self] in
+      let state = await SpeechRecognitionPermission.request()
       guard let self else { return }
       if priorPolicy == .accessory {
         // Restore accessory only when the user has not enabled Dock icon.
@@ -483,7 +493,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     // touching the lazy handle here would construct the bridge at teardown
     // purely to stop something that was never running.
     guard !shouldExitForDuplicate, !Self.isRunningTests else { return }
-    VoiceLabRuntime.stopOwnedProcess()
+    model.chat.invalidate()
+    appActionListener?.invalidate()
+    voiceDeliveryListener?.invalidate()
+    trayStatus.invalidate()
+    Task { await VoiceLabRuntime.shared.stopOwnedProcess() }
     hotkeys.stop()
     sleepWakeObserver?.invalidate()
     sleepWakeObserver = nil

@@ -63,6 +63,10 @@ private struct CSFocusPolicyMonitor: NSViewRepresentable {
   }
 
   func updateNSView(_ nsView: CSFocusPolicyMonitorView, context: Context) {}
+
+  static func dismantleNSView(_ nsView: CSFocusPolicyMonitorView, coordinator: ()) {
+    nsView.invalidate()
+  }
 }
 
 @MainActor
@@ -92,10 +96,8 @@ private final class CSFocusPolicyMonitorView: NSView {
     }
   }
 
-  deinit {
-    if let mouseMonitor {
-      NSEvent.removeMonitor(mouseMonitor)
-    }
+  func invalidate() {
+    removeMouseMonitor()
   }
 
   private func removeMouseMonitor() {

@@ -42,7 +42,8 @@ struct DesignGallery: View {
               RoundedRectangle(cornerRadius: CSRadius.chip).fill(color)
                 .frame(height: CSSpace.previewInset)
                 .overlay(
-                  RoundedRectangle(cornerRadius: CSRadius.chip).strokeBorder(CSColor.hairline(), lineWidth: 1))
+                  RoundedRectangle(cornerRadius: CSRadius.chip).strokeBorder(
+                    CSColor.hairline(), lineWidth: 1))
               Text(name).font(CSFont.mono(9)).foregroundStyle(CSColor.textMuted)
             }
           }

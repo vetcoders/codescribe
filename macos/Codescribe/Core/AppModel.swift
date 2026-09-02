@@ -129,7 +129,7 @@ final class OverlayController: ObservableObject {
       // Block the composer mic while the shared recorder owns the microphone.
       AppModel.shared.chat.dictationBlocked = true
       Task.detached(priority: .utility) {
-        VoiceLabRuntime.ensureListening()
+        await VoiceLabRuntime.shared.ensureListening()
       }
     }
     state.onRecordingStarted = { [weak self] in
@@ -150,7 +150,7 @@ final class OverlayController: ObservableObject {
       // Unconditional: releases the composer phase, the blocked flag and the
       // thread-ownership latch in one beat, whatever the lane turned out to be.
       AppModel.shared.chat.endDictationSession()
-      VoiceLabRuntime.stopOwnedProcess()
+      Task { await VoiceLabRuntime.shared.stopOwnedProcess() }
     }
     state.onSuccessfulDictation = {
       Task { @MainActor in
@@ -198,6 +198,7 @@ final class OverlayController: ObservableObject {
     let panel = panel ?? panelFactory(state, textScale)
     self.panel = panel
     if let floating = panel as? FloatingOverlayPanel {
+      floating.startPresence()
       floating.onUserMove = { [weak self] in
         guard let self, !Self.isApplyingFrame, let panel = self.panel else { return }
         if self.state.freeMotion {
@@ -282,6 +283,7 @@ final class OverlayController: ObservableObject {
       if state.freeMotion {
         OverlayPlacement.persistOrigin(panel.frame.origin)
       }
+      (panel as? FloatingOverlayPanel)?.invalidatePresence()
     }
     if let panel { orderPanelOut(panel) }
   }
