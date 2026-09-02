@@ -310,7 +310,7 @@ struct DictationOverlayView: View {
   /// at the window floor.
   private var transcriptScroll: some View {
     VStack(alignment: .leading, spacing: 0) {
-      LiveTranscriptTextView(runs: state.highlightCanvasRuns)
+      LiveTranscriptTextView(text: state.listeningDisplay)
         .overlay(alignment: .bottomTrailing) {
           BlinkingCaret()
             .padding(.trailing, 3)
@@ -318,15 +318,6 @@ struct DictationOverlayView: View {
         }
         .frame(minHeight: transcriptMinHeight)
         .accessibilityIdentifier("overlay-transcript-area")
-      if state.highlightsEnabled {
-        OverlayHighlightTeachBar(
-          highlights: state.highlights,
-          selectedId: state.selectedHighlightId,
-          onSelect: { state.selectHighlight($0) },
-          onTeach: { state.sendHighlightToTeach($0) }
-        )
-        .padding(.top, 8)
-      }
     }
     .frame(maxWidth: .infinity, alignment: .leading)
   }

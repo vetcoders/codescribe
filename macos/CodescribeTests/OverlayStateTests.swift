@@ -231,11 +231,7 @@ final class OverlayStateTests: XCTestCase {
     projectText("analyze the repo for duplicate dispatch", to: state)
     XCTAssertTrue(state.canCopy)
     XCTAssertEqual(state.activeText, "analyze the repo for duplicate dispatch")
-    XCTAssertTrue(
-      String(state.listeningCanvas.characters).contains(
-        "analyze the repo for duplicate dispatch"
-      )
-    )
+    XCTAssertEqual(state.listeningDisplay, "analyze the repo for duplicate dispatch")
   }
 
   func testProjectionWithoutAcousticEvidenceCannotClaimTheCanvas() {
@@ -1268,65 +1264,6 @@ final class OverlayStateTests: XCTestCase {
     let state = OverlayState()
     state.handleError(message: "layer1_lane_degraded: Layer 1 lane fell back")
     XCTAssertEqual(state.mode, .error)
-  }
-
-  func testCanvasRunsSplitLexiconWordAndKeepPreview() {
-    let runs = OverlayCanvas.runs(
-      segments: [(utteranceId: 1, text: "Reports i Edyta")],
-      highlights: [
-        OverlayCanvas.lexiconHighlight(
-          utteranceId: 1, start: 0, replacement: "Reports", before: "RIPOS")!
-      ],
-      preview: "dalej"
-    )
-    XCTAssertEqual(
-      runs,
-      [
-        .highlight(
-          OverlayCanvas.lexiconHighlight(
-            utteranceId: 1, start: 0, replacement: "Reports", before: "RIPOS")!),
-        .text(" i Edyta dalej"),
-      ])
-  }
-
-  func testHighlightScreenshotRendersLexiconAndGap() throws {
-    let highlight = OverlayCanvas.lexiconHighlight(
-      utteranceId: 1, start: 0, replacement: "Reports", before: "RIPOS")!
-    let gap = OverlayCanvas.speechGap(utteranceId: 2)
-    let view = OverlayHighlightScreenshot(
-      runs: OverlayCanvas.runs(
-        segments: [(utteranceId: 1, text: "Reports")],
-        highlights: [highlight, gap],
-        preview: ""
-      ),
-      highlights: [highlight, gap]
-    )
-    .frame(width: 520, height: 220)
-    let renderer = ImageRenderer(content: view)
-    renderer.scale = 2
-    guard let image = renderer.nsImage else {
-      XCTFail("ImageRenderer produced no nsImage")
-      return
-    }
-    let dest = FileManager.default.temporaryDirectory
-      .appendingPathComponent("w13-6b-highlights.png")
-    let reportDest = URL(fileURLWithPath: NSHomeDirectory())
-      .appendingPathComponent(
-        ".vibecrafted/artifacts/vetcoders/codescribe/2026_0813/reports/implement/w13-6b-highlights.png"
-      )
-    guard let tiff = image.tiffRepresentation,
-      let rep = NSBitmapImageRep(data: tiff),
-      let png = rep.representation(using: .png, properties: [:])
-    else {
-      XCTFail("could not encode highlight screenshot")
-      return
-    }
-    try png.write(to: dest)
-    try? FileManager.default.createDirectory(
-      at: reportDest.deletingLastPathComponent(), withIntermediateDirectories: true)
-    try? png.write(to: reportDest)
-    XCTAssertGreaterThan(png.count, 800)
-    XCTAssertTrue(FileManager.default.fileExists(atPath: dest.path))
   }
 
   @MainActor

@@ -27,7 +27,7 @@ enum LiveTranscriptSelectionPolicy {
 /// chain instead: drag selection, Cmd-C, Select All and the standard context
 /// menu keep working while the recording and transcript updates continue.
 struct LiveTranscriptTextView: NSViewRepresentable {
-  let runs: [OverlayCanvasRun]
+  let text: String
   @Environment(\.csTextScale) private var textScale
 
   func makeCoordinator() -> Coordinator { Coordinator() }
@@ -121,33 +121,12 @@ struct LiveTranscriptTextView: NSViewRepresentable {
     paragraph.lineSpacing = 5
     let result = NSMutableAttributedString()
 
-    for run in runs {
-      let text: String
-      let color: NSColor
-      var extra: [NSAttributedString.Key: Any] = [:]
-      switch run {
-      case .text(let value):
-        text = value
-        color = NSColor(CSColor.textBody)
-      case .highlight(let highlight):
-        text = highlight.after
-        switch highlight.kind {
-        case .lexiconCorrected:
-          color = NSColor(highlight.taught ? CSColor.oliveLight : CSColor.terracottaLight)
-        case .speechGap:
-          color = NSColor(CSColor.amber)
-          extra[.underlineStyle] = NSUnderlineStyle.single.rawValue
-          extra[.underlineColor] = NSColor(CSColor.amber)
-        }
-      }
-      var attributes: [NSAttributedString.Key: Any] = [
-        .font: font,
-        .foregroundColor: color,
-        .paragraphStyle: paragraph,
-      ]
-      attributes.merge(extra) { _, replacement in replacement }
-      result.append(NSAttributedString(string: text, attributes: attributes))
-    }
+    let attributes: [NSAttributedString.Key: Any] = [
+      .font: font,
+      .foregroundColor: NSColor(CSColor.textBody),
+      .paragraphStyle: paragraph,
+    ]
+    result.append(NSAttributedString(string: text, attributes: attributes))
     return result
   }
 

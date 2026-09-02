@@ -10,8 +10,8 @@ import SwiftUI
 // TRANSCRIPT MODEL (one-throne bridge semantics):
 //   on_transcript_projection → complete Rust-reduced document plus acoustic
 //                              receipts; the sole Swift text-admission path.
-//   legacy preview/correction/final/patch callbacks remain protocol stubs and
-//   carry no transcript authority.
+//   raw preview/correction/final/patch events remain IPC diagnostics and never
+//   cross the product-facing listener.
 //   on_vad_active → speech start/stop → drives the WaveformView pulse.
 //   on_audio_level → capture RMS per block → real waveform amplitude (U22;
 //                   closes the old AMPLITUDE GAP — ambient eq is now only the
@@ -128,66 +128,6 @@ enum OverlayPrimaryActionKind: Equatable {
   case insert
 }
 
-/// Dictionary/history helper follows Settings `asr_mode`. Apple-only has no helper.
-func helperRetranscribePass(asrMode: String) -> FileRetranscribePass? {
-  switch asrMode.lowercased() {
-  case "local_power": return .fullHq
-  case "cloud": return .cloud
-  default: return nil
-  }
-}
-
-enum HelperFilePassRefusal: Equatable, Error {
-  case noHelper
-  case noArchivedAudio
-}
-
-/// Bind a Dictionary row to an explicit file pass. Never invent `last_session.wav`.
-enum HelperFilePass {
-  static func request(asrMode: String, archivedAudio: URL?) -> Result<
-    (FileRetranscribePass, String), HelperFilePassRefusal
-  > {
-    guard let pass = helperRetranscribePass(asrMode: asrMode) else {
-      return .failure(.noHelper)
-    }
-    guard let archived = archivedAudio else {
-      return .failure(.noArchivedAudio)
-    }
-    return .success((pass, "\(pass.rawValue):\(archived.path)"))
-  }
-
-  static func compare(daily: String, helper: String, pass: FileRetranscribePass) -> String {
-    let left = daily.trimmingCharacters(in: .whitespacesAndNewlines)
-    let right = helper.trimmingCharacters(in: .whitespacesAndNewlines)
-    if left == right {
-      return "Helper \(pass.visibleName) matches daily."
-    }
-    return
-      "DAILY\n\(left)\n\nHELPER \(pass.visibleName.uppercased())\n\(right)\n\nDaily is unchanged until you save a correction."
-  }
-}
-
-enum FileRetranscribePass: String, CaseIterable, Identifiable {
-  case fullHq = "hq"
-  case cloud = "cloud"
-
-  var id: String { rawValue }
-
-  var visibleName: String {
-    switch self {
-    case .fullHq: "Full HQ file pass"
-    case .cloud: "Cloud pass"
-    }
-  }
-
-  var help: String {
-    switch self {
-    case .fullHq: "Full local Whisper pass over the selected audio file"
-    case .cloud: "Cloud STT pass over the selected audio file"
-    }
-  }
-}
-
 struct OverlayInsertActionPresentation: Equatable {
   let targetAppName: String?
   let title: String
@@ -225,8 +165,6 @@ final class OverlayState: ObservableObject {
 
   // MARK: Published state
   @Published var mode: OverlayMode = .listening
-  @Published var preview: String = ""  // current utterance interim
-  @Published var committedUtterances: [String] = []  // accumulated finals, one item per utterance
   @Published var formattedText: String = ""  // finalized transcript after stop
   @Published var vadActive: Bool = false  // drives the WaveformView pulse
   /// Live capture level for the waveform. NOT @Published on purpose — the
@@ -251,16 +189,6 @@ final class OverlayState: ObservableObject {
   /// presentation routing only; the controller remains the admission authority.
   @Published private(set) var recoverySettingsSection: SettingsSection?
   @Published private(set) var recoverySettingsAnchor: SettingsAnchor?
-  /// W13-6B highlight layer. Default follows the OFF flag; tests inject `true`.
-  @Published var highlightsEnabled = false
-  /// Span highlights (lexicon-corrected words + speech-gap pustki).
-  @Published private(set) var highlights: [OverlayHighlight] = []
-  @Published private(set) var selectedHighlightId: String?
-  /// Last Teach acknowledgement for tests and the toast.
-  @Published private(set) var lastTeachAcknowledgement: String?
-  /// Injected Teach writer. Production uses `qualityTeachSpan`; tests replace
-  /// this so XCTest never writes the operator's live lexicon.
-  var teachSpan: ((OverlayHighlight) throws -> String)?
   @Published var isEditingTranscript: Bool = false
   /// Prompt-free policy snapshot from C02's persisted settings owner. These
   /// values are replaced only by a fresh engine read, never by optimistic UI.
@@ -364,7 +292,6 @@ final class OverlayState: ObservableObject {
   /// never re-prompts once the scope is determined, so a second attempt in
   /// the same app run could only loop on the terminal error.
   private var speechAuthRequestAttempted = false
-  private var mockRevealTask: Task<Void, Never>?
   /// Belt-and-suspenders guard against an orphaned optimistic "starting" overlay.
   /// The Rust bridge now guarantees a terminal event for every preparing it shows
   /// (`compensate_orphaned_preparing`); this watchdog is the second layer: if no
@@ -385,11 +312,6 @@ final class OverlayState: ObservableObject {
 
   init(nowProvider: @escaping () -> TimeInterval = { ProcessInfo.processInfo.systemUptime }) {
     self.nowProvider = nowProvider
-    // Production reads the UniFFI flag (default OFF). XCTest hosts stay off
-    // unless a test flips `highlightsEnabled` — never inherit a leaked env.
-    if !QualityCaptureHost.isRunningTests {
-      highlightsEnabled = overlayHighlightsEnabled()
-    }
   }
 
   func attach() {
@@ -471,16 +393,8 @@ final class OverlayState: ObservableObject {
   }
 
   /// Rust-rendered transcript bytes from the latest admitted projection.
-  ///
-  /// The local arrays remain only for static SwiftUI previews that have no
-  /// runtime listener. Once a projection exists, they can never outrank it.
   private var rawLiveText: String {
-    if let projection = latestTranscriptProjection {
-      return projection.renderedText
-    }
-    return (committedUtterances + [preview])
-      .filter { !$0.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty }
-      .joined(separator: " ")
+    latestTranscriptProjection?.renderedText ?? ""
   }
 
   var liveText: String {
@@ -506,50 +420,6 @@ final class OverlayState: ObservableObject {
     return warmingUp ? "starting…" : "listening…"
   }
 
-  /// Sealed committed utterances — engine must not rewrite these except via
-  /// a human edit on the FINAL canvas. Highlighted on the live canvas.
-  var listeningSealedText: String {
-    let sealed =
-      committedUtterances
-      .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
-      .filter { !$0.isEmpty }
-      .joined(separator: " ")
-    return insertingContextMarkers(into: sealed)
-  }
-
-  /// Unsealed interim hypothesis. Dimmer than sealed; copy includes it.
-  var listeningPreviewText: String {
-    preview.trimmingCharacters(in: .whitespacesAndNewlines)
-  }
-
-  /// Live canvas: sealed truth highlighted, interim unsealed. Empty canvas
-  /// keeps the phase placeholder so the body never goes blank.
-  var listeningCanvas: AttributedString {
-    let sealed = listeningSealedText
-    let previewRun = listeningPreviewText
-    if sealed.isEmpty && previewRun.isEmpty {
-      var placeholder = AttributedString(listeningDisplay)
-      placeholder.foregroundColor = CSColor.textBody
-      return placeholder
-    }
-    var canvas = AttributedString()
-    if !sealed.isEmpty {
-      var run = AttributedString(sealed)
-      run.foregroundColor = CSColor.textHigh
-      run.backgroundColor = CSColor.modeReady.opacity(0.18)
-      canvas.append(run)
-    }
-    if !sealed.isEmpty && !previewRun.isEmpty {
-      canvas.append(AttributedString(" "))
-    }
-    if !previewRun.isEmpty {
-      var run = AttributedString(previewRun)
-      run.foregroundColor = CSColor.textMuted
-      canvas.append(run)
-    }
-    return canvas
-  }
-
   /// Copy is live from the first captured letter — listening or FINAL.
   var canCopy: Bool {
     !activeText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
@@ -559,14 +429,6 @@ final class OverlayState: ObservableObject {
   /// frozen value after stop.
   var showsSessionTimer: Bool {
     captureStartedAtUptime != nil
-  }
-
-  /// Visual runs for the highlight canvas. Empty when the lane is off.
-  var highlightCanvasRuns: [OverlayCanvasRun] {
-    // Typed highlight evidence is not part of TranscriptRevision yet. Showing
-    // highlights reconstructed from deleted Swift segments would create a
-    // second transcript authority, so render the canonical projection plainly.
-    [.text(listeningDisplay)]
   }
 
   /// Whatever the action row should copy/send for the current state.
@@ -864,7 +726,6 @@ final class OverlayState: ObservableObject {
     captureQualityIfEdited(action: "close")
     cancelWarmupWatchdog()
     cancelAutoHide()
-    mockRevealTask?.cancel()
     toastTask?.cancel()
     pasteTargetRefreshTask?.cancel()
     if recording, let engine {
@@ -1425,10 +1286,6 @@ final class OverlayState: ObservableObject {
     let message = speechNotice ?? admissionNotice?.detail ?? message
     let toast = speechNotice ?? admissionNotice?.headline ?? toast
     abortRecordingSession()
-    preview = ""
-    committedUtterances = []
-    highlights = []
-    selectedHighlightId = nil
     speechWasActive = false
     pendingNoSpeechMessage = nil
     noSpeechNotice = OverlayState.defaultNoSpeechNotice
@@ -1539,8 +1396,6 @@ final class OverlayState: ObservableObject {
     )
     latestTranscriptProjection = projection
     markTranscriptActivity()
-    preview = ""
-    committedUtterances = []
     formattedText = projection.renderedText
     if projection.reducerAction == "record_ledger_terminal_seal" {
       finishTerminalPresentation(
@@ -1596,13 +1451,8 @@ final class OverlayState: ObservableObject {
 
   private func resetTranscript() {
     latestTranscriptProjection = nil
-    preview = ""
-    committedUtterances = []
     formattedText = ""
     contextMarkers = []
-    highlights = []
-    selectedHighlightId = nil
-    lastTeachAcknowledgement = nil
     speechWasActive = false
     deliveredText = ""
     manualHumanEditPending = false
@@ -1699,98 +1549,6 @@ final class OverlayState: ObservableObject {
     }
   }
 
-  func selectHighlight(_ highlight: OverlayHighlight) {
-    selectedHighlightId = highlight.id
-  }
-
-  /// One-click send-span-to-Teach. Production goes through `qualityTeachSpan`
-  /// behind `QualityCaptureHost`; tests inject `teachSpan`.
-  func sendHighlightToTeach(_ highlight: OverlayHighlight) {
-    guard highlightsEnabled else { return }
-    guard let index = highlights.firstIndex(where: { $0.id == highlight.id }) else { return }
-    if let teachSpan {
-      do {
-        let acknowledgement = try teachSpan(highlight)
-        highlights[index].taught = true
-        lastTeachAcknowledgement = acknowledgement
-        if !acknowledgement.isEmpty { showToast(acknowledgement) }
-      } catch {
-        showToast("Teach failed")
-      }
-      return
-    }
-    guard !QualityCaptureHost.isRunningTests else { return }
-    let variant = highlight.teachVariant
-    let canonical = highlight.teachCanonical
-    let kind = highlight.teachKind
-    Task.detached(priority: .utility) { [weak self] in
-      let result = try? qualityTeachSpan(
-        variant: variant,
-        canonical: canonical,
-        kind: kind
-      )
-      await MainActor.run {
-        guard let self else { return }
-        if let acknowledgement = result?.acknowledgement {
-          if let idx = self.highlights.firstIndex(where: { $0.id == highlight.id }) {
-            self.highlights[idx].taught = true
-          }
-          self.lastTeachAcknowledgement = acknowledgement
-          if !acknowledgement.isEmpty { self.showToast(acknowledgement) }
-        } else {
-          self.showToast("Teach failed")
-        }
-      }
-    }
-  }
-
-  private func noteSpeechGap(utteranceId: UInt64, speechPct: Float?) {
-    let heard = speechWasActive || (speechPct ?? 0) > 0
-    speechWasActive = false
-    guard heard else { return }
-    let gap = OverlayCanvas.speechGap(utteranceId: utteranceId)
-    if !highlights.contains(where: { $0.id == gap.id }) {
-      highlights.append(gap)
-    }
-  }
-
-  private func sliceUtteranceText(_ text: String, start: UInt64, end: UInt64) -> String {
-    guard let startOffset = Int(exactly: start),
-      let endOffset = Int(exactly: end),
-      startOffset <= endOffset,
-      endOffset <= text.count
-    else { return "" }
-    let startIndex = text.index(text.startIndex, offsetBy: startOffset)
-    let endIndex = text.index(text.startIndex, offsetBy: endOffset)
-    return String(text[startIndex..<endIndex])
-  }
-
-  private func rebaseHighlights(
-    utteranceId: UInt64,
-    start: UInt64,
-    end: UInt64,
-    replacementCount: UInt64
-  ) {
-    let removed = end >= start ? end - start : 0
-    let delta = Int64(replacementCount) - Int64(removed)
-    highlights = highlights.compactMap { highlight in
-      guard highlight.utteranceId == utteranceId, highlight.kind == .lexiconCorrected else {
-        return highlight
-      }
-      if highlight.charEnd <= start { return highlight }
-      if highlight.charStart >= end {
-        var shifted = highlight
-        let startShift = Int64(highlight.charStart) + delta
-        let endShift = Int64(highlight.charEnd) + delta
-        guard startShift >= 0, endShift >= startShift else { return nil }
-        shifted.charStart = UInt64(startShift)
-        shifted.charEnd = UInt64(endShift)
-        return shifted
-      }
-      return nil
-    }
-  }
-
   func showToast(_ message: String) {
     toast = message
     toastTask?.cancel()
@@ -1803,13 +1561,13 @@ final class OverlayState: ObservableObject {
 
   // MARK: Preview / mock helpers (no engine required)
 
-  /// Seeded view model for #Preview in the listening state, with a typing reveal
-  /// that imitates progressive projection revisions (mock: 46ms).
+  /// Seeded view model for #Preview in the listening state.
   static func previewListening() -> OverlayState {
     let s = OverlayState()
     s.mode = .listening
     s.vadActive = true
-    s.beginMockReveal("add a rate limiter to the login route and write a test for it")
+    s.latestTranscriptProjection = previewProjection(
+      "add a rate limiter to the login route and write a test for it")
     return s
   }
 
@@ -1819,7 +1577,8 @@ final class OverlayState: ObservableObject {
     s.mode = .listening
     s.transcribing = true
     s.audioReady = true
-    s.committedUtterances = ["add a rate limiter to the login route and write a test for it"]
+    s.latestTranscriptProjection = previewProjection(
+      "add a rate limiter to the login route and write a test for it")
     return s
   }
 
@@ -1841,18 +1600,12 @@ final class OverlayState: ObservableObject {
     return s
   }
 
-  func beginMockReveal(_ full: String, interval: Double = 0.046) {
-    mockRevealTask?.cancel()
-    resetTranscript()
-    mockRevealTask = Task { @MainActor [weak self] in
-      var acc = ""
-      for ch in full {
-        if Task.isCancelled { return }
-        acc.append(ch)
-        self?.preview = acc
-        try? await Task.sleep(nanoseconds: UInt64(interval * 1_000_000_000))
-      }
-    }
+  private static func previewProjection(_ renderedText: String) -> OverlayTranscriptProjection {
+    OverlayTranscriptProjection(
+      schema: "preview", sequence: 1, emittedAt: "preview", sessionId: "preview", mode: "dictation",
+      reducerRevision: 1, reducerAction: "preview_fixture", occurrenceSessionId: "preview",
+      captureEpoch: 0, sampleStart: 0, sampleEnd: 0, documentIndex: 0, label: renderedText,
+      renderedText: renderedText, acousticReceipts: [])
   }
 }
 
