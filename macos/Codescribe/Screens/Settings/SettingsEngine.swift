@@ -19,6 +19,7 @@ import Foundation
 //   LLM_API_KEY / STT_API_KEY / LLM_FORMATTING_API_KEY / LLM_ASSISTIVE_API_KEY / LLM_ANTHROPIC_API_KEY / GITHUB_TOKEN
 
 /// Subset of the codescribe config surface the Settings screen consumes.
+@MainActor
 protocol SettingsEngine {
   // Snapshot / location
   func loadSettings() -> CsSettings
@@ -49,6 +50,7 @@ protocol SettingsEngine {
   func loadLexiconCustomEntries() throws -> [CsLexiconEntry]
   func finalizeVoiceLabCorrection(id: String, canonical: String) throws -> CsVoiceLabSaveResult
   func teachDictionaryFromStore() throws -> CsDictionaryTeachResult
+  func teachDictionaryFromStoreAsync() async throws -> CsDictionaryTeachResult
 
   // Keychain-backed API keys — presence booleans only, secrets never read back
   func keyStatus() -> CsKeyStatus
@@ -56,14 +58,19 @@ protocol SettingsEngine {
   func setApiKey(account: String, secret: String) throws
   func clearApiKey(account: String) throws
   func testApiKey(account: String) throws -> CsApiKeyProbeResult
+  func testApiKeyAsync(account: String) async throws -> CsApiKeyProbeResult
 
   // Assistive/agent-lane providers and live model discovery
   func availableProviders() -> [CsProviderOption]
   func discoverModels(providerId: String) -> CsModelDiscovery
+  func discoverModelsAsync(providerId: String) async -> CsModelDiscovery
   func startAccountLogin(providerId: String) throws -> CsAccountLoginResult
   // Blocks until the in-flight login completes/fails/times out — call from a
   // background queue only. Timeout shuts the local callback server down.
   func awaitAccountLogin(providerId: String, timeoutSeconds: UInt64) throws -> CsAccountLoginResult
+  func awaitAccountLoginAsync(
+    providerId: String, timeoutSeconds: UInt64
+  ) async throws -> CsAccountLoginResult
   func cancelAccountLogin()
   func signOutAccount(providerId: String) throws
 
@@ -89,6 +96,23 @@ protocol SettingsEngine {
   func resetAgentPreview() -> CsAgentResetPreview
   func resetAgentData() throws
   func clearMcpConfiguration() throws
+}
+
+extension SettingsEngine {
+  func teachDictionaryFromStoreAsync() async throws -> CsDictionaryTeachResult {
+    try teachDictionaryFromStore()
+  }
+  func testApiKeyAsync(account: String) async throws -> CsApiKeyProbeResult {
+    try testApiKey(account: account)
+  }
+  func discoverModelsAsync(providerId: String) async -> CsModelDiscovery {
+    discoverModels(providerId: providerId)
+  }
+  func awaitAccountLoginAsync(
+    providerId: String, timeoutSeconds: UInt64
+  ) async throws -> CsAccountLoginResult {
+    try awaitAccountLogin(providerId: providerId, timeoutSeconds: timeoutSeconds)
+  }
 }
 
 // MARK: - Real engine (UniFFI bridge adapter)
@@ -142,6 +166,11 @@ final class RealSettingsEngine: SettingsEngine {
   func teachDictionaryFromStore() throws -> CsDictionaryTeachResult {
     try qualityTeachDictionaryFromStore()
   }
+  nonisolated func teachDictionaryFromStoreAsync() async throws -> CsDictionaryTeachResult {
+    try await Task.detached(priority: .userInitiated) {
+      try qualityTeachDictionaryFromStore()
+    }.value
+  }
 
   func keyStatus() -> CsKeyStatus { config.keyStatus() }
   func keyAccounts() -> [String] { config.keyAccounts() }
@@ -152,10 +181,20 @@ final class RealSettingsEngine: SettingsEngine {
   func testApiKey(account: String) throws -> CsApiKeyProbeResult {
     try config.testApiKey(account: account)
   }
+  nonisolated func testApiKeyAsync(account: String) async throws -> CsApiKeyProbeResult {
+    try await Task.detached(priority: .userInitiated) {
+      try CodescribeConfig().testApiKey(account: account)
+    }.value
+  }
 
   func availableProviders() -> [CsProviderOption] { config.availableProviders() }
   func discoverModels(providerId: String) -> CsModelDiscovery {
     config.discoverModels(providerId: providerId)
+  }
+  nonisolated func discoverModelsAsync(providerId: String) async -> CsModelDiscovery {
+    await Task.detached(priority: .userInitiated) {
+      CodescribeConfig().discoverModels(providerId: providerId)
+    }.value
   }
   func startAccountLogin(providerId: String) throws -> CsAccountLoginResult {
     try config.startAccountLogin(providerId: providerId)
@@ -163,6 +202,16 @@ final class RealSettingsEngine: SettingsEngine {
   func awaitAccountLogin(providerId: String, timeoutSeconds: UInt64) throws -> CsAccountLoginResult
   {
     try config.awaitAccountLogin(providerId: providerId, timeoutSeconds: timeoutSeconds)
+  }
+  nonisolated func awaitAccountLoginAsync(
+    providerId: String, timeoutSeconds: UInt64
+  ) async throws -> CsAccountLoginResult {
+    try await Task.detached(priority: .userInitiated) {
+      try CodescribeConfig().awaitAccountLogin(
+        providerId: providerId,
+        timeoutSeconds: timeoutSeconds
+      )
+    }.value
   }
   func cancelAccountLogin() { config.cancelAccountLogin() }
   func signOutAccount(providerId: String) throws {

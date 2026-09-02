@@ -903,10 +903,6 @@ enum AppRelaunch {
   }
 }
 
-private struct BackgroundSettingsEngine: @unchecked Sendable {
-  let engine: SettingsEngine
-}
-
 extension CsWhisperModelStatus {
   /// Placeholder for canvas / engine-less previews (no network, no disk probe).
   static let sampleUnavailable = CsWhisperModelStatus(
@@ -919,12 +915,18 @@ extension CsWhisperModelStatus {
   )
 }
 
-/// Bridges UniFFI download callbacks onto the main-actor SettingsViewModel.
-final class WhisperDownloadProgressSink: CsWhisperDownloadListener, @unchecked Sendable {
-  weak var model: SettingsViewModel?
+private enum WhisperDownloadEvent: Sendable {
+  case progress(detail: String, fraction: Double?)
+  case complete(path: String)
+}
 
-  init(model: SettingsViewModel) {
-    self.model = model
+/// Value-only UniFFI callback adapter; the view model owns the one ordered
+/// MainActor consumer.
+final class WhisperDownloadProgressSink: CsWhisperDownloadListener, Sendable {
+  private let continuation: AsyncStream<WhisperDownloadEvent>.Continuation
+
+  fileprivate init(continuation: AsyncStream<WhisperDownloadEvent>.Continuation) {
+    self.continuation = continuation
   }
 
   func onProgress(file: String, bytesDone: UInt64, bytesTotal: Int64) {
@@ -942,18 +944,15 @@ final class WhisperDownloadProgressSink: CsWhisperDownloadListener, @unchecked S
     } else {
       detail = String(format: "%@ · %.0f MB", file, mbDone)
     }
-    DispatchQueue.main.async { [weak self] in
-      self?.model?.applyWhisperDownloadProgress(detail: detail, fraction: fraction)
-    }
+    continuation.yield(.progress(detail: detail, fraction: fraction))
   }
 
   func onComplete(path: String) {
-    DispatchQueue.main.async { [weak self] in
-      self?.model?.applyWhisperDownloadProgress(
-        detail: "Saved · \(path)",
-        fraction: 1.0
-      )
-    }
+    continuation.yield(.complete(path: path))
+  }
+
+  func finish() {
+    continuation.finish()
   }
 }
 
@@ -1054,6 +1053,7 @@ final class SettingsViewModel: ObservableObject {
   /// 0...1 when Content-Length is known; nil for indeterminate.
   @Published private(set) var whisperDownloadFraction: Double?
   private var whisperDownloadSink: WhisperDownloadProgressSink?
+  private var whisperDownloadEventTask: Task<Void, Never>?
 
   // MARK: - Hotkeys (mode bindings)
 
@@ -1207,8 +1207,20 @@ final class SettingsViewModel: ObservableObject {
     whisperDownloadDetail = "Starting download…"
     whisperDownloadFraction = nil
     lastError = nil
-    let sink = WhisperDownloadProgressSink(model: self)
+    let channel = AsyncStream<WhisperDownloadEvent>.makeStream()
+    let sink = WhisperDownloadProgressSink(continuation: channel.continuation)
     whisperDownloadSink = sink
+    whisperDownloadEventTask = Task { @MainActor [weak self] in
+      for await event in channel.stream {
+        guard let self else { return }
+        switch event {
+        case .progress(let detail, let fraction):
+          self.applyWhisperDownloadProgress(detail: detail, fraction: fraction)
+        case .complete(let path):
+          self.applyWhisperDownloadProgress(detail: "Saved · \(path)", fraction: 1.0)
+        }
+      }
+    }
     Task { @MainActor [weak self] in
       guard let self else { return }
       do {
@@ -1224,8 +1236,13 @@ final class SettingsViewModel: ObservableObject {
         self.whisperDownloadDetail = "Download failed"
         self.whisperDownloadFraction = nil
       }
+      sink.finish()
+      if let eventTask = self.whisperDownloadEventTask {
+        await eventTask.value
+      }
       self.whisperDownloadInFlight = false
       self.whisperDownloadSink = nil
+      self.whisperDownloadEventTask = nil
     }
   }
 
@@ -1350,14 +1367,11 @@ final class SettingsViewModel: ObservableObject {
   /// back on the main actor; a stale list for a moment beats a frozen app.
   func reloadToolPermissions() {
     guard let mcpAdmin else { return }
-    Task.detached(priority: .userInitiated) { [weak self] in
-      let policy = mcpAdmin.getPermissionPolicy()
-      let capabilities = mcpAdmin.listToolCapabilities()
-      await MainActor.run { [weak self] in
-        guard let self else { return }
-        self.permissionPolicy = policy
-        self.toolCapabilities = capabilities
-      }
+    Task { @MainActor [weak self] in
+      let (policy, capabilities) = await mcpAdmin.loadPermissionSurface()
+      guard let self else { return }
+      self.permissionPolicy = policy
+      self.toolCapabilities = capabilities
     }
   }
 
@@ -1921,29 +1935,19 @@ final class SettingsViewModel: ObservableObject {
     guard let engine, !voiceLabTeachPending else { return }
     voiceLabTeachPending = true
     voiceLabTeachMessage = nil
-    let backgroundEngine = BackgroundSettingsEngine(engine: engine)
-
-    DispatchQueue.global(qos: .userInitiated).async { [backgroundEngine] in
-      let outcome: Result<CsDictionaryTeachResult, Error>
+    Task { @MainActor [weak self] in
+      guard let self else { return }
       do {
-        outcome = .success(try backgroundEngine.engine.teachDictionaryFromStore())
-      } catch {
-        outcome = .failure(error)
-      }
-
-      DispatchQueue.main.async { [weak self] in
-        guard let self else { return }
+        let result = try await engine.teachDictionaryFromStoreAsync()
         self.voiceLabTeachPending = false
-        switch outcome {
-        case .success(let result):
-          self.voiceLabTeachMessage =
-            "Taught +\(result.fromCorrections) from corrections, +\(result.fromProposed) from proposed → \(result.totalRules) live rules (\(result.rulesFromCorrectionSource) correction-sourced)."
-          self.refreshVoiceLab()
-        case .failure(let error):
-          let message = String(describing: error)
-          self.voiceLabTeachMessage = "Teach failed: \(message)"
-          self.lastError = message
-        }
+        self.voiceLabTeachMessage =
+          "Taught +\(result.fromCorrections) from corrections, +\(result.fromProposed) from proposed → \(result.totalRules) live rules (\(result.rulesFromCorrectionSource) correction-sourced)."
+        self.refreshVoiceLab()
+      } catch {
+        self.voiceLabTeachPending = false
+        let message = String(describing: error)
+        self.voiceLabTeachMessage = "Teach failed: \(message)"
+        self.lastError = message
       }
     }
   }
@@ -2411,32 +2415,22 @@ final class SettingsViewModel: ObservableObject {
   func testKey(account: String) {
     guard let engine else { return }
     guard !keyProbePending.contains(account) else { return }
-    let backgroundEngine = BackgroundSettingsEngine(engine: engine)
     keyProbePending.insert(account)
-
-    DispatchQueue.global(qos: .userInitiated).async { [backgroundEngine, account] in
-      let result: Result<CsApiKeyProbeResult, Error>
+    Task { @MainActor [weak self] in
+      guard let self else { return }
       do {
-        result = .success(try backgroundEngine.engine.testApiKey(account: account))
-      } catch {
-        result = .failure(error)
-      }
-
-      DispatchQueue.main.async { [weak self] in
-        guard let self else { return }
+        let probe = try await engine.testApiKeyAsync(account: account)
         self.keyProbePending.remove(account)
-        switch result {
-        case .success(let probe):
-          self.keyProbeResults[account] = probe
-        case .failure(let error):
-          self.keyProbeResults[account] = CsApiKeyProbeResult(
-            account: account,
-            status: .network,
-            message: String(describing: error),
-            probedEndpoint: nil
-          )
-          self.lastError = String(describing: error)
-        }
+        self.keyProbeResults[account] = probe
+      } catch {
+        self.keyProbePending.remove(account)
+        self.keyProbeResults[account] = CsApiKeyProbeResult(
+          account: account,
+          status: .network,
+          message: String(describing: error),
+          probedEndpoint: nil
+        )
+        self.lastError = String(describing: error)
       }
     }
   }
@@ -2472,43 +2466,25 @@ final class SettingsViewModel: ObservableObject {
     accountLoginNotices[providerId] = nil
     NSWorkspace.shared.open(url)
 
-    let backgroundEngine = BackgroundSettingsEngine(engine: engine)
-    DispatchQueue.global(qos: .userInitiated).async { [backgroundEngine, providerId] in
-      let outcome: Result<CsAccountLoginResult, Error>
+    Task { @MainActor [weak self] in
+      guard let self else { return }
       do {
-        outcome = .success(
-          try backgroundEngine.engine.awaitAccountLogin(
-            providerId: providerId,
-            // P2-09: 300s chosen as pragmatic cap for OAuth browser roundtrip
-            // (user may need to 2FA, switch windows, consent). No new Settings
-            // knob (per charter). Cancel path: second start or sign-out flow
-            // or app close (server is torn down on timeout/failure).
-            // Discovery (P2-08) uses the same await; partial cancel support
-            // exists via pending set + supersede in core.
-            timeoutSeconds: 300
-          )
+        let login = try await engine.awaitAccountLoginAsync(
+          providerId: providerId,
+          // P2-09: 300s is the cap for OAuth browser roundtrip and 2FA.
+          timeoutSeconds: 300
         )
-      } catch {
-        outcome = .failure(error)
-      }
-
-      DispatchQueue.main.async { [weak self] in
-        guard let self else { return }
         self.accountLoginPending.remove(providerId)
-        switch outcome {
-        case .success(let login):
-          // "signed_in" needs no banner — the row status flips on the
-          // provider refresh below. Everything else is surfaced as-is.
-          self.accountLoginNotices[providerId] =
-            login.status == "signed_in" ? nil : login.message
-        case .failure(let error):
-          self.accountLoginNotices[providerId] = String(describing: error)
-        }
-        if let engine = self.engine {
-          self.providers = engine.availableProviders()
-        }
-        self.refreshAgentStatus()
+        self.accountLoginNotices[providerId] =
+          login.status == "signed_in" ? nil : login.message
+      } catch {
+        self.accountLoginPending.remove(providerId)
+        self.accountLoginNotices[providerId] = String(describing: error)
       }
+      if let currentEngine = self.engine {
+        self.providers = currentEngine.availableProviders()
+      }
+      self.refreshAgentStatus()
     }
   }
 
@@ -2582,25 +2558,23 @@ final class SettingsViewModel: ObservableObject {
       modelDiscoveries[providerId] = loading
     }
 
-    let backgroundEngine = BackgroundSettingsEngine(engine: engine)
-    DispatchQueue.global(qos: .userInitiated).async {
-      [backgroundEngine, providerIds, generations] in
-      let discoveries = providerIds.map { providerId in
-        (providerId, backgroundEngine.engine.discoverModels(providerId: providerId))
+    Task { @MainActor [weak self] in
+      var discoveries: [(String, CsModelDiscovery)] = []
+      for providerId in providerIds {
+        discoveries.append(
+          (providerId, await engine.discoverModelsAsync(providerId: providerId))
+        )
       }
-
-      DispatchQueue.main.async { [weak self, discoveries, generations] in
-        guard let self else { return }
-        for (providerId, discovery) in discoveries {
-          guard self.modelDiscoveryGenerations[providerId] == generations[providerId] else {
-            continue
-          }
-          self.modelDiscoveries[providerId] = discovery
-          self.applyPendingAssistiveModelSelection(
-            providerId: providerId,
-            discovery: discovery
-          )
+      guard let self else { return }
+      for (providerId, discovery) in discoveries {
+        guard self.modelDiscoveryGenerations[providerId] == generations[providerId] else {
+          continue
         }
+        self.modelDiscoveries[providerId] = discovery
+        self.applyPendingAssistiveModelSelection(
+          providerId: providerId,
+          discovery: discovery
+        )
       }
     }
   }

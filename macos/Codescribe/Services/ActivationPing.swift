@@ -18,6 +18,7 @@ struct ActivationPingConfiguration: Equatable {
   }
 }
 
+@MainActor
 protocol ActivationPingTransport {
   func data(for request: URLRequest) async throws -> (Data, URLResponse)
 }
@@ -63,7 +64,7 @@ final class ActivationPing {
   init(
     configuration: ActivationPingConfiguration = .production,
     defaults: UserDefaults = .standard,
-    transport: ActivationPingTransport = URLSessionActivationPingTransport(),
+    transport: ActivationPingTransport? = nil,
     appVersion: @escaping () -> String = {
       Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String
         ?? "unknown"
@@ -74,7 +75,7 @@ final class ActivationPing {
   ) {
     self.configuration = configuration
     self.defaults = defaults
-    self.transport = transport
+    self.transport = transport ?? URLSessionActivationPingTransport()
     self.appVersion = appVersion
     self.operatingSystem = operatingSystem
   }
