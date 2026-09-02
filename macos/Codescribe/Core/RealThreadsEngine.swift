@@ -4,7 +4,7 @@ import Foundation
 // ThreadStore via the UniFFI bridge (CodescribeThreads). Lists/searches thread
 // summaries for the rail, loads messages on demand, and forwards lightweight
 // thread mutations that already exist in the core.
-final class RealThreadsEngine: ChatThreadsProviding {
+final class RealThreadsEngine: BackgroundThreadListing {
   private let threads = CodescribeThreads()
 
   func listThreads() -> [ChatThread] {

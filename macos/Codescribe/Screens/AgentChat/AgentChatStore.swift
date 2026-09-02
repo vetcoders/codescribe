@@ -33,6 +33,7 @@ private let queueLog = Logger(
 /// W2-01 supplies an adapter that forwards to the real `VistaEngine`
 /// (mapping `assistive` → `VistaAiMode.assistive`). Kept free of bridge types
 /// so the view-model + #Preview compile and render standalone.
+@MainActor
 protocol AgentChatEngine: AnyObject {
   /// True when the assistive provider can be built (keys present).
   func isAvailable() -> Bool
@@ -503,6 +504,10 @@ protocol ChatThreadsProviding: AnyObject {
   func generateThreadId() -> String
 }
 
+/// Production providers whose immutable bridge handle can cross into the
+/// detached initial-index read. Preview/test providers remain actor-local.
+protocol BackgroundThreadListing: ChatThreadsProviding, Sendable {}
+
 // MARK: - Composer gesture seam (Agent capture on the shared controller)
 
 /// Agent-facing view of the shared controller lifecycle.
@@ -724,9 +729,7 @@ final class AgentChatStore: ObservableObject {
   /// the first disk persist and a manual rename interleave.
   private var customTitleThreadIDs: Set<UUID> = []
 
-  /// NotificationCenter tokens for the event-driven rail refresh (wave S,
-  /// cut C): window activation + cross-surface `threadsDidChange`. Removed
-  /// on deinit; empty when no threads provider is wired (preview/mock).
+  /// Owner-removed synchronous notification registrations for rail refresh.
   private var externalThreadsObservers: [NSObjectProtocol] = []
   private let licenseService: LicenseService?
   private var licenseChangeSink: AnyCancellable?
@@ -794,9 +797,14 @@ final class AgentChatStore: ObservableObject {
     Task { @MainActor [weak self] in
       guard let self, let provider = self.threadsProvider else { return }
       let start = Date()
-      let loaded = await Task.detached(priority: .userInitiated) {
-        provider.listThreads()
-      }.value
+      let loaded: [ChatThread]
+      if let backgroundProvider = provider as? any BackgroundThreadListing {
+        loaded = await Task.detached(priority: .userInitiated) {
+          backgroundProvider.listThreads()
+        }.value
+      } else {
+        loaded = provider.listThreads()
+      }
       AgentPerf.log("thread index load", since: start, detail: "\(loaded.count) threads")
       var idleWaits = 0
       while self.activeComposerTurn != nil || self.voiceTurnPhase != nil, idleWaits < 240 {
@@ -818,10 +826,11 @@ final class AgentChatStore: ObservableObject {
     }
   }
 
-  deinit {
+  func invalidate() {
     for observer in externalThreadsObservers {
       NotificationCenter.default.removeObserver(observer)
     }
+    externalThreadsObservers.removeAll()
   }
 
   var currentThread: ChatThread? {
@@ -916,7 +925,7 @@ final class AgentChatStore: ObservableObject {
   /// Provider-gated: a preview/mock store has no disk truth to re-read.
   private func beginObservingExternalThreadChanges() {
     guard threadsProvider != nil else { return }
-    let handler: (Notification) -> Void = { [weak self] _ in
+    let handler: @Sendable (Notification) -> Void = { [weak self] _ in
       MainActor.assumeIsolated { self?.scheduleExternalThreadsRefresh() }
     }
     externalThreadsObservers = [
@@ -1350,13 +1359,12 @@ final class AgentChatStore: ObservableObject {
           text,
           threadId: backendId,
           attachmentPaths: attachmentPaths,
-          onDelta: { [weak self] delta in
-            guard self?.acceptsComposerEvent(turnID, assistantID: assistantID, in: threadID) == true
-            else {
+          onDelta: { [self] delta in
+            guard acceptsComposerEvent(turnID, assistantID: assistantID, in: threadID) else {
               return
             }
-            self?.setComposerPhase(.streaming, for: turnID)
-            self?.update(assistantID, in: threadID) {
+            setComposerPhase(.streaming, for: turnID)
+            update(assistantID, in: threadID) {
               $0.isThinking = false
               $0.isStreaming = true
               if $0.reasonedSeconds == nil {
@@ -1365,29 +1373,26 @@ final class AgentChatStore: ObservableObject {
               $0.text += delta
             }
           },
-          onReasoning: { [weak self] delta in
-            guard self?.acceptsComposerEvent(turnID, assistantID: assistantID, in: threadID) == true
-            else {
+          onReasoning: { [self] delta in
+            guard acceptsComposerEvent(turnID, assistantID: assistantID, in: threadID) else {
               return
             }
-            self?.appendReasoning(delta, to: assistantID, in: threadID)
+            appendReasoning(delta, to: assistantID, in: threadID)
           },
-          onToolExecuting: { [weak self] name, id in
-            guard self?.acceptsComposerEvent(turnID, assistantID: assistantID, in: threadID) == true
-            else {
+          onToolExecuting: { [self] name, id in
+            guard acceptsComposerEvent(turnID, assistantID: assistantID, in: threadID) else {
               return
             }
-            self?.recordToolStarted(name: name, callID: id, before: assistantID, in: threadID)
+            recordToolStarted(name: name, callID: id, before: assistantID, in: threadID)
           },
-          onToolResult: { [weak self] name, id, isError, reason in
-            self?.pendingToolApprovals.removeAll {
+          onToolResult: { [self] name, id, isError, reason in
+            pendingToolApprovals.removeAll {
               $0.threadID == backendId && $0.callID == id
             }
-            guard self?.acceptsComposerEvent(turnID, assistantID: assistantID, in: threadID) == true
-            else {
+            guard acceptsComposerEvent(turnID, assistantID: assistantID, in: threadID) else {
               return
             }
-            self?.recordToolResult(
+            recordToolResult(
               name: name, callID: id, isError: isError, reason: reason,
               before: assistantID, in: threadID)
           }
@@ -2517,16 +2522,16 @@ final class AgentChatStore: ObservableObject {
       let reply =
         "On it — \(text.lowercased())\(seen). I'd start with a minimal patch and a regression test."
       var assembled = ""
-      await onReasoning("Reading the turn and checking the smallest useful next step.")
+      onReasoning("Reading the turn and checking the smallest useful next step.")
       let mockToolID = "mock-preview-tool"
-      await onToolExecuting("preview-context", mockToolID)
+      onToolExecuting("preview-context", mockToolID)
       for word in reply.split(separator: " ", omittingEmptySubsequences: false) {
         try? await Task.sleep(nanoseconds: 60_000_000)
         let chunk = (assembled.isEmpty ? "" : " ") + word
         assembled += chunk
-        await onDelta(chunk)
+        onDelta(chunk)
       }
-      await onToolResult("preview-context", mockToolID, false, "mock context ready")
+      onToolResult("preview-context", mockToolID, false, "mock context ready")
       return assembled
     }
 

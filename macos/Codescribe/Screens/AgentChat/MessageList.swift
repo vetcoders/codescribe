@@ -473,6 +473,7 @@ private struct ChatBottomKey: PreferenceKey {
 /// macOS 14-compatible user-intent detector. SwiftUI's geometry preference
 /// reports position but cannot distinguish a wheel/trackpad/scrollbar gesture
 /// from `ScrollViewProxy.scrollTo`; AppKit live-scroll notifications can.
+@MainActor
 private struct ChatLiveScrollObserver: NSViewRepresentable {
   let onEvent: (StreamScrollFollowState.Event) -> Void
 
@@ -497,6 +498,7 @@ private struct ChatLiveScrollObserver: NSViewRepresentable {
     coordinator.detach()
   }
 
+  @MainActor
   final class AttachmentView: NSView {
     var onAttach: ((NSScrollView) -> Void)?
 
@@ -506,17 +508,19 @@ private struct ChatLiveScrollObserver: NSViewRepresentable {
     }
 
     func attachWhenReady() {
-      DispatchQueue.main.async { [weak self] in
+      Task { @MainActor [weak self] in
+        await Task.yield()
         guard let self, let scrollView = enclosingScrollView else { return }
         onAttach?(scrollView)
       }
     }
   }
 
+  @MainActor
   final class Coordinator {
     var onEvent: (StreamScrollFollowState.Event) -> Void
     private weak var scrollView: NSScrollView?
-    private var observers: [NSObjectProtocol] = []
+    private var observationTasks: [Task<Void, Never>] = []
 
     init(onEvent: @escaping (StreamScrollFollowState.Event) -> Void) {
       self.onEvent = onEvent
@@ -526,36 +530,36 @@ private struct ChatLiveScrollObserver: NSViewRepresentable {
       guard self.scrollView !== scrollView else { return }
       detach()
       self.scrollView = scrollView
-      let center = NotificationCenter.default
-      observers = [
-        center.addObserver(
-          forName: NSScrollView.willStartLiveScrollNotification,
-          object: scrollView,
-          queue: .main
-        ) { [weak self] _ in
-          self?.onEvent(.userScrollBegan)
+      observationTasks = [
+        observe(NSScrollView.willStartLiveScrollNotification, in: scrollView) { coordinator in
+          coordinator.onEvent(.userScrollBegan)
         },
-        center.addObserver(
-          forName: NSScrollView.didLiveScrollNotification,
-          object: scrollView,
-          queue: .main
-        ) { [weak self] _ in
-          self?.reportViewport(asScrollEnd: true)
+        observe(NSScrollView.didLiveScrollNotification, in: scrollView) { coordinator in
+          coordinator.reportViewport(asScrollEnd: true)
         },
-        center.addObserver(
-          forName: NSScrollView.didEndLiveScrollNotification,
-          object: scrollView,
-          queue: .main
-        ) { [weak self] _ in
-          self?.reportViewport()
+        observe(NSScrollView.didEndLiveScrollNotification, in: scrollView) { coordinator in
+          coordinator.reportViewport()
         },
       ]
     }
 
+    private func observe(
+      _ name: Notification.Name,
+      in scrollView: NSScrollView,
+      action: @escaping @MainActor (Coordinator) -> Void
+    ) -> Task<Void, Never> {
+      Task { @MainActor [weak self, weak scrollView] in
+        guard let scrollView else { return }
+        for await _ in NotificationCenter.default.notifications(named: name, object: scrollView) {
+          guard !Task.isCancelled, let self else { return }
+          action(self)
+        }
+      }
+    }
+
     func detach() {
-      let center = NotificationCenter.default
-      observers.forEach(center.removeObserver)
-      observers.removeAll()
+      for task in observationTasks { task.cancel() }
+      observationTasks.removeAll()
       scrollView = nil
     }
 
@@ -568,10 +572,6 @@ private struct ChatLiveScrollObserver: NSViewRepresentable {
         asScrollEnd
           ? .userScrollEnded(isAtLiveEdge: isAtLiveEdge)
           : .userViewportChanged(isAtLiveEdge: isAtLiveEdge))
-    }
-
-    deinit {
-      detach()
     }
   }
 }
