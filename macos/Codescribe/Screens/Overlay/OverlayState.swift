@@ -211,6 +211,9 @@ final class OverlayState {
   /// Destination name latched once at overlay session entry. The action row
   /// reads this snapshot; it never polls the bridge during rendering.
   private(set) var pasteTargetAppName: String?
+  /// Serving-engine label latched once per session. Rendering never performs
+  /// settings I/O or a UniFFI read.
+  private(set) var engineChip = "local apple"
   /// Final pass phase (AI formatting / authoritative assembly after stop).
   /// Set on `applySessionFinalised`, cleared on controller finish or reset.
   /// Drives "final pass" status while the user still sees the live assembly.
@@ -274,8 +277,6 @@ final class OverlayState {
   static let defaultNoSpeechNotice = "No speech detected"
 
   private var recording = false
-  /// True after `on_vad_active(true)` until an empty-or-nonempty final consumes it.
-  private var speechWasActive = false
   /// Reason from `on_no_speech`, captured before the terminal stop.
   private var pendingNoSpeechMessage: String?
   /// The delivered (pre-user-edit) text at the moment we entered .formatted.
@@ -393,25 +394,7 @@ final class OverlayState {
   /// Footer left engine chip — last stop serving label when available, else
   /// configured preference. Never a hardcoded "local whisper" (STT_CONTRACT).
   var footerEngineLabel: String {
-    // Free UniFFI function (same as Settings Active STT).
-    if let serving = currentServingVerdict() {
-      let eng = serving.engine.trimmingCharacters(in: .whitespacesAndNewlines)
-      if !eng.isEmpty {
-        return Self.displayEngineChip(eng)
-      }
-    }
-    if let pref = CodescribeConfig().loadSettings().sttEngine?
-      .trimmingCharacters(in: .whitespacesAndNewlines),
-      !pref.isEmpty
-    {
-      switch pref.lowercased() {
-      case "apple": return "local apple"
-      case "whisper", "candle": return "local whisper"
-      case "auto": return "auto · apple-first"
-      default: return pref
-      }
-    }
-    return "local apple"
+    engineChip
   }
 
   private static func displayEngineChip(_ engine: String) -> String {
@@ -624,9 +607,7 @@ final class OverlayState {
     if described.contains("speech_auth_not_determined"), !speechAuthRequestAttempted {
       speechAuthRequestAttempted = true
       abortRecordingSession()
-      let state = await withCheckedContinuation { continuation in
-        SpeechRecognitionPermission.request { continuation.resume(returning: $0) }
-      }
+      let state = await SpeechRecognitionPermission.request()
       if state == .granted {
         await runStart(language: language)
         return
@@ -795,6 +776,29 @@ final class OverlayState {
     autoFormatLevel = truth.autoFormatLevel
   }
 
+  private var engineChipLatched = false
+
+  private func refreshEngineChip(reset: Bool) {
+    if reset { engineChipLatched = false }
+    guard !engineChipLatched else { return }
+    engineChipLatched = true
+    if let serving = currentServingVerdict() {
+      let engine = serving.engine.trimmingCharacters(in: .whitespacesAndNewlines)
+      if !engine.isEmpty {
+        engineChip = Self.displayEngineChip(engine)
+        return
+      }
+    }
+    let preference = CodescribeConfig().loadSettings().sttEngine?
+      .trimmingCharacters(in: .whitespacesAndNewlines)
+    switch preference?.lowercased() {
+    case "whisper", "candle": engineChip = "local whisper"
+    case "auto": engineChip = "auto · apple-first"
+    case let preference? where !preference.isEmpty: engineChip = preference
+    default: engineChip = "local apple"
+    }
+  }
+
   func beginTranscriptEdit() {
     guard mode == .formatted else { return }
     isEditingTranscript = true
@@ -951,6 +955,7 @@ final class OverlayState {
     }
     recording = true
     refreshOverlayPolicyTruth()
+    refreshEngineChip(reset: true)
     refreshPasteTargetAppName(reset: true)
     onRecordingPreparing?()
     armWarmupWatchdog()
@@ -975,6 +980,7 @@ final class OverlayState {
     }
     recording = true
     refreshOverlayPolicyTruth()
+    refreshEngineChip(reset: false)
     refreshPasteTargetAppName(reset: false)
     onRecordingStarted?()
   }
@@ -1318,7 +1324,6 @@ final class OverlayState {
     let message = speechNotice ?? admissionNotice?.detail ?? message
     let toast = speechNotice ?? admissionNotice?.headline ?? toast
     abortRecordingSession()
-    speechWasActive = false
     pendingNoSpeechMessage = nil
     noSpeechNotice = OverlayState.defaultNoSpeechNotice
     formattedText = ""
@@ -1475,7 +1480,6 @@ final class OverlayState {
   private func resetTranscript() {
     latestTranscriptProjection = nil
     formattedText = ""
-    speechWasActive = false
     deliveredText = ""
     manualHumanEditPending = false
     pendingNoSpeechMessage = nil
@@ -1505,13 +1509,6 @@ final class OverlayState {
     }
   }
 
-  private func normalized(_ text: String) -> String {
-    text.lowercased()
-      .components(separatedBy: CharacterSet.alphanumerics.inverted)
-      .filter { !$0.isEmpty }
-      .joined(separator: " ")
-  }
-
   /// `on_audio_level` — capture RMS per audio block. Only feeds the meter
   /// during live capture: once the session is transcribing/finalised the
   /// waveform is frozen or gone, and a late block must not wiggle it.
@@ -1533,7 +1530,6 @@ final class OverlayState {
     guard !finalized else { return }
     vadActive = active
     if active {
-      speechWasActive = true
       cancelWarmupWatchdog()
       warmingUp = false
       audioReady = true

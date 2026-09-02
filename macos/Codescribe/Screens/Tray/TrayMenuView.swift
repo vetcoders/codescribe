@@ -40,7 +40,7 @@ struct TrayMenuView: View {
         }
         if DeveloperSurface.isEnabled() {
           TrayRow(icon: .diagnostics, title: "Voice Lab…") {
-            VoiceLabRuntime.openConsole()
+            Task { await VoiceLabRuntime.shared.openConsole() }
           }
         }
         TrayRow(icon: .setupWizard, title: "Setup Wizard…") { viewModel.onOpenSetupWizard() }

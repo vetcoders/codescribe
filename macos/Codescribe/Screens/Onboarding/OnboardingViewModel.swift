@@ -397,7 +397,8 @@ final class OnboardingViewModel: ObservableObject {
   func grantPermission(for kind: PermissionKind) {
     let state = permissions.state(kind)
     if state == .notDetermined, kind.supportsInAppPermissionRequest {
-      kind.requestInApp { [weak self] _ in
+      Task { @MainActor [weak self] in
+        _ = await kind.requestInApp()
         self?.reprobePermissions()
       }
       return

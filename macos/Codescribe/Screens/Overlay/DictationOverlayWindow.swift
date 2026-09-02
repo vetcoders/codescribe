@@ -16,6 +16,14 @@ final class FloatingOverlayPanel: NSPanel, NSWindowDelegate {
   var onUserResize: (() -> Void)?
   fileprivate var presence: OverlayPresence?
 
+  func startPresence() {
+    presence?.start()
+  }
+
+  func invalidatePresence() {
+    presence?.invalidate()
+  }
+
   override var canBecomeKey: Bool { allowsKeyForEdit }
   override var canBecomeMain: Bool { false }
   var allowsKeyForEdit = false
@@ -287,6 +295,7 @@ final class OverlayPresence {
   }
 
   func start() {
+    guard localMonitor == nil, globalMonitor == nil, workspaceObserver == nil else { return }
     localMonitor = NSEvent.addLocalMonitorForEvents(matching: .keyDown) { [weak self] event in
       self?.noteScreenshotIfNeeded(event)
       return event
@@ -304,13 +313,18 @@ final class OverlayPresence {
     apply()
   }
 
-  deinit {
+  func invalidate() {
     if let localMonitor { NSEvent.removeMonitor(localMonitor) }
     if let globalMonitor { NSEvent.removeMonitor(globalMonitor) }
     if let workspaceObserver {
       NSWorkspace.shared.notificationCenter.removeObserver(workspaceObserver)
     }
+    localMonitor = nil
+    globalMonitor = nil
+    workspaceObserver = nil
     captureTimer?.invalidate()
+    captureTimer = nil
+    captureUntil = nil
   }
 
   private func noteScreenshotIfNeeded(_ event: NSEvent) {
@@ -403,6 +417,7 @@ enum OverlayResizeHit: Sendable {
     return frame
   }
 
+  @MainActor
   static func cursorRects(in bounds: NSRect, band: CGFloat = band) -> [(NSRect, NSCursor)] {
     let b = band
     let w = bounds.width
@@ -419,6 +434,7 @@ enum OverlayResizeHit: Sendable {
     ]
   }
 
+  @MainActor
   static func cursor(for edge: Edge) -> NSCursor {
     if #available(macOS 15.0, *) {
       let position: NSCursor.FrameResizePosition
@@ -499,25 +515,30 @@ struct OverlayKeyGate: NSViewRepresentable {
     nsView.onResign = onResign
     nsView.apply(editing: editing)
   }
+
+  static func dismantleNSView(_ nsView: OverlayKeyGateView, coordinator: ()) {
+    nsView.invalidate()
+  }
 }
 
 final class OverlayKeyGateView: NSView {
   var onResign: (() -> Void)?
-  private var resignObserver: NSObjectProtocol?
+  private var resignTask: Task<Void, Never>?
 
   override func viewDidMoveToWindow() {
     super.viewDidMoveToWindow()
-    if let resignObserver {
-      NotificationCenter.default.removeObserver(resignObserver)
-      self.resignObserver = nil
-    }
+    resignTask?.cancel()
+    resignTask = nil
     guard let window else { return }
-    resignObserver = NotificationCenter.default.addObserver(
-      forName: NSWindow.didResignKeyNotification,
-      object: window,
-      queue: .main
-    ) { [weak self] _ in
-      self?.onResign?()
+    resignTask = Task { @MainActor [weak self, weak window] in
+      guard let window else { return }
+      for await _ in NotificationCenter.default.notifications(
+        named: NSWindow.didResignKeyNotification,
+        object: window
+      ) {
+        guard !Task.isCancelled else { return }
+        self?.onResign?()
+      }
     }
   }
 
@@ -532,9 +553,9 @@ final class OverlayKeyGateView: NSView {
     }
   }
 
-  deinit {
-    if let resignObserver {
-      NotificationCenter.default.removeObserver(resignObserver)
-    }
+  func invalidate() {
+    resignTask?.cancel()
+    resignTask = nil
+    onResign = nil
   }
 }
