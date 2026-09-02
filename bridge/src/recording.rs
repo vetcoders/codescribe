@@ -559,12 +559,9 @@ mod retranscribe_tests {
 
 /// Foreign callback trait — dictation events forwarded to Swift.
 ///
-/// `on_transcript_projection` is the sole committed transcript callback. The
-/// raw text callbacks below are ephemeral paint or diagnostics and must never
-/// write delivery state, reconstruct occurrence identity, or seal a document:
-/// - `on_preview` carries replace-not-append ephemeral paint.
-/// - `on_final`, `on_correction`, `on_replace_range`, and
-///   `on_insert_annotation` report raw engine observations only.
+/// `on_transcript_projection` is the sole transcript callback. Raw preview,
+/// final, correction, patch, and annotation events remain on the IPC stream as
+/// diagnostics; they do not cross this product-facing callback boundary.
 /// - `on_vad_active` flips when speech starts/ends.
 /// - `on_no_speech` fires when a session/utterance produced no usable speech.
 /// - `on_error` carries recoverable engine warnings.
@@ -589,40 +586,6 @@ pub trait CsTranscriptionListener: Send + Sync {
     /// Swift-driven Finish path enters that phase itself; this is the native-path
     /// counterpart. Surfaces with no post-capture phase may leave it a no-op.
     fn on_recording_finalising(&self);
-    /// Latest interim text for the utterance in flight. Replace-not-append: each
-    /// call supersedes the previous preview rather than extending it.
-    fn on_preview(&self, text: String);
-    /// Diagnostic raw correction. Committed text arrives only through
-    /// `on_transcript_projection`.
-    fn on_correction(&self, text: String, previous_text: String);
-    /// Diagnostic VAD-bounded raw final. Optional quality fields feed badges
-    /// and telemetry; this callback has no committed-text authority.
-    fn on_final(
-        &self,
-        utterance_id: u64,
-        text: String,
-        avg_logprob: Option<f32>,
-        speech_pct: Option<f32>,
-        confidence_flags: Vec<String>,
-    );
-    /// Diagnostic bounded patch observation. It does not mutate committed
-    /// projection state.
-    fn on_replace_range(
-        &self,
-        utterance_id: u64,
-        start: u64,
-        end: u64,
-        text: String,
-        source: CsLayerSource,
-    );
-    /// Diagnostic annotation observation with no committed-text authority.
-    fn on_insert_annotation(
-        &self,
-        utterance_id: u64,
-        position: u64,
-        text: String,
-        kind: CsAnnotationKind,
-    );
     /// Insert a context-bucket marker at the global transcript character
     /// position captured when the agent combo was pressed.
     fn on_context_marker(&self, position: u64, marker: String);

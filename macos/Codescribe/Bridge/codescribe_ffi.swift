@@ -5295,12 +5295,9 @@ public func FfiConverterTypeCsAppActionListener_lower(_ value: CsAppActionListen
 /**
  * Foreign callback trait — dictation events forwarded to Swift.
  *
- * `on_transcript_projection` is the sole committed transcript callback. The
- * raw text callbacks below are ephemeral paint or diagnostics and must never
- * write delivery state, reconstruct occurrence identity, or seal a document:
- * - `on_preview` carries replace-not-append ephemeral paint.
- * - `on_final`, `on_correction`, `on_replace_range`, and
- * `on_insert_annotation` report raw engine observations only.
+ * `on_transcript_projection` is the sole transcript callback. Raw preview,
+ * final, correction, patch, and annotation events remain on the IPC stream as
+ * diagnostics; they do not cross this product-facing callback boundary.
  * - `on_vad_active` flips when speech starts/ends.
  * - `on_no_speech` fires when a session/utterance produced no usable speech.
  * - `on_error` carries recoverable engine warnings.
@@ -5342,35 +5339,6 @@ public protocol CsTranscriptionListener: AnyObject, Sendable {
     func onRecordingFinalising()
 
     /**
-     * Latest interim text for the utterance in flight. Replace-not-append: each
-     * call supersedes the previous preview rather than extending it.
-     */
-    func onPreview(text: String)
-
-    /**
-     * Diagnostic raw correction. Committed text arrives only through
-     * `on_transcript_projection`.
-     */
-    func onCorrection(text: String, previousText: String)
-
-    /**
-     * Diagnostic VAD-bounded raw final. Optional quality fields feed badges
-     * and telemetry; this callback has no committed-text authority.
-     */
-    func onFinal(utteranceId: UInt64, text: String, avgLogprob: Float?, speechPct: Float?, confidenceFlags: [String])
-
-    /**
-     * Diagnostic bounded patch observation. It does not mutate committed
-     * projection state.
-     */
-    func onReplaceRange(utteranceId: UInt64, start: UInt64, end: UInt64, text: String, source: CsLayerSource)
-
-    /**
-     * Diagnostic annotation observation with no committed-text authority.
-     */
-    func onInsertAnnotation(utteranceId: UInt64, position: UInt64, text: String, kind: CsAnnotationKind)
-
-    /**
      * Insert a context-bucket marker at the global transcript character
      * position captured when the agent combo was pressed.
      */
@@ -5409,12 +5377,9 @@ public protocol CsTranscriptionListener: AnyObject, Sendable {
 /**
  * Foreign callback trait — dictation events forwarded to Swift.
  *
- * `on_transcript_projection` is the sole committed transcript callback. The
- * raw text callbacks below are ephemeral paint or diagnostics and must never
- * write delivery state, reconstruct occurrence identity, or seal a document:
- * - `on_preview` carries replace-not-append ephemeral paint.
- * - `on_final`, `on_correction`, `on_replace_range`, and
- * `on_insert_annotation` report raw engine observations only.
+ * `on_transcript_projection` is the sole transcript callback. Raw preview,
+ * final, correction, patch, and annotation events remain on the IPC stream as
+ * diagnostics; they do not cross this product-facing callback boundary.
  * - `on_vad_active` flips when speech starts/ends.
  * - `on_no_speech` fires when a session/utterance produced no usable speech.
  * - `on_error` carries recoverable engine warnings.
@@ -5523,77 +5488,6 @@ open func onRecordingStopped()  {try! rustCall() {
 open func onRecordingFinalising()  {try! rustCall() {
     uniffi_codescribe_ffi_fn_method_cstranscriptionlistener_on_recording_finalising(
             self.uniffiCloneHandle(),$0
-    )
-}
-}
-
-    /**
-     * Latest interim text for the utterance in flight. Replace-not-append: each
-     * call supersedes the previous preview rather than extending it.
-     */
-open func onPreview(text: String)  {try! rustCall() {
-    uniffi_codescribe_ffi_fn_method_cstranscriptionlistener_on_preview(
-            self.uniffiCloneHandle(),
-        FfiConverterString.lower(text),$0
-    )
-}
-}
-
-    /**
-     * Diagnostic raw correction. Committed text arrives only through
-     * `on_transcript_projection`.
-     */
-open func onCorrection(text: String, previousText: String)  {try! rustCall() {
-    uniffi_codescribe_ffi_fn_method_cstranscriptionlistener_on_correction(
-            self.uniffiCloneHandle(),
-        FfiConverterString.lower(text),
-        FfiConverterString.lower(previousText),$0
-    )
-}
-}
-
-    /**
-     * Diagnostic VAD-bounded raw final. Optional quality fields feed badges
-     * and telemetry; this callback has no committed-text authority.
-     */
-open func onFinal(utteranceId: UInt64, text: String, avgLogprob: Float?, speechPct: Float?, confidenceFlags: [String])  {try! rustCall() {
-    uniffi_codescribe_ffi_fn_method_cstranscriptionlistener_on_final(
-            self.uniffiCloneHandle(),
-        FfiConverterUInt64.lower(utteranceId),
-        FfiConverterString.lower(text),
-        FfiConverterOptionFloat.lower(avgLogprob),
-        FfiConverterOptionFloat.lower(speechPct),
-        FfiConverterSequenceString.lower(confidenceFlags),$0
-    )
-}
-}
-
-    /**
-     * Diagnostic bounded patch observation. It does not mutate committed
-     * projection state.
-     */
-open func onReplaceRange(utteranceId: UInt64, start: UInt64, end: UInt64, text: String, source: CsLayerSource)  {try! rustCall() {
-    uniffi_codescribe_ffi_fn_method_cstranscriptionlistener_on_replace_range(
-            self.uniffiCloneHandle(),
-        FfiConverterUInt64.lower(utteranceId),
-        FfiConverterUInt64.lower(start),
-        FfiConverterUInt64.lower(end),
-        FfiConverterString.lower(text),
-        FfiConverterTypeCsLayerSource_lower(source),$0
-    )
-}
-}
-
-    /**
-     * Diagnostic annotation observation with no committed-text authority.
-     */
-open func onInsertAnnotation(utteranceId: UInt64, position: UInt64, text: String, kind: CsAnnotationKind)  {try! rustCall() {
-    uniffi_codescribe_ffi_fn_method_cstranscriptionlistener_on_insert_annotation(
-            self.uniffiCloneHandle(),
-        FfiConverterUInt64.lower(utteranceId),
-        FfiConverterUInt64.lower(position),
-        FfiConverterString.lower(text),
-        FfiConverterTypeCsAnnotationKind_lower(kind),$0
     )
 }
 }
@@ -5801,150 +5695,6 @@ fileprivate struct UniffiCallbackInterfaceCsTranscriptionListener {
                     throw UniffiInternalError.unexpectedStaleHandle
                 }
                 return uniffiObj.onRecordingFinalising(
-                )
-            }
-
-
-            let writeReturn = { () }
-            uniffiTraitInterfaceCall(
-                callStatus: uniffiCallStatus,
-                makeCall: makeCall,
-                writeReturn: writeReturn
-            )
-        },
-        onPreview: { (
-            uniffiHandle: UInt64,
-            text: RustBuffer,
-            uniffiOutReturn: UnsafeMutableRawPointer,
-            uniffiCallStatus: UnsafeMutablePointer<RustCallStatus>
-        ) in
-            let makeCall = {
-                () throws -> () in
-                guard let uniffiObj = try? FfiConverterTypeCsTranscriptionListener.handleMap.get(handle: uniffiHandle) else {
-                    throw UniffiInternalError.unexpectedStaleHandle
-                }
-                return uniffiObj.onPreview(
-                     text: try FfiConverterString.lift(text)
-                )
-            }
-
-
-            let writeReturn = { () }
-            uniffiTraitInterfaceCall(
-                callStatus: uniffiCallStatus,
-                makeCall: makeCall,
-                writeReturn: writeReturn
-            )
-        },
-        onCorrection: { (
-            uniffiHandle: UInt64,
-            text: RustBuffer,
-            previousText: RustBuffer,
-            uniffiOutReturn: UnsafeMutableRawPointer,
-            uniffiCallStatus: UnsafeMutablePointer<RustCallStatus>
-        ) in
-            let makeCall = {
-                () throws -> () in
-                guard let uniffiObj = try? FfiConverterTypeCsTranscriptionListener.handleMap.get(handle: uniffiHandle) else {
-                    throw UniffiInternalError.unexpectedStaleHandle
-                }
-                return uniffiObj.onCorrection(
-                     text: try FfiConverterString.lift(text),
-                     previousText: try FfiConverterString.lift(previousText)
-                )
-            }
-
-
-            let writeReturn = { () }
-            uniffiTraitInterfaceCall(
-                callStatus: uniffiCallStatus,
-                makeCall: makeCall,
-                writeReturn: writeReturn
-            )
-        },
-        onFinal: { (
-            uniffiHandle: UInt64,
-            utteranceId: UInt64,
-            text: RustBuffer,
-            avgLogprob: RustBuffer,
-            speechPct: RustBuffer,
-            confidenceFlags: RustBuffer,
-            uniffiOutReturn: UnsafeMutableRawPointer,
-            uniffiCallStatus: UnsafeMutablePointer<RustCallStatus>
-        ) in
-            let makeCall = {
-                () throws -> () in
-                guard let uniffiObj = try? FfiConverterTypeCsTranscriptionListener.handleMap.get(handle: uniffiHandle) else {
-                    throw UniffiInternalError.unexpectedStaleHandle
-                }
-                return uniffiObj.onFinal(
-                     utteranceId: try FfiConverterUInt64.lift(utteranceId),
-                     text: try FfiConverterString.lift(text),
-                     avgLogprob: try FfiConverterOptionFloat.lift(avgLogprob),
-                     speechPct: try FfiConverterOptionFloat.lift(speechPct),
-                     confidenceFlags: try FfiConverterSequenceString.lift(confidenceFlags)
-                )
-            }
-
-
-            let writeReturn = { () }
-            uniffiTraitInterfaceCall(
-                callStatus: uniffiCallStatus,
-                makeCall: makeCall,
-                writeReturn: writeReturn
-            )
-        },
-        onReplaceRange: { (
-            uniffiHandle: UInt64,
-            utteranceId: UInt64,
-            start: UInt64,
-            end: UInt64,
-            text: RustBuffer,
-            source: RustBuffer,
-            uniffiOutReturn: UnsafeMutableRawPointer,
-            uniffiCallStatus: UnsafeMutablePointer<RustCallStatus>
-        ) in
-            let makeCall = {
-                () throws -> () in
-                guard let uniffiObj = try? FfiConverterTypeCsTranscriptionListener.handleMap.get(handle: uniffiHandle) else {
-                    throw UniffiInternalError.unexpectedStaleHandle
-                }
-                return uniffiObj.onReplaceRange(
-                     utteranceId: try FfiConverterUInt64.lift(utteranceId),
-                     start: try FfiConverterUInt64.lift(start),
-                     end: try FfiConverterUInt64.lift(end),
-                     text: try FfiConverterString.lift(text),
-                     source: try FfiConverterTypeCsLayerSource_lift(source)
-                )
-            }
-
-
-            let writeReturn = { () }
-            uniffiTraitInterfaceCall(
-                callStatus: uniffiCallStatus,
-                makeCall: makeCall,
-                writeReturn: writeReturn
-            )
-        },
-        onInsertAnnotation: { (
-            uniffiHandle: UInt64,
-            utteranceId: UInt64,
-            position: UInt64,
-            text: RustBuffer,
-            kind: RustBuffer,
-            uniffiOutReturn: UnsafeMutableRawPointer,
-            uniffiCallStatus: UnsafeMutablePointer<RustCallStatus>
-        ) in
-            let makeCall = {
-                () throws -> () in
-                guard let uniffiObj = try? FfiConverterTypeCsTranscriptionListener.handleMap.get(handle: uniffiHandle) else {
-                    throw UniffiInternalError.unexpectedStaleHandle
-                }
-                return uniffiObj.onInsertAnnotation(
-                     utteranceId: try FfiConverterUInt64.lift(utteranceId),
-                     position: try FfiConverterUInt64.lift(position),
-                     text: try FfiConverterString.lift(text),
-                     kind: try FfiConverterTypeCsAnnotationKind_lift(kind)
                 )
             }
 
@@ -14427,37 +14177,22 @@ private let initializationResult: InitializationResult = {
     if (uniffi_codescribe_ffi_checksum_method_cstranscriptionlistener_on_recording_finalising() != 35300) {
         return InitializationResult.apiChecksumMismatch
     }
-    if (uniffi_codescribe_ffi_checksum_method_cstranscriptionlistener_on_preview() != 48992) {
+    if (uniffi_codescribe_ffi_checksum_method_cstranscriptionlistener_on_context_marker() != 33153) {
         return InitializationResult.apiChecksumMismatch
     }
-    if (uniffi_codescribe_ffi_checksum_method_cstranscriptionlistener_on_correction() != 62884) {
+    if (uniffi_codescribe_ffi_checksum_method_cstranscriptionlistener_on_session_finalised() != 39954) {
         return InitializationResult.apiChecksumMismatch
     }
-    if (uniffi_codescribe_ffi_checksum_method_cstranscriptionlistener_on_final() != 8328) {
+    if (uniffi_codescribe_ffi_checksum_method_cstranscriptionlistener_on_vad_active() != 20349) {
         return InitializationResult.apiChecksumMismatch
     }
-    if (uniffi_codescribe_ffi_checksum_method_cstranscriptionlistener_on_replace_range() != 6198) {
+    if (uniffi_codescribe_ffi_checksum_method_cstranscriptionlistener_on_audio_level() != 55213) {
         return InitializationResult.apiChecksumMismatch
     }
-    if (uniffi_codescribe_ffi_checksum_method_cstranscriptionlistener_on_insert_annotation() != 14795) {
+    if (uniffi_codescribe_ffi_checksum_method_cstranscriptionlistener_on_no_speech() != 8113) {
         return InitializationResult.apiChecksumMismatch
     }
-    if (uniffi_codescribe_ffi_checksum_method_cstranscriptionlistener_on_context_marker() != 12395) {
-        return InitializationResult.apiChecksumMismatch
-    }
-    if (uniffi_codescribe_ffi_checksum_method_cstranscriptionlistener_on_session_finalised() != 65321) {
-        return InitializationResult.apiChecksumMismatch
-    }
-    if (uniffi_codescribe_ffi_checksum_method_cstranscriptionlistener_on_vad_active() != 40828) {
-        return InitializationResult.apiChecksumMismatch
-    }
-    if (uniffi_codescribe_ffi_checksum_method_cstranscriptionlistener_on_audio_level() != 55568) {
-        return InitializationResult.apiChecksumMismatch
-    }
-    if (uniffi_codescribe_ffi_checksum_method_cstranscriptionlistener_on_no_speech() != 54696) {
-        return InitializationResult.apiChecksumMismatch
-    }
-    if (uniffi_codescribe_ffi_checksum_method_cstranscriptionlistener_on_error() != 20067) {
+    if (uniffi_codescribe_ffi_checksum_method_cstranscriptionlistener_on_error() != 30256) {
         return InitializationResult.apiChecksumMismatch
     }
     if (uniffi_codescribe_ffi_checksum_method_cstraystatuslistener_on_tray_status() != 48227) {

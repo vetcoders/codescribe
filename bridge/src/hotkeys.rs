@@ -28,8 +28,8 @@ use crate::agent_delivery::{
     CsAgentDeliveryListener, set_delivery_listener, spawn_delivery_forwarder,
 };
 use crate::recording::{
-    CsAdmissionReadiness, CsAnnotationKind, CsEnergyCalibrationReport, CsLayerSummary,
-    CsTranscriptProjectionEvent, CsTranscription, CsTranscriptionListener,
+    CsAdmissionReadiness, CsEnergyCalibrationReport, CsLayerSummary, CsTranscriptProjectionEvent,
+    CsTranscription, CsTranscriptionListener,
 };
 use crate::{CsError, application_runtime};
 
@@ -469,12 +469,21 @@ fn forward_event_to_listener(payload: IpcEventPayload, listener: Arc<dyn CsTrans
                 );
             }
             EngineEventWire::NoSpeech { reason } => listener.on_no_speech(reason),
-            EngineEventWire::Preview { text, .. } => listener.on_preview(text),
+            EngineEventWire::Preview { rev, text } => tracing::debug!(
+                rev,
+                text_len = text.len(),
+                "raw preview observation (diagnostic only)"
+            ),
             EngineEventWire::Correction {
+                rev,
                 text,
                 previous_text,
-                ..
-            } => listener.on_correction(text, previous_text),
+            } => tracing::debug!(
+                rev,
+                text_len = text.len(),
+                previous_text_len = previous_text.len(),
+                "raw correction observation (diagnostic only)"
+            ),
             EngineEventWire::UtteranceFinal {
                 utterance_id,
                 text,
@@ -482,33 +491,39 @@ fn forward_event_to_listener(payload: IpcEventPayload, listener: Arc<dyn CsTrans
                 vad_speech_pct,
                 confidence_flags,
                 ..
-            } => {
-                let flags: Vec<String> = confidence_flags.iter().map(ToString::to_string).collect();
-                listener.on_final(utterance_id, text, avg_logprob, vad_speech_pct, flags);
-            }
+            } => tracing::debug!(
+                utterance_id,
+                text_len = text.len(),
+                ?avg_logprob,
+                ?vad_speech_pct,
+                ?confidence_flags,
+                "raw utterance-final observation (diagnostic only)"
+            ),
             EngineEventWire::ReplaceRange {
                 utterance_id,
                 start,
                 end,
                 text,
                 source,
-            } => listener.on_replace_range(
+            } => tracing::debug!(
                 utterance_id,
-                start as u64,
-                end as u64,
-                text,
-                source.into(),
+                start,
+                end,
+                text_len = text.len(),
+                ?source,
+                "raw replace-range observation (diagnostic only)"
             ),
             EngineEventWire::InsertAnnotation {
                 utterance_id,
                 position,
                 text,
                 kind,
-            } => listener.on_insert_annotation(
+            } => tracing::debug!(
                 utterance_id,
-                position as u64,
-                text,
-                CsAnnotationKind::from(&kind),
+                position,
+                text_len = text.len(),
+                ?kind,
+                "raw annotation observation (diagnostic only)"
             ),
             EngineEventWire::SessionFinalised {
                 session_id,
@@ -2298,39 +2313,6 @@ mod preparing_compensation_tests {
         /// Count busy→finalising transitions for the hold-release sequence.
         fn on_recording_finalising(&self) {
             self.finalising.fetch_add(1, Ordering::SeqCst);
-        }
-        /// No-op: preview text is not under test in this suite.
-        fn on_preview(&self, _text: String) {}
-        /// No-op: mid-stream corrections are not under test in this suite.
-        fn on_correction(&self, _text: String, _previous_text: String) {}
-        /// No-op: utterance finals are not under test in this suite.
-        fn on_final(
-            &self,
-            _utterance_id: u64,
-            _text: String,
-            _avg_logprob: Option<f32>,
-            _speech_pct: Option<f32>,
-            _confidence_flags: Vec<String>,
-        ) {
-        }
-        /// No-op: layered replace-range patches are not under test here.
-        fn on_replace_range(
-            &self,
-            _utterance_id: u64,
-            _start: u64,
-            _end: u64,
-            _text: String,
-            _source: crate::recording::CsLayerSource,
-        ) {
-        }
-        /// No-op: annotation inserts are not under test in this suite.
-        fn on_insert_annotation(
-            &self,
-            _utterance_id: u64,
-            _position: u64,
-            _text: String,
-            _kind: CsAnnotationKind,
-        ) {
         }
         /// Capture selection/context markers for forwarder assertions.
         fn on_context_marker(&self, position: u64, marker: String) {

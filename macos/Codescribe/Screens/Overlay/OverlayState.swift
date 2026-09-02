@@ -1944,26 +1944,6 @@ final class DictationListener: CsTranscriptionListener, @unchecked Sendable {
       MainActor.assumeIsolated { self.state?.handleRecordingFinalising() }
     }
   }
-  /// Legacy wire callback retained by the UniFFI protocol. Transcript text is
-  /// admitted only through `onTranscriptProjection`.
-  func onPreview(text _: String) {}
-  /// Legacy wire callback retained by the UniFFI protocol. Transcript text is
-  /// admitted only through `onTranscriptProjection`.
-  func onCorrection(text _: String, previousText _: String) {}
-  func onFinal(
-    utteranceId _: UInt64,
-    text _: String,
-    avgLogprob _: Float?,
-    speechPct _: Float?,
-    confidenceFlags _: [String]
-  ) {}
-  func onReplaceRange(
-    utteranceId _: UInt64, start _: UInt64, end _: UInt64, text _: String,
-    source _: CsLayerSource
-  ) {}
-  func onInsertAnnotation(
-    utteranceId _: UInt64, position _: UInt64, text _: String, kind _: CsAnnotationKind
-  ) {}
   func onContextMarker(position: UInt64, marker: String) {
     DispatchQueue.main.async {
       MainActor.assumeIsolated {
@@ -1974,7 +1954,6 @@ final class DictationListener: CsTranscriptionListener, @unchecked Sendable {
   func onSessionFinalised(sessionId: String, layerSummary: CsLayerSummary) {
     DispatchQueue.main.async { MainActor.assumeIsolated { self.state?.applySessionFinalised() } }
   }
-  func onFinalTranscriptReady(text _: String) {}
   func onVadActive(active: Bool) {
     DispatchQueue.main.async { MainActor.assumeIsolated { self.state?.applyVad(active) } }
   }
