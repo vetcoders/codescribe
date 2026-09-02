@@ -1,0 +1,12 @@
+# logs
+# Runtime artifacts from Codescribe sessions, canary runs, and structural receipts.
+# These are evidence, not source. Do not commit secrets or raw PCM here.
+
+*.log
+*.jsonl
+*.wav
+*.m4a
+*.pcm
+receipts/
+canary-runs/
+transcript-events/
