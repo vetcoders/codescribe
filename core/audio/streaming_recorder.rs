@@ -17,7 +17,7 @@ use crate::asr_session::recorder::{
 };
 use crate::audio::recorder::{Recorder, RecorderConfig};
 use crate::config::{RuntimeSettingsSnapshot, UserSettings};
-use crate::pipeline::acoustic_ledger::{AcousticLedger, SealCoverageStatus};
+use crate::pipeline::acoustic_ledger::{AcousticLedger, SealCoverageReceipt, SealCoverageStatus};
 use crate::pipeline::contracts::{EngineEvent, EventSink};
 use crate::pipeline::streaming::{
     SessionConfig, TailPatchSessionReceipt, collect_buffered_engine_events_with_config,
@@ -30,6 +30,36 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use tokio::sync::{Mutex, mpsc};
 use tokio::task::JoinHandle;
 use tracing::{debug, info, warn};
+
+/// Ledger refusal of the terminal transcript after a successful capture stop.
+///
+/// Raised by [`StreamingRecorder::stop`] when the acoustic ledger reports
+/// [`SealCoverageStatus::Incomplete`]: speech physically existed that no sealed
+/// occurrence covers, so the take text may not be promoted to a terminal
+/// transcript. The capture itself succeeded — `audio_path` is the take WAV
+/// already written to disk — which is why this is a typed error rather than a
+/// string: the stop path must retain that audio and close the take instead of
+/// reporting a recorder failure.
+#[derive(Debug, Clone)]
+pub struct TerminalSealRefused {
+    pub receipt: SealCoverageReceipt,
+    pub audio_path: Option<std::path::PathBuf>,
+}
+
+impl std::fmt::Display for TerminalSealRefused {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            f,
+            "terminal transcript refused: seal coverage incomplete ({}/{} samples covered; max gap {} > threshold {})",
+            self.receipt.covered_samples,
+            self.receipt.speech_samples,
+            self.receipt.max_uncovered_samples,
+            self.receipt.incomplete_threshold_samples,
+        )
+    }
+}
+
+impl std::error::Error for TerminalSealRefused {}
 
 // Keep enough raw audio queued to survive a cold Whisper load without dropping
 // the user's first words. The STT session drains this backlog once the model is ready.
@@ -432,13 +462,14 @@ impl StreamingRecorder {
                 .cloned()
         });
         if let Some(receipt) = incomplete_coverage {
-            return Err(anyhow!(
-                "terminal transcript refused: seal coverage incomplete ({}/{} samples covered; max gap {} > threshold {})",
-                receipt.covered_samples,
-                receipt.speech_samples,
-                receipt.max_uncovered_samples,
-                receipt.incomplete_threshold_samples,
-            ));
+            // The ledger refused the terminal transcript, not the capture: the
+            // mic is stopped and the take WAV is already on disk. Carry that
+            // path in the typed refusal so the controller can retain the audio
+            // and close the take without reading this as a recorder failure.
+            return Err(anyhow::Error::new(TerminalSealRefused {
+                receipt,
+                audio_path,
+            }));
         }
 
         // 4. Return collected transcript
@@ -1120,5 +1151,49 @@ mod tests {
         println!("╰────────────────────────────────────────────────────╯\n");
 
         assert!(all_pass, "Some files had zero speech detection");
+    }
+}
+
+#[cfg(test)]
+mod terminal_seal_refusal_tests {
+    use super::TerminalSealRefused;
+    use crate::pipeline::acoustic_ledger::{SealCoverageReceipt, SealCoverageStatus};
+
+    fn refusal(audio_path: Option<std::path::PathBuf>) -> TerminalSealRefused {
+        TerminalSealRefused {
+            receipt: SealCoverageReceipt {
+                session_id: "e4060d87-fe0f-49fd-bbd5-eaea7e89ca17".to_string(),
+                capture_epoch: 0,
+                speech_samples: 2_696_704,
+                covered_samples: 585_216,
+                uncovered_speech_ranges: Vec::new(),
+                max_uncovered_samples: 2_111_488,
+                incomplete_threshold_samples: 12_000,
+                status: SealCoverageStatus::Incomplete,
+            },
+            audio_path,
+        }
+    }
+
+    /// The controller tells a refused seal apart from a failed mic by type,
+    /// and the take WAV path survives the trip through `anyhow`.
+    #[test]
+    fn refusal_downcasts_through_anyhow_with_its_audio_path() {
+        let path = std::path::PathBuf::from("/tmp/codescribe_recording_1788315408813.wav");
+        let err = anyhow::Error::new(refusal(Some(path.clone())));
+        let refused = err
+            .downcast::<TerminalSealRefused>()
+            .expect("typed refusal survives anyhow");
+        assert_eq!(refused.audio_path.as_deref(), Some(path.as_path()));
+        assert_eq!(refused.receipt.status, SealCoverageStatus::Incomplete);
+    }
+
+    /// The message names the refused seal, never the recorder.
+    #[test]
+    fn refusal_message_names_the_seal_not_the_mic() {
+        let text = refusal(None).to_string();
+        assert!(text.starts_with("terminal transcript refused"), "{text}");
+        assert!(text.contains("585216/2696704"), "{text}");
+        assert!(!text.to_lowercase().contains("recorder"), "{text}");
     }
 }

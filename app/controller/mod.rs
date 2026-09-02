@@ -57,7 +57,7 @@ use tokio::task::JoinHandle;
 use tracing::{debug, error, info, warn};
 use uuid::Uuid;
 
-use crate::audio::streaming_recorder::StreamingRecorder;
+use crate::audio::streaming_recorder::{StreamingRecorder, TerminalSealRefused};
 use crate::config::models::ModelManager;
 use crate::config::{Config, RuntimeSettingsSnapshot, UserSettings};
 use crate::os::clipboard;
@@ -270,6 +270,46 @@ fn retain_session_audio(
     match std::fs::copy(path, &alias) {
         Ok(_) => info!("last_session.wav alias updated at {}", alias.display()),
         Err(err) => warn!("last_session.wav alias failed: {err:#}"),
+    }
+}
+
+/// Stop the recorder for a finished take and classify the outcome.
+///
+/// A ledger refusal of the terminal transcript ([`TerminalSealRefused`]) is a
+/// legitimate take outcome, not a recorder failure: the capture stopped and the
+/// take WAV is already on disk. That audio is retained under the Bus uuid here,
+/// before the refusal is returned, so the take survives for Retranscribe and the
+/// error the user sees names the refused seal rather than the mic. Any other
+/// error is the recorder failing to stop.
+///
+/// Incident 2026-09-02 02:17 UTC (`~/.codescribe/logs/codescribe.log`): a quiet
+/// take (-57.9 dB) ended with `terminal_seal_coverage_incomplete`; the toggle
+/// stop propagated the refusal with `?` past its own state reset, the
+/// controller stayed `Busy` for good, the Bus session never ended and every
+/// later Finish press was ignored until the app was restarted.
+async fn stop_recorder_for_terminal(
+    recorder: &mut StreamingRecorder,
+    session_id: Option<&str>,
+) -> Result<(String, Option<std::path::PathBuf>)> {
+    match recorder.stop().await {
+        Ok(stopped) => Ok(stopped),
+        Err(err) => match err.downcast::<TerminalSealRefused>() {
+            Ok(refusal) => {
+                warn!(
+                    session_id = ?session_id,
+                    covered = refusal.receipt.covered_samples,
+                    speech = refusal.receipt.speech_samples,
+                    max_uncovered = refusal.receipt.max_uncovered_samples,
+                    "terminal transcript refused after a successful capture stop; retaining take audio"
+                );
+                match refusal.audio_path.as_deref() {
+                    Some(path) => retain_session_audio(session_id, path, None),
+                    None => warn!("refused take has no audio path to retain"),
+                }
+                Err(anyhow::Error::new(refusal))
+            }
+            Err(err) => Err(err.context("Failed to stop recorder")),
+        },
     }
 }
 
@@ -2917,7 +2957,13 @@ impl RecordingController {
         self.set_state(State::Busy).await;
         self.show_processing_badge_if_enabled().await;
 
-        let (result, rec_stop_secs, phase3_secs) = {
+        // Phases 1–3 run inside one fallible block so that PHASE 4 — the state
+        // reset, the terminal Bus line and the user-facing result — always
+        // runs. A `?` here used to leave the controller `Busy` forever when the
+        // ledger refused the terminal transcript (incident 2026-09-02).
+        let mut rec_stop_secs = 0.0_f64;
+        let mut phase3_secs = 0.0_f64;
+        let result: Result<ProcessRecordingOutcome> = async {
             let phase1 = std::time::Instant::now();
             info!("stop_toggle_inner: PHASE 1 — locking recorder mutex");
             let mut recorder_guard = self.recorder.lock().await;
@@ -2930,9 +2976,14 @@ impl RecordingController {
 
             let phase2 = std::time::Instant::now();
             info!("stop_toggle_inner: PHASE 2 — calling recorder.stop() (cpal drain + WAV save)");
-            let (streaming_text, raw_audio_path_opt) =
-                recorder.stop().await.context("Failed to stop recorder")?;
-            let rec_stop_secs = phase2.elapsed().as_secs_f64();
+            // The live slot is `{uuid}:stopping` here. File-lane identity is
+            // the Bus uuid snapped before that rewrite.
+            let stopped =
+                stop_recorder_for_terminal(recorder, session_id_snapshot.as_deref()).await;
+            rec_stop_secs = phase2.elapsed().as_secs_f64();
+            Self::clear_recorder_callbacks(recorder);
+            drop(recorder_guard);
+            let (streaming_text, raw_audio_path_opt) = stopped?;
             info!(
                 "stop_toggle_inner: PHASE 2 — recorder.stop() returned in {:?} (streaming_text={} chars, has_wav={})",
                 phase2.elapsed(),
@@ -2940,32 +2991,26 @@ impl RecordingController {
                 raw_audio_path_opt.is_some()
             );
 
-            Self::clear_recorder_callbacks(recorder);
-            drop(recorder_guard);
-
             let phase3 = std::time::Instant::now();
             info!("stop_toggle_inner: PHASE 3 — reducer-owned transcript already delivered");
             if let Some(path) = raw_audio_path_opt.as_deref() {
-                // The live slot is `{uuid}:stopping` here. File-lane identity
-                // is the Bus uuid snapped before that rewrite.
                 retain_session_audio(
                     session_id_snapshot.as_deref(),
                     path,
                     Some(streaming_text.as_str()),
                 );
             }
-            let r = Ok(ProcessRecordingOutcome {
+            phase3_secs = phase3.elapsed().as_secs_f64();
+            info!(
+                "stop_toggle_inner: PHASE 3 — reducer handoff completed in {:?}",
+                phase3.elapsed()
+            );
+            Ok(ProcessRecordingOutcome {
                 transcript_present: !streaming_text.trim().is_empty(),
                 ..ProcessRecordingOutcome::default()
-            });
-            let phase3_secs = phase3.elapsed().as_secs_f64();
-            info!(
-                "stop_toggle_inner: PHASE 3 — reducer handoff completed in {:?} (ok={})",
-                phase3.elapsed(),
-                r.is_ok()
-            );
-            (r, rec_stop_secs, phase3_secs)
-        };
+            })
+        }
+        .await;
 
         let phase4 = std::time::Instant::now();
         self.toggle_user_has_text.store(false, Ordering::SeqCst);
@@ -3112,15 +3157,18 @@ impl RecordingController {
         }
 
         // Stop the recorder and get audio file path
+        let take_id = match session_id {
+            Some(id) => Some(id),
+            None => self.session_id.read().await.clone(),
+        };
         let mut recorder_guard = self.recorder.lock().await;
         let recorder = Self::recorder_from_guard_mut(&mut recorder_guard, "Process-recording")?;
-        let (streaming_text, raw_audio_path_opt) =
-            recorder.stop().await.context("Failed to stop recorder")?;
+        let stopped = stop_recorder_for_terminal(recorder, take_id.as_deref()).await;
         Self::clear_recorder_callbacks(recorder);
         drop(recorder_guard); // Release lock
+        let (streaming_text, raw_audio_path_opt) = stopped?;
 
         if let Some(path) = raw_audio_path_opt.as_deref() {
-            let take_id = session_id.clone().or(self.session_id.read().await.clone());
             retain_session_audio(take_id.as_deref(), path, Some(streaming_text.as_str()));
         }
         let _ = (assistive, hold_mode, force_raw, force_ai);
