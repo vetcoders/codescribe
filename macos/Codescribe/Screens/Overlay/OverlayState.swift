@@ -1,4 +1,5 @@
 import AppKit
+import Observation
 import SwiftUI
 
 // View model for the dictation overlay, backed by the redesign hotkey/controller
@@ -52,9 +53,8 @@ private struct OverlayProjectedAcousticReceipt: Equatable {
 /// One immutable reducer projection for display. It is an event value, not a
 /// Swift-owned committed document, and has no admit/reconcile/seal operation.
 ///
-/// W2 input: `CsTranscriptProjectionEvent`. W2 output: visible overlay text and
-/// evidence affordances. The listener callback and UI application are
-/// intentionally unresolved until W2/W3.
+/// Input: `CsTranscriptProjectionEvent`. Output: visible overlay text and
+/// evidence affordances.
 private struct OverlayTranscriptProjection: Equatable {
   let schema: String
   let sequence: UInt64
@@ -92,6 +92,7 @@ private struct OverlayManualEditReceipt: Equatable {
 
 /// Minimal slice of the controller-backed dictation surface the overlay needs.
 /// Kept as a protocol so the view-model + preview compile without a live Rust core.
+@MainActor
 protocol DictationEngine: AnyObject {
   func setListener(_ listener: CsTranscriptionListener)
   func startRecording(language: CsLanguage?) async throws
@@ -160,70 +161,87 @@ enum OverlayMode: Equatable {
   case error
 }
 
+/// The sole cross-thread ingress into the overlay. UniFFI callbacks enqueue
+/// values here; one main-actor consumer applies them in arrival order.
+enum OverlayListenerEvent: Sendable {
+  case transcriptProjection(CsTranscriptProjectionEvent)
+  case recordingPreparing
+  case recordingStarted
+  case recordingStopped
+  case recordingFinalising
+  case contextMarker(position: UInt64, marker: String)
+  case sessionFinalised
+  case vadActive(Bool)
+  case audioLevel(Float)
+  case noSpeech(String)
+  case error(String)
+}
+
 @MainActor
-final class OverlayState: ObservableObject {
+@Observable
+final class OverlayState {
 
   // MARK: Published state
-  @Published var mode: OverlayMode = .listening
-  @Published var formattedText: String = ""  // finalized transcript after stop
-  @Published var vadActive: Bool = false  // drives the WaveformView pulse
-  /// Live capture level for the waveform. NOT @Published on purpose — the
+  var mode: OverlayMode = .listening
+  var formattedText: String = ""  // finalized transcript after stop
+  var vadActive: Bool = false  // drives the WaveformView pulse
+  /// Live capture level for the waveform. NOT on purpose — the
   /// waveform's TimelineView reads it every frame; see `AudioLevelMeter`.
   let levelMeter = AudioLevelMeter()
   /// Distinguishes a measured microphone feed from the explicit ambient
   /// fallback used by legacy/disconnected engines before any RMS arrives.
-  @Published private(set) var hasMeasuredAudioLevel = false
-  @Published var audioReady: Bool = false  // recorder confirmed; STT/VAD may still be warming
-  @Published var warmingUp: Bool = false  // true after user intent, before audio/VAD proves life
+  private(set) var hasMeasuredAudioLevel = false
+  var audioReady: Bool = false  // recorder confirmed; STT/VAD may still be warming
+  var warmingUp: Bool = false  // true after user intent, before audio/VAD proves life
   /// Stop was requested and we are awaiting the final transcript. Distinct from
   /// recording: the waveform must NOT keep pulsing like capture, and the status
   /// reads "transcribing" so the user can tell recording ended vs. hung. Set only
   /// on the Swift-observable stop (`runStop`); cleared by finalize / error / reset
   /// / close so it can never stick. See `WaveformView(transcribing:)`.
-  @Published var transcribing: Bool = false
-  @Published var toast: String?  // transient error notice
-  @Published var errorMessage: String?
-  @Published private(set) var errorLifecycleDetail =
+  var transcribing: Bool = false
+  var toast: String?  // transient error notice
+  var errorMessage: String?
+  private(set) var errorLifecycleDetail =
     "Recording stopped before a transcript was available."
   /// Settings destination that can resolve the current terminal error. This is
   /// presentation routing only; the controller remains the admission authority.
-  @Published private(set) var recoverySettingsSection: SettingsSection?
-  @Published private(set) var recoverySettingsAnchor: SettingsAnchor?
-  @Published var isEditingTranscript: Bool = false
+  private(set) var recoverySettingsSection: SettingsSection?
+  private(set) var recoverySettingsAnchor: SettingsAnchor?
+  var isEditingTranscript: Bool = false
   /// Prompt-free policy snapshot from C02's persisted settings owner. These
   /// values are replaced only by a fresh engine read, never by optimistic UI.
-  @Published private(set) var autoPasteEnabled = true
-  @Published private(set) var autoFormatLevel: FormattingPolicyOption = .correction
+  private(set) var autoPasteEnabled = true
+  private(set) var autoFormatLevel: FormattingPolicyOption = .correction
   /// Assistive sessions never expose delivery controls. The controller owns
   /// that authoritative session gate and updates this presentation fence.
-  @Published private(set) var autoPasteControlAvailable = true
+  private(set) var autoPasteControlAvailable = true
   /// Destination name latched once at overlay session entry. The action row
   /// reads this snapshot; it never polls the bridge during rendering.
-  @Published private(set) var pasteTargetAppName: String?
+  private(set) var pasteTargetAppName: String?
   /// Final pass phase (AI formatting / authoritative assembly after stop).
   /// Set on `applySessionFinalised`, cleared on controller finish or reset.
   /// Drives "final pass" status while the user still sees the live assembly.
-  @Published var isFinalPass: Bool = false
+  var isFinalPass: Bool = false
   /// Human-facing notice shown in the `.noSpeech` outcome body. Set when a
   /// session finalizes without usable text; refined by `on_no_speech`'s reason
   /// so VAD silence and quality-gate rejection read differently.
-  @Published var noSpeechNotice: String = OverlayState.defaultNoSpeechNotice
-  @Published private(set) var indicatorMode: CsIndicatorMode = .hold
+  var noSpeechNotice: String = OverlayState.defaultNoSpeechNotice
+  private(set) var indicatorMode: CsIndicatorMode = .hold
 
   // MARK: Session capture clock (UI_DIVERGENCE_AUDIT pkt 5 — overlay timer)
   /// Monotonic uptime stamp of the moment capture began for the open session.
   /// The overlay's live `00:00` counter derives from this: the user's absolute
   /// reference for audio sync, transcription lag, and stream drift.
-  @Published private(set) var captureStartedAtUptime: TimeInterval?
+  private(set) var captureStartedAtUptime: TimeInterval?
   /// Freeze stamp — set when capture stops (Finish / native release / abort) so
   /// the counter halts at the session's true duration instead of ticking
   /// through the final pass.
-  @Published private(set) var captureEndedAtUptime: TimeInterval?
+  private(set) var captureEndedAtUptime: TimeInterval?
 
   // MARK: Panel placement (persisted; the window orchestrator repositions live)
   /// Anchored placement: one of six screen anchors, applied on every show().
   /// Picking an anchor exits free motion — the pick's intent is "go there".
-  @Published var placementAnchor: OverlayAnchor = OverlayPlacement.anchor {
+  var placementAnchor: OverlayAnchor = OverlayPlacement.anchor {
     didSet {
       guard placementAnchor != oldValue else { return }
       OverlayPlacement.anchor = placementAnchor
@@ -231,7 +249,7 @@ final class OverlayState: ObservableObject {
     }
   }
   /// Free motion: the panel keeps (and restores) wherever the user dragged it.
-  @Published var freeMotion: Bool = OverlayPlacement.freeMotion {
+  var freeMotion: Bool = OverlayPlacement.freeMotion {
     didSet {
       guard freeMotion != oldValue else { return }
       OverlayPlacement.freeMotion = freeMotion
@@ -255,9 +273,10 @@ final class OverlayState: ObservableObject {
   /// Content-free success seam. No transcript crosses this callback.
   var onSuccessfulDictation: (() -> Void)?
 
-  /// Strong ref so the Rust-side callback (held via the UniFFI handle map) and
-  /// our hop-to-main bridge stay alive for the lifetime of the overlay.
-  private lazy var listener: CsTranscriptionListener = DictationListener(state: self)
+  /// Strong refs for the one ordered Rust-callback ingress.
+  @ObservationIgnored private let listener: CsTranscriptionListener
+  @ObservationIgnored private let eventStream: AsyncStream<OverlayListenerEvent>
+  @ObservationIgnored private var eventTask: Task<Void, Never>?
 
   static let defaultNoSpeechNotice = "No speech detected"
 
@@ -269,7 +288,7 @@ final class OverlayState: ObservableObject {
   /// Global transcript markers captured by the agent combo. They remain
   /// independent from per-utterance semantic annotations so the authoritative
   /// final pass cannot erase context references.
-  @Published private var contextMarkers: [OverlayContextMarker] = []
+  private var contextMarkers: [OverlayContextMarker] = []
   /// The delivered (pre-user-edit) text at the moment we entered .formatted.
   /// Captured for P0-D quality loop: diff delivered→edited on Copy/Send/close.
   private var deliveredText: String = ""
@@ -311,11 +330,37 @@ final class OverlayState: ObservableObject {
   static let autoHideDelaySeconds: TimeInterval = 5
 
   init(nowProvider: @escaping () -> TimeInterval = { ProcessInfo.processInfo.systemUptime }) {
+    let channel = AsyncStream<OverlayListenerEvent>.makeStream()
+    eventStream = channel.stream
+    listener = DictationListener(continuation: channel.continuation)
     self.nowProvider = nowProvider
+    eventTask = Task { @MainActor [weak self, eventStream] in
+      for await event in eventStream {
+        guard let self else { return }
+        apply(event)
+      }
+    }
   }
 
   func attach() {
     engine?.setListener(listener)
+  }
+
+  private func apply(_ event: OverlayListenerEvent) {
+    switch event {
+    case .transcriptProjection(let projection): applyTranscriptProjection(projection)
+    case .recordingPreparing: handleRecordingPreparing()
+    case .recordingStarted: handleRecordingStarted()
+    case .recordingStopped: finishControllerRecording()
+    case .recordingFinalising: handleRecordingFinalising()
+    case .contextMarker(let position, let marker):
+      applyContextMarker(position: position, marker: marker)
+    case .sessionFinalised: applySessionFinalised()
+    case .vadActive(let active): applyVad(active)
+    case .audioLevel(let rms): applyAudioLevel(rms)
+    case .noSpeech(let reason): applyNoSpeech(reason: reason)
+    case .error(let message): handleError(message: message)
+    }
   }
 
   // MARK: Derived display (one source of truth for the view)
@@ -368,7 +413,7 @@ final class OverlayState: ObservableObject {
         return Self.displayEngineChip(eng)
       }
     }
-    if let pref = try? CodescribeConfig().loadSettings().sttEngine?
+    if let pref = CodescribeConfig().loadSettings().sttEngine?
       .trimmingCharacters(in: .whitespacesAndNewlines),
       !pref.isEmpty
     {
@@ -1538,7 +1583,7 @@ final class OverlayState: ObservableObject {
 
   func applyVad(_ active: Bool) {
     // Drop late VAD toggles after finalize: the waveform is gone in Idle and a
-    // stray `vadActive` flip is just another needless @Published invalidation.
+    // stray `vadActive` flip is just another needless invalidation.
     guard !finalized else { return }
     vadActive = active
     if active {
@@ -1611,6 +1656,7 @@ final class OverlayState: ObservableObject {
 
 /// Adapter for the redesign hotkey/controller path. This is the product path:
 /// one `RecordingController`, one event stream, one Swift overlay surface.
+@MainActor
 final class ControllerDictationEngine: DictationEngine {
   private let hotkeys = CodescribeHotkeys()
   private let config = CodescribeConfig()
@@ -1663,77 +1709,61 @@ final class ControllerDictationEngine: DictationEngine {
   }
 }
 
-// MARK: - Listener bridge (Rust callbacks → main actor → OverlayState)
+// MARK: - Listener bridge (Rust callbacks → ordered stream → main actor)
 
-/// Bridges Rust-side `CsTranscriptionListener` callbacks (fired from the core's
-/// transcription thread) onto the main actor, driving `OverlayState`. Mirrors the
-/// hop pattern used by `StreamListener` in RealChatEngine.
-final class DictationListener: CsTranscriptionListener, @unchecked Sendable {
-  private weak var state: OverlayState?
+/// A value-only callback adapter. Its immutable continuation is Sendable, so
+/// the class needs no unchecked promise about actor isolation.
+final class DictationListener: CsTranscriptionListener {
+  private let continuation: AsyncStream<OverlayListenerEvent>.Continuation
 
-  init(state: OverlayState) {
-    self.state = state
+  init(continuation: AsyncStream<OverlayListenerEvent>.Continuation) {
+    self.continuation = continuation
   }
 
   func onTranscriptProjection(event: CsTranscriptProjectionEvent) {
-    DispatchQueue.main.async {
-      MainActor.assumeIsolated { self.state?.applyTranscriptProjection(event) }
-    }
+    continuation.yield(.transcriptProjection(event))
   }
 
   func onRecordingPreparing() {
-    DispatchQueue.main.async { MainActor.assumeIsolated { self.state?.handleRecordingPreparing() } }
+    continuation.yield(.recordingPreparing)
   }
   func onRecordingStarted() {
-    DispatchQueue.main.async { MainActor.assumeIsolated { self.state?.handleRecordingStarted() } }
+    continuation.yield(.recordingStarted)
   }
   func onRecordingStopped() {
-    DispatchQueue.main.async {
-      MainActor.assumeIsolated { self.state?.finishControllerRecording() }
-    }
+    continuation.yield(.recordingStopped)
   }
   func onRecordingFinalising() {
-    DispatchQueue.main.async {
-      MainActor.assumeIsolated { self.state?.handleRecordingFinalising() }
-    }
+    continuation.yield(.recordingFinalising)
   }
   func onContextMarker(position: UInt64, marker: String) {
-    DispatchQueue.main.async {
-      MainActor.assumeIsolated {
-        self.state?.applyContextMarker(position: position, marker: marker)
-      }
-    }
+    continuation.yield(.contextMarker(position: position, marker: marker))
   }
   func onSessionFinalised(sessionId: String, layerSummary: CsLayerSummary) {
-    DispatchQueue.main.async { MainActor.assumeIsolated { self.state?.applySessionFinalised() } }
+    continuation.yield(.sessionFinalised)
   }
   func onVadActive(active: Bool) {
-    DispatchQueue.main.async { MainActor.assumeIsolated { self.state?.applyVad(active) } }
+    continuation.yield(.vadActive(active))
   }
   func onAudioLevel(rms: Float) {
-    DispatchQueue.main.async { MainActor.assumeIsolated { self.state?.applyAudioLevel(rms) } }
+    continuation.yield(.audioLevel(rms))
   }
   func onNoSpeech(reason: String) {
     // Route the reason into the dedicated no-speech OUTCOME (a persistent
     // body + Close), not a transient toast that fades and leaves an empty
     // editable FINAL behind. `applyNoSpeech` maps the reason to a user-facing
     // notice (genuine silence vs. quality-gate rejection).
-    DispatchQueue.main.async {
-      MainActor.assumeIsolated { self.state?.applyNoSpeech(reason: reason) }
-    }
+    continuation.yield(.noSpeech(reason))
   }
   func onError(message: String) {
-    DispatchQueue.main.async {
-      MainActor.assumeIsolated {
-        self.state?.handleError(message: message)
-      }
-    }
+    continuation.yield(.error(message))
   }
 }
 
 // MARK: - Mock engine for #Preview
 
 #if DEBUG
+  @MainActor
   final class MockDictationEngine: DictationEngine {
     func setListener(_ listener: CsTranscriptionListener) {}
     func startRecording(language: CsLanguage?) async throws {}

@@ -17,7 +17,7 @@ private let attachLog = Logger(
 /// drag & drop, and ⌘V paste — all landing in `store.addAttachments`.
 struct Composer: View {
   @ObservedObject var store: AgentChatStore
-  @ObservedObject var overlay: OverlayState
+  let overlay: OverlayState
   @State private var fieldFocused = false
   /// Chat text scale (⌘+/-/0) — applied to the message field + placeholder so the
   /// composer input tracks the message bodies. Chrome (chips, affordance hints,

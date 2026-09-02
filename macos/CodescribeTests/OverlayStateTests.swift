@@ -7,6 +7,7 @@ import XCTest
 // Executed by `make test-swift`. The marker-rebase assertions below run for
 // real; see CodescribeTests/README.md.
 
+@MainActor
 private final class OverlayStateTestEngine: DictationEngine {
   var pastedText: String?
   var pasteCallCount = 0
@@ -99,6 +100,29 @@ private final class OverlayStateTestClock {
 @MainActor
 final class OverlayStateTests: XCTestCase {
   private var nextProjectionSequence: UInt64 = 0
+
+  func testListenerQueuesLifecycleEventsInCallbackOrder() async {
+    let channel = AsyncStream<OverlayListenerEvent>.makeStream()
+    let listener = DictationListener(continuation: channel.continuation)
+    listener.onRecordingPreparing()
+    listener.onRecordingStarted()
+    listener.onRecordingFinalising()
+    listener.onRecordingStopped()
+
+    var iterator = channel.stream.makeAsyncIterator()
+    guard case .recordingPreparing = await iterator.next() else {
+      return XCTFail("preparing callback lost or reordered")
+    }
+    guard case .recordingStarted = await iterator.next() else {
+      return XCTFail("started callback lost or reordered")
+    }
+    guard case .recordingFinalising = await iterator.next() else {
+      return XCTFail("finalising callback lost or reordered")
+    }
+    guard case .recordingStopped = await iterator.next() else {
+      return XCTFail("stopped callback lost or reordered")
+    }
+  }
 
   /// Admit Rust-owned transcript truth through the same projection boundary as
   /// production. Tests may choose rendered documents; they do not replay the

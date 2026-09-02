@@ -18,7 +18,7 @@ import SwiftUI
 struct DictationOverlayView: View {
   @Environment(\.openSettings) private var openSettings
   @Environment(\.accessibilityReduceMotion) private var reduceMotion
-  @ObservedObject var state: OverlayState
+  @Bindable var state: OverlayState
 
   // Geometry constants local to this surface. The window is user-resizable;
   // content fills the frame and never goes narrower than `windowMinWidth`.
