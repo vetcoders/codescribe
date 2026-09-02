@@ -86,11 +86,19 @@ a seal. `seal_coverage` is emitted before terminal finality. A terminal
 `LedgerSeal` reducer action marks the writer sealed only when the latest
 coverage is not incomplete. No arbitrary string can close committed Bus truth.
 
+Controller-authenticated context captures enter the same presentation reducer
+as `RecordContextMarker` actions (`record_context_marker` on the Bus). The
+reducer anchors each marker at the captured character position and renders it
+into every later complete `rendered_text` revision, preserving capture order at
+equal positions. Swift receives that finished projection verbatim; it does not
+insert, pad, retain, or replay marker text.
+
 ## Authority boundary
 
 ```text
 OccurrenceIdentity + AcousticLedger receipts
   → TranscriptReducer.document_by_occurrence
+  + controller-authenticated context markers
   → TranscriptRevision
   → TranscriptBus::publish_revision
   → CsTranscriptProjectionEvent

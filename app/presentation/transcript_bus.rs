@@ -328,6 +328,7 @@ impl TranscriptBus {
             } => "record_ledger_seal",
             ReducerAction::RecordSealCoverage { .. } => "seal_coverage",
             ReducerAction::ApplyManualEdit { .. } => "apply_manual_edit",
+            ReducerAction::RecordContextMarker { .. } => "record_context_marker",
         };
         let mut writer = self
             .writer

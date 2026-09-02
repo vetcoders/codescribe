@@ -892,49 +892,18 @@ final class OverlayStateTests: XCTestCase {
     XCTAssertEqual(engine.sentAssistiveTexts, ["untouched final"])
   }
 
-  func testContextMarkerLandsAtCapturedWordPositionAndSurvivesFinalPass() {
+  func testRustRenderedContextMarkerPassesThroughUnchanged() {
     let state = OverlayState()
     state.applyIndicatorMode(.assistive)
     state.handleRecordingPreparing()
     state.handleRecordingStarted()
-    projectText("alpha beta", to: state)
-
-    state.applyContextMarker(position: 5, marker: "{selection_1}")
+    projectText("alpha {selection_1} beta", to: state)
     XCTAssertEqual(state.liveText, "alpha {selection_1} beta")
 
-    projectText("alpha beta", to: state, terminal: true)
+    projectText("alpha {selection_1} beta", to: state, terminal: true)
     state.finishControllerRecording()
-    XCTAssertEqual(state.formattedText, "alpha beta")
+    XCTAssertEqual(state.formattedText, "alpha {selection_1} beta")
     XCTAssertEqual(state.activeText, "alpha {selection_1} beta")
-  }
-
-  func testContextMarkerInsideWordStaysUnpaddedForLosslessTitles() {
-    let state = OverlayState()
-    state.applyIndicatorMode(.assistive)
-    state.handleRecordingPreparing()
-    state.handleRecordingStarted()
-    projectText("bardzo mnie drażni", to: state)
-
-    // Position 9 splits "mnie" between "mn" and "ie": no padding, so the
-    // split stays lossless for downstream title derivation.
-    state.applyContextMarker(position: 9, marker: "{selection_1}")
-    XCTAssertEqual(state.liveText, "bardzo mn{selection_1}ie drażni")
-  }
-
-  func testContextMarkersAtSamePositionKeepCaptureOrder() {
-    let state = OverlayState()
-    state.handleRecordingPreparing()
-    state.handleRecordingStarted()
-    projectText("alpha", to: state)
-
-    state.applyContextMarker(position: 5, marker: "{selection_1}")
-    state.applyContextMarker(position: 5, marker: "{selection_2}")
-    state.applyContextMarker(position: 5, marker: "{selection_3}")
-
-    XCTAssertEqual(
-      state.liveText,
-      "alpha {selection_1} {selection_2} {selection_3}"
-    )
   }
 
   func testAnyAgentFinalEditPermanentlyVetoesAutoSendUntilButton() async {

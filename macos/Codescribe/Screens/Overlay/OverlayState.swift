@@ -22,12 +22,6 @@ import SwiftUI
 
 // MARK: - Engine seam (orchestrator injects the real adapter in App.swift)
 
-private struct OverlayContextMarker: Equatable {
-  var position: Int
-  var marker: String
-  var order: Int
-}
-
 /// Read-only evidence copied from the bridge projection. Overlay code must not
 /// reinterpret it as admission or finality authority.
 private struct OverlayProjectedAcousticReceipt: Equatable {
@@ -169,7 +163,6 @@ enum OverlayListenerEvent: Sendable {
   case recordingStarted
   case recordingStopped
   case recordingFinalising
-  case contextMarker(position: UInt64, marker: String)
   case sessionFinalised
   case vadActive(Bool)
   case audioLevel(Float)
@@ -285,10 +278,6 @@ final class OverlayState {
   private var speechWasActive = false
   /// Reason from `on_no_speech`, captured before the terminal stop.
   private var pendingNoSpeechMessage: String?
-  /// Global transcript markers captured by the agent combo. They remain
-  /// independent from per-utterance semantic annotations so the authoritative
-  /// final pass cannot erase context references.
-  private var contextMarkers: [OverlayContextMarker] = []
   /// The delivered (pre-user-edit) text at the moment we entered .formatted.
   /// Captured for P0-D quality loop: diff delivered→edited on Copy/Send/close.
   private var deliveredText: String = ""
@@ -353,8 +342,6 @@ final class OverlayState {
     case .recordingStarted: handleRecordingStarted()
     case .recordingStopped: finishControllerRecording()
     case .recordingFinalising: handleRecordingFinalising()
-    case .contextMarker(let position, let marker):
-      applyContextMarker(position: position, marker: marker)
     case .sessionFinalised: applySessionFinalised()
     case .vadActive(let active): applyVad(active)
     case .audioLevel(let rms): applyAudioLevel(rms)
@@ -443,7 +430,7 @@ final class OverlayState {
   }
 
   var liveText: String {
-    insertingContextMarkers(into: rawLiveText)
+    rawLiveText
   }
 
   /// Text shown in the listening body, in the SAME prominent slot that renders
@@ -480,7 +467,7 @@ final class OverlayState {
   var activeText: String {
     switch mode {
     case .listening: return liveText
-    case .formatted: return insertingContextMarkers(into: formattedText)
+    case .formatted: return formattedText
     case .noSpeech, .error: return ""
     }
   }
@@ -1451,15 +1438,6 @@ final class OverlayState {
     }
   }
 
-  func applyContextMarker(position: UInt64, marker: String) {
-    guard !finalized, let offset = Int(exactly: position) else { return }
-    let clean = marker.trimmingCharacters(in: .whitespacesAndNewlines)
-    guard !clean.isEmpty else { return }
-    contextMarkers.append(
-      OverlayContextMarker(position: offset, marker: clean, order: contextMarkers.count)
-    )
-  }
-
   func applySessionFinalised() {
     guard !finalized else { return }
     markTranscriptActivity()
@@ -1497,7 +1475,6 @@ final class OverlayState {
   private func resetTranscript() {
     latestTranscriptProjection = nil
     formattedText = ""
-    contextMarkers = []
     speechWasActive = false
     deliveredText = ""
     manualHumanEditPending = false
@@ -1526,37 +1503,6 @@ final class OverlayState {
     if recording {
       mode = .listening
     }
-  }
-
-  private func insertingContextMarkers(into text: String) -> String {
-    guard !contextMarkers.isEmpty else { return text }
-    var rendered = text
-    let ordered = contextMarkers.sorted {
-      if $0.position == $1.position { return $0.order > $1.order }
-      return $0.position > $1.position
-    }
-    for item in ordered {
-      let offset = min(max(item.position, 0), rendered.count)
-      let index = rendered.index(rendered.startIndex, offsetBy: offset)
-      let previous: Character? =
-        index > rendered.startIndex ? rendered[rendered.index(before: index)] : nil
-      let next: Character? = index < rendered.endIndex ? rendered[index] : nil
-      // A marker landing INSIDE a word ("mn|ie") stays unpadded, so the
-      // split is lossless downstream: title derivation strips the bare
-      // marker and the word reads whole again ("mnie"). Space padding is
-      // only for word-boundary insertions.
-      let splitsWord =
-        (previous?.isLetter == true || previous?.isNumber == true)
-        && (next?.isLetter == true || next?.isNumber == true)
-      let needsLeadingSpace = !splitsWord && previous != nil && previous?.isWhitespace != true
-      let needsTrailingSpace = !splitsWord && next != nil && next?.isWhitespace != true
-      let insertion =
-        (needsLeadingSpace ? " " : "")
-        + item.marker
-        + (needsTrailingSpace ? " " : "")
-      rendered.insert(contentsOf: insertion, at: index)
-    }
-    return rendered
   }
 
   private func normalized(_ text: String) -> String {
@@ -1735,9 +1681,6 @@ final class DictationListener: CsTranscriptionListener {
   }
   func onRecordingFinalising() {
     continuation.yield(.recordingFinalising)
-  }
-  func onContextMarker(position: UInt64, marker: String) {
-    continuation.yield(.contextMarker(position: position, marker: marker))
   }
   func onSessionFinalised(sessionId: String, layerSummary: CsLayerSummary) {
     continuation.yield(.sessionFinalised)

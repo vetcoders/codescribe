@@ -49,6 +49,7 @@ pub use types::{HotkeyAction, HotkeyInput, HotkeyType, State};
 use crate::presentation::transcript_bus::TranscriptSessionEndReason;
 use crate::presentation::{PresentationEmitter, TranscriptBus, TranscriptMode, TranscriptSession};
 use anyhow::{Context, Result};
+use codescribe_core::pipeline::contracts::EngineEvent;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
 use std::time::Duration;
@@ -726,30 +727,42 @@ impl RecordingController {
         let mut bucket = self.context_bucket.lock().await;
         let result = (|| -> anyhow::Result<_> {
             let mut context = captured;
-            let marker = match context.selected_text.take() {
-                Some(selected_text) => bucket.add_selection(position, selected_text)?,
-                None => None,
-            };
-            if let Some(png) = image_png {
-                let _ = bucket.add_image_png(&png)?;
+            let mut markers = Vec::new();
+            if let Some(selected_text) = context.selected_text.take()
+                && let Some(marker) = bucket.add_selection(position, selected_text)?
+            {
+                markers.push(marker);
             }
-            Ok((context, marker))
+            if let Some(png) = image_png
+                && let Some(mut marker) = bucket.add_image_png(&png)?
+            {
+                marker.position = position;
+                markers.push(marker);
+            }
+            Ok((context, markers))
         })();
+        drop(bucket);
 
         match result {
-            Ok((context, Some(marker))) => {
-                let marker = format!("{{{}}}", marker.label);
-                let _ = self.event_broadcast.send(IpcEvent {
-                    timestamp: chrono::Utc::now()
-                        .to_rfc3339_opts(chrono::SecondsFormat::Millis, true),
-                    payload: IpcEventPayload::ContextMarker {
-                        position: u64::try_from(position).unwrap_or(u64::MAX),
-                        marker,
-                    },
-                });
+            Ok((context, markers)) => {
+                let event_sink = {
+                    let recorder = self.recorder.lock().await;
+                    recorder
+                        .as_ref()
+                        .and_then(StreamingRecorder::event_sink_handle)
+                };
+                if let Some(event_sink) = event_sink {
+                    for marker in markers {
+                        event_sink.on_event(&EngineEvent::ContextMarker {
+                            position: marker.position,
+                            label: format!("{{{}}}", marker.label),
+                        });
+                    }
+                } else if !markers.is_empty() {
+                    warn!("Context markers captured without an active presentation reducer");
+                }
                 context
             }
-            Ok((context, None)) => context,
             Err(error) => {
                 warn!("Context bucket capture failed; retaining legacy selection context: {error}");
                 fallback

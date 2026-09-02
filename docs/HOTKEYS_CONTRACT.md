@@ -120,6 +120,9 @@ Fn hold-down (Raw) captures any live OS selection once as `{selection_1}`.
 Mid-hold Shift (or the configured arm modifier, default Shift, optional
 Command) attaches further pulses as `{selection_2..n}`. Neither upgrade
 `HoldMode` to Chat, fronts Agent, hides the overlay, or stops the Fn take.
+The controller sends those authenticated captures into `TranscriptReducer` at
+their document positions. The reducer renders and anchors the markers in the
+projected document; the Swift overlay only displays the resulting projection.
 
 Fn+Shift from idle is dictation, not Assistive. Voice chat is the Assistive
 work-mode binding (default: double-tap Right Option), not Hold Fn+Shift.

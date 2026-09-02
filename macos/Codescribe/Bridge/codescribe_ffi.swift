@@ -5339,12 +5339,6 @@ public protocol CsTranscriptionListener: AnyObject, Sendable {
     func onRecordingFinalising()
 
     /**
-     * Insert a context-bucket marker at the global transcript character
-     * position captured when the agent combo was pressed.
-     */
-    func onContextMarker(position: UInt64, marker: String)
-
-    /**
      * The session closed; `layer_summary` carries the per-layer edit counters.
      */
     func onSessionFinalised(sessionId: String, layerSummary: CsLayerSummary)
@@ -5488,19 +5482,6 @@ open func onRecordingStopped()  {try! rustCall() {
 open func onRecordingFinalising()  {try! rustCall() {
     uniffi_codescribe_ffi_fn_method_cstranscriptionlistener_on_recording_finalising(
             self.uniffiCloneHandle(),$0
-    )
-}
-}
-
-    /**
-     * Insert a context-bucket marker at the global transcript character
-     * position captured when the agent combo was pressed.
-     */
-open func onContextMarker(position: UInt64, marker: String)  {try! rustCall() {
-    uniffi_codescribe_ffi_fn_method_cstranscriptionlistener_on_context_marker(
-            self.uniffiCloneHandle(),
-        FfiConverterUInt64.lower(position),
-        FfiConverterString.lower(marker),$0
     )
 }
 }
@@ -5695,32 +5676,6 @@ fileprivate struct UniffiCallbackInterfaceCsTranscriptionListener {
                     throw UniffiInternalError.unexpectedStaleHandle
                 }
                 return uniffiObj.onRecordingFinalising(
-                )
-            }
-
-
-            let writeReturn = { () }
-            uniffiTraitInterfaceCall(
-                callStatus: uniffiCallStatus,
-                makeCall: makeCall,
-                writeReturn: writeReturn
-            )
-        },
-        onContextMarker: { (
-            uniffiHandle: UInt64,
-            position: UInt64,
-            marker: RustBuffer,
-            uniffiOutReturn: UnsafeMutableRawPointer,
-            uniffiCallStatus: UnsafeMutablePointer<RustCallStatus>
-        ) in
-            let makeCall = {
-                () throws -> () in
-                guard let uniffiObj = try? FfiConverterTypeCsTranscriptionListener.handleMap.get(handle: uniffiHandle) else {
-                    throw UniffiInternalError.unexpectedStaleHandle
-                }
-                return uniffiObj.onContextMarker(
-                     position: try FfiConverterUInt64.lift(position),
-                     marker: try FfiConverterString.lift(marker)
                 )
             }
 
@@ -14177,22 +14132,19 @@ private let initializationResult: InitializationResult = {
     if (uniffi_codescribe_ffi_checksum_method_cstranscriptionlistener_on_recording_finalising() != 35300) {
         return InitializationResult.apiChecksumMismatch
     }
-    if (uniffi_codescribe_ffi_checksum_method_cstranscriptionlistener_on_context_marker() != 33153) {
+    if (uniffi_codescribe_ffi_checksum_method_cstranscriptionlistener_on_session_finalised() != 33807) {
         return InitializationResult.apiChecksumMismatch
     }
-    if (uniffi_codescribe_ffi_checksum_method_cstranscriptionlistener_on_session_finalised() != 39954) {
+    if (uniffi_codescribe_ffi_checksum_method_cstranscriptionlistener_on_vad_active() != 19289) {
         return InitializationResult.apiChecksumMismatch
     }
-    if (uniffi_codescribe_ffi_checksum_method_cstranscriptionlistener_on_vad_active() != 20349) {
+    if (uniffi_codescribe_ffi_checksum_method_cstranscriptionlistener_on_audio_level() != 22485) {
         return InitializationResult.apiChecksumMismatch
     }
-    if (uniffi_codescribe_ffi_checksum_method_cstranscriptionlistener_on_audio_level() != 55213) {
+    if (uniffi_codescribe_ffi_checksum_method_cstranscriptionlistener_on_no_speech() != 30313) {
         return InitializationResult.apiChecksumMismatch
     }
-    if (uniffi_codescribe_ffi_checksum_method_cstranscriptionlistener_on_no_speech() != 8113) {
-        return InitializationResult.apiChecksumMismatch
-    }
-    if (uniffi_codescribe_ffi_checksum_method_cstranscriptionlistener_on_error() != 30256) {
+    if (uniffi_codescribe_ffi_checksum_method_cstranscriptionlistener_on_error() != 20960) {
         return InitializationResult.apiChecksumMismatch
     }
     if (uniffi_codescribe_ffi_checksum_method_cstraystatuslistener_on_tray_status() != 48227) {

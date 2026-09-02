@@ -644,6 +644,10 @@ pub enum EngineEvent {
     /// of an occurrence that already exists.
     #[serde(skip)]
     OccurrenceLabelProposal { proposal: OccurrenceLabelProposal },
+    /// Presentation-only context captured at a character position in the
+    /// committed document. The transcript reducer owns rendering and anchoring.
+    #[serde(skip)]
+    ContextMarker { position: usize, label: String },
     /// VAD detected speech start.
     VadStart { speech_prob: f32, ts_ms: u64 },
     /// VAD detected speech end.

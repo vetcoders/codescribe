@@ -282,6 +282,12 @@ impl StreamingRecorder {
         self.event_sink = sink;
     }
 
+    /// Clone the active session sink so controller-owned presentation events
+    /// can enter the same ordered reducer/fanout as engine events.
+    pub fn event_sink_handle(&self) -> Option<Arc<dyn EventSink>> {
+        self.event_sink.clone()
+    }
+
     /// Returns true when the underlying recorder still has an active audio stream.
     pub fn is_recording(&self) -> bool {
         self.recorder.is_active()

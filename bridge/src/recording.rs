@@ -586,9 +586,6 @@ pub trait CsTranscriptionListener: Send + Sync {
     /// Swift-driven Finish path enters that phase itself; this is the native-path
     /// counterpart. Surfaces with no post-capture phase may leave it a no-op.
     fn on_recording_finalising(&self);
-    /// Insert a context-bucket marker at the global transcript character
-    /// position captured when the agent combo was pressed.
-    fn on_context_marker(&self, position: u64, marker: String);
     /// The session closed; `layer_summary` carries the per-layer edit counters.
     fn on_session_finalised(&self, session_id: String, layer_summary: CsLayerSummary);
     /// Voice activity started (`true`) or stopped (`false`).

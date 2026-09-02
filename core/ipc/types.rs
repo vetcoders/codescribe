@@ -158,7 +158,8 @@ impl TryFrom<&EngineEvent> for EngineEventWire {
             EngineEvent::LedgerMutation { .. }
             | EngineEvent::LedgerSeal { .. }
             | EngineEvent::SealCoverage { .. }
-            | EngineEvent::OccurrenceLabelProposal { .. } => {
+            | EngineEvent::OccurrenceLabelProposal { .. }
+            | EngineEvent::ContextMarker { .. } => {
                 return Err(IpcIneligibleEngineEvent);
             }
             EngineEvent::VadStart { speech_prob, ts_ms } => Self::VadStart {

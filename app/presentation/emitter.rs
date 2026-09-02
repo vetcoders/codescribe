@@ -64,6 +64,13 @@ pub struct TranscriptDocumentEntry {
     pub manual_edit_receipt: Option<String>,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct DocumentContextMarker {
+    position: usize,
+    label: String,
+    order: usize,
+}
+
 /// A ledger-authorized document transition. Every variant names a physical
 /// occurrence; no action locates content by comparing transcript strings.
 ///
@@ -86,6 +93,11 @@ pub enum ReducerAction {
     },
     ApplyManualEdit {
         entry: TranscriptDocumentEntry,
+    },
+    RecordContextMarker {
+        position: usize,
+        label: String,
+        order: usize,
     },
 }
 
@@ -119,6 +131,7 @@ pub struct TranscriptReducer {
     ephemeral_preview: String,
     latest_seal_coverage: Option<SealCoverageReceipt>,
     latest_comparison: Option<TranscriptComparisonReceipt>,
+    context_markers: Vec<DocumentContextMarker>,
 }
 
 /// Trim a fragment's outer edges. Interior whitespace and newlines survive —
@@ -337,13 +350,42 @@ impl TranscriptReducer {
         )
     }
 
+    /// Record one controller-authenticated context reference. The captured
+    /// position is applied to every later document render, so an early marker
+    /// remains anchored as preceding occurrences arrive.
+    pub fn record_context_marker(
+        &mut self,
+        position: usize,
+        label: &str,
+    ) -> Option<TranscriptRevision> {
+        let label = label.trim();
+        if label.is_empty() {
+            return None;
+        }
+        let order = self.context_markers.len();
+        self.context_markers.push(DocumentContextMarker {
+            position,
+            label: label.to_string(),
+            order,
+        });
+        Some(
+            self.revision_for_action(ReducerAction::RecordContextMarker {
+                position,
+                label: label.to_string(),
+                order,
+            }),
+        )
+    }
+
     fn committed_rendered_text(&self) -> String {
-        self.document_by_occurrence
+        let rendered = self
+            .document_by_occurrence
             .values()
             .map(|entry| entry.label.trim())
             .filter(|label| !label.is_empty())
             .collect::<Vec<_>>()
-            .join(" ")
+            .join(" ");
+        render_context_markers(&rendered, &self.context_markers)
     }
 
     fn set_ephemeral_preview(&mut self, text: &str) {
@@ -359,6 +401,39 @@ impl TranscriptReducer {
         append_rendered_fragment(&mut rendered, &self.ephemeral_preview);
         rendered
     }
+}
+
+fn render_context_markers(text: &str, markers: &[DocumentContextMarker]) -> String {
+    let mut rendered = text.to_string();
+    let mut ordered = markers.to_vec();
+    ordered.sort_by(|left, right| {
+        right
+            .position
+            .cmp(&left.position)
+            .then_with(|| right.order.cmp(&left.order))
+    });
+    for marker in ordered {
+        let chars = rendered.chars().collect::<Vec<_>>();
+        let offset = marker.position.min(chars.len());
+        let previous = offset.checked_sub(1).and_then(|index| chars.get(index));
+        let next = chars.get(offset);
+        let splits_word = previous.is_some_and(|ch| ch.is_alphanumeric())
+            && next.is_some_and(|ch| ch.is_alphanumeric());
+        let leading_space = !splits_word && previous.is_some_and(|ch| !ch.is_whitespace());
+        let trailing_space = !splits_word && next.is_some_and(|ch| !ch.is_whitespace());
+        let insertion = format!(
+            "{}{}{}",
+            if leading_space { " " } else { "" },
+            marker.label,
+            if trailing_space { " " } else { "" }
+        );
+        let byte_offset = rendered
+            .char_indices()
+            .nth(offset)
+            .map_or(rendered.len(), |(index, _)| index);
+        rendered.insert_str(byte_offset, &insertion);
+    }
+    rendered
 }
 
 /// Presentation emitter — the single reducer and ordered delivery writer.
@@ -506,6 +581,21 @@ impl PresentationEmitter {
             debug!("Emitter channel closed, dropping command");
         }
     }
+
+    fn publish_revision(&self, revision: TranscriptRevision) {
+        if let Some(ledger) = &self.acoustic_ledger {
+            let ledger = ledger.lock().unwrap_or_else(|error| error.into_inner());
+            if let Some(bus) = &self.transcript_bus {
+                let events = bus.publish_revision(&revision, &ledger);
+                if let Some(callback) = &self.projection_callback {
+                    for event in &events {
+                        callback(event);
+                    }
+                }
+            }
+        }
+        self.send_cmd(EmitterCmd::PublishCommittedRevision(revision.rendered_text));
+    }
 }
 
 impl Drop for PresentationEmitter {
@@ -550,6 +640,16 @@ impl EventSink for PresentationEmitter {
                         }
                     }
                     self.send_cmd(EmitterCmd::PublishCommittedRevision(revision.rendered_text));
+                }
+            }
+            EngineEvent::ContextMarker { position, label } => {
+                let revision = self
+                    .session_state
+                    .lock()
+                    .unwrap_or_else(|error| error.into_inner())
+                    .record_context_marker(*position, label);
+                if let Some(revision) = revision {
+                    self.publish_revision(revision);
                 }
             }
             EngineEvent::LedgerSeal { receipt } => {
@@ -1036,6 +1136,80 @@ mod tests {
         for entry in reducer.document_by_occurrence.values() {
             assert_eq!(entry.label, "Iwo");
         }
+    }
+
+    #[test]
+    fn context_marker_rendered_into_document() {
+        fn reducer_with_text(text: &str) -> TranscriptReducer {
+            let mut ledger = AcousticLedger::new();
+            let event = admitted_mutation(
+                &mut ledger,
+                OccurrenceIdentity::new("session", 1, 0, 16_000),
+                1,
+                text,
+            );
+            let EngineEvent::LedgerMutation {
+                observation,
+                receipt,
+                ..
+            } = event
+            else {
+                unreachable!();
+            };
+            let mut reducer = TranscriptReducer::default();
+            assert!(
+                reducer
+                    .apply_ledger_mutation(&ledger, &observation, &receipt)
+                    .is_some()
+            );
+            reducer
+        }
+
+        let mut boundary = reducer_with_text("alpha beta");
+        boundary.record_context_marker(5, "{selection_1}");
+        assert_eq!(
+            boundary.committed_rendered_text(),
+            "alpha {selection_1} beta"
+        );
+
+        let mut inside_word = reducer_with_text("bardzo mnie drażni");
+        inside_word.record_context_marker(9, "{selection_1}");
+        assert_eq!(
+            inside_word.committed_rendered_text(),
+            "bardzo mn{selection_1}ie drażni"
+        );
+
+        let mut ordered = reducer_with_text("alpha");
+        ordered.record_context_marker(5, "{selection_1}");
+        ordered.record_context_marker(5, "{selection_2}");
+        ordered.record_context_marker(5, "{selection_3}");
+        assert_eq!(
+            ordered.committed_rendered_text(),
+            "alpha {selection_1} {selection_2} {selection_3}"
+        );
+
+        let mut anchored_before_text = TranscriptReducer::default();
+        anchored_before_text.record_context_marker(5, "{selection_1}");
+        let mut ledger = AcousticLedger::new();
+        let event = admitted_mutation(
+            &mut ledger,
+            OccurrenceIdentity::new("session", 2, 0, 16_000),
+            2,
+            "alpha beta",
+        );
+        let EngineEvent::LedgerMutation {
+            observation,
+            receipt,
+            ..
+        } = event
+        else {
+            unreachable!();
+        };
+        anchored_before_text.apply_ledger_mutation(&ledger, &observation, &receipt);
+        assert_eq!(
+            anchored_before_text.committed_rendered_text(),
+            "alpha {selection_1} beta"
+        );
     }
 
     /// A terminal seal closes committed truth. A later non-manual observation
