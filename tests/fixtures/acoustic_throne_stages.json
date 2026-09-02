@@ -938,7 +938,7 @@
               "file": "macos/Codescribe/Screens/Overlay/OverlayState.swift",
               "required_code": [
                 "func onTranscriptProjection(event: CsTranscriptProjectionEvent)",
-                "self.state?.applyTranscriptProjection(event)"
+                "continuation.yield(.transcriptProjection(event))"
               ]
             },
             {
@@ -958,7 +958,7 @@
               "symbol": "activeText",
               "file": "macos/Codescribe/Screens/Overlay/OverlayState.swift",
               "required_code": [
-                "case .formatted: return insertingContextMarkers(into: formattedText)",
+                "case .formatted: return formattedText",
                 "case .noSpeech, .error: return \"\""
               ]
             },
@@ -1101,7 +1101,7 @@
             {
               "callee": "applyTranscriptProjection",
               "callee_file": "macos/Codescribe/Screens/Overlay/OverlayState.swift",
-              "caller": "onTranscriptProjection",
+              "caller": "apply",
               "caller_file": "macos/Codescribe/Screens/Overlay/OverlayState.swift",
               "min_calls": 1
             },
@@ -1335,8 +1335,9 @@
               "required_code": [
                 ".latest_seal_coverage()",
                 "receipt.status == SealCoverageStatus::Incomplete",
-                "return Err(anyhow!(",
-                "receipt.covered_samples"
+                "return Err(anyhow::Error::new(TerminalSealRefused {",
+                "receipt",
+                "audio_path"
               ]
             }
           ],
@@ -1446,7 +1447,7 @@
               "file": "macos/Codescribe/Screens/Overlay/OverlayState.swift",
               "required_code": [
                 "func onTranscriptProjection(event: CsTranscriptProjectionEvent)",
-                "self.state?.applyTranscriptProjection(event)"
+                "continuation.yield(.transcriptProjection(event))"
               ]
             },
             {
@@ -1493,7 +1494,7 @@
             {
               "callee": "applyTranscriptProjection",
               "callee_file": "macos/Codescribe/Screens/Overlay/OverlayState.swift",
-              "caller": "onTranscriptProjection",
+              "caller": "apply",
               "caller_file": "macos/Codescribe/Screens/Overlay/OverlayState.swift"
             }
           ]
