@@ -76,13 +76,13 @@ final class AgentChatCancellationTests: XCTestCase {
     ) async throws -> String {
       let call = state.nextCall()
       if call > 1 {
-        await onDelta("Recovered")
+        onDelta("Recovered")
         return "Recovered"
       }
 
       if emitPartialAndTool {
-        await onDelta("Partial answer")
-        await onToolExecuting("slow-side-effect", "call-1")
+        onDelta("Partial answer")
+        onToolExecuting("slow-side-effect", "call-1")
       }
 
       return try await withTaskCancellationHandler {

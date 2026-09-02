@@ -394,9 +394,9 @@ final class SettingsTruthTests: XCTestCase {
   func testDictationControlsWriteExactPromotedKeysAndValues() {
     var writes: [(key: String, value: String)] = []
     let model = SettingsViewModel(
-      engine: MockSettingsEngine { key, value in
+      engine: MockSettingsEngine(updateConfigObserver: { key, value in
         writes.append((key, value))
-      })
+      }))
 
     model.setSttEngine("whisper")
     model.setToggleSilenceSeconds(3.5)
@@ -606,9 +606,9 @@ final class SettingsTruthTests: XCTestCase {
   func testAgentLaneEditorsPreserveExactKeysAndEmptyResetSemantics() {
     var writes: [(key: String, value: String)] = []
     let model = SettingsViewModel(
-      engine: MockSettingsEngine { key, value in
+      engine: MockSettingsEngine(updateConfigObserver: { key, value in
         writes.append((key, value))
-      },
+      }),
       runtimeLlmLaneProvider: { lane in
         CsRuntimeLlmLane(
           lane: lane,
@@ -787,9 +787,9 @@ final class SettingsTruthTests: XCTestCase {
 
   func testCreatorLanguageSelectionWritesStableRuntimeCodes() {
     var writes: [(key: String, value: String)] = []
-    let engine = MockSettingsEngine { key, value in
+    let engine = MockSettingsEngine(updateConfigObserver: { key, value in
       writes.append((key, value))
-    }
+    })
     let model = SettingsViewModel(engine: engine)
 
     model.setLanguage(.auto)
@@ -816,9 +816,9 @@ final class SettingsTruthTests: XCTestCase {
 
     var writes: [(String, String)] = []
     let model = SettingsViewModel(
-      engine: MockSettingsEngine { key, value in
+      engine: MockSettingsEngine(updateConfigObserver: { key, value in
         writes.append((key, value))
-      })
+      }))
     for value in ["raw", "medium", "smart", "creative"] {
       model.setFormattingLevel(value)
     }
@@ -893,9 +893,9 @@ final class SettingsTruthTests: XCTestCase {
 
   func testTaggingToggleWritesPromotedConfigKey() {
     var writes: [(key: String, value: String)] = []
-    let engine = MockSettingsEngine { key, value in
+    let engine = MockSettingsEngine(updateConfigObserver: { key, value in
       writes.append((key, value))
-    }
+    })
     let model = SettingsViewModel(engine: engine)
 
     model.setTranscriptTaggingEnabled(true)
@@ -911,9 +911,9 @@ final class SettingsTruthTests: XCTestCase {
 
   func testTranscriptTagTemplateWritesPromotedConfigKeyAndAllowsStaticAttributes() {
     var writes: [(key: String, value: String)] = []
-    let engine = MockSettingsEngine { key, value in
+    let engine = MockSettingsEngine(updateConfigObserver: { key, value in
       writes.append((key, value))
-    }
+    })
     let model = SettingsViewModel(engine: engine)
 
     model.setTranscriptTagTemplate(
@@ -943,9 +943,9 @@ final class SettingsTruthTests: XCTestCase {
 
   func testRestoreTranscriptTagTemplateWritesDefault() {
     var writes: [(key: String, value: String)] = []
-    let engine = MockSettingsEngine { key, value in
+    let engine = MockSettingsEngine(updateConfigObserver: { key, value in
       writes.append((key, value))
-    }
+    })
     let model = SettingsViewModel(engine: engine)
 
     model.restoreDefaultTranscriptTagTemplate()
@@ -1132,7 +1132,8 @@ final class SettingsTruthTests: XCTestCase {
   func testDeferredInsertPickerRoundTrips() {
     var writes: [(String, String)] = []
     let model = SettingsViewModel(
-      engine: MockSettingsEngine { key, value in writes.append((key, value)) }
+      engine: MockSettingsEngine(
+        updateConfigObserver: { key, value in writes.append((key, value)) })
     )
     _ = ShortcutsPanel(model: model)
 

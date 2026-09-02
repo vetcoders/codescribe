@@ -62,5 +62,6 @@ API changes, regenerate UniFFI Swift bindings with `make app-bindings`.
 - `make check` — formatting, Clippy, Semgrep, env registry, and gate ledger.
 - `make verify` — hermetic Rust tests and doctests; this is the CI contract.
 - `make test-swift` — bindings/project regeneration plus the Swift suite.
+- Both Swift targets build in Swift 6 language mode with strict concurrency and warnings as errors; warning suppressors are forbidden.
 - Report host-only corpus, real-API, loopback, and parity evidence explicitly;
   these are bench evidence, not implicit merge gates.
