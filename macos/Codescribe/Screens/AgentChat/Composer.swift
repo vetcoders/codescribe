@@ -600,12 +600,23 @@ struct Composer: View {
   private func installPasteMonitor() {
     guard pasteMonitor == nil else { return }
     pasteMonitor = NSEvent.addLocalMonitorForEvents(matching: .keyDown) { event in
+      let characters = event.charactersIgnoringModifiers?.lowercased()
+      let modifierFlags = event.modifierFlags
+      let windowNumber = event.windowNumber
       // Local key monitors always deliver on the main thread; assume the
-      // main actor statically so the store calls stay isolation-checked.
-      MainActor.assumeIsolated {
-        guard isComposerPasteEvent(event) else { return event }
-        return handlePaste(NSPasteboard.general) ? nil : event
+      // main actor only after the non-Sendable NSEvent has been reduced to
+      // Sendable value fields.
+      let consumed = MainActor.assumeIsolated {
+        guard
+          isComposerPasteEvent(
+            characters: characters,
+            modifierFlags: modifierFlags,
+            windowNumber: windowNumber
+          )
+        else { return false }
+        return handlePaste(NSPasteboard.general)
       }
+      return consumed ? nil : event
     }
   }
 
@@ -617,15 +628,21 @@ struct Composer: View {
   /// True only for a plain ⌘V aimed at this composer: field focused, event in
   /// our own window, no other modifiers (⌘⇧V paste-and-match-style passes on).
   @MainActor
-  private func isComposerPasteEvent(_ event: NSEvent) -> Bool {
-    guard fieldFocused, let hostWindow, event.window === hostWindow else { return false }
-    let flags = event.modifierFlags.intersection(.deviceIndependentFlagsMask)
+  private func isComposerPasteEvent(
+    characters: String?,
+    modifierFlags: NSEvent.ModifierFlags,
+    windowNumber: Int
+  ) -> Bool {
+    guard fieldFocused, let hostWindow, windowNumber == hostWindow.windowNumber else {
+      return false
+    }
+    let flags = modifierFlags.intersection(.deviceIndependentFlagsMask)
     // ⌘ alone — shift/option/control bail (⌘⇧V stays native), but stray
     // state flags like capsLock must not defeat the match.
     guard flags.contains(.command),
       flags.isDisjoint(with: [.shift, .option, .control])
     else { return false }
-    return event.charactersIgnoringModifiers?.lowercased() == "v"
+    return characters == "v"
   }
 
   /// Route a composer ⌘V. Returns true when the event was consumed by staging

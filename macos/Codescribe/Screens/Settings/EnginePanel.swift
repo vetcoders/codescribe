@@ -665,7 +665,10 @@ private struct PermissionMatrixCell: View {
       // Same grant path as onboarding: in-app dialog while undetermined,
       // System Settings deep-link once macOS will no longer re-prompt.
       if state == .notDetermined, kind.supportsInAppPermissionRequest {
-        kind.requestInApp { _ in onStateChanged?() }
+        Task { @MainActor in
+          _ = await kind.requestInApp()
+          onStateChanged?()
+        }
       } else {
         kind.openSystemSettings()
       }

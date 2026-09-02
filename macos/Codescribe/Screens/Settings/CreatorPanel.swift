@@ -292,7 +292,10 @@ private struct PermissionChecklistRow: View {
       } else {
         Button {
           if state == .notDetermined, kind.supportsInAppPermissionRequest {
-            kind.requestInApp { _ in onStateChanged?() }
+            Task { @MainActor in
+              _ = await kind.requestInApp()
+              onStateChanged?()
+            }
           } else {
             kind.openSystemSettings()
           }

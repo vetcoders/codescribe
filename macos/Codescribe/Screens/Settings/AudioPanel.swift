@@ -552,7 +552,10 @@ struct AudioPanel: View {
   private func resolveMicrophonePermission() {
     let kind = PermissionKind.microphone
     if model.permissions.microphone == .notDetermined {
-      kind.requestInApp { _ in model.refresh() }
+      Task { @MainActor in
+        _ = await kind.requestInApp()
+        model.refresh()
+      }
     } else {
       kind.openSystemSettings()
     }

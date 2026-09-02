@@ -24,7 +24,7 @@ struct LabPanel: View {
         .font(CSFont.ui(13, .medium))
 
       Button("Open Voice Lab") {
-        VoiceLabRuntime.openConsole()
+        Task { await VoiceLabRuntime.shared.openConsole() }
       }
       .font(CSFont.mono(11, .semibold))
       .foregroundStyle(CSColor.chromeAccent)

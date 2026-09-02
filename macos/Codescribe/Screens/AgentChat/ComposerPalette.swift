@@ -111,6 +111,7 @@ enum ComposerPalette {
 
 /// Data behind the palette. One protocol so the store stays testable and
 /// previews render without a live bridge.
+@MainActor
 protocol ComposerPaletteSourcing {
   func entries(for command: ComposerPaletteCommand) -> [ComposerPaletteEntry]
   func apply(_ entry: ComposerPaletteEntry, for command: ComposerPaletteCommand) throws
