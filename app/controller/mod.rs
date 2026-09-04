@@ -39,7 +39,10 @@ pub mod serving_status;
 /// Controller state, hotkey types, and recording truth metadata.
 mod types;
 
-pub use delivery_route::{OverlayPasteDelivery, OverlayPasteResult};
+pub use delivery_route::{
+    DeliveryIntent, DeliveryRoute, OverlayPasteDelivery, OverlayPasteResult,
+    format_delivery_route_line, overlay_insert_facts, resolve_delivery_route,
+};
 pub(crate) use delivery_route::{
     TranscriptProjectionAvailability, resolve_transcript_projection_availability,
 };
@@ -80,10 +83,7 @@ use codescribe_core::conversation::{ConversationEngine, MoshiConfig};
 use codescribe_core::ipc::{EngineEventWire, IpcEvent, IpcEventPayload};
 use codescribe_core::tts::AudioPlayer;
 
-use delivery_route::{
-    DeliveryFacts, DeliveryIntent, DeliveryRoute, format_delivery_route_line, overlay_insert_facts,
-    resolve_delivery_route, target_is_self_app,
-};
+use delivery_route::{DeliveryFacts, target_is_self_app};
 use helpers::send_assistive_with_agent_runtime_lane;
 use hotkey_policy::{
     STOP_TIMEOUT, effective_hold_start_delay_ms, should_apply_incoming_mode_flags,
@@ -1322,11 +1322,13 @@ impl RecordingController {
     /// Atomically reset the full set of session-lifecycle fields owned by the
     /// controller and flip `state` to Idle as the final mutation.
     ///
-    /// This is the single source of truth for which fields constitute "session
-    /// state" so the various reset entry points (start-failure, finished
-    /// recording, toggle-stop, nuclear reset) can no longer drift apart in the
-    /// subset of fields they clear (P3.1). Each caller keeps its own UI /
-    /// telemetry / status-string tail.
+    /// This is the single source of truth for which fields constitute active
+    /// recording state so the various reset entry points (start-failure,
+    /// finished recording, toggle-stop, nuclear reset) can no longer drift
+    /// apart in the subset of fields they clear (P3.1). The latched delivery
+    /// target deliberately is not active recording state: after a terminal
+    /// reset the overlay still needs it for an explicit Insert click. Failure
+    /// and nuclear-reset callers clear that latch in their own tails.
     ///
     /// Ordering note (P2.2): every satellite flag is cleared before
     /// `set_state(State::Idle)` so cross-thread readers (e.g. the VAD monitor
@@ -1351,7 +1353,6 @@ impl RecordingController {
         )
         .await;
         *self.assistive_context.write().await = None;
-        *self.pre_overlay_frontmost_app.write().await = None;
         self.start_transition_in_flight
             .store(false, Ordering::SeqCst);
         self.assistive_loop_active.store(false, Ordering::SeqCst);
@@ -1419,6 +1420,7 @@ impl RecordingController {
     /// failed start leaves nothing behind for the next hotkey press.
     async fn reset_session_after_start_failure(&self, context: &str) {
         warn!("{context}: resetting controller flags after failed start");
+        *self.pre_overlay_frontmost_app.write().await = None;
         self.reset_session_fields().await;
         set_assistive_session(false);
     }
@@ -3243,6 +3245,7 @@ impl RecordingController {
 
     /// Internal helper to reset all state variables
     async fn reset_state(&self) {
+        *self.pre_overlay_frontmost_app.write().await = None;
         self.reset_session_fields().await;
 
         info!("State reset to IDLE complete");
@@ -3266,6 +3269,45 @@ impl Default for RecordingController {
     /// Build a controller with production defaults (`RecordingController::new`).
     fn default() -> Self {
         Self::new()
+    }
+}
+
+#[cfg(test)]
+mod terminal_delivery_target_falsifiers {
+    use super::*;
+
+    /// A completed take returns the recorder to Idle before the overlay Insert
+    /// click. Its foreign caret must survive that transition, while explicit
+    /// recovery still clears the latch so a later take cannot inherit it.
+    #[tokio::test]
+    async fn completed_reset_preserves_target_until_explicit_recovery() {
+        let controller = RecordingController::new_without_keychain();
+        *controller.pre_overlay_frontmost_app.write().await = Some("Ghostty".to_string());
+
+        controller.reset_finished_recording_state().await;
+
+        assert_eq!(controller.current_state().await, State::Idle);
+        assert_eq!(
+            controller.paste_target_app_name().await.as_deref(),
+            Some("Ghostty")
+        );
+
+        controller.reset().await;
+        assert!(controller.paste_target_app_name().await.is_none());
+    }
+
+    /// A start that never became a take has no terminal canvas and therefore
+    /// must not leave a target behind for an unrelated later Insert click.
+    #[tokio::test]
+    async fn failed_start_clears_target_latch() {
+        let controller = RecordingController::new_without_keychain();
+        *controller.pre_overlay_frontmost_app.write().await = Some("Ghostty".to_string());
+
+        controller
+            .reset_session_after_start_failure("delivery target falsifier")
+            .await;
+
+        assert!(controller.paste_target_app_name().await.is_none());
     }
 }
 
