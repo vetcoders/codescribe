@@ -171,7 +171,6 @@ final class OverlayStateTests: XCTestCase {
         emittedAt: "2026-08-25T00:00:00Z",
         sessionId: "overlay-state-tests",
         mode: mode,
-        phase: projectedPhase,
         reducerRevision: sequence,
         reducerAction: terminal
           ? "record_ledger_terminal_seal"
@@ -183,6 +182,7 @@ final class OverlayStateTests: XCTestCase {
         documentIndex: sequence - 1,
         label: terminal ? "terminal" : "live",
         renderedText: text,
+        phase: projectedPhase,
         canPaste: canPaste,
         canInsert: canInsert,
         canCopy: canCopy ?? !text.isEmpty,
@@ -1429,7 +1429,6 @@ final class OverlayStateTests: XCTestCase {
         emittedAt: "2026-08-28T00:00:00Z",
         sessionId: sessionId,
         mode: "dictation",
-        phase: terminal ? "formatted" : "listening",
         reducerRevision: sequence,
         reducerAction: terminal
           ? "record_ledger_terminal_seal"
@@ -1441,6 +1440,7 @@ final class OverlayStateTests: XCTestCase {
         documentIndex: sequence - 1,
         label: terminal ? "terminal" : "live",
         renderedText: text,
+        phase: terminal ? "formatted" : "listening",
         canPaste: terminal,
         canInsert: terminal,
         canCopy: !text.isEmpty,
