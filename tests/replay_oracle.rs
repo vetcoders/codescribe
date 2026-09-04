@@ -126,21 +126,29 @@ fn fixture_preserves_the_34_row_chronology_and_terminal_gap() {
     assert_eq!(types.get("record_seal_coverage"), None);
     assert_eq!(types.get("record_ledger_terminal_seal"), None);
 
-    let last_evidence = &rows[32];
-    let ended = &rows[33];
-    let last_evidence_at = DateTime::parse_from_rfc3339(
-        last_evidence["emitted_at"]
-            .as_str()
-            .expect("last evidence timestamp"),
-    )
-    .expect("RFC3339 last evidence timestamp");
-    let ended_at = DateTime::parse_from_rfc3339(
-        ended["emitted_at"]
-            .as_str()
-            .expect("session-ended timestamp"),
-    )
-    .expect("RFC3339 session-ended timestamp");
-    let terminal_gap = ended_at.signed_duration_since(last_evidence_at);
+    let timestamps = rows
+        .iter()
+        .enumerate()
+        .map(|(index, row)| {
+            DateTime::parse_from_rfc3339(
+                row["emitted_at"]
+                    .as_str()
+                    .unwrap_or_else(|| panic!("fixture row {} needs a timestamp", index + 1)),
+            )
+            .unwrap_or_else(|error| {
+                panic!(
+                    "fixture row {} has an invalid timestamp: {error}",
+                    index + 1
+                )
+            })
+        })
+        .collect::<Vec<_>>();
+    assert!(
+        timestamps.windows(2).all(|pair| pair[0] <= pair[1]),
+        "captured Bus chronology must never move backwards"
+    );
+
+    let terminal_gap = timestamps[33].signed_duration_since(timestamps[32]);
     assert_eq!(terminal_gap.num_milliseconds(), 92_162);
     assert_eq!((terminal_gap.num_milliseconds() + 999) / 1_000, 93);
 }
