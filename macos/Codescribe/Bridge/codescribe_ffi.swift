@@ -10661,12 +10661,12 @@ public func FfiConverterTypeCsToolGrant_lower(_ value: CsToolGrant) -> RustBuffe
 
 
 /**
- * Bridge event schema for one reducer-owned transcript projection. It carries
- * a rendered value and evidence but no document mutation or finality method.
+ * Bridge event schema for the one reducer-owned transcript projection. It
+ * carries the full render, phase, availability, terminal state, and evidence,
+ * but exposes no document mutation method.
  *
- * W2 input: `TranscriptBusEvidenceEvent`. W2 output: the foreign listener
- * callback below. The producer and Swift consumer remain unresolved in W1;
- * UniFFI binding regeneration is explicitly deferred to W3.
+ * Input is `TranscriptBusEvidenceEvent`; output is the foreign listener
+ * callback below. UniFFI binding regeneration is deferred to plan attestation.
  */
 public struct CsTranscriptProjectionEvent: Equatable, Hashable {
     public var schema: String
@@ -10683,11 +10683,18 @@ public struct CsTranscriptProjectionEvent: Equatable, Hashable {
     public var documentIndex: UInt64
     public var label: String
     public var renderedText: String
+    public var phase: String
+    public var canPaste: Bool
+    public var canInsert: Bool
+    public var canCopy: Bool
+    public var canRetranscribe: Bool
+    public var canFormat: Bool
+    public var terminal: Bool
     public var acousticReceipts: [CsProjectedAcousticReceipt]
 
     // Default memberwise initializers are never public by default, so we
     // declare one manually.
-    public init(schema: String, sequence: UInt64, emittedAt: String, sessionId: String, mode: String, reducerRevision: UInt64, reducerAction: String, occurrenceSessionId: String, captureEpoch: UInt64, sampleStart: UInt64, sampleEnd: UInt64, documentIndex: UInt64, label: String, renderedText: String, acousticReceipts: [CsProjectedAcousticReceipt]) {
+    public init(schema: String, sequence: UInt64, emittedAt: String, sessionId: String, mode: String, reducerRevision: UInt64, reducerAction: String, occurrenceSessionId: String, captureEpoch: UInt64, sampleStart: UInt64, sampleEnd: UInt64, documentIndex: UInt64, label: String, renderedText: String, phase: String, canPaste: Bool, canInsert: Bool, canCopy: Bool, canRetranscribe: Bool, canFormat: Bool, terminal: Bool, acousticReceipts: [CsProjectedAcousticReceipt]) {
         self.schema = schema
         self.sequence = sequence
         self.emittedAt = emittedAt
@@ -10702,6 +10709,13 @@ public struct CsTranscriptProjectionEvent: Equatable, Hashable {
         self.documentIndex = documentIndex
         self.label = label
         self.renderedText = renderedText
+        self.phase = phase
+        self.canPaste = canPaste
+        self.canInsert = canInsert
+        self.canCopy = canCopy
+        self.canRetranscribe = canRetranscribe
+        self.canFormat = canFormat
+        self.terminal = terminal
         self.acousticReceipts = acousticReceipts
     }
 
@@ -10733,6 +10747,13 @@ public struct FfiConverterTypeCsTranscriptProjectionEvent: FfiConverterRustBuffe
                 documentIndex: FfiConverterUInt64.read(from: &buf),
                 label: FfiConverterString.read(from: &buf),
                 renderedText: FfiConverterString.read(from: &buf),
+                phase: FfiConverterString.read(from: &buf),
+                canPaste: FfiConverterBool.read(from: &buf),
+                canInsert: FfiConverterBool.read(from: &buf),
+                canCopy: FfiConverterBool.read(from: &buf),
+                canRetranscribe: FfiConverterBool.read(from: &buf),
+                canFormat: FfiConverterBool.read(from: &buf),
+                terminal: FfiConverterBool.read(from: &buf),
                 acousticReceipts: FfiConverterSequenceTypeCsProjectedAcousticReceipt.read(from: &buf)
         )
     }
@@ -10752,6 +10773,13 @@ public struct FfiConverterTypeCsTranscriptProjectionEvent: FfiConverterRustBuffe
         FfiConverterUInt64.write(value.documentIndex, into: &buf)
         FfiConverterString.write(value.label, into: &buf)
         FfiConverterString.write(value.renderedText, into: &buf)
+        FfiConverterString.write(value.phase, into: &buf)
+        FfiConverterBool.write(value.canPaste, into: &buf)
+        FfiConverterBool.write(value.canInsert, into: &buf)
+        FfiConverterBool.write(value.canCopy, into: &buf)
+        FfiConverterBool.write(value.canRetranscribe, into: &buf)
+        FfiConverterBool.write(value.canFormat, into: &buf)
+        FfiConverterBool.write(value.terminal, into: &buf)
         FfiConverterSequenceTypeCsProjectedAcousticReceipt.write(value.acousticReceipts, into: &buf)
     }
 }
