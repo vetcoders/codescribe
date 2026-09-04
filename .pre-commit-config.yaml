@@ -22,7 +22,7 @@ repos:
     hooks:
       - id: cargo-check
         name: cargo check
-        entry: cargo check --all-targets
+        entry: scripts/git-hooks/embargo-guard.sh cargo-check -- cargo check --all-targets
         language: system
         types: [rust]
         pass_filenames: false
@@ -30,7 +30,7 @@ repos:
 
       - id: cargo-fmt
         name: cargo fmt (fix)
-        entry: bash -c 'cargo fmt --all && git add -u'
+        entry: scripts/git-hooks/embargo-guard.sh cargo-fmt -- bash -c 'cargo fmt --all && git add -u'
         language: system
         types: [rust]
         pass_filenames: false
@@ -42,7 +42,8 @@ repos:
     hooks:
       - id: prettier
         name: prettier (non-rust)
-        files: '\\.(md|mdx|json|ya?ml|html?|css|scss|js|jsx|ts|tsx|mjs|cjs)$'
+        entry: scripts/git-hooks/embargo-guard.sh prettier -- prettier --write --ignore-unknown
+        files: '\.(md|mdx|json|ya?ml|html?|css|scss|js|jsx|ts|tsx|mjs|cjs)$'
         stages: [pre-commit]
 
   # Rust + Security hooks (pre-push stage)
@@ -50,7 +51,7 @@ repos:
     hooks:
       - id: cargo-clippy
         name: cargo clippy
-        entry: cargo clippy -- -D warnings
+        entry: scripts/git-hooks/embargo-guard.sh cargo-clippy -- cargo clippy -- -D warnings
         language: system
         types: [rust]
         pass_filenames: false
