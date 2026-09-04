@@ -40,6 +40,9 @@ pub mod serving_status;
 mod types;
 
 pub use delivery_route::{OverlayPasteDelivery, OverlayPasteResult};
+pub(crate) use delivery_route::{
+    TranscriptProjectionAvailability, resolve_transcript_projection_availability,
+};
 pub use helpers::{
     is_assistive_session, is_conversation_session, publish_recording_indicator,
     set_assistive_session, set_assistive_target_thread, set_conversation_session,
@@ -1333,13 +1336,17 @@ impl RecordingController {
         *self.hold_mode.write().await = HoldMode::Raw;
         *self.force_raw_mode.write().await = false;
         *self.force_ai_mode.write().await = false;
-        *self.session_id.write().await = None;
+        let session_id = self.session_id.write().await.take();
+        let session_wav_exists = retainable_session_id(session_id.as_deref())
+            .and_then(session_audio_path)
+            .is_some_and(|path| path.is_file());
         // Every path back to Idle ends the Bus session exactly once (text-free
         // lifecycle line), so an observer can tell "the take is over" apart
         // from "the take is live" even when zero occurrences sealed.
         Self::end_transcript_bus(
             &self.active_transcript_bus,
             TranscriptSessionEndReason::Completed,
+            session_wav_exists,
             &self.event_broadcast,
         )
         .await;
@@ -1363,11 +1370,12 @@ impl RecordingController {
     async fn end_transcript_bus(
         slot: &RwLock<Option<Arc<TranscriptBus>>>,
         reason: TranscriptSessionEndReason,
+        session_wav_exists: bool,
         event_broadcast: &broadcast::Sender<IpcEvent>,
     ) {
         let ended_bus = slot.write().await.take();
         if let Some(bus) = ended_bus {
-            if let Some(event) = bus.publish_ended(reason) {
+            if let Some(event) = bus.publish_ended(reason, session_wav_exists) {
                 Self::broadcast_transcript_projection(event_broadcast, &event);
             }
         }
@@ -1396,6 +1404,7 @@ impl RecordingController {
         Self::end_transcript_bus(
             &session.active_transcript_bus,
             abort.bus_reason(),
+            false,
             &session.event_broadcast,
         )
         .await;
@@ -2395,6 +2404,7 @@ impl RecordingController {
             .await
             .unwrap_or_default()
         };
+        let has_latched_target = trigger_context.frontmost_app.is_some();
         *self.pre_overlay_frontmost_app.write().await = trigger_context.frontmost_app.clone();
         *self.assistive_context.write().await = Some(trigger_context);
 
@@ -2590,6 +2600,10 @@ impl RecordingController {
                 } else {
                     TranscriptMode::Dictation
                 },
+                has_latched_target,
+                // The capture-time target predates the overlay caret. A true
+                // self-canvas fact exists only at the explicit defer click.
+                latched_target_is_self: false,
             })
             .map(Arc::new);
             // Install the Bus before the recorder starts: from here every exit
@@ -2722,6 +2736,7 @@ impl RecordingController {
             .await
             .unwrap_or_default()
         };
+        let has_latched_target = trigger_context.frontmost_app.is_some();
         *self.pre_overlay_frontmost_app.write().await = trigger_context.frontmost_app.clone();
         *self.assistive_context.write().await = Some(trigger_context);
 
@@ -2838,6 +2853,10 @@ impl RecordingController {
             } else {
                 TranscriptMode::Dictation
             },
+            has_latched_target,
+            // The capture-time target predates the overlay caret. A true
+            // self-canvas fact exists only at the explicit defer click.
+            latched_target_is_self: false,
         })
         .map(Arc::new);
 

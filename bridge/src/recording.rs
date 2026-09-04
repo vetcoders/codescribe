@@ -45,12 +45,12 @@ pub struct CsProjectedAcousticReceipt {
     pub manual_edit_receipt: Option<String>,
 }
 
-/// Bridge event schema for one reducer-owned transcript projection. It carries
-/// a rendered value and evidence but no document mutation or finality method.
+/// Bridge event schema for the one reducer-owned transcript projection. It
+/// carries the full render, phase, availability, terminal state, and evidence,
+/// but exposes no document mutation method.
 ///
-/// W2 input: `TranscriptBusEvidenceEvent`. W2 output: the foreign listener
-/// callback below. The producer and Swift consumer remain unresolved in W1;
-/// UniFFI binding regeneration is explicitly deferred to W3.
+/// Input is `TranscriptBusEvidenceEvent`; output is the foreign listener
+/// callback below. UniFFI binding regeneration is deferred to plan attestation.
 #[derive(uniffi::Record, Debug, Clone, PartialEq)]
 pub struct CsTranscriptProjectionEvent {
     pub schema: String,
@@ -67,6 +67,13 @@ pub struct CsTranscriptProjectionEvent {
     pub document_index: u64,
     pub label: String,
     pub rendered_text: String,
+    pub phase: String,
+    pub can_paste: bool,
+    pub can_insert: bool,
+    pub can_copy: bool,
+    pub can_retranscribe: bool,
+    pub can_format: bool,
+    pub terminal: bool,
     pub acoustic_receipts: Vec<CsProjectedAcousticReceipt>,
 }
 
@@ -111,6 +118,13 @@ impl CsTranscriptProjectionEvent {
             document_index: event.document_index,
             label: event.label.clone(),
             rendered_text: event.rendered_text.clone(),
+            phase: event.phase.as_str().to_string(),
+            can_paste: event.can_paste,
+            can_insert: event.can_insert,
+            can_copy: event.can_copy,
+            can_retranscribe: event.can_retranscribe,
+            can_format: event.can_format,
+            terminal: event.terminal,
             acoustic_receipts: event
                 .acoustic_receipts
                 .iter()
@@ -621,7 +635,7 @@ pub fn request_mic_permission() -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use codescribe::presentation::transcript_bus::TranscriptMode;
+    use codescribe::presentation::transcript_bus::{TranscriptMode, TranscriptProjectionPhase};
 
     #[test]
     fn bus_projection_conversion_preserves_every_authority_field() {
@@ -640,6 +654,13 @@ mod tests {
             document_index: 29,
             label: "Iwo".to_string(),
             rendered_text: "Iwo".to_string(),
+            phase: TranscriptProjectionPhase::Formatted,
+            can_paste: true,
+            can_insert: true,
+            can_copy: true,
+            can_retranscribe: true,
+            can_format: true,
+            terminal: true,
             acoustic_receipts: vec![ProjectedAcousticReceipt {
                 acoustic_serial_version: 2,
                 acoustic_serial: "sha256:acoustic".to_string(),
@@ -682,6 +703,13 @@ mod tests {
                 document_index: 29,
                 label: "Iwo".to_string(),
                 rendered_text: "Iwo".to_string(),
+                phase: "formatted".to_string(),
+                can_paste: true,
+                can_insert: true,
+                can_copy: true,
+                can_retranscribe: true,
+                can_format: true,
+                terminal: true,
                 acoustic_receipts: vec![CsProjectedAcousticReceipt {
                     acoustic_serial_version: 2,
                     acoustic_serial: "sha256:acoustic".to_string(),

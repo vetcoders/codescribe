@@ -12,6 +12,8 @@ use std::time::Duration;
 
 use serde::{Deserialize, Serialize};
 
+use super::transcript_bus::TranscriptProjectionPhase;
+
 pub const LIFECYCLE_SCHEMA: &str = "codescribe.transcript.v1";
 pub const EVIDENCE_SCHEMA: &str = "codescribe.transcript-evidence.v1";
 pub const PROJECTION_SCHEMA: &str = "codescribe.transcript-projection.v1";
@@ -29,6 +31,20 @@ pub struct LifecycleRow {
     pub sequence: u64,
     pub session_id: String,
     pub status: String,
+    #[serde(default)]
+    pub phase: Option<TranscriptProjectionPhase>,
+    #[serde(default)]
+    pub can_paste: bool,
+    #[serde(default)]
+    pub can_insert: bool,
+    #[serde(default)]
+    pub can_copy: bool,
+    #[serde(default)]
+    pub can_retranscribe: bool,
+    #[serde(default)]
+    pub can_format: bool,
+    #[serde(default)]
+    pub terminal: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
@@ -44,6 +60,20 @@ pub struct EvidenceRow {
     pub sample_end: u64,
     pub document_index: u64,
     pub rendered_text: String,
+    #[serde(default)]
+    pub phase: TranscriptProjectionPhase,
+    #[serde(default)]
+    pub can_paste: bool,
+    #[serde(default)]
+    pub can_insert: bool,
+    #[serde(default)]
+    pub can_copy: bool,
+    #[serde(default)]
+    pub can_retranscribe: bool,
+    #[serde(default)]
+    pub can_format: bool,
+    #[serde(default)]
+    pub terminal: bool,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
@@ -72,6 +102,13 @@ pub struct TranscriptProjection {
     pub sample_end: u64,
     pub document_index: u64,
     pub rendered_text: String,
+    pub phase: TranscriptProjectionPhase,
+    pub can_paste: bool,
+    pub can_insert: bool,
+    pub can_copy: bool,
+    pub can_retranscribe: bool,
+    pub can_format: bool,
+    pub terminal: bool,
 }
 
 impl TranscriptProjection {
@@ -203,6 +240,26 @@ impl TranscriptProjectionReader {
         self.current_session = None;
         self.retired_sessions.insert(row.session_id.clone());
 
+        let has_text = last
+            .as_ref()
+            .is_some_and(|evidence| !evidence.rendered_text.trim().is_empty());
+        let legacy_lifecycle = row.phase.is_none();
+        let phase = row.phase.unwrap_or(if has_text {
+            TranscriptProjectionPhase::Formatted
+        } else {
+            TranscriptProjectionPhase::NoSpeech
+        });
+        let can_copy = if legacy_lifecycle {
+            has_text
+        } else {
+            row.can_copy
+        };
+        let can_format = if legacy_lifecycle {
+            has_text
+        } else {
+            row.can_format
+        };
+
         Some(match last {
             Some(last) => TranscriptProjection {
                 schema: PROJECTION_SCHEMA,
@@ -217,6 +274,13 @@ impl TranscriptProjectionReader {
                 sample_end: last.sample_end,
                 document_index: last.document_index,
                 rendered_text: last.rendered_text,
+                phase,
+                can_paste: row.can_paste,
+                can_insert: row.can_insert,
+                can_copy,
+                can_retranscribe: row.can_retranscribe,
+                can_format,
+                terminal: true,
             },
             None => TranscriptProjection {
                 schema: PROJECTION_SCHEMA,
@@ -231,6 +295,13 @@ impl TranscriptProjectionReader {
                 sample_end: 0,
                 document_index: 0,
                 rendered_text: String::new(),
+                phase,
+                can_paste: row.can_paste,
+                can_insert: row.can_insert,
+                can_copy,
+                can_retranscribe: row.can_retranscribe,
+                can_format,
+                terminal: true,
             },
         })
     }
@@ -270,6 +341,13 @@ impl TranscriptProjectionReader {
             sample_end: row.sample_end,
             document_index: row.document_index,
             rendered_text: row.rendered_text,
+            phase: row.phase,
+            can_paste: row.can_paste,
+            can_insert: row.can_insert,
+            can_copy: row.can_copy,
+            can_retranscribe: row.can_retranscribe,
+            can_format: row.can_format,
+            terminal: row.terminal,
         })
     }
 

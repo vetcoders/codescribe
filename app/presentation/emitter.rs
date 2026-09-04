@@ -861,7 +861,11 @@ impl EventSink for PresentationEmitter {
 #[cfg(test)]
 mod tests {
     use super::{PresentationEmitter, TranscriptReducer};
-    use crate::presentation::transcript_bus::{TranscriptBus, TranscriptMode, TranscriptSession};
+    use crate::presentation::transcript_bus::{
+        TranscriptBus, TranscriptMode, TranscriptProjectionPhase, TranscriptSession,
+        TranscriptSessionEndReason,
+    };
+    use crate::presentation::transcript_projection::TranscriptProjectionReader;
     use codescribe_core::llm::inline_format::{LabelProposalDisposition, OccurrenceLabelProposal};
     use codescribe_core::pipeline::acoustic_ledger::{
         AcousticEvidence, AcousticLedger, EnergyCalibration, ObservationIdentity,
@@ -979,6 +983,8 @@ mod tests {
                 TranscriptSession {
                     session_id: "session".to_string(),
                     mode: TranscriptMode::Dictation,
+                    has_latched_target: true,
+                    latched_target_is_self: false,
                 },
                 bus_path.clone(),
                 None,
@@ -997,11 +1003,12 @@ mod tests {
                 "Iwo",
             )
         };
+        bus.publish_started();
         let mut emitter = PresentationEmitter::new_with_authority(
             Arc::clone(&delivery),
             Some(deltas.clone()),
             None,
-            Some(bus),
+            Some(Arc::clone(&bus)),
             Some(ledger),
             Some(Arc::new(move |_| {
                 projection_count_for_callback.fetch_add(1, Ordering::SeqCst);
@@ -1010,6 +1017,9 @@ mod tests {
 
         emitter.on_event(&mutation);
         emitter.finish().await;
+        let terminal = bus
+            .publish_ended(TranscriptSessionEndReason::Completed, true)
+            .expect("committed book must produce a terminal projection");
 
         assert_eq!(delivery.lock().await.as_str(), "Iwo");
         assert!(
@@ -1020,11 +1030,31 @@ mod tests {
                 .is_empty()
         );
         assert_eq!(projection_count.load(Ordering::SeqCst), 1);
+        assert_eq!(terminal.rendered_text, "Iwo");
+        assert_eq!(terminal.phase, TranscriptProjectionPhase::Formatted);
+        assert!(terminal.can_paste);
+        assert!(terminal.can_insert);
+        assert!(terminal.can_copy);
+        assert!(terminal.can_retranscribe);
+        assert!(terminal.can_format);
+        assert!(terminal.terminal);
+        let bus_bytes = std::fs::read(bus_path).unwrap();
         assert!(
-            std::fs::read_to_string(bus_path)
+            std::str::from_utf8(&bus_bytes)
                 .unwrap()
                 .contains("codescribe.transcript-evidence.v1")
         );
+        let mut reader = TranscriptProjectionReader::new();
+        let tail_projections = reader
+            .push_bytes(&bus_bytes)
+            .into_iter()
+            .collect::<Result<Vec<_>, _>>()
+            .expect("projection tail must parse");
+        let tail_terminal = tail_projections.last().expect("terminal tail projection");
+        assert_eq!(tail_terminal.rendered_text, "Iwo");
+        assert_eq!(tail_terminal.phase, TranscriptProjectionPhase::Formatted);
+        assert!(tail_terminal.can_paste);
+        assert!(tail_terminal.terminal);
     }
 
     #[tokio::test]
@@ -1037,6 +1067,8 @@ mod tests {
                 TranscriptSession {
                     session_id: "session".to_string(),
                     mode: TranscriptMode::Dictation,
+                    has_latched_target: false,
+                    latched_target_is_self: false,
                 },
                 bus_path.clone(),
                 None,
