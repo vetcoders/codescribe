@@ -963,23 +963,46 @@
               ]
             },
             {
-              "symbol": "performPrimaryAction",
+              "symbol": "body",
               "file": "macos/Codescribe/Screens/Overlay/DictationOverlayView.swift",
+              "signature_contains": "var body: some View",
               "required_code": [
-                "case .finish: state.stop()",
-                "case .insert: state.pasteToPreviousApp()"
+                "OverlayIntentRail(",
+                "intents: OverlayIntentRail.projectedIntents(for: state)",
+                "onIntent: state.relayIntent"
               ]
             },
             {
-              "symbol": "pasteToPreviousApp",
+              "symbol": "OverlayIntentRail",
+              "file": "macos/Codescribe/Screens/Overlay/OverlayIntentRail.swift",
+              "required_code": [
+                "struct OverlayIntentRail: View",
+                "ForEach(intents, id: \\.self)",
+                "dispatch(intent)",
+                "func dispatch(_ intent: OverlayIntent)",
+                "onIntent(intent)"
+              ]
+            },
+            {
+              "symbol": "relayIntent",
               "file": "macos/Codescribe/Screens/Overlay/OverlayState.swift",
               "required_code": [
-                "func pasteToPreviousApp()",
-                "captureQualityIfEdited(action: \"paste\")",
+                "func relayIntent(_ intent: OverlayIntent)",
+                "case .insertPaste:",
+                "relayInsertPasteIntent()"
+              ]
+            },
+            {
+              "symbol": "relayInsertPasteIntent",
+              "file": "macos/Codescribe/Screens/Overlay/OverlayState.swift",
+              "required_code": [
+                "private func relayInsertPasteIntent()",
+                "guard let engine else { return }",
                 "let text = activeText",
-                "if self.insertCaretInCodescribeProbe()",
-                "engine?.deferText(text: text)",
-                "engine?.pasteText(text: text)"
+                "let shouldDefer = insertCaretInCodescribeProbe()",
+                "if shouldDefer",
+                "engine.deferText(text: text)",
+                "engine.pasteText(text: text)"
               ]
             },
             {
@@ -1106,10 +1129,38 @@
               "min_calls": 1
             },
             {
-              "callee": "pasteToPreviousApp",
-              "callee_file": "macos/Codescribe/Screens/Overlay/OverlayState.swift",
-              "caller": "performPrimaryAction",
+              "callee": "OverlayIntentRail",
+              "callee_file": "macos/Codescribe/Screens/Overlay/OverlayIntentRail.swift",
+              "caller": "body",
               "caller_file": "macos/Codescribe/Screens/Overlay/DictationOverlayView.swift",
+              "min_calls": 1
+            },
+            {
+              "callee": "dispatch",
+              "callee_file": "macos/Codescribe/Screens/Overlay/OverlayIntentRail.swift",
+              "caller": "body",
+              "caller_file": "macos/Codescribe/Screens/Overlay/OverlayIntentRail.swift",
+              "min_calls": 1
+            },
+            {
+              "callee": "onIntent",
+              "callee_file": "macos/Codescribe/Screens/Overlay/OverlayIntentRail.swift",
+              "caller": "dispatch",
+              "caller_file": "macos/Codescribe/Screens/Overlay/OverlayIntentRail.swift",
+              "min_calls": 1
+            },
+            {
+              "callee": "relayIntent",
+              "callee_file": "macos/Codescribe/Screens/Overlay/OverlayState.swift",
+              "caller": "body",
+              "caller_file": "macos/Codescribe/Screens/Overlay/DictationOverlayView.swift",
+              "min_calls": 1
+            },
+            {
+              "callee": "relayInsertPasteIntent",
+              "callee_file": "macos/Codescribe/Screens/Overlay/OverlayState.swift",
+              "caller": "relayIntent",
+              "caller_file": "macos/Codescribe/Screens/Overlay/OverlayState.swift",
               "min_calls": 1
             },
             {
