@@ -97,17 +97,12 @@ impl fmt::Display for ProjectionReadError {
 
 impl std::error::Error for ProjectionReadError {}
 
-#[derive(Debug, Clone, PartialEq, Eq, Hash)]
-struct RevisionIdentity {
-    reducer_revision: u64,
-    reducer_action: String,
-}
-
 #[derive(Debug, Default)]
 struct SessionProjectionState {
     last_sequence: Option<u64>,
     last_reducer_revision: Option<u64>,
-    emitted_terminal_seals: HashSet<RevisionIdentity>,
+    last_evidence: Option<EvidenceRow>,
+    terminal_emitted: bool,
 }
 
 /// Stateful JSONL decoder and deterministic projection reducer.
@@ -183,25 +178,61 @@ impl TranscriptProjectionReader {
 
     pub fn project(&mut self, row: TranscriptBusRow) -> Option<TranscriptProjection> {
         match row {
-            TranscriptBusRow::Lifecycle(row) => {
-                self.observe_lifecycle(row);
-                None
-            }
+            TranscriptBusRow::Lifecycle(row) => self.observe_lifecycle(row),
             TranscriptBusRow::Evidence(row) => self.project_evidence(row),
         }
     }
 
-    fn observe_lifecycle(&mut self, row: LifecycleRow) {
+    fn observe_lifecycle(&mut self, row: LifecycleRow) -> Option<TranscriptProjection> {
         if row.status == "session_started" {
             if !self.select_session(&row.session_id) {
-                return;
+                return None;
             }
         } else if self.current_session.as_deref() != Some(row.session_id.as_str()) {
-            return;
+            return None;
         }
-        let _ = self.accept_sequence(&row.session_id, row.sequence);
-        // `session_ended` is lifecycle only. It intentionally does not clear,
-        // replace, seal, or synthesize the latest projection.
+        if !self.accept_sequence(&row.session_id, row.sequence) || row.status != "session_ended" {
+            return None;
+        }
+
+        let state = self.sessions.entry(row.session_id.clone()).or_default();
+        if std::mem::replace(&mut state.terminal_emitted, true) {
+            return None;
+        }
+        let last = state.last_evidence.clone();
+        self.current_session = None;
+        self.retired_sessions.insert(row.session_id.clone());
+
+        Some(match last {
+            Some(last) => TranscriptProjection {
+                schema: PROJECTION_SCHEMA,
+                kind: TranscriptProjectionKind::TerminalSeal,
+                session_id: row.session_id,
+                sequence: row.sequence,
+                reducer_revision: last.reducer_revision,
+                reducer_action: "session_ended".to_string(),
+                occurrence_session_id: last.occurrence_session_id,
+                capture_epoch: last.capture_epoch,
+                sample_start: last.sample_start,
+                sample_end: last.sample_end,
+                document_index: last.document_index,
+                rendered_text: last.rendered_text,
+            },
+            None => TranscriptProjection {
+                schema: PROJECTION_SCHEMA,
+                kind: TranscriptProjectionKind::TerminalSeal,
+                session_id: row.session_id,
+                sequence: row.sequence,
+                reducer_revision: 0,
+                reducer_action: "session_ended".to_string(),
+                occurrence_session_id: String::new(),
+                capture_epoch: 0,
+                sample_start: 0,
+                sample_end: 0,
+                document_index: 0,
+                rendered_text: String::new(),
+            },
+        })
     }
 
     fn project_evidence(&mut self, row: EvidenceRow) -> Option<TranscriptProjection> {
@@ -225,21 +256,10 @@ impl TranscriptProjectionReader {
                     revision.max(row.reducer_revision)
                 }),
         );
-        let kind = if row.reducer_action == "record_ledger_terminal_seal" {
-            let identity = RevisionIdentity {
-                reducer_revision: row.reducer_revision,
-                reducer_action: row.reducer_action.clone(),
-            };
-            if !state.emitted_terminal_seals.insert(identity) {
-                return None;
-            }
-            TranscriptProjectionKind::TerminalSeal
-        } else {
-            TranscriptProjectionKind::LiveRevision
-        };
+        state.last_evidence = Some(row.clone());
         Some(TranscriptProjection {
             schema: PROJECTION_SCHEMA,
-            kind,
+            kind: TranscriptProjectionKind::LiveRevision,
             session_id: row.session_id,
             sequence: row.sequence,
             reducer_revision: row.reducer_revision,
@@ -536,15 +556,18 @@ mod tests {
             evidence("s1", 3, 2, "apply_ledger_decision", "Iwo Iwo"),
             evidence("s1", 4, 3, "record_ledger_terminal_seal", "Iwo Iwo"),
             evidence("s1", 5, 3, "record_ledger_terminal_seal", "Iwo Iwo"),
+            lifecycle("s1", 6, "session_ended"),
         ]
         .join("\n")
             + "\n";
         let output = replay(&input);
-        assert_eq!(output.len(), 4);
+        assert_eq!(output.len(), 6);
         assert!(output[0].contains("\"reducer_revision\":1"));
         assert!(output[1].contains("\"reducer_revision\":2"));
         assert!(output[2].contains("\"reducer_revision\":2"));
-        assert!(output[3].contains("\"kind\":\"terminal_seal\""));
+        assert!(output[4].contains("\"kind\":\"live_revision\""));
+        assert!(output[5].contains("\"kind\":\"terminal_seal\""));
+        assert!(output[5].contains("\"reducer_action\":\"session_ended\""));
     }
 
     #[test]
@@ -567,13 +590,19 @@ mod tests {
         .join("\n")
             + "\n";
         let output = replay(&input);
-        assert_eq!(output.len(), 2);
+        assert_eq!(output.len(), 4);
         assert!(output.last().unwrap().contains("\"session_id\":\"new\""));
         assert!(
             output
                 .last()
                 .unwrap()
                 .contains("\"rendered_text\":\"nowe\"")
+        );
+        assert!(
+            output
+                .last()
+                .unwrap()
+                .contains("\"kind\":\"terminal_seal\"")
         );
     }
 

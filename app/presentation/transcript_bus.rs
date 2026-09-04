@@ -277,6 +277,9 @@ struct TranscriptBusWriter {
     sealed: bool,
     /// The controller left this session; nothing lifecycle-wise follows.
     ended: bool,
+    /// Last occurrence-authenticated book projection. `session_ended` may copy
+    /// its complete rendered value but can never mutate it.
+    last_projection: Option<TranscriptBusEvidenceEvent>,
 }
 
 impl TranscriptBus {
@@ -377,6 +380,7 @@ impl TranscriptBus {
                 self.log_write_error(error);
                 break;
             }
+            writer.last_projection = Some(event.clone());
             emitted.push(event);
         }
         if matches!(
@@ -435,6 +439,7 @@ impl TranscriptBus {
                 started: false,
                 sealed: false,
                 ended: false,
+                last_projection: None,
             }),
         };
         Ok(bus)
@@ -465,13 +470,16 @@ impl TranscriptBus {
     /// zero occurrences sealed. `reason` is the typed cause; a session that was
     /// superseded or failed before recording says so instead of masquerading
     /// as a completed take.
-    pub fn publish_ended(&self, reason: TranscriptSessionEndReason) {
+    pub fn publish_ended(
+        &self,
+        reason: TranscriptSessionEndReason,
+    ) -> Option<TranscriptBusEvidenceEvent> {
         let mut writer = self
             .writer
             .lock()
             .unwrap_or_else(|error| error.into_inner());
         if !writer.started || writer.ended {
-            return;
+            return None;
         }
         let event = CleanTranscriptEvent {
             schema: "codescribe.transcript.v1".to_string(),
@@ -500,8 +508,38 @@ impl TranscriptBus {
             Ok(()) => {
                 writer.ended = true;
                 tracing::info!(path = %self.path.display(), session_id = %self.session.session_id, sealed = writer.sealed, ?reason, "clean transcript bus session ended");
+                let mut terminal =
+                    writer
+                        .last_projection
+                        .clone()
+                        .unwrap_or_else(|| TranscriptBusEvidenceEvent {
+                            schema: "codescribe.transcript-evidence.v1".to_string(),
+                            sequence: writer.sequence,
+                            emitted_at: String::new(),
+                            session_id: self.session.session_id.clone(),
+                            mode: self.session.mode,
+                            reducer_revision: 0,
+                            reducer_action: "session_ended".to_string(),
+                            occurrence_session_id: String::new(),
+                            capture_epoch: 0,
+                            sample_start: 0,
+                            sample_end: 0,
+                            document_index: 0,
+                            label: String::new(),
+                            rendered_text: String::new(),
+                            acoustic_receipts: Vec::new(),
+                            seal_coverage: None,
+                            comparison: None,
+                        });
+                terminal.sequence = writer.sequence;
+                terminal.emitted_at = Utc::now().to_rfc3339_opts(SecondsFormat::Micros, true);
+                terminal.reducer_action = "session_ended".to_string();
+                Some(terminal)
             }
-            Err(error) => self.log_write_error(error),
+            Err(error) => {
+                self.log_write_error(error);
+                None
+            }
         }
     }
 
@@ -697,13 +735,20 @@ mod tests {
         };
 
         let never_started = TranscriptBus::open_at(session.clone(), path.clone(), None).unwrap();
-        never_started.publish_ended(TranscriptSessionEndReason::StartSuperseded);
+        let never_started_terminal =
+            never_started.publish_ended(TranscriptSessionEndReason::StartSuperseded);
+        assert!(never_started_terminal.is_none());
         assert_eq!(std::fs::read_to_string(&path).unwrap().lines().count(), 0);
 
         let bus = TranscriptBus::open_at(session, path.clone(), None).unwrap();
         bus.publish_started();
-        bus.publish_ended(TranscriptSessionEndReason::Completed);
-        bus.publish_ended(TranscriptSessionEndReason::StartFailed);
+        let terminal = bus
+            .publish_ended(TranscriptSessionEndReason::Completed)
+            .expect("started session must produce one terminal projection");
+        let duplicate_terminal = bus.publish_ended(TranscriptSessionEndReason::StartFailed);
+        assert!(duplicate_terminal.is_none());
+        assert_eq!(terminal.reducer_action, "session_ended");
+        assert!(terminal.rendered_text.is_empty());
 
         let lines: Vec<CleanTranscriptEvent> = std::fs::read_to_string(&path)
             .unwrap()

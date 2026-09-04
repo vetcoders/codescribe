@@ -470,7 +470,10 @@ fn forward_event_to_listener(payload: IpcEventPayload, listener: Arc<dyn CsTrans
                     "Silero sideband evidence (non-text)"
                 );
             }
-            EngineEventWire::NoSpeech { reason } => listener.on_no_speech(reason),
+            EngineEventWire::NoSpeech { reason } => {
+                tracing::debug!(%reason, "no-speech reason forwarded as sideband; projection owns terminal phase");
+                listener.on_no_speech(reason);
+            }
             EngineEventWire::Preview { rev, text } => tracing::debug!(
                 rev,
                 text_len = text.len(),

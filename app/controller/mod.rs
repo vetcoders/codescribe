@@ -209,6 +209,7 @@ struct HoldStartSession {
     active_transcript_bus: Arc<RwLock<Option<Arc<TranscriptBus>>>>,
     assistive_context: Arc<RwLock<Option<AssistiveContext>>>,
     pre_overlay_frontmost_app: Arc<RwLock<Option<String>>>,
+    event_broadcast: broadcast::Sender<IpcEvent>,
 }
 
 /// Safe filename fragment for a controller session id. Rejects path
@@ -1339,6 +1340,7 @@ impl RecordingController {
         Self::end_transcript_bus(
             &self.active_transcript_bus,
             TranscriptSessionEndReason::Completed,
+            &self.event_broadcast,
         )
         .await;
         *self.assistive_context.write().await = None;
@@ -1361,10 +1363,13 @@ impl RecordingController {
     async fn end_transcript_bus(
         slot: &RwLock<Option<Arc<TranscriptBus>>>,
         reason: TranscriptSessionEndReason,
+        event_broadcast: &broadcast::Sender<IpcEvent>,
     ) {
         let ended_bus = slot.write().await.take();
         if let Some(bus) = ended_bus {
-            bus.publish_ended(reason);
+            if let Some(event) = bus.publish_ended(reason) {
+                Self::broadcast_transcript_projection(event_broadcast, &event);
+            }
         }
     }
 
@@ -1388,7 +1393,12 @@ impl RecordingController {
             }
             Self::clear_recorder_callbacks(rec);
         }
-        Self::end_transcript_bus(&session.active_transcript_bus, abort.bus_reason()).await;
+        Self::end_transcript_bus(
+            &session.active_transcript_bus,
+            abort.bus_reason(),
+            &session.event_broadcast,
+        )
+        .await;
         *session.session_id.write().await = None;
         *session.assistive_context.write().await = None;
         *session.pre_overlay_frontmost_app.write().await = None;
@@ -1560,18 +1570,7 @@ impl RecordingController {
         let projection_broadcast = event_broadcast.clone();
         let projection_callback = Arc::new(
             move |event: &crate::presentation::transcript_bus::TranscriptBusEvidenceEvent| {
-                match serde_json::to_string(event) {
-                    Ok(json) => {
-                        let _ = projection_broadcast.send(IpcEvent {
-                            timestamp: chrono::Utc::now()
-                                .to_rfc3339_opts(chrono::SecondsFormat::Millis, true),
-                            payload: IpcEventPayload::TranscriptProjection { json },
-                        });
-                    }
-                    Err(error) => {
-                        tracing::warn!(%error, "transcript projection serialization failed");
-                    }
-                }
+                Self::broadcast_transcript_projection(&projection_broadcast, event);
             },
         );
         let pe: Arc<dyn codescribe_core::pipeline::contracts::EventSink> =
@@ -1588,6 +1587,28 @@ impl RecordingController {
         Arc::new(codescribe_core::pipeline::sinks::FanoutEventSink::new(
             vec![pe, ipc_sink],
         ))
+    }
+
+    /// Send the sole typed transcript projection over the existing IPC event.
+    /// Reducer revisions arrive through `PresentationEmitter`; the one terminal
+    /// value arrives only after `TranscriptBus::publish_ended` has read the last
+    /// committed book render.
+    fn broadcast_transcript_projection(
+        event_broadcast: &broadcast::Sender<IpcEvent>,
+        event: &crate::presentation::transcript_bus::TranscriptBusEvidenceEvent,
+    ) {
+        match serde_json::to_string(event) {
+            Ok(json) => {
+                let _ = event_broadcast.send(IpcEvent {
+                    timestamp: chrono::Utc::now()
+                        .to_rfc3339_opts(chrono::SecondsFormat::Millis, true),
+                    payload: IpcEventPayload::TranscriptProjection { json },
+                });
+            }
+            Err(error) => {
+                tracing::warn!(%error, "transcript projection serialization failed");
+            }
+        }
     }
 
     /// Feed the overlay's live level meter without doing allocation or timestamp
@@ -2394,6 +2415,7 @@ impl RecordingController {
             active_transcript_bus: Arc::clone(&self.active_transcript_bus),
             assistive_context: Arc::clone(&self.assistive_context),
             pre_overlay_frontmost_app: Arc::clone(&self.pre_overlay_frontmost_app),
+            event_broadcast: event_broadcast.clone(),
         };
 
         let task = tokio::spawn(async move {

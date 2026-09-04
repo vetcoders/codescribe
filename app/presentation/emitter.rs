@@ -443,7 +443,9 @@ fn render_context_markers(text: &str, markers: &[DocumentContextMarker]) -> Stri
 ///
 /// Named because this is an authority-bearing role, not an anonymous closure
 /// slot: it is invoked only after an occurrence-authenticated ledger receipt
-/// has already produced a committed revision, never on preview paint.
+/// has already produced a committed revision, never on preview paint. The
+/// controller publishes the terminal copy separately after `session_ended`;
+/// that copy reads this same Bus book and never re-enters the reducer.
 pub type ProjectionObserver = Arc<dyn Fn(&TranscriptBusEvidenceEvent) + Send + Sync>;
 
 /// All target mutations are serialized through one mpsc worker, guaranteeing
