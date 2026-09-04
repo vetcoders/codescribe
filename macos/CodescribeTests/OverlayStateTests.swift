@@ -1343,6 +1343,48 @@ final class OverlayStateTests: XCTestCase {
     XCTAssertNil(silent.primaryActionKind)
   }
 
+  /// One availability projection drives the split chrome: impossible actions
+  /// are omitted instead of rendered disabled — empty listening has no Copy;
+  /// terminal no-speech/error states keep only the valid Close command.
+  func testUnifiedActionMenuItemsFollowModeTable() {
+    let listening = OverlayState()
+    listening.handleRecordingPreparing()
+    projectText("hello", to: listening)
+
+    let formatted = OverlayState.previewFormatted()
+    let silent = OverlayState.previewNoSpeech()
+    let failed = OverlayState()
+    failed.handleError(message: "engine unavailable")
+
+    let rows: [(String, [OverlayActionMenuItem], [OverlayActionMenuItem])] = [
+      ("listening", listening.actionMenuItems, [.finish, .copy, .close]),
+      ("formatted", formatted.actionMenuItems, [.insert, .copy, .sendToAgent, .close]),
+      ("noSpeech", silent.actionMenuItems, [.close]),
+      ("error", failed.actionMenuItems, [.close]),
+    ]
+    for (mode, actual, expected) in rows {
+      XCTAssertEqual(actual, expected, mode)
+    }
+
+    let emptyListening = OverlayState()
+    XCTAssertEqual(emptyListening.actionMenuItems, [.finish, .close])
+  }
+
+  func testActionMenuAccessibilityValueNamesPhase() {
+    let listening = OverlayState()
+    XCTAssertEqual(listening.actionMenuAccessibilityValue, "Recording in progress")
+
+    let formatted = OverlayState.previewFormatted()
+    XCTAssertEqual(formatted.actionMenuAccessibilityValue, "Transcript ready")
+
+    let silent = OverlayState.previewNoSpeech()
+    XCTAssertEqual(silent.actionMenuAccessibilityValue, "No speech")
+
+    let failed = OverlayState()
+    failed.handleError(message: "engine unavailable")
+    XCTAssertEqual(failed.actionMenuAccessibilityValue, "Recording failed")
+  }
+
   /// macOS `Menu` + `primaryAction` treats the whole control as the primary, so
   /// the painted chevron never opens. The slim chrome must be a true split:
   /// a Button for Finish/Insert and a separate Menu on the chevron.

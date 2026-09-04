@@ -63,21 +63,23 @@ extension DictationOverlayView {
     .fixedSize()
     .accessibilityElement(children: .contain)
     .accessibilityLabel("Dictation actions")
+    .accessibilityValue(state.actionMenuAccessibilityValue)
   }
 
+  /// Renders from the state's one availability projection (`actionMenuItems`);
+  /// the primary act and the Close row have their own dedicated surfaces here.
   @ViewBuilder
   func secondaryActionButtons(for kind: OverlayPrimaryActionKind) -> some View {
-    switch kind {
-    case .finish:
-      if state.canCopy {
+    ForEach(state.actionMenuItems) { item in
+      switch item {
+      case .copy:
         Button("Copy", systemImage: "doc.on.doc") { state.copyToPasteboard() }
-      }
-    case .insert:
-      if state.canCopy {
-        Button("Copy", systemImage: "doc.on.doc") { state.copyToPasteboard() }
-      }
-      Button(OverlayActionPresentation.sendTitle, systemImage: "paperplane") {
-        state.sendToAgent()
+      case .sendToAgent:
+        Button(OverlayActionPresentation.sendTitle, systemImage: "paperplane") {
+          state.sendToAgent()
+        }
+      case .finish, .insert, .close:
+        EmptyView()
       }
     }
   }

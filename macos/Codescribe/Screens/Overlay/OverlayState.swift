@@ -123,6 +123,19 @@ enum OverlayPrimaryActionKind: Equatable {
   case insert
 }
 
+/// State-aware commands possible in the current mode. One projection feeds the
+/// split chrome: the primary act renders as the button, the rest fill the
+/// attached menu. Impossible actions are omitted instead of rendered disabled.
+enum OverlayActionMenuItem: String, Equatable, Identifiable {
+  case finish
+  case copy
+  case insert
+  case sendToAgent
+  case close
+
+  var id: String { rawValue }
+}
+
 struct OverlayInsertActionPresentation: Equatable {
   let targetAppName: String?
   let title: String
@@ -511,6 +524,39 @@ final class OverlayState {
     case .finish: return OverlayActionPresentation.finishHelp
     case .insert: return insertActionPresentation.help
     case nil: return ""
+    }
+  }
+
+  /// Commands possible in the current mode, in menu order. Impossible actions
+  /// are omitted instead of rendered disabled: empty listening has no Copy;
+  /// terminal no-speech/error states keep only the valid Close command.
+  var actionMenuItems: [OverlayActionMenuItem] {
+    switch mode {
+    case .listening:
+      var items: [OverlayActionMenuItem] = [.finish]
+      if canCopy { items.append(.copy) }
+      items.append(.close)
+      return items
+    case .formatted:
+      guard canCopy else { return [.close] }
+      return [.insert, .copy, .sendToAgent, .close]
+    case .noSpeech, .error:
+      return [.close]
+    }
+  }
+
+  /// VoiceOver value names the current phase while the accessibility label
+  /// keeps describing the actions control. Presentation-only state.
+  var actionMenuAccessibilityValue: String {
+    switch mode {
+    case .listening:
+      if isFinalPass { return "Final pass" }
+      if transcribing { return "Transcribing" }
+      if warmingUp { return "Starting recording" }
+      return "Recording in progress"
+    case .formatted: return "Transcript ready"
+    case .noSpeech: return "No speech"
+    case .error: return "Recording failed"
     }
   }
 
