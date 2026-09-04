@@ -659,8 +659,9 @@ public protocol CodescribeAgentProtocol: AnyObject, Sendable {
     func generateThreadTitle(text: String) async throws  -> String?
 
     /**
-     * True when the sealed assistive lane can reach its provider. A
-     * key-optional local endpoint counts as available.
+     * True when the assistive lane can reach its provider under the CURRENT
+     * settings (fresh reload). A key-optional local endpoint counts as
+     * available.
      */
     func isAvailable()  -> Bool
 
@@ -752,8 +753,9 @@ open class CodescribeAgent: CodescribeAgentProtocol, @unchecked Sendable {
         return try! rustCall { uniffi_codescribe_ffi_fn_clone_codescribeagent(self.handle, $0) }
     }
     /**
-     * Construct the FFI handle and seal one runtime settings snapshot for its
-     * complete lifetime. Every later method observes this exact object.
+     * Construct the FFI handle. Settings are re-sealed freshly on every
+     * call via [`Self::current_settings`]; the snapshot loaded here is only
+     * the fallback for a failed reload.
      */
 public convenience init() {
     let handle =
@@ -835,8 +837,9 @@ open func generateThreadTitle(text: String)async throws  -> String?  {
 }
 
     /**
-     * True when the sealed assistive lane can reach its provider. A
-     * key-optional local endpoint counts as available.
+     * True when the assistive lane can reach its provider under the CURRENT
+     * settings (fresh reload). A key-optional local endpoint counts as
+     * available.
      */
 open func isAvailable() -> Bool  {
     return try!  FfiConverterBool.lift(try! rustCall() {
@@ -13727,7 +13730,7 @@ private let initializationResult: InitializationResult = {
     if (uniffi_codescribe_ffi_checksum_method_codescribeagent_generate_thread_title() != 6378) {
         return InitializationResult.apiChecksumMismatch
     }
-    if (uniffi_codescribe_ffi_checksum_method_codescribeagent_is_available() != 44312) {
+    if (uniffi_codescribe_ffi_checksum_method_codescribeagent_is_available() != 42455) {
         return InitializationResult.apiChecksumMismatch
     }
     if (uniffi_codescribe_ffi_checksum_method_codescribeagent_resolve_tool_approval() != 55035) {
@@ -14156,7 +14159,7 @@ private let initializationResult: InitializationResult = {
     if (uniffi_codescribe_ffi_checksum_method_cswhisperdownloadlistener_on_complete() != 46072) {
         return InitializationResult.apiChecksumMismatch
     }
-    if (uniffi_codescribe_ffi_checksum_constructor_codescribeagent_new() != 59251) {
+    if (uniffi_codescribe_ffi_checksum_constructor_codescribeagent_new() != 40045) {
         return InitializationResult.apiChecksumMismatch
     }
     if (uniffi_codescribe_ffi_checksum_constructor_codescribeagentstatus_new() != 27409) {
