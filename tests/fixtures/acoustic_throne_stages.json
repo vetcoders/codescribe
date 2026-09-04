@@ -897,9 +897,17 @@
               "file": "app/controller/mod.rs",
               "required_code": [
                 "event: &crate::presentation::transcript_bus::TranscriptBusEvidenceEvent",
-                "serde_json::to_string(event)",
-                "IpcEventPayload::TranscriptProjection { json }",
+                "Self::broadcast_transcript_projection(&projection_broadcast, event)",
                 "Some(projection_callback)"
+              ]
+            },
+            {
+              "symbol": "broadcast_transcript_projection",
+              "file": "app/controller/mod.rs",
+              "required_code": [
+                "serde_json::to_string(event)",
+                "event_broadcast.send(IpcEvent",
+                "IpcEventPayload::TranscriptProjection { json }"
               ]
             },
             {
@@ -944,23 +952,29 @@
             {
               "symbol": "applyTranscriptProjection",
               "file": "macos/Codescribe/Screens/Overlay/OverlayState.swift",
+              "signature_contains": "func applyTranscriptProjection",
               "required_code": [
+                "guard let phase = OverlayMode(rawValue: event.phase)",
                 "event.acousticReceipts.map",
-                "let transcriptRevision = event.reducerRevision",
-                "guard transcriptRevision > 0, !acousticSerials.isEmpty",
-                "!$0.acousticSerial.isEmpty && !$0.wordEvidenceReceipts.isEmpty",
-                "&& !$0.layerDecisionReceipts.isEmpty",
+                "renderedText: event.renderedText",
+                "terminal: event.terminal",
+                "applyProjection(projection)"
+              ]
+            },
+            {
+              "symbol": "applyProjection",
+              "file": "macos/Codescribe/Screens/Overlay/OverlayState.swift",
+              "required_code": [
+                "mode = projection.phase",
                 "formattedText = projection.renderedText",
-                "finishTerminalPresentation("
+                "terminal = projection.terminal"
               ]
             },
             {
               "symbol": "activeText",
               "file": "macos/Codescribe/Screens/Overlay/OverlayState.swift",
-              "required_code": [
-                "case .formatted: return formattedText",
-                "case .noSpeech, .error: return \"\""
-              ]
+              "signature_contains": "var activeText",
+              "required_code": ["formattedText"]
             },
             {
               "symbol": "body",
@@ -1433,9 +1447,17 @@
               "file": "app/controller/mod.rs",
               "required_code": [
                 "event: &crate::presentation::transcript_bus::TranscriptBusEvidenceEvent",
-                "serde_json::to_string(event)",
-                "IpcEventPayload::TranscriptProjection { json }",
+                "Self::broadcast_transcript_projection(&projection_broadcast, event)",
                 "Some(projection_callback)"
+              ]
+            },
+            {
+              "symbol": "broadcast_transcript_projection",
+              "file": "app/controller/mod.rs",
+              "required_code": [
+                "serde_json::to_string(event)",
+                "event_broadcast.send(IpcEvent",
+                "IpcEventPayload::TranscriptProjection { json }"
               ]
             },
             {
@@ -1504,6 +1526,7 @@
             {
               "symbol": "applyTranscriptProjection",
               "file": "macos/Codescribe/Screens/Overlay/OverlayState.swift",
+              "signature_contains": "func applyTranscriptProjection",
               "required_code": [
                 "func applyTranscriptProjection(_ event: CsTranscriptProjectionEvent)",
                 "acousticSerialVersion: receipt.acousticSerialVersion",
@@ -1523,9 +1546,9 @@
                 "layerDecisionReceipts: receipt.layerDecisionReceipts",
                 "sealReceipt: receipt.sealReceipt",
                 "manualEditReceipt: receipt.manualEditReceipt",
-                "let transcriptRevision = event.reducerRevision",
-                "formattedText = projection.renderedText",
-                "finishTerminalPresentation("
+                "renderedText: event.renderedText",
+                "terminal: event.terminal",
+                "applyProjection(projection)"
               ]
             }
           ],
