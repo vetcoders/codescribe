@@ -10,6 +10,41 @@ final class OverlayResizeHitTests: XCTestCase {
     XCTAssertNil(OverlayResizeHit.edge(at: NSPoint(x: 200, y: 150), in: bounds))
   }
 
+  @MainActor
+  func testCanvasDragLayerYieldsToControlsAndTextSelection() {
+    let root = NSView(frame: NSRect(x: 0, y: 0, width: 240, height: 160))
+    let dragLayer = OverlayDragHandleView(frame: root.bounds)
+    root.addSubview(dragLayer)
+
+    let button = NSButton(frame: NSRect(x: 180, y: 110, width: 40, height: 30))
+    root.addSubview(button)
+    let transcript = LiveTranscriptNativeTextView(
+      frame: NSRect(x: 20, y: 30, width: 160, height: 60)
+    )
+    root.addSubview(transcript)
+
+    XCTAssertTrue(dragLayer.mouseDownCanMoveWindow)
+    XCTAssertTrue(dragLayer.acceptsFirstMouse(for: nil))
+    XCTAssertTrue(root.hitTest(NSPoint(x: 8, y: 8)) === dragLayer)
+    XCTAssertTrue(root.hitTest(NSPoint(x: 200, y: 125)) === button)
+    XCTAssertTrue(root.hitTest(NSPoint(x: 80, y: 55)) === transcript)
+    XCTAssertTrue(transcript.isSelectable)
+  }
+
+  func testPersistedContentSizeRoundTripsThroughDefaults() throws {
+    let suiteName = "OverlayResizeHitTests.\(UUID().uuidString)"
+    let defaults = try XCTUnwrap(UserDefaults(suiteName: suiteName))
+    defer { defaults.removePersistentDomain(forName: suiteName) }
+
+    let expected = NSSize(width: 612, height: 377)
+    DictationOverlayWindow.persist(size: expected, defaults: defaults)
+
+    XCTAssertEqual(
+      DictationOverlayWindow.restoredContentSize(for: nil, defaults: defaults),
+      expected
+    )
+  }
+
   func testEdgesAndCornersUseTheFatBand() {
     XCTAssertEqual(OverlayResizeHit.edge(at: NSPoint(x: 2, y: 150), in: bounds), .left)
     XCTAssertEqual(OverlayResizeHit.edge(at: NSPoint(x: 398, y: 150), in: bounds), .right)
