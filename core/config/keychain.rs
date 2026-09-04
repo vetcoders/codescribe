@@ -166,7 +166,11 @@ fn load_bundle() -> Option<KeychainBundle> {
             bundle
         }
         Err(e) => {
-            debug!("No Keychain bundle entry: {e}");
+            // INFO on purpose: an unreadable bundle (absent OR ACL-denied
+            // after a re-signed install) silently strips every lane of its
+            // credential — at debug level that was invisible in the 2026-09-04
+            // agent-chat 401 boot log.
+            info!("Keychain bundle unreadable (absent or access denied): {e}");
             None
         }
     }

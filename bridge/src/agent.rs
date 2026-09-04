@@ -100,8 +100,12 @@ pub trait CsAgentListener: Send + Sync {
 /// Thin handle to the codescribe agent engine.
 #[derive(uniffi::Object, Clone)]
 pub struct CodescribeAgent {
-    /// One loader-owned settings seal shared by availability, provider
-    /// construction, stream options, vision admission, and persistence.
+    /// Construction-time settings seal, kept ONLY as the fallback when a
+    /// fresh per-call reload fails. Every surface reads settings through
+    /// [`Self::current_settings`], so a key saved in Settings after launch
+    /// reaches the very next call — the sealed-for-life snapshot was the
+    /// 2026-09-04 agent-chat 401 (seal-lifecycle smear: Settings probed live,
+    /// the controller rolled on digest change, this bridge never refreshed).
     runtime_settings: Arc<RuntimeSettingsSnapshot>,
     /// In-flight turns keyed by thread id, so `cancel_turn` can abort them.
     /// Shared (`Arc`) because each turn's RAII guard must be able to deregister
@@ -124,20 +128,41 @@ impl Default for CodescribeAgent {
     }
 }
 
+impl CodescribeAgent {
+    /// One coherent settings seal for THIS call: a fresh loader pass
+    /// (settings.json → env → Keychain, same precedence as boot), falling
+    /// back to the construction-time seal only when the reload fails. Fresh
+    /// per call, sealed within a call — the same generation contract the
+    /// controller enforces via `ensure_runtime_generation_with`.
+    fn current_settings(&self) -> Arc<RuntimeSettingsSnapshot> {
+        match codescribe_core::config::Config::load_runtime_snapshot() {
+            Ok(fresh) => Arc::new(fresh),
+            Err(err) => {
+                tracing::warn!(
+                    "runtime settings reload failed; serving construction-time seal: {err:#}"
+                );
+                Arc::clone(&self.runtime_settings)
+            }
+        }
+    }
+}
+
 #[uniffi::export]
 impl CodescribeAgent {
-    /// Construct the FFI handle and seal one runtime settings snapshot for its
-    /// complete lifetime. Every later method observes this exact object.
+    /// Construct the FFI handle. Settings are re-sealed freshly on every
+    /// call via [`Self::current_settings`]; the snapshot loaded here is only
+    /// the fallback for a failed reload.
     #[uniffi::constructor]
     pub fn new() -> Self {
         codescribe::logging::init_logging();
         Self::default()
     }
 
-    /// True when the sealed assistive lane can reach its provider. A
-    /// key-optional local endpoint counts as available.
+    /// True when the assistive lane can reach its provider under the CURRENT
+    /// settings (fresh reload). A key-optional local endpoint counts as
+    /// available.
     pub fn is_available(&self) -> bool {
-        self.runtime_settings.llm_lanes().assistive().available()
+        self.current_settings().llm_lanes().assistive().available()
     }
 
     /// Availability of the assistive lane as one record: `available` mirrors
@@ -145,7 +170,8 @@ impl CodescribeAgent {
     /// reason when the lane cannot reach a model (which lane, endpoint or key
     /// is missing — never a generic "add an API key"). Empty when ready.
     pub fn availability(&self) -> CsAgentAvailability {
-        let lane = self.runtime_settings.llm_lanes().assistive();
+        let settings = self.current_settings();
+        let lane = settings.llm_lanes().assistive();
         match codescribe::agent::assistive_unavailable_reason(lane) {
             None => CsAgentAvailability {
                 available: true,
@@ -162,7 +188,7 @@ impl CodescribeAgent {
     /// formatting lane. The core call has its own 8-second timeout and never
     /// participates in the assistive or formatting response chains.
     pub async fn generate_thread_title(&self, text: String) -> Result<Option<String>, CsError> {
-        let runtime_settings = self.runtime_settings.clone();
+        let runtime_settings = self.current_settings();
         application_runtime::run(async move {
             Ok(codescribe_core::llm::ai_formatting::generate_thread_title(
                 &text,
@@ -222,7 +248,8 @@ impl CodescribeAgent {
     ) -> Result<String, CsError> {
         let agent = self.clone();
         application_runtime::run(async move {
-            let assistive_lane = agent.runtime_settings.llm_lanes().assistive();
+            let settings = agent.current_settings();
+            let assistive_lane = settings.llm_lanes().assistive();
             let images = validate_composer_attachments(
                 &attachments,
                 assistive_lane.provider(),
@@ -285,8 +312,12 @@ impl CodescribeAgent {
         attachments: Vec<ImageAttachment>,
         listener: Arc<dyn CsAgentListener>,
     ) -> Result<String, CsError> {
-        let assistive_lane = self.runtime_settings.llm_lanes().assistive();
-        let provider = codescribe::agent::create_default_provider(self.runtime_settings.as_ref())?;
+        // One fresh seal for the WHOLE turn: lane identity, provider
+        // credential, stream options and persistence labels all read the same
+        // generation, and a key saved in Settings reaches the next send.
+        let settings = self.current_settings();
+        let assistive_lane = settings.llm_lanes().assistive();
+        let provider = codescribe::agent::create_default_provider(settings.as_ref())?;
         let mut registry = ToolRegistry::new();
         codescribe::agent::tools::register_all_tools(&mut registry);
         // settings.json agent.permissions + legacy tool_grants (always-allow).
@@ -334,8 +365,8 @@ impl CodescribeAgent {
         // is not stripped of the WORKSPACE-augmented assistive prompt and the
         // configured `ai_assistive_max_tokens`.
         let options = build_bridge_stream_options(
-            self.runtime_settings.values().ai_assistive_max_tokens,
-            self.runtime_settings.as_ref(),
+            settings.values().ai_assistive_max_tokens,
+            settings.as_ref(),
         );
 
         let turn = PreparedTurn {
@@ -961,6 +992,28 @@ mod tests {
     fn empty_attachments_yield_no_images() {
         let images = validate_test_attachments(&[]).unwrap();
         assert!(images.is_empty());
+    }
+
+    /// Effect witness for the 2026-09-04 seal-lifecycle 401: a credential that
+    /// appears AFTER the handle is constructed must reach the very next call.
+    /// The witness is the resolved lane credential (what the request would
+    /// send), not a struct field name. Env outranks Keychain in the loader
+    /// precedence, so setting the env var stands in for "the user saved a key
+    /// in Settings after launch".
+    #[test]
+    fn fresh_seal_sees_a_key_saved_after_construction() {
+        let agent = CodescribeAgent::default();
+        // SAFETY: test-local env mutation; no other test in this binary
+        // touches LLM_ASSISTIVE_API_KEY concurrently.
+        unsafe { std::env::set_var("LLM_ASSISTIVE_API_KEY", "witness-fresh-seal") };
+        let fresh = agent.current_settings();
+        unsafe { std::env::remove_var("LLM_ASSISTIVE_API_KEY") };
+        assert_eq!(
+            fresh.llm_lanes().assistive().credential().api_key(),
+            Some("witness-fresh-seal"),
+            "a key saved after construction must be visible to the next call \
+             (sealed-for-life snapshot = the agent-chat 401)"
+        );
     }
 
     /// A readable PNG path loads through core vision loading into one attachment.
