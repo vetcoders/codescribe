@@ -129,6 +129,31 @@ Engine events are observational transport, not a transcript document API.
 product text. Only an occurrence-authenticated reducer revision may become
 committed Bus projection and delivery truth.
 
+## Transcript Projection Event
+
+Committed canvas state uses the existing `transcript_projection` IPC payload.
+Its `json` member is one serialized `codescribe.transcript-evidence.v1`
+snapshot; no second text or lifecycle channel is authoritative:
+
+```json
+{
+  "Event": {
+    "timestamp": "2026-09-04T12:00:00.000Z",
+    "event": "transcript_projection",
+    "json": "{\"schema\":\"codescribe.transcript-evidence.v1\",\"reducer_revision\":20,\"rendered_text\":\"Committed document\",\"phase\":\"formatted\",\"can_paste\":true,\"can_insert\":true,\"can_copy\":true,\"can_retranscribe\":true,\"can_format\":true,\"terminal\":true}"
+  }
+}
+```
+
+The full projection also carries Bus sequence/time, session/mode, reducer
+action, occurrence coordinates, document index, label, and acoustic receipts.
+Open revisions are `listening`; a terminal ledger seal is `finalizing`; only
+the controller's `session_ended` transition produces `terminal=true` and the
+final `formatted`, `no_speech`, or `error` phase. All five action flags are
+computed in Rust from committed text, take/audio facts, and
+`resolve_delivery_route`. Hosts paint those values verbatim and do not derive
+availability from focus, raw engine text, or receipt presence.
+
 ## Security and Sanitization
 
 - `raw_text` is internal engine data and is never emitted in IPC payloads.

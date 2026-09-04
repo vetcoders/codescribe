@@ -30,7 +30,11 @@ host, date, room, or control-plane path is embedded in Codescribe.
 one empty `session_started` event for the controller-owned session, and
 `publish_ended` emits one empty `session_ended` event when the controller
 leaves that session (every path back to Idle, including zero-seal takes and
-stop-timeout recovery). Neither can publish document text. A
+stop-timeout recovery). Neither can publish document text. The terminal row
+does carry the already-resolved projection phase and action availability so a
+file tailer can combine it with the last authenticated render without inventing
+UI policy.
+
 One microphone: the live app take is the most recently started app session
 that has no later `session_ended` (or legacy `transcript_sealed`) for that
 same `session_id`. Historical `session_started` rows without terminals are
@@ -79,6 +83,27 @@ contains:
   for the pre-repair Apple-lane document and the whole-session local Whisper
   pass. These fields remain inside `codescribe.transcript-evidence.v1`; older
   readers may ignore them and Rust decoding defaults them to absent.
+- the complete canvas contract: `phase`, `can_paste`, `can_insert`,
+  `can_copy`, `can_retranscribe`, `can_format`, and `terminal`.
+
+The projection contract is one snapshot, not a bag of Swift inputs:
+
+| Field | Source of truth |
+|---|---|
+| `reducer_revision`, `rendered_text` | Exact committed reducer revision |
+| `phase` | `listening` for open book revisions, `finalizing` after a terminal ledger seal, then `formatted` or `no_speech` from `session_ended` plus the last committed render; failed/superseded starts are `error` |
+| `can_paste` | The delivery throne selects `ClipboardPaste`, a latched target exists, and the take has ended |
+| `can_insert` | The delivery throne selects `ClipboardPaste` or `DeferredInsert`, and the take has ended |
+| `can_copy` | The committed render is non-empty |
+| `can_retranscribe` | The session WAV exists and the take has ended |
+| `can_format` | The take has ended and the committed render is non-empty |
+| `terminal` | The controller's unique `session_ended` transition was processed |
+
+`resolve_delivery_route(OverlayInsert, ...)` remains the only destination
+decision. The projection layer queries its result; it does not create another
+paste policy. The controller snapshots the target before overlay focus can
+replace it, and checks the session-owned WAV only after the stop path has had a
+chance to retain it.
 
 The Bus skips entries the ledger cannot authenticate. It cannot admit an
 occurrence, choose a label, infer identity, perform text-tail matching, or mint
@@ -103,6 +128,9 @@ OccurrenceIdentity + AcousticLedger receipts
   → TranscriptBus::publish_revision
   → CsTranscriptProjectionEvent
   → OverlayState.applyTranscriptProjection
+
+session_ended + last committed Bus render + delivery/audio snapshot
+  → the same CsTranscriptProjectionEvent (`terminal=true`)
 ```
 
 `EngineEvent::Preview` is ephemeral overlay paint. Raw `UtteranceFinal`,
@@ -146,11 +174,14 @@ follower is a session observer of that bag, not a second archive.
 `codescribe.transcript-projection.v1` JSONL to stdout. Every output row is an
 exact full `rendered_text` snapshot with `kind=live_revision|terminal_seal` and
 the source session, sequence, reducer revision/action, occurrence coordinates,
-and document index. Consumers replace their displayed snapshot when metadata is
-newer; stdout never pretends that a textual suffix can encode a replacement.
-Lifecycle rows remain text-free control observations and produce no projection.
-On macOS the follower wakes from kqueue vnode events; a bounded timeout exists
-only to recover from a missed rotation/replacement watch.
+document index, phase, five action bits, and terminal flag. Consumers replace
+their displayed snapshot when metadata is newer; stdout never pretends that a
+textual suffix can encode a replacement. A text-free `session_ended` row emits
+one terminal projection by combining its control fields with the last committed
+render for that session; old rows without the additive fields retain the same
+deterministic formatted/no-speech fallback. On macOS the follower wakes from
+kqueue vnode events; a bounded timeout exists only to recover from a missed
+rotation/replacement watch.
 
 ## C11 evidence boundary
 

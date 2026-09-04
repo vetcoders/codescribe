@@ -17,6 +17,9 @@ use codescribe_core::pipeline::contracts::TranscriptSegment;
 use serde::{Deserialize, Serialize};
 
 use super::emitter::{ReducerAction, TranscriptRevision};
+use crate::controller::{
+    TranscriptProjectionAvailability, resolve_transcript_projection_availability,
+};
 
 /// Explicit path override for the clean transcript bus.
 pub const TRANSCRIPT_BUS_PATH_ENV: &str = "CODESCRIBE_TRANSCRIPT_BUS_PATH";
@@ -35,6 +38,30 @@ pub enum TranscriptMode {
     Assistive,
 }
 
+/// Canvas phase carried by the one reducer-owned projection contract.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum TranscriptProjectionPhase {
+    #[default]
+    Listening,
+    Finalizing,
+    Formatted,
+    NoSpeech,
+    Error,
+}
+
+impl TranscriptProjectionPhase {
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Listening => "listening",
+            Self::Finalizing => "finalizing",
+            Self::Formatted => "formatted",
+            Self::NoSpeech => "no_speech",
+            Self::Error => "error",
+        }
+    }
+}
+
 #[cfg(test)]
 #[path = "../../tests/support/p0_b_five_iwo.rs"]
 mod p0_b_five_iwo;
@@ -44,6 +71,12 @@ mod p0_b_five_iwo;
 pub struct TranscriptSession {
     pub session_id: String,
     pub mode: TranscriptMode,
+    /// A delivery target captured before the overlay can steal focus.
+    pub has_latched_target: bool,
+    /// Whether the explicit target is the overlay canvas itself. Normal
+    /// capture-time sessions set this false because that caret fact exists
+    /// only at the later defer click.
+    pub latched_target_is_self: bool,
 }
 
 /// Grain of one published span. Word pins are engine evidence; utterance
@@ -200,6 +233,20 @@ pub struct TranscriptBusEvidenceEvent {
     pub document_index: u64,
     pub label: String,
     pub rendered_text: String,
+    #[serde(default)]
+    pub phase: TranscriptProjectionPhase,
+    #[serde(default)]
+    pub can_paste: bool,
+    #[serde(default)]
+    pub can_insert: bool,
+    #[serde(default)]
+    pub can_copy: bool,
+    #[serde(default)]
+    pub can_retranscribe: bool,
+    #[serde(default)]
+    pub can_format: bool,
+    #[serde(default)]
+    pub terminal: bool,
     pub acoustic_receipts: Vec<ProjectedAcousticReceipt>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub seal_coverage: Option<ProjectedSealCoverageReceipt>,
@@ -239,6 +286,20 @@ pub struct CleanTranscriptEvent {
     pub audio_start_seconds: Option<f32>,
     pub audio_end_seconds: Option<f32>,
     pub text: String,
+    #[serde(default)]
+    pub phase: TranscriptProjectionPhase,
+    #[serde(default)]
+    pub can_paste: bool,
+    #[serde(default)]
+    pub can_insert: bool,
+    #[serde(default)]
+    pub can_copy: bool,
+    #[serde(default)]
+    pub can_retranscribe: bool,
+    #[serde(default)]
+    pub can_format: bool,
+    #[serde(default)]
+    pub terminal: bool,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub segments: Vec<TranscriptSegment>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
@@ -277,9 +338,27 @@ struct TranscriptBusWriter {
     sealed: bool,
     /// The controller left this session; nothing lifecycle-wise follows.
     ended: bool,
+    /// Last occurrence-authenticated book projection. `session_ended` may copy
+    /// its complete rendered value but can never mutate it.
+    last_projection: Option<TranscriptBusEvidenceEvent>,
 }
 
 impl TranscriptBus {
+    fn projection_availability(
+        &self,
+        has_text: bool,
+        take_in_progress: bool,
+        session_wav_exists: bool,
+    ) -> TranscriptProjectionAvailability {
+        resolve_transcript_projection_availability(
+            has_text,
+            take_in_progress,
+            session_wav_exists,
+            self.session.has_latched_target,
+            self.session.latched_target_is_self,
+        )
+    }
+
     fn project_serial(
         serial: &AcousticSerial,
         word_evidence_receipts: Vec<String>,
@@ -330,6 +409,13 @@ impl TranscriptBus {
             ReducerAction::ApplyManualEdit { .. } => "apply_manual_edit",
             ReducerAction::RecordContextMarker { .. } => "record_context_marker",
         };
+        let phase = if reducer_action == "record_ledger_terminal_seal" {
+            TranscriptProjectionPhase::Finalizing
+        } else {
+            TranscriptProjectionPhase::Listening
+        };
+        let availability =
+            self.projection_availability(!revision.rendered_text.trim().is_empty(), true, false);
         let mut writer = self
             .writer
             .lock()
@@ -357,6 +443,13 @@ impl TranscriptBus {
                 document_index: document_index as u64,
                 label: entry.label.clone(),
                 rendered_text: revision.rendered_text.clone(),
+                phase,
+                can_paste: availability.can_paste,
+                can_insert: availability.can_insert,
+                can_copy: availability.can_copy,
+                can_retranscribe: availability.can_retranscribe,
+                can_format: availability.can_format,
+                terminal: false,
                 acoustic_receipts: vec![Self::project_serial(
                     serial,
                     entry.word_evidence_receipts.clone(),
@@ -377,6 +470,7 @@ impl TranscriptBus {
                 self.log_write_error(error);
                 break;
             }
+            writer.last_projection = Some(event.clone());
             emitted.push(event);
         }
         if matches!(
@@ -435,6 +529,7 @@ impl TranscriptBus {
                 started: false,
                 sealed: false,
                 ended: false,
+                last_projection: None,
             }),
         };
         Ok(bus)
@@ -465,14 +560,31 @@ impl TranscriptBus {
     /// zero occurrences sealed. `reason` is the typed cause; a session that was
     /// superseded or failed before recording says so instead of masquerading
     /// as a completed take.
-    pub fn publish_ended(&self, reason: TranscriptSessionEndReason) {
+    pub fn publish_ended(
+        &self,
+        reason: TranscriptSessionEndReason,
+        session_wav_exists: bool,
+    ) -> Option<TranscriptBusEvidenceEvent> {
         let mut writer = self
             .writer
             .lock()
             .unwrap_or_else(|error| error.into_inner());
         if !writer.started || writer.ended {
-            return;
+            return None;
         }
+        let has_text = writer
+            .last_projection
+            .as_ref()
+            .is_some_and(|projection| !projection.rendered_text.trim().is_empty());
+        let phase = match reason {
+            TranscriptSessionEndReason::Completed if has_text => {
+                TranscriptProjectionPhase::Formatted
+            }
+            TranscriptSessionEndReason::Completed => TranscriptProjectionPhase::NoSpeech,
+            TranscriptSessionEndReason::StartSuperseded
+            | TranscriptSessionEndReason::StartFailed => TranscriptProjectionPhase::Error,
+        };
+        let availability = self.projection_availability(has_text, false, session_wav_exists);
         let event = CleanTranscriptEvent {
             schema: "codescribe.transcript.v1".to_string(),
             sequence: 0,
@@ -488,6 +600,13 @@ impl TranscriptBus {
             audio_start_seconds: None,
             audio_end_seconds: None,
             text: String::new(),
+            phase,
+            can_paste: availability.can_paste,
+            can_insert: availability.can_insert,
+            can_copy: availability.can_copy,
+            can_retranscribe: availability.can_retranscribe,
+            can_format: availability.can_format,
+            terminal: true,
             segments: Vec::new(),
             words: Vec::new(),
             coverage: None,
@@ -500,8 +619,52 @@ impl TranscriptBus {
             Ok(()) => {
                 writer.ended = true;
                 tracing::info!(path = %self.path.display(), session_id = %self.session.session_id, sealed = writer.sealed, ?reason, "clean transcript bus session ended");
+                let mut terminal =
+                    writer
+                        .last_projection
+                        .clone()
+                        .unwrap_or_else(|| TranscriptBusEvidenceEvent {
+                            schema: "codescribe.transcript-evidence.v1".to_string(),
+                            sequence: writer.sequence,
+                            emitted_at: String::new(),
+                            session_id: self.session.session_id.clone(),
+                            mode: self.session.mode,
+                            reducer_revision: 0,
+                            reducer_action: "session_ended".to_string(),
+                            occurrence_session_id: String::new(),
+                            capture_epoch: 0,
+                            sample_start: 0,
+                            sample_end: 0,
+                            document_index: 0,
+                            label: String::new(),
+                            rendered_text: String::new(),
+                            phase,
+                            can_paste: availability.can_paste,
+                            can_insert: availability.can_insert,
+                            can_copy: availability.can_copy,
+                            can_retranscribe: availability.can_retranscribe,
+                            can_format: availability.can_format,
+                            terminal: true,
+                            acoustic_receipts: Vec::new(),
+                            seal_coverage: None,
+                            comparison: None,
+                        });
+                terminal.sequence = writer.sequence;
+                terminal.emitted_at = Utc::now().to_rfc3339_opts(SecondsFormat::Micros, true);
+                terminal.reducer_action = "session_ended".to_string();
+                terminal.phase = phase;
+                terminal.can_paste = availability.can_paste;
+                terminal.can_insert = availability.can_insert;
+                terminal.can_copy = availability.can_copy;
+                terminal.can_retranscribe = availability.can_retranscribe;
+                terminal.can_format = availability.can_format;
+                terminal.terminal = true;
+                Some(terminal)
             }
-            Err(error) => self.log_write_error(error),
+            Err(error) => {
+                self.log_write_error(error);
+                None
+            }
         }
     }
 
@@ -531,6 +694,13 @@ impl TranscriptBus {
                 audio_start_seconds: None,
                 audio_end_seconds: None,
                 text: String::new(),
+                phase: TranscriptProjectionPhase::Listening,
+                can_paste: false,
+                can_insert: false,
+                can_copy: false,
+                can_retranscribe: false,
+                can_format: false,
+                terminal: false,
                 segments: Vec::new(),
                 words: Vec::new(),
                 coverage: None,
@@ -643,9 +813,27 @@ mod tests {
             "rendered_text": "Kurde",
             "acoustic_receipts": []
         });
-        let decoded: TranscriptBusEvidenceEvent = serde_json::from_value(legacy).unwrap();
+        let mut decoded: TranscriptBusEvidenceEvent = serde_json::from_value(legacy).unwrap();
+        assert_eq!(decoded.phase, TranscriptProjectionPhase::Listening);
+        assert!(!decoded.can_paste);
+        assert!(!decoded.can_insert);
+        assert!(!decoded.can_copy);
+        assert!(!decoded.can_retranscribe);
+        assert!(!decoded.can_format);
+        assert!(!decoded.terminal);
         assert!(decoded.seal_coverage.is_none());
         assert!(decoded.comparison.is_none());
+
+        decoded.phase = TranscriptProjectionPhase::Formatted;
+        decoded.can_paste = true;
+        decoded.can_insert = true;
+        decoded.can_copy = true;
+        decoded.can_retranscribe = true;
+        decoded.can_format = true;
+        decoded.terminal = true;
+        let encoded = serde_json::to_string(&decoded).unwrap();
+        let round_trip: TranscriptBusEvidenceEvent = serde_json::from_str(&encoded).unwrap();
+        assert_eq!(round_trip, decoded);
     }
 
     #[test]
@@ -656,6 +844,8 @@ mod tests {
             TranscriptSession {
                 session_id: "session-agent".to_string(),
                 mode: TranscriptMode::Agent,
+                has_latched_target: false,
+                latched_target_is_self: false,
             },
             path.clone(),
             Some(48_000),
@@ -694,16 +884,27 @@ mod tests {
         let session = TranscriptSession {
             session_id: "session-ended".to_string(),
             mode: TranscriptMode::Dictation,
+            has_latched_target: false,
+            latched_target_is_self: false,
         };
 
         let never_started = TranscriptBus::open_at(session.clone(), path.clone(), None).unwrap();
-        never_started.publish_ended(TranscriptSessionEndReason::StartSuperseded);
+        let never_started_terminal =
+            never_started.publish_ended(TranscriptSessionEndReason::StartSuperseded, false);
+        assert!(never_started_terminal.is_none());
         assert_eq!(std::fs::read_to_string(&path).unwrap().lines().count(), 0);
 
         let bus = TranscriptBus::open_at(session, path.clone(), None).unwrap();
         bus.publish_started();
-        bus.publish_ended(TranscriptSessionEndReason::Completed);
-        bus.publish_ended(TranscriptSessionEndReason::StartFailed);
+        let terminal = bus
+            .publish_ended(TranscriptSessionEndReason::Completed, false)
+            .expect("started session must produce one terminal projection");
+        let duplicate_terminal = bus.publish_ended(TranscriptSessionEndReason::StartFailed, false);
+        assert!(duplicate_terminal.is_none());
+        assert_eq!(terminal.reducer_action, "session_ended");
+        assert_eq!(terminal.phase, TranscriptProjectionPhase::NoSpeech);
+        assert!(terminal.terminal);
+        assert!(terminal.rendered_text.is_empty());
 
         let lines: Vec<CleanTranscriptEvent> = std::fs::read_to_string(&path)
             .unwrap()

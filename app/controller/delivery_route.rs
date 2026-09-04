@@ -131,6 +131,17 @@ pub struct DeliveryDecision {
     pub reason: &'static str,
 }
 
+/// Read-only projection of which overlay actions are legal for one immutable
+/// take snapshot. It does not execute delivery or choose transcript text.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub(crate) struct TranscriptProjectionAvailability {
+    pub can_paste: bool,
+    pub can_insert: bool,
+    pub can_copy: bool,
+    pub can_retranscribe: bool,
+    pub can_format: bool,
+}
+
 /// Localized name of **this process**. Used to skip `NSRunningApplication`
 /// activate (we are already running). Not a paste veto — the Agent window
 /// is a legal Cmd+V sink. Overlay-canvas veto is the Swift caret probe.
@@ -172,6 +183,36 @@ pub fn resolve_delivery_route(intent: DeliveryIntent, facts: DeliveryFacts) -> D
             reason: "explicit_to_agent",
         },
         DeliveryIntent::OverlayInsert => overlay_insert_route(facts),
+    }
+}
+
+/// Derive canvas availability through the delivery throne plus immutable book,
+/// audio, and lifecycle facts. A caller may paint these bits but must not
+/// reconstruct them independently.
+pub(crate) fn resolve_transcript_projection_availability(
+    has_text: bool,
+    take_in_progress: bool,
+    session_wav_exists: bool,
+    has_latched_target: bool,
+    latched_target_is_self: bool,
+) -> TranscriptProjectionAvailability {
+    let insert = resolve_delivery_route(
+        DeliveryIntent::OverlayInsert,
+        overlay_insert_facts(has_text, latched_target_is_self),
+    );
+    let insert_route_is_legal = matches!(
+        insert.route,
+        DeliveryRoute::ClipboardPaste | DeliveryRoute::DeferredInsert
+    );
+
+    TranscriptProjectionAvailability {
+        can_paste: !take_in_progress
+            && has_latched_target
+            && matches!(insert.route, DeliveryRoute::ClipboardPaste),
+        can_insert: !take_in_progress && insert_route_is_legal,
+        can_copy: has_text,
+        can_retranscribe: !take_in_progress && session_wav_exists,
+        can_format: !take_in_progress && has_text,
     }
 }
 
@@ -299,6 +340,70 @@ mod tests {
         assert!(click.latched_target_is_self);
         let decision = resolve_delivery_route(DeliveryIntent::OverlayInsert, click);
         assert_eq!(decision.route, DeliveryRoute::DeferredInsert);
+    }
+
+    #[test]
+    fn projection_availability_follows_book_lifecycle_audio_and_delivery_table() {
+        let cases = [
+            (
+                "listening",
+                (true, true, false, true, false),
+                TranscriptProjectionAvailability {
+                    can_paste: false,
+                    can_insert: false,
+                    can_copy: true,
+                    can_retranscribe: false,
+                    can_format: false,
+                },
+            ),
+            (
+                "formatted_foreign_target",
+                (true, false, true, true, false),
+                TranscriptProjectionAvailability {
+                    can_paste: true,
+                    can_insert: true,
+                    can_copy: true,
+                    can_retranscribe: true,
+                    can_format: true,
+                },
+            ),
+            (
+                "formatted_self_target",
+                (true, false, true, true, true),
+                TranscriptProjectionAvailability {
+                    can_paste: false,
+                    can_insert: true,
+                    can_copy: true,
+                    can_retranscribe: true,
+                    can_format: true,
+                },
+            ),
+            (
+                "no_speech",
+                (false, false, true, true, false),
+                TranscriptProjectionAvailability {
+                    can_paste: false,
+                    can_insert: false,
+                    can_copy: false,
+                    can_retranscribe: true,
+                    can_format: false,
+                },
+            ),
+        ];
+
+        for (name, (has_text, in_progress, wav, has_target, target_is_self), expected) in cases {
+            assert_eq!(
+                resolve_transcript_projection_availability(
+                    has_text,
+                    in_progress,
+                    wav,
+                    has_target,
+                    target_is_self,
+                ),
+                expected,
+                "{name}"
+            );
+        }
     }
 
     #[test]

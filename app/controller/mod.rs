@@ -40,6 +40,9 @@ pub mod serving_status;
 mod types;
 
 pub use delivery_route::{OverlayPasteDelivery, OverlayPasteResult};
+pub(crate) use delivery_route::{
+    TranscriptProjectionAvailability, resolve_transcript_projection_availability,
+};
 pub use helpers::{
     is_assistive_session, is_conversation_session, publish_recording_indicator,
     set_assistive_session, set_assistive_target_thread, set_conversation_session,
@@ -209,6 +212,7 @@ struct HoldStartSession {
     active_transcript_bus: Arc<RwLock<Option<Arc<TranscriptBus>>>>,
     assistive_context: Arc<RwLock<Option<AssistiveContext>>>,
     pre_overlay_frontmost_app: Arc<RwLock<Option<String>>>,
+    event_broadcast: broadcast::Sender<IpcEvent>,
 }
 
 /// Safe filename fragment for a controller session id. Rejects path
@@ -1332,13 +1336,18 @@ impl RecordingController {
         *self.hold_mode.write().await = HoldMode::Raw;
         *self.force_raw_mode.write().await = false;
         *self.force_ai_mode.write().await = false;
-        *self.session_id.write().await = None;
+        let session_id = self.session_id.write().await.take();
+        let session_wav_exists = retainable_session_id(session_id.as_deref())
+            .and_then(session_audio_path)
+            .is_some_and(|path| path.is_file());
         // Every path back to Idle ends the Bus session exactly once (text-free
         // lifecycle line), so an observer can tell "the take is over" apart
         // from "the take is live" even when zero occurrences sealed.
         Self::end_transcript_bus(
             &self.active_transcript_bus,
             TranscriptSessionEndReason::Completed,
+            session_wav_exists,
+            &self.event_broadcast,
         )
         .await;
         *self.assistive_context.write().await = None;
@@ -1361,10 +1370,14 @@ impl RecordingController {
     async fn end_transcript_bus(
         slot: &RwLock<Option<Arc<TranscriptBus>>>,
         reason: TranscriptSessionEndReason,
+        session_wav_exists: bool,
+        event_broadcast: &broadcast::Sender<IpcEvent>,
     ) {
         let ended_bus = slot.write().await.take();
         if let Some(bus) = ended_bus {
-            bus.publish_ended(reason);
+            if let Some(event) = bus.publish_ended(reason, session_wav_exists) {
+                Self::broadcast_transcript_projection(event_broadcast, &event);
+            }
         }
     }
 
@@ -1388,7 +1401,13 @@ impl RecordingController {
             }
             Self::clear_recorder_callbacks(rec);
         }
-        Self::end_transcript_bus(&session.active_transcript_bus, abort.bus_reason()).await;
+        Self::end_transcript_bus(
+            &session.active_transcript_bus,
+            abort.bus_reason(),
+            false,
+            &session.event_broadcast,
+        )
+        .await;
         *session.session_id.write().await = None;
         *session.assistive_context.write().await = None;
         *session.pre_overlay_frontmost_app.write().await = None;
@@ -1560,18 +1579,7 @@ impl RecordingController {
         let projection_broadcast = event_broadcast.clone();
         let projection_callback = Arc::new(
             move |event: &crate::presentation::transcript_bus::TranscriptBusEvidenceEvent| {
-                match serde_json::to_string(event) {
-                    Ok(json) => {
-                        let _ = projection_broadcast.send(IpcEvent {
-                            timestamp: chrono::Utc::now()
-                                .to_rfc3339_opts(chrono::SecondsFormat::Millis, true),
-                            payload: IpcEventPayload::TranscriptProjection { json },
-                        });
-                    }
-                    Err(error) => {
-                        tracing::warn!(%error, "transcript projection serialization failed");
-                    }
-                }
+                Self::broadcast_transcript_projection(&projection_broadcast, event);
             },
         );
         let pe: Arc<dyn codescribe_core::pipeline::contracts::EventSink> =
@@ -1588,6 +1596,28 @@ impl RecordingController {
         Arc::new(codescribe_core::pipeline::sinks::FanoutEventSink::new(
             vec![pe, ipc_sink],
         ))
+    }
+
+    /// Send the sole typed transcript projection over the existing IPC event.
+    /// Reducer revisions arrive through `PresentationEmitter`; the one terminal
+    /// value arrives only after `TranscriptBus::publish_ended` has read the last
+    /// committed book render.
+    fn broadcast_transcript_projection(
+        event_broadcast: &broadcast::Sender<IpcEvent>,
+        event: &crate::presentation::transcript_bus::TranscriptBusEvidenceEvent,
+    ) {
+        match serde_json::to_string(event) {
+            Ok(json) => {
+                let _ = event_broadcast.send(IpcEvent {
+                    timestamp: chrono::Utc::now()
+                        .to_rfc3339_opts(chrono::SecondsFormat::Millis, true),
+                    payload: IpcEventPayload::TranscriptProjection { json },
+                });
+            }
+            Err(error) => {
+                tracing::warn!(%error, "transcript projection serialization failed");
+            }
+        }
     }
 
     /// Feed the overlay's live level meter without doing allocation or timestamp
@@ -2374,6 +2404,7 @@ impl RecordingController {
             .await
             .unwrap_or_default()
         };
+        let has_latched_target = trigger_context.frontmost_app.is_some();
         *self.pre_overlay_frontmost_app.write().await = trigger_context.frontmost_app.clone();
         *self.assistive_context.write().await = Some(trigger_context);
 
@@ -2394,6 +2425,7 @@ impl RecordingController {
             active_transcript_bus: Arc::clone(&self.active_transcript_bus),
             assistive_context: Arc::clone(&self.assistive_context),
             pre_overlay_frontmost_app: Arc::clone(&self.pre_overlay_frontmost_app),
+            event_broadcast: event_broadcast.clone(),
         };
 
         let task = tokio::spawn(async move {
@@ -2568,6 +2600,10 @@ impl RecordingController {
                 } else {
                     TranscriptMode::Dictation
                 },
+                has_latched_target,
+                // The capture-time target predates the overlay caret. A true
+                // self-canvas fact exists only at the explicit defer click.
+                latched_target_is_self: false,
             })
             .map(Arc::new);
             // Install the Bus before the recorder starts: from here every exit
@@ -2700,6 +2736,7 @@ impl RecordingController {
             .await
             .unwrap_or_default()
         };
+        let has_latched_target = trigger_context.frontmost_app.is_some();
         *self.pre_overlay_frontmost_app.write().await = trigger_context.frontmost_app.clone();
         *self.assistive_context.write().await = Some(trigger_context);
 
@@ -2816,6 +2853,10 @@ impl RecordingController {
             } else {
                 TranscriptMode::Dictation
             },
+            has_latched_target,
+            // The capture-time target predates the overlay caret. A true
+            // self-canvas fact exists only at the explicit defer click.
+            latched_target_is_self: false,
         })
         .map(Arc::new);
 

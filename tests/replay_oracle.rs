@@ -154,7 +154,6 @@ fn fixture_preserves_the_34_row_chronology_and_terminal_gap() {
 }
 
 #[test]
-#[ignore = "RED until W1-T2"]
 fn session_6903184c_ends_formatted_from_committed_revision_20() {
     let canvas = replay_projection_effect();
 
@@ -168,4 +167,33 @@ fn session_6903184c_ends_formatted_from_committed_revision_20() {
         CanvasMode::Formatted,
         "session_ended must derive terminal canvas mode from the last committed projection"
     );
+}
+
+#[test]
+fn empty_committed_book_ends_no_speech() {
+    let mut reader = TranscriptProjectionReader::new();
+    let started = serde_json::json!({
+        "schema": "codescribe.transcript.v1",
+        "sequence": 1,
+        "session_id": "empty-session",
+        "status": "session_started"
+    });
+    let ended = serde_json::json!({
+        "schema": "codescribe.transcript.v1",
+        "sequence": 2,
+        "session_id": "empty-session",
+        "status": "session_ended"
+    });
+    assert!(reader.push_line(&started.to_string()).unwrap().is_none());
+    let terminal = reader
+        .push_line(&ended.to_string())
+        .unwrap()
+        .expect("session_ended must project an empty committed book");
+
+    let mut canvas = CanvasState::default();
+    canvas.apply_projection(terminal);
+    assert_eq!(canvas.mode, CanvasMode::NoSpeech);
+    assert_eq!(canvas.revision, Some(0));
+    assert!(canvas.committed_text.is_empty());
+    assert!(canvas.terminal_projection_seen);
 }
