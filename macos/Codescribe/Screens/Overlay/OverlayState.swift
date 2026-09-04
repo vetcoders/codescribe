@@ -17,8 +17,8 @@ import SwiftUI
 //   on_audio_level → capture RMS per block → real waveform amplitude (U22;
 //                   closes the old AMPLITUDE GAP — ambient eq is now only the
 //                   fallback when no live level arrives).
-//   on_no_speech → dedicated `.noSpeech` outcome body (Close only).
-//   on_error     → transient toast.
+//   on_no_speech → user-facing reason sideband; projection owns the phase.
+//   on_error     → recovery detail sideband; projection owns the phase.
 
 // MARK: - Engine seam (orchestrator injects the real adapter in App.swift)
 
@@ -55,6 +55,7 @@ private struct OverlayTranscriptProjection: Equatable {
   let emittedAt: String
   let sessionId: String
   let mode: String
+  let phase: OverlayMode
   let reducerRevision: UInt64
   let reducerAction: String
   let occurrenceSessionId: String
@@ -64,24 +65,13 @@ private struct OverlayTranscriptProjection: Equatable {
   let documentIndex: UInt64
   let label: String
   let renderedText: String
+  let canPaste: Bool
+  let canInsert: Bool
+  let canCopy: Bool
+  let canRetranscribe: Bool
+  let canFormat: Bool
+  let terminal: Bool
   let acousticReceipts: [OverlayProjectedAcousticReceipt]
-}
-
-/// Explicit human-edit receipt projection. W2 must send the edit to the
-/// acoustic ledger and populate this only from its accepted receipt; Swift may
-/// request and display the edit but cannot supersede a sealed label by itself.
-private struct OverlayManualEditReceipt: Equatable {
-  let receiptId: String
-  let occurrenceSessionId: String
-  let captureEpoch: UInt64
-  let sampleStart: UInt64
-  let sampleEnd: UInt64
-  let baseRevision: UInt64
-  let acceptedRevision: UInt64
-  let previousLabel: String
-  let replacementLabel: String
-  let predecessorReceipt: String?
-  let editedAt: String
 }
 
 /// Minimal slice of the controller-backed dictation surface the overlay needs.
@@ -109,62 +99,13 @@ struct OverlayPolicySnapshot: Equatable {
   let autoFormatLevel: FormattingPolicyOption
 }
 
-enum OverlayActionPresentation {
-  static let sendTitle = "To Agent"
-  static let sendHelp = "Send transcript to the agent"
-  static let finishTitle = "Finish"
-  static let finishHelp = "Stop capture and seal the take"
-}
-
-/// Compact chrome primary act for the slim overlay. Secondary actions live in
-/// the attached menu; CloseDot remains the always-visible dismiss control.
-enum OverlayPrimaryActionKind: Equatable {
-  case finish
-  case insert
-}
-
-/// State-aware commands possible in the current mode. One projection feeds the
-/// split chrome: the primary act renders as the button, the rest fill the
-/// attached menu. Impossible actions are omitted instead of rendered disabled.
-enum OverlayActionMenuItem: String, Equatable, Identifiable {
-  case finish
-  case copy
-  case insert
-  case sendToAgent
-  case close
-
-  var id: String { rawValue }
-}
-
-struct OverlayInsertActionPresentation: Equatable {
-  let targetAppName: String?
-  let title: String
-  let help: String
-
-  init(targetAppName: String?) {
-    let normalized = targetAppName?.trimmingCharacters(in: .whitespacesAndNewlines)
-    let target = normalized.flatMap { $0.isEmpty ? nil : $0 }
-    self.targetAppName = target
-    if let target {
-      title = "Insert → \(target)"
-      help = "Insert at the cursor in \(target)"
-    } else {
-      title = "Insert"
-      help = "Insert at the cursor in the previous app"
-    }
-  }
-}
-
-/// State machine mirrored from the mock: live dictation, the finalized
-/// transcript returned by `stopRecording`, or a session that ended without any
-/// usable text (VAD silence / all speech rejected). `.noSpeech` is a dedicated
-/// terminal outcome so the overlay never lands in `.formatted` with an empty
-/// editable FINAL that reads like a crash. `.error` is the terminal outcome for
-/// engine/controller failures so they are not flattened into "no speech".
-enum OverlayMode: Equatable {
+/// Presentation phase supplied by the reducer-owned projection. Swift parses
+/// the wire value but never derives a phase from text, callbacks, or seals.
+enum OverlayMode: String, Equatable {
   case listening
+  case finalizing
   case formatted
-  case noSpeech
+  case noSpeech = "no_speech"
   case error
 }
 
@@ -188,8 +129,16 @@ enum OverlayListenerEvent: Sendable {
 final class OverlayState {
 
   // MARK: Published state
-  var mode: OverlayMode = .listening
-  var formattedText: String = ""  // finalized transcript after stop
+  private(set) var transcriptMode = "dictation"
+  private(set) var mode: OverlayMode = .listening
+  private(set) var formattedText = ""
+  private(set) var revision: UInt64 = 0
+  private(set) var canPaste = false
+  private(set) var canInsert = false
+  private(set) var canCopy = false
+  private(set) var canRetranscribe = false
+  private(set) var canFormat = false
+  private(set) var terminal = false
   var vadActive: Bool = false  // drives the WaveformView pulse
   /// Live capture level for the waveform. NOT on purpose — the
   /// waveform's TimelineView reads it every frame; see `AudioLevelMeter`.
@@ -199,11 +148,8 @@ final class OverlayState {
   private(set) var hasMeasuredAudioLevel = false
   var audioReady: Bool = false  // recorder confirmed; STT/VAD may still be warming
   var warmingUp: Bool = false  // true after user intent, before audio/VAD proves life
-  /// Stop was requested and we are awaiting the final transcript. Distinct from
-  /// recording: the waveform must NOT keep pulsing like capture, and the status
-  /// reads "transcribing" so the user can tell recording ended vs. hung. Set only
-  /// on the Swift-observable stop (`runStop`); cleared by finalize / error / reset
-  /// / close so it can never stick. See `WaveformView(transcribing:)`.
+  /// Stop is in flight. This is a controller/lifecycle guard only; visible phase
+  /// and waveform presentation come from the projection's `phase` field.
   var transcribing: Bool = false
   var toast: String?  // transient error notice
   var errorMessage: String?
@@ -213,7 +159,6 @@ final class OverlayState {
   /// presentation routing only; the controller remains the admission authority.
   private(set) var recoverySettingsSection: SettingsSection?
   private(set) var recoverySettingsAnchor: SettingsAnchor?
-  var isEditingTranscript: Bool = false
   /// Prompt-free policy snapshot from C02's persisted settings owner. These
   /// values are replaced only by a fresh engine read, never by optimistic UI.
   private(set) var autoPasteEnabled = true
@@ -221,15 +166,11 @@ final class OverlayState {
   /// Assistive sessions never expose delivery controls. The controller owns
   /// that authoritative session gate and updates this presentation fence.
   private(set) var autoPasteControlAvailable = true
-  /// Destination name latched once at overlay session entry. The action row
-  /// reads this snapshot; it never polls the bridge during rendering.
-  private(set) var pasteTargetAppName: String?
   /// Serving-engine label latched once per session. Rendering never performs
   /// settings I/O or a UniFFI read.
   private(set) var engineChip = "local apple"
-  /// Final pass phase (AI formatting / authoritative assembly after stop).
-  /// Set on `applySessionFinalised`, cleared on controller finish or reset.
-  /// Drives "final pass" status while the user still sees the live assembly.
+  /// Lifecycle evidence that the final pass is active. It never selects a
+  /// presentation phase; the reducer projection owns that field.
   var isFinalPass: Bool = false
   /// Human-facing notice shown in the `.noSpeech` outcome body. Set when a
   /// session finalizes without usable text; refined by `on_no_speech`'s reason
@@ -292,15 +233,10 @@ final class OverlayState {
   private var recording = false
   /// Reason from `on_no_speech`, captured before the terminal stop.
   private var pendingNoSpeechMessage: String?
-  /// The delivered (pre-user-edit) text at the moment we entered .formatted.
-  /// Captured for P0-D quality loop: diff delivered→edited on Copy/Send/close.
+  /// The exact rendered text at the terminal projection.
   private var deliveredText: String = ""
-  /// Armed only by a genuine TextEditor write and consumed by the first
-  /// delivery action that records that edit. Delivery actions remain separate.
-  private var manualHumanEditPending = false
-  /// Once the reducer projects `record_ledger_terminal_seal`, later machine
-  /// projections are rejected. Human edits operate on the terminal presentation;
-  /// they do not rewrite `latestTranscriptProjection`.
+  /// Last reducer-owned projection painted by Swift. The reducer owns ordering
+  /// and finality; the overlay does not second-guess an event that reached it.
   private var finalized = false
   /// Latest immutable projection event only; Rust `TranscriptRevision` remains
   /// the document owner and Rust `AcousticSerial` remains evidence authority.
@@ -320,7 +256,6 @@ final class OverlayState {
   /// started/activity/stopped/finish arrives within `warmupWatchdogNanos`, the
   /// overlay dismisses itself instead of hanging on "starting" forever.
   private var warmupWatchdogTask: Task<Void, Never>?
-  private var pasteTargetRefreshTask: Task<Void, Never>?
   private static let warmupWatchdogNanos: UInt64 = 4_000_000_000
 
   // MARK: Activity-anchored auto-hide for terminal outcomes
@@ -328,7 +263,7 @@ final class OverlayState {
   private var autoHideDeadline: TimeInterval?
   private var isPointerHovering = false
   private let nowProvider: () -> TimeInterval
-  /// Single source of truth for the operator-dictated terminal lifetime.
+  /// Single source of truth for the Founder-dictated terminal lifetime.
   /// Five seconds is the comfortable end of the requested 3–5 second range.
   static let autoHideDelaySeconds: TimeInterval = 5
 
@@ -367,14 +302,13 @@ final class OverlayState {
   // MARK: Derived display (one source of truth for the view)
 
   var statusText: String {
-    if mode == .error { return "failed" }
-    if mode == .formatted { return "done" }
-    if mode == .noSpeech { return "no speech" }
-    guard mode == .listening else { return "Idle" }
-    if isFinalPass { return "final pass" }
-    if transcribing { return "transcribing" }
-    if warmingUp { return "starting" }
-    return hasMeasuredAudioLevel ? "recording" : "recording · level pending"
+    switch mode {
+    case .listening: return "listening"
+    case .finalizing: return "finalizing"
+    case .formatted: return "formatted"
+    case .noSpeech: return "no speech"
+    case .error: return "error"
+    }
   }
 
   /// Narrow-window projection of the same single phase truth. The full status
@@ -382,25 +316,21 @@ final class OverlayState {
   /// evidence at the 320 pt floor without forcing the pill into a vertical
   /// capsule.
   var compactStatusText: String {
-    statusText == "recording · level pending" ? "recording" : statusText
+    statusText
   }
   var statusColor: Color {
     switch mode {
     case .listening: return CSColor.terracotta
+    case .finalizing: return CSColor.amber
     case .formatted: return CSColor.oliveLight
     case .noSpeech: return CSColor.textMuted
     case .error: return CSColor.terracotta
     }
   }
 
-  /// Only the live-capture pill ripples. During `transcribing` / `final pass`
-  /// we swap to the static pill so its
-  /// repeatForever animation tears down — a second visual cue that capture
-  /// has ended and post-processing is in flight, not a waveform grind.
+  /// Only a reducer-projected listening phase may ripple.
   var statusRippling: Bool {
     mode == .listening
-      && !transcribing
-      && !isFinalPass
       && (audioReady || vadActive)
   }
 
@@ -422,20 +352,19 @@ final class OverlayState {
 
   /// Rust-rendered transcript bytes from the latest admitted projection.
   private var rawLiveText: String {
-    latestTranscriptProjection?.renderedText ?? ""
+    formattedText
   }
 
   var liveText: String {
     rawLiveText
   }
 
-  /// Text shown in the listening body, in the SAME prominent slot that renders
-  /// "listening…"/"starting…" during capture.
+  /// Text shown in the listening/finalizing body.
   ///
   /// CAPTURED WORDS ALWAYS WIN OVER PHASE. The previous shape let the
   /// transcribing phase replace the live canvas with "transcribing…", so
   /// stopping a recording made the user's own words vanish behind a spinner
-  /// until the final text swapped in — the operator dictated the bug report
+  /// until the final text swapped in — the Founder dictated the bug report
   /// into the very canvas that then ate it (2026-08-09 20:13): "wyłączenie
   /// nagrywania zastępuje tekst … i podmienia dopiero ostateczny tekst a tego
   /// ma nie być". The overlay doctrine forbids exactly this class: never drop
@@ -443,14 +372,7 @@ final class OverlayState {
   /// the header pill carries the phase otherwise.
   var listeningDisplay: String {
     if !liveText.isEmpty { return liveText }
-    if isFinalPass { return "final pass…" }
-    if transcribing { return "transcribing…" }
-    return warmingUp ? "starting…" : "listening…"
-  }
-
-  /// Copy is live from the first captured letter — listening or FINAL.
-  var canCopy: Bool {
-    !activeText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+    return mode == .finalizing ? "finalizing…" : "listening…"
   }
 
   /// Timer is mandatory for any session that has started, including the
@@ -459,13 +381,9 @@ final class OverlayState {
     captureStartedAtUptime != nil
   }
 
-  /// Whatever the action row should copy/send for the current state.
+  /// Exact rendered bytes for non-canvas consumers such as copy/delivery.
   var activeText: String {
-    switch mode {
-    case .listening: return liveText
-    case .formatted: return formattedText
-    case .noSpeech, .error: return ""
-    }
+    formattedText
   }
 
   /// Post-take review owns the floating panel. The formatted / no-speech
@@ -473,10 +391,6 @@ final class OverlayState {
   /// `hide()` and arms Agent auto-send.
   var blocksAssistiveOverlayHide: Bool {
     mode == .formatted || mode == .noSpeech
-  }
-
-  var insertActionPresentation: OverlayInsertActionPresentation {
-    OverlayInsertActionPresentation(targetAppName: pasteTargetAppName)
   }
 
   var autoPasteAccessibilityValue: String {
@@ -490,73 +404,6 @@ final class OverlayState {
     case ..<0.35: return "Quiet"
     case ..<0.68: return "Good level"
     default: return "Strong level"
-    }
-  }
-
-  /// One primary act for the slim chrome combo control. `nil` for terminal
-  /// outcomes that only need Close (no-speech / error).
-  var primaryActionKind: OverlayPrimaryActionKind? {
-    switch mode {
-    case .listening: return .finish
-    case .formatted: return .insert
-    case .noSpeech, .error: return nil
-    }
-  }
-
-  var primaryActionTitle: String {
-    switch primaryActionKind {
-    case .finish: return OverlayActionPresentation.finishTitle
-    case .insert: return insertActionPresentation.title
-    case nil: return ""
-    }
-  }
-
-  var primaryActionCompactTitle: String {
-    switch primaryActionKind {
-    case .finish: return OverlayActionPresentation.finishTitle
-    case .insert: return "Insert"
-    case nil: return ""
-    }
-  }
-
-  var primaryActionHelp: String {
-    switch primaryActionKind {
-    case .finish: return OverlayActionPresentation.finishHelp
-    case .insert: return insertActionPresentation.help
-    case nil: return ""
-    }
-  }
-
-  /// Commands possible in the current mode, in menu order. Impossible actions
-  /// are omitted instead of rendered disabled: empty listening has no Copy;
-  /// terminal no-speech/error states keep only the valid Close command.
-  var actionMenuItems: [OverlayActionMenuItem] {
-    switch mode {
-    case .listening:
-      var items: [OverlayActionMenuItem] = [.finish]
-      if canCopy { items.append(.copy) }
-      items.append(.close)
-      return items
-    case .formatted:
-      guard canCopy else { return [.close] }
-      return [.insert, .copy, .sendToAgent, .close]
-    case .noSpeech, .error:
-      return [.close]
-    }
-  }
-
-  /// VoiceOver value names the current phase while the accessibility label
-  /// keeps describing the actions control. Presentation-only state.
-  var actionMenuAccessibilityValue: String {
-    switch mode {
-    case .listening:
-      if isFinalPass { return "Final pass" }
-      if transcribing { return "Transcribing" }
-      if warmingUp { return "Starting recording" }
-      return "Recording in progress"
-    case .formatted: return "Transcript ready"
-    case .noSpeech: return "No speech"
-    case .error: return "Recording failed"
     }
   }
 
@@ -617,7 +464,6 @@ final class OverlayState {
       return
     }
     engine.setListener(listener)
-    mode = .listening
     warmingUp = true
     resetTranscript()
     errorMessage = nil
@@ -667,9 +513,8 @@ final class OverlayState {
 
   private func runStop() async {
     guard let engine else { return }
-    // Enter the explicit "transcribing" phase for the whole awaited stop: the
-    // waveform stops pulsing like capture and the status reads "transcribing"
-    // instead of leaving the recording UI up while the final pass runs.
+    // Prevent duplicate stops while Rust emits authoritative finalizing and
+    // terminal projections. This flag never paints a phase.
     transcribing = true
     warmingUp = false
     freezeCaptureClock()
@@ -786,7 +631,6 @@ final class OverlayState {
     cancelWarmupWatchdog()
     cancelAutoHide()
     toastTask?.cancel()
-    pasteTargetRefreshTask?.cancel()
     if recording, let engine {
       recording = false
       Task { @MainActor in _ = try? await engine.stopRecording() }
@@ -796,24 +640,7 @@ final class OverlayState {
     warmingUp = false
     transcribing = false
     isFinalPass = false
-    isEditingTranscript = false
     onClose?()
-  }
-
-  private func refreshPasteTargetAppName(reset: Bool) {
-    pasteTargetRefreshTask?.cancel()
-    if reset {
-      pasteTargetAppName = nil
-    }
-    guard let engine else { return }
-    pasteTargetRefreshTask = Task { @MainActor [weak self] in
-      let target = await engine.pasteTargetAppName()
-      guard !Task.isCancelled, let self else { return }
-      self.pasteTargetAppName =
-        OverlayInsertActionPresentation(
-          targetAppName: target
-        ).targetAppName
-    }
   }
 
   private func refreshOverlayPolicyTruth() {
@@ -843,41 +670,6 @@ final class OverlayState {
     case let preference? where !preference.isEmpty: engineChip = preference
     default: engineChip = "local apple"
     }
-  }
-
-  func beginTranscriptEdit() {
-    guard mode == .formatted else { return }
-    isEditingTranscript = true
-    cancelAutoHide()
-  }
-
-  func endTranscriptEdit() {
-    guard isEditingTranscript else { return }
-    isEditingTranscript = false
-  }
-
-  /// TextEditor writes through this seam so only actual user edits — never a
-  /// machine projection or file-pass output — re-anchor the terminal lifetime.
-  func userEditedTranscript(_ text: String) {
-    if agentSessionArmed, agentFinalTranscriptAppeared, text != formattedText {
-      agentAutoSendCancelled = true
-    }
-    if text != formattedText {
-      manualHumanEditPending = true
-    }
-    formattedText = text
-    restartAutoHideCountdown()
-  }
-
-  /// One manual edit act may vote once. Copy followed by Close therefore keeps
-  /// the second quality receipt non-voting; a later TextEditor change re-arms it.
-  func consumeManualEditProvenanceForQuality(isEdited: Bool) -> String? {
-    guard isEdited, manualHumanEditPending else {
-      if !isEdited { manualHumanEditPending = false }
-      return nil
-    }
-    manualHumanEditPending = false
-    return "manual_human"
   }
 
   /// Consume the canonical Rust indicator mode. Agent arm is a one-shot
@@ -913,17 +705,17 @@ final class OverlayState {
     }
   }
 
-  // MARK: P0-D quality loop (user edits on FINAL → record + lexicon candidate)
+  // MARK: P0-D quality loop
 
   private func captureQualityIfEdited(action: String) {
     guard mode == .formatted else { return }
     // `commitOverlayQualityRecord` is a free FFI function, not a call on the
     // injected `engine` — so a mocked engine does NOT stop it, and the XCTest
     // suite was appending two synthetic corrections ("original delivered
-    // transcript here with user fix") to the OPERATOR'S live
+    // transcript here with user fix") to the FOUNDER'S live
     // ~/.codescribe/quality/corrections.jsonl on every run. 276 of 501 rows
     // in the real store came from test runs, and they surfaced in Settings ›
-    // Dictionary as if the user had made them (operator screenshot
+    // Dictionary as if the user had made them (Founder screenshot
     // 2026-08-09 14:21, three seconds after a suite finished). The keychain
     // test-host gate landed earlier did not cover this path.
     guard !QualityCaptureHost.isRunningTests else { return }
@@ -933,14 +725,14 @@ final class OverlayState {
     let isEdited = delivered != edited
     // Unedited transcripts used to never reach the review queue — but "not
     // corrected on the overlay" means "no time right now", not "perfect"
-    // (operator, 2026-08-09). Capture them once per session, on close, so
+    // (Founder, 2026-08-09). Capture them once per session, on close, so
     // Settings › Dictionary can serve as the deferred correction desk. The
     // identical delivered/edited pair teaches the lexicon nothing (word-pair
     // extraction over a zero delta yields zero rules), so this fills the
     // queue without poisoning learning.
     guard isEdited || action == "close" else { return }
     let recordedAction = isEdited ? action : "close-unreviewed"
-    let editProvenance = consumeManualEditProvenanceForQuality(isEdited: isEdited)
+    let editProvenance: String? = nil
     // Bridge FFI (generated by uniffi) appends the quality JSONL and feeds safe
     // candidates to lexicon.custom.jsonl. That is blocking disk I/O, so it runs
     // off the main actor — Copy/Send/Close must never wait on the disk.
@@ -988,9 +780,7 @@ final class OverlayState {
     autoPasteControlAvailable = !agentSessionArmed
     finalized = false
     isFinalPass = false
-    mode = .listening
     warmingUp = true
-    isEditingTranscript = false
     audioReady = false
     hasMeasuredAudioLevel = false
     levelMeter.reset()
@@ -1002,7 +792,6 @@ final class OverlayState {
     recording = true
     refreshOverlayPolicyTruth()
     refreshEngineChip(reset: true)
-    refreshPasteTargetAppName(reset: true)
     onRecordingPreparing?()
     armWarmupWatchdog()
   }
@@ -1011,7 +800,6 @@ final class OverlayState {
     cancelWarmupWatchdog()
     finalized = false
     isFinalPass = false
-    mode = .listening
     warmingUp = false
     audioReady = true
     if !recording {
@@ -1027,7 +815,6 @@ final class OverlayState {
     recording = true
     refreshOverlayPolicyTruth()
     refreshEngineChip(reset: false)
-    refreshPasteTargetAppName(reset: false)
     onRecordingStarted?()
   }
 
@@ -1045,33 +832,15 @@ final class OverlayState {
     levelMeter.reset()
     hasMeasuredAudioLevel = false
 
-    // A terminal ledger projection normally finalizes presentation before the
-    // controller returns to idle. If it did not, never leave `.listening` on
-    // screen: capture is over and claiming RECORDING would be false. Preserve
-    // any admitted canvas bytes, surface the missing seal, and release every
-    // app-level recording latch through the same terminal callback.
     if shouldNotifyStopped {
       finalized = true
-      if let noSpeech = pendingNoSpeechMessage {
-        noSpeechNotice = noSpeech
-        mode = .noSpeech
-      } else if mode == .listening {
-        errorMessage = "Recording ended before a sealed transcript was committed"
-        mode = .error
-      }
       onRecordingStopped?()
-      restartAutoHideCountdown()
     }
   }
 
-  /// Native hold-release / toggle stop: the controller entered `Busy` (final
-  /// transcription pass) but no Swift-side `runStop` ran, so nothing had flipped
-  /// us out of the live-capture UI. Enter the same "transcribing" phase the
-  /// Finish button uses (waveform stops pulsing like capture, status reads
-  /// "transcribing"). The terminal `on_recording_stopped`
-  /// clears it, as do error / close / reset. Cancels the warmup watchdog because
-  /// reaching finalisation proves the session progressed. Idempotent: a repeated
-  /// `Busy` broadcast (or one arriving after finalize) is a no-op.
+  /// Native hold-release / toggle-stop lifecycle evidence. It freezes capture
+  /// resources and guards duplicate transitions, but never selects a visible
+  /// phase; only a projection can do that.
   func handleRecordingFinalising() {
     guard recording, !finalized, !transcribing else { return }
     cancelWarmupWatchdog()
@@ -1111,12 +880,11 @@ final class OverlayState {
     warmupWatchdogTask = nil
     guard warmingUp, !finalized else { return }
     abortRecordingSession(resetTranscript: true)
-    mode = .listening
     onClose?()
   }
 
   private var isTerminalMode: Bool {
-    mode == .formatted || mode == .noSpeech || mode == .error
+    terminal
   }
 
   private func restartAutoHideCountdown() {
@@ -1245,11 +1013,7 @@ final class OverlayState {
       if let engine {
         Task { @MainActor in _ = try? await engine.stopRecording() }
       }
-      finishTerminalPresentation(
-        projection: projection,
-        signalsSuccessfulDictation: false,
-        armsAgentAutoSend: false
-      )
+      abortRecordingSession()
       showToast("Dictation failed — transcript kept")
       return
     }
@@ -1372,7 +1136,6 @@ final class OverlayState {
     abortRecordingSession()
     pendingNoSpeechMessage = nil
     noSpeechNotice = OverlayState.defaultNoSpeechNotice
-    formattedText = ""
     isFinalPass = false
     errorMessage = message
     recoverySettingsSection = recoverySection
@@ -1381,55 +1144,19 @@ final class OverlayState {
       captureHadStarted
       ? "Recording stopped before a transcript was available."
       : "Recording did not start."
-    mode = .error
     finalized = true
     showToast(toast)
-    restartAutoHideCountdown()
-  }
-
-  /// Finish UI and capture lifecycle for bytes already admitted through the
-  /// Rust projection boundary. This helper never accepts free-form text.
-  private func finishTerminalPresentation(
-    projection: OverlayTranscriptProjection,
-    signalsSuccessfulDictation: Bool,
-    armsAgentAutoSend: Bool
-  ) {
-    let renderedText = projection.renderedText
-    let hasTranscript =
-      !renderedText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
-    abortRecordingSession()
-    finalized = true
-    isFinalPass = false
-    transcribing = false
-    formattedText = renderedText
-    deliveredText = renderedText
-    agentFinalTranscriptAppeared = armsAgentAutoSend && hasTranscript
-    if hasTranscript {
-      mode = .formatted
-      if signalsSuccessfulDictation {
-        onSuccessfulDictation?()
-      }
-    } else {
-      noSpeechNotice = pendingNoSpeechMessage ?? OverlayState.defaultNoSpeechNotice
-      mode = .noSpeech
-    }
-    restartAutoHideCountdown()
   }
 
   // MARK: Listener-driven mutations (called on the main actor by DictationListener)
 
-  /// Apply one immutable reducer/ledger projection. Swift checks that the
-  /// projected evidence is present, then displays Rust-owned rendered bytes;
-  /// it never admits a label or decides whether a seal exists.
+  /// Parse one reducer-owned projection, then paint every contract field 1:1.
+  /// Ordering, admission, availability and terminal decisions have already
+  /// happened in Rust; this method never reconstructs them from text or receipts.
   func applyTranscriptProjection(_ event: CsTranscriptProjectionEvent) {
-    // Bus sequences restart at 1 for every session, so both the terminal-seal
-    // latch and the monotonic-sequence guard are only meaningful *within* one
-    // session. Applied across sessions they silently drop every projection of
-    // the next take and leave the previous take's sealed text on screen.
-    let remembered = latestTranscriptProjection
-    if let remembered, remembered.sessionId == event.sessionId {
-      guard remembered.reducerAction != "record_ledger_terminal_seal" else { return }
-      guard event.sequence > remembered.sequence else { return }
+    guard let phase = OverlayMode(rawValue: event.phase) else {
+      assertionFailure("Unknown transcript projection phase: \(event.phase)")
+      return
     }
     let acousticReceipts = event.acousticReceipts.map { receipt in
       OverlayProjectedAcousticReceipt(
@@ -1452,21 +1179,14 @@ final class OverlayState {
         manualEditReceipt: receipt.manualEditReceipt
       )
     }
-    let acousticSerials = acousticReceipts.map(\.acousticSerial)
-    let transcriptRevision = event.reducerRevision
-    guard transcriptRevision > 0, !acousticSerials.isEmpty,
-      acousticReceipts.allSatisfy({
-        !$0.acousticSerial.isEmpty && !$0.wordEvidenceReceipts.isEmpty
-          && !$0.layerDecisionReceipts.isEmpty
-      })
-    else { return }
     let projection = OverlayTranscriptProjection(
       schema: event.schema,
       sequence: event.sequence,
       emittedAt: event.emittedAt,
       sessionId: event.sessionId,
       mode: event.mode,
-      reducerRevision: transcriptRevision,
+      phase: phase,
+      reducerRevision: event.reducerRevision,
       reducerAction: event.reducerAction,
       occurrenceSessionId: event.occurrenceSessionId,
       captureEpoch: event.captureEpoch,
@@ -1475,26 +1195,59 @@ final class OverlayState {
       documentIndex: event.documentIndex,
       label: event.label,
       renderedText: event.renderedText,
+      canPaste: event.canPaste,
+      canInsert: event.canInsert,
+      canCopy: event.canCopy,
+      canRetranscribe: event.canRetranscribe,
+      canFormat: event.canFormat,
+      terminal: event.terminal,
       acousticReceipts: acousticReceipts
     )
+    applyProjection(projection)
+  }
+
+  private func applyProjection(_ projection: OverlayTranscriptProjection) {
+    let signalsFirstSuccessfulTerminal =
+      !terminal && projection.terminal && projection.phase == .formatted
+    if projection.terminal {
+      // Release capture before flipping `finalized`; abort uses the previous
+      // value to decide whether the app-level stopped callback is still owed.
+      abortRecordingSession()
+    }
     latestTranscriptProjection = projection
-    markTranscriptActivity()
+    if !projection.terminal {
+      markTranscriptActivity()
+    }
+    transcriptMode = projection.mode
+    mode = projection.phase
+    revision = projection.reducerRevision
     formattedText = projection.renderedText
-    if projection.reducerAction == "record_ledger_terminal_seal" {
-      finishTerminalPresentation(
-        projection: projection,
-        signalsSuccessfulDictation: true,
-        armsAgentAutoSend: true
-      )
+    canPaste = projection.canPaste
+    canInsert = projection.canInsert
+    canCopy = projection.canCopy
+    canRetranscribe = projection.canRetranscribe
+    canFormat = projection.canFormat
+    terminal = projection.terminal
+    finalized = projection.terminal
+
+    if projection.terminal {
+      deliveredText = projection.renderedText
+      agentFinalTranscriptAppeared = projection.phase == .formatted
+      if signalsFirstSuccessfulTerminal {
+        onSuccessfulDictation?()
+      }
+      if projection.phase == .noSpeech {
+        noSpeechNotice = pendingNoSpeechMessage ?? OverlayState.defaultNoSpeechNotice
+      }
+      restartAutoHideCountdown()
     }
   }
 
   func applySessionFinalised() {
     guard !finalized else { return }
     markTranscriptActivity()
-    // Enter final pass phase (the post-stop AI formatting / authoritative
-    // assembly). Status shows "final pass", transcript assembly remains
-    // visible; the controller finish will surface the resolved .formatted.
+    // Lifecycle-only evidence that formatting is running. Presentation remains
+    // whatever the latest reducer projection says.
     isFinalPass = true
     transcribing = false
   }
@@ -1512,22 +1265,11 @@ final class OverlayState {
       message = OverlayState.defaultNoSpeechNotice
     }
     pendingNoSpeechMessage = message
-    if finalized, mode == .formatted,
-      formattedText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
-    {
-      noSpeechNotice = message
-      mode = .noSpeech
-      restartAutoHideCountdown()
-    } else if mode == .noSpeech {
-      noSpeechNotice = message
-    }
+    noSpeechNotice = message
   }
 
   private func resetTranscript() {
-    latestTranscriptProjection = nil
-    formattedText = ""
     deliveredText = ""
-    manualHumanEditPending = false
     pendingNoSpeechMessage = nil
     noSpeechNotice = OverlayState.defaultNoSpeechNotice
     recoverySettingsSection = nil
@@ -1546,13 +1288,9 @@ final class OverlayState {
   }
 
   private func markTranscriptActivity() {
-    manualHumanEditPending = false
     cancelWarmupWatchdog()
     warmingUp = false
     audioReady = true
-    if recording {
-      mode = .listening
-    }
   }
 
   /// `on_audio_level` — capture RMS per audio block. Only feeds the meter
@@ -1597,21 +1335,28 @@ final class OverlayState {
   /// Seeded view model for #Preview in the listening state.
   static func previewListening() -> OverlayState {
     let s = OverlayState()
-    s.mode = .listening
+    s.applyProjection(
+      previewProjection(
+        "add a rate limiter to the login route and write a test for it",
+        phase: .listening,
+        terminal: false
+      )
+    )
     s.vadActive = true
-    s.latestTranscriptProjection = previewProjection(
-      "add a rate limiter to the login route and write a test for it")
     return s
   }
 
   /// Seeded view model for #Preview in the post-capture transcribing phase.
   static func previewTranscribing() -> OverlayState {
     let s = OverlayState()
-    s.mode = .listening
-    s.transcribing = true
+    s.applyProjection(
+      previewProjection(
+        "add a rate limiter to the login route and write a test for it",
+        phase: .finalizing,
+        terminal: false
+      )
+    )
     s.audioReady = true
-    s.latestTranscriptProjection = previewProjection(
-      "add a rate limiter to the login route and write a test for it")
     return s
   }
 
@@ -1619,7 +1364,7 @@ final class OverlayState {
   /// without any usable text).
   static func previewNoSpeech() -> OverlayState {
     let s = OverlayState()
-    s.mode = .noSpeech
+    s.applyProjection(previewProjection("", phase: .noSpeech, terminal: true))
     s.noSpeechNotice = OverlayState.defaultNoSpeechNotice
     return s
   }
@@ -1627,18 +1372,29 @@ final class OverlayState {
   /// Seeded view model for #Preview in the finalized state.
   static func previewFormatted() -> OverlayState {
     let s = OverlayState()
-    s.mode = .formatted
-    s.formattedText =
-      "Add a rate limiter to the login route and write a test that covers the throttle window. Keep the existing error shape."
+    s.applyProjection(
+      previewProjection(
+        "Add a rate limiter to the login route and write a test that covers the throttle window. Keep the existing error shape.",
+        phase: .formatted,
+        terminal: true
+      )
+    )
     return s
   }
 
-  private static func previewProjection(_ renderedText: String) -> OverlayTranscriptProjection {
+  private static func previewProjection(
+    _ renderedText: String,
+    phase: OverlayMode,
+    terminal: Bool
+  ) -> OverlayTranscriptProjection {
     OverlayTranscriptProjection(
       schema: "preview", sequence: 1, emittedAt: "preview", sessionId: "preview", mode: "dictation",
-      reducerRevision: 1, reducerAction: "preview_fixture", occurrenceSessionId: "preview",
+      phase: phase, reducerRevision: 1, reducerAction: "preview_fixture",
+      occurrenceSessionId: "preview",
       captureEpoch: 0, sampleStart: 0, sampleEnd: 0, documentIndex: 0, label: renderedText,
-      renderedText: renderedText, acousticReceipts: [])
+      renderedText: renderedText, canPaste: false, canInsert: false,
+      canCopy: !renderedText.isEmpty, canRetranscribe: terminal, canFormat: !terminal,
+      terminal: terminal, acousticReceipts: [])
   }
 }
 

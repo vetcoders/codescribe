@@ -3,8 +3,7 @@ import SwiftUI
 // Slim evidence-first dictation overlay.
 //
 // Layout (top → bottom):
-//   header   brand · ONE status pill · compact waveform · timer · Auto Paste ·
-//            placement · split primary (Finish/Insert + chevron menu)
+//   header   brand · ONE projection phase · compact waveform · timer
 //   body     transcript is the product surface (listening / formatted / terminal)
 //   footer   ● engine chip · transient actionable notice
 //
@@ -27,9 +26,6 @@ struct DictationOverlayView: View {
   private let windowMinWidth: CGFloat = 320
   private let bodyMinHeight: CGFloat = 130
   private let transcriptMinHeight: CGFloat = 96
-  let buttonRadius: CGFloat = 10
-  let primaryActionHeight: CGFloat = 28
-
   var body: some View {
     GlassPanel(cornerRadius: CSRadius.window, sitsInForest: true) {
       VStack(alignment: .leading, spacing: 0) {
@@ -41,15 +37,6 @@ struct DictationOverlayView: View {
       }
     }
     .csFocusPolicy()
-    .background(
-      OverlayKeyGate(
-        editing: state.isEditingTranscript,
-        onResign: { state.endTranscriptEdit() }
-      )
-      .frame(width: 0, height: 0)
-      .allowsHitTesting(false)
-    )
-    .onExitCommand { state.endTranscriptEdit() }
     .frame(minWidth: windowMinWidth, maxWidth: .infinity, maxHeight: .infinity)
     // Terminal corner clip (U22): GlassPanel paints its background from the
     // CONTENT column's size, not the window's. Whenever the column outgrows
@@ -93,7 +80,7 @@ struct DictationOverlayView: View {
     HStack(spacing: 10) {
       // Brand block with a LIVE dot: the orange dot sits in the window's
       // traffic-light zone and reads as a control, so it IS one — click
-      // closes the overlay (same as the Close action). Hover shows the
+      // closes the overlay. Hover shows the
       // familiar "×" glyph; the wordmark text stays inert.
       HStack(spacing: 9) {
         CloseDot { state.close() }
@@ -105,38 +92,28 @@ struct DictationOverlayView: View {
       }
       phaseStatus(text: state.statusText)
 
-      if state.mode == .listening {
+      if state.mode == .listening || state.mode == .finalizing {
         chromeWaveform(barCount: 18)
       }
 
       Spacer(minLength: 4)
 
       sessionTimer
-
-      if state.autoPasteControlAvailable {
-        autoPasteControl
-      }
-      placementMenu
-        .foregroundStyle(CSColor.textFaint)
-      compactPrimaryAction
     }
     .fixedSize(horizontal: true, vertical: false)
   }
 
-  /// Essential chrome only at the supported 320 pt window floor. Secondary
-  /// policy and placement controls remain available as soon as the window has
-  /// room; Close, one phase, real level evidence, time, and the primary action
-  /// never disappear or collapse vertically.
+  /// Essential chrome only at the supported 320 pt window floor. Close, one
+  /// projected phase, real level evidence, and time never collapse vertically.
   private var narrowHeader: some View {
     HStack(spacing: 7) {
       CloseDot { state.close() }
       phaseStatus(text: state.compactStatusText)
-      if state.mode == .listening {
+      if state.mode == .listening || state.mode == .finalizing {
         chromeWaveform(barCount: 10)
       }
       Spacer(minLength: 0)
       sessionTimer
-      compactPrimaryAction(forceCompactTitle: true)
     }
     .fixedSize(horizontal: true, vertical: false)
   }
@@ -166,8 +143,8 @@ struct DictationOverlayView: View {
   private func chromeWaveform(barCount: Int) -> some View {
     WaveformView(
       barCount: barCount,
-      active: !state.transcribing && !state.isFinalPass && (state.audioReady || state.vadActive),
-      transcribing: state.transcribing || state.isFinalPass,
+      active: state.mode == .listening && (state.audioReady || state.vadActive),
+      transcribing: state.mode == .finalizing,
       indicatorMode: state.indicatorMode,
       meter: state.levelMeter,
       compact: true
@@ -176,72 +153,6 @@ struct DictationOverlayView: View {
     .accessibilityLabel("Live audio level")
     .accessibilityValue(state.audioLevelAccessibilityValue)
     .allowsHitTesting(false)
-  }
-
-  /// Compact persisted delivery control. `ViewThatFits` keeps the literal label
-  /// in normal widths and falls back to the same truthful icon/value control at
-  /// the 320pt floor. Both variants share one explicit accessibility contract.
-  private var autoPasteControl: some View {
-    Button {
-      state.setAutoPasteEnabled(!state.autoPasteEnabled)
-    } label: {
-      ViewThatFits(in: .horizontal) {
-        autoPasteControlLabel(showTitle: true)
-        autoPasteControlLabel(showTitle: false)
-      }
-    }
-    .csFocusRing(cornerRadius: CSRadius.pill)
-    .help("Auto Paste: \(state.autoPasteAccessibilityValue)")
-    .accessibilityLabel("Auto Paste")
-    .accessibilityValue(state.autoPasteAccessibilityValue)
-    .accessibilityHint("Automatically insert completed dictation in the previous app")
-    .accessibilityIdentifier("overlay-auto-paste")
-  }
-
-  private func autoPasteControlLabel(showTitle: Bool) -> some View {
-    HStack(spacing: 5) {
-      Image(systemName: "arrow.down.doc.fill")
-        .font(.system(size: 10, weight: .semibold))
-      if showTitle {
-        Text("Auto Paste")
-          .csMono(9, .semibold)
-          .lineLimit(1)
-      }
-      Circle()
-        .fill(state.autoPasteEnabled ? CSColor.oliveLight : CSColor.textFaint)
-        .frame(width: 6, height: 6)
-    }
-    .foregroundStyle(CSColor.textFaint)
-    .padding(.horizontal, showTitle ? 8 : 7)
-    .padding(.vertical, 5)
-    .background(CSColor.surfaceRaised(0.04))
-    .overlay(
-      Capsule().strokeBorder(CSColor.hairline(0.12), lineWidth: 1)
-    )
-    .clipShape(Capsule())
-  }
-
-  /// Placement config under the `…` icon: six screen anchors or free motion.
-  /// Selecting an anchor exits free motion (the pick's intent is "go there");
-  /// the reposition itself is orchestrated via `OverlayState.onPlacementChanged`.
-  private var placementMenu: some View {
-    Menu {
-      Picker("Position", selection: $state.placementAnchor) {
-        ForEach(OverlayAnchor.allCases) { anchor in
-          Text(anchor.label).tag(anchor)
-        }
-      }
-      .pickerStyle(.inline)
-      Divider()
-      Toggle("Free motion", isOn: $state.freeMotion)
-    } label: {
-      CSIconView(icon: .more, size: 15, weight: .medium)
-    }
-    .menuStyle(.button)
-    .csFocusRing()
-    .menuIndicator(.hidden)
-    .fixedSize()
-    .accessibilityIdentifier("overlay-placement-menu")
   }
 
   /// Live `00:00` session counter — absolute reference for audio sync and lag.
@@ -267,15 +178,10 @@ struct DictationOverlayView: View {
   private var bodySection: some View {
     Group {
       switch state.mode {
-      case .listening:
+      case .listening, .finalizing:
         listeningBody
           .transition(reduceMotion ? .identity : .opacity.combined(with: .offset(y: 8)))
       case .formatted:
-        // TextEditor is an AppKit-backed platform view. Moving it with a SwiftUI
-        // transition can leave its native text layer painting at the old frame
-        // while the surrounding stack has already settled, which lets transcript
-        // glyphs bleed through the action row during finalization. The FINAL body
-        // swaps in place; the containing clip below is the hard sibling boundary.
         formattedBody
       case .noSpeech:
         noSpeechBody
@@ -291,8 +197,7 @@ struct DictationOverlayView: View {
     .padding(.horizontal, 20)
     .padding(.top, 4)
     .padding(.bottom, 10)
-    // Platform-backed TextEditor content must never paint into the action/footer
-    // siblings, including the mode-transition and live-resize frames.
+    // Transcript content must never paint into the footer during live resize.
     .clipped()
     .animation(reduceMotion ? nil : CSMotion.floatIn, value: state.mode)
   }
@@ -323,40 +228,18 @@ struct DictationOverlayView: View {
   }
 
   private var formattedBody: some View {
-    VStack(alignment: .leading, spacing: 8) {
-      if state.isEditingTranscript {
-        TextEditor(
-          text: Binding(
-            get: { state.formattedText },
-            set: { state.userEditedTranscript($0) }
-          )
-        )
-        .csFont(19)
+    ScrollView {
+      Text(state.formattedText)
+        .csFont(19, .medium)
         .foregroundStyle(CSColor.textHigh)
         .lineSpacing(6)
-        .scrollContentBackground(.hidden)
-        .background(Color.clear)
-        .frame(minHeight: bodyMinHeight)
-        .accessibilityIdentifier("overlay-transcript-formatted")
-      } else {
-        Button {
-          state.beginTranscriptEdit()
-        } label: {
-          Text(state.formattedText)
-            .csFont(19, .medium)
-            .foregroundStyle(CSColor.textHigh)
-            .lineSpacing(6)
-            .frame(maxWidth: .infinity, minHeight: bodyMinHeight, alignment: .topLeading)
-            .contentShape(Rectangle())
-        }
-        .buttonStyle(.plain)
-        .accessibilityLabel("Final transcript")
-        .accessibilityValue(state.formattedText)
-        .accessibilityHint("Edit transcript")
-        .accessibilityIdentifier("overlay-transcript-formatted")
-        .help("Click to edit. The caret stays in the other app until you do.")
-      }
+        .textSelection(.enabled)
+        .frame(maxWidth: .infinity, alignment: .topLeading)
     }
+    .frame(maxWidth: .infinity, minHeight: bodyMinHeight, alignment: .topLeading)
+    .accessibilityLabel("Final transcript")
+    .accessibilityValue(state.formattedText)
+    .accessibilityIdentifier("overlay-transcript-formatted")
   }
 
   /// Terminal outcome for a session that captured no usable speech. Replaces
@@ -413,34 +296,6 @@ struct DictationOverlayView: View {
       }
     }
     .frame(maxWidth: .infinity, minHeight: bodyMinHeight, alignment: .leading)
-  }
-
-  // MARK: Compact primary action
-
-  /// Split chrome control: the title runs the primary act; the chevron is a
-  /// separate menu. One capsule, two hit targets. macOS Menu with a primary
-  /// action treats the whole control as that action, so the chevron never opens.
-  /// CloseDot stays the always-visible dismiss path; Close remains in the menu.
-  @ViewBuilder
-  private var compactPrimaryAction: some View {
-    compactPrimaryAction(forceCompactTitle: false)
-  }
-
-  @ViewBuilder
-  private func compactPrimaryAction(forceCompactTitle: Bool) -> some View {
-    if let kind = state.primaryActionKind {
-      splitPrimaryAction(kind: kind, compact: forceCompactTitle)
-    }
-  }
-
-  /// Seal-to-delivery hop. One Loctree body in this file — the split chrome
-  /// that *calls* this hop lives in `OverlaySplitPrimaryAction.swift` so a
-  /// later trailing closure (`Menu { … }`) is not emitted as a second body.
-  func performPrimaryAction(_ kind: OverlayPrimaryActionKind) {
-    switch kind {
-    case .finish: state.stop()
-    case .insert: state.pasteToPreviousApp()
-    }
   }
 
   // MARK: Footer
@@ -577,7 +432,7 @@ private struct AnimatedOverlayCaret: View {
 
 /// The overlay's brand dot as a real close control. It sits where macOS puts
 /// traffic lights, so it honors that promise: hover swaps in the familiar "x"
-/// glyph and click closes the overlay (same path as Close in the secondary menu).
+/// glyph and click closes the overlay.
 /// The cursor stays the SYSTEM ARROW — real macOS window controls never switch
 /// to a pointing hand, and neither does this one (U22; reverts 5415e7e's
 /// pointingHand). Only the dot is live — the wordmark text is inert.

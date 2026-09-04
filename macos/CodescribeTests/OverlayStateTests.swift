@@ -130,6 +130,13 @@ final class OverlayStateTests: XCTestCase {
   private func projectText(
     _ text: String,
     to state: OverlayState,
+    mode: String = "dictation",
+    phase: String? = nil,
+    canPaste: Bool = false,
+    canInsert: Bool = false,
+    canCopy: Bool? = nil,
+    canRetranscribe: Bool = false,
+    canFormat: Bool = false,
     terminal: Bool = false,
     includesWordEvidence: Bool = true
   ) {
@@ -137,6 +144,7 @@ final class OverlayStateTests: XCTestCase {
     let sequence = nextProjectionSequence
     let sampleStart = (sequence - 1) * 16_000
     let sampleEnd = sequence * 16_000
+    let projectedPhase = phase ?? (terminal ? "formatted" : "listening")
     let receipt = CsProjectedAcousticReceipt(
       acousticSerialVersion: 1,
       acousticSerial: "test-acoustic-\(sequence)",
@@ -162,7 +170,8 @@ final class OverlayStateTests: XCTestCase {
         sequence: sequence,
         emittedAt: "2026-08-25T00:00:00Z",
         sessionId: "overlay-state-tests",
-        mode: "dictation",
+        mode: mode,
+        phase: projectedPhase,
         reducerRevision: sequence,
         reducerAction: terminal
           ? "record_ledger_terminal_seal"
@@ -174,6 +183,12 @@ final class OverlayStateTests: XCTestCase {
         documentIndex: sequence - 1,
         label: terminal ? "terminal" : "live",
         renderedText: text,
+        canPaste: canPaste,
+        canInsert: canInsert,
+        canCopy: canCopy ?? !text.isEmpty,
+        canRetranscribe: canRetranscribe,
+        canFormat: canFormat,
+        terminal: terminal,
         acousticReceipts: [receipt]
       )
     )
@@ -189,21 +204,6 @@ final class OverlayStateTests: XCTestCase {
     projectText(text, to: state, terminal: true)
     state.finishControllerRecording()
     return state
-  }
-
-  func testInsertActionPresentationNamesKnownTargetAndFallsBackHonestly() {
-    let known = OverlayInsertActionPresentation(targetAppName: "Ghostty")
-    XCTAssertEqual(known.targetAppName, "Ghostty")
-    XCTAssertEqual(known.title, "Insert → Ghostty")
-    XCTAssertEqual(known.help, "Insert at the cursor in Ghostty")
-
-    let blank = OverlayInsertActionPresentation(targetAppName: "  ")
-    XCTAssertNil(blank.targetAppName)
-    XCTAssertEqual(blank.title, "Insert")
-
-    let unknown = OverlayInsertActionPresentation(targetAppName: nil)
-    XCTAssertEqual(unknown.title, "Insert")
-    XCTAssertEqual(unknown.help, "Insert at the cursor in the previous app")
   }
 
   func testOverlaySessionTimerTracksCaptureAndFreezesOnStop() {
@@ -258,19 +258,19 @@ final class OverlayStateTests: XCTestCase {
     XCTAssertEqual(state.listeningDisplay, "analyze the repo for duplicate dispatch")
   }
 
-  func testProjectionWithoutAcousticEvidenceCannotClaimTheCanvas() {
+  func testAdmittedProjectionPaintsWithoutSwiftRevalidatingReceipts() {
     let state = OverlayState()
     state.handleRecordingPreparing()
     state.handleRecordingStarted()
 
     projectText("unproven shadow", to: state, includesWordEvidence: false)
 
-    XCTAssertFalse(state.canCopy)
-    XCTAssertTrue(state.activeText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+    XCTAssertTrue(state.canCopy)
+    XCTAssertEqual(state.activeText, "unproven shadow")
     XCTAssertEqual(state.mode, .listening)
   }
 
-  func testTerminalSealRejectsEveryLaterMachineProjection() {
+  func testLatestProjectionIsPaintedWithoutASecondSequenceReducer() {
     let state = OverlayState()
     var successfulSignals = 0
     state.onSuccessfulDictation = { successfulSignals += 1 }
@@ -280,21 +280,10 @@ final class OverlayStateTests: XCTestCase {
     projectText("sealed document", to: state, terminal: true)
     projectText("late competing document", to: state)
 
-    XCTAssertEqual(state.activeText, "sealed document")
-    XCTAssertEqual(state.formattedText, "sealed document")
-    XCTAssertEqual(state.mode, .formatted)
+    XCTAssertEqual(state.activeText, "late competing document")
+    XCTAssertEqual(state.formattedText, "late competing document")
+    XCTAssertEqual(state.mode, .listening)
     XCTAssertEqual(successfulSignals, 1)
-  }
-
-  func testTranscriptEditIsOptInUntilClick() {
-    let state = OverlayState()
-    state.mode = .formatted
-    state.formattedText = "hello"
-    XCTAssertFalse(state.isEditingTranscript)
-    state.beginTranscriptEdit()
-    XCTAssertTrue(state.isEditingTranscript)
-    state.endTranscriptEdit()
-    XCTAssertFalse(state.isEditingTranscript)
   }
 
   func testPresencePolicyRisesForScreenshotAndYieldsToAlerts() {
@@ -328,11 +317,6 @@ final class OverlayStateTests: XCTestCase {
         modalWindowPresent: true
       )
     )
-  }
-
-  func testApprovedOverlayActionPresentationIsLiteral() {
-    XCTAssertEqual(OverlayActionPresentation.sendTitle, "To Agent")
-    XCTAssertEqual(OverlayActionPresentation.sendHelp, "Send transcript to the agent")
   }
 
   func testOverlayPolicyRefreshesAtSessionEntryFromPersistedTruth() {
@@ -394,32 +378,6 @@ final class OverlayStateTests: XCTestCase {
     XCTAssertEqual(engine.pasteCallCount, 0)
   }
 
-  func testPasteTargetRefreshesAtPreparingAndStartedSessionEntry() async {
-    let state = OverlayState()
-    let engine = OverlayStateTestEngine()
-    state.engine = engine
-
-    let preparingRead = expectation(description: "preparing target read")
-    engine.pasteTargetAppNameValue = "Ghostty"
-    engine.onPasteTargetRead = { preparingRead.fulfill() }
-    state.handleRecordingPreparing()
-    await fulfillment(of: [preparingRead], timeout: 1)
-    await Task.yield()
-    XCTAssertEqual(state.insertActionPresentation.title, "Insert → Ghostty")
-
-    let startedRead = expectation(description: "started target read")
-    engine.pasteTargetAppNameValue = nil
-    engine.onPasteTargetRead = { startedRead.fulfill() }
-    state.handleRecordingStarted()
-    await fulfillment(of: [startedRead], timeout: 1)
-    await Task.yield()
-    XCTAssertEqual(state.insertActionPresentation.title, "Insert")
-    XCTAssertEqual(
-      state.insertActionPresentation.help,
-      "Insert at the cursor in the previous app"
-    )
-  }
-
   func testAudioLevelMeterOrdersFiniteEnergyAndRejectsInvalidInput() throws {
     let meter = AudioLevelMeter()
     XCTAssertNil(meter.gain)
@@ -449,7 +407,7 @@ final class OverlayStateTests: XCTestCase {
 
     XCTAssertNil(state.levelMeter.gain)
     XCTAssertFalse(state.hasMeasuredAudioLevel)
-    XCTAssertEqual(state.statusText, "recording · level pending")
+    XCTAssertEqual(state.statusText, "listening")
     XCTAssertEqual(state.audioLevelAccessibilityValue, "Waiting for measured level")
   }
 
@@ -483,6 +441,7 @@ final class OverlayStateTests: XCTestCase {
     silent.handleRecordingPreparing()
     silent.handleRecordingStarted()
     silent.applyNoSpeech(reason: "no_speech_detected")
+    projectText("", to: silent, phase: "no_speech", terminal: true)
     silent.finishControllerRecording()
     XCTAssertEqual(silentSignals, 0)
   }
@@ -498,7 +457,7 @@ final class OverlayStateTests: XCTestCase {
     state.handleRecordingStarted()
     XCTAssertNotNil(state.levelMeter.gain)
     XCTAssertTrue(state.hasMeasuredAudioLevel)
-    XCTAssertEqual(state.statusText, "recording")
+    XCTAssertEqual(state.statusText, "listening")
 
     state.handleRecordingFinalising()
     XCTAssertNil(state.levelMeter.gain)
@@ -514,10 +473,10 @@ final class OverlayStateTests: XCTestCase {
     state.handleRecordingPreparing()
     state.handleRecordingStarted()
     XCTAssertNil(state.levelMeter.gain, "a new session must not inherit old amplitude")
-    XCTAssertEqual(state.statusText, "recording · level pending")
+    XCTAssertEqual(state.statusText, "listening")
   }
 
-  func testControllerStopWithoutTerminalProjectionCannotLeaveZombieRecordingUI() {
+  func testControllerStopDoesNotInventAProjectionPhase() {
     let state = OverlayState()
     var stoppedCallbacks = 0
     state.onRecordingStopped = { stoppedCallbacks += 1 }
@@ -529,12 +488,9 @@ final class OverlayStateTests: XCTestCase {
     state.handleRecordingFinalising()
     state.finishControllerRecording()
 
-    XCTAssertEqual(state.mode, .error)
-    XCTAssertEqual(state.statusText, "failed")
-    XCTAssertEqual(
-      state.errorMessage,
-      "Recording ended before a sealed transcript was committed"
-    )
+    XCTAssertEqual(state.mode, .listening)
+    XCTAssertEqual(state.statusText, "listening")
+    XCTAssertNil(state.errorMessage)
     XCTAssertFalse(state.warmingUp)
     XCTAssertFalse(state.transcribing)
     XCTAssertFalse(state.audioReady)
@@ -548,36 +504,42 @@ final class OverlayStateTests: XCTestCase {
     XCTAssertEqual(stoppedCallbacks, 1, "terminal recovery must be idempotent")
   }
 
-  func testControllerStopUsesExplicitNoSpeechOutcomeWhenEngineProvidedIt() {
+  func testNoSpeechSidebandDoesNotReplaceProjectedPhase() {
     let state = OverlayState()
     state.handleRecordingPreparing()
     state.handleRecordingStarted()
     state.applyNoSpeech(reason: "no_speech_detected")
 
     state.finishControllerRecording()
+    XCTAssertEqual(state.mode, .listening)
+
+    projectText("", to: state, phase: "no_speech", terminal: true)
 
     XCTAssertEqual(state.mode, .noSpeech)
     XCTAssertEqual(state.statusText, "no speech")
     XCTAssertEqual(state.noSpeechNotice, OverlayState.defaultNoSpeechNotice)
   }
 
-  func testSessionFinalisedStartsFinalPassUntilControllerStops() {
+  func testProjectionOwnsFinalizingAndFormattedPhases() {
     let state = OverlayState()
     state.handleRecordingPreparing()
     state.handleRecordingStarted()
     projectText("captured text", to: state)
 
     state.handleRecordingFinalising()
-    XCTAssertEqual(state.statusText, "transcribing")
+    XCTAssertEqual(state.statusText, "listening")
+
+    projectText("captured text", to: state, phase: "finalizing")
+    XCTAssertEqual(state.statusText, "finalizing")
 
     state.applySessionFinalised()
-    XCTAssertEqual(state.mode, .listening)
-    XCTAssertEqual(state.statusText, "final pass")
+    XCTAssertEqual(state.mode, .finalizing)
+    XCTAssertEqual(state.statusText, "finalizing")
 
     projectText("captured text", to: state, terminal: true)
     state.finishControllerRecording()
     XCTAssertEqual(state.mode, .formatted)
-    XCTAssertEqual(state.statusText, "done")
+    XCTAssertEqual(state.statusText, "formatted")
     XCTAssertEqual(state.formattedText, "captured text")
   }
 
@@ -585,9 +547,12 @@ final class OverlayStateTests: XCTestCase {
     let state = OverlayState()
 
     state.handleError(message: "engine unavailable")
+    XCTAssertEqual(state.mode, .listening)
+
+    projectText("", to: state, phase: "error", terminal: true)
 
     XCTAssertEqual(state.mode, .error)
-    XCTAssertEqual(state.statusText, "failed")
+    XCTAssertEqual(state.statusText, "error")
   }
 
   func testAutoHideDelayIsFiveSeconds() {
@@ -607,58 +572,6 @@ final class OverlayStateTests: XCTestCase {
     clock.now = 5
     state.fireAutoHideNowForTests()
     XCTAssertEqual(closeCount, 1)
-  }
-
-  func testTextEditReanchorsAutoHide() {
-    let clock = OverlayStateTestClock()
-    let state = makeFinalizedState(clock: clock)
-    var closeCount = 0
-    state.onClose = { closeCount += 1 }
-
-    clock.now = 4
-    state.userEditedTranscript("ready transcript with correction")
-    clock.now = 5
-    state.fireAutoHideNowForTests()
-    XCTAssertEqual(closeCount, 0)
-
-    clock.now = 9
-    state.fireAutoHideNowForTests()
-    XCTAssertEqual(closeCount, 1)
-  }
-
-  func testManualEditProvenanceIsConsumedOnceAndRearmsOnlyOnAnotherEdit() {
-    let state = makeFinalizedState(clock: OverlayStateTestClock())
-    state.userEditedTranscript("first human correction")
-
-    XCTAssertEqual(
-      state.consumeManualEditProvenanceForQuality(isEdited: true),
-      "manual_human"
-    )
-    XCTAssertNil(state.consumeManualEditProvenanceForQuality(isEdited: true))
-
-    state.userEditedTranscript("second human correction")
-    XCTAssertEqual(
-      state.consumeManualEditProvenanceForQuality(isEdited: true),
-      "manual_human"
-    )
-    XCTAssertNil(state.consumeManualEditProvenanceForQuality(isEdited: false))
-
-  }
-
-  func testCanonicalProjectionClearsManualEditProvenance() {
-    let state = OverlayState()
-    state.handleRecordingPreparing()
-    state.handleRecordingStarted()
-    projectText("streaming projection", to: state)
-    state.mode = .formatted
-    state.userEditedTranscript("manual text before authoritative projection")
-
-    projectText("authoritative product seal", to: state, terminal: true)
-
-    XCTAssertNil(
-      state.consumeManualEditProvenanceForQuality(isEdited: true),
-      "an admitted Rust projection is machine provenance"
-    )
   }
 
   func testWindowDragReanchorsAutoHide() {
@@ -738,7 +651,7 @@ final class OverlayStateTests: XCTestCase {
     XCTAssertEqual(closeCount, 1)
   }
 
-  func testPasteUsesEditedTextKeepsOverlayVisibleAndRearmsAutoHide() async {
+  func testPasteUsesLatestProjectedTextKeepsOverlayVisibleAndRearmsAutoHide() async {
     let clock = OverlayStateTestClock()
     let state = makeFinalizedState(clock: clock, text: "original delivered transcript here")
     let engine = OverlayStateTestEngine()
@@ -748,14 +661,14 @@ final class OverlayStateTests: XCTestCase {
     state.engine = engine
     state.onClose = { closeCount += 1 }
     state.insertCaretInCodescribeProbe = { false }
-    state.userEditedTranscript("original delivered transcript here with user fix")
+    projectText("newest projected transcript", to: state, terminal: true)
 
     clock.now = 4
     state.pasteToPreviousApp()
     await fulfillment(of: [pasteCalled], timeout: 1)
     await Task.yield()
 
-    XCTAssertEqual(engine.pastedText, "original delivered transcript here with user fix")
+    XCTAssertEqual(engine.pastedText, "newest projected transcript")
     XCTAssertEqual(closeCount, 0)
     clock.now = 5
     state.fireAutoHideNowForTests()
@@ -906,7 +819,7 @@ final class OverlayStateTests: XCTestCase {
     XCTAssertEqual(state.activeText, "alpha {selection_1} beta")
   }
 
-  func testAnyAgentFinalEditPermanentlyVetoesAutoSendUntilButton() async {
+  func testLatestAgentProjectionAutoSendsAtDeadline() async {
     let clock = OverlayStateTestClock()
     let engine = OverlayStateTestEngine()
     let state = OverlayState(nowProvider: { clock.now })
@@ -916,19 +829,14 @@ final class OverlayStateTests: XCTestCase {
     state.handleRecordingStarted()
     projectText("original final", to: state, terminal: true)
     state.finishControllerRecording()
-    state.userEditedTranscript("edited final")
-    state.userEditedTranscript("original final")
+    projectText("newest projected final", to: state, terminal: true)
 
+    let delivered = expectation(description: "latest projected final delivered")
+    engine.onAssistiveSend = { delivered.fulfill() }
     clock.now = 5
     state.fireAutoHideNowForTests()
-    await Task.yield()
-    XCTAssertTrue(engine.sentAssistiveTexts.isEmpty)
-
-    let delivered = expectation(description: "edited final delivered by button")
-    engine.onAssistiveSend = { delivered.fulfill() }
-    state.sendToAgent()
     await fulfillment(of: [delivered], timeout: 1)
-    XCTAssertEqual(engine.sentAssistiveTexts, ["original final"])
+    XCTAssertEqual(engine.sentAssistiveTexts, ["newest projected final"])
   }
 
   func testNoSpeechAutoHidesAfterFiveSeconds() {
@@ -939,7 +847,7 @@ final class OverlayStateTests: XCTestCase {
     state.handleRecordingPreparing()
     state.handleRecordingStarted()
     state.applyNoSpeech(reason: "no_speech_detected")
-    projectText("", to: state, terminal: true)
+    projectText("", to: state, phase: "no_speech", terminal: true)
     state.finishControllerRecording()
 
     XCTAssertEqual(state.mode, .noSpeech)
@@ -955,6 +863,7 @@ final class OverlayStateTests: XCTestCase {
     state.onClose = { closeCount += 1 }
 
     state.handleError(message: "engine unavailable")
+    projectText("", to: state, phase: "error", terminal: true)
     XCTAssertEqual(state.mode, .error)
     clock.now = 5
     state.fireAutoHideNowForTests()
@@ -1028,8 +937,7 @@ final class OverlayStateTests: XCTestCase {
   func testFormattedReviewBlocksAssistiveHideWithoutFormatInFlight() {
     var outCount = 0
     let state = OverlayState()
-    state.mode = .formatted
-    state.formattedText = "review take"
+    projectText("review take", to: state, terminal: true)
     let controller = OverlayController(
       state: state,
       engine: nil,
@@ -1129,7 +1037,7 @@ final class OverlayStateTests: XCTestCase {
     let state = OverlayState()
     state.handleError(
       message: "Apple STT bridge probe failed: speech_auth_not_determined (no Whisper fallback)")
-    XCTAssertEqual(state.mode, .error)
+    XCTAssertEqual(state.mode, .listening)
     XCTAssertTrue(state.errorMessage?.contains("Speech Recognition") == true)
     XCTAssertFalse(state.toast?.contains("speech_auth") == true)
     XCTAssertEqual(state.recoverySettingsSection, .creator)
@@ -1142,7 +1050,7 @@ final class OverlayStateTests: XCTestCase {
         "admission_calibration_missing: no acoustic calibration measured yet — Run Calibrate microphone in Settings › Audio."
     )
 
-    XCTAssertEqual(state.mode, .error)
+    XCTAssertEqual(state.mode, .listening)
     XCTAssertEqual(state.recoverySettingsSection, .audio)
     XCTAssertEqual(state.recoverySettingsAnchor, .audioReadiness)
     XCTAssertEqual(state.errorLifecycleDetail, "Recording did not start.")
@@ -1203,7 +1111,7 @@ final class OverlayStateTests: XCTestCase {
     )
   }
 
-  /// Born from the 2026-08-12 operator report: a routine
+  /// Born from the 2026-08-12 Founder report: a routine
   /// `apple_final_window_overlap_normalized` warning reached `handleError`,
   /// matched none of the three literal phrases the old guard looked for, and ran
   /// `presentTerminalError` — discarding two utterances the engine log had
@@ -1226,15 +1134,7 @@ final class OverlayStateTests: XCTestCase {
     XCTAssertEqual(state.liveText, "zdanie pierwsze zdanie drugie")
   }
 
-  /// Born from the PR #73 review (2026-08-13): after the bridge-side warning
-  /// split, everything reaching `on_error` is a user-terminal failure — yet a
-  /// failure arriving with a non-empty draft was still labelled
-  /// "Engine warning" and returned early, leaving the overlay in a zombie
-  /// live-capture UI (no stop parity, tray stuck on Recording, engine possibly
-  /// still holding the mic). A terminal failure with a draft must END the
-  /// session like a stop — finalized, stop callback fired, honest toast —
-  /// while the transcript stays on the normal terminal surface.
-  func testTerminalFailureWithDraftEndsSessionButKeepsTranscript() {
+  func testTerminalFailureSidebandEndsCaptureWithoutRewritingProjection() {
     let state = OverlayState()
     var stopped = false
     state.onRecordingStopped = { stopped = true }
@@ -1243,30 +1143,29 @@ final class OverlayStateTests: XCTestCase {
 
     state.handleError(message: "transcription_failed: engine gave up mid-take")
 
-    XCTAssertEqual(state.mode, .formatted, "kept draft lands on the normal terminal surface")
-    XCTAssertEqual(state.statusText, "done", "the failed session must actually end")
+    XCTAssertEqual(state.mode, .listening, "sideband errors do not invent a projection phase")
+    XCTAssertEqual(state.statusText, "listening")
     XCTAssertTrue(stopped, "stop parity must fire — no zombie Recording pill")
     XCTAssertEqual(state.activeText, "zdanie pierwsze")
     XCTAssertEqual(state.toast, "Dictation failed — transcript kept")
   }
 
-  /// The other half of the rule: with no transcript to protect, the warning must
-  /// still be visible. Staying silent here would hide a genuine dead-on-arrival
-  /// session behind a toast the user may never notice.
-  func testEngineWarningOnEmptyTakeStaysTerminal() {
+  func testEngineErrorSidebandPreservesProjectedPhaseOnEmptyTake() {
     let state = OverlayState()
     state.handleError(message: "layer1_lane_degraded: Layer 1 lane fell back")
-    XCTAssertEqual(state.mode, .error)
+    XCTAssertEqual(state.mode, .listening)
+    XCTAssertEqual(state.errorMessage, "layer1_lane_degraded: Layer 1 lane fell back")
   }
 
   @MainActor
   func testFormattedOverlayMinimumHeightSnapshotRenders() throws {
-    let state = OverlayState.previewListening()
-    state.formattedText = Array(
+    let state = OverlayState()
+    let longTranscript = Array(
       repeating:
         "Choose Insert to paste the text where you want it and press Return. The clipboard is untouched.",
       count: 20
     ).joined(separator: "\n")
+    projectText(longTranscript, to: state, terminal: true)
     let size = CGSize(
       width: 617,
       height: DictationOverlayWindow.minSize.height
@@ -1278,9 +1177,6 @@ final class OverlayStateTests: XCTestCase {
         .preferredColorScheme(.dark)
     )
     hostingView.frame = CGRect(origin: .zero, size: size)
-    hostingView.layoutSubtreeIfNeeded()
-    RunLoop.main.run(until: Date().addingTimeInterval(0.03))
-    state.mode = .formatted
     hostingView.layoutSubtreeIfNeeded()
     RunLoop.main.run(until: Date().addingTimeInterval(0.03))
     guard let bitmap = hostingView.bitmapImageRepForCachingDisplay(in: hostingView.bounds) else {
@@ -1299,10 +1195,8 @@ final class OverlayStateTests: XCTestCase {
     // Slim chrome: the bottom action layer is gone. Measure the empty center of
     // the footer — excluding its truthful engine label on the left and the
     // developer-power mark on the right. Bright glyphs in this corridor mean
-    // the native TextEditor escaped its clipped body. The previous 40..<580
-    // range counted both legitimate footer labels and failed while the rendered
-    // screenshot was visually correct. A small allowance covers antialiased
-    // footer/border pixels; a real escaped transcript produces hundreds.
+    // the transcript escaped its clipped body. A small allowance covers
+    // antialiased footer/border pixels; a real escape produces hundreds.
     var leakedBrightPixels = 0
     for x in 140..<500 {
       for y in 6..<28 {
@@ -1322,73 +1216,48 @@ final class OverlayStateTests: XCTestCase {
     )
   }
 
-  func testSlimChromeHasOnePrimaryStatusAndOnePrimaryAction() {
-    let listening = OverlayState()
-    listening.handleRecordingPreparing()
-    XCTAssertEqual(listening.primaryActionKind, .finish)
-    XCTAssertEqual(listening.primaryActionTitle, OverlayActionPresentation.finishTitle)
-    XCTAssertEqual(listening.primaryActionCompactTitle, OverlayActionPresentation.finishTitle)
-    XCTAssertEqual(listening.statusText, "starting")
-
-    listening.handleRecordingStarted()
-    XCTAssertEqual(listening.statusText, "recording · level pending")
-
-    projectText("hello", to: listening)
-
-    let formatted = OverlayState.previewFormatted()
-    XCTAssertEqual(formatted.primaryActionKind, .insert)
-    XCTAssertEqual(formatted.primaryActionCompactTitle, "Insert")
-
-    let silent = OverlayState.previewNoSpeech()
-    XCTAssertNil(silent.primaryActionKind)
-  }
-
-  /// One availability projection drives the split chrome: impossible actions
-  /// are omitted instead of rendered disabled — empty listening has no Copy;
-  /// terminal no-speech/error states keep only the valid Close command.
-  func testUnifiedActionMenuItemsFollowModeTable() {
-    let listening = OverlayState()
-    listening.handleRecordingPreparing()
-    projectText("hello", to: listening)
-
-    let formatted = OverlayState.previewFormatted()
-    let silent = OverlayState.previewNoSpeech()
-    let failed = OverlayState()
-    failed.handleError(message: "engine unavailable")
-
-    let rows: [(String, [OverlayActionMenuItem], [OverlayActionMenuItem])] = [
-      ("listening", listening.actionMenuItems, [.finish, .copy, .close]),
-      ("formatted", formatted.actionMenuItems, [.insert, .copy, .sendToAgent, .close]),
-      ("noSpeech", silent.actionMenuItems, [.close]),
-      ("error", failed.actionMenuItems, [.close]),
+  func testProjectionFixturesMirrorEveryCanvasField() {
+    let state = OverlayState()
+    let rows: [(
+      phase: String, text: String, mode: String, paste: Bool, insert: Bool,
+      copy: Bool, retranscribe: Bool, format: Bool, terminal: Bool
+    )] = [
+      ("listening", "  exact live\ntext  ", "dictation", false, false, true, false, true, false),
+      ("finalizing", "final pass", "assistive", false, false, true, false, false, false),
+      ("formatted", "final text", "dictation", true, true, true, true, true, true),
+      ("no_speech", "", "dictation", false, false, false, true, false, true),
+      ("error", "kept draft", "dictation", false, false, true, true, false, true),
     ]
-    for (mode, actual, expected) in rows {
-      XCTAssertEqual(actual, expected, mode)
+
+    for (index, row) in rows.enumerated() {
+      projectText(
+        row.text,
+        to: state,
+        mode: row.mode,
+        phase: row.phase,
+        canPaste: row.paste,
+        canInsert: row.insert,
+        canCopy: row.copy,
+        canRetranscribe: row.retranscribe,
+        canFormat: row.format,
+        terminal: row.terminal
+      )
+
+      XCTAssertEqual(state.mode.rawValue, row.phase)
+      XCTAssertEqual(state.formattedText, row.text)
+      XCTAssertEqual(state.activeText, row.text)
+      XCTAssertEqual(state.transcriptMode, row.mode)
+      XCTAssertEqual(state.revision, UInt64(index + 1))
+      XCTAssertEqual(state.canPaste, row.paste)
+      XCTAssertEqual(state.canInsert, row.insert)
+      XCTAssertEqual(state.canCopy, row.copy)
+      XCTAssertEqual(state.canRetranscribe, row.retranscribe)
+      XCTAssertEqual(state.canFormat, row.format)
+      XCTAssertEqual(state.terminal, row.terminal)
     }
-
-    let emptyListening = OverlayState()
-    XCTAssertEqual(emptyListening.actionMenuItems, [.finish, .close])
   }
 
-  func testActionMenuAccessibilityValueNamesPhase() {
-    let listening = OverlayState()
-    XCTAssertEqual(listening.actionMenuAccessibilityValue, "Recording in progress")
-
-    let formatted = OverlayState.previewFormatted()
-    XCTAssertEqual(formatted.actionMenuAccessibilityValue, "Transcript ready")
-
-    let silent = OverlayState.previewNoSpeech()
-    XCTAssertEqual(silent.actionMenuAccessibilityValue, "No speech")
-
-    let failed = OverlayState()
-    failed.handleError(message: "engine unavailable")
-    XCTAssertEqual(failed.actionMenuAccessibilityValue, "Recording failed")
-  }
-
-  /// macOS `Menu` + `primaryAction` treats the whole control as the primary, so
-  /// the painted chevron never opens. The slim chrome must be a true split:
-  /// a Button for Finish/Insert and a separate Menu on the chevron.
-  func testCompactPrimaryActionIsSplitControlNotMenuPrimaryAction() throws {
+  func testCanvasSourceHasNoDeliveryOrPlacementChrome() throws {
     let macosDir = URL(fileURLWithPath: #filePath)
       .deletingLastPathComponent()
       .deletingLastPathComponent()
@@ -1397,39 +1266,13 @@ final class OverlayStateTests: XCTestCase {
       contentsOf: overlayDir.appendingPathComponent("DictationOverlayView.swift"),
       encoding: .utf8
     )
-    let splitSource = try String(
-      contentsOf: overlayDir.appendingPathComponent("OverlaySplitPrimaryAction.swift"),
-      encoding: .utf8
-    )
+    let splitPath = overlayDir.appendingPathComponent("OverlaySplitPrimaryAction.swift").path
 
-    XCTAssertFalse(
-      overlaySource.contains("primaryAction:") || splitSource.contains("primaryAction:"),
-      "Menu.primaryAction swallows the chevron on macOS; the split control must not use it"
-    )
-    XCTAssertFalse(
-      overlaySource.contains("NSComboButton") || splitSource.contains("NSComboButton"),
-      "HStack split is the sanctioned control; NSComboButton is the fallback not taken"
-    )
-    XCTAssertTrue(
-      splitSource.contains("accessibilityIdentifier(\"overlay-primary-action\")"),
-      "primary Finish/Insert button must keep overlay-primary-action"
-    )
-    XCTAssertTrue(
-      splitSource.contains("accessibilityIdentifier(\"overlay-primary-action-menu\")"),
-      "chevron menu must be a separate hit target"
-    )
-    XCTAssertTrue(
-      splitSource.contains("performPrimaryAction(kind)"),
-      "primary button must run the existing Finish/Insert action"
-    )
-    XCTAssertTrue(
-      splitSource.contains("secondaryActionButtons(for: kind)"),
-      "chevron menu must keep the secondary commands"
-    )
-    XCTAssertTrue(
-      overlaySource.contains("func performPrimaryAction(_ kind: OverlayPrimaryActionKind)"),
-      "seal_to_delivery hop stays one function body in DictationOverlayView.swift"
-    )
+    XCTAssertFalse(FileManager.default.fileExists(atPath: splitPath))
+    XCTAssertFalse(overlaySource.contains("Menu {"))
+    XCTAssertFalse(overlaySource.contains("overlay-auto-paste"))
+    XCTAssertFalse(overlaySource.contains("overlay-placement-menu"))
+    XCTAssertFalse(overlaySource.contains("performPrimaryAction"))
     XCTAssertTrue(
       overlaySource.contains("CloseDot"),
       "CloseDot stays the always-visible dismiss control"
@@ -1513,6 +1356,7 @@ final class OverlayStateTests: XCTestCase {
         emittedAt: "2026-08-28T00:00:00Z",
         sessionId: sessionId,
         mode: "dictation",
+        phase: terminal ? "formatted" : "listening",
         reducerRevision: sequence,
         reducerAction: terminal
           ? "record_ledger_terminal_seal"
@@ -1524,6 +1368,12 @@ final class OverlayStateTests: XCTestCase {
         documentIndex: sequence - 1,
         label: terminal ? "terminal" : "live",
         renderedText: text,
+        canPaste: terminal,
+        canInsert: terminal,
+        canCopy: !text.isEmpty,
+        canRetranscribe: terminal,
+        canFormat: !terminal,
+        terminal: terminal,
         acousticReceipts: [receipt]
       )
     )
@@ -1573,10 +1423,9 @@ final class OverlayStateTests: XCTestCase {
     XCTAssertNil(state.errorMessage)
   }
 
-  /// The guards still do their job inside one session: a stale, out-of-order
-  /// projection and any projection after that session's terminal seal are
-  /// refused. Without this, the session-scoping above would be a hole.
-  func testWithinOneSessionTheSealAndSequenceGuardsStillRefuse() {
+  /// Events that reach the projection listener are already reducer-owned. Swift
+  /// paints their arrival order without rebuilding sequence or seal policy.
+  func testWithinOneSessionSwiftDoesNotRebuildReducerGuards() {
     let clock = OverlayStateTestClock()
     let state = OverlayState(nowProvider: { clock.now })
     state.handleRecordingPreparing()
@@ -1585,9 +1434,8 @@ final class OverlayStateTests: XCTestCase {
     projectSessionText("pierwsza", sessionId: "same-session", sequence: 5, to: state)
     XCTAssertEqual(state.formattedText, "pierwsza")
 
-    // Out of order inside the same session — refused.
     projectSessionText("spóźniona", sessionId: "same-session", sequence: 3, to: state)
-    XCTAssertEqual(state.formattedText, "pierwsza")
+    XCTAssertEqual(state.formattedText, "spóźniona")
 
     projectSessionText(
       "zapieczętowana",
@@ -1598,16 +1446,13 @@ final class OverlayStateTests: XCTestCase {
     )
     XCTAssertEqual(state.formattedText, "zapieczętowana")
 
-    // After the terminal seal of the same session — refused.
     projectSessionText("po pieczęci", sessionId: "same-session", sequence: 7, to: state)
-    XCTAssertEqual(state.formattedText, "zapieczętowana")
+    XCTAssertEqual(state.formattedText, "po pieczęci")
+    XCTAssertEqual(state.mode, .listening)
+    XCTAssertFalse(state.terminal)
   }
 
-  /// A controller may enter the started phase directly, without a preceding
-  /// preparing callback. The new take must clear the remembered canonical
-  /// projection itself; clearing only `formattedText` still lets `liveText`
-  /// paint the previous take through `latestTranscriptProjection`.
-  func testRecordingStartClearsThePreviousTakeProjection() {
+  func testRecordingLifecycleDoesNotClearTheLastProjection() {
     let state = OverlayState()
 
     state.handleRecordingStarted()
@@ -1623,8 +1468,17 @@ final class OverlayStateTests: XCTestCase {
 
     state.handleRecordingStarted()
 
+    XCTAssertEqual(state.mode, .formatted)
+    XCTAssertEqual(state.liveText, "tekst poprzedniego nagrania")
+    XCTAssertEqual(state.formattedText, "tekst poprzedniego nagrania")
+
+    projectSessionText(
+      "tekst nowego nagrania",
+      sessionId: "new-take",
+      sequence: 1,
+      to: state
+    )
     XCTAssertEqual(state.mode, .listening)
-    XCTAssertTrue(state.liveText.isEmpty)
-    XCTAssertTrue(state.formattedText.isEmpty)
+    XCTAssertEqual(state.formattedText, "tekst nowego nagrania")
   }
 }
