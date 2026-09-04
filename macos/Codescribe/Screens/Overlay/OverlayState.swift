@@ -109,6 +109,18 @@ enum OverlayMode: String, Equatable {
   case error
 }
 
+/// A user command emitted by the overlay rail. The rail decides only which
+/// projected commands to paint; this value crosses the view/state seam without
+/// carrying a second copy of reducer or delivery policy.
+enum OverlayIntent: String, Equatable, Hashable {
+  case finish
+  case copy
+  case insertPaste = "insert-paste"
+  case retranscribe
+  case format
+  case close
+}
+
 /// The sole cross-thread ingress into the overlay. UniFFI callbacks enqueue
 /// values here; one main-actor consumer applies them in arrival order.
 enum OverlayListenerEvent: Sendable {
@@ -215,6 +227,10 @@ final class OverlayState {
   /// Handoff to the agent surface — wired by the orchestrator (routes the text
   /// into AgentChat, which streams it through `CodescribeAgent.streamReply`).
   var onSendToAgent: ((String) -> Void)?
+  /// W3-T8 replaces this seam with the Rust-backed retranscribe/format intent
+  /// path. Keeping the two commands observable now lets W2 prove click routing
+  /// without inventing local execution or another IPC channel.
+  @ObservationIgnored var onDeferredBackendIntent: ((OverlayIntent) -> Void)?
   /// Dismiss the floating window — wired by the orchestrator.
   var onClose: (() -> Void)?
   var onRecordingPreparing: (() -> Void)?
@@ -534,6 +550,53 @@ final class OverlayState {
   }
 
   // MARK: Action row
+
+  /// Thin relay from the projection-driven rail into existing controller
+  /// routes. No branch here changes phase, text, or availability optimistically;
+  /// those fields move only when the next Rust projection arrives.
+  func relayIntent(_ intent: OverlayIntent) {
+    switch intent {
+    case .finish:
+      stop()
+    case .copy:
+      relayCopyIntent()
+    case .insertPaste:
+      relayInsertPasteIntent()
+    case .retranscribe, .format:
+      onDeferredBackendIntent?(intent)
+    case .close:
+      close()
+    }
+  }
+
+  private func relayCopyIntent() {
+    guard let engine else { return }
+    let text = activeText
+    Task { @MainActor in
+      do {
+        try await engine.copyTaggedTranscript(text: text)
+      } catch {
+        NSLog("Overlay copy intent failed: \(error)")
+      }
+    }
+  }
+
+  private func relayInsertPasteIntent() {
+    guard let engine else { return }
+    let text = activeText
+    let shouldDefer = insertCaretInCodescribeProbe()
+    Task { @MainActor in
+      do {
+        if shouldDefer {
+          _ = try await engine.deferText(text: text)
+        } else {
+          _ = try await engine.pasteText(text: text)
+        }
+      } catch {
+        NSLog("Overlay insert intent failed: \(error)")
+      }
+    }
+  }
 
   func copyToPasteboard(_ pasteboard: NSPasteboard = .general) {
     // P0-D: capture user correction on FINAL for quality loop + lexicon learning.

@@ -759,6 +759,77 @@ final class OverlayStateTests: XCTestCase {
     XCTAssertEqual(state.toast, "no ax")
   }
 
+  func testRailCopyRelaysToControllerWithoutOptimisticProjectionMutation() async {
+    let state = OverlayState()
+    let engine = OverlayStateTestEngine()
+    state.engine = engine
+    projectText(
+      "projected transcript",
+      to: state,
+      phase: "formatted",
+      canPaste: true,
+      canInsert: true,
+      canCopy: true,
+      canRetranscribe: true,
+      canFormat: true,
+      terminal: true
+    )
+    let copied = expectation(description: "copy intent reached controller")
+    engine.onCopyTagged = { copied.fulfill() }
+
+    state.relayIntent(.copy)
+    await fulfillment(of: [copied], timeout: 1)
+
+    XCTAssertEqual(engine.copiedTaggedText, "projected transcript")
+    XCTAssertEqual(state.mode, .formatted)
+    XCTAssertEqual(state.formattedText, "projected transcript")
+    XCTAssertEqual(state.revision, 1)
+    XCTAssertTrue(state.canPaste)
+    XCTAssertTrue(state.canInsert)
+    XCTAssertTrue(state.canCopy)
+    XCTAssertTrue(state.canRetranscribe)
+    XCTAssertTrue(state.canFormat)
+    XCTAssertTrue(state.terminal)
+    XCTAssertNil(state.toast)
+  }
+
+  func testRailInsertRelaysToControllerWithoutOptimisticProjectionMutation() async {
+    let state = OverlayState()
+    let engine = OverlayStateTestEngine()
+    engine.pasteOutcome = .accessibilityPermissionNeeded
+    state.engine = engine
+    state.insertCaretInCodescribeProbe = { false }
+    projectText(
+      "projected transcript",
+      to: state,
+      phase: "formatted",
+      canPaste: true,
+      canInsert: true,
+      canCopy: true,
+      canRetranscribe: true,
+      canFormat: true,
+      terminal: true
+    )
+    let pasted = expectation(description: "insert intent reached controller")
+    engine.onPaste = { pasted.fulfill() }
+
+    state.relayIntent(.insertPaste)
+    await fulfillment(of: [pasted], timeout: 1)
+
+    XCTAssertEqual(engine.pastedText, "projected transcript")
+    XCTAssertEqual(state.mode, .formatted)
+    XCTAssertEqual(state.formattedText, "projected transcript")
+    XCTAssertEqual(state.revision, 1)
+    XCTAssertTrue(state.canPaste)
+    XCTAssertTrue(state.canInsert)
+    XCTAssertTrue(state.canCopy)
+    XCTAssertTrue(state.canRetranscribe)
+    XCTAssertTrue(state.canFormat)
+    XCTAssertTrue(state.terminal)
+    XCTAssertNil(state.toast)
+    XCTAssertNil(state.errorMessage)
+  }
+
   func testCloseIsImmediateAndAgentButtonUsesControllerDelivery() async {
     let clock = OverlayStateTestClock()
     let engine = OverlayStateTestEngine()
@@ -783,7 +854,7 @@ final class OverlayStateTests: XCTestCase {
     XCTAssertEqual(closeCount, 1)
 
     state.close()
-    XCTAssertEqual(closeCount, 2, "Close button and brand CloseDot share this action")
+    XCTAssertEqual(closeCount, 2, "explicit close intent stays immediate")
   }
 
   func testUntouchedAgentFinalAutoSendsAtDeadline() async {
@@ -1218,16 +1289,17 @@ final class OverlayStateTests: XCTestCase {
 
   func testProjectionFixturesMirrorEveryCanvasField() {
     let state = OverlayState()
-    let rows: [(
-      phase: String, text: String, mode: String, paste: Bool, insert: Bool,
-      copy: Bool, retranscribe: Bool, format: Bool, terminal: Bool
-    )] = [
-      ("listening", "  exact live\ntext  ", "dictation", false, false, true, false, true, false),
-      ("finalizing", "final pass", "assistive", false, false, true, false, false, false),
-      ("formatted", "final text", "dictation", true, true, true, true, true, true),
-      ("no_speech", "", "dictation", false, false, false, true, false, true),
-      ("error", "kept draft", "dictation", false, false, true, true, false, true),
-    ]
+    let rows:
+      [(
+        phase: String, text: String, mode: String, paste: Bool, insert: Bool,
+        copy: Bool, retranscribe: Bool, format: Bool, terminal: Bool
+      )] = [
+        ("listening", "  exact live\ntext  ", "dictation", false, false, true, false, true, false),
+        ("finalizing", "final pass", "assistive", false, false, true, false, false, false),
+        ("formatted", "final text", "dictation", true, true, true, true, true, true),
+        ("no_speech", "", "dictation", false, false, false, true, false, true),
+        ("error", "kept draft", "dictation", false, false, true, true, false, true),
+      ]
 
     for (index, row) in rows.enumerated() {
       projectText(
@@ -1273,9 +1345,10 @@ final class OverlayStateTests: XCTestCase {
     XCTAssertFalse(overlaySource.contains("overlay-auto-paste"))
     XCTAssertFalse(overlaySource.contains("overlay-placement-menu"))
     XCTAssertFalse(overlaySource.contains("performPrimaryAction"))
-    XCTAssertTrue(
+    XCTAssertTrue(overlaySource.contains("OverlayIntentRail"))
+    XCTAssertFalse(
       overlaySource.contains("CloseDot"),
-      "CloseDot stays the always-visible dismiss control"
+      "the rail is the sole overlay control surface"
     )
     XCTAssertTrue(
       overlaySource.contains("chromeWaveform"),

@@ -36,6 +36,14 @@ struct DictationOverlayView: View {
         footer
       }
     }
+    .overlay(alignment: .trailing) {
+      OverlayIntentRail(
+        phase: state.statusText,
+        intents: OverlayIntentRail.projectedIntents(for: state),
+        onIntent: state.relayIntent
+      )
+      .padding(.trailing, CSSpace.sm)
+    }
     .csFocusPolicy()
     .frame(minWidth: windowMinWidth, maxWidth: .infinity, maxHeight: .infinity)
     // Terminal corner clip (U22): GlassPanel paints its background from the
@@ -78,12 +86,11 @@ struct DictationOverlayView: View {
 
   private var fullHeader: some View {
     HStack(spacing: 10) {
-      // Brand block with a LIVE dot: the orange dot sits in the window's
-      // traffic-light zone and reads as a control, so it IS one — click
-      // closes the overlay. Hover shows the
-      // familiar "×" glyph; the wordmark text stays inert.
+      // Brand block stays inert. The trailing intent rail is the overlay's
+      // one control surface, including its projected Close command.
       HStack(spacing: 9) {
-        CloseDot { state.close() }
+        ModeDot(color: CSColor.terracotta, size: 9)
+          .accessibilityHidden(true)
         Text("codescribe")
           .font(CSFont.ui(15, .bold))
           .tracking(-0.3)
@@ -107,7 +114,8 @@ struct DictationOverlayView: View {
   /// projected phase, real level evidence, and time never collapse vertically.
   private var narrowHeader: some View {
     HStack(spacing: 7) {
-      CloseDot { state.close() }
+      ModeDot(color: CSColor.terracotta, size: 9)
+        .accessibilityHidden(true)
       phaseStatus(text: state.compactStatusText)
       if state.mode == .listening || state.mode == .finalizing {
         chromeWaveform(barCount: 10)
@@ -244,8 +252,8 @@ struct DictationOverlayView: View {
 
   /// Terminal outcome for a session that captured no usable speech. Replaces
   /// the empty editable FINAL with a calm, non-alarming notice (mic glyph +
-  /// message). No Copy/Insert/Send — there is nothing to act on; CloseDot
-  /// remains the dismiss control.
+  /// message). No Copy/Insert/Send — there is nothing to act on; the intent
+  /// rail follows the projection table and keeps Retranscribe/Close only.
   private var noSpeechBody: some View {
     HStack(spacing: 12) {
       CSIconView(icon: .mic, size: 18, weight: .regular)
@@ -429,36 +437,3 @@ private struct AnimatedOverlayCaret: View {
     }
   }
 #endif
-
-/// The overlay's brand dot as a real close control. It sits where macOS puts
-/// traffic lights, so it honors that promise: hover swaps in the familiar "x"
-/// glyph and click closes the overlay.
-/// The cursor stays the SYSTEM ARROW — real macOS window controls never switch
-/// to a pointing hand, and neither does this one (U22; reverts 5415e7e's
-/// pointingHand). Only the dot is live — the wordmark text is inert.
-private struct CloseDot: View {
-  var action: () -> Void
-  @State private var hovered = false
-
-  var body: some View {
-    Button(action: action) {
-      ZStack {
-        ModeDot(color: CSColor.terracotta, size: 9)
-        if hovered {
-          Text("\u{00D7}")
-            .font(.system(size: 9, weight: .heavy))
-            .foregroundStyle(Color.black.opacity(0.7))
-            .offset(y: -0.5)
-        }
-      }
-      .frame(width: 16, height: 16)
-      .contentShape(Circle())
-    }
-    .csFocusRing()
-    .onHover { inside in
-      hovered = inside
-    }
-    .accessibilityLabel("Close overlay")
-    .accessibilityHint("Closes the dictation overlay")
-  }
-}
