@@ -35,12 +35,12 @@ Recording stopped before a transcript was available.
 
 ### Fixed product contract (2026-07-24 ship cut)
 
-| Layer                 | Rule                                                                                                   |
-| --------------------- | ------------------------------------------------------------------------------------------------------ |
-| Empty `speech.engine` | Load defaults to **`stt_engine=apple`**, **`final_pass_mode=smart`**                                   |
-| Settings UI write     | **Promoted** to `settings.json` + reconciles process env **and** `.env` (single brain)                 |
-| Record start          | **`preflight_apple_live_ready()`** when engine is Apple — refuse before REC if Speech/bridge not ready |
-| Live vs final         | Live = Apple only; file final = Whisper; recovery path separate from mid-stream swap                   |
+| Layer                 | Rule                                                                                                     |
+| --------------------- | -------------------------------------------------------------------------------------------------------- |
+| Empty `speech.engine` | Load defaults to **`stt_engine=apple`** and **`final_pass_mode=smart`**; explicit saved values still win |
+| Settings UI write     | **Promoted** to `settings.json` + reconciles process env **and** `.env` (single brain)                   |
+| Record start          | **`preflight_apple_live_ready()`** when engine is Apple — refuse before REC if Speech/bridge not ready   |
+| Live vs final         | Cloud/Apple-only live fails closed without local weights; explicit HQ/local Retranscribe may use Whisper |
 
 ---
 
@@ -130,6 +130,7 @@ button.
   "language": "pl",
   "engine": {
     "stt_engine": "apple",
+    "whisper_model": "whisper-large-v3-turbo",
     "final_pass_mode": "smart"
   },
   "formatting": { "enabled": true, "level": "smart" }
@@ -267,7 +268,11 @@ Valid engine labels on verdict: `local_apple`, `local_whisper`, `streaming_whisp
    CODESCRIBE_STT_ENGINE=apple
    ```
    ```json
-   "engine": { "stt_engine": "apple", "final_pass_mode": "smart" }
+   "engine": {
+     "stt_engine": "apple",
+     "whisper_model": "whisper-large-v3-turbo",
+     "final_pass_mode": "smart"
+   }
    ```
 2. Full quit + relaunch.
 3. Footer / Active STT after a take: **`local_apple`** on happy path.

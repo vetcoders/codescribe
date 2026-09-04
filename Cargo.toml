@@ -5,6 +5,7 @@ members = [".", "core", "bridge"]
 [workspace.package]
 version = "0.14.1"
 edition = "2024"
+rust-version = "1.88"
 authors = ["Vetcoders <hello@vetcoders.io>"]
 
 [workspace.dependencies]
@@ -20,6 +21,7 @@ tracing = "0.1"
 name = "codescribe"
 version = "0.14.1"
 edition = "2024"
+rust-version.workspace = true
 description = "Speech-to-text for macOS — SwiftUI front-end over a Rust engine (UniFFI bridge)"
 authors = ["Vetcoders <hello@vetcoders.io>"]
 license = "FSL-1.1-ALv2"
@@ -141,6 +143,7 @@ tempfile = "3"
 mockito = "1"
 serial_test = "3"
 hound = "3.5"
+tokenizers = "0.22"
 
 [lints.rust]
 # Allow unexpected_cfgs from objc crate's msg_send! macro (uses cargo-clippy cfg internally)

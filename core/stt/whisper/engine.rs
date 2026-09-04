@@ -42,6 +42,21 @@ use crate::safe_path;
 use super::embedded::EmbeddedModel;
 use super::params::DecodingParams;
 
+fn candle_config(architecture: crate::whisper_weights::WhisperArchitecture) -> Config {
+    Config {
+        num_mel_bins: architecture.n_mels,
+        max_source_positions: architecture.n_audio_ctx,
+        d_model: architecture.n_audio_state,
+        encoder_attention_heads: architecture.n_audio_head,
+        encoder_layers: architecture.n_audio_layer,
+        vocab_size: architecture.n_vocab,
+        max_target_positions: architecture.n_text_ctx,
+        decoder_attention_heads: architecture.n_text_head,
+        decoder_layers: architecture.n_text_layer,
+        suppress_tokens: Vec::new(),
+    }
+}
+
 /// Callback for streaming chunk results (called after each chunk is transcribed)
 pub type ChunkCallback<'a> = &'a dyn Fn(&str);
 
@@ -121,8 +136,13 @@ fn prepend_initial_prompt_tokens(
     tokens: &mut Vec<u32>,
     start_of_previous_token: u32,
     prompt_tokens: &[u32],
+    max_target_positions: usize,
 ) -> usize {
-    let keep = prompt_tokens.len().min(WHISPER_INITIAL_PROMPT_TOKEN_BUDGET);
+    let available = max_target_positions.saturating_sub(tokens.len() + 2);
+    let keep = prompt_tokens
+        .len()
+        .min(WHISPER_INITIAL_PROMPT_TOKEN_BUDGET)
+        .min(available);
     if keep == 0 {
         return 0;
     }
@@ -133,6 +153,10 @@ fn prepend_initial_prompt_tokens(
     tokens.extend_from_slice(&prompt_tokens[..keep]);
     tokens.extend_from_slice(&current_prefix);
     keep
+}
+
+fn prompt_token_ids_fit_vocab(tokens: &[u32], vocab_size: usize) -> bool {
+    tokens.iter().all(|token| (*token as usize) < vocab_size)
 }
 
 /// Record that a requested final pass was skipped, with the reason.
@@ -429,23 +453,20 @@ impl LocalWhisperEngine {
     /// Load a model from a directory (development / external models).
     ///
     /// Expects `config.json` plus `weights.safetensors` or `model.safetensors`.
-    /// MLX-style quantized weights are dequantized during load — see
-    /// [`dequantize_q8`] for the cost this implies.
+    /// Quantized MLX weights are refused. Runtime Whisper is fp16/fp32 only;
+    /// this keeps q8 dequantization off every product path.
     ///
     /// # Errors
-    /// Missing config or weights, an unreadable tokenizer, or tensor shapes the
-    /// dequantizer cannot reconcile.
+    /// Missing config or weights, an unreadable tokenizer, a quantized payload,
+    /// or tensor shapes the fp16 loader cannot reconcile.
     pub fn new(model_path: &Path) -> Result<Self> {
-        let device = process_device();
-        tracing::debug!("LocalWhisperEngine using device: {:?}", device);
-
         let config_path = model_path.join("config.json");
-        let weights_path = if model_path.join("weights.safetensors").exists() {
-            model_path.join("weights.safetensors")
-        } else {
-            model_path.join("model.safetensors")
-        };
-        if !weights_path.exists() {
+        if !config_path.is_file() {
+            anyhow::bail!("Whisper config not found at {}", config_path.display());
+        }
+        if !model_path.join("weights.safetensors").is_file()
+            && !model_path.join("model.safetensors").is_file()
+        {
             anyhow::bail!(
                 "Whisper weights not found (expected weights.safetensors or model.safetensors) in {}",
                 model_path.display()
@@ -453,149 +474,64 @@ impl LocalWhisperEngine {
         }
         let tokenizer_path = model_path.join("tokenizer.json");
         let mel_filters_path = model_path.join("mel_filters.npz");
+        crate::whisper_weights::validate_whisper_model_bundle(model_path)
+            .context("validate complete Whisper model bundle")?;
+        let architecture = crate::whisper_weights::load_whisper_architecture(&config_path)?;
+        let tokenizer = crate::whisper_weights::load_validated_whisper_tokenizer_for_architecture(
+            &tokenizer_path,
+            architecture,
+        )?;
+        let weights_path = crate::config::models::resolve_compatible_whisper_weights_path(
+            model_path,
+            architecture,
+        )
+        .context("resolve architecture-compatible Whisper weights")?;
+        let device = process_device();
+        tracing::debug!("LocalWhisperEngine using device: {:?}", device);
 
-        let config_str = safe_path::safe_read_to_string(&config_path)?;
-
-        // Parse MLX config and map to Candle Config
-        let mlx_config: serde_json::Value =
-            serde_json::from_str(&config_str).context("Failed to parse MLX config json")?;
-
-        let n_mels = mlx_config["n_mels"].as_u64().unwrap_or(80);
-        let new_config_json = serde_json::json!({
-            "num_mel_bins": n_mels,
-            "max_source_positions": mlx_config["n_audio_ctx"].as_u64().unwrap_or(1500),
-            "d_model": mlx_config["n_audio_state"].as_u64().unwrap_or(512),
-            "encoder_attention_heads": mlx_config["n_audio_head"].as_u64().unwrap_or(8),
-            "encoder_layers": mlx_config["n_audio_layer"].as_u64().unwrap_or(6),
-            "vocab_size": mlx_config["n_vocab"].as_u64().unwrap_or(51865),
-            "decoder_attention_heads": mlx_config["n_text_head"].as_u64().unwrap_or(8),
-            "decoder_layers": mlx_config["n_text_layer"].as_u64().unwrap_or(6),
-            "max_target_positions": mlx_config["n_text_ctx"].as_u64().unwrap_or(448),
-            "activation_function": "gelu",
-            // defaults
-            "dropout": 0.0,
-            "attention_dropout": 0.0,
-            "activation_dropout": 0.0,
-            "init_std": 0.02,
-            "encoder_layerdrop": 0.0,
-            "decoder_layerdrop": 0.0,
-            "use_cache": true,
-            "scale_embedding": false
-        });
-
-        let config: Config = serde_json::from_value(new_config_json)
-            .context("Failed to build Config from MLX values")?;
+        let config = candle_config(architecture);
 
         // Phase timings for the cold load. "Preloaded, zero latency" is the
         // product's claim, and the operator's logs show 56 cold loads costing a
         // median of 9.2 s (p90 21.9 s, worst 34.9 s, 805 s in total) because the
         // idle reaper drops the weights every 45 minutes and this function then
         // rebuilds them from scratch. A single aggregate number cannot say
-        // whether to attack the read, the dequantisation, or the GPU upload, so
+        // whether to attack the read, tensor conversion/mapping, or GPU upload, so
         // each phase reports its own cost.
         let load_started = std::time::Instant::now();
         let read_secs;
         let plain_secs;
-        let dequant_secs;
 
         let vb = unsafe {
             let tensors = candle_core::safetensors::MmapedSafetensors::new(&weights_path)?;
             let mut raw_tensors: HashMap<String, Tensor> = HashMap::new();
 
-            // Load everything on CPU first so we can dequantize packed weights.
+            // Load the verified unquantized tensors on CPU before device transfer.
             let read_started = std::time::Instant::now();
             for (name, view) in tensors.tensors() {
+                if name == "alignment_heads" {
+                    continue;
+                }
                 let loaded = view.load(&Device::Cpu)?;
                 raw_tensors.insert(name.to_string(), loaded);
             }
             read_secs = read_started.elapsed().as_secs_f64();
 
             let plain_started = std::time::Instant::now();
-            let mut tensor_map = HashMap::new();
-            let mut quantized_weights: Vec<String> = Vec::new();
-
-            // First pass: handle non-quantized tensors and collect quantized weight names.
-            for (name, tensor) in raw_tensors.iter() {
-                if name.ends_with(".weight") && tensor.dtype() == DType::U32 {
-                    quantized_weights.push(name.clone());
-                    continue;
-                }
-
-                if name.ends_with(".scales") || name.ends_with(".biases") {
-                    continue;
-                }
-
-                let mapped_name = map_tensor_name(name);
-                let mut t = tensor.clone();
-                if t.dtype() != DType::F32 {
-                    t = t.to_dtype(DType::F32)?;
-                }
-
-                // Fix shape for conv weights (MLX [out, kernel, in] -> Candle [out, in, kernel])
-                if mapped_name.ends_with("conv1.weight") || mapped_name.ends_with("conv2.weight") {
-                    let dims = t.dims();
-                    if dims.len() == 3 && dims[1] == 3 {
-                        t = t.permute((0, 2, 1))?.contiguous()?;
-                    }
-                }
-
-                let t = t.to_device(&device)?;
-                tensor_map.insert(mapped_name, t);
-            }
-
+            let vb = build_varbuilder_from_tensors(raw_tensors, &device)?;
             plain_secs = plain_started.elapsed().as_secs_f64();
-
-            // Second pass: dequantize packed q8 weights.
-            let dequant_started = std::time::Instant::now();
-            for weight_name in quantized_weights {
-                let base = weight_name.trim_end_matches(".weight");
-                let packed = raw_tensors
-                    .get(&weight_name)
-                    .context(format!("Missing packed tensor for {}", weight_name))?;
-                let scales_key = format!("{}.scales", base);
-                let biases_key = format!("{}.biases", base);
-                let scales = raw_tensors
-                    .get(&scales_key)
-                    .context(format!("Missing scales tensor for {}", weight_name))?;
-                let biases = raw_tensors
-                    .get(&biases_key)
-                    .context(format!("Missing biases tensor for {}", weight_name))?;
-
-                let mut dequant = dequantize_q8(packed, scales, biases, &device)?;
-                let mapped_name = map_tensor_name(&weight_name);
-
-                if mapped_name.ends_with("conv1.weight") || mapped_name.ends_with("conv2.weight") {
-                    let dims = dequant.dims();
-                    if dims.len() == 3 && dims[1] == 3 {
-                        dequant = dequant.permute((0, 2, 1))?.contiguous()?;
-                    }
-                }
-
-                tensor_map.insert(mapped_name, dequant);
-            }
-            dequant_secs = dequant_started.elapsed().as_secs_f64();
-
-            candle_nn::VarBuilder::from_tensors(tensor_map, DType::F32, &device)
+            vb
         };
 
         let build_started = std::time::Instant::now();
         let model = Model::load(&vb, config.clone()).context("Failed to create Whisper Model")?;
         tracing::info!(
-            "whisper_cold_load_phases total={:.2}s read={:.2}s plain_tensors={:.2}s dequantize_q8={:.2}s build_model={:.2}s",
+            "whisper_cold_load_phases total={:.2}s read={:.2}s plain_tensors={:.2}s build_model={:.2}s",
             load_started.elapsed().as_secs_f64(),
             read_secs,
             plain_secs,
-            dequant_secs,
             build_started.elapsed().as_secs_f64()
         );
-
-        let tokenizer = Tokenizer::from_file(&tokenizer_path).map_err(|e| {
-            anyhow!(
-                "Failed to load tokenizer from {}: {}",
-                tokenizer_path.display(),
-                e
-            )
-        })?;
 
         // Load mel filters
         if !mel_filters_path.exists() {
@@ -609,7 +545,7 @@ impl LocalWhisperEngine {
         let mel_filters =
             load_mel_filters(&mel_filters_path, n_mels).context("Failed to load mel filters")?;
 
-        let ts_range = TimestampRange::from_tokenizer(&tokenizer);
+        let ts_range = TimestampRange::from_tokenizer(&tokenizer, config.vocab_size)?;
 
         Ok(Self {
             model,
@@ -640,33 +576,9 @@ impl LocalWhisperEngine {
         // Parse config from bytes
         let config_str = std::str::from_utf8(embedded.config)
             .context("Invalid UTF-8 in embedded config.json")?;
-        let mlx_config: serde_json::Value =
-            serde_json::from_str(config_str).context("Failed to parse embedded config json")?;
-
-        let n_mels = mlx_config["n_mels"].as_u64().unwrap_or(80);
-        let new_config_json = serde_json::json!({
-            "num_mel_bins": n_mels,
-            "max_source_positions": mlx_config["n_audio_ctx"].as_u64().unwrap_or(1500),
-            "d_model": mlx_config["n_audio_state"].as_u64().unwrap_or(512),
-            "encoder_attention_heads": mlx_config["n_audio_head"].as_u64().unwrap_or(8),
-            "encoder_layers": mlx_config["n_audio_layer"].as_u64().unwrap_or(6),
-            "vocab_size": mlx_config["n_vocab"].as_u64().unwrap_or(51865),
-            "decoder_attention_heads": mlx_config["n_text_head"].as_u64().unwrap_or(8),
-            "decoder_layers": mlx_config["n_text_layer"].as_u64().unwrap_or(6),
-            "max_target_positions": mlx_config["n_text_ctx"].as_u64().unwrap_or(448),
-            "activation_function": "gelu",
-            "dropout": 0.0,
-            "attention_dropout": 0.0,
-            "activation_dropout": 0.0,
-            "init_std": 0.02,
-            "encoder_layerdrop": 0.0,
-            "decoder_layerdrop": 0.0,
-            "use_cache": true,
-            "scale_embedding": false
-        });
-
-        let config: Config = serde_json::from_value(new_config_json)
-            .context("Failed to build Config from embedded MLX values")?;
+        let architecture =
+            crate::whisper_weights::parse_whisper_config(config_str, "embedded config.json")?;
+        let config = candle_config(architecture);
 
         // Load weights directly from bytes - NO DISK I/O!
         let raw_tensors = candle_core::safetensors::load_buffer(embedded.weights, &Device::Cpu)
@@ -680,12 +592,12 @@ impl LocalWhisperEngine {
             .map_err(|e| anyhow!("Failed to load embedded tokenizer: {}", e))?;
 
         // Load mel filters from bytes
-        let mel_filters = load_mel_filters_from_bytes(embedded.mel_filters, n_mels as usize)
+        let mel_filters = load_mel_filters_from_bytes(embedded.mel_filters, config.num_mel_bins)
             .context("Failed to load embedded mel filters")?;
 
         tracing::info!("Embedded Whisper model loaded successfully");
 
-        let ts_range = TimestampRange::from_tokenizer(&tokenizer);
+        let ts_range = TimestampRange::from_tokenizer(&tokenizer, config.vocab_size)?;
 
         Ok(Self {
             model,
@@ -1162,7 +1074,8 @@ impl LocalWhisperEngine {
         let last_logits = logits.i((.., seq_len - 1, ..))?.squeeze(0)?;
         let logits_vec = last_logits.to_vec1::<f32>()?;
 
-        let candidates = self.language_token_candidates(logits_vec.len());
+        let candidates =
+            crate::whisper_weights::language_token_candidates(&self.tokenizer, logits_vec.len());
         ensure!(
             !candidates.is_empty(),
             "No language token candidates available in tokenizer"
@@ -1183,50 +1096,6 @@ impl LocalWhisperEngine {
         }
 
         Ok(best_lang)
-    }
-
-    /// Enumerate `(token_id, language_code)` pairs to score during detection.
-    ///
-    /// Sweeps the conventional language-token range and keeps the ids this
-    /// tokenizer actually defines, bounded by `vocab_size`. Falls back to a
-    /// small common-language set when the sweep finds nothing, so detection
-    /// still works on a tokenizer that numbers its tokens differently.
-    fn language_token_candidates(&self, vocab_size: usize) -> Vec<(u32, String)> {
-        // Whisper language tokens are typically in this range.
-        /// First id of the conventional Whisper language-token block.
-        const LANG_TOKEN_START: u32 = 50_259;
-        /// Last id of that block (inclusive).
-        const LANG_TOKEN_END: u32 = 50_358;
-
-        let mut out = Vec::new();
-        for id in LANG_TOKEN_START..=LANG_TOKEN_END {
-            if (id as usize) >= vocab_size {
-                break;
-            }
-            if let Some(tok) = self.tokenizer.id_to_token(id)
-                && let Some(lang) = parse_language_token(&tok)
-            {
-                out.push((id, lang.to_string()));
-            }
-        }
-
-        if !out.is_empty() {
-            return out;
-        }
-
-        // Fallback: common languages only.
-        let fallback = [
-            "en", "pl", "de", "fr", "es", "it", "pt", "nl", "ru", "uk", "cs", "sk",
-        ];
-        for lang in fallback {
-            let tok = format!("<|{}|>", lang);
-            if let Some(id) = self.tokenizer.token_to_id(&tok)
-                && (id as usize) < vocab_size
-            {
-                out.push((id, lang.to_string()));
-            }
-        }
-        out
     }
 
     /// Text-only wrapper over [`Self::transcribe_samples_16k_raw`].
@@ -1293,15 +1162,22 @@ impl LocalWhisperEngine {
         let mut tokens = vec![start_token];
         if let Some(lang) = language {
             let lang_tok = format!("<|{}|>", lang.to_lowercase());
-            if let Some(t) = self.tokenizer.token_to_id(&lang_tok) {
+            if let Some(t) = self.tokenizer.token_to_id(&lang_tok)
+                && (t as usize) < self.config.vocab_size
+            {
                 tokens.push(t);
             }
         }
-        if let Some(t) = self.tokenizer.token_to_id("<|transcribe|>") {
+        if let Some(t) = self.tokenizer.token_to_id("<|transcribe|>")
+            && (t as usize) < self.config.vocab_size
+        {
             tokens.push(t);
         }
         let timestamps_enabled = self.decoding_params.emit_timestamps && self.ts_range.is_some();
-        if !timestamps_enabled && let Some(t) = self.tokenizer.token_to_id("<|notimestamps|>") {
+        if !timestamps_enabled
+            && let Some(t) = self.tokenizer.token_to_id("<|notimestamps|>")
+            && (t as usize) < self.config.vocab_size
+        {
             tokens.push(t);
         }
 
@@ -1310,13 +1186,18 @@ impl LocalWhisperEngine {
         if let Some(ref prompt) = self.decoding_params.initial_prompt
             && let Ok(encoding) = self.tokenizer.encode(prompt.as_str(), false)
         {
-            let prompt_tokens: Vec<u32> = encoding.get_ids().to_vec();
-            if !prompt_tokens.is_empty() {
-                if let Some(start_of_previous_token) = start_of_previous_token {
+            let prompt_tokens = encoding.get_ids();
+            if !prompt_token_ids_fit_vocab(prompt_tokens, self.config.vocab_size) {
+                tracing::warn!("Ignoring Whisper initial prompt containing out-of-vocabulary IDs");
+            } else if !prompt_tokens.is_empty() {
+                if let Some(start_of_previous_token) = start_of_previous_token
+                    && (start_of_previous_token as usize) < self.config.vocab_size
+                {
                     let used = prepend_initial_prompt_tokens(
                         &mut tokens,
                         start_of_previous_token,
-                        &prompt_tokens,
+                        prompt_tokens,
+                        self.config.max_target_positions,
                     );
                     tracing::debug!("Initial prompt: {} ({} tokens)", prompt, used);
                 } else {
@@ -1608,26 +1489,6 @@ impl LocalWhisperEngine {
     }
 }
 
-/// Extract the language code from a `<|xx|>` token, or `None` when the token is
-/// not a language marker.
-///
-/// Accepts only 2–3 ASCII letters between the delimiters, which is what
-/// separates `<|pl|>` from control tokens like `<|notimestamps|>`.
-fn parse_language_token(token: &str) -> Option<&str> {
-    if !token.starts_with("<|") || !token.ends_with("|>") {
-        return None;
-    }
-    let inner = &token[2..token.len() - 2];
-    if inner.len() < 2 || inner.len() > 3 {
-        return None;
-    }
-    if inner.chars().all(|c| c.is_ascii_alphabetic()) {
-        Some(inner)
-    } else {
-        None
-    }
-}
-
 /// Normalize a word for overlap comparison: lowercase, alphanumerics only.
 ///
 /// Falls back to the lowercased original when stripping would leave nothing, so
@@ -1792,53 +1653,6 @@ fn load_mel_filters_from_reader<R: Read + std::io::Seek>(
     Ok(data)
 }
 
-/// Rewrite an MLX/OpenAI Whisper tensor name into the Candle naming scheme.
-///
-/// Order is load-bearing and must not be "simplified": cross-attention names
-/// are rewritten before the generic attention rules, otherwise `cross_attn`
-/// would be mangled by the `attn` replacements and the weight would silently
-/// land under the wrong module.
-fn map_tensor_name(name: &str) -> String {
-    let mut new_name = name.to_string();
-
-    new_name = new_name.replace("blocks", "layers");
-    new_name = new_name.replace("mlp1", "fc1");
-    new_name = new_name.replace("mlp2", "fc2");
-    new_name = new_name.replace("decoder.ln", "decoder.layer_norm");
-    // Replace cross-attn layer norms before generic attn replacement to avoid mangling
-    new_name = new_name.replace("cross_attn_ln", "encoder_attn_layer_norm");
-    new_name = new_name.replace("attn_ln", "self_attn_layer_norm");
-    new_name = new_name.replace("mlp_ln", "final_layer_norm");
-    new_name = new_name.replace("ln_post", "layer_norm");
-
-    // Important: handle cross_attn BEFORE attn
-    new_name = new_name.replace("cross_attn", "encoder_attn");
-
-    // Replace ".attn." segment with ".self_attn."
-    new_name = new_name.replace(".attn.", ".self_attn.");
-
-    // Projections
-    new_name = new_name.replace("query", "q_proj");
-    new_name = new_name.replace("key", "k_proj");
-    new_name = new_name.replace("value", "v_proj");
-    new_name = new_name.replace(".out.", ".out_proj.");
-
-    // Embedding aliases
-    new_name = new_name.replace("decoder.token_embedding", "decoder.embed_tokens");
-
-    // Prefix
-    if !new_name.starts_with("model.") {
-        new_name = format!("model.{}", new_name);
-    }
-
-    // Positional embedding key from MLX
-    if new_name == "model.decoder.positional_embedding" {
-        new_name = "model.decoder.embed_positions.weight".to_string();
-    }
-    new_name = new_name.replace(".biases", ".bias");
-    new_name
-}
-
 /// Incremental no-repeat n-gram blocker.
 ///
 /// Replaces the per-step O(n) full scan of `all_tokens` (which made the decode
@@ -1938,97 +1752,39 @@ fn should_drop_for_quality_gate(
     low_logprob && high_compression
 }
 
-/// Expand MLX-style q8 weights into `F32`.
-///
-/// `packed` holds four uint8 weights per `u32`; each is scaled and offset by
-/// the `scales` / `biases` entry for its 32-element group, producing an
-/// `out_dim × in_dim` tensor.
-///
-/// Cost note: this runs on every cold load and dominates it — measured at
-/// roughly three quarters of Whisper cold-start time (commit `e9d8e5d9`).
-/// Keeping weights resident is what avoids paying it again.
-///
-/// # Errors
-/// Non-`u32` packed input, non-2D tensors, or scale/bias dimensions that do not
-/// match the packed shape.
-fn dequantize_q8(
-    packed: &Tensor,
-    scales: &Tensor,
-    biases: &Tensor,
-    device: &Device,
-) -> Result<Tensor> {
-    ensure!(packed.dtype() == DType::U32, "Packed tensor must be u32");
-
-    let packed_dims = packed.dims();
-    ensure!(packed_dims.len() == 2, "Packed weight must be 2D");
-    let out_dim = packed_dims[0];
-    let packed_in = packed_dims[1];
-    let in_dim = packed_in * 4;
-
-    let scales_dims = scales.dims();
-    let biases_dims = biases.dims();
-    ensure!(
-        scales_dims.len() == 2 && biases_dims.len() == 2,
-        "Scales and biases must be 2D"
-    );
-    ensure!(
-        scales_dims[0] == out_dim && biases_dims[0] == out_dim,
-        "Scales/biases out dimension mismatch"
-    );
-
-    let group_size = 32usize;
-    let expected_groups = in_dim / group_size;
-    ensure!(
-        scales_dims[1] == expected_groups && biases_dims[1] == expected_groups,
-        "Scales/biases group dimension mismatch"
-    );
-
-    let packed_data = packed.to_vec2::<u32>()?;
-    let scales_data = scales.to_dtype(DType::F32)?.to_vec2::<f32>()?;
-    let biases_data = biases.to_dtype(DType::F32)?.to_vec2::<f32>()?;
-
-    let mut output: Vec<f32> = Vec::with_capacity(out_dim * in_dim);
-
-    for (o, packed_row) in packed_data.iter().enumerate() {
-        for (p, &val) in packed_row.iter().enumerate() {
-            for b in 0..4 {
-                let idx = p * 4 + b;
-                let group = idx / group_size;
-                // Treat as uint8
-                let w = ((val >> (8 * b)) & 0xff) as u8;
-                let scale = scales_data[o][group];
-                let bias = biases_data[o][group];
-                output.push((w as f32) * scale + bias);
-            }
-        }
+/// Build a VarBuilder from verified unquantized tensors.
+fn is_supported_runtime_tensor(name: &str, tensor: &Tensor) -> bool {
+    if name == "alignment_heads" {
+        return tensor.dtype() == DType::I64;
     }
-
-    Ok(Tensor::from_vec(output, (out_dim, in_dim), device)?)
+    if name.ends_with(".scales") || name.ends_with(".biases") {
+        return false;
+    }
+    matches!(tensor.dtype(), DType::F16 | DType::F32)
 }
 
-/// Build VarBuilder from raw tensors with Q8 dequantization
-///
-/// Handles MLX quantized weights (packed U32 + scales + biases)
-/// and converts tensor names to Candle format.
 fn build_varbuilder_from_tensors(
     raw_tensors: HashMap<String, Tensor>,
     device: &Device,
 ) -> Result<candle_nn::VarBuilder<'static>> {
+    if raw_tensors
+        .iter()
+        .any(|(name, tensor)| !is_supported_runtime_tensor(name, tensor))
+    {
+        anyhow::bail!("Unsupported Whisper tensor payload refused; fp16 weights are required");
+    }
+    crate::whisper_weights::validate_mapped_tensor_name_uniqueness(
+        raw_tensors.keys().map(String::as_str),
+    )?;
     let mut tensor_map = HashMap::new();
-    let mut quantized_weights: Vec<String> = Vec::new();
 
-    // First pass: handle non-quantized tensors and collect quantized weight names
+    // alignment_heads is integer metadata used by upstream timestamp tooling,
+    // not a model weight consumed by Candle's Whisper loader.
     for (name, tensor) in raw_tensors.iter() {
-        if name.ends_with(".weight") && tensor.dtype() == DType::U32 {
-            quantized_weights.push(name.clone());
+        if name == "alignment_heads" {
             continue;
         }
-
-        if name.ends_with(".scales") || name.ends_with(".biases") {
-            continue;
-        }
-
-        let mapped_name = map_tensor_name(name);
+        let mapped_name = crate::whisper_weights::map_whisper_tensor_name(name);
         let mut t = tensor.clone();
         if t.dtype() != DType::F32 {
             t = t.to_dtype(DType::F32)?;
@@ -2046,39 +1802,283 @@ fn build_varbuilder_from_tensors(
         tensor_map.insert(mapped_name, t);
     }
 
-    // Second pass: dequantize packed Q8 weights
-    for weight_name in quantized_weights {
-        let base = weight_name.trim_end_matches(".weight");
-        let packed = raw_tensors
-            .get(&weight_name)
-            .context(format!("Missing packed tensor for {}", weight_name))?;
-        let scales_key = format!("{}.scales", base);
-        let biases_key = format!("{}.biases", base);
-        let scales = raw_tensors
-            .get(&scales_key)
-            .context(format!("Missing scales tensor for {}", weight_name))?;
-        let biases = raw_tensors
-            .get(&biases_key)
-            .context(format!("Missing biases tensor for {}", weight_name))?;
-
-        let mut dequant = dequantize_q8(packed, scales, biases, device)?;
-        let mapped_name = map_tensor_name(&weight_name);
-
-        if mapped_name.ends_with("conv1.weight") || mapped_name.ends_with("conv2.weight") {
-            let dims = dequant.dims();
-            if dims.len() == 3 && dims[1] == 3 {
-                dequant = dequant.permute((0, 2, 1))?.contiguous()?;
-            }
-        }
-
-        tensor_map.insert(mapped_name, dequant);
-    }
-
     Ok(candle_nn::VarBuilder::from_tensors(
         tensor_map,
         DType::F32,
         device,
     ))
+}
+
+#[cfg(test)]
+mod model_payload_tests {
+    use super::*;
+    use std::fs;
+    use tempfile::TempDir;
+
+    fn decode_hex(raw: &str) -> Vec<u8> {
+        let digits: String = raw.chars().filter(|ch| !ch.is_whitespace()).collect();
+        assert!(digits.len().is_multiple_of(2));
+        digits
+            .as_bytes()
+            .as_chunks::<2>()
+            .0
+            .iter()
+            .map(|pair| u8::from_str_radix(std::str::from_utf8(pair).unwrap(), 16).unwrap())
+            .collect()
+    }
+
+    fn write_valid_bundle_artifacts(path: &Path) {
+        fs::create_dir_all(path).unwrap();
+        fs::write(
+            path.join("config.json"),
+            include_str!("../../../tests/fixtures/whisper_test_config.json"),
+        )
+        .unwrap();
+        fs::write(
+            path.join("tokenizer.json"),
+            include_str!("../../../tests/fixtures/whisper_tokenizer.json"),
+        )
+        .unwrap();
+        fs::write(
+            path.join("mel_filters.npz"),
+            decode_hex(include_str!(
+                "../../../tests/fixtures/whisper_mel_filters.npz.hex"
+            )),
+        )
+        .unwrap();
+    }
+
+    fn write_tiny_model(path: &Path, name: &str, dtype: &str, payload_bytes: usize) {
+        write_valid_bundle_artifacts(path);
+        let header = serde_json::json!({
+            name: {
+                "dtype": dtype,
+                "shape": [1],
+                "data_offsets": [0, payload_bytes]
+            }
+        });
+        let header = serde_json::to_vec(&header).unwrap();
+        let mut file = (header.len() as u64).to_le_bytes().to_vec();
+        file.extend_from_slice(&header);
+        file.resize(file.len() + payload_bytes, 0);
+        fs::write(path.join("weights.safetensors"), file).unwrap();
+    }
+
+    #[test]
+    fn local_loader_refuses_tiny_u32_safetensors() {
+        let temp = TempDir::new().unwrap();
+        write_tiny_model(temp.path(), "encoder.weight", "U32", 4);
+
+        let err = LocalWhisperEngine::new(temp.path())
+            .err()
+            .expect("U32 must be refused");
+        assert!(format!("{err:#}").contains("unsupported Whisper tensor dtype U32"));
+    }
+
+    #[test]
+    fn local_loader_refuses_non_allowlisted_integer_safetensors() {
+        let temp = TempDir::new().unwrap();
+        write_tiny_model(temp.path(), "encoder.weight", "I32", 4);
+
+        let err = LocalWhisperEngine::new(temp.path())
+            .err()
+            .expect("I32 must be refused");
+        assert!(format!("{err:#}").contains("unsupported Whisper tensor dtype I32"));
+    }
+
+    #[test]
+    fn tensor_builder_refuses_u32_before_mapping() {
+        let mut tensors = HashMap::new();
+        tensors.insert(
+            "encoder.weight".to_string(),
+            Tensor::from_vec(vec![0_u32], 1, &Device::Cpu).unwrap(),
+        );
+
+        let err = build_varbuilder_from_tensors(tensors, &Device::Cpu)
+            .err()
+            .expect("U32 must be refused by the builder gate");
+        assert!(format!("{err:#}").contains("refused"));
+    }
+
+    #[test]
+    fn tensor_builder_excludes_i64_alignment_metadata() {
+        let mut tensors = HashMap::new();
+        tensors.insert(
+            "encoder.weight".to_string(),
+            Tensor::from_vec(vec![1.0_f32], 1, &Device::Cpu).unwrap(),
+        );
+        tensors.insert(
+            "alignment_heads".to_string(),
+            Tensor::from_vec(
+                vec![2_i64, 4, 2, 11, 3, 3, 3, 6, 3, 11, 3, 14],
+                (6, 2),
+                &Device::Cpu,
+            )
+            .unwrap(),
+        );
+
+        let vb = build_varbuilder_from_tensors(tensors, &Device::Cpu).unwrap();
+
+        assert!(vb.contains_tensor("model.encoder.weight"));
+        assert_eq!(
+            vb.get_unchecked("model.encoder.weight").unwrap().dtype(),
+            DType::F32
+        );
+        assert!(!vb.contains_tensor("model.alignment_heads"));
+    }
+
+    #[test]
+    fn tensor_builder_rejects_mapped_name_collisions() {
+        let mut tensors = HashMap::new();
+        tensors.insert(
+            "decoder.ln.weight".to_string(),
+            Tensor::from_vec(vec![1.0_f32], 1, &Device::Cpu).unwrap(),
+        );
+        tensors.insert(
+            "decoder.layer_norm.weight".to_string(),
+            Tensor::from_vec(vec![2.0_f32], 1, &Device::Cpu).unwrap(),
+        );
+
+        let err = build_varbuilder_from_tensors(tensors, &Device::Cpu)
+            .err()
+            .expect("mapped collision must be rejected");
+        let message = format!("{err:#}");
+        assert!(message.contains("decoder.ln.weight"), "{message}");
+        assert!(message.contains("decoder.layer_norm.weight"), "{message}");
+        assert!(
+            message.contains("model.decoder.layer_norm.weight"),
+            "{message}"
+        );
+    }
+
+    #[test]
+    fn tensor_builder_rejects_float_alignment_metadata() {
+        let mut tensors = HashMap::new();
+        tensors.insert(
+            "alignment_heads".to_string(),
+            Tensor::from_vec(vec![1.0_f32], 1, &Device::Cpu).unwrap(),
+        );
+        let err = build_varbuilder_from_tensors(tensors, &Device::Cpu)
+            .err()
+            .expect("float alignment metadata must be rejected");
+        assert!(format!("{err:#}").contains("refused"));
+    }
+
+    #[test]
+    fn local_loader_rejects_invalid_tokenizer_before_model_load() {
+        let temp = TempDir::new().unwrap();
+        write_valid_bundle_artifacts(temp.path());
+        let architecture = crate::whisper_weights::parse_whisper_config(
+            include_str!("../../../tests/fixtures/whisper_test_config.json"),
+            "test fixture",
+        )
+        .unwrap();
+        crate::whisper_weights::write_test_whisper_weights(
+            &temp.path().join("weights.safetensors"),
+            architecture,
+        )
+        .unwrap();
+        fs::write(temp.path().join("tokenizer.json"), "{}").unwrap();
+
+        let err = LocalWhisperEngine::new(temp.path())
+            .err()
+            .expect("invalid tokenizer must be rejected");
+        let message = format!("{err:#}");
+        assert!(message.contains("tokenizer"), "{message}");
+        assert!(
+            !message.contains("Failed to create Whisper Model"),
+            "{message}"
+        );
+    }
+
+    #[test]
+    fn local_loader_rejects_oversized_tokenizer_before_model_load() {
+        let temp = TempDir::new().unwrap();
+        write_valid_bundle_artifacts(temp.path());
+        let architecture = crate::whisper_weights::parse_whisper_config(
+            include_str!("../../../tests/fixtures/whisper_test_config.json"),
+            "test fixture",
+        )
+        .unwrap();
+        crate::whisper_weights::write_test_whisper_weights(
+            &temp.path().join("weights.safetensors"),
+            architecture,
+        )
+        .unwrap();
+        fs::File::create(temp.path().join("tokenizer.json"))
+            .unwrap()
+            .set_len(crate::whisper_weights::MAX_WHISPER_TOKENIZER_BYTES + 1)
+            .unwrap();
+
+        let err = LocalWhisperEngine::new(temp.path())
+            .err()
+            .expect("oversized tokenizer must be rejected");
+        let message = format!("{err:#}");
+        assert!(message.contains("16777216-byte limit"), "{message}");
+        assert!(
+            !message.contains("Failed to create Whisper Model"),
+            "{message}"
+        );
+    }
+
+    #[test]
+    fn local_loader_rejects_unpinned_mel_before_model_load() {
+        let temp = TempDir::new().unwrap();
+        write_valid_bundle_artifacts(temp.path());
+        let architecture = crate::whisper_weights::parse_whisper_config(
+            include_str!("../../../tests/fixtures/whisper_test_config.json"),
+            "test fixture",
+        )
+        .unwrap();
+        crate::whisper_weights::write_test_whisper_weights(
+            &temp.path().join("weights.safetensors"),
+            architecture,
+        )
+        .unwrap();
+        fs::write(
+            temp.path().join("mel_filters.npz"),
+            vec![0_u8; crate::whisper_weights::MEL_FILTERS_SIZE_BYTES as usize],
+        )
+        .unwrap();
+
+        let err = LocalWhisperEngine::new(temp.path())
+            .err()
+            .expect("unpinned mel must be rejected");
+        let message = format!("{err:#}");
+        assert!(message.contains("SHA-256 mismatch"), "{message}");
+        assert!(
+            !message.contains("Failed to create Whisper Model"),
+            "{message}"
+        );
+    }
+
+    #[test]
+    fn local_loader_uses_valid_alternative_after_invalid_primary() {
+        let temp = TempDir::new().unwrap();
+        fs::create_dir_all(temp.path()).unwrap();
+        fs::write(
+            temp.path().join("config.json"),
+            include_str!("../../../tests/fixtures/whisper_test_config.json"),
+        )
+        .unwrap();
+        write_valid_bundle_artifacts(temp.path());
+        let architecture = crate::whisper_weights::parse_whisper_config(
+            include_str!("../../../tests/fixtures/whisper_test_config.json"),
+            "test fixture",
+        )
+        .unwrap();
+        crate::whisper_weights::write_test_whisper_weights(
+            &temp.path().join("model.safetensors"),
+            architecture,
+        )
+        .unwrap();
+        write_tiny_model(temp.path(), "encoder.weight", "U32", 4);
+
+        assert!(
+            LocalWhisperEngine::new(temp.path()).is_ok(),
+            "compatible alternative should load after invalid primary"
+        );
+    }
 }
 
 // ═══════════════════════════════════════════════════════════════════════════════
@@ -2312,7 +2312,7 @@ mod dedup_tests {
         let without_prompt = vec![1_u32, 2, 3];
         let mut with_prompt = without_prompt.clone();
 
-        let used = prepend_initial_prompt_tokens(&mut with_prompt, 99, &[10, 11, 12]);
+        let used = prepend_initial_prompt_tokens(&mut with_prompt, 99, &[10, 11, 12], 448);
 
         assert_eq!(used, 3);
         assert_ne!(with_prompt, without_prompt);
@@ -2327,7 +2327,7 @@ mod dedup_tests {
         let prompt_tokens: Vec<u32> =
             (0..(WHISPER_INITIAL_PROMPT_TOKEN_BUDGET as u32 + 10)).collect();
 
-        let used = prepend_initial_prompt_tokens(&mut tokens, 99, &prompt_tokens);
+        let used = prepend_initial_prompt_tokens(&mut tokens, 99, &prompt_tokens, 448);
 
         assert_eq!(used, WHISPER_INITIAL_PROMPT_TOKEN_BUDGET);
         assert_eq!(tokens.len(), 4 + WHISPER_INITIAL_PROMPT_TOKEN_BUDGET);
@@ -2340,6 +2340,30 @@ mod dedup_tests {
             &tokens[(WHISPER_INITIAL_PROMPT_TOKEN_BUDGET + 1)..],
             &[1, 2, 3]
         );
+    }
+
+    #[test]
+    fn initial_prompt_reserves_one_decode_position() {
+        let prompt = [10_u32, 11, 12, 13];
+
+        let mut minimum_context = vec![1_u32, 2, 3, 4];
+        let used = prepend_initial_prompt_tokens(&mut minimum_context, 99, &prompt, 5);
+        assert_eq!(used, 0);
+        assert_eq!(minimum_context, vec![1, 2, 3, 4]);
+        assert!(minimum_context.len() < 5);
+
+        let mut short_context = vec![1_u32, 2, 3, 4];
+        let used = prepend_initial_prompt_tokens(&mut short_context, 99, &prompt, 8);
+        assert_eq!(used, 2);
+        assert_eq!(short_context, vec![99, 10, 11, 1, 2, 3, 4]);
+        assert_eq!(8 - short_context.len(), 1);
+    }
+
+    #[test]
+    fn initial_prompt_rejects_any_out_of_vocabulary_id() {
+        assert!(prompt_token_ids_fit_vocab(&[0, 1, 3], 4));
+        assert!(!prompt_token_ids_fit_vocab(&[0, 4], 4));
+        assert!(!prompt_token_ids_fit_vocab(&[5], 4));
     }
 
     /// Incremental n-gram blocker matches full-scan blocks across sizes and edges.

@@ -18,13 +18,15 @@ pub struct TimestampRange {
 
 impl TimestampRange {
     /// Resolve the timestamp token range from tokenizer special tokens.
-    pub fn from_tokenizer(tokenizer: &Tokenizer) -> Option<Self> {
-        let begin = tokenizer.token_to_id("<|0.00|>")?;
-        let end_inclusive = tokenizer.token_to_id("<|30.00|>")?;
-        Some(Self {
-            begin,
-            end_inclusive,
-        })
+    pub fn from_tokenizer(tokenizer: &Tokenizer, n_vocab: usize) -> anyhow::Result<Option<Self>> {
+        Ok(
+            crate::whisper_weights::validated_timestamp_token_range(tokenizer, n_vocab)?.map(
+                |(begin, end_inclusive)| Self {
+                    begin,
+                    end_inclusive,
+                },
+            ),
+        )
     }
 
     /// Returns true when `tok` is a timestamp token.
@@ -104,12 +106,15 @@ mod tests {
             ("hello".to_string(), 1_u32),
             ("world".to_string(), 2_u32),
             ("again".to_string(), 3_u32),
-            ("<|0.00|>".to_string(), 1000_u32),
-            ("<|0.02|>".to_string(), 1001_u32),
-            ("<|0.04|>".to_string(), 1002_u32),
-            ("<|30.00|>".to_string(), 1030_u32),
         ]
         .into_iter()
+        .chain((0..=1500).map(|step| {
+            let hundredths = step * 2;
+            (
+                format!("<|{}.{:02}|>", hundredths / 100, hundredths % 100),
+                1000_u32 + step,
+            )
+        }))
         .collect();
 
         let model = WordLevel::builder()
@@ -125,9 +130,11 @@ mod tests {
     #[test]
     fn timestamp_range_resolves_from_tokenizer() {
         let tokenizer = test_tokenizer();
-        let range = TimestampRange::from_tokenizer(&tokenizer).expect("timestamp range");
+        let range = TimestampRange::from_tokenizer(&tokenizer, 2501)
+            .unwrap()
+            .expect("timestamp range");
         assert_eq!(range.begin, 1000);
-        assert_eq!(range.end_inclusive, 1030);
+        assert_eq!(range.end_inclusive, 2500);
         assert!(range.is_timestamp(1005));
         assert!(!range.is_timestamp(12));
     }
@@ -136,7 +143,9 @@ mod tests {
     #[test]
     fn extract_segments_parses_closed_spans() {
         let tokenizer = test_tokenizer();
-        let range = TimestampRange::from_tokenizer(&tokenizer).expect("timestamp range");
+        let range = TimestampRange::from_tokenizer(&tokenizer, 2501)
+            .unwrap()
+            .expect("timestamp range");
         let tokens = vec![1000, 1, 2, 1002, 3, 1004];
 
         let (text, segments) = extract_segments(&tokens, &tokenizer, &range);
@@ -155,7 +164,9 @@ mod tests {
     #[test]
     fn extract_segments_ignores_unclosed_trailing_span() {
         let tokenizer = test_tokenizer();
-        let range = TimestampRange::from_tokenizer(&tokenizer).expect("timestamp range");
+        let range = TimestampRange::from_tokenizer(&tokenizer, 2501)
+            .unwrap()
+            .expect("timestamp range");
         let tokens = vec![1000, 1, 1002, 2, 3];
 
         let (text, segments) = extract_segments(&tokens, &tokenizer, &range);

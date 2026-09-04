@@ -1,0 +1,1289 @@
+//! Shared Whisper safetensors validation for runtime and fat-build selection.
+
+use anyhow::{Context, Result, anyhow};
+use sha2::{Digest, Sha256};
+use std::collections::{BTreeMap, HashSet};
+use std::fs;
+use std::io::{Read, Seek, SeekFrom};
+use std::path::{Path, PathBuf};
+
+/// Supported weight filenames in deterministic preference order.
+pub const SUPPORTED_NAMES: [&str; 2] = ["weights.safetensors", "model.safetensors"];
+/// SHA-256 of the pinned official OpenAI mel filterbank.
+pub const MEL_FILTERS_SHA256: &str =
+    "7450ae70723a5ef9d341e3cee628c7cb0177f36ce42c44b7ed2bf3325f0f6d4c";
+/// Byte length of the pinned official OpenAI mel filterbank.
+pub const MEL_FILTERS_SIZE_BYTES: u64 = 4_271;
+pub(crate) const MAX_WHISPER_CONFIG_BYTES: u64 = 1024 * 1024;
+pub(crate) const MAX_WHISPER_TOKENIZER_BYTES: u64 = 16 * 1024 * 1024;
+const REQUIRED_TOKENIZER_TOKENS: [&str; 2] = ["<|startoftranscript|>", "<|endoftext|>"];
+const OPTIONAL_PROMPT_TOKENS: [&str; 3] = ["<|transcribe|>", "<|notimestamps|>", "<|startofprev|>"];
+const MAX_WHISPER_LAYERS: usize = 64;
+const MAX_WHISPER_AUDIO_CONTEXT: usize = 1_500;
+const MAX_WHISPER_TEXT_CONTEXT: usize = 448;
+const MAX_WHISPER_STATE_WIDTH: usize = 1_280;
+const MAX_WHISPER_VOCAB: usize = 51_866;
+const WHISPER_TIMESTAMP_STEPS: u32 = 1_500;
+const LANG_TOKEN_START: u32 = 50_259;
+const LANG_TOKEN_END: u32 = 50_358;
+const FALLBACK_LANGUAGES: [&str; 12] = [
+    "en", "pl", "de", "fr", "es", "it", "pt", "nl", "ru", "uk", "cs", "sk",
+];
+/// MLX Whisper architecture shared by validation, disk loading, and embedding.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct WhisperArchitecture {
+    pub n_mels: usize,
+    pub n_audio_ctx: usize,
+    pub n_audio_state: usize,
+    pub n_audio_head: usize,
+    pub n_audio_layer: usize,
+    pub n_vocab: usize,
+    pub n_text_ctx: usize,
+    pub n_text_state: usize,
+    pub n_text_head: usize,
+    pub n_text_layer: usize,
+}
+
+/// Validate every artifact required by runtime and embedded Whisper loaders.
+pub fn validate_whisper_model_bundle(path: &Path) -> Result<()> {
+    let architecture = load_whisper_architecture(&path.join("config.json"))?;
+    validate_whisper_tokenizer_for_architecture(&path.join("tokenizer.json"), architecture)?;
+    verify_mel_filters(&path.join("mel_filters.npz"))?;
+    resolve_compatible_whisper_weights_path(path, architecture).map(|_| ())
+}
+
+/// Parse the tokenizer and require the control tokens used by every decode.
+pub(crate) fn validate_whisper_tokenizer(path: &Path) -> Result<()> {
+    let tokenizer = load_bounded_whisper_tokenizer(path)?;
+    for token in REQUIRED_TOKENIZER_TOKENS {
+        if tokenizer.token_to_id(token).is_none() {
+            return Err(anyhow!(
+                "Whisper tokenizer {} is missing required token {token}",
+                path.display()
+            ));
+        }
+    }
+    Ok(())
+}
+
+pub(crate) fn validate_whisper_tokenizer_for_architecture(
+    path: &Path,
+    architecture: WhisperArchitecture,
+) -> Result<()> {
+    load_validated_whisper_tokenizer_for_architecture(path, architecture).map(|_| ())
+}
+
+pub(crate) fn load_validated_whisper_tokenizer_for_architecture(
+    path: &Path,
+    architecture: WhisperArchitecture,
+) -> Result<tokenizers::Tokenizer> {
+    let tokenizer = load_bounded_whisper_tokenizer(path)?;
+    validated_timestamp_token_range(&tokenizer, architecture.n_vocab)
+        .with_context(|| format!("validate Whisper timestamp tokens in {}", path.display()))?;
+    for token in REQUIRED_TOKENIZER_TOKENS {
+        let id = tokenizer.token_to_id(token).ok_or_else(|| {
+            anyhow!(
+                "Whisper tokenizer {} is missing required token {token}",
+                path.display()
+            )
+        })?;
+        if id as usize >= architecture.n_vocab {
+            return Err(anyhow!(
+                "Whisper tokenizer {} required token {token} has id {id} outside configured vocabulary 0..{}",
+                path.display(),
+                architecture.n_vocab
+            ));
+        }
+    }
+    for token in OPTIONAL_PROMPT_TOKENS {
+        if let Some(id) = tokenizer.token_to_id(token)
+            && id as usize >= architecture.n_vocab
+        {
+            return Err(anyhow!(
+                "Whisper tokenizer {} prompt token {token} has id {id} outside configured vocabulary 0..{}",
+                path.display(),
+                architecture.n_vocab
+            ));
+        }
+    }
+    let vocab = tokenizer.get_vocab(true);
+    if let Some((token, id)) = vocab.iter().find(|(token, id)| {
+        parse_language_token(token).is_some() && (**id as usize) >= architecture.n_vocab
+    }) {
+        return Err(anyhow!(
+            "Whisper tokenizer {} language token {token} has id {id} outside configured vocabulary 0..{}",
+            path.display(),
+            architecture.n_vocab
+        ));
+    }
+    if let Some((token, id)) = vocab
+        .iter()
+        .find(|(_, id)| (**id as usize) >= architecture.n_vocab)
+    {
+        return Err(anyhow!(
+            "Whisper tokenizer {} token {token} has id {id} outside configured vocabulary 0..{}",
+            path.display(),
+            architecture.n_vocab
+        ));
+    }
+    let covered: HashSet<u32> = vocab
+        .values()
+        .copied()
+        .filter(|id| (*id as usize) < architecture.n_vocab)
+        .collect();
+    if covered.len() != architecture.n_vocab {
+        return Err(anyhow!(
+            "Whisper tokenizer {} does not cover configured vocabulary 0..{}",
+            path.display(),
+            architecture.n_vocab
+        ));
+    }
+    if language_token_candidates(&tokenizer, architecture.n_vocab).is_empty() {
+        return Err(anyhow!(
+            "Whisper tokenizer {} has no runtime-discoverable language token required for automatic detection",
+            path.display()
+        ));
+    }
+    Ok(tokenizer)
+}
+
+fn load_bounded_whisper_tokenizer(path: &Path) -> Result<tokenizers::Tokenizer> {
+    let bytes = read_bounded_metadata_file(path, MAX_WHISPER_TOKENIZER_BYTES, "tokenizer")?;
+    tokenizers::Tokenizer::from_bytes(bytes)
+        .map_err(|err| anyhow!("invalid Whisper tokenizer {}: {err}", path.display()))
+}
+
+/// Resolve and validate the optional 20 ms timestamp-token block.
+pub(crate) fn validated_timestamp_token_range(
+    tokenizer: &tokenizers::Tokenizer,
+    n_vocab: usize,
+) -> Result<Option<(u32, u32)>> {
+    let begin = tokenizer.token_to_id("<|0.00|>");
+    let end = tokenizer.token_to_id("<|30.00|>");
+    let (begin, end) = match (begin, end) {
+        (None, None) => return Ok(None),
+        (Some(_), None) | (None, Some(_)) => {
+            return Err(anyhow!("incomplete Whisper timestamp token range"));
+        }
+        (Some(begin), Some(end)) => (begin, end),
+    };
+    if begin.checked_add(WHISPER_TIMESTAMP_STEPS) != Some(end) {
+        return Err(anyhow!(
+            "invalid Whisper timestamp token span: begin={begin}, end={end}, expected delta={WHISPER_TIMESTAMP_STEPS}"
+        ));
+    }
+    if end as usize >= n_vocab {
+        return Err(anyhow!(
+            "Whisper timestamp endpoint id {end} is outside configured vocabulary 0..{n_vocab}"
+        ));
+    }
+    for step in 0..=WHISPER_TIMESTAMP_STEPS {
+        let hundredths = step * 2;
+        let expected = format!("<|{}.{:02}|>", hundredths / 100, hundredths % 100);
+        let id = begin + step;
+        if tokenizer.id_to_token(id).as_deref() != Some(expected.as_str()) {
+            return Err(anyhow!(
+                "Whisper timestamp token id {id} must be {expected}"
+            ));
+        }
+    }
+    Ok(Some((begin, end)))
+}
+
+pub(crate) fn language_token_candidates(
+    tokenizer: &tokenizers::Tokenizer,
+    vocab_size: usize,
+) -> Vec<(u32, String)> {
+    let mut out = Vec::new();
+    for id in LANG_TOKEN_START..=LANG_TOKEN_END {
+        if id as usize >= vocab_size {
+            break;
+        }
+        if let Some(token) = tokenizer.id_to_token(id)
+            && let Some(language) = parse_language_token(&token)
+        {
+            out.push((id, language.to_string()));
+        }
+    }
+    if !out.is_empty() {
+        return out;
+    }
+    for language in FALLBACK_LANGUAGES {
+        let token = format!("<|{language}|>");
+        if let Some(id) = tokenizer.token_to_id(&token)
+            && (id as usize) < vocab_size
+        {
+            out.push((id, language.to_string()));
+        }
+    }
+    out
+}
+
+fn parse_language_token(token: &str) -> Option<&str> {
+    let inner = token.strip_prefix("<|")?.strip_suffix("|>")?;
+    ((2..=3).contains(&inner.len()) && inner.chars().all(|ch| ch.is_ascii_alphabetic()))
+        .then_some(inner)
+}
+
+/// Validate the config schema and reject every declared quantization mode.
+pub(crate) fn validate_whisper_config(path: &Path) -> Result<()> {
+    load_whisper_architecture(path).map(|_| ())
+}
+
+pub(crate) fn load_whisper_architecture(path: &Path) -> Result<WhisperArchitecture> {
+    let bytes = read_bounded_metadata_file(path, MAX_WHISPER_CONFIG_BYTES, "config")?;
+    let raw = std::str::from_utf8(&bytes)
+        .with_context(|| format!("Whisper config {} is not UTF-8", path.display()))?;
+    parse_whisper_config(raw, &path.display().to_string())
+}
+
+fn read_bounded_metadata_file(path: &Path, max_bytes: u64, label: &str) -> Result<Vec<u8>> {
+    let mut file = {
+        // nosemgrep: rust.actix.path-traversal.tainted-path.tainted-path -- Read-only validation of an operator-selected local model artifact or internally resolved cache child.
+        fs::File::open(path)
+    }
+    .with_context(|| format!("open Whisper {label} {}", path.display()))?;
+    let metadata = file
+        .metadata()
+        .with_context(|| format!("inspect Whisper {label} {}", path.display()))?;
+    if !metadata.is_file() {
+        return Err(anyhow!(
+            "Whisper {label} {} is not a regular file",
+            path.display()
+        ));
+    }
+    if metadata.len() > max_bytes {
+        return Err(anyhow!(
+            "Whisper {label} {} size {} exceeds the {max_bytes}-byte limit",
+            path.display(),
+            metadata.len()
+        ));
+    }
+
+    let mut bytes = Vec::with_capacity(metadata.len() as usize);
+    (&mut file)
+        .take(max_bytes + 1)
+        .read_to_end(&mut bytes)
+        .with_context(|| format!("read Whisper {label} {}", path.display()))?;
+    if bytes.len() as u64 > max_bytes {
+        return Err(anyhow!(
+            "Whisper {label} {} grew beyond the {max_bytes}-byte limit while reading",
+            path.display()
+        ));
+    }
+    Ok(bytes)
+}
+
+/// Parse and validate the MLX architecture consumed by Candle's Whisper loader.
+pub(crate) fn parse_whisper_config(raw: &str, source: &str) -> Result<WhisperArchitecture> {
+    let config: serde_json::Value =
+        serde_json::from_str(raw).with_context(|| format!("parse Whisper config {source}"))?;
+    if !config.is_object() {
+        return Err(anyhow!("Whisper config must be a JSON object: {source}"));
+    }
+    if config
+        .get("quantization")
+        .is_some_and(|value| !value.is_null())
+        || config
+            .get("quantization_config")
+            .is_some_and(|value| !value.is_null())
+    {
+        return Err(anyhow!("quantized Whisper config is unsupported"));
+    }
+    let dimension = |name: &str| -> Result<usize> {
+        let value = config
+            .get(name)
+            .and_then(serde_json::Value::as_u64)
+            .and_then(|value| usize::try_from(value).ok())
+            .filter(|value| *value > 0)
+            .ok_or_else(|| anyhow!("Whisper config {source} requires a positive integer {name}"))?;
+        Ok(value)
+    };
+    let architecture = WhisperArchitecture {
+        n_mels: dimension("n_mels")?,
+        n_audio_ctx: dimension("n_audio_ctx")?,
+        n_audio_state: dimension("n_audio_state")?,
+        n_audio_head: dimension("n_audio_head")?,
+        n_audio_layer: dimension("n_audio_layer")?,
+        n_vocab: dimension("n_vocab")?,
+        n_text_ctx: dimension("n_text_ctx")?,
+        n_text_state: dimension("n_text_state")?,
+        n_text_head: dimension("n_text_head")?,
+        n_text_layer: dimension("n_text_layer")?,
+    };
+    if architecture.n_vocab > u32::MAX as usize {
+        return Err(anyhow!(
+            "Whisper config {source} requires n_vocab to fit tokenizer u32 IDs"
+        ));
+    }
+    if architecture.n_vocab > MAX_WHISPER_VOCAB {
+        return Err(anyhow!(
+            "Whisper config {source} exceeds the supported Whisper vocabulary of {MAX_WHISPER_VOCAB} tokens"
+        ));
+    }
+    if architecture.n_audio_layer > MAX_WHISPER_LAYERS
+        || architecture.n_text_layer > MAX_WHISPER_LAYERS
+    {
+        return Err(anyhow!(
+            "Whisper config {source} exceeds the resource limit of {MAX_WHISPER_LAYERS} encoder or decoder layers"
+        ));
+    }
+    if !(5..=MAX_WHISPER_TEXT_CONTEXT).contains(&architecture.n_text_ctx) {
+        return Err(anyhow!(
+            "Whisper config {source} requires n_text_ctx in 5..={MAX_WHISPER_TEXT_CONTEXT} for the supported decoder context"
+        ));
+    }
+    if !matches!(architecture.n_mels, 80 | 128) {
+        return Err(anyhow!(
+            "Whisper config {source} requires n_mels to be 80 or 128"
+        ));
+    }
+    if architecture.n_audio_ctx != MAX_WHISPER_AUDIO_CONTEXT {
+        return Err(anyhow!(
+            "Whisper config {source} requires n_audio_ctx={MAX_WHISPER_AUDIO_CONTEXT} for the supported 30-second runtime window"
+        ));
+    }
+    if architecture.n_audio_state != architecture.n_text_state {
+        return Err(anyhow!(
+            "Whisper config {source} requires n_audio_state to equal n_text_state"
+        ));
+    }
+    if architecture.n_audio_state > MAX_WHISPER_STATE_WIDTH {
+        return Err(anyhow!(
+            "Whisper config {source} exceeds the supported Whisper state width of {MAX_WHISPER_STATE_WIDTH}"
+        ));
+    }
+    if architecture.n_audio_state < 4 || !architecture.n_audio_state.is_multiple_of(2) {
+        return Err(anyhow!(
+            "Whisper config {source} requires an even n_audio_state of at least 4"
+        ));
+    }
+    if !architecture
+        .n_audio_state
+        .is_multiple_of(architecture.n_audio_head)
+    {
+        return Err(anyhow!(
+            "Whisper config {source} requires n_audio_state divisible by n_audio_head"
+        ));
+    }
+    if !architecture
+        .n_text_state
+        .is_multiple_of(architecture.n_text_head)
+    {
+        return Err(anyhow!(
+            "Whisper config {source} requires n_text_state divisible by n_text_head"
+        ));
+    }
+    Ok(architecture)
+}
+
+/// Verify the pinned mel filterbank used by Whisper.
+pub(crate) fn verify_mel_filters(path: &Path) -> Result<()> {
+    let mut file = {
+        // nosemgrep: rust.actix.path-traversal.tainted-path.tainted-path -- Read-only checksum of an operator-selected local model artifact or internally resolved download destination.
+        fs::File::open(path)
+    }
+    .with_context(|| format!("open {} for checksum", path.display()))?;
+    let metadata_len = file
+        .metadata()
+        .with_context(|| format!("stat {} for checksum", path.display()))?
+        .len();
+    if metadata_len != MEL_FILTERS_SIZE_BYTES {
+        return Err(anyhow!(
+            "size mismatch for {}: expected {} bytes, got {}",
+            path.display(),
+            MEL_FILTERS_SIZE_BYTES,
+            metadata_len
+        ));
+    }
+
+    let mut hasher = Sha256::new();
+    let mut total = 0_u64;
+    let mut buffer = [0_u8; 8 * 1024];
+    let mut bounded = (&mut file).take(MEL_FILTERS_SIZE_BYTES + 1);
+    loop {
+        let read = bounded
+            .read(&mut buffer)
+            .with_context(|| format!("read {} for checksum", path.display()))?;
+        if read == 0 {
+            break;
+        }
+        total += read as u64;
+        hasher.update(&buffer[..read]);
+    }
+    if total != MEL_FILTERS_SIZE_BYTES {
+        return Err(anyhow!(
+            "size changed while reading {}: expected {} bytes, got {}",
+            path.display(),
+            MEL_FILTERS_SIZE_BYTES,
+            total
+        ));
+    }
+
+    let actual = format!("{:x}", hasher.finalize());
+    if actual != MEL_FILTERS_SHA256 {
+        return Err(anyhow!(
+            "SHA-256 mismatch for {}: expected {}, got {}",
+            path.display(),
+            MEL_FILTERS_SHA256,
+            actual
+        ));
+    }
+    Ok(())
+}
+
+/// Resolve the first structurally valid supported weight file.
+#[cfg(test)]
+pub fn resolve_valid_whisper_weights_path(path: &Path) -> Result<PathBuf> {
+    let mut failures = Vec::new();
+    for name in SUPPORTED_NAMES {
+        let candidate = path.join(name);
+        if !candidate.is_file() {
+            continue;
+        }
+        match validate_safetensors_file(&candidate) {
+            Ok(()) => return Ok(candidate),
+            Err(err) => failures.push(format!("{name}: {err:#}")),
+        }
+    }
+
+    if failures.is_empty() {
+        Err(anyhow!(
+            "Whisper weights are missing from {}",
+            path.display()
+        ))
+    } else {
+        Err(anyhow!(
+            "no valid Whisper weights in {} ({})",
+            path.display(),
+            failures.join("; ")
+        ))
+    }
+}
+
+/// Resolve the first supported weight file matching the configured architecture.
+pub(crate) fn resolve_compatible_whisper_weights_path(
+    path: &Path,
+    architecture: WhisperArchitecture,
+) -> Result<PathBuf> {
+    let mut failures = Vec::new();
+    for name in SUPPORTED_NAMES {
+        let candidate = path.join(name);
+        if !candidate.is_file() {
+            continue;
+        }
+        match validate_whisper_weights_for_architecture(&candidate, architecture) {
+            Ok(()) => return Ok(candidate),
+            Err(err) => failures.push(format!("{name}: {err:#}")),
+        }
+    }
+    if failures.is_empty() {
+        Err(anyhow!(
+            "Whisper weights are missing from {}",
+            path.display()
+        ))
+    } else {
+        Err(anyhow!(
+            "no architecture-compatible Whisper weights in {} ({})",
+            path.display(),
+            failures.join("; ")
+        ))
+    }
+}
+
+/// Validate the config/weights generation used by warm-cache composition.
+pub(crate) fn validate_whisper_model_pair(path: &Path) -> Result<()> {
+    let architecture = load_whisper_architecture(&path.join("config.json"))?;
+    resolve_compatible_whisper_weights_path(path, architecture).map(|_| ())
+}
+
+/// Validate the complete safetensors structure without loading tensor data.
+pub(crate) fn validate_safetensors_file(path: &Path) -> Result<()> {
+    read_validated_tensor_shapes(path).map(|_| ())
+}
+
+fn read_validated_tensor_shapes(path: &Path) -> Result<BTreeMap<String, Vec<usize>>> {
+    const MAX_HEADER_BYTES: u64 = 16 * 1024 * 1024;
+    // nosemgrep: rust.actix.path-traversal.tainted-path.tainted-path -- Read-only model inspection. `path` is an operator-selected local model file or an internally resolved bundle/cache child; no network/request path component reaches it.
+    let mut file = fs::File::open(path).with_context(|| format!("open {}", path.display()))?;
+    let mut len_bytes = [0_u8; 8];
+    file.read_exact(&mut len_bytes)
+        .with_context(|| format!("read safetensors header length from {}", path.display()))?;
+    let header_len = u64::from_le_bytes(len_bytes);
+    if header_len == 0 || header_len > MAX_HEADER_BYTES {
+        return Err(anyhow!(
+            "invalid safetensors header length in {}",
+            path.display()
+        ));
+    }
+    let mut header = vec![0_u8; header_len as usize];
+    file.seek(SeekFrom::Start(8))?;
+    file.read_exact(&mut header)
+        .with_context(|| format!("read safetensors header from {}", path.display()))?;
+    let metadata: serde_json::Value = serde_json::from_slice(&header)
+        .with_context(|| format!("parse safetensors header from {}", path.display()))?;
+    let Some(tensors) = metadata.as_object() else {
+        return Err(anyhow!(
+            "safetensors header is not an object: {}",
+            path.display()
+        ));
+    };
+
+    if let Some(metadata) = tensors.get("__metadata__") {
+        let valid = metadata.is_null()
+            || metadata
+                .as_object()
+                .is_some_and(|entries| entries.values().all(serde_json::Value::is_string));
+        if !valid {
+            return Err(anyhow!(
+                "invalid safetensors __metadata__ in {}",
+                path.display()
+            ));
+        }
+    }
+
+    let file_len = file.metadata()?.len();
+    let data_start = 8_u64
+        .checked_add(header_len)
+        .ok_or_else(|| anyhow!("safetensors header offset overflow"))?;
+    let data_len = file_len
+        .checked_sub(data_start)
+        .ok_or_else(|| anyhow!("truncated safetensors file: {}", path.display()))?;
+    let mut ranges = Vec::new();
+    let mut tensor_shapes = BTreeMap::new();
+
+    for (name, tensor) in tensors.iter().filter(|(name, _)| *name != "__metadata__") {
+        let tensor = tensor
+            .as_object()
+            .ok_or_else(|| anyhow!("invalid tensor entry {name}"))?;
+        let dtype = tensor
+            .get("dtype")
+            .and_then(serde_json::Value::as_str)
+            .ok_or_else(|| anyhow!("tensor {name} has no dtype"))?;
+        let bytes_per_element = match (name.as_str(), dtype) {
+            ("alignment_heads", "I64") => 8_u64,
+            ("alignment_heads", _) => {
+                return Err(anyhow!(
+                    "unsupported Whisper tensor dtype {dtype} for {name}"
+                ));
+            }
+            (_, "F16") => 2_u64,
+            (_, "F32") => 4_u64,
+            _ => {
+                return Err(anyhow!(
+                    "unsupported Whisper tensor dtype {dtype} for {name}"
+                ));
+            }
+        };
+        if name.ends_with(".scales") || name.ends_with(".biases") {
+            return Err(anyhow!(
+                "quantized Whisper companion tensor refused: {name}"
+            ));
+        }
+
+        let shape = tensor
+            .get("shape")
+            .and_then(serde_json::Value::as_array)
+            .ok_or_else(|| anyhow!("tensor {name} has no shape"))?;
+        let dimensions = shape
+            .iter()
+            .map(|dim| {
+                dim.as_u64()
+                    .and_then(|value| usize::try_from(value).ok())
+                    .ok_or_else(|| anyhow!("tensor {name} has an invalid shape"))
+            })
+            .collect::<Result<Vec<_>>>()?;
+        let element_count = dimensions.iter().try_fold(1_u64, |count, dim| {
+            count
+                .checked_mul(*dim as u64)
+                .ok_or_else(|| anyhow!("tensor {name} shape overflows"))
+        })?;
+        if element_count == 0 {
+            return Err(anyhow!("tensor {name} has an empty shape"));
+        }
+        let expected_bytes = element_count
+            .checked_mul(bytes_per_element)
+            .ok_or_else(|| anyhow!("tensor {name} byte size overflows"))?;
+
+        let offsets = tensor
+            .get("data_offsets")
+            .and_then(serde_json::Value::as_array)
+            .filter(|offsets| offsets.len() == 2)
+            .ok_or_else(|| anyhow!("tensor {name} has invalid data_offsets"))?;
+        let start = offsets[0]
+            .as_u64()
+            .ok_or_else(|| anyhow!("tensor {name} has invalid start offset"))?;
+        let end = offsets[1]
+            .as_u64()
+            .ok_or_else(|| anyhow!("tensor {name} has invalid end offset"))?;
+        if end.checked_sub(start) != Some(expected_bytes) {
+            return Err(anyhow!(
+                "tensor {name} byte range does not match its shape/dtype"
+            ));
+        }
+        ranges.push((start, end, name));
+        tensor_shapes.insert(name.clone(), dimensions);
+    }
+
+    if ranges.is_empty() {
+        return Err(anyhow!(
+            "safetensors file contains no tensors: {}",
+            path.display()
+        ));
+    }
+    ranges.sort_by_key(|(start, _, _)| *start);
+    let mut cursor = 0_u64;
+    for (start, end, name) in ranges {
+        if start != cursor {
+            return Err(anyhow!("tensor {name} has a non-contiguous data offset"));
+        }
+        cursor = end;
+    }
+    if cursor != data_len {
+        return Err(anyhow!(
+            "safetensors data length mismatch in {}: header covers {cursor}, file has {data_len}",
+            path.display()
+        ));
+    }
+    Ok(tensor_shapes)
+}
+
+fn validate_whisper_weights_for_architecture(
+    path: &Path,
+    architecture: WhisperArchitecture,
+) -> Result<()> {
+    let tensors = read_validated_tensor_shapes(path)?;
+    validate_mapped_tensor_name_uniqueness(tensors.keys().map(String::as_str))?;
+    validate_whisper_tensor_shapes(&tensors, architecture)
+        .with_context(|| format!("validate Whisper tensor schema in {}", path.display()))
+}
+
+fn validate_whisper_tensor_shapes(
+    tensors: &BTreeMap<String, Vec<usize>>,
+    architecture: WhisperArchitecture,
+) -> Result<()> {
+    let expected_shapes = expected_whisper_tensor_shapes(architecture)?;
+    if let Some(shape) = tensors.get("alignment_heads") {
+        let maximum = architecture
+            .n_text_layer
+            .checked_mul(architecture.n_text_head)
+            .ok_or_else(|| anyhow!("Whisper alignment-head bound overflows"))?;
+        if shape.len() != 2 || shape[0] == 0 || shape[0] > maximum || shape[1] != 2 {
+            return Err(anyhow!(
+                "Whisper alignment_heads has shape {:?}, expected [N, 2] with 1 <= N <= {maximum}",
+                shape
+            ));
+        }
+    }
+    for (name, expected) in &expected_shapes {
+        let actual = tensors
+            .get(name)
+            .ok_or_else(|| anyhow!("Whisper weights are missing tensor {name}"))?;
+        if actual != expected {
+            return Err(anyhow!(
+                "Whisper tensor {name} has shape {:?}, expected {:?}",
+                actual,
+                expected
+            ));
+        }
+    }
+    if let Some(unexpected) = tensors
+        .keys()
+        .find(|name| name.as_str() != "alignment_heads" && !expected_shapes.contains_key(*name))
+    {
+        return Err(anyhow!("unexpected Whisper tensor {unexpected}"));
+    }
+    Ok(())
+}
+
+pub(crate) fn validate_mapped_tensor_name_uniqueness<'a>(
+    names: impl IntoIterator<Item = &'a str>,
+) -> Result<()> {
+    let mut mapped_sources = BTreeMap::<String, String>::new();
+    for name in names {
+        if name == "alignment_heads" {
+            continue;
+        }
+        let mapped = map_whisper_tensor_name(name);
+        if let Some(previous) = mapped_sources.insert(mapped.clone(), name.to_string()) {
+            let mut sources = [previous, name.to_string()];
+            sources.sort();
+            return Err(anyhow!(
+                "Whisper tensors {} and {} collide after runtime mapping to {mapped}",
+                sources[0],
+                sources[1]
+            ));
+        }
+    }
+    Ok(())
+}
+
+/// Rewrite an MLX/OpenAI tensor name into Candle's Whisper namespace.
+///
+/// Replacement order is load-bearing: cross-attention names must be handled
+/// before the generic attention rules so aliases map exactly as the loader sees
+/// them and the shared collision gate can reject ambiguous payloads.
+pub(crate) fn map_whisper_tensor_name(name: &str) -> String {
+    let mut mapped = name.to_string();
+    mapped = mapped.replace("blocks", "layers");
+    mapped = mapped.replace("mlp1", "fc1");
+    mapped = mapped.replace("mlp2", "fc2");
+    mapped = mapped.replace("decoder.ln", "decoder.layer_norm");
+    mapped = mapped.replace("cross_attn_ln", "encoder_attn_layer_norm");
+    mapped = mapped.replace("attn_ln", "self_attn_layer_norm");
+    mapped = mapped.replace("mlp_ln", "final_layer_norm");
+    mapped = mapped.replace("ln_post", "layer_norm");
+    mapped = mapped.replace("cross_attn", "encoder_attn");
+    mapped = mapped.replace(".attn.", ".self_attn.");
+    mapped = mapped.replace("query", "q_proj");
+    mapped = mapped.replace("key", "k_proj");
+    mapped = mapped.replace("value", "v_proj");
+    mapped = mapped.replace(".out.", ".out_proj.");
+    mapped = mapped.replace("decoder.token_embedding", "decoder.embed_tokens");
+    if !mapped.starts_with("model.") {
+        mapped = format!("model.{mapped}");
+    }
+    if mapped == "model.decoder.positional_embedding" {
+        mapped = "model.decoder.embed_positions.weight".to_string();
+    }
+    mapped.replace(".biases", ".bias")
+}
+
+fn expected_whisper_tensor_shapes(
+    architecture: WhisperArchitecture,
+) -> Result<BTreeMap<String, Vec<usize>>> {
+    fn add(out: &mut BTreeMap<String, Vec<usize>>, name: String, shape: &[usize]) {
+        out.insert(name, shape.to_vec());
+    }
+
+    fn add_attention(out: &mut BTreeMap<String, Vec<usize>>, prefix: &str, model_width: usize) {
+        add(
+            out,
+            format!("{prefix}.key.weight"),
+            &[model_width, model_width],
+        );
+        add(
+            out,
+            format!("{prefix}.query.weight"),
+            &[model_width, model_width],
+        );
+        add(out, format!("{prefix}.query.bias"), &[model_width]);
+        add(
+            out,
+            format!("{prefix}.value.weight"),
+            &[model_width, model_width],
+        );
+        add(out, format!("{prefix}.value.bias"), &[model_width]);
+        add(
+            out,
+            format!("{prefix}.out.weight"),
+            &[model_width, model_width],
+        );
+        add(out, format!("{prefix}.out.bias"), &[model_width]);
+    }
+
+    fn add_block_tail(
+        out: &mut BTreeMap<String, Vec<usize>>,
+        prefix: &str,
+        model_width: usize,
+        feed_forward_width: usize,
+    ) {
+        add(out, format!("{prefix}.attn_ln.weight"), &[model_width]);
+        add(out, format!("{prefix}.attn_ln.bias"), &[model_width]);
+        add(
+            out,
+            format!("{prefix}.mlp1.weight"),
+            &[feed_forward_width, model_width],
+        );
+        add(out, format!("{prefix}.mlp1.bias"), &[feed_forward_width]);
+        add(
+            out,
+            format!("{prefix}.mlp2.weight"),
+            &[model_width, feed_forward_width],
+        );
+        add(out, format!("{prefix}.mlp2.bias"), &[model_width]);
+        add(out, format!("{prefix}.mlp_ln.weight"), &[model_width]);
+        add(out, format!("{prefix}.mlp_ln.bias"), &[model_width]);
+    }
+
+    let mut out = BTreeMap::new();
+    let d = architecture.n_audio_state;
+    let ff = d
+        .checked_mul(4)
+        .ok_or_else(|| anyhow!("Whisper feed-forward width overflows"))?;
+    add(
+        &mut out,
+        "encoder.conv1.weight".into(),
+        &[d, 3, architecture.n_mels],
+    );
+    add(&mut out, "encoder.conv1.bias".into(), &[d]);
+    add(&mut out, "encoder.conv2.weight".into(), &[d, 3, d]);
+    add(&mut out, "encoder.conv2.bias".into(), &[d]);
+    add(&mut out, "encoder.ln_post.weight".into(), &[d]);
+    add(&mut out, "encoder.ln_post.bias".into(), &[d]);
+    add(
+        &mut out,
+        "decoder.token_embedding.weight".into(),
+        &[architecture.n_vocab, d],
+    );
+    add(
+        &mut out,
+        "decoder.positional_embedding".into(),
+        &[architecture.n_text_ctx, d],
+    );
+    add(&mut out, "decoder.ln.weight".into(), &[d]);
+    add(&mut out, "decoder.ln.bias".into(), &[d]);
+
+    for layer in 0..architecture.n_audio_layer {
+        let prefix = format!("encoder.blocks.{layer}");
+        add_attention(&mut out, &format!("{prefix}.attn"), d);
+        add_block_tail(&mut out, &prefix, d, ff);
+    }
+    for layer in 0..architecture.n_text_layer {
+        let prefix = format!("decoder.blocks.{layer}");
+        add_attention(&mut out, &format!("{prefix}.attn"), d);
+        add_attention(&mut out, &format!("{prefix}.cross_attn"), d);
+        add(&mut out, format!("{prefix}.cross_attn_ln.weight"), &[d]);
+        add(&mut out, format!("{prefix}.cross_attn_ln.bias"), &[d]);
+        add_block_tail(&mut out, &prefix, d, ff);
+    }
+    Ok(out)
+}
+
+#[cfg(test)]
+pub(crate) fn write_test_whisper_weights(
+    path: &Path,
+    architecture: WhisperArchitecture,
+) -> Result<()> {
+    let mut offset = 0_u64;
+    let mut header = serde_json::Map::new();
+    for (name, shape) in expected_whisper_tensor_shapes(architecture)? {
+        let elements = shape.iter().try_fold(1_u64, |count, dim| {
+            count
+                .checked_mul(*dim as u64)
+                .ok_or_else(|| anyhow!("test tensor shape overflows"))
+        })?;
+        let end = offset
+            .checked_add(elements * 2)
+            .ok_or_else(|| anyhow!("test tensor payload overflows"))?;
+        header.insert(
+            name,
+            serde_json::json!({
+                "dtype": "F16",
+                "shape": shape,
+                "data_offsets": [offset, end]
+            }),
+        );
+        offset = end;
+    }
+    let header = serde_json::to_vec(&header)?;
+    let mut bytes = (header.len() as u64).to_le_bytes().to_vec();
+    bytes.extend_from_slice(&header);
+    bytes.resize(bytes.len() + offset as usize, 0);
+    fs::write(path, bytes)?;
+    Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use tempfile::TempDir;
+
+    fn valid_config() -> serde_json::Value {
+        serde_json::from_str(include_str!("../tests/fixtures/whisper_config.json")).unwrap()
+    }
+
+    #[test]
+    fn official_whisper_architecture_is_accepted() {
+        let raw = include_str!("../tests/fixtures/whisper_config.json");
+        let architecture = parse_whisper_config(raw, "fixture").unwrap();
+        assert_eq!(architecture.n_mels, 128);
+        assert_eq!(architecture.n_audio_state, 1280);
+        assert_eq!(architecture.n_text_state, 1280);
+    }
+
+    #[test]
+    fn every_loader_dimension_is_required() {
+        let fields = [
+            "n_mels",
+            "n_audio_ctx",
+            "n_audio_state",
+            "n_audio_head",
+            "n_audio_layer",
+            "n_vocab",
+            "n_text_ctx",
+            "n_text_state",
+            "n_text_head",
+            "n_text_layer",
+        ];
+        for field in fields {
+            let mut config = valid_config();
+            config.as_object_mut().unwrap().remove(field);
+            let err = parse_whisper_config(&config.to_string(), "fixture").unwrap_err();
+            assert!(err.to_string().contains(field), "{field}: {err:#}");
+        }
+    }
+
+    #[test]
+    fn non_positive_or_non_integer_dimensions_are_rejected() {
+        for value in [
+            serde_json::Value::Null,
+            serde_json::json!("128"),
+            serde_json::json!(-1),
+            serde_json::json!(0),
+            serde_json::json!(80.5),
+        ] {
+            let mut config = valid_config();
+            config["n_mels"] = value;
+            assert!(parse_whisper_config(&config.to_string(), "fixture").is_err());
+        }
+    }
+
+    #[test]
+    fn incompatible_architecture_relationships_are_rejected() {
+        for (field, value, expected) in [
+            ("n_mels", 81, "n_mels"),
+            ("n_text_state", 640, "equal"),
+            ("n_audio_head", 3, "n_audio_head"),
+            ("n_text_head", 3, "n_text_head"),
+            ("n_audio_state", 3, "equal"),
+        ] {
+            let mut config = valid_config();
+            config[field] = serde_json::json!(value);
+            let err = parse_whisper_config(&config.to_string(), "fixture").unwrap_err();
+            assert!(err.to_string().contains(expected), "{field}: {err:#}");
+        }
+
+        let mut odd_state = valid_config();
+        odd_state["n_audio_state"] = serde_json::json!(3);
+        odd_state["n_text_state"] = serde_json::json!(3);
+        assert!(
+            parse_whisper_config(&odd_state.to_string(), "fixture")
+                .unwrap_err()
+                .to_string()
+                .contains("even")
+        );
+    }
+
+    #[test]
+    fn architecture_resource_limits_are_enforced_before_schema_expansion() {
+        for field in ["n_audio_layer", "n_text_layer"] {
+            let mut accepted = valid_config();
+            accepted[field] = serde_json::json!(MAX_WHISPER_LAYERS);
+            parse_whisper_config(&accepted.to_string(), "fixture").unwrap();
+
+            let mut rejected = valid_config();
+            rejected[field] = serde_json::json!(MAX_WHISPER_LAYERS + 1);
+            let err = parse_whisper_config(&rejected.to_string(), "fixture").unwrap_err();
+            assert!(
+                format!("{err:#}").contains("resource limit"),
+                "{field}: {err:#}"
+            );
+        }
+
+        for value in [
+            1,
+            MAX_WHISPER_AUDIO_CONTEXT - 1,
+            MAX_WHISPER_AUDIO_CONTEXT + 1,
+        ] {
+            let mut rejected_context = valid_config();
+            rejected_context["n_audio_ctx"] = serde_json::json!(value);
+            let err = parse_whisper_config(&rejected_context.to_string(), "fixture").unwrap_err();
+            assert!(format!("{err:#}").contains("30-second"), "{value}: {err:#}");
+        }
+
+        for value in [MAX_WHISPER_STATE_WIDTH + 1, 100_000] {
+            let mut rejected_state = valid_config();
+            rejected_state["n_audio_state"] = serde_json::json!(value);
+            rejected_state["n_text_state"] = serde_json::json!(value);
+            let err = parse_whisper_config(&rejected_state.to_string(), "fixture").unwrap_err();
+            assert!(
+                format!("{err:#}").contains("state width of 1280"),
+                "{value}: {err:#}"
+            );
+        }
+
+        let mut maximum_state = valid_config();
+        maximum_state["n_audio_state"] = serde_json::json!(MAX_WHISPER_STATE_WIDTH);
+        maximum_state["n_text_state"] = serde_json::json!(MAX_WHISPER_STATE_WIDTH);
+        parse_whisper_config(&maximum_state.to_string(), "fixture").unwrap();
+
+        let mut oversized_vocab = valid_config();
+        oversized_vocab["n_vocab"] = serde_json::json!(MAX_WHISPER_VOCAB + 1);
+        let err = parse_whisper_config(&oversized_vocab.to_string(), "fixture").unwrap_err();
+        assert!(format!("{err:#}").contains("vocabulary of 51866"));
+    }
+
+    #[test]
+    fn text_context_reserves_decode_output() {
+        for value in 1..5 {
+            let mut config = valid_config();
+            config["n_text_ctx"] = serde_json::json!(value);
+            let err = parse_whisper_config(&config.to_string(), "fixture").unwrap_err();
+            assert!(format!("{err:#}").contains("5..=448"), "{value}: {err:#}");
+        }
+        for value in [5, MAX_WHISPER_TEXT_CONTEXT] {
+            let mut config = valid_config();
+            config["n_text_ctx"] = serde_json::json!(value);
+            parse_whisper_config(&config.to_string(), "fixture").unwrap();
+        }
+        for value in [MAX_WHISPER_TEXT_CONTEXT + 1, 100_000] {
+            let mut config = valid_config();
+            config["n_text_ctx"] = serde_json::json!(value);
+            let err = parse_whisper_config(&config.to_string(), "fixture").unwrap_err();
+            assert!(format!("{err:#}").contains("5..=448"), "{value}: {err:#}");
+        }
+    }
+
+    fn timestamp_tokenizer(begin: u32, malformed_step: Option<u32>) -> tokenizers::Tokenizer {
+        let mut vocab = BTreeMap::from([
+            ("<unk>".to_string(), 0_u32),
+            ("<|startoftranscript|>".to_string(), 1_u32),
+            ("<|endoftext|>".to_string(), 2_u32),
+            ("<|pl|>".to_string(), 3_u32),
+        ]);
+        for step in 0..=WHISPER_TIMESTAMP_STEPS {
+            let hundredths = step * 2;
+            let token = if malformed_step == Some(step) {
+                "lexical-collision".to_string()
+            } else {
+                format!("<|{}.{:02}|>", hundredths / 100, hundredths % 100)
+            };
+            vocab.insert(token, begin + step);
+        }
+        let model = tokenizers::models::wordlevel::WordLevel::builder()
+            .vocab(vocab.into_iter().collect())
+            .unk_token("<unk>".to_string())
+            .build()
+            .unwrap();
+        tokenizers::Tokenizer::new(model)
+    }
+
+    #[test]
+    fn timestamp_token_range_matches_runtime_semantics() {
+        let tokenizer = timestamp_tokenizer(100, None);
+        assert_eq!(
+            validated_timestamp_token_range(&tokenizer, 1_601).unwrap(),
+            Some((100, 1_600))
+        );
+
+        let malformed = timestamp_tokenizer(100, Some(1));
+        let err = validated_timestamp_token_range(&malformed, 1_601).unwrap_err();
+        assert!(format!("{err:#}").contains("must be <|0.02|>"));
+
+        let err = validated_timestamp_token_range(&tokenizer, 1_600).unwrap_err();
+        assert!(format!("{err:#}").contains("outside configured vocabulary"));
+
+        let no_timestamps =
+            tokenizers::Tokenizer::new(tokenizers::models::wordlevel::WordLevel::default());
+        assert_eq!(
+            validated_timestamp_token_range(&no_timestamps, 1).unwrap(),
+            None
+        );
+    }
+
+    #[test]
+    fn tokenizer_without_language_tokens_is_rejected() {
+        let temp = TempDir::new().unwrap();
+        let path = temp.path().join("tokenizer.json");
+        let mut tokenizer = tokenizers::Tokenizer::new(tokenizers::models::bpe::BPE::default());
+        tokenizer.add_special_tokens(&[
+            tokenizers::AddedToken::from("<|startoftranscript|>", true),
+            tokenizers::AddedToken::from("<|endoftext|>", true),
+            tokenizers::AddedToken::from("<|transcribe|>", true),
+            tokenizers::AddedToken::from("<|notimestamps|>", true),
+        ]);
+        tokenizer.save(&path, false).unwrap();
+        let architecture = parse_whisper_config(
+            include_str!("../tests/fixtures/whisper_test_config.json"),
+            "test fixture",
+        )
+        .unwrap();
+
+        let err = validate_whisper_tokenizer_for_architecture(&path, architecture).unwrap_err();
+        assert!(format!("{err:#}").contains("runtime-discoverable"));
+    }
+
+    #[test]
+    fn mel_filter_verification_pins_size_before_checksum() {
+        let temp = TempDir::new().unwrap();
+        let path = temp.path().join("mel_filters.npz");
+
+        fs::write(&path, vec![0_u8; MEL_FILTERS_SIZE_BYTES as usize]).unwrap();
+        let checksum_err = verify_mel_filters(&path).unwrap_err();
+        assert!(format!("{checksum_err:#}").contains("SHA-256 mismatch"));
+
+        for size in [MEL_FILTERS_SIZE_BYTES - 1, MEL_FILTERS_SIZE_BYTES + 1] {
+            fs::File::create(&path).unwrap().set_len(size).unwrap();
+            let err = verify_mel_filters(&path).unwrap_err();
+            let message = format!("{err:#}");
+            assert!(message.contains("size mismatch"), "{message}");
+            assert!(message.contains("4271"), "{message}");
+            assert!(message.contains(&size.to_string()), "{message}");
+        }
+    }
+
+    #[test]
+    fn config_and_tokenizer_are_bounded_before_json_parsing() {
+        let temp = TempDir::new().unwrap();
+        let config = temp.path().join("config.json");
+        let tokenizer = temp.path().join("tokenizer.json");
+        fs::File::create(&config)
+            .unwrap()
+            .set_len(MAX_WHISPER_CONFIG_BYTES + 1)
+            .unwrap();
+        fs::File::create(&tokenizer)
+            .unwrap()
+            .set_len(MAX_WHISPER_TOKENIZER_BYTES + 1)
+            .unwrap();
+
+        let config_err = load_whisper_architecture(&config).unwrap_err();
+        let tokenizer_err = validate_whisper_tokenizer(&tokenizer).unwrap_err();
+        assert!(format!("{config_err:#}").contains("1048576-byte limit"));
+        assert!(format!("{tokenizer_err:#}").contains("16777216-byte limit"));
+    }
+
+    #[test]
+    fn sparse_tokenizer_rejects_extreme_vocab_without_dense_allocation() {
+        let temp = TempDir::new().unwrap();
+        let path = temp.path().join("tokenizer.json");
+        let tokenizer = tokenizers::Tokenizer::from_file(
+            Path::new(env!("CARGO_MANIFEST_DIR")).join("../tests/fixtures/whisper_tokenizer.json"),
+        )
+        .unwrap();
+        tokenizer.save(&path, false).unwrap();
+        let mut architecture = parse_whisper_config(
+            include_str!("../tests/fixtures/whisper_test_config.json"),
+            "test fixture",
+        )
+        .unwrap();
+        architecture.n_vocab = u32::MAX as usize;
+
+        let err = validate_whisper_tokenizer_for_architecture(&path, architecture).unwrap_err();
+        assert!(format!("{err:#}").contains("does not cover configured vocabulary"));
+    }
+
+    fn write_wordlevel_tokenizer(path: &Path, vocab: &[(&str, u32)]) {
+        let mut tokenizer: serde_json::Value =
+            serde_json::from_str(include_str!("../tests/fixtures/whisper_tokenizer.json")).unwrap();
+        tokenizer["model"]["vocab"] = serde_json::Value::Object(
+            vocab
+                .iter()
+                .map(|(token, id)| ((*token).to_string(), serde_json::json!(id)))
+                .collect(),
+        );
+        fs::write(path, serde_json::to_vec(&tokenizer).unwrap()).unwrap();
+    }
+
+    #[test]
+    fn tokenizer_language_gate_matches_runtime_candidates() {
+        let temp = TempDir::new().unwrap();
+        let path = temp.path().join("tokenizer.json");
+        write_wordlevel_tokenizer(
+            &path,
+            &[
+                ("<unk>", 0),
+                ("<|startoftranscript|>", 1),
+                ("<|endoftext|>", 2),
+                ("<|ja|>", 3),
+            ],
+        );
+        let architecture = parse_whisper_config(
+            include_str!("../tests/fixtures/whisper_test_config.json"),
+            "test fixture",
+        )
+        .unwrap();
+        let tokenizer = tokenizers::Tokenizer::from_file(&path).unwrap();
+        assert!(language_token_candidates(&tokenizer, architecture.n_vocab).is_empty());
+        let err = validate_whisper_tokenizer_for_architecture(&path, architecture).unwrap_err();
+        assert!(format!("{err:#}").contains("runtime-discoverable"));
+    }
+
+    #[test]
+    fn tokenizer_control_tokens_must_fit_model_vocabulary() {
+        let temp = TempDir::new().unwrap();
+        let path = temp.path().join("tokenizer.json");
+        write_wordlevel_tokenizer(
+            &path,
+            &[
+                ("<unk>", 0),
+                ("ordinary", 1),
+                ("other", 2),
+                ("<|pl|>", 3),
+                ("<|startoftranscript|>", 4),
+                ("<|endoftext|>", 5),
+            ],
+        );
+        let architecture = parse_whisper_config(
+            include_str!("../tests/fixtures/whisper_test_config.json"),
+            "test fixture",
+        )
+        .unwrap();
+        let err = validate_whisper_tokenizer_for_architecture(&path, architecture).unwrap_err();
+        let message = format!("{err:#}");
+        assert!(message.contains("<|startoftranscript|>"), "{message}");
+        assert!(message.contains("id 4"), "{message}");
+    }
+
+    #[test]
+    fn tokenizer_cannot_encode_any_id_without_an_embedding_row() {
+        let temp = TempDir::new().unwrap();
+        let path = temp.path().join("tokenizer.json");
+        write_wordlevel_tokenizer(
+            &path,
+            &[
+                ("<unk>", 0),
+                ("<|startoftranscript|>", 1),
+                ("<|endoftext|>", 2),
+                ("<|pl|>", 3),
+                ("surplus", 4),
+            ],
+        );
+        let architecture = parse_whisper_config(
+            include_str!("../tests/fixtures/whisper_test_config.json"),
+            "test fixture",
+        )
+        .unwrap();
+        let err = validate_whisper_tokenizer_for_architecture(&path, architecture).unwrap_err();
+        let message = format!("{err:#}");
+        assert!(message.contains("surplus"), "{message}");
+        assert!(message.contains("id 4"), "{message}");
+    }
+
+    #[test]
+    fn mapped_tensor_aliases_are_rejected_deterministically() {
+        let err = validate_mapped_tensor_name_uniqueness([
+            "decoder.layer_norm.weight",
+            "decoder.ln.weight",
+        ])
+        .unwrap_err();
+        let message = format!("{err:#}");
+        assert!(message.contains("decoder.layer_norm.weight"), "{message}");
+        assert!(message.contains("decoder.ln.weight"), "{message}");
+        assert!(
+            message.contains("model.decoder.layer_norm.weight"),
+            "{message}"
+        );
+    }
+
+    #[test]
+    fn tensor_schema_rejects_surplus_but_allows_bounded_alignment_metadata() {
+        let architecture = parse_whisper_config(
+            include_str!("../tests/fixtures/whisper_test_config.json"),
+            "test fixture",
+        )
+        .unwrap();
+        let mut tensors = expected_whisper_tensor_shapes(architecture).unwrap();
+        tensors.insert("surplus.weight".to_string(), vec![1]);
+        let err = validate_whisper_tensor_shapes(&tensors, architecture).unwrap_err();
+        assert!(format!("{err:#}").contains("unexpected Whisper tensor surplus.weight"));
+
+        tensors.remove("surplus.weight");
+        tensors.insert("alignment_heads".to_string(), vec![1, 2]);
+        validate_whisper_tensor_shapes(&tensors, architecture).unwrap();
+
+        tensors.insert("alignment_heads".to_string(), vec![2, 2]);
+        let err = validate_whisper_tensor_shapes(&tensors, architecture).unwrap_err();
+        assert!(format!("{err:#}").contains("alignment_heads"));
+    }
+}

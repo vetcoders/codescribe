@@ -782,9 +782,11 @@ fn decode_pcm_f32le(bytes: &[u8]) -> Result<Vec<f32>> {
         bail!("sidecar PCM frame has an invalid bounded length");
     }
     bytes
-        .chunks_exact(4)
+        .as_chunks::<4>()
+        .0
+        .iter()
         .map(|chunk| {
-            let sample = f32::from_le_bytes(chunk.try_into().expect("four-byte chunk"));
+            let sample = f32::from_le_bytes(*chunk);
             if sample.is_finite() {
                 Ok(sample)
             } else {
