@@ -1374,10 +1374,10 @@ impl RecordingController {
         event_broadcast: &broadcast::Sender<IpcEvent>,
     ) {
         let ended_bus = slot.write().await.take();
-        if let Some(bus) = ended_bus {
-            if let Some(event) = bus.publish_ended(reason, session_wav_exists) {
-                Self::broadcast_transcript_projection(event_broadcast, &event);
-            }
+        if let Some(bus) = ended_bus
+            && let Some(event) = bus.publish_ended(reason, session_wav_exists)
+        {
+            Self::broadcast_transcript_projection(event_broadcast, &event);
         }
     }
 
