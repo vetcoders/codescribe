@@ -217,10 +217,10 @@ format prompts.
 The `codescribe` binary is a first-class client of the same bus. It never opens
 a second microphone.
 
-| Need                                            | Command                          |
-| ----------------------------------------------- | -------------------------------- |
-| Watch a take as it is spoken                    | `codescribe transcribe live`     |
-| The last completed transcript, on stdout        | `codescribe transcribe last`     |
+| Need                                              | Command                        |
+| ------------------------------------------------- | ------------------------------ |
+| Watch a take as it is spoken                      | `codescribe transcribe live`   |
+| The last completed transcript, on stdout          | `codescribe transcribe last`   |
 | A file through the product pipeline, onto the bus | `codescribe transcribe <file>` |
 
 `transcribe live` dispatches on `schema`, so it hears both families, and prints
@@ -235,12 +235,12 @@ Dictation into the shell line is a line-editor widget, not a synthetic paste:
 source <checkout>/scripts/codescribe.zsh   # binds Ctrl-X Ctrl-V
 ```
 
-A synthetic Cmd+V targets the frontmost application — which is the terminal
-running the command. The delivery throne already refuses that case as
-`refuse_paste_into_self`, and attempting it needs an Accessibility grant. The
-widget inserts under a key the human presses: no permission, no synthetic event
-in the trust path, identical behaviour in tmux, zellij and a bare tty. It
-refuses an empty bus with a message rather than inserting nothing silently.
+Overlay Insert may restore a positively latched terminal and deliver through
+one borrowed-clipboard Cmd+V. The widget is the explicit no-synthetic-event
+path: it inserts under a key the human presses, needs no Accessibility grant,
+and behaves identically in tmux, zellij and a bare tty. Both paths read the
+same committed Bus; neither invents transcript text. The widget refuses an
+empty bus with a message rather than inserting nothing silently.
 
 Compose everything else from stdout rather than asking for another flag:
 

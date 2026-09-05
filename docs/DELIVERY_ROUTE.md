@@ -1,6 +1,6 @@
 # Delivery route — one throne for destination
 
-> Operator 2026-08-15: the stop path was a fight for the throne. This file is
+> Founder 2026-08-15: the stop path was a fight for the throne. This file is
 > the destination axis only. Mic lock, transcript truth, and agent-chain
 > memory stay other thrones.
 
@@ -11,11 +11,11 @@
 2. **`resolve_delivery_route` is the only function that picks a destination.**
    Auto-paste, overlay Insert, and To Agent consult it. They do not invent a
    second king.
-3. **Codescribe is never a legal Cmd+V target.** Caret in our overlay or Agent
-   window → park Paste Here or use the explicit Agent route. Alacritty/Zellij
-   (vc-terminal), Notes, and other positively latched foreign carets are legal
-   paste targets. Assistive delivers as a first-class Agent message; it does
-   not synthesize a paste back into our own process.
+3. **The Codescribe overlay canvas is never a legal Cmd+V target.** Its caret
+   parks Paste Here. A positively latched Agent composer, Alacritty/Zellij
+   (vc-terminal), Notes, or another foreign caret is legal; choosing the Agent
+   route remains an explicit action. Assistive delivers as a first-class Agent
+   message rather than synthesizing a focus-derived paste.
 4. **Clipboard is borrowed, never stolen.** On release we snapshot the user's
    pasteboard, Cmd+V into the latched caret, then restore. The overlay must
    resign key first. The foreign target must then be observed as frontmost;
@@ -45,17 +45,38 @@ Cmd+V; Agent requires the explicit Agent route.
 `paste_text_from_overlay` and `defer_text_from_overlay` consult
 `resolve_delivery_route`. They do not pick a destination on their own.
 
+The target is latched before the recording overlay takes focus and survives
+the terminal transition back to Idle. Start failure and explicit recovery
+clear it. This ordering matters: Insert happens after the terminal transition,
+so clearing the target as ordinary recording state makes every finished take
+degrade to DeferredInsert even when the foreign caret was known.
+
 ## Telemetry
 
 One INFO line per stop / To Agent / overlay Insert / defer:
 
 ```text
-delivery_route: intent=orient_dictation route=clipboard_paste reason=auto_paste_to_latched_target target=Ghostty
+delivery_route: intent=overlay_insert route=clipboard_paste reason=explicit_insert target=Ghostty
 ```
 
 `reason=refuse_paste_into_self` is the smoking gun for "Codescribe owned focus,
 so the transcript was parked instead of being pasted into an unknown internal
 caret".
+
+## Terminal and CLI consumers
+
+An overlay Insert into a positively latched terminal/editor uses one borrowed
+clipboard swap and one Cmd+V. The terminal emulator owns bracketed-paste
+handling; Codescribe never types the transcript character by character.
+Alternate-screen confirmation remains a product walk-around, especially for
+vc-frame and zellij key-routing combinations.
+
+The CLI reads the same committed Transcript Bus. `codescribe transcribe live`
+owns the canonical Rust wake/projection path; `bus-demux.py` is a named-agent
+routing adapter, not another transcript reducer. For an editable shell prompt,
+`scripts/codescribe.zsh` inserts `codescribe transcribe last` literally through
+ZLE without appending Enter. That explicit line-editor path complements UI
+Insert and does not create a second text authority.
 
 ## What this cut does not do
 

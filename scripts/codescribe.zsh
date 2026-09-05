@@ -7,12 +7,11 @@
 # Then dictate as usual and press Ctrl-X Ctrl-V. To bind another key, call
 # `bindkey <key> codescribe-insert-last` after sourcing.
 #
-# WHY A WIDGET AND NOT A PASTE. A synthetic Cmd+V targets the frontmost
-# application, which is the terminal running the command — the app's delivery
-# throne already refuses that case as `refuse_paste_into_self`, and it would
-# need an Accessibility grant to attempt it at all. A ZLE widget inserts under
-# a key the operator presses: no permission, no synthetic event, and it works
-# the same inside tmux, zellij, and a bare tty.
+# WHY A WIDGET AS WELL AS UI INSERT. Overlay Insert may restore a positively
+# latched terminal and use one borrowed-clipboard Cmd+V. This widget is the
+# explicit no-synthetic-event path: a key the human presses reads the same
+# committed Bus, needs no Accessibility grant, and works inside tmux, zellij,
+# and a bare tty without becoming a second transcript authority.
 
 codescribe-insert-last() {
   local text
