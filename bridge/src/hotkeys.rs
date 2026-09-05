@@ -28,8 +28,8 @@ use crate::agent_delivery::{
     CsAgentDeliveryListener, set_delivery_listener, spawn_delivery_forwarder,
 };
 use crate::recording::{
-    CsAdmissionReadiness, CsEnergyCalibrationReport, CsLayerSummary, CsTranscriptProjectionEvent,
-    CsTranscription, CsTranscriptionListener,
+    CsAdmissionReadiness, CsEnergyCalibrationReport, CsLayerSummary, CsPresentationStatusEvent,
+    CsTranscriptProjectionEvent, CsTranscription, CsTranscriptionListener,
 };
 use crate::{CsError, application_runtime};
 
@@ -448,6 +448,19 @@ fn forward_event_to_listener(payload: IpcEventPayload, listener: Arc<dyn CsTrans
                 Err(error) => tracing::warn!(
                     %error,
                     "transcript projection transport rejected invalid Bus schema"
+                ),
+            }
+        }
+        IpcEventPayload::PresentationStatus { json } => {
+            match serde_json::from_str::<
+                codescribe::presentation::status_projection::PresentationStatusProjection,
+            >(&json)
+            {
+                Ok(event) => listener
+                    .on_presentation_status(CsPresentationStatusEvent::from_projection(&event)),
+                Err(error) => tracing::warn!(
+                    %error,
+                    "presentation status transport rejected invalid schema"
                 ),
             }
         }
@@ -1668,7 +1681,6 @@ impl CodescribeHotkeys {
                 .map_err(|error| CsError::Recording {
                     msg: error.to_string(),
                 })?;
-            refresh_live_controller_config();
             Ok(CsEnergyCalibrationReport {
                 device_name: report.device_name,
                 sample_rate: report.sample_rate,
@@ -2295,6 +2307,8 @@ mod preparing_compensation_tests {
     impl CsTranscriptionListener for RecordingLifecycleListener {
         /// No-op: transcript projections are not under test in this suite.
         fn on_transcript_projection(&self, _event: CsTranscriptProjectionEvent) {}
+        /// No-op: passive presentation statuses are not under test in this suite.
+        fn on_presentation_status(&self, _event: CsPresentationStatusEvent) {}
         /// Count preparing overlay shows for compensation assertions.
         fn on_recording_preparing(&self) {
             self.preparing.fetch_add(1, Ordering::SeqCst);

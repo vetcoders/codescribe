@@ -52,6 +52,7 @@ pub use helpers::{
 };
 pub use types::{HotkeyAction, HotkeyInput, HotkeyType, State};
 
+use crate::presentation::status_projection::PresentationStatusProjection;
 use crate::presentation::transcript_bus::TranscriptSessionEndReason;
 use crate::presentation::{PresentationEmitter, TranscriptBus, TranscriptMode, TranscriptSession};
 use anyhow::{Context, Result};
@@ -943,8 +944,25 @@ impl RecordingController {
         if self.current_state().await != State::Idle {
             return false;
         }
-        *self.runtime_settings.write().await = Arc::new(runtime_settings);
+        self.install_runtime_settings_generation(runtime_settings)
+            .await;
         true
+    }
+
+    /// Install one already-sealed generation. Callers must own `serial_lock`;
+    /// keeping the single write site here preserves the one-generation fence.
+    async fn install_runtime_settings_generation(&self, runtime_settings: RuntimeSettingsSnapshot) {
+        *self.runtime_settings.write().await = Arc::new(runtime_settings);
+    }
+
+    /// Reload the just-persisted calibration into the controller before the
+    /// calibration call returns. The capture path already owns `serial_lock`,
+    /// so a Settings readiness probe cannot interleave on the stale Arc.
+    async fn refresh_runtime_settings_after_calibration_locked(&self) -> Result<()> {
+        let refreshed = Config::load_runtime_snapshot_without_keychain()
+            .context("calibration_snapshot_refresh_failed")?;
+        self.install_runtime_settings_generation(refreshed).await;
+        Ok(())
     }
 
     /// Borrow the current settings generation as an Arc (may differ from an
@@ -974,22 +992,56 @@ impl RecordingController {
             })
     }
 
-    /// Surface a refused start on the one engine `Warning` channel the bridge
-    /// already forwards to `listener.on_error` (user-terminal code), and flag
-    /// the tray. The refusal happened before any microphone opened, so no
-    /// state transition exists to carry it — this is the only signal.
+    /// Surface a refused start as typed presentation truth and flag the tray.
+    /// The refusal happened before any microphone opened, so it deliberately
+    /// does not invent a transcript projection or acoustic receipt.
     fn broadcast_admission_refusal(
         event_broadcast: &broadcast::Sender<IpcEvent>,
+        session_id: Option<String>,
         blocker: &admission::AdmissionBlocker,
     ) {
         crate::os::tray_status::update_tray_status(crate::os::tray_status::TrayStatus::Error);
+        let status = PresentationStatusProjection::admission_refused(
+            session_id,
+            blocker.code(),
+            format!("{} — {}", blocker.explanation(), blocker.action()),
+        );
+        Self::broadcast_presentation_status(event_broadcast, &status);
+    }
+
+    fn broadcast_apple_preflight_refusal(
+        event_broadcast: &broadcast::Sender<IpcEvent>,
+        session_id: String,
+        error: &anyhow::Error,
+    ) {
+        crate::os::tray_status::update_tray_status(crate::os::tray_status::TrayStatus::Error);
+        let status = PresentationStatusProjection::admission_refused(
+            Some(session_id),
+            "admission_speech_recognition_unavailable",
+            format!(
+                "Apple dictation could not start: {error:#} — Enable Speech Recognition for Codescribe in System Settings › Privacy & Security › Speech Recognition."
+            ),
+        );
+        Self::broadcast_presentation_status(event_broadcast, &status);
+    }
+
+    /// Publish one non-transcript status over the same controller IPC stream as
+    /// transcript projections. Serialization failure is logged and never
+    /// re-routed through the engine warning channel.
+    fn broadcast_presentation_status(
+        event_broadcast: &broadcast::Sender<IpcEvent>,
+        status: &PresentationStatusProjection,
+    ) {
+        let json = match serde_json::to_string(status) {
+            Ok(json) => json,
+            Err(error) => {
+                error!(%error, "presentation status serialization failed");
+                return;
+            }
+        };
         let _ = event_broadcast.send(IpcEvent {
             timestamp: chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Millis, true),
-            payload: IpcEventPayload::Engine(EngineEventWire::Warning {
-                code: codescribe_core::pipeline::contracts::ADMISSION_REFUSED_WARNING_CODE
-                    .to_string(),
-                message: blocker.to_string(),
-            }),
+            payload: IpcEventPayload::PresentationStatus { json },
         });
     }
 
@@ -1000,6 +1052,25 @@ impl RecordingController {
     /// counts only — the temporary WAV the recorder writes is deleted and no
     /// audio is retained. Refuses unless the controller is idle.
     pub async fn capture_energy_calibration(
+        &self,
+        duration: Duration,
+    ) -> Result<admission::EnergyCalibrationReport> {
+        let result = self.capture_energy_calibration_inner(duration).await;
+        let status = match &result {
+            Ok(report) => PresentationStatusProjection::calibration_succeeded(
+                report.version.clone(),
+                format!(
+                    "{} at {} Hz is ready for recording (profile {}).",
+                    report.device_name, report.sample_rate, report.version
+                ),
+            ),
+            Err(error) => PresentationStatusProjection::calibration_failed(error.to_string()),
+        };
+        Self::broadcast_presentation_status(&self.event_broadcast, &status);
+        result
+    }
+
+    async fn capture_energy_calibration_inner(
         &self,
         duration: Duration,
     ) -> Result<admission::EnergyCalibrationReport> {
@@ -1061,6 +1132,12 @@ impl RecordingController {
         let path = energy_calibration_path();
         EnergyCalibrationArtifact::record_profile(&path, profile.clone(), now_ms)
             .map_err(|refusal| anyhow::anyhow!("calibration_store_failed: {refusal}"))?;
+        // The caller's Settings refresh runs immediately after this method
+        // returns. Replace the controller generation synchronously while the
+        // calibration still owns `serial_lock`, so that probe cannot observe
+        // the pre-calibration snapshot.
+        self.refresh_runtime_settings_after_calibration_locked()
+            .await?;
         info!(
             device = %profile.capture_path.device_name,
             version = %profile.version,
@@ -2509,6 +2586,11 @@ impl RecordingController {
                         });
                 if let Err(e) = preflight {
                     error!("Hold-start aborted (Apple STT preflight): {e:#}");
+                    Self::broadcast_apple_preflight_refusal(
+                        &event_broadcast,
+                        new_session_id.clone(),
+                        &e,
+                    );
                     Self::unwind_hold_start(&hold_session, None, HoldStartAbort::PreflightRefused)
                         .await;
                     return;
@@ -2541,7 +2623,11 @@ impl RecordingController {
                     ),
                     Err(blocker) => {
                         error!("Hold-start refused (acoustic admission): {blocker}");
-                        Self::broadcast_admission_refusal(&event_broadcast, &blocker);
+                        Self::broadcast_admission_refusal(
+                            &event_broadcast,
+                            Some(new_session_id.clone()),
+                            &blocker,
+                        );
                         Self::unwind_hold_start(
                             &hold_session,
                             None,
@@ -2793,6 +2879,11 @@ impl RecordingController {
             if let Err(e) = preflight {
                 // Must log the actual cause — silent "resetting flags" made padaka undiagnosable.
                 error!("Toggle-start aborted (Apple STT preflight): {e:#}");
+                Self::broadcast_apple_preflight_refusal(
+                    &self.event_broadcast,
+                    new_session_id.clone(),
+                    &e,
+                );
                 self.reset_session_after_start_failure("Toggle-start Apple STT preflight")
                     .await;
                 return Err(e);
@@ -2813,7 +2904,11 @@ impl RecordingController {
                 ),
                 Err(blocker) => {
                     error!("Toggle-start refused (acoustic admission): {blocker}");
-                    Self::broadcast_admission_refusal(&self.event_broadcast, &blocker);
+                    Self::broadcast_admission_refusal(
+                        &self.event_broadcast,
+                        Some(new_session_id.clone()),
+                        &blocker,
+                    );
                     self.reset_session_after_start_failure("Toggle-start admission")
                         .await;
                     return Err(anyhow::anyhow!("{blocker}"));
@@ -3312,9 +3407,104 @@ mod terminal_delivery_target_falsifiers {
 }
 
 #[cfg(test)]
+mod admission_presentation_status_falsifiers {
+    use super::*;
+
+    /// W3-T11 baseline witness: a deterministic refusal must leave the engine
+    /// warning side-channel and travel as a typed presentation projection.
+    #[test]
+    fn acoustic_admission_refusal_uses_presentation_projection_event() {
+        let (events, mut receiver) = broadcast::channel(2);
+        let blocker = admission::AdmissionBlocker::CalibrationUnusable {
+            device_name: "Built-in Microphone".to_string(),
+            reason: "capture generation changed: measured 88200Hz/1ch, current 48000Hz/1ch"
+                .to_string(),
+        };
+
+        RecordingController::broadcast_admission_refusal(
+            &events,
+            Some("session-1".to_string()),
+            &blocker,
+        );
+
+        let event = receiver.try_recv().expect("one refusal projection");
+        let payload = serde_json::to_value(event.payload).expect("serialize IPC payload");
+        assert_eq!(payload["event"], "presentation_status");
+        let projection: serde_json::Value = serde_json::from_str(
+            payload["json"]
+                .as_str()
+                .expect("presentation status owns typed JSON"),
+        )
+        .expect("valid presentation status projection");
+        assert_eq!(projection["kind"], "admission_refused");
+        assert_eq!(projection["code"], "admission_calibration_unusable");
+        assert_eq!(projection["session_id"], "session-1");
+        assert!(
+            projection["message"]
+                .as_str()
+                .expect("human-readable refusal")
+                .contains("Settings › Audio")
+        );
+    }
+}
+
+#[cfg(test)]
 mod c15d_settings_one_path_falsifiers {
     use super::*;
     use crate::config::Config;
+    use codescribe_core::audio::capture_receipt::{
+        CAPTURE_LEVEL_RECEIPT_CODE, CaptureLevelReceipt, CapturePathMeta,
+    };
+    use codescribe_core::config::energy_calibration::{
+        EnergyCalibrationArtifact, EnergyCalibrationProfile, SOURCE_SYNTHETIC_FIXTURE,
+        energy_calibration_path,
+    };
+    use codescribe_core::pipeline::streaming::SealLaneProbe;
+    use std::ffi::OsString;
+
+    struct DataDirGuard(Option<OsString>);
+
+    impl DataDirGuard {
+        fn install(path: &std::path::Path) -> Self {
+            let previous = std::env::var_os("CODESCRIBE_DATA_DIR");
+            // SAFETY: the test is serial and restores the process variable.
+            unsafe { std::env::set_var("CODESCRIBE_DATA_DIR", path) };
+            Self(previous)
+        }
+    }
+
+    impl Drop for DataDirGuard {
+        fn drop(&mut self) {
+            // SAFETY: paired restoration for the serial test above.
+            unsafe {
+                match self.0.take() {
+                    Some(previous) => std::env::set_var("CODESCRIBE_DATA_DIR", previous),
+                    None => std::env::remove_var("CODESCRIBE_DATA_DIR"),
+                }
+            }
+        }
+    }
+
+    fn calibration_receipt(device_name: &str) -> CaptureLevelReceipt {
+        CaptureLevelReceipt {
+            code: CAPTURE_LEVEL_RECEIPT_CODE,
+            device_name: device_name.to_string(),
+            sample_rate: 48_000,
+            channels: 1,
+            sample_count: 480_000,
+            digital_zero_samples: 0,
+            active_speech_samples: 240_000,
+            clipping_samples: 0,
+            dropout_blocks: 0,
+            all_audio_median_db: -40.0,
+            active_speech_median_db: -30.0,
+            peak_db: -6.0,
+            noise_floor_db: -80.0,
+            snr_db: Some(50.0),
+            threshold_db: -52.0,
+            low: false,
+        }
+    }
 
     /// C15D-A structural falsifier: the controller source has one mutable
     /// settings handle, one write site and no compatibility setter.
@@ -3375,6 +3565,54 @@ mod c15d_settings_one_path_falsifiers {
         );
         assert_eq!(before.digest().as_str(), before_digest.as_str());
         assert_eq!(before.values().hold_start_delay_ms, before_delay);
+    }
+
+    /// W3-T11 race falsifier: after the profile is stored, the calibration
+    /// path must replace the live controller Arc before Swift can issue its
+    /// immediate readiness probe.
+    #[tokio::test]
+    #[serial_test::serial]
+    async fn calibration_refresh_makes_the_new_profile_visible_before_return() {
+        let temp = tempfile::tempdir().expect("temporary data dir");
+        let _data_dir = DataDirGuard::install(temp.path());
+        let controller = RecordingController::new_without_keychain();
+        let before = controller.runtime_settings_arc().await;
+        assert_eq!(admission::calibration_status_view(&before).code, "missing");
+
+        let measured_at = 10_000;
+        let profile = EnergyCalibrationProfile::derive(
+            &calibration_receipt("Fixture Mic"),
+            measured_at,
+            SOURCE_SYNTHETIC_FIXTURE,
+        )
+        .expect("fixture calibration derives");
+        EnergyCalibrationArtifact::record_profile(&energy_calibration_path(), profile, measured_at)
+            .expect("profile persists");
+
+        let _serial_guard = controller.serial_lock.lock().await;
+        controller
+            .refresh_runtime_settings_after_calibration_locked()
+            .await
+            .expect("calibration refresh seals a new generation");
+        let after = controller.runtime_settings_arc().await;
+
+        assert!(!Arc::ptr_eq(&before, &after));
+        assert_eq!(admission::calibration_status_view(&after).code, "sealed");
+        let grant = admission::evaluate_admission_readiness_at(
+            &after,
+            Ok(CapturePathMeta {
+                device_name: "Fixture Mic".to_string(),
+                sample_rate: 48_000,
+                channels: 1,
+            }),
+            SealLaneProbe {
+                armed: true,
+                vad_available: true,
+            },
+            measured_at,
+        )
+        .expect("immediate readiness probe sees the persisted profile");
+        assert_eq!(grant.calibration_version, "cal2-fixture-mic-10000@48000hz");
     }
 
     /// C15D-A lifecycle falsifier: an unfinished delayed hold owns its selected

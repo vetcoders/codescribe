@@ -99,6 +99,22 @@ struct OverlayPolicySnapshot: Equatable {
   let autoFormatLevel: FormattingPolicyOption
 }
 
+/// Value-only rendering model for Rust-owned product status. It deliberately
+/// contains no command, Settings route, or transcript field.
+struct OverlayPresentationStatus: Equatable {
+  let schema: String
+  let emittedAt: String
+  let sessionId: String?
+  let kind: String
+  let code: String
+  let statusLabel: String
+  let headline: String
+  let message: String
+  let isError: Bool
+  let terminal: Bool
+  let calibrationVersion: String?
+}
+
 /// Presentation phase supplied by the reducer-owned projection. Swift parses
 /// the wire value but never derives a phase from text, callbacks, or seals.
 enum OverlayMode: String, Equatable {
@@ -125,6 +141,7 @@ enum OverlayIntent: String, Equatable, Hashable {
 /// values here; one main-actor consumer applies them in arrival order.
 enum OverlayListenerEvent: Sendable {
   case transcriptProjection(CsTranscriptProjectionEvent)
+  case presentationStatus(CsPresentationStatusEvent)
   case recordingPreparing
   case recordingStarted
   case recordingStopped
@@ -165,12 +182,9 @@ final class OverlayState {
   var transcribing: Bool = false
   var toast: String?  // transient error notice
   var errorMessage: String?
+  private(set) var presentationStatus: OverlayPresentationStatus?
   private(set) var errorLifecycleDetail =
     "Recording stopped before a transcript was available."
-  /// Settings destination that can resolve the current terminal error. This is
-  /// presentation routing only; the controller remains the admission authority.
-  private(set) var recoverySettingsSection: SettingsSection?
-  private(set) var recoverySettingsAnchor: SettingsAnchor?
   /// Prompt-free policy snapshot from C02's persisted settings owner. These
   /// values are replaced only by a fresh engine read, never by optimistic UI.
   private(set) var autoPasteEnabled = true
@@ -236,6 +250,7 @@ final class OverlayState {
   var onRecordingPreparing: (() -> Void)?
   var onRecordingStarted: (() -> Void)?
   var onRecordingStopped: (() -> Void)?
+  @ObservationIgnored var onPresentationStatus: (() -> Void)?
   /// Content-free success seam. No transcript crosses this callback.
   var onSuccessfulDictation: (() -> Void)?
 
@@ -303,6 +318,7 @@ final class OverlayState {
   private func apply(_ event: OverlayListenerEvent) {
     switch event {
     case .transcriptProjection(let projection): applyTranscriptProjection(projection)
+    case .presentationStatus(let status): applyPresentationStatus(status)
     case .recordingPreparing: handleRecordingPreparing()
     case .recordingStarted: handleRecordingStarted()
     case .recordingStopped: finishControllerRecording()
@@ -318,6 +334,7 @@ final class OverlayState {
   // MARK: Derived display (one source of truth for the view)
 
   var statusText: String {
+    if let presentationStatus { return presentationStatus.statusLabel }
     switch mode {
     case .listening: return "listening"
     case .finalizing: return "finalizing"
@@ -335,6 +352,9 @@ final class OverlayState {
     statusText
   }
   var statusColor: Color {
+    if let presentationStatus {
+      return presentationStatus.isError ? CSColor.terracotta : CSColor.oliveLight
+    }
     switch mode {
     case .listening: return CSColor.terracotta
     case .finalizing: return CSColor.amber
@@ -406,7 +426,7 @@ final class OverlayState {
   /// surface must not yield to an Assistive tray tick — that path calls
   /// `hide()` and arms Agent auto-send.
   var blocksAssistiveOverlayHide: Bool {
-    mode == .formatted || mode == .noSpeech
+    presentationStatus != nil || mode == .formatted || mode == .noSpeech
   }
 
   var autoPasteAccessibilityValue: String {
@@ -1102,107 +1122,16 @@ final class OverlayState {
       + "Settings › Privacy & Security › Speech Recognition"
   }
 
-  /// User-facing rewrite for acoustic admission refusals. The controller
-  /// refuses BEFORE opening the microphone and reports one `admission_*`
-  /// code followed by its explanation and action; the toast keeps the short
-  /// headline, the panel keeps the full actionable message. Nil otherwise.
-  static func admissionNotice(from message: String) -> (headline: String, detail: String)? {
-    guard let range = message.range(of: "admission_") else { return nil }
-    let tail = String(message[range.lowerBound...])
-    let code = tail.prefix { $0 == "_" || $0.isLetter }
-    let detail = tail.dropFirst(code.count).drop { $0 == ":" || $0 == " " }
-    let headline: String
-    switch code {
-    case "admission_calibration_missing", "admission_calibration_no_profile":
-      headline = "Microphone not calibrated — Settings › Audio › Calibrate microphone"
-    case "admission_calibration_refused", "admission_calibration_unusable":
-      headline = "Stored calibration can't be used — recalibrate in Settings › Audio"
-    case "admission_seal_lane_disarmed":
-      headline =
-        detail.contains("CODESCRIBE_SILERO_FUSION")
-        ? "Seal lane is off — CODESCRIBE_SILERO_FUSION override"
-        : "Seal lane is off — enable it in Settings › Audio"
-    case "admission_seal_vad_unavailable":
-      headline = "Silero VAD did not load — recording refused"
-    case "admission_capture_device_unavailable":
-      headline = "No microphone available — recording refused"
-    case "admission_refused":
-      // Warning-channel envelope: the real code follows in the message.
-      return admissionNotice(from: String(detail))
-    default:
-      return nil
-    }
-    let detailText = detail.isEmpty ? headline : String(detail)
-    return (headline, detailText)
-  }
-
-  /// Route a repairable terminal error to the closest product surface. The
-  /// destination is presentation-only: it never changes controller admission.
-  static func recoverySettingsSection(from message: String) -> SettingsSection? {
-    if speechAuthNotice(from: message) != nil { return .creator }
-    let lowered = message.lowercased()
-    if lowered.contains("microphone access") || lowered.contains("microphone permission") {
-      return .audio
-    }
-    guard let range = message.range(of: "admission_") else {
-      if lowered.contains("transcription_failed") || lowered.contains("stt model") {
-        return .engine
-      }
-      return nil
-    }
-    let tail = String(message[range.lowerBound...])
-    let code = tail.prefix { $0 == "_" || $0.isLetter }
-    if code == "admission_refused" {
-      let detail = tail.dropFirst(code.count).drop { $0 == ":" || $0 == " " }
-      return recoverySettingsSection(from: String(detail))
-    }
-    switch code {
-    case "admission_seal_vad_unavailable": return .engine
-    case "admission_calibration_missing", "admission_calibration_no_profile",
-      "admission_calibration_refused", "admission_calibration_unusable",
-      "admission_seal_lane_disarmed", "admission_capture_device_unavailable":
-      return .audio
-    default: return nil
-    }
-  }
-
-  static func recoverySettingsAnchor(from message: String) -> SettingsAnchor? {
-    let lowered = message.lowercased()
-    if lowered.contains("microphone access") || lowered.contains("microphone permission") {
-      return .audioReadiness
-    }
-    guard let range = message.range(of: "admission_") else { return nil }
-    let tail = String(message[range.lowerBound...])
-    let code = tail.prefix { $0 == "_" || $0.isLetter }
-    if code == "admission_refused" {
-      let detail = tail.dropFirst(code.count).drop { $0 == ":" || $0 == " " }
-      return recoverySettingsAnchor(from: String(detail))
-    }
-    switch code {
-    case "admission_capture_device_unavailable": return .audioInput
-    case "admission_calibration_missing", "admission_calibration_no_profile",
-      "admission_calibration_refused", "admission_calibration_unusable",
-      "admission_seal_lane_disarmed":
-      return .audioReadiness
-    default: return nil
-    }
-  }
-
   private func presentTerminalError(message: String, toast: String) {
     let speechNotice = OverlayState.speechAuthNotice(from: message)
-    let admissionNotice = OverlayState.admissionNotice(from: message)
-    let recoverySection = OverlayState.recoverySettingsSection(from: message)
-    let recoveryAnchor = OverlayState.recoverySettingsAnchor(from: message)
     let captureHadStarted = recording
-    let message = speechNotice ?? admissionNotice?.detail ?? message
-    let toast = speechNotice ?? admissionNotice?.headline ?? toast
+    let message = speechNotice ?? message
+    let toast = speechNotice ?? toast
     abortRecordingSession()
     pendingNoSpeechMessage = nil
     noSpeechNotice = OverlayState.defaultNoSpeechNotice
     isFinalPass = false
     errorMessage = message
-    recoverySettingsSection = recoverySection
-    recoverySettingsAnchor = recoveryAnchor
     errorLifecycleDetail =
       captureHadStarted
       ? "Recording stopped before a transcript was available."
@@ -1212,6 +1141,43 @@ final class OverlayState {
   }
 
   // MARK: Listener-driven mutations (called on the main actor by DictationListener)
+
+  /// Paint one Rust-owned status card. This sibling projection may close a
+  /// failed/preparing capture lifecycle, but it never creates transcript text,
+  /// receipts, or product actions in Swift.
+  func applyPresentationStatus(_ event: CsPresentationStatusEvent) {
+    abortRecordingSession(resetTranscript: true)
+    let status = OverlayPresentationStatus(
+      schema: event.schema,
+      emittedAt: event.emittedAt,
+      sessionId: event.sessionId,
+      kind: event.kind,
+      code: event.code,
+      statusLabel: event.statusLabel,
+      headline: event.headline,
+      message: event.message,
+      isError: event.isError,
+      terminal: event.terminal,
+      calibrationVersion: event.calibrationVersion
+    )
+    presentationStatus = status
+    latestTranscriptProjection = nil
+    deliveredText = ""
+    formattedText = ""
+    revision = 0
+    canPaste = false
+    canInsert = false
+    canCopy = false
+    canRetranscribe = false
+    canFormat = false
+    mode = event.isError ? .error : .formatted
+    terminal = event.terminal
+    finalized = event.terminal
+    errorMessage = event.isError ? event.message : nil
+    onPresentationStatus?()
+    showToast(event.headline)
+    if event.terminal { restartAutoHideCountdown() }
+  }
 
   /// Parse one reducer-owned projection, then paint every contract field 1:1.
   /// Ordering, admission, availability and terminal decisions have already
@@ -1335,8 +1301,7 @@ final class OverlayState {
     deliveredText = ""
     pendingNoSpeechMessage = nil
     noSpeechNotice = OverlayState.defaultNoSpeechNotice
-    recoverySettingsSection = nil
-    recoverySettingsAnchor = nil
+    presentationStatus = nil
     errorLifecycleDetail = "Recording stopped before a transcript was available."
     finalized = false
     agentFinalTranscriptAppeared = false
@@ -1529,6 +1494,10 @@ final class DictationListener: CsTranscriptionListener {
 
   func onTranscriptProjection(event: CsTranscriptProjectionEvent) {
     continuation.yield(.transcriptProjection(event))
+  }
+
+  func onPresentationStatus(event: CsPresentationStatusEvent) {
+    continuation.yield(.presentationStatus(event))
   }
 
   func onRecordingPreparing() {

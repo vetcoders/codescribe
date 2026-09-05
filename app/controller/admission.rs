@@ -31,9 +31,11 @@ use codescribe_core::pipeline::streaming::{SILERO_FUSION_ENV, SealLaneProbe};
 /// Why the next product recording must not begin.
 #[derive(Debug, Clone, PartialEq)]
 pub enum AdmissionBlocker {
+    /// macOS has not granted microphone capture to this process.
+    MicrophonePermissionUnavailable { status: String },
     /// No input device could be resolved (or the probe itself failed).
     CaptureDeviceUnavailable { reason: String },
-    /// The operator has not measured this machine yet.
+    /// The Founder has not measured this machine yet.
     CalibrationMissing { path: PathBuf },
     /// The artifact exists but the loader refused it (tamper, schema, shape).
     CalibrationRefused { path: PathBuf, reason: String },
@@ -54,6 +56,9 @@ impl AdmissionBlocker {
     /// Stable marker shared with the Swift overlay/Settings rewrite tables.
     pub const fn code(&self) -> &'static str {
         match self {
+            Self::MicrophonePermissionUnavailable { .. } => {
+                "admission_microphone_permission_unavailable"
+            }
             Self::CaptureDeviceUnavailable { .. } => "admission_capture_device_unavailable",
             Self::CalibrationMissing { .. } => "admission_calibration_missing",
             Self::CalibrationRefused { .. } => "admission_calibration_refused",
@@ -64,9 +69,13 @@ impl AdmissionBlocker {
         }
     }
 
-    /// What the operator can do about it (one sentence, no jargon).
+    /// What the Founder can do about it (one sentence, no jargon).
     pub fn action(&self) -> String {
         match self {
+            Self::MicrophonePermissionUnavailable { .. } => {
+                "Enable Codescribe in System Settings › Privacy & Security › Microphone."
+                    .to_string()
+            }
             Self::CaptureDeviceUnavailable { .. } => {
                 "Connect a microphone and refresh Audio settings.".to_string()
             }
@@ -95,6 +104,9 @@ impl AdmissionBlocker {
     /// Human-readable explanation of the blocker (no action).
     pub fn explanation(&self) -> String {
         match self {
+            Self::MicrophonePermissionUnavailable { status } => {
+                format!("microphone permission is {status}")
+            }
             Self::CaptureDeviceUnavailable { reason } => format!("no input device: {reason}"),
             Self::CalibrationMissing { path } => {
                 format!("no acoustic calibration measured yet ({})", path.display())
@@ -252,6 +264,21 @@ fn evaluate_probed_admission_at(
 pub fn evaluate_live_admission(
     snapshot: &RuntimeSettingsSnapshot,
 ) -> Result<AdmissionGrant, AdmissionBlocker> {
+    use crate::os::permissions::PermissionStatus;
+
+    match crate::os::permissions::check_microphone() {
+        PermissionStatus::Granted => {}
+        PermissionStatus::Denied => {
+            return Err(AdmissionBlocker::MicrophonePermissionUnavailable {
+                status: "denied".to_string(),
+            });
+        }
+        PermissionStatus::NotDetermined => {
+            return Err(AdmissionBlocker::MicrophonePermissionUnavailable {
+                status: "not determined".to_string(),
+            });
+        }
+    }
     let capture = codescribe_core::audio::recorder::probe_input_capture_path()
         .map_err(|error| format!("{error:#}"));
     let seal_lane = codescribe_core::pipeline::streaming::seal_lane_probe(snapshot);
@@ -393,6 +420,19 @@ mod tests {
                 .to_string()
                 .starts_with("admission_capture_device_unavailable: ")
         );
+    }
+
+    #[test]
+    fn microphone_permission_refusal_has_a_stable_actionable_projection() {
+        let blocker = AdmissionBlocker::MicrophonePermissionUnavailable {
+            status: "denied".to_string(),
+        };
+        assert_eq!(
+            blocker.code(),
+            "admission_microphone_permission_unavailable"
+        );
+        assert!(blocker.explanation().contains("denied"));
+        assert!(blocker.action().contains("Privacy & Security › Microphone"));
     }
 
     #[test]

@@ -29,7 +29,8 @@ pub struct IpcEvent {
 ///
 /// [`Engine`] is the transcription pipeline's own event stream; the remaining
 /// variants are surfaces that exist only across this boundary (context markers,
-/// capture-level metering, and ledger-owned projections) and have no
+/// capture-level metering, typed presentation status, and ledger-owned
+/// projections) and have no
 /// [`EngineEvent`] counterpart.
 ///
 /// [`Engine`]: IpcEventPayload::Engine
@@ -55,6 +56,10 @@ pub enum IpcEventPayload {
     /// owner schema without defining a second projection model.
     #[serde(rename = "transcript_projection")]
     TranscriptProjection { json: String },
+    /// Byte-for-byte `PresentationStatusProjection` JSON. This shares the
+    /// product event stream without impersonating ledger/reducer truth.
+    #[serde(rename = "presentation_status")]
+    PresentationStatus { json: String },
 }
 
 /// Serializable mirror of [`EngineEvent`], tagged by `type` in snake_case.

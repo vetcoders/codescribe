@@ -794,14 +794,7 @@ pub enum EngineEvent {
 /// routine receipt painted "Dictation stopped" over a live session, desynced
 /// the toggle parity, and the next toggle started a second, orphaned capture
 /// that held the microphone behind an Idle tray (2026-08-12 incident).
-pub const USER_TERMINAL_WARNING_CODES: &[&str] =
-    &["transcription_failed", ADMISSION_REFUSED_WARNING_CODE];
-
-/// The controller refused to begin a product recording because acoustic
-/// admission (measured calibration + seal lane) cannot serve. Emitted BEFORE
-/// any microphone opens, so the user's start gesture genuinely failed and the
-/// overlay must show the actionable reason instead of a silent no-op.
-pub const ADMISSION_REFUSED_WARNING_CODE: &str = "admission_refused";
+pub const USER_TERMINAL_WARNING_CODES: &[&str] = &["transcription_failed"];
 
 /// Whether a [`EngineEvent::Warning`] code is a user-terminal failure
 /// (forward to `on_error`) rather than a quality receipt (log only).
