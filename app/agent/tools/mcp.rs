@@ -286,7 +286,7 @@ pub fn probe_core_readiness(runtime_settings: &RuntimeSettingsSnapshot) -> CoreR
     assemble_core_readiness(
         assistive_lane.provider(),
         assistive_lane.credential().key_account().to_string(),
-        assistive_lane.available(),
+        assistive_lane.request_available(),
         configured_workspace_roots,
         tool_workspace_roots,
     )

@@ -536,11 +536,12 @@ impl RuntimeLlmLaneKind {
     }
 }
 
-/// Credential facts sealed by the loader for one LLM lane.
+/// Credential identity and seal-time facts for one LLM lane.
 ///
 /// The secret stays private, has no serde implementation, and is redacted from
-/// `Debug`. Consumers may borrow it for a request but cannot derive a second
-/// settings authority from this record.
+/// `Debug`. The account identity is immutable; request senders resolve that
+/// account again at send time so a controller created without Keychain access
+/// cannot keep emitting unauthenticated requests for its whole lifetime.
 #[derive(Clone, PartialEq, Eq)]
 pub struct RuntimeLlmCredential {
     key_account: String,
@@ -569,6 +570,16 @@ impl RuntimeLlmCredential {
         self.api_key.as_deref()
     }
 
+    /// Resolve the credential at the explicit secret-use boundary.
+    ///
+    /// This is deliberately not the seal-time [`Self::api_key`] value. Settings
+    /// may save, rotate, or remove a Keychain secret while a controller or
+    /// provider handle remains resident; every outgoing request must observe
+    /// that current truth without rebuilding the lane topology.
+    pub fn request_api_key(&self) -> Option<String> {
+        super::keychain::runtime_key(&self.key_account)
+    }
+
     pub const fn account_auth(&self) -> bool {
         self.account_auth
     }
@@ -585,8 +596,9 @@ impl fmt::Debug for RuntimeLlmCredential {
     }
 }
 
-/// One fully resolved LLM lane. No consumer may reparse settings, env, or
-/// Keychain after receiving this value.
+/// One fully resolved LLM lane. Endpoint, model, provider, and account identity
+/// are immutable. Only the secret behind that account is refreshed at the
+/// explicit request boundary through [`RuntimeLlmCredential::request_api_key`].
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct RuntimeLlmLane {
     lane: RuntimeLlmLaneKind,
@@ -647,6 +659,14 @@ impl RuntimeLlmLane {
 
     pub const fn available(&self) -> bool {
         self.available
+    }
+
+    /// Whether a request can be sent under the credential truth that exists
+    /// now, rather than only under the truth observed when this lane was sealed.
+    pub fn request_available(&self) -> bool {
+        self.credential.account_auth()
+            || self.credential.request_api_key().is_some()
+            || !ProviderKind::endpoint_requires_api_key(&self.endpoint)
     }
 
     pub fn unavailable_reason(&self) -> Option<&str> {

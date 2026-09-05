@@ -29,7 +29,7 @@
 //! (MutexGuard is `!Send`); the async session only shuttles PCM in and
 //! `EngineEvent`s out.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::sync::mpsc as std_mpsc;
 use std::sync::{Arc, Mutex};
 use std::thread;
@@ -571,7 +571,10 @@ pub(crate) async fn apple_stream_transcription_session(
     let formatter_on = formatter_lane_is_armed(
         runtime_settings.values().ai_formatting_enabled,
         runtime_settings.formatting_policy(),
-        runtime_settings.llm_lanes().formatting().available(),
+        runtime_settings
+            .llm_lanes()
+            .formatting()
+            .request_available(),
     );
     let mut formatter_jobs = FuturesOrdered::<BoxFuture<'static, FormatterCompletion>>::new();
     let formatter_runtime_settings = Arc::clone(&runtime_settings);
@@ -930,7 +933,10 @@ struct AppleSealState {
     /// permits jobs; it is not itself a scheduled ledger return.
     formatter: Option<mpsc::Sender<FormatterRequest>>,
     /// Exact accepted formatter jobs not yet acknowledged after reducer/seal
-    /// delivery. Identity remains in `pending_events` and AcousticLedger.
+    /// delivery. This identity is deliberately independent of `pending_events`:
+    /// a concurrently completed observer may publish and remove the pending
+    /// payload before the formatter acknowledgement reaches the worker.
+    formatter_in_flight: BTreeSet<OccurrenceIdentity>,
     formatter_awaiting_completion: u64,
     /// Concatenation of already progressive-sealed text — left context for
     /// Light+ casing on the next seal (w2-b).
@@ -992,6 +998,7 @@ impl AppleSealState {
             tail_patch_backpressure_drops: 0,
             tail_patch_awaiting_completion: 0,
             formatter: None,
+            formatter_in_flight: BTreeSet::new(),
             formatter_awaiting_completion: 0,
             sealed_prefix: String::new(),
             pending_events: BTreeMap::new(),
@@ -1306,7 +1313,7 @@ impl AppleSealState {
             let _ = ev_tx.send(EngineEvent::LedgerSeal { receipt });
         }
         drop(ledger);
-        if formatter_scheduled {
+        if formatter_scheduled && self.formatter_in_flight.insert(occurrence.clone()) {
             self.formatter_awaiting_completion =
                 self.formatter_awaiting_completion.saturating_add(1);
         }
@@ -1322,13 +1329,13 @@ impl AppleSealState {
         if !completion.carries_same_occurrence() {
             return false;
         }
-        let Some(utterance_id) = self
+        if !self.formatter_in_flight.contains(&completion.occurrence) {
+            return false;
+        }
+        let utterance_id = self
             .pending_events
             .iter()
-            .find_map(|(id, pending)| (pending.occurrence == completion.occurrence).then_some(*id))
-        else {
-            return false;
-        };
+            .find_map(|(id, pending)| (pending.occurrence == completion.occurrence).then_some(*id));
         let canonical_label = {
             let ledger = self
                 .acoustic_ledger
@@ -1352,11 +1359,16 @@ impl AppleSealState {
         if self.formatter_awaiting_completion == 0 {
             return false;
         }
-        if let Some(pending) = self.pending_events.get_mut(&utterance_id) {
-            pending.layer1_baseline = canonical_label;
+        if !self.formatter_in_flight.remove(&completion.occurrence) {
+            return false;
+        }
+        if let Some(utterance_id) = utterance_id {
+            if let Some(pending) = self.pending_events.get_mut(&utterance_id) {
+                pending.layer1_baseline = canonical_label;
+            }
+            self.emit_pending_seal(ev_tx, utterance_id);
         }
         self.formatter_awaiting_completion = self.formatter_awaiting_completion.saturating_sub(1);
-        self.emit_pending_seal(ev_tx, utterance_id);
         true
     }
 
@@ -2161,7 +2173,7 @@ fn admit_ledger_label(
         let _ = ev_tx.send(EngineEvent::LedgerSeal { receipt: seal });
     }
     drop(ledger);
-    if formatter_scheduled {
+    if formatter_scheduled && state.formatter_in_flight.insert(occurrence) {
         state.formatter_awaiting_completion = state.formatter_awaiting_completion.saturating_add(1);
     }
     Some(receipt)
@@ -3609,6 +3621,79 @@ mod c13a_lifecycle_tests {
             assert_eq!(completion.proposal.disposition, disposition);
             assert_eq!(completion.proposal.proposed_label, proposed_label);
         }
+    }
+
+    #[test]
+    fn formatter_transport_failure_after_raw_seal_keeps_lane_and_terminal_seal_alive() {
+        let (ev_tx, mut ev_rx) = mpsc::unbounded_channel();
+        let (formatter_tx, mut formatter_rx) = mpsc::channel(FORMATTER_QUEUE_CAP);
+        let mut state = state_for_session("formatter-transport-failure");
+        state.formatter = Some(formatter_tx);
+        let first = OccurrenceIdentity::new("formatter-transport-failure", 1, 0, 16_000);
+
+        stage_pending_occurrence(&mut state, &ev_tx, 1, first.clone(), "Surowe zdanie");
+        return_lexicon(&mut state, &ev_tx, 1, &first);
+        let request = formatter_rx.try_recv().expect("exact formatter request");
+        let completion = FormatterCompletion::from_result(
+            request,
+            // Deterministic provider/transport refusal stub: this is the same
+            // typed outcome produced after a 401 or an exhausted HTTP failure.
+            ai_result(AiFormatStatus::Failed, "Surowe zdanie"),
+        );
+
+        // PresentationEmitter synchronously returns the Formatter frontier,
+        // seals the raw occurrence, and may let another completion publish it
+        // before the worker receives this acknowledgement.
+        {
+            let mut ledger = state.acoustic_ledger.lock().expect("ledger");
+            assert!(ledger.note_frontier_return(&first, LedgerObservationProducer::Formatter,));
+            assert!(ledger.seal(&first).is_ok());
+        }
+        state.emit_pending_seal(&ev_tx, 1);
+        assert!(state.pending_events.is_empty());
+
+        assert!(
+            state.complete_formatter(&ev_tx, completion),
+            "a known formatter failure must be acknowledged even after raw publication",
+        );
+        assert_eq!(state.formatter_awaiting_completion, 0);
+
+        // A later utterance proves that the live lane remained usable after
+        // the formatter failure instead of terminating at the acknowledgement.
+        state.formatter = None;
+        let second = OccurrenceIdentity::new("formatter-transport-failure", 1, 16_000, 32_000);
+        stage_pending_occurrence(&mut state, &ev_tx, 2, second.clone(), "Dalszy surowy tekst");
+        return_lexicon(&mut state, &ev_tx, 2, &second);
+
+        let terminal = state
+            .acoustic_ledger
+            .lock()
+            .expect("ledger")
+            .seal_terminal(&state.session_id, state.capture_epoch)
+            .expect("formatter refusal must not block the terminal ledger seal");
+        assert_eq!(terminal.sealed_occurrences, vec![first, second]);
+        let finals = std::iter::from_fn(|| ev_rx.try_recv().ok())
+            .filter_map(|event| match event {
+                EngineEvent::UtteranceFinal {
+                    utterance_id,
+                    text,
+                    raw_text,
+                    ..
+                } => Some((utterance_id, text, raw_text)),
+                _ => None,
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(
+            finals,
+            vec![
+                (1, "Surowe zdanie".to_string(), "Surowe zdanie".to_string(),),
+                (
+                    2,
+                    "Dalszy surowy tekst".to_string(),
+                    "Dalszy surowy tekst".to_string(),
+                ),
+            ],
+        );
     }
 
     #[test]

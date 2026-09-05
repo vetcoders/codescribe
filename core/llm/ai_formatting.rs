@@ -285,7 +285,8 @@ pub async fn generate_thread_title(
 /// endpoint may legitimately have no credential; cloud availability was sealed
 /// by the loader and fails closed before a request is attempted.
 fn resolve_thread_title_provider(lane: &RuntimeLlmLane) -> Result<ThreadTitleProvider> {
-    if !lane.available() {
+    let api_key = lane.credential().request_api_key();
+    if !lane.request_available() {
         anyhow::bail!(
             "{}",
             lane.unavailable_reason()
@@ -297,7 +298,7 @@ fn resolve_thread_title_provider(lane: &RuntimeLlmLane) -> Result<ThreadTitlePro
         wire_family: lane.wire_family(),
         endpoint: lane.endpoint().to_string(),
         model: lane.model().to_string(),
-        api_key: lane.credential().api_key().map(str::to_string),
+        api_key,
     })
 }
 
@@ -1512,22 +1513,21 @@ async fn call_anthropic_messages(
     assistive: bool,
     lane: &RuntimeLlmLane,
 ) -> Result<ProviderOutput> {
-    if !lane.available() {
+    let api_key = lane.credential().request_api_key().unwrap_or_default();
+    if !lane.request_available() {
         anyhow::bail!(
             "{}",
             lane.unavailable_reason()
                 .unwrap_or("Anthropic lane is unavailable")
         );
     }
-    let api_key = lane.credential().api_key().unwrap_or_default();
-
     call_anthropic_messages_resolved(
         user_message,
         system_prompt,
         assistive,
         lane.endpoint(),
         lane.model(),
-        api_key,
+        &api_key,
     )
     .await
 }
@@ -1742,17 +1742,15 @@ async fn resolve_lane_auth(lane: &RuntimeLlmLane) -> Result<(String, bool)> {
             .map_err(|error| anyhow::anyhow!("Provider account authentication failed: {error}"))?;
         return Ok((token, true));
     }
-    if !lane.available() {
+    let api_key = lane.credential().request_api_key();
+    if api_key.is_none() && !lane.request_available() {
         anyhow::bail!(
             "{}",
             lane.unavailable_reason()
                 .unwrap_or("LLM lane is unavailable")
         );
     }
-    Ok((
-        lane.credential().api_key().unwrap_or_default().to_string(),
-        false,
-    ))
+    Ok((api_key.unwrap_or_default(), false))
 }
 
 /// Call LLM endpoint with SSE streaming (Responses API)
@@ -1864,7 +1862,7 @@ async fn call_llm_endpoint_streaming(
 
 /// Check if AI formatting is available for report/test flows.
 pub fn is_formatting_available(lane: &RuntimeLlmLane) -> bool {
-    lane.available()
+    lane.request_available()
 }
 
 /// Wire-contract and text-hygiene tests for the formatting module.
@@ -2396,6 +2394,120 @@ mod tests {
             snapshot.llm_lanes().assistive().model(),
             "fresh-assistive-model"
         );
+    }
+
+    #[tokio::test]
+    #[serial]
+    async fn every_runtime_llm_lane_authenticates_from_the_key_present_at_request_time() {
+        use crate::config::RuntimeLlmLaneKind;
+        use crate::state::conversation::{AiMode, reset_conversation_for_mode};
+
+        let data_dir = tempfile::TempDir::new().expect("isolated data dir");
+        let mut server = mockito::Server::new_async().await;
+        let endpoint = format!("{}/v1/responses", server.url());
+        let mut env = TestEnv::clean();
+        env.set(
+            "CODESCRIBE_DATA_DIR",
+            data_dir.path().to_str().expect("utf-8 test data path"),
+        );
+        env.set("CODESCRIBE_DISABLE_KEYCHAIN", "1");
+        env.set("LLM_ENDPOINT", &endpoint);
+        env.set("LLM_MODEL", "gpt-test-main");
+        env.set("LLM_FORMATTING_PROVIDER", "openai-responses");
+        env.set("LLM_FORMATTING_ENDPOINT", &endpoint);
+        env.set("LLM_FORMATTING_MODEL", "gpt-test-formatting");
+        env.set("LLM_ASSISTIVE_PROVIDER", "openai-responses");
+        env.set("LLM_ASSISTIVE_ENDPOINT", &endpoint);
+        env.set("LLM_ASSISTIVE_MODEL", "gpt-test-assistive");
+        for key in [
+            "LLM_API_KEY",
+            "LLM_FORMATTING_API_KEY",
+            "LLM_ASSISTIVE_API_KEY",
+        ] {
+            env.guards.push(EnvGuard::remove(key));
+        }
+
+        // Seal the lane topology before any credential exists. This mirrors
+        // the production controller created through `new_without_keychain()`.
+        let snapshot = Config::load_runtime_snapshot().expect("seal credential-free topology");
+        for lane in [
+            RuntimeLlmLaneKind::Main,
+            RuntimeLlmLaneKind::Formatting,
+            RuntimeLlmLaneKind::Assistive,
+        ] {
+            assert!(
+                snapshot
+                    .llm_lanes()
+                    .lane(lane)
+                    .credential()
+                    .api_key()
+                    .is_none(),
+                "baseline snapshot must not already contain the test credential",
+            );
+        }
+
+        let cases = [
+            (
+                RuntimeLlmLaneKind::Main,
+                "LLM_API_KEY",
+                "synthetic-main-key",
+                false,
+            ),
+            (
+                RuntimeLlmLaneKind::Formatting,
+                "LLM_FORMATTING_API_KEY",
+                "synthetic-formatting-key",
+                false,
+            ),
+            (
+                RuntimeLlmLaneKind::Assistive,
+                "LLM_ASSISTIVE_API_KEY",
+                "synthetic-assistive-key",
+                true,
+            ),
+        ];
+        for (kind, account, synthetic_key, assistive) in cases {
+            env.set(account, synthetic_key);
+            let expected_authorization = format!("Bearer {synthetic_key}");
+            let mock = server
+                .mock("POST", "/v1/responses")
+                .match_header("authorization", expected_authorization.as_str())
+                .match_header("x-api-key", synthetic_key)
+                .match_body(Matcher::Any)
+                .expect(1)
+                .with_status(200)
+                .with_header("content-type", "application/json")
+                .with_body(
+                    json!({
+                        "id": format!("resp-{}", kind.as_str()),
+                        "output": [{
+                            "type": "message",
+                            "content": [{"type": "output_text", "text": "authenticated"}]
+                        }]
+                    })
+                    .to_string(),
+                )
+                .create_async()
+                .await;
+
+            reset_conversation_for_mode(if assistive {
+                AiMode::Assistive
+            } else {
+                AiMode::Formatting
+            });
+            let output = call_llm_endpoint(
+                "request-time credential witness",
+                "test system prompt",
+                assistive,
+                snapshot.llm_lanes().lane(kind),
+            )
+            .await
+            .unwrap_or_else(|error| panic!("{} lane request failed: {error}", kind.as_str()));
+            assert_eq!(output.assistant_text, "authenticated");
+            mock.assert_async().await;
+        }
+        reset_conversation_for_mode(AiMode::Formatting);
+        reset_conversation_for_mode(AiMode::Assistive);
     }
 
     #[tokio::test]

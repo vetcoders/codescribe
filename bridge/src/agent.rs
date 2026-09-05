@@ -162,7 +162,10 @@ impl CodescribeAgent {
     /// settings (fresh reload). A key-optional local endpoint counts as
     /// available.
     pub fn is_available(&self) -> bool {
-        self.current_settings().llm_lanes().assistive().available()
+        self.current_settings()
+            .llm_lanes()
+            .assistive()
+            .request_available()
     }
 
     /// Availability of the assistive lane as one record: `available` mirrors
