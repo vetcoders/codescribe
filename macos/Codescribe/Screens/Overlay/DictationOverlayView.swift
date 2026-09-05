@@ -15,7 +15,6 @@ import SwiftUI
 // attaches to AgentChatStore (same thread owner) via existing sendToAgent — not
 // a parallel chat window.
 struct DictationOverlayView: View {
-  @Environment(\.openSettings) private var openSettings
   @Environment(\.accessibilityReduceMotion) private var reduceMotion
   @Bindable var state: OverlayState
 
@@ -185,18 +184,23 @@ struct DictationOverlayView: View {
 
   private var bodySection: some View {
     Group {
-      switch state.mode {
-      case .listening, .finalizing:
-        listeningBody
+      if let status = state.presentationStatus {
+        presentationStatusBody(status)
           .transition(reduceMotion ? .identity : .opacity.combined(with: .offset(y: 8)))
-      case .formatted:
-        formattedBody
-      case .noSpeech:
-        noSpeechBody
-          .transition(reduceMotion ? .identity : .opacity.combined(with: .offset(y: 8)))
-      case .error:
-        errorBody
-          .transition(reduceMotion ? .identity : .opacity.combined(with: .offset(y: 8)))
+      } else {
+        switch state.mode {
+        case .listening, .finalizing:
+          listeningBody
+            .transition(reduceMotion ? .identity : .opacity.combined(with: .offset(y: 8)))
+        case .formatted:
+          formattedBody
+        case .noSpeech:
+          noSpeechBody
+            .transition(reduceMotion ? .identity : .opacity.combined(with: .offset(y: 8)))
+        case .error:
+          errorBody
+            .transition(reduceMotion ? .identity : .opacity.combined(with: .offset(y: 8)))
+        }
       }
     }
     .frame(
@@ -291,19 +295,31 @@ struct DictationOverlayView: View {
         }
         Spacer(minLength: 0)
       }
-      if let target = state.recoverySettingsSection {
-        Button("Open \(target.title) Settings") {
-          SettingsDeepLink.present(target, anchor: state.recoverySettingsAnchor)
-          openSettings()
-        }
-        .buttonStyle(.borderedProminent)
-        .controlSize(.small)
-        .tint(CSColor.chromeAccent)
-        .accessibilityHint("Opens the settings section that can resolve this error")
-        .accessibilityIdentifier("overlay-error-recovery")
-      }
     }
     .frame(maxWidth: .infinity, minHeight: bodyMinHeight, alignment: .leading)
+  }
+
+  /// Rust supplies every word and classification. The canvas only paints the
+  /// status and intentionally exposes no repair button or Settings command.
+  private func presentationStatusBody(_ status: OverlayPresentationStatus) -> some View {
+    HStack(spacing: 12) {
+      CSIconView(icon: status.isError ? .error : .success, size: 18, weight: .regular)
+        .foregroundStyle(status.isError ? CSColor.terracotta : CSColor.oliveLight)
+      VStack(alignment: .leading, spacing: 4) {
+        Text(status.headline)
+          .csFont(15, .medium)
+          .foregroundStyle(CSColor.textBody)
+          .fixedSize(horizontal: false, vertical: true)
+        Text(status.message)
+          .csMono(11, .medium)
+          .foregroundStyle(CSColor.textFaint)
+          .fixedSize(horizontal: false, vertical: true)
+      }
+      Spacer(minLength: 0)
+    }
+    .frame(maxWidth: .infinity, minHeight: bodyMinHeight, alignment: .leading)
+    .accessibilityElement(children: .combine)
+    .accessibilityIdentifier("overlay-presentation-status")
   }
 
   // MARK: Footer

@@ -5316,6 +5316,12 @@ public protocol CsTranscriptionListener: AnyObject, Sendable {
     func onTranscriptProjection(event: CsTranscriptProjectionEvent)
 
     /**
+     * Typed product status. Swift may display it but receives no settings or
+     * repair command through this passive projection.
+     */
+    func onPresentationStatus(event: CsPresentationStatusEvent)
+
+    /**
      * The engine is spinning up capture; no audio is flowing yet.
      */
     func onRecordingPreparing()
@@ -5439,6 +5445,18 @@ open func onTranscriptProjection(event: CsTranscriptProjectionEvent)  {try! rust
     uniffi_codescribe_ffi_fn_method_cstranscriptionlistener_on_transcript_projection(
             self.uniffiCloneHandle(),
         FfiConverterTypeCsTranscriptProjectionEvent_lower(event),$0
+    )
+}
+}
+
+    /**
+     * Typed product status. Swift may display it but receives no settings or
+     * repair command through this passive projection.
+     */
+open func onPresentationStatus(event: CsPresentationStatusEvent)  {try! rustCall() {
+    uniffi_codescribe_ffi_fn_method_cstranscriptionlistener_on_presentation_status(
+            self.uniffiCloneHandle(),
+        FfiConverterTypeCsPresentationStatusEvent_lower(event),$0
     )
 }
 }
@@ -5591,6 +5609,30 @@ fileprivate struct UniffiCallbackInterfaceCsTranscriptionListener {
                 }
                 return uniffiObj.onTranscriptProjection(
                      event: try FfiConverterTypeCsTranscriptProjectionEvent_lift(event)
+                )
+            }
+
+
+            let writeReturn = { () }
+            uniffiTraitInterfaceCall(
+                callStatus: uniffiCallStatus,
+                makeCall: makeCall,
+                writeReturn: writeReturn
+            )
+        },
+        onPresentationStatus: { (
+            uniffiHandle: UInt64,
+            event: RustBuffer,
+            uniffiOutReturn: UnsafeMutableRawPointer,
+            uniffiCallStatus: UnsafeMutablePointer<RustCallStatus>
+        ) in
+            let makeCall = {
+                () throws -> () in
+                guard let uniffiObj = try? FfiConverterTypeCsTranscriptionListener.handleMap.get(handle: uniffiHandle) else {
+                    throw UniffiInternalError.unexpectedStaleHandle
+                }
+                return uniffiObj.onPresentationStatus(
+                     event: try FfiConverterTypeCsPresentationStatusEvent_lift(event)
                 )
             }
 
@@ -8794,6 +8836,99 @@ public func FfiConverterTypeCsPermissionPolicy_lift(_ buf: RustBuffer) throws ->
 #endif
 public func FfiConverterTypeCsPermissionPolicy_lower(_ value: CsPermissionPolicy) -> RustBuffer {
     return FfiConverterTypeCsPermissionPolicy.lower(value)
+}
+
+
+/**
+ * Passive, typed product status from Rust presentation authority. This is a
+ * sibling of transcript projection, not a transcript event: it carries no
+ * reducer revision or acoustic evidence and exposes no repair command.
+ */
+public struct CsPresentationStatusEvent: Equatable, Hashable {
+    public var schema: String
+    public var emittedAt: String
+    public var sessionId: String?
+    public var kind: String
+    public var code: String
+    public var statusLabel: String
+    public var headline: String
+    public var message: String
+    public var isError: Bool
+    public var terminal: Bool
+    public var calibrationVersion: String?
+
+    // Default memberwise initializers are never public by default, so we
+    // declare one manually.
+    public init(schema: String, emittedAt: String, sessionId: String?, kind: String, code: String, statusLabel: String, headline: String, message: String, isError: Bool, terminal: Bool, calibrationVersion: String?) {
+        self.schema = schema
+        self.emittedAt = emittedAt
+        self.sessionId = sessionId
+        self.kind = kind
+        self.code = code
+        self.statusLabel = statusLabel
+        self.headline = headline
+        self.message = message
+        self.isError = isError
+        self.terminal = terminal
+        self.calibrationVersion = calibrationVersion
+    }
+
+
+}
+
+#if compiler(>=6)
+extension CsPresentationStatusEvent: Sendable {}
+#endif
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public struct FfiConverterTypeCsPresentationStatusEvent: FfiConverterRustBuffer {
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> CsPresentationStatusEvent {
+        return
+            try CsPresentationStatusEvent(
+                schema: FfiConverterString.read(from: &buf),
+                emittedAt: FfiConverterString.read(from: &buf),
+                sessionId: FfiConverterOptionString.read(from: &buf),
+                kind: FfiConverterString.read(from: &buf),
+                code: FfiConverterString.read(from: &buf),
+                statusLabel: FfiConverterString.read(from: &buf),
+                headline: FfiConverterString.read(from: &buf),
+                message: FfiConverterString.read(from: &buf),
+                isError: FfiConverterBool.read(from: &buf),
+                terminal: FfiConverterBool.read(from: &buf),
+                calibrationVersion: FfiConverterOptionString.read(from: &buf)
+        )
+    }
+
+    public static func write(_ value: CsPresentationStatusEvent, into buf: inout [UInt8]) {
+        FfiConverterString.write(value.schema, into: &buf)
+        FfiConverterString.write(value.emittedAt, into: &buf)
+        FfiConverterOptionString.write(value.sessionId, into: &buf)
+        FfiConverterString.write(value.kind, into: &buf)
+        FfiConverterString.write(value.code, into: &buf)
+        FfiConverterString.write(value.statusLabel, into: &buf)
+        FfiConverterString.write(value.headline, into: &buf)
+        FfiConverterString.write(value.message, into: &buf)
+        FfiConverterBool.write(value.isError, into: &buf)
+        FfiConverterBool.write(value.terminal, into: &buf)
+        FfiConverterOptionString.write(value.calibrationVersion, into: &buf)
+    }
+}
+
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeCsPresentationStatusEvent_lift(_ buf: RustBuffer) throws -> CsPresentationStatusEvent {
+    return try FfiConverterTypeCsPresentationStatusEvent.lift(buf)
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeCsPresentationStatusEvent_lower(_ value: CsPresentationStatusEvent) -> RustBuffer {
+    return FfiConverterTypeCsPresentationStatusEvent.lower(value)
 }
 
 
@@ -14151,31 +14286,34 @@ private let initializationResult: InitializationResult = {
     if (uniffi_codescribe_ffi_checksum_method_cstranscriptionlistener_on_transcript_projection() != 430) {
         return InitializationResult.apiChecksumMismatch
     }
-    if (uniffi_codescribe_ffi_checksum_method_cstranscriptionlistener_on_recording_preparing() != 54126) {
+    if (uniffi_codescribe_ffi_checksum_method_cstranscriptionlistener_on_presentation_status() != 2568) {
         return InitializationResult.apiChecksumMismatch
     }
-    if (uniffi_codescribe_ffi_checksum_method_cstranscriptionlistener_on_recording_started() != 10468) {
+    if (uniffi_codescribe_ffi_checksum_method_cstranscriptionlistener_on_recording_preparing() != 479) {
         return InitializationResult.apiChecksumMismatch
     }
-    if (uniffi_codescribe_ffi_checksum_method_cstranscriptionlistener_on_recording_stopped() != 7984) {
+    if (uniffi_codescribe_ffi_checksum_method_cstranscriptionlistener_on_recording_started() != 65106) {
         return InitializationResult.apiChecksumMismatch
     }
-    if (uniffi_codescribe_ffi_checksum_method_cstranscriptionlistener_on_recording_finalising() != 35300) {
+    if (uniffi_codescribe_ffi_checksum_method_cstranscriptionlistener_on_recording_stopped() != 53699) {
         return InitializationResult.apiChecksumMismatch
     }
-    if (uniffi_codescribe_ffi_checksum_method_cstranscriptionlistener_on_session_finalised() != 33807) {
+    if (uniffi_codescribe_ffi_checksum_method_cstranscriptionlistener_on_recording_finalising() != 17181) {
         return InitializationResult.apiChecksumMismatch
     }
-    if (uniffi_codescribe_ffi_checksum_method_cstranscriptionlistener_on_vad_active() != 19289) {
+    if (uniffi_codescribe_ffi_checksum_method_cstranscriptionlistener_on_session_finalised() != 39954) {
         return InitializationResult.apiChecksumMismatch
     }
-    if (uniffi_codescribe_ffi_checksum_method_cstranscriptionlistener_on_audio_level() != 22485) {
+    if (uniffi_codescribe_ffi_checksum_method_cstranscriptionlistener_on_vad_active() != 20349) {
         return InitializationResult.apiChecksumMismatch
     }
-    if (uniffi_codescribe_ffi_checksum_method_cstranscriptionlistener_on_no_speech() != 30313) {
+    if (uniffi_codescribe_ffi_checksum_method_cstranscriptionlistener_on_audio_level() != 55213) {
         return InitializationResult.apiChecksumMismatch
     }
-    if (uniffi_codescribe_ffi_checksum_method_cstranscriptionlistener_on_error() != 20960) {
+    if (uniffi_codescribe_ffi_checksum_method_cstranscriptionlistener_on_no_speech() != 8113) {
+        return InitializationResult.apiChecksumMismatch
+    }
+    if (uniffi_codescribe_ffi_checksum_method_cstranscriptionlistener_on_error() != 30256) {
         return InitializationResult.apiChecksumMismatch
     }
     if (uniffi_codescribe_ffi_checksum_method_cstraystatuslistener_on_tray_status() != 48227) {

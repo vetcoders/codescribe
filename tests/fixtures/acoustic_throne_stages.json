@@ -977,10 +977,11 @@
               "required_code": ["formattedText"]
             },
             {
-              "symbol": "body",
+              "symbol": "DictationOverlayView",
               "file": "macos/Codescribe/Screens/Overlay/DictationOverlayView.swift",
-              "signature_contains": "var body: some View",
+              "signature_contains": "struct DictationOverlayView: View",
               "required_code": [
+                "var body: some View",
                 "OverlayIntentRail(",
                 "intents: OverlayIntentRail.projectedIntents(for: state)",
                 "onIntent: state.relayIntent"

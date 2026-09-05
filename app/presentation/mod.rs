@@ -6,6 +6,7 @@
 
 pub mod cli_transcript_lane;
 pub mod emitter;
+pub mod status_projection;
 pub mod transcript_bus;
 pub mod transcript_projection;
 

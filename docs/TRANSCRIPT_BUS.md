@@ -63,8 +63,13 @@ snapshot (`energy-calibration.json` beside `settings.json`, see
 (`audio.seal_lane_armed`, default `true`). The optional power-user
 `CODESCRIBE_SILERO_FUSION` env value overrides that field when present in
 either direction. A refused start writes nothing to the Bus and opens no
-microphone; the refusal reaches the overlay as an
-`admission_refused` warning with one actionable `admission_*` code.
+microphone. It reaches the overlay as a typed
+`codescribe.presentation-status.v1` projection with kind
+`admission_refused`, one actionable `admission_*` code, and Rust-owned display
+copy. Guided calibration publishes `calibration_succeeded` (including the new
+profile version) or `calibration_failed` through the same IPC/listener lane.
+These passive status cards are not Bus rows and carry no occurrence, reducer,
+or acoustic receipt fields.
 
 `codescribe.transcript-evidence.v1` is the committed projection family. Every
 line is created only by `TranscriptBus::publish_revision(revision, ledger)` and
@@ -88,16 +93,16 @@ contains:
 
 The projection contract is one snapshot, not a bag of Swift inputs:
 
-| Field | Source of truth |
-|---|---|
-| `reducer_revision`, `rendered_text` | Exact committed reducer revision |
-| `phase` | `listening` for open book revisions, `finalizing` after a terminal ledger seal, then `formatted` or `no_speech` from `session_ended` plus the last committed render; failed/superseded starts are `error` |
-| `can_paste` | The delivery throne selects `ClipboardPaste`, a latched target exists, and the take has ended |
-| `can_insert` | The delivery throne selects `ClipboardPaste` or `DeferredInsert`, and the take has ended |
-| `can_copy` | The committed render is non-empty |
-| `can_retranscribe` | The session WAV exists and the take has ended |
-| `can_format` | The take has ended and the committed render is non-empty |
-| `terminal` | The controller's unique `session_ended` transition was processed |
+| Field                               | Source of truth                                                                                                                                                                                           |
+| ----------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `reducer_revision`, `rendered_text` | Exact committed reducer revision                                                                                                                                                                          |
+| `phase`                             | `listening` for open book revisions, `finalizing` after a terminal ledger seal, then `formatted` or `no_speech` from `session_ended` plus the last committed render; failed/superseded starts are `error` |
+| `can_paste`                         | The delivery throne selects `ClipboardPaste`, a latched target exists, and the take has ended                                                                                                             |
+| `can_insert`                        | The delivery throne selects `ClipboardPaste` or `DeferredInsert`, and the take has ended                                                                                                                  |
+| `can_copy`                          | The committed render is non-empty                                                                                                                                                                         |
+| `can_retranscribe`                  | The session WAV exists and the take has ended                                                                                                                                                             |
+| `can_format`                        | The take has ended and the committed render is non-empty                                                                                                                                                  |
+| `terminal`                          | The controller's unique `session_ended` transition was processed                                                                                                                                          |
 
 `resolve_delivery_route(OverlayInsert, ...)` remains the only destination
 decision. The projection layer queries its result; it does not create another
@@ -131,6 +136,11 @@ OccurrenceIdentity + AcousticLedger receipts
 
 session_ended + last committed Bus render + delivery/audio snapshot
   → the same CsTranscriptProjectionEvent (`terminal=true`)
+
+controller admission / calibration outcome
+  → PresentationStatusProjection (not a Transcript Bus row)
+  → CsPresentationStatusEvent
+  → OverlayState.applyPresentationStatus
 ```
 
 `EngineEvent::Preview` is ephemeral overlay paint. Raw `UtteranceFinal`,

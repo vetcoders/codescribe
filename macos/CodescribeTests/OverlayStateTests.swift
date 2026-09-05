@@ -124,6 +124,19 @@ final class OverlayStateTests: XCTestCase {
     }
   }
 
+  func testListenerCarriesTypedPresentationStatusWithoutTextParsing() async {
+    let channel = AsyncStream<OverlayListenerEvent>.makeStream()
+    let listener = DictationListener(continuation: channel.continuation)
+    listener.onPresentationStatus(event: refusalStatus())
+
+    var iterator = channel.stream.makeAsyncIterator()
+    guard case .presentationStatus(let event) = await iterator.next() else {
+      return XCTFail("typed presentation status callback was lost")
+    }
+    XCTAssertEqual(event.code, "admission_calibration_unusable")
+    XCTAssertTrue(event.message.contains("Settings › Audio"))
+  }
+
   /// Admit Rust-owned transcript truth through the same projection boundary as
   /// production. Tests may choose rendered documents; they do not replay the
   /// demolished Swift preview/final/patch reducer.
@@ -191,6 +204,23 @@ final class OverlayStateTests: XCTestCase {
         terminal: terminal,
         acousticReceipts: [receipt]
       )
+    )
+  }
+
+  private func refusalStatus() -> CsPresentationStatusEvent {
+    CsPresentationStatusEvent(
+      schema: "codescribe.presentation-status.v1",
+      emittedAt: "2026-09-05T00:00:00Z",
+      sessionId: "refused-session",
+      kind: "admission_refused",
+      code: "admission_calibration_unusable",
+      statusLabel: "recording blocked",
+      headline: "Stored microphone calibration cannot be used",
+      message:
+        "capture generation changed: measured 88200Hz/1ch, current 48000Hz/1ch — Re-run Calibrate microphone in Settings › Audio.",
+      isError: true,
+      terminal: true,
+      calibrationVersion: nil
     )
   }
 
@@ -1063,45 +1093,82 @@ final class OverlayStateTests: XCTestCase {
     XCTAssertNil(OverlayState.speechAuthNotice(from: "Couldn't start recording: mic busy"))
   }
 
-  // MARK: Acoustic admission refusal rewriting
+  // MARK: Typed admission/calibration presentation status
 
-  func testAdmissionCalibrationMissingRewritesToCalibrateHint() {
-    let notice = OverlayState.admissionNotice(
-      from:
-        "Couldn't start recording: admission_calibration_missing: no acoustic calibration measured yet (/x/energy-calibration.json) — Run Calibrate microphone in Settings › Audio (about 10 seconds of normal speech)."
+  func testAdmissionRefusalProjectionBecomesRenderablePassiveOverlayState() {
+    let state = OverlayState()
+    var visibleCallbacks = 0
+    state.onPresentationStatus = { visibleCallbacks += 1 }
+
+    state.applyPresentationStatus(refusalStatus())
+
+    XCTAssertEqual(state.mode, .error)
+    XCTAssertEqual(state.statusText, "recording blocked")
+    XCTAssertEqual(state.presentationStatus?.kind, "admission_refused")
+    XCTAssertEqual(state.presentationStatus?.code, "admission_calibration_unusable")
+    XCTAssertEqual(
+      state.presentationStatus?.headline,
+      "Stored microphone calibration cannot be used"
     )
-    XCTAssertNotNil(notice)
-    XCTAssertTrue(notice?.headline.contains("Calibrate microphone") == true)
-    XCTAssertTrue(notice?.detail.contains("Run Calibrate microphone") == true)
-    XCTAssertFalse(notice?.headline.contains("admission_") == true)
+    XCTAssertTrue(state.presentationStatus?.message.contains("Settings › Audio") == true)
+    XCTAssertTrue(state.terminal)
+    XCTAssertFalse(state.canPaste)
+    XCTAssertFalse(state.canInsert)
+    XCTAssertFalse(state.canCopy)
+    XCTAssertFalse(state.canRetranscribe)
+    XCTAssertFalse(state.canFormat)
+    XCTAssertEqual(OverlayIntentRail.projectedIntents(for: state), [.close])
+    XCTAssertEqual(visibleCallbacks, 1)
   }
 
-  func testAdmissionWarningEnvelopePointsSettingsOwnedRefusalToAudio() {
-    let notice = OverlayState.admissionNotice(
-      from:
-        "admission_refused: admission_seal_lane_disarmed: seal lane is off in Settings › Audio, so no utterance can commit — Enable Seal lane in Settings › Audio."
+  func testCalibrationSuccessProjectionCarriesNewProfileVersion() {
+    let state = OverlayState()
+    state.applyPresentationStatus(
+      CsPresentationStatusEvent(
+        schema: "codescribe.presentation-status.v1",
+        emittedAt: "2026-09-05T00:00:00Z",
+        sessionId: nil,
+        kind: "calibration_succeeded",
+        code: "calibration_succeeded",
+        statusLabel: "calibrated",
+        headline: "Microphone calibration saved",
+        message: "Built-in Microphone at 48000 Hz is ready for recording.",
+        isError: false,
+        terminal: true,
+        calibrationVersion: "cal2-built-in-microphone-1"
+      )
     )
-    XCTAssertNotNil(notice)
-    XCTAssertTrue(notice?.headline.contains("Settings › Audio") == true)
-    XCTAssertTrue(notice?.detail.contains("no utterance can commit") == true)
-    XCTAssertFalse(notice?.headline.contains(".env") == true)
-    XCTAssertFalse(notice?.detail.contains(".env") == true)
+
+    XCTAssertEqual(state.statusText, "calibrated")
+    XCTAssertEqual(state.presentationStatus?.kind, "calibration_succeeded")
+    XCTAssertEqual(state.presentationStatus?.calibrationVersion, "cal2-built-in-microphone-1")
+    XCTAssertNil(state.errorMessage)
+    XCTAssertEqual(OverlayIntentRail.projectedIntents(for: state), [.close])
   }
 
-  func testAdmissionEnvOverrideNamesTheOverrideWithoutEnvFileInstructions() {
-    let notice = OverlayState.admissionNotice(
-      from:
-        "admission_seal_lane_disarmed: seal lane is disarmed by the CODESCRIBE_SILERO_FUSION override, so no utterance can commit — CODESCRIBE_SILERO_FUSION power-user override is off; remove the override or set it to 1."
+  func testCalibrationFailureProjectionKeepsReasonPassiveAndRenderable() {
+    let state = OverlayState()
+    state.applyPresentationStatus(
+      CsPresentationStatusEvent(
+        schema: "codescribe.presentation-status.v1",
+        emittedAt: "2026-09-05T00:00:00Z",
+        sessionId: nil,
+        kind: "calibration_failed",
+        code: "calibration_failed",
+        statusLabel: "calibration failed",
+        headline: "Microphone calibration failed",
+        message: "calibration_capture_failed: microphone disconnected",
+        isError: true,
+        terminal: true,
+        calibrationVersion: nil
+      )
     )
-    XCTAssertTrue(notice?.headline.contains("CODESCRIBE_SILERO_FUSION override") == true)
-    XCTAssertTrue(notice?.detail.contains("power-user override") == true)
-    XCTAssertFalse(notice?.headline.contains(".env") == true)
-    XCTAssertFalse(notice?.detail.contains(".env") == true)
-  }
 
-  func testNonAdmissionErrorsAreNotRewrittenAsAdmission() {
-    XCTAssertNil(OverlayState.admissionNotice(from: "Couldn't start recording: mic busy"))
-    XCTAssertNil(OverlayState.admissionNotice(from: "speech_auth_denied"))
+    XCTAssertEqual(state.mode, .error)
+    XCTAssertEqual(state.presentationStatus?.kind, "calibration_failed")
+    XCTAssertTrue(state.presentationStatus?.message.contains("microphone disconnected") == true)
+    XCTAssertTrue(state.terminal)
+    XCTAssertEqual(OverlayIntentRail.projectedIntents(for: state), [.close])
   }
 
   func testHandleErrorSurfacesFriendlySpeechAuthToast() {
@@ -1111,75 +1178,6 @@ final class OverlayStateTests: XCTestCase {
     XCTAssertEqual(state.mode, .listening)
     XCTAssertTrue(state.errorMessage?.contains("Speech Recognition") == true)
     XCTAssertFalse(state.toast?.contains("speech_auth") == true)
-    XCTAssertEqual(state.recoverySettingsSection, .creator)
-  }
-
-  func testAdmissionErrorRoutesRecoveryToAudioSettingsAndResetClearsIt() {
-    let state = OverlayState()
-    state.handleError(
-      message:
-        "admission_calibration_missing: no acoustic calibration measured yet — Run Calibrate microphone in Settings › Audio."
-    )
-
-    XCTAssertEqual(state.mode, .listening)
-    XCTAssertEqual(state.recoverySettingsSection, .audio)
-    XCTAssertEqual(state.recoverySettingsAnchor, .audioReadiness)
-    XCTAssertEqual(state.errorLifecycleDetail, "Recording did not start.")
-
-    state.handleRecordingPreparing()
-    XCTAssertNil(state.recoverySettingsSection)
-    XCTAssertNil(state.recoverySettingsAnchor)
-  }
-
-  func testRecoveryRoutingUsesTheClosestSettingsOwner() {
-    XCTAssertEqual(
-      OverlayState.recoverySettingsSection(
-        from: "admission_seal_vad_unavailable: Silero VAD failed to load"
-      ),
-      .engine
-    )
-    XCTAssertEqual(
-      OverlayState.recoverySettingsSection(
-        from: "admission_capture_device_unavailable: no input device"
-      ),
-      .audio
-    )
-    XCTAssertEqual(
-      OverlayState.recoverySettingsSection(
-        from: "speech_auth_denied: Apple speech recognition is off"
-      ),
-      .creator
-    )
-    XCTAssertEqual(
-      OverlayState.recoverySettingsSection(from: "Microphone access denied"),
-      .audio
-    )
-    XCTAssertEqual(
-      OverlayState.recoverySettingsSection(
-        from: "admission_refused: admission_calibration_unusable: stale profile"
-      ),
-      .audio
-    )
-    XCTAssertEqual(
-      OverlayState.recoverySettingsAnchor(
-        from: "admission_refused: admission_calibration_unusable: stale profile"
-      ),
-      .audioReadiness
-    )
-    XCTAssertEqual(
-      OverlayState.recoverySettingsAnchor(
-        from: "admission_capture_device_unavailable: no input device"
-      ),
-      .audioInput
-    )
-    XCTAssertEqual(
-      OverlayState.recoverySettingsSection(from: "transcription_failed: model unavailable"),
-      .engine
-    )
-    XCTAssertEqual(
-      OverlayState.recoverySettingsSection(from: "STT model could not load"),
-      .engine
-    )
   }
 
   /// Born from the 2026-08-12 Founder report: a routine

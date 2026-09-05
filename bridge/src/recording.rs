@@ -4,6 +4,9 @@
 
 use std::sync::Arc;
 
+use codescribe::presentation::status_projection::{
+    PresentationStatusKind, PresentationStatusProjection,
+};
 use codescribe::presentation::transcript_bus::{
     ProjectedAcousticReceipt, TranscriptBusEvidenceEvent,
 };
@@ -77,6 +80,24 @@ pub struct CsTranscriptProjectionEvent {
     pub acoustic_receipts: Vec<CsProjectedAcousticReceipt>,
 }
 
+/// Passive, typed product status from Rust presentation authority. This is a
+/// sibling of transcript projection, not a transcript event: it carries no
+/// reducer revision or acoustic evidence and exposes no repair command.
+#[derive(uniffi::Record, Debug, Clone, PartialEq, Eq)]
+pub struct CsPresentationStatusEvent {
+    pub schema: String,
+    pub emitted_at: String,
+    pub session_id: Option<String>,
+    pub kind: String,
+    pub code: String,
+    pub status_label: String,
+    pub headline: String,
+    pub message: String,
+    pub is_error: bool,
+    pub terminal: bool,
+    pub calibration_version: Option<String>,
+}
+
 impl CsProjectedAcousticReceipt {
     pub(crate) fn from_bus_receipt(receipt: &ProjectedAcousticReceipt) -> Self {
         Self {
@@ -130,6 +151,29 @@ impl CsTranscriptProjectionEvent {
                 .iter()
                 .map(CsProjectedAcousticReceipt::from_bus_receipt)
                 .collect(),
+        }
+    }
+}
+
+impl CsPresentationStatusEvent {
+    pub(crate) fn from_projection(event: &PresentationStatusProjection) -> Self {
+        let kind = match event.kind {
+            PresentationStatusKind::AdmissionRefused => "admission_refused",
+            PresentationStatusKind::CalibrationSucceeded => "calibration_succeeded",
+            PresentationStatusKind::CalibrationFailed => "calibration_failed",
+        };
+        Self {
+            schema: event.schema.clone(),
+            emitted_at: event.emitted_at.clone(),
+            session_id: event.session_id.clone(),
+            kind: kind.to_string(),
+            code: event.code.clone(),
+            status_label: event.status_label.clone(),
+            headline: event.headline.clone(),
+            message: event.message.clone(),
+            is_error: event.is_error,
+            terminal: event.terminal,
+            calibration_version: event.calibration_version.clone(),
         }
     }
 }
@@ -586,6 +630,9 @@ pub trait CsTranscriptionListener: Send + Sync {
     /// Immutable reducer/ledger projection. Swift may display it but cannot
     /// mutate, seal, or reinterpret transcript truth through this callback.
     fn on_transcript_projection(&self, event: CsTranscriptProjectionEvent);
+    /// Typed product status. Swift may display it but receives no settings or
+    /// repair command through this passive projection.
+    fn on_presentation_status(&self, event: CsPresentationStatusEvent);
     /// The engine is spinning up capture; no audio is flowing yet.
     fn on_recording_preparing(&self);
     /// The microphone is live and utterances may start arriving.
@@ -731,6 +778,27 @@ mod tests {
                 }],
             }
         );
+    }
+
+    #[test]
+    fn presentation_status_conversion_preserves_rust_owned_copy_and_classification() {
+        let event = PresentationStatusProjection::admission_refused(
+            Some("session-1".to_string()),
+            "admission_calibration_unusable",
+            "capture generation changed — Re-run Calibrate microphone in Settings › Audio",
+        );
+
+        let projected = CsPresentationStatusEvent::from_projection(&event);
+
+        assert_eq!(projected.schema, "codescribe.presentation-status.v1");
+        assert_eq!(projected.session_id.as_deref(), Some("session-1"));
+        assert_eq!(projected.kind, "admission_refused");
+        assert_eq!(projected.code, "admission_calibration_unusable");
+        assert_eq!(projected.status_label, "recording blocked");
+        assert!(projected.message.contains("Settings › Audio"));
+        assert!(projected.is_error);
+        assert!(projected.terminal);
+        assert_eq!(projected.calibration_version, None);
     }
 
     #[test]

@@ -152,6 +152,10 @@ final class OverlayController: ObservableObject {
       AppModel.shared.chat.endDictationSession()
       Task { await VoiceLabRuntime.shared.stopOwnedProcess() }
     }
+    // Admission and calibration outcomes are product feedback even when the
+    // transcript overlay preference is off. The typed status is passive; this
+    // seam only brings its already-reduced card on screen.
+    state.onPresentationStatus = { [weak self] in self?.show() }
     state.onSuccessfulDictation = {
       Task { @MainActor in
         _ = await ActivationPing.shared.recordFirstSuccessfulDictation()
