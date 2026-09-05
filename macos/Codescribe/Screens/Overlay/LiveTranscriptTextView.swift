@@ -28,6 +28,7 @@ enum LiveTranscriptSelectionPolicy {
 /// menu keep working while the recording and transcript updates continue.
 struct LiveTranscriptTextView: NSViewRepresentable {
   let text: String
+  let appearance: OverlayAppearance
   @Environment(\.csTextScale) private var textScale
 
   func makeCoordinator() -> Coordinator { Coordinator() }
@@ -123,7 +124,7 @@ struct LiveTranscriptTextView: NSViewRepresentable {
 
     let attributes: [NSAttributedString.Key: Any] = [
       .font: font,
-      .foregroundColor: NSColor(CSColor.textBody),
+      .foregroundColor: OverlayAppearancePalette.resolve(appearance).bodyText.nsColor,
       .paragraphStyle: paragraph,
     ]
     result.append(NSAttributedString(string: text, attributes: attributes))

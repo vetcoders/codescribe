@@ -55,6 +55,8 @@ struct WaveformView: View {
   var indicatorMode: CsIndicatorMode = .hold
   /// Real capture level, when the engine streams it. nil → neutral flat bars.
   var meter: AudioLevelMeter? = nil
+  /// Appearance-aware neutral track supplied by the owning surface.
+  var inactiveColor: Color = CSColor.hairline(0.16)
   /// Chrome placement uses a tighter strip so the waveform can live in the
   /// primary bar without competing with transcript words.
   var compact: Bool = false
@@ -147,7 +149,7 @@ struct WaveformView: View {
     // Muted terracotta so the phase reads as our brand "at work", clearly
     // dimmer than the live-capture bars.
     if transcribing { return CSColor.modeProcessing.opacity(0.55) }
-    guard active, meter?.gain != nil else { return CSColor.hairline(0.16) }
+    guard active, meter?.gain != nil else { return inactiveColor }
     if indicatorMode == .assistive {
       return i % 5 == 0 ? CSColor.assistiveLight : CSColor.modeAgent
     }

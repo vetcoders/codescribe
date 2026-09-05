@@ -17,6 +17,7 @@ import SwiftUI
 struct DictationOverlayView: View {
   @Environment(\.openSettings) private var openSettings
   @Environment(\.accessibilityReduceMotion) private var reduceMotion
+  @Environment(\.colorScheme) private var colorScheme
   @Bindable var state: OverlayState
 
   // Geometry constants local to this surface. The window is user-resizable;
@@ -26,8 +27,12 @@ struct DictationOverlayView: View {
   private let windowMinWidth: CGFloat = 320
   private let bodyMinHeight: CGFloat = 130
   private let transcriptMinHeight: CGFloat = 96
+  private var palette: OverlayAppearancePalette {
+    OverlayAppearancePalette.resolve(colorScheme)
+  }
+
   var body: some View {
-    GlassPanel(cornerRadius: CSRadius.window, sitsInForest: true) {
+    OverlayCanvasSurface(palette: palette) {
       VStack(alignment: .leading, spacing: 0) {
         header
         hairline(0.06)
@@ -40,6 +45,7 @@ struct DictationOverlayView: View {
       OverlayIntentRail(
         phase: state.statusText,
         intents: OverlayIntentRail.projectedIntents(for: state),
+        palette: palette,
         onIntent: state.relayIntent
       )
       .padding(.trailing, CSSpace.sm)
@@ -68,7 +74,7 @@ struct DictationOverlayView: View {
 
   /// 1px separator matching the mock's hairline borders.
   private func hairline(_ alpha: Double) -> some View {
-    CSColor.hairline(alpha).frame(height: 1)
+    palette.border.color.opacity(alpha / max(palette.border.alpha, 0.001)).frame(height: 1)
   }
 
   // MARK: Header
@@ -81,7 +87,6 @@ struct DictationOverlayView: View {
     .frame(maxWidth: .infinity, alignment: .leading)
     .padding(.horizontal, 16)
     .padding(.vertical, 10)
-    .background(OverlayDragHandle())
   }
 
   private var fullHeader: some View {
@@ -94,7 +99,7 @@ struct DictationOverlayView: View {
         Text("codescribe")
           .font(CSFont.ui(15, .bold))
           .tracking(-0.3)
-          .foregroundStyle(CSColor.textHigh)
+          .foregroundStyle(palette.primaryText.color)
           .allowsHitTesting(false)
       }
       phaseStatus(text: state.statusText)
@@ -131,13 +136,13 @@ struct DictationOverlayView: View {
     // One phase pill only — do not also paint RECORDING/tag/meta rows. Swap the
     // whole view type on live vs idle so repeatForever tears down after capture.
     if state.statusRippling {
-      StatusPill(text: text, color: state.statusColor, rippling: true)
+      StatusPill(text: text, color: palette.statusToken(for: state.mode).color, rippling: true)
         .fixedSize(horizontal: true, vertical: false)
         .allowsHitTesting(false)
         .accessibilityLabel(state.statusText)
         .accessibilityIdentifier("overlay-phase-status")
     } else {
-      StaticStatusPill(text: text, color: state.statusColor)
+      StaticStatusPill(text: text, color: palette.statusToken(for: state.mode).color)
         .fixedSize(horizontal: true, vertical: false)
         .allowsHitTesting(false)
         .accessibilityLabel(state.statusText)
@@ -155,6 +160,7 @@ struct DictationOverlayView: View {
       transcribing: state.mode == .finalizing,
       indicatorMode: state.indicatorMode,
       meter: state.levelMeter,
+      inactiveColor: palette.border.color,
       compact: true
     )
     .accessibilityIdentifier("overlay-chrome-waveform")
@@ -172,7 +178,7 @@ struct DictationOverlayView: View {
       TimelineView(.periodic(from: .now, by: 1)) { _ in
         Text(state.sessionTimerText)
           .csMono(11, .semibold)
-          .foregroundStyle(CSColor.textFaint)
+          .foregroundStyle(palette.mutedText.color)
           .monospacedDigit()
       }
       .accessibilityIdentifier("overlay-session-timer")
@@ -223,14 +229,17 @@ struct DictationOverlayView: View {
   /// at the window floor.
   private var transcriptScroll: some View {
     VStack(alignment: .leading, spacing: 0) {
-      LiveTranscriptTextView(text: state.listeningDisplay)
-        .overlay(alignment: .bottomTrailing) {
-          BlinkingCaret()
-            .padding(.trailing, 3)
-            .allowsHitTesting(false)
-        }
-        .frame(minHeight: transcriptMinHeight)
-        .accessibilityIdentifier("overlay-transcript-area")
+      LiveTranscriptTextView(
+        text: state.listeningDisplay,
+        appearance: palette.appearance
+      )
+      .overlay(alignment: .bottomTrailing) {
+        BlinkingCaret()
+          .padding(.trailing, 3)
+          .allowsHitTesting(false)
+      }
+      .frame(minHeight: transcriptMinHeight)
+      .accessibilityIdentifier("overlay-transcript-area")
     }
     .frame(maxWidth: .infinity, alignment: .leading)
   }
@@ -239,7 +248,7 @@ struct DictationOverlayView: View {
     ScrollView {
       Text(state.formattedText)
         .csFont(19, .medium)
-        .foregroundStyle(CSColor.textHigh)
+        .foregroundStyle(palette.primaryText.color)
         .lineSpacing(6)
         .textSelection(.enabled)
         .frame(maxWidth: .infinity, alignment: .topLeading)
@@ -257,15 +266,15 @@ struct DictationOverlayView: View {
   private var noSpeechBody: some View {
     HStack(spacing: 12) {
       CSIconView(icon: .mic, size: 18, weight: .regular)
-        .foregroundStyle(CSColor.textFaint)
+        .foregroundStyle(palette.mutedText.color)
       VStack(alignment: .leading, spacing: 2) {
         Text(state.noSpeechNotice)
           .csFont(15, .medium)
-          .foregroundStyle(CSColor.textBody)
+          .foregroundStyle(palette.bodyText.color)
           .fixedSize(horizontal: false, vertical: true)
         Text("Nothing was captured this session.")
           .csMono(11, .medium)
-          .foregroundStyle(CSColor.textFaint)
+          .foregroundStyle(palette.mutedText.color)
       }
       Spacer(minLength: 0)
     }
@@ -283,11 +292,11 @@ struct DictationOverlayView: View {
         VStack(alignment: .leading, spacing: 2) {
           Text(state.errorMessage ?? "Transcription failed")
             .csFont(15, .medium)
-            .foregroundStyle(CSColor.textBody)
+            .foregroundStyle(palette.bodyText.color)
             .fixedSize(horizontal: false, vertical: true)
           Text(state.errorLifecycleDetail)
             .csMono(11, .medium)
-            .foregroundStyle(CSColor.textFaint)
+            .foregroundStyle(palette.mutedText.color)
         }
         Spacer(minLength: 0)
       }
@@ -314,11 +323,11 @@ struct DictationOverlayView: View {
         Text("●").foregroundStyle(footerEngineDot)
         // Product truth: never hardcode "local whisper". Chip = last serving
         // engine when known, else preference (Apple live default).
-        Text(state.footerEngineLabel).foregroundStyle(CSColor.textFaintAlt)
+        Text(state.footerEngineLabel).foregroundStyle(palette.mutedText.color)
         if let toast = state.toast, !toast.isEmpty {
-          Text("·").foregroundStyle(CSColor.textFaintAlt)
+          Text("·").foregroundStyle(palette.mutedText.color)
           Text(toast)
-            .foregroundStyle(CSColor.textFaintAlt)
+            .foregroundStyle(palette.mutedText.color)
             .lineLimit(1)
             .truncationMode(.tail)
             .accessibilityIdentifier("overlay-footer-notice")
@@ -329,7 +338,6 @@ struct DictationOverlayView: View {
     .csMono(10, .medium)
     .padding(.horizontal, 16)
     .padding(.vertical, 7)
-    .background(OverlayDragHandle())
   }
 
   private var footerEngineDot: Color {
@@ -337,43 +345,6 @@ struct DictationOverlayView: View {
     if label.contains("apple") { return CSColor.oliveLight }
     if label.contains("whisper") { return CSColor.olive }
     return CSColor.amber
-  }
-}
-
-/// Word-reveal caret: 8×18 terracotta block, softpulsing on a 1s cycle (mock).
-private struct BlinkingCaret: View {
-  @Environment(\.accessibilityReduceMotion) private var reduceMotion
-
-  var body: some View {
-    if reduceMotion {
-      caret.opacity(1)
-    } else {
-      AnimatedOverlayCaret()
-    }
-  }
-
-  private var caret: some View {
-    RoundedRectangle(cornerRadius: 1, style: .continuous)
-      .fill(CSColor.terracotta)
-      .frame(width: 7, height: 15)
-      .padding(.bottom, 3)
-  }
-}
-
-private struct AnimatedOverlayCaret: View {
-  @State private var on = false
-
-  var body: some View {
-    RoundedRectangle(cornerRadius: 1, style: .continuous)
-      .fill(CSColor.terracotta)
-      .frame(width: 7, height: 15)
-      .padding(.bottom, 3)
-      .opacity(on ? 1 : 0.7)
-      .onAppear {
-        withAnimation(.easeInOut(duration: 1).repeatForever(autoreverses: true)) {
-          on = true
-        }
-      }
   }
 }
 
@@ -388,12 +359,19 @@ private struct AnimatedOverlayCaret: View {
       .frame(width: width, height: height)
       .padding(CSSpace.previewInset)
       .background(CSColor.windowWash)
-      .preferredColorScheme(.dark)
   }
 
   #Preview("Listening") {
-    overlayPreviewCanvas {
-      DictationOverlayView(state: .previewListening())
+    Group {
+      overlayPreviewCanvas {
+        DictationOverlayView(state: .previewListening())
+      }
+      .preferredColorScheme(.light)
+
+      overlayPreviewCanvas {
+        DictationOverlayView(state: .previewListening())
+      }
+      .preferredColorScheme(.dark)
     }
   }
 

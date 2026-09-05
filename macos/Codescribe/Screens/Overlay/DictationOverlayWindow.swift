@@ -6,8 +6,8 @@ import SwiftUI
 // This is a FACTORY ONLY. Summon/dismiss wiring (hotkey, placement, focus handoff,
 // activation policy) belongs to the orchestrator in App.swift — this file just
 // builds a correctly-configured panel whose content is `DictationOverlayView`,
-// with a clear background so the `.ultraThinMaterial` inside `GlassPanel` blurs
-// whatever is underneath.
+// with a clear background so the appearance-aware material inside the SwiftUI
+// sheet blurs whatever is underneath.
 
 /// Borderless, non-activating panel that can still become key so the overlay's
 /// buttons (Copy / Send to Agent / Close) receive clicks without stealing app focus.
@@ -181,7 +181,7 @@ enum DictationOverlayWindow {
     // Transparent chrome so the SwiftUI glass material is the only surface.
     panel.isOpaque = false
     panel.backgroundColor = .clear
-    panel.hasShadow = false  // GlassPanel paints its own deep shadow.
+    panel.hasShadow = false  // The SwiftUI sheet paints its own adaptive shadow.
 
     // Float above normal windows, ride along every Space, never take app focus.
     // sharingType stays readable so PrintScreen can see the panel; presence
@@ -191,7 +191,10 @@ enum DictationOverlayWindow {
     panel.collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary, .stationary]
     panel.isFloatingPanel = true
     panel.hidesOnDeactivate = false
-    panel.isMovableByWindowBackground = true  // chrome drag handles + empty background
+    // The SwiftUI surface places `OverlayDragHandle` behind the complete sheet.
+    // Controls and the native transcript sit above that layer and retain their
+    // own clicks; every inert point reaches a view whose mouseDown moves this panel.
+    panel.isMovableByWindowBackground = true
 
     panel.titleVisibility = .hidden
     panel.titlebarAppearsTransparent = true
@@ -222,8 +225,10 @@ enum DictationOverlayWindow {
   }
 
   /// Restore the user's last content size (clamped), or the default on first launch.
-  static func restoredContentSize(for screen: NSScreen? = NSScreen.main) -> NSSize {
-    let defaults = UserDefaults.standard
+  static func restoredContentSize(
+    for screen: NSScreen? = NSScreen.main,
+    defaults: UserDefaults = .standard
+  ) -> NSSize {
     let width = defaults.double(forKey: sizeDefaultsKey + ".w")
     let height = defaults.double(forKey: sizeDefaultsKey + ".h")
     let raw = (width > 0 && height > 0) ? NSSize(width: width, height: height) : defaultSize
@@ -231,8 +236,7 @@ enum DictationOverlayWindow {
   }
 
   /// Persist the current content size so it survives relaunch. Called on hide().
-  static func persist(size: NSSize) {
-    let defaults = UserDefaults.standard
+  static func persist(size: NSSize, defaults: UserDefaults = .standard) {
     defaults.set(Double(size.width), forKey: sizeDefaultsKey + ".w")
     defaults.set(Double(size.height), forKey: sizeDefaultsKey + ".h")
   }
@@ -483,8 +487,9 @@ enum OverlayResizeHit: Sendable {
   }
 }
 
-/// Chrome hit target: the view itself moves the window. Interactive siblings
-/// (buttons, editor) sit above it and keep their clicks.
+/// Full-sheet background hit target: the view itself moves the window.
+/// Interactive siblings (the intent rail and transcript editor) sit above it
+/// and keep their clicks/selection through ordinary AppKit hit-test ordering.
 struct OverlayDragHandle: NSViewRepresentable {
   func makeNSView(context: Context) -> OverlayDragHandleView {
     OverlayDragHandleView()

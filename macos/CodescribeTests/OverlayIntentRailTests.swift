@@ -57,6 +57,7 @@ final class OverlayIntentRailTests: XCTestCase {
     let rail = OverlayIntentRail(
       phase: state.statusText,
       intents: OverlayIntentRail.projectedIntents(for: state),
+      palette: .dark,
       onIntent: state.relayIntent
     )
 

@@ -9,6 +9,7 @@ struct OverlayIntentRail: View {
 
   let phase: String
   let intents: [OverlayIntent]
+  let palette: OverlayAppearancePalette
   let onIntent: (OverlayIntent) -> Void
 
   var body: some View {
@@ -39,12 +40,12 @@ struct OverlayIntentRail: View {
       }
     }
     .buttonStyle(.plain)
-    .foregroundStyle(CSColor.textHigh)
+    .foregroundStyle(palette.primaryText.color)
     .padding(CSSpace.xs)
     .background(.ultraThinMaterial, in: RoundedRectangle(cornerRadius: CSRadius.input))
     .overlay {
       RoundedRectangle(cornerRadius: CSRadius.input)
-        .strokeBorder(CSColor.hairline(0.16), lineWidth: 1)
+        .strokeBorder(palette.border.color, lineWidth: 1)
         .allowsHitTesting(false)
     }
     .animation(Self.revealAnimation(reduceMotion: reduceMotion), value: isExpanded)
