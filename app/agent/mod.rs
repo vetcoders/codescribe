@@ -33,7 +33,7 @@ pub fn create_default_provider(
         lane.lane() == RuntimeLlmLaneKind::Assistive,
         "agent provider requires the assistive runtime lane"
     );
-    if !lane.available() {
+    if !lane.request_available() {
         anyhow::bail!(
             "{}",
             lane.unavailable_reason()
@@ -58,7 +58,7 @@ pub fn create_default_provider(
 /// (`None` when a send can proceed). Kept beside [`create_default_provider`]
 /// so the availability gate and provider construction can never drift.
 pub fn assistive_unavailable_reason(lane: &RuntimeLlmLane) -> Option<String> {
-    (!lane.available()).then(|| {
+    (!lane.request_available()).then(|| {
         lane.unavailable_reason()
             .unwrap_or("assistive runtime lane is unavailable")
             .to_string()

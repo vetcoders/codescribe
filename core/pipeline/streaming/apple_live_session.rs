@@ -571,7 +571,10 @@ pub(crate) async fn apple_stream_transcription_session(
     let formatter_on = formatter_lane_is_armed(
         runtime_settings.values().ai_formatting_enabled,
         runtime_settings.formatting_policy(),
-        runtime_settings.llm_lanes().formatting().available(),
+        runtime_settings
+            .llm_lanes()
+            .formatting()
+            .request_available(),
     );
     let mut formatter_jobs = FuturesOrdered::<BoxFuture<'static, FormatterCompletion>>::new();
     let formatter_runtime_settings = Arc::clone(&runtime_settings);

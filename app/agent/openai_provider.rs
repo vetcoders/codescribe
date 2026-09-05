@@ -29,7 +29,7 @@ use codescribe_core::agent::{
     AgentEvent, AgentProvider, ContentBlock, ImageAsset, Message, Role, StreamOptions,
     ToolDefinition,
 };
-use codescribe_core::config::{RuntimeAiRequestTiming, RuntimeLlmLane};
+use codescribe_core::config::{RuntimeAiRequestTiming, RuntimeLlmLane, keychain};
 use codescribe_core::llm::account_auth;
 use codescribe_core::llm::provider::ProviderKind;
 use codescribe_core::llm::responses_streaming_manager::{
@@ -43,8 +43,12 @@ pub struct OpenAiProvider {
     client: Client,
     /// Full Responses endpoint URL for the resolved lane.
     endpoint: String,
-    /// Bearer/API key; empty means an intentionally unauthenticated endpoint.
+    /// Fixed credential used only by direct internal fixtures. Lane-built
+    /// providers leave it empty and resolve `api_key_account` for every send.
     api_key: String,
+    /// Keychain/env account resolved at the request boundary. This prevents a
+    /// long-lived provider from freezing the construction-time secret.
+    api_key_account: Option<String>,
     /// Model used when the caller leaves `StreamOptions::model` blank.
     default_model: String,
     /// Whether server-side chaining is enabled at all
@@ -73,18 +77,17 @@ pub struct OpenAiProvider {
 }
 
 impl OpenAiProvider {
-    /// Build from the resolved assistive lane (fresh settings → env →
-    /// Keychain) instead of the frozen bootstrap process env. `api_key: None`
-    /// becomes an empty key, which the streaming manager translates into a
-    /// clean unauthenticated request — key-optional local endpoints are a
-    /// first-class configuration, not an error.
+    /// Build from the resolved assistive lane topology while retaining only
+    /// its credential account. The secret itself is fetched by [`Self::stream`]
+    /// for every outgoing request.
     pub fn from_lane(
         lane: &RuntimeLlmLane,
         request_timing: &RuntimeAiRequestTiming,
     ) -> Result<Self> {
         let endpoint = lane.endpoint().to_string();
         let default_model = lane.model().to_string();
-        let api_key = lane.credential().api_key().unwrap_or_default().to_string();
+        let snapshot_key_present = lane.credential().api_key().is_some();
+        let api_key_account = Some(lane.credential().key_account().to_string());
         let use_account_auth = lane.credential().account_auth();
         let provider = lane.provider();
 
@@ -99,10 +102,10 @@ impl OpenAiProvider {
             .context("Failed to create OpenAI agent HTTP client")?;
 
         info!(
-            "OpenAI agent provider configured (model={}, account_auth={}, has_api_key={}, initial_timeout={}s, inter_chunk_timeout={}s, previous_response_id={})",
+            "OpenAI agent provider configured (model={}, account_auth={}, snapshot_key_present={}, initial_timeout={}s, inter_chunk_timeout={}s, previous_response_id={})",
             default_model,
             use_account_auth,
-            !api_key.is_empty(),
+            snapshot_key_present,
             initial_response_timeout.as_secs(),
             inter_chunk_timeout.as_secs(),
             use_previous_response_id
@@ -111,7 +114,8 @@ impl OpenAiProvider {
         Ok(Self {
             client,
             endpoint,
-            api_key,
+            api_key: String::new(),
+            api_key_account,
             default_model,
             use_previous_response_id,
             previous_response_id: Arc::new(Mutex::new(None)),
@@ -206,7 +210,14 @@ impl AgentProvider for OpenAiProvider {
         } else {
             None
         };
-        let auth_secret = account_token.as_deref().unwrap_or(&self.api_key);
+        let request_api_key = self
+            .api_key_account
+            .as_deref()
+            .and_then(keychain::runtime_key);
+        let auth_secret = account_token
+            .as_deref()
+            .or(request_api_key.as_deref())
+            .unwrap_or(&self.api_key);
 
         let auth_header_mode = if self.use_account_auth {
             AuthHeaderMode::BearerOnly
@@ -820,6 +831,49 @@ mod tests {
     use serde_json::json;
     use tokio::sync::{Mutex, mpsc};
 
+    /// Restores process env after a serial request-boundary test.
+    struct ScopedEnv {
+        previous: Vec<(&'static str, Option<std::ffi::OsString>)>,
+    }
+
+    impl ScopedEnv {
+        fn new() -> Self {
+            Self {
+                previous: Vec::new(),
+            }
+        }
+
+        fn set(&mut self, key: &'static str, value: impl AsRef<std::ffi::OsStr>) {
+            self.previous.push((key, std::env::var_os(key)));
+            // SAFETY: the only test using this helper is serial and restores
+            // every value before leaving its scope.
+            unsafe { std::env::set_var(key, value) };
+        }
+
+        fn remove(&mut self, key: &'static str) {
+            self.previous.push((key, std::env::var_os(key)));
+            // SAFETY: same serial, scope-bound invariant as `set`.
+            unsafe { std::env::remove_var(key) };
+        }
+    }
+
+    impl Drop for ScopedEnv {
+        fn drop(&mut self) {
+            for (key, previous) in self.previous.drain(..).rev() {
+                match previous {
+                    Some(value) => {
+                        // SAFETY: restoring the value captured by this serial test.
+                        unsafe { std::env::set_var(key, value) };
+                    }
+                    None => {
+                        // SAFETY: restoring the absent state captured by this serial test.
+                        unsafe { std::env::remove_var(key) };
+                    }
+                }
+            }
+        }
+    }
+
     /// Reasoning summary requests apply only to reasoning-capable model families.
     #[test]
     fn requests_public_reasoning_summaries_only_for_reasoning_models() {
@@ -1164,6 +1218,61 @@ mod tests {
         );
     }
 
+    #[tokio::test]
+    #[serial_test::serial]
+    async fn agent_provider_fetches_the_key_after_construction_before_sending() {
+        const TEST_KEY_ACCOUNT: &str = "CODESCRIBE_TEST_OPENAI_REQUEST_KEY";
+        let mut server = mockito::Server::new_async().await;
+        let endpoint = format!("{}/v1/responses", server.url());
+        let mut env = ScopedEnv::new();
+        env.remove(TEST_KEY_ACCOUNT);
+        let provider = OpenAiProvider {
+            client: Client::new(),
+            endpoint,
+            api_key: String::new(),
+            api_key_account: Some(TEST_KEY_ACCOUNT.to_string()),
+            default_model: "gpt-test-assistive".to_string(),
+            use_previous_response_id: false,
+            previous_response_id: Arc::new(Mutex::new(None)),
+            initial_response_timeout: Duration::from_secs(2),
+            inter_chunk_timeout: Duration::from_secs(2),
+            use_account_auth: false,
+            provider: ProviderKind::OpenAiResponses,
+        };
+
+        env.set(TEST_KEY_ACCOUNT, "synthetic-agent-key");
+        let body = [
+            r#"data: {"type":"response.created","sequence_number":0,"response":{"id":"resp_live_key"}}"#,
+            "",
+            r#"data: {"type":"response.failed","sequence_number":1,"response":{"id":"resp_live_key","status":"failed","error":{"code":"synthetic_end","message":"done"}}}"#,
+            "",
+            "data: [DONE]",
+            "",
+        ]
+        .join("\n");
+        let mock = server
+            .mock("POST", "/v1/responses")
+            .match_header("authorization", "Bearer synthetic-agent-key")
+            .match_header("x-api-key", "synthetic-agent-key")
+            .expect(1)
+            .with_status(200)
+            .with_header("content-type", "text/event-stream")
+            .with_body(body)
+            .create_async()
+            .await;
+
+        let messages = vec![Message::new(
+            Role::User,
+            vec![ContentBlock::Text("request-time key".to_string())],
+        )];
+        let mut rx = provider
+            .stream(&messages, &[], &StreamOptions::default())
+            .await
+            .expect("agent request should start");
+        while rx.recv().await.is_some() {}
+        mock.assert_async().await;
+    }
+
     /// SSE `error` events surface as specific AgentEvent::Error, not session noise.
     #[tokio::test]
     async fn stream_surfaces_sse_error_event_as_specific_agent_error() {
@@ -1187,6 +1296,7 @@ mod tests {
             client: Client::new(),
             endpoint: format!("{}/v1/responses", server.url()),
             api_key: "test-key".to_string(),
+            api_key_account: None,
             default_model: "gpt-5.5".to_string(),
             use_previous_response_id: false,
             previous_response_id: Arc::new(Mutex::new(None)),
@@ -1231,6 +1341,7 @@ mod tests {
             client: Client::new(),
             endpoint: "http://unused.invalid/v1/responses".to_string(),
             api_key: "test-key".to_string(),
+            api_key_account: None,
             default_model: "gpt-5.5".to_string(),
             use_previous_response_id: true,
             previous_response_id: Arc::clone(&stored_chain),
@@ -1268,6 +1379,7 @@ mod tests {
             client: Client::new(),
             endpoint: "http://unused.invalid/v1/responses".to_string(),
             api_key: "test-key".to_string(),
+            api_key_account: None,
             default_model: "gpt-5.5".to_string(),
             use_previous_response_id: true,
             previous_response_id: Arc::clone(&stored_chain),
@@ -1303,6 +1415,7 @@ mod tests {
             client: Client::new(),
             endpoint: "http://unused.invalid/v1/responses".to_string(),
             api_key: "test-key".to_string(),
+            api_key_account: None,
             default_model: "gpt-5.5".to_string(),
             use_previous_response_id: true,
             previous_response_id: Arc::clone(&stored_chain),
@@ -1383,6 +1496,7 @@ mod tests {
             client: Client::new(),
             endpoint: "http://unused.invalid/v1/responses".to_string(),
             api_key: "test-key".to_string(),
+            api_key_account: None,
             default_model: "gpt-5.5".to_string(),
             use_previous_response_id: true,
             previous_response_id: Arc::clone(&stored_chain),
@@ -1561,6 +1675,7 @@ mod tests {
             client: Client::new(),
             endpoint: format!("{}/v1/responses", server.url()),
             api_key: "test-key".to_string(),
+            api_key_account: None,
             default_model: "gpt-5.5".to_string(),
             use_previous_response_id: true,
             previous_response_id: Arc::clone(&stored_chain),
