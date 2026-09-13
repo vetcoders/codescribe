@@ -471,14 +471,15 @@ const fn formatter_lane_is_armed(
 /// `schedule_formatter_after_terminal_label` cannot reserve a permit and no
 /// `Formatter` observer is ever scheduled on the ledger frontier. The turn is
 /// formatted once at terminal processing by the controller instead.
-const fn live_formatter_lane_is_armed(
+fn live_formatter_lane_is_armed(
     capture_turn: CaptureTurnIntent,
     ai_formatting_enabled: bool,
     policy: FormattingPolicy,
-    lane_available: bool,
+    lane_available: impl FnOnce() -> bool,
 ) -> bool {
     capture_turn.schedules_live_formatting()
-        && formatter_lane_is_armed(ai_formatting_enabled, policy, lane_available)
+        && formatter_lane_is_armed(ai_formatting_enabled, policy, true)
+        && lane_available()
 }
 
 /// Surface one Layer 1 lane degrade as a counts-only warning event.
@@ -687,10 +688,12 @@ pub(crate) async fn apple_stream_transcription_session(
         capture_turn,
         runtime_settings.values().ai_formatting_enabled,
         runtime_settings.formatting_policy(),
-        runtime_settings
-            .llm_lanes()
-            .formatting()
-            .request_available(),
+        || {
+            runtime_settings
+                .llm_lanes()
+                .formatting()
+                .request_available()
+        },
     );
     if !capture_turn.schedules_live_formatting() {
         info!(
@@ -1199,12 +1202,13 @@ impl AppleSealState {
 
     fn new_for_session(sample_rate: u32, session_id: String, capture_epoch: u64) -> Self {
         let session_id_for_energy = session_id.clone();
+        let speech_progress = SpeechProgress::new(session_id.clone(), capture_epoch, sample_rate);
         Self {
             session_id,
             capture_epoch,
             sample_rate,
             preview_rev: 0,
-            speech_progress: SpeechProgress::default(),
+            speech_progress,
             last_integrity: None,
             utterance_id: 0,
             open_partial: String::new(),
@@ -1713,7 +1717,7 @@ impl AppleSealState {
                     .text_recovery_pending(occurrence);
             if debt_resolved && let Some(fusion) = self.fusion.as_ref() {
                 self.speech_progress
-                    .recovered_through(occurrence.sample_end, &fusion.acoustic_speech_evidence());
+                    .recovered_occurrence(occurrence, &fusion.acoustic_speech_evidence());
             }
             self.emit_pending_seal(ev_tx, *member_id);
         }
@@ -3960,6 +3964,7 @@ fn apple_stream_worker(
                             silero_ingest
                                 .as_ref()
                                 .is_some_and(|ingest| ingest.speech_live),
+                            sample_rate,
                         );
                     }
                     seal_sliced_by_silero(&mut state, &ev_tx, &[]);
@@ -9840,15 +9845,36 @@ mod composer_turn_formatter_arming_tests {
     const FULLY_ARMED: (bool, FormattingPolicy, bool) = (true, FormattingPolicy::Correction, true);
 
     #[test]
+    fn unarmed_live_formatting_never_resolves_credentials() {
+        for (intent, enabled, policy) in [
+            (
+                CaptureTurnIntent::SingleTurn,
+                true,
+                FormattingPolicy::Correction,
+            ),
+            (
+                CaptureTurnIntent::HandsFree,
+                false,
+                FormattingPolicy::Correction,
+            ),
+            (CaptureTurnIntent::HandsFree, true, FormattingPolicy::Off),
+        ] {
+            assert!(!live_formatter_lane_is_armed(
+                intent,
+                enabled,
+                policy,
+                || { panic!("an unarmed live lane must not enter the credential-use boundary") }
+            ));
+        }
+    }
+
+    #[test]
     fn a_one_turn_take_never_arms_the_live_formatter_lane() {
         let (enabled, policy, available) = FULLY_ARMED;
         assert!(
-            !live_formatter_lane_is_armed(
-                CaptureTurnIntent::SingleTurn,
-                enabled,
-                policy,
+            !live_formatter_lane_is_armed(CaptureTurnIntent::SingleTurn, enabled, policy, || {
                 available
-            ),
+            }),
             "a composer turn must not open paid provider slots per sealed fragment, \
              even with formatting fully enabled, a non-Off policy and a live lane"
         );
@@ -9858,7 +9884,9 @@ mod composer_turn_formatter_arming_tests {
     fn a_hands_free_take_keeps_its_existing_live_lane() {
         let (enabled, policy, available) = FULLY_ARMED;
         assert!(
-            live_formatter_lane_is_armed(CaptureTurnIntent::HandsFree, enabled, policy, available),
+            live_formatter_lane_is_armed(CaptureTurnIntent::HandsFree, enabled, policy, || {
+                available
+            }),
             "hotkey, tray and overlay takes keep the per-occurrence formatter they had"
         );
     }
@@ -9877,7 +9905,7 @@ mod composer_turn_formatter_arming_tests {
                     CaptureTurnIntent::HandsFree,
                     enabled,
                     policy,
-                    available
+                    || available
                 ),
                 "capture intent must not override formatter configuration or transport ownership"
             );
@@ -9985,7 +10013,7 @@ mod live_refinement_admission_tests {
     fn synthetic_silero_guardian_recovers_whole_occurrence_or_keeps_explicit_debt() {
         use super::super::silero_fusion::SileroIngress;
         use crate::audio::chunker::{VadBoundaryEvidence, VadBoundaryKind};
-        for succeeds in [false, true] {
+        for (succeeds, resumes) in [(false, false), (true, false), (false, true), (true, true)] {
             let (mut state, events, mut receiver, mut requests) = fixture(1);
             let mut fusion = SileroIngress::new(RATE, "live-admission", 7);
             fusion.note_observed_pcm(200, 200);
@@ -9996,7 +10024,7 @@ mod live_refinement_admission_tests {
             }]);
             state
                 .speech_progress
-                .observe_speech(&fusion.acoustic_speech_evidence(), true);
+                .observe_speech(&fusion.acoustic_speech_evidence(), true, RATE);
             state.speech_progress.observe_apple("partial words", 200);
             fusion.note_observed_pcm(2_400, 2_600);
             fusion.observe_boundaries(&[VadBoundaryEvidence {
@@ -10005,12 +10033,18 @@ mod live_refinement_admission_tests {
                 speech_probability: 0.05,
             }]);
             let speech = fusion.acoustic_speech_evidence();
-            state.speech_progress.observe_speech(&speech, false);
+            state.speech_progress.observe_speech(&speech, false, RATE);
             assert_eq!(state.speech_progress.debt_ms(RATE), 2_400);
             assert_eq!(
                 state.speech_progress.phase(RATE),
                 crate::pipeline::contracts::SpeechIntegrityPhase::Stalled
             );
+            if resumes {
+                state
+                    .speech_progress
+                    .observe_apple("partial words and latest words", 2_600);
+                assert_eq!(state.speech_progress.debt_ms(RATE), 0);
+            }
             state.fusion = Some(fusion);
             let mut physical = UtteranceLedger::new();
             physical.open_or_extend("live-admission", 7, 0, 2_600);
@@ -10086,6 +10120,12 @@ mod live_refinement_admission_tests {
                 );
             }
             drop(ledger);
+            assert_eq!(
+                state
+                    .speech_progress
+                    .occurrence_has_debt(&occurrence, &speech, RATE),
+                !succeeds,
+            );
             let emitted = std::iter::from_fn(|| receiver.try_recv().ok()).collect::<Vec<_>>();
             assert_eq!(emitted.iter().any(|event| matches!(event,
                 EngineEvent::LedgerMutation { observation, receipt: MutationReceipt::Correct { .. }, label }

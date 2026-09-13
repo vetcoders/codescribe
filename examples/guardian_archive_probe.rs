@@ -122,7 +122,7 @@ async fn main() -> Result<()> {
             } => timeline.push(json!({
                 "ordinal":ordinal,"kind":"mutation","producer":observation.producer.as_str(),
                 "start":observation.occurrence.sample_start,"end":observation.occurrence.sample_end,
-                "label_chars":label.chars().count(),"grants_mutation":receipt.grants_mutation(),
+                "label_chars":label.chars().count(),"label":label,"grants_mutation":receipt.grants_mutation(),
             })),
             EngineEvent::LedgerSeal { receipt } => {
                 terminal |= !receipt.is_occurrence_seal();
