@@ -28,6 +28,8 @@ else
   repo_root="$(cd -- "$script_dir/.." && pwd)"
 fi
 home_dir="${HOME:-}"
+# shellcheck source=scripts/lib/data-assets.sh
+. "$script_dir/lib/data-assets.sh"
 model_validator="$repo_root/scripts/validate-whisper-model.sh"
 
 fixture_mode="${BENCH_STT_FIXTURES:-repo}"
@@ -270,18 +272,21 @@ select_historical_pairs() {
 select_repo_pairs() {
   : > "$selected_tsv"
   # Private fixtures are local-only (see tests/assets/data_assets/README.md).
-  local assets="${CODESCRIBE_DATA_ASSETS:-$HOME/.codescribe/data_assets}"
-  [[ -d "$assets" ]] || assets="$repo_root/tests/assets/data_assets"
-  local stem wav ref
+  local assets
+  assets="$(data_assets_dir)"
+  local stem wav ref status
   for stem in \
     01_no-to-dobra \
     02_kubernetes-wymaga-konfiguracji \
     03_algorytm-ma-zlozonosc \
     04_runda-3-czyli; do
     wav="$assets/$stem.wav"
-    ref="$assets/${stem}_human_transcription.txt"
-    if [[ -f "$wav" && -f "$ref" ]]; then
+    [[ -f "$wav" ]] || continue
+    if ref="$(resolve_data_asset_reference "$wav")"; then
       printf 'repo-assets__%s\t%s\t%s\trepo_tests_assets\n' "$stem" "$wav" "$ref" >> "$selected_tsv"
+    else
+      status=$?
+      [[ "$status" -eq 3 ]] || return "$status"
     fi
   done
 }

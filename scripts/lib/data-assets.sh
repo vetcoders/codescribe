@@ -111,6 +111,39 @@ resolve_data_asset() {
   return 3
 }
 
+# Resolve only references adjacent to the selected audio: never pair recordings
+# and labels from different corpus roots. Conflicting labels are not a choice
+# this resolver has authority to make.
+resolve_data_asset_reference() {
+  local wav="${1:-}" candidate selected=""
+  if [ -z "$wav" ]; then
+    printf 'resolve_data_asset_reference: missing audio path\n' >&2
+    return 2
+  fi
+  if [ ! -f "$wav" ]; then
+    printf 'audio not found: %s\n' "$wav" >&2
+    return 3
+  fi
+  for candidate in "${wav%.*}_human_transcription.txt" \
+    "${wav%.*}_codescribe_raw_human_transcription_from_wav.txt"; do
+    [ -f "$candidate" ] || continue
+    if ! LC_ALL=C grep -q '[^[:space:]]' "$candidate"; then
+      printf 'empty or unreadable human reference: %s\n' "$candidate" >&2
+      return 4
+    fi
+    if [ -n "$selected" ] && ! cmp -s "$selected" "$candidate"; then
+      printf 'conflicting human references: %s and %s\n' "$selected" "$candidate" >&2
+      return 4
+    fi
+    selected="$candidate"
+  done
+  if [ -z "$selected" ]; then
+    printf 'human reference not found beside: %s\n' "$wav" >&2
+    return 3
+  fi
+  printf '%s\n' "$selected"
+}
+
 # Executed rather than sourced → dispatch a subcommand.
 if [ "${BASH_SOURCE[0]}" = "$0" ]; then
   set -uo pipefail
@@ -121,8 +154,11 @@ if [ "${BASH_SOURCE[0]}" = "$0" ]; then
     resolve)
       resolve_data_asset "${2:-}"
       ;;
+    reference)
+      resolve_data_asset_reference "${2:-}"
+      ;;
     *)
-      printf 'usage: %s {dir|resolve <fixture>}\n' "${0##*/}" >&2
+      printf 'usage: %s {dir|resolve <fixture>|reference <audio-path>}\n' "${0##*/}" >&2
       exit 2
       ;;
   esac
