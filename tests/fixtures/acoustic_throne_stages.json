@@ -327,11 +327,12 @@
               "file": "core/config/loader.rs",
               "signature_contains": "fn capture_runtime_inputs(",
               "required_code": [
-                "let values = Self::load_with_keychain_population(populate_keychain)",
+                "let (values, user_settings) = Self::capture_config_and_settings(populate_keychain)",
                 "let energy_calibration_path = energy_calibration_path()",
                 "let energy_calibration = SealedEnergyCalibration::load(&energy_calibration_path)",
                 "let mut input = CapturedRuntimeInputs {",
                 "values,",
+                "user_settings,",
                 "energy_calibration_path,",
                 "energy_calibration,"
               ]

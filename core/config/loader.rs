@@ -220,11 +220,8 @@ impl Config {
         Self::load_with_keychain_population(true)
     }
 
-    /// Load runtime configuration without bootstrapping Keychain accounts.
-    ///
-    /// During the STT alias transition, the mandated one-shot migration and
-    /// legacy-key fallback can still access Keychain. Resolved snapshot rows
-    /// themselves never perform secret I/O.
+    /// Load runtime configuration using only files, env, and cached credentials.
+    /// Credential imports remain pending until an authorized load can commit them.
     pub fn load_without_keychain() -> Self {
         Self::load_with_keychain_population(false)
     }
@@ -292,8 +289,7 @@ impl Config {
     /// Production acquisition adapter. The shared resolver below sees values only.
     fn capture_runtime_inputs(populate_keychain: bool) -> CapturedRuntimeInputs {
         note_startup_acquisition("settings capture");
-        let values = Self::load_with_keychain_population(populate_keychain);
-        let user_settings = UserSettings::load();
+        let (values, user_settings) = Self::capture_config_and_settings(populate_keychain);
         let settings_path = UserSettings::settings_path();
         let settings_bytes = fs::read(&settings_path).ok();
         let env_overlay_keys = Self::seeded_env_keys()
@@ -772,12 +768,16 @@ impl Config {
     /// a stale `~/.codescribe/.env` cannot shadow a choice made in the UI.
     /// Only after that are defaults, settings, and finally explicit env applied.
     fn load_with_keychain_population(populate_keychain: bool) -> Self {
+        Self::capture_config_and_settings(populate_keychain).0
+    }
+
+    fn capture_config_and_settings(populate_keychain: bool) -> (Self, UserSettings) {
         note_startup_acquisition("config files/env/keychain");
         let _data_io = match super::storage_reset::begin_app_data_io() {
             Ok(guard) => guard,
             Err(error) => {
                 warn!(%error, "Config load skipped while app-data reset owns the process");
-                return Self::default();
+                return (Self::default(), UserSettings::default());
             }
         };
         let _bootstrap_guard = Self::config_env_bootstrap_guard();
@@ -798,8 +798,11 @@ impl Config {
         }
 
         // One-time import from legacy .env-only installs into settings.json.
-        super::migrate::migrate_if_needed(file_env_vars.as_ref());
-        super::migrate::migrate_agent_workspace_roots_if_needed(file_env_vars.as_ref());
+        let deferred_settings =
+            super::migrate::migrate_if_needed(file_env_vars.as_ref(), populate_keychain);
+        if deferred_settings.is_none() {
+            super::migrate::migrate_agent_workspace_roots_if_needed(file_env_vars.as_ref());
+        }
 
         // Optional .env remains available for env-managed / power-user keys, but
         // promoted settings are intentionally excluded so stale ~/.codescribe/.env
@@ -809,18 +812,19 @@ impl Config {
         }
 
         // Load API keys from Keychain (only if not already set by .env).
-        if populate_keychain && seed_process_env {
-            super::keychain::populate_env_from_keychain();
+        if populate_keychain {
+            super::keychain::populate_env_from_keychain(seed_process_env);
         }
 
         // Load user settings from JSON. A legacy LLM lane layout migrates
         // inside `load`; its Keychain key moves are applied here, the only
         // place allowed to touch the bundle during a load.
-        let user_settings = super::settings::UserSettings::load();
+        let mut user_settings = deferred_settings.unwrap_or_else(UserSettings::load);
         if populate_keychain && !user_settings.pending_key_moves.is_empty() {
             match super::settings::UserSettings::settle_pending_key_moves() {
                 Ok(changed) => {
-                    info!("Applied legacy LLM key relocation ({changed} bundle changes)")
+                    info!("Applied legacy LLM key relocation ({changed} bundle changes)");
+                    user_settings = UserSettings::load();
                 }
                 Err(error) => warn!("Legacy LLM key relocation remains pending: {error}"),
             }
@@ -865,7 +869,7 @@ impl Config {
         config.load_from_env();
         config.sanitize();
         Self::mark_process_env_bootstrapped(seed_process_env);
-        config
+        (config, user_settings)
     }
 
     /// Hold the bootstrap lock for the duration of a load. Skipped under `cfg(test)`,
@@ -1188,7 +1192,7 @@ impl Config {
         if let Some(key) = std::env::var("STT_API_KEY")
             .ok()
             .filter(|v| !v.trim().is_empty())
-            .or_else(|| super::keychain::load_key("STT_API_KEY"))
+            .or_else(|| super::keychain::cached_runtime_key("STT_API_KEY"))
         {
             static WARN: std::sync::Once = std::sync::Once::new();
             WARN.call_once(|| warn!("STT_API_KEY is retired; use STT_FILE_API_KEY / STT_LIVE_API_KEY (removed after 2026-10-15)"));
@@ -1579,7 +1583,7 @@ impl Config {
 
         // API keys (vendor and custom-provider accounts) → Keychain
         if super::keychain::is_known_account(key) {
-            super::keychain::save_key(key, value)?;
+            UserSettings::with_credential_edit(key, |_| super::keychain::save_key(key, value))?;
             return Ok(());
         }
 
@@ -1701,7 +1705,10 @@ impl Config {
         for (key, value) in entries {
             // API keys (vendor and custom-provider accounts) → Keychain
             if super::keychain::is_known_account(key) {
-                super::keychain::save_key(key, value)?;
+                UserSettings::with_credential_edit(key, |_| super::keychain::save_key(key, value))?;
+                if let Some(settings) = settings.as_mut() {
+                    settings.cancel_pending_credential_imports(key);
+                }
                 continue;
             }
 
@@ -2243,6 +2250,167 @@ mod tests {
     use serial_test::serial;
     use std::fs;
     use tempfile::TempDir;
+
+    #[test]
+    #[serial]
+    fn no_keychain_entrypoints_never_attempt_credentials_including_stt_migration() {
+        let _data = TestEnvGuard::unset("CODESCRIBE_DATA_DIR");
+        let _env = TestEnvGuard::unset("CODESCRIBE_ENV_PATH");
+        let _pack = TestEnvGuard::unset("CODESCRIBE_VOICE_LAB_SRC");
+        let _retired = TestEnvGuard::unset("STT_API_KEY");
+        let _bundle = super::super::keychain::test_support::install_bundle(&[]);
+        for raw in [
+            r#"{"schema_version":3}"#,
+            r#"{"schema_version":3,"speech":{"engine":{"cloud_transcription_endpoint":"https://example.test/v1/audio/transcriptions"}}}"#,
+        ] {
+            for entry in 0..3 {
+                let dir = TempDir::new().unwrap();
+                set_env_for_test("CODESCRIBE_DATA_DIR", dir.path());
+                fs::write(dir.path().join("settings.json"), raw).unwrap();
+                let probe = super::super::keychain::CredentialAcquisitionProbe::forbid();
+                match entry {
+                    0 => {
+                        let _ = Config::load_without_keychain();
+                    }
+                    1 => {
+                        Config::load_runtime_snapshot_without_keychain().unwrap();
+                    }
+                    _ => {
+                        Config::load_startup_runtime_snapshot(false);
+                    }
+                }
+                assert!(probe.attempts().is_empty());
+            }
+        }
+    }
+
+    #[test]
+    #[serial]
+    fn no_keychain_first_import_survives_settings_save_until_authorized_commit() {
+        let _data = TestEnvGuard::unset("CODESCRIBE_DATA_DIR");
+        let _env = TestEnvGuard::unset("CODESCRIBE_ENV_PATH");
+        let _pack = TestEnvGuard::unset("CODESCRIBE_VOICE_LAB_SRC");
+        let _key = TestEnvGuard::unset("STT_FILE_API_KEY");
+        let _retired = TestEnvGuard::unset("STT_API_KEY");
+        let _auto_paste = TestEnvGuard::unset("AUTO_PASTE_ENABLED");
+        let _roots = TestEnvGuard::unset("AGENT_WORKSPACE_ROOTS");
+        let _bundle = super::super::keychain::test_support::install_bundle(&[]);
+        let dir = TempDir::new().unwrap();
+        set_env_for_test("CODESCRIBE_DATA_DIR", dir.path());
+        let env = "STT_FILE_API_KEY=synthetic-import-key\nAUTO_PASTE_ENABLED=false\nAGENT_WORKSPACE_ROOTS=/tmp/synthetic-workspace\n";
+        fs::write(dir.path().join(".env"), env).unwrap();
+        {
+            let probe = super::super::keychain::CredentialAcquisitionProbe::forbid();
+            let snapshot = Config::load_runtime_snapshot_without_keychain().unwrap();
+            assert_eq!(snapshot.user_settings().auto_paste_enabled, Some(false));
+            assert_eq!(
+                snapshot
+                    .user_settings()
+                    .agent_workspace_roots
+                    .as_ref()
+                    .unwrap(),
+                &["/tmp/synthetic-workspace"]
+            );
+            assert!(UserSettings::settings_path().exists());
+            let mut edited = UserSettings::load();
+            assert_eq!(edited.auto_paste_enabled, Some(false));
+            assert_eq!(edited.pending_env_key_imports.len(), 1);
+            edited.show_dock_icon = Some(true);
+            edited.save().unwrap();
+            let persisted = fs::read_to_string(UserSettings::settings_path()).unwrap();
+            assert!(!persisted.contains("synthetic-import-key"));
+            assert_eq!(fs::read_to_string(dir.path().join(".env")).unwrap(), env);
+            assert!(probe.attempts().is_empty());
+        }
+        // Unit-test secret writes use synthetic env, never the OS credential store.
+        let snapshot = Config::load_runtime_snapshot().unwrap();
+        assert_eq!(snapshot.user_settings().auto_paste_enabled, Some(false));
+        assert_eq!(snapshot.user_settings().show_dock_icon, Some(true));
+        assert!(snapshot.user_settings().pending_env_key_imports.is_empty());
+        assert!(UserSettings::settings_path().exists());
+        assert_eq!(
+            std::env::var("STT_FILE_API_KEY").unwrap(),
+            "synthetic-import-key"
+        );
+    }
+
+    #[test]
+    #[serial]
+    fn public_config_reads_newly_acquired_stt_cache_and_preserves_explicit_env() {
+        let _data = TestEnvGuard::unset("CODESCRIBE_DATA_DIR");
+        let _env = TestEnvGuard::unset("CODESCRIBE_ENV_PATH");
+        let _pack = TestEnvGuard::unset("CODESCRIBE_VOICE_LAB_SRC");
+        let _file = TestEnvGuard::unset("STT_FILE_API_KEY");
+        let _live = TestEnvGuard::unset("STT_LIVE_API_KEY");
+        let _retired = TestEnvGuard::unset("STT_API_KEY");
+        let dir = TempDir::new().unwrap();
+        set_env_for_test("CODESCRIBE_DATA_DIR", dir.path());
+        fs::write(dir.path().join("settings.json"), r#"{"schema_version":3}"#).unwrap();
+        let _empty = super::super::keychain::test_support::install_bundle(&[]);
+        let first = Config::load_without_keychain();
+        assert!(first.stt_file_api_key.is_none());
+        let _acquired = super::super::keychain::test_support::install_bundle(&[
+            ("STT_FILE_API_KEY", "synthetic-file"),
+            ("STT_LIVE_API_KEY", "synthetic-live"),
+        ]);
+        assert!(std::env::var_os("STT_FILE_API_KEY").is_none());
+        let loaded = Config::load();
+        assert_eq!(loaded.stt_file_api_key.as_deref(), Some("synthetic-file"));
+        assert_eq!(loaded.stt_live_api_key.as_deref(), Some("synthetic-live"));
+        assert!(std::env::var_os("STT_FILE_API_KEY").is_none());
+        set_env_for_test("STT_FILE_API_KEY", "synthetic-explicit");
+        let probe = super::super::keychain::CredentialAcquisitionProbe::forbid();
+        let loaded = Config::load_without_keychain();
+        assert_eq!(
+            loaded.stt_file_api_key.as_deref(),
+            Some("synthetic-explicit")
+        );
+        assert_eq!(loaded.stt_live_api_key.as_deref(), Some("synthetic-live"));
+        assert!(probe.attempts().is_empty());
+        let _retired_cache = super::super::keychain::test_support::install_bundle(&[(
+            "STT_API_KEY",
+            "synthetic-retired-cache",
+        )]);
+        let loaded = Config::load_without_keychain();
+        assert_eq!(
+            loaded.stt_file_api_key.as_deref(),
+            Some("synthetic-explicit")
+        );
+        assert_eq!(
+            loaded.stt_live_api_key.as_deref(),
+            Some("synthetic-retired-cache")
+        );
+        assert!(probe.attempts().is_empty());
+    }
+
+    #[test]
+    #[serial]
+    fn bulk_setting_then_key_edit_cannot_reissue_buffered_import_intent() {
+        let _data = TestEnvGuard::unset("CODESCRIBE_DATA_DIR");
+        let _env = TestEnvGuard::unset("CODESCRIBE_ENV_PATH");
+        let _key = TestEnvGuard::unset("STT_FILE_API_KEY");
+        let dir = TempDir::new().unwrap();
+        set_env_for_test("CODESCRIBE_DATA_DIR", dir.path());
+        let source = dir.path().join(".env");
+        fs::write(&source, "STT_FILE_API_KEY=synthetic-old-import\n").unwrap();
+        let values = Config::parse_env_file(&source).unwrap();
+        super::super::migrate::migrate_if_needed(Some(&values), false);
+        assert_eq!(UserSettings::load().pending_env_key_imports.len(), 1);
+        Config::default()
+            .save_to_env_many(&[
+                ("SHOW_DOCK_ICON", "true"),
+                ("STT_FILE_API_KEY", "synthetic-user-edit"),
+            ])
+            .unwrap();
+        let settings = UserSettings::load();
+        assert!(settings.pending_env_key_imports.is_empty());
+        assert_eq!(settings.show_dock_icon, Some(true));
+        super::super::migrate::migrate_if_needed(None, true);
+        assert_eq!(
+            std::env::var("STT_FILE_API_KEY").as_deref(),
+            Ok("synthetic-user-edit")
+        );
+    }
 
     /// Replay launch defects through the public loader using isolated on-disk tiers.
     #[test]

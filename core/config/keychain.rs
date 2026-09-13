@@ -14,6 +14,53 @@ use tracing::{debug, info};
 
 use crate::llm::provider::is_custom_key_account;
 
+type CredentialAttempts = std::rc::Rc<std::cell::RefCell<Vec<&'static str>>>;
+
+thread_local! {
+    static CREDENTIAL_ACQUISITION_ATTEMPTS: std::cell::RefCell<Option<CredentialAttempts>> = const { std::cell::RefCell::new(None) };
+}
+
+/// Synchronous credential-I/O tripwire, including dependency-mode witnesses.
+/// Attempts panic before test bypasses or any credential-store operation.
+#[doc(hidden)]
+pub struct CredentialAcquisitionProbe {
+    attempts: CredentialAttempts,
+}
+
+impl CredentialAcquisitionProbe {
+    pub fn forbid() -> Self {
+        let attempts = std::rc::Rc::new(std::cell::RefCell::new(Vec::new()));
+        CREDENTIAL_ACQUISITION_ATTEMPTS.with(|slot| {
+            let mut slot = slot.borrow_mut();
+            assert!(
+                slot.is_none(),
+                "credential acquisition probe already installed"
+            );
+            *slot = Some(attempts.clone());
+        });
+        Self { attempts }
+    }
+
+    pub fn attempts(&self) -> Vec<&'static str> {
+        self.attempts.borrow().clone()
+    }
+}
+
+impl Drop for CredentialAcquisitionProbe {
+    fn drop(&mut self) {
+        CREDENTIAL_ACQUISITION_ATTEMPTS.with(|slot| *slot.borrow_mut() = None);
+    }
+}
+
+fn note_credential_acquisition(operation: &'static str) {
+    CREDENTIAL_ACQUISITION_ATTEMPTS.with(|slot| {
+        if let Some(attempts) = slot.borrow().as_ref() {
+            attempts.borrow_mut().push(operation);
+            panic!("forbidden credential acquisition: {operation}");
+        }
+    });
+}
+
 /// Keychain service identity for every Codescribe generic-password item.
 const SERVICE: &str = "com.vetcoders.codescribe";
 /// Account name of the single bundled secret item (all API keys together).
@@ -65,6 +112,7 @@ pub struct KeyMove {
 /// overwritten by a legacy one; a differing legacy secret remains recoverable.
 /// Disabled Keychain access leaves relocation pending.
 pub fn apply_key_moves(moves: &[KeyMove]) -> Result<usize> {
+    note_credential_acquisition("relocate");
     if moves.is_empty() {
         return Ok(0);
     }
@@ -124,6 +172,7 @@ fn relocate_bundle_keys(bundle: &mut KeychainBundle, moves: &[KeyMove]) -> usize
 /// Copy a legacy key to missing targets, then drain the source in one bundle write.
 /// A failed write leaves the source/cache intact so a later load can retry.
 pub fn fan_out_key(from: &str, targets: &[&str]) -> usize {
+    note_credential_acquisition("fan out");
     if targets.is_empty() || targets.contains(&from) {
         return 0;
     }
@@ -132,9 +181,25 @@ pub fn fan_out_key(from: &str, targets: &[&str]) -> usize {
     } else {
         load_bundle()
     };
-    let Some(mut bundle) = bundle else {
+    let Some(bundle) = bundle else {
         return 0;
     };
+    persist_key_fan_out(bundle, from, targets, |bundle| {
+        if is_test_env() {
+            write_bundle_cache(Some(bundle.clone()));
+            Ok(())
+        } else {
+            save_bundle(bundle)
+        }
+    })
+}
+
+fn persist_key_fan_out(
+    mut bundle: KeychainBundle,
+    from: &str,
+    targets: &[&str],
+    persist: impl FnOnce(&KeychainBundle) -> Result<()>,
+) -> usize {
     let Some(secret) = bundle.keys.remove(from) else {
         return 0;
     };
@@ -145,9 +210,7 @@ pub fn fan_out_key(from: &str, targets: &[&str]) -> usize {
             changed += 1;
         }
     }
-    if is_test_env() {
-        write_bundle_cache(Some(bundle));
-    } else if let Err(error) = save_bundle(&bundle) {
+    if let Err(error) = persist(&bundle) {
         tracing::warn!(%error, "STT key fan-out failed; source retained");
         return 0;
     }
@@ -280,6 +343,7 @@ fn decode_bundle(bytes: &[u8]) -> Option<KeychainBundle> {
 /// where a prompt is acceptable — see [`cached_runtime_key`] for the silent one.
 /// A successful read populates the cache; a decode failure does not.
 fn load_bundle() -> Option<KeychainBundle> {
+    note_credential_acquisition("read bundle");
     if let Some(bundle) = read_bundle_cache() {
         return Some(bundle);
     }
@@ -304,6 +368,7 @@ fn load_bundle() -> Option<KeychainBundle> {
 
 /// Write the bundle to the Keychain and refresh the cache on success.
 fn save_bundle(bundle: &KeychainBundle) -> Result<()> {
+    note_credential_acquisition("write bundle");
     let payload = encode_bundle(bundle)?;
     set_generic_password(SERVICE, BUNDLE_ACCOUNT, &payload)
         .with_context(|| "Failed to save Keychain bundle")?;
@@ -407,6 +472,7 @@ fn is_xctest_host_by_signals(config_file: bool, session_id: bool, bundle_path: b
 /// In test environments a static account is set as an env var instead; a
 /// custom-provider account (never read from env) goes into the bundle cache.
 pub fn save_key(account: &str, secret: &str) -> Result<()> {
+    note_credential_acquisition("save");
     if is_test_env() {
         debug!("Test env: skipping Keychain save for {account}");
         if is_custom_key_account(account) {
@@ -427,6 +493,7 @@ pub fn save_key(account: &str, secret: &str) -> Result<()> {
 
 /// Loads a secret from the macOS Keychain. Returns `None` if not found.
 pub fn load_key(account: &str) -> Option<String> {
+    note_credential_acquisition("load");
     if is_test_env() {
         debug!("Test env: skipping Keychain load for {account}");
         return None;
@@ -555,6 +622,7 @@ fn non_empty_secret(value: Option<String>) -> Option<String> {
 
 /// Deletes a secret from the macOS Keychain. Ignores "not found" errors.
 pub fn delete_key(account: &str) -> Result<()> {
+    note_credential_acquisition("delete");
     if is_test_env() {
         debug!("Test env: skipping Keychain delete for {account}");
         if is_custom_key_account(account)
@@ -611,19 +679,28 @@ pub(crate) fn retry_stt_key_fan_out() -> usize {
 /// already set. Custom-provider keys and OAuth records stay in the bundle.
 ///
 /// This ensures `.env` values always take priority over Keychain entries.
-pub fn populate_env_from_keychain() {
+/// A closed env-seeding window still permits authorized acquisition into cache;
+/// it never permits writing the acquired values into the running process env.
+pub fn populate_env_from_keychain(seed_process_env: bool) {
+    note_credential_acquisition("populate");
     if is_test_env() {
         debug!("Test env: skipping Keychain population");
         return;
     }
+    let Some(bundle) = load_bundle() else {
+        debug!("Keychain bundle missing; skipping population");
+        return;
+    };
+    retry_stt_key_fan_out();
+    let bundle = read_bundle_cache().unwrap_or(bundle);
+    seed_bundle_env(&bundle, seed_process_env);
+}
+
+fn seed_bundle_env(bundle: &KeychainBundle, seed_process_env: bool) {
+    if !seed_process_env {
+        return;
+    }
     POPULATE_ONCE.call_once(|| {
-        let bundle = load_bundle();
-        if bundle.is_none() {
-            debug!("Keychain bundle missing; skipping population");
-            return;
-        }
-        retry_stt_key_fan_out();
-        let bundle = read_bundle_cache().unwrap_or_else(|| bundle.unwrap());
         for &account in KEYCHAIN_ACCOUNTS {
             if std::env::var(account).is_err()
                 && let Some(value) = bundle.keys.get(account)
@@ -642,6 +719,54 @@ pub fn populate_env_from_keychain() {
 /// Keychain bypass and runtime-key priority regressions (no live Keychain I/O).
 #[cfg(test)]
 mod tests {
+    #[test]
+    #[serial_test::serial]
+    fn failed_fan_out_write_preserves_source_and_existing_destinations() {
+        let _cache = super::test_support::install_bundle(&[
+            ("STT_API_KEY", "synthetic-source"),
+            ("STT_FILE_API_KEY", "synthetic-current"),
+        ]);
+        let before = super::read_bundle_cache().unwrap();
+        let changed = super::persist_key_fan_out(
+            before.clone(),
+            "STT_API_KEY",
+            &["STT_FILE_API_KEY", "STT_LIVE_API_KEY"],
+            |candidate| {
+                assert_eq!(
+                    candidate.keys.get("STT_FILE_API_KEY").map(String::as_str),
+                    Some("synthetic-current")
+                );
+                assert_eq!(
+                    candidate.keys.get("STT_LIVE_API_KEY").map(String::as_str),
+                    Some("synthetic-source")
+                );
+                anyhow::bail!("synthetic persistence refusal")
+            },
+        );
+        assert_eq!(changed, 0);
+        assert_eq!(super::read_bundle_cache().unwrap().keys, before.keys);
+    }
+
+    #[test]
+    fn credential_probe_detects_attempts_before_harness_bypass() {
+        let probe = super::CredentialAcquisitionProbe::forbid();
+        let result = std::panic::catch_unwind(|| super::load_key("synthetic-account"));
+        assert!(result.is_err());
+        assert_eq!(probe.attempts(), ["load"]);
+    }
+
+    #[test]
+    #[serial_test::serial]
+    fn closed_env_window_keeps_newly_acquired_credentials_out_of_process_env() {
+        let before = std::env::var_os("STT_FILE_API_KEY");
+        let mut bundle = super::KeychainBundle::default();
+        bundle
+            .keys
+            .insert("STT_FILE_API_KEY".into(), "synthetic-new-value".into());
+        super::seed_bundle_env(&bundle, false);
+        assert!(std::env::var_os("STT_FILE_API_KEY") == before);
+    }
+
     use super::{
         KEYCHAIN_ACCOUNTS, cached_runtime_key, is_known_account, is_xctest_host_by_signals,
         key_present, keychain_disabled_by_signals, resolve_runtime_key, test_support,

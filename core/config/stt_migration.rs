@@ -152,19 +152,15 @@ pub fn migrate_legacy_stt_lanes_once(settings: &mut UserSettings) {
         .and_then(|bytes| serde_json::from_slice(&bytes).ok())
         .unwrap_or(serde_json::Value::Null);
     let legacy = SttV2Legacy::from_json(&raw);
-    let (steps, targets) = migrate_legacy_stt_lanes(&legacy, settings);
+    let (steps, _) = migrate_legacy_stt_lanes(&legacy, settings);
     if steps.is_empty() {
         // A write here would serialize SettingsV2 (no cloud key) and let the
         // next load's pack-seed repair put the key back — the 2026-09-08
         // `Saved settings` / `Migrated legacy STT lanes rows=0` storm.
         return;
     }
-    // Copy the retired `STT_API_KEY` into both lanes at the migration moment
-    // only. A plain load must never open the Keychain by itself: an unsigned
-    // CLI binary blocks on the authorization dialog (bisect 2026-09-08). The
-    // retry after a Keychain outage lives in `keychain::populate_env_from_keychain`,
-    // where the bundle is already open.
-    super::keychain::fan_out_key("STT_API_KEY", &targets);
+    // Settings projection never acquires credentials. The source account stays
+    // intact until the authorized loader performs atomic STT key fan-out.
     match settings.save_unlocked() {
         Ok(()) => {
             *settings = UserSettings::from_v2(settings.to_v2());

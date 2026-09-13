@@ -898,9 +898,13 @@ impl CodescribeConfig {
         let removed = settings
             .remove_custom_provider(&id)
             .map_err(provider_error)?;
-        // Delete first: a failed Keychain write must leave the row addressable for retry.
-        delete_key(&removed.provider.key_account()).map_err(provider_error)?;
-        settings.save().map_err(provider_error)?;
+        let account = removed.provider.key_account();
+        let removed = UserSettings::with_credential_edit(&account, |latest| {
+            let removed = latest.remove_custom_provider(&id)?;
+            delete_key(&account)?;
+            Ok(removed)
+        })
+        .map_err(provider_error)?;
         crate::hotkeys::refresh_live_controller_config();
         Ok(CsCustomProviderRemoval {
             id: removed.provider.id,
@@ -1195,9 +1199,11 @@ impl CodescribeConfig {
     /// `KEYCHAIN_ACCOUNTS` entry. The secret is never echoed back.
     pub fn set_api_key(&self, account: String, secret: String) -> Result<(), CsError> {
         ensure_known_account(&account)?;
-        save_key(&account, &secret).map_err(|error| CsError::Config {
-            msg: error.to_string(),
-        })?;
+        UserSettings::with_credential_edit(&account, |_| save_key(&account, &secret)).map_err(
+            |error| CsError::Config {
+                msg: error.to_string(),
+            },
+        )?;
         invalidate_runtime_snapshot_cache();
         crate::hotkeys::refresh_live_controller_config();
         Ok(())
@@ -1207,9 +1213,11 @@ impl CodescribeConfig {
     /// `KEYCHAIN_ACCOUNTS` entry.
     pub fn clear_api_key(&self, account: String) -> Result<(), CsError> {
         ensure_known_account(&account)?;
-        delete_key(&account).map_err(|error| CsError::Config {
-            msg: error.to_string(),
-        })?;
+        UserSettings::with_credential_edit(&account, |_| delete_key(&account)).map_err(
+            |error| CsError::Config {
+                msg: error.to_string(),
+            },
+        )?;
         invalidate_runtime_snapshot_cache();
         crate::hotkeys::refresh_live_controller_config();
         Ok(())
@@ -1421,12 +1429,14 @@ impl CodescribeConfig {
 
         for account in &secret_accounts {
             mutation_started = true;
-            delete_key(account).map_err(|error| {
-                agent_reset_error(
-                    mutation_started,
-                    format!("failed to remove Agent secret {account}: {error}"),
-                )
-            })?;
+            UserSettings::with_credential_edit(account, |_| delete_key(account)).map_err(
+                |error| {
+                    agent_reset_error(
+                        mutation_started,
+                        format!("failed to remove Agent secret {account}: {error}"),
+                    )
+                },
+            )?;
         }
         Ok(())
     }
@@ -2374,7 +2384,11 @@ fn persist_custom_provider(
     // Persist the addressable row first; failed key writes can be retried through set_api_key.
     settings.save().map_err(provider_error)?;
     let result = secret
-        .map(|secret| save_key(&row.key_account(), &secret))
+        .map(|secret| {
+            UserSettings::with_credential_edit(&row.key_account(), |_| {
+                save_key(&row.key_account(), &secret)
+            })
+        })
         .transpose();
     crate::hotkeys::refresh_live_controller_config();
     result.map_err(provider_error)?;
@@ -3150,6 +3164,68 @@ mod settings_snapshot_tests {
             endpoint: endpoint.into(),
             api_key: None,
         }
+    }
+
+    #[test]
+    #[serial]
+    fn explicit_key_actions_cancel_pending_imports_and_stale_settings_cannot_reissue_them() {
+        for replacement in [Some("synthetic-new-key"), None] {
+            let root = tempfile::tempdir().unwrap();
+            let _data = EnvGuard::set("CODESCRIBE_DATA_DIR", root.path());
+            let source = root.path().join("selected.env");
+            let _env = EnvGuard::set("CODESCRIBE_ENV_PATH", &source);
+            let _key = EnvGuard::remove("STT_FILE_API_KEY");
+            fs::write(&source, "STT_FILE_API_KEY=synthetic-old-import\n").unwrap();
+            let values = Config::parse_env_file(&source).unwrap();
+            codescribe_core::config::migrate::migrate_if_needed(Some(&values), false);
+            let mut stale = UserSettings::load();
+            assert_eq!(stale.pending_env_key_imports.len(), 1);
+            let config = CodescribeConfig::new();
+            match replacement {
+                Some(secret) => config
+                    .set_api_key("STT_FILE_API_KEY".into(), secret.into())
+                    .unwrap(),
+                None => config.clear_api_key("STT_FILE_API_KEY".into()).unwrap(),
+            }
+            stale.show_dock_icon = Some(true);
+            stale.save().unwrap();
+            assert!(UserSettings::load().pending_env_key_imports.is_empty());
+            codescribe_core::config::migrate::migrate_if_needed(None, true);
+            assert_eq!(
+                keychain::cached_runtime_key("STT_FILE_API_KEY").as_deref(),
+                replacement
+            );
+        }
+    }
+
+    #[test]
+    #[serial]
+    fn removing_pending_custom_provider_then_reusing_id_does_not_restore_its_old_key() {
+        let root = tempfile::tempdir().unwrap();
+        let _data = EnvGuard::set("CODESCRIBE_DATA_DIR", root.path());
+        let source = root.path().join("selected.env");
+        let _env = EnvGuard::set("CODESCRIBE_ENV_PATH", &source);
+        fs::write(&source, "LLM_FORMATTING_ENDPOINT=https://synthetic.example/v1/responses\nLLM_FORMATTING_API_KEY=synthetic-old-provider-key\n").unwrap();
+        let values = Config::parse_env_file(&source).unwrap();
+        codescribe_core::config::migrate::migrate_if_needed(Some(&values), false);
+        let before = UserSettings::load();
+        let provider = before.llm_custom_providers.first().unwrap();
+        let account = provider.key_account();
+        assert!(
+            before
+                .pending_env_key_imports
+                .iter()
+                .any(|row| row.target == account)
+        );
+        let config = CodescribeConfig::new();
+        config.remove_custom_provider(provider.id.clone()).unwrap();
+        assert!(UserSettings::load().pending_env_key_imports.is_empty());
+        let added = config
+            .add_custom_provider(custom_draft(&provider.name, &provider.endpoint))
+            .unwrap();
+        assert_eq!(added.api_key_account, account);
+        codescribe_core::config::migrate::migrate_if_needed(None, true);
+        assert!(keychain::cached_runtime_key(&account).is_none());
     }
 
     #[test]

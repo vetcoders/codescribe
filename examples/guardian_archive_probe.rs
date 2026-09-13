@@ -7,6 +7,7 @@ use std::sync::{Arc, Mutex};
 use anyhow::{Context, Result, ensure};
 use codescribe_core::audio::streaming_recorder::CaptureTurnIntent;
 use codescribe_core::config::Config;
+use codescribe_core::config::keychain::CredentialAcquisitionProbe;
 use codescribe_core::pipeline::acoustic_ledger::AcousticLedger;
 use codescribe_core::pipeline::contracts::EngineEvent;
 use codescribe_core::pipeline::streaming::{
@@ -56,10 +57,16 @@ async fn main() -> Result<()> {
         .into_samples::<i16>()
         .map(|sample| sample.map(|value| f32::from(value) / 32768.0))
         .collect::<std::result::Result<Vec<_>, _>>()?;
-    let snapshot = Arc::new(
-        Config::load_runtime_snapshot_without_keychain()
-            .map_err(|_| anyhow::anyhow!("runtime snapshot refused"))?,
-    );
+    let snapshot = {
+        let credential_probe = CredentialAcquisitionProbe::forbid();
+        let snapshot = Config::load_runtime_snapshot_without_keychain()
+            .map_err(|_| anyhow::anyhow!("runtime snapshot refused"))?;
+        ensure!(
+            credential_probe.attempts().is_empty(),
+            "credential acquisition attempted by no-Keychain loader"
+        );
+        Arc::new(snapshot)
+    };
     ensure!(
         snapshot.tail_provider() == Some(TailProviderId::InProcess),
         "diagnostic requires local Whisper"

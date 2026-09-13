@@ -2489,6 +2489,17 @@ class CurrentChainMutantTests(unittest.TestCase):
              "Self::resolve_runtime_snapshot_with_capture(|| input)",
              "Self::resolve_runtime_snapshot_with_capture(|| CapturedRuntimeInputs::default())",
              "load_runtime_snapshot_with_keychain_population"),
+            # Config and settings must come from one capture, not two reads.
+            ("settings_capture_split",
+             "capture_runtime_inputs", "core/config/loader.rs",
+             "let (values, user_settings) = Self::capture_config_and_settings(populate_keychain);",
+             "let values = Self::load_with_keychain_population(populate_keychain); let user_settings = UserSettings::load();",
+             "capture_runtime_inputs"),
+            ("captured_settings_discarded",
+             "capture_runtime_inputs", "core/config/loader.rs",
+             "user_settings,",
+             "user_settings: UserSettings::default(),",
+             "capture_runtime_inputs"),
             # Calibration is never acquired, so the sealed snapshot carries none.
             ("calibration_omitted_at_capture",
              "capture_runtime_inputs", "core/config/loader.rs",

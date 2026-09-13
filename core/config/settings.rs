@@ -228,6 +228,9 @@ pub struct UserSettings {
     /// Durable, secret-free relocation intent until the Keychain write succeeds.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub pending_key_moves: Vec<super::keychain::KeyMove>,
+    /// Secret-free first-import receipts; source files retain credential values.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub pending_env_key_imports: Vec<super::migrate::PendingEnvKeyImport>,
     /// Optional override for the OpenAI OAuth client id (non-secret app identity).
     /// `None` falls through to env, then the shipped Codex CLI public app id
     /// (see `NOTICE`). Env `CODESCRIBE_OPENAI_OAUTH_CLIENT_ID` is the dev fallback.
@@ -1271,6 +1274,8 @@ struct ProvidersV2 {
     custom: Vec<CustomProvider>,
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pending_key_moves: Vec<super::keychain::KeyMove>,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pending_env_key_imports: Vec<super::migrate::PendingEnvKeyImport>,
 }
 
 /// `agent` section. Written only when at least one of its parts is present, so
@@ -1762,10 +1767,12 @@ impl UserSettings {
                 }),
             },
             providers: (!self.llm_custom_providers.is_empty()
-                || !self.pending_key_moves.is_empty())
+                || !self.pending_key_moves.is_empty()
+                || !self.pending_env_key_imports.is_empty())
             .then(|| ProvidersV2 {
                 custom: self.llm_custom_providers.clone(),
                 pending_key_moves: self.pending_key_moves.clone(),
+                pending_env_key_imports: self.pending_env_key_imports.clone(),
             }),
         }
     }
@@ -1860,6 +1867,11 @@ impl UserSettings {
                 .providers
                 .as_ref()
                 .map(|p| p.pending_key_moves.clone())
+                .unwrap_or_default(),
+            pending_env_key_imports: v2
+                .providers
+                .as_ref()
+                .map(|p| p.pending_env_key_imports.clone())
                 .unwrap_or_default(),
             llm_assistive_model: v2
                 .speech
@@ -2280,6 +2292,57 @@ impl UserSettings {
         Self::settle_pending_key_moves_with(super::keychain::apply_key_moves)
     }
 
+    /// Re-read under the settings lock and acknowledge only completed imports.
+    pub(crate) fn settle_pending_env_key_imports() -> anyhow::Result<()> {
+        let _data_io = super::storage_reset::begin_app_data_io()?;
+        let _settings_io = settings_io_lock();
+        let mut latest = Self::load_unlocked();
+        while let Some(row) = latest.pending_env_key_imports.first() {
+            super::migrate::import_pending_env_key(row)?;
+            latest.pending_env_key_imports.remove(0);
+            latest.save_unlocked()?;
+        }
+        Ok(())
+    }
+
+    /// Explicit credential intent supersedes queued imports under the same lock
+    /// used by settlement. Store actions must not acquire Settings themselves.
+    pub fn with_credential_edit<T>(
+        account: &str,
+        edit: impl FnOnce(&mut Self) -> anyhow::Result<T>,
+    ) -> anyhow::Result<T> {
+        Self::with_credential_edit_persistence(account, edit, Self::save_unlocked)
+    }
+
+    fn with_credential_edit_persistence<T>(
+        account: &str,
+        edit: impl FnOnce(&mut Self) -> anyhow::Result<T>,
+        persist: impl Fn(&Self) -> anyhow::Result<()>,
+    ) -> anyhow::Result<T> {
+        let _data_io = super::storage_reset::begin_app_data_io()?;
+        let _settings_io = settings_io_lock();
+        let mut latest = Self::read_persisted_settings()?.unwrap_or_default();
+        if latest.cancel_pending_credential_imports(account) {
+            // Cancellation is durable even if the following explicit store
+            // action fails. A failed cancellation forbids that store action.
+            persist(&latest)?;
+        }
+        let before_edit = latest.clone();
+        let result = edit(&mut latest)?;
+        if latest != before_edit {
+            persist(&latest)?;
+        }
+        Ok(result)
+    }
+
+    pub fn cancel_pending_credential_imports(&mut self, account: &str) -> bool {
+        let before = self.pending_env_key_imports.len() + self.pending_key_moves.len();
+        self.pending_env_key_imports
+            .retain(|row| row.target != account);
+        self.pending_key_moves.retain(|row| row.to != account);
+        before != self.pending_env_key_imports.len() + self.pending_key_moves.len()
+    }
+
     fn settle_pending_key_moves_with(
         apply: impl FnOnce(&[super::keychain::KeyMove]) -> anyhow::Result<usize>,
     ) -> anyhow::Result<usize> {
@@ -2344,6 +2407,7 @@ impl UserSettings {
             .position(|row| row.id == id)
             .ok_or_else(|| ProviderError::UnknownProvider(id.to_string()))?;
         let provider = self.llm_custom_providers.remove(index);
+        self.cancel_pending_credential_imports(&provider.key_account());
         let pointer = ProviderRef::Custom(provider.id.clone()).as_string();
         let mut lanes_reset = Vec::new();
         if self.llm_formatting_provider.as_deref() == Some(pointer.as_str()) {
@@ -2364,7 +2428,42 @@ impl UserSettings {
     pub fn save(&self) -> anyhow::Result<()> {
         let _data_io = super::storage_reset::begin_app_data_io()?;
         let _settings_io = settings_io_lock();
-        self.save_unlocked()
+        let mut next = self.clone();
+        if let Some(durable) = Self::read_persisted_settings()? {
+            // Ordinary stale Settings snapshots cannot reissue canceled or
+            // acknowledged migration intent. Only its locked owner changes it.
+            next.pending_env_key_imports = durable.pending_env_key_imports;
+            next.pending_key_moves = durable.pending_key_moves;
+            let owns = |account: &str| {
+                !crate::llm::provider::is_custom_key_account(account)
+                    || next
+                        .llm_custom_providers
+                        .iter()
+                        .any(|p| p.key_account() == account)
+            };
+            next.pending_env_key_imports.retain(|row| owns(&row.target));
+            next.pending_key_moves.retain(|row| owns(&row.to));
+        }
+        next.save_unlocked()
+    }
+
+    /// Mutation authority cannot treat an unreadable document as empty settings.
+    /// No repair or credential acquisition is performed by this strict reader.
+    fn read_persisted_settings() -> anyhow::Result<Option<Self>> {
+        let raw = match fs::read_to_string(Self::settings_path()) {
+            Ok(raw) => raw,
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+            Err(error) => return Err(error.into()),
+        };
+        let value: serde_json::Value = serde_json::from_str(&raw)?;
+        let settings = if value.get("schema_version").is_some() {
+            let v2: SettingsV2 = serde_json::from_value(value)?;
+            Self::validate_v2(&v2)?;
+            Self::from_v2(v2)
+        } else {
+            serde_json::from_value(value)?
+        };
+        Ok(Some(settings))
     }
 
     /// Remove only Agent-owned fields from the persisted JSON document.
@@ -2881,6 +2980,74 @@ mod tests {
             std::env::remove_var("TOGGLE_TRIGGER");
         }
         tmp
+    }
+
+    #[test]
+    #[serial]
+    fn failed_credential_cancellation_persistence_forbids_store_mutation() {
+        let _tmp = setup_isolated_data_dir();
+        let settings = UserSettings {
+            pending_env_key_imports: vec![crate::config::migrate::PendingEnvKeyImport {
+                env_path: std::path::PathBuf::from("/tmp/synthetic-selected.env"),
+                source: "STT_FILE_API_KEY".into(),
+                target: "STT_FILE_API_KEY".into(),
+            }],
+            ..UserSettings::default()
+        };
+        settings.save().unwrap();
+        let called = std::cell::Cell::new(false);
+        let error = UserSettings::with_credential_edit_persistence(
+            "STT_FILE_API_KEY",
+            |_| {
+                called.set(true);
+                Ok(())
+            },
+            |_| anyhow::bail!("synthetic cancellation persistence refusal"),
+        );
+        assert!(error.is_err());
+        assert!(!called.get());
+        assert_eq!(
+            UserSettings::load().pending_env_key_imports,
+            settings.pending_env_key_imports
+        );
+        let failed_store: anyhow::Result<()> =
+            UserSettings::with_credential_edit("STT_FILE_API_KEY", |_| {
+                anyhow::bail!("synthetic store refusal")
+            });
+        assert!(failed_store.is_err());
+        assert!(UserSettings::load().pending_env_key_imports.is_empty());
+        // An older Settings view cannot revive the canceled import afterward.
+        settings.save().unwrap();
+        assert!(UserSettings::load().pending_env_key_imports.is_empty());
+    }
+
+    #[test]
+    #[serial]
+    fn unreadable_or_invalid_settings_refuse_credential_mutation_before_store() {
+        let root = setup_isolated_data_dir();
+        let path = UserSettings::settings_path();
+        for invalid in ["{", r#"{"schema_version":99}"#] {
+            fs::write(&path, invalid).unwrap();
+            let called = std::cell::Cell::new(false);
+            let result = UserSettings::with_credential_edit("STT_FILE_API_KEY", |_| {
+                called.set(true);
+                Ok(())
+            });
+            assert!(result.is_err());
+            assert!(!called.get());
+            assert_eq!(fs::read_to_string(&path).unwrap(), invalid);
+        }
+        fs::remove_file(&path).unwrap();
+        fs::create_dir(&path).unwrap();
+        let called = std::cell::Cell::new(false);
+        let result = UserSettings::with_credential_edit("STT_FILE_API_KEY", |_| {
+            called.set(true);
+            Ok(())
+        });
+        assert!(result.is_err());
+        assert!(!called.get());
+        assert!(path.is_dir());
+        drop(root);
     }
 
     /// Legacy schema-v3 files have no seal-lane field. Loading them performs
