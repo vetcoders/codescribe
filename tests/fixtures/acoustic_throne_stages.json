@@ -473,112 +473,112 @@
               "callee_file": "core/config/loader.rs",
               "caller": "load_runtime_snapshot_with_keychain_population",
               "caller_file": "core/config/loader.rs",
-              "min_calls": 1
+              "minimum_count": 1
             },
             {
               "callee": "resolve_runtime_snapshot_with_capture",
               "callee_file": "core/config/loader.rs",
               "caller": "load_runtime_snapshot_with_keychain_population",
               "caller_file": "core/config/loader.rs",
-              "min_calls": 1
+              "minimum_count": 1
             },
             {
               "callee": "runtime_snapshot_from_captured",
               "callee_file": "core/config/loader.rs",
               "caller": "resolve_runtime_snapshot_with_capture",
               "caller_file": "core/config/loader.rs",
-              "min_calls": 1
+              "minimum_count": 1
             },
             {
               "callee": "seal_loaded",
               "callee_file": "core/config/settings.rs",
               "caller": "runtime_snapshot_from_captured",
               "caller_file": "core/config/loader.rs",
-              "min_calls": 1
+              "minimum_count": 1
             },
             {
               "callee": "admit",
               "callee_file": "core/config/settings.rs",
               "caller": "seal_loaded",
               "caller_file": "core/config/settings.rs",
-              "min_calls": 1
+              "minimum_count": 1
             },
             {
               "callee": "validate_time",
               "callee_file": "core/config/energy_calibration.rs",
               "caller": "profile_at",
               "caller_file": "core/config/energy_calibration.rs",
-              "min_calls": 1
+              "minimum_count": 1
             },
             {
               "callee": "profile_at",
               "callee_file": "core/config/energy_calibration.rs",
               "caller": "for_capture_at",
               "caller_file": "core/config/energy_calibration.rs",
-              "min_calls": 1
+              "minimum_count": 1
             },
             {
               "callee": "validate_capture_path",
               "callee_file": "core/config/energy_calibration.rs",
               "caller": "for_capture_at",
               "caller_file": "core/config/energy_calibration.rs",
-              "min_calls": 1
+              "minimum_count": 1
             },
             {
               "callee": "ledger_calibration",
               "callee_file": "core/config/energy_calibration.rs",
               "caller": "for_capture_at",
               "caller_file": "core/config/energy_calibration.rs",
-              "min_calls": 1
+              "minimum_count": 1
             },
             {
               "callee": "for_capture_at",
               "callee_file": "core/config/energy_calibration.rs",
               "caller": "evaluate_probed_admission_at",
               "caller_file": "app/controller/admission.rs",
-              "min_calls": 1
+              "minimum_count": 1
             },
             {
               "callee": "evaluate_probed_admission_at",
               "callee_file": "app/controller/admission.rs",
               "caller": "evaluate_admission_readiness",
               "caller_file": "app/controller/admission.rs",
-              "min_calls": 1
+              "minimum_count": 1
             },
             {
               "callee": "evaluate_admission_readiness",
               "callee_file": "app/controller/admission.rs",
               "caller": "evaluate_live_admission",
               "caller_file": "app/controller/admission.rs",
-              "min_calls": 1
+              "minimum_count": 1
             },
             {
               "callee": "evaluate_live_admission",
               "callee_file": "app/controller/admission.rs",
               "caller": "evaluate_live_admission_arc",
               "caller_file": "app/controller/admission.rs",
-              "min_calls": 1
+              "minimum_count": 1
             },
             {
               "callee": "evaluate_live_admission_arc",
               "callee_file": "app/controller/admission.rs",
               "caller": "schedule_hold_start",
               "caller_file": "app/controller/mod.rs",
-              "min_calls": 1
+              "minimum_count": 1
             },
             {
               "callee": "evaluate_live_admission_arc",
               "callee_file": "app/controller/admission.rs",
               "caller": "admission_readiness",
               "caller_file": "app/controller/mod.rs",
-              "min_calls": 1
+              "minimum_count": 1
             },
             {
               "callee": "admission_readiness",
               "callee_file": "app/controller/mod.rs",
               "caller": "start_toggle_recording",
               "caller_file": "app/controller/mod.rs",
-              "min_calls": 1
+              "minimum_count": 1
             }
           ],
           "ordering": [
@@ -1280,119 +1280,119 @@
               "callee_file": "app/presentation/emitter.rs",
               "caller": "on_event",
               "caller_file": "app/presentation/emitter.rs",
-              "min_calls": 1
+              "minimum_count": 1
             },
             {
               "callee": "publish_revision",
               "callee_file": "app/presentation/transcript_bus.rs",
               "caller": "on_event",
               "caller_file": "app/presentation/emitter.rs",
-              "min_calls": 1
+              "minimum_count": 1
             },
             {
               "callee": "project_serial",
               "callee_file": "app/presentation/transcript_bus.rs",
               "caller": "publish_revision",
               "caller_file": "app/presentation/transcript_bus.rs",
-              "min_calls": 1
+              "minimum_count": 1
             },
             {
               "callee": "from_bus_event",
               "callee_file": "bridge/src/recording.rs",
               "caller": "forward_event_to_listener",
               "caller_file": "bridge/src/hotkeys.rs",
-              "min_calls": 1
+              "minimum_count": 1
             },
             {
               "callee": "from_bus_receipt",
               "callee_file": "bridge/src/recording.rs",
               "caller": "from_bus_event",
               "caller_file": "bridge/src/recording.rs",
-              "min_calls": 1
+              "minimum_count": 1
             },
             {
               "callee": "applyTranscriptProjection",
               "callee_file": "macos/Codescribe/Screens/Overlay/OverlayState.swift",
               "caller": "apply",
               "caller_file": "macos/Codescribe/Screens/Overlay/OverlayState.swift",
-              "min_calls": 1
+              "minimum_count": 1
             },
             {
               "callee": "OverlayIntentRail",
               "callee_file": "macos/Codescribe/Screens/Overlay/OverlayIntentRail.swift",
               "caller": "body",
               "caller_file": "macos/Codescribe/Screens/Overlay/DictationOverlayView.swift",
-              "min_calls": 1
+              "minimum_count": 1
             },
             {
               "callee": "dispatch",
               "callee_file": "macos/Codescribe/Screens/Overlay/OverlayIntentRail.swift",
               "caller": "body",
               "caller_file": "macos/Codescribe/Screens/Overlay/OverlayIntentRail.swift",
-              "min_calls": 1
+              "minimum_count": 1
             },
             {
               "callee": "onIntent",
               "callee_file": "macos/Codescribe/Screens/Overlay/OverlayIntentRail.swift",
               "caller": "dispatch",
               "caller_file": "macos/Codescribe/Screens/Overlay/OverlayIntentRail.swift",
-              "min_calls": 1
+              "minimum_count": 1
             },
             {
               "callee": "relayIntent",
               "callee_file": "macos/Codescribe/Screens/Overlay/OverlayState.swift",
               "caller": "body",
               "caller_file": "macos/Codescribe/Screens/Overlay/DictationOverlayView.swift",
-              "min_calls": 1
+              "minimum_count": 1
             },
             {
               "callee": "relayInsertPasteIntent",
               "callee_file": "macos/Codescribe/Screens/Overlay/OverlayState.swift",
               "caller": "relayIntent",
               "caller_file": "macos/Codescribe/Screens/Overlay/OverlayState.swift",
-              "min_calls": 1
+              "minimum_count": 1
             },
             {
               "callee": "paste_text_from_overlay",
               "callee_file": "app/controller/mod.rs",
               "caller": "paste_text",
               "caller_file": "bridge/src/hotkeys.rs",
-              "min_calls": 1
+              "minimum_count": 1
             },
             {
               "callee": "overlay_insert_facts",
               "callee_file": "app/controller/delivery_route.rs",
               "caller": "paste_text_from_overlay",
               "caller_file": "app/controller/mod.rs",
-              "min_calls": 1
+              "minimum_count": 1
             },
             {
               "callee": "resolve_delivery_route",
               "callee_file": "app/controller/delivery_route.rs",
               "caller": "paste_text_from_overlay",
               "caller_file": "app/controller/mod.rs",
-              "min_calls": 1
+              "minimum_count": 1
             },
             {
               "callee": "overlay_insert_route",
               "callee_file": "app/controller/delivery_route.rs",
               "caller": "resolve_delivery_route",
               "caller_file": "app/controller/delivery_route.rs",
-              "min_calls": 1
+              "minimum_count": 1
             },
             {
               "callee": "paste_and_restore",
               "callee_file": "app/os/clipboard.rs",
               "caller": "execute_clipboard_paste",
               "caller_file": "app/controller/mod.rs",
-              "min_calls": 1
+              "minimum_count": 1
             },
             {
               "callee": "paste_text_smart",
               "callee_file": "app/os/clipboard.rs",
               "caller": "paste_and_restore",
               "caller_file": "app/os/clipboard.rs",
-              "min_calls": 1
+              "minimum_count": 1
             },
             {
               "caller": "paste_text_from_overlay",
