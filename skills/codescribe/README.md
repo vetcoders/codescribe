@@ -1,35 +1,18 @@
 # codescribe
 
-Foundation skill: how a chat agent plugs into Codescribe.app's transcript bus.
-No Vibecrafted worker. The human holds Fn. The agent listens on jsonl.
+Connect a named chat agent to the Codescribe Transcript Bus and prove delivery
+into the conversation. The authoritative contract and version are in
+[SKILL.md](SKILL.md).
 
-## Quick reference
+Invoke `/codescribe` in the current chat. This foundation skill has no worker
+launcher. A successful attachment includes a fresh voice-triggered reply;
+a running tail process is insufficient.
 
-| Field            | Value                                                 |
-| ---------------- | ----------------------------------------------------- |
-| Name             | `codescribe`                                          |
-| Version          | `0.2.0`                                               |
-| Operator command | **none** — not `vibecrafted codescribe <agent>`       |
-| Interactive      | `/codescribe`                                         |
-| Canonical doc    | [`SKILL.md`](SKILL.md)                                |
-| Follower         | `~/.codescribe/agent-bridge/runtime/bin/bus-demux.py` |
+The source package lives in the Codescribe checkout at `skills/codescribe/`.
+The app packages it under `Contents/Resources/agent-bridge/skills/codescribe/`;
+the product setup installs provider copies. Author the source and synchronize
+the intended installed copy. Do not claim a signed app update from editing a
+local skill. Vibecrafted is the authoring-standard reference, not a presumed
+second owner of this package.
 
-## Homes
-
-| Tree                | Path                                                 |
-| ------------------- | ---------------------------------------------------- |
-| Codescribe checkout | `skills/codescribe/`                                 |
-| Signed app payload  | `Contents/Resources/agent-bridge/skills/codescribe/` |
-| Product install     | Codex or Claude skill home + managed receipt/marker  |
-| Fleet               | `vibecrafted_core/skills/codescribe/`                |
-
-Keep authoring copies in lockstep. The signed app packages the complete tree and
-the Setup Wizard installs it explicitly. Runtime commands use the stable product
-helper under `~/.codescribe/agent-bridge/runtime/`, never the checkout.
-
-## Authoring checklist
-
-- [x] Foundation: no fake worker CLI
-- [x] Example in `examples/`
-- [x] Attach / live-vs-seal in `references/`
-- [ ] `make test-skills` from vibecrafted-core when that copy is committed
+See [FLOW.md](FLOW.md) and [examples](examples/example-prompt.md).
