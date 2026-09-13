@@ -425,6 +425,7 @@ pub struct AcousticLedger {
     incremental_shapings: Vec<IncrementalShapingReceipt>,
     derivations: Vec<OccurrenceDerivation>,
     latest_seal_coverage: Option<SealCoverageReceipt>,
+    pending_text_recovery: BTreeSet<OccurrenceIdentity>,
 }
 
 impl AcousticLedger {
@@ -486,6 +487,35 @@ impl AcousticLedger {
 
     pub fn latest_seal_coverage(&self) -> Option<&SealCoverageReceipt> {
         self.latest_seal_coverage.as_ref()
+    }
+
+    /// Mark an acoustically qualified occurrence whose provisional label does
+    /// not account for its speech. The label stays visible, but cannot certify
+    /// coverage or finality until an authorized recovery observation lands.
+    pub fn require_text_recovery(&mut self, occurrence: &OccurrenceIdentity) -> bool {
+        if !self.evidence.contains_key(occurrence) || self.seals.contains_key(occurrence) {
+            return false;
+        }
+        self.pending_text_recovery.insert(occurrence.clone());
+        true
+    }
+
+    pub fn text_recovery_pending(&self, occurrence: &OccurrenceIdentity) -> bool {
+        self.pending_text_recovery.contains(occurrence)
+    }
+
+    pub fn pending_text_recoveries(
+        &self,
+        session: &str,
+        capture_epoch: u64,
+    ) -> Vec<OccurrenceIdentity> {
+        self.pending_text_recovery
+            .iter()
+            .filter(|occurrence| {
+                occurrence.session == session && occurrence.capture_epoch == capture_epoch
+            })
+            .cloned()
+            .collect()
     }
 
     /// Compare committed occurrence ranges with authenticated measured speech
@@ -595,6 +625,35 @@ impl AcousticLedger {
             return refuse(AcousticEvidenceGap::PartialObservation);
         }
 
+        // Subtract debt from the union, not individual labels: another label
+        // overlapping the same PCM must not make unresolved speech disappear.
+        let debt = self.pending_text_recoveries(session, capture_epoch);
+        let committed: Vec<(u64, u64)> = committed
+            .into_iter()
+            .flat_map(|range| {
+                let mut pieces = vec![range];
+                for occurrence in &debt {
+                    pieces = pieces
+                        .into_iter()
+                        .flat_map(|(start, end)| {
+                            if occurrence.sample_end <= start || occurrence.sample_start >= end {
+                                return vec![(start, end)];
+                            }
+                            let mut retained = Vec::with_capacity(2);
+                            if start < occurrence.sample_start {
+                                retained.push((start, occurrence.sample_start));
+                            }
+                            if end > occurrence.sample_end {
+                                retained.push((occurrence.sample_end, end));
+                            }
+                            retained
+                        })
+                        .collect();
+                }
+                pieces
+            })
+            .collect();
+
         let speech_samples = speech
             .iter()
             .map(|(start, end)| end.saturating_sub(*start))
@@ -637,7 +696,7 @@ impl AcousticLedger {
             .map(|range| range.sample_end.saturating_sub(range.sample_start))
             .max()
             .unwrap_or(0);
-        let status = if max_uncovered_samples > incomplete_threshold_samples {
+        let status = if !debt.is_empty() || max_uncovered_samples > incomplete_threshold_samples {
             SealCoverageStatus::Incomplete
         } else {
             SealCoverageStatus::Complete
@@ -665,8 +724,26 @@ impl AcousticLedger {
     /// Every call also appends exactly one [`LayerDecisionReceipt`], so the
     /// per-layer history can never fall behind the decisions it describes.
     pub fn admit(&mut self, observation: &ObservationIdentity, text: &str) -> MutationReceipt {
+        let authorized_recovery = !text.trim().is_empty()
+            && matches!(
+                observation.producer,
+                ObservationProducer::Whisper | ObservationProducer::ManualHuman
+            )
+            && self
+                .committed
+                .get(&observation.occurrence)
+                .is_none_or(|held| {
+                    observation.producer.authority_rank() > held.producer.authority_rank()
+                        || (observation.producer == held.producer
+                            && observation.generation > held.generation)
+                });
         let decision = self.decide_observation(observation, text);
         self.record_layer_decision(observation, text, &decision);
+        if authorized_recovery
+            && (decision.grants_mutation() || matches!(decision, MutationReceipt::Preserve { .. }))
+        {
+            self.pending_text_recovery.remove(&observation.occurrence);
+        }
         decision
     }
 
@@ -1005,6 +1082,9 @@ impl AcousticLedger {
 
     /// Assemble the seal for one occurrence, or say exactly why it cannot seal.
     fn mint_seal(&self, occurrence: &OccurrenceIdentity) -> Result<LedgerSealReceipt, SealRefusal> {
+        if self.text_recovery_pending(occurrence) {
+            return Err(SealRefusal::TextRecoveryPending);
+        }
         let serial = self
             .evidence
             .get(occurrence)
@@ -1076,6 +1156,12 @@ impl AcousticLedger {
         session: &str,
         capture_epoch: u64,
     ) -> Result<LedgerSealReceipt, SealRefusal> {
+        if !self
+            .pending_text_recoveries(session, capture_epoch)
+            .is_empty()
+        {
+            return Err(SealRefusal::TextRecoveryPending);
+        }
         // Two distinct refusals, both terminal-blocking: measured uncovered
         // speech, and no authenticated measurement at all. Absence of evidence
         // may not certify a seal simply because it is not `Incomplete`.
@@ -2364,6 +2450,8 @@ pub enum SealRefusal {
     FrontierUnknown,
     /// All scheduled observers returned, but none supplied a usable label.
     LabelMissing,
+    /// Speech outlasted its provisional label and has not been recovered.
+    TextRecoveryPending,
     /// An admitted observation for the range has no decision receipt.
     ObservationsWithoutReceipts,
     /// The terminal seal was asked for while an occurrence in the epoch is
@@ -2382,6 +2470,7 @@ impl SealRefusal {
             Self::FrontierOpen => "frontier_open",
             Self::FrontierUnknown => "frontier_unknown",
             Self::LabelMissing => "label_missing",
+            Self::TextRecoveryPending => "text_recovery_pending",
             Self::ObservationsWithoutReceipts => "observations_without_receipts",
             Self::OccurrenceStillOpen => "occurrence_still_open",
             Self::CoverageIncomplete => "coverage_incomplete",
@@ -2797,6 +2886,191 @@ mod tests {
         assert!(ledger.qualify(&evidence, &calibration).is_qualified());
         ledger.schedule_frontier(occurrence.clone(), [ObservationProducer::Whisper]);
         (ledger, occurrence)
+    }
+
+    fn debt_speech() -> AcousticSpeechEvidence {
+        measured_speech(
+            "s1",
+            1,
+            16_000,
+            vec![TailSampleRange {
+                session: "s1".to_string(),
+                capture_epoch: 1,
+                sample_start: 0,
+                sample_end: 16_000,
+            }],
+        )
+    }
+
+    #[test]
+    fn text_recovery_debt_retains_apple_but_refuses_false_coverage_and_seals() {
+        let (mut ledger, occurrence) = whisper_only_qualified_ledger();
+        ledger.admit(
+            &obs(ObservationProducer::Apple, 0, occurrence.clone()),
+            "partial",
+        );
+        let before = ledger.assess_seal_coverage("s1", 1, &debt_speech(), 32_000);
+        assert_eq!(before.coverage_ratio(), Some(1.0));
+        assert!(ledger.record_seal_coverage(before));
+        assert!(ledger.require_text_recovery(&occurrence));
+        assert!(ledger.require_text_recovery(&occurrence));
+        assert_eq!(
+            ledger.pending_text_recoveries("s1", 1),
+            vec![occurrence.clone()]
+        );
+        let after = ledger.assess_seal_coverage("s1", 1, &debt_speech(), 32_000);
+        assert_eq!(after.status, SealCoverageStatus::Incomplete);
+        assert_eq!(after.coverage_ratio(), Some(0.0));
+        assert_eq!(after.max_uncovered_samples, 16_000);
+        assert_eq!(ledger.text_of(&occurrence), Some("partial"));
+        ledger.admit(
+            &obs(ObservationProducer::Whisper, 0, occurrence.clone()),
+            " ",
+        );
+        ledger.note_frontier_return(&occurrence, ObservationProducer::Whisper);
+        assert!(ledger.text_recovery_pending(&occurrence));
+        assert_eq!(
+            ledger.seal(&occurrence),
+            Err(SealRefusal::TextRecoveryPending)
+        );
+        assert_eq!(
+            ledger.seal_terminal("s1", 1),
+            Err(SealRefusal::TextRecoveryPending)
+        );
+    }
+
+    #[test]
+    fn text_recovery_debt_resolves_only_after_exact_authorized_observation() {
+        let (mut ledger, occurrence) = whisper_only_qualified_ledger();
+        ledger.admit(
+            &obs(ObservationProducer::Apple, 0, occurrence.clone()),
+            "partial",
+        );
+        assert!(ledger.require_text_recovery(&occurrence));
+        let foreign = OccurrenceIdentity::new("foreign", 1, 0, 16_000);
+        ledger.admit(
+            &obs(ObservationProducer::Whisper, 0, foreign),
+            "foreign words",
+        );
+        assert!(ledger.text_recovery_pending(&occurrence));
+        ledger.admit(
+            &obs(ObservationProducer::Whisper, 0, occ(0, 8_000)),
+            "tail words",
+        );
+        assert!(ledger.text_recovery_pending(&occurrence));
+        let repaired = ledger.admit(
+            &obs(ObservationProducer::Whisper, 1, occurrence.clone()),
+            "entire recovered utterance",
+        );
+        assert!(repaired.grants_mutation());
+        assert!(!ledger.text_recovery_pending(&occurrence));
+        ledger.note_frontier_return(&occurrence, ObservationProducer::Whisper);
+        let coverage = ledger.assess_seal_coverage("s1", 1, &debt_speech(), 0);
+        assert_eq!(coverage.coverage_ratio(), Some(1.0));
+        assert!(ledger.record_seal_coverage(coverage));
+        assert!(ledger.seal_terminal("s1", 1).is_ok());
+        assert!(!ledger.require_text_recovery(&occurrence));
+        assert!(!ledger.require_text_recovery(&occ(32_000, 48_000)));
+    }
+
+    #[test]
+    fn text_recovery_debt_accepts_agreement_but_not_replayed_agreement() {
+        let (mut ledger, occurrence) = whisper_only_qualified_ledger();
+        ledger.admit(
+            &obs(ObservationProducer::Apple, 0, occurrence.clone()),
+            "same words",
+        );
+        assert!(ledger.require_text_recovery(&occurrence));
+        let whisper = obs(ObservationProducer::Whisper, 0, occurrence.clone());
+        assert!(matches!(
+            ledger.admit(&whisper, "same words"),
+            MutationReceipt::Preserve { .. }
+        ));
+        assert!(!ledger.text_recovery_pending(&occurrence));
+        assert!(ledger.require_text_recovery(&occurrence));
+        assert!(matches!(
+            ledger.admit(&whisper, "same words"),
+            MutationReceipt::Refuse { .. }
+        ));
+        assert!(ledger.text_recovery_pending(&occurrence));
+        ledger.admit(
+            &obs(ObservationProducer::Formatter, 1, occurrence.clone()),
+            "polished words",
+        );
+        assert!(matches!(
+            ledger.admit(
+                &obs(ObservationProducer::Whisper, 2, occurrence.clone()),
+                "polished words"
+            ),
+            MutationReceipt::Preserve { .. }
+        ));
+        assert!(ledger.text_recovery_pending(&occurrence));
+        ledger.admit(
+            &obs(ObservationProducer::ManualHuman, 3, occurrence.clone()),
+            "",
+        );
+        assert!(ledger.text_recovery_pending(&occurrence));
+        ledger.admit(
+            &obs(ObservationProducer::ManualHuman, 4, occurrence.clone()),
+            "human words",
+        );
+        assert!(!ledger.text_recovery_pending(&occurrence));
+    }
+
+    #[test]
+    fn text_recovery_debt_cannot_be_covered_by_an_overlapping_label() {
+        let (mut ledger, occurrence) = whisper_only_qualified_ledger();
+        assert!(ledger.require_text_recovery(&occurrence));
+        assert!(
+            ledger
+                .admit(
+                    &obs(ObservationProducer::Whisper, 0, occ(0, 32_000)),
+                    "words spanning both ranges",
+                )
+                .grants_mutation()
+        );
+        let speech = measured_speech(
+            "s1",
+            1,
+            32_000,
+            vec![TailSampleRange {
+                session: "s1".to_string(),
+                capture_epoch: 1,
+                sample_start: 0,
+                sample_end: 32_000,
+            }],
+        );
+        let coverage = ledger.assess_seal_coverage("s1", 1, &speech, 0);
+        assert_eq!(coverage.coverage_ratio(), Some(0.5));
+        assert_eq!(coverage.max_uncovered_samples, 16_000);
+        assert_eq!(coverage.uncovered_speech_ranges[0].sample_start, 0);
+        assert_eq!(coverage.uncovered_speech_ranges[0].sample_end, 16_000);
+        assert!(ledger.text_recovery_pending(&occurrence));
+    }
+
+    #[test]
+    fn text_recovery_debt_requires_new_same_lane_generation() {
+        let (mut ledger, occurrence) = whisper_only_qualified_ledger();
+        ledger.admit(
+            &obs(ObservationProducer::Whisper, 4, occurrence.clone()),
+            "heard words",
+        );
+        assert!(ledger.require_text_recovery(&occurrence));
+        let stale =
+            ObservationIdentity::new(ObservationProducer::Whisper, 8, 3, occurrence.clone());
+        assert!(matches!(
+            ledger.admit(&stale, "heard words"),
+            MutationReceipt::Preserve { .. }
+        ));
+        assert!(ledger.text_recovery_pending(&occurrence));
+        assert!(matches!(
+            ledger.admit(
+                &obs(ObservationProducer::Whisper, 5, occurrence.clone()),
+                "heard words",
+            ),
+            MutationReceipt::Preserve { .. }
+        ));
+        assert!(!ledger.text_recovery_pending(&occurrence));
     }
 
     #[test]

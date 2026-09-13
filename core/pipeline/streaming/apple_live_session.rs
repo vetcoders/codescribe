@@ -63,7 +63,9 @@ use crate::pipeline::acoustic_ledger::{
     ObservationProducer as LedgerObservationProducer, OccurrenceIdentity, SealCoverageReceipt,
     SealCoverageStatus, SealRefusal,
 };
-use crate::pipeline::contracts::{EngineEvent, EventSink, TranscriptSegment};
+use crate::pipeline::contracts::{
+    EngineEvent, EventSink, SpeechIntegrity, SpeechIntegrityPhase, TranscriptSegment,
+};
 use crate::stt::apple_stt::{LiveStreamEvent, LiveStreamSession};
 use crate::stt::tail_patcher::{SkipReasonCode, TailPatchConfig, TailPatchOutcome};
 use crate::stt::tail_provider::{
@@ -82,6 +84,7 @@ use super::silero_fusion::{
     ContextBounds, FusionContextMode, FusionWord, SileroIngress, bound_context_range,
     slice_apple_words,
 };
+use super::speech_progress::SpeechProgress;
 use super::stream_log::append_to_stream_log;
 
 /// How many sealed utterances may wait for Layer 1 before the seal path starts
@@ -1032,6 +1035,8 @@ struct AppleSealState {
     capture_epoch: u64,
     sample_rate: u32,
     preview_rev: u64,
+    speech_progress: SpeechProgress,
+    last_integrity: Option<SpeechIntegrity>,
     utterance_id: u64,
     open_partial: String,
     open_partial_segments: Vec<TranscriptSegment>,
@@ -1122,6 +1127,59 @@ struct AppleSealState {
 }
 
 impl AppleSealState {
+    fn emit_speech_integrity(&mut self, ev_tx: &mpsc::UnboundedSender<EngineEvent>) {
+        let ledger = self
+            .acoustic_ledger
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let debts = ledger.pending_text_recoveries(&self.session_id, self.capture_epoch);
+        let recovering = debts.iter().any(|occurrence| {
+            ledger.frontier_of(occurrence).is_some_and(|frontier| {
+                frontier
+                    .open_producers()
+                    .contains(&LedgerObservationProducer::Whisper)
+            })
+        });
+        drop(ledger);
+        let phase = if recovering {
+            SpeechIntegrityPhase::Recovering
+        } else if !debts.is_empty() {
+            SpeechIntegrityPhase::Unresolved
+        } else {
+            self.speech_progress.phase(self.sample_rate)
+        };
+        let debt_ms = self.speech_progress.debt_ms(self.sample_rate);
+        if self.last_integrity.as_ref().is_some_and(|previous| {
+            previous.phase == phase
+                && previous.pending_occurrences == debts.len() as u64
+                && previous.acoustic_speech_ms_since_text_advance / 100 == debt_ms / 100
+        }) {
+            return;
+        }
+        let evidence = SpeechIntegrity {
+            session_id: self.session_id.clone(),
+            capture_epoch: self.capture_epoch,
+            sequence: self
+                .last_integrity
+                .as_ref()
+                .map_or(1, |previous| previous.sequence + 1),
+            acoustic_speech_ms_since_text_advance: debt_ms,
+            pending_occurrences: debts.len() as u64,
+            phase,
+        };
+        self.last_integrity = Some(evidence.clone());
+        let _ = ev_tx.send(EngineEvent::SpeechIntegrity { evidence });
+    }
+
+    fn observe_apple_progress(&mut self, text: &str, segments: &[TranscriptSegment]) {
+        let word_end = segments
+            .iter()
+            .map(|segment| (segment.end_ts.max(0.0) * self.sample_rate as f32) as u64)
+            .max()
+            .unwrap_or(0);
+        self.speech_progress.observe_apple(text, word_end);
+    }
+
     fn window_by_samples(&self, start: u64, end: u64) -> Option<ResolvedAudioWindow> {
         if let Some(archive) = &self.terminal_pcm {
             archive.window(start, end)
@@ -1146,6 +1204,8 @@ impl AppleSealState {
             capture_epoch,
             sample_rate,
             preview_rev: 0,
+            speech_progress: SpeechProgress::default(),
+            last_integrity: None,
             utterance_id: 0,
             open_partial: String::new(),
             open_partial_segments: Vec::new(),
@@ -1564,6 +1624,11 @@ impl AppleSealState {
         let single_member = exact_open_members.len() == 1;
         let mut mutation_admitted = false;
         for (generation, (member_id, occurrence)) in exact_open_members.iter().enumerate() {
+            let had_debt = self
+                .acoustic_ledger
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .text_recovery_pending(occurrence);
             let label = payload.as_ref().and_then(|payload| {
                 let pinned = payload
                     .segments
@@ -1639,6 +1704,16 @@ impl AppleSealState {
                 None => {
                     self.fail_refinement(ev_tx, *member_id, occurrence, RefinementFailure::NoLabel)
                 }
+            }
+            let debt_resolved = had_debt
+                && !self
+                    .acoustic_ledger
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner)
+                    .text_recovery_pending(occurrence);
+            if debt_resolved && let Some(fusion) = self.fusion.as_ref() {
+                self.speech_progress
+                    .recovered_through(occurrence.sample_end, &fusion.acoustic_speech_evidence());
             }
             self.emit_pending_seal(ev_tx, *member_id);
         }
@@ -2390,8 +2465,9 @@ fn reconcile_silero_ledger(
         // Blank Apple evidence neither consumes this identity nor blocks its PCM.
         let has_apple_label = !text.trim().is_empty();
         if !has_apple_label && state.tail_patch.is_none() && !state.refinement_lane_lost {
-            // Local refinement disabled by the session owner: wait for real
-            // Apple evidence instead of sealing an unobserved empty label.
+            // An explicitly Apple-only take has no recovery observer to launch.
+            // Leave the occurrence unlabelled until Apple actually observes it;
+            // absent text remains uncovered rather than an invented empty seal.
             continue;
         }
         let span_start = words
@@ -2438,6 +2514,27 @@ fn reconcile_silero_ledger(
             state.fail_refinement(ev_tx, utterance_id, &occurrence, reason);
             state.reconciled_silero.insert(utterance_id);
             continue;
+        }
+        if !has_apple_label && !first_attempt {
+            continue;
+        }
+        let owes_recovery = !has_apple_label
+            || state.fusion.as_ref().is_some_and(|fusion| {
+                state.speech_progress.occurrence_has_debt(
+                    &occurrence,
+                    &fusion.acoustic_speech_evidence(),
+                    state.sample_rate,
+                )
+            });
+        if owes_recovery {
+            state
+                .acoustic_ledger
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .require_text_recovery(&occurrence);
+            // Debt is a whole-occurrence job, never a coalesced tail sharing
+            // another occurrence's result. Older pieces keep their own jobs.
+            state.flush_layer1_coalesce(ev_tx);
         }
         if has_apple_label {
             let mut ledger = state
@@ -2497,9 +2594,6 @@ fn reconcile_silero_ledger(
         } else {
             None
         };
-        if !has_apple_label && !first_attempt {
-            continue;
-        }
         state.pending_events.insert(
             utterance_id,
             PendingAppleSeal {
@@ -2547,11 +2641,15 @@ fn reconcile_silero_ledger(
         // to the occurrence's own span rather than costing Layer 1 the job
         // entirely. Ownership is unaffected either way — `occurrence` above was
         // minted from `silero.range`, not from this window.
-        let window = state
-            .window_by_samples(request_range.sample_start, request_range.sample_end)
-            .or_else(|| {
-                state.window_by_samples(silero.range.sample_start, silero.range.sample_end)
-            });
+        let window = if owes_recovery {
+            state.window_by_samples(silero.range.sample_start, silero.range.sample_end)
+        } else {
+            state
+                .window_by_samples(request_range.sample_start, request_range.sample_end)
+                .or_else(|| {
+                    state.window_by_samples(silero.range.sample_start, silero.range.sample_end)
+                })
+        };
         let _current_piece_owned = if let Some(window) = window {
             let committed_text = text.clone();
             state.enqueue_layer1_piece(
@@ -2577,6 +2675,9 @@ fn reconcile_silero_ledger(
             );
             false
         };
+        if owes_recovery {
+            state.flush_layer1_coalesce(ev_tx);
+        }
         if apple_admitted.is_some() {
             let _ = admit_ledger_label(
                 state,
@@ -3163,6 +3264,9 @@ fn schedule_formatter_after_terminal_label(
     occurrence: &OccurrenceIdentity,
     returning: LedgerObservationProducer,
 ) -> bool {
+    if ledger.text_recovery_pending(occurrence) {
+        return false;
+    }
     let Some(frontier) = ledger.frontier_of(occurrence) else {
         return false;
     };
@@ -3850,6 +3954,14 @@ fn apple_stream_worker(
                     }
                 }
                 if state.fusion_seal_armed {
+                    if let Some(fusion) = state.fusion.as_ref() {
+                        state.speech_progress.observe_speech(
+                            &fusion.acoustic_speech_evidence(),
+                            silero_ingest
+                                .as_ref()
+                                .is_some_and(|ingest| ingest.speech_live),
+                        );
+                    }
                     seal_sliced_by_silero(&mut state, &ev_tx, &[]);
                 }
                 let speech_live = silero_ingest.is_some_and(|ingest| ingest.speech_live);
@@ -3930,6 +4042,7 @@ fn apple_stream_worker(
             }
             Err(std_mpsc::RecvTimeoutError::Disconnected) => break,
         }
+        state.emit_speech_integrity(&ev_tx);
     }
 
     if let Some(receiver) = terminal_audio {
@@ -4024,6 +4137,7 @@ fn apple_stream_worker(
     repair_terminal_seal_coverage(&mut state, &ev_tx, language, &local_execution);
     drain_formatter_observers(&mut state, &ev_tx, &formatter_done)?;
     let seal_coverage = publish_terminal_coverage(&state, &ev_tx);
+    state.emit_speech_integrity(&ev_tx);
     info!(
         session_id = %state.session_id,
         capture_epoch = state.capture_epoch,
@@ -4178,6 +4292,7 @@ fn emit_stream_events(
                 );
             }
             LiveStreamEvent::Partial { text, segments } => {
+                state.observe_apple_progress(&text, &segments);
                 // Safety net for the named drop mechanism: if the bridge
                 // missed a freeze (shared opener collapse), seal the open
                 // partial here before the rewrite lands.
@@ -4208,6 +4323,7 @@ fn emit_stream_events(
                 });
             }
             LiveStreamEvent::PhraseFinal { text, segments } => {
+                state.observe_apple_progress(&text, &segments);
                 // The phrase is closed either way — the open partial is stale.
                 info!(
                     audio_secs,
@@ -9531,8 +9647,8 @@ mod rc_w2_test_rehab {
         assert_eq!(state.refinement_pending.len(), 8);
         assert_eq!(state.tail_patch_backpressure_drops, 1);
         assert_eq!(
-            state.sealed_count, 1,
-            "only exhausted capacity returns ownership"
+            state.sealed_count, 0,
+            "capacity failure returns the job, not a successful speech recovery"
         );
         let mut submitted = BTreeSet::new();
         for _ in 0..9 {
@@ -9558,8 +9674,21 @@ mod rc_w2_test_rehab {
         assert_eq!(submitted.len(), 9);
         assert!(state.refinement_pending.is_empty());
         assert_eq!(state.tail_patch_awaiting_completion, 0);
-        assert_eq!(state.sealed_count, 10);
-        assert_eq!(raw_finals(&drain(&mut rx)).len(), 10);
+        assert_eq!(state.sealed_count, 1);
+        assert_eq!(raw_finals(&drain(&mut rx)).len(), 1);
+        {
+            let ledger = state.acoustic_ledger.lock().unwrap();
+            assert_eq!(ledger.pending_text_recoveries("full-tail", 7).len(), 9);
+            for (i, &(start, end)) in ranges.iter().enumerate() {
+                let occurrence =
+                    OccurrenceIdentity::new("full-tail", 7, sample(start), sample(end));
+                assert_eq!(
+                    ledger.text_of(&occurrence),
+                    Some(format!("segment {i}").as_str()),
+                    "all physical labels remain visible even when recovery failed"
+                );
+            }
+        }
         let before = state.audio.session_sample_end();
         state.audio.push(&[0.25; 512]);
         assert_eq!(state.audio.session_sample_end(), before + 512);
@@ -9850,6 +9979,129 @@ mod live_refinement_admission_tests {
         completion
     }
 
+    /// Synthetic boundary-driven integration witness, not a microphone proof.
+    /// Exercise production reconciliation and admission with partial Apple text.
+    #[test]
+    fn synthetic_silero_guardian_recovers_whole_occurrence_or_keeps_explicit_debt() {
+        use super::super::silero_fusion::SileroIngress;
+        use crate::audio::chunker::{VadBoundaryEvidence, VadBoundaryKind};
+        for succeeds in [false, true] {
+            let (mut state, events, mut receiver, mut requests) = fixture(1);
+            let mut fusion = SileroIngress::new(RATE, "live-admission", 7);
+            fusion.note_observed_pcm(200, 200);
+            fusion.observe_boundaries(&[VadBoundaryEvidence {
+                kind: VadBoundaryKind::SpeechStart,
+                sample: 0,
+                speech_probability: 0.95,
+            }]);
+            state
+                .speech_progress
+                .observe_speech(&fusion.acoustic_speech_evidence(), true);
+            state.speech_progress.observe_apple("partial words", 200);
+            fusion.note_observed_pcm(2_400, 2_600);
+            fusion.observe_boundaries(&[VadBoundaryEvidence {
+                kind: VadBoundaryKind::SpeechEnd,
+                sample: 2_600,
+                speech_probability: 0.05,
+            }]);
+            let speech = fusion.acoustic_speech_evidence();
+            state.speech_progress.observe_speech(&speech, false);
+            assert_eq!(state.speech_progress.debt_ms(RATE), 2_400);
+            assert_eq!(
+                state.speech_progress.phase(RATE),
+                crate::pipeline::contracts::SpeechIntegrityPhase::Stalled
+            );
+            state.fusion = Some(fusion);
+            let mut physical = UtteranceLedger::new();
+            physical.open_or_extend("live-admission", 7, 0, 2_600);
+            physical.close_open(2_600);
+            reconcile_silero_ledger(
+                &mut state,
+                &events,
+                &physical,
+                &[TranscriptSegment {
+                    text: "partial words".into(),
+                    start_ts: 0.0,
+                    end_ts: 0.2,
+                }],
+            );
+            let request = requests.try_recv().expect("debt submits at speech close");
+            let occurrence = OccurrenceIdentity::new("live-admission", 7, 0, 2_600);
+            assert_eq!(request.member_occurrences, vec![(1, occurrence.clone())]);
+            assert_eq!(
+                OccurrenceIdentity::from(&request.provider_request.identity.range),
+                occurrence
+            );
+            assert_eq!(request.audio, vec![0.25; 2_600]);
+            request
+                .provider_request
+                .validate_pcm(&request.audio)
+                .unwrap();
+            assert!(state.layer1_coalesce.is_empty());
+            {
+                let ledger = state.acoustic_ledger.lock().unwrap();
+                assert_eq!(ledger.text_of(&occurrence), Some("partial words"));
+                assert!(ledger.text_recovery_pending(&occurrence));
+                assert_eq!(
+                    ledger
+                        .assess_seal_coverage("live-admission", 7, &speech, 250)
+                        .coverage_ratio(),
+                    Some(0.0)
+                );
+            }
+            while receiver.try_recv().is_ok() {}
+            let mut completion = if succeeds {
+                labelled_completion(&request)
+            } else {
+                finish(&request)
+            };
+            if let Some(payload) = completion.payload.as_mut() {
+                payload.text = "partial words and the recovered remainder".into();
+                payload.segments[0].text = payload.text.clone();
+            }
+            state.complete_whisper_window(&events, completion, 20.0);
+            let mut ledger = state.acoustic_ledger.lock().unwrap();
+            assert_eq!(ledger.text_recovery_pending(&occurrence), !succeeds);
+            assert_eq!(ledger.is_sealed(&occurrence), succeeds);
+            assert_eq!(
+                ledger.text_of(&occurrence),
+                Some(if succeeds {
+                    "partial words and the recovered remainder"
+                } else {
+                    "partial words"
+                })
+            );
+            let coverage = ledger.assess_seal_coverage("live-admission", 7, &speech, 250);
+            assert_eq!(
+                coverage.coverage_ratio(),
+                Some(if succeeds { 1.0 } else { 0.0 })
+            );
+            assert!(ledger.record_seal_coverage(coverage));
+            if succeeds {
+                assert!(ledger.seal_terminal("live-admission", 7).is_ok());
+            } else {
+                assert_eq!(
+                    ledger.seal_terminal("live-admission", 7),
+                    Err(SealRefusal::TextRecoveryPending)
+                );
+            }
+            drop(ledger);
+            let emitted = std::iter::from_fn(|| receiver.try_recv().ok()).collect::<Vec<_>>();
+            assert_eq!(emitted.iter().any(|event| matches!(event,
+                EngineEvent::LedgerMutation { observation, receipt: MutationReceipt::Correct { .. }, label }
+                    if observation.producer == LedgerObservationProducer::Whisper
+                    && label == "partial words and the recovered remainder"
+            )), succeeds);
+            assert_eq!(
+                emitted
+                    .iter()
+                    .any(|event| matches!(event, EngineEvent::LedgerSeal { .. })),
+                succeeds
+            );
+            assert!(requests.try_recv().is_err());
+        }
+    }
+
     #[test]
     fn whisper_segmentless_text_requires_exact_window_and_rejected_pins_never_fallback() {
         for context in [
@@ -9860,7 +10112,7 @@ mod live_refinement_admission_tests {
                 let (mut state, events, mut receiver, mut requests) = fixture(1);
                 state.fusion_context = context;
                 reconcile_silero_ledger(&mut state, &events, &closed(1), &[]);
-                assert!(state.flush_layer1_coalesce(&events));
+                assert!(state.layer1_coalesce.is_empty());
                 let request = requests.try_recv().unwrap();
                 request
                     .provider_request
@@ -9880,7 +10132,11 @@ mod live_refinement_admission_tests {
                 }
                 while receiver.try_recv().is_ok() {}
                 state.complete_whisper_window(&events, completion, 20.0);
-                let accepted = context == FusionContextMode::UtteranceOnly && defect == "none";
+                let accepted = defect == "none";
+                assert_eq!(
+                    OccurrenceIdentity::from(&request.provider_request.identity.range),
+                    *occurrence
+                );
                 let ledger = state.acoustic_ledger.lock().unwrap();
                 assert_eq!(
                     ledger.text_of(occurrence),
@@ -9930,7 +10186,7 @@ mod live_refinement_admission_tests {
     fn whisper_foreign_envelopes_preserve_the_submitted_job_until_exact_completion() {
         let (mut state, events, mut receiver, mut requests) = fixture(1);
         reconcile_silero_ledger(&mut state, &events, &closed(1), &[]);
-        assert!(state.flush_layer1_coalesce(&events));
+        assert!(state.layer1_coalesce.is_empty());
         let request = requests.try_recv().unwrap();
         let occurrence = &request.member_occurrences[0].1;
         while receiver.try_recv().is_ok() {}
@@ -10011,10 +10267,21 @@ mod live_refinement_admission_tests {
     fn whisper_unsolicited_completion_cannot_consume_a_held_occurrence() {
         let (mut source, source_events, _source_receiver, mut source_requests) = fixture(1);
         reconcile_silero_ledger(&mut source, &source_events, &closed(1), &[]);
-        assert!(source.flush_layer1_coalesce(&source_events));
+        assert!(source.layer1_coalesce.is_empty());
         let unsolicited = source_requests.try_recv().unwrap();
         let (mut state, events, mut receiver, mut requests) = fixture(1);
-        reconcile_silero_ledger(&mut state, &events, &closed(1), &[]);
+        // A labelled, debt-free occurrence still exercises held coalescer
+        // ownership; a blank occurrence is now submitted immediately.
+        reconcile_silero_ledger(
+            &mut state,
+            &events,
+            &closed(1),
+            &[TranscriptSegment {
+                text: "hello".into(),
+                start_ts: 0.0,
+                end_ts: 0.4,
+            }],
+        );
         let occurrence = &unsolicited.member_occurrences[0].1;
         while receiver.try_recv().is_ok() {}
         state.complete_whisper_window(&events, labelled_completion(&unsolicited), 20.0);
@@ -10023,7 +10290,7 @@ mod live_refinement_admission_tests {
         assert!(state.refinement_submitted.is_empty());
         assert!(!state.layer1_coalesce.is_empty());
         let ledger = state.acoustic_ledger.lock().unwrap();
-        assert_eq!(ledger.text_of(occurrence), None);
+        assert_eq!(ledger.text_of(occurrence), Some("hello"));
         assert!(!ledger.is_sealed(occurrence));
         assert!(
             ledger
@@ -10048,7 +10315,7 @@ mod live_refinement_admission_tests {
         for defect in ["request", "session", "epoch", "start", "end"] {
             let (mut state, events, mut receiver, mut requests) = fixture(1);
             reconcile_silero_ledger(&mut state, &events, &closed(1), &[]);
-            assert!(state.flush_layer1_coalesce(&events));
+            assert!(state.layer1_coalesce.is_empty());
             let request = requests.try_recv().unwrap();
             let occurrence = &request.member_occurrences[0].1;
             let mut completion = labelled_completion(&request);
@@ -10094,7 +10361,7 @@ mod live_refinement_admission_tests {
     }
 
     #[test]
-    fn closed_without_next_apple_piece_submits_on_live_tick_in_both_capture_intents() {
+    fn closed_without_next_apple_piece_submits_immediately_in_both_capture_intents() {
         // The production tick has no intent input: neither SingleTurn nor
         // hands-free lifecycle may veto acoustic readiness.
         for silence in [None, Some(2.0)] {
@@ -10102,13 +10369,14 @@ mod live_refinement_admission_tests {
             let _epoch = EpochGate::for_session(RATE, silence, true);
             let now = state.refinement_clock;
             reconcile_silero_ledger(&mut state, &events, &closed(1), &[]);
-            state.tick_refinements(&events, now + Duration::from_millis(1_199));
-            assert!(requests.try_recv().is_err());
-            state.audio.push(&[0.0; 40]); // capture continues, no Apple piece or Stop
-            state.tick_refinements(&events, now + Duration::from_millis(1_200));
             let request = requests
                 .try_recv()
-                .expect("closed physical span must be submitted");
+                .expect("speech debt submits at close, without another Apple piece or tick");
+            state.tick_refinements(&events, now + Duration::from_millis(1_199));
+            assert!(requests.try_recv().is_err());
+            state.audio.push(&[0.0; 40]);
+            state.tick_refinements(&events, now + Duration::from_millis(1_200));
+            assert!(requests.try_recv().is_err());
             assert_eq!(
                 request.member_occurrences,
                 vec![(1, OccurrenceIdentity::new("live-admission", 7, 0, 400))]
@@ -10170,7 +10438,7 @@ mod live_refinement_admission_tests {
             state.acoustic_ledger.lock().unwrap().text_of(occurrence),
             Some("hello")
         );
-        state.complete_whisper_window(&events, finish(&request), 20.0);
+        state.complete_whisper_window(&events, labelled_completion(&request), 20.0);
         assert!(state.acoustic_ledger.lock().unwrap().is_sealed(occurrence));
         let emitted = std::iter::from_fn(|| receiver.try_recv().ok()).collect::<Vec<_>>();
         assert_eq!(emitted.iter().filter(|event| matches!(event,
@@ -10191,7 +10459,7 @@ mod live_refinement_admission_tests {
         let request = requests.try_recv().unwrap();
         let occurrence = request.member_occurrences[0].1.clone();
         assert_eq!(occurrence.sample_end, 400);
-        assert_eq!(request.provider_request.identity.range.sample_end, 800);
+        assert_eq!(request.provider_request.identity.range.sample_end, 400);
         request
             .provider_request
             .validate_pcm(&request.audio)
@@ -10294,7 +10562,10 @@ mod live_refinement_admission_tests {
         state.complete_whisper_window(&events, finish(&request), 20.0);
         {
             let mut ledger = state.acoustic_ledger.lock().unwrap();
-            assert_eq!(ledger.seal(&occurrence), Err(SealRefusal::LabelMissing));
+            assert_eq!(
+                ledger.seal(&occurrence),
+                Err(SealRefusal::TextRecoveryPending)
+            );
             assert!(ledger.frontier_of(&occurrence).unwrap().is_closed());
             assert_eq!(ledger.layer_trail_for(&occurrence).count(), 1);
         }
@@ -10321,14 +10592,9 @@ mod live_refinement_admission_tests {
                 ledger.qualified_occurrences().cloned().collect::<Vec<_>>(),
                 vec![occurrence.clone()]
             );
-            assert_eq!(
-                ledger
-                    .seal_of(&occurrence)
-                    .unwrap()
-                    .layer_trail_ordinals
-                    .len(),
-                3
-            );
+            assert!(ledger.seal_of(&occurrence).is_none());
+            assert!(ledger.text_recovery_pending(&occurrence));
+            assert_eq!(ledger.layer_trail_for(&occurrence).count(), 3);
             assert!(ledger.frontier_of(&occurrence).unwrap().is_closed());
         }
         let emitted = std::iter::from_fn(|| receiver.try_recv().ok()).collect::<Vec<_>>();
@@ -10347,7 +10613,7 @@ mod live_refinement_admission_tests {
                 .iter()
                 .filter(|event| matches!(event, EngineEvent::LedgerSeal { .. }))
                 .count(),
-            1
+            0
         );
         assert_eq!(
             emitted
@@ -10356,7 +10622,7 @@ mod live_refinement_admission_tests {
                     EngineEvent::UtteranceFinal { text, .. } if text == "late real words"
                 ))
                 .count(),
-            1
+            0
         );
         let later = state.refinement_clock + Duration::from_secs(3);
         state.tick_refinements(&events, later);
@@ -10477,7 +10743,8 @@ mod live_refinement_admission_tests {
                 OccurrenceIdentity::new("live-admission", 7, id * 1_000, id * 1_000 + 400);
             let ledger = state.acoustic_ledger.lock().unwrap();
             assert_eq!(ledger.text_of(&occurrence), Some("recovered"));
-            assert!(ledger.is_sealed(&occurrence));
+            assert!(!ledger.is_sealed(&occurrence));
+            assert!(ledger.text_recovery_pending(&occurrence));
             assert_eq!(ledger.layer_trail_for(&occurrence).count(), 3);
         }
         assert!(requests.try_recv().is_err());
@@ -10517,7 +10784,8 @@ mod live_refinement_admission_tests {
                 OccurrenceIdentity::new("live-admission", 7, id * 1_000, id * 1_000 + 400);
             let ledger = state.acoustic_ledger.lock().unwrap();
             assert_eq!(ledger.text_of(&occurrence), Some("recovered"));
-            assert!(ledger.is_sealed(&occurrence));
+            assert!(!ledger.is_sealed(&occurrence));
+            assert!(ledger.text_recovery_pending(&occurrence));
             assert_eq!(ledger.layer_trail_for(&occurrence).count(), 3);
         }
         assert_eq!(
@@ -10617,7 +10885,7 @@ mod live_refinement_admission_tests {
             let refusal = ledger
                 .seal_terminal("live-admission", 7)
                 .expect_err("no label at Stop");
-            assert_eq!(refusal, SealRefusal::LabelMissing);
+            assert_eq!(refusal, SealRefusal::TextRecoveryPending);
             report_terminal_seal_refusal(&events, refusal);
             assert_eq!(
                 warnings(&mut receiver, LEDGER_TERMINAL_SEAL_REFUSED_WARNING_CODE),
@@ -10653,7 +10921,7 @@ mod live_refinement_admission_tests {
             assert!(ledger.record_seal_coverage(coverage));
             assert_eq!(
                 ledger.seal_terminal("live-admission", 7),
-                Err(SealRefusal::CoverageIncomplete)
+                Err(SealRefusal::TextRecoveryPending)
             );
             assert_eq!(state.sealed_count, 0);
             assert_eq!(

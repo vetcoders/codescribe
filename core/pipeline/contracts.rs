@@ -612,6 +612,30 @@ pub enum AcousticSpanGrain {
     Utterance,
 }
 
+/// Live acoustic integrity projected by the session's one Silero observer.
+/// No phase grants transcript mutation or terminal delivery permission.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum SpeechIntegrityPhase {
+    Unavailable,
+    Listening,
+    Tracking,
+    Stalled,
+    Recovering,
+    Unresolved,
+}
+
+/// Content-free progress evidence scoped to a physical capture.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SpeechIntegrity {
+    pub session_id: String,
+    pub capture_epoch: u64,
+    pub sequence: u64,
+    pub acoustic_speech_ms_since_text_advance: u64,
+    pub pending_occurrences: u64,
+    pub phase: SpeechIntegrityPhase,
+}
+
 /// Events emitted by the transcription engine.
 ///
 /// These are semantic events — the engine communicates what happened
@@ -621,6 +645,8 @@ pub enum AcousticSpanGrain {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum EngineEvent {
+    /// Live acoustic-versus-text integrity, never transcript mutation authority.
+    SpeechIntegrity { evidence: SpeechIntegrity },
     /// The only transcript mutation input. Engines submit an observation to
     /// `AcousticLedger`; this event carries its exact receipt to the reducer.
     #[serde(skip)]

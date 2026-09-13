@@ -163,6 +163,7 @@ impl TryFrom<&EngineEvent> for EngineEventWire {
             EngineEvent::LedgerMutation { .. }
             | EngineEvent::LedgerSeal { .. }
             | EngineEvent::SealCoverage { .. }
+            | EngineEvent::SpeechIntegrity { .. }
             | EngineEvent::OccurrenceLabelProposal { .. }
             | EngineEvent::ContextMarker { .. } => {
                 return Err(IpcIneligibleEngineEvent);

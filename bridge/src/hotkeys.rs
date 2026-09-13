@@ -314,17 +314,14 @@ pub(crate) fn refresh_live_controller_config() {
         return;
     };
     handle.spawn(async move {
-        let Ok(snapshot) = Config::load_runtime_snapshot_without_keychain() else {
-            tracing::warn!("settings refresh skipped: runtime snapshot refused");
-            return;
-        };
-        if !controller
-            .replace_runtime_settings_when_idle(snapshot)
-            .await
-        {
-            tracing::info!(
+        match controller.refresh_runtime_settings_from_disk().await {
+            Ok(true) => {}
+            Ok(false) => tracing::info!(
                 "settings refresh deferred: active take keeps its immutable snapshot generation"
-            );
+            ),
+            Err(error) => {
+                tracing::warn!("settings refresh pending: runtime snapshot refused: {error:#}")
+            }
         }
     });
 }

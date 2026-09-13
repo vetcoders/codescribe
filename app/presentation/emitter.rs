@@ -17,12 +17,17 @@ use codescribe_core::pipeline::acoustic_ledger::{
     ObservationIdentity, ObservationProducer, OccurrenceIdentity, SealCoverageReceipt,
     TranscriptComparisonReceipt,
 };
-use codescribe_core::pipeline::contracts::{DeltaSink, EngineEvent, EventSink, TranscriptDelta};
+use codescribe_core::pipeline::contracts::{
+    DeltaSink, EngineEvent, EventSink, SpeechIntegrity, SpeechIntegrityPhase, TranscriptDelta,
+};
 use sha2::{Digest, Sha256};
 use tokio::sync::Mutex;
 use tracing::{debug, info};
 
 use super::transcript_bus::{TranscriptBus, TranscriptBusEvidenceEvent};
+
+/// Read-only cursor paint observer: bounded text and acoustic warning state.
+pub type CursorObserver = Arc<dyn Fn(&str, bool) + Send + Sync>;
 
 /// Commands sent through the ordered channel to the emitter worker.
 enum EmitterCmd {
@@ -1098,6 +1103,10 @@ pub type ProjectionObserver = Arc<dyn Fn(&TranscriptBusEvidenceEvent) + Send + S
 /// All target mutations are serialized through one mpsc worker, guaranteeing
 /// that overlay deltas and the shared transcript snapshot see identical order.
 pub struct PresentationEmitter {
+    cursor_observer: Option<CursorObserver>,
+    cursor_integrity: std::sync::Mutex<Option<SpeechIntegrity>>,
+    /// Last bounded paint, not a document or independently reconstructed delta.
+    cursor_tail: std::sync::Mutex<String>,
     cmd_tx: std::sync::Mutex<Option<tokio::sync::mpsc::UnboundedSender<EmitterCmd>>>,
     cmd_handle: Option<tokio::task::JoinHandle<()>>,
     /// One occurrence-keyed committed document plus volatile overlay paint.
@@ -1188,6 +1197,9 @@ impl PresentationEmitter {
             acoustic_ledger,
             projection_callback,
             literal_delivery: std::sync::atomic::AtomicBool::new(false),
+            cursor_observer: None,
+            cursor_integrity: std::sync::Mutex::new(None),
+            cursor_tail: std::sync::Mutex::new(String::new()),
         }
     }
 
@@ -1197,6 +1209,46 @@ impl PresentationEmitter {
     pub fn set_literal_delivery(&self, literal: bool) {
         self.literal_delivery
             .store(literal, std::sync::atomic::Ordering::SeqCst);
+    }
+
+    /// Observe ephemeral paint without granting document or delivery authority.
+    pub fn with_cursor_observer(mut self, observer: CursorObserver) -> Self {
+        self.cursor_observer = Some(observer);
+        self
+    }
+
+    fn paint_cursor(&self, rendered: &str) {
+        if self.cursor_observer.is_none() {
+            return;
+        }
+        let mut words = rendered
+            .split_whitespace()
+            .rev()
+            .take(5)
+            .collect::<Vec<_>>();
+        words.reverse();
+        *self.cursor_tail.lock().unwrap_or_else(|e| e.into_inner()) = words.join(" ");
+        self.repaint_cursor();
+    }
+
+    fn repaint_cursor(&self) {
+        let Some(observer) = &self.cursor_observer else {
+            return;
+        };
+        let integrity = self
+            .cursor_integrity
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        let degraded = integrity.as_ref().is_some_and(|e| {
+            matches!(
+                e.phase,
+                SpeechIntegrityPhase::Stalled
+                    | SpeechIntegrityPhase::Recovering
+                    | SpeechIntegrityPhase::Unresolved
+            )
+        });
+        let tail = self.cursor_tail.lock().unwrap_or_else(|e| e.into_inner());
+        observer(if degraded { "…" } else { &tail }, degraded);
     }
 
     /// Whether this take promised literal words (see [`Self::set_literal_delivery`]).
@@ -1223,6 +1275,11 @@ impl PresentationEmitter {
 
     /// Send a command to the emitter worker (non-blocking, ordered).
     fn send_cmd(&self, cmd: EmitterCmd) {
+        match &cmd {
+            EmitterCmd::PublishCommittedRevision(text)
+            | EmitterCmd::PaintEphemeralPreview(text) => self.paint_cursor(text),
+            EmitterCmd::Finish => {}
+        }
         if let Ok(guard) = self.cmd_tx.lock()
             && let Some(tx) = guard.as_ref()
             && tx.send(cmd).is_err()
@@ -1502,6 +1559,30 @@ impl EventSink for PresentationEmitter {
     /// Route an `EngineEvent` into reducer state and ordered delta delivery.
     fn on_event(&self, event: &EngineEvent) {
         match event {
+            EngineEvent::SpeechIntegrity { evidence } => {
+                if self
+                    .transcript_bus
+                    .as_ref()
+                    .is_some_and(|bus| bus.session_id() != evidence.session_id)
+                {
+                    return;
+                }
+                {
+                    let mut current = self
+                        .cursor_integrity
+                        .lock()
+                        .unwrap_or_else(|e| e.into_inner());
+                    if current.as_ref().is_some_and(|old| {
+                        old.session_id != evidence.session_id
+                            || old.capture_epoch != evidence.capture_epoch
+                            || old.sequence >= evidence.sequence
+                    }) {
+                        return;
+                    }
+                    *current = Some(evidence.clone());
+                }
+                self.repaint_cursor();
+            }
             EngineEvent::LedgerMutation {
                 observation,
                 receipt,
@@ -1823,6 +1904,87 @@ mod tests {
     #[derive(Default)]
     struct RecordingDeltaSink {
         deltas: StdMutex<Vec<TranscriptDelta>>,
+    }
+
+    #[tokio::test]
+    async fn cursor_projects_five_words_and_acoustic_debt_without_delivery() {
+        use codescribe_core::pipeline::contracts::{SpeechIntegrity, SpeechIntegrityPhase};
+        let paints = Arc::new(StdMutex::new(Vec::new()));
+        let observed = paints.clone();
+        let delivery = Arc::new(Mutex::new(String::new()));
+        let temp = tempfile::tempdir().unwrap();
+        let bus = Arc::new(
+            TranscriptBus::open_at(
+                TranscriptSession {
+                    session_id: "take".into(),
+                    mode: TranscriptMode::Dictation,
+                    has_latched_target: false,
+                    latched_target_is_self: false,
+                },
+                temp.path().join("cursor.jsonl"),
+                None,
+            )
+            .unwrap(),
+        );
+        let emitter = super::PresentationEmitter::new_with_transcript_bus(
+            delivery.clone(),
+            None,
+            None,
+            Some(bus),
+        )
+        .with_cursor_observer(Arc::new(move |text, amber| {
+            observed.lock().unwrap().push((text.to_owned(), amber));
+        }));
+        emitter.on_event(&EngineEvent::Preview {
+            rev: 1,
+            text: "zero jeden dwa trzy cztery pięć".into(),
+        });
+        assert_eq!(
+            paints.lock().unwrap().last().unwrap(),
+            &("jeden dwa trzy cztery pięć".into(), false)
+        );
+        let mut evidence = SpeechIntegrity {
+            session_id: "take".into(),
+            capture_epoch: 7,
+            sequence: 1,
+            acoustic_speech_ms_since_text_advance: 2400,
+            pending_occurrences: 1,
+            phase: SpeechIntegrityPhase::Stalled,
+        };
+        let mut foreign_first = evidence.clone();
+        foreign_first.session_id = "previous take".into();
+        emitter.on_event(&EngineEvent::SpeechIntegrity {
+            evidence: foreign_first,
+        });
+        assert!(!paints.lock().unwrap().last().unwrap().1);
+        assert!(emitter.cursor_integrity.lock().unwrap().is_none());
+        for phase in [
+            SpeechIntegrityPhase::Stalled,
+            SpeechIntegrityPhase::Recovering,
+            SpeechIntegrityPhase::Unresolved,
+        ] {
+            evidence.phase = phase;
+            emitter.on_event(&EngineEvent::SpeechIntegrity {
+                evidence: evidence.clone(),
+            });
+            assert_eq!(paints.lock().unwrap().last().unwrap(), &("…".into(), true));
+            evidence.sequence += 1;
+        }
+        let before = paints.lock().unwrap().len();
+        let mut stale = evidence.clone();
+        stale.session_id = "old take".into();
+        emitter.on_event(&EngineEvent::SpeechIntegrity { evidence: stale });
+        assert_eq!(paints.lock().unwrap().len(), before);
+        // A canonical repair paints while amber. Clearing the warning must
+        // reveal that repair, not resurrect the earlier provisional preview.
+        emitter.paint_cursor("odzyskany cały fragment");
+        evidence.phase = SpeechIntegrityPhase::Tracking;
+        emitter.on_event(&EngineEvent::SpeechIntegrity { evidence });
+        assert_eq!(
+            paints.lock().unwrap().last().unwrap(),
+            &("odzyskany cały fragment".into(), false)
+        );
+        assert!(delivery.lock().await.is_empty());
     }
 
     impl DeltaSink for RecordingDeltaSink {

@@ -18,6 +18,8 @@ pub(crate) mod live_audio_buffer;
 pub(crate) mod session;
 /// W13-3B Silero identity + conservative per-word fusion (product-owned arming).
 pub(crate) mod silero_fusion;
+/// Read-only comparison of measured speech with recognizer progress.
+pub(crate) mod speech_progress;
 /// Session stream-log sink (`CODESCRIBE_STREAM_LOG*` env contract).
 pub(crate) mod stream_log;
 

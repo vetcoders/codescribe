@@ -778,6 +778,9 @@ pub struct RecordingController {
     /// The Arc inside is replaced only when idle so an active take keeps its
     /// generation even if Settings writes a later snapshot.
     runtime_settings: RwLock<Arc<RuntimeSettingsSnapshot>>,
+    /// Persisted intent changed while a take owned the current generation.
+    /// This is invalidation only; the loader remains the settings authority.
+    runtime_settings_refresh_pending: AtomicBool,
 
     /// Current state
     state: Arc<RwLock<State>>,
@@ -1072,6 +1075,7 @@ impl RecordingController {
 
         Self {
             runtime_settings,
+            runtime_settings_refresh_pending: AtomicBool::new(false),
             state: Arc::new(RwLock::new(State::Idle)),
             recorder: Arc::new(Mutex::new(recorder)),
             assistive_mode: Arc::new(RwLock::new(false)),
@@ -1467,22 +1471,23 @@ impl RecordingController {
         }
     }
 
-    /// Replace the immutable settings generation when no take is active.
+    /// Refresh persisted intent now when idle, otherwise retain an invalidation
+    /// for the next take. Load under the lifecycle lock so asynchronous Settings
+    /// notifications cannot install an older, preloaded generation out of order.
     ///
     /// Scheduling, starts, stops and refresh all cross `serial_lock`. A live
     /// delayed-hold task counts as active ownership; a finished stale handle is
     /// consumed so it cannot block refresh forever.
-    pub async fn replace_runtime_settings_when_idle(
-        &self,
-        runtime_settings: RuntimeSettingsSnapshot,
-    ) -> bool {
+    pub async fn refresh_runtime_settings_from_disk(&self) -> Result<bool> {
         let _serial_guard = self.serial_lock.lock().await;
+        self.runtime_settings_refresh_pending
+            .store(true, Ordering::SeqCst);
 
         {
             let mut hold_task = self.hold_start_task.lock().await;
             let finished = hold_task.as_ref().map(|task| task.is_finished());
             match finished {
-                Some(false) => return false,
+                Some(false) => return Ok(false),
                 Some(true) => {
                     let _ = hold_task.take();
                 }
@@ -1491,11 +1496,25 @@ impl RecordingController {
         }
 
         if self.current_state().await != State::Idle {
-            return false;
+            return Ok(false);
         }
-        self.install_runtime_settings_generation(runtime_settings)
-            .await;
-        true
+        self.refresh_pending_runtime_settings_locked().await?;
+        Ok(true)
+    }
+
+    /// The next take must consume persisted intent before selecting its Arc.
+    /// Call only at an idle start boundary under `serial_lock`. A refused load
+    /// keeps the invalidation set and refuses that start instead of silently
+    /// recording with settings that the Founder has already changed.
+    async fn refresh_pending_runtime_settings_locked(&self) -> Result<()> {
+        if self.runtime_settings_refresh_pending.load(Ordering::SeqCst) {
+            let refreshed = Config::load_runtime_snapshot_without_keychain()
+                .context("pending_settings_snapshot_refresh_failed")?;
+            self.install_runtime_settings_generation(refreshed).await;
+            self.runtime_settings_refresh_pending
+                .store(false, Ordering::SeqCst);
+        }
+        Ok(())
     }
 
     /// Install one already-sealed generation. Callers must own `serial_lock`;
@@ -2572,14 +2591,20 @@ impl RecordingController {
                 Self::broadcast_transcript_projection(&projection_broadcast, event);
             },
         );
-        let presentation = Arc::new(PresentationEmitter::new_with_authority(
-            transcript_buffer,
-            delta_sink,
-            None,
-            transcript_bus,
-            acoustic_ledger,
-            Some(projection_callback),
-        ));
+        let cursor_token = crate::os::hold_badge::take_token();
+        let presentation = Arc::new(
+            PresentationEmitter::new_with_authority(
+                transcript_buffer,
+                delta_sink,
+                None,
+                transcript_bus,
+                acoustic_ledger,
+                Some(projection_callback),
+            )
+            .with_cursor_observer(Arc::new(move |text, degraded| {
+                crate::os::hold_badge::update_transcript(cursor_token, text, degraded);
+            })),
+        );
         let presentation_sink: Arc<dyn codescribe_core::pipeline::contracts::EventSink> =
             presentation.clone();
         let ipc_sink: Arc<dyn codescribe_core::pipeline::contracts::EventSink> =
@@ -3384,6 +3409,7 @@ impl RecordingController {
         }
         // Cancel any existing delayed start before selecting the next Arc.
         self.cancel_pending_hold_start().await;
+        self.refresh_pending_runtime_settings_locked().await?;
         let task_generation = self.hold_start_generation.load(Ordering::SeqCst);
         let runtime_settings = self.runtime_settings_arc().await;
         let config = runtime_settings.values().clone();
@@ -3754,6 +3780,7 @@ impl RecordingController {
         }
         // A new take inherits no destination from the previous one.
         *self.delivery_disposition.write().await = TranscriptDelivery::Unattempted;
+        self.refresh_pending_runtime_settings_locked().await?;
         let runtime_settings = self.runtime_settings_arc().await;
         let config = runtime_settings.values();
         let _start_guard = AtomicFlagGuard::new(Arc::clone(&self.start_transition_in_flight));
@@ -6284,20 +6311,31 @@ mod c15d_settings_one_path_falsifiers {
     /// C15D-A generation falsifier: idle refresh performs one Arc replacement
     /// and cannot mutate a previously selected Arc.
     #[tokio::test]
+    #[serial_test::serial]
     async fn idle_refresh_replaces_one_arc_and_preserves_previous_generation() {
+        let temp = tempfile::tempdir().unwrap();
+        let _data_dir = DataDirGuard::install(temp.path());
         let controller = RecordingController::new_without_keychain();
         let before = controller.runtime_settings_arc().await;
         let before_digest = before.digest().as_str().to_string();
         let before_delay = before.values().hold_start_delay_ms;
-        let next = Config::load_runtime_snapshot_without_keychain().expect("seal next generation");
+        let mut settings = UserSettings::load();
+        settings.auto_paste_enabled = Some(false);
+        settings.save().unwrap();
         assert!(
             controller
-                .replace_runtime_settings_when_idle(next.clone())
+                .refresh_runtime_settings_from_disk()
                 .await
+                .expect("refresh idle settings")
         );
         let after = controller.runtime_settings_arc().await;
         assert!(!Arc::ptr_eq(&before, &after));
-        assert_eq!(after.digest().as_str(), next.digest().as_str());
+        assert!(!after.values().auto_paste_enabled);
+        assert!(
+            !controller
+                .runtime_settings_refresh_pending
+                .load(Ordering::SeqCst)
+        );
         assert_eq!(
             controller.get_config().await.hold_start_delay_ms,
             after.values().hold_start_delay_ms
@@ -6366,9 +6404,12 @@ mod c15d_settings_one_path_falsifiers {
         });
         *controller.hold_start_task.lock().await = Some(pending);
 
-        let next =
-            Config::load_runtime_snapshot_without_keychain().expect("seal deferred generation");
-        assert!(!controller.replace_runtime_settings_when_idle(next).await);
+        assert!(
+            !controller
+                .refresh_runtime_settings_from_disk()
+                .await
+                .unwrap()
+        );
         let after = controller.runtime_settings_arc().await;
         assert!(Arc::ptr_eq(&before, &after));
 
@@ -6387,9 +6428,12 @@ mod c15d_settings_one_path_falsifiers {
         }
         *controller.hold_start_task.lock().await = Some(finished);
 
-        let next =
-            Config::load_runtime_snapshot_without_keychain().expect("seal post-hold generation");
-        assert!(controller.replace_runtime_settings_when_idle(next).await);
+        assert!(
+            controller
+                .refresh_runtime_settings_from_disk()
+                .await
+                .unwrap()
+        );
         assert!(controller.hold_start_task.lock().await.is_none());
     }
 
@@ -6401,13 +6445,68 @@ mod c15d_settings_one_path_falsifiers {
         for active_state in [State::RecHold, State::RecToggle] {
             *controller.state.write().await = active_state;
             let before = controller.runtime_settings_arc().await;
-            let next =
-                Config::load_runtime_snapshot_without_keychain().expect("seal later generation");
-            assert!(!controller.replace_runtime_settings_when_idle(next).await);
+            assert!(
+                !controller
+                    .refresh_runtime_settings_from_disk()
+                    .await
+                    .unwrap()
+            );
             let after = controller.runtime_settings_arc().await;
             assert!(Arc::ptr_eq(&before, &after));
         }
         *controller.state.write().await = State::Idle;
+    }
+
+    #[tokio::test]
+    #[serial_test::serial]
+    async fn deferred_settings_refresh_is_consumed_at_next_idle_selection() {
+        let temp = tempfile::tempdir().unwrap();
+        let _data_dir = DataDirGuard::install(temp.path());
+        let controller = RecordingController::new_without_keychain();
+        let before = controller.runtime_settings_arc().await;
+        *controller.state.write().await = State::RecToggle;
+        let mut settings = UserSettings::load();
+        settings.auto_paste_enabled = Some(false);
+        settings.save().unwrap();
+        assert!(
+            !controller
+                .refresh_runtime_settings_from_disk()
+                .await
+                .unwrap()
+        );
+        assert!(Arc::ptr_eq(
+            &before,
+            &controller.runtime_settings_arc().await
+        ));
+        assert!(
+            controller
+                .runtime_settings_refresh_pending
+                .load(Ordering::SeqCst)
+        );
+
+        // Exercise the serialized selection boundary without opening a microphone.
+        let _serial_guard = controller.serial_lock.lock().await;
+        *controller.state.write().await = State::Idle;
+        controller
+            .refresh_pending_runtime_settings_locked()
+            .await
+            .unwrap();
+        let after = controller.runtime_settings_arc().await;
+        assert!(!Arc::ptr_eq(&before, &after));
+        assert!(!after.values().auto_paste_enabled);
+        assert!(
+            !controller
+                .runtime_settings_refresh_pending
+                .load(Ordering::SeqCst)
+        );
+        controller
+            .refresh_pending_runtime_settings_locked()
+            .await
+            .unwrap();
+        assert!(Arc::ptr_eq(
+            &after,
+            &controller.runtime_settings_arc().await
+        ));
     }
 
     /// C15D-A source falsifier: each start body selects exactly one Arc under
