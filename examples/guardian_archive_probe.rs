@@ -17,6 +17,7 @@ use serde_json::json;
 
 #[tokio::main]
 async fn main() -> Result<()> {
+    tracing_subscriber::fmt::init();
     let mut args = std::env::args_os().skip(1);
     let wav = PathBuf::from(args.next().context("WAV path required")?);
     let original_log = PathBuf::from(args.next().context("original app log required")?);
@@ -120,8 +121,11 @@ async fn main() -> Result<()> {
                 terminal |= !receipt.is_occurrence_seal();
                 timeline.push(json!({"ordinal":ordinal,"kind":"seal","terminal":!receipt.is_occurrence_seal()}));
             }
-            EngineEvent::Warning { code, .. } => {
+            EngineEvent::Warning { code, message } => {
                 *warning_codes.entry(code.clone()).or_default() += 1;
+                timeline.push(
+                    json!({"ordinal":ordinal,"kind":"warning","code":code,"message":message}),
+                );
             }
             EngineEvent::NoSpeech { reason } => {
                 timeline.push(json!({"ordinal":ordinal,"kind":"no_speech","reason":reason}));

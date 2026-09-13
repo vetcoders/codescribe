@@ -2087,10 +2087,10 @@ class NeutralAstTests(unittest.TestCase):
             ("focus_removed", "execute_clipboard_paste", "if focus_confirmed && preflight.can_post_events()", "if preflight.can_post_events()"),
             ("preflight_removed", "execute_clipboard_paste", "if focus_confirmed && preflight.can_post_events()", "if focus_confirmed"),
             ("wrong_paste_helper", "paste_text_from_overlay", "self.execute_clipboard_paste(", "self.wrong_helper("),
-            ("coverage_removed", "complete_stop", ".latest_seal_coverage()", ".wrong_coverage()"),
-            ("incomplete_success_decoy", "complete_stop", "if let Some(receipt) = incomplete_coverage {", "if let Some(receipt) = incomplete_coverage { if bypass { return Ok((String::new(), audio_path)); }"),
-            ("audio_receipt_removed", "complete_stop", "TerminalSealRefused {\n                receipt,\n                audio_path,", "TerminalSealRefused {\n                receipt,"),
-            ("committed_receipt_removed", "complete_stop", "                committed_text,", ""),
+            ("coverage_removed", "complete_stop", ".terminal_finality(session, self.capture_epoch)", ".wrong_finality(session, self.capture_epoch)"),
+            ("incomplete_success_decoy", "complete_stop", "if empty_capture {", "if empty_capture || bypass {"),
+            ("audio_receipt_removed", "complete_stop", "                    finality,\n                    audio_path,", "                    finality,"),
+            ("committed_receipt_removed", "complete_stop", "                    committed_text: transcript,", ""),
             ("shutdown_bypass", "complete_stop", "if let Some(sender)", "if bypass { return Ok((String::new(), None)); } if let Some(sender)"),
             ("shutdown_order", "complete_stop", "self.transcription_handle = None;", ""),
             ("stop_bypass", "stop", "let stopped =", "if bypass { return Ok((String::new(), None)); } let stopped ="),
@@ -2120,8 +2120,8 @@ class NeutralAstTests(unittest.TestCase):
              "receipt.status.is_complete()"),
             # No adjudication at all: the latest receipt always refuses.
             ("filter_dropped",
-             ".filter(|receipt| !receipt.status.is_complete())",
-             ""),
+             "coverage.is_some_and(|receipt| !receipt.status.is_complete())",
+             "coverage.is_some()"),
             # Absence silently treated as completeness.
             ("unavailable_admitted_as_complete",
              "!receipt.status.is_complete()",
@@ -2129,13 +2129,34 @@ class NeutralAstTests(unittest.TestCase):
         ]
         for name, old, new in mutations:
             with self.subTest(mutation=name):
-                evidence = self.run_payload(self.mutate("complete_stop", old, new))
+                evidence = self.run_payload(self.mutate("terminal_finality", old, new))
                 self.assertFalse(evidence["accepted"], name)
                 contract = next(row for row in evidence["contracts"]
-                                if row["symbol"] == "complete_stop")
+                                if row["symbol"] == "terminal_finality")
                 self.assertFalse(contract["accepted"], name)
                 self.assertTrue(any("non-complete receipt" in failure
                                     for failure in contract["failures"]), contract)
+
+    def test_terminal_finality_authority_mutants_rejected(self):
+        cases = [
+            ("stop_mints_seal", "complete_stop", ".terminal_finality(session, self.capture_epoch)", ".seal_terminal(session, self.capture_epoch)"),
+            ("zero_sample_guard_removed", "complete_stop", "self.captured_samples.load(Ordering::Relaxed) == 0", "true"),
+            ("missing_authority_succeeds", "complete_stop", "match finality {", "if finality.is_none() { return Ok((transcript, audio_path)); } match finality {"),
+            ("foreign_receipt", "terminal_finality", "receipt.coverage.capture_epoch == capture_epoch", "true"),
+            ("stale_occurrence_set", "terminal_finality", "receipt.sealed_occurrences.contains(range)", "true"),
+            ("silence_without_measurement", "terminal_finality", 'receipt.availability == "observed"', "true"),
+            ("speech_treated_as_silence", "terminal_finality", "receipt.speech_samples == 0", "true"),
+            ("debt_ignored", "terminal_finality", "if pending {", "if false {"),
+            ("coverage_rewritten", "terminal_finality", "coverage: coverage.cloned(),", "coverage: None,"),
+            ("controller_foreign_take", "process_terminal_stop_error", "retainable_session_id(take_id.as_deref()) != Some(refusal.finality.session_id())", "false"),
+            ("bus_foreign_epoch", "matches_refused_document", "last.capture_epoch == refusal.capture_epoch()", "true"),
+            ("bus_foreign_words", "matches_refused_document", "last.rendered_text == text", "true"),
+            ("bus_ended_admitted", "matches_refused_document", "!writer.ended", "true"),
+            ("bus_sealed_admitted", "matches_refused_document", "!writer.sealed", "true"),
+        ]
+        for name, symbol, old, new in cases:
+            with self.subTest(mutation=name):
+                self.assertFalse(self.run_payload(self.mutate(symbol, old, new))["accepted"], name)
 
     def test_control_scope_and_unknown_syntax_counterexamples(self):
         cases = [
@@ -2143,7 +2164,7 @@ class NeutralAstTests(unittest.TestCase):
             ("duplicate_guarded_effect", "execute_clipboard_paste", "OverlayPasteDelivery::Pasted", "clipboard::paste_and_restore(&paste_text)?; OverlayPasteDelivery::Pasted"),
             ("nested_false", "execute_clipboard_paste", "clipboard::paste_and_restore(&paste_text)", "if false { clipboard::paste_and_restore(&paste_text)?; } Ok::<(), Error>(())"),
             ("closure_effect", "execute_clipboard_paste", "clipboard::paste_and_restore(&paste_text)", "(|| clipboard::paste_and_restore(&paste_text))()"),
-            ("closure_refusal", "complete_stop", "return Err(anyhow::Error::new(TerminalSealRefused {", "let later = || return Err(anyhow::Error::new(TerminalSealRefused {"),
+            ("closure_refusal", "complete_stop", "Err(anyhow::Error::new(TerminalSealRefused {", "|| Err(anyhow::Error::new(TerminalSealRefused {"),
             ("unreachable_shutdown", "complete_stop", "self.lifecycle_handle = None;", "return Err(anyhow::anyhow!(\"early\")); self.lifecycle_handle = None;"),
             ("question_mark_stop", "stop", "self.recorder.stop().await;", "self.recorder.stop().await?;"),
             ("unknown_macro", "complete_stop", "self.lifecycle_handle = None;", "unreviewed!(); self.lifecycle_handle = None;"),
@@ -2151,8 +2172,8 @@ class NeutralAstTests(unittest.TestCase):
             ("unknown_callee", "complete_stop", "self.lifecycle_handle = None;", "unreviewed(); self.lifecycle_handle = None;"),
             ("unknown_loop", "stop", "let stopped =", "while condition { return Err(error); } let stopped ="),
             ("shadow_guard", "execute_clipboard_paste", "let preflight =", "let focus_confirmed = true; let preflight ="),
-            ("false_receipt", "complete_stop", "                committed_text,", "                committed_text: String::new(),"),
-            ("else_success", "complete_stop", "if let Some(receipt) = incomplete_coverage {", "if let None = incomplete_coverage { return Ok((String::new(), audio_path)); } else {"),
+            ("false_receipt", "complete_stop", "committed_text: transcript,", "committed_text: String::new(),"),
+            ("else_success", "complete_stop", "if empty_capture {", "if !empty_capture {"),
             ("attribute", "stop", "pub async fn stop", "#[cfg(any())] pub async fn stop"),
         ]
         for name, symbol, old, new in cases:
@@ -2285,12 +2306,12 @@ class NeutralAstTests(unittest.TestCase):
             contracts.append({"name": corridor["name"], "hops": hops,
                 "required_invocations": [row for row in corridor["required_invocations"]
                     if row["caller"] in VERIFIER.AST_BODIES and row["callee"] in
-                    {"execute_clipboard_paste", "paste_and_restore", "complete_stop", "latest_seal_coverage"}]})
+                    {"execute_clipboard_paste", "paste_and_restore", "complete_stop", "terminal_finality"}]})
         live = VERIFIER.StructuralVerifier(self.repo)
         observed, failures = VERIFIER.verify_code_corridors(live, contracts)
         self.assertFalse(failures, failures)
         self.assertEqual(sum(len(row["invocations"]) for row in observed.values()), 4)
-        for symbol in ("execute_clipboard_paste", "paste_and_restore", "complete_stop", "latest_seal_coverage"):
+        for symbol in ("execute_clipboard_paste", "paste_and_restore", "complete_stop", "terminal_finality"):
             original = live.occurrences(symbol)
             missing = copy.deepcopy(original)
             missing["occurrences"] = [row for row in missing["occurrences"] if row.get("match_role") != "reference"]

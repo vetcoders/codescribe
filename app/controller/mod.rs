@@ -549,9 +549,8 @@ async fn stop_recorder_for_terminal(
             Ok(refusal) => {
                 warn!(
                     session_id = ?session_id,
-                    covered = refusal.receipt.covered_samples,
-                    speech = refusal.receipt.speech_samples,
-                    max_uncovered = refusal.receipt.max_uncovered_samples,
+                    reason = refusal.finality.reason().as_str(),
+                    coverage = ?refusal.finality.coverage(),
                     "terminal transcript refused after a successful capture stop; retaining take audio"
                 );
                 match refusal.audio_path.as_deref() {
@@ -559,7 +558,7 @@ async fn stop_recorder_for_terminal(
                         session_id,
                         path,
                         codescribe_core::state::SessionTranscriptArchive::Unavailable(
-                            "terminal seal coverage incomplete",
+                            refusal.finality.reason().as_str(),
                         ),
                     ),
                     None => warn!("refused take has no audio path to retain"),
@@ -2047,13 +2046,9 @@ impl RecordingController {
     {
         let refusal = error.downcast::<TerminalSealRefused>()?;
         let take_id = self.session_id.read().await.clone();
-        // A refusal must name this capture and must actually be a refusal. Any
-        // non-complete verdict qualifies: measured uncovered speech and missing
-        // acoustic measurement both leave authenticated words worth recovering,
-        // and pinning this guard to one reason would drop them for the other.
-        if retainable_session_id(take_id.as_deref()) != Some(refusal.receipt.session_id.as_str())
-            || refusal.receipt.status.is_complete()
-        {
+        // The ledger owns refusal identity/reason. Complete measured coverage
+        // can coexist with a missing issued seal; never reinterpret coverage.
+        if retainable_session_id(take_id.as_deref()) != Some(refusal.finality.session_id()) {
             return Err(anyhow::anyhow!(
                 "terminal refusal does not match the active capture"
             ));
@@ -2063,7 +2058,7 @@ impl RecordingController {
         }
         let bus = self.active_transcript_bus.read().await.clone();
         if bus.as_ref().is_none_or(|bus| {
-            !bus.matches_refused_document(&refusal.receipt, &refusal.committed_text)
+            !bus.matches_refused_document(&refusal.finality, &refusal.committed_text)
         }) {
             return Err(anyhow::anyhow!(
                 "terminal refusal has no matching authenticated Bus document"
@@ -5037,9 +5032,21 @@ mod refusal_recovery_tests {
     const TAKE: &str = "refusal-capture";
     const WORDS: &str = "Te słowa zostały.";
 
+    fn fixture_refusal(
+        receipt: &codescribe_core::pipeline::acoustic_ledger::SealCoverageReceipt,
+    ) -> codescribe_core::pipeline::acoustic_ledger::TerminalFinalityRefusal {
+        let mut ledger = AcousticLedger::new();
+        assert!(ledger.record_seal_coverage(receipt.clone()));
+        ledger
+            .terminal_finality(&receipt.session_id, receipt.capture_epoch)
+            .into_refusal()
+            .expect("fixture has no issued terminal seal")
+    }
+
     struct Take {
         controller: RecordingController,
         bus: Arc<TranscriptBus>,
+        ledger: Arc<std::sync::Mutex<AcousticLedger>>,
         emitter: PresentationEmitter,
         refusal: TerminalSealRefused,
         events: broadcast::Receiver<IpcEvent>,
@@ -5157,15 +5164,80 @@ mod refusal_recovery_tests {
         Take {
             controller,
             bus,
+            ledger,
             emitter,
             events,
             dir,
             refusal: TerminalSealRefused {
-                receipt,
+                finality: fixture_refusal(&receipt),
                 audio_path: Some(audio),
                 committed_text: if words { WORDS.into() } else { String::new() },
             },
         }
+    }
+
+    #[tokio::test]
+    async fn complete_coverage_without_seal_retains_words_without_certifying_finality() {
+        let mut take = take(State::RecHold, true).await;
+        let coverage = {
+            let mut ledger = take.ledger.lock().unwrap();
+            let speech = AcousticSpeechEvidence::measured(
+                CaptureEvidenceIdentity::new(TAKE, 7),
+                "synthetic_complete_test",
+                AcousticAvailability::Observed {
+                    observed_samples: 16_000,
+                },
+                vec![TailSampleRange {
+                    session: TAKE.into(),
+                    capture_epoch: 7,
+                    sample_start: 0,
+                    sample_end: 16_000,
+                }],
+            );
+            let coverage = ledger.assess_seal_coverage(TAKE, 7, &speech, 0);
+            assert!(coverage.status.is_complete());
+            assert!(ledger.record_seal_coverage(coverage.clone()));
+            take.refusal.finality = ledger.terminal_finality(TAKE, 7).into_refusal().unwrap();
+            coverage
+        };
+        take.emitter.on_event(&EngineEvent::SealCoverage {
+            receipt: coverage.clone(),
+            comparison: None,
+        });
+        let result = take
+            .controller
+            .process_terminal_stop_error(
+                anyhow::Error::new(take.refusal.clone()),
+                |text| async move {
+                    assert_eq!(text, WORDS);
+                    Ok(TranscriptDelivery::SinkAccepted)
+                },
+            )
+            .await;
+        let outcome = result.as_ref().unwrap();
+        assert_eq!(
+            outcome.refusal.as_ref().unwrap().finality.coverage(),
+            Some(&coverage)
+        );
+        take.controller
+            .reset_finished_recording_state(&result)
+            .await;
+        let (terminals, _) = terminal_events(&mut take);
+        assert_eq!(terminals.len(), 1);
+        assert_eq!(
+            terminals[0].phase,
+            TranscriptProjectionPhase::CoverageRefused
+        );
+        assert_eq!(
+            terminals[0].seal_coverage,
+            Some(ProjectedSealCoverageReceipt::from(&coverage))
+        );
+        assert!(
+            terminals[0]
+                .acoustic_receipts
+                .iter()
+                .all(|receipt| receipt.seal_receipt.is_none())
+        );
     }
 
     fn terminal_events(
@@ -5196,7 +5268,7 @@ mod refusal_recovery_tests {
             let mut take = take(state, true).await;
             assert!(
                 take.bus
-                    .matches_refused_document(&take.refusal.receipt, WORDS)
+                    .matches_refused_document(&take.refusal.finality, WORDS)
             );
             let controller = &take.controller;
             let result = take
@@ -5237,7 +5309,9 @@ mod refusal_recovery_tests {
             assert_eq!(terminal.delivery, TranscriptDelivery::ComposerPending);
             assert_eq!(
                 terminal.seal_coverage,
-                Some(ProjectedSealCoverageReceipt::from(&take.refusal.receipt))
+                Some(ProjectedSealCoverageReceipt::from(
+                    take.refusal.finality.coverage().unwrap()
+                ))
             );
             assert!(
                 terminal
@@ -5279,15 +5353,18 @@ mod refusal_recovery_tests {
         for state in [State::RecHold, State::RecToggle] {
             let mut take = take_with(state, true, false).await;
             assert_eq!(
-                take.refusal.receipt.status,
+                take.refusal.finality.coverage().unwrap().status,
                 codescribe_core::pipeline::acoustic_ledger::SealCoverageStatus::Unavailable(
                     codescribe_core::pipeline::acoustic_ledger::AcousticEvidenceGap::NotObserved
                 )
             );
-            assert_eq!(take.refusal.receipt.coverage_ratio(), None);
+            assert_eq!(
+                take.refusal.finality.coverage().unwrap().coverage_ratio(),
+                None
+            );
             assert!(
                 take.bus
-                    .matches_refused_document(&take.refusal.receipt, WORDS)
+                    .matches_refused_document(&take.refusal.finality, WORDS)
             );
             let controller = &take.controller;
             let result = take
@@ -5344,7 +5421,7 @@ mod refusal_recovery_tests {
             );
             assert_eq!(
                 projected,
-                &ProjectedSealCoverageReceipt::from(&take.refusal.receipt)
+                &ProjectedSealCoverageReceipt::from(take.refusal.finality.coverage().unwrap())
             );
             assert!(
                 terminal
@@ -5442,7 +5519,7 @@ mod refusal_recovery_tests {
     #[tokio::test]
     async fn forged_coverage_text_and_successor_identity_cannot_authorize_handoff() {
         let mut take = take(State::RecToggle, true).await;
-        let mut forged = take.refusal.receipt.clone();
+        let mut forged = take.refusal.finality.coverage().unwrap().clone();
         forged.max_uncovered_samples += 1;
         take.emitter.on_event(&EngineEvent::SealCoverage {
             receipt: forged.clone(),
@@ -5450,14 +5527,18 @@ mod refusal_recovery_tests {
         });
         assert!(
             take.bus
-                .matches_refused_document(&take.refusal.receipt, WORDS)
+                .matches_refused_document(&take.refusal.finality, WORDS)
         );
-        assert!(!take.bus.matches_refused_document(&forged, WORDS));
+        assert!(
+            !take
+                .bus
+                .matches_refused_document(&fixture_refusal(&forged), WORDS)
+        );
         for mutation in 0..3 {
             let mut refusal = take.refusal.clone();
             match mutation {
                 0 => refusal.committed_text = "preview is not committed".into(),
-                1 => refusal.receipt = forged.clone(),
+                1 => refusal.finality = fixture_refusal(&forged),
                 _ => *take.controller.session_id.write().await = Some("successor-capture".into()),
             }
             let result = take
@@ -5566,7 +5647,7 @@ mod refusal_recovery_tests {
         assert!(!root.join("sessions/refusal-capture:stopping.wav").exists());
         assert!(
             take.bus
-                .matches_refused_document(&take.refusal.receipt, WORDS)
+                .matches_refused_document(&take.refusal.finality, WORDS)
         );
     }
 

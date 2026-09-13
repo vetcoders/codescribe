@@ -349,9 +349,12 @@ W4 obligations.
 Both `process_recording` (hold/generic) and `stop_toggle_and_adjudicate_inner`
 consume `process_terminal_stop_error` after the existing recorder terminal tail
 and audio retention. A string mentioning "seal refused" is still an ordinary
-failure. Only `TerminalSealRefused` with non-complete coverage for the current
-capture can reach degraded handoff. Nonempty text must exactly match the
-already published unsealed Bus document, capture epoch and coverage diagnostics.
+failure. Only `TerminalSealRefused` with a ledger-issued finality refusal for the
+current capture can reach degraded handoff. The private-field witness names the
+session, capture epoch and refusal reason and retains the original optional
+coverage receipt. Complete coverage is not an issued terminal seal. Nonempty
+text must exactly match the already published unsealed Bus document, capture
+epoch and coverage diagnostics (including matching absence).
 The emitter accepts `SealCoverage` only when it matches the ledger's current
 receipt. No preview, raw final, synthetic seal or changed coverage threshold
 can satisfy these checks. Missing/mismatched Bus evidence fails closed; this
@@ -363,28 +366,42 @@ Three facts remain separate:
   `Stopped` does not acknowledge a receiver or certify a ledger seal.
 - Usable refused words end with `end_reason=coverage_refused` and
   `phase=coverage_refused`. The Bus clones the authenticated projection and
-  retains the non-complete coverage receipt; its `sealed` latch remains false.
+  retains the original optional coverage receipt; its `sealed` latch remains false.
+  These existing wire phase names describe refused terminal finality, not a
+  claim that the coverage measurement itself is incomplete.
 
 ### Which refusals reach this path
 
-`SealCoverageStatus` has three outcomes and only `complete` certifies terminal
-truth. Both non-success outcomes route here identically:
+Coverage and terminal finality are separate facts. Normal nonempty Stop requires
+an already-issued `LedgerSealReceipt` for the exact session and epoch covering
+the current acoustic occurrence set. Stop only inspects this receipt; it never
+calls `seal_terminal`, and inspection does not compare mutable label bytes.
+Pending text recovery, non-complete coverage, or a missing/currently insufficient
+terminal receipt refuse success. A complete measurement remains complete in the
+refusal payload; it is never rewritten to manufacture an acoustic hole.
 
-| Coverage verdict                   | Meaning                                                                                     | Delivery                       |
-| ---------------------------------- | ------------------------------------------------------------------------------------------- | ------------------------------ |
-| `complete`                         | committed words cover the measured speech (measured silence included)                       | terminal seal, normal delivery |
-| `incomplete`                       | authenticated measured speech is uncovered beyond 250 ms                                    | degraded handoff               |
-| `unavailable(not_observed)`        | no acoustic observer measured this take                                                     | degraded handoff               |
-| `unavailable(identity_mismatch)`   | the measurement names another session or capture epoch                                      | degraded handoff               |
-| `unavailable(invalid_measurement)` | some PCM reaching the observer was non-finite, so nothing it measured can be trusted        | degraded handoff               |
-| `unavailable(partial_observation)` | the observer's extent stops short of the capture, or committed/measured spans reach past it | degraded handoff               |
+| Coverage verdict                   | Meaning                                                                                     | Delivery                                      |
+| ---------------------------------- | ------------------------------------------------------------------------------------------- | --------------------------------------------- |
+| `complete`, issued current seal    | committed words cover measured speech and ledger finality was issued                        | normal delivery                               |
+| `complete`, missing current seal   | coverage is measured; terminal receipt is absent or predates current occurrences            | degraded handoff                              |
+| absent receipt                     | no coverage receipt is available for this capture                                           | degraded handoff if authenticated words exist |
+| `incomplete`                       | authenticated measured speech is uncovered beyond 250 ms                                    | degraded handoff                              |
+| `unavailable(not_observed)`        | no acoustic observer measured this take                                                     | degraded handoff                              |
+| `unavailable(identity_mismatch)`   | the measurement names another session or capture epoch                                      | degraded handoff                              |
+| `unavailable(invalid_measurement)` | some PCM reaching the observer was non-finite, so nothing it measured can be trusted        | degraded handoff                              |
+| `unavailable(partial_observation)` | the observer's extent stops short of the capture, or committed/measured spans reach past it | degraded handoff                              |
 
 The distinction matters for honesty, not for routing: an unavailable verdict is
 **not** a claim that words were lost. Committed occurrences and the session WAV
 are preserved exactly as for `incomplete`, `TerminalSealRefused` carries the
 same authenticated payload, and recovery keeps the words. What changes is that
-the take is no longer allowed to _certify_ itself, and a quiet take with a real
-measurement behind it still seals normally.
+the take is no longer allowed to _certify_ itself. Empty text alone is not proof
+of silence. Zero captured samples with empty text and no ledger facts may finish
+without a seal. Nonzero captured audio with empty text may finish only with an
+authenticated observed-silence receipt and no acoustic occurrences or recovery
+debt. This is an explicit no-speech outcome, not a manufactured terminal seal.
+Missing capture authority or observed silence paired with nonempty text produces
+`CaptureStopFailure`, preserving saved audio but authorizing no text handoff.
 
 The native projection now carries typed coverage status and unavailable reason
 through `CsTranscriptProjectionEvent.seal_coverage`, including an absent ratio

@@ -9,9 +9,10 @@
 use serde::{Deserialize, Serialize};
 use syn::{Block, Expr, ImplItemFn, Stmt, parse_quote, visit::Visit};
 
+mod finality;
 mod productions;
 
-pub const IDENTITY: &str = "codescribe-structural-ast/0.1.0;syn=2.0.118;grammar=1";
+pub const IDENTITY: &str = "codescribe-structural-ast/0.1.0;syn=2.0.118;grammar=2";
 
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -196,6 +197,37 @@ fn check(body: &Body) -> Contract {
                         ) -> Result<(String, Option<std::path::PathBuf>)> {
                         }
                     ),
+                    "terminal_finality" => parse_quote!(
+                        pub fn terminal_finality(
+                            &self,
+                            session: &str,
+                            capture_epoch: u64,
+                        ) -> TerminalFinality {
+                        }
+                    ),
+                    "has_no_capture_facts" => parse_quote!(
+                        pub fn has_no_capture_facts(&self) -> bool {}
+                    ),
+                    "matches_refused_document" => parse_quote!(
+                        pub(crate) fn matches_refused_document(
+                            &self,
+                            refusal: &TerminalFinalityRefusal,
+                            text: &str,
+                        ) -> bool {
+                        }
+                    ),
+                    "process_terminal_stop_error" => parse_quote!(
+                        async fn process_terminal_stop_error<F, Fut>(
+                            &self,
+                            error: anyhow::Error,
+                            deliver: F,
+                        ) -> Result<ProcessRecordingOutcome>
+                        where
+                            F: FnOnce(String) -> Fut,
+                            Fut: std::future::Future<Output = Result<TranscriptDelivery>>,
+                        {
+                        }
+                    ),
                     _ => function.clone(),
                 };
                 // Optional trailing commas are syntax trivia, not ownership.
@@ -210,11 +242,10 @@ fn check(body: &Body) -> Contract {
                 );
                 g.require(
                     function.attrs.is_empty()
-                        && function.sig.asyncness.is_some()
+                        && function.sig.asyncness == expected.sig.asyncness
                         && function.sig.unsafety.is_none()
                         && function.sig.abi.is_none()
-                        && function.sig.generics.params.is_empty()
-                        && function.sig.generics.where_clause.is_none(),
+                        && function.sig.generics == expected.sig.generics,
                     "unsupported function attributes/signature",
                 );
                 match body.symbol.as_str() {
@@ -235,6 +266,10 @@ fn check(body: &Body) -> Contract {
                     }
                     "stop" => productions::stop(&mut g, &function.block),
                     "complete_stop" => productions::complete(&mut g, &function.block),
+                    "terminal_finality" => finality::ledger(&mut g, &function.block),
+                    "has_no_capture_facts" => finality::empty(&mut g, &function.block),
+                    "matches_refused_document" => finality::bus(&mut g, &function.block),
+                    "process_terminal_stop_error" => finality::controller(&mut g, &function.block),
                     _ => g.failures.push("unknown contract".into()),
                 }
             }
@@ -254,6 +289,13 @@ pub fn analyze(request: Request) -> Evidence {
         ("execute_clipboard_paste", "app/controller/mod.rs"),
         ("stop", "core/audio/streaming_recorder.rs"),
         ("complete_stop", "core/audio/streaming_recorder.rs"),
+        ("terminal_finality", "core/pipeline/acoustic_ledger.rs"),
+        ("has_no_capture_facts", "core/pipeline/acoustic_ledger.rs"),
+        (
+            "matches_refused_document",
+            "app/presentation/transcript_bus.rs",
+        ),
+        ("process_terminal_stop_error", "app/controller/mod.rs"),
     ];
     let mut failures = Vec::new();
     if request.schema != "codescribe.structural-ast-input.v1"

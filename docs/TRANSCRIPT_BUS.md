@@ -423,7 +423,15 @@ capture is live.
 ### Refused coverage at the receiver (rc-w2-refusal-ui, W2 source checkpoint)
 
 `coverage_refused` is a terminal presentation outcome of its own, parsed from
-the wire like every other phase. Before it existed as an `OverlayMode` case the
+the wire like every other phase. The existing phase name covers refused terminal
+finality, including a missing issued seal with complete measured coverage. It
+does not reclassify complete coverage as incomplete. The optional coverage
+payload is preserved unchanged; absent coverage stays absent. Retained-word
+handoff requires the ledger refusal's exact session, epoch, rendered text and
+optional coverage to match this already-published unsealed document. Bus remains
+an observer: it neither mints a seal nor reconstructs missing projections.
+
+Before it existed as an `OverlayMode` case the
 receiver's `OverlayMode(rawValue:) ?? mode` fallback kept the previous phase, so
 a settled refused take finished its life painted as `finalizing`. That is the
 concrete defect this section closes; the fallback itself is unchanged and still

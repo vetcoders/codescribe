@@ -12,7 +12,7 @@ use std::sync::Mutex;
 use chrono::{SecondsFormat, Utc};
 use codescribe_core::pipeline::acoustic_ledger::{
     AcousticLedger, AcousticSerial, IncrementalShapingReceipt, SealCoverageReceipt,
-    TranscriptComparisonReceipt,
+    TerminalFinalityRefusal, TranscriptComparisonReceipt,
 };
 use codescribe_core::pipeline::contracts::TranscriptSegment;
 use serde::{Deserialize, Serialize};
@@ -498,7 +498,7 @@ impl TranscriptBus {
     /// reducer receipt. This reads evidence; it cannot publish or repair text.
     pub(crate) fn matches_refused_document(
         &self,
-        receipt: &SealCoverageReceipt,
+        refusal: &TerminalFinalityRefusal,
         text: &str,
     ) -> bool {
         let writer = self
@@ -508,12 +508,12 @@ impl TranscriptBus {
         writer.started
             && !writer.ended
             && !writer.sealed
-            && receipt.session_id == self.session.session_id
+            && refusal.session_id() == self.session.session_id
             && writer.last_projection.as_ref().is_some_and(|last| {
-                last.capture_epoch == receipt.capture_epoch
+                last.capture_epoch == refusal.capture_epoch()
                     && last.rendered_text == text
-                    && last.seal_coverage.as_ref()
-                        == Some(&ProjectedSealCoverageReceipt::from(receipt))
+                    && last.seal_coverage
+                        == refusal.coverage().map(ProjectedSealCoverageReceipt::from)
             })
     }
 
@@ -1055,6 +1055,14 @@ fn expand_tilde(path: &str) -> PathBuf {
 
 #[cfg(test)]
 mod tests {
+    fn fixture_refusal(receipt: &super::SealCoverageReceipt) -> super::TerminalFinalityRefusal {
+        let mut ledger = super::AcousticLedger::new();
+        assert!(ledger.record_seal_coverage(receipt.clone()));
+        ledger
+            .terminal_finality(&receipt.session_id, receipt.capture_epoch)
+            .into_refusal()
+            .expect("fixture has no issued terminal seal")
+    }
     use super::super::emitter::{TranscriptReducer, UserRevisionIntent};
     use super::*;
     use codescribe_core::pipeline::acoustic_ledger::{
@@ -1159,12 +1167,12 @@ mod tests {
         let revision = reducer.apply_seal_coverage(&receipt, None);
         let published = bus.publish_revision(&revision, &ledger);
         assert_eq!(published.len(), 2);
-        assert!(bus.matches_refused_document(&receipt, &revision.rendered_text));
+        assert!(bus.matches_refused_document(&fixture_refusal(&receipt), &revision.rendered_text));
         let mut forged = receipt.clone();
         forged.max_uncovered_samples += 1;
         let forged_revision = reducer.apply_seal_coverage(&forged, None);
         assert!(bus.publish_revision(&forged_revision, &ledger).is_empty());
-        assert!(bus.matches_refused_document(&receipt, &revision.rendered_text));
+        assert!(bus.matches_refused_document(&fixture_refusal(&receipt), &revision.rendered_text));
         let terminal = bus
             .publish_ended(
                 TranscriptSessionEndReason::CoverageRefused,
@@ -1190,7 +1198,7 @@ mod tests {
             )
             .is_none()
         );
-        assert!(!bus.matches_refused_document(&receipt, &revision.rendered_text));
+        assert!(!bus.matches_refused_document(&fixture_refusal(&receipt), &revision.rendered_text));
     }
 
     /// The projection carries the typed availability reason, an explicitly
@@ -1295,29 +1303,86 @@ mod tests {
         assert!(ledger.record_seal_coverage(receipt.clone()));
         let revision = reducer.apply_seal_coverage(&receipt, None);
         assert_eq!(bus.publish_revision(&revision, &ledger).len(), 2);
-        assert!(bus.matches_refused_document(&receipt, &revision.rendered_text));
+        assert!(bus.matches_refused_document(&fixture_refusal(&receipt), &revision.rendered_text));
 
         let mut forged = receipt.clone();
         forged.availability = "observed".into();
         forged.observed_samples = Some(64_000);
         assert!(
-            !bus.matches_refused_document(&forged, &revision.rendered_text),
+            !bus.matches_refused_document(&fixture_refusal(&forged), &revision.rendered_text),
             "a forged availability must not match the published projection"
         );
         assert!(
-            !bus.matches_refused_document(&receipt, "inne słowa"),
+            !bus.matches_refused_document(&fixture_refusal(&receipt), "inne słowa"),
             "the document text is still part of the match"
         );
         let mut foreign = receipt.clone();
         foreign.session_id = "successor".into();
         assert!(
-            !bus.matches_refused_document(&foreign, &revision.rendered_text),
+            !bus.matches_refused_document(&fixture_refusal(&foreign), &revision.rendered_text),
             "a foreign session never matches this bus"
         );
     }
 
     /// Synthetic calibrated evidence admitted by the actual ledger and reducer.
     /// Two entries catch an append failure that incorrectly breaks the loop.
+    #[test]
+    fn finality_refusal_matches_complete_or_absent_coverage_without_inventing_a_seal() {
+        for measured in [false, true] {
+            let id = if measured {
+                "complete-no-seal"
+            } else {
+                "absent-no-seal"
+            };
+            let (mut ledger, mut reducer, mut revision) = committed_fixture(id);
+            let dir = tempfile::tempdir().unwrap();
+            let bus =
+                TranscriptBus::open_at(session(id), dir.path().join("bus.jsonl"), None).unwrap();
+            bus.publish_started();
+            if measured {
+                let coverage = SealCoverageReceipt {
+                    session_id: id.into(),
+                    capture_epoch: 7,
+                    speech_samples: 32_000,
+                    covered_samples: 32_000,
+                    uncovered_speech_ranges: vec![],
+                    max_uncovered_samples: 0,
+                    incomplete_threshold_samples: 4_000,
+                    status:
+                        codescribe_core::pipeline::acoustic_ledger::SealCoverageStatus::Complete,
+                    speech_producer: "synthetic_test".into(),
+                    availability: "observed".into(),
+                    observed_samples: Some(32_000),
+                };
+                assert!(ledger.record_seal_coverage(coverage.clone()));
+                revision = reducer.apply_seal_coverage(&coverage, None);
+            }
+            assert!(!bus.publish_revision(&revision, &ledger).is_empty());
+            let refusal = ledger.terminal_finality(id, 7).into_refusal().unwrap();
+            assert_eq!(refusal.coverage().is_some(), measured);
+            assert!(bus.matches_refused_document(&refusal, &revision.rendered_text));
+            assert!(!bus.matches_refused_document(&refusal, "different words"));
+            let foreign = ledger.terminal_finality(id, 8).into_refusal().unwrap();
+            assert!(!bus.matches_refused_document(&foreign, &revision.rendered_text));
+            let missing = AcousticLedger::new()
+                .terminal_finality(id, 7)
+                .into_refusal()
+                .unwrap();
+            assert_eq!(
+                bus.matches_refused_document(&missing, &revision.rendered_text),
+                !measured
+            );
+            bus.publish_ended(
+                TranscriptSessionEndReason::CoverageRefused,
+                true,
+                TranscriptDelivery::SinkAccepted,
+            )
+            .unwrap();
+            assert!(!bus.matches_refused_document(&refusal, &revision.rendered_text));
+            assert!(!bus.writer.lock().unwrap().sealed);
+        }
+    }
+
     fn committed_fixture(id: &str) -> (AcousticLedger, TranscriptReducer, TranscriptRevision) {
         let mut ledger = AcousticLedger::new();
         let mut reducer = TranscriptReducer::default();

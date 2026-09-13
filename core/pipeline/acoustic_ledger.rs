@@ -489,6 +489,73 @@ impl AcousticLedger {
         self.latest_seal_coverage.as_ref()
     }
 
+    /// Read issued finality for exactly one capture; never mint a seal here.
+    pub fn terminal_finality(&self, session: &str, capture_epoch: u64) -> TerminalFinality {
+        let coverage = self.latest_seal_coverage.as_ref().filter(|receipt| {
+            receipt.session_id == session && receipt.capture_epoch == capture_epoch
+        });
+        let pending = !self
+            .pending_text_recoveries(session, capture_epoch)
+            .is_empty();
+        let reason = if pending {
+            TerminalFinalityRefusalReason::TextRecoveryPending
+        } else if coverage.is_some_and(|receipt| !receipt.status.is_complete()) {
+            TerminalFinalityRefusalReason::CoverageRefused
+        } else {
+            if let Some(receipt) = self.terminal_seals.iter().rev().find(|receipt| {
+                receipt.coverage.session == session
+                    && receipt.coverage.capture_epoch == capture_epoch
+                    && self
+                        .evidence
+                        .keys()
+                        .chain(self.committed.keys())
+                        .filter(|range| {
+                            range.session == session && range.capture_epoch == capture_epoch
+                        })
+                        .all(|range| receipt.sealed_occurrences.contains(range))
+                    && receipt
+                        .sealed_occurrences
+                        .iter()
+                        .all(|range| self.evidence.contains_key(range))
+            }) {
+                return TerminalFinality::Sealed(receipt.clone());
+            }
+            let has_occurrences = self
+                .evidence
+                .keys()
+                .chain(self.committed.keys())
+                .any(|range| range.session == session && range.capture_epoch == capture_epoch);
+            if !has_occurrences
+                && let Some(receipt) = coverage.filter(|receipt| {
+                    receipt.status.is_complete()
+                        && receipt.speech_samples == 0
+                        && receipt.covered_samples == 0
+                        && receipt.uncovered_speech_ranges.is_empty()
+                        && receipt.availability == "observed"
+                        && receipt.observed_samples.is_some()
+                })
+            {
+                return TerminalFinality::ObservedSilence(receipt.clone());
+            }
+            TerminalFinalityRefusalReason::TerminalReceiptMissing
+        };
+        TerminalFinality::Refused(TerminalFinalityRefusal {
+            session_id: session.to_string(),
+            capture_epoch,
+            reason,
+            coverage: coverage.cloned(),
+        })
+    }
+
+    /// No ledger fact can conflict with an empty, zero-sample capture outcome.
+    pub fn has_no_capture_facts(&self) -> bool {
+        self.evidence.is_empty()
+            && self.committed.is_empty()
+            && self.pending_text_recovery.is_empty()
+            && self.terminal_seals.is_empty()
+            && self.latest_seal_coverage.is_none()
+    }
+
     /// Mark an acoustically qualified occurrence whose provisional label does
     /// not account for its speech. The label stays visible, but cannot certify
     /// coverage or finality until an authorized recovery observation lands.
@@ -2461,6 +2528,65 @@ pub enum SealRefusal {
     CoverageIncomplete,
 }
 
+/// Inspection of existing terminal evidence, not a request to create it.
+#[derive(Debug, Clone, PartialEq)]
+pub enum TerminalFinality {
+    Sealed(LedgerSealReceipt),
+    ObservedSilence(SealCoverageReceipt),
+    Refused(TerminalFinalityRefusal),
+}
+
+impl TerminalFinality {
+    pub fn into_refusal(self) -> Option<TerminalFinalityRefusal> {
+        match self {
+            Self::Refused(refusal) => Some(refusal),
+            Self::Sealed(_) | Self::ObservedSilence(_) => None,
+        }
+    }
+}
+
+/// Why existing evidence does not authorize a terminal transcript.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TerminalFinalityRefusalReason {
+    CoverageRefused,
+    TextRecoveryPending,
+    TerminalReceiptMissing,
+}
+
+impl TerminalFinalityRefusalReason {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::CoverageRefused => "coverage_refused",
+            Self::TextRecoveryPending => "text_recovery_pending",
+            Self::TerminalReceiptMissing => "terminal_receipt_missing",
+        }
+    }
+}
+
+/// Ledger-owned, identity-bound refusal. Coverage retains its measured meaning.
+#[derive(Debug, Clone, PartialEq)]
+pub struct TerminalFinalityRefusal {
+    session_id: String,
+    capture_epoch: u64,
+    reason: TerminalFinalityRefusalReason,
+    coverage: Option<SealCoverageReceipt>,
+}
+
+impl TerminalFinalityRefusal {
+    pub fn session_id(&self) -> &str {
+        &self.session_id
+    }
+    pub fn capture_epoch(&self) -> u64 {
+        self.capture_epoch
+    }
+    pub fn reason(&self) -> TerminalFinalityRefusalReason {
+        self.reason
+    }
+    pub fn coverage(&self) -> Option<&SealCoverageReceipt> {
+        self.coverage.as_ref()
+    }
+}
+
 impl SealRefusal {
     /// Stable label for receipts and logs.
     pub fn as_str(self) -> &'static str {
@@ -2900,6 +3026,163 @@ mod tests {
                 sample_end: 16_000,
             }],
         )
+    }
+
+    #[test]
+    fn terminal_finality_observes_issued_receipts_without_minting_them() {
+        let (mut ledger, occurrence) = whisper_only_qualified_ledger();
+        ledger.admit(
+            &obs(ObservationProducer::Whisper, 0, occurrence.clone()),
+            "words",
+        );
+        ledger.note_frontier_return(&occurrence, ObservationProducer::Whisper);
+        let coverage = ledger.assess_seal_coverage("s1", 1, &debt_speech(), 0);
+        assert!(ledger.record_seal_coverage(coverage.clone()));
+        ledger.seal(&occurrence).unwrap();
+        let counts = (
+            ledger.seals.len(),
+            ledger.terminal_seals.len(),
+            ledger.layer_trail().len(),
+        );
+        let refusal = ledger.terminal_finality("s1", 1).into_refusal().unwrap();
+        assert_eq!(
+            refusal.reason(),
+            TerminalFinalityRefusalReason::TerminalReceiptMissing
+        );
+        assert_eq!(refusal.coverage(), Some(&coverage));
+        assert_eq!(
+            counts,
+            (
+                ledger.seals.len(),
+                ledger.terminal_seals.len(),
+                ledger.layer_trail().len()
+            )
+        );
+        let issued = ledger.seal_terminal("s1", 1).unwrap();
+        assert_eq!(
+            ledger.terminal_finality("s1", 1),
+            TerminalFinality::Sealed(issued)
+        );
+        for (session, epoch) in [("s1", 2), ("foreign", 1)] {
+            let refusal = ledger
+                .terminal_finality(session, epoch)
+                .into_refusal()
+                .unwrap();
+            assert_eq!(refusal.session_id(), session);
+            assert_eq!(refusal.capture_epoch(), epoch);
+            assert!(refusal.coverage().is_none());
+        }
+    }
+
+    #[test]
+    fn terminal_finality_rejects_a_receipt_before_new_same_capture_occurrence() {
+        let (mut ledger, occurrence) = whisper_only_qualified_ledger();
+        ledger.admit(
+            &obs(ObservationProducer::Whisper, 0, occurrence.clone()),
+            "words",
+        );
+        ledger.note_frontier_return(&occurrence, ObservationProducer::Whisper);
+        let coverage = ledger.assess_seal_coverage("s1", 1, &debt_speech(), 0);
+        ledger.record_seal_coverage(coverage.clone());
+        ledger.seal_terminal("s1", 1).unwrap();
+        assert!(matches!(
+            ledger.terminal_finality("s1", 1),
+            TerminalFinality::Sealed(_)
+        ));
+        let next = occ(16_000, 32_000);
+        let calibration = EnergyCalibration::new("label-finality", 1.0, 1);
+        let evidence = AcousticEvidence {
+            occurrence: next.clone(),
+            duration_ms: 1_000.0,
+            energy_integral: 100.0,
+            mean_rms_dbfs: -20.0,
+            peak_dbfs: -10.0,
+            vad_open_sample: Some(16_000),
+            vad_close_sample: Some(32_000),
+            evidence_calibration_version: calibration.version.clone(),
+        };
+        assert!(ledger.qualify(&evidence, &calibration).is_qualified());
+        let count = ledger.terminal_seals.len();
+        let refusal = ledger.terminal_finality("s1", 1).into_refusal().unwrap();
+        assert_eq!(
+            refusal.reason(),
+            TerminalFinalityRefusalReason::TerminalReceiptMissing
+        );
+        assert_eq!(refusal.coverage(), Some(&coverage));
+        assert!(!ledger.committed.contains_key(&next));
+        assert_eq!(ledger.terminal_seals.len(), count);
+    }
+
+    #[test]
+    fn terminal_finality_complete_coverage_does_not_hide_missing_label_or_debt() {
+        let (mut ledger, occurrence) = whisper_only_qualified_ledger();
+        ledger.admit(
+            &obs(ObservationProducer::Apple, 0, occ(0, 8_000)),
+            "partial span",
+        );
+        let speech = measured_speech(
+            "s1",
+            1,
+            16_000,
+            vec![TailSampleRange {
+                session: "s1".into(),
+                capture_epoch: 1,
+                sample_start: 0,
+                sample_end: 8_000,
+            }],
+        );
+        let coverage = ledger.assess_seal_coverage("s1", 1, &speech, 0);
+        assert!(coverage.status.is_complete());
+        ledger.record_seal_coverage(coverage.clone());
+        ledger.note_frontier_return(&occurrence, ObservationProducer::Whisper);
+        assert_eq!(
+            ledger.seal_terminal("s1", 1),
+            Err(SealRefusal::LabelMissing)
+        );
+        let refusal = ledger.terminal_finality("s1", 1).into_refusal().unwrap();
+        assert_eq!(
+            refusal.reason(),
+            TerminalFinalityRefusalReason::TerminalReceiptMissing
+        );
+        assert_eq!(refusal.coverage(), Some(&coverage));
+        ledger.require_text_recovery(&occurrence);
+        assert_eq!(
+            ledger
+                .terminal_finality("s1", 1)
+                .into_refusal()
+                .unwrap()
+                .reason(),
+            TerminalFinalityRefusalReason::TextRecoveryPending
+        );
+    }
+
+    #[test]
+    fn terminal_finality_requires_observed_silence_not_absent_evidence() {
+        let mut ledger = AcousticLedger::new();
+        assert!(ledger.has_no_capture_facts());
+        assert!(ledger.terminal_finality("s1", 1).into_refusal().is_some());
+        let silence = measured_speech("s1", 1, 16_000, vec![]);
+        let coverage = ledger.assess_seal_coverage("s1", 1, &silence, 0);
+        ledger.record_seal_coverage(coverage.clone());
+        assert_eq!(
+            ledger.terminal_finality("s1", 1),
+            TerminalFinality::ObservedSilence(coverage)
+        );
+        assert!(!ledger.has_no_capture_facts());
+        let unavailable = AcousticSpeechEvidence::unavailable(
+            crate::audio::capture_receipt::CaptureEvidenceIdentity::new("s1", 1),
+            "capture_energy",
+            AcousticAvailability::NotObserved,
+        );
+        ledger.record_seal_coverage(ledger.assess_seal_coverage("s1", 1, &unavailable, 0));
+        assert_eq!(
+            ledger
+                .terminal_finality("s1", 1)
+                .into_refusal()
+                .unwrap()
+                .reason(),
+            TerminalFinalityRefusalReason::CoverageRefused
+        );
     }
 
     #[test]

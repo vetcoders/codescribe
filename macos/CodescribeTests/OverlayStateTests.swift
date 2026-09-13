@@ -3210,6 +3210,45 @@ final class OverlayStateTests: XCTestCase {
       coverageRatio: status == .incomplete ? 0.5 : nil)
   }
 
+  func testCompleteMeasuredCoverageWithoutTerminalSealKeepsWordsWithoutPromisingSuccess() {
+    for copyAllowed in [false, true] {
+      let state = OverlayState()
+      var successes = 0
+      var sends = 0
+      state.onSuccessfulDictation = { successes += 1 }
+      state.onSendToAgent = { _ in sends += 1 }
+      let receipt = CsProjectedSealCoverageReceipt(
+        status: .complete, unavailableReason: nil, speechSamples: 32_000,
+        coveredSamples: 32_000, uncoveredSpeechRanges: [], maxUncoveredSamples: 0,
+        incompleteThresholdSamples: 4_000, speechProducer: "capture_energy",
+        availability: "observed", observedSamples: 64_000, coverageRatio: 1.0)
+      let words = "  Zażółć — zachowane słowa.\n"
+      projectText(
+        words, to: state, phase: "coverage_refused", canCopy: copyAllowed,
+        terminal: true, sealCoverage: receipt)
+
+      XCTAssertEqual(state.mode, .coverageRefused)
+      XCTAssertEqual(state.statusText, "unsealed transcript")
+      XCTAssertEqual(
+        state.coverageRefusalNotice,
+        "These words were kept, but the transcript was not sealed")
+      XCTAssertEqual(
+        state.coverageRefusalDetail,
+        "Acoustic coverage was measured as complete, but this transcript has no current terminal seal."
+      )
+      XCTAssertEqual(Array(state.activeText.utf8), Array(words.utf8))
+      XCTAssertEqual(state.canCopy, copyAllowed, "measurement must not grant copy permission")
+      XCTAssertFalse(state.canInsert)
+      XCTAssertFalse(state.canRetranscribe)
+      XCTAssertTrue(state.terminal)
+      XCTAssertFalse(state.statusRippling)
+      XCTAssertNil(state.autoHideDeadline)
+      state.fireAutoHideNowForTests()
+      XCTAssertEqual(successes, 0)
+      XCTAssertEqual(sends, 0)
+    }
+  }
+
   func testTypedCoverageExplainsIncompleteAndEveryUnavailableReasonWithoutChangingBytes() {
     let cases: [(CsProjectedSealCoverageReceipt, String, String)] = [
       (coverage(.incomplete), "incomplete coverage", "Incomplete coverage"),

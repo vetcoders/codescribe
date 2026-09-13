@@ -31,12 +31,16 @@ AST_COMMAND = (
     "cargo", "run", "--offline", "--locked", "--package",
     "codescribe-structural-ast", "--bin", "codescribe-structural-ast", "--quiet",
 )
-AST_IDENTITY = "codescribe-structural-ast/0.1.0;syn=2.0.118;grammar=1"
+AST_IDENTITY = "codescribe-structural-ast/0.1.0;syn=2.0.118;grammar=2"
 AST_BODIES = {
     "paste_text_from_overlay": "app/controller/mod.rs",
     "execute_clipboard_paste": "app/controller/mod.rs",
     "stop": "core/audio/streaming_recorder.rs",
     "complete_stop": "core/audio/streaming_recorder.rs",
+    "terminal_finality": "core/pipeline/acoustic_ledger.rs",
+    "has_no_capture_facts": "core/pipeline/acoustic_ledger.rs",
+    "matches_refused_document": "app/presentation/transcript_bus.rs",
+    "process_terminal_stop_error": "app/controller/mod.rs",
 }
 # The shipped default when no lease is supplied. A fleet worktree that owns a
 # shared target must be able to state its own budget instead of having this
@@ -134,7 +138,7 @@ def ast_tool_digest(repo: Path) -> str:
         raise RuntimeError("neutral AST package has unadmitted executable targets")
     files = [root / "Cargo.toml", *sorted((root / "src").rglob("*"))]
     if {path.relative_to(root).as_posix() for path in files} != {
-        "Cargo.toml", "src/lib.rs", "src/main.rs", "src/productions.rs",
+        "Cargo.toml", "src/lib.rs", "src/main.rs", "src/productions.rs", "src/finality.rs",
     } or any(path.is_symlink() or not path.is_file() for path in files):
         raise RuntimeError("neutral AST source inventory changed")
     workspace = tomllib.loads((repo / "Cargo.toml").read_text())["workspace"]["dependencies"]

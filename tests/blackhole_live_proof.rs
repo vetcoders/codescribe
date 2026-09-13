@@ -98,16 +98,13 @@ async fn blackhole_session_proof() {
                 .downcast_ref::<codescribe_core::audio::streaming_recorder::TerminalSealRefused>(
             ) {
                 eprintln!("TerminalSealRefused details:");
-                eprintln!("  covered_samples: {}", refusal.receipt.covered_samples);
-                eprintln!("  speech_samples: {}", refusal.receipt.speech_samples);
+                eprintln!("  reason: {}", refusal.finality.reason().as_str());
                 eprintln!(
-                    "  max_uncovered_samples: {}",
-                    refusal.receipt.max_uncovered_samples
+                    "  session: {} epoch: {}",
+                    refusal.finality.session_id(),
+                    refusal.finality.capture_epoch()
                 );
-                eprintln!(
-                    "  incomplete_threshold_samples: {}",
-                    refusal.receipt.incomplete_threshold_samples
-                );
+                eprintln!("  measured_coverage: {:?}", refusal.finality.coverage());
                 eprintln!("  committed_text: '{}'", refusal.committed_text);
                 eprintln!("  audio_path: {:?}", refusal.audio_path);
             }

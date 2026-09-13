@@ -177,34 +177,64 @@ pub(super) fn complete(g: &mut Grammar, body: &Block) {
             "typed capture failure only after shutdown",
         ),
         (
-            // Every non-complete verdict refuses, including the ones that say
-            // no measurement exists. An `== Incomplete` comparison would let an
-            // `Unavailable` receipt reach the terminal success below.
-            parse_quote!(let incomplete_coverage = self.acoustic_ledger.as_ref().and_then(|ledger| {
-            ledger.lock().unwrap_or_else(std::sync::PoisonError::into_inner)
-                .latest_seal_coverage()
-                .filter(|receipt| !receipt.status.is_complete()).cloned()
-        });),
-            "read and filter latest non-complete receipt",
-        ),
-        (
-            parse_quote!(if let Some(receipt) = incomplete_coverage {
-                let committed_text = self.transcript_buffer.lock().await.clone();
-                return Err(anyhow::Error::new(TerminalSealRefused {
-                    receipt,
-                    audio_path,
-                    committed_text,
-                }));
-            }),
-            "incomplete branch must return typed refusal with all three original fields",
-        ),
-        (
             parse_quote!(let transcript = self.transcript_buffer.lock().await.clone();),
-            "read committed transcript after refusal branch",
+            "read committed transcript after owned shutdown",
         ),
         (
-            Stmt::Expr(parse_quote!(Ok((transcript, audio_path))), None),
-            "only success follows shutdown and refusal branch",
+            parse_quote!(let empty_capture = self.captured_samples.load(Ordering::Relaxed) == 0
+                && transcript.is_empty()
+                && self.acoustic_ledger.as_ref().is_none_or(|ledger| {
+                    ledger.lock().unwrap_or_else(std::sync::PoisonError::into_inner)
+                        .has_no_capture_facts()
+                });),
+            "empty capture requires zero samples and no conflicting ledger facts",
+        ),
+        (
+            parse_quote!(if empty_capture {
+                return Ok((transcript, audio_path));
+            }),
+            "zero-sample empty capture is not a fabricated speech seal",
+        ),
+        (
+            parse_quote!(let finality = self.authority_session_id.as_deref().and_then(|session| {
+                self.acoustic_ledger.as_ref().map(|ledger| {
+                    ledger.lock().unwrap_or_else(std::sync::PoisonError::into_inner)
+                        .terminal_finality(session, self.capture_epoch)
+                })
+            });),
+            "inspect issued finality using exact capture identity",
+        ),
+        (
+            Stmt::Expr(
+                syn::parse_str(
+                    r#"match finality {
+                    Some(crate::pipeline::acoustic_ledger::TerminalFinality::Sealed(_)) => {
+                        Ok((transcript, audio_path))
+                    }
+                    Some(crate::pipeline::acoustic_ledger::TerminalFinality::ObservedSilence(_))
+                        if transcript.is_empty() => {
+                        Ok((transcript, audio_path))
+                    }
+                    Some(crate::pipeline::acoustic_ledger::TerminalFinality::Refused(finality)) => {
+                        Err(anyhow::Error::new(TerminalSealRefused {
+                            finality,
+                            audio_path,
+                            committed_text: transcript,
+                        }))
+                    }
+                    _ => Err(anyhow::Error::new(CaptureStopFailure {
+                        session_id: self.authority_session_id.clone(),
+                        capture_epoch: self.capture_epoch,
+                        audio_path,
+                        cause: anyhow!("recording terminal authority unavailable or inconsistent"),
+                        task_failure: None,
+                    })),
+                }"#,
+                )
+                .expect("reviewed finality production"),
+                None,
+            ),
+            "issued finality or observed empty silence succeeds; refusal retains audio and words",
         ),
     ];
     g.sequence(body, shutdown);

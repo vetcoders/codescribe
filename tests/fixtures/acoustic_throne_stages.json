@@ -1695,7 +1695,7 @@
               "caller_file": "app/presentation/emitter.rs"
             },
             {
-              "callee": "latest_seal_coverage",
+              "callee": "terminal_finality",
               "callee_file": "core/pipeline/acoustic_ledger.rs",
               "caller": "complete_stop",
               "caller_file": "core/audio/streaming_recorder.rs"
@@ -2182,7 +2182,7 @@
               "const": "codescribe.structural-ast-evidence.v1"
             },
             "identity": {
-              "const": "codescribe-structural-ast/0.1.0;syn=2.0.118;grammar=1"
+              "const": "codescribe-structural-ast/0.1.0;syn=2.0.118;grammar=2"
             },
             "accepted": {
               "type": "boolean"

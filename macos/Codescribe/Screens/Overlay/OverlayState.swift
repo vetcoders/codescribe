@@ -298,8 +298,8 @@ final class OverlayState {
   private(set) var presentationStatus: OverlayPresentationStatus?
   private(set) var errorLifecycleDetail =
     "No transcript was delivered."
-  /// Standing explanation for a take whose acoustic coverage the ledger
-  /// refused. Non-nil exactly while the last terminal projection carried
+  /// Standing explanation for a take whose terminal seal the ledger refused,
+  /// independently of measured coverage. Non-nil while the terminal projection carried
   /// `coverage_refused`, so the surface cannot outlive the fact it describes.
   ///
   /// It is a notice, never a document: it holds no transcript bytes, cannot
@@ -461,12 +461,12 @@ final class OverlayState {
   @ObservationIgnored private var eventTask: Task<Void, Never>?
 
   static let defaultNoSpeechNotice = "No speech detected"
-  /// Missing legacy coverage is unverified, never proof of missing words.
+  /// Missing coverage is unverified, never proof of missing words.
   static let defaultCoverageRefusalNotice =
     "Coverage could not be verified — these words were kept, not sealed"
 
-  /// Display copy comes only from the admitted coverage projection. Absence is
-  /// unknown, not incomplete speech and not a successful measurement.
+  /// Display copy distinguishes measured coverage from refused finality.
+  /// Absent coverage is unknown; complete coverage does not mint a terminal seal.
   private var coverageRefusalCopy: (status: String, notice: String) {
     guard let coverage = latestTranscriptProjection?.sealCoverage else {
       return ("unverified coverage", Self.defaultCoverageRefusalNotice)
@@ -485,8 +485,9 @@ final class OverlayState {
       case .unknown, nil: explanation = "The acoustic measurement was unavailable"
       }
       return ("measurement unavailable", "\(explanation) — these words were kept, not sealed")
-    case .unknown, .complete:
-      // A conflicting complete diagnostic cannot override a refused phase.
+    case .complete:
+      return ("unsealed transcript", "These words were kept, but the transcript was not sealed")
+    case .unknown:
       return ("unverified coverage", Self.defaultCoverageRefusalNotice)
     }
   }
@@ -699,14 +700,18 @@ final class OverlayState {
       || mode == .noSpeech
   }
 
-  /// Second line of the refusal card. Both branches are statements about what
-  /// did NOT happen, which is the only thing this surface can honestly assert:
-  /// the overlay is the postman, so it may report a handover that came back,
-  /// and it may report the missing seal — never an acceptance.
+  /// The refusal card reports retained delivery, measured coverage and the
+  /// missing seal separately. None of these facts grants terminal acceptance.
   var coverageRefusalDetail: String {
-    retainedComposerDelivery != nil
-      ? "The handover came back. These words are retained here — recover them before the next take."
-      : "No seal was recorded for this take, so nothing here is certified complete."
+    if retainedComposerDelivery != nil {
+      return
+        "The handover came back. These words are retained here — recover them before the next take."
+    }
+    if latestTranscriptProjection?.sealCoverage?.status == .complete {
+      return
+        "Acoustic coverage was measured as complete, but this transcript has no current terminal seal."
+    }
+    return "No seal was recorded for this take, so nothing here is certified complete."
   }
 
   var audioLevelAccessibilityValue: String {

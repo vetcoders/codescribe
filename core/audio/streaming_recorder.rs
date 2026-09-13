@@ -15,7 +15,9 @@
 use crate::asr_session::recorder::{RecorderLifecycleHandle, recorder_lifecycle_channel};
 use crate::audio::recorder::{Recorder, RecorderConfig};
 use crate::config::{RuntimeSettingsSnapshot, UserSettings};
-use crate::pipeline::acoustic_ledger::{AcousticLedger, SealCoverageReceipt};
+use crate::pipeline::acoustic_ledger::AcousticLedger;
+#[cfg(test)]
+use crate::pipeline::acoustic_ledger::SealCoverageReceipt;
 use crate::pipeline::contracts::{EngineEvent, EventSink};
 use crate::pipeline::streaming::{
     SessionConfig, TailPatchSessionReceipt, collect_buffered_engine_events_with_config,
@@ -93,16 +95,15 @@ impl CaptureTurnIntent {
 
 /// Ledger refusal of the terminal transcript after a successful capture stop.
 ///
-/// Raised by [`StreamingRecorder::stop`] when the acoustic ledger reports
-/// [`SealCoverageStatus::Incomplete`]: speech physically existed that no sealed
-/// occurrence covers, so the take text may not be promoted to a terminal
-/// transcript. The capture itself succeeded — `audio_path` is the take WAV
+/// Raised by [`StreamingRecorder::stop`] when the acoustic ledger cannot
+/// authenticate an issued terminal seal. Complete coverage is not finality.
+/// The capture itself succeeded — `audio_path` is the take WAV
 /// already written to disk — which is why this is a typed error rather than a
 /// string: the stop path must retain that audio and close the take instead of
 /// reporting a recorder failure.
 #[derive(Debug, Clone)]
 pub struct TerminalSealRefused {
-    pub receipt: SealCoverageReceipt,
+    pub finality: crate::pipeline::acoustic_ledger::TerminalFinalityRefusal,
     pub audio_path: Option<std::path::PathBuf>,
     /// The committed live document at refusal time. The ledger refused the
     /// seal, not the words: the controller may still hand this text to the
@@ -115,12 +116,20 @@ impl std::fmt::Display for TerminalSealRefused {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         write!(
             f,
-            "terminal transcript refused: seal coverage incomplete ({}/{} samples covered; max gap {} > threshold {})",
-            self.receipt.covered_samples,
-            self.receipt.speech_samples,
-            self.receipt.max_uncovered_samples,
-            self.receipt.incomplete_threshold_samples,
-        )
+            "terminal transcript refused: {}",
+            self.finality.reason().as_str()
+        )?;
+        if let Some(receipt) = self.finality.coverage() {
+            write!(
+                f,
+                " ({}/{} samples covered; measured max gap {}; threshold {})",
+                receipt.covered_samples,
+                receipt.speech_samples,
+                receipt.max_uncovered_samples,
+                receipt.incomplete_threshold_samples
+            )?;
+        }
+        Ok(())
     }
 }
 
@@ -669,33 +678,50 @@ impl StreamingRecorder {
             }));
         }
 
-        let incomplete_coverage = self.acoustic_ledger.as_ref().and_then(|ledger| {
-            ledger
-                .lock()
-                .unwrap_or_else(std::sync::PoisonError::into_inner)
-                .latest_seal_coverage()
-                // Every non-complete verdict refuses the terminal transcript,
-                // including the ones that say no measurement exists. The typed
-                // refusal below is also what preserves the committed words.
-                .filter(|receipt| !receipt.status.is_complete())
-                .cloned()
-        });
-        if let Some(receipt) = incomplete_coverage {
-            // The ledger refused the terminal transcript, not the capture: the
-            // mic is stopped and the take WAV is already on disk. Carry that
-            // path in the typed refusal so the controller can retain the audio
-            // and close the take without reading this as a recorder failure.
-            let committed_text = self.transcript_buffer.lock().await.clone();
-            return Err(anyhow::Error::new(TerminalSealRefused {
-                receipt,
-                audio_path,
-                committed_text,
-            }));
-        }
-
-        // 4. Return collected transcript
         let transcript = self.transcript_buffer.lock().await.clone();
-        Ok((transcript, audio_path))
+        let empty_capture = self.captured_samples.load(Ordering::Relaxed) == 0
+            && transcript.is_empty()
+            && self.acoustic_ledger.as_ref().is_none_or(|ledger| {
+                ledger
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner)
+                    .has_no_capture_facts()
+            });
+        if empty_capture {
+            return Ok((transcript, audio_path));
+        }
+        let finality = self.authority_session_id.as_deref().and_then(|session| {
+            self.acoustic_ledger.as_ref().map(|ledger| {
+                ledger
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner)
+                    .terminal_finality(session, self.capture_epoch)
+            })
+        });
+        match finality {
+            Some(crate::pipeline::acoustic_ledger::TerminalFinality::Sealed(_)) => {
+                Ok((transcript, audio_path))
+            }
+            Some(crate::pipeline::acoustic_ledger::TerminalFinality::ObservedSilence(_))
+                if transcript.is_empty() =>
+            {
+                Ok((transcript, audio_path))
+            }
+            Some(crate::pipeline::acoustic_ledger::TerminalFinality::Refused(finality)) => {
+                Err(anyhow::Error::new(TerminalSealRefused {
+                    finality,
+                    audio_path,
+                    committed_text: transcript,
+                }))
+            }
+            _ => Err(anyhow::Error::new(CaptureStopFailure {
+                session_id: self.authority_session_id.clone(),
+                capture_epoch: self.capture_epoch,
+                audio_path,
+                cause: anyhow!("recording terminal authority unavailable or inconsistent"),
+                task_failure: None,
+            })),
+        }
     }
 
     /// Stop the session and return only the transcript.
@@ -1375,20 +1401,26 @@ mod terminal_seal_refusal_tests {
     use crate::pipeline::acoustic_ledger::{SealCoverageReceipt, SealCoverageStatus};
 
     fn refusal(audio_path: Option<std::path::PathBuf>) -> TerminalSealRefused {
+        let receipt = SealCoverageReceipt {
+            session_id: "e4060d87-fe0f-49fd-bbd5-eaea7e89ca17".to_string(),
+            capture_epoch: 0,
+            speech_samples: 2_696_704,
+            covered_samples: 585_216,
+            uncovered_speech_ranges: Vec::new(),
+            max_uncovered_samples: 2_111_488,
+            incomplete_threshold_samples: 12_000,
+            status: SealCoverageStatus::Incomplete,
+            speech_producer: "capture_energy".to_string(),
+            availability: "observed".to_string(),
+            observed_samples: Some(2_696_704),
+        };
+        let mut ledger = crate::pipeline::acoustic_ledger::AcousticLedger::new();
+        assert!(ledger.record_seal_coverage(receipt.clone()));
         TerminalSealRefused {
-            receipt: SealCoverageReceipt {
-                session_id: "e4060d87-fe0f-49fd-bbd5-eaea7e89ca17".to_string(),
-                capture_epoch: 0,
-                speech_samples: 2_696_704,
-                covered_samples: 585_216,
-                uncovered_speech_ranges: Vec::new(),
-                max_uncovered_samples: 2_111_488,
-                incomplete_threshold_samples: 12_000,
-                status: SealCoverageStatus::Incomplete,
-                speech_producer: "capture_energy".to_string(),
-                availability: "observed".to_string(),
-                observed_samples: Some(2_696_704),
-            },
+            finality: ledger
+                .terminal_finality(&receipt.session_id, receipt.capture_epoch)
+                .into_refusal()
+                .unwrap(),
             audio_path,
             committed_text: String::new(),
         }
@@ -1404,7 +1436,10 @@ mod terminal_seal_refusal_tests {
             .downcast::<TerminalSealRefused>()
             .expect("typed refusal survives anyhow");
         assert_eq!(refused.audio_path.as_deref(), Some(path.as_path()));
-        assert_eq!(refused.receipt.status, SealCoverageStatus::Incomplete);
+        assert_eq!(
+            refused.finality.coverage().unwrap().status,
+            SealCoverageStatus::Incomplete
+        );
     }
 
     /// The message names the refused seal, never the recorder.
@@ -1665,7 +1700,7 @@ mod capture_stop_failure_tests {
             "caller expiry must leave the session handle available for retry"
         );
         let refused = error.downcast_ref::<TerminalSealRefused>().unwrap();
-        assert_eq!(refused.receipt, receipt);
+        assert_eq!(refused.finality.coverage(), Some(&receipt));
         assert_eq!(refused.audio_path.as_ref(), Some(&path));
         assert_eq!(std::fs::read(path).unwrap(), bytes);
         assert_released(&recorder);
@@ -1674,6 +1709,7 @@ mod capture_stop_failure_tests {
     #[tokio::test]
     async fn clean_stop_and_seal_refusal_keep_their_existing_outcomes() {
         let mut recorder = recorder();
+        recorder.captured_samples.store(0, Ordering::Relaxed);
         let stopped = recorder.complete_stop(Ok(None)).await.unwrap();
         assert_eq!(stopped, (String::new(), None));
         let mut ledger = AcousticLedger::new();
@@ -1694,6 +1730,194 @@ mod capture_stop_failure_tests {
         let error = recorder.complete_stop(Ok(None)).await.unwrap_err();
         assert!(error.downcast_ref::<TerminalSealRefused>().is_some());
         assert!(error.downcast_ref::<CaptureStopFailure>().is_none());
+        assert_released(&recorder);
+    }
+
+    fn stop_finality_ledger(issued: bool, silence: bool) -> AcousticLedger {
+        stop_finality_ledger_with_label(issued, silence, true)
+    }
+
+    fn stop_finality_ledger_with_label(issued: bool, silence: bool, whole: bool) -> AcousticLedger {
+        use crate::audio::capture_receipt::{
+            AcousticAvailability, AcousticSpeechEvidence, CaptureEvidenceIdentity,
+        };
+        use crate::pipeline::acoustic_ledger::{
+            AcousticEvidence, EnergyCalibration, ObservationIdentity, ObservationProducer,
+            OccurrenceIdentity,
+        };
+        let mut ledger = AcousticLedger::new();
+        let occurrence = OccurrenceIdentity::new("capture-owner", 7, 0, 4);
+        if !silence {
+            let calibration = EnergyCalibration::new("stop-synthetic", 1.0, 1);
+            assert!(
+                ledger
+                    .qualify(
+                        &AcousticEvidence {
+                            occurrence: occurrence.clone(),
+                            duration_ms: 1.0,
+                            energy_integral: 100.0,
+                            mean_rms_dbfs: -20.0,
+                            peak_dbfs: -10.0,
+                            vad_open_sample: Some(0),
+                            vad_close_sample: Some(4),
+                            evidence_calibration_version: calibration.version.clone(),
+                        },
+                        &calibration
+                    )
+                    .is_qualified()
+            );
+            ledger.schedule_frontier(occurrence.clone(), [ObservationProducer::Whisper]);
+            ledger.admit(
+                &ObservationIdentity::new(
+                    ObservationProducer::Whisper,
+                    1,
+                    0,
+                    if whole {
+                        occurrence.clone()
+                    } else {
+                        OccurrenceIdentity::new("capture-owner", 7, 0, 2)
+                    },
+                ),
+                "committed words",
+            );
+            ledger.note_frontier_return(&occurrence, ObservationProducer::Whisper);
+            if whole {
+                ledger.seal(&occurrence).unwrap();
+            }
+        }
+        let speech = AcousticSpeechEvidence::measured(
+            CaptureEvidenceIdentity::new("capture-owner", 7),
+            "synthetic_stop_observer",
+            AcousticAvailability::Observed {
+                observed_samples: 4,
+            },
+            if silence {
+                vec![]
+            } else {
+                vec![crate::stt::tail_provider::TailSampleRange {
+                    session: "capture-owner".into(),
+                    capture_epoch: 7,
+                    sample_start: 0,
+                    sample_end: if whole { 4 } else { 2 },
+                }]
+            },
+        );
+        ledger.record_seal_coverage(ledger.assess_seal_coverage("capture-owner", 7, &speech, 0));
+        if issued {
+            ledger.seal_terminal("capture-owner", 7).unwrap();
+        }
+        ledger
+    }
+
+    #[tokio::test]
+    async fn complete_stop_refuses_label_missing_despite_complete_coverage() {
+        use crate::pipeline::acoustic_ledger::SealRefusal;
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("label-missing.wav");
+        let bytes = write_wav(&path);
+        let mut ledger = stop_finality_ledger_with_label(false, false, false);
+        assert!(ledger.latest_seal_coverage().unwrap().status.is_complete());
+        assert_eq!(
+            ledger.seal_terminal("capture-owner", 7),
+            Err(SealRefusal::LabelMissing)
+        );
+        let mut recorder = recorder();
+        recorder.acoustic_ledger = Some(Arc::new(StdMutex::new(ledger)));
+        *recorder.transcript_buffer.lock().await = "committed words".into();
+        let error = recorder
+            .complete_stop(Ok(Some(path.clone())))
+            .await
+            .unwrap_err();
+        let refusal = error.downcast_ref::<TerminalSealRefused>().unwrap();
+        assert!(refusal.finality.coverage().unwrap().status.is_complete());
+        assert_eq!(refusal.audio_path.as_ref(), Some(&path));
+        assert_eq!(std::fs::read(path).unwrap(), bytes);
+    }
+
+    #[tokio::test]
+    async fn complete_stop_requires_issued_terminal_receipt_and_preserves_wav() {
+        use crate::pipeline::acoustic_ledger::TerminalFinalityRefusalReason;
+        for issued in [false, true] {
+            let mut recorder = recorder();
+            let ledger = Arc::new(StdMutex::new(stop_finality_ledger(issued, false)));
+            recorder.acoustic_ledger = Some(ledger.clone());
+            *recorder.transcript_buffer.lock().await = "committed words".into();
+            let dir = tempfile::tempdir().unwrap();
+            let path = dir.path().join("real-stop-tail.wav");
+            let bytes = write_wav(&path);
+            let result = recorder.complete_stop(Ok(Some(path.clone()))).await;
+            if issued {
+                assert_eq!(
+                    result.unwrap(),
+                    ("committed words".into(), Some(path.clone()))
+                );
+            } else {
+                let error = result.unwrap_err();
+                let refusal = error.downcast_ref::<TerminalSealRefused>().unwrap();
+                assert_eq!(
+                    refusal.finality.reason(),
+                    TerminalFinalityRefusalReason::TerminalReceiptMissing
+                );
+                assert!(refusal.finality.coverage().unwrap().status.is_complete());
+                assert_eq!(refusal.audio_path.as_ref(), Some(&path));
+                assert_eq!(refusal.committed_text, "committed words");
+                assert!(
+                    ledger
+                        .lock()
+                        .unwrap()
+                        .terminal_finality("capture-owner", 7)
+                        .into_refusal()
+                        .is_some(),
+                    "Stop must not mint the missing terminal receipt"
+                );
+            }
+            assert_eq!(std::fs::read(&path).unwrap(), bytes);
+            assert_released(&recorder);
+        }
+    }
+
+    #[tokio::test]
+    async fn complete_stop_empty_text_is_not_proof_of_silence_or_authority() {
+        for has_measurement in [false, true] {
+            for text in ["", "unattributed words"] {
+                let mut recorder = recorder();
+                *recorder.transcript_buffer.lock().await = text.into();
+                if has_measurement {
+                    recorder.acoustic_ledger =
+                        Some(Arc::new(StdMutex::new(stop_finality_ledger(false, true))));
+                }
+                let result = recorder.complete_stop(Ok(None)).await;
+                if has_measurement && text.is_empty() {
+                    assert_eq!(result.unwrap(), (String::new(), None));
+                } else {
+                    assert!(result.unwrap_err().is::<CaptureStopFailure>());
+                }
+                assert_released(&recorder);
+            }
+        }
+        let mut recorder = recorder();
+        recorder.acoustic_ledger =
+            Some(Arc::new(StdMutex::new(stop_finality_ledger(false, false))));
+        assert!(
+            recorder
+                .complete_stop(Ok(None))
+                .await
+                .unwrap_err()
+                .is::<TerminalSealRefused>(),
+            "empty rendering cannot erase measured speech"
+        );
+    }
+
+    #[tokio::test]
+    async fn complete_stop_foreign_epoch_seal_cannot_authorize_current_capture() {
+        let mut recorder = recorder();
+        recorder.capture_epoch = 8;
+        recorder.acoustic_ledger = Some(Arc::new(StdMutex::new(stop_finality_ledger(true, false))));
+        *recorder.transcript_buffer.lock().await = "committed words".into();
+        let error = recorder.complete_stop(Ok(None)).await.unwrap_err();
+        let refusal = error.downcast_ref::<TerminalSealRefused>().unwrap();
+        assert_eq!(refusal.finality.capture_epoch(), 8);
+        assert!(refusal.finality.coverage().is_none());
         assert_released(&recorder);
     }
 
@@ -1734,8 +1958,8 @@ mod capture_stop_failure_tests {
         let refused = error
             .downcast_ref::<TerminalSealRefused>()
             .expect("unavailable measurement is a typed seal refusal");
-        assert_eq!(refused.receipt, receipt);
-        assert!(!refused.receipt.status.is_complete());
+        assert_eq!(refused.finality.coverage(), Some(&receipt));
+        assert!(!refused.finality.coverage().unwrap().status.is_complete());
         assert_eq!(refused.committed_text, "słowa które przetrwały");
         assert_eq!(refused.audio_path.as_ref(), Some(&path));
         assert_eq!(std::fs::read(path).unwrap(), bytes);
