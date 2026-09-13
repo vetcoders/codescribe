@@ -1,10 +1,11 @@
 import SwiftUI
 
-/// Quiet corner mark for an org `make install-app` bake.
-/// Hidden on production DMGs (`CSDeveloperSurface` off).
+/// Quiet corner mark for active Voice Lab, never merely for a developer build.
 struct DeveloperPowerMark: View {
+  @AppStorage(DictationOverlayGate.labModeDefaultsKey) private var labMode = false
+
   var body: some View {
-    if DeveloperSurface.isEnabled() {
+    if DeveloperSurface.isPowerModeEnabled(labMode: labMode) {
       Text(DeveloperSurface.powerModeCaption)
         .font(CSFont.mono(10, .medium))
         .tracking(0.2)
