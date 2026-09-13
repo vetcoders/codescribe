@@ -2418,7 +2418,7 @@ impl RecordingController {
             Ok(outcome) if outcome.refusal.is_some() => {
                 self.publish_stop_warning(
                     "terminal_coverage_refused",
-                    "Recording stopped. Available words are retained; speech coverage is incomplete. Destination acceptance is reported separately.".to_string(),
+                    "Recording stopped. Available words are retained, but the transcript has no current terminal seal. Destination acceptance is reported separately.".to_string(),
                 );
             }
             Ok(outcome) => {
@@ -2455,7 +2455,7 @@ impl RecordingController {
                 error!("Processing failed: {}", e);
                 if let Some(failure) = e.downcast_ref::<StopDeliveryFailure>() {
                     let message = if failure.refusal.is_some() {
-                        format!("Speech coverage is incomplete. {failure}")
+                        format!("The transcript has no current terminal seal. {failure}")
                     } else {
                         failure.to_string()
                     };
@@ -2467,7 +2467,7 @@ impl RecordingController {
                 if e.is::<TerminalSealRefused>() {
                     self.publish_stop_warning(
                         "transcription_failed",
-                        "Recording stopped with incomplete speech coverage and no committed words. Retained audio may be used for recovery.".to_string(),
+                        "Recording stopped without a current terminal seal or committed words. Retained audio may be used for recovery.".to_string(),
                     );
                     return;
                 }
@@ -5321,6 +5321,8 @@ mod refusal_recovery_tests {
             );
             assert_eq!(warnings.len(), 1);
             assert_eq!(warnings[0].0, "terminal_coverage_refused");
+            assert!(warnings[0].1.contains("no current terminal seal"));
+            assert!(!warnings[0].1.contains("coverage is incomplete"));
             assert_eq!(
                 take.controller.paste_target_app_name().await.as_deref(),
                 Some("original-editor")
@@ -5432,6 +5434,8 @@ mod refusal_recovery_tests {
             );
             assert_eq!(warnings.len(), 1);
             assert_eq!(warnings[0].0, "terminal_coverage_refused");
+            assert!(warnings[0].1.contains("no current terminal seal"));
+            assert!(!warnings[0].1.contains("coverage is incomplete"));
             assert_eq!(
                 std::fs::read(take.refusal.audio_path.as_ref().unwrap()).unwrap(),
                 b"synthetic retained WAV witness"
@@ -5472,6 +5476,10 @@ mod refusal_recovery_tests {
             assert_eq!(terminals[0].phase, TranscriptProjectionPhase::Error);
             assert_eq!(terminals[0].delivery, TranscriptDelivery::Unattempted);
             assert_eq!(warnings[0].0, "transcription_failed");
+            if typed {
+                assert!(warnings[0].1.contains("without a current terminal seal"));
+                assert!(!warnings[0].1.contains("incomplete speech coverage"));
+            }
             let rows = std::fs::read_to_string(take.dir.path().join("bus.jsonl")).unwrap();
             assert!(rows.contains(if typed {
                 "coverage_refused_empty"
@@ -5513,6 +5521,8 @@ mod refusal_recovery_tests {
         assert_eq!(terminals[0].rendered_text, WORDS);
         assert_eq!(terminals[0].delivery, TranscriptDelivery::Retained);
         assert!(warnings[0].1.contains("receiver unavailable"));
+        assert!(warnings[0].1.contains("no current terminal seal"));
+        assert!(!warnings[0].1.contains("coverage is incomplete"));
         assert_eq!(warnings[0].0, "transcription_failed");
     }
 
