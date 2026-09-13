@@ -237,6 +237,28 @@ fn should_suppress_decoder_control_tokens(generated_tokens: usize) -> bool {
     generated_tokens == 0
 }
 
+/// Blank suppression is an initial-step constraint, using this tokenizer's
+/// space encoding and end token. Later spaces must remain available to speech.
+fn apply_initial_blank_suppression(
+    logits: &mut [f32],
+    generated_tokens: usize,
+    space_tokens: &[u32],
+    eot_token: u32,
+) {
+    if generated_tokens != 0 {
+        return;
+    }
+    for token in space_tokens
+        .iter()
+        .copied()
+        .chain(std::iter::once(eot_token))
+    {
+        if let Some(logit) = logits.get_mut(token as usize) {
+            *logit = f32::NEG_INFINITY;
+        }
+    }
+}
+
 /// Apply Whisper's timestamp-token constraints to one decoder step.
 ///
 /// This mirrors OpenAI Whisper's `ApplyTimestampRules`: the first generated
@@ -1124,6 +1146,15 @@ impl LocalWhisperEngine {
         let nospeech_token = self.tokenizer.token_to_id("<|nospeech|>");
         let no_timestamps_token = self.tokenizer.token_to_id("<|notimestamps|>");
         let start_of_previous_token = self.tokenizer.token_to_id(WHISPER_START_OF_PREVIOUS_TOKEN);
+        let space_tokens = if self.decoding_params.suppress_blank {
+            self.tokenizer
+                .encode(" ", false)
+                .map_err(|error| anyhow!("Tokenizer space encoding failed: {error}"))?
+                .get_ids()
+                .to_vec()
+        } else {
+            Vec::new()
+        };
 
         // Initial tokens: <|startoftranscript|> <|lang|>? <|transcribe|> <|notimestamps|>
         let mut tokens = vec![start_token];
@@ -1221,16 +1252,13 @@ impl LocalWhisperEngine {
             let mut logits_vec = last_logits.to_vec1::<f32>()?;
             control.check()?;
 
-            // 2. Suppress Blank (suppress_blank)
-            if self.decoding_params.suppress_blank && all_tokens.len() < 4 {
-                // Block common blank tokens (space, empty, etc.)
-                // Token IDs depend on tokenizer - check whisper tokenizer
-                let blank_tokens = [220, 50256];
-                for &tok in &blank_tokens {
-                    if tok < logits_vec.len() {
-                        logits_vec[tok] = f32::NEG_INFINITY;
-                    }
-                }
+            if self.decoding_params.suppress_blank {
+                apply_initial_blank_suppression(
+                    &mut logits_vec,
+                    all_tokens.len(),
+                    &space_tokens,
+                    eot_token,
+                );
             }
 
             if timestamps_enabled && let Some(range) = self.ts_range.as_ref() {
@@ -1882,6 +1910,39 @@ mod dedup_tests {
         assert!(should_suppress_decoder_control_tokens(0));
         assert!(!should_suppress_decoder_control_tokens(1));
         assert!(!should_suppress_decoder_control_tokens(15));
+    }
+
+    #[test]
+    fn blank_suppression_uses_tokenizer_ids_only_at_initial_step() {
+        let mut logits = vec![1.0; 9];
+        apply_initial_blank_suppression(&mut logits, 0, &[2, 5], 7);
+        assert_eq!(
+            logits,
+            vec![
+                1.0,
+                1.0,
+                f32::NEG_INFINITY,
+                1.0,
+                1.0,
+                f32::NEG_INFINITY,
+                1.0,
+                f32::NEG_INFINITY,
+                1.0
+            ]
+        );
+        for generated in [1, 2, 3, 4, 15] {
+            let mut later = vec![1.0; 9];
+            apply_initial_blank_suppression(&mut later, generated, &[2, 5], 7);
+            assert_eq!(later, vec![1.0; 9], "step {generated}");
+        }
+    }
+
+    #[test]
+    fn blank_suppression_bounds_tokenizer_ids_to_logits() {
+        let mut logits = vec![1.0; 3];
+        apply_initial_blank_suppression(&mut logits, 0, &[1, u32::MAX], 8);
+        assert_eq!(logits, vec![1.0, f32::NEG_INFINITY, 1.0]);
+        apply_initial_blank_suppression(&mut [], 0, &[1], 8);
     }
 
     /// Embedded lexicon cleanup reports Changed with rewrite counts.
