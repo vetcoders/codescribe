@@ -41,7 +41,26 @@ If the turn ends, state that the background reader cannot itself resume this
 conversation. Do not promise unattended voice replies or silently configure
 another provider runtime. An attach-only setup remains `attached_unverified`.
 
-## Diagnostic readers
+## Active-turn notifications with functions.exec
+
+When this provider exposes `functions.exec`, `tools.write_stdin` and
+`notify`, use a yielded, bounded exec loop to read the existing follower and
+notify on each new envelope while other work proceeds. Do not await an
+infinite follower's exit. Use the shortest supported read wait, retain partial
+JSON lines, and preserve delivery_id, session_id, text and state_change_allowed.
+Deduplicate delivery IDs across notification windows, not just within one read.
+
+Retain the exec cell separately from the follower session. Renew completed
+windows on that same follower. After interruption or context recovery, verify
+that new output actually arrives; a cell still labelled running is not proof.
+Stop an unresponsive owned notification cell before replacing its reader, so
+two loops do not consume the same stream.
+
+This mechanism has demonstrated delivery during an active turn. It does not
+establish wakeup after a final answer. Report that distinction and keep an
+active listening turn open when post-final wakeup is unavailable.
+
+## Diagnostic readers (observation only)
 
 `scripts/bus-tail.sh --all` combines the bus and application log for diagnosis.
 Its human view may truncate text; it is not an agent notification mechanism.

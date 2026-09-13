@@ -12,6 +12,18 @@ Releasing Fn requests closure; it does not guarantee a successful terminal
 seal. Follow the emitted envelope, not elapsed silence, UI state, clipboard
 delivery, or a successful process exit.
 
+On hearing the bound name in live text, acknowledge attention promptly when
+useful, then follow revisions until the thought is coherent. Do not wait for
+terminal sealing merely to answer conversationally, and do not interrupt every
+partial clause. A logical end supports a reply; it does not manufacture a seal
+or permission to mutate state.
+
+If recognition leaves the intended request uncertain, inspect the exact take's
+audio through the documented Codescribe CLI transcription path before treating
+the wording as reliable. Read references/cli.md for that operation. Preserve
+the audio session identity, disclose remaining ambiguity, and do not re-execute
+an already handled command because retranscription produced another event.
+
 The helper interprets both transcript schemas. Evidence rows can repeat the
 whole rendered document across entries; do not treat each row as a new command.
 A CLI file verdict is a separate producer/session. Do not describe that result
