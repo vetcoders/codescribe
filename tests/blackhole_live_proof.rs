@@ -16,9 +16,31 @@ impl codescribe_core::pipeline::contracts::EventSink for CollectSink {
     }
 }
 
+fn blackhole_capture_gate(value: Option<&str>) -> anyhow::Result<()> {
+    anyhow::ensure!(
+        value == Some("1"),
+        "live BlackHole proof requires CODESCRIBE_E2E_CAPTURE_VIA_DEVICE=1 before capture"
+    );
+    Ok(())
+}
+
+#[test]
+fn test_blackhole_capture_gate_requires_explicit_opt_in() {
+    for value in [None, Some(""), Some("0"), Some("false"), Some("yes")] {
+        assert!(blackhole_capture_gate(value).is_err());
+    }
+    assert!(blackhole_capture_gate(Some("1")).is_ok());
+}
+
 #[tokio::test(flavor = "multi_thread")]
-#[ignore = "live blackhole proof"]
+#[ignore = "live BlackHole proof: requires CODESCRIBE_E2E_CAPTURE_VIA_DEVICE=1"]
 async fn blackhole_session_proof() {
+    blackhole_capture_gate(
+        std::env::var("CODESCRIBE_E2E_CAPTURE_VIA_DEVICE")
+            .ok()
+            .as_deref(),
+    )
+    .expect("capture opt-in");
     tracing_subscriber::fmt()
         .with_max_level(tracing::Level::INFO)
         .with_test_writer()
@@ -67,15 +89,12 @@ async fn blackhole_session_proof() {
     eprintln!("==> Playing {session_wav} into BlackHole 2ch...");
     let player_script =
         Path::new(env!("CARGO_MANIFEST_DIR")).join("scripts/audio-play-to-device.swift");
-    let mut player = std::process::Command::new("swift")
+    let player_status = std::process::Command::new("swift")
         .arg(&player_script)
         .arg("BlackHole 2ch")
         .arg(wav_path)
-        .spawn()
-        .expect("spawn audio-play-to-device");
-
-    let status = player.wait().expect("wait for player");
-    eprintln!("==> Player exited with status: {status:?}");
+        .status();
+    eprintln!("==> Player result: {player_status:?}");
 
     // Tail drain
     eprintln!("==> Waiting 3s for pipeline drain...");
@@ -83,6 +102,11 @@ async fn blackhole_session_proof() {
 
     eprintln!("==> Calling recorder.stop().await...");
     let stop_result = recorder.stop().await;
+
+    // Release this test's capture before reporting a playback failure. Speech
+    // heard from another source cannot turn failed WAV playback into proof.
+    let status = player_status.expect("run audio-play-to-device");
+    assert!(status.success(), "audio-play-to-device failed: {status}");
 
     eprintln!("==================================================");
     eprintln!("STOP RESULT:");

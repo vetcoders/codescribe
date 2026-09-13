@@ -516,26 +516,27 @@ fn assets_dir() -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/assets/data_assets")
 }
 
-/// Resolve a private-corpus clip. Missing clip + `CODESCRIBE_E2E_ROUNDTRIP=1`
-/// (`make test-e2e-roundtrip`, the operator asked for the real thing) = failure
-/// with the resolved path. Missing clip without the opt-in (the workspace-wide
-/// `--ignored` sweep in `make test-all`) = loud SKIP, never a silent green.
-fn private_clip(filename: &str) -> Option<PathBuf> {
+/// Selecting an ignored corpus test requires its input. Missing input is a
+/// failure, never an early return that the test runner would report as a pass.
+fn private_clip(filename: &str) -> PathBuf {
     let path = assets_dir().join(filename);
-    if path.exists() {
-        return Some(path);
-    }
     let hint = "resolution: CODESCRIBE_DATA_ASSETS → ~/.codescribe/data_assets → tests/assets/data_assets; see tests/assets/data_assets/README.md";
     assert!(
-        std::env::var("CODESCRIBE_E2E_ROUNDTRIP").is_err(),
-        "private corpus clip not found: {} ({hint})",
+        path.is_file(),
+        "private corpus clip is not a regular file: {} ({hint})",
         path.display()
     );
-    eprintln!(
-        "SKIP: private corpus clip not found: {} ({hint})",
-        path.display()
-    );
-    None
+    path
+}
+
+#[test]
+fn test_private_clip_requires_regular_file() {
+    let directory = tempfile::tempdir().unwrap();
+    let missing = directory.path().join("missing.wav");
+    assert!(std::panic::catch_unwind(|| private_clip(missing.to_str().unwrap())).is_err());
+    assert!(std::panic::catch_unwind(|| private_clip(directory.path().to_str().unwrap())).is_err());
+    std::fs::write(&missing, b"fixture presence witness, not audio").unwrap();
+    assert_eq!(private_clip(missing.to_str().unwrap()), missing);
 }
 
 /// Smoke test on the COMMITTED fixture: real (TTS) speech → embedded Silero
@@ -578,9 +579,7 @@ fn test_vad_committed_tts_fixture_detects_speech() {
 #[test]
 #[ignore = "needs the private data_assets corpus (NN_slug.wav; CODESCRIBE_DATA_ASSETS → ~/.codescribe/data_assets) — run: make test-e2e-roundtrip"]
 fn test_vad_real_audio_smoke() {
-    let Some(wav_path) = private_clip("01_no-to-dobra.wav") else {
-        return;
-    };
+    let wav_path = private_clip("01_no-to-dobra.wav");
     let (samples, sample_rate) = load_wav(&wav_path);
     eprintln!("  Loaded {} samples at {}Hz", samples.len(), sample_rate);
 
@@ -614,9 +613,7 @@ fn test_vad_real_audio_speech_detection() {
     ];
 
     for (filename, label) in &recordings {
-        let Some(wav_path) = private_clip(filename) else {
-            return;
-        };
+        let wav_path = private_clip(filename);
         let (samples, sample_rate) = load_wav(&wav_path);
         let mut vad = create_vad(sample_rate);
 
@@ -655,9 +652,7 @@ fn test_vad_real_audio_speech_detection() {
 #[test]
 #[ignore = "needs the private data_assets corpus (NN_slug.wav; CODESCRIBE_DATA_ASSETS → ~/.codescribe/data_assets) — run: make test-e2e-roundtrip"]
 fn test_vad_real_audio_silence_gaps() {
-    let Some(wav_path) = private_clip("02_kubernetes-wymaga-konfiguracji.wav") else {
-        return;
-    };
+    let wav_path = private_clip("02_kubernetes-wymaga-konfiguracji.wav");
     let (samples, sample_rate) = load_wav(&wav_path);
     let mut vad = create_vad(sample_rate);
 
@@ -701,9 +696,7 @@ fn test_vad_real_audio_silence_gaps() {
 #[test]
 #[ignore = "needs the private data_assets corpus (VAD_voice_real_pauses.wav; CODESCRIBE_DATA_ASSETS → ~/.codescribe/data_assets) — run: make test-e2e-roundtrip"]
 fn test_vad_real_pauses_recording() {
-    let Some(wav_path) = private_clip("VAD_voice_real_pauses.wav") else {
-        return;
-    };
+    let wav_path = private_clip("VAD_voice_real_pauses.wav");
     let (samples, sample_rate) = load_wav(&wav_path);
     let duration_sec = samples.len() as f32 / sample_rate as f32;
     eprintln!(
