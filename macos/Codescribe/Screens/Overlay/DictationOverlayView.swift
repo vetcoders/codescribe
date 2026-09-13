@@ -125,11 +125,17 @@ struct DictationOverlayView: View {
           .accessibilityValue(actionsVisible ? "Expanded" : "Collapsed")
           .accessibilityIdentifier("overlay-tools-handle")
         }
-        .frame(maxWidth: actionsVisible ? .infinity : 90)
+        .fixedSize(horizontal: true, vertical: true)
         .padding(.horizontal, 8)
         .padding(.bottom, 8)
         .contentShape(Rectangle())
-        .onHover { pointerInside = $0 }
+        .onHover { hovering in
+          pointerInside = hovering
+          if !hovering {
+            actionsPinned = false
+            actionsFocused = false
+          }
+        }
         .animation(reduceMotion ? nil : .easeOut(duration: 0.15), value: actionsVisible)
       }
     }
@@ -142,8 +148,7 @@ struct DictationOverlayView: View {
   private var actionsVisible: Bool {
     OverlayChromeVisibility.actionsVisible(
       pointerInside: pointerInside,
-      keyboardFocus: actionsFocused || actionsPinned
-        || NSApp.isFullKeyboardAccessEnabled,
+      keyboardFocus: actionsFocused || actionsPinned,
       voiceOver: voiceOverEnabled
     )
   }

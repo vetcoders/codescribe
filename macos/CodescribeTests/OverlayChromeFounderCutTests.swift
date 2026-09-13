@@ -150,7 +150,14 @@ final class OverlayChromeFounderCutTests: XCTestCase {
     let source = try overlaySource()
     XCTAssertTrue(source.contains("overlay-tools-handle"))
     XCTAssertTrue(source.contains("overlay-collapse-toggle"))
-    XCTAssertTrue(source.contains(".onHover { pointerInside = $0 }"))
+    let tools = try section(
+      of: source, from: "VStack(spacing: 2)", to: "private var actionsVisible")
+    XCTAssertTrue(tools.contains(".fixedSize(horizontal: true, vertical: true)"))
+    XCTAssertTrue(tools.contains("pointerInside = hovering"))
+    XCTAssertTrue(tools.contains("if !hovering {"))
+    XCTAssertTrue(tools.contains("actionsPinned = false"))
+    XCTAssertTrue(tools.contains("actionsFocused = false"))
+    XCTAssertFalse(source.contains("NSApp.isFullKeyboardAccessEnabled"))
     XCTAssertFalse(
       source.contains("pointerInside = inside"), "Whole canvas hover must not reveal tools")
     XCTAssertFalse(
