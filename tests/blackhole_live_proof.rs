@@ -120,6 +120,9 @@ async fn blackhole_session_proof() {
         codescribe_core::config::Config::load_runtime_snapshot_without_keychain()
             .expect("load runtime snapshot"),
     );
+    runtime_settings
+        .energy_calibration_for_capture(&capture_path.device_name, capture_path.sample_rate)
+        .expect("measured calibration for the selected loopback device is required before capture");
     let session_id = uuid::Uuid::new_v4().to_string();
     recorder.bind_session_authority(session_id, runtime_settings);
 

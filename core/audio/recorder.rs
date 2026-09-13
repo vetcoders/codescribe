@@ -262,43 +262,50 @@ pub type AudioCallback = Box<dyn Fn(&[f32]) + Send + Sync + 'static>;
 /// [`Recorder::snapshot_wav`] can slice the buffer without interrupting
 /// capture.
 /// Resolve the input device exactly as a recording start would: an
-/// `AUDIO_INPUT_DEVICE` exact/substring match wins, otherwise the system
-/// default. Shared by [`Recorder::start`] and [`probe_input_capture_path`].
+/// A named `AUDIO_INPUT_DEVICE` must be present. The system default is used
+/// only without an explicit selection. Shared by [`Recorder::start`] and
+/// [`probe_input_capture_path`], so disappearance before stream opening refuses.
 fn select_input_device(host: &cpal::Host) -> Result<(Device, String)> {
     let preferred = std::env::var("AUDIO_INPUT_DEVICE")
         .ok()
         .map(|s| s.trim().to_string())
         .filter(|s| !s.is_empty());
 
-    let device = if let Some(preferred) = preferred {
-        let devices = host
-            .input_devices()
-            .context("Failed to enumerate input devices")?;
-
-        let mut selected: Option<Device> = None;
-        for d in devices {
-            if let Ok(desc) = d.description() {
-                let name = desc.to_string();
-                if name == preferred || name.to_lowercase().contains(&preferred.to_lowercase()) {
-                    selected = Some(d);
-                    break;
-                }
-            }
-        }
-
-        selected
-            .or_else(|| host.default_input_device())
-            .context("No input device available")?
-    } else {
-        host.default_input_device()
-            .context("No input device available")?
-    };
+    let device = resolve_capture_device(
+        preferred.as_deref(),
+        || {
+            Ok(host
+                .input_devices()
+                .context("Failed to enumerate input devices")?
+                .filter_map(|device| {
+                    let name = device.description().ok()?.to_string();
+                    Some((device, name))
+                }))
+        },
+        || host.default_input_device(),
+    )?;
 
     let device_name = device
         .description()
         .map(|d| d.to_string())
         .unwrap_or_else(|_| "Unknown".to_string());
     Ok((device, device_name))
+}
+
+fn resolve_capture_device<T, I: Iterator<Item = (T, String)>>(
+    preferred: Option<&str>,
+    named_devices: impl FnOnce() -> Result<I>,
+    default_device: impl FnOnce() -> Option<T>,
+) -> Result<T> {
+    if let Some(preferred) = preferred {
+        let needle = preferred.to_lowercase();
+        named_devices()?
+            .find(|(_, name)| name == preferred || name.to_lowercase().contains(&needle))
+            .map(|(device, _)| device)
+            .with_context(|| format!("Requested audio input device is unavailable: {preferred}"))
+    } else {
+        default_device().context("No input device available")
+    }
 }
 
 /// Identity of the capture path a recording would open right now — device
@@ -1112,6 +1119,54 @@ pub fn wav_duration_secs(path: &Path) -> Option<f32> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn explicit_capture_device_never_opens_system_default() {
+        for devices in [vec![], vec![(1, "MacBook Microphone".to_string())]] {
+            assert!(
+                resolve_capture_device(
+                    Some("BlackHole 2ch"),
+                    || Ok(devices.into_iter()),
+                    || panic!("explicit input must never consult system default")
+                )
+                .is_err()
+            );
+        }
+        assert_eq!(
+            resolve_capture_device(
+                Some("blackhole 2ch"),
+                || Ok(vec![(7, "BlackHole 2ch".to_string())].into_iter()),
+                || panic!("named match owns capture")
+            )
+            .unwrap(),
+            7
+        );
+    }
+
+    #[test]
+    fn unselected_capture_uses_default_without_enumerating() {
+        assert_eq!(
+            resolve_capture_device(
+                None,
+                || -> Result<std::vec::IntoIter<(u8, String)>> {
+                    panic!("no named-device enumeration")
+                },
+                || Some(9)
+            )
+            .unwrap(),
+            9
+        );
+        assert!(
+            resolve_capture_device(
+                None,
+                || -> Result<std::vec::IntoIter<(u8, String)>> {
+                    panic!("no named-device enumeration")
+                },
+                || None
+            )
+            .is_err()
+        );
+    }
 
     // Note: RMS tests removed - now using Silero VAD (see vad module tests)
 
