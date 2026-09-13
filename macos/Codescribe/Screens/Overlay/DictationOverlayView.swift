@@ -18,6 +18,7 @@ struct DictationOverlayView: View {
   @Environment(\.accessibilityReduceMotion) private var reduceMotion
   @Environment(\.colorScheme) private var colorScheme
   @Environment(\.accessibilityVoiceOverEnabled) private var voiceOverEnabled
+  @AppStorage(DictationOverlayGate.labModeDefaultsKey) private var labMode = false
   @State private var pointerInside = false
   @State private var actionsPinned = false
   @State private var actionsFocused = false
@@ -32,6 +33,9 @@ struct DictationOverlayView: View {
   private let transcriptMinHeight: CGFloat = 96
   private var palette: OverlayAppearancePalette {
     OverlayAppearancePalette.resolve(colorScheme)
+  }
+  private var showsDiagnostics: Bool {
+    DeveloperSurface.isPowerModeEnabled(labMode: labMode)
   }
 
   var body: some View {
@@ -208,7 +212,7 @@ struct DictationOverlayView: View {
         .accessibilityIdentifier("overlay-header-center")
 
       HStack(spacing: compact ? 4 : 8) {
-        if state.compactProjection?.degraded == true {
+        if showsDiagnostics && state.compactProjection?.degraded == true {
           Image(systemName: "exclamationmark.bubble.fill")
             .foregroundStyle(.orange)
             .help("Detected speech is not fully transcribed")
@@ -328,8 +332,10 @@ struct DictationOverlayView: View {
         case .formatted:
           revisionStatusRow
         case .coverageRefused:
-          coverageRefusedBody
-            .transition(reduceMotion ? .identity : .opacity.combined(with: .offset(y: 8)))
+          if showsDiagnostics {
+            coverageRefusedBody
+              .transition(reduceMotion ? .identity : .opacity.combined(with: .offset(y: 8)))
+          }
         case .noSpeech:
           noSpeechBody
             .transition(reduceMotion ? .identity : .opacity.combined(with: .offset(y: 8)))
@@ -459,10 +465,8 @@ struct DictationOverlayView: View {
 
   /// Terminal outcome for a take the ledger settled without accepting its
   /// acoustic coverage. The words stay on the canvas above, untouched: this
-  /// row explains why they carry no seal and what is still possible with
-  /// them. It is not an error card and not a success card, and it exists
-  /// precisely because reusing either one would have been a lie the user
-  /// cannot see through.
+  /// Voice Lab row explains why they carry no seal. Hiding this diagnostic
+  /// never changes the projected delivery permissions or the retained text.
   ///
   /// Persistent by construction — it is painted from state, not scheduled
   /// like a toast — and combined into one accessibility element so VoiceOver

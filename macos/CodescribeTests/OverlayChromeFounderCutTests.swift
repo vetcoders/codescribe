@@ -16,6 +16,19 @@ import XCTest
 /// does expose: the native hierarchy and window drag hit-testing.
 @MainActor
 final class OverlayChromeFounderCutTests: XCTestCase {
+  func testAcousticWarningsUseVoiceLabGateWithoutHidingOperationErrors() throws {
+    let source = try overlaySource()
+    XCTAssertTrue(source.contains("@AppStorage(DictationOverlayGate.labModeDefaultsKey)"))
+    XCTAssertTrue(source.contains("DeveloperSurface.isPowerModeEnabled(labMode: labMode)"))
+    let header = try headerSource(source)
+    XCTAssertTrue(
+      header.contains("if showsDiagnostics && state.compactProjection?.degraded == true"))
+    XCTAssertTrue(header.contains("if let error = state.expansionPreferenceError"))
+    let refusal = try section(of: source, from: "case .coverageRefused:", to: "case .noSpeech:")
+    XCTAssertTrue(refusal.contains("if showsDiagnostics {"))
+    XCTAssertTrue(refusal.contains("coverageRefusedBody"))
+  }
+
   func testExpansionClampsBottomAnchorsLowDragsAndSmallerNegativeDisplay() {
     let visible = NSRect(x: -1400, y: -200, width: 1200, height: 800)
     let expanded = NSSize(width: 700, height: 400)
