@@ -7,15 +7,32 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## Release reality
 
-| Version  | Repository milestone | Public distribution status                                                                         |
-| -------- | -------------------- | -------------------------------------------------------------------------------------------------- |
-| `0.13.3` | 2026-08-13           | **Latest published GitHub Release** (`v0.13.3`), signed, notarized, and stapled.                   |
-| `0.14.0` | 2026-08-17           | Source/daily-build milestone only; no Git tag or GitHub Release was published.                     |
-| `0.14.1` | 2026-08-18 onward    | Current source version and release candidate; no Git tag or GitHub Release has been published yet. |
+| Version  | Repository milestone | Public distribution status                                                        |
+| -------- | -------------------- | --------------------------------------------------------------------------------- |
+| `0.13.3` | 2026-08-13           | **Latest published GitHub Release** (`v0.13.3`), signed, notarized, and stapled.  |
+| `0.14.0` | 2026-08-17           | Source/daily-build milestone only; no Git tag or GitHub Release was published.    |
+| `0.14.1` | 2026-08-18 onward    | Earlier source/release-candidate milestone.                                       |
+| `0.15.2` | 2026-09-13           | Current source/daily-build milestone; this patch bump does not publish a release. |
 
 The sections below distinguish code milestones from public releases. A version
 number in `Cargo.toml` is not evidence that a DMG, tag, appcast, or GitHub
 Release exists.
+
+## [0.15.2] - 2026-09-13 (source milestone)
+
+### Changed
+
+- Recording overlay starts as a compact bar, with expandable transcript,
+  persistent expansion preference, and tools revealed from a small handle.
+- Acoustic speech stalls remain visible and require same-occurrence recovery
+  before a terminal transcript can be certified.
+- Stop requires a current ledger terminal seal, independently of measured
+  coverage. Refused finality preserves authenticated words and saved audio;
+  complete coverage without a current seal is displayed as an unsealed transcript.
+
+This is a local source milestone, not a published DMG or an end-to-end
+transcription-quality certification. Transient omissions and credential-free
+configuration loading remain under investigation.
 
 ## [Unreleased]
 
