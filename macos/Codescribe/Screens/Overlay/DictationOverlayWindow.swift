@@ -19,6 +19,42 @@ final class FloatingOverlayPanel: NSPanel, NSWindowDelegate {
   var onUserResize: (() -> Void)?
   fileprivate var presence: OverlayPresence?
   private var dragStart: (mouse: NSPoint, frame: NSRect)?
+  private var expandedSize: NSSize?
+  var sizeForPersistence: NSSize { expandedSize ?? frame.size }
+
+  /// Preserve the top edge and size where the selected display can contain them.
+  func setCollapsed(_ collapsed: Bool) {
+    guard collapsed != (expandedSize != nil) else { return }
+    let wasApplyingFrame = OverlayController.isApplyingFrame
+    OverlayController.isApplyingFrame = true
+    defer { OverlayController.isApplyingFrame = wasApplyingFrame }
+    let top = frame.maxY
+    let size: NSSize
+    if collapsed {
+      // A hidden editor must not keep accepting the Founder's keystrokes.
+      makeFirstResponder(nil)
+      releaseKeyAfterEdit()
+      expandedSize = frame.size
+      size = NSSize(width: frame.width, height: DictationOverlayWindow.collapsedHeight)
+      minSize = NSSize(width: DictationOverlayWindow.minSize.width, height: size.height)
+      contentMinSize = minSize
+      styleMask.remove(.resizable)
+    } else {
+      size = expandedSize ?? DictationOverlayWindow.defaultSize
+      expandedSize = nil
+      minSize = DictationOverlayWindow.minSize
+      contentMinSize = minSize
+      styleMask.insert(.resizable)
+    }
+    let proposed = NSRect(
+      x: frame.minX, y: top - size.height, width: size.width, height: size.height)
+    let restored =
+      collapsed
+      ? proposed
+      : DictationOverlayWindow.visibleExpansionFrame(
+        proposed, in: screen?.visibleFrame ?? NSScreen.main?.visibleFrame)
+    setFrame(restored, display: true)
+  }
 
   func startPresence() {
     presence?.start()
@@ -147,12 +183,17 @@ private final class OverlayContentContainer: NSView {
   /// AppKit's borderless resize strip is ~1–2 px. Claim the 12 pt band first
   /// so SwiftUI / movable-background do not steal the edge.
   override func hitTest(_ point: NSPoint) -> NSView? {
-    if OverlayResizeHit.edge(at: point, in: bounds) != nil { return self }
+    if window?.styleMask.contains(.resizable) == true,
+      OverlayResizeHit.edge(at: point, in: bounds) != nil
+    {
+      return self
+    }
     return super.hitTest(point)
   }
 
   override func resetCursorRects() {
     discardCursorRects()
+    guard window?.styleMask.contains(.resizable) == true else { return }
     for (rect, cursor) in OverlayResizeHit.cursorRects(in: bounds) {
       addCursorRect(rect, cursor: cursor)
     }
@@ -173,6 +214,17 @@ private final class OverlayContentContainer: NSView {
 }
 
 enum DictationOverlayWindow {
+  static let collapsedHeight: CGFloat = 46
+
+  /// Shared geometry seam: a low-dragged/bottom-anchored bar must not unfold
+  /// below the display. Keep its top unchanged whenever the full frame fits.
+  static func visibleExpansionFrame(_ proposed: NSRect, in visible: NSRect?) -> NSRect {
+    guard let visible else { return proposed }
+    let size = NSSize(
+      width: min(proposed.width, visible.width), height: min(proposed.height, visible.height))
+    return NSRect(
+      origin: OverlayPlacement.clampOrigin(proposed.origin, size: size, in: visible), size: size)
+  }
   /// Hard floor for the panel's content size. Enforced for user edge-drag
   /// (`minSize`/`contentMinSize`) AND for every programmatic `setFrame` via
   /// `clamp(_:to:)` (AppKit does not apply `minSize` to programmatic frames).
@@ -228,6 +280,7 @@ enum DictationOverlayWindow {
       defer: false
     )
     panel.delegate = panel
+    state.onCollapseChanged = { [weak panel] collapsed in panel?.setCollapsed(collapsed) }
     panel.onUserMove = { [weak state] in
       guard !OverlayController.isApplyingFrame else { return }
       state?.userDraggedOverlay()
@@ -274,6 +327,8 @@ enum DictationOverlayWindow {
     let presence = OverlayPresence(panel: panel)
     presence.start()
     panel.presence = presence
+
+    if state.isCollapsed { panel.setCollapsed(true) }
 
     // Size is window-owned (user-resizable) — do NOT resize to fittingSize each frame.
     return panel

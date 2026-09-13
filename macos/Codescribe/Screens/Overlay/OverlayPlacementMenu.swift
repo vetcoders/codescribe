@@ -9,6 +9,10 @@ struct OverlayPlacementMenu: View {
 
   var body: some View {
     Menu {
+      if let error = state.expansionPreferenceError {
+        Text(error)
+        Divider()
+      }
       Section("Anchor") {
         ForEach(OverlayAnchor.allCases) { anchor in
           Button {
@@ -31,6 +35,16 @@ struct OverlayPlacementMenu: View {
             : "arrow.up.and.down.and.arrow.left.and.right"
         )
       }
+      Divider()
+      Toggle(
+        "Show transcript by default",
+        isOn: Binding(
+          get: { state.expandedByDefault },
+          set: { state.setExpandedByDefault($0) }
+        )
+      )
+      .help("Save whether new recordings open the transcript or just the recording bar")
+      .accessibilityIdentifier("overlay-expanded-by-default")
     } label: {
       Label("Position overlay", systemImage: "location.viewfinder")
         .labelStyle(.iconOnly)

@@ -94,18 +94,23 @@ final class OverlayResizeHitTests: XCTestCase {
       ("after-brand", 150),
       ("center-waveform", root.bounds.midX),
       ("before-timer", root.bounds.maxX - 150),
-      ("between-waveform-and-controls", root.bounds.maxX - 110),
+      ("between-waveform-and-controls", root.bounds.maxX - 160),
     ]
     for (region, x) in probes {
       let point = NSPoint(x: x, y: y)
       let hit = try XCTUnwrap(root.hitTest(point))
       let chain = hitChain(from: hit)
-      print("CHROME_V3_HEADER_DRAG region=\(region) x=\(x) dragHit=\(panel.isWindowDragHit(at: point)) chain=\(chain)")
+      print(
+        "CHROME_V3_HEADER_DRAG region=\(region) x=\(x) dragHit=\(panel.isWindowDragHit(at: point)) chain=\(chain)"
+      )
       XCTAssertTrue(
         panel.isWindowDragHit(at: point),
         "header \(region) at x=\(x) is not a window drag handle: \(chain)"
       )
     }
+    XCTAssertFalse(
+      panel.isWindowDragHit(at: NSPoint(x: root.bounds.maxX - 27, y: y)),
+      "The collapse control must answer clicks, not window drags")
   }
 
   @MainActor
@@ -237,6 +242,7 @@ final class OverlayResizeHitTests: XCTestCase {
   @MainActor
   func testRealOverlayKeepsTranscriptBetweenHeaderAndDock() throws {
     let state = OverlayState()
+    state.toggleCollapsed()  // This test measures the explicitly expanded transcript.
     project(
       "first line with uncut caps\nsecond line\nthird line\nfourth line\nfifth line\nlast line above the dock",
       sequence: 1,
@@ -285,8 +291,42 @@ final class OverlayResizeHitTests: XCTestCase {
   }
 
   @MainActor
+  func testProjectedTextCannotUnfoldTheRecordingBar() throws {
+    let state = OverlayState()
+    var builtPanel: FloatingOverlayPanel?
+    let controller = OverlayController(
+      state: state, engine: nil,
+      overlayEnabledProvider: { true }, assistiveStatusProvider: { false },
+      panelFactory: { state, scale in
+        let panel = DictationOverlayWindow.make(state: state, textScale: scale)
+        builtPanel = panel as? FloatingOverlayPanel
+        return panel
+      }, orderPanelFront: { $0.orderFrontRegardless() }, orderPanelOut: { $0.orderOut(nil) }
+    )
+    controller.show()
+    let panel = try XCTUnwrap(builtPanel)
+    defer {
+      panel.orderOut(nil)
+      panel.invalidatePresence()
+    }
+    let savedSize = panel.sizeForPersistence
+    let text = (1...80).map { "recorded words \($0)" }.joined(separator: "\n")
+    project(text, sequence: 1, to: state)
+    RunLoop.main.run(until: Date().addingTimeInterval(0.05))
+    XCTAssertTrue(state.isCollapsed)
+    XCTAssertEqual(panel.frame.height, DictationOverlayWindow.collapsedHeight, accuracy: 0.5)
+    XCTAssertEqual(panel.sizeForPersistence, savedSize)
+    XCTAssertEqual(state.activeText, text)
+    state.toggleCollapsed()
+    XCTAssertEqual(panel.frame.size, savedSize)
+    project(text + "\nmore words", sequence: 2, to: state)
+    XCTAssertGreaterThanOrEqual(panel.frame.height, savedSize.height)
+  }
+
+  @MainActor
   func testRealOverlayBreathesToSixtyPercentThenHonorsManualResize() throws {
     let state = OverlayState()
+    state.toggleCollapsed()  // Auto-sizing applies only to the expanded transcript.
     var builtPanel: FloatingOverlayPanel?
     let controller = OverlayController(
       state: state,

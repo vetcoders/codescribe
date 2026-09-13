@@ -249,6 +249,9 @@ pub struct UserSettings {
     pub show_dock_icon: Option<bool>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub transcription_overlay_enabled: Option<bool>,
+    /// Start the overlay with its transcript visible; absence means compact.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub overlay_expanded_by_default: Option<bool>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub tray_start_assistive: Option<bool>,
     // Promoted 2026-08-11: these lived only in `.env`, so the tray/settings
@@ -1491,6 +1494,8 @@ struct UiV2 {
     #[serde(skip_serializing_if = "Option::is_none")]
     transcription_overlay_enabled: Option<bool>,
     #[serde(skip_serializing_if = "Option::is_none")]
+    overlay_expanded_by_default: Option<bool>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     tray_start_assistive: Option<bool>,
     #[serde(skip_serializing_if = "Option::is_none")]
     hold_indicator: Option<bool>,
@@ -1724,6 +1729,7 @@ impl UserSettings {
                 chat_zoom: self.chat_zoom,
                 show_dock_icon: self.show_dock_icon,
                 transcription_overlay_enabled: self.transcription_overlay_enabled,
+                overlay_expanded_by_default: self.overlay_expanded_by_default,
                 tray_start_assistive: self.tray_start_assistive,
                 hold_indicator: self.hold_indicator,
                 hold_badge_size: self.hold_badge_size,
@@ -1872,6 +1878,10 @@ impl UserSettings {
                 .as_ref()
                 .and_then(|ui| ui.transcription_overlay_enabled),
             tray_start_assistive: v2.ui.as_ref().and_then(|ui| ui.tray_start_assistive),
+            overlay_expanded_by_default: v2
+                .ui
+                .as_ref()
+                .and_then(|ui| ui.overlay_expanded_by_default),
             hold_indicator: v2.ui.as_ref().and_then(|ui| ui.hold_indicator),
             hold_badge_size: v2.ui.as_ref().and_then(|ui| ui.hold_badge_size),
             deferred_insert_shortcut: v2
@@ -3742,6 +3752,29 @@ mod tests {
                 .and_then(|v| v.as_bool()),
             Some(false)
         );
+    }
+
+    #[test]
+    #[serial]
+    fn overlay_expansion_preference_roundtrips_in_ui_without_changing_visibility() {
+        let _tmp = setup_isolated_data_dir();
+        assert_eq!(UserSettings::load().overlay_expanded_by_default, None);
+        for expanded in [true, false] {
+            let settings = UserSettings {
+                overlay_expanded_by_default: Some(expanded),
+                transcription_overlay_enabled: Some(true),
+                ..UserSettings::default()
+            };
+            settings.save().expect("persist overlay preference");
+            let loaded = UserSettings::load();
+            assert_eq!(loaded.overlay_expanded_by_default, Some(expanded));
+            assert_eq!(loaded.transcription_overlay_enabled, Some(true));
+            let persisted: serde_json::Value =
+                serde_json::from_str(&fs::read_to_string(UserSettings::settings_path()).unwrap())
+                    .unwrap();
+            assert_eq!(persisted["ui"]["overlay_expanded_by_default"], expanded);
+            assert!(persisted.get("overlay_expanded_by_default").is_none());
+        }
     }
 
     /// Same section contract for the tray's starting lane.

@@ -691,6 +691,26 @@ impl CodescribeConfig {
         CsSettings::from_runtime_snapshot(&runtime)
     }
 
+    /// Read the presentation preference from the canonical settings snapshot.
+    pub fn overlay_expanded_by_default(&self) -> bool {
+        Config::load_runtime_snapshot_without_keychain()
+            .expect("canonical runtime settings must load for overlay preference")
+            .user_settings()
+            .overlay_expanded_by_default
+            .unwrap_or(false)
+    }
+
+    /// Persist only the preferred presentation; never change live capture.
+    pub fn set_overlay_expanded_by_default(&self, enabled: bool) -> bool {
+        let mut settings = UserSettings::load();
+        settings.overlay_expanded_by_default = Some(enabled);
+        if let Err(error) = settings.save() {
+            tracing::warn!(%error, "overlay expansion preference could not be saved");
+            return false;
+        }
+        true
+    }
+
     /// Persist Auto Paste and return the prompt-free post-write truth in one
     /// result. Callers may re-read `tray_toggles()` after an error; no optimistic
     /// bridge cache is retained.
@@ -3439,6 +3459,22 @@ mod settings_snapshot_tests {
             assert!(!env.contains_key("AUTO_PASTE_ENABLED"));
             assert!(!env.contains_key("FORMATTING_LEVEL"));
         }
+        let _ = remove_path_without_following_symlinks(&root);
+    }
+
+    #[test]
+    #[serial]
+    fn overlay_preference_defaults_compact_and_survives_new_handle() {
+        let root = scratch("overlay_expansion_truth");
+        std::fs::create_dir_all(&root).expect("create bridge scratch");
+        let _data_dir = EnvGuard::set("CODESCRIBE_DATA_DIR", &root);
+        let _env_path = EnvGuard::remove("CODESCRIBE_ENV_PATH");
+        let config = CodescribeConfig::new();
+        assert!(!config.overlay_expanded_by_default());
+        assert!(config.set_overlay_expanded_by_default(true));
+        assert!(CodescribeConfig::new().overlay_expanded_by_default());
+        assert!(config.set_overlay_expanded_by_default(false));
+        assert!(!CodescribeConfig::new().overlay_expanded_by_default());
         let _ = remove_path_without_following_symlinks(&root);
     }
 

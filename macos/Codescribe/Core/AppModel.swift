@@ -286,7 +286,10 @@ final class OverlayController: ObservableObject {
     Self.isApplyingFrame = true
     defer { Self.isApplyingFrame = false }
     let screen = NSScreen.main
-    let size = DictationOverlayWindow.clamp(panel.frame.size, to: screen)
+    let clamped = DictationOverlayWindow.clamp(panel.frame.size, to: screen)
+    let size = NSSize(
+      width: clamped.width,
+      height: state.isCollapsed ? DictationOverlayWindow.collapsedHeight : clamped.height)
     let origin: NSPoint?
     if state.freeMotion {
       origin = OverlayPlacement.restoredOrigin(size: size, on: screen) ?? panel.frame.origin
@@ -311,7 +314,7 @@ final class OverlayController: ObservableObject {
   /// and unanimated; content keeps its existing reveal transition instead of
   /// morphing the glass panel or exporting hosting constraints.
   private func resizeForProjectedContent() {
-    guard automaticContentSizingEnabled, let panel else { return }
+    guard automaticContentSizingEnabled, !state.isCollapsed, let panel else { return }
     let screen = panel.screen ?? NSScreen.main
     let targetHeight = OverlayContentSizePolicy.preferredHeight(
       for: state.activeText,
@@ -373,7 +376,8 @@ final class OverlayController: ObservableObject {
     // which used to write back the old feedback loop's runaway sizes) — and,
     // in free motion, the dragged origin.
     if let panel {
-      DictationOverlayWindow.persist(size: panel.frame.size)
+      DictationOverlayWindow.persist(
+        size: (panel as? FloatingOverlayPanel)?.sizeForPersistence ?? panel.frame.size)
       if state.freeMotion {
         OverlayPlacement.persistOrigin(panel.frame.origin)
       }
@@ -387,7 +391,8 @@ final class OverlayController: ObservableObject {
   /// of lingering over the conversation it just fed.
   func hideForAgentHandoff() {
     guard let panel, panel.isVisible else { return }
-    DictationOverlayWindow.persist(size: panel.frame.size)
+    DictationOverlayWindow.persist(
+      size: (panel as? FloatingOverlayPanel)?.sizeForPersistence ?? panel.frame.size)
     if state.freeMotion {
       OverlayPlacement.persistOrigin(panel.frame.origin)
     }

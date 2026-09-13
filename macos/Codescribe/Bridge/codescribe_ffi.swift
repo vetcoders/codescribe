@@ -1285,6 +1285,11 @@ public protocol CodescribeConfigProtocol: AnyObject, Sendable {
      */
     func onboardingProgress()  -> UInt32
 
+    /**
+     * Read the presentation preference from the canonical settings snapshot.
+     */
+    func overlayExpandedByDefault()  -> Bool
+
     func removeCustomProvider(id: String) throws  -> CsCustomProviderRemoval
 
     /**
@@ -1406,6 +1411,11 @@ public protocol CodescribeConfigProtocol: AnyObject, Sendable {
      * promoted `ONBOARDING_MODE` key.
      */
     func setOnboardingMode(mode: String) throws
+
+    /**
+     * Persist only the preferred presentation; never change live capture.
+     */
+    func setOverlayExpandedByDefault(enabled: Bool)  -> Bool
 
     /**
      * Whether the first-run onboarding wizard should be shown (mirrors the
@@ -1767,6 +1777,17 @@ open func onboardingProgress() -> UInt32  {
 })
 }
 
+    /**
+     * Read the presentation preference from the canonical settings snapshot.
+     */
+open func overlayExpandedByDefault() -> Bool  {
+    return try!  FfiConverterBool.lift(try! rustCall() {
+    uniffi_codescribe_ffi_fn_method_codescribeconfig_overlay_expanded_by_default(
+            self.uniffiCloneHandle(),$0
+    )
+})
+}
+
 open func removeCustomProvider(id: String)throws  -> CsCustomProviderRemoval  {
     return try  FfiConverterTypeCsCustomProviderRemoval_lift(try rustCallWithError(FfiConverterTypeCsError_lift) {
     uniffi_codescribe_ffi_fn_method_codescribeconfig_remove_custom_provider(
@@ -2015,6 +2036,18 @@ open func setOnboardingMode(mode: String)throws   {try rustCallWithError(FfiConv
         FfiConverterString.lower(mode),$0
     )
 }
+}
+
+    /**
+     * Persist only the preferred presentation; never change live capture.
+     */
+open func setOverlayExpandedByDefault(enabled: Bool) -> Bool  {
+    return try!  FfiConverterBool.lift(try! rustCall() {
+    uniffi_codescribe_ffi_fn_method_codescribeconfig_set_overlay_expanded_by_default(
+            self.uniffiCloneHandle(),
+        FfiConverterBool.lower(enabled),$0
+    )
+})
 }
 
     /**
@@ -15296,6 +15329,9 @@ private let initializationResult: InitializationResult = {
     if (uniffi_codescribe_ffi_checksum_method_codescribeconfig_onboarding_progress() != 28580) {
         return InitializationResult.apiChecksumMismatch
     }
+    if (uniffi_codescribe_ffi_checksum_method_codescribeconfig_overlay_expanded_by_default() != 62379) {
+        return InitializationResult.apiChecksumMismatch
+    }
     if (uniffi_codescribe_ffi_checksum_method_codescribeconfig_remove_custom_provider() != 11187) {
         return InitializationResult.apiChecksumMismatch
     }
@@ -15357,6 +15393,9 @@ private let initializationResult: InitializationResult = {
         return InitializationResult.apiChecksumMismatch
     }
     if (uniffi_codescribe_ffi_checksum_method_codescribeconfig_set_onboarding_mode() != 39503) {
+        return InitializationResult.apiChecksumMismatch
+    }
+    if (uniffi_codescribe_ffi_checksum_method_codescribeconfig_set_overlay_expanded_by_default() != 25199) {
         return InitializationResult.apiChecksumMismatch
     }
     if (uniffi_codescribe_ffi_checksum_method_codescribeconfig_should_show_onboarding() != 17785) {

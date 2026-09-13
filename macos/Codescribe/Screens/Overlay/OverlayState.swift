@@ -41,6 +41,8 @@ protocol DictationEngine: AnyObject {
   func currentOverlayPolicy() -> OverlayPolicySnapshot?
   func setAutoPasteEnabled(_ enabled: Bool)
   func setAutoFormatLevel(_ level: FormattingPolicyOption)
+  func overlayExpandedByDefault() -> Bool
+  func setOverlayExpandedByDefault(_ enabled: Bool) -> Bool
   func pasteText(text: String) async throws -> CsPasteResult
   func deferText(text: String) async throws -> CsPasteResult
   func copyTaggedTranscript(text: String) async throws
@@ -52,6 +54,8 @@ protocol DictationEngine: AnyObject {
 
 extension DictationEngine {
   func lastSessionAudioPath() -> String? { nil }
+  func overlayExpandedByDefault() -> Bool { false }
+  func setOverlayExpandedByDefault(_ enabled: Bool) -> Bool { false }
 }
 
 struct OverlayPolicySnapshot: Equatable {
@@ -293,7 +297,7 @@ final class OverlayState {
   var errorMessage: String?
   private(set) var presentationStatus: OverlayPresentationStatus?
   private(set) var errorLifecycleDetail =
-"No transcript was delivered."
+    "No transcript was delivered."
   /// Standing explanation for a take whose acoustic coverage the ledger
   /// refused. Non-nil exactly while the last terminal projection carried
   /// `coverage_refused`, so the surface cannot outlive the fact it describes.
@@ -382,6 +386,35 @@ final class OverlayState {
   var onSendToAgent: ((String) -> Void)?
   /// Dismiss the floating window — wired by the orchestrator.
   var onClose: (() -> Void)?
+  /// Window chrome only: folding never ends capture or creates text edits.
+  /// Leaving an edited canvas uses its existing commit-on-blur path.
+  private(set) var isCollapsed = true
+  private(set) var expandedByDefault = false
+  private(set) var expansionPreferenceError: String?
+  @ObservationIgnored var onCollapseChanged: ((Bool) -> Void)?
+
+  func toggleCollapsed() {
+    isCollapsed.toggle()
+    onCollapseChanged?(isCollapsed)
+  }
+
+  func setExpandedByDefault(_ expanded: Bool) {
+    guard let engine, engine.setOverlayExpandedByDefault(expanded) else {
+      expansionPreferenceError = "Couldn't save overlay preference"
+      return
+    }
+    expansionPreferenceError = nil
+    applyPreferredExpansion()
+  }
+
+  private func applyPreferredExpansion() {
+    guard let engine else { return }
+    expandedByDefault = engine.overlayExpandedByDefault()
+    let collapsed = !expandedByDefault
+    guard isCollapsed != collapsed else { return }
+    isCollapsed = collapsed
+    onCollapseChanged?(collapsed)
+  }
   var onRecordingPreparing: (() -> Void)?
   var onRecordingStarted: (() -> Void)?
   var onRecordingStopped: (() -> Void)?
@@ -447,7 +480,8 @@ final class OverlayState {
       case .notObserved: explanation = "No acoustic measurement was available for this take"
       case .identityMismatch: explanation = "The acoustic measurement did not match this take"
       case .invalidMeasurement: explanation = "The acoustic measurement could not be used"
-      case .partialObservation: explanation = "The acoustic measurement covered only part of this take"
+      case .partialObservation:
+        explanation = "The acoustic measurement covered only part of this take"
       case .unknown, nil: explanation = "The acoustic measurement was unavailable"
       }
       return ("measurement unavailable", "\(explanation) — these words were kept, not sealed")
@@ -473,7 +507,8 @@ final class OverlayState {
   /// This is fallback presentation; the connected store owns recovery actions.
   private var retainedComposerDocuments: [(id: String, text: String)] = []
   var retainedComposerDelivery: String? {
-    retainedComposerDocuments.isEmpty ? nil
+    retainedComposerDocuments.isEmpty
+      ? nil
       : retainedComposerDocuments.map(\.text).joined(separator: "\n")
   }
   private var qualityCapturedProvenance: String?
@@ -555,6 +590,7 @@ final class OverlayState {
   }
 
   func attach() {
+    applyPreferredExpansion()
     engine?.setListener(listener)
   }
 
@@ -1340,6 +1376,7 @@ final class OverlayState {
       resetTranscript()
       errorMessage = nil
       beginCaptureClock()
+      applyPreferredExpansion()
     }
     recording = true
     refreshOverlayPolicyTruth()
@@ -1361,6 +1398,7 @@ final class OverlayState {
       resetTranscript()
       errorMessage = nil
       beginCaptureClock()
+      applyPreferredExpansion()
     }
     if captureStartedAtUptime == nil {
       beginCaptureClock()
@@ -1756,7 +1794,8 @@ final class OverlayState {
   func applyTranscriptProjection(_ projection: CsTranscriptProjectionEvent) {
     // Retired projections may still carry undelivered words, but cannot paint
     // or finalize the newer capture. Retry the identity-addressed receiver only.
-    let foreignComposerTerminal = projection.terminal && projection.lifecycleTerminal
+    let foreignComposerTerminal =
+      projection.terminal && projection.lifecycleTerminal
       && acceptsCaptureTerminal?(projection.sessionId) == false
     if retiredProjectionSessions.contains(projection.sessionId)
       || foreignComposerTerminal
@@ -1793,7 +1832,8 @@ final class OverlayState {
       }
     }
     projectionOrder[projection.sessionId] = (
-      projection.sequence, projection.reducerRevision, projection.captureEpoch)
+      projection.sequence, projection.reducerRevision, projection.captureEpoch
+    )
     // Replayed lifecycle cannot repaint or release capture twice. A later
     // addressed offer can still retry an unacknowledged composer handover.
     let lifecycleTerminal = projection.terminal && projection.lifecycleTerminal
@@ -1961,7 +2001,8 @@ final class OverlayState {
     let text = projection.renderedText
     guard !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return }
     guard let onComposerTranscript else {
-      retainComposerDelivery(text, sessionID: projection.sessionId, notice: "no composer receiver",
+      retainComposerDelivery(
+        text, sessionID: projection.sessionId, notice: "no composer receiver",
         showsNotice: affectsCurrentCapture)
       return
     }
@@ -1977,7 +2018,8 @@ final class OverlayState {
         if affectsCurrentCapture { showFooterNotice("kept in composer recovery") }
         return
       }
-      retainComposerDelivery(refused, sessionID: projection.sessionId, notice: "kept for recovery",
+      retainComposerDelivery(
+        refused, sessionID: projection.sessionId, notice: "kept for recovery",
         showsNotice: affectsCurrentCapture)
     case .empty:
       break
@@ -2333,6 +2375,7 @@ final class OverlayState {
   /// Seeded view model for #Preview in the listening state.
   static func previewListening() -> OverlayState {
     let s = OverlayState()
+    s.isCollapsed = false
     s.applyTranscriptProjection(
       previewProjection(
         "add a rate limiter to the login route and write a test for it",
@@ -2347,6 +2390,7 @@ final class OverlayState {
   /// Seeded view model for #Preview in the post-capture transcribing phase.
   static func previewTranscribing() -> OverlayState {
     let s = OverlayState()
+    s.isCollapsed = false
     s.applyTranscriptProjection(
       previewProjection(
         "add a rate limiter to the login route and write a test for it",
@@ -2362,6 +2406,7 @@ final class OverlayState {
   /// without any usable text).
   static func previewNoSpeech() -> OverlayState {
     let s = OverlayState()
+    s.isCollapsed = false
     s.applyTranscriptProjection(previewProjection("", phase: .noSpeech, terminal: true))
     s.noSpeechNotice = OverlayState.defaultNoSpeechNotice
     return s
@@ -2370,6 +2415,7 @@ final class OverlayState {
   /// Seeded view model for #Preview in the finalized state.
   static func previewFormatted() -> OverlayState {
     let s = OverlayState()
+    s.isCollapsed = false
     s.applyTranscriptProjection(
       previewProjection(
         "Add a rate limiter to the login route and write a test that covers the throttle window. Keep the existing error shape.",
@@ -2383,6 +2429,7 @@ final class OverlayState {
   /// Seeded view model for the terminal error phase.
   static func previewError() -> OverlayState {
     let s = OverlayState()
+    s.isCollapsed = false
     s.applyTranscriptProjection(
       previewProjection("", phase: .error, terminal: true)
     )
@@ -2401,10 +2448,12 @@ final class OverlayState {
       reducerRevision: 1, reducerAction: "preview_fixture",
       occurrenceSessionId: "preview",
       captureEpoch: 0, sampleStart: 0, sampleEnd: 0, documentIndex: 0, label: renderedText,
-      renderedText: renderedText, phase: phase.rawValue, canPaste: isFormatted, canInsert: isFormatted,
+      renderedText: renderedText, phase: phase.rawValue, canPaste: isFormatted,
+      canInsert: isFormatted,
       canCopy: !renderedText.isEmpty, canRetranscribe: phase == .noSpeech || isFormatted,
       canFormat: isFormatted,
-      terminal: terminal, lifecycleTerminal: terminal, delivery: .unattempted, acousticReceipts: [], sealCoverage: nil)
+      terminal: terminal, lifecycleTerminal: terminal, delivery: .unattempted, acousticReceipts: [],
+      sealCoverage: nil)
   }
 }
 
@@ -2459,6 +2508,12 @@ final class ControllerDictationEngine: DictationEngine {
   }
   func setAutoPasteEnabled(_ enabled: Bool) {
     _ = try? config.setAutoPasteEnabled(enabled: enabled)
+  }
+  func overlayExpandedByDefault() -> Bool {
+    config.overlayExpandedByDefault()
+  }
+  func setOverlayExpandedByDefault(_ enabled: Bool) -> Bool {
+    config.setOverlayExpandedByDefault(enabled: enabled)
   }
   func setAutoFormatLevel(_ level: FormattingPolicyOption) {
     _ = try? config.setAutoFormatLevel(level: level.rawValue)

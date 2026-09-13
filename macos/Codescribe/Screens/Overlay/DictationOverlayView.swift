@@ -19,6 +19,7 @@ struct DictationOverlayView: View {
   @Environment(\.colorScheme) private var colorScheme
   @Environment(\.accessibilityVoiceOverEnabled) private var voiceOverEnabled
   @State private var pointerInside = false
+  @State private var actionsPinned = false
   @State private var actionsFocused = false
   @Bindable var state: OverlayState
 
@@ -63,7 +64,6 @@ struct DictationOverlayView: View {
     .clipShape(RoundedRectangle(cornerRadius: CSRadius.window, style: .continuous))
     .animation(reduceMotion ? nil : CSMotion.floatIn, value: state.toast)
     .onHover { inside in
-      pointerInside = inside
       state.setPointerHovering(inside)
     }
     .onAppear {
@@ -85,32 +85,62 @@ struct DictationOverlayView: View {
   }
 
   private func canvasStack<IntentRail: View>(_ intentRail: IntentRail) -> some View {
-    bodySection
-      .safeAreaInset(edge: .top, spacing: 0) {
-        VStack(alignment: .leading, spacing: 0) {
-          header
-          hairline(0.06)
+    VStack(spacing: 0) {
+      header
+      hairline(0.06)
+      bodySection
+        .frame(height: state.isCollapsed ? 0 : nil)
+        .clipped()
+        .opacity(state.isCollapsed ? 0 : 1)
+        .allowsHitTesting(!state.isCollapsed)
+        .accessibilityHidden(state.isCollapsed)
+    }
+    .overlay(alignment: .bottom) {
+      if !state.isCollapsed {
+        VStack(spacing: 2) {
+          intentRail
+            .opacity(actionsVisible ? 1 : 0)
+            .frame(height: actionsVisible ? nil : 0)
+            .clipped()
+            .allowsHitTesting(actionsVisible)
+            .accessibilityHidden(!actionsVisible)
+            .accessibilityIdentifier("overlay-actions-ephemeral")
+          Button {
+            actionsPinned.toggle()
+          } label: {
+            Capsule()
+              .fill(palette.mutedText.color.opacity(0.7))
+              .frame(width: 38, height: 4)
+              .padding(.horizontal, 20)
+              .padding(.vertical, 8)
+              .contentShape(Rectangle())
+          }
+          .buttonStyle(.plain)
+          .help(actionsVisible ? "Hide tools" : "Show tools")
+          .accessibilityLabel("Overlay tools")
+          .accessibilityValue(actionsVisible ? "Expanded" : "Collapsed")
+          .accessibilityIdentifier("overlay-tools-handle")
         }
+        .frame(maxWidth: actionsVisible ? .infinity : 90)
+        .padding(.horizontal, 8)
+        .padding(.bottom, 8)
+        .contentShape(Rectangle())
+        .onHover { pointerInside = $0 }
+        .animation(reduceMotion ? nil : .easeOut(duration: 0.15), value: actionsVisible)
       }
-      .overlay(alignment: .bottom) {
-        intentRail
-          .opacity(actionsVisible ? 1 : 0)
-          .allowsHitTesting(actionsVisible)
-          .accessibilityHidden(false)
-          .padding(.horizontal, 8)
-          .padding(.bottom, 8)
-          .animation(reduceMotion ? nil : .easeOut(duration: 0.15), value: actionsVisible)
-          .accessibilityIdentifier("overlay-actions-ephemeral")
-      }
+    }
+    .onChange(of: state.isCollapsed) { _, _ in
+      pointerInside = false
+      actionsPinned = false
+    }
   }
 
   private var actionsVisible: Bool {
     OverlayChromeVisibility.actionsVisible(
       pointerInside: pointerInside,
-      keyboardFocus: actionsFocused || state.isEditingTranscript
+      keyboardFocus: actionsFocused || actionsPinned
         || NSApp.isFullKeyboardAccessEnabled,
-      voiceOver: voiceOverEnabled,
-      retainedWork: state.hasRecoverableSupersededWork
+      voiceOver: voiceOverEnabled
     )
   }
 
@@ -178,10 +208,30 @@ struct DictationOverlayView: View {
         .accessibilityIdentifier("overlay-header-center")
 
       HStack(spacing: compact ? 4 : 8) {
+        if let error = state.expansionPreferenceError {
+          Image(systemName: "exclamationmark.triangle.fill")
+            .foregroundStyle(.orange)
+            .help(error)
+            .accessibilityLabel(error)
+            .accessibilityIdentifier("overlay-preference-save-error")
+        }
         autoPasteControl
         sessionTimer
           .allowsHitTesting(false)
         OverlayPlacementMenu(state: state, palette: palette)
+        Button {
+          state.toggleCollapsed()
+        } label: {
+          Image(systemName: state.isCollapsed ? "chevron.down" : "chevron.up")
+            .font(.system(size: 11, weight: .semibold))
+            .foregroundStyle(palette.mutedText.color)
+            .frame(width: 22, height: 22)
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .help(state.isCollapsed ? "Expand transcript" : "Collapse to recording bar")
+        .accessibilityLabel(state.isCollapsed ? "Expand transcript" : "Collapse transcript")
+        .accessibilityIdentifier("overlay-collapse-toggle")
       }
       .fixedSize()
       .accessibilityElement(children: .contain)
@@ -451,9 +501,9 @@ struct DictationOverlayView: View {
                 ? "Delivery interrupted — the transcript is still here"
                 : state.activeText.isEmpty ? "Transcription failed" : "Delivery interrupted")
           )
-            .csFont(15, .medium)
-            .foregroundStyle(palette.bodyText.color)
-            .fixedSize(horizontal: false, vertical: true)
+          .csFont(15, .medium)
+          .foregroundStyle(palette.bodyText.color)
+          .fixedSize(horizontal: false, vertical: true)
           Text(state.errorLifecycleDetail)
             .csMono(11, .medium)
             .foregroundStyle(palette.mutedText.color)

@@ -16,6 +16,140 @@ import XCTest
 /// does expose: the native hierarchy and window drag hit-testing.
 @MainActor
 final class OverlayChromeFounderCutTests: XCTestCase {
+  func testExpansionClampsBottomAnchorsLowDragsAndSmallerNegativeDisplay() {
+    let visible = NSRect(x: -1400, y: -200, width: 1200, height: 800)
+    let expanded = NSSize(width: 700, height: 400)
+    for anchor in [OverlayAnchor.bottomLeft, .bottomCenter, .bottomRight] {
+      let barSize = NSSize(width: expanded.width, height: DictationOverlayWindow.collapsedHeight)
+      let bar = NSRect(
+        origin: OverlayPlacement.origin(for: anchor, size: barSize, in: visible), size: barSize)
+      let proposed = NSRect(
+        x: bar.minX, y: bar.maxY - expanded.height, width: expanded.width, height: expanded.height)
+      let restored = DictationOverlayWindow.visibleExpansionFrame(proposed, in: visible)
+      XCTAssertTrue(visible.contains(restored), "\(anchor)")
+      XCTAssertEqual(restored.size, expanded)
+      XCTAssertEqual(restored.minY, visible.minY)
+    }
+    let lowDrag = NSRect(x: -500, y: -580, width: 700, height: 400)
+    XCTAssertTrue(
+      visible.contains(DictationOverlayWindow.visibleExpansionFrame(lowDrag, in: visible)))
+    let smallDisplay = NSRect(x: -800, y: -600, width: 500, height: 300)
+    XCTAssertEqual(
+      DictationOverlayWindow.visibleExpansionFrame(lowDrag, in: smallDisplay), smallDisplay)
+    let fitting = NSRect(x: -1300, y: 100, width: 700, height: 400)
+    XCTAssertEqual(DictationOverlayWindow.visibleExpansionFrame(fitting, in: visible), fitting)
+  }
+
+  func testPreferenceSaveFailureIsVisibleWithoutExpandingTheBar() throws {
+    let state = OverlayState()
+    let engine = OverlayChromePolicyEngine()
+    engine.expansionWriteAllowed = false
+    state.engine = engine
+    state.setExpandedByDefault(true)
+    XCTAssertTrue(state.isCollapsed)
+    XCTAssertFalse(state.expandedByDefault)
+    XCTAssertEqual(state.expansionPreferenceError, "Couldn't save overlay preference")
+    let header = try headerSource(overlaySource())
+    XCTAssertTrue(header.contains("state.expansionPreferenceError"))
+    XCTAssertTrue(header.contains("overlay-preference-save-error"))
+    XCTAssertTrue(header.contains(".accessibilityLabel(error)"))
+    engine.expansionWriteAllowed = true
+    state.setExpandedByDefault(false)
+    XCTAssertNil(state.expansionPreferenceError)
+    XCTAssertTrue(state.isCollapsed)
+  }
+
+  func testBottomDraggedBarExpandsInsideItsRealScreen() throws {
+    let state = OverlayState.previewFormatted()
+    try withPanel(state: state) { panel, root in
+      let visible = try XCTUnwrap(panel.screen ?? NSScreen.main).visibleFrame
+      state.toggleCollapsed()
+      panel.setFrameOrigin(NSPoint(x: visible.minX + 20, y: visible.minY + 12))
+      state.toggleCollapsed()
+      settle(root)
+      XCTAssertTrue(visible.contains(panel.frame))
+      XCTAssertEqual(panel.frame.minY, visible.minY, accuracy: 0.5)
+    }
+  }
+
+  func testSavedExpansionAppliesOnAttachAndTemporaryChevronDoesNotWritePreference() {
+    let engine = OverlayChromePolicyEngine()
+    let first = OverlayState()
+    first.engine = engine
+    first.attach()
+    XCTAssertTrue(first.isCollapsed)
+    first.setExpandedByDefault(true)
+    XCTAssertEqual(engine.expansionWrites, [true])
+    XCTAssertFalse(first.isCollapsed)
+    first.toggleCollapsed()
+    XCTAssertTrue(first.isCollapsed)
+    XCTAssertEqual(engine.expansionWrites, [true])
+    let reopened = OverlayState()
+    reopened.engine = engine
+    reopened.attach()
+    XCTAssertFalse(reopened.isCollapsed)
+    engine.expansionWriteAllowed = false
+    reopened.setExpandedByDefault(false)
+    XCTAssertFalse(reopened.isCollapsed)
+    XCTAssertTrue(reopened.expandedByDefault)
+  }
+  func testOverlayStartsAsRecordingBar() throws {
+    let state = OverlayState()
+    XCTAssertTrue(state.isCollapsed)
+    let panel = try XCTUnwrap(
+      DictationOverlayWindow.make(
+        state: state, textScale: TextScaleController(key: "OverlayCollapse.default")
+      ) as? FloatingOverlayPanel)
+    defer {
+      panel.orderOut(nil)
+      panel.invalidatePresence()
+    }
+    XCTAssertEqual(panel.frame.height, DictationOverlayWindow.collapsedHeight, accuracy: 0.5)
+    XCTAssertFalse(panel.styleMask.contains(.resizable))
+  }
+
+  func testCollapsePreservesTextSizeAndTopEdgeAcrossBarDrag() throws {
+    let state = OverlayState.previewFormatted()
+    let text = state.activeText
+    try withPanel(state: state, width: 700) { panel, root in
+      panel.setFrame(NSRect(x: 140, y: 180, width: 700, height: 400), display: true)
+      let expanded = panel.frame
+      let native = try XCTUnwrap(findTranscript(in: root))
+      state.toggleCollapsed()
+      settle(root)
+      XCTAssertEqual(panel.frame.maxY, expanded.maxY, accuracy: 0.5)
+      XCTAssertEqual(panel.frame.height, DictationOverlayWindow.collapsedHeight, accuracy: 0.5)
+      XCTAssertEqual(panel.sizeForPersistence, expanded.size)
+      XCTAssertEqual(state.activeText, text)
+      XCTAssertTrue(findTranscript(in: root) === native, "Folding must not recreate the editor")
+      panel.setFrameOrigin(NSPoint(x: 200, y: panel.frame.minY + 40))
+      let movedTop = panel.frame.maxY
+      state.toggleCollapsed()
+      settle(root)
+      XCTAssertEqual(panel.frame.size, expanded.size)
+      XCTAssertEqual(panel.frame.maxY, movedTop, accuracy: 0.5)
+      XCTAssertEqual(state.activeText, text)
+      XCTAssertTrue(findTranscript(in: root) === native)
+    }
+  }
+
+  func testToolsHaveSmallHandleAndDoNotRevealOnCanvasHover() throws {
+    let source = try overlaySource()
+    XCTAssertTrue(source.contains("overlay-tools-handle"))
+    XCTAssertTrue(source.contains("overlay-collapse-toggle"))
+    XCTAssertTrue(source.contains(".onHover { pointerInside = $0 }"))
+    XCTAssertFalse(
+      source.contains("pointerInside = inside"), "Whole canvas hover must not reveal tools")
+    XCTAssertFalse(
+      OverlayChromeVisibility.actionsVisible(
+        pointerInside: false, keyboardFocus: false, voiceOver: false))
+  }
+
+  private func findTranscript(in view: NSView) -> LiveTranscriptNativeTextView? {
+    if let text = view as? LiveTranscriptNativeTextView { return text }
+    return view.subviews.lazy.compactMap { self.findTranscript(in: $0) }.first
+  }
+
   func testHeaderHasNoCloseGlyph() throws {
     try withPanel(state: .previewListening()) { panel, root in
       let elements = accessibilityTree(root)
@@ -109,7 +243,8 @@ final class OverlayChromeFounderCutTests: XCTestCase {
     XCTAssertTrue(control.contains("state.setAutoPasteEnabled(!state.autoPasteEnabled)"))
     XCTAssertTrue(control.contains(".disabled(!state.autoPasteControlAvailable)"))
     XCTAssertTrue(control.contains(".accessibilityIdentifier(\"overlay-auto-paste\")"))
-    XCTAssertTrue(control.contains(".accessibilityValue(state.autoPasteEnabled ? \"On\" : \"Off\")"))
+    XCTAssertTrue(
+      control.contains(".accessibilityValue(state.autoPasteEnabled ? \"On\" : \"Off\")"))
   }
 
   private func withPanel(
@@ -185,6 +320,16 @@ final class OverlayChromeFounderCutTests: XCTestCase {
 
 @MainActor
 private final class OverlayChromePolicyEngine: DictationEngine {
+  var expansionWrites: [Bool] = []
+  var expanded = false
+  var expansionWriteAllowed = true
+  func overlayExpandedByDefault() -> Bool { expanded }
+  func setOverlayExpandedByDefault(_ enabled: Bool) -> Bool {
+    guard expansionWriteAllowed else { return false }
+    expansionWrites.append(enabled)
+    expanded = enabled
+    return true
+  }
   var writes: [Bool] = []
   var enabled = true
   func setListener(_ listener: CsTranscriptionListener) {}
