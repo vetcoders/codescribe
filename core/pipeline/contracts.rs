@@ -964,6 +964,11 @@ impl std::fmt::Display for DropKind {
 /// Implementations decide how to present events — typing animation,
 /// overlay updates, clipboard paste, IPC streaming, etc.
 pub trait EventSink: Send + Sync {
+    /// Bind passive capture observers after the recorder opens successfully,
+    /// before the transcription worker starts. This is not a document event,
+    /// ledger receipt, or public IPC message.
+    fn on_capture_opened(&self, _session_id: &str, _capture_epoch: u64) {}
+
     /// Receive one semantic engine event. Called from the engine's own thread,
     /// so implementations must not block — presentation work belongs on the
     /// consumer's queue, not on this call.

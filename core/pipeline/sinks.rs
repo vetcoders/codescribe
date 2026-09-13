@@ -98,6 +98,12 @@ impl FanoutEventSink {
 }
 
 impl EventSink for FanoutEventSink {
+    fn on_capture_opened(&self, session_id: &str, capture_epoch: u64) {
+        for sink in &self.sinks {
+            sink.on_capture_opened(session_id, capture_epoch);
+        }
+    }
+
     /// Deliver to every sink in order, synchronously on the caller's thread.
     ///
     /// No isolation between sinks: a slow one delays the rest, and a panicking
@@ -263,6 +269,34 @@ mod tests {
     }
 
     /// FanoutEventSink delivers each event to every configured child sink.
+    #[test]
+    fn capture_open_reaches_every_child_before_engine_events() {
+        #[derive(Default)]
+        struct CaptureObserver(Mutex<Vec<String>>);
+        impl EventSink for CaptureObserver {
+            fn on_capture_opened(&self, session_id: &str, capture_epoch: u64) {
+                self.0
+                    .lock()
+                    .unwrap()
+                    .push(format!("{session_id}:{capture_epoch}"));
+            }
+            fn on_event(&self, _: &EngineEvent) {
+                self.0.lock().unwrap().push("event".into());
+            }
+        }
+        let a = Arc::new(CaptureObserver::default());
+        let b = Arc::new(CaptureObserver::default());
+        let fanout = FanoutEventSink::pair(a.clone(), b.clone());
+        fanout.on_capture_opened("take", 7);
+        fanout.on_event(&EngineEvent::Preview {
+            rev: 1,
+            text: "hello".into(),
+        });
+        for observer in [a, b] {
+            assert_eq!(*observer.0.lock().unwrap(), ["take:7", "event"]);
+        }
+    }
+
     #[test]
     fn test_fanout_event_sink_forwards_to_all() {
         let a = Arc::new(CollectorEventSink::new());

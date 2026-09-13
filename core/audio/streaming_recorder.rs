@@ -528,6 +528,7 @@ impl StreamingRecorder {
         // Start actual audio stream
         self.recorder.start().await?;
         self.capture_epoch = next_capture_epoch;
+        event_sink.on_capture_opened(&session_id, next_capture_epoch);
 
         // Update sample rate to match real input stream
         let actual_sample_rate = self.recorder.actual_sample_rate();

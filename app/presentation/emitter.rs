@@ -1104,6 +1104,7 @@ pub type ProjectionObserver = Arc<dyn Fn(&TranscriptBusEvidenceEvent) + Send + S
 /// that overlay deltas and the shared transcript snapshot see identical order.
 pub struct PresentationEmitter {
     cursor_observer: Option<CursorObserver>,
+    cursor_capture: std::sync::OnceLock<(String, u64)>,
     cursor_integrity: std::sync::Mutex<Option<SpeechIntegrity>>,
     /// Last bounded paint, not a document or independently reconstructed delta.
     cursor_tail: std::sync::Mutex<String>,
@@ -1198,6 +1199,7 @@ impl PresentationEmitter {
             projection_callback,
             literal_delivery: std::sync::atomic::AtomicBool::new(false),
             cursor_observer: None,
+            cursor_capture: std::sync::OnceLock::new(),
             cursor_integrity: std::sync::Mutex::new(None),
             cursor_tail: std::sync::Mutex::new(String::new()),
         }
@@ -1556,15 +1558,30 @@ impl Drop for PresentationEmitter {
 }
 
 impl EventSink for PresentationEmitter {
+    fn on_capture_opened(&self, session_id: &str, capture_epoch: u64) {
+        if session_id.is_empty()
+            || capture_epoch == 0
+            || self
+                .transcript_bus
+                .as_ref()
+                .is_some_and(|bus| bus.session_id() != session_id)
+        {
+            return;
+        }
+        // One emitter belongs to one opened capture. A late lifecycle callback
+        // cannot rebind it to a successor or erase its warning evidence.
+        let _ = self
+            .cursor_capture
+            .set((session_id.to_owned(), capture_epoch));
+    }
+
     /// Route an `EngineEvent` into reducer state and ordered delta delivery.
     fn on_event(&self, event: &EngineEvent) {
         match event {
             EngineEvent::SpeechIntegrity { evidence } => {
-                if self
-                    .transcript_bus
-                    .as_ref()
-                    .is_some_and(|bus| bus.session_id() != evidence.session_id)
-                {
+                if !self.cursor_capture.get().is_some_and(|(session, epoch)| {
+                    session == &evidence.session_id && *epoch == evidence.capture_epoch
+                }) {
                     return;
                 }
                 {
@@ -1952,6 +1969,20 @@ mod tests {
             phase: SpeechIntegrityPhase::Stalled,
         };
         let mut foreign_first = evidence.clone();
+        emitter.on_event(&EngineEvent::SpeechIntegrity {
+            evidence: evidence.clone(),
+        });
+        assert!(emitter.cursor_integrity.lock().unwrap().is_none());
+        emitter.on_capture_opened("take", 0);
+        emitter.on_capture_opened("previous take", 7);
+        assert!(emitter.cursor_capture.get().is_none());
+        emitter.on_capture_opened("take", 7);
+        emitter.on_capture_opened("take", 8);
+        foreign_first.capture_epoch = 6;
+        emitter.on_event(&EngineEvent::SpeechIntegrity {
+            evidence: foreign_first.clone(),
+        });
+        assert!(emitter.cursor_integrity.lock().unwrap().is_none());
         foreign_first.session_id = "previous take".into();
         emitter.on_event(&EngineEvent::SpeechIntegrity {
             evidence: foreign_first,
@@ -1971,6 +2002,15 @@ mod tests {
             evidence.sequence += 1;
         }
         let before = paints.lock().unwrap().len();
+        for (epoch, sequence) in [(7, evidence.sequence - 1), (8, u64::MAX)] {
+            let mut stale = evidence.clone();
+            stale.capture_epoch = epoch;
+            stale.sequence = sequence;
+            stale.phase = SpeechIntegrityPhase::Tracking;
+            emitter.on_event(&EngineEvent::SpeechIntegrity { evidence: stale });
+            assert_eq!(paints.lock().unwrap().len(), before);
+            assert!(paints.lock().unwrap().last().unwrap().1);
+        }
         let mut stale = evidence.clone();
         stale.session_id = "old take".into();
         emitter.on_event(&EngineEvent::SpeechIntegrity { evidence: stale });
