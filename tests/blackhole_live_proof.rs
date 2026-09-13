@@ -1,4 +1,6 @@
-//! BlackHole loopback proof on real operator session audio.
+//! BlackHole loopback proof on explicitly selected Founder session audio.
+//! Requires PROOF_WAV, PROOF_EXPECT_TEXT and CODESCRIBE_APPLE_STT_BRIDGE.
+//! Expected text is a contiguous word sequence; case and punctuation are ignored.
 
 #![cfg(target_os = "macos")]
 
@@ -24,6 +26,38 @@ fn blackhole_capture_gate(value: Option<&str>) -> anyhow::Result<()> {
     Ok(())
 }
 
+fn blackhole_transcript_matches(transcript: &str, expected: &str) -> bool {
+    let words = |text: &str| {
+        text.split(|c: char| !c.is_alphanumeric())
+            .filter(|word| !word.is_empty())
+            .map(str::to_lowercase)
+            .collect::<Vec<_>>()
+    };
+    let actual = words(transcript);
+    let expected = words(expected);
+    !expected.is_empty() && actual.windows(expected.len()).any(|part| part == expected)
+}
+
+#[test]
+fn blackhole_expected_clause_rejects_missing_words_and_empty_expectations() {
+    let expected = "widget który będzie można przypiąć do pointera";
+    assert!(blackhole_transcript_matches(
+        "Mini WIDGET, który będzie można przypiąć do pointera myszki.",
+        expected
+    ));
+    for actual in [
+        "",
+        "jakiś tekst",
+        "widget który będzie do pointera",
+        "miniwidget który będzie można przypiąć do pointera",
+    ] {
+        assert!(!blackhole_transcript_matches(actual, expected));
+    }
+    for empty in ["", "  ", "..."] {
+        assert!(!blackhole_transcript_matches("dowolny tekst", empty));
+    }
+}
+
 #[test]
 fn test_blackhole_capture_gate_requires_explicit_opt_in() {
     for value in [None, Some(""), Some("0"), Some("false"), Some("yes")] {
@@ -46,22 +80,34 @@ async fn blackhole_session_proof() {
         .with_test_writer()
         .init();
 
-    let session_wav = std::env::var("PROOF_WAV").unwrap_or_else(|_| {
-        "/Users/maciejgad/.codescribe/sessions/15e7b236-94ef-4d60-a388-3870d1aa8923.wav".to_string()
-    });
+    let session_wav = std::env::var("PROOF_WAV").expect("explicit PROOF_WAV required");
+    let expected = std::env::var("PROOF_EXPECT_TEXT").expect("explicit PROOF_EXPECT_TEXT required");
+    assert!(
+        blackhole_transcript_matches(&expected, &expected),
+        "expected clause must contain words"
+    );
     let wav_path = Path::new(&session_wav);
-    assert!(wav_path.exists(), "WAV file does not exist: {session_wav}");
+    assert!(wav_path.is_file(), "WAV file does not exist: {session_wav}");
 
-    let bridge_path = Path::new(env!("CARGO_MANIFEST_DIR"))
-        .join("target/release/codescribe-stt-bridge")
-        .to_string_lossy()
-        .into_owned();
+    let bridge_path = std::env::var("CODESCRIBE_APPLE_STT_BRIDGE")
+        .expect("explicit CODESCRIBE_APPLE_STT_BRIDGE required");
+    assert!(
+        Path::new(&bridge_path).is_file(),
+        "selected bridge is missing"
+    );
     unsafe {
         std::env::set_var("AUDIO_INPUT_DEVICE", "BlackHole 2ch");
         std::env::set_var("CODESCRIBE_STT_ENGINE", "apple");
         std::env::set_var("CODESCRIBE_APPLE_STT_BRIDGE", bridge_path);
         std::env::set_var("CODESCRIBE_BRIDGE_DISCLAIM", "1");
     }
+
+    let capture_path = codescribe_core::audio::recorder::probe_input_capture_path()
+        .expect("resolve capture device without opening a stream");
+    assert_eq!(
+        capture_path.device_name, "BlackHole 2ch",
+        "refuse a different capture device"
+    );
 
     let events = Arc::new(Mutex::new(Vec::new()));
     let sink = Arc::new(CollectSink(events.clone()));
@@ -162,15 +208,15 @@ async fn blackhole_session_proof() {
         speech_samples.is_some_and(|n| n > 0),
         "no speech samples reached the ledger: {speech_samples:?}"
     );
-    let transcript = match &stop_result {
-        Ok((text, _)) => text.clone(),
-        Err(err) => err
-            .downcast_ref::<codescribe_core::audio::streaming_recorder::TerminalSealRefused>()
-            .map(|refusal| refusal.committed_text.clone())
-            .unwrap_or_default(),
-    };
+    let (transcript, _) = stop_result.expect("live proof requires successful terminal closure");
     assert!(
-        !transcript.trim().is_empty(),
-        "real speech played through BlackHole produced no transcript"
+        captured_events.iter().any(|event| matches!(event,
+            EngineEvent::LedgerSeal { receipt } if !receipt.is_occurrence_seal()
+        )),
+        "live proof requires an actual terminal ledger seal"
+    );
+    assert!(
+        blackhole_transcript_matches(&transcript, &expected),
+        "real speech played through BlackHole lost the expected clause"
     );
 }
