@@ -5497,6 +5497,11 @@ public protocol CsTranscriptionListener: AnyObject, Sendable {
     func onPresentationStatus(event: CsPresentationStatusEvent)
 
     /**
+     * Ordered passive compact paint from the opened recorder capture.
+     */
+    func onCompactProjection(event: CsCompactProjection)
+
+    /**
      * The engine is spinning up capture; no audio is flowing yet.
      */
     func onRecordingPreparing()
@@ -5632,6 +5637,17 @@ open func onPresentationStatus(event: CsPresentationStatusEvent)  {try! rustCall
     uniffi_codescribe_ffi_fn_method_cstranscriptionlistener_on_presentation_status(
             self.uniffiCloneHandle(),
         FfiConverterTypeCsPresentationStatusEvent_lower(event),$0
+    )
+}
+}
+
+    /**
+     * Ordered passive compact paint from the opened recorder capture.
+     */
+open func onCompactProjection(event: CsCompactProjection)  {try! rustCall() {
+    uniffi_codescribe_ffi_fn_method_cstranscriptionlistener_on_compact_projection(
+            self.uniffiCloneHandle(),
+        FfiConverterTypeCsCompactProjection_lower(event),$0
     )
 }
 }
@@ -5808,6 +5824,30 @@ fileprivate struct UniffiCallbackInterfaceCsTranscriptionListener {
                 }
                 return uniffiObj.onPresentationStatus(
                      event: try FfiConverterTypeCsPresentationStatusEvent_lift(event)
+                )
+            }
+
+
+            let writeReturn = { () }
+            uniffiTraitInterfaceCall(
+                callStatus: uniffiCallStatus,
+                makeCall: makeCall,
+                writeReturn: writeReturn
+            )
+        },
+        onCompactProjection: { (
+            uniffiHandle: UInt64,
+            event: RustBuffer,
+            uniffiOutReturn: UnsafeMutableRawPointer,
+            uniffiCallStatus: UnsafeMutablePointer<RustCallStatus>
+        ) in
+            let makeCall = {
+                () throws -> () in
+                guard let uniffiObj = try? FfiConverterTypeCsTranscriptionListener.handleMap.get(handle: uniffiHandle) else {
+                    throw UniffiInternalError.unexpectedStaleHandle
+                }
+                return uniffiObj.onCompactProjection(
+                     event: try FfiConverterTypeCsCompactProjection_lift(event)
                 )
             }
 
@@ -7489,6 +7529,73 @@ public func FfiConverterTypeCsCaptureHandle_lift(_ buf: RustBuffer) throws -> Cs
 #endif
 public func FfiConverterTypeCsCaptureHandle_lower(_ value: CsCaptureHandle) -> RustBuffer {
     return FfiConverterTypeCsCaptureHandle.lower(value)
+}
+
+
+/**
+ * Capture-bound ephemeral paint. No document or delivery mutation is exposed.
+ */
+public struct CsCompactProjection: Equatable, Hashable {
+    public var sessionId: String
+    public var captureEpoch: UInt64
+    public var sequence: UInt64
+    public var text: String
+    public var degraded: Bool
+
+    // Default memberwise initializers are never public by default, so we
+    // declare one manually.
+    public init(sessionId: String, captureEpoch: UInt64, sequence: UInt64, text: String, degraded: Bool) {
+        self.sessionId = sessionId
+        self.captureEpoch = captureEpoch
+        self.sequence = sequence
+        self.text = text
+        self.degraded = degraded
+    }
+
+
+}
+
+#if compiler(>=6)
+extension CsCompactProjection: Sendable {}
+#endif
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public struct FfiConverterTypeCsCompactProjection: FfiConverterRustBuffer {
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> CsCompactProjection {
+        return
+            try CsCompactProjection(
+                sessionId: FfiConverterString.read(from: &buf),
+                captureEpoch: FfiConverterUInt64.read(from: &buf),
+                sequence: FfiConverterUInt64.read(from: &buf),
+                text: FfiConverterString.read(from: &buf),
+                degraded: FfiConverterBool.read(from: &buf)
+        )
+    }
+
+    public static func write(_ value: CsCompactProjection, into buf: inout [UInt8]) {
+        FfiConverterString.write(value.sessionId, into: &buf)
+        FfiConverterUInt64.write(value.captureEpoch, into: &buf)
+        FfiConverterUInt64.write(value.sequence, into: &buf)
+        FfiConverterString.write(value.text, into: &buf)
+        FfiConverterBool.write(value.degraded, into: &buf)
+    }
+}
+
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeCsCompactProjection_lift(_ buf: RustBuffer) throws -> CsCompactProjection {
+    return try FfiConverterTypeCsCompactProjection.lift(buf)
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeCsCompactProjection_lower(_ value: CsCompactProjection) -> RustBuffer {
+    return FfiConverterTypeCsCompactProjection.lower(value)
 }
 
 
@@ -15674,31 +15781,34 @@ private let initializationResult: InitializationResult = {
     if (uniffi_codescribe_ffi_checksum_method_cstranscriptionlistener_on_presentation_status() != 2568) {
         return InitializationResult.apiChecksumMismatch
     }
-    if (uniffi_codescribe_ffi_checksum_method_cstranscriptionlistener_on_recording_preparing() != 479) {
+    if (uniffi_codescribe_ffi_checksum_method_cstranscriptionlistener_on_compact_projection() != 51169) {
         return InitializationResult.apiChecksumMismatch
     }
-    if (uniffi_codescribe_ffi_checksum_method_cstranscriptionlistener_on_recording_started() != 65106) {
+    if (uniffi_codescribe_ffi_checksum_method_cstranscriptionlistener_on_recording_preparing() != 35315) {
         return InitializationResult.apiChecksumMismatch
     }
-    if (uniffi_codescribe_ffi_checksum_method_cstranscriptionlistener_on_recording_stopped() != 53699) {
+    if (uniffi_codescribe_ffi_checksum_method_cstranscriptionlistener_on_recording_started() != 25446) {
         return InitializationResult.apiChecksumMismatch
     }
-    if (uniffi_codescribe_ffi_checksum_method_cstranscriptionlistener_on_recording_finalising() != 17181) {
+    if (uniffi_codescribe_ffi_checksum_method_cstranscriptionlistener_on_recording_stopped() != 56772) {
         return InitializationResult.apiChecksumMismatch
     }
-    if (uniffi_codescribe_ffi_checksum_method_cstranscriptionlistener_on_session_finalised() != 39954) {
+    if (uniffi_codescribe_ffi_checksum_method_cstranscriptionlistener_on_recording_finalising() != 26436) {
         return InitializationResult.apiChecksumMismatch
     }
-    if (uniffi_codescribe_ffi_checksum_method_cstranscriptionlistener_on_vad_active() != 20349) {
+    if (uniffi_codescribe_ffi_checksum_method_cstranscriptionlistener_on_session_finalised() != 11304) {
         return InitializationResult.apiChecksumMismatch
     }
-    if (uniffi_codescribe_ffi_checksum_method_cstranscriptionlistener_on_audio_level() != 55213) {
+    if (uniffi_codescribe_ffi_checksum_method_cstranscriptionlistener_on_vad_active() != 5003) {
         return InitializationResult.apiChecksumMismatch
     }
-    if (uniffi_codescribe_ffi_checksum_method_cstranscriptionlistener_on_no_speech() != 8113) {
+    if (uniffi_codescribe_ffi_checksum_method_cstranscriptionlistener_on_audio_level() != 17216) {
         return InitializationResult.apiChecksumMismatch
     }
-    if (uniffi_codescribe_ffi_checksum_method_cstranscriptionlistener_on_error() != 30256) {
+    if (uniffi_codescribe_ffi_checksum_method_cstranscriptionlistener_on_no_speech() != 36183) {
+        return InitializationResult.apiChecksumMismatch
+    }
+    if (uniffi_codescribe_ffi_checksum_method_cstranscriptionlistener_on_error() != 20412) {
         return InitializationResult.apiChecksumMismatch
     }
     if (uniffi_codescribe_ffi_checksum_method_cstraystatuslistener_on_tray_status() != 48227) {

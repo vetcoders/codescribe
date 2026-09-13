@@ -193,6 +193,7 @@ enum OverlayIntent: String, Equatable, Hashable {
 enum OverlayListenerEvent: Sendable {
   case transcriptProjection(CsTranscriptProjectionEvent)
   case presentationStatus(CsPresentationStatusEvent)
+  case compactProjection(CsCompactProjection)
   case recordingPreparing
   case recordingStarted
   case recordingStopped
@@ -219,6 +220,10 @@ final class DictationListener: CsTranscriptionListener {
 
   func onPresentationStatus(event: CsPresentationStatusEvent) {
     continuation.yield(.presentationStatus(event))
+  }
+
+  func onCompactProjection(event: CsCompactProjection) {
+    continuation.yield(.compactProjection(event))
   }
 
   func onRecordingPreparing() {
@@ -296,6 +301,7 @@ final class OverlayState {
   var toast: String?  // transient error notice
   var errorMessage: String?
   private(set) var presentationStatus: OverlayPresentationStatus?
+  private(set) var compactProjection: CsCompactProjection?
   private(set) var errorLifecycleDetail =
     "No transcript was delivered."
   /// Standing explanation for a take whose terminal seal the ledger refused,
@@ -599,6 +605,7 @@ final class OverlayState {
     switch event {
     case .transcriptProjection(let projection): applyTranscriptProjection(projection)
     case .presentationStatus(let status): applyPresentationStatus(status)
+    case .compactProjection(let projection): applyCompactProjection(projection)
     case .recordingPreparing: handleRecordingPreparing()
     case .recordingStarted: handleRecordingStarted()
     case .recordingStopped: finishControllerRecording()
@@ -1796,6 +1803,28 @@ final class OverlayState {
 
   /// Paint the engine document directly. An unfamiliar chrome phase must not
   /// prevent text delivery; retain the current chrome until a known phase arrives.
+  /// Passive paint only. Neither capture admission nor document state is
+  /// inferred from compact text. Sequence 1 comes from the opened recorder.
+  func applyCompactProjection(_ projection: CsCompactProjection) {
+    guard recording || transcribing, !terminal,
+      !projection.sessionId.isEmpty, projection.captureEpoch > 0,
+      !retiredProjectionSessions.contains(projection.sessionId),
+      !endedProjectionSessions.contains(projection.sessionId)
+    else { return }
+    if let current = compactProjection {
+      guard current.sessionId == projection.sessionId,
+        current.captureEpoch == projection.captureEpoch,
+        projection.sequence > current.sequence
+      else { return }
+    } else {
+      guard projection.sequence == 1 else { return }
+      if let current = latestTranscriptProjection {
+        guard current.sessionId == projection.sessionId else { return }
+      }
+    }
+    compactProjection = projection
+  }
+
   func applyTranscriptProjection(_ projection: CsTranscriptProjectionEvent) {
     // Retired projections may still carry undelivered words, but cannot paint
     // or finalize the newer capture. Retry the identity-addressed receiver only.
@@ -2259,6 +2288,10 @@ final class OverlayState {
   /// finish its addressed delivery, but it can no longer repaint, finalize or
   /// auto-hide the successor.
   private func admitNewCapture() {
+    if let compactProjection {
+      retiredProjectionSessions.insert(compactProjection.sessionId)
+    }
+    compactProjection = nil
     // Read the draft's dirtiness against the OUTGOING document, before any
     // field below moves. Computed after the reset it would compare against an
     // empty projection and misclassify a clean draft as unsaved work.

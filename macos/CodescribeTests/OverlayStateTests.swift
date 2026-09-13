@@ -165,6 +165,57 @@ private final class OverlayStateTestClock {
 
 @MainActor
 final class OverlayStateTests: XCTestCase {
+  func testCompactPaintCannotAdmitCaptureOrMutateDocument() {
+    let state = OverlayState()
+    let initial = CsCompactProjection(
+      sessionId: "A", captureEpoch: 7, sequence: 1, text: "", degraded: false)
+    state.applyCompactProjection(initial)
+    XCTAssertNil(state.compactProjection)
+    state.handleRecordingPreparing()
+    state.applyCompactProjection(initial)
+    let warning = CsCompactProjection(
+      sessionId: "A", captureEpoch: 7, sequence: 2, text: "…", degraded: true)
+    state.applyCompactProjection(warning)
+    XCTAssertEqual(state.compactProjection, warning)
+    for stale in [
+      initial,
+      CsCompactProjection(
+        sessionId: "A", captureEpoch: 8, sequence: 9, text: "bad epoch", degraded: false),
+      CsCompactProjection(
+        sessionId: "B", captureEpoch: 7, sequence: 9, text: "bad session", degraded: false),
+    ] {
+      state.applyCompactProjection(stale)
+      XCTAssertEqual(state.compactProjection, warning)
+    }
+    XCTAssertNil(state.latestTranscriptProjection)
+    XCTAssertTrue(state.formattedText.isEmpty)
+    state.finishControllerRecording()
+    state.handleRecordingPreparing()
+    XCTAssertNil(state.compactProjection)
+    state.applyCompactProjection(initial)
+    state.applyCompactProjection(warning)
+    XCTAssertNil(state.compactProjection)
+    let successor = CsCompactProjection(
+      sessionId: "B", captureEpoch: 1, sequence: 1, text: "", degraded: false)
+    state.applyCompactProjection(successor)
+    XCTAssertEqual(state.compactProjection, successor)
+    state.finishControllerRecording()
+  }
+
+  func testListenerQueuesCompactPaintWithoutReinterpretation() async {
+    let channel = AsyncStream<OverlayListenerEvent>.makeStream()
+    let listener = DictationListener(continuation: channel.continuation)
+    let paint = CsCompactProjection(
+      sessionId: "A", captureEpoch: 7, sequence: 2, text: "…", degraded: true)
+    listener.onCompactProjection(event: paint)
+    channel.continuation.finish()
+    var iterator = channel.stream.makeAsyncIterator()
+    guard case .compactProjection(let received) = await iterator.next() else {
+      return XCTFail("Missing compact projection")
+    }
+    XCTAssertEqual(received, paint)
+  }
+
   private var nextProjectionSequence: UInt64 = 0
 
   func testListenerQueuesLifecycleEventsInCallbackOrder() async {

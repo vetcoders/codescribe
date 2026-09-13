@@ -271,6 +271,28 @@ pub struct CsPresentationStatusEvent {
     pub calibration_version: Option<String>,
 }
 
+/// Capture-bound ephemeral paint. No document or delivery mutation is exposed.
+#[derive(uniffi::Record, Debug, Clone, PartialEq, Eq)]
+pub struct CsCompactProjection {
+    pub session_id: String,
+    pub capture_epoch: u64,
+    pub sequence: u64,
+    pub text: String,
+    pub degraded: bool,
+}
+
+impl From<codescribe::presentation::emitter::CompactProjection> for CsCompactProjection {
+    fn from(value: codescribe::presentation::emitter::CompactProjection) -> Self {
+        Self {
+            session_id: value.session_id,
+            capture_epoch: value.capture_epoch,
+            sequence: value.sequence,
+            text: value.text,
+            degraded: value.degraded,
+        }
+    }
+}
+
 impl CsProjectedAcousticReceipt {
     pub(crate) fn from_bus_receipt(receipt: &ProjectedAcousticReceipt) -> Self {
         Self {
@@ -881,6 +903,8 @@ pub trait CsTranscriptionListener: Send + Sync {
     /// Typed product status. Swift may display it but receives no settings or
     /// repair command through this passive projection.
     fn on_presentation_status(&self, event: CsPresentationStatusEvent);
+    /// Ordered passive compact paint from the opened recorder capture.
+    fn on_compact_projection(&self, event: CsCompactProjection);
     /// The engine is spinning up capture; no audio is flowing yet.
     fn on_recording_preparing(&self);
     /// The microphone is live and utterances may start arriving.

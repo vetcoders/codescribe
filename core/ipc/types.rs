@@ -60,6 +60,9 @@ pub enum IpcEventPayload {
     /// product event stream without impersonating ledger/reducer truth.
     #[serde(rename = "presentation_status")]
     PresentationStatus { json: String },
+    /// Passive, capture-bound `CompactProjection` paint; no document authority.
+    #[serde(rename = "compact_projection")]
+    CompactProjection { json: String },
 }
 
 /// Serializable mirror of [`EngineEvent`], tagged by `type` in snake_case.

@@ -27,7 +27,18 @@ use tracing::{debug, info};
 use super::transcript_bus::{TranscriptBus, TranscriptBusEvidenceEvent};
 
 /// Read-only cursor paint observer: bounded text and acoustic warning state.
-pub type CursorObserver = Arc<dyn Fn(&str, bool) + Send + Sync>;
+pub type CursorObserver = Arc<dyn Fn(&CompactProjection) + Send + Sync>;
+
+/// Passive paint from one opened capture. Sequence 1 binds the display before
+/// any transcription event; later values replace paint, never document truth.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct CompactProjection {
+    pub session_id: String,
+    pub capture_epoch: u64,
+    pub sequence: u64,
+    pub text: String,
+    pub degraded: bool,
+}
 
 /// Commands sent through the ordered channel to the emitter worker.
 enum EmitterCmd {
@@ -1105,6 +1116,7 @@ pub type ProjectionObserver = Arc<dyn Fn(&TranscriptBusEvidenceEvent) + Send + S
 pub struct PresentationEmitter {
     cursor_observer: Option<CursorObserver>,
     cursor_capture: std::sync::OnceLock<(String, u64)>,
+    cursor_sequence: std::sync::Mutex<u64>,
     cursor_integrity: std::sync::Mutex<Option<SpeechIntegrity>>,
     /// Last bounded paint, not a document or independently reconstructed delta.
     cursor_tail: std::sync::Mutex<String>,
@@ -1200,6 +1212,7 @@ impl PresentationEmitter {
             literal_delivery: std::sync::atomic::AtomicBool::new(false),
             cursor_observer: None,
             cursor_capture: std::sync::OnceLock::new(),
+            cursor_sequence: std::sync::Mutex::new(0),
             cursor_integrity: std::sync::Mutex::new(None),
             cursor_tail: std::sync::Mutex::new(String::new()),
         }
@@ -1237,6 +1250,18 @@ impl PresentationEmitter {
         let Some(observer) = &self.cursor_observer else {
             return;
         };
+        let Some((session_id, capture_epoch)) = self.cursor_capture.get() else {
+            return;
+        };
+        // Serialize snapshots and observer calls together: an earlier paint
+        // must never be published after a later sequence.
+        let mut sequence = self
+            .cursor_sequence
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        let Some(next) = sequence.checked_add(1) else {
+            return;
+        };
         let integrity = self
             .cursor_integrity
             .lock()
@@ -1250,7 +1275,20 @@ impl PresentationEmitter {
             )
         });
         let tail = self.cursor_tail.lock().unwrap_or_else(|e| e.into_inner());
-        observer(if degraded { "…" } else { &tail }, degraded);
+        *sequence = next;
+        observer(&CompactProjection {
+            session_id: session_id.clone(),
+            capture_epoch: *capture_epoch,
+            sequence: next,
+            // Earlier recovery debt must not hide words arriving now. Amber
+            // stays authoritative until that debt is actually resolved.
+            text: if degraded && tail.is_empty() {
+                "…".into()
+            } else {
+                tail.clone()
+            },
+            degraded,
+        });
     }
 
     /// Whether this take promised literal words (see [`Self::set_literal_delivery`]).
@@ -1570,9 +1608,13 @@ impl EventSink for PresentationEmitter {
         }
         // One emitter belongs to one opened capture. A late lifecycle callback
         // cannot rebind it to a successor or erase its warning evidence.
-        let _ = self
+        if self
             .cursor_capture
-            .set((session_id.to_owned(), capture_epoch));
+            .set((session_id.to_owned(), capture_epoch))
+            .is_ok()
+        {
+            self.repaint_cursor();
+        }
     }
 
     /// Route an `EngineEvent` into reducer state and ordered delta delivery.
@@ -1924,6 +1966,75 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn pending_recovery_does_not_hide_new_live_words() {
+        let paints = Arc::new(StdMutex::new(Vec::new()));
+        let observed = paints.clone();
+        let delivery = Arc::new(Mutex::new(String::new()));
+        let emitter = super::PresentationEmitter::new(delivery.clone(), None, None)
+            .with_cursor_observer(Arc::new(move |paint| {
+                observed.lock().unwrap().push(paint.clone());
+            }));
+        emitter.on_capture_opened("take", 7);
+        emitter.on_event(&EngineEvent::SpeechIntegrity {
+            evidence: codescribe_core::pipeline::contracts::SpeechIntegrity {
+                session_id: "take".into(),
+                capture_epoch: 7,
+                sequence: 1,
+                acoustic_speech_ms_since_text_advance: 0,
+                pending_occurrences: 1,
+                phase: codescribe_core::pipeline::contracts::SpeechIntegrityPhase::Recovering,
+            },
+        });
+        assert_eq!(paints.lock().unwrap().last().unwrap().text, "…");
+        emitter.on_event(&EngineEvent::Preview {
+            rev: 1,
+            text: "nowe słowa na żywo".into(),
+        });
+        let paint = paints.lock().unwrap().last().unwrap().clone();
+        assert_eq!(paint.text, "nowe słowa na żywo");
+        assert!(
+            paint.degraded,
+            "new words cannot certify the earlier missing speech"
+        );
+        assert!(delivery.lock().await.is_empty());
+    }
+
+    #[tokio::test]
+    async fn compact_projection_keeps_capture_identity_and_publication_order() {
+        let paints = Arc::new(StdMutex::new(Vec::new()));
+        let observed = paints.clone();
+        let emitter =
+            super::PresentationEmitter::new(Arc::new(Mutex::new(String::new())), None, None)
+                .with_cursor_observer(Arc::new(move |paint| {
+                    observed.lock().unwrap().push(paint.clone());
+                }));
+        emitter.on_capture_opened("take", 7);
+        std::thread::scope(|scope| {
+            for _ in 0..8 {
+                scope.spawn(|| {
+                    for _ in 0..10 {
+                        emitter.paint_cursor("jeden dwa trzy cztery pięć sześć");
+                    }
+                });
+            }
+        });
+        let paints = paints.lock().unwrap();
+        assert_eq!(paints.len(), 81);
+        assert!(paints[0].text.is_empty());
+        for (index, paint) in paints.iter().enumerate() {
+            assert_eq!(paint.sequence, index as u64 + 1);
+            assert_eq!(paint.session_id, "take");
+            assert_eq!(paint.capture_epoch, 7);
+            assert!(paint.text.split_whitespace().count() <= 5);
+            let json = serde_json::to_string(paint).unwrap();
+            assert_eq!(
+                *paint,
+                serde_json::from_str::<super::CompactProjection>(&json).unwrap()
+            );
+        }
+    }
+
+    #[tokio::test]
     async fn cursor_projects_five_words_and_acoustic_debt_without_delivery() {
         use codescribe_core::pipeline::contracts::{SpeechIntegrity, SpeechIntegrityPhase};
         let paints = Arc::new(StdMutex::new(Vec::new()));
@@ -1949,17 +2060,17 @@ mod tests {
             None,
             Some(bus),
         )
-        .with_cursor_observer(Arc::new(move |text, amber| {
-            observed.lock().unwrap().push((text.to_owned(), amber));
+        .with_cursor_observer(Arc::new(move |projection| {
+            observed
+                .lock()
+                .unwrap()
+                .push((projection.text.clone(), projection.degraded));
         }));
         emitter.on_event(&EngineEvent::Preview {
             rev: 1,
             text: "zero jeden dwa trzy cztery pięć".into(),
         });
-        assert_eq!(
-            paints.lock().unwrap().last().unwrap(),
-            &("jeden dwa trzy cztery pięć".into(), false)
-        );
+        assert!(paints.lock().unwrap().is_empty());
         let mut evidence = SpeechIntegrity {
             session_id: "take".into(),
             capture_epoch: 7,
@@ -1977,6 +2088,10 @@ mod tests {
         emitter.on_capture_opened("previous take", 7);
         assert!(emitter.cursor_capture.get().is_none());
         emitter.on_capture_opened("take", 7);
+        assert_eq!(
+            paints.lock().unwrap().last().unwrap(),
+            &("jeden dwa trzy cztery pięć".into(), false)
+        );
         emitter.on_capture_opened("take", 8);
         foreign_first.capture_epoch = 6;
         emitter.on_event(&EngineEvent::SpeechIntegrity {
@@ -1998,7 +2113,21 @@ mod tests {
             emitter.on_event(&EngineEvent::SpeechIntegrity {
                 evidence: evidence.clone(),
             });
+            assert_eq!(
+                paints.lock().unwrap().last().unwrap(),
+                &("jeden dwa trzy cztery pięć".into(), true)
+            );
+            emitter.on_event(&EngineEvent::Preview {
+                rev: evidence.sequence + 1,
+                text: "nowe słowa na żywo".into(),
+            });
+            assert_eq!(
+                paints.lock().unwrap().last().unwrap(),
+                &("nowe słowa na żywo".into(), true)
+            );
+            emitter.paint_cursor("");
             assert_eq!(paints.lock().unwrap().last().unwrap(), &("…".into(), true));
+            emitter.paint_cursor("jeden dwa trzy cztery pięć");
             evidence.sequence += 1;
         }
         let before = paints.lock().unwrap().len();
@@ -2018,6 +2147,10 @@ mod tests {
         // A canonical repair paints while amber. Clearing the warning must
         // reveal that repair, not resurrect the earlier provisional preview.
         emitter.paint_cursor("odzyskany cały fragment");
+        assert_eq!(
+            paints.lock().unwrap().last().unwrap(),
+            &("odzyskany cały fragment".into(), true)
+        );
         evidence.phase = SpeechIntegrityPhase::Tracking;
         emitter.on_event(&EngineEvent::SpeechIntegrity { evidence });
         assert_eq!(

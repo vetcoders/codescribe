@@ -51,6 +51,8 @@ elif name == 'xcodebuild':
     assert args[:3] == ['test', '-scheme', 'Codescribe'], args
     assert args[args.index('-destination') + 1] == 'platform=macOS,arch=arm64'
     assert 'CODE_SIGN_IDENTITY=fixture-signing' in args
+    assert 'ONLY_ACTIVE_ARCH=YES' in args
+    assert 'ENABLE_TESTABILITY=YES' in args
     assert '-only-testing:CodescribeTests/Fixture' in args
     assert os.environ['DEVELOPER_DIR'] == '/fixture/xcode'
     data = Path(os.environ['CODESCRIBE_DATA_DIR'])
@@ -184,7 +186,7 @@ def run_case(base, profile, layout, mode='success'):
             receipt = next(c for c in calls if 'selected' in c)
             assert receipt['selected'] == str(root / profile / 'libcodescribe_ffi.dylib'), receipt
             assert receipt['identity'] == 'selected-' + profile, receipt
-            assert receipt['config'] == ('Debug' if profile == 'debug' else 'Release'), receipt
+            assert receipt['config'] == 'Debug', receipt
             argv = next(c['argv'] for c in calls if c['tool'] == 'xcodebuild')
             for key in ('LIBRARY_SEARCH_PATHS', 'LD_RUNPATH_SEARCH_PATHS'):
                 settings = [a.split('=', 1)[1] for a in argv if a.startswith(key + '=')]

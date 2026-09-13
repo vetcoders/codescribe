@@ -208,6 +208,13 @@ struct DictationOverlayView: View {
         .accessibilityIdentifier("overlay-header-center")
 
       HStack(spacing: compact ? 4 : 8) {
+        if state.compactProjection?.degraded == true {
+          Image(systemName: "exclamationmark.bubble.fill")
+            .foregroundStyle(.orange)
+            .help("Detected speech is not fully transcribed")
+            .accessibilityLabel("Detected speech is not fully transcribed")
+            .accessibilityIdentifier("overlay-acoustic-warning")
+        }
         if let error = state.expansionPreferenceError {
           Image(systemName: "exclamationmark.triangle.fill")
             .foregroundStyle(.orange)

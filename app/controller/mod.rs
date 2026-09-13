@@ -2587,6 +2587,7 @@ impl RecordingController {
             },
         );
         let cursor_token = crate::os::hold_badge::take_token();
+        let compact_broadcast = event_broadcast.clone();
         let presentation = Arc::new(
             PresentationEmitter::new_with_authority(
                 transcript_buffer,
@@ -2596,8 +2597,22 @@ impl RecordingController {
                 acoustic_ledger,
                 Some(projection_callback),
             )
-            .with_cursor_observer(Arc::new(move |text, degraded| {
-                crate::os::hold_badge::update_transcript(cursor_token, text, degraded);
+            .with_cursor_observer(Arc::new(move |projection| {
+                crate::os::hold_badge::update_transcript(
+                    cursor_token,
+                    &projection.text,
+                    projection.degraded,
+                );
+                match serde_json::to_string(projection) {
+                    Ok(json) => {
+                        let _ = compact_broadcast.send(IpcEvent {
+                            timestamp: chrono::Utc::now()
+                                .to_rfc3339_opts(chrono::SecondsFormat::Millis, true),
+                            payload: IpcEventPayload::CompactProjection { json },
+                        });
+                    }
+                    Err(error) => tracing::warn!(%error, "compact projection serialization failed"),
+                }
             })),
         );
         let presentation_sink: Arc<dyn codescribe_core::pipeline::contracts::EventSink> =

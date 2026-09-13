@@ -11,10 +11,11 @@ shift 5
 
 echo "=== Apple phrase-restart Rust/Swift lockstep self-test ==="
 "${ENGINE_BRIDGE}" --phrase-restart-self-test || exit $?
-# Match build-app profiles; this test path consumes existing host artifacts.
+# Select the Rust artifact independently from the Swift XCTest configuration.
+# The suite requires DEBUG-only fixtures; release optimization must not remove
+# those fixtures merely because the selected Rust dylib is optimized.
 case "$PROFILE" in
-  debug) CONFIG=Debug ;;
-  release|local-release) CONFIG=Release ;;
+  debug|release|local-release) CONFIG=Debug ;;
   *) echo "test-swift: unsupported profile: $PROFILE" >&2; exit 2 ;;
 esac
 # Cargo resolves environment and config-relative paths from the repository root.
@@ -48,6 +49,8 @@ cd macos || exit $?
 xcodebuild test \
   -scheme Codescribe \
   -configuration "$CONFIG" \
+  ONLY_ACTIVE_ARCH=YES \
+  ENABLE_TESTABILITY=YES \
   LIBRARY_SEARCH_PATHS="\"$TARGET_DIR\"" \
   LD_RUNPATH_SEARCH_PATHS="\"$TARGET_DIR\" @executable_path/../Frameworks" \
   -destination 'platform=macOS,arch=arm64' \

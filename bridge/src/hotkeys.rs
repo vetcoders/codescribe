@@ -452,6 +452,16 @@ fn forward_event_to_listener(payload: IpcEventPayload, listener: Arc<dyn CsTrans
             "legacy context-marker IPC telemetry is not product transcript truth"
         ),
         IpcEventPayload::AudioLevel { rms } => listener.on_audio_level(rms),
+        IpcEventPayload::CompactProjection { json } => {
+            match serde_json::from_str::<codescribe::presentation::emitter::CompactProjection>(
+                &json,
+            ) {
+                Ok(event) => listener.on_compact_projection(event.into()),
+                Err(error) => {
+                    tracing::warn!(%error, "compact projection transport rejected invalid schema")
+                }
+            }
+        }
         IpcEventPayload::TranscriptProjection { json } => {
             match serde_json::from_str::<
                 codescribe::presentation::transcript_bus::TranscriptBusEvidenceEvent,
@@ -2642,6 +2652,7 @@ mod preparing_compensation_tests {
         stopped: AtomicUsize,
         finalising: AtomicUsize,
         audio_levels: StdMutex<Vec<f32>>,
+        compact_paints: StdMutex<Vec<crate::recording::CsCompactProjection>>,
     }
 
     impl RecordingLifecycleListener {
@@ -2675,6 +2686,9 @@ mod preparing_compensation_tests {
         fn on_transcript_projection(&self, _event: CsTranscriptProjectionEvent) {}
         /// No-op: passive presentation statuses are not under test in this suite.
         fn on_presentation_status(&self, _event: CsPresentationStatusEvent) {}
+        fn on_compact_projection(&self, event: crate::recording::CsCompactProjection) {
+            self.compact_paints.lock().unwrap().push(event);
+        }
         /// Count preparing overlay shows for compensation assertions.
         fn on_recording_preparing(&self) {
             self.preparing.fetch_add(1, Ordering::SeqCst);
@@ -2746,6 +2760,31 @@ mod preparing_compensation_tests {
     }
 
     /// AudioLevel IPC payload forwards the RMS sample to the Swift listener.
+    #[test]
+    fn compact_projection_transport_preserves_identity_and_rejects_invalid_json() {
+        let listener = Arc::new(RecordingLifecycleListener::default());
+        let paint = codescribe::presentation::emitter::CompactProjection {
+            session_id: "take".into(),
+            capture_epoch: 7,
+            sequence: 2,
+            text: "…".into(),
+            degraded: true,
+        };
+        forward_event_to_listener(
+            IpcEventPayload::CompactProjection {
+                json: serde_json::to_string(&paint).unwrap(),
+            },
+            listener.clone(),
+        );
+        forward_event_to_listener(
+            IpcEventPayload::CompactProjection { json: "{}".into() },
+            listener.clone(),
+        );
+        assert_eq!(*listener.compact_paints.lock().unwrap(), vec![paint.into()]);
+        assert_eq!(listener.started(), 0);
+        assert_eq!(listener.stopped(), 0);
+    }
+
     #[test]
     fn recording_audio_level_payload_forwards_rms() {
         let listener = Arc::new(RecordingLifecycleListener::default());
