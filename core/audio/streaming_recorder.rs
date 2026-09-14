@@ -811,7 +811,10 @@ mod tests {
     #[async_trait::async_trait]
     impl crate::ai_formatting::FormattingAgent for TransportOnlyAgent {
         async fn execute(
-            &self, _turn_id: &str, _text: &str, _settings: &RuntimeSettingsSnapshot,
+            &self,
+            _turn_id: &str,
+            _text: &str,
+            _settings: &RuntimeSettingsSnapshot,
         ) -> Result<String> {
             panic!("transport must not execute an instruction");
         }
@@ -824,12 +827,15 @@ mod tests {
         for intent in [CaptureTurnIntent::HandsFree, CaptureTurnIntent::SingleTurn] {
             for enabled in [false, true] {
                 for policy in [
-                    FormattingPolicy::Off, FormattingPolicy::Correction,
-                    FormattingPolicy::Smart, FormattingPolicy::Max,
+                    FormattingPolicy::Off,
+                    FormattingPolicy::Correction,
+                    FormattingPolicy::Smart,
+                    FormattingPolicy::Max,
                 ] {
                     let selected = live_max_capability(intent, enabled, policy, Some(&agent));
                     let admitted = intent == CaptureTurnIntent::HandsFree
-                        && enabled && policy == FormattingPolicy::Max;
+                        && enabled
+                        && policy == FormattingPolicy::Max;
                     assert_eq!(selected.is_some(), admitted);
                     if let Some(selected) = selected {
                         assert!(Arc::ptr_eq(&selected, &agent));
@@ -837,9 +843,15 @@ mod tests {
                 }
             }
         }
-        assert!(live_max_capability(
-            CaptureTurnIntent::HandsFree, true, FormattingPolicy::Max, None,
-        ).is_none());
+        assert!(
+            live_max_capability(
+                CaptureTurnIntent::HandsFree,
+                true,
+                FormattingPolicy::Max,
+                None,
+            )
+            .is_none()
+        );
     }
 
     /// Empty/silence/full-scale blocks map to the 0 / 0 / ~1 energy ladder meters use.

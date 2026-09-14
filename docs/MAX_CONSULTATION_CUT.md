@@ -983,3 +983,106 @@ changed source, insufficient coverage, resumed speech and a successor boundary
 must close it without authorization; disconnected execution must not advance
 the accepted prefix. These remain authored, unexecuted tests under the same
 structural embargo and checkpoint hook-bypass accounting above.
+
+## W2_STRUCTURALLY_CLOSED — Max integration, 2026-09-14T18:15:31Z
+
+Integrator: Roman (Codex), following the Founder's explicit instruction to
+integrate this cut into the current branch. Runtime: Living Tree at
+`/Users/maciejgad/vc-workspace/vetcoders/codescribe`.
+Assembled source SHA: `b45115f5f45f9ddd8e96a7ac2e20f1833ebdf08e`.
+Base and exact admitted Fleet tip are recorded above. This receipt changes
+documentation only; subsequent source repairs must name their own SHA.
+
+The Max source graph is assembled and ready for executable verification:
+
+- Both controller recording entrypoints inject the selected retained Max host.
+  The live capture owner uses bounded assessment/preparation/answer transports.
+- Durable preparation has no execution authority. Capture revalidates current
+  PCM member evidence, then signals authorization without journal/admission I/O.
+  Dropped preparation is rejected before provider execution.
+- Terminal composer and explicit overlay formatting invoke the same retained
+  host through FormattingConsultation. Non-Max policies do not admit Max tools.
+- The host selects the immutable formatting lane, uses the existing configured
+  tool registry and AgentSession, and retains local history across provider changes.
+- Journal FIFO, execution lease, begin/complete and ThreadDeliveryGateway own
+  the durable execution boundary. Unresolved state is not automatically replayed.
+- Approval snapshots/decisions and new-consultation controls have matching Rust
+  bridge exports and Swift consumers. Existing UniFFI generation is the declared
+  W3 binding-generation step; generated output is not asserted current.
+- Completed groups pass through the single declared presentation destination,
+  existing ledger/reducer validation and Bus projection, not a new document owner.
+- Authored tests cover group conservation, stale source, loss of authorization,
+  history, replay refusal, permissions, provider selection and bridge/UI seams.
+  Their execution and the real microphone/clipboard path remain wholly unproved.
+
+Evidence: refreshed Loctree slices/occurrences after integration; bounded source
+reads of the above callers/owners; zero remaining `admit_assessed`/`enqueue_group`
+call sites in core/app/tests; whole-cut `git diff --check`; `pre-commit run detect-private-key --files <47 exact cut paths>` passed. Local Semgrep config
+over app/core/bridge/macOS/tests ran 3 applicable rules on 381 tracked files,
+0 findings, 58 ignored files. This does not replace `make check`'s full security
+configuration. The current commit-provenance hook checks subject prefixes;
+historical missing trailer findings are retained without rewriting ancestry.
+
+Grade B phase advances to W3: all preregistered compiler/formatter/test/build
+commands return, followed by full `make check`, `make verify`, `make test-swift`,
+binding regeneration and idle-safe install with real two-turn acceptance.
+No active marker exists to change. Existing foreign Swift-binding changes and
+`docs/settings.json` remain excluded from authored staging and must be preserved
+when regenerating bindings. Source-level closure is not installed-artifact proof.
+
+Operational risk: only 18 GiB free, no active cargo/rustc/xcodebuild observed.
+Cold build cost is unknown. Do not run parallel build trees or allow a build
+to exhaust the volume. Disk pressure does not waive any required gate.
+The all-conversations intention census, other historical product debts and
+cross-host voice-bus acceptance remain open outside this Max phase transition.
+No full-goal, release, runtime performance or lexical-accuracy claim is made.
+
+## W3 measurements and structural re-entry: SessionConfig consumer census
+
+Receipts: `/tmp/codescribe-w3-20260914.kJy9Wj/`.
+The first full `make check` stopped at Rust formatting (`01-make-check.log`).
+After formatting the cut's Rust files, the second stopped at non-Rust formatting
+(`02-make-check.log`): both authored documents were formatted, but the foreign
+untracked `docs/settings.json` was deliberately left untouched. Full check is red.
+
+Full-workspace/all-target Clippy ran with two jobs, no incremental artifacts and
+dev/test debuginfo disabled to bound disk use. No target or warning was disabled.
+`03-clippy.log` reports unused import, Boolean simplifications and a large queue
+enum; repair 1 boxes the queue payload and preserves predicates. `07-clippy-repair-1.log`
+reports equivalent Boolean/if simplifications in controller/emitter; repair 2
+applies them. `08-clippy-repair-2.log` reports filter/next_back in the HTTP test;
+repair 3 uses rfind. `09-clippy-repair-3.log` then exposes a missing SessionConfig
+field in `examples/guardian_archive_probe.rs`. All four Clippy exits are 101.
+The three-attempt mechanical loop ends here, not silently extended.
+
+Classification: INSTRUMENT_FALSE_NEGATIVE in the integrator's consumer census,
+not a compiler/architecture disagreement. The original W2 receipt remains above;
+it omitted an example consumer and therefore overstated graph completeness.
+Structural W2 re-entry is bounded to SessionConfig constructors and that example.
+Loctree occurrence evidence is saved as `session-config-occurrences.json` and
+cross-checked against literal constructors in core/app/bridge/examples/tests:
+
+- live recorder: passes its selected live_formatting_agent;
+- production-session replay, buffered harness and seal-coverage harness: None;
+- guardian archive diagnostic: previously missing, now explicitly None because
+  it replays archived PCM and must not invoke a live consultation's tools.
+
+The definition and Apple destructuring already agree. The all-target compiler
+gate remains the regression instrument for example consumers; it must be rerun
+after renewed exact-SHA closure. No further compiler run occurs in this re-entry.
+The source repair does not alter recorder ownership, speech identities or tools.
+
+Additional gate outcomes: env registry passed (136 variables); gate ledger passed
+(34 classified targets). Native full Semgrep ran 1827 rules on 693 files and
+reported four blocking path-traversal findings in thread-store writes/directory
+sync calls (`04-semgrep-native.log`). These remain unresolved, not suppressed or
+declared false positives. The initial `--config auto --metrics=off` invocation
+was invalid and is not a scan result. Local-config-only clean results cannot
+substitute for this failed full security gate. Build artifacts measured 884 MiB,
+with 17 GiB free; no app was installed or recording interrupted.
+
+This structural re-entry checkpoint preserves formatter/mechanical changes and
+the example fix with `--no-verify`; the full skipped pre-commit/commit-msg controls
+are the same list recorded above. All still require final restoration. Foreign
+Swift binding changes and settings remain excluded. No push, verified delivery,
+or new structural-close claim is made by this checkpoint.

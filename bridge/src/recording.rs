@@ -8,8 +8,8 @@ use codescribe::presentation::status_projection::{
     PresentationStatusKind, PresentationStatusProjection,
 };
 use codescribe::presentation::transcript_bus::{
-    ProjectedAcousticReceipt, ProjectedConsultationPresentation, ProjectedPresentationReceipt, ProjectedSealCoverageReceipt,
-    TranscriptBusEvidenceEvent, TranscriptDelivery,
+    ProjectedAcousticReceipt, ProjectedConsultationPresentation, ProjectedPresentationReceipt,
+    ProjectedSealCoverageReceipt, TranscriptBusEvidenceEvent, TranscriptDelivery,
 };
 use codescribe_core::pipeline::contracts::{AnnotationKind, LayerSource, LayerSummary};
 use cpal::traits::{DeviceTrait, HostTrait};
@@ -193,14 +193,24 @@ pub struct CsProjectedConsultationPresentation {
 impl CsProjectedConsultationPresentation {
     fn from_bus_receipt(receipt: &ProjectedConsultationPresentation) -> Self {
         Self {
-            receipt_id: receipt.receipt_id.clone(), consultation_id: receipt.consultation_id.clone(),
-            turn_id: receipt.turn_id.clone(), source_revision: receipt.source_revision,
-            revision: receipt.revision, rendered_text: receipt.rendered_text.clone(),
-            members: receipt.members.iter().map(|member| CsProjectedConsultationMember {
-                session_id: member.session_id.clone(), capture_epoch: member.capture_epoch,
-                sample_start: member.sample_start, sample_end: member.sample_end,
-                source_label: member.source_label.clone(), seal_receipt: member.seal_receipt.clone(),
-            }).collect(),
+            receipt_id: receipt.receipt_id.clone(),
+            consultation_id: receipt.consultation_id.clone(),
+            turn_id: receipt.turn_id.clone(),
+            source_revision: receipt.source_revision,
+            revision: receipt.revision,
+            rendered_text: receipt.rendered_text.clone(),
+            members: receipt
+                .members
+                .iter()
+                .map(|member| CsProjectedConsultationMember {
+                    session_id: member.session_id.clone(),
+                    capture_epoch: member.capture_epoch,
+                    sample_start: member.sample_start,
+                    sample_end: member.sample_end,
+                    source_label: member.source_label.clone(),
+                    seal_receipt: member.seal_receipt.clone(),
+                })
+                .collect(),
         }
     }
 }
@@ -401,8 +411,11 @@ impl CsTranscriptProjectionEvent {
             terminal: event.terminal,
             lifecycle_terminal: event.lifecycle_terminal,
             delivery: CsTranscriptDelivery::from_bus_delivery(event.delivery),
-            consultation_presentations: event.consultation_presentations.iter()
-                .map(CsProjectedConsultationPresentation::from_bus_receipt).collect(),
+            consultation_presentations: event
+                .consultation_presentations
+                .iter()
+                .map(CsProjectedConsultationPresentation::from_bus_receipt)
+                .collect(),
             seal_coverage: event
                 .seal_coverage
                 .as_ref()
@@ -1029,14 +1042,22 @@ mod tests {
             lifecycle_terminal: true,
             delivery: TranscriptDelivery::ComposerPending,
             consultation_presentations: vec![ProjectedConsultationPresentation {
-                receipt_id: "max-group-receipt".into(), consultation_id: "Max".into(),
-                turn_id: "turn-5".into(), source_revision: 9, revision: 10,
+                receipt_id: "max-group-receipt".into(),
+                consultation_id: "Max".into(),
+                turn_id: "turn-5".into(),
+                source_revision: 9,
+                revision: 10,
                 rendered_text: "git add -- 'plik ze spacją.rs'".into(),
-                members: vec![codescribe::presentation::transcript_bus::ProjectedConsultationMember {
-                    session_id: "occurrence-session".into(), capture_epoch: 13,
-                    sample_start: 17, sample_end: 23, source_label: "Iwo".into(),
-                    seal_receipt: "seal-receipt".into(),
-                }],
+                members: vec![
+                    codescribe::presentation::transcript_bus::ProjectedConsultationMember {
+                        session_id: "occurrence-session".into(),
+                        capture_epoch: 13,
+                        sample_start: 17,
+                        sample_end: 23,
+                        source_label: "Iwo".into(),
+                        seal_receipt: "seal-receipt".into(),
+                    },
+                ],
             }],
             acoustic_receipts: vec![ProjectedAcousticReceipt {
                 acoustic_serial_version: 2,
@@ -1092,12 +1113,18 @@ mod tests {
                 lifecycle_terminal: true,
                 delivery: CsTranscriptDelivery::ComposerPending,
                 consultation_presentations: vec![CsProjectedConsultationPresentation {
-                    receipt_id: "max-group-receipt".into(), consultation_id: "Max".into(),
-                    turn_id: "turn-5".into(), source_revision: 9, revision: 10,
+                    receipt_id: "max-group-receipt".into(),
+                    consultation_id: "Max".into(),
+                    turn_id: "turn-5".into(),
+                    source_revision: 9,
+                    revision: 10,
                     rendered_text: "git add -- 'plik ze spacją.rs'".into(),
                     members: vec![CsProjectedConsultationMember {
-                        session_id: "occurrence-session".into(), capture_epoch: 13,
-                        sample_start: 17, sample_end: 23, source_label: "Iwo".into(),
+                        session_id: "occurrence-session".into(),
+                        capture_epoch: 13,
+                        sample_start: 17,
+                        sample_end: 23,
+                        source_label: "Iwo".into(),
                         seal_receipt: "seal-receipt".into(),
                     }],
                 }],

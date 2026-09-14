@@ -11,8 +11,8 @@ use std::sync::Mutex;
 
 use chrono::{SecondsFormat, Utc};
 use codescribe_core::pipeline::acoustic_ledger::{
-    AcousticLedger, AcousticSerial, ConsultationPresentationReceipt, IncrementalShapingReceipt, SealCoverageReceipt,
-    TerminalFinalityRefusal, TranscriptComparisonReceipt,
+    AcousticLedger, AcousticSerial, ConsultationPresentationReceipt, IncrementalShapingReceipt,
+    SealCoverageReceipt, TerminalFinalityRefusal, TranscriptComparisonReceipt,
 };
 use codescribe_core::pipeline::contracts::TranscriptSegment;
 use serde::{Deserialize, Serialize};
@@ -379,14 +379,24 @@ pub struct ProjectedConsultationMember {
 impl From<&ConsultationPresentationReceipt> for ProjectedConsultationPresentation {
     fn from(receipt: &ConsultationPresentationReceipt) -> Self {
         Self {
-            receipt_id: receipt.receipt_id.clone(), consultation_id: receipt.consultation_id.clone(),
-            turn_id: receipt.turn_id.clone(), source_revision: receipt.source_revision,
-            revision: receipt.revision, rendered_text: receipt.rendered_text.clone(),
-            members: receipt.members.iter().map(|member| ProjectedConsultationMember {
-                session_id: member.occurrence.session.clone(), capture_epoch: member.occurrence.capture_epoch,
-                sample_start: member.occurrence.sample_start, sample_end: member.occurrence.sample_end,
-                source_label: member.source_label.clone(), seal_receipt: member.seal_receipt.clone(),
-            }).collect(),
+            receipt_id: receipt.receipt_id.clone(),
+            consultation_id: receipt.consultation_id.clone(),
+            turn_id: receipt.turn_id.clone(),
+            source_revision: receipt.source_revision,
+            revision: receipt.revision,
+            rendered_text: receipt.rendered_text.clone(),
+            members: receipt
+                .members
+                .iter()
+                .map(|member| ProjectedConsultationMember {
+                    session_id: member.occurrence.session.clone(),
+                    capture_epoch: member.occurrence.capture_epoch,
+                    sample_start: member.occurrence.sample_start,
+                    sample_end: member.occurrence.sample_end,
+                    source_label: member.source_label.clone(),
+                    seal_receipt: member.seal_receipt.clone(),
+                })
+                .collect(),
         }
     }
 }
@@ -621,7 +631,9 @@ impl TranscriptBus {
             // manual edit and not a terminal revision: the words are unchanged,
             // the lifecycle is open, and the take is still being spoken.
             ReducerAction::ApplyIncrementalShaping { .. } => "apply_incremental_shaping",
-            ReducerAction::ApplyConsultationPresentation { .. } => "apply_consultation_presentation",
+            ReducerAction::ApplyConsultationPresentation { .. } => {
+                "apply_consultation_presentation"
+            }
             ReducerAction::RecordContextMarker { .. } => "record_context_marker",
         };
         let is_user_revision = matches!(&revision.action, ReducerAction::ApplyUserRevision { .. });
@@ -724,8 +736,11 @@ impl TranscriptBus {
                     .comparison
                     .as_ref()
                     .map(ProjectedTranscriptComparisonReceipt::from),
-                consultation_presentations: revision.consultation_presentations.iter()
-                    .map(ProjectedConsultationPresentation::from).collect(),
+                consultation_presentations: revision
+                    .consultation_presentations
+                    .iter()
+                    .map(ProjectedConsultationPresentation::from)
+                    .collect(),
             };
             if let Err(error) = self.write_evidence_event_locked(&mut writer, &event) {
                 self.log_write_error(error);

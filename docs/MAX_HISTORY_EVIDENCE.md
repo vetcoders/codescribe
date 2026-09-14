@@ -72,11 +72,11 @@ files opened. Extracts are under
 `/Users/maciejgad/.aicx/codescribe-history-20260914/`, named
 `roman-review-<full-session-id>-user.md`.
 
-| Source session | Read extent | Disposition |
-| --- | --- | --- |
-| `01a09c61-1e33-7ec1-ac13-baa03ca7f0ff` | All 41 lines; 4 extracted messages | Repeats the integration question and positive pointer feedback present in the current Roman conversation. No additional Max behavior requirement. |
-| `01a09c5f-2ae0-78e3-8de9-ad2a92ff3907` | All 29 lines; one image reference | Text extraction has no new instruction. Image pixels were not reviewed in this pass. |
-| `ca094059-bb7c-4329-84c8-07d87f701447` | All 603 lines; header reports 22 messages, CLI reports 32 entries | Mixed host/runtime incident, not established Codescribe malfunction. See attribution below. |
+| Source session                         | Read extent                                                       | Disposition                                                                                                                                       |
+| -------------------------------------- | ----------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `01a09c61-1e33-7ec1-ac13-baa03ca7f0ff` | All 41 lines; 4 extracted messages                                | Repeats the integration question and positive pointer feedback present in the current Roman conversation. No additional Max behavior requirement. |
+| `01a09c5f-2ae0-78e3-8de9-ad2a92ff3907` | All 29 lines; one image reference                                 | Text extraction has no new instruction. Image pixels were not reviewed in this pass.                                                              |
+| `ca094059-bb7c-4329-84c8-07d87f701447` | All 603 lines; header reports 22 messages, CLI reports 32 entries | Mixed host/runtime incident, not established Codescribe malfunction. See attribution below.                                                       |
 
 Exact sources for the first two are respectively:
 `/Users/maciejgad/.codex/sessions/2026/09/13/rollout-2026-09-13T22-06-45-01a09c61-1e33-7ec1-ac13-baa03ca7f0ff.jsonl`
@@ -119,10 +119,10 @@ Outputs are under `/Users/maciejgad/.aicx/codescribe-history-20260914/`, named
 `roman-review-<full-session-id>-user.md`. Each extraction parsed one source and
 opened zero catalog files. No transcript was edited.
 
-| Session | Read extent | Attribution |
-| --- | --- | --- |
-| `2bc39d81-fcc5-4e70-84b8-6688f315f835` | All 115 lines; header 20 messages, CLI 49 entries | Fork shares earlier Codescribe context, then explicitly moves to Screenscribe integration. That later assignment is not an instruction to modify Codescribe. |
-| `2f29bfff-1430-4f61-8d21-ac144b207da1` | All 675 lines in two bounded reads; header 77 messages, CLI 155 entries | Codescribe parent plus subsequent unrelated host/privacy investigation and provider-generated compaction summary. |
+| Session                                | Read extent                                                             | Attribution                                                                                                                                                  |
+| -------------------------------------- | ----------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| `2bc39d81-fcc5-4e70-84b8-6688f315f835` | All 115 lines; header 20 messages, CLI 49 entries                       | Fork shares earlier Codescribe context, then explicitly moves to Screenscribe integration. That later assignment is not an instruction to modify Codescribe. |
+| `2f29bfff-1430-4f61-8d21-ac144b207da1` | All 675 lines in two bounded reads; header 77 messages, CLI 155 entries | Codescribe parent plus subsequent unrelated host/privacy investigation and provider-generated compaction summary.                                            |
 
 Direct Founder messages add or reaffirm these Codescribe concerns:
 

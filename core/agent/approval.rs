@@ -112,7 +112,8 @@ impl ApprovalBroker {
     }
 
     fn notify_changed(&self) {
-        self.changed.send_modify(|revision| *revision = revision.wrapping_add(1));
+        self.changed
+            .send_modify(|revision| *revision = revision.wrapping_add(1));
     }
 
     /// Park a tool call and hand back the future its execution awaits.
@@ -134,10 +135,7 @@ impl ApprovalBroker {
                 upstream_tool: upstream_tool.clone(),
             },
             ToolOrigin::Native => GrantTarget::Native {
-                identity: crate::agent::permissions::tool_identity(
-                    &request.origin,
-                    &request.tool,
-                ),
+                identity: crate::agent::permissions::tool_identity(&request.origin, &request.tool),
             },
         };
         let key = ApprovalKey {
@@ -152,15 +150,23 @@ impl ApprovalBroker {
             if pending.contains_key(&key) {
                 return Box::pin(async { false });
             }
-            pending.insert(key.clone(), PendingApproval {
-                request, tx, grant_target, token: Arc::clone(&token),
-            });
+            pending.insert(
+                key.clone(),
+                PendingApproval {
+                    request,
+                    tx,
+                    grant_target,
+                    token: Arc::clone(&token),
+                },
+            );
             self.notify_changed();
         }
         // Capture the guard before polling: dropping an unpolled future must
         // also evict its registration.
         let guard = PendingApprovalGuard {
-            broker: Arc::clone(self), key, token,
+            broker: Arc::clone(self),
+            key,
+            token,
         };
         Box::pin(async move {
             let _guard = guard;
@@ -172,7 +178,8 @@ impl ApprovalBroker {
     /// after a missed notification reads this owner rather than replaying tools.
     /// A snapshot grants nothing; resolve still requires an outstanding exact key.
     pub fn pending_for_thread(&self, thread_id: &str) -> Vec<ToolApprovalRequest> {
-        let mut requests = recover(self.pending.lock()).values()
+        let mut requests = recover(self.pending.lock())
+            .values()
             .filter(|entry| entry.request.thread_id == thread_id)
             .map(|entry| entry.request.clone())
             .collect::<Vec<_>>();
@@ -250,7 +257,8 @@ impl Drop for PendingApprovalGuard {
     /// again by a stale Swift approval card.
     fn drop(&mut self) {
         let mut pending = recover(self.broker.pending.lock());
-        if pending.get(&self.key)
+        if pending
+            .get(&self.key)
             .is_some_and(|entry| Arc::ptr_eq(&entry.token, &self.token))
         {
             pending.remove(&self.key);
@@ -265,10 +273,16 @@ mod tests {
 
     fn request() -> ToolApprovalRequest {
         ToolApprovalRequest {
-            call_id: "call".into(), session_id: "session".into(),
-            thread_id: "thread".into(), tool: "write_file".into(),
-            origin: ToolOrigin::Native, risk: crate::agent::ToolRisk::Mutating,
-            summary: "write a file".into(), command: None, cwd: None, paths: vec![],
+            call_id: "call".into(),
+            session_id: "session".into(),
+            thread_id: "thread".into(),
+            tool: "write_file".into(),
+            origin: ToolOrigin::Native,
+            risk: crate::agent::ToolRisk::Mutating,
+            summary: "write a file".into(),
+            command: None,
+            cwd: None,
+            paths: vec![],
         }
     }
 

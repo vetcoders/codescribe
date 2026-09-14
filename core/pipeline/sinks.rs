@@ -99,8 +99,9 @@ impl FanoutEventSink {
 
 impl EventSink for FanoutEventSink {
     fn consultation_destinations(&self) -> usize {
-        self.sinks.iter().fold(0usize, |count, sink|
-            count.saturating_add(sink.consultation_destinations()))
+        self.sinks.iter().fold(0usize, |count, sink| {
+            count.saturating_add(sink.consultation_destinations())
+        })
     }
 
     fn on_consultation_completed(
@@ -109,9 +110,14 @@ impl EventSink for FanoutEventSink {
     ) -> anyhow::Result<()> {
         // Validate the entire nested topology before invoking any publisher.
         // Ordinary event fan-out must not duplicate a document mutation.
-        anyhow::ensure!(self.consultation_destinations() == 1,
-            "consultation presentation requires exactly one destination");
-        let sink = self.sinks.iter().find(|sink| sink.consultation_destinations() == 1)
+        anyhow::ensure!(
+            self.consultation_destinations() == 1,
+            "consultation presentation requires exactly one destination"
+        );
+        let sink = self
+            .sinks
+            .iter()
+            .find(|sink| sink.consultation_destinations() == 1)
             .ok_or_else(|| anyhow::anyhow!("consultation presentation topology changed"))?;
         sink.on_consultation_completed(completed)
     }

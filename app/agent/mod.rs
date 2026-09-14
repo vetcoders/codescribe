@@ -6,7 +6,9 @@
 
 use anyhow::Result;
 use codescribe_core::agent::AgentProvider;
-use codescribe_core::config::{FormattingPolicy, RuntimeLlmLane, RuntimeLlmLaneKind, RuntimeSettingsSnapshot};
+use codescribe_core::config::{
+    FormattingPolicy, RuntimeLlmLane, RuntimeLlmLaneKind, RuntimeSettingsSnapshot,
+};
 use codescribe_core::llm::provider::WireFamily;
 
 /// Anthropic Messages-family assistive provider client.

@@ -1063,7 +1063,10 @@ mod tests {
             _tools: &[ToolDefinition],
             _options: &StreamOptions,
         ) -> anyhow::Result<mpsc::Receiver<AgentEvent>> {
-            self.received_messages.lock().expect("messages lock").push(messages.to_vec());
+            self.received_messages
+                .lock()
+                .expect("messages lock")
+                .push(messages.to_vec());
             let events = self
                 .scripted_events
                 .lock()
@@ -1300,20 +1303,37 @@ mod tests {
             Box::new(ScriptedProvider::new(Vec::new())),
             Arc::clone(&tools),
             ui_tx,
-        ).with_tool_approval("max-consultation-a", Arc::clone(&approval));
+        )
+        .with_tool_approval("max-consultation-a", Arc::clone(&approval));
         let history = vec![
-            Message::new(Role::User, vec![ContentBlock::Text("Prepare git add, do not execute it.".into())]),
-            Message::new(Role::Assistant, vec![ContentBlock::Text("git add -- 'one.rs'".into())]),
+            Message::new(
+                Role::User,
+                vec![ContentBlock::Text(
+                    "Prepare git add, do not execute it.".into(),
+                )],
+            ),
+            Message::new(
+                Role::Assistant,
+                vec![ContentBlock::Text("git add -- 'one.rs'".into())],
+            ),
         ];
         session.restore_messages(history.clone());
         session.thread_id = Some("old-provider-response".into());
-        session.provider.restore_response_chain(Some("old-chain".into())).await;
+        session
+            .provider
+            .restore_response_chain(Some("old-chain".into()))
+            .await;
         let execution_session = session.execution_session_id.clone();
         let replacement = ScriptedProvider::new(vec![vec![
             AgentEvent::TextDone("git add -- 'two.rs'".into()),
-            AgentEvent::ResponseDone { response_id: Some("new-response".into()), clean: true },
+            AgentEvent::ResponseDone {
+                response_id: Some("new-response".into()),
+                clean: true,
+            },
         ]]);
-        replacement.restore_response_chain(Some("unrelated-chain".into())).await;
+        replacement
+            .restore_response_chain(Some("unrelated-chain".into()))
+            .await;
         let received = Arc::clone(&replacement.received_messages);
 
         session.replace_provider(Box::new(replacement)).await;
@@ -1324,15 +1344,26 @@ mod tests {
         assert_eq!(session.execution_thread_id, "max-consultation-a");
         assert_eq!(session.execution_session_id, execution_session);
         assert!(Arc::ptr_eq(&session.tools, &tools));
-        assert!(Arc::ptr_eq(session.approval_handler.as_ref().expect("approval retained"), &approval));
+        assert!(Arc::ptr_eq(
+            session
+                .approval_handler
+                .as_ref()
+                .expect("approval retained"),
+            &approval
+        ));
 
         let correction = "Use two.rs instead, still only prepare the command.";
-        session.send(correction.into(), Vec::new(), &StreamOptions::default()).await.expect("second turn");
+        session
+            .send(correction.into(), Vec::new(), &StreamOptions::default())
+            .await
+            .expect("second turn");
         let requests = received.lock().expect("messages lock");
         assert_eq!(requests.len(), 1);
         assert_eq!(&requests[0][..history.len()], history.as_slice());
-        assert_eq!(requests[0].last().expect("correction").content,
-            vec![ContentBlock::Text(correction.into())]);
+        assert_eq!(
+            requests[0].last().expect("correction").content,
+            vec![ContentBlock::Text(correction.into())]
+        );
         assert_eq!(session.messages().len(), 4);
         assert_eq!(session.thread_id(), Some("new-response"));
     }
@@ -1494,36 +1525,62 @@ mod tests {
 
     #[tokio::test]
     async fn tool_execution_requires_clean_terminal_and_dirty_terminal_cannot_be_reversed() {
-        for terminals in [vec![], vec![false], vec![true, false], vec![false, true], vec![true]] {
+        for terminals in [
+            vec![],
+            vec![false],
+            vec![true, false],
+            vec![false, true],
+            vec![true],
+        ] {
             let allowed = terminals == vec![true];
             let calls = Arc::new(AtomicUsize::new(0));
             let counted = Arc::clone(&calls);
             let mut registry = ToolRegistry::new();
-            registry.register(ToolDefinition {
-                name: "count_call".into(), description: "Count execution".into(),
-                input_schema: json!({"type":"object"}),
-            }, Box::new(move |_| {
-                let counted = Arc::clone(&counted);
-                Box::pin(async move {
-                    counted.fetch_add(1, Ordering::SeqCst);
-                    vec![ToolResultContent::Text("counted".into())]
-                })
-            })).expect("register tool");
+            registry
+                .register(
+                    ToolDefinition {
+                        name: "count_call".into(),
+                        description: "Count execution".into(),
+                        input_schema: json!({"type":"object"}),
+                    },
+                    Box::new(move |_| {
+                        let counted = Arc::clone(&counted);
+                        Box::pin(async move {
+                            counted.fetch_add(1, Ordering::SeqCst);
+                            vec![ToolResultContent::Text("counted".into())]
+                        })
+                    }),
+                )
+                .expect("register tool");
             let mut first = vec![AgentEvent::ToolCallReady {
-                id: "call-1".into(), name: "count_call".into(), arguments: json!({}),
+                id: "call-1".into(),
+                name: "count_call".into(),
+                arguments: json!({}),
             }];
             first.extend(terminals.into_iter().map(|clean| AgentEvent::ResponseDone {
-                response_id: Some("candidate".into()), clean,
+                response_id: Some("candidate".into()),
+                clean,
             }));
-            let provider = ScriptedProvider::new(vec![first, vec![
-                AgentEvent::TextDone("finished".into()),
-                AgentEvent::ResponseDone { response_id: Some("finished".into()), clean: true },
-            ]]);
+            let provider = ScriptedProvider::new(vec![
+                first,
+                vec![
+                    AgentEvent::TextDone("finished".into()),
+                    AgentEvent::ResponseDone {
+                        response_id: Some("finished".into()),
+                        clean: true,
+                    },
+                ],
+            ]);
             let (tx, mut rx) = mpsc::channel(32);
             let mut session = AgentSession::new(Box::new(provider), Arc::new(registry), tx);
             session.thread_id = Some("prior".into());
-            session.provider.restore_response_chain(Some("prior-chain".into())).await;
-            let result = session.send("count once".into(), Vec::new(), &StreamOptions::default()).await;
+            session
+                .provider
+                .restore_response_chain(Some("prior-chain".into()))
+                .await;
+            let result = session
+                .send("count once".into(), Vec::new(), &StreamOptions::default())
+                .await;
             assert_eq!(result.is_ok(), allowed);
             assert_eq!(calls.load(Ordering::SeqCst), usize::from(allowed));
             if !allowed {
@@ -1531,7 +1588,10 @@ mod tests {
                 assert_eq!(session.snapshot_response_chain().await, None);
                 assert_eq!(session.messages().len(), 1);
                 while let Ok(event) = rx.try_recv() {
-                    assert!(!matches!(event, AgentUiEvent::Done | AgentUiEvent::ToolExecuting { .. }));
+                    assert!(!matches!(
+                        event,
+                        AgentUiEvent::Done | AgentUiEvent::ToolExecuting { .. }
+                    ));
                 }
             }
         }

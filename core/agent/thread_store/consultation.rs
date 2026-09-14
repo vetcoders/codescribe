@@ -45,28 +45,36 @@ struct SelectedConsultation {
 pub(crate) fn inspect_selected_max_consultation(
     store: &ThreadStore,
 ) -> Result<Option<crate::agent::thread_delivery::ConsultationRecoverySnapshot>> {
-    let Some(directory) = existing_consultation_directory(&store.threads_dir, "consultations")? else {
+    let Some(directory) = existing_consultation_directory(&store.threads_dir, "consultations")?
+    else {
         return Ok(None);
     };
     let Some(selection) = existing_consultation_directory(&directory, "selection")? else {
         return Ok(None);
     };
-    let file = match OpenOptions::new().read(true).custom_flags(libc::O_NOFOLLOW)
-        .open(selection.join("current.json")) {
+    let file = match OpenOptions::new()
+        .read(true)
+        .custom_flags(libc::O_NOFOLLOW)
+        .open(selection.join("current.json"))
+    {
         Ok(file) => file,
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
         Err(error) => return Err(error).context("inspect Max consultation selection"),
     };
-    let selected: SelectedConsultation = serde_json::from_reader(file)
-        .context("corrupt Max consultation selection")?;
+    let selected: SelectedConsultation =
+        serde_json::from_reader(file).context("corrupt Max consultation selection")?;
     validate_thread_id(&selected.thread_id)?;
     // Selection can change after this read. Return the identity actually read,
     // never relabel its journal as belonging to a subsequently selected thread.
-    Ok(Some(inspect_retained_input(store, &selected.thread_id)?.unwrap_or(
-        crate::agent::thread_delivery::ConsultationRecoverySnapshot {
-            consultation_id: selected.thread_id, pending_turn_id: None, retained_inputs: Vec::new(),
-        },
-    )))
+    Ok(Some(
+        inspect_retained_input(store, &selected.thread_id)?.unwrap_or(
+            crate::agent::thread_delivery::ConsultationRecoverySnapshot {
+                consultation_id: selected.thread_id,
+                pending_turn_id: None,
+                retained_inputs: Vec::new(),
+            },
+        ),
+    ))
 }
 
 fn existing_consultation_directory(parent: &Path, name: &str) -> Result<Option<PathBuf>> {
@@ -77,7 +85,10 @@ fn existing_consultation_directory(parent: &Path, name: &str) -> Result<Option<P
         Err(error) => return Err(error).context("inspect consultation directory"),
     }
     let directory = canonical_existing_child(parent, &directory)?;
-    ensure!(directory.is_dir(), "consultation directory is not a directory");
+    ensure!(
+        directory.is_dir(),
+        "consultation directory is not a directory"
+    );
     Ok(Some(directory))
 }
 
@@ -88,37 +99,62 @@ pub(crate) fn inspect_retained_input(
     use crate::agent::thread_delivery::{ConsultationInputSnapshot, ConsultationRecoverySnapshot};
     use crate::agent::{ContentBlock, Role};
     validate_thread_id(id)?;
-    let Some(directory) = existing_consultation_directory(&store.threads_dir, "consultations")? else {
+    let Some(directory) = existing_consultation_directory(&store.threads_dir, "consultations")?
+    else {
         return Ok(None);
     };
-    let file = match OpenOptions::new().read(true).custom_flags(libc::O_NOFOLLOW)
-        .open(directory.join(format!("{id}.json"))) {
+    let file = match OpenOptions::new()
+        .read(true)
+        .custom_flags(libc::O_NOFOLLOW)
+        .open(directory.join(format!("{id}.json")))
+    {
         Ok(file) => file,
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
         Err(error) => return Err(error).context("inspect consultation input"),
     };
     // Atomic rename makes this a coherent old-or-new snapshot while an owner
     // is running. It does not make the snapshot a lease or a recovery decision.
-    let state: AdmissionState = serde_json::from_reader(file).context("corrupt consultation admission state")?;
+    let state: AdmissionState =
+        serde_json::from_reader(file).context("corrupt consultation admission state")?;
     let mut ids = BTreeSet::new();
     for entry in &state.queued {
-        ensure!(!entry.turn_id.trim().is_empty() && ids.insert(entry.turn_id.clone())
-            && !state.completed.contains(&entry.turn_id), "invalid retained consultation identity");
-        ensure!(entry.input.role == Role::User && entry.input.content.iter().all(|block|
-            matches!(block, ContentBlock::Text(_) | ContentBlock::Image { .. })),
-            "retained consultation input is not source user content");
+        ensure!(
+            !entry.turn_id.trim().is_empty()
+                && ids.insert(entry.turn_id.clone())
+                && !state.completed.contains(&entry.turn_id),
+            "invalid retained consultation identity"
+        );
+        ensure!(
+            entry.input.role == Role::User
+                && entry.input.content.iter().all(|block| matches!(
+                    block,
+                    ContentBlock::Text(_) | ContentBlock::Image { .. }
+                )),
+            "retained consultation input is not source user content"
+        );
     }
     if let Some(pending) = &state.pending {
-        ensure!(!pending.trim().is_empty() && !state.completed.contains(pending),
-            "invalid pending consultation identity");
-        ensure!(state.queued.is_empty() || state.queued[0].turn_id == *pending,
-            "pending consultation is not the retained front");
+        ensure!(
+            !pending.trim().is_empty() && !state.completed.contains(pending),
+            "invalid pending consultation identity"
+        );
+        ensure!(
+            state.queued.is_empty() || state.queued[0].turn_id == *pending,
+            "pending consultation is not the retained front"
+        );
     }
     Ok(Some(ConsultationRecoverySnapshot {
-        consultation_id: id.to_string(), pending_turn_id: state.pending,
-        retained_inputs: state.queued.into_iter().map(|entry| ConsultationInputSnapshot {
-            turn_id: entry.turn_id, input: entry.input, provider_name: entry.provider_name,
-        }).collect(),
+        consultation_id: id.to_string(),
+        pending_turn_id: state.pending,
+        retained_inputs: state
+            .queued
+            .into_iter()
+            .map(|entry| ConsultationInputSnapshot {
+                turn_id: entry.turn_id,
+                input: entry.input,
+                provider_name: entry.provider_name,
+            })
+            .collect(),
     }))
 }
 
@@ -128,11 +164,16 @@ pub(crate) fn inspect_retained_input(
 pub(crate) fn selected_id(store: &ThreadStore) -> Result<String> {
     let path = selection_path(store)?;
     let _selection_owner = exclusive_owner(&path.with_file_name("owner.lock"))?;
-    let selected: SelectedConsultation = match OpenOptions::new().read(true)
-        .custom_flags(libc::O_NOFOLLOW).open(&path) {
+    let selected: SelectedConsultation = match OpenOptions::new()
+        .read(true)
+        .custom_flags(libc::O_NOFOLLOW)
+        .open(&path)
+    {
         Ok(file) => serde_json::from_reader(file).context("corrupt Max consultation selection")?,
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
-            let selected = SelectedConsultation { thread_id: ThreadStore::generate_id() };
+            let selected = SelectedConsultation {
+                thread_id: ThreadStore::generate_id(),
+            };
             persist_json(&path, &selected)?;
             selected
         }
@@ -148,14 +189,23 @@ pub(crate) fn begin_new(store: &ThreadStore, expected: &str) -> Result<String> {
     validate_thread_id(expected)?;
     let path = selection_path(store)?;
     let _selection_owner = exclusive_owner(&path.with_file_name("owner.lock"))?;
-    let file = OpenOptions::new().read(true).custom_flags(libc::O_NOFOLLOW).open(&path)?;
-    let selected: SelectedConsultation = serde_json::from_reader(file).context("corrupt Max consultation selection")?;
-    ensure!(selected.thread_id == expected, "Max consultation selection changed; refusing stale reset");
+    let file = OpenOptions::new()
+        .read(true)
+        .custom_flags(libc::O_NOFOLLOW)
+        .open(&path)?;
+    let selected: SelectedConsultation =
+        serde_json::from_reader(file).context("corrupt Max consultation selection")?;
+    ensure!(
+        selected.thread_id == expected,
+        "Max consultation selection changed; refusing stale reset"
+    );
     // Caller must first close its owner. Another process still owning that
     // conversation also prevents reset, regardless of its apparent UI state.
     let directory = consultation_directory(store)?;
     let _old_owner = exclusive_owner(&directory.join(format!("{expected}.lock")))?;
-    let replacement = SelectedConsultation { thread_id: ThreadStore::generate_id() };
+    let replacement = SelectedConsultation {
+        thread_id: ThreadStore::generate_id(),
+    };
     persist_json(&path, &replacement)?;
     Ok(replacement.thread_id)
 }
@@ -177,17 +227,31 @@ fn consultation_directory(store: &ThreadStore) -> Result<PathBuf> {
 }
 
 fn exclusive_owner(path: &Path) -> Result<File> {
-    let owner = OpenOptions::new().read(true).write(true).create(true)
-        .truncate(false).mode(0o600).custom_flags(libc::O_NOFOLLOW).open(path)?;
+    let owner = OpenOptions::new()
+        .read(true)
+        .write(true)
+        .create(true)
+        .truncate(false)
+        .mode(0o600)
+        .custom_flags(libc::O_NOFOLLOW)
+        .open(path)?;
     // SAFETY: owner holds a live file descriptor for the full lease lifetime.
     let acquired = unsafe { libc::flock(owner.as_raw_fd(), libc::LOCK_EX | libc::LOCK_NB) };
-    ensure!(acquired == 0, "consultation already owned or lock unavailable: {}", std::io::Error::last_os_error());
+    ensure!(
+        acquired == 0,
+        "consultation already owned or lock unavailable: {}",
+        std::io::Error::last_os_error()
+    );
     Ok(owner)
 }
 
 fn persist_json(path: &Path, value: &impl Serialize) -> Result<()> {
     let temporary = path.with_extension(format!("{}.tmp", uuid::Uuid::new_v4()));
-    let mut file = OpenOptions::new().write(true).create_new(true).mode(0o600).open(&temporary)?;
+    let mut file = OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .mode(0o600)
+        .open(&temporary)?;
     file.write_all(&serde_json::to_vec(value)?)?;
     file.sync_all()?;
     fs::rename(&temporary, path)?;
@@ -223,33 +287,74 @@ impl ConsultationJournal {
         let directory = consultation_directory(store)?;
         let owner = exclusive_owner(&directory.join(format!("{id}.lock")))?;
         let path = directory.join(format!("{id}.json"));
-        let state = match OpenOptions::new().read(true).custom_flags(libc::O_NOFOLLOW).open(&path) {
-            Ok(file) => serde_json::from_reader(file).context("corrupt consultation admission state")?,
+        let state = match OpenOptions::new()
+            .read(true)
+            .custom_flags(libc::O_NOFOLLOW)
+            .open(&path)
+        {
+            Ok(file) => {
+                serde_json::from_reader(file).context("corrupt consultation admission state")?
+            }
             Err(error) if error.kind() == std::io::ErrorKind::NotFound => AdmissionState::default(),
             Err(error) => return Err(error).context("read consultation admission state"),
         };
-        let journal = Self { path, state, recovery_reason: None, _owner: owner };
-        ensure!(journal.state.pending.is_none(), "consultation requires recovery; unresolved turn {:?}", journal.state.pending);
-        ensure!(journal.state.queued.is_empty(), "consultation requires recovery; retained waiting instructions");
+        let journal = Self {
+            path,
+            state,
+            recovery_reason: None,
+            _owner: owner,
+        };
+        ensure!(
+            journal.state.pending.is_none(),
+            "consultation requires recovery; unresolved turn {:?}",
+            journal.state.pending
+        );
+        ensure!(
+            journal.state.queued.is_empty(),
+            "consultation requires recovery; retained waiting instructions"
+        );
         Ok(journal)
     }
 
     pub(crate) fn accept_input(&mut self, input: QueuedInstruction) -> Result<()> {
-        ensure!(self.recovery_reason.is_none(), "consultation requires recovery");
-        ensure!(!input.turn_id.trim().is_empty(), "turn identity is required");
-        ensure!(!self.state.completed.contains(&input.turn_id)
-            && !self.state.queued.iter().any(|entry| entry.turn_id == input.turn_id),
-            "turn already admitted; refusing replay");
+        ensure!(
+            self.recovery_reason.is_none(),
+            "consultation requires recovery"
+        );
+        ensure!(
+            !input.turn_id.trim().is_empty(),
+            "turn identity is required"
+        );
+        ensure!(
+            !self.state.completed.contains(&input.turn_id)
+                && !self
+                    .state
+                    .queued
+                    .iter()
+                    .any(|entry| entry.turn_id == input.turn_id),
+            "turn already admitted; refusing replay"
+        );
         self.state.queued.push(input);
         self.persist()
     }
 
     /// Only before begin, when the owner proves no provider/tool work started.
     pub(crate) fn discard_unstarted(&mut self, turn: &str) -> Result<()> {
-        ensure!(self.recovery_reason.is_none(), "consultation requires recovery");
-        ensure!(self.state.pending.is_none(), "cannot discard a potentially executed turn");
-        ensure!(self.state.queued.first().is_some_and(|entry| entry.turn_id == turn),
-            "consultation discard is out of order");
+        ensure!(
+            self.recovery_reason.is_none(),
+            "consultation requires recovery"
+        );
+        ensure!(
+            self.state.pending.is_none(),
+            "cannot discard a potentially executed turn"
+        );
+        ensure!(
+            self.state
+                .queued
+                .first()
+                .is_some_and(|entry| entry.turn_id == turn),
+            "consultation discard is out of order"
+        );
         let input = self.state.queued.remove(0);
         if let Err(error) = self.persist() {
             self.state.queued.insert(0, input);
@@ -259,11 +364,25 @@ impl ConsultationJournal {
     }
 
     pub(crate) fn begin(&mut self, turn: &str) -> Result<()> {
-        ensure!(self.recovery_reason.is_none(), "consultation requires recovery");
-        ensure!(self.state.pending.is_none(), "consultation requires recovery");
-        ensure!(!self.state.completed.contains(turn), "turn {turn} already completed; refusing replay");
-        ensure!(self.state.queued.first().is_some_and(|entry| entry.turn_id == turn),
-            "consultation execution is not the admitted front");
+        ensure!(
+            self.recovery_reason.is_none(),
+            "consultation requires recovery"
+        );
+        ensure!(
+            self.state.pending.is_none(),
+            "consultation requires recovery"
+        );
+        ensure!(
+            !self.state.completed.contains(turn),
+            "turn {turn} already completed; refusing replay"
+        );
+        ensure!(
+            self.state
+                .queued
+                .first()
+                .is_some_and(|entry| entry.turn_id == turn),
+            "consultation execution is not the admitted front"
+        );
         self.state.pending = Some(turn.to_string());
         // Failure deliberately leaves in-memory pending set: do not execute
         // anything if the before-effects receipt could not be made durable.
@@ -271,10 +390,21 @@ impl ConsultationJournal {
     }
 
     pub(crate) fn complete(&mut self, turn: &str) -> Result<()> {
-        ensure!(self.recovery_reason.is_none(), "consultation requires recovery");
-        ensure!(self.state.pending.as_deref() == Some(turn), "consultation completion identity mismatch");
-        ensure!(self.state.queued.first().is_some_and(|entry| entry.turn_id == turn),
-            "consultation completion is not the admitted front");
+        ensure!(
+            self.recovery_reason.is_none(),
+            "consultation requires recovery"
+        );
+        ensure!(
+            self.state.pending.as_deref() == Some(turn),
+            "consultation completion identity mismatch"
+        );
+        ensure!(
+            self.state
+                .queued
+                .first()
+                .is_some_and(|entry| entry.turn_id == turn),
+            "consultation completion is not the admitted front"
+        );
         let input = self.state.queued.remove(0);
         self.state.completed.insert(turn.to_string());
         self.state.pending = None;
@@ -288,7 +418,9 @@ impl ConsultationJournal {
 
     fn persist(&mut self) -> Result<()> {
         let result = persist_json(&self.path, &self.state);
-        if result.is_err() { self.require_recovery("consultation journal write uncertain".into()); }
+        if result.is_err() {
+            self.require_recovery("consultation journal write uncertain".into());
+        }
         result
     }
 }
@@ -298,12 +430,18 @@ mod tests {
     use super::*;
 
     fn accept(journal: &mut ConsultationJournal, turn: &str) {
-        journal.accept_input(QueuedInstruction {
-            turn_id: turn.into(),
-            input: crate::agent::Message::new(crate::agent::Role::User,
-                vec![crate::agent::ContentBlock::Text("instruction".into())]),
-            provider_name: "fixture".into(), options: serde_json::json!({}), group: None,
-        }).unwrap();
+        journal
+            .accept_input(QueuedInstruction {
+                turn_id: turn.into(),
+                input: crate::agent::Message::new(
+                    crate::agent::Role::User,
+                    vec![crate::agent::ContentBlock::Text("instruction".into())],
+                ),
+                provider_name: "fixture".into(),
+                options: serde_json::json!({}),
+                group: None,
+            })
+            .unwrap();
     }
 
     #[test]
@@ -311,15 +449,28 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let store = ThreadStore::new_in(dir.path()).unwrap();
         let gateway = crate::agent::ThreadDeliveryGateway::new_in(dir.path()).unwrap();
-        assert!(gateway.inspect_selected_max_consultation().unwrap().is_none());
+        assert!(
+            gateway
+                .inspect_selected_max_consultation()
+                .unwrap()
+                .is_none()
+        );
         assert!(!dir.path().join("consultations").exists());
         fs::create_dir(dir.path().join("consultations")).unwrap();
-        assert!(gateway.inspect_selected_max_consultation().unwrap().is_none());
+        assert!(
+            gateway
+                .inspect_selected_max_consultation()
+                .unwrap()
+                .is_none()
+        );
         assert!(!dir.path().join("consultations/selection").exists());
         let id = selected_id(&store).unwrap();
         let selection = dir.path().join("consultations/selection/current.json");
         let selected_bytes = fs::read(&selection).unwrap();
-        let empty = gateway.inspect_selected_max_consultation().unwrap().unwrap();
+        let empty = gateway
+            .inspect_selected_max_consultation()
+            .unwrap()
+            .unwrap();
         assert_eq!(empty.consultation_id, id);
         assert!(empty.retained_inputs.is_empty());
         let journal_path = dir.path().join(format!("consultations/{id}.json"));
@@ -328,13 +479,19 @@ mod tests {
         accept(&mut journal, "interrupted");
         journal.begin("interrupted").unwrap();
         let before = fs::read(&journal_path).unwrap();
-        let active = gateway.inspect_selected_max_consultation().unwrap().unwrap();
+        let active = gateway
+            .inspect_selected_max_consultation()
+            .unwrap()
+            .unwrap();
         assert_eq!(active.consultation_id, id);
         assert_eq!(active.pending_turn_id.as_deref(), Some("interrupted"));
         assert_eq!(active.retained_inputs.len(), 1);
         drop(journal);
         assert!(ConsultationJournal::open(&store, &id).is_err());
-        assert_eq!(gateway.inspect_selected_max_consultation().unwrap(), Some(active));
+        assert_eq!(
+            gateway.inspect_selected_max_consultation().unwrap(),
+            Some(active)
+        );
         assert_eq!(fs::read(&journal_path).unwrap(), before);
         assert_eq!(fs::read(&selection).unwrap(), selected_bytes);
         fs::write(&selection, b"{broken").unwrap();
@@ -361,16 +518,36 @@ mod tests {
         let snapshot = gateway.inspect_consultation("inspect").unwrap().unwrap();
         assert_eq!(snapshot.consultation_id, "inspect");
         assert_eq!(snapshot.pending_turn_id.as_deref(), Some("one"));
-        assert_eq!(snapshot.retained_inputs.iter().map(|entry| entry.turn_id.as_str()).collect::<Vec<_>>(),
-            vec!["one", "two"]);
-        assert_eq!(snapshot.retained_inputs[1].input.role, crate::agent::Role::User);
-        assert_eq!(snapshot.retained_inputs[1].input.content,
-            vec![crate::agent::ContentBlock::Text("instruction".into())]);
+        assert_eq!(
+            snapshot
+                .retained_inputs
+                .iter()
+                .map(|entry| entry.turn_id.as_str())
+                .collect::<Vec<_>>(),
+            vec!["one", "two"]
+        );
+        assert_eq!(
+            snapshot.retained_inputs[1].input.role,
+            crate::agent::Role::User
+        );
+        assert_eq!(
+            snapshot.retained_inputs[1].input.content,
+            vec![crate::agent::ContentBlock::Text("instruction".into())]
+        );
         assert_eq!(fs::read(&path).unwrap(), before);
-        assert!(ConsultationJournal::open(&store, "inspect").is_err(), "inspection did not take or release execution ownership");
+        assert!(
+            ConsultationJournal::open(&store, "inspect").is_err(),
+            "inspection did not take or release execution ownership"
+        );
         drop(journal);
-        assert_eq!(gateway.inspect_consultation("inspect").unwrap(), Some(snapshot));
-        assert!(ConsultationJournal::open(&store, "inspect").is_err(), "inspection must not resolve uncertainty");
+        assert_eq!(
+            gateway.inspect_consultation("inspect").unwrap(),
+            Some(snapshot)
+        );
+        assert!(
+            ConsultationJournal::open(&store, "inspect").is_err(),
+            "inspection must not resolve uncertainty"
+        );
         assert_eq!(fs::read(&path).unwrap(), before);
         fs::write(&path, b"{broken").unwrap();
         assert!(gateway.inspect_consultation("inspect").is_err());
@@ -394,7 +571,9 @@ mod tests {
         assert!(gateway.inspect_consultation("invalid-input").is_err());
         journal.state.pending = None;
         journal.state.queued[0].input.content = vec![crate::agent::ContentBlock::ToolUse {
-            id: "call".into(), name: "execute".into(), input: serde_json::json!({}),
+            id: "call".into(),
+            name: "execute".into(),
+            input: serde_json::json!({}),
         }];
         journal.persist().unwrap();
         assert!(gateway.inspect_consultation("invalid-input").is_err());
@@ -408,13 +587,23 @@ mod tests {
         assert!(journal.begin("not-admitted").is_err());
         accept(&mut journal, "one");
         accept(&mut journal, "two");
-        assert!(journal.begin("two").is_err(), "execution must follow persisted order");
-        assert!(journal.complete("one").is_err(), "acceptance is not completion");
+        assert!(
+            journal.begin("two").is_err(),
+            "execution must follow persisted order"
+        );
+        assert!(
+            journal.complete("one").is_err(),
+            "acceptance is not completion"
+        );
         let path = dir.path().join("consultations/waiting.json");
         let before = fs::read(&path).unwrap();
         drop(journal);
         assert!(ConsultationJournal::open(&store, "waiting").is_err());
-        assert_eq!(fs::read(path).unwrap(), before, "recovery refusal preserves every input");
+        assert_eq!(
+            fs::read(path).unwrap(),
+            before,
+            "recovery refusal preserves every input"
+        );
     }
 
     #[test]
@@ -434,8 +623,16 @@ mod tests {
         assert!(journal.discard_unstarted("first").is_err());
         second.turn_id = "third".into();
         assert!(journal.accept_input(second).is_err());
-        assert_eq!(fs::read(path).unwrap(), before, "uncertainty must not rewrite the last known durable input");
-        assert_eq!(journal.state.queued.len(), 2, "retain the attempted input until explicit recovery");
+        assert_eq!(
+            fs::read(path).unwrap(),
+            before,
+            "uncertainty must not rewrite the last known durable input"
+        );
+        assert_eq!(
+            journal.state.queued.len(),
+            2,
+            "retain the attempted input until explicit recovery"
+        );
     }
 
     #[test]
@@ -474,7 +671,10 @@ mod tests {
         assert_eq!(selected_id(&store).unwrap(), new);
         assert_eq!(fs::read(&journal_path).unwrap(), before);
         assert!(ConsultationJournal::open(&store, &old).is_err());
-        assert!(begin_new(&store, &old).is_err(), "stale reset cannot replace newer selection");
+        assert!(
+            begin_new(&store, &old).is_err(),
+            "stale reset cannot replace newer selection"
+        );
         assert_eq!(selected_id(&store).unwrap(), new);
     }
 
@@ -499,7 +699,10 @@ mod tests {
         let store = ThreadStore::new_in(dir.path()).unwrap();
         selected_id(&store).unwrap();
         let path = dir.path().join("consultations/selection/current.json");
-        for invalid in [b"{broken".as_slice(), br#"{"thread_id":"../escape"}"#.as_slice()] {
+        for invalid in [
+            b"{broken".as_slice(),
+            br#"{"thread_id":"../escape"}"#.as_slice(),
+        ] {
             fs::write(&path, invalid).unwrap();
             assert!(selected_id(&store).is_err());
             assert_eq!(fs::read(&path).unwrap(), invalid);

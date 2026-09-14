@@ -1470,43 +1470,65 @@ impl AcousticLedger {
         let mut end = first.occurrence.sample_start;
         for member in input.members {
             let occurrence = &member.occurrence;
-            if &occurrence.session != session || occurrence.capture_epoch != epoch
-                || occurrence.sample_start < end || occurrence.sample_start >= occurrence.sample_end
+            if &occurrence.session != session
+                || occurrence.capture_epoch != epoch
+                || occurrence.sample_start < end
+                || occurrence.sample_start >= occurrence.sample_end
             {
                 return Err("consultation_presentation_member_order");
             }
-            if !self.is_qualified(occurrence) || self.text_recovery_pending(occurrence)
-                || !self.frontier_of(occurrence).is_some_and(|frontier| frontier.is_closed())
+            if !self.is_qualified(occurrence)
+                || self.text_recovery_pending(occurrence)
+                || !self
+                    .frontier_of(occurrence)
+                    .is_some_and(|frontier| frontier.is_closed())
                 || self.text_of(occurrence) != Some(member.source_label.as_str())
                 || member.source_label.trim().is_empty()
-                || self.seal_of(occurrence).is_none_or(|seal| seal.receipt_id != member.seal_receipt)
+                || self
+                    .seal_of(occurrence)
+                    .is_none_or(|seal| seal.receipt_id != member.seal_receipt)
             {
                 return Err("consultation_presentation_source_changed");
             }
             end = occurrence.sample_end;
         }
-        let known = self.qualified_occurrences().chain(self.occurrences())
-            .filter(|occurrence| &occurrence.session == session && occurrence.capture_epoch == epoch
-                && occurrence.sample_start < end && first.occurrence.sample_start < occurrence.sample_end)
+        let known = self
+            .qualified_occurrences()
+            .chain(self.occurrences())
+            .filter(|occurrence| {
+                &occurrence.session == session
+                    && occurrence.capture_epoch == epoch
+                    && occurrence.sample_start < end
+                    && first.occurrence.sample_start < occurrence.sample_end
+            })
             .collect::<BTreeSet<_>>();
         if known.len() != input.members.len()
-            || !known.into_iter().eq(input.members.iter().map(|member| &member.occurrence))
+            || !known
+                .into_iter()
+                .eq(input.members.iter().map(|member| &member.occurrence))
         {
             return Err("consultation_presentation_members_incomplete");
         }
-        if self.consultation_presentations.iter().any(|receipt|
-            receipt.consultation_id == input.consultation_id && receipt.turn_id == input.turn_id)
-        {
+        if self.consultation_presentations.iter().any(|receipt| {
+            receipt.consultation_id == input.consultation_id && receipt.turn_id == input.turn_id
+        }) {
             return Err("consultation_presentation_turn_repeated");
         }
-        if self.consultation_presentations.iter().any(|receipt|
-            receipt.members.iter().any(|old| input.members.iter().any(|member|
-                old.occurrence == member.occurrence)))
-        {
+        if self.consultation_presentations.iter().any(|receipt| {
+            receipt.members.iter().any(|old| {
+                input
+                    .members
+                    .iter()
+                    .any(|member| old.occurrence == member.occurrence)
+            })
+        }) {
             return Err("consultation_presentation_group_overlaps");
         }
         let receipt = ConsultationPresentationReceipt {
-            receipt_id: format!("max-group-{session}-{epoch}-{}", self.consultation_presentations.len()),
+            receipt_id: format!(
+                "max-group-{session}-{epoch}-{}",
+                self.consultation_presentations.len()
+            ),
             consultation_id: input.consultation_id.to_string(),
             turn_id: input.turn_id.to_string(),
             source_revision: input.source_revision,

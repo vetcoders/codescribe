@@ -75,7 +75,12 @@ pub type AiReasoningCallback = Arc<dyn Fn(&str) + Send + Sync>;
 /// platform tools or discovers a conversation through process-global state.
 #[async_trait::async_trait]
 pub trait FormattingAgent: Send + Sync {
-    async fn execute(&self, turn_id: &str, text: &str, settings: &RuntimeSettingsSnapshot) -> Result<String>;
+    async fn execute(
+        &self,
+        turn_id: &str,
+        text: &str,
+        settings: &RuntimeSettingsSnapshot,
+    ) -> Result<String>;
 
     /// Tool-free assessment; neither silence nor a seal alone establishes a
     /// complete instruction. Unavailable assessment cannot authorize execution.
@@ -1166,8 +1171,16 @@ pub async fn format_text_with_status_for_policy(
     runtime_settings: &RuntimeSettingsSnapshot,
     consultation: Option<FormattingConsultation<'_>>,
 ) -> AiFormatResult {
-    format_text_with_status_channels_for_policy(text, language, false, runtime_settings, None, None, consultation)
-        .await
+    format_text_with_status_channels_for_policy(
+        text,
+        language,
+        false,
+        runtime_settings,
+        None,
+        None,
+        consultation,
+    )
+    .await
 }
 
 /// The single implementation every public formatting entry point funnels into.
@@ -1197,14 +1210,27 @@ async fn format_text_with_status_channels_for_policy(
         // Commands and corrections must not pass through the text-only floor,
         // repetition cleanup, expansion retries or refusal/echo filters.
         let result = match consultation {
-            Some(context) => context.agent.execute(context.turn_id, text, runtime_settings).await,
+            Some(context) => {
+                context
+                    .agent
+                    .execute(context.turn_id, text, runtime_settings)
+                    .await
+            }
             None => Err(anyhow::anyhow!("Max consultation executor unavailable")),
         };
         return match result {
-            Ok(text) => AiFormatResult { text, reasoning_text: None, status: AiFormatStatus::Applied },
+            Ok(text) => AiFormatResult {
+                text,
+                reasoning_text: None,
+                status: AiFormatStatus::Applied,
+            },
             Err(error) => {
                 warn!(%error, "Max consultation did not produce an admitted answer");
-                AiFormatResult { text: text.to_string(), reasoning_text: None, status: AiFormatStatus::Failed }
+                AiFormatResult {
+                    text: text.to_string(),
+                    reasoning_text: None,
+                    status: AiFormatStatus::Failed,
+                }
             }
         };
     }

@@ -42,15 +42,15 @@ use futures_util::stream::FuturesOrdered;
 use tokio::sync::mpsc;
 use tracing::{debug, info, warn};
 
+use crate::agent::consultation::{
+    ConsultationGroupAnswer, ConsultationInputQueue, ConsultationReadiness,
+    PendingConsultationGroup, PreparedConsultationGroup, SealedConsultationInput,
+};
 use crate::asr_session::recorder::{
     LAYER1_DEGRADED_WARNING_CODE, Layer1DegradeReason, RecorderLayer1Lane,
     apply_recorder_lifecycle_event,
 };
 use crate::asr_session::{SessionId as Layer1SessionId, SessionInput as Layer1SessionInput};
-use crate::agent::consultation::{
-    ConsultationGroupAnswer, ConsultationInputQueue, ConsultationReadiness,
-    PendingConsultationGroup, PreparedConsultationGroup, SealedConsultationInput,
-};
 use crate::audio::capture_receipt::{
     AcousticAvailability, AcousticSpeechEvidence, CaptureEnergyOwner, CaptureLevelAccumulator,
     CapturePathMeta, emit_capture_level_receipt,
@@ -58,7 +58,7 @@ use crate::audio::capture_receipt::{
 use crate::audio::streaming_recorder::CaptureTurnIntent;
 use crate::config::{FormattingPolicy, RuntimeSettingsSnapshot};
 use crate::llm::ai_formatting::{
-    AiFormatResult, AiFormatStatus, FormattingAgent, format_text_with_status_for_policy,
+    AiFormatResult, AiFormatStatus, format_text_with_status_for_policy,
 };
 use crate::llm::inline_format::{LabelProposalDisposition, OccurrenceLabelProposal};
 use crate::pipeline::acoustic_ledger::{
@@ -138,7 +138,11 @@ struct LiveConsultationCapture {
 }
 
 impl LiveConsultationCapture {
-    fn observe(&mut self, ingest: &super::silero_fusion::SileroIngest, samples_seen: u64) -> Result<()> {
+    fn observe(
+        &mut self,
+        ingest: &super::silero_fusion::SileroIngest,
+        samples_seen: u64,
+    ) -> Result<()> {
         self.speech_open = ingest.open.is_some();
         if ingest.speech_live {
             self.queue.resume_speech();
@@ -178,7 +182,9 @@ impl LiveConsultationCapture {
             match result {
                 LiveConsultationReturn::Published(result) => {
                     self.answers_pending = self.answers_pending.saturating_sub(1);
-                    if result.is_err() { self.report_refusal(events); }
+                    if result.is_err() {
+                        self.report_refusal(events);
+                    }
                 }
                 LiveConsultationReturn::Assessed(result) => {
                     self.assessment_pending = false;
@@ -189,9 +195,16 @@ impl LiveConsultationCapture {
                         });
                         continue;
                     };
-                    if self.refused || self.speech_open { continue; }
-                    let ConsultationReadiness::Complete(input) = assessment else { continue; };
-                    match self.requests.try_send(LiveConsultationRequest::Prepare(input)) {
+                    if self.refused || self.speech_open {
+                        continue;
+                    }
+                    let ConsultationReadiness::Complete(input) = assessment else {
+                        continue;
+                    };
+                    match self
+                        .requests
+                        .try_send(LiveConsultationRequest::Prepare(input))
+                    {
                         Ok(()) => self.assessment_pending = true,
                         Err(_) => self.report_refusal(events),
                     }
@@ -200,12 +213,19 @@ impl LiveConsultationCapture {
                     self.assessment_pending = false;
                     let prepared = match result {
                         Ok(prepared) => prepared,
-                        Err(_) => { self.report_refusal(events); continue; }
+                        Err(_) => {
+                            self.report_refusal(events);
+                            continue;
+                        }
                     };
                     // A dropped preparation cannot execute. Revalidate AFTER
                     // disk I/O, while capture owns current speech and ledger.
-                    if self.refused || self.speech_open { continue; }
-                    let Some(fusion) = state.fusion.as_ref() else { continue; };
+                    if self.refused || self.speech_open {
+                        continue;
+                    }
+                    let Some(fusion) = state.fusion.as_ref() else {
+                        continue;
+                    };
                     let speech = fusion.acoustic_speech_evidence();
                     // Reserve result transport BEFORE accepting effects. A
                     // successfully accepted handle cannot disappear on pressure.
@@ -214,7 +234,9 @@ impl LiveConsultationCapture {
                         self.report_refusal(events);
                         continue;
                     };
-                    let ledger = state.acoustic_ledger.lock()
+                    let ledger = state
+                        .acoustic_ledger
+                        .lock()
                         .unwrap_or_else(std::sync::PoisonError::into_inner);
                     match self.queue.ready(&ledger, &speech) {
                         Ok(Some(current)) if &current == prepared.input() => {}
@@ -228,28 +250,46 @@ impl LiveConsultationCapture {
                             let acknowledged = self.queue.acknowledge(&pending);
                             self.answers_pending += 1;
                             permit.send(LiveConsultationRequest::Finish(pending));
-                            if acknowledged.is_err() { self.report_refusal(events); }
+                            if acknowledged.is_err() {
+                                self.report_refusal(events);
+                            }
                         }
                         Err(_) => self.report_refusal(events),
                     }
                 }
             }
         }
-        if self.refused || self.speech_open || self.assessment_pending
+        if self.refused
+            || self.speech_open
+            || self.assessment_pending
             || self.answers_pending >= CONSULTATION_QUEUE_CAP
-        { return; }
-        let Some(fusion) = state.fusion.as_ref() else { return; };
+        {
+            return;
+        }
+        let Some(fusion) = state.fusion.as_ref() else {
+            return;
+        };
         let speech = fusion.acoustic_speech_evidence();
-        let ledger = state.acoustic_ledger.lock()
+        let ledger = state
+            .acoustic_ledger
+            .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
         while self.queue.skip_measured_silence(&ledger, &speech) {}
         let input = match self.queue.ready(&ledger, &speech) {
             Ok(Some(input)) => input,
             Ok(None) => return,
-            Err(_) => { self.report_refusal(events); return; }
+            Err(_) => {
+                self.report_refusal(events);
+                return;
+            }
         };
-        if self.last_assessed.as_ref() == Some(&input) { return; }
-        match self.requests.try_send(LiveConsultationRequest::Assess(input.clone())) {
+        if self.last_assessed.as_ref() == Some(&input) {
+            return;
+        }
+        match self
+            .requests
+            .try_send(LiveConsultationRequest::Assess(input.clone()))
+        {
             Ok(()) => {
                 self.last_assessed = Some(input);
                 self.assessment_pending = true;
@@ -259,20 +299,34 @@ impl LiveConsultationCapture {
         }
     }
 
-    fn settle(&mut self, state: &AppleSealState, events: &mpsc::UnboundedSender<EngineEvent>, end: u64) {
+    fn settle(
+        &mut self,
+        state: &AppleSealState,
+        events: &mpsc::UnboundedSender<EngineEvent>,
+        end: u64,
+    ) {
         self.speech_open = false;
-        if self.queue.append_boundary(end).is_err() { self.report_refusal(events); }
+        if self.queue.append_boundary(end).is_err() {
+            self.report_refusal(events);
+        }
         while self.queue.pending_groups() > 1 {
-            if self.queue.join_front().is_err() { self.report_refusal(events); break; }
+            if self.queue.join_front().is_err() {
+                self.report_refusal(events);
+                break;
+            }
         }
         loop {
             self.tick(state, events);
-            if !self.assessment_pending && self.answers_pending == 0 { break; }
+            if !self.assessment_pending && self.answers_pending == 0 {
+                break;
+            }
             // The async session keeps draining providers, approvals and answer
             // publication. Microphone capture has already ended at this point.
             thread::sleep(LIVE_WORKER_QUANTUM);
         }
-        if self.queue.pending_groups() > 0 { self.report_refusal(events); }
+        if self.queue.pending_groups() > 0 {
+            self.report_refusal(events);
+        }
     }
 }
 
@@ -285,7 +339,8 @@ fn deliver_consultation_result(
         LiveConsultationResult::Assessed(result) => LiveConsultationReturn::Assessed(result),
         LiveConsultationResult::Prepared(result) => LiveConsultationReturn::Prepared(result),
         LiveConsultationResult::Answer(result) => LiveConsultationReturn::Published(
-            result.and_then(|answer| sink.on_consultation_completed(&answer))),
+            result.and_then(|answer| sink.on_consultation_completed(&answer)),
+        ),
     };
     if returns.send(result).is_err() {
         warn!("Max capture owner closed before result acknowledgement; no execution replay");
@@ -908,9 +963,12 @@ pub(crate) async fn apple_stream_transcription_session(
 
     let (consultation_tx, mut consultation_rx) = mpsc::channel(CONSULTATION_QUEUE_CAP);
     let (consultation_return_tx, consultation_return_rx) = std_mpsc::channel();
-    let mut consultation_assessments = FuturesOrdered::<BoxFuture<'static, Result<ConsultationReadiness>>>::new();
-    let mut consultation_preparations = FuturesOrdered::<BoxFuture<'static, Result<PreparedConsultationGroup>>>::new();
-    let mut consultation_answers = FuturesOrdered::<BoxFuture<'static, Result<ConsultationGroupAnswer>>>::new();
+    let mut consultation_assessments =
+        FuturesOrdered::<BoxFuture<'static, Result<ConsultationReadiness>>>::new();
+    let mut consultation_preparations =
+        FuturesOrdered::<BoxFuture<'static, Result<PreparedConsultationGroup>>>::new();
+    let mut consultation_answers =
+        FuturesOrdered::<BoxFuture<'static, Result<ConsultationGroupAnswer>>>::new();
     if live_formatting_agent.is_some() && event_sink.consultation_destinations() != 1 {
         event_sink.on_event(&EngineEvent::Warning {
             code: "max_consultation_destination_unavailable".into(),
@@ -923,17 +981,19 @@ pub(crate) async fn apple_stream_transcription_session(
             && runtime_settings.formatting_policy() == FormattingPolicy::Max
             && event_sink.consultation_destinations() == 1
     });
-    let worker_consultation = live_formatting_agent.as_ref().map(|_| LiveConsultationCapture {
-        queue: ConsultationInputQueue::new(session_id.clone(), capture_epoch)
-            .expect("recorder owns a valid capture identity"),
-        requests: consultation_tx,
-        returns: consultation_return_rx,
-        last_assessed: None,
-        assessment_pending: false,
-        answers_pending: 0,
-        speech_open: false,
-        refused: false,
-    });
+    let worker_consultation = live_formatting_agent
+        .as_ref()
+        .map(|_| LiveConsultationCapture {
+            queue: ConsultationInputQueue::new(session_id.clone(), capture_epoch)
+                .expect("recorder owns a valid capture identity"),
+            requests: consultation_tx,
+            returns: consultation_return_rx,
+            last_assessed: None,
+            assessment_pending: false,
+            answers_pending: 0,
+            speech_open: false,
+            refused: false,
+        });
 
     let worker_session_id = session_id.clone();
     let worker_capture_energy = capture_energy.clone();
@@ -1175,10 +1235,15 @@ pub(crate) async fn apple_stream_transcription_session(
         if let Some(reason) = layer1_lane.take_degrade_notice() {
             emit_layer1_degrade_warning(event_sink.as_ref(), reason);
         }
-        if worker_finished && consultation_rx.is_closed() && consultation_rx.is_empty()
-            && consultation_assessments.is_empty() && consultation_preparations.is_empty()
+        if worker_finished
+            && consultation_rx.is_closed()
+            && consultation_rx.is_empty()
+            && consultation_assessments.is_empty()
+            && consultation_preparations.is_empty()
             && consultation_answers.is_empty()
-        { break; }
+        {
+            break;
+        }
     }
 
     // Worker exited (event channel closed). If audio is still open, keep
@@ -4232,7 +4297,9 @@ fn apple_stream_worker(
                 if let Some(ingest) = silero_ingest.as_ref() {
                     if let Some(owner) = consultation.as_mut()
                         && owner.observe(ingest, samples_seen).is_err()
-                    { owner.report_refusal(&ev_tx); }
+                    {
+                        owner.report_refusal(&ev_tx);
+                    }
                     for evidence in &ingest.sideband {
                         let _ = ev_tx.send(EngineEvent::SidebandEvidence {
                             evidence: evidence.clone(),
@@ -4329,7 +4396,9 @@ fn apple_stream_worker(
             }
             Err(std_mpsc::RecvTimeoutError::Disconnected) => break,
         }
-        if let Some(owner) = consultation.as_mut() { owner.tick(&state, &ev_tx); }
+        if let Some(owner) = consultation.as_mut() {
+            owner.tick(&state, &ev_tx);
+        }
         state.emit_speech_integrity(&ev_tx);
     }
 
@@ -4424,7 +4493,9 @@ fn apple_stream_worker(
     state.seal_remaining_at_session_end(&ev_tx);
     repair_terminal_seal_coverage(&mut state, &ev_tx, language, &local_execution);
     drain_formatter_observers(&mut state, &ev_tx, &formatter_done)?;
-    if let Some(owner) = consultation.as_mut() { owner.settle(&state, &ev_tx, samples_seen); }
+    if let Some(owner) = consultation.as_mut() {
+        owner.settle(&state, &ev_tx, samples_seen);
+    }
     let seal_coverage = publish_terminal_coverage(&state, &ev_tx);
     state.emit_speech_integrity(&ev_tx);
     info!(
@@ -4681,12 +4752,20 @@ mod c13a_lifecycle_tests {
     ) {
         let (requests, rx) = mpsc::channel(CONSULTATION_QUEUE_CAP);
         let (tx, returns) = std_mpsc::channel();
-        (LiveConsultationCapture {
-            queue: ConsultationInputQueue::new("max-capture".into(), 1).unwrap(),
-            requests, returns,
-            last_assessed: None, assessment_pending: false, answers_pending: 0,
-            speech_open: false, refused: false,
-        }, rx, tx)
+        (
+            LiveConsultationCapture {
+                queue: ConsultationInputQueue::new("max-capture".into(), 1).unwrap(),
+                requests,
+                returns,
+                last_assessed: None,
+                assessment_pending: false,
+                answers_pending: 0,
+                speech_open: false,
+                refused: false,
+            },
+            rx,
+            tx,
+        )
     }
 
     #[test]
@@ -4694,24 +4773,74 @@ mod c13a_lifecycle_tests {
         use super::super::silero_fusion::SileroIngest;
         let (mut owner, mut requests, _returns) = consultation_owner();
         owner.observe(&SileroIngest::default(), 16_000).unwrap();
-        assert_eq!(owner.queue.pending_groups(), 0, "silence cannot nominate speech");
-        owner.observe(&SileroIngest { open: Some(1), speech_live: true,
-            ..Default::default() }, 32_000).unwrap();
+        assert_eq!(
+            owner.queue.pending_groups(),
+            0,
+            "silence cannot nominate speech"
+        );
+        owner
+            .observe(
+                &SileroIngest {
+                    open: Some(1),
+                    speech_live: true,
+                    ..Default::default()
+                },
+                32_000,
+            )
+            .unwrap();
         assert!(owner.speech_open);
         assert_eq!(owner.queue.pending_groups(), 0);
-        owner.observe(&SileroIngest { closed: vec![1], speech_live: true,
-            ..Default::default() }, 64_000).unwrap();
-        assert!(!owner.speech_open, "the closing chunk still carries speech_live");
+        owner
+            .observe(
+                &SileroIngest {
+                    closed: vec![1],
+                    speech_live: true,
+                    ..Default::default()
+                },
+                64_000,
+            )
+            .unwrap();
+        assert!(
+            !owner.speech_open,
+            "the closing chunk still carries speech_live"
+        );
         assert_eq!(owner.queue.pending_groups(), 1);
         owner.observe(&SileroIngest::default(), 72_000).unwrap();
-        assert_eq!(owner.queue.pending_groups(), 1, "quiet ticks keep one candidate");
-        owner.observe(&SileroIngest { open: Some(2), speech_live: true,
-            ..Default::default() }, 80_000).unwrap();
-        assert_eq!(owner.queue.pending_groups(), 0, "continuation invalidates assessment input");
-        owner.observe(&SileroIngest { closed: vec![2], speech_live: true,
-            ..Default::default() }, 96_000).unwrap();
+        assert_eq!(
+            owner.queue.pending_groups(),
+            1,
+            "quiet ticks keep one candidate"
+        );
+        owner
+            .observe(
+                &SileroIngest {
+                    open: Some(2),
+                    speech_live: true,
+                    ..Default::default()
+                },
+                80_000,
+            )
+            .unwrap();
+        assert_eq!(
+            owner.queue.pending_groups(),
+            0,
+            "continuation invalidates assessment input"
+        );
+        owner
+            .observe(
+                &SileroIngest {
+                    closed: vec![2],
+                    speech_live: true,
+                    ..Default::default()
+                },
+                96_000,
+            )
+            .unwrap();
         assert_eq!(owner.queue.pending_groups(), 1);
-        assert!(requests.try_recv().is_err(), "edges alone cannot request semantic assessment");
+        assert!(
+            requests.try_recv().is_err(),
+            "edges alone cannot request semantic assessment"
+        );
         assert!(!owner.assessment_pending);
     }
 
@@ -4727,25 +4856,49 @@ mod c13a_lifecycle_tests {
         assert!(owner.refused);
         assert!(!owner.assessment_pending);
         assert_eq!(owner.answers_pending, 0);
-        assert!(matches!(observed.try_recv().unwrap(), EngineEvent::Warning { code, .. }
-            if code == "max_consultation_refused"));
+        assert!(
+            matches!(observed.try_recv().unwrap(), EngineEvent::Warning { code, .. }
+            if code == "max_consultation_refused")
+        );
         assert!(observed.try_recv().is_err());
-        assert_eq!(owner.queue.pending_groups(), 1, "lost transport cannot acknowledge source");
+        assert_eq!(
+            owner.queue.pending_groups(),
+            1,
+            "lost transport cannot acknowledge source"
+        );
     }
 
     #[test]
     fn max_async_errors_return_to_capture_without_fabricating_publication() {
         let (tx, rx) = std_mpsc::channel();
         let sink = crate::pipeline::sinks::CollectorEventSink::new();
-        deliver_consultation_result(LiveConsultationResult::Assessed(Err(anyhow::anyhow!("assessment"))),
-            &tx, &sink);
-        assert!(matches!(rx.try_recv().unwrap(), LiveConsultationReturn::Assessed(Err(_))));
-        deliver_consultation_result(LiveConsultationResult::Prepared(Err(anyhow::anyhow!("disk"))),
-            &tx, &sink);
-        assert!(matches!(rx.try_recv().unwrap(), LiveConsultationReturn::Prepared(Err(_))));
-        deliver_consultation_result(LiveConsultationResult::Answer(Err(anyhow::anyhow!("execution"))),
-            &tx, &sink);
-        assert!(matches!(rx.try_recv().unwrap(), LiveConsultationReturn::Published(Err(_))));
+        deliver_consultation_result(
+            LiveConsultationResult::Assessed(Err(anyhow::anyhow!("assessment"))),
+            &tx,
+            &sink,
+        );
+        assert!(matches!(
+            rx.try_recv().unwrap(),
+            LiveConsultationReturn::Assessed(Err(_))
+        ));
+        deliver_consultation_result(
+            LiveConsultationResult::Prepared(Err(anyhow::anyhow!("disk"))),
+            &tx,
+            &sink,
+        );
+        assert!(matches!(
+            rx.try_recv().unwrap(),
+            LiveConsultationReturn::Prepared(Err(_))
+        ));
+        deliver_consultation_result(
+            LiveConsultationResult::Answer(Err(anyhow::anyhow!("execution"))),
+            &tx,
+            &sink,
+        );
+        assert!(matches!(
+            rx.try_recv().unwrap(),
+            LiveConsultationReturn::Published(Err(_))
+        ));
         assert!(sink.events().is_empty());
     }
 
@@ -5007,8 +5160,12 @@ mod c13a_lifecycle_tests {
         // its policy, not because the transport happens to be unavailable.
         let (max_tx, mut max_rx) = mpsc::channel(1);
         let max_formatter = live_formatter_lane_is_armed(
-            CaptureTurnIntent::HandsFree, true, FormattingPolicy::Max, || true,
-        ).then_some(max_tx);
+            CaptureTurnIntent::HandsFree,
+            true,
+            FormattingPolicy::Max,
+            || true,
+        )
+        .then_some(max_tx);
         for (session, formatter) in {
             let (closed_tx, closed_rx) = mpsc::channel(1);
             drop(closed_rx);
@@ -5036,7 +5193,10 @@ mod c13a_lifecycle_tests {
             );
             assert_eq!(state.formatter_awaiting_completion, 0);
         }
-        assert!(max_rx.try_recv().is_err(), "Max must not enqueue an occurrence job");
+        assert!(
+            max_rx.try_recv().is_err(),
+            "Max must not enqueue an occurrence job"
+        );
     }
 
     #[test]

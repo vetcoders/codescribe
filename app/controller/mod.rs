@@ -1168,11 +1168,14 @@ impl RecordingController {
     }
 
     /// Read pending Max cards without constructing a session or touching the mic.
-    pub async fn pending_max_tool_approvals(&self) -> Vec<codescribe_core::agent::ToolApprovalRequest> {
+    pub async fn pending_max_tool_approvals(
+        &self,
+    ) -> Vec<codescribe_core::agent::ToolApprovalRequest> {
         let selected = self.max_consultation.lock().await;
-        selected.as_ref().map(|consultation| {
-            self.max_approvals.pending_for_thread(consultation.id())
-        }).unwrap_or_default()
+        selected
+            .as_ref()
+            .map(|consultation| self.max_approvals.pending_for_thread(consultation.id()))
+            .unwrap_or_default()
     }
 
     /// Resolve only a currently pending call belonging to the selected Max owner.
@@ -1186,29 +1189,40 @@ impl RecordingController {
         remember: bool,
     ) -> bool {
         let selected = self.max_consultation.lock().await;
-        if !selected.as_ref().is_some_and(|consultation| consultation.id() == thread_id) {
+        if selected
+            .as_ref()
+            .is_none_or(|consultation| consultation.id() != thread_id)
+        {
             return false;
         }
-        self.max_approvals.resolve(session_id, thread_id, call_id, approved, remember)
+        self.max_approvals
+            .resolve(session_id, thread_id, call_id, approved, remember)
     }
 
     /// Explicit conversation reset, preserving the prior thread and any
     /// unresolved effects. Never interrupt recording or accepted Agent work.
     pub async fn begin_new_max_consultation(&self) -> Result<String> {
         let _serial = self.serial_lock.lock().await;
-        anyhow::ensure!(self.current_state().await == State::Idle, "cannot reset Max while recording or processing");
         anyhow::ensure!(
-            !self.hold_start_task.lock().await.as_ref().is_some_and(|task| !task.is_finished()),
+            self.current_state().await == State::Idle,
+            "cannot reset Max while recording or processing"
+        );
+        anyhow::ensure!(
+            self.hold_start_task
+                .lock()
+                .await
+                .as_ref()
+                .is_none_or(|task| task.is_finished()),
             "cannot reset Max while a hold capture is scheduled"
         );
         let mut selected = self.max_consultation.lock().await;
         let gateway = codescribe_core::agent::ThreadDeliveryGateway::new()?;
         let expected = gateway.selected_max_consultation_id()?;
-        if let Some(consultation) = selected.take() {
-            if let Err(error) = consultation.close_if_idle().await {
-                *selected = Some(consultation);
-                return Err(error);
-            }
+        if let Some(consultation) = selected.take()
+            && let Err(error) = consultation.close_if_idle().await
+        {
+            *selected = Some(consultation);
+            return Err(error);
         }
         gateway.begin_new_max_consultation(&expected)
     }
@@ -1266,13 +1280,20 @@ impl RecordingController {
             .map_err(anyhow::Error::new)?;
         let runtime_settings = self.runtime_settings_arc().await;
         let language = runtime_settings.values().whisper_language;
-        let consultation = self.selected_max_consultation(runtime_settings.as_ref()).await?;
+        let consultation = self
+            .selected_max_consultation(runtime_settings.as_ref())
+            .await?;
         let turn_id = format!("{session_id}:revision:{source_revision}");
         let result = format_text_with_status_for_policy(
             &source,
             language.whisper_hint(),
             runtime_settings.as_ref(),
-            consultation.as_deref().map(|agent| codescribe_core::ai_formatting::FormattingConsultation { agent, turn_id: &turn_id }),
+            consultation.as_deref().map(|agent| {
+                codescribe_core::ai_formatting::FormattingConsultation {
+                    agent,
+                    turn_id: &turn_id,
+                }
+            }),
         )
         .await;
         let _serial_guard = self.serial_lock.lock().await;
@@ -3525,10 +3546,12 @@ impl RecordingController {
             && !*self.force_raw_mode.read().await
             && config.ai_formatting_enabled
         {
-            match self.selected_max_consultation(runtime_settings.as_ref()).await {
-                Ok(consultation) => consultation.map(|agent| {
-                    agent as Arc<dyn codescribe_core::ai_formatting::FormattingAgent>
-                }),
+            match self
+                .selected_max_consultation(runtime_settings.as_ref())
+                .await
+            {
+                Ok(consultation) => consultation
+                    .map(|agent| agent as Arc<dyn codescribe_core::ai_formatting::FormattingAgent>),
                 Err(error) => {
                     warn!(%error, "Max live executor unavailable; capture remains transcription-only");
                     None
@@ -4055,10 +4078,12 @@ impl RecordingController {
             && !*self.force_raw_mode.read().await
             && config.ai_formatting_enabled
         {
-            match self.selected_max_consultation(runtime_settings.as_ref()).await {
-                Ok(consultation) => consultation.map(|agent| {
-                    agent as Arc<dyn codescribe_core::ai_formatting::FormattingAgent>
-                }),
+            match self
+                .selected_max_consultation(runtime_settings.as_ref())
+                .await
+            {
+                Ok(consultation) => consultation
+                    .map(|agent| agent as Arc<dyn codescribe_core::ai_formatting::FormattingAgent>),
                 Err(error) => {
                     warn!(%error, "Max live executor unavailable; capture remains transcription-only");
                     None
@@ -4674,7 +4699,10 @@ impl RecordingController {
         let language = runtime_settings.values().whisper_language;
         // The one paid call this take is allowed. Same production entry point
         // the explicit overlay formatter uses; no second lane, no retry loop.
-        let consultation = match self.selected_max_consultation(runtime_settings.as_ref()).await {
+        let consultation = match self
+            .selected_max_consultation(runtime_settings.as_ref())
+            .await
+        {
             Ok(consultation) => consultation,
             Err(error) => {
                 warn!(%error, "Max consultation unavailable; preserving committed transcript");
@@ -4686,7 +4714,12 @@ impl RecordingController {
             &source_text,
             language.whisper_hint(),
             runtime_settings.as_ref(),
-            consultation.as_deref().map(|agent| codescribe_core::ai_formatting::FormattingConsultation { agent, turn_id: &turn_id }),
+            consultation.as_deref().map(|agent| {
+                codescribe_core::ai_formatting::FormattingConsultation {
+                    agent,
+                    turn_id: &turn_id,
+                }
+            }),
         )
         .await;
         match presentation.apply_formatter_revision(session_id, source_revision, result) {

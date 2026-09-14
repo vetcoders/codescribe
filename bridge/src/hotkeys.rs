@@ -214,8 +214,11 @@ fn spawn_max_approval_forwarder(controller: &RecordingController, handle: Handle
     let mut changes = controller.subscribe_max_approval_changes();
     handle.spawn(async move {
         while changes.changed().await.is_ok() {
-            let listener = shared_app_action_listener().read()
-                .unwrap_or_else(|error| error.into_inner()).as_ref().map(Arc::clone);
+            let listener = shared_app_action_listener()
+                .read()
+                .unwrap_or_else(|error| error.into_inner())
+                .as_ref()
+                .map(Arc::clone);
             if let Some(listener) = listener {
                 listener.on_max_approvals_changed();
             }
@@ -724,26 +727,37 @@ pub struct CsMaxConsultationSnapshot {
     pub retained_inputs: Vec<CsMaxRetainedInput>,
 }
 
-impl From<codescribe_core::agent::thread_delivery::ConsultationRecoverySnapshot> for CsMaxConsultationSnapshot {
-    fn from(snapshot: codescribe_core::agent::thread_delivery::ConsultationRecoverySnapshot) -> Self {
+impl From<codescribe_core::agent::thread_delivery::ConsultationRecoverySnapshot>
+    for CsMaxConsultationSnapshot
+{
+    fn from(
+        snapshot: codescribe_core::agent::thread_delivery::ConsultationRecoverySnapshot,
+    ) -> Self {
         use codescribe_core::agent::ContentBlock;
         Self {
             consultation_id: snapshot.consultation_id,
             pending_turn_id: snapshot.pending_turn_id,
-            retained_inputs: snapshot.retained_inputs.into_iter().map(|entry| {
-                let mut text_blocks = Vec::new();
-                let mut image_count = 0;
-                for block in entry.input.content {
-                    match block {
-                        ContentBlock::Text(text) => text_blocks.push(text),
-                        ContentBlock::Image { .. } => image_count += 1,
-                        _ => {}
+            retained_inputs: snapshot
+                .retained_inputs
+                .into_iter()
+                .map(|entry| {
+                    let mut text_blocks = Vec::new();
+                    let mut image_count = 0;
+                    for block in entry.input.content {
+                        match block {
+                            ContentBlock::Text(text) => text_blocks.push(text),
+                            ContentBlock::Image { .. } => image_count += 1,
+                            _ => {}
+                        }
                     }
-                }
-                CsMaxRetainedInput {
-                    turn_id: entry.turn_id, text_blocks, image_count, provider_name: entry.provider_name,
-                }
-            }).collect(),
+                    CsMaxRetainedInput {
+                        turn_id: entry.turn_id,
+                        text_blocks,
+                        image_count,
+                        provider_name: entry.provider_name,
+                    }
+                })
+                .collect(),
         }
     }
 }
@@ -1062,24 +1076,37 @@ impl CodescribeHotkeys {
 
     /// Inspect retained source input even when unresolved work prevents Max from
     /// starting. No controller, microphone, provider or execution lease is opened.
-    pub async fn inspect_selected_max_consultation(&self) -> Result<Option<CsMaxConsultationSnapshot>, CsError> {
+    pub async fn inspect_selected_max_consultation(
+        &self,
+    ) -> Result<Option<CsMaxConsultationSnapshot>, CsError> {
         application_runtime::run(async move {
             codescribe_core::agent::ThreadDeliveryGateway::new()
                 .and_then(|gateway| gateway.inspect_selected_max_consultation())
                 .map(|snapshot| snapshot.map(Into::into))
-                .map_err(|error| CsError::Recording { msg: error.to_string() })
-        }).await?
+                .map_err(|error| CsError::Recording {
+                    msg: error.to_string(),
+                })
+        })
+        .await?
     }
 
     /// Snapshot current Max approval cards. No controller means no pending calls;
     /// this read must never construct a recorder to populate a settings view.
-    pub async fn pending_max_tool_approvals(&self) -> Result<Vec<crate::agent::CsToolApprovalRequest>, CsError> {
+    pub async fn pending_max_tool_approvals(
+        &self,
+    ) -> Result<Vec<crate::agent::CsToolApprovalRequest>, CsError> {
         application_runtime::run(async move {
             let Some(controller) = current_controller(&shared_controller()) else {
                 return Vec::new();
             };
-            controller.pending_max_tool_approvals().await.into_iter().map(Into::into).collect()
-        }).await
+            controller
+                .pending_max_tool_approvals()
+                .await
+                .into_iter()
+                .map(Into::into)
+                .collect()
+        })
+        .await
     }
 
     /// Answer a Max card using the exact session, consultation and call identity.
@@ -1095,23 +1122,29 @@ impl CodescribeHotkeys {
             let Some(controller) = current_controller(&shared_controller()) else {
                 return false;
             };
-            controller.resolve_max_tool_approval(
-                &session_id, &thread_id, &call_id, approved, remember,
-            ).await
-        }).await
+            controller
+                .resolve_max_tool_approval(&session_id, &thread_id, &call_id, approved, remember)
+                .await
+        })
+        .await
     }
 
     /// Explicitly start a fresh Max consultation without deleting old history.
     /// The controller refuses while capture, processing or accepted work is active.
     pub async fn begin_new_max_consultation(&self) -> Result<String, CsError> {
         application_runtime::run(async move {
-            let controller = current_controller(&shared_controller()).ok_or_else(|| CsError::Recording {
-                msg: "no recording controller for Max consultation reset".to_string(),
-            })?;
-            controller.begin_new_max_consultation().await.map_err(|error| CsError::Recording {
-                msg: error.to_string(),
-            })
-        }).await?
+            let controller =
+                current_controller(&shared_controller()).ok_or_else(|| CsError::Recording {
+                    msg: "no recording controller for Max consultation reset".to_string(),
+                })?;
+            controller
+                .begin_new_max_consultation()
+                .await
+                .map_err(|error| CsError::Recording {
+                    msg: error.to_string(),
+                })
+        })
+        .await?
     }
 
     /// Forward a macOS sleep/wake boundary to the active recorder, if any.
@@ -1548,7 +1581,9 @@ async fn dispatch_recording_hotkey_event(
 #[cfg(test)]
 mod max_consultation_inspection_tests {
     use super::CsMaxConsultationSnapshot;
-    use codescribe_core::agent::thread_delivery::{ConsultationInputSnapshot, ConsultationRecoverySnapshot};
+    use codescribe_core::agent::thread_delivery::{
+        ConsultationInputSnapshot, ConsultationRecoverySnapshot,
+    };
     use codescribe_core::agent::{ContentBlock, Message, Role};
 
     #[test]
@@ -1559,11 +1594,17 @@ mod max_consultation_inspection_tests {
             retained_inputs: vec![ConsultationInputSnapshot {
                 turn_id: "uncertain-turn".into(),
                 provider_name: "formatting-provider".into(),
-                input: Message::new(Role::User, vec![
-                    ContentBlock::Text("Prepare git add; do not execute it.".into()),
-                    ContentBlock::Image { media_type: "image/png".into(), data: b"fixture".to_vec() },
-                    ContentBlock::Text("Keep the exact clipboard paths.".into()),
-                ]),
+                input: Message::new(
+                    Role::User,
+                    vec![
+                        ContentBlock::Text("Prepare git add; do not execute it.".into()),
+                        ContentBlock::Image {
+                            media_type: "image/png".into(),
+                            data: b"fixture".to_vec(),
+                        },
+                        ContentBlock::Text("Keep the exact clipboard paths.".into()),
+                    ],
+                ),
             }],
         });
         assert_eq!(snapshot.consultation_id, "selected-max");
@@ -1573,9 +1614,13 @@ mod max_consultation_inspection_tests {
         assert_eq!(input.turn_id, "uncertain-turn");
         assert_eq!(input.provider_name, "formatting-provider");
         assert_eq!(input.image_count, 1);
-        assert_eq!(input.text_blocks, vec![
-            "Prepare git add; do not execute it.", "Keep the exact clipboard paths.",
-        ]);
+        assert_eq!(
+            input.text_blocks,
+            vec![
+                "Prepare git add; do not execute it.",
+                "Keep the exact clipboard paths.",
+            ]
+        );
     }
 }
 

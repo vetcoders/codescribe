@@ -967,7 +967,9 @@ pub trait EventSink: Send + Sync {
     /// Number of configured consultation publishers below this sink. Passive
     /// observers return zero. This must remain stable for the sink's lifetime;
     /// it describes wiring, not focus or current delivery availability.
-    fn consultation_destinations(&self) -> usize { 0 }
+    fn consultation_destinations(&self) -> usize {
+        0
+    }
 
     /// In-process completed-answer delivery, deliberately absent from the
     /// serializable EngineEvent protocol. The retained executor owns this

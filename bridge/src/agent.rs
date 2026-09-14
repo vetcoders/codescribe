@@ -6,13 +6,13 @@ use std::collections::HashMap;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 
-use codescribe_core::agent::{
-    AgentSession, AgentUiEvent, ApprovalBroker, ImageAttachment, Message, StreamOptions, ThreadDeliveryGateway,
-    ThreadDeliveryInput, ThreadDeliverySource, ThreadMessage, ThreadStore, ToolApprovalHandler,
-    ToolApprovalRequest, ToolOrigin,
-};
 #[cfg(test)]
 use codescribe_core::agent::ToolRegistry;
+use codescribe_core::agent::{
+    AgentSession, AgentUiEvent, ApprovalBroker, ImageAttachment, Message, StreamOptions,
+    ThreadDeliveryGateway, ThreadDeliveryInput, ThreadDeliverySource, ThreadMessage, ThreadStore,
+    ToolApprovalHandler, ToolApprovalRequest, ToolOrigin,
+};
 use codescribe_core::attachment::{MAX_VISION_IMAGE_BYTES, load_image_for_vision};
 use codescribe_core::config::RuntimeSettingsSnapshot;
 use tokio::task::AbortHandle;
@@ -81,10 +81,16 @@ impl From<ToolApprovalRequest> for CsToolApprovalRequest {
             ToolOrigin::Mcp { server, .. } => server.clone(),
         };
         Self {
-            call_id: request.call_id, session_id: request.session_id,
-            thread_id: request.thread_id, tool: request.tool, server,
-            risk: request.risk.as_str().to_string(), summary: request.summary,
-            command: request.command, cwd: request.cwd, paths: request.paths,
+            call_id: request.call_id,
+            session_id: request.session_id,
+            thread_id: request.thread_id,
+            tool: request.tool,
+            server,
+            risk: request.risk.as_str().to_string(),
+            summary: request.summary,
+            command: request.command,
+            cwd: request.cwd,
+            paths: request.paths,
         }
     }
 }
@@ -302,7 +308,11 @@ impl CodescribeAgent {
     /// Recover outstanding cards after attaching or refreshing the UI.
     /// Reading this snapshot never executes or approves a tool.
     pub fn pending_tool_approvals(&self, thread_id: String) -> Vec<CsToolApprovalRequest> {
-        self.approvals.pending_for_thread(&thread_id).into_iter().map(Into::into).collect()
+        self.approvals
+            .pending_for_thread(&thread_id)
+            .into_iter()
+            .map(Into::into)
+            .collect()
     }
 
     /// Answer a pending tool-approval request, resuming the suspended call.

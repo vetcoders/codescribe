@@ -235,7 +235,8 @@ async fn formatting_off_bypasses_llm() {
     assert_eq!(runtime_settings.formatting_policy(), FormattingPolicy::Off);
 
     let input = "This transcript is intentionally long enough to reach the provider path.";
-    let result = format_text_with_status_for_policy(input, Some("en"), &runtime_settings, None).await;
+    let result =
+        format_text_with_status_for_policy(input, Some("en"), &runtime_settings, None).await;
 
     assert_eq!(result.text, input);
     assert_eq!(result.status, AiFormatStatus::Skipped);
@@ -245,12 +246,17 @@ async fn formatting_off_bypasses_llm() {
 #[tokio::test]
 #[serial]
 async fn max_uses_explicit_consultation_even_for_short_corrections() {
-    use std::sync::atomic::{AtomicUsize, Ordering};
     use codescribe_core::ai_formatting::{FormattingAgent, FormattingConsultation};
+    use std::sync::atomic::{AtomicUsize, Ordering};
     struct Executor(AtomicUsize);
     #[async_trait::async_trait]
     impl FormattingAgent for Executor {
-        async fn execute(&self, turn_id: &str, text: &str, settings: &codescribe_core::config::RuntimeSettingsSnapshot) -> anyhow::Result<String> {
+        async fn execute(
+            &self,
+            turn_id: &str,
+            text: &str,
+            settings: &codescribe_core::config::RuntimeSettingsSnapshot,
+        ) -> anyhow::Result<String> {
             assert_eq!(turn_id, "correction-2");
             assert_eq!(settings.formatting_policy(), FormattingPolicy::Max);
             self.0.fetch_add(1, Ordering::SeqCst);
@@ -262,16 +268,27 @@ async fn max_uses_explicit_consultation_even_for_short_corrections() {
     let _policy = EnvGuard::unset("FORMATTING_LEVEL");
     let executor = Executor(AtomicUsize::new(0));
     for policy in FormattingPolicy::ALL {
-        Config::default().save_to_env("FORMATTING_LEVEL", policy.as_str()).expect("policy");
+        Config::default()
+            .save_to_env("FORMATTING_LEVEL", policy.as_str())
+            .expect("policy");
         let settings = Config::load_runtime_snapshot().expect("snapshot");
         let before = executor.0.load(Ordering::SeqCst);
-        let result = format_text_with_status_for_policy("co?", None, &settings,
-            Some(FormattingConsultation { agent: &executor, turn_id: "correction-2" })).await;
+        let result = format_text_with_status_for_policy(
+            "co?",
+            None,
+            &settings,
+            Some(FormattingConsultation {
+                agent: &executor,
+                turn_id: "correction-2",
+            }),
+        )
+        .await;
         assert_eq!(result.text, "co?");
         if policy == FormattingPolicy::Max {
             assert_eq!(result.status, AiFormatStatus::Applied);
             assert_eq!(executor.0.load(Ordering::SeqCst), before + 1);
-            let unavailable = format_text_with_status_for_policy("co?", None, &settings, None).await;
+            let unavailable =
+                format_text_with_status_for_policy("co?", None, &settings, None).await;
             assert_eq!(unavailable.status, AiFormatStatus::Failed);
             assert_eq!(executor.0.load(Ordering::SeqCst), before + 1);
         } else {

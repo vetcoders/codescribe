@@ -94,6 +94,7 @@ async fn main() -> Result<()> {
             session_id: session.to_owned(),
             capture_epoch: 1,
             runtime_settings: snapshot,
+            live_formatting_agent: None,
             acoustic_ledger: ledger.clone(),
             sample_rate: spec.sample_rate,
             capture_device_name: Some(device.to_owned()),

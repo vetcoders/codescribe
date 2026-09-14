@@ -14,12 +14,12 @@ use crate::agent_delivery::{AgentDeliveryEvent, register_agent_delivery_turn};
 use crate::os::hold_badge::{BadgeMode, HoldBadgeConfig, show_hold_badge_with_config};
 use crate::os::tray_status;
 use anyhow::{Context, Result};
+#[cfg(test)]
+use codescribe_core::agent::ToolRegistry;
 use codescribe_core::agent::{
     AgentSession, AgentUiEvent, ImageAttachment, Message, StreamOptions, ThreadDeliveryGateway,
     ThreadDeliveryInput, ThreadDeliveryReceipt, ThreadDeliverySource, ThreadMessage, ThreadStore,
 };
-#[cfg(test)]
-use codescribe_core::agent::ToolRegistry;
 use codescribe_core::config::{
     Config, RuntimeLlmLane, RuntimeSettingsSnapshot, SettingsSnapshotDigest,
 };
@@ -483,7 +483,7 @@ fn initialize_agent_runtime(
         runtime_settings.as_ref(),
         codescribe_core::config::RuntimeLlmLaneKind::Assistive,
     )
-        .context("Failed to create default agent provider")?;
+    .context("Failed to create default agent provider")?;
     let (ui_tx, ui_rx) = mpsc::channel(AGENT_UI_CHANNEL_CAPACITY);
     let session = AgentSession::new(provider, Arc::new(registry), ui_tx);
 
