@@ -666,6 +666,12 @@ public protocol CodescribeAgentProtocol: AnyObject, Sendable {
     func isAvailable()  -> Bool
 
     /**
+     * Recover outstanding cards after attaching or refreshing the UI.
+     * Reading this snapshot never executes or approves a tool.
+     */
+    func pendingToolApprovals(threadId: String)  -> [CsToolApprovalRequest]
+
+    /**
      * Answer a pending tool-approval request, resuming the suspended call.
      * Returns `false` when no call matches — the identity must match on all
      * three of session, thread and call id, so a stale card cannot resume a
@@ -845,6 +851,19 @@ open func isAvailable() -> Bool  {
     return try!  FfiConverterBool.lift(try! rustCall() {
     uniffi_codescribe_ffi_fn_method_codescribeagent_is_available(
             self.uniffiCloneHandle(),$0
+    )
+})
+}
+
+    /**
+     * Recover outstanding cards after attaching or refreshing the UI.
+     * Reading this snapshot never executes or approves a tool.
+     */
+open func pendingToolApprovals(threadId: String) -> [CsToolApprovalRequest]  {
+    return try!  FfiConverterSequenceTypeCsToolApprovalRequest.lift(try! rustCall() {
+    uniffi_codescribe_ffi_fn_method_codescribeagent_pending_tool_approvals(
+            self.uniffiCloneHandle(),
+        FfiConverterString.lower(threadId),$0
     )
 })
 }
@@ -1258,6 +1277,12 @@ public protocol CodescribeConfigProtocol: AnyObject, Sendable {
     func keyStatus()  -> CsKeyStatus
 
     /**
+     * Diagnostic projection without credential imports. The canonical loader
+     * may repair settings; a recorded refusal must not become apparent success.
+     */
+    func loadDiagnosticSettings() throws  -> CsSettings
+
+    /**
      * Full settings snapshot for the Settings UI. Loads exactly one canonical
      * `RuntimeSettingsSnapshot` and projects a secret-free `CsSettings` from
      * that instance — never a second `Config::load` + `UserSettings::load` +
@@ -1416,6 +1441,12 @@ public protocol CodescribeConfigProtocol: AnyObject, Sendable {
      * Persist only the preferred presentation; never change live capture.
      */
     func setOverlayExpandedByDefault(enabled: Bool)  -> Bool
+
+    /**
+     * Settings JSON belongs to the settings loader, not the app-data directory.
+     * Resolves the path only; does not load credentials or create a file.
+     */
+    func settingsFilePath()  -> String
 
     /**
      * Whether the first-run onboarding wizard should be shown (mirrors the
@@ -1721,6 +1752,18 @@ open func getFormattingPrompt() -> String  {
 open func keyStatus() -> CsKeyStatus  {
     return try!  FfiConverterTypeCsKeyStatus_lift(try! rustCall() {
     uniffi_codescribe_ffi_fn_method_codescribeconfig_key_status(
+            self.uniffiCloneHandle(),$0
+    )
+})
+}
+
+    /**
+     * Diagnostic projection without credential imports. The canonical loader
+     * may repair settings; a recorded refusal must not become apparent success.
+     */
+open func loadDiagnosticSettings()throws  -> CsSettings  {
+    return try  FfiConverterTypeCsSettings_lift(try rustCallWithError(FfiConverterTypeCsError_lift) {
+    uniffi_codescribe_ffi_fn_method_codescribeconfig_load_diagnostic_settings(
             self.uniffiCloneHandle(),$0
     )
 })
@@ -2051,6 +2094,18 @@ open func setOverlayExpandedByDefault(enabled: Bool) -> Bool  {
 }
 
     /**
+     * Settings JSON belongs to the settings loader, not the app-data directory.
+     * Resolves the path only; does not load credentials or create a file.
+     */
+open func settingsFilePath() -> String  {
+    return try!  FfiConverterString.lift(try! rustCall() {
+    uniffi_codescribe_ffi_fn_method_codescribeconfig_settings_file_path(
+            self.uniffiCloneHandle(),$0
+    )
+})
+}
+
+    /**
      * Whether the first-run onboarding wizard should be shown (mirrors the
      * live app gate; re-validates permission markers).
      */
@@ -2239,6 +2294,12 @@ public protocol CodescribeHotkeysProtocol: AnyObject, Sendable {
     func availableBindings()  -> [CsBindingOption]
 
     /**
+     * Explicitly start a fresh Max consultation without deleting old history.
+     * The controller refuses while capture, processing or accepted work is active.
+     */
+    func beginNewMaxConsultation() async throws  -> String
+
+    /**
      * Guided acoustic calibration through the shared controller's recorder:
      * `seconds` (clamped 4..=30) of the operator speaking normally. Stores a
      * device profile beside `settings.json` and pushes the new settings
@@ -2289,6 +2350,12 @@ public protocol CodescribeHotkeysProtocol: AnyObject, Sendable {
     func getModeBindings()  -> [CsModeBinding]
 
     /**
+     * Inspect retained source input even when unresolved work prevents Max from
+     * starting. No controller, microphone, provider or execution lease is opened.
+     */
+    func inspectSelectedMaxConsultation() async throws  -> CsMaxConsultationSnapshot?
+
+    /**
      * True once the listener is installed and owned by this process.
      */
     func isActive()  -> Bool
@@ -2332,6 +2399,12 @@ public protocol CodescribeHotkeysProtocol: AnyObject, Sendable {
     func pasteText(text: String) async throws  -> CsPasteResult
 
     /**
+     * Snapshot current Max approval cards. No controller means no pending calls;
+     * this read must never construct a recorder to populate a settings view.
+     */
+    func pendingMaxToolApprovals() async throws  -> [CsToolApprovalRequest]
+
+    /**
      * Prompt-free warmup for the shared recording controller.
      *
      * This intentionally does not start recording. It front-loads the expensive
@@ -2359,6 +2432,11 @@ public protocol CodescribeHotkeysProtocol: AnyObject, Sendable {
      * Formatting=Double Left Option, Assistive=Double Right Option) and reload.
      */
     func resetBindingsToDefaults() throws
+
+    /**
+     * Answer a Max card using the exact session, consultation and call identity.
+     */
+    func resolveMaxToolApproval(sessionId: String, threadId: String, callId: String, approved: Bool, remember: Bool) async throws  -> Bool
 
     /**
      * Deliver an assistive transcript from the editable overlay. The
@@ -2574,6 +2652,27 @@ open func availableBindings() -> [CsBindingOption]  {
 }
 
     /**
+     * Explicitly start a fresh Max consultation without deleting old history.
+     * The controller refuses while capture, processing or accepted work is active.
+     */
+open func beginNewMaxConsultation()async throws  -> String  {
+    return
+        try  await uniffiRustCallAsync(
+            rustFutureFunc: {
+                uniffi_codescribe_ffi_fn_method_codescribehotkeys_begin_new_max_consultation(
+                    self.uniffiCloneHandle()
+
+                )
+            },
+            pollFunc: ffi_codescribe_ffi_rust_future_poll_rust_buffer,
+            completeFunc: ffi_codescribe_ffi_rust_future_complete_rust_buffer,
+            freeFunc: ffi_codescribe_ffi_rust_future_free_rust_buffer,
+            liftFunc: FfiConverterString.lift,
+            errorHandler: FfiConverterTypeCsError_lift
+        )
+}
+
+    /**
      * Guided acoustic calibration through the shared controller's recorder:
      * `seconds` (clamped 4..=30) of the operator speaking normally. Stores a
      * device profile beside `settings.json` and pushes the new settings
@@ -2712,6 +2811,27 @@ open func getModeBindings() -> [CsModeBinding]  {
 }
 
     /**
+     * Inspect retained source input even when unresolved work prevents Max from
+     * starting. No controller, microphone, provider or execution lease is opened.
+     */
+open func inspectSelectedMaxConsultation()async throws  -> CsMaxConsultationSnapshot?  {
+    return
+        try  await uniffiRustCallAsync(
+            rustFutureFunc: {
+                uniffi_codescribe_ffi_fn_method_codescribehotkeys_inspect_selected_max_consultation(
+                    self.uniffiCloneHandle()
+
+                )
+            },
+            pollFunc: ffi_codescribe_ffi_rust_future_poll_rust_buffer,
+            completeFunc: ffi_codescribe_ffi_rust_future_complete_rust_buffer,
+            freeFunc: ffi_codescribe_ffi_rust_future_free_rust_buffer,
+            liftFunc: FfiConverterOptionTypeCsMaxConsultationSnapshot.lift,
+            errorHandler: FfiConverterTypeCsError_lift
+        )
+}
+
+    /**
      * True once the listener is installed and owned by this process.
      */
 open func isActive() -> Bool  {
@@ -2836,6 +2956,27 @@ open func pasteText(text: String)async throws  -> CsPasteResult  {
 }
 
     /**
+     * Snapshot current Max approval cards. No controller means no pending calls;
+     * this read must never construct a recorder to populate a settings view.
+     */
+open func pendingMaxToolApprovals()async throws  -> [CsToolApprovalRequest]  {
+    return
+        try  await uniffiRustCallAsync(
+            rustFutureFunc: {
+                uniffi_codescribe_ffi_fn_method_codescribehotkeys_pending_max_tool_approvals(
+                    self.uniffiCloneHandle()
+
+                )
+            },
+            pollFunc: ffi_codescribe_ffi_rust_future_poll_rust_buffer,
+            completeFunc: ffi_codescribe_ffi_rust_future_complete_rust_buffer,
+            freeFunc: ffi_codescribe_ffi_rust_future_free_rust_buffer,
+            liftFunc: FfiConverterSequenceTypeCsToolApprovalRequest.lift,
+            errorHandler: FfiConverterTypeCsError_lift
+        )
+}
+
+    /**
      * Prompt-free warmup for the shared recording controller.
      *
      * This intentionally does not start recording. It front-loads the expensive
@@ -2888,6 +3029,26 @@ open func resetBindingsToDefaults()throws   {try rustCallWithError(FfiConverterT
             self.uniffiCloneHandle(),$0
     )
 }
+}
+
+    /**
+     * Answer a Max card using the exact session, consultation and call identity.
+     */
+open func resolveMaxToolApproval(sessionId: String, threadId: String, callId: String, approved: Bool, remember: Bool)async throws  -> Bool  {
+    return
+        try  await uniffiRustCallAsync(
+            rustFutureFunc: {
+                uniffi_codescribe_ffi_fn_method_codescribehotkeys_resolve_max_tool_approval(
+                    self.uniffiCloneHandle(),
+                    FfiConverterString.lower(sessionId),FfiConverterString.lower(threadId),FfiConverterString.lower(callId),FfiConverterBool.lower(approved),FfiConverterBool.lower(remember)
+                )
+            },
+            pollFunc: ffi_codescribe_ffi_rust_future_poll_i8,
+            completeFunc: ffi_codescribe_ffi_rust_future_complete_i8,
+            freeFunc: ffi_codescribe_ffi_rust_future_free_i8,
+            liftFunc: FfiConverterBool.lift,
+            errorHandler: FfiConverterTypeCsError_lift
+        )
 }
 
     /**
@@ -5288,6 +5449,11 @@ public protocol CsAppActionListener: AnyObject, Sendable {
      */
     func onShowAgent()
 
+    /**
+     * Pending Max permission state changed; re-read its authoritative snapshot.
+     */
+    func onMaxApprovalsChanged()
+
 }
 /**
  * Foreign callback for UI-only global commands. These actions are deliberately
@@ -5352,6 +5518,16 @@ open func onShowAgent()  {try! rustCall() {
 }
 }
 
+    /**
+     * Pending Max permission state changed; re-read its authoritative snapshot.
+     */
+open func onMaxApprovalsChanged()  {try! rustCall() {
+    uniffi_codescribe_ffi_fn_method_csappactionlistener_on_max_approvals_changed(
+            self.uniffiCloneHandle(),$0
+    )
+}
+}
+
 
 
 }
@@ -5392,6 +5568,28 @@ fileprivate struct UniffiCallbackInterfaceCsAppActionListener {
                     throw UniffiInternalError.unexpectedStaleHandle
                 }
                 return uniffiObj.onShowAgent(
+                )
+            }
+
+
+            let writeReturn = { () }
+            uniffiTraitInterfaceCall(
+                callStatus: uniffiCallStatus,
+                makeCall: makeCall,
+                writeReturn: writeReturn
+            )
+        },
+        onMaxApprovalsChanged: { (
+            uniffiHandle: UInt64,
+            uniffiOutReturn: UnsafeMutableRawPointer,
+            uniffiCallStatus: UnsafeMutablePointer<RustCallStatus>
+        ) in
+            let makeCall = {
+                () throws -> () in
+                guard let uniffiObj = try? FfiConverterTypeCsAppActionListener.handleMap.get(handle: uniffiHandle) else {
+                    throw UniffiInternalError.unexpectedStaleHandle
+                }
+                return uniffiObj.onMaxApprovalsChanged(
                 )
             }
 
@@ -8468,6 +8666,129 @@ public func FfiConverterTypeCsLicenseStatus_lower(_ value: CsLicenseStatus) -> R
 
 
 /**
+ * Pending identifies potentially executed work, not a running process.
+ */
+public struct CsMaxConsultationSnapshot: Equatable, Hashable {
+    public var consultationId: String
+    public var pendingTurnId: String?
+    public var retainedInputs: [CsMaxRetainedInput]
+
+    // Default memberwise initializers are never public by default, so we
+    // declare one manually.
+    public init(consultationId: String, pendingTurnId: String?, retainedInputs: [CsMaxRetainedInput]) {
+        self.consultationId = consultationId
+        self.pendingTurnId = pendingTurnId
+        self.retainedInputs = retainedInputs
+    }
+
+
+}
+
+#if compiler(>=6)
+extension CsMaxConsultationSnapshot: Sendable {}
+#endif
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public struct FfiConverterTypeCsMaxConsultationSnapshot: FfiConverterRustBuffer {
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> CsMaxConsultationSnapshot {
+        return
+            try CsMaxConsultationSnapshot(
+                consultationId: FfiConverterString.read(from: &buf),
+                pendingTurnId: FfiConverterOptionString.read(from: &buf),
+                retainedInputs: FfiConverterSequenceTypeCsMaxRetainedInput.read(from: &buf)
+        )
+    }
+
+    public static func write(_ value: CsMaxConsultationSnapshot, into buf: inout [UInt8]) {
+        FfiConverterString.write(value.consultationId, into: &buf)
+        FfiConverterOptionString.write(value.pendingTurnId, into: &buf)
+        FfiConverterSequenceTypeCsMaxRetainedInput.write(value.retainedInputs, into: &buf)
+    }
+}
+
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeCsMaxConsultationSnapshot_lift(_ buf: RustBuffer) throws -> CsMaxConsultationSnapshot {
+    return try FfiConverterTypeCsMaxConsultationSnapshot.lift(buf)
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeCsMaxConsultationSnapshot_lower(_ value: CsMaxConsultationSnapshot) -> RustBuffer {
+    return FfiConverterTypeCsMaxConsultationSnapshot.lower(value)
+}
+
+
+/**
+ * Read-only source instruction projection. Image bytes and provider options
+ * stay in the retained journal; this view grants no tool or replay permission.
+ */
+public struct CsMaxRetainedInput: Equatable, Hashable {
+    public var turnId: String
+    public var textBlocks: [String]
+    public var imageCount: UInt64
+    public var providerName: String
+
+    // Default memberwise initializers are never public by default, so we
+    // declare one manually.
+    public init(turnId: String, textBlocks: [String], imageCount: UInt64, providerName: String) {
+        self.turnId = turnId
+        self.textBlocks = textBlocks
+        self.imageCount = imageCount
+        self.providerName = providerName
+    }
+
+
+}
+
+#if compiler(>=6)
+extension CsMaxRetainedInput: Sendable {}
+#endif
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public struct FfiConverterTypeCsMaxRetainedInput: FfiConverterRustBuffer {
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> CsMaxRetainedInput {
+        return
+            try CsMaxRetainedInput(
+                turnId: FfiConverterString.read(from: &buf),
+                textBlocks: FfiConverterSequenceString.read(from: &buf),
+                imageCount: FfiConverterUInt64.read(from: &buf),
+                providerName: FfiConverterString.read(from: &buf)
+        )
+    }
+
+    public static func write(_ value: CsMaxRetainedInput, into buf: inout [UInt8]) {
+        FfiConverterString.write(value.turnId, into: &buf)
+        FfiConverterSequenceString.write(value.textBlocks, into: &buf)
+        FfiConverterUInt64.write(value.imageCount, into: &buf)
+        FfiConverterString.write(value.providerName, into: &buf)
+    }
+}
+
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeCsMaxRetainedInput_lift(_ buf: RustBuffer) throws -> CsMaxRetainedInput {
+    return try FfiConverterTypeCsMaxRetainedInput.lift(buf)
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeCsMaxRetainedInput_lower(_ value: CsMaxRetainedInput) -> RustBuffer {
+    return FfiConverterTypeCsMaxRetainedInput.lower(value)
+}
+
+
+/**
  * One configured MCP server for the management list. Carries env var NAMES only
  * — secret values never cross the FFI boundary.
  */
@@ -9482,6 +9803,150 @@ public func FfiConverterTypeCsProjectedAcousticReceipt_lift(_ buf: RustBuffer) t
 #endif
 public func FfiConverterTypeCsProjectedAcousticReceipt_lower(_ value: CsProjectedAcousticReceipt) -> RustBuffer {
     return FfiConverterTypeCsProjectedAcousticReceipt.lower(value)
+}
+
+
+/**
+ * Lossless group provenance. These are presentation sources, not alignment of
+ * generated answer words to PCM. Swift receives them without interpreting them.
+ */
+public struct CsProjectedConsultationMember: Equatable, Hashable {
+    public var sessionId: String
+    public var captureEpoch: UInt64
+    public var sampleStart: UInt64
+    public var sampleEnd: UInt64
+    public var sourceLabel: String
+    public var sealReceipt: String
+
+    // Default memberwise initializers are never public by default, so we
+    // declare one manually.
+    public init(sessionId: String, captureEpoch: UInt64, sampleStart: UInt64, sampleEnd: UInt64, sourceLabel: String, sealReceipt: String) {
+        self.sessionId = sessionId
+        self.captureEpoch = captureEpoch
+        self.sampleStart = sampleStart
+        self.sampleEnd = sampleEnd
+        self.sourceLabel = sourceLabel
+        self.sealReceipt = sealReceipt
+    }
+
+
+}
+
+#if compiler(>=6)
+extension CsProjectedConsultationMember: Sendable {}
+#endif
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public struct FfiConverterTypeCsProjectedConsultationMember: FfiConverterRustBuffer {
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> CsProjectedConsultationMember {
+        return
+            try CsProjectedConsultationMember(
+                sessionId: FfiConverterString.read(from: &buf),
+                captureEpoch: FfiConverterUInt64.read(from: &buf),
+                sampleStart: FfiConverterUInt64.read(from: &buf),
+                sampleEnd: FfiConverterUInt64.read(from: &buf),
+                sourceLabel: FfiConverterString.read(from: &buf),
+                sealReceipt: FfiConverterString.read(from: &buf)
+        )
+    }
+
+    public static func write(_ value: CsProjectedConsultationMember, into buf: inout [UInt8]) {
+        FfiConverterString.write(value.sessionId, into: &buf)
+        FfiConverterUInt64.write(value.captureEpoch, into: &buf)
+        FfiConverterUInt64.write(value.sampleStart, into: &buf)
+        FfiConverterUInt64.write(value.sampleEnd, into: &buf)
+        FfiConverterString.write(value.sourceLabel, into: &buf)
+        FfiConverterString.write(value.sealReceipt, into: &buf)
+    }
+}
+
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeCsProjectedConsultationMember_lift(_ buf: RustBuffer) throws -> CsProjectedConsultationMember {
+    return try FfiConverterTypeCsProjectedConsultationMember.lift(buf)
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeCsProjectedConsultationMember_lower(_ value: CsProjectedConsultationMember) -> RustBuffer {
+    return FfiConverterTypeCsProjectedConsultationMember.lower(value)
+}
+
+
+public struct CsProjectedConsultationPresentation: Equatable, Hashable {
+    public var receiptId: String
+    public var consultationId: String
+    public var turnId: String
+    public var sourceRevision: UInt64
+    public var revision: UInt64
+    public var members: [CsProjectedConsultationMember]
+    public var renderedText: String
+
+    // Default memberwise initializers are never public by default, so we
+    // declare one manually.
+    public init(receiptId: String, consultationId: String, turnId: String, sourceRevision: UInt64, revision: UInt64, members: [CsProjectedConsultationMember], renderedText: String) {
+        self.receiptId = receiptId
+        self.consultationId = consultationId
+        self.turnId = turnId
+        self.sourceRevision = sourceRevision
+        self.revision = revision
+        self.members = members
+        self.renderedText = renderedText
+    }
+
+
+}
+
+#if compiler(>=6)
+extension CsProjectedConsultationPresentation: Sendable {}
+#endif
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public struct FfiConverterTypeCsProjectedConsultationPresentation: FfiConverterRustBuffer {
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> CsProjectedConsultationPresentation {
+        return
+            try CsProjectedConsultationPresentation(
+                receiptId: FfiConverterString.read(from: &buf),
+                consultationId: FfiConverterString.read(from: &buf),
+                turnId: FfiConverterString.read(from: &buf),
+                sourceRevision: FfiConverterUInt64.read(from: &buf),
+                revision: FfiConverterUInt64.read(from: &buf),
+                members: FfiConverterSequenceTypeCsProjectedConsultationMember.read(from: &buf),
+                renderedText: FfiConverterString.read(from: &buf)
+        )
+    }
+
+    public static func write(_ value: CsProjectedConsultationPresentation, into buf: inout [UInt8]) {
+        FfiConverterString.write(value.receiptId, into: &buf)
+        FfiConverterString.write(value.consultationId, into: &buf)
+        FfiConverterString.write(value.turnId, into: &buf)
+        FfiConverterUInt64.write(value.sourceRevision, into: &buf)
+        FfiConverterUInt64.write(value.revision, into: &buf)
+        FfiConverterSequenceTypeCsProjectedConsultationMember.write(value.members, into: &buf)
+        FfiConverterString.write(value.renderedText, into: &buf)
+    }
+}
+
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeCsProjectedConsultationPresentation_lift(_ buf: RustBuffer) throws -> CsProjectedConsultationPresentation {
+    return try FfiConverterTypeCsProjectedConsultationPresentation.lift(buf)
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeCsProjectedConsultationPresentation_lower(_ value: CsProjectedConsultationPresentation) -> RustBuffer {
+    return FfiConverterTypeCsProjectedConsultationPresentation.lower(value)
 }
 
 
@@ -11600,6 +12065,7 @@ public struct CsTranscriptProjectionEvent: Equatable, Hashable {
     public var canCopy: Bool
     public var canRetranscribe: Bool
     public var canFormat: Bool
+    public var canSendToAgent: Bool
     public var terminal: Bool
     /**
      * True only for the session's lifecycle terminal. A terminal *revision* of
@@ -11615,10 +12081,11 @@ public struct CsTranscriptProjectionEvent: Equatable, Hashable {
     public var delivery: CsTranscriptDelivery
     public var acousticReceipts: [CsProjectedAcousticReceipt]
     public var sealCoverage: CsProjectedSealCoverageReceipt?
+    public var consultationPresentations: [CsProjectedConsultationPresentation]
 
     // Default memberwise initializers are never public by default, so we
     // declare one manually.
-    public init(schema: String, sequence: UInt64, emittedAt: String, sessionId: String, mode: String, reducerRevision: UInt64, reducerAction: String, occurrenceSessionId: String, captureEpoch: UInt64, sampleStart: UInt64, sampleEnd: UInt64, documentIndex: UInt64, label: String, renderedText: String, phase: String, canPaste: Bool, canInsert: Bool, canCopy: Bool, canRetranscribe: Bool, canFormat: Bool, terminal: Bool,
+    public init(schema: String, sequence: UInt64, emittedAt: String, sessionId: String, mode: String, reducerRevision: UInt64, reducerAction: String, occurrenceSessionId: String, captureEpoch: UInt64, sampleStart: UInt64, sampleEnd: UInt64, documentIndex: UInt64, label: String, renderedText: String, phase: String, canPaste: Bool, canInsert: Bool, canCopy: Bool, canRetranscribe: Bool, canFormat: Bool, canSendToAgent: Bool, terminal: Bool,
         /**
          * True only for the session's lifecycle terminal. A terminal *revision* of
          * the document is not the end of the capture, and only this flag tells the
@@ -11628,7 +12095,7 @@ public struct CsTranscriptProjectionEvent: Equatable, Hashable {
          * Controller-owned delivery disposition, forwarded verbatim. Swift branches
          * on this typed state; the human-facing `label` above stays presentation and
          * never carries control meaning.
-         */delivery: CsTranscriptDelivery, acousticReceipts: [CsProjectedAcousticReceipt], sealCoverage: CsProjectedSealCoverageReceipt?) {
+         */delivery: CsTranscriptDelivery, acousticReceipts: [CsProjectedAcousticReceipt], sealCoverage: CsProjectedSealCoverageReceipt?, consultationPresentations: [CsProjectedConsultationPresentation]) {
         self.schema = schema
         self.sequence = sequence
         self.emittedAt = emittedAt
@@ -11649,11 +12116,13 @@ public struct CsTranscriptProjectionEvent: Equatable, Hashable {
         self.canCopy = canCopy
         self.canRetranscribe = canRetranscribe
         self.canFormat = canFormat
+        self.canSendToAgent = canSendToAgent
         self.terminal = terminal
         self.lifecycleTerminal = lifecycleTerminal
         self.delivery = delivery
         self.acousticReceipts = acousticReceipts
         self.sealCoverage = sealCoverage
+        self.consultationPresentations = consultationPresentations
     }
 
 
@@ -11690,11 +12159,13 @@ public struct FfiConverterTypeCsTranscriptProjectionEvent: FfiConverterRustBuffe
                 canCopy: FfiConverterBool.read(from: &buf),
                 canRetranscribe: FfiConverterBool.read(from: &buf),
                 canFormat: FfiConverterBool.read(from: &buf),
+                canSendToAgent: FfiConverterBool.read(from: &buf),
                 terminal: FfiConverterBool.read(from: &buf),
                 lifecycleTerminal: FfiConverterBool.read(from: &buf),
                 delivery: FfiConverterTypeCsTranscriptDelivery.read(from: &buf),
                 acousticReceipts: FfiConverterSequenceTypeCsProjectedAcousticReceipt.read(from: &buf),
-                sealCoverage: FfiConverterOptionTypeCsProjectedSealCoverageReceipt.read(from: &buf)
+                sealCoverage: FfiConverterOptionTypeCsProjectedSealCoverageReceipt.read(from: &buf),
+                consultationPresentations: FfiConverterSequenceTypeCsProjectedConsultationPresentation.read(from: &buf)
         )
     }
 
@@ -11719,11 +12190,13 @@ public struct FfiConverterTypeCsTranscriptProjectionEvent: FfiConverterRustBuffe
         FfiConverterBool.write(value.canCopy, into: &buf)
         FfiConverterBool.write(value.canRetranscribe, into: &buf)
         FfiConverterBool.write(value.canFormat, into: &buf)
+        FfiConverterBool.write(value.canSendToAgent, into: &buf)
         FfiConverterBool.write(value.terminal, into: &buf)
         FfiConverterBool.write(value.lifecycleTerminal, into: &buf)
         FfiConverterTypeCsTranscriptDelivery.write(value.delivery, into: &buf)
         FfiConverterSequenceTypeCsProjectedAcousticReceipt.write(value.acousticReceipts, into: &buf)
         FfiConverterOptionTypeCsProjectedSealCoverageReceipt.write(value.sealCoverage, into: &buf)
+        FfiConverterSequenceTypeCsProjectedConsultationPresentation.write(value.consultationPresentations, into: &buf)
     }
 }
 
@@ -14241,6 +14714,30 @@ fileprivate struct FfiConverterOptionTypeCsLastServingVerdict: FfiConverterRustB
 #if swift(>=5.8)
 @_documentation(visibility: private)
 #endif
+fileprivate struct FfiConverterOptionTypeCsMaxConsultationSnapshot: FfiConverterRustBuffer {
+    typealias SwiftType = CsMaxConsultationSnapshot?
+
+    public static func write(_ value: SwiftType, into buf: inout [UInt8]) {
+        guard let value = value else {
+            writeInt(&buf, Int8(0))
+            return
+        }
+        writeInt(&buf, Int8(1))
+        FfiConverterTypeCsMaxConsultationSnapshot.write(value, into: &buf)
+    }
+
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> SwiftType {
+        switch try readInt(&buf) as Int8 {
+        case 0: return nil
+        case 1: return try FfiConverterTypeCsMaxConsultationSnapshot.read(from: &buf)
+        default: throw UniffiInternalError.unexpectedOptionalTag
+        }
+    }
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
 fileprivate struct FfiConverterOptionTypeCsProjectedPresentationReceipt: FfiConverterRustBuffer {
     typealias SwiftType = CsProjectedPresentationReceipt?
 
@@ -14561,6 +15058,31 @@ fileprivate struct FfiConverterSequenceTypeCsLexiconEntry: FfiConverterRustBuffe
 #if swift(>=5.8)
 @_documentation(visibility: private)
 #endif
+fileprivate struct FfiConverterSequenceTypeCsMaxRetainedInput: FfiConverterRustBuffer {
+    typealias SwiftType = [CsMaxRetainedInput]
+
+    public static func write(_ value: [CsMaxRetainedInput], into buf: inout [UInt8]) {
+        let len = Int32(value.count)
+        writeInt(&buf, len)
+        for item in value {
+            FfiConverterTypeCsMaxRetainedInput.write(item, into: &buf)
+        }
+    }
+
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> [CsMaxRetainedInput] {
+        let len: Int32 = try readInt(&buf)
+        var seq = [CsMaxRetainedInput]()
+        seq.reserveCapacity(Int(len))
+        for _ in 0 ..< len {
+            seq.append(try FfiConverterTypeCsMaxRetainedInput.read(from: &buf))
+        }
+        return seq
+    }
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
 fileprivate struct FfiConverterSequenceTypeCsMcpServer: FfiConverterRustBuffer {
     typealias SwiftType = [CsMcpServer]
 
@@ -14678,6 +15200,56 @@ fileprivate struct FfiConverterSequenceTypeCsProjectedAcousticReceipt: FfiConver
         seq.reserveCapacity(Int(len))
         for _ in 0 ..< len {
             seq.append(try FfiConverterTypeCsProjectedAcousticReceipt.read(from: &buf))
+        }
+        return seq
+    }
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+fileprivate struct FfiConverterSequenceTypeCsProjectedConsultationMember: FfiConverterRustBuffer {
+    typealias SwiftType = [CsProjectedConsultationMember]
+
+    public static func write(_ value: [CsProjectedConsultationMember], into buf: inout [UInt8]) {
+        let len = Int32(value.count)
+        writeInt(&buf, len)
+        for item in value {
+            FfiConverterTypeCsProjectedConsultationMember.write(item, into: &buf)
+        }
+    }
+
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> [CsProjectedConsultationMember] {
+        let len: Int32 = try readInt(&buf)
+        var seq = [CsProjectedConsultationMember]()
+        seq.reserveCapacity(Int(len))
+        for _ in 0 ..< len {
+            seq.append(try FfiConverterTypeCsProjectedConsultationMember.read(from: &buf))
+        }
+        return seq
+    }
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+fileprivate struct FfiConverterSequenceTypeCsProjectedConsultationPresentation: FfiConverterRustBuffer {
+    typealias SwiftType = [CsProjectedConsultationPresentation]
+
+    public static func write(_ value: [CsProjectedConsultationPresentation], into buf: inout [UInt8]) {
+        let len = Int32(value.count)
+        writeInt(&buf, len)
+        for item in value {
+            FfiConverterTypeCsProjectedConsultationPresentation.write(item, into: &buf)
+        }
+    }
+
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> [CsProjectedConsultationPresentation] {
+        let len: Int32 = try readInt(&buf)
+        var seq = [CsProjectedConsultationPresentation]()
+        seq.reserveCapacity(Int(len))
+        for _ in 0 ..< len {
+            seq.append(try FfiConverterTypeCsProjectedConsultationPresentation.read(from: &buf))
         }
         return seq
     }
@@ -14853,6 +15425,31 @@ fileprivate struct FfiConverterSequenceTypeCsThreadSummary: FfiConverterRustBuff
         seq.reserveCapacity(Int(len))
         for _ in 0 ..< len {
             seq.append(try FfiConverterTypeCsThreadSummary.read(from: &buf))
+        }
+        return seq
+    }
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+fileprivate struct FfiConverterSequenceTypeCsToolApprovalRequest: FfiConverterRustBuffer {
+    typealias SwiftType = [CsToolApprovalRequest]
+
+    public static func write(_ value: [CsToolApprovalRequest], into buf: inout [UInt8]) {
+        let len = Int32(value.count)
+        writeInt(&buf, len)
+        for item in value {
+            FfiConverterTypeCsToolApprovalRequest.write(item, into: &buf)
+        }
+    }
+
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> [CsToolApprovalRequest] {
+        let len: Int32 = try readInt(&buf)
+        var seq = [CsToolApprovalRequest]()
+        seq.reserveCapacity(Int(len))
+        for _ in 0 ..< len {
+            seq.append(try FfiConverterTypeCsToolApprovalRequest.read(from: &buf))
         }
         return seq
     }
@@ -15358,6 +15955,9 @@ private let initializationResult: InitializationResult = {
     if (uniffi_codescribe_ffi_checksum_method_codescribeagent_is_available() != 42455) {
         return InitializationResult.apiChecksumMismatch
     }
+    if (uniffi_codescribe_ffi_checksum_method_codescribeagent_pending_tool_approvals() != 52256) {
+        return InitializationResult.apiChecksumMismatch
+    }
     if (uniffi_codescribe_ffi_checksum_method_codescribeagent_resolve_tool_approval() != 55035) {
         return InitializationResult.apiChecksumMismatch
     }
@@ -15422,6 +16022,9 @@ private let initializationResult: InitializationResult = {
         return InitializationResult.apiChecksumMismatch
     }
     if (uniffi_codescribe_ffi_checksum_method_codescribeconfig_key_status() != 48273) {
+        return InitializationResult.apiChecksumMismatch
+    }
+    if (uniffi_codescribe_ffi_checksum_method_codescribeconfig_load_diagnostic_settings() != 15698) {
         return InitializationResult.apiChecksumMismatch
     }
     if (uniffi_codescribe_ffi_checksum_method_codescribeconfig_load_settings() != 21744) {
@@ -15505,6 +16108,9 @@ private let initializationResult: InitializationResult = {
     if (uniffi_codescribe_ffi_checksum_method_codescribeconfig_set_overlay_expanded_by_default() != 25199) {
         return InitializationResult.apiChecksumMismatch
     }
+    if (uniffi_codescribe_ffi_checksum_method_codescribeconfig_settings_file_path() != 60048) {
+        return InitializationResult.apiChecksumMismatch
+    }
     if (uniffi_codescribe_ffi_checksum_method_codescribeconfig_should_show_onboarding() != 17785) {
         return InitializationResult.apiChecksumMismatch
     }
@@ -15538,6 +16144,9 @@ private let initializationResult: InitializationResult = {
     if (uniffi_codescribe_ffi_checksum_method_codescribehotkeys_available_bindings() != 35701) {
         return InitializationResult.apiChecksumMismatch
     }
+    if (uniffi_codescribe_ffi_checksum_method_codescribehotkeys_begin_new_max_consultation() != 46924) {
+        return InitializationResult.apiChecksumMismatch
+    }
     if (uniffi_codescribe_ffi_checksum_method_codescribehotkeys_calibrate_energy() != 1823) {
         return InitializationResult.apiChecksumMismatch
     }
@@ -15557,6 +16166,9 @@ private let initializationResult: InitializationResult = {
         return InitializationResult.apiChecksumMismatch
     }
     if (uniffi_codescribe_ffi_checksum_method_codescribehotkeys_get_mode_bindings() != 18882) {
+        return InitializationResult.apiChecksumMismatch
+    }
+    if (uniffi_codescribe_ffi_checksum_method_codescribehotkeys_inspect_selected_max_consultation() != 22751) {
         return InitializationResult.apiChecksumMismatch
     }
     if (uniffi_codescribe_ffi_checksum_method_codescribehotkeys_is_active() != 58930) {
@@ -15580,6 +16192,9 @@ private let initializationResult: InitializationResult = {
     if (uniffi_codescribe_ffi_checksum_method_codescribehotkeys_paste_text() != 10820) {
         return InitializationResult.apiChecksumMismatch
     }
+    if (uniffi_codescribe_ffi_checksum_method_codescribehotkeys_pending_max_tool_approvals() != 30855) {
+        return InitializationResult.apiChecksumMismatch
+    }
     if (uniffi_codescribe_ffi_checksum_method_codescribehotkeys_prewarm_recording() != 27979) {
         return InitializationResult.apiChecksumMismatch
     }
@@ -15587,6 +16202,9 @@ private let initializationResult: InitializationResult = {
         return InitializationResult.apiChecksumMismatch
     }
     if (uniffi_codescribe_ffi_checksum_method_codescribehotkeys_reset_bindings_to_defaults() != 64674) {
+        return InitializationResult.apiChecksumMismatch
+    }
+    if (uniffi_codescribe_ffi_checksum_method_codescribehotkeys_resolve_max_tool_approval() != 6688) {
         return InitializationResult.apiChecksumMismatch
     }
     if (uniffi_codescribe_ffi_checksum_method_codescribehotkeys_send_assistive_transcript() != 10588) {
@@ -15773,6 +16391,9 @@ private let initializationResult: InitializationResult = {
         return InitializationResult.apiChecksumMismatch
     }
     if (uniffi_codescribe_ffi_checksum_method_csappactionlistener_on_show_agent() != 40684) {
+        return InitializationResult.apiChecksumMismatch
+    }
+    if (uniffi_codescribe_ffi_checksum_method_csappactionlistener_on_max_approvals_changed() != 29603) {
         return InitializationResult.apiChecksumMismatch
     }
     if (uniffi_codescribe_ffi_checksum_method_cstranscriptionlistener_on_transcript_projection() != 430) {

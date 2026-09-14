@@ -21,6 +21,7 @@ private final class OverlayStateTestEngine: DictationEngine {
   }
 
   var pastedText: String?
+  var onStopRecording: (() -> Void)?
   var pasteCallCount = 0
   var pasteOutcome: CsPasteOutcome = .pasted
   var pasteFrontmostAppNameValue: String?
@@ -56,7 +57,10 @@ private final class OverlayStateTestEngine: DictationEngine {
 
   func setListener(_ listener: CsTranscriptionListener) {}
   func startRecording(language: CsLanguage?) async throws {}
-  func stopRecording() async throws -> String { "" }
+  func stopRecording() async throws -> String {
+    onStopRecording?()
+    return ""
+  }
   func commitUserRevision(
     sessionId: String, sourceRevision: UInt64, renderedText: String
   ) async throws -> CsUserRevisionResult {
@@ -1319,7 +1323,7 @@ final class OverlayStateTests: XCTestCase {
     XCTAssertEqual(Array(state.activeText.utf8), Array(text.utf8))
     XCTAssertEqual(state.revision, 8)
     XCTAssertEqual(state.userRevisionProvenance, "user-edit-test-7-8")
-    XCTAssertEqual(OverlayIntentRail.projectedIntents(for: state), [.copy, .close])
+    XCTAssertEqual(OverlayIntentRail.projectedIntents(for: state), [.copy, .sendToAgent, .close])
   }
 
   func testUserEditCommitsOnlyThroughReturnedRustProjection() async {
@@ -1396,7 +1400,7 @@ final class OverlayStateTests: XCTestCase {
     XCTAssertEqual(state.userRevisionProvenance, "user-edit-revision-session-7-8-1")
     XCTAssertEqual(
       OverlayIntentRail.projectedIntents(for: state),
-      [.insertPaste, .copy, .close],
+      [.insertPaste, .copy, .sendToAgent, .close],
       "delivery actions return only after the new ledger projection"
     )
 
@@ -1715,11 +1719,14 @@ final class OverlayStateTests: XCTestCase {
       engine.assistiveSendHandler = nil
       await deliveryTask?.value
       XCTAssertEqual(state.captureGeneration, generation)
-      XCTAssertTrue(state.recording)
       XCTAssertEqual(closes, 0)
       XCTAssertEqual(presentations, 0)
       XCTAssertNil(state.toast)
       XCTAssertEqual(engine.sentAssistiveTexts, ["outgoing final"])
+      let stopped = expectation(description: "successor remains stoppable after prior send")
+      engine.onStopRecording = { stopped.fulfill() }
+      state.stop()
+      await fulfillment(of: [stopped], timeout: 1)
     }
   }
 
@@ -3137,7 +3144,7 @@ final class OverlayStateTests: XCTestCase {
     XCTAssertNotNil(state.coverageRefusalNotice)
     XCTAssertEqual(
       OverlayIntentRail.projectedIntents(for: state),
-      [.insertPaste, .copy, .retranscribe, .close])
+      [.insertPaste, .copy, .retranscribe, .sendToAgent, .close])
   }
 
   func testWakeArmedBeforeRefusalCannotCloseRecoveryAtItsDeadline() throws {

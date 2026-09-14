@@ -1933,13 +1933,24 @@ mod tests {
     #[tokio::test]
     async fn rejected_approval_never_starts_handler() {
         let provider = ScriptedProvider::new(vec![
-            vec![AgentEvent::ToolCallReady {
-                id: "call_rejected".to_string(),
-                name: "external_mutation".to_string(),
-                arguments: json!({}),
-            }, AgentEvent::ResponseDone { response_id: Some("reject-call".into()), clean: true }],
-            vec![AgentEvent::TextDone("rejection handled".to_string()),
-                AgentEvent::ResponseDone { response_id: Some("reject-answer".into()), clean: true }],
+            vec![
+                AgentEvent::ToolCallReady {
+                    id: "call_rejected".to_string(),
+                    name: "external_mutation".to_string(),
+                    arguments: json!({}),
+                },
+                AgentEvent::ResponseDone {
+                    response_id: Some("reject-call".into()),
+                    clean: true,
+                },
+            ],
+            vec![
+                AgentEvent::TextDone("rejection handled".to_string()),
+                AgentEvent::ResponseDone {
+                    response_id: Some("reject-answer".into()),
+                    clean: true,
+                },
+            ],
         ]);
         let handler_started = Arc::new(AtomicBool::new(false));
         let started = Arc::clone(&handler_started);
@@ -2000,13 +2011,24 @@ mod tests {
     #[tokio::test]
     async fn timed_out_approval_never_starts_handler() {
         let provider = ScriptedProvider::new(vec![
-            vec![AgentEvent::ToolCallReady {
-                id: "call_timeout".to_string(),
-                name: "external_mutation".to_string(),
-                arguments: json!({}),
-            }, AgentEvent::ResponseDone { response_id: Some("timeout-call".into()), clean: true }],
-            vec![AgentEvent::TextDone("timeout handled".to_string()),
-                AgentEvent::ResponseDone { response_id: Some("timeout-answer".into()), clean: true }],
+            vec![
+                AgentEvent::ToolCallReady {
+                    id: "call_timeout".to_string(),
+                    name: "external_mutation".to_string(),
+                    arguments: json!({}),
+                },
+                AgentEvent::ResponseDone {
+                    response_id: Some("timeout-call".into()),
+                    clean: true,
+                },
+            ],
+            vec![
+                AgentEvent::TextDone("timeout handled".to_string()),
+                AgentEvent::ResponseDone {
+                    response_id: Some("timeout-answer".into()),
+                    clean: true,
+                },
+            ],
         ]);
         let handler_started = Arc::new(AtomicBool::new(false));
         let started = Arc::clone(&handler_started);

@@ -274,7 +274,7 @@ final class RealAgentBridgeInstaller: AgentBridgeInstalling {
     try? fileManager.setAttributes([.posixPermissions: 0o700], ofItemAtPath: bridgeRoot.path)
     let lease = try acquireInstallationLease()
     defer {
-      _ = Darwin.flock(lease, LOCK_UN)
+      _ = flock(lease, LOCK_UN)
       _ = Darwin.close(lease)
     }
 
@@ -433,7 +433,7 @@ final class RealAgentBridgeInstaller: AgentBridgeInstalling {
     var metadata = stat()
     guard Darwin.fstat(descriptor, &metadata) == 0,
       (metadata.st_mode & mode_t(S_IFMT)) == mode_t(S_IFREG),
-      Darwin.flock(descriptor, LOCK_EX | LOCK_NB) == 0
+      flock(descriptor, LOCK_EX | LOCK_NB) == 0
     else {
       _ = Darwin.close(descriptor)
       throw AgentBridgeInstallationError.transaction("another installation is active or its lock is unavailable; try again after it finishes")

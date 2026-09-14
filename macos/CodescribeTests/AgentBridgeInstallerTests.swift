@@ -433,21 +433,21 @@ final class AgentBridgeInstallerTests: XCTestCase {
     XCTAssertGreaterThanOrEqual(descriptor, 0)
     guard descriptor >= 0 else { return }
     defer { _ = Darwin.close(descriptor) }
-    XCTAssertEqual(Darwin.flock(descriptor, LOCK_EX | LOCK_NB), 0)
+    XCTAssertEqual(flock(descriptor, LOCK_EX | LOCK_NB), 0)
     let installer = RealAgentBridgeInstaller(
       resourceRoot: payload, homeDirectory: home, environment: [:])
     XCTAssertThrowsError(try installer.install(selectedClients: [.codex]))
     XCTAssertFalse(FileManager.default.fileExists(atPath: root.appendingPathComponent("runtime").path))
     XCTAssertFalse(FileManager.default.fileExists(atPath: root.appendingPathComponent("receipt.json").path))
-    XCTAssertEqual(Darwin.flock(descriptor, LOCK_UN), 0)
+    XCTAssertEqual(flock(descriptor, LOCK_UN), 0)
     // Missing manual folder fails after the installer acquires the lock.
     XCTAssertThrowsError(try installer.adoptManualSkill(client: .codex))
-    XCTAssertEqual(Darwin.flock(descriptor, LOCK_EX | LOCK_NB), 0, "failure released ownership")
-    XCTAssertEqual(Darwin.flock(descriptor, LOCK_UN), 0)
+    XCTAssertEqual(flock(descriptor, LOCK_EX | LOCK_NB), 0, "failure released ownership")
+    XCTAssertEqual(flock(descriptor, LOCK_UN), 0)
     _ = try installer.install(selectedClients: [.codex])
-    XCTAssertEqual(Darwin.flock(descriptor, LOCK_EX | LOCK_NB), 0, "success released ownership")
+    XCTAssertEqual(flock(descriptor, LOCK_EX | LOCK_NB), 0, "success released ownership")
     XCTAssertTrue(FileManager.default.fileExists(atPath: lockPath))
-    XCTAssertEqual(Darwin.flock(descriptor, LOCK_UN), 0)
+    XCTAssertEqual(flock(descriptor, LOCK_UN), 0)
   }
 
   func testInstallationRefusesSymlinkedLeaseWithoutTouchingItsTarget() throws {
@@ -486,6 +486,7 @@ final class AgentBridgeInstallerTests: XCTestCase {
       XCTAssertThrowsError(try installer.adoptManualSkill(client: .codex)) { error in
         failure = error.localizedDescription
       }
+      XCTAssertEqual(manager.injectedRefusals, 1, "the fixture must reach the rollback operation")
       let backups = try FileManager.default.contentsOfDirectory(
         at: destination.deletingLastPathComponent(), includingPropertiesForKeys: nil
       ).filter { $0.lastPathComponent.hasPrefix(".codescribe.backup-") }
@@ -565,6 +566,7 @@ final class AgentBridgeInstallerTests: XCTestCase {
 private final class RefusingRollbackFileManager: FileManager, @unchecked Sendable {
   private let destination: URL
   private let blockRemoval: Bool
+  private(set) var injectedRefusals = 0
 
   init(destination: URL, blockRemoval: Bool) {
     self.destination = destination
@@ -573,14 +575,17 @@ private final class RefusingRollbackFileManager: FileManager, @unchecked Sendabl
   }
 
   override func removeItem(at URL: URL) throws {
-    if blockRemoval, URL == destination {
+    if blockRemoval, URL.standardizedFileURL.path == destination.standardizedFileURL.path {
+      injectedRefusals += 1
       throw CocoaError(.fileWriteNoPermission)
     }
     try super.removeItem(at: URL)
   }
 
   override func moveItem(at source: URL, to target: URL) throws {
-    if !blockRemoval, target == destination, source.lastPathComponent.hasPrefix(".codescribe.backup-") {
+    if !blockRemoval, target.standardizedFileURL.path == destination.standardizedFileURL.path,
+      source.lastPathComponent.hasPrefix(".codescribe.backup-") {
+      injectedRefusals += 1
       throw CocoaError(.fileWriteNoPermission)
     }
     try super.moveItem(at: source, to: target)

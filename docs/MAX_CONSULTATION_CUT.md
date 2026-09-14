@@ -1198,3 +1198,104 @@ whitespace, EOF, conflict markers, mixed line endings, private-key detection,
 cargo-check, cargo-fmt, Prettier and commit-message provenance. Earlier scoped
 passes do not certify this new checkpoint. All controls return after exact-SHA
 closure. Foreign Swift and settings changes remain unstaged; no push or install.
+
+## W2_STRUCTURALLY_CLOSED — session fixture contracts
+
+Roman closes this bounded re-entry against
+`9dd97b252e0b3b3688932d6e451e629a927d40a2` on 2026-09-14. Source inspection
+traces clean ResponseDone to the terminal gate before tool resolution, then
+Unknown risk to Ask and the approval callback to rejection/timeout. Fixtures
+now reach the branch they claim to falsify, without replacing any runtime
+decision or removing negative cases. The source diff is test-only for this
+re-entry; previous codec and admission repairs retain their recorded receipts.
+All deferred gates return now. This attests readiness to execute verification,
+not successful tests, security acceptance, installed delivery or goal completion.
+
+### W3 native verify passed
+
+`16-make-verify-approval-fixtures.log` completed with exit 0 on the checkpoint
+plus rustfmt-only session formatting and these receipts. All three previously
+failing session fixtures passed. Core totals: 1436 passed, 0 failed, 5 ignored.
+The complete native verify chain also completed workspace targets, doctests,
+Whisper promotion, env/data references and all 98 gate-ledger scenarios.
+The gate explicitly excludes Swift, real-provider/audio parity and installed
+host acceptance. The new checkpoint's scoped hygiene/private-key controls
+passed for all seven owned files. Semgrep's three directory-sync findings and
+foreign settings formatting remain unresolved full-check obligations.
+
+### Bridge / Swift verification started
+
+The final workspace/all-target Clippy (`17-clippy-after-verify.log`) passed,
+exit 0. FFI build passed (`18-ffi-build.log`). Before regenerating the shared
+Swift file, an isolated bindgen preview at
+`/tmp/codescribe-bindings-20260914.y7V3An` confirmed that all five pre-existing
+`canSendToAgent` sites remain generated from `bridge/src/recording.rs`.
+No foreign field was removed. This preservation is not an ownership claim.
+
+Native `make app-bindings PROFILE=debug` then passed (`20-app-bindings.log`),
+regenerating the Swift/C bridge and Xcode project from the current Rust library.
+The generated diff adds the cut's missing API alongside the retained foreign
+field. `make test-swift PROFILE=debug` is running with logs
+`21-test-swift.log` and `21-swift-xcode.log` in the same receipt directory.
+No app installation or release was performed. Swift results remain pending.
+
+Swift attempt 1 failed at compilation: `Darwin.flock` resolves to the imported
+struct on this toolchain, not the POSIX function. A typed local Swift probe
+confirmed unqualified `flock` resolves correctly. Installer and its lock tests
+now use that function with identical descriptors/flags; no locking was removed.
+Attempt 2 compiled those sources but failed at link, executing zero tests:
+`mis-aligned LINKEDIT string pool` in the Rust dylib (Xcode beta ld 27037.1).
+Both original Cargo and relocated copies have LC_SYMTAB.stroff 82490244, so
+the misalignment precedes install_name_tool. Cargo.toml already documents this
+Xcode 27 issue and disables strip on release/local-release. Only Xcode-beta
+is installed. The debug verification build is now being rebuilt with explicit
+`CARGO_PROFILE_DEV_STRIP=none`, retaining DEBUG=0 and two build jobs; no source
+gate or linker diagnostic is suppressed. Log: `23-bindings-unstripped.log`.
+
+That rebuild passed: LC_SYMTAB.stroff is now 82452672 (8-aligned), and native
+binding/project generation completed. Swift is being retried with the matching
+unstripped debug library; logs `24-test-swift-unstripped.log` / `24-swift-xcode.log`.
+
+Founder subsequently authorized deciding the untracked profile's disposition.
+Inspection identified a local settings profile, not a tracked product default.
+Roman retains it untracked and does not apply it to runtime; Prettier formatting
+completed with identical canonical JSON hashes before/after. Calling it the
+Founder's authored file was unsupported; its author remains unknown. This
+supersedes the earlier formatting blocker and byte-for-byte preservation rule
+for this file only. No configuration values were intentionally changed.
+
+Swift compilation next exposed a test reading private `OverlayState.recording`.
+The test now exercises public `stop()` and observes the test engine's stop
+callback after the previous send resolves, while retaining generation/close/
+presentation assertions. No production visibility or recording behavior changed.
+
+`25-test-swift-overlay.log` executed 642 tests with one skipped and five failing
+assertions (make exit 2 / Xcode exit 65). Three overlay action-array expectations
+omit the projected sendToAgent action; two assertions in the installer's
+incomplete-rollback fixture expected a retained backup but found none. These
+are unresolved findings, not declared harmless without contract inspection.
+The suite took 30.088 seconds, also slightly beyond its 30-second budget;
+slowest was the long-revision refusal-layout test at 5.371 seconds. No time
+budget has been increased. Linking with the unstripped artifact now works.
+
+After the bounded Swift repair attempts, Roman re-enters structural review of
+these fixtures and their production action/rollback paths. Further executable
+gates wait for exact-SHA structural closure. Rust's passed receipts remain
+scoped to their prior source; no Swift green or installed delivery is claimed.
+
+Structural review: the overlay fixture defaults canSendToAgent to nonempty
+terminal text and the rail projects that permission directly; its three stale
+arrays now include the action. Explicit permission-refusal cases remain.
+The rollback double compared Foundation URLs whose directory hints differ
+between its fixture and the production destination. It now compares standardized
+filesystem paths and counts injected refusals; the test requires one refusal
+before asserting retained backup contents and recovery diagnostics. No production
+rollback operation or assertion about backup preservation is removed.
+
+This checkpoint also records the generated Swift/C bindings produced from the
+committed Rust API. The pre-existing canSendToAgent edit is retained as a
+reproducible projection of existing Rust, not attributed as a new authored
+feature. All generated additions were produced by native app-bindings; the
+untracked local settings profile remains excluded. W2 checkpoint uses
+--no-verify; all hook controls listed in the preceding W2 receipt are skipped
+again (including security) and return after closure. No push or installation.
