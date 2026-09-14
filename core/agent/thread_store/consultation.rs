@@ -746,4 +746,77 @@ mod tests {
         assert!(ConsultationJournal::open(&store, "a").is_err());
         assert!(ConsultationJournal::open(&store, "../outside").is_err());
     }
+
+    #[test]
+    fn consultation_directory_escape_refuses_before_external_state_changes() {
+        let root = tempfile::tempdir().unwrap();
+        let outside = tempfile::tempdir().unwrap();
+        let store = ThreadStore::new_in(root.path()).unwrap();
+        fs::write(outside.path().join("sentinel"), b"unchanged").unwrap();
+        std::os::unix::fs::symlink(outside.path(), root.path().join("consultations")).unwrap();
+
+        assert!(selected_id(&store).is_err());
+        assert!(ConsultationJournal::open(&store, "a").is_err());
+        assert!(inspect_selected_max_consultation(&store).is_err());
+        assert!(inspect_retained_input(&store, "a").is_err());
+        assert_eq!(
+            fs::read(outside.path().join("sentinel")).unwrap(),
+            b"unchanged"
+        );
+        assert_eq!(fs::read_dir(outside.path()).unwrap().count(), 1);
+    }
+
+    #[test]
+    fn selection_directory_escape_preserves_external_selection() {
+        let root = tempfile::tempdir().unwrap();
+        let outside = tempfile::tempdir().unwrap();
+        let store = ThreadStore::new_in(root.path()).unwrap();
+        let directory = root.path().join("consultations");
+        fs::create_dir(&directory).unwrap();
+        let original = br#"{"thread_id":"external"}"#;
+        fs::write(outside.path().join("current.json"), original).unwrap();
+        std::os::unix::fs::symlink(outside.path(), directory.join("selection")).unwrap();
+
+        assert!(selected_id(&store).is_err());
+        assert!(begin_new(&store, "external").is_err());
+        assert!(inspect_selected_max_consultation(&store).is_err());
+        assert_eq!(
+            fs::read(outside.path().join("current.json")).unwrap(),
+            original
+        );
+        assert_eq!(fs::read_dir(outside.path()).unwrap().count(), 1);
+    }
+
+    #[test]
+    fn symlinked_state_files_are_not_admitted_or_overwritten() {
+        let root = tempfile::tempdir().unwrap();
+        let outside = tempfile::tempdir().unwrap();
+        let store = ThreadStore::new_in(root.path()).unwrap();
+        let path = selection_path(&store).unwrap();
+        let selection = br#"{"thread_id":"external"}"#;
+        let journal = br#"{"completed":[],"pending":null,"queued":[]}"#;
+        fs::write(outside.path().join("selection.json"), selection).unwrap();
+        fs::write(outside.path().join("journal.json"), journal).unwrap();
+        std::os::unix::fs::symlink(outside.path().join("selection.json"), &path).unwrap();
+        std::os::unix::fs::symlink(
+            outside.path().join("journal.json"),
+            root.path().join("consultations/external.json"),
+        )
+        .unwrap();
+
+        assert!(selected_id(&store).is_err());
+        assert!(begin_new(&store, "external").is_err());
+        assert!(inspect_selected_max_consultation(&store).is_err());
+        assert!(ConsultationJournal::open(&store, "external").is_err());
+        assert!(inspect_retained_input(&store, "external").is_err());
+        assert_eq!(
+            fs::read(outside.path().join("selection.json")).unwrap(),
+            selection
+        );
+        assert_eq!(
+            fs::read(outside.path().join("journal.json")).unwrap(),
+            journal
+        );
+        assert_eq!(fs::read_dir(outside.path()).unwrap().count(), 2);
+    }
 }

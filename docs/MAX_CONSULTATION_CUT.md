@@ -1350,3 +1350,20 @@ ping occurred. Tracked files were clean before this receipt; the local
 `docs/settings.json` profile remains untracked. Next: settle the concrete
 security findings, then perform idle-safe installed-artifact acceptance and
 the still-unproven live consultation scenarios.
+
+### Consultation path-boundary regression evidence — 2026-09-14
+
+Three additional tests exercise real temporary filesystem entries, not mocked
+validation: an external consultation-directory symlink, an external selection
+directory symlink, and symlinked selection/journal files. Public selection,
+reset, journal admission and inspection paths refuse these inputs; external
+sentinel bytes and directory entry counts remain unchanged. These tests cover
+pre-existing substitutions, not concurrent ancestor swaps.
+
+The first command selected package `codescribe` and executed zero matching
+tests (`31-consultation-path-tests.log`); it is not a test-pass receipt.
+The corrected `cargo test -p codescribe-core --lib agent::thread_store::consultation::tests -- --test-threads=1` completed with
+15 passed, zero failed or ignored, including all three added cases
+(`32-consultation-path-tests-core.log`, same W3 log directory). Runtime source,
+Semgrep rules and suppressions are unchanged; the three scanner findings
+remain an explicit acceptance obligation rather than a claimed fixed exploit.
