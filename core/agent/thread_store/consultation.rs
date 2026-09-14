@@ -7,7 +7,7 @@ use std::fs::{self, File, OpenOptions};
 use std::io::Write;
 use std::os::fd::AsRawFd;
 use std::os::unix::fs::OpenOptionsExt;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result, ensure};
 use serde::{Deserialize, Serialize};
@@ -19,6 +19,63 @@ use super::{ThreadStore, canonical_existing_child, validate_thread_id};
 struct AdmissionState {
     completed: BTreeSet<String>,
     pending: Option<String>,
+}
+
+#[derive(Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct SelectedConsultation {
+    thread_id: String,
+}
+
+/// Conversation selection is thread state, not an ASR/provider setting. Only
+/// first use mints an id; corrupt state and unresolved turns never choose a
+/// different conversation as a side effect of recovery.
+pub(crate) fn selected_id(store: &ThreadStore) -> Result<String> {
+    let directory = consultation_directory(store)?;
+    let selection_dir = directory.join("selection");
+    fs::create_dir_all(&selection_dir)?;
+    File::open(&directory)?.sync_all()?;
+    let selection_dir = canonical_existing_child(&directory, &selection_dir)?;
+    let _selection_owner = exclusive_owner(&selection_dir.join("owner.lock"))?;
+    let path = selection_dir.join("current.json");
+    let selected: SelectedConsultation = match OpenOptions::new().read(true)
+        .custom_flags(libc::O_NOFOLLOW).open(&path) {
+        Ok(file) => serde_json::from_reader(file).context("corrupt Max consultation selection")?,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+            let selected = SelectedConsultation { thread_id: ThreadStore::generate_id() };
+            persist_json(&path, &selected)?;
+            selected
+        }
+        Err(error) => return Err(error).context("read Max consultation selection"),
+    };
+    validate_thread_id(&selected.thread_id)?;
+    Ok(selected.thread_id)
+}
+
+fn consultation_directory(store: &ThreadStore) -> Result<PathBuf> {
+    let directory = store.threads_dir.join("consultations");
+    fs::create_dir_all(&directory)?;
+    File::open(&store.threads_dir)?.sync_all()?;
+    canonical_existing_child(&store.threads_dir, &directory)
+}
+
+fn exclusive_owner(path: &Path) -> Result<File> {
+    let owner = OpenOptions::new().read(true).write(true).create(true)
+        .truncate(false).mode(0o600).custom_flags(libc::O_NOFOLLOW).open(path)?;
+    // SAFETY: owner holds a live file descriptor for the full lease lifetime.
+    let acquired = unsafe { libc::flock(owner.as_raw_fd(), libc::LOCK_EX | libc::LOCK_NB) };
+    ensure!(acquired == 0, "consultation already owned or lock unavailable: {}", std::io::Error::last_os_error());
+    Ok(owner)
+}
+
+fn persist_json(path: &Path, value: &impl Serialize) -> Result<()> {
+    let temporary = path.with_extension(format!("{}.tmp", uuid::Uuid::new_v4()));
+    let mut file = OpenOptions::new().write(true).create_new(true).mode(0o600).open(&temporary)?;
+    file.write_all(&serde_json::to_vec(value)?)?;
+    file.sync_all()?;
+    fs::rename(&temporary, path)?;
+    File::open(path.parent().context("consultation state parent")?)?.sync_all()?;
+    Ok(())
 }
 
 pub(crate) struct ConsultationJournal {
@@ -35,16 +92,8 @@ impl ConsultationJournal {
 
     pub(crate) fn open(store: &ThreadStore, id: &str) -> Result<Self> {
         validate_thread_id(id)?;
-        let directory = store.threads_dir.join("consultations");
-        fs::create_dir_all(&directory)?;
-        File::open(&store.threads_dir)?.sync_all()?;
-        let directory = canonical_existing_child(&store.threads_dir, &directory)?;
-        let owner = OpenOptions::new().read(true).write(true).create(true)
-            .truncate(false).mode(0o600).custom_flags(libc::O_NOFOLLOW)
-            .open(directory.join(format!("{id}.lock")))?;
-        // SAFETY: owner holds a live file descriptor for the full lease lifetime.
-        let acquired = unsafe { libc::flock(owner.as_raw_fd(), libc::LOCK_EX | libc::LOCK_NB) };
-        ensure!(acquired == 0, "consultation {id} already owned or lock unavailable: {}", std::io::Error::last_os_error());
+        let directory = consultation_directory(store)?;
+        let owner = exclusive_owner(&directory.join(format!("{id}.lock")))?;
         let path = directory.join(format!("{id}.json"));
         let state = match OpenOptions::new().read(true).custom_flags(libc::O_NOFOLLOW).open(&path) {
             Ok(file) => serde_json::from_reader(file).context("corrupt consultation admission state")?,
@@ -77,19 +126,40 @@ impl ConsultationJournal {
     }
 
     fn persist(&self) -> Result<()> {
-        let temporary = self.path.with_extension(format!("{}.tmp", uuid::Uuid::new_v4()));
-        let mut file = OpenOptions::new().write(true).create_new(true).mode(0o600).open(&temporary)?;
-        file.write_all(&serde_json::to_vec(&self.state)?)?;
-        file.sync_all()?;
-        fs::rename(&temporary, &self.path)?;
-        File::open(self.path.parent().context("journal parent")?)?.sync_all()?;
-        Ok(())
+        persist_json(&self.path, &self.state)
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn selected_conversation_survives_reopen_and_pending_does_not_replace_it() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = ThreadStore::new_in(dir.path()).unwrap();
+        let id = selected_id(&store).unwrap();
+        let mut journal = ConsultationJournal::open(&store, &id).unwrap();
+        journal.begin("unresolved").unwrap();
+        drop(journal);
+        drop(store);
+        let reopened = ThreadStore::new_in(dir.path()).unwrap();
+        assert_eq!(selected_id(&reopened).unwrap(), id);
+        assert!(ConsultationJournal::open(&reopened, &id).is_err());
+    }
+
+    #[test]
+    fn corrupt_selection_is_not_replaced_with_fresh_identity() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = ThreadStore::new_in(dir.path()).unwrap();
+        selected_id(&store).unwrap();
+        let path = dir.path().join("consultations/selection/current.json");
+        for invalid in [b"{broken".as_slice(), br#"{"thread_id":"../escape"}"#.as_slice()] {
+            fs::write(&path, invalid).unwrap();
+            assert!(selected_id(&store).is_err());
+            assert_eq!(fs::read(&path).unwrap(), invalid);
+        }
+    }
 
     #[test]
     fn owner_is_exclusive_and_unfinished_turn_survives_reopen() {

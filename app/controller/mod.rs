@@ -1136,12 +1136,14 @@ impl RecordingController {
         }
         let mut selected = self.max_consultation.lock().await;
         if selected.is_none() {
+            let gateway = codescribe_core::agent::ThreadDeliveryGateway::new()?;
+            let consultation_id = gateway.selected_max_consultation_id()?;
             let consultation = crate::agent::max_consultation::MaxConsultation::start(
-                codescribe_core::agent::ThreadStore::generate_id(),
+                consultation_id,
                 settings,
                 Arc::new(crate::agent::tools::configured_registry()),
                 None,
-                codescribe_core::agent::ThreadDeliveryGateway::new()?,
+                gateway,
                 Arc::new(|_consultation, _turn, event| {
                     if let codescribe_core::agent::AgentUiEvent::Error(error) = event {
                         warn!(%error, "Max consultation failed");

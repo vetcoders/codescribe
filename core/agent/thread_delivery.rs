@@ -102,6 +102,11 @@ pub struct ThreadDeliveryGateway {
 }
 
 impl ThreadDeliveryGateway {
+    /// Read the durable Max selection, minting an identity only on first use.
+    pub fn selected_max_consultation_id(&self) -> Result<String> {
+        super::thread_store::consultation::selected_id(&self.store)
+    }
+
     /// Called only while holding the consultation lease. Never substitute an
     /// empty history for a missing completed thread or an unreadable message.
     pub(crate) fn restore_consultation(&self, id: &str, history_required: bool) -> Result<Vec<Message>> {

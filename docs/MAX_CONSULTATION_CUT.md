@@ -205,14 +205,19 @@ while authored tests supply a temp path. An authored test holds the installer
 lock and checks zero provider calls, then explicit resubmission after release.
 This is still unexecuted; runtime install exclusion is not yet proven.
 
-The controller currently creates a fresh consultation id after process launch;
-durable selection/reset UI is not wired. Approval requests without a host broker
+The controller now gets its selected id from the same ThreadStore gateway.
+Selection is atomically synced under an exclusive selection lock; only first
+use mints an id. Reopening the store retains it, including when that
+consultation has unresolved work. Corrupt selection/path identity is refused
+without overwriting it. Authored tests cover store reopen, unresolved work and
+corrupt selection preservation; no installed restart has been exercised.
+Explicit selection/reset UI is not wired. Approval requests without a host broker
 remain refused. Its event callback currently reports errors only; streaming Max
 UI is not connected. Live occurrence formatting still passes None, deliberately
 not executing one tool turn per acoustic fragment. This remains unassembled and
 must not be installed as a completed Max cut.
 
-Outstanding: production host-owned consultation selection/reset; durable
+Outstanding: explicit consultation selection/reset UI and recovery actions; durable
 queued-but-not-started instructions; explicit
 reconciliation of unresolved turns (never implicit replay); cancellation;
 live turn admission; permission UI and streaming presentation/delivery wiring.
