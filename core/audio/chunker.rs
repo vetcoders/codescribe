@@ -730,16 +730,27 @@ impl SpeechSession {
             self.force_reopen_after_seal = false;
 
             if let Some(start) = self.segment_start.take()
-                && let Some((emit_start, emit_end)) = self.supervisor_emit_range(start, end)
-                && let Some(chunk) = self.raw_slice(emit_start, emit_end)
+                && end > start
             {
                 match self.mode {
-                    SpeechMode::Stream { .. } => self
-                        .push_event_with_speech_vad_samples(&mut events, SpeechEvent::Chunk(chunk)),
-                    SpeechMode::Utterance { .. } => self.push_event_with_speech_vad_samples(
-                        &mut events,
-                        SpeechEvent::UtteranceFinal,
-                    ),
+                    SpeechMode::Stream { .. } => {
+                        if let Some((emit_start, emit_end)) = self.supervisor_emit_range(start, end)
+                            && let Some(chunk) = self.raw_slice(emit_start, emit_end)
+                        {
+                            self.push_event_with_speech_vad_samples(
+                                &mut events,
+                                SpeechEvent::Chunk(chunk),
+                            );
+                        }
+                    }
+                    SpeechMode::Utterance { .. } => {
+                        // This is a boundary, not an audio payload. Interim
+                        // retention must not erase the observed end of speech.
+                        self.push_event_with_speech_vad_samples(
+                            &mut events,
+                            SpeechEvent::UtteranceFinal,
+                        );
+                    }
                 }
             }
             self.pending_end = None;
@@ -806,6 +817,13 @@ impl SpeechSession {
                 // VAD fired Start but recording ended before End — emit what we have.
                 let end = self.pending_end.take().unwrap_or(self.raw_cursor);
                 let end = end.min(self.raw_cursor);
+                if matches!(self.mode, SpeechMode::Utterance { .. }) && end > start {
+                    let speech_vad_samples = self.take_pending_event_speech_vad_samples();
+                    self.event_speech_vad_samples.push_back(speech_vad_samples);
+                    self.segment_peak_prob = 0.0;
+                    self.last_emit_raw = end;
+                    return Some(SpeechEvent::UtteranceFinal);
+                }
                 if let Some((emit_start, emit_end)) = self.supervisor_emit_range(start, end)
                     && let Some(chunk) = self.raw_slice(emit_start, emit_end)
                 {
@@ -1980,6 +1998,50 @@ mod tests {
             result.is_none(),
             "flush() should return None when VAD never started a segment"
         );
+    }
+
+    #[test]
+    fn test_supervisor_final_boundary_survives_trimmed_audio() {
+        let mut session = SpeechSession::new_utterance(16000);
+        session.gate_mode = VadGateMode::Supervisor;
+        session.raw_cursor = 3200;
+        session.raw_buffer_start = 3200;
+        session.last_emit_raw = 3200;
+        session.segment_start = Some(0);
+        session.pending_end = Some(1600);
+        session.raw_buffer.clear();
+
+        let events = session.feed(&[0.0], 16000);
+        assert!(matches!(events.as_slice(), [SpeechEvent::UtteranceFinal]));
+        assert!(session.open_segment_raw_range().is_none());
+        assert!(session.feed(&[0.0], 16000).is_empty());
+        assert!(session.flush().is_none());
+    }
+
+    #[test]
+    fn test_supervisor_flush_boundary_survives_trimmed_audio() {
+        let mut session = SpeechSession::new_utterance(16000);
+        session.gate_mode = VadGateMode::Supervisor;
+        session.raw_cursor = 3200;
+        session.raw_buffer_start = 3200;
+        session.last_emit_raw = 3200;
+        session.segment_start = Some(0);
+        session.raw_buffer.clear();
+
+        assert!(matches!(session.flush(), Some(SpeechEvent::UtteranceFinal)));
+        assert!(session.flush().is_none());
+    }
+
+    #[test]
+    fn test_supervisor_flush_does_not_finalize_empty_reopened_segment() {
+        let mut session = SpeechSession::new_utterance(16000);
+        session.gate_mode = VadGateMode::Supervisor;
+        session.raw_cursor = 3200;
+        session.raw_buffer_start = 3200;
+        session.last_emit_raw = 3200;
+        session.segment_start = Some(3200);
+        session.raw_buffer.clear();
+        assert!(session.flush().is_none());
     }
 
     /// Regression guard: completed segments must clear peak state.
