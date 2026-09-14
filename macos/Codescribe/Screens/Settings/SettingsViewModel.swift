@@ -956,6 +956,9 @@ final class SettingsViewModel: ObservableObject {
   }
 
   @Published private(set) var permissions: PermissionSnapshot
+  @Published private(set) var creatorAgentBridgeStatus = AgentBridgeInstallationStatus.unavailable
+  @Published private(set) var creatorAgentBridgeError: String?
+  @Published private(set) var creatorAgentBridgeNotice: String?
   @Published private(set) var settings: CsSettings
   @Published private(set) var newMaxConsultationPending = false
   @Published private(set) var maxConsultationNotice: String?
@@ -1052,6 +1055,7 @@ final class SettingsViewModel: ObservableObject {
   var appVersion: String { buildInfo.version }
 
   private let engine: SettingsEngine?
+  private let creatorAgentBridge: AgentBridgeInstalling
   private let permissionProbe: PermissionProbing
   private let agentStatus: AgentStatusEngine?
   private let mcpAdmin: MCPAdminEngine?
@@ -1065,6 +1069,7 @@ final class SettingsViewModel: ObservableObject {
 
   init(
     engine: SettingsEngine? = nil,
+    creatorAgentBridge: AgentBridgeInstalling = RealAgentBridgeInstaller(),
     permissionProbe: PermissionProbing = NativePermissionProbe(),
     agentStatus: AgentStatusEngine? = nil,
     mcpAdmin: MCPAdminEngine? = nil,
@@ -1085,6 +1090,7 @@ final class SettingsViewModel: ObservableObject {
     }
   ) {
     self.engine = engine
+    self.creatorAgentBridge = creatorAgentBridge
     self.permissionProbe = permissionProbe
     self.agentStatus = agentStatus
     self.mcpAdmin = mcpAdmin
@@ -1121,6 +1127,34 @@ final class SettingsViewModel: ObservableObject {
     self.agentResetPreview = .sample
     self.licenseStatus = self.licenseService.status
     lastServingVerdict = servingStatusProvider()
+  }
+
+  /// Passive inspection of the bundled installer; never attaches an agent.
+  func refreshCreatorAgentBridge() {
+    creatorAgentBridgeStatus = creatorAgentBridge.status()
+  }
+
+  /// Add/update one client while preserving other managed clients. Creator
+  /// has no implicit deselection or deletion action.
+  func installCreatorAgentBridge(for client: AgentBridgeClient) {
+    let current = creatorAgentBridge.status()
+    creatorAgentBridgeStatus = current
+    creatorAgentBridgeError = nil
+    creatorAgentBridgeNotice = nil
+    guard current.payloadAvailable else {
+      creatorAgentBridgeError = current.detail
+      return
+    }
+    do {
+      let clients = Set(current.installedClients).union([client])
+      creatorAgentBridgeStatus = try creatorAgentBridge.install(selectedClients: clients)
+      creatorAgentBridgeNotice =
+        "Skill installed from this app. Reload skills in your agent client, then invoke /codescribe. "
+        + "Installation does not attach a listener or verify voice delivery."
+    } catch {
+      creatorAgentBridgeError = error.userFacingMessage
+      creatorAgentBridgeStatus = creatorAgentBridge.status()
+    }
   }
 
   /// Re-read live state (permissions can change while the window is open).

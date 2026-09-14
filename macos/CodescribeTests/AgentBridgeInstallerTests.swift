@@ -305,6 +305,57 @@ final class AgentBridgeInstallerTests: XCTestCase {
     }
   }
 
+  func testCreatorInspectionIsPassiveAndInstallingOneClientPreservesTheOther() throws {
+    let payload = try makePayload()
+    let home = scratch.appendingPathComponent("creator-home")
+    let installer = RealAgentBridgeInstaller(
+      resourceRoot: payload, homeDirectory: home, environment: [:])
+    let model = SettingsViewModel(
+      creatorAgentBridge: installer,
+      permissionProbe: MockPermissionProbe(.allGranted),
+      servingStatusProvider: { nil }
+    )
+    model.refreshCreatorAgentBridge()
+    XCTAssertTrue(model.creatorAgentBridgeStatus.payloadAvailable)
+    XCTAssertFalse(FileManager.default.fileExists(atPath: home.path))
+    XCTAssertNil(model.creatorAgentBridgeNotice)
+
+    // Another surface installs Claude after Creator's last inspection.
+    _ = try installer.install(selectedClients: [.claudeCode])
+    model.installCreatorAgentBridge(for: .codex)
+    XCTAssertNil(model.creatorAgentBridgeError)
+    XCTAssertEqual(Set(model.creatorAgentBridgeStatus.installedClients), [.codex, .claudeCode])
+    XCTAssertTrue(FileManager.default.fileExists(
+      atPath: home.appendingPathComponent(".claude/skills/codescribe/SKILL.md").path))
+    XCTAssertTrue(FileManager.default.fileExists(
+      atPath: home.appendingPathComponent(".codex/skills/codescribe/SKILL.md").path))
+    XCTAssertTrue(model.creatorAgentBridgeNotice?.contains("does not attach a listener") == true)
+    model.installCreatorAgentBridge(for: .codex)
+    XCTAssertEqual(Set(model.creatorAgentBridgeStatus.installedClients), [.codex, .claudeCode])
+  }
+
+  func testCreatorShowsUnownedSkillConflictWithoutReplacingUserContent() throws {
+    let payload = try makePayload()
+    let home = scratch.appendingPathComponent("creator-unowned")
+    let skill = home.appendingPathComponent(".codex/skills/codescribe")
+    try FileManager.default.createDirectory(at: skill, withIntermediateDirectories: true)
+    let source = skill.appendingPathComponent("SKILL.md")
+    let original = Data("user-maintained instructions".utf8)
+    try original.write(to: source)
+    let model = SettingsViewModel(
+      creatorAgentBridge: RealAgentBridgeInstaller(
+        resourceRoot: payload, homeDirectory: home, environment: [:]),
+      permissionProbe: MockPermissionProbe(.allGranted),
+      servingStatusProvider: { nil }
+    )
+    model.installCreatorAgentBridge(for: .codex)
+    XCTAssertNotNil(model.creatorAgentBridgeError)
+    XCTAssertNil(model.creatorAgentBridgeNotice)
+    XCTAssertEqual(try Data(contentsOf: source), original)
+    XCTAssertFalse(FileManager.default.fileExists(
+      atPath: home.appendingPathComponent(".codescribe/agent-bridge/receipt.json").path))
+  }
+
   private func makePayload() throws -> URL {
     let payload = scratch.appendingPathComponent("payload-\(UUID().uuidString)", isDirectory: true)
     let helper = payload.appendingPathComponent("bin/bus-demux.py")

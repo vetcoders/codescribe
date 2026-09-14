@@ -88,6 +88,9 @@ struct CreatorPanel: View {
         MaxApprovalCards(model: model).padding(.top, CSSpace.section)
       }
 
+      agentBridgeSection
+        .padding(.top, CSSpace.section)
+
       SettingsSectionLabel("Quick start")
         .padding(.top, CSSpace.section)
       HStack(spacing: 10) {
@@ -114,7 +117,43 @@ struct CreatorPanel: View {
     }
     .padding(.horizontal, CSSpace.xl)
     .padding(.vertical, CSSpace.section)
+    .onAppear { model.refreshCreatorAgentBridge() }
     .task { await model.refreshMaxToolApprovals() }
+  }
+
+  private var agentBridgeSection: some View {
+    VStack(alignment: .leading, spacing: CSSpace.control) {
+      SettingsSectionLabel("Connect your coding agent")
+      Text("Install the Codescribe skill and bus helper from this app. No repository clone or manual file copying is needed.")
+        .font(.callout)
+        .foregroundStyle(CSColor.textHigh)
+      ForEach(AgentBridgeClient.allCases) { client in
+        SettingsControlRow(
+          title: client.displayName,
+          subtitle: "Named voice messages to your existing conversation"
+        ) {
+          Button(model.creatorAgentBridgeStatus.installedClients.contains(client) ? "Update skill" : "Install skill") {
+            model.installCreatorAgentBridge(for: client)
+          }
+          .disabled(!model.creatorAgentBridgeStatus.payloadAvailable)
+          .accessibilityIdentifier("settings-agent-bridge-\(client.rawValue)")
+        }
+      }
+      Button("Refresh installation status", action: model.refreshCreatorAgentBridge)
+      Text(model.creatorAgentBridgeStatus.detail)
+        .font(.caption)
+        .foregroundStyle(CSColor.textMutedAlt)
+        .textSelection(.enabled)
+      if let notice = model.creatorAgentBridgeNotice {
+        Text(notice).font(.callout).foregroundStyle(CSColor.textHigh)
+      }
+      if let error = model.creatorAgentBridgeError {
+        Text(error)
+          .font(.callout)
+          .foregroundStyle(CSColor.terracottaLight)
+          .textSelection(.enabled)
+      }
+    }
   }
 
   // MARK: - Bindings (read VM state, write through the router)

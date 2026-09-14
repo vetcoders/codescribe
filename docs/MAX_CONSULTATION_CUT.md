@@ -662,3 +662,41 @@ Authored, unexecuted tests cover missing selection, active and interrupted work,
 unchanged selection/journal bytes, corrupt and escaping selection, and bridge
 projection of exact source text with attachment count. Swift consumption,
 generated bindings, recovery decisions and real crash proof remain outstanding.
+
+## W1 structural re-entry: agent installation discoverability
+
+Founder message on 2026-09-14 explicitly requires that the agent skill be
+available from configuration without a cloned repository. This adds the existing
+AgentBridgeInstaller, Creator settings entry and direct tests to this worktree's
+closed domain. No remote installation, configuration edit or follower restart
+on Dragon is authorized by this structural step. The same compile embargo holds.
+
+Read-only host comparison found local app 1050/b91e9a947 versus Dragon
+1041/fed519f7d (both version 0.15.1). Dragon's installed Codex/Claude skill says
+0.4.0 while its app payload already says 0.5.0. Dragon has no bridge receipt or
+managed marker in the inspected Codex skill folder; its live Leon process uses
+../../codescribe/scripts/bus-demux.py, not the installed runtime helper.
+These are installation drift receipts, not proof of an ASR-quality cause.
+Persisted settings also differ (local Max/Luna/Smart final pass; Dragon
+Correction/Terra/Off final pass, explicit EarPods input). No effective runtime
+snapshot or matched-audio comparison has yet established causality.
+
+The existing installer already sources its payload from the app bundle. Creator
+will expose that installer without silently installing on visit or overwriting
+unowned skill folders. Explicit adoption with recoverable backup remains a
+separate unfinished part of this requirement, as does follower wakeup proof.
+
+Creator now has per-client Install/Update buttons and passive status refresh.
+SettingsViewModel injects the existing AgentBridgeInstalling service. A click
+re-reads installed clients and unions the requested client, so updating Codex
+does not implicitly deselect Claude installed since the last UI refresh.
+Success explains skill reload and /codescribe without claiming a listener was
+attached. Failure displays the installer error and never reports success.
+Authored tests use an isolated real bundle payload and temporary home through
+the settings model: passive inspection leaves home absent, explicit installation
+preserves the other client, repeated update retains both, and an unowned skill
+remains byte-identical with visible error and no receipt. Tests are unexecuted.
+The SwiftUI skill guided reuse of existing model/service ownership; no alternate
+installer or settings authority was added. This is source-only, not installed
+or rendered proof. Manual-copy adoption and live notification delivery remain
+unfinished, and the full history census goal is still open.
