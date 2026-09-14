@@ -431,9 +431,64 @@ Crossing/overlapping members and invalid intervals are refused instead of clippe
 An authored synthetic five-Iwo test checks exact member/receipt preservation;
 another covers pending Whisper, clipped intervals and foreign capture identity.
 Neither test has run and neither is physical-audio proof.
-This reader is not yet a production boundary consumer. It intentionally does
-not certify full acoustic coverage or semantic completeness and grants no
-execution permission. Those gates and the worker-to-host handoff remain open.
+This reader is not yet a production boundary consumer. Since ac1fa9982 it
+requires the existing ledger's authenticated coverage of the candidate interval;
+it still does not certify semantic completeness or grant execution permission.
+The worker-to-host handoff remains open. The capture-local input queue added in
+51b8e3b30 retains pending boundaries across failed readiness reads, and 5744f0277
+adds measured-silence advancement. Neither is wired to production yet; neither
+is a durable queued-instruction journal.
+
+## W1 structural re-entry: scoped answer presentation
+
+Roman's implementation decision at source baseline 5744f0277. This explicitly
+extends the closed source domain before further writes; it is not a new Founder
+requirement, W2 closure, or permission to execute gates.
+
+Additional domain: the existing AcousticLedger's presentation-receipt API,
+TranscriptReducer/PresentationEmitter scoped group revision admission,
+TranscriptRevision publication authentication, and direct TranscriptBus/
+projection consumers and tests. Acoustic qualification, PCM identity, VAD,
+seal predicates and observation ownership are NOT included in this extension.
+
+Evidence: authenticated_revision_occurrences rejects a nonterminal document.
+record_manual_document_revision binds the complete document to its full source
+set. IncrementalShapingReceipt explicitly binds one occurrence and Light+ left
+context. Assigning an arbitrary Agent answer to either receipt would assert a
+different provenance than the computation actually has. An untracked UI text
+override would also bypass authenticates_publication and the single reducer.
+
+Required group corridor:
+
+1. Preserve the admitted consultation id, turn id, capture identity, ordered
+   source member identities, source labels and their seal receipts. No generated
+   word receives fabricated PCM alignment.
+2. Authenticate a group presentation receipt in the existing ledger, then let
+   the existing reducer mint the document revision. This is a presentation
+   receipt, never an observation, new occurrence or terminal seal.
+3. Store group presentation once for the exact contiguous source member set.
+   Subsequent spoken entries remain outside that replacement. The immutable
+   revision must carry enough group evidence for publication authentication;
+   a generated answer must not appear only in an unaudited rendered_text field.
+4. Admit a late answer only if its exact member set/labels/seals still matches.
+   A global revision mismatch caused solely by new suffix speech must not lose
+   an already completed tool answer. Conflicting group edits, cancellation or a
+   different destination must refuse replacement without retrying tool effects.
+5. Light+ shapes cannot concurrently own presentation of the same source group.
+   Whole-document user edits remain explicit and invalidate older pending group
+   replacement rights. Do not erase persisted Agent history on display refusal.
+6. Tentative Agent events stay separately identified and never publish committed
+   transcript revisions before final answer/history settlement.
+
+Required falsifiers: answer after a new open suffix, answer after a later sealed
+group, missing/relabelled member, overlapping group, duplicated answer, changed
+session/epoch/turn, explicit document edit, tampered revision payload and Bus
+publication. Assert exact member preservation and untouched suffix as well as
+the displayed answer. Keep the existing real clipboard/two-turn delivery proof.
+
+This re-entry removes a concrete assembly obstacle; it does not assert that the
+new corridor exists. Next implementation must connect this evidence path before
+allowing live Max tool execution. Current installed behavior is unchanged.
 
 These checkpoints are structural W1 work. Checkpoint hooks are bypassed in full:
 trailing-whitespace, end-of-file-fixer, check-merge-conflict, mixed-line-ending,
