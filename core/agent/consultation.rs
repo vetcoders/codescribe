@@ -186,9 +186,10 @@ impl ConsultationInputQueue {
         )
     }
 
-    /// Validate before invoking durable admission, not after tools may start.
+    /// Validate before authorizing a prepared candidate, not after tools start.
     /// The capture owner must hold its current ledger/observer state throughout
     /// this synchronous call and invalidate boundaries when speech resumes.
+    /// The callback may only authorize an already persisted handle: no I/O.
     /// The returned handle remains the caller's responsibility: acknowledge it
     /// and retain it for completion, including if acknowledgement refuses.
     /// CONTINUE, stale source and admission pressure never consume the front.
@@ -289,6 +290,25 @@ pub struct PendingConsultationGroup {
     reply: oneshot::Receiver<Result<ConsultationAnswer>>,
 }
 
+/// Persisted candidate with no execution authority. Preparation may block on
+/// disk and must run outside capture and its ledger lock. Dropping this handle
+/// rejects the candidate; only the owner removes its unstarted journal entry.
+pub struct PreparedConsultationGroup {
+    pending: PendingConsultationGroup,
+    authorize: oneshot::Sender<()>,
+}
+
+impl PreparedConsultationGroup {
+    pub fn input(&self) -> &SealedConsultationInput { self.pending.input() }
+
+    /// Call only after capture revalidates this exact source. This operation
+    /// performs no I/O and takes no journal or admission lock.
+    pub fn authorize(self) -> Result<PendingConsultationGroup> {
+        self.authorize.send(()).map_err(|_| anyhow!("consultation owner stopped before authorization"))?;
+        Ok(self.pending)
+    }
+}
+
 impl PendingConsultationGroup {
     pub fn input(&self) -> &SealedConsultationInput { &self.input }
 
@@ -318,6 +338,7 @@ struct QueuedTurn {
     turn: ConsultationTurn,
     reply: oneshot::Sender<Result<ConsultationAnswer>>,
     pending: PendingTurn,
+    authorization: Option<oneshot::Receiver<()>>,
 }
 
 enum OwnerCommand {
@@ -380,13 +401,13 @@ impl ConsultationRuntime {
         &self.id
     }
 
-    /// The capture host owes semantic admission before this call. Bind its
-    /// sealed source to the exact queued instruction before any effects occur.
-    pub fn enqueue_group(
+    /// Persist a candidate off the capture thread. Bind sealed source to its
+    /// queued instruction; no effects run until capture authorizes the handle.
+    pub fn prepare_group(
         &self,
         input: SealedConsultationInput,
         turn: ConsultationTurn,
-    ) -> Result<PendingConsultationGroup> {
+    ) -> Result<PreparedConsultationGroup> {
         ensure!(turn.id == input.turn_id_for_group(), "consultation group turn mismatch");
         ensure!(turn.text == input.text(), "consultation group source mismatch");
         let group = serde_json::json!({
@@ -400,8 +421,12 @@ impl ConsultationRuntime {
                 "source_label": member.source_label, "seal_receipt": member.seal_receipt,
             })).collect::<Vec<_>>(),
         });
-        let reply = self.enqueue_recorded(turn, Some(group))?;
-        Ok(PendingConsultationGroup { consultation_id: self.id.clone(), input, reply })
+        let (authorize, authorization) = oneshot::channel();
+        let reply = self.enqueue_recorded(turn, Some(group), Some(authorization))?;
+        Ok(PreparedConsultationGroup {
+            pending: PendingConsultationGroup { consultation_id: self.id.clone(), input, reply },
+            authorize,
+        })
     }
 
     /// Close only when no accepted work remains. The acknowledgement is sent
@@ -423,10 +448,11 @@ impl ConsultationRuntime {
     /// A full queue refuses before the journal write. Dropping the returned
     /// receiver does not revoke an already accepted instruction.
     pub fn enqueue(&self, turn: ConsultationTurn) -> Result<oneshot::Receiver<Result<ConsultationAnswer>>> {
-        self.enqueue_recorded(turn, None)
+        self.enqueue_recorded(turn, None, None)
     }
 
-    fn enqueue_recorded(&self, turn: ConsultationTurn, group: Option<serde_json::Value>)
+    fn enqueue_recorded(&self, turn: ConsultationTurn, group: Option<serde_json::Value>,
+        authorization: Option<oneshot::Receiver<()>>)
         -> Result<oneshot::Receiver<Result<ConsultationAnswer>>>
     {
         ensure!(turn.policy == FormattingPolicy::Max, "consultation tools require Max");
@@ -452,7 +478,7 @@ impl ConsultationRuntime {
         admission.pending.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
         let pending = PendingTurn(Arc::clone(&admission.pending));
         let (reply, receipt) = oneshot::channel();
-        permit.send(OwnerCommand::Turn(QueuedTurn { turn, reply, pending }));
+        permit.send(OwnerCommand::Turn(QueuedTurn { turn, reply, pending, authorization }));
         drop(journal);
         drop(admission);
         Ok(receipt)
@@ -474,7 +500,7 @@ async fn run_owner(owner: ConsultationOwner) {
     let ConsultationOwner { id, mut session, mut ui_rx, gateway, journal,
         events, mut rx, install_lease_path } = owner;
     while let Some(command) = rx.recv().await {
-        let QueuedTurn { turn, reply, pending } = match command {
+        let QueuedTurn { turn, reply, pending, authorization } = match command {
             OwnerCommand::Turn(turn) => turn,
             OwnerCommand::Close(reply) => {
                 drop(session);
@@ -490,6 +516,20 @@ async fn run_owner(owner: ConsultationOwner) {
         if let Some(reason) = recovery_reason {
             drop(pending);
             let _ = reply.send(Err(anyhow!("consultation requires recovery: {reason}")));
+            continue;
+        }
+        // Persistence alone cannot authorize a spoken candidate. Capture may
+        // have resumed or changed while preparation was syncing to disk.
+        if let Some(authorization) = authorization
+            && authorization.await.is_err()
+        {
+            let discarded = journal.lock().map_err(|_| anyhow!("consultation journal lock poisoned"))
+                .and_then(|mut journal| journal.discard_unstarted(&turn.id));
+            if let Err(ref failure) = discarded
+                && let Ok(mut journal) = journal.lock()
+            { journal.require_recovery(format!("{failure:#}")); }
+            drop(pending);
+            let _ = reply.send(Err(discarded.err().unwrap_or_else(|| anyhow!("consultation candidate rejected before execution"))));
             continue;
         }
         // Refuse before any provider or tool work if installation already owns
@@ -976,6 +1016,53 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn prepared_group_rejection_never_calls_provider_and_allows_explicit_retry() {
+        let dir = tempfile::tempdir().unwrap();
+        let requests = Arc::new(Mutex::new(Vec::new()));
+        let entered = Arc::new(Semaphore::new(0));
+        let release = Arc::new(Semaphore::new(1));
+        let provider = ObservedProvider { requests: Arc::clone(&requests),
+            entered: Arc::clone(&entered), release, fail: false };
+        let (ui_tx, ui_rx) = mpsc::channel(2);
+        let session = AgentSession::new(Box::new(provider), Arc::new(ToolRegistry::new()), ui_tx);
+        let runtime = ConsultationRuntime::start("prepared-history".into(), session, ui_rx,
+            ThreadDeliveryGateway::new_in(dir.path()).unwrap(), Arc::new(|_, _, _| {}),
+            dir.path().join("agent-turn.lock")).unwrap();
+        let ledger = repeated_word_ledger(false);
+        let speech = consultation_speech_evidence(80_000);
+        let mut queue = ConsultationInputQueue::new("capture".into(), 1).unwrap();
+        queue.append_boundary(64_000).unwrap();
+        let input = queue.ready(&ledger, &speech).unwrap().unwrap();
+        let prepared = runtime.prepare_group(input.clone(),
+            turn(&input.turn_id_for_group(), input.text())).unwrap();
+        tokio::task::yield_now().await;
+        assert!(requests.lock().unwrap().is_empty());
+        assert!(entered.try_acquire().is_err());
+        assert!(runtime.close_if_idle().await.is_err(), "prepared work retains owner lifetime");
+        let PreparedConsultationGroup { pending, authorize } = prepared;
+        drop(authorize);
+        assert!(pending.finish().await.is_err(), "rejection waits for unstarted journal cleanup");
+        assert!(requests.lock().unwrap().is_empty());
+        let retained: serde_json::Value = serde_json::from_slice(
+            &std::fs::read(dir.path().join("consultations/prepared-history.json")).unwrap()).unwrap();
+        assert!(retained["queued"].as_array().unwrap().is_empty());
+        let retry = runtime.prepare_group(input.clone(),
+            turn(&input.turn_id_for_group(), input.text())).unwrap();
+        // Authorization cannot need either of these locks: capture may hold
+        // its ledger while the journal is in use by an unrelated disk write.
+        let journal = runtime.journal.upgrade().unwrap();
+        let journal_guard = journal.lock().unwrap();
+        let admission_guard = runtime.admission.lock().unwrap();
+        let accepted = retry.authorize().unwrap();
+        drop(admission_guard);
+        drop(journal_guard);
+        queue.acknowledge(&accepted).unwrap();
+        accepted.finish().await.unwrap();
+        assert_eq!(requests.lock().unwrap().len(), 1);
+        runtime.close_if_idle().await.unwrap();
+    }
+
+    #[tokio::test]
     async fn grouped_queue_preserves_source_and_durable_answer_without_reexecution() {
         let dir = tempfile::tempdir().expect("temp directory");
         let requests = Arc::new(Mutex::new(Vec::new()));
@@ -994,17 +1081,17 @@ mod tests {
         input_queue.append_boundary(64_000).unwrap();
         input_queue.append_boundary(80_000).unwrap();
         let first = input_queue.ready(&ledger, &speech).unwrap().unwrap();
-        assert!(runtime.enqueue_group(first.clone(), turn("wrong", first.text())).is_err());
-        assert!(runtime.enqueue_group(first.clone(), turn(&first.turn_id_for_group(), "changed source")).is_err());
+        assert!(runtime.prepare_group(first.clone(), turn("wrong", first.text())).is_err());
+        assert!(runtime.prepare_group(first.clone(), turn(&first.turn_id_for_group(), "changed source")).is_err());
         assert!(requests.lock().unwrap().is_empty());
         assert_eq!(input_queue.pending_groups(), 2);
         assert_eq!(input_queue.ready(&ledger, &speech).unwrap(), Some(first.clone()));
+        let prepared = runtime.prepare_group(first.clone(), turn(&first.turn_id_for_group(), first.text())).unwrap();
+        tokio::task::yield_now().await;
+        assert!(requests.lock().unwrap().is_empty(), "persisted candidate has no execution authority");
         let pending = input_queue.admit_assessed(
             ConsultationReadiness::Complete(first.clone()), &ledger, &speech,
-            |input| {
-                let request = turn(&input.turn_id_for_group(), input.text());
-                runtime.enqueue_group(input, request)
-            },
+            |_| prepared.authorize(),
         ).unwrap().unwrap();
         assert_eq!(pending.input(), &first);
         input_queue.acknowledge(&pending).unwrap();
@@ -1013,12 +1100,10 @@ mod tests {
         let second = input_queue.ready(&ledger, &speech).unwrap().unwrap();
         assert_ne!(first.turn_id_for_group(), second.turn_id_for_group());
         entered.acquire().await.unwrap().forget();
+        let prepared = runtime.prepare_group(second.clone(), turn(&second.turn_id_for_group(), second.text())).unwrap();
         let later = input_queue.admit_assessed(
             ConsultationReadiness::Complete(second.clone()), &ledger, &speech,
-            |input| {
-                let request = turn(&input.turn_id_for_group(), input.text());
-                runtime.enqueue_group(input, request)
-            },
+            |_| prepared.authorize(),
         ).unwrap().unwrap();
         input_queue.acknowledge(&later).unwrap();
         assert_eq!(input_queue.pending_groups(), 0);
@@ -1078,7 +1163,7 @@ mod tests {
         let completed = later.finish().await.unwrap();
         assert_eq!(completed.input(), &second);
         assert_eq!(completed.answer().delivery.message_count, 4);
-        assert!(runtime.enqueue_group(first.clone(), turn(&first.turn_id_for_group(), first.text())).is_err());
+        assert!(runtime.prepare_group(first.clone(), turn(&first.turn_id_for_group(), first.text())).is_err());
         assert_eq!(requests.lock().unwrap().len(), 2);
         let stored = ThreadStore::new_in(dir.path()).unwrap().load_thread("group-history").unwrap();
         assert_eq!(stored.messages.len(), 4);

@@ -230,7 +230,8 @@ async fn selected_agent_lane_roundtrip(lane: codescribe_core::config::RuntimeLlm
             .inspect_consultation(consultation.id()).unwrap().unwrap();
         assert!(inspection.pending_turn_id.is_none());
         assert!(inspection.retained_inputs.is_empty());
-        let pending = consultation.enqueue_group(input.clone(), &runtime_settings).unwrap();
+        let pending = consultation.prepare_group(input.clone(), &runtime_settings).unwrap()
+            .authorize().unwrap();
         // The destination advances before applying the answer. Its open suffix
         // is not part of the Agent request and must remain untouched.
         let later = group_fixture_mutation(&mut ledger.lock().unwrap(),

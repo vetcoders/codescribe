@@ -49,7 +49,7 @@ use crate::asr_session::recorder::{
 use crate::asr_session::{SessionId as Layer1SessionId, SessionInput as Layer1SessionInput};
 use crate::agent::consultation::{
     ConsultationGroupAnswer, ConsultationInputQueue, ConsultationReadiness,
-    PendingConsultationGroup, SealedConsultationInput,
+    PendingConsultationGroup, PreparedConsultationGroup, SealedConsultationInput,
 };
 use crate::audio::capture_receipt::{
     AcousticAvailability, AcousticSpeechEvidence, CaptureEnergyOwner, CaptureLevelAccumulator,
@@ -108,16 +108,19 @@ const CONSULTATION_QUEUE_CAP: usize = 16;
 
 enum LiveConsultationRequest {
     Assess(SealedConsultationInput),
+    Prepare(SealedConsultationInput),
     Finish(PendingConsultationGroup),
 }
 
 enum LiveConsultationResult {
     Assessed(Result<ConsultationReadiness>),
+    Prepared(Result<PreparedConsultationGroup>),
     Answer(Result<ConsultationGroupAnswer>),
 }
 
 enum LiveConsultationReturn {
     Assessed(Result<ConsultationReadiness>),
+    Prepared(Result<PreparedConsultationGroup>),
     Published(Result<()>),
 }
 
@@ -125,8 +128,6 @@ enum LiveConsultationReturn {
 /// session; only this owner reads speech edges and advances the accepted prefix.
 struct LiveConsultationCapture {
     queue: ConsultationInputQueue,
-    agent: Arc<dyn FormattingAgent>,
-    settings: Arc<RuntimeSettingsSnapshot>,
     requests: mpsc::Sender<LiveConsultationRequest>,
     returns: std_mpsc::Receiver<LiveConsultationReturn>,
     last_assessed: Option<SealedConsultationInput>,
@@ -189,6 +190,21 @@ impl LiveConsultationCapture {
                         continue;
                     };
                     if self.refused || self.speech_open { continue; }
+                    let ConsultationReadiness::Complete(input) = assessment else { continue; };
+                    match self.requests.try_send(LiveConsultationRequest::Prepare(input)) {
+                        Ok(()) => self.assessment_pending = true,
+                        Err(_) => self.report_refusal(events),
+                    }
+                }
+                LiveConsultationReturn::Prepared(result) => {
+                    self.assessment_pending = false;
+                    let prepared = match result {
+                        Ok(prepared) => prepared,
+                        Err(_) => { self.report_refusal(events); continue; }
+                    };
+                    // A dropped preparation cannot execute. Revalidate AFTER
+                    // disk I/O, while capture owns current speech and ledger.
+                    if self.refused || self.speech_open { continue; }
                     let Some(fusion) = state.fusion.as_ref() else { continue; };
                     let speech = fusion.acoustic_speech_evidence();
                     // Reserve result transport BEFORE accepting effects. A
@@ -200,18 +216,15 @@ impl LiveConsultationCapture {
                     };
                     let ledger = state.acoustic_ledger.lock()
                         .unwrap_or_else(std::sync::PoisonError::into_inner);
-                    if let ConsultationReadiness::Complete(input) = &assessment {
-                        match self.queue.ready(&ledger, &speech) {
-                            Ok(Some(current)) if &current == input => {}
-                            _ => continue,
-                        }
+                    match self.queue.ready(&ledger, &speech) {
+                        Ok(Some(current)) if &current == prepared.input() => {}
+                        _ => continue,
                     }
-                    let agent = &self.agent;
-                    let settings = &self.settings;
                     // A stale assessment is expected after continuation. It
                     // never invokes the executor and never consumes the front.
+                    let assessment = ConsultationReadiness::Complete(prepared.input().clone());
                     let accepted = self.queue.admit_assessed(assessment, &ledger, &speech,
-                        |input| agent.enqueue_group(input, settings));
+                        |_| prepared.authorize());
                     match accepted {
                         Ok(Some(pending)) => {
                             let acknowledged = self.queue.acknowledge(&pending);
@@ -273,6 +286,7 @@ fn deliver_consultation_result(
 ) {
     let result = match result {
         LiveConsultationResult::Assessed(result) => LiveConsultationReturn::Assessed(result),
+        LiveConsultationResult::Prepared(result) => LiveConsultationReturn::Prepared(result),
         LiveConsultationResult::Answer(result) => LiveConsultationReturn::Published(
             result.and_then(|answer| sink.on_consultation_completed(&answer))),
     };
@@ -898,6 +912,7 @@ pub(crate) async fn apple_stream_transcription_session(
     let (consultation_tx, mut consultation_rx) = mpsc::channel(CONSULTATION_QUEUE_CAP);
     let (consultation_return_tx, consultation_return_rx) = std_mpsc::channel();
     let mut consultation_assessments = FuturesOrdered::<BoxFuture<'static, Result<ConsultationReadiness>>>::new();
+    let mut consultation_preparations = FuturesOrdered::<BoxFuture<'static, Result<PreparedConsultationGroup>>>::new();
     let mut consultation_answers = FuturesOrdered::<BoxFuture<'static, Result<ConsultationGroupAnswer>>>::new();
     if live_formatting_agent.is_some() && event_sink.consultation_destinations() != 1 {
         event_sink.on_event(&EngineEvent::Warning {
@@ -911,11 +926,9 @@ pub(crate) async fn apple_stream_transcription_session(
             && runtime_settings.formatting_policy() == FormattingPolicy::Max
             && event_sink.consultation_destinations() == 1
     });
-    let worker_consultation = live_formatting_agent.as_ref().map(|agent| LiveConsultationCapture {
+    let worker_consultation = live_formatting_agent.as_ref().map(|_| LiveConsultationCapture {
         queue: ConsultationInputQueue::new(session_id.clone(), capture_epoch)
             .expect("recorder owns a valid capture identity"),
-        agent: Arc::clone(agent),
-        settings: Arc::clone(&runtime_settings),
         requests: consultation_tx,
         returns: consultation_return_rx,
         last_assessed: None,
@@ -988,6 +1001,16 @@ pub(crate) async fn apple_stream_transcription_session(
                             }));
                         }
                     }
+                    LiveConsultationRequest::Prepare(input) => {
+                        if let Some(agent) = live_formatting_agent.as_ref() {
+                            let agent = Arc::clone(agent);
+                            let settings = Arc::clone(&formatter_runtime_settings);
+                            consultation_preparations.push_back(Box::pin(async move {
+                                tokio::task::spawn_blocking(move || agent.prepare_group(input, &settings))
+                                    .await.map_err(|error| anyhow::anyhow!("Max preparation worker failed: {error}"))?
+                            }));
+                        }
+                    }
                     LiveConsultationRequest::Finish(pending) => {
                         consultation_answers.push_back(Box::pin(pending.finish()));
                     }
@@ -995,6 +1018,10 @@ pub(crate) async fn apple_stream_transcription_session(
             }
             Some(result) = consultation_assessments.next() => {
                 deliver_consultation_result(LiveConsultationResult::Assessed(result),
+                    &consultation_return_tx, event_sink.as_ref());
+            }
+            Some(result) = consultation_preparations.next() => {
+                deliver_consultation_result(LiveConsultationResult::Prepared(result),
                     &consultation_return_tx, event_sink.as_ref());
             }
             Some(result) = consultation_answers.next() => {
@@ -1152,7 +1179,8 @@ pub(crate) async fn apple_stream_transcription_session(
             emit_layer1_degrade_warning(event_sink.as_ref(), reason);
         }
         if worker_finished && consultation_rx.is_closed() && consultation_rx.is_empty()
-            && consultation_assessments.is_empty() && consultation_answers.is_empty()
+            && consultation_assessments.is_empty() && consultation_preparations.is_empty()
+            && consultation_answers.is_empty()
         { break; }
     }
 
@@ -4649,15 +4677,6 @@ mod c13a_lifecycle_tests {
 
     const TEST_SAMPLE_RATE: u32 = 16_000;
 
-    struct NoExecutionAgent;
-
-    #[async_trait::async_trait]
-    impl FormattingAgent for NoExecutionAgent {
-        async fn execute(&self, _: &str, _: &str, _: &RuntimeSettingsSnapshot) -> Result<String> {
-            panic!("capture bookkeeping cannot execute a text-only turn")
-        }
-    }
-
     fn consultation_owner() -> (
         LiveConsultationCapture,
         mpsc::Receiver<LiveConsultationRequest>,
@@ -4665,11 +4684,9 @@ mod c13a_lifecycle_tests {
     ) {
         let (requests, rx) = mpsc::channel(CONSULTATION_QUEUE_CAP);
         let (tx, returns) = std_mpsc::channel();
-        let settings = crate::config::Config::runtime_snapshot_from_captured(
-            crate::config::CapturedRuntimeInputs::defaults_at("/synthetic/max-capture".into(), 0));
         (LiveConsultationCapture {
             queue: ConsultationInputQueue::new("max-capture".into(), 1).unwrap(),
-            agent: Arc::new(NoExecutionAgent), settings: Arc::new(settings), requests, returns,
+            requests, returns,
             last_assessed: None, assessment_pending: false, answers_pending: 0,
             speech_open: false, refused: false,
         }, rx, tx)
@@ -4726,6 +4743,9 @@ mod c13a_lifecycle_tests {
         deliver_consultation_result(LiveConsultationResult::Assessed(Err(anyhow::anyhow!("assessment"))),
             &tx, &sink);
         assert!(matches!(rx.try_recv().unwrap(), LiveConsultationReturn::Assessed(Err(_))));
+        deliver_consultation_result(LiveConsultationResult::Prepared(Err(anyhow::anyhow!("disk"))),
+            &tx, &sink);
+        assert!(matches!(rx.try_recv().unwrap(), LiveConsultationReturn::Prepared(Err(_))));
         deliver_consultation_result(LiveConsultationResult::Answer(Err(anyhow::anyhow!("execution"))),
             &tx, &sink);
         assert!(matches!(rx.try_recv().unwrap(), LiveConsultationReturn::Published(Err(_))));

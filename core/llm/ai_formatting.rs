@@ -87,13 +87,13 @@ pub trait FormattingAgent: Send + Sync {
         anyhow::bail!("consultation readiness assessment unavailable")
     }
 
-    /// Synchronous FIFO admission, followed by separately awaited durable
-    /// completion. Text-only executors cannot manufacture group/history proof.
-    fn enqueue_group(
+    /// Blocking durable preparation without execution permission. The live
+    /// host runs this off capture, then revalidates before authorizing the handle.
+    fn prepare_group(
         &self,
         _input: crate::agent::consultation::SealedConsultationInput,
         _settings: &RuntimeSettingsSnapshot,
-    ) -> Result<crate::agent::consultation::PendingConsultationGroup> {
+    ) -> Result<crate::agent::consultation::PreparedConsultationGroup> {
         anyhow::bail!("grouped consultation execution unavailable")
     }
 }

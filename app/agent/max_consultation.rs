@@ -8,7 +8,7 @@ use tokio::sync::{mpsc, oneshot};
 use codescribe_core::agent::{AgentSession, ImageAttachment, StreamOptions,
     ThreadDeliveryGateway, ToolApprovalHandler, ToolRegistry};
 use codescribe_core::agent::consultation::{ConsultationAnswer, ConsultationEvents,
-    ConsultationRuntime, ConsultationTurn, PendingConsultationGroup, SealedConsultationInput};
+    ConsultationRuntime, ConsultationTurn, PreparedConsultationGroup, SealedConsultationInput};
 use codescribe_core::config::{FormattingPolicy, RuntimeLlmLaneKind,
     RuntimeSettingsSnapshot};
 
@@ -127,14 +127,14 @@ impl codescribe_core::ai_formatting::FormattingAgent for MaxConsultation {
         })
     }
 
-    fn enqueue_group(
+    fn prepare_group(
         &self,
         input: SealedConsultationInput,
         settings: &RuntimeSettingsSnapshot,
-    ) -> Result<PendingConsultationGroup> {
+    ) -> Result<PreparedConsultationGroup> {
         let turn = Self::prepare_turn(input.turn_id_for_group(), input.text().to_string(),
             Vec::new(), settings)?;
-        self.runtime.enqueue_group(input, turn)
+        self.runtime.prepare_group(input, turn)
     }
 
     async fn execute(&self, turn_id: &str, text: &str, settings: &RuntimeSettingsSnapshot) -> Result<String> {
