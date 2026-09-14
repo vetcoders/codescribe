@@ -203,10 +203,11 @@ impl ConsultationInputQueue {
         Ok(())
     }
 
-    /// Only call after the retained executor has accepted this exact group.
-    /// Provider failure is handled by its journal, never by replaying tools
-    /// from this capture queue. A failed enqueue must not call this method.
-    pub fn acknowledge(&mut self, input: &SealedConsultationInput) -> Result<()> {
+    /// Requires the retained executor's admission handle, not merely a ready
+    /// ledger reading. The caller keeps the handle for completion/recovery even
+    /// if this acknowledgement fails. Queue acceptance is not durable completion.
+    pub fn acknowledge(&mut self, accepted: &PendingConsultationGroup) -> Result<()> {
+        let input = accepted.input();
         ensure!(input.session_id == self.session_id && input.capture_epoch == self.capture_epoch,
             "consultation acknowledgement names a different capture");
         ensure!(input.samples.start == self.accepted_end
@@ -616,12 +617,19 @@ mod tests {
         assert_eq!(queue.pending_groups(), 2);
         assert_eq!(queue.ready(&ledger, &speech).unwrap(), Some(first.clone()),
             "an unacknowledged read remains retryable after executor pressure");
+        // This unit test isolates capture identity/order validation. Runtime
+        // admission is exercised by grouped_queue_preserves_source below.
+        let acceptance = |input: &SealedConsultationInput| {
+            let (_, reply) = oneshot::channel();
+            PendingConsultationGroup { consultation_id: "fixture".into(), input: input.clone(), reply }
+        };
+        let first_accepted = acceptance(&first);
         let mut foreign = ConsultationInputQueue::new("other".into(), 1).unwrap();
         foreign.append_boundary(64_000).unwrap();
-        assert!(foreign.acknowledge(&first).is_err());
+        assert!(foreign.acknowledge(&first_accepted).is_err());
         assert_eq!(foreign.pending_groups(), 1);
-        queue.acknowledge(&first).unwrap();
-        assert!(queue.acknowledge(&first).is_err(), "old acknowledgement cannot consume the next group");
+        queue.acknowledge(&first_accepted).unwrap();
+        assert!(queue.acknowledge(&first_accepted).is_err(), "old acknowledgement cannot consume the next group");
         for _ in 0..3 {
             assert!(queue.ready(&ledger, &speech).unwrap().is_none());
             assert_eq!(queue.pending_groups(), 1, "Whisper wait must retain the instruction");
@@ -632,7 +640,7 @@ mod tests {
         let recovered = queue.ready(&ledger, &speech).unwrap().unwrap();
         assert_eq!(recovered.text(), "Iwo");
         assert_eq!(recovered.members()[0].occurrence, last);
-        queue.acknowledge(&recovered).unwrap();
+        queue.acknowledge(&acceptance(&recovered)).unwrap();
         assert_eq!(queue.pending_groups(), 0);
         assert!(queue.ready(&ledger, &speech).unwrap().is_none());
         assert!(!queue.append_boundary(80_000).unwrap());
@@ -644,11 +652,11 @@ mod tests {
         assert_eq!(joined.pending_groups(), 1);
         joined.append_boundary(80_000).unwrap();
         joined.join_front().unwrap();
-        assert!(joined.acknowledge(&first).is_err(), "joining invalidates the narrower snapshot");
+        assert!(joined.acknowledge(&first_accepted).is_err(), "joining invalidates the narrower snapshot");
         let whole = joined.ready(&ledger, &speech).unwrap().unwrap();
         assert_eq!(whole.text(), "Iwo Iwo Iwo Iwo Iwo");
         assert_eq!(whole.members().len(), 5);
-        joined.acknowledge(&whole).unwrap();
+        joined.acknowledge(&acceptance(&whole)).unwrap();
 
         let mut full = ConsultationInputQueue::new("capture".into(), 1).unwrap();
         for boundary in 1..=16 { full.append_boundary(boundary).unwrap(); }
@@ -849,18 +857,26 @@ mod tests {
             dir.path().join("agent-turn.lock")).unwrap();
         let ledger = repeated_word_ledger(false);
         let speech = consultation_speech_evidence(80_000);
-        let first = SealedConsultationInput::from_ledger(&ledger, "capture", 1, 0..64_000, &speech)
-            .unwrap().unwrap();
-        let second = SealedConsultationInput::from_ledger(&ledger, "capture", 1, 64_000..80_000, &speech)
-            .unwrap().unwrap();
-        assert_ne!(first.turn_id_for_group(), second.turn_id_for_group());
+        let mut input_queue = ConsultationInputQueue::new("capture".into(), 1).unwrap();
+        input_queue.append_boundary(64_000).unwrap();
+        input_queue.append_boundary(80_000).unwrap();
+        let first = input_queue.ready(&ledger, &speech).unwrap().unwrap();
         assert!(runtime.enqueue_group(first.clone(), turn("wrong", first.text())).is_err());
         assert!(runtime.enqueue_group(first.clone(), turn(&first.turn_id_for_group(), "changed source")).is_err());
         assert!(requests.lock().unwrap().is_empty());
+        assert_eq!(input_queue.pending_groups(), 2);
+        assert_eq!(input_queue.ready(&ledger, &speech).unwrap(), Some(first.clone()));
         let pending = runtime.enqueue_group(first.clone(), turn(&first.turn_id_for_group(), first.text())).unwrap();
         assert_eq!(pending.input(), &first);
+        input_queue.acknowledge(&pending).unwrap();
+        assert_eq!(input_queue.pending_groups(), 1);
+        assert!(input_queue.acknowledge(&pending).is_err());
+        let second = input_queue.ready(&ledger, &speech).unwrap().unwrap();
+        assert_ne!(first.turn_id_for_group(), second.turn_id_for_group());
         entered.acquire().await.unwrap().forget();
         let later = runtime.enqueue_group(second.clone(), turn(&second.turn_id_for_group(), second.text())).unwrap();
+        input_queue.acknowledge(&later).unwrap();
+        assert_eq!(input_queue.pending_groups(), 0);
         assert_eq!(requests.lock().unwrap().len(), 1);
         release.add_permits(1);
         let completed = pending.finish().await.unwrap();

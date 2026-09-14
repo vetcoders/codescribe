@@ -541,3 +541,18 @@ The HTTP request count remains exact. This cross-component test is authored but
 unexecuted under W1; its acoustic evidence is synthetic and its tool registry
 empty. It is not real microphone/clipboard proof. Production capture admission,
 semantic completion, durable pending input and stop/cancel settlement remain open.
+
+Capture queue acknowledgement now takes PendingConsultationGroup, not a sealed
+ledger reading. Production code can obtain that handle only from successful
+retained-owner group admission. The capture queue still checks exact session,
+epoch and current interval; stale or foreign handles do not advance it. A caller
+must retain an accepted handle even if capture acknowledgement is refused, since
+that refusal cannot revoke already accepted effects.
+
+The authored retained-runtime group test now advances the actual capture queue
+with both accepted handles, checks that refused source/turn admission leaves its
+front unchanged, and rejects repeated acknowledgement before awaiting completed
+history. The isolated capture-order unit test explicitly uses constructed test
+handles and does not claim runtime admission proof. Neither test has run. This
+typed handoff closes the accidental read-as-ack API, not durable queue recovery
+or production microphone wiring; W1 and the full verification debt remain open.
