@@ -629,3 +629,20 @@ new history or permission source. The extended unexecuted failure test asserts
 two retained entries, the pending first id, synchronous third-input refusal and
 byte-identical persisted state after refusal. Closing still releases ownership
 without clearing those records. Recovery actions and full verification remain open.
+
+ThreadDeliveryGateway now exposes read-only inspect_consultation. It reads one
+atomically published journal snapshot without creating consultation directories,
+acquiring/releasing the execution lease, selecting a new conversation or invoking
+a provider. The projection contains retained user Message inputs, provider names
+and the pending turn id; request prompts, provider objects and group metadata are
+not promoted into instructions or UI action authority. Pending can mean active
+or interrupted execution: this read does not claim liveness or authorize replay.
+
+Inspection refuses malformed JSON, path escape, repeated/conflicting identities,
+non-user roles and tool-control blocks in retained source input. Missing state
+returns None, not a newly created empty consultation. Authored tests inspect
+while another owner holds the lease and after its drop, compare unchanged file
+bytes, preserve recovery refusal and cover malformed/control-shaped inputs.
+These tests are unexecuted under W1. No bridge/UI consumes this read yet; it is
+the existing store's inspection boundary for that next connection, not a finished
+recovery surface or a new history owner.

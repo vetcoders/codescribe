@@ -90,6 +90,23 @@ pub struct ThreadDeliveryReceipt {
     pub title_eligible: bool,
 }
 
+/// Read-only retained input for a recovery UI. Not a new execution request.
+#[derive(Debug, Clone, PartialEq)]
+pub struct ConsultationInputSnapshot {
+    pub turn_id: String,
+    pub input: Message,
+    pub provider_name: String,
+}
+
+/// One atomic journal read. A pending id does not prove process liveness:
+/// it may describe active work or effects interrupted by a crash.
+#[derive(Debug, Clone, PartialEq)]
+pub struct ConsultationRecoverySnapshot {
+    pub consultation_id: String,
+    pub pending_turn_id: Option<String>,
+    pub retained_inputs: Vec<ConsultationInputSnapshot>,
+}
+
 /// The single write path for completed agent turns.
 ///
 /// Every send path goes through here so thread identity, title/summary
@@ -102,6 +119,12 @@ pub struct ThreadDeliveryGateway {
 }
 
 impl ThreadDeliveryGateway {
+    /// Inspect without acquiring execution ownership, selecting a new thread,
+    /// creating journal directories, modifying history or invoking a provider.
+    pub fn inspect_consultation(&self, id: &str) -> Result<Option<ConsultationRecoverySnapshot>> {
+        super::thread_store::consultation::inspect_retained_input(&self.store, id)
+    }
+
     /// Read the durable Max selection, minting an identity only on first use.
     pub fn selected_max_consultation_id(&self) -> Result<String> {
         super::thread_store::consultation::selected_id(&self.store)

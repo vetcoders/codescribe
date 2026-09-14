@@ -41,6 +41,51 @@ struct SelectedConsultation {
     thread_id: String,
 }
 
+pub(crate) fn inspect_retained_input(
+    store: &ThreadStore,
+    id: &str,
+) -> Result<Option<crate::agent::thread_delivery::ConsultationRecoverySnapshot>> {
+    use crate::agent::thread_delivery::{ConsultationInputSnapshot, ConsultationRecoverySnapshot};
+    use crate::agent::{ContentBlock, Role};
+    validate_thread_id(id)?;
+    let directory = store.threads_dir.join("consultations");
+    match fs::symlink_metadata(&directory) {
+        Ok(_) => {}
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+        Err(error) => return Err(error).context("inspect consultation directory"),
+    }
+    let directory = canonical_existing_child(&store.threads_dir, &directory)?;
+    let file = match OpenOptions::new().read(true).custom_flags(libc::O_NOFOLLOW)
+        .open(directory.join(format!("{id}.json"))) {
+        Ok(file) => file,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+        Err(error) => return Err(error).context("inspect consultation input"),
+    };
+    // Atomic rename makes this a coherent old-or-new snapshot while an owner
+    // is running. It does not make the snapshot a lease or a recovery decision.
+    let state: AdmissionState = serde_json::from_reader(file).context("corrupt consultation admission state")?;
+    let mut ids = BTreeSet::new();
+    for entry in &state.queued {
+        ensure!(!entry.turn_id.trim().is_empty() && ids.insert(entry.turn_id.clone())
+            && !state.completed.contains(&entry.turn_id), "invalid retained consultation identity");
+        ensure!(entry.input.role == Role::User && entry.input.content.iter().all(|block|
+            matches!(block, ContentBlock::Text(_) | ContentBlock::Image { .. })),
+            "retained consultation input is not source user content");
+    }
+    if let Some(pending) = &state.pending {
+        ensure!(!pending.trim().is_empty() && !state.completed.contains(pending),
+            "invalid pending consultation identity");
+        ensure!(state.queued.is_empty() || state.queued[0].turn_id == *pending,
+            "pending consultation is not the retained front");
+    }
+    Ok(Some(ConsultationRecoverySnapshot {
+        consultation_id: id.to_string(), pending_turn_id: state.pending,
+        retained_inputs: state.queued.into_iter().map(|entry| ConsultationInputSnapshot {
+            turn_id: entry.turn_id, input: entry.input, provider_name: entry.provider_name,
+        }).collect(),
+    }))
+}
+
 /// Conversation selection is thread state, not an ASR/provider setting. Only
 /// first use mints an id; corrupt state and unresolved turns never choose a
 /// different conversation as a side effect of recovery.
@@ -223,6 +268,62 @@ mod tests {
                 vec![crate::agent::ContentBlock::Text("instruction".into())]),
             provider_name: "fixture".into(), options: serde_json::json!({}), group: None,
         }).unwrap();
+    }
+
+    #[test]
+    fn inspection_reads_retained_work_without_owner_or_disk_mutation() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = ThreadStore::new_in(dir.path()).unwrap();
+        let gateway = crate::agent::ThreadDeliveryGateway::new_in(dir.path()).unwrap();
+        assert!(gateway.inspect_consultation("missing").unwrap().is_none());
+        assert!(!dir.path().join("consultations").exists());
+        assert!(gateway.inspect_consultation("../outside").is_err());
+        let mut journal = ConsultationJournal::open(&store, "inspect").unwrap();
+        accept(&mut journal, "one");
+        accept(&mut journal, "two");
+        journal.begin("one").unwrap();
+        let path = dir.path().join("consultations/inspect.json");
+        let before = fs::read(&path).unwrap();
+        let snapshot = gateway.inspect_consultation("inspect").unwrap().unwrap();
+        assert_eq!(snapshot.consultation_id, "inspect");
+        assert_eq!(snapshot.pending_turn_id.as_deref(), Some("one"));
+        assert_eq!(snapshot.retained_inputs.iter().map(|entry| entry.turn_id.as_str()).collect::<Vec<_>>(),
+            vec!["one", "two"]);
+        assert_eq!(snapshot.retained_inputs[1].input.role, crate::agent::Role::User);
+        assert_eq!(snapshot.retained_inputs[1].input.content,
+            vec![crate::agent::ContentBlock::Text("instruction".into())]);
+        assert_eq!(fs::read(&path).unwrap(), before);
+        assert!(ConsultationJournal::open(&store, "inspect").is_err(), "inspection did not take or release execution ownership");
+        drop(journal);
+        assert_eq!(gateway.inspect_consultation("inspect").unwrap(), Some(snapshot));
+        assert!(ConsultationJournal::open(&store, "inspect").is_err(), "inspection must not resolve uncertainty");
+        assert_eq!(fs::read(&path).unwrap(), before);
+        fs::write(&path, b"{broken").unwrap();
+        assert!(gateway.inspect_consultation("inspect").is_err());
+        assert_eq!(fs::read(path).unwrap(), b"{broken");
+    }
+
+    #[test]
+    fn inspection_refuses_control_blocks_and_conflicting_pending_identity() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = ThreadStore::new_in(dir.path()).unwrap();
+        let gateway = crate::agent::ThreadDeliveryGateway::new_in(dir.path()).unwrap();
+        let mut journal = ConsultationJournal::open(&store, "invalid-input").unwrap();
+        accept(&mut journal, "one");
+        let original = journal.state.queued[0].clone();
+        journal.state.queued[0].input.role = crate::agent::Role::Assistant;
+        journal.persist().unwrap();
+        assert!(gateway.inspect_consultation("invalid-input").is_err());
+        journal.state.queued[0] = original;
+        journal.state.pending = Some("other".into());
+        journal.persist().unwrap();
+        assert!(gateway.inspect_consultation("invalid-input").is_err());
+        journal.state.pending = None;
+        journal.state.queued[0].input.content = vec![crate::agent::ContentBlock::ToolUse {
+            id: "call".into(), name: "execute".into(), input: serde_json::json!({}),
+        }];
+        journal.persist().unwrap();
+        assert!(gateway.inspect_consultation("invalid-input").is_err());
     }
 
     #[test]
