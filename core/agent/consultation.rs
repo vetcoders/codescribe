@@ -963,6 +963,44 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn accepted_waiting_instruction_is_durable_before_provider_execution() {
+        let dir = tempfile::tempdir().unwrap();
+        let requests = Arc::new(Mutex::new(Vec::new()));
+        let entered = Arc::new(Semaphore::new(0));
+        let release = Arc::new(Semaphore::new(0));
+        let provider = ObservedProvider { requests: Arc::clone(&requests),
+            entered: Arc::clone(&entered), release: Arc::clone(&release), fail: false };
+        let (ui_tx, ui_rx) = mpsc::channel(2);
+        let session = AgentSession::new(Box::new(provider), Arc::new(ToolRegistry::new()), ui_tx);
+        let runtime = ConsultationRuntime::start("durable-input".into(), session, ui_rx,
+            ThreadDeliveryGateway::new_in(dir.path()).unwrap(), Arc::new(|_, _, _| {}),
+            dir.path().join("agent-turn.lock")).unwrap();
+        let first = runtime.enqueue(turn("first", "Prepare a command.")).unwrap();
+        entered.acquire().await.unwrap().forget();
+        let second = runtime.enqueue(turn("second", "Change only the file name to Monika.txt.")).unwrap();
+        assert_eq!(requests.lock().unwrap().len(), 1, "the second provider call has not started");
+        // Read while the first provider is blocked. No sleep, completion or
+        // graceful shutdown may be needed to persist an acknowledged input.
+        let bytes = std::fs::read(dir.path().join("consultations/durable-input.json")).unwrap();
+        let journal: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+        let queued = journal["queued"].as_array().expect("acknowledged waiting inputs must be durable");
+        let waiting = queued.iter().find(|entry| entry["turn_id"] == "second")
+            .expect("second instruction must survive loss of the in-memory channel");
+        let input: Message = serde_json::from_value(waiting["input"].clone()).unwrap();
+        assert_eq!(input.role, Role::User);
+        assert_eq!(input.content, vec![ContentBlock::Text("Change only the file name to Monika.txt.".into())]);
+        assert_eq!(journal["pending"], "first");
+        release.add_permits(1);
+        first.await.unwrap().unwrap();
+        second.await.unwrap().unwrap();
+        runtime.close_if_idle().await.unwrap();
+        let journal: serde_json::Value = serde_json::from_slice(
+            &std::fs::read(dir.path().join("consultations/durable-input.json")).unwrap()).unwrap();
+        assert!(journal["queued"].as_array().unwrap().is_empty(), "completed input belongs in canonical history only");
+        assert!(journal["completed"].as_array().unwrap().contains(&serde_json::json!("second")));
+    }
+
+    #[tokio::test]
     async fn failed_turn_stops_following_work_and_other_policies_cannot_enter() {
         let dir = tempfile::tempdir().expect("temp directory");
         let requests = Arc::new(Mutex::new(Vec::new()));

@@ -556,3 +556,30 @@ history. The isolated capture-order unit test explicitly uses constructed test
 handles and does not claim runtime admission proof. Neither test has run. This
 typed handoff closes the accidental read-as-ack API, not durable queue recovery
 or production microphone wiring; W1 and the full verification debt remain open.
+
+## Durable admission falsifier at a210cea07
+
+Source inspection confirms a lost-input window: ConsultationRuntime::enqueue
+increments an in-memory count and sends through mpsc, while run_owner calls
+ConsultationJournal::begin only after dequeuing and obtaining its install lease.
+AdmissionState stores completed ids and one pending id, not waiting input.
+Thus successful queue acceptance currently cannot prove restart survival.
+
+An authored test now blocks the first provider call, enqueues a second instruction,
+and immediately reads the existing consultation journal. It requires a queued
+entry with turn_id and canonical user Message input before that second provider
+call starts. After completion it requires removal from queued state while the
+completed id remains. This is an unexecuted falsifier: inspected current source
+does not implement the asserted queued field. It is not a green regression test.
+
+Next structural implementation must persist acceptance in this same journal
+before returning the admission handle. Completed messages remain owned by
+ThreadStore; queued input is unfinished work, not a second conversation history.
+Reserve channel capacity before durable acceptance, serialize admission order,
+and preserve journal ownership across that write without stale runtime handles
+keeping its kernel lease alive after close. Installer refusal before effects
+must explicitly settle unstarted admission, while an uncertain write or executed
+turn remains recovery-required. Reopen must never silently replay uncertain tools.
+Group source receipts and multimodal input must also survive; do not store auth
+credentials or replacement-provider objects as recovery payloads. This schema
+and lifecycle work remains unfinished; no W2 closure is asserted.
