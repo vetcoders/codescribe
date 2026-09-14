@@ -113,6 +113,75 @@ impl SealedConsultationInput {
     pub fn text(&self) -> &str { &self.text }
 }
 
+/// Capture-local pending group boundaries. This owns transport order only;
+/// the ledger still owns speech, labels and seals. A missing ready input is
+/// retained for the next recovery tick, never consumed as an empty instruction.
+/// The host must retain this owner until outstanding groups are resolved.
+pub struct ConsultationInputQueue {
+    session_id: String,
+    capture_epoch: u64,
+    accepted_end: u64,
+    boundaries: std::collections::VecDeque<u64>,
+}
+
+impl ConsultationInputQueue {
+    pub fn new(session_id: String, capture_epoch: u64) -> Result<Self> {
+        ensure!(!session_id.trim().is_empty() && capture_epoch != 0,
+            "consultation input requires capture identity");
+        Ok(Self { session_id, capture_epoch, accepted_end: 0, boundaries: Default::default() })
+    }
+
+    /// Register a recorder-clock boundary. Duplicate ticks are harmless;
+    /// backwards boundaries and queue pressure are explicit refusals. The
+    /// caller must retain a refused boundary and retry, not discard the audio.
+    pub fn append_boundary(&mut self, end: u64) -> Result<bool> {
+        let last = self.boundaries.back().copied().unwrap_or(self.accepted_end);
+        ensure!(end >= last, "consultation boundary moved backwards");
+        if end == last { return Ok(false); }
+        ensure!(self.boundaries.len() < 16, "consultation input queue is full");
+        self.boundaries.push_back(end);
+        Ok(true)
+    }
+
+    /// Re-read current ledger truth after each observer return. No cached
+    /// label can hide a later recovery. Reading has no queue side effects.
+    pub fn ready(
+        &self,
+        ledger: &crate::pipeline::acoustic_ledger::AcousticLedger,
+        speech: &crate::audio::capture_receipt::AcousticSpeechEvidence,
+    ) -> Result<Option<SealedConsultationInput>> {
+        let Some(end) = self.boundaries.front().copied() else { return Ok(None); };
+        SealedConsultationInput::from_ledger(
+            ledger, &self.session_id, self.capture_epoch, self.accepted_end..end, speech,
+        )
+    }
+
+    /// A semantic decision may join adjacent candidates, but cannot remove
+    /// speech or merge their acoustic occurrences. Existing input snapshots
+    /// cease to match the front and therefore cannot acknowledge this group.
+    pub fn join_front(&mut self) -> Result<()> {
+        ensure!(self.boundaries.len() >= 2, "no following consultation group yet");
+        self.boundaries.pop_front();
+        Ok(())
+    }
+
+    /// Only call after the retained executor has accepted this exact group.
+    /// Provider failure is handled by its journal, never by replaying tools
+    /// from this capture queue. A failed enqueue must not call this method.
+    pub fn acknowledge(&mut self, input: &SealedConsultationInput) -> Result<()> {
+        ensure!(input.session_id == self.session_id && input.capture_epoch == self.capture_epoch,
+            "consultation acknowledgement names a different capture");
+        ensure!(input.samples.start == self.accepted_end
+            && self.boundaries.front().copied() == Some(input.samples.end),
+            "consultation acknowledgement is stale or out of order");
+        self.accepted_end = input.samples.end;
+        self.boundaries.pop_front();
+        Ok(())
+    }
+
+    pub fn pending_groups(&self) -> usize { self.boundaries.len() }
+}
+
 /// One admitted instruction, not an arbitrary partial ASR label.
 pub struct ConsultationTurn {
     pub id: String,
@@ -446,6 +515,63 @@ mod tests {
         assert!(SealedConsultationInput::from_ledger(&ledger, "foreign", 1, 0..80_000, &consultation_speech_evidence(80_000))
             .unwrap().is_none());
         assert!(SealedConsultationInput::from_ledger(&ledger, "capture", 1, 10..10, &consultation_speech_evidence(80_000)).is_err());
+    }
+
+    #[test]
+    fn input_queue_retains_unready_groups_and_rejects_stale_acknowledgements() {
+        use crate::pipeline::acoustic_ledger::{ObservationProducer, OccurrenceIdentity};
+        let mut ledger = repeated_word_ledger(true);
+        let speech = consultation_speech_evidence(80_000);
+        let mut queue = ConsultationInputQueue::new("capture".into(), 1).unwrap();
+        assert!(queue.append_boundary(64_000).unwrap());
+        assert!(!queue.append_boundary(64_000).unwrap());
+        assert!(queue.append_boundary(80_000).unwrap());
+        let first = queue.ready(&ledger, &speech).unwrap().unwrap();
+        assert_eq!(first.text(), "Iwo Iwo Iwo Iwo");
+        assert_eq!(queue.pending_groups(), 2);
+        assert_eq!(queue.ready(&ledger, &speech).unwrap(), Some(first.clone()),
+            "an unacknowledged read remains retryable after executor pressure");
+        let mut foreign = ConsultationInputQueue::new("other".into(), 1).unwrap();
+        foreign.append_boundary(64_000).unwrap();
+        assert!(foreign.acknowledge(&first).is_err());
+        assert_eq!(foreign.pending_groups(), 1);
+        queue.acknowledge(&first).unwrap();
+        assert!(queue.acknowledge(&first).is_err(), "old acknowledgement cannot consume the next group");
+        for _ in 0..3 {
+            assert!(queue.ready(&ledger, &speech).unwrap().is_none());
+            assert_eq!(queue.pending_groups(), 1, "Whisper wait must retain the instruction");
+        }
+        let last = OccurrenceIdentity::new("capture", 1, 64_000, 80_000);
+        ledger.note_frontier_return(&last, ObservationProducer::Whisper);
+        ledger.seal(&last).unwrap();
+        let recovered = queue.ready(&ledger, &speech).unwrap().unwrap();
+        assert_eq!(recovered.text(), "Iwo");
+        assert_eq!(recovered.members()[0].0, last);
+        queue.acknowledge(&recovered).unwrap();
+        assert_eq!(queue.pending_groups(), 0);
+        assert!(queue.ready(&ledger, &speech).unwrap().is_none());
+        assert!(!queue.append_boundary(80_000).unwrap());
+        assert!(queue.append_boundary(79_999).is_err());
+
+        let mut joined = ConsultationInputQueue::new("capture".into(), 1).unwrap();
+        joined.append_boundary(64_000).unwrap();
+        assert!(joined.join_front().is_err(), "waiting for a continuation must keep the first group");
+        assert_eq!(joined.pending_groups(), 1);
+        joined.append_boundary(80_000).unwrap();
+        joined.join_front().unwrap();
+        assert!(joined.acknowledge(&first).is_err(), "joining invalidates the narrower snapshot");
+        let whole = joined.ready(&ledger, &speech).unwrap().unwrap();
+        assert_eq!(whole.text(), "Iwo Iwo Iwo Iwo Iwo");
+        assert_eq!(whole.members().len(), 5);
+        joined.acknowledge(&whole).unwrap();
+
+        let mut full = ConsultationInputQueue::new("capture".into(), 1).unwrap();
+        for boundary in 1..=16 { full.append_boundary(boundary).unwrap(); }
+        assert!(full.append_boundary(17).is_err());
+        assert_eq!(full.pending_groups(), 16, "pressure cannot evict an earlier group");
+        full.join_front().unwrap();
+        assert!(full.append_boundary(17).unwrap(), "refused boundary remains retryable");
+        assert_eq!(full.pending_groups(), 16);
     }
 
     struct ObservedProvider {
