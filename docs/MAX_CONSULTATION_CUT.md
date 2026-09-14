@@ -334,6 +334,78 @@ coalesced notifications, re-entrant snapshot invalidation and separating Max
 refresh from chat summon. These tests remain unrun; first generated-binding,
 compile and real permission-window proof are still outstanding.
 
+## Live assembly decision record (after dacb32089)
+
+This is Roman's source-derived implementation design, not a new Founder
+decision and not a W2 closure receipt. The live path is still absent.
+
+### Evidence changing the next implementation step
+
+- apple_stream_transcription_session receives SessionConfig with the capture
+  identity, immutable settings and shared AcousticLedger, but no host Max
+  capability. Passing a callback only to controller terminal formatting cannot
+  reach this function.
+- schedule_formatter_after_terminal_label acquires a permit for exactly one
+  occurrence before the last earlier observer returns. Its FormatterRequest
+  and FormatterCompletion both carry one occurrence. Replacing None with Max
+  in that call would execute one tool conversation per fragment.
+- EpochDecision::Sleep finishes Apple, seals its open partial and flushes
+  Layer 1 coalescing. It does not wait for Whisper completion. Sleep is a
+  candidate acoustic boundary, not permission to execute.
+- core/conversation/turns.rs::TurnManager uses wall-clock speech/silence
+  thresholds. It has no occurrence membership, ledger receipts or semantic
+  completeness input. Instantiating it beside the existing EpochGate would
+  add another timing owner without resolving instruction readiness.
+- PresentationEmitter::terminal_revision_source and apply_formatter_revision
+  are a terminal-document corridor. record_manual_document_revision expressly
+  does not distribute generated words back across PCM labels. Using either as
+  a live per-occurrence formatter would misrepresent the provenance.
+
+### Required assembly order
+
+1. Carry the selected host execution capability through the existing recorder
+   session configuration. It is optional for non-Max takes and sealed once per
+   capture; the core must not instantiate app tools or reload settings.
+2. At an existing acoustic boundary, retain the capture sample interval and
+   its member occurrences. Preserve five distinct equal labels as five PCM
+   members. This is instruction grouping, never new acoustic identity.
+3. Wait for every member's real observation frontier and seal receipt, including
+   Whisper and required text recovery. Uncovered speech, missing receipts,
+   dropped refinement or a crossing occurrence prevents readiness; a timeout
+   must not convert these into success.
+4. Distinguish acoustic readiness from a complete instruction. No inspected
+   component currently supplies a semantic-completeness verdict. The concrete
+   semantic admission mechanism remains an open architectural obligation;
+   punctuation, elapsed silence and engine closure alone cannot close it.
+5. Admit one ready instruction with an explicit capture/boundary identity to
+   the retained FIFO. Queue ownership precedes provider/tool execution.
+   Resuming speech while readiness is pending must extend or invalidate that
+   candidate before effects, without replaying an already admitted turn.
+6. Render tentative Agent events with consultation AND turn identity, separate
+   from committed ASR text. A result is a revision of the admitted instruction
+   group, not a label assigned to its first occurrence. The existing reducer
+   needs a scoped admission operation that preserves later spoken content.
+   Stale or cancelled destinations must not overwrite the successor document.
+7. On stop, settle pending candidates and acknowledged turns explicitly. Neither
+   abandon acknowledged instructions nor secretly rerun the entire take through
+   a second Max turn. Persistence and cancellation obligations still apply.
+
+### Falsifiers required before W2 closure
+
+Author cross-component cases for: five identical physical words in one
+instruction; one instruction split across several Apple results; silence while
+Whisper is pending; resumed speech before readiness; queue pressure; a dropped
+UI consumer after tool execution; a tool result arriving after the next
+instruction; capture cancellation; and stop while a permission is outstanding.
+Each must assert tool execution count and identity, retained conversation
+history, ledger membership and final delivered document together. Isolated
+queue tests cannot prove these properties. Real-audio proof remains W4.
+
+The next write must address capability transport and grouped admission, not
+change the existing per-occurrence Max call to execute tools prematurely.
+Any required change outside the closed W1 source domain needs an explicit
+domain update before editing; this record does not silently expand it.
+
 These checkpoints are structural W1 work. Checkpoint hooks are bypassed in full:
 trailing-whitespace, end-of-file-fixer, check-merge-conflict, mixed-line-ending,
 detect-private-key (security), cargo-check, cargo-fmt, prettier and
