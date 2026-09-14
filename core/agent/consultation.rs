@@ -6,7 +6,6 @@
 //! construction, permissions and explicit cancellation. This module never
 //! creates a recorder, changes delivery destination or invents PCM identity.
 
-use std::collections::HashSet;
 use std::sync::Arc;
 
 use anyhow::{Context, Result, anyhow, ensure};
@@ -14,6 +13,7 @@ use chrono::Utc;
 use tokio::sync::{mpsc, oneshot};
 
 use crate::config::FormattingPolicy;
+use super::thread_store::consultation::ConsultationJournal;
 use super::{
     AgentProvider, AgentSession, AgentUiEvent, ContentBlock, ImageAttachment,
     Role, StreamOptions, ThreadDeliveryGateway, ThreadDeliveryInput,
@@ -70,9 +70,10 @@ impl ConsultationRuntime {
         events: ConsultationEvents,
     ) -> Result<Self> {
         ensure!(!id.trim().is_empty(), "consultation identity is required");
+        let journal = gateway.open_consultation(&id)?;
         session.bind_execution_thread(id.clone());
         let (tx, rx) = mpsc::channel(16);
-        tokio::spawn(run_owner(id.clone(), session, ui_rx, gateway, events, rx));
+        tokio::spawn(run_owner(id.clone(), session, ui_rx, gateway, journal, events, rx));
         Ok(Self { id, tx })
     }
 
@@ -99,22 +100,23 @@ async fn run_owner(
     mut session: AgentSession,
     mut ui_rx: mpsc::Receiver<AgentUiEvent>,
     gateway: ThreadDeliveryGateway,
+    mut journal: ConsultationJournal,
     events: ConsultationEvents,
     mut rx: mpsc::Receiver<QueuedTurn>,
 ) {
-    let mut accepted = HashSet::new();
     let mut unsettled: Option<String> = None;
     while let Some(QueuedTurn { turn, reply }) = rx.recv().await {
         if let Some(reason) = &unsettled {
             let _ = reply.send(Err(anyhow!("consultation requires recovery: {reason}")));
             continue;
         }
-        if !accepted.insert(turn.id.clone()) {
-            let _ = reply.send(Err(anyhow!("turn {} was already admitted; refusing replay", turn.id)));
+        if let Err(error) = journal.begin(&turn.id) {
+            let _ = reply.send(Err(error));
             continue;
         }
         let turn_id = turn.id.clone();
-        let result = run_turn(&id, &mut session, &mut ui_rx, &gateway, &events, turn).await;
+        let result = run_turn(&id, &mut session, &mut ui_rx, &gateway, &events, turn).await
+            .and_then(|answer| { journal.complete(&turn_id)?; Ok(answer) });
         if let Err(error) = &result {
             // Do not roll back successful tool effects or automatically retry a
             // partially executed instruction. The host must resolve this state.

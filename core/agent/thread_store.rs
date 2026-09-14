@@ -16,6 +16,7 @@
 //!   derivation paths never overwrite an owned title.
 
 use std::fs;
+use std::io::Write;
 use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result, bail};
@@ -29,6 +30,9 @@ use tracing::{debug, warn};
 
 use super::thread_index::ThreadIndex;
 use super::types::{ContentBlock, Message, Role};
+
+/// Durable admission receipts for Max turns, beside canonical thread history.
+pub(crate) mod consultation;
 
 /// Subdirectory under app data holding per-thread JSON files.
 const THREADS_DIR_NAME: &str = "threads";
@@ -934,8 +938,11 @@ fn atomic_write(path: &Path, data: &[u8]) -> Result<()> {
     }
 
     let tmp = path.with_extension("tmp");
-    fs::write(&tmp, data)
+    let mut file = fs::File::create(&tmp)
+        .with_context(|| format!("Failed to create temporary file {}", tmp.display()))?;
+    file.write_all(data)
         .with_context(|| format!("Failed to write temporary file {}", tmp.display()))?;
+    file.sync_all().context("Failed to sync thread data before rename")?;
     fs::rename(&tmp, path).with_context(|| {
         format!(
             "Failed to atomically rename {} -> {}",
@@ -943,6 +950,9 @@ fn atomic_write(path: &Path, data: &[u8]) -> Result<()> {
             path.display()
         )
     })?;
+    if let Some(parent) = path.parent() {
+        fs::File::open(parent)?.sync_all().context("Failed to sync thread directory")?;
+    }
     Ok(())
 }
 

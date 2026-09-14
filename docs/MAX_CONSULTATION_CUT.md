@@ -151,12 +151,27 @@ first reply receiver, completed history in the canonical store, duplicate-id
 refusal, failed-turn blocking and Off/Correction/Smart exclusion. These use a
 synthetic provider, not real clipboard or tool execution.
 
-Outstanding: host-owned consultation selection/reset and strict history restore,
-durable admission/pending/failed records and cross-restart replay protection,
-explicit cancellation and install lease, host execution handoff on all three
-formatting paths, permission UI and live presentation/delivery wiring. The new
-owner is not connected to production. Its in-memory failure/duplicate state is
-not crash recovery; completed-thread persistence alone does not close that gap.
+The following step moves pending/completed turn identities into a journal owned
+by ThreadStore, alongside (not duplicating) message history. A kernel file lock
+permits one live owner per consultation. The pending marker is written and synced
+before provider execution. Completion is written only after the canonical
+history receipt. Reopen refuses unresolved pending state or malformed JSON;
+completed ids cannot be replayed after reopen. A crash between history delivery
+and journal completion conservatively requires recovery. Thread atomic writes
+now sync data before rename and the parent directory after rename, so the
+completion journal cannot intentionally outrun an unsynced thread save.
+
+Authored journal tests simulate owner drop/reopen, unfinished-turn refusal,
+completed-id replay refusal, concurrent ownership, malformed state and path
+escape. They have not run and are not actual process-kill/power-loss evidence.
+
+Outstanding: host-owned consultation selection/reset and strict history restore
+under the ownership lock; durable queued-but-not-started instructions; explicit
+reconciliation of unresolved turns (never implicit replay); cancellation and
+install lease; host execution handoff on all three formatting paths; permission
+UI and live presentation/delivery wiring. The new owner is not connected to
+production. The journal protects before-effects admission, not all acknowledged
+in-memory queue entries; do not claim complete crash recovery yet.
 
 Both checkpoints are structural W1 work. Checkpoint hooks are bypassed in full:
 trailing-whitespace, end-of-file-fixer, check-merge-conflict, mixed-line-ending,

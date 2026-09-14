@@ -102,6 +102,11 @@ pub struct ThreadDeliveryGateway {
 }
 
 impl ThreadDeliveryGateway {
+    /// Lock the same store's consultation admission state before executing tools.
+    pub(crate) fn open_consultation(&self, id: &str) -> Result<super::thread_store::consultation::ConsultationJournal> {
+        super::thread_store::consultation::ConsultationJournal::open(&self.store, id)
+    }
+
     /// Open the gateway over the user's real threads directory.
     pub fn new() -> Result<Self> {
         Ok(Self {
