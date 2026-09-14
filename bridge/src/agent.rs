@@ -9,8 +9,10 @@ use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 use codescribe_core::agent::{
     AgentSession, AgentUiEvent, ImageAttachment, Message, StreamOptions, ThreadDeliveryGateway,
     ThreadDeliveryInput, ThreadDeliverySource, ThreadMessage, ThreadStore, ToolApprovalHandler,
-    ToolApprovalRequest, ToolOrigin, ToolRegistry,
+    ToolApprovalRequest, ToolOrigin,
 };
+#[cfg(test)]
+use codescribe_core::agent::ToolRegistry;
 use codescribe_core::attachment::{MAX_VISION_IMAGE_BYTES, load_image_for_vision};
 use codescribe_core::config::RuntimeSettingsSnapshot;
 use tokio::task::AbortHandle;
@@ -322,14 +324,7 @@ impl CodescribeAgent {
             settings.as_ref(),
             codescribe_core::config::RuntimeLlmLaneKind::Assistive,
         )?;
-        let mut registry = ToolRegistry::new();
-        codescribe::agent::tools::register_all_tools(&mut registry);
-        // settings.json agent.permissions + legacy tool_grants (always-allow).
-        registry.set_policy(
-            codescribe_core::agent::permissions::AgentPermissions::load()
-                .with_legacy_grants(codescribe_core::agent::tool_grants::load_granted()),
-        );
-        registry.enable_policy_hot_reload();
+        let registry = codescribe::agent::tools::configured_registry();
         let (ui_tx, ui_rx) = tokio::sync::mpsc::channel::<AgentUiEvent>(64);
         let approvals = Arc::clone(&self.approvals);
         let approval_handler: ToolApprovalHandler =

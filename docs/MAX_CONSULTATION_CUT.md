@@ -190,9 +190,19 @@ and retry filters; the app Max host implements it. Missing capability returns
 Failed rather than running the one-shot prompt and pretending to be an Agent.
 Off/Correction/Smart cannot invoke the capability. An authored core test checks
 short correction admission, unchanged legitimate answers and those policy
-boundaries. All production call sites currently pass None: this is an explicitly
-unassembled state in which Max cannot run, not a release candidate. Next work
-must supply the retained host and exact turn identity from controller/capture.
+boundaries. The controller now retains one Max host across captures and supplies
+it to explicit overlay formatting and terminal composer formatting. Turn ids
+come from session id plus source revision, not transcript text. Both routes
+still pass their answer through existing presentation revision admission.
+Chat, voice Agent and this Max host now use one `configured_registry` factory
+with the same persisted permissions, grant merge and decision-time hot reload.
+
+The controller currently creates a fresh consultation id after process launch;
+durable selection/reset UI is not wired. Approval requests without a host broker
+remain refused. Its event callback currently reports errors only; streaming Max
+UI is not connected. Live occurrence formatting still passes None, deliberately
+not executing one tool turn per acoustic fragment. This remains unassembled and
+must not be installed as a completed Max cut.
 
 Outstanding: production host-owned consultation selection/reset; durable
 queued-but-not-started instructions; explicit

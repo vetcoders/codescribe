@@ -813,6 +813,10 @@ pub struct RecordingController {
     /// Replaced atomically when the next take installs its own authority.
     active_presentation: Arc<RwLock<Option<Arc<PresentationEmitter>>>>,
 
+    /// Max conversation survives capture teardown; microphone lifetime is not
+    /// conversation lifetime. No chat selection or OS focus changes this slot.
+    max_consultation: Mutex<Option<Arc<crate::agent::max_consultation::MaxConsultation>>>,
+
     /// Task handle for delayed hold-start (800ms default)
     hold_start_task: Arc<Mutex<Option<JoinHandle<()>>>>,
     /// Monotonic generation for hold-start tasks.
@@ -1084,6 +1088,7 @@ impl RecordingController {
             session_id: Arc::new(RwLock::new(None)),
             active_transcript_bus: Arc::new(RwLock::new(None)),
             active_presentation: Arc::new(RwLock::new(None)),
+            max_consultation: Mutex::new(None),
             hold_start_task: Arc::new(Mutex::new(None)),
             hold_start_generation: Arc::new(AtomicU64::new(0)),
             start_transition_in_flight: Arc::new(AtomicBool::new(false)),
@@ -1118,6 +1123,34 @@ impl RecordingController {
     /// Get current state
     pub async fn current_state(&self) -> State {
         *self.state.read().await
+    }
+
+    /// Resolve the controller's retained Max consultation without another
+    /// recorder or a process-global conversation selection.
+    async fn selected_max_consultation(
+        &self,
+        settings: &RuntimeSettingsSnapshot,
+    ) -> Result<Option<Arc<crate::agent::max_consultation::MaxConsultation>>> {
+        if settings.formatting_policy() != codescribe_core::config::FormattingPolicy::Max {
+            return Ok(None);
+        }
+        let mut selected = self.max_consultation.lock().await;
+        if selected.is_none() {
+            let consultation = crate::agent::max_consultation::MaxConsultation::start(
+                codescribe_core::agent::ThreadStore::generate_id(),
+                settings,
+                Arc::new(crate::agent::tools::configured_registry()),
+                None,
+                codescribe_core::agent::ThreadDeliveryGateway::new()?,
+                Arc::new(|_consultation, _turn, event| {
+                    if let codescribe_core::agent::AgentUiEvent::Error(error) = event {
+                        warn!(%error, "Max consultation failed");
+                    }
+                }),
+            )?;
+            *selected = Some(Arc::new(consultation));
+        }
+        Ok(selected.clone())
     }
 
     /// Commit an overlay edit through the retained terminal reducer. The
@@ -1173,11 +1206,13 @@ impl RecordingController {
             .map_err(anyhow::Error::new)?;
         let runtime_settings = self.runtime_settings_arc().await;
         let language = runtime_settings.values().whisper_language;
+        let consultation = self.selected_max_consultation(runtime_settings.as_ref()).await?;
+        let turn_id = format!("{session_id}:revision:{source_revision}");
         let result = format_text_with_status_for_policy(
             &source,
             language.whisper_hint(),
             runtime_settings.as_ref(),
-            None,
+            consultation.as_deref().map(|agent| codescribe_core::ai_formatting::FormattingConsultation { agent, turn_id: &turn_id }),
         )
         .await;
         let _serial_guard = self.serial_lock.lock().await;
@@ -4542,11 +4577,19 @@ impl RecordingController {
         let language = runtime_settings.values().whisper_language;
         // The one paid call this take is allowed. Same production entry point
         // the explicit overlay formatter uses; no second lane, no retry loop.
+        let consultation = match self.selected_max_consultation(runtime_settings.as_ref()).await {
+            Ok(consultation) => consultation,
+            Err(error) => {
+                warn!(%error, "Max consultation unavailable; preserving committed transcript");
+                return committed_text;
+            }
+        };
+        let turn_id = format!("{session_id}:revision:{source_revision}");
         let result = format_text_with_status_for_policy(
             &source_text,
             language.whisper_hint(),
             runtime_settings.as_ref(),
-            None,
+            consultation.as_deref().map(|agent| codescribe_core::ai_formatting::FormattingConsultation { agent, turn_id: &turn_id }),
         )
         .await;
         match presentation.apply_formatter_revision(session_id, source_revision, result) {

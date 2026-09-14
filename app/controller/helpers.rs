@@ -17,8 +17,9 @@ use anyhow::{Context, Result};
 use codescribe_core::agent::{
     AgentSession, AgentUiEvent, ImageAttachment, Message, StreamOptions, ThreadDeliveryGateway,
     ThreadDeliveryInput, ThreadDeliveryReceipt, ThreadDeliverySource, ThreadMessage, ThreadStore,
-    ToolRegistry,
 };
+#[cfg(test)]
+use codescribe_core::agent::ToolRegistry;
 use codescribe_core::config::{
     Config, RuntimeLlmLane, RuntimeSettingsSnapshot, SettingsSnapshotDigest,
 };
@@ -476,15 +477,7 @@ fn load_thread_messages_from(
 fn initialize_agent_runtime(
     runtime_settings: &Arc<RuntimeSettingsSnapshot>,
 ) -> Result<AgentRuntime> {
-    let mut registry = ToolRegistry::new();
-    crate::agent::tools::register_all_tools(&mut registry);
-    // B2: same policy load as the UniFFI bridge path — settings.json
-    // agent.permissions + legacy tool_grants always-allow keys.
-    registry.set_policy(
-        codescribe_core::agent::permissions::AgentPermissions::load()
-            .with_legacy_grants(codescribe_core::agent::tool_grants::load_granted()),
-    );
-    registry.enable_policy_hot_reload();
+    let registry = crate::agent::tools::configured_registry();
 
     let provider = crate::agent::create_provider_for_lane(
         runtime_settings.as_ref(),
