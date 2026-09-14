@@ -646,3 +646,19 @@ bytes, preserve recovery refusal and cover malformed/control-shaped inputs.
 These tests are unexecuted under W1. No bridge/UI consumes this read yet; it is
 the existing store's inspection boundary for that next connection, not a finished
 recovery surface or a new history owner.
+
+The next checkpoint connects selected-consultation inspection to CodescribeHotkeys
+without constructing RecordingController or Max. Selection inspection reads the
+existing atomic selection file and journal; first use returns None instead of
+minting an identity. A selected identity with no journal returns an empty snapshot
+for that identity without creating a journal. Corrupt selection remains an error.
+The returned identity is the one read even if selection changes concurrently.
+The bridge projects source text blocks, attachment count and provider name, not
+image bytes, request options or permission to replay potentially executed work.
+ThreadStore initialization can create its root/blobs directories; consultation
+inspection itself creates neither selection nor journal directories or files.
+
+Authored, unexecuted tests cover missing selection, active and interrupted work,
+unchanged selection/journal bytes, corrupt and escaping selection, and bridge
+projection of exact source text with attachment count. Swift consumption,
+generated bindings, recovery decisions and real crash proof remain outstanding.

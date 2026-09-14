@@ -119,6 +119,13 @@ pub struct ThreadDeliveryGateway {
 }
 
 impl ThreadDeliveryGateway {
+    /// Read the existing selection and its retained input, without selecting a
+    /// consultation on first use. Snapshot identity may cease to be selected
+    /// after the read; it is not an execution lease or a reset authorization.
+    pub fn inspect_selected_max_consultation(&self) -> Result<Option<ConsultationRecoverySnapshot>> {
+        super::thread_store::consultation::inspect_selected_max_consultation(&self.store)
+    }
+
     /// Inspect without acquiring execution ownership, selecting a new thread,
     /// creating journal directories, modifying history or invoking a provider.
     pub fn inspect_consultation(&self, id: &str) -> Result<Option<ConsultationRecoverySnapshot>> {

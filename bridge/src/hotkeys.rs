@@ -706,6 +706,48 @@ async fn compensate_orphaned_preparing(controller: &Arc<RecordingController>) {
     }
 }
 
+/// Read-only source instruction projection. Image bytes and provider options
+/// stay in the retained journal; this view grants no tool or replay permission.
+#[derive(Debug, Clone, PartialEq, uniffi::Record)]
+pub struct CsMaxRetainedInput {
+    pub turn_id: String,
+    pub text_blocks: Vec<String>,
+    pub image_count: u64,
+    pub provider_name: String,
+}
+
+/// Pending identifies potentially executed work, not a running process.
+#[derive(Debug, Clone, PartialEq, uniffi::Record)]
+pub struct CsMaxConsultationSnapshot {
+    pub consultation_id: String,
+    pub pending_turn_id: Option<String>,
+    pub retained_inputs: Vec<CsMaxRetainedInput>,
+}
+
+impl From<codescribe_core::agent::thread_delivery::ConsultationRecoverySnapshot> for CsMaxConsultationSnapshot {
+    fn from(snapshot: codescribe_core::agent::thread_delivery::ConsultationRecoverySnapshot) -> Self {
+        use codescribe_core::agent::ContentBlock;
+        Self {
+            consultation_id: snapshot.consultation_id,
+            pending_turn_id: snapshot.pending_turn_id,
+            retained_inputs: snapshot.retained_inputs.into_iter().map(|entry| {
+                let mut text_blocks = Vec::new();
+                let mut image_count = 0;
+                for block in entry.input.content {
+                    match block {
+                        ContentBlock::Text(text) => text_blocks.push(text),
+                        ContentBlock::Image { .. } => image_count += 1,
+                        _ => {}
+                    }
+                }
+                CsMaxRetainedInput {
+                    turn_id: entry.turn_id, text_blocks, image_count, provider_name: entry.provider_name,
+                }
+            }).collect(),
+        }
+    }
+}
+
 /// Process-global hotkey runtime owner.
 ///
 /// `start()` installs the native listener but creates `RecordingController`
@@ -1016,6 +1058,17 @@ impl CodescribeHotkeys {
                 })
         })
         .await?
+    }
+
+    /// Inspect retained source input even when unresolved work prevents Max from
+    /// starting. No controller, microphone, provider or execution lease is opened.
+    pub async fn inspect_selected_max_consultation(&self) -> Result<Option<CsMaxConsultationSnapshot>, CsError> {
+        application_runtime::run(async move {
+            codescribe_core::agent::ThreadDeliveryGateway::new()
+                .and_then(|gateway| gateway.inspect_selected_max_consultation())
+                .map(|snapshot| snapshot.map(Into::into))
+                .map_err(|error| CsError::Recording { msg: error.to_string() })
+        }).await?
     }
 
     /// Snapshot current Max approval cards. No controller means no pending calls;
@@ -1490,6 +1543,40 @@ async fn dispatch_recording_hotkey_event(
     }
 
     Ok(())
+}
+
+#[cfg(test)]
+mod max_consultation_inspection_tests {
+    use super::CsMaxConsultationSnapshot;
+    use codescribe_core::agent::thread_delivery::{ConsultationInputSnapshot, ConsultationRecoverySnapshot};
+    use codescribe_core::agent::{ContentBlock, Message, Role};
+
+    #[test]
+    fn retained_projection_preserves_source_text_identity_and_attachment_count() {
+        let snapshot = CsMaxConsultationSnapshot::from(ConsultationRecoverySnapshot {
+            consultation_id: "selected-max".into(),
+            pending_turn_id: Some("uncertain-turn".into()),
+            retained_inputs: vec![ConsultationInputSnapshot {
+                turn_id: "uncertain-turn".into(),
+                provider_name: "formatting-provider".into(),
+                input: Message::new(Role::User, vec![
+                    ContentBlock::Text("Prepare git add; do not execute it.".into()),
+                    ContentBlock::Image { media_type: "image/png".into(), data: b"fixture".to_vec() },
+                    ContentBlock::Text("Keep the exact clipboard paths.".into()),
+                ]),
+            }],
+        });
+        assert_eq!(snapshot.consultation_id, "selected-max");
+        assert_eq!(snapshot.pending_turn_id.as_deref(), Some("uncertain-turn"));
+        assert_eq!(snapshot.retained_inputs.len(), 1);
+        let input = &snapshot.retained_inputs[0];
+        assert_eq!(input.turn_id, "uncertain-turn");
+        assert_eq!(input.provider_name, "formatting-provider");
+        assert_eq!(input.image_count, 1);
+        assert_eq!(input.text_blocks, vec![
+            "Prepare git add; do not execute it.", "Keep the exact clipboard paths.",
+        ]);
+    }
 }
 
 /// Dependency-mode fixture: app/core are normal dependencies, so cfg(test) in

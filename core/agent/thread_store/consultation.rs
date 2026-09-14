@@ -41,6 +41,46 @@ struct SelectedConsultation {
     thread_id: String,
 }
 
+/// Reading settings must not mint a consultation or acquire execution ownership.
+pub(crate) fn inspect_selected_max_consultation(
+    store: &ThreadStore,
+) -> Result<Option<crate::agent::thread_delivery::ConsultationRecoverySnapshot>> {
+    let Some(directory) = existing_consultation_directory(&store.threads_dir, "consultations")? else {
+        return Ok(None);
+    };
+    let Some(selection) = existing_consultation_directory(&directory, "selection")? else {
+        return Ok(None);
+    };
+    let file = match OpenOptions::new().read(true).custom_flags(libc::O_NOFOLLOW)
+        .open(selection.join("current.json")) {
+        Ok(file) => file,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+        Err(error) => return Err(error).context("inspect Max consultation selection"),
+    };
+    let selected: SelectedConsultation = serde_json::from_reader(file)
+        .context("corrupt Max consultation selection")?;
+    validate_thread_id(&selected.thread_id)?;
+    // Selection can change after this read. Return the identity actually read,
+    // never relabel its journal as belonging to a subsequently selected thread.
+    Ok(Some(inspect_retained_input(store, &selected.thread_id)?.unwrap_or(
+        crate::agent::thread_delivery::ConsultationRecoverySnapshot {
+            consultation_id: selected.thread_id, pending_turn_id: None, retained_inputs: Vec::new(),
+        },
+    )))
+}
+
+fn existing_consultation_directory(parent: &Path, name: &str) -> Result<Option<PathBuf>> {
+    let directory = parent.join(name);
+    match fs::symlink_metadata(&directory) {
+        Ok(_) => {}
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+        Err(error) => return Err(error).context("inspect consultation directory"),
+    }
+    let directory = canonical_existing_child(parent, &directory)?;
+    ensure!(directory.is_dir(), "consultation directory is not a directory");
+    Ok(Some(directory))
+}
+
 pub(crate) fn inspect_retained_input(
     store: &ThreadStore,
     id: &str,
@@ -48,13 +88,9 @@ pub(crate) fn inspect_retained_input(
     use crate::agent::thread_delivery::{ConsultationInputSnapshot, ConsultationRecoverySnapshot};
     use crate::agent::{ContentBlock, Role};
     validate_thread_id(id)?;
-    let directory = store.threads_dir.join("consultations");
-    match fs::symlink_metadata(&directory) {
-        Ok(_) => {}
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
-        Err(error) => return Err(error).context("inspect consultation directory"),
-    }
-    let directory = canonical_existing_child(&store.threads_dir, &directory)?;
+    let Some(directory) = existing_consultation_directory(&store.threads_dir, "consultations")? else {
+        return Ok(None);
+    };
     let file = match OpenOptions::new().read(true).custom_flags(libc::O_NOFOLLOW)
         .open(directory.join(format!("{id}.json"))) {
         Ok(file) => file,
@@ -268,6 +304,44 @@ mod tests {
                 vec![crate::agent::ContentBlock::Text("instruction".into())]),
             provider_name: "fixture".into(), options: serde_json::json!({}), group: None,
         }).unwrap();
+    }
+
+    #[test]
+    fn selected_inspection_never_creates_selection_or_restarts_retained_work() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = ThreadStore::new_in(dir.path()).unwrap();
+        let gateway = crate::agent::ThreadDeliveryGateway::new_in(dir.path()).unwrap();
+        assert!(gateway.inspect_selected_max_consultation().unwrap().is_none());
+        assert!(!dir.path().join("consultations").exists());
+        fs::create_dir(dir.path().join("consultations")).unwrap();
+        assert!(gateway.inspect_selected_max_consultation().unwrap().is_none());
+        assert!(!dir.path().join("consultations/selection").exists());
+        let id = selected_id(&store).unwrap();
+        let selection = dir.path().join("consultations/selection/current.json");
+        let selected_bytes = fs::read(&selection).unwrap();
+        let empty = gateway.inspect_selected_max_consultation().unwrap().unwrap();
+        assert_eq!(empty.consultation_id, id);
+        assert!(empty.retained_inputs.is_empty());
+        let journal_path = dir.path().join(format!("consultations/{id}.json"));
+        assert!(!journal_path.exists());
+        let mut journal = ConsultationJournal::open(&store, &id).unwrap();
+        accept(&mut journal, "interrupted");
+        journal.begin("interrupted").unwrap();
+        let before = fs::read(&journal_path).unwrap();
+        let active = gateway.inspect_selected_max_consultation().unwrap().unwrap();
+        assert_eq!(active.consultation_id, id);
+        assert_eq!(active.pending_turn_id.as_deref(), Some("interrupted"));
+        assert_eq!(active.retained_inputs.len(), 1);
+        drop(journal);
+        assert!(ConsultationJournal::open(&store, &id).is_err());
+        assert_eq!(gateway.inspect_selected_max_consultation().unwrap(), Some(active));
+        assert_eq!(fs::read(&journal_path).unwrap(), before);
+        assert_eq!(fs::read(&selection).unwrap(), selected_bytes);
+        fs::write(&selection, b"{broken").unwrap();
+        assert!(gateway.inspect_selected_max_consultation().is_err());
+        assert_eq!(fs::read(&selection).unwrap(), b"{broken");
+        fs::write(&selection, br#"{"thread_id":"../outside"}"#).unwrap();
+        assert!(gateway.inspect_selected_max_consultation().is_err());
     }
 
     #[test]
