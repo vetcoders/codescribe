@@ -47,6 +47,10 @@ use crate::asr_session::recorder::{
     apply_recorder_lifecycle_event,
 };
 use crate::asr_session::{SessionId as Layer1SessionId, SessionInput as Layer1SessionInput};
+use crate::agent::consultation::{
+    ConsultationGroupAnswer, ConsultationInputQueue, ConsultationReadiness,
+    PendingConsultationGroup, SealedConsultationInput,
+};
 use crate::audio::capture_receipt::{
     AcousticAvailability, AcousticSpeechEvidence, CaptureEnergyOwner, CaptureLevelAccumulator,
     CapturePathMeta, emit_capture_level_receipt,
@@ -54,7 +58,7 @@ use crate::audio::capture_receipt::{
 use crate::audio::streaming_recorder::CaptureTurnIntent;
 use crate::config::{FormattingPolicy, RuntimeSettingsSnapshot};
 use crate::llm::ai_formatting::{
-    AiFormatResult, AiFormatStatus, format_text_with_status_for_policy,
+    AiFormatResult, AiFormatStatus, FormattingAgent, format_text_with_status_for_policy,
 };
 use crate::llm::inline_format::{LabelProposalDisposition, OccurrenceLabelProposal};
 use crate::pipeline::acoustic_ledger::{
@@ -99,6 +103,183 @@ const TAIL_PATCH_QUEUE_CAP: usize = 8;
 /// Bounded transport ownership for occurrence formatter jobs. Saturation skips
 /// Formatter scheduling for that occurrence; it never backpressures PCM.
 const FORMATTER_QUEUE_CAP: usize = 8;
+
+const CONSULTATION_QUEUE_CAP: usize = 16;
+
+enum LiveConsultationRequest {
+    Assess(SealedConsultationInput),
+    Finish(PendingConsultationGroup),
+}
+
+enum LiveConsultationResult {
+    Assessed(Result<ConsultationReadiness>),
+    Answer(Result<ConsultationGroupAnswer>),
+}
+
+enum LiveConsultationReturn {
+    Assessed(Result<ConsultationReadiness>),
+    Published(Result<()>),
+}
+
+/// Capture-thread grouping and admission. Provider futures live on the async
+/// session; only this owner reads speech edges and advances the accepted prefix.
+struct LiveConsultationCapture {
+    queue: ConsultationInputQueue,
+    agent: Arc<dyn FormattingAgent>,
+    settings: Arc<RuntimeSettingsSnapshot>,
+    requests: mpsc::Sender<LiveConsultationRequest>,
+    returns: std_mpsc::Receiver<LiveConsultationReturn>,
+    last_assessed: Option<SealedConsultationInput>,
+    assessment_pending: bool,
+    answers_pending: usize,
+    speech_open: bool,
+    refused: bool,
+}
+
+impl LiveConsultationCapture {
+    fn observe(&mut self, ingest: &super::silero_fusion::SileroIngest, samples_seen: u64) -> Result<()> {
+        self.speech_open = ingest.open.is_some();
+        if ingest.speech_live {
+            self.queue.resume_speech();
+        }
+        // A closing block is speech_live too. Only the actual close with no
+        // successor open can nominate a candidate; silence alone cannot.
+        if !ingest.closed.is_empty() && !self.speech_open {
+            self.queue.append_boundary(samples_seen)?;
+        }
+        Ok(())
+    }
+
+    fn report_refusal(&mut self, events: &mpsc::UnboundedSender<EngineEvent>) {
+        if !self.refused {
+            let _ = events.send(EngineEvent::Warning {
+                code: "max_consultation_refused".into(),
+                message: "Max consultation could not settle; source audio and transcript remain authoritative. Accepted tools must not be replayed.".into(),
+            });
+        }
+        self.refused = true;
+    }
+
+    fn tick(&mut self, state: &AppleSealState, events: &mpsc::UnboundedSender<EngineEvent>) {
+        loop {
+            let result = match self.returns.try_recv() {
+                Ok(result) => result,
+                Err(std_mpsc::TryRecvError::Empty) => break,
+                Err(std_mpsc::TryRecvError::Disconnected) => {
+                    self.report_refusal(events);
+                    // The session task vanished. This cannot certify tool
+                    // cancellation; the retained executor still owns recovery.
+                    self.assessment_pending = false;
+                    self.answers_pending = 0;
+                    break;
+                }
+            };
+            match result {
+                LiveConsultationReturn::Published(result) => {
+                    self.answers_pending = self.answers_pending.saturating_sub(1);
+                    if result.is_err() { self.report_refusal(events); }
+                }
+                LiveConsultationReturn::Assessed(result) => {
+                    self.assessment_pending = false;
+                    let Ok(assessment) = result else {
+                        let _ = events.send(EngineEvent::Warning {
+                            code: "max_assessment_unavailable".into(),
+                            message: "Max could not assess this candidate. It remains pending; new speech can form a new candidate.".into(),
+                        });
+                        continue;
+                    };
+                    if self.refused || self.speech_open { continue; }
+                    let Some(fusion) = state.fusion.as_ref() else { continue; };
+                    let speech = fusion.acoustic_speech_evidence();
+                    // Reserve result transport BEFORE accepting effects. A
+                    // successfully accepted handle cannot disappear on pressure.
+                    let sender = self.requests.clone();
+                    let Ok(permit) = sender.try_reserve() else {
+                        self.report_refusal(events);
+                        continue;
+                    };
+                    let ledger = state.acoustic_ledger.lock()
+                        .unwrap_or_else(std::sync::PoisonError::into_inner);
+                    if let ConsultationReadiness::Complete(input) = &assessment {
+                        match self.queue.ready(&ledger, &speech) {
+                            Ok(Some(current)) if &current == input => {}
+                            _ => continue,
+                        }
+                    }
+                    let agent = &self.agent;
+                    let settings = &self.settings;
+                    // A stale assessment is expected after continuation. It
+                    // never invokes the executor and never consumes the front.
+                    let accepted = self.queue.admit_assessed(assessment, &ledger, &speech,
+                        |input| agent.enqueue_group(input, settings));
+                    match accepted {
+                        Ok(Some(pending)) => {
+                            let acknowledged = self.queue.acknowledge(&pending);
+                            self.answers_pending += 1;
+                            permit.send(LiveConsultationRequest::Finish(pending));
+                            if acknowledged.is_err() { self.report_refusal(events); }
+                        }
+                        Ok(None) => {}
+                        Err(_) => self.report_refusal(events),
+                    }
+                }
+            }
+        }
+        if self.refused || self.speech_open || self.assessment_pending
+            || self.answers_pending >= CONSULTATION_QUEUE_CAP
+        { return; }
+        let Some(fusion) = state.fusion.as_ref() else { return; };
+        let speech = fusion.acoustic_speech_evidence();
+        let ledger = state.acoustic_ledger.lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        while self.queue.skip_measured_silence(&ledger, &speech) {}
+        let input = match self.queue.ready(&ledger, &speech) {
+            Ok(Some(input)) => input,
+            Ok(None) => return,
+            Err(_) => { self.report_refusal(events); return; }
+        };
+        if self.last_assessed.as_ref() == Some(&input) { return; }
+        match self.requests.try_send(LiveConsultationRequest::Assess(input.clone())) {
+            Ok(()) => {
+                self.last_assessed = Some(input);
+                self.assessment_pending = true;
+            }
+            Err(mpsc::error::TrySendError::Full(_)) => {}
+            Err(mpsc::error::TrySendError::Closed(_)) => self.report_refusal(events),
+        }
+    }
+
+    fn settle(&mut self, state: &AppleSealState, events: &mpsc::UnboundedSender<EngineEvent>, end: u64) {
+        self.speech_open = false;
+        if self.queue.append_boundary(end).is_err() { self.report_refusal(events); }
+        while self.queue.pending_groups() > 1 {
+            if self.queue.join_front().is_err() { self.report_refusal(events); break; }
+        }
+        loop {
+            self.tick(state, events);
+            if !self.assessment_pending && self.answers_pending == 0 { break; }
+            // The async session keeps draining providers, approvals and answer
+            // publication. Microphone capture has already ended at this point.
+            thread::sleep(LIVE_WORKER_QUANTUM);
+        }
+        if self.queue.pending_groups() > 0 { self.report_refusal(events); }
+    }
+}
+
+fn deliver_consultation_result(
+    result: LiveConsultationResult,
+    returns: &std_mpsc::Sender<LiveConsultationReturn>,
+    sink: &dyn EventSink,
+) {
+    let result = match result {
+        LiveConsultationResult::Assessed(result) => LiveConsultationReturn::Assessed(result),
+        LiveConsultationResult::Answer(result) => LiveConsultationReturn::Published(
+            result.and_then(|answer| sink.on_consultation_completed(&answer))),
+    };
+    if returns.send(result).is_err() {
+        warn!("Max capture owner closed before result acknowledgement; no execution replay");
+    }
+}
 
 /// Total budget for the end-of-session closure loop across all Layer 1
 /// job to report back.
@@ -589,7 +770,7 @@ pub(crate) async fn apple_stream_transcription_session(
         session_id,
         capture_epoch,
         runtime_settings,
-        live_formatting_agent: _live_formatting_agent,
+        live_formatting_agent,
         acoustic_ledger,
         sample_rate,
         capture_device_name,
@@ -714,6 +895,36 @@ pub(crate) async fn apple_stream_transcription_session(
     let (formatter_done_tx, formatter_done_rx) = std_mpsc::channel::<FormatterCompletion>();
     let worker_formatter_tx = formatter_on.then_some(formatter_tx);
 
+    let (consultation_tx, mut consultation_rx) = mpsc::channel(CONSULTATION_QUEUE_CAP);
+    let (consultation_return_tx, consultation_return_rx) = std_mpsc::channel();
+    let mut consultation_assessments = FuturesOrdered::<BoxFuture<'static, Result<ConsultationReadiness>>>::new();
+    let mut consultation_answers = FuturesOrdered::<BoxFuture<'static, Result<ConsultationGroupAnswer>>>::new();
+    if live_formatting_agent.is_some() && event_sink.consultation_destinations() != 1 {
+        event_sink.on_event(&EngineEvent::Warning {
+            code: "max_consultation_destination_unavailable".into(),
+            message: "Live Max requires exactly one configured presentation destination.".into(),
+        });
+    }
+    let live_formatting_agent = live_formatting_agent.filter(|_| {
+        capture_turn.schedules_live_formatting()
+            && runtime_settings.values().ai_formatting_enabled
+            && runtime_settings.formatting_policy() == FormattingPolicy::Max
+            && event_sink.consultation_destinations() == 1
+    });
+    let worker_consultation = live_formatting_agent.as_ref().map(|agent| LiveConsultationCapture {
+        queue: ConsultationInputQueue::new(session_id.clone(), capture_epoch)
+            .expect("recorder owns a valid capture identity"),
+        agent: Arc::clone(agent),
+        settings: Arc::clone(&runtime_settings),
+        requests: consultation_tx,
+        returns: consultation_return_rx,
+        last_assessed: None,
+        assessment_pending: false,
+        answers_pending: 0,
+        speech_open: false,
+        refused: false,
+    });
+
     let worker_session_id = session_id.clone();
     let worker_capture_energy = capture_energy.clone();
     let worker_execution = Arc::clone(&tail_patch_lane.execution);
@@ -738,6 +949,7 @@ pub(crate) async fn apple_stream_transcription_session(
                 settings_digest,
                 utterance_silence_sec,
                 terminal_audio,
+                consultation: worker_consultation,
             },
         )
     });
@@ -749,9 +961,10 @@ pub(crate) async fn apple_stream_transcription_session(
     // until EOF. The engine had letter-level partials; the overlay saw nothing
     // until the session ended. Product truth: presentation was missing, not STT.
     let mut audio_eof = false;
+    let mut worker_finished = false;
     loop {
         tokio::select! {
-            event = ev_rx.recv() => {
+            event = ev_rx.recv(), if !worker_finished => {
                 match event {
                     // Same diagnostic artifact the VAD path writes: one line
                     // per committed utterance (CODESCRIBE_STREAM_LOG).
@@ -761,8 +974,37 @@ pub(crate) async fn apple_stream_transcription_session(
                         stream_log_path.as_deref(),
                     ),
                     // Worker dropped the sender — stream finished.
-                    None => break,
+                    None => worker_finished = true,
                 }
+            }
+            Some(request) = consultation_rx.recv() => {
+                match request {
+                    LiveConsultationRequest::Assess(input) => {
+                        if let Some(agent) = live_formatting_agent.as_ref() {
+                            let agent = Arc::clone(agent);
+                            let settings = Arc::clone(&formatter_runtime_settings);
+                            consultation_assessments.push_back(Box::pin(async move {
+                                agent.assess_group(input, &settings).await
+                            }));
+                        }
+                    }
+                    LiveConsultationRequest::Finish(pending) => {
+                        consultation_answers.push_back(Box::pin(pending.finish()));
+                    }
+                }
+            }
+            Some(result) = consultation_assessments.next() => {
+                deliver_consultation_result(LiveConsultationResult::Assessed(result),
+                    &consultation_return_tx, event_sink.as_ref());
+            }
+            Some(result) = consultation_answers.next() => {
+                // A fast provider must not overtake the source ledger events
+                // already emitted by the capture worker on the other channel.
+                while let Ok(event) = ev_rx.try_recv() {
+                    deliver_event(&event, event_sink.as_ref(), stream_log_path.as_deref());
+                }
+                deliver_consultation_result(LiveConsultationResult::Answer(result),
+                    &consultation_return_tx, event_sink.as_ref());
             }
             chunk = chunk_receiver.recv(), if !audio_eof => {
                 match chunk {
@@ -909,6 +1151,9 @@ pub(crate) async fn apple_stream_transcription_session(
         if let Some(reason) = layer1_lane.take_degrade_notice() {
             emit_layer1_degrade_warning(event_sink.as_ref(), reason);
         }
+        if worker_finished && consultation_rx.is_closed() && consultation_rx.is_empty()
+            && consultation_assessments.is_empty() && consultation_answers.is_empty()
+        { break; }
     }
 
     // Worker exited (event channel closed). If audio is still open, keep
@@ -3775,6 +4020,7 @@ fn seal_open_partial(
 
 /// Everything the blocking worker needs that is not a channel.
 struct AppleWorkerConfig<'a> {
+    consultation: Option<LiveConsultationCapture>,
     local_execution: Arc<LocalExecutionOwner>,
     sample_rate: u32,
     /// Device the recorder opened; selects the measured calibration profile.
@@ -3806,6 +4052,7 @@ fn apple_stream_worker(
     config: AppleWorkerConfig<'_>,
 ) -> anyhow::Result<AppleStreamOutcome> {
     let AppleWorkerConfig {
+        mut consultation,
         local_execution,
         sample_rate,
         capture_device_name,
@@ -3958,6 +4205,9 @@ fn apple_stream_worker(
                     .as_mut()
                     .map(|fusion| fusion.ingest(&samples, samples_seen));
                 if let Some(ingest) = silero_ingest.as_ref() {
+                    if let Some(owner) = consultation.as_mut()
+                        && owner.observe(ingest, samples_seen).is_err()
+                    { owner.report_refusal(&ev_tx); }
                     for evidence in &ingest.sideband {
                         let _ = ev_tx.send(EngineEvent::SidebandEvidence {
                             evidence: evidence.clone(),
@@ -4054,6 +4304,7 @@ fn apple_stream_worker(
             }
             Err(std_mpsc::RecvTimeoutError::Disconnected) => break,
         }
+        if let Some(owner) = consultation.as_mut() { owner.tick(&state, &ev_tx); }
         state.emit_speech_integrity(&ev_tx);
     }
 
@@ -4148,6 +4399,7 @@ fn apple_stream_worker(
     state.seal_remaining_at_session_end(&ev_tx);
     repair_terminal_seal_coverage(&mut state, &ev_tx, language, &local_execution);
     drain_formatter_observers(&mut state, &ev_tx, &formatter_done)?;
+    if let Some(owner) = consultation.as_mut() { owner.settle(&state, &ev_tx, samples_seen); }
     let seal_coverage = publish_terminal_coverage(&state, &ev_tx);
     state.emit_speech_integrity(&ev_tx);
     info!(
@@ -4396,6 +4648,89 @@ mod c13a_lifecycle_tests {
     use super::*;
 
     const TEST_SAMPLE_RATE: u32 = 16_000;
+
+    struct NoExecutionAgent;
+
+    #[async_trait::async_trait]
+    impl FormattingAgent for NoExecutionAgent {
+        async fn execute(&self, _: &str, _: &str, _: &RuntimeSettingsSnapshot) -> Result<String> {
+            panic!("capture bookkeeping cannot execute a text-only turn")
+        }
+    }
+
+    fn consultation_owner() -> (
+        LiveConsultationCapture,
+        mpsc::Receiver<LiveConsultationRequest>,
+        std_mpsc::Sender<LiveConsultationReturn>,
+    ) {
+        let (requests, rx) = mpsc::channel(CONSULTATION_QUEUE_CAP);
+        let (tx, returns) = std_mpsc::channel();
+        let settings = crate::config::Config::runtime_snapshot_from_captured(
+            crate::config::CapturedRuntimeInputs::defaults_at("/synthetic/max-capture".into(), 0));
+        (LiveConsultationCapture {
+            queue: ConsultationInputQueue::new("max-capture".into(), 1).unwrap(),
+            agent: Arc::new(NoExecutionAgent), settings: Arc::new(settings), requests, returns,
+            last_assessed: None, assessment_pending: false, answers_pending: 0,
+            speech_open: false, refused: false,
+        }, rx, tx)
+    }
+
+    #[test]
+    fn max_capture_uses_closed_edges_not_the_speech_live_bit_or_silence() {
+        use super::super::silero_fusion::SileroIngest;
+        let (mut owner, mut requests, _returns) = consultation_owner();
+        owner.observe(&SileroIngest::default(), 16_000).unwrap();
+        assert_eq!(owner.queue.pending_groups(), 0, "silence cannot nominate speech");
+        owner.observe(&SileroIngest { open: Some(1), speech_live: true,
+            ..Default::default() }, 32_000).unwrap();
+        assert!(owner.speech_open);
+        assert_eq!(owner.queue.pending_groups(), 0);
+        owner.observe(&SileroIngest { closed: vec![1], speech_live: true,
+            ..Default::default() }, 64_000).unwrap();
+        assert!(!owner.speech_open, "the closing chunk still carries speech_live");
+        assert_eq!(owner.queue.pending_groups(), 1);
+        owner.observe(&SileroIngest::default(), 72_000).unwrap();
+        assert_eq!(owner.queue.pending_groups(), 1, "quiet ticks keep one candidate");
+        owner.observe(&SileroIngest { open: Some(2), speech_live: true,
+            ..Default::default() }, 80_000).unwrap();
+        assert_eq!(owner.queue.pending_groups(), 0, "continuation invalidates assessment input");
+        owner.observe(&SileroIngest { closed: vec![2], speech_live: true,
+            ..Default::default() }, 96_000).unwrap();
+        assert_eq!(owner.queue.pending_groups(), 1);
+        assert!(requests.try_recv().is_err(), "edges alone cannot request semantic assessment");
+        assert!(!owner.assessment_pending);
+    }
+
+    #[test]
+    fn max_stop_refuses_disconnected_return_owner_without_waiting_forever() {
+        let (mut owner, _requests, returns) = consultation_owner();
+        owner.assessment_pending = true;
+        owner.answers_pending = 1;
+        drop(returns);
+        let state = state_for_session("max-capture");
+        let (events, mut observed) = mpsc::unbounded_channel();
+        owner.settle(&state, &events, 16_000);
+        assert!(owner.refused);
+        assert!(!owner.assessment_pending);
+        assert_eq!(owner.answers_pending, 0);
+        assert!(matches!(observed.try_recv().unwrap(), EngineEvent::Warning { code, .. }
+            if code == "max_consultation_refused"));
+        assert!(observed.try_recv().is_err());
+        assert_eq!(owner.queue.pending_groups(), 1, "lost transport cannot acknowledge source");
+    }
+
+    #[test]
+    fn max_async_errors_return_to_capture_without_fabricating_publication() {
+        let (tx, rx) = std_mpsc::channel();
+        let sink = crate::pipeline::sinks::CollectorEventSink::new();
+        deliver_consultation_result(LiveConsultationResult::Assessed(Err(anyhow::anyhow!("assessment"))),
+            &tx, &sink);
+        assert!(matches!(rx.try_recv().unwrap(), LiveConsultationReturn::Assessed(Err(_))));
+        deliver_consultation_result(LiveConsultationResult::Answer(Err(anyhow::anyhow!("execution"))),
+            &tx, &sink);
+        assert!(matches!(rx.try_recv().unwrap(), LiveConsultationReturn::Published(Err(_))));
+        assert!(sink.events().is_empty());
+    }
 
     fn state_for_session(session_id: &str) -> AppleSealState {
         AppleSealState::new_for_session(TEST_SAMPLE_RATE, session_id.to_string(), 1)

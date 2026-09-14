@@ -885,3 +885,48 @@ The Apple worker still does not schedule grouped Max assessments or deliver thei
 results. Next assembly must connect the recorder-observed candidate owner, bounded
 assessment scheduling, fresh-source admission, this completed-answer method and
 stop/cancel settlement. No structural-close, install or integration claim is made.
+
+## W1 live Max connection checkpoint
+
+The Apple session now consumes the injected live FormattingAgent instead of
+discarding it. Arming requires live-formatting capture intent, enabled Max and
+exactly one configured consultation publisher. Correction/Smart keep the existing
+occurrence formatter path; SingleTurn capture does not enter this live owner.
+
+LiveConsultationCapture resides on the existing Apple capture worker. It observes
+that worker's SileroIngest open/closed edges, invalidates unaccepted boundaries on
+continued speech and reads sealed candidates from the same AcousticLedger and
+Silero acoustic evidence. One immutable candidate is assessed at a time. Unchanged
+pending input is not resubmitted every PCM tick. Assessments and accepted answers
+use separate async future queues so waiting for an answer/approval does not hold
+up a newer semantic assessment. At most sixteen answers await completion.
+
+Before executor admission, the worker checks fresh source under the ledger lock
+and reserves answer transport. The admission handle is retained even if subsequent
+queue acknowledgement refuses. Answer collection flushes already-emitted source
+events before invoking EventSink's typed completed-answer method. The async session
+continues draining admitted work if its engine event sender closes early.
+
+On ordinary EOF, final source sealing/repair precedes a final grouping attempt and
+settlement before terminal ledger publication. CONTINUE is not forced to COMPLETE.
+Source that cannot settle produces an explicit warning. A lost return channel
+ends capture-side waiting with refusal, not an assertion that accepted tools were
+cancelled; the retained executor/history still owns their recovery. Assessment
+failure alone keeps the source pending and allows a later changed candidate;
+execution/publication ambiguity stops further admission within that capture.
+
+Three new active-module tests are authored for actual open/closed edge semantics,
+disconnected-return stop handling and error return without fabricated publication.
+They are unexecuted. This checkpoint has no compiler, lint, security-gate or runtime
+verification. Remaining W2/W4 obligations include the complete live audio/provider/
+tool/approval/presentation round trip, cancellation and host-task loss while effects
+are running, source mutation during assessment, and resource/latency measurements.
+In particular, synchronous durable executor admission currently runs on the Apple
+worker: its journal I/O can delay PCM processing even though model execution is
+async. This remains an explicit structural/performance review obligation, not a
+claim of nonblocking capture. Stop while an approval is pending follows the existing
+executor's timeout/settlement policy; no new forced tool cancellation is asserted.
+
+The existing history census and worktree-admission obligations remain open. This
+checkpoint does not integrate any historical branch or certify all conversations
+reviewed. No W2_STRUCTURALLY_CLOSED receipt or installed-app claim is issued.
