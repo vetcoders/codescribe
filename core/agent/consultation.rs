@@ -435,7 +435,6 @@ struct ConsultationOwner {
 async fn run_owner(owner: ConsultationOwner) {
     let ConsultationOwner { id, mut session, mut ui_rx, gateway, journal,
         events, mut rx, install_lease_path } = owner;
-    let mut unsettled: Option<String> = None;
     while let Some(command) = rx.recv().await {
         let QueuedTurn { turn, reply, pending } = match command {
             OwnerCommand::Turn(turn) => turn,
@@ -446,7 +445,11 @@ async fn run_owner(owner: ConsultationOwner) {
                 return;
             }
         };
-        if let Some(reason) = &unsettled {
+        let recovery_reason = match journal.lock() {
+            Ok(journal) => journal.recovery_reason().map(str::to_owned),
+            Err(_) => Some("consultation journal lock poisoned".into()),
+        };
+        if let Some(reason) = recovery_reason {
             drop(pending);
             let _ = reply.send(Err(anyhow!("consultation requires recovery: {reason}")));
             continue;
@@ -458,7 +461,9 @@ async fn run_owner(owner: ConsultationOwner) {
             Err(error) => {
                 let discarded = journal.lock().map_err(|_| anyhow!("consultation journal lock poisoned"))
                     .and_then(|mut journal| journal.discard_unstarted(&turn.id));
-                if let Err(ref failure) = discarded { unsettled = Some(format!("{failure:#}")); }
+                if let Err(ref failure) = discarded
+                    && let Ok(mut journal) = journal.lock()
+                { journal.require_recovery(format!("{failure:#}")); }
                 drop(pending);
                 let _ = reply.send(Err(discarded.err().unwrap_or(error)));
                 continue;
@@ -467,7 +472,9 @@ async fn run_owner(owner: ConsultationOwner) {
         let begun = journal.lock().map_err(|_| anyhow!("consultation journal lock poisoned"))
             .and_then(|mut journal| journal.begin(&turn.id));
         if let Err(error) = begun {
-            unsettled = Some(format!("{error:#}"));
+            if let Ok(mut journal) = journal.lock() {
+                journal.require_recovery(format!("{error:#}"));
+            }
             drop(pending);
             let _ = reply.send(Err(error));
             continue;
@@ -481,7 +488,9 @@ async fn run_owner(owner: ConsultationOwner) {
         if let Err(error) = &result {
             // Do not roll back successful tool effects or automatically retry a
             // partially executed instruction. The host must resolve this state.
-            unsettled = Some(format!("turn {turn_id}: {error:#}"));
+            if let Ok(mut journal) = journal.lock() {
+                journal.require_recovery(format!("turn {turn_id}: {error:#}"));
+            }
             events(&id, &turn_id, AgentUiEvent::Error(format!("{error:#}")));
         } else {
             events(&id, &turn_id, AgentUiEvent::Done);
@@ -1078,6 +1087,13 @@ mod tests {
         assert!(first.await.expect("first reply").is_err());
         assert!(second.await.expect("second reply").expect_err("recovery required").to_string().contains("requires recovery"));
         assert_eq!(requests.lock().expect("requests").len(), 1);
+        let journal_path = dir.path().join("consultations/consultation-b.json");
+        let before = std::fs::read(&journal_path).unwrap();
+        let retained: serde_json::Value = serde_json::from_slice(&before).unwrap();
+        assert_eq!(retained["queued"].as_array().unwrap().len(), 2);
+        assert_eq!(retained["pending"], "one");
+        assert!(runtime.enqueue(turn("three", "must refuse before acknowledgement")).is_err());
+        assert_eq!(std::fs::read(&journal_path).unwrap(), before);
         runtime.close_if_idle().await.expect("failed owner can close without replay");
         let gateway = ThreadDeliveryGateway::new_in(dir.path()).expect("gateway");
         assert!(gateway.open_consultation("consultation-b").is_err(), "closing must not erase unresolved turn");

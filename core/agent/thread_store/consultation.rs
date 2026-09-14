@@ -117,12 +117,22 @@ fn persist_json(path: &Path, value: &impl Serialize) -> Result<()> {
 pub(crate) struct ConsultationJournal {
     path: PathBuf,
     state: AdmissionState,
-    write_uncertain: bool,
+    recovery_reason: Option<String>,
     // Kernel ownership dies with the process; the lock file must not be unlinked.
     _owner: File,
 }
 
 impl ConsultationJournal {
+    pub(crate) fn recovery_reason(&self) -> Option<&str> {
+        self.recovery_reason.as_deref()
+    }
+
+    /// The persisted pending/queued records remain the restart authority.
+    /// This live gate stops new acceptance as soon as this owner observes failure.
+    pub(crate) fn require_recovery(&mut self, reason: String) {
+        self.recovery_reason.get_or_insert(reason);
+    }
+
     pub(crate) fn has_completed_turns(&self) -> bool {
         !self.state.completed.is_empty()
     }
@@ -137,14 +147,14 @@ impl ConsultationJournal {
             Err(error) if error.kind() == std::io::ErrorKind::NotFound => AdmissionState::default(),
             Err(error) => return Err(error).context("read consultation admission state"),
         };
-        let journal = Self { path, state, write_uncertain: false, _owner: owner };
+        let journal = Self { path, state, recovery_reason: None, _owner: owner };
         ensure!(journal.state.pending.is_none(), "consultation requires recovery; unresolved turn {:?}", journal.state.pending);
         ensure!(journal.state.queued.is_empty(), "consultation requires recovery; retained waiting instructions");
         Ok(journal)
     }
 
     pub(crate) fn accept_input(&mut self, input: QueuedInstruction) -> Result<()> {
-        ensure!(!self.write_uncertain, "consultation journal write requires recovery");
+        ensure!(self.recovery_reason.is_none(), "consultation requires recovery");
         ensure!(!input.turn_id.trim().is_empty(), "turn identity is required");
         ensure!(!self.state.completed.contains(&input.turn_id)
             && !self.state.queued.iter().any(|entry| entry.turn_id == input.turn_id),
@@ -155,7 +165,7 @@ impl ConsultationJournal {
 
     /// Only before begin, when the owner proves no provider/tool work started.
     pub(crate) fn discard_unstarted(&mut self, turn: &str) -> Result<()> {
-        ensure!(!self.write_uncertain, "consultation journal write requires recovery");
+        ensure!(self.recovery_reason.is_none(), "consultation requires recovery");
         ensure!(self.state.pending.is_none(), "cannot discard a potentially executed turn");
         ensure!(self.state.queued.first().is_some_and(|entry| entry.turn_id == turn),
             "consultation discard is out of order");
@@ -168,7 +178,7 @@ impl ConsultationJournal {
     }
 
     pub(crate) fn begin(&mut self, turn: &str) -> Result<()> {
-        ensure!(!self.write_uncertain, "consultation journal write requires recovery");
+        ensure!(self.recovery_reason.is_none(), "consultation requires recovery");
         ensure!(self.state.pending.is_none(), "consultation requires recovery");
         ensure!(!self.state.completed.contains(turn), "turn {turn} already completed; refusing replay");
         ensure!(self.state.queued.first().is_some_and(|entry| entry.turn_id == turn),
@@ -180,7 +190,7 @@ impl ConsultationJournal {
     }
 
     pub(crate) fn complete(&mut self, turn: &str) -> Result<()> {
-        ensure!(!self.write_uncertain, "consultation journal write requires recovery");
+        ensure!(self.recovery_reason.is_none(), "consultation requires recovery");
         ensure!(self.state.pending.as_deref() == Some(turn), "consultation completion identity mismatch");
         ensure!(self.state.queued.first().is_some_and(|entry| entry.turn_id == turn),
             "consultation completion is not the admitted front");
@@ -197,7 +207,7 @@ impl ConsultationJournal {
 
     fn persist(&mut self) -> Result<()> {
         let result = persist_json(&self.path, &self.state);
-        if result.is_err() { self.write_uncertain = true; }
+        if result.is_err() { self.require_recovery("consultation journal write uncertain".into()); }
         result
     }
 }

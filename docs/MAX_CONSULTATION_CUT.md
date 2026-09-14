@@ -617,3 +617,15 @@ while retaining provider-call counts. None have executed under W1. The previous
 falsifier has an implementation to assess, not a passing receipt. Real process
 crash, disk failure, performance of synchronous fsync, full gates, production
 capture wiring and installed proof remain outstanding.
+
+The live recovery gate now belongs to the shared journal rather than a separate
+run_owner-local unsettled flag. Both admission and execution consult it. A
+provider/tool/history failure marks that gate before the failing reply is sent;
+later input is refused before acknowledgement or a journal rewrite. Already
+accepted entries remain retained and receive explicit recovery-required results.
+Uncertain writes use this same gate, preserving the first failure reason.
+Persisted pending/queued records still govern reopen; the live reason is not a
+new history or permission source. The extended unexecuted failure test asserts
+two retained entries, the pending first id, synchronous third-input refusal and
+byte-identical persisted state after refusal. Closing still releases ownership
+without clearing those records. Recovery actions and full verification remain open.
