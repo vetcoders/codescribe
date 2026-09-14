@@ -406,6 +406,22 @@ change the existing per-occurrence Max call to execute tools prematurely.
 Any required change outside the closed W1 source domain needs an explicit
 domain update before editing; this record does not silently expand it.
 
+The selected Max executor now travels through StreamingRecorder into
+SessionConfig for live takes. Both hold and toggle bind the controller's same
+retained host; explicit raw and assistive routing do not bind it. The recorder
+additionally excludes disabled formatting, non-Max policies and SingleTurn.
+Rebinding session authority clears the old handle; callback cleanup also clears
+it. Offline constructors carry None. Apple receives but does not yet invoke
+the handle: grouped/semantic admission and scoped result delivery are still
+missing, so wiring the old per-occurrence call remains forbidden.
+An authored transport test checks the full intent/enabled/policy matrix,
+Arc identity and missing capability without opening audio or running an Agent.
+It has not run. Max reset now refuses a scheduled unfinished Hold start, because
+changing selection between scheduling and capture would otherwise strand the
+captured handle on the previous conversation. A Max initialization failure keeps
+capture available without a tool executor and logs the refusal; no successful
+Agent execution is claimed from that path.
+
 These checkpoints are structural W1 work. Checkpoint hooks are bypassed in full:
 trailing-whitespace, end-of-file-fixer, check-merge-conflict, mixed-line-ending,
 detect-private-key (security), cargo-check, cargo-fmt, prettier and

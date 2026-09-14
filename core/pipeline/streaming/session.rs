@@ -135,6 +135,8 @@ pub struct SessionConfig {
     pub capture_epoch: u64,
     /// One immutable settings read for the entire session.
     pub runtime_settings: Arc<RuntimeSettingsSnapshot>,
+    /// Host-owned Max executor. Presence is transport only, never turn admission.
+    pub live_formatting_agent: Option<Arc<dyn crate::ai_formatting::FormattingAgent>>,
     /// The single PCM/evidence/admission owner shared by capture and engines.
     pub acoustic_ledger: Arc<StdMutex<AcousticLedger>>,
     pub sample_rate: u32,
@@ -577,6 +579,7 @@ pub async fn collect_buffered_engine_events(
             session_id: uuid::Uuid::new_v4().to_string(),
             capture_epoch: 1,
             runtime_settings,
+            live_formatting_agent: None,
             acoustic_ledger: Arc::new(StdMutex::new(AcousticLedger::new())),
             sample_rate,
             capture_device_name: None,

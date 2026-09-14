@@ -584,6 +584,7 @@ pub(crate) async fn apple_stream_transcription_session(
         session_id,
         capture_epoch,
         runtime_settings,
+        live_formatting_agent: _live_formatting_agent,
         acoustic_ledger,
         sample_rate,
         capture_device_name,

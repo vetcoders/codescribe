@@ -1197,6 +1197,10 @@ impl RecordingController {
     pub async fn begin_new_max_consultation(&self) -> Result<String> {
         let _serial = self.serial_lock.lock().await;
         anyhow::ensure!(self.current_state().await == State::Idle, "cannot reset Max while recording or processing");
+        anyhow::ensure!(
+            !self.hold_start_task.lock().await.as_ref().is_some_and(|task| !task.is_finished()),
+            "cannot reset Max while a hold capture is scheduled"
+        );
         let mut selected = self.max_consultation.lock().await;
         let gateway = codescribe_core::agent::ThreadDeliveryGateway::new()?;
         let expected = gateway.selected_max_consultation_id()?;
@@ -2332,6 +2336,7 @@ impl RecordingController {
         // override cannot outlive the take that asked for it.
         recorder.set_capture_turn_intent(CaptureTurnIntent::HandsFree);
         recorder.set_event_sink(None);
+        recorder.set_live_formatting_agent(None);
         recorder.set_level_callback(None);
     }
 
@@ -3516,6 +3521,23 @@ impl RecordingController {
         let runtime_settings = self.runtime_settings_arc().await;
         let config = runtime_settings.values().clone();
 
+        let live_formatting_agent = if !assistive
+            && !*self.force_raw_mode.read().await
+            && config.ai_formatting_enabled
+        {
+            match self.selected_max_consultation(runtime_settings.as_ref()).await {
+                Ok(consultation) => consultation.map(|agent| {
+                    agent as Arc<dyn codescribe_core::ai_formatting::FormattingAgent>
+                }),
+                Err(error) => {
+                    warn!(%error, "Max live executor unavailable; capture remains transcription-only");
+                    None
+                }
+            }
+        } else {
+            None
+        };
+
         // Hold mode never runs the assistive loop
         self.assistive_loop_active.store(false, Ordering::SeqCst);
         let configured_delay_ms = config.hold_start_delay_ms;
@@ -3747,6 +3769,7 @@ impl RecordingController {
             // so the very first deltas route to the correct overlay.
             set_assistive_session(is_assistive);
             rec.bind_session_authority(new_session_id.clone(), Arc::clone(&runtime_settings));
+            rec.set_live_formatting_agent(live_formatting_agent);
             let transcript_bus = TranscriptBus::open(TranscriptSession {
                 session_id: new_session_id,
                 mode: if is_assistive {
@@ -4027,6 +4050,24 @@ impl RecordingController {
         // so the very first deltas route to the correct overlay.
         set_assistive_session(is_assistive);
         recorder.bind_session_authority(new_session_id.clone(), Arc::clone(&runtime_settings));
+        let live_formatting_agent = if !is_assistive
+            && capture_turn.schedules_live_formatting()
+            && !*self.force_raw_mode.read().await
+            && config.ai_formatting_enabled
+        {
+            match self.selected_max_consultation(runtime_settings.as_ref()).await {
+                Ok(consultation) => consultation.map(|agent| {
+                    agent as Arc<dyn codescribe_core::ai_formatting::FormattingAgent>
+                }),
+                Err(error) => {
+                    warn!(%error, "Max live executor unavailable; capture remains transcription-only");
+                    None
+                }
+            }
+        } else {
+            None
+        };
+        recorder.set_live_formatting_agent(live_formatting_agent);
         let transcript_bus = TranscriptBus::open(TranscriptSession {
             session_id: new_session_id.clone(),
             mode: if is_assistive {

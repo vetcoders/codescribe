@@ -429,6 +429,7 @@ async fn private_archive_live_producer_bench() {
             session_id: session.clone(),
             capture_epoch: 1,
             runtime_settings: snapshot,
+            live_formatting_agent: None,
             acoustic_ledger: ledger.clone(),
             sample_rate: rate,
             capture_device_name: Some(device),

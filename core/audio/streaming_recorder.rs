@@ -93,6 +93,23 @@ impl CaptureTurnIntent {
     }
 }
 
+/// Transport admission only: never invoke the executor while opening audio.
+fn live_max_capability(
+    intent: CaptureTurnIntent,
+    enabled: bool,
+    policy: crate::config::FormattingPolicy,
+    agent: Option<&Arc<dyn crate::ai_formatting::FormattingAgent>>,
+) -> Option<Arc<dyn crate::ai_formatting::FormattingAgent>> {
+    if intent.schedules_live_formatting()
+        && enabled
+        && policy == crate::config::FormattingPolicy::Max
+    {
+        agent.cloned()
+    } else {
+        None
+    }
+}
+
 /// Ledger refusal of the terminal transcript after a successful capture stop.
 ///
 /// Raised by [`StreamingRecorder::stop`] when the acoustic ledger cannot
@@ -234,6 +251,7 @@ pub async fn replay_production_session(
         session_id: uuid::Uuid::new_v4().to_string(),
         capture_epoch: 1,
         runtime_settings,
+        live_formatting_agent: None,
         acoustic_ledger: acoustic_ledger.clone(),
         sample_rate,
         capture_device_name: None,
@@ -286,6 +304,8 @@ pub struct StreamingRecorder {
     lifecycle_handle: Option<RecorderLifecycleHandle>,
     /// Session-frozen runtime truth. Set once by the controller before start.
     runtime_settings: Option<Arc<RuntimeSettingsSnapshot>>,
+    /// Bound by the host after session authority; cleared on each new bind.
+    live_formatting_agent: Option<Arc<dyn crate::ai_formatting::FormattingAgent>>,
     /// The one ledger instance shared by PCM capture, engines, and reducer.
     acoustic_ledger: Option<Arc<StdMutex<AcousticLedger>>>,
     /// Controller-owned session identity bound with the ledger.
@@ -323,6 +343,7 @@ impl StreamingRecorder {
             level_callback: None,
             lifecycle_handle: None,
             runtime_settings: None,
+            live_formatting_agent: None,
             acoustic_ledger: None,
             authority_session_id: None,
             capture_epoch: 0,
@@ -352,6 +373,7 @@ impl StreamingRecorder {
             level_callback: None,
             lifecycle_handle: None,
             runtime_settings: None,
+            live_formatting_agent: None,
             acoustic_ledger: None,
             authority_session_id: None,
             capture_epoch: 0,
@@ -370,8 +392,18 @@ impl StreamingRecorder {
         self.capture_epoch = 0;
         self.authority_session_id = Some(session_id);
         self.runtime_settings = Some(runtime_settings);
+        self.live_formatting_agent = None;
         self.acoustic_ledger = Some(Arc::clone(&acoustic_ledger));
         acoustic_ledger
+    }
+
+    /// Supply the existing host executor without creating another Agent session.
+    /// The streaming lane still owes explicit whole-instruction admission.
+    pub fn set_live_formatting_agent(
+        &mut self,
+        agent: Option<Arc<dyn crate::ai_formatting::FormattingAgent>>,
+    ) {
+        self.live_formatting_agent = agent;
     }
 
     /// Borrow the ledger handle already bound for the next/active session.
@@ -551,6 +583,12 @@ impl StreamingRecorder {
         let log_path = stream_log_path();
         let utterance_silence_sec = self.utterance_silence_sec;
         let capture_turn = self.capture_turn;
+        let live_formatting_agent = live_max_capability(
+            capture_turn,
+            runtime_settings.values().ai_formatting_enabled,
+            runtime_settings.formatting_policy(),
+            self.live_formatting_agent.as_ref(),
+        );
 
         let (layer1, _decision_receipt) = crate::asr_session::layer1_decision(&runtime_settings);
         let (lifecycle_handle, lifecycle_events) = recorder_lifecycle_channel();
@@ -565,6 +603,7 @@ impl StreamingRecorder {
                     session_id,
                     capture_epoch: next_capture_epoch,
                     runtime_settings,
+                    live_formatting_agent,
                     acoustic_ledger,
                     sample_rate: actual_sample_rate,
                     capture_device_name,
@@ -766,6 +805,42 @@ mod tests {
     use serial_test::serial;
     use std::fs;
     use tokio::time::Duration;
+
+    struct TransportOnlyAgent;
+
+    #[async_trait::async_trait]
+    impl crate::ai_formatting::FormattingAgent for TransportOnlyAgent {
+        async fn execute(
+            &self, _turn_id: &str, _text: &str, _settings: &RuntimeSettingsSnapshot,
+        ) -> Result<String> {
+            panic!("transport must not execute an instruction");
+        }
+    }
+
+    #[test]
+    fn live_max_transport_preserves_owner_and_excludes_other_policies() {
+        use crate::config::FormattingPolicy;
+        let agent: Arc<dyn crate::ai_formatting::FormattingAgent> = Arc::new(TransportOnlyAgent);
+        for intent in [CaptureTurnIntent::HandsFree, CaptureTurnIntent::SingleTurn] {
+            for enabled in [false, true] {
+                for policy in [
+                    FormattingPolicy::Off, FormattingPolicy::Correction,
+                    FormattingPolicy::Smart, FormattingPolicy::Max,
+                ] {
+                    let selected = live_max_capability(intent, enabled, policy, Some(&agent));
+                    let admitted = intent == CaptureTurnIntent::HandsFree
+                        && enabled && policy == FormattingPolicy::Max;
+                    assert_eq!(selected.is_some(), admitted);
+                    if let Some(selected) = selected {
+                        assert!(Arc::ptr_eq(&selected, &agent));
+                    }
+                }
+            }
+        }
+        assert!(live_max_capability(
+            CaptureTurnIntent::HandsFree, true, FormattingPolicy::Max, None,
+        ).is_none());
+    }
 
     /// Empty/silence/full-scale blocks map to the 0 / 0 / ~1 energy ladder meters use.
     #[test]
