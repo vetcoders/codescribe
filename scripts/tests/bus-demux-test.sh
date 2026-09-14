@@ -738,6 +738,53 @@ try:
 finally:
     follower.terminate()
     follower.communicate(timeout=5)
+
+# Keep the same live process at capacity; acknowledge one item and verify the
+# blocked evidence seal is delivered, not consumed by normalization on retry.
+events[-1] = dict(schema='codescribe.transcript-evidence.v1', sequence=256,
+                  session_id='blocked-evidence', reducer_revision=1,
+                  reducer_action='record_ledger_terminal_seal',
+                  rendered_text='Roman, blocked terminal fixture.')
+bus.write_text(''.join(json.dumps(row)+'\n' for row in events))
+continuous = base.copy()
+continuous[continuous.index('--session')+1] = 'continuous'
+import hashlib
+identifier = hashlib.sha256(b'test\0continuous').hexdigest()[:32]
+continuous_state = root/'leases'/f'{identifier}.json'
+with (root/'continuous.jsonl').open('w') as output:
+    follower = subprocess.Popen(continuous+['--follow', '--from-start'],
+                                stdout=output, stderr=subprocess.PIPE)
+    try:
+        deadline = time.monotonic()+15
+        while True:
+            state = json.loads(continuous_state.read_text()) if continuous_state.exists() else {}
+            if len(state.get('pending', [])) == 256:
+                break
+            assert follower.poll() is None and time.monotonic() < deadline
+            time.sleep(.02)
+        heartbeat = state['heartbeat_unix']
+        time.sleep(1.2)
+        state = json.loads(continuous_state.read_text())
+        assert follower.poll() is None and state['heartbeat_unix'] > heartbeat
+        assert state['cursor'] < bus.stat().st_size
+        ack = continuous[:continuous.index('--name')]
+        subprocess.run(ack+['--ack', state['pending'][0]['delivery_id']],
+                       capture_output=True, check=True)
+        while True:
+            state = json.loads(continuous_state.read_text())
+            if state['cursor'] == bus.stat().st_size:
+                break
+            assert follower.poll() is None and time.monotonic() < deadline
+            time.sleep(.02)
+        assert state['pending'][-1]['text'] == 'Roman, blocked terminal fixture.'
+        assert state['pending'][-1]['state_change_allowed'] is True
+        assert state['pid'] == follower.pid
+    finally:
+        follower.terminate()
+        follower.communicate(timeout=5)
+rows = [json.loads(line) for line in (root/'continuous.jsonl').read_text().splitlines()]
+assert len(rows) == 258, len(rows)  # attach + 257 deliveries, no retry duplicate
+assert rows[-1]['text'] == 'Roman, blocked terminal fixture.'
 PY
 
 echo "bus-demux: ok"

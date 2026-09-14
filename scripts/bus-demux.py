@@ -970,6 +970,23 @@ def run(args: argparse.Namespace) -> int:
     # a fresh one per line would re-emit the entire document every time.
     normalizer = EvidenceNormalizer()
     event_trigger: BusEventTrigger | None = None
+    deferred: tuple[dict[str, Any], int | None] | None = None
+
+    def deliver(payload: dict[str, Any], next_cursor: int | None) -> None:
+        nonlocal deferred
+        try:
+            if not lease or lease.queue_delivery(payload):
+                emit(payload)
+        except BufferError:
+            # Preserve the already normalized envelope. Re-normalizing its
+            # raw evidence row would suppress a terminal phase on retry.
+            deferred = (payload, next_cursor)
+            raise
+        if lease and next_cursor is not None:
+            lease.persist(
+                active=True, cursor=next_cursor, sequence=payload.get("sequence")
+            )
+        deferred = None
 
     def handle(raw: str, next_cursor: int | None = None) -> None:
         nonlocal name, hear_all
@@ -1001,16 +1018,9 @@ def run(args: argparse.Namespace) -> int:
             sys.stderr.write(f"bus-demux: bound name={name}\n")
         if lease:
             lease.enrich(payload)
-        if not lease or lease.queue_delivery(payload):
-            emit(payload)
         # Read progress is independent of receipt. The original envelope is
-        # already durable and remains pending until its owner acknowledges it.
-        if lease and next_cursor is not None:
-            lease.persist(
-                active=True,
-                cursor=next_cursor,
-                sequence=event.get("sequence"),
-            )
+        # made durable before emission and remains pending until acknowledged.
+        deliver(payload, next_cursor)
 
     try:
         if lease:
@@ -1059,15 +1069,31 @@ def run(args: argparse.Namespace) -> int:
             sys.stderr.write(f" trigger={event_trigger.mode}")
         sys.stderr.write("\n")
         last_heartbeat = time.monotonic()
+        waiting_for_ack = False
         while True:
             if lease:
                 lease.collect_acknowledgments()
-            previous_offset = offset
-            entries, offset = iter_new_lines(path, offset)
-            for raw, next_cursor in entries:
-                handle(raw, next_cursor)
-            if lease and not entries and offset != previous_offset:
-                lease.persist(active=True, cursor=offset)
+            try:
+                if deferred is not None:
+                    deliver(*deferred)
+                    assert lease is not None
+                    offset = lease.cursor
+                previous_offset = offset
+                entries, offset = iter_new_lines(path, offset)
+                for raw, next_cursor in entries:
+                    handle(raw, next_cursor)
+                if lease and not entries and offset != previous_offset:
+                    lease.persist(active=True, cursor=offset)
+            except BufferError:
+                if not args.follow:
+                    raise
+                assert lease is not None
+                offset = lease.cursor
+                if not waiting_for_ack:
+                    sys.stderr.write("bus-demux: mailbox full; waiting for acknowledgment\n")
+                waiting_for_ack = True
+            else:
+                waiting_for_ack = False
             if not args.follow:
                 return 0
             if lease and time.monotonic() - last_heartbeat >= 1.0:

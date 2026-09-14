@@ -689,8 +689,10 @@ text on its next loop or reattachment. Lease directories are private and files
 are mode 0600; unacknowledged transcript text persists across process exits.
 
 Pending storage is capped at 256 envelopes or 8 MiB of serialized envelope
-content. At capacity, the reader exits 4 without advancing past the undelivered
-event. Acknowledge received items, then resume the same lease. Do not delete
+content. At capacity, a continuous follower retains its lock and heartbeat,
+pauses bus consumption, and resumes automatically after acknowledgment frees
+space. A one-shot read exits 4 without advancing past the undelivered event;
+acknowledge received items, then resume that same lease. Do not delete
 recovery files or create a new provider session to clear this condition.
 
 An acknowledgment proves receipt, not execution of an external side effect.
