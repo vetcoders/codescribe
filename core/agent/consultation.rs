@@ -1926,12 +1926,13 @@ mod tests {
             .expect("second completed");
         assert_eq!(answer.delivery.message_count, 4);
         assert_eq!(answer.delivery.backend_id, "consultation-a");
-        let observed = requests.lock().expect("requests");
-        assert_eq!(observed.len(), 2);
-        assert_eq!(observed[1].len(), 3);
-        assert_eq!(observed[1][0].content, observed[0][0].content);
-        assert_eq!(observed[1][1].role, Role::Assistant);
-        drop(observed);
+        {
+            let observed = requests.lock().expect("requests");
+            assert_eq!(observed.len(), 2);
+            assert_eq!(observed[1].len(), 3);
+            assert_eq!(observed[1][0].content, observed[0][0].content);
+            assert_eq!(observed[1][1].role, Role::Assistant);
+        }
         let stored = ThreadStore::new_in(dir.path())
             .expect("store")
             .load_thread("consultation-a")

@@ -1108,3 +1108,93 @@ of those particular sinks, not a claim that the scanner accepts it, nor a proof
 against hostile concurrent replacement of ancestor directories. No rule was
 disabled. Full security gate disposition remains pending the next scan.
 This checkpoint retains structural embargo and the hook-bypass accounting above.
+
+## W2_STRUCTURALLY_CLOSED — consumer/security repair
+
+Roman closes the bounded re-entry against source SHA
+`c1e4ddb1bf5b6d6fdc0af8ce7ba52778f32b9fc5` on 2026-09-14. The complete identified
+SessionConfig constructor census now agrees on executor ownership; archived
+replay has no executor. The existing atomic writer owns an exclusive private
+staging file, and its destination and durability sequence are unchanged.
+Source/consumer inspection and `git diff --check` support readiness to check,
+not correctness in execution. This supersedes neither the recorded first
+closure's missed consumer nor any failed gate. All preregistered gates return.
+The next Clippy uses `--keep-going` with workspace/all-target scope to surface
+independent crate failures together instead of serially hiding later targets.
+Security findings, foreign settings formatting, tests and installed proof remain
+open acceptance obligations. No full-goal completion is implied.
+
+### W3 consumer repair results — 2026-09-14
+
+The full keep-going Clippy pass found two further test consumers: the formatter
+policy-entry smoke test omitted its optional consultation argument, and emitter
+tests omitted the consultation presentation input import. Repair attempt 1
+restored these contracts. The next pass reported a test guard lifetime despite
+its explicit drop; repair attempt 2 gives the assertions a lexical lock scope.
+`13-clippy-test-lock-scope.log` then passed workspace/all-target Clippy with
+`-D warnings` (exit 0). No lint was suppressed and no assertion weakened.
+
+The second full Semgrep scan (`11-semgrep-after-staging.log`) no longer reports
+the thread staging writer; the three directory-sync findings remain. This is
+not a green security gate. `make verify` was launched with the same bounded
+Cargo resource settings; its pending result is in `14-make-verify.log` under
+`/tmp/codescribe-w3-20260914.kJy9Wj`. Foreign Swift/settings hashes remain
+unchanged. Test-consumer repairs are still uncommitted; no push or install.
+
+The ongoing native verify run has now passed all 106 structural instrument
+tests, the live `wired` acoustic-throne receipt, and the Transcript Bus path /
+install-guard tests. It has advanced to compiling workspace tests; this does
+not yet prove their execution. Scoped pre-commit trailing-whitespace, EOF,
+merge-conflict, mixed-line-ending and private-key controls passed for the five
+authored repair files. The current branch independently contains the original
+cut tip `fa9225f17da179fcb726f88bfc32bb428166e6b3` by Git ancestry.
+
+### W3 runtime message codec failure
+
+The first native verify run terminated with exit 2 after its Rust test command
+failed: `max_uses_formatting_provider_and_model_not_chat_settings` could not
+admit a text instruction. Serde's internally tagged ContentBlock enum cannot
+encode its Text(String) variant. This was real Max admission breakage, not a
+mock mismatch. Every queued instruction includes a Text block, including
+attachment-only instructions, so this representation could not persist a
+normal admitted input.
+
+Repair attempt 3 uses adjacent `type` / `payload` fields on the existing
+runtime ContentBlock codec, retaining every enum variant without changing
+provider request projection or ThreadStore's separate storage projection.
+It also adds a complete Message roundtrip test including non-ASCII text,
+inline image bytes, image references, tool invocation and nested tool results.
+The existing full Max HTTP end-to-end test remains unchanged as the independent
+admission falsifier. Existing malformed journal data is not silently repaired
+or replayed. The rerun is `15-make-verify-message-codec.log` in the same receipt
+directory; it is still pending. No successful Max execution is claimed yet.
+
+The rerun has now terminated (make exit 2): all three HTTP agent-lane tests
+passed, including the formerly failing Max admission. Core's prepared rejection /
+explicit retry, grouped durable answer, staging-symlink and full-message codec
+regressions also passed. Core totals were 1433 passed, 3 failed, 5 ignored.
+The failures are the rejection/timeout approval fixtures and the clean-terminal
+tool execution matrix in `core/agent/session.rs`. The first two omit provider
+ResponseDone events; they therefore hit terminal refusal before testing approval.
+The third registers its counter through the default policy; its authorization
+precondition needs independent review before changing an assertion or runtime.
+
+The three-repair budget is exhausted. Roman re-enters structural review for
+the session test fixtures and their actual terminal/permission contracts.
+No further executable gate is authorized until this bounded re-entry is closed
+against its checkpoint SHA. The runtime clean-terminal requirement remains
+unchanged; neither dropping failing tests nor relaxing authorization is a repair.
+
+Structural review confirmed `register` assigns Unknown risk and therefore Ask;
+the terminal matrix's in-memory counter now declares ReadOnly explicitly. The
+approval fixtures now supply clean terminal events on both provider rounds and
+assert that the approval callback was actually entered before the handler-not-run
+assertion. Dirty/missing-terminal matrix cases remain unchanged. These are test
+precondition repairs, not production authorization changes.
+
+This structural checkpoint includes the preceding owned codec/test repairs and
+receipts only. It uses `--no-verify` under W2; skipped controls are trailing
+whitespace, EOF, conflict markers, mixed line endings, private-key detection,
+cargo-check, cargo-fmt, Prettier and commit-message provenance. Earlier scoped
+passes do not certify this new checkpoint. All controls return after exact-SHA
+closure. Foreign Swift and settings changes remain unstaged; no push or install.

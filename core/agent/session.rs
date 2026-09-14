@@ -1537,7 +1537,7 @@ mod tests {
             let counted = Arc::clone(&calls);
             let mut registry = ToolRegistry::new();
             registry
-                .register(
+                .register_native(
                     ToolDefinition {
                         name: "count_call".into(),
                         description: "Count execution".into(),
@@ -1550,6 +1550,7 @@ mod tests {
                             vec![ToolResultContent::Text("counted".into())]
                         })
                     }),
+                    ToolRisk::ReadOnly,
                 )
                 .expect("register tool");
             let mut first = vec![AgentEvent::ToolCallReady {
@@ -1936,8 +1937,9 @@ mod tests {
                 id: "call_rejected".to_string(),
                 name: "external_mutation".to_string(),
                 arguments: json!({}),
-            }],
-            vec![AgentEvent::TextDone("rejection handled".to_string())],
+            }, AgentEvent::ResponseDone { response_id: Some("reject-call".into()), clean: true }],
+            vec![AgentEvent::TextDone("rejection handled".to_string()),
+                AgentEvent::ResponseDone { response_id: Some("reject-answer".into()), clean: true }],
         ]);
         let handler_started = Arc::new(AtomicBool::new(false));
         let started = Arc::clone(&handler_started);
@@ -1967,8 +1969,12 @@ mod tests {
                 None,
             )
             .expect("register tool");
-        let approval_handler =
-            Arc::new(|_| Box::pin(async { false }) as crate::agent::ToolApprovalFuture);
+        let approval_requested = Arc::new(AtomicBool::new(false));
+        let requested = Arc::clone(&approval_requested);
+        let approval_handler = Arc::new(move |_| {
+            requested.store(true, Ordering::SeqCst);
+            Box::pin(async { false }) as crate::agent::ToolApprovalFuture
+        });
         let (ui_tx, _ui_rx) = mpsc::channel(32);
         let mut session = AgentSession::new(Box::new(provider), Arc::new(registry), ui_tx)
             .with_tool_approval("thread-reject", approval_handler);
@@ -1986,6 +1992,7 @@ mod tests {
             )
             .await
             .expect("rejection becomes a tool result");
+        assert!(approval_requested.load(Ordering::SeqCst));
         assert!(!handler_started.load(Ordering::SeqCst));
     }
 
@@ -1997,8 +2004,9 @@ mod tests {
                 id: "call_timeout".to_string(),
                 name: "external_mutation".to_string(),
                 arguments: json!({}),
-            }],
-            vec![AgentEvent::TextDone("timeout handled".to_string())],
+            }, AgentEvent::ResponseDone { response_id: Some("timeout-call".into()), clean: true }],
+            vec![AgentEvent::TextDone("timeout handled".to_string()),
+                AgentEvent::ResponseDone { response_id: Some("timeout-answer".into()), clean: true }],
         ]);
         let handler_started = Arc::new(AtomicBool::new(false));
         let started = Arc::clone(&handler_started);
@@ -2028,7 +2036,10 @@ mod tests {
                 None,
             )
             .expect("register tool");
-        let approval_handler = Arc::new(|_| {
+        let approval_requested = Arc::new(AtomicBool::new(false));
+        let requested = Arc::clone(&approval_requested);
+        let approval_handler = Arc::new(move |_| {
+            requested.store(true, Ordering::SeqCst);
             Box::pin(std::future::pending::<bool>()) as crate::agent::ToolApprovalFuture
         });
         let (ui_tx, _ui_rx) = mpsc::channel(32);
@@ -2049,6 +2060,7 @@ mod tests {
             )
             .await
             .expect("timeout becomes a tool result");
+        assert!(approval_requested.load(Ordering::SeqCst));
         assert!(!handler_started.load(Ordering::SeqCst));
     }
 

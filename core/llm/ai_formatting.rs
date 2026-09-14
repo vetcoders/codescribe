@@ -2396,7 +2396,7 @@ mod tests {
         let _f2 = format_text_with_status("test", None, false, &runtime_settings, None);
         let _f3 =
             format_text_with_status_channels("test", None, false, &runtime_settings, None, None);
-        let _f4 = format_text_with_status_for_policy("test", None, &runtime_settings);
+        let _f4 = format_text_with_status_for_policy("test", None, &runtime_settings, None);
     }
 
     /// Saved settings win on the next seal — a settings change takes effect on

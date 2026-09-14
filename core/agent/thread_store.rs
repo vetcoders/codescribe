@@ -1077,7 +1077,10 @@ mod tests {
         assert_eq!(fs::read(&outside)?, b"preserve unrelated content");
         assert_eq!(fs::read(&destination)?, b"new thread");
         assert!(fs::symlink_metadata(staging)?.file_type().is_symlink());
-        assert_eq!(fs::metadata(&destination)?.permissions().mode() & 0o777, 0o600);
+        assert_eq!(
+            fs::metadata(&destination)?.permissions().mode() & 0o777,
+            0o600
+        );
         Ok(())
     }
 

@@ -2186,8 +2186,9 @@ mod tests {
     use codescribe_core::llm::ai_formatting::{AiFormatResult, AiFormatStatus};
     use codescribe_core::llm::inline_format::{LabelProposalDisposition, OccurrenceLabelProposal};
     use codescribe_core::pipeline::acoustic_ledger::{
-        AcousticEvidence, AcousticLedger, DocumentRevisionProvenance, EnergyCalibration,
-        IncrementalShapingReceipt, ObservationIdentity, ObservationProducer, OccurrenceIdentity,
+        AcousticEvidence, AcousticLedger, ConsultationPresentationInput,
+        DocumentRevisionProvenance, EnergyCalibration, IncrementalShapingReceipt,
+        ObservationIdentity, ObservationProducer, OccurrenceIdentity,
     };
     use codescribe_core::pipeline::contracts::{
         AnnotationKind, DeltaSink, EngineEvent, EventSink, LayerSource, LayerSummary,

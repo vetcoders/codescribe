@@ -16,7 +16,7 @@ pub enum Role {
 
 /// Provider-agnostic multimodal content block.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-#[serde(tag = "type", rename_all = "snake_case")]
+#[serde(tag = "type", content = "payload", rename_all = "snake_case")]
 pub enum ContentBlock {
     /// Plain text.
     Text(String),
@@ -81,5 +81,50 @@ impl Message {
             content,
             timestamp: Some(Utc::now()),
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn runtime_message_roundtrip_preserves_text_images_and_nested_tools() {
+        let text = ContentBlock::Text("Roman, zachowaj dokładnie tę wiadomość.".into());
+        let message = Message::new(
+            Role::User,
+            vec![
+                text.clone(),
+                ContentBlock::Image {
+                    data: vec![0, 127, 255],
+                    media_type: "image/png".into(),
+                },
+                ContentBlock::ImageAsset(ImageAsset {
+                    asset_id: "retained-image".into(),
+                    path: PathBuf::from("/retained/image.png"),
+                    media_type: "image/png".into(),
+                    size_bytes: 3,
+                }),
+                ContentBlock::ToolUse {
+                    id: "call-1".into(),
+                    name: "read_file".into(),
+                    input: serde_json::json!({"path": "README.md"}),
+                },
+                ContentBlock::ToolResult {
+                    tool_use_id: "call-1".into(),
+                    content: vec![text],
+                    is_error: false,
+                },
+            ],
+        );
+        let encoded = serde_json::to_vec(&message).expect("all content variants serialize");
+        let restored: Message = serde_json::from_slice(&encoded).expect("restore runtime message");
+        assert_eq!(restored, message);
+        let encoded: serde_json::Value = serde_json::from_slice(&encoded).unwrap();
+        assert_eq!(encoded["content"][0]["type"], "text");
+        assert_eq!(
+            encoded["content"][0]["payload"],
+            "Roman, zachowaj dokładnie tę wiadomość."
+        );
     }
 }
