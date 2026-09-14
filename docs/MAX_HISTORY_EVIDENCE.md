@@ -165,3 +165,55 @@ Next bounded work should improve the app's debug receipt from existing runtime
 truth while retaining the separate Finder distribution and backup-origin debts.
 This review expands explicit coverage of the existing census; it does not mean
 all 1633 associated records have been read or the full goal is complete.
+
+## Additional user-source review at 1bbcdda39
+
+Read the user-only AICX extraction of session
+`d3c24e5a-714a-46ac-a00e-a93ed7d2972c`, from the same uppercase Claude project
+directory listed above. Output:
+`/Users/maciejgad/.aicx/codescribe-history-20260914/roman-review-d3c24e5a-714a-46ac-a00e-a93ed7d2972c-user.md`.
+All 1080 lines were read in bounded ranges; the truncated portion around lines
+505–545 was explicitly reread. CLI reports 159 entries, extracted header 88
+messages, while the older census reports 756 user messages. These different
+counts are not reconciled: this is coverage of the extraction, not proof that
+every raw source message or image was reviewed. No assistant/tool execution
+receipts were independently inspected in this pass.
+
+Direct Founder messages establish:
+
+- September 5: design and implement rather than patch for green gates; compile
+  embargo; meaningful hover affordances and clipped lettering complaints;
+  multi-file CLI and Finder Quick Actions; explicit checkpoint permission with
+  outstanding obligations recorded. Historical cleanup/release commands are
+  not replayed and do not override the current W1 contract.
+- September 6 09:40 UTC: file `501f74b9-4a1a-412f-8346-58f3ccf467ae.wav`
+  failed at window 38–63 seconds, with 1328 decoded characters but no timestamped
+  segments. At 09:43 the Founder explicitly rejected manufacturing one segment
+  spanning the entire window merely to pass the assembly contract.
+- At 10:11/10:12: diagnose the architectural cause; gates confirm the result,
+  not define correctness. A process sample was supplied for a hung app; the
+  extraction alone does not establish the sample's current availability or cause.
+- At 10:19/10:20: CLI must use the singleton Whisper and the proper engine.
+  The later proposal for an app-hosted socket and one model per machine is
+  explicitly an agent design, not a direct Founder protocol specification.
+
+The extraction contains extensive provider compaction summaries and duplicated
+peer messages. Their claimed fixes, CPU/RSS measurements, install receipts,
+dispatch status and historical hang hypotheses are leads, not current proof.
+In particular, peer messages first suggest and then retract a concurrent-build
+explanation of LINKEDIT corruption; neither claim is adopted without the actual
+measurements. Later Vibecrafted Runtime Pack work is a separate repo assignment,
+not completion of the Codescribe architectural request. Image pixels remain
+unreviewed.
+
+Current source trace at this baseline, after Loctree literal mapping:
+`bin/codescribe.rs` calls `stt::transcribe_file_verdict_observed`, both router arms
+call `whisper::transcribe_file_verdict_observed`, and that enters
+`with_engine_initial_prompt`. `core/stt/whisper/singleton.rs` owns a static
+`OnceLock<Mutex<WhisperSlot>>`. Thus this CLI path uses a process-local engine;
+it does not call the app's resident engine through IPC. This source trace is
+not a fresh RSS measurement, and no claim is made about every other engine path.
+Shared-process ownership, historical long-file refusal recovery and the hang
+still need their own current-source and executable evidence. Max consultation
+assembly remains separately unfinished; this review does not close W1 or the
+all-conversations goal.
