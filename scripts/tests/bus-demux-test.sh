@@ -787,4 +787,63 @@ assert len(rows) == 258, len(rows)  # attach + 257 deliveries, no retry duplicat
 assert rows[-1]['text'] == 'Roman, blocked terminal fixture.'
 PY
 
+python3 - "$DEMUX" "$WORKDIR" <<'PY'
+import importlib.util, json, subprocess, sys
+from pathlib import Path
+spec = importlib.util.spec_from_file_location('bus_names', sys.argv[1])
+module = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(module)
+for text in ('Raman, sprawdź.', 'Rmoan, sprawdź.', 'Rman, sprawdź.', 'Romaan, sprawdź.', 'Hej Raman, sprawdź.'):
+    assert module.resolve_recipients(text, {'roman'}) == ({'roman'}, 'fuzzy'), text
+assert module.resolve_recipients('ROMANIE, sprawdź.', {'roman', 'ramon'}) == ({'roman'}, 'exact')
+assert module.resolve_recipients('Raman, sprawdź.', {'roman', 'ramon'}) == ({'roman', 'ramon'}, 'ambiguous')
+assert module.resolve_recipients('Raman, sprawdź.', {'roman', 'raman'}) == ({'raman'}, 'exact')
+assert module.resolve_recipients('To jest Raman.', {'roman'}) == (set(), 'none')
+assert module.resolve_recipients('Iva, sprawdź.', {'iwo'}) == (set(), 'none')
+
+root = Path(sys.argv[2])/'recipient-process'
+bus = root/'bus.jsonl'
+root.mkdir()
+bus.touch()
+def register(name):
+    lease = module.SessionLease(root=root, provider='test', provider_session_id=name,
+                                name=name, bus=bus, requested_id=None,
+                                ttl_seconds=120, follow_from_end=False)
+    lease.close()  # offline identity must still prevent misrouting
+register('roman')
+other_bus = root/'other-bus.jsonl'
+other_bus.touch()
+other = module.SessionLease(root=root, provider='test', provider_session_id='other-bus',
+                            name='ramon', bus=other_bus, requested_id=None,
+                            ttl_seconds=120, follow_from_end=False)
+other.close()
+assert module.registered_recipients(root, bus) == {'roman'}
+event = dict(schema=module.CLEAN_SCHEMA, session_id='names', sequence=1,
+             status=module.SEALED, text='Raman, sprawdź.')
+bus.write_text(json.dumps(event)+'\n')
+cmd = ['python3', sys.argv[1], '--bus', str(bus), '--bridge-home', str(root),
+       '--name', 'Roman', '--once']
+row = json.loads(subprocess.run(cmd, capture_output=True, text=True, check=True).stdout)
+assert row['routing_match'] == 'fuzzy' and row['text'] == event['text']
+assert row['state_change_allowed'] is True
+event['status'] = 'utterance_draft'
+bus.write_text(json.dumps(event)+'\n')
+row = json.loads(subprocess.run(cmd+['--drafts'], capture_output=True, text=True, check=True).stdout)
+assert row['routing_match'] == 'fuzzy' and row['state_change_allowed'] is False
+event['status'] = module.SEALED
+bus.write_text(json.dumps(event)+'\n')
+register('ramon')
+row = json.loads(subprocess.run(cmd, capture_output=True, text=True, check=True).stdout)
+assert row['kind'] == 'routing_ambiguity' and row['state_change_allowed'] is False
+assert row['routing_candidates'] == ['ramon', 'roman'] and row['text'] == event['text']
+register('raman')
+assert subprocess.run(cmd, capture_output=True).returncode == 1
+(root/'leases'/'damaged.json').write_text('{')
+assert module.registered_recipients(root, bus) is None
+assert subprocess.run(cmd, capture_output=True).returncode == 1
+event['text'] = 'Roman, sprawdź.'
+bus.write_text(json.dumps(event)+'\n')
+assert subprocess.run(cmd, capture_output=True).returncode == 0
+PY
+
 echo "bus-demux: ok"

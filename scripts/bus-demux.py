@@ -216,6 +216,63 @@ def addressed_to(text: str, name: str) -> bool:
     return name_pat(name).search(text or "") is not None
 
 
+def resolve_recipients(text: str, names: set[str]) -> tuple[set[str], str]:
+    """Exact addresses win; a distorted opening vocative must be unique."""
+    names = {name.casefold() for name in names if name}
+    exact = {name for name in names if addressed_to(text, name)}
+    if exact:
+        return exact, "exact"
+    opening = re.match(
+        r"(?i)^\s*(?:(?:hej|cześć|hello|hey)\s*[,!:]?\s+)?([^\W\d_]{4,32})\b",
+        text,
+    )
+    if not opening:
+        return set(), "none"
+    token = opening.group(1).casefold()
+
+    def one_edit(left: str, right: str) -> bool:
+        if abs(len(left) - len(right)) > 1:
+            return False
+        if len(left) == len(right):
+            differences = [i for i, pair in enumerate(zip(left, right)) if pair[0] != pair[1]]
+            return len(differences) <= 1 or (
+                len(differences) == 2
+                and differences[1] == differences[0] + 1
+                and left[differences[0]] == right[differences[1]]
+                and left[differences[1]] == right[differences[0]]
+            )
+        shorter, longer = sorted((left, right), key=len)
+        return any(longer[:i] + longer[i + 1:] == shorter for i in range(len(longer)))
+
+    candidates = {
+        name for name in names
+        if 4 <= len(name) <= 32
+        and any(one_edit(token, name + suffix) for suffix in ("", "ie", "owi", "a", "em", "u"))
+    }
+    return candidates, "fuzzy" if len(candidates) == 1 else "ambiguous" if candidates else "none"
+
+
+def registered_recipients(root: Path, bus: Path) -> set[str] | None:
+    """Offline names still reserve their address; incomplete discovery forbids guessing."""
+    names: set[str] = set()
+    resolved_bus = str(bus.expanduser().resolve(strict=False))
+    try:
+        for path in (root / "leases").glob("*.json"):
+            value = read_json(path)
+            if not value or value.get("schema") != LEASE_SCHEMA:
+                return None
+            if value.get("bus") != resolved_bus:
+                continue
+            name = value.get("name")
+            if name is not None and not isinstance(name, str):
+                return None
+            if name:
+                names.add(name.casefold())
+    except OSError:
+        return None
+    return names
+
+
 def event_kind(status: Any) -> str:
     return {
         "utterance_draft": "draft",
@@ -417,15 +474,28 @@ def consider(
     hear_all: bool,
     drafts: bool,
     debug: bool,
+    recipients: set[str] | None = None,
 ) -> dict[str, Any] | None:
     status = event.get("status")
     if status != SEALED and not (drafts and status in LIVE_STATUSES):
         return None
     text = event.get("text") or ""
-    # Recognition can classify a destination, but never rewrites transcript
-    # state.  Exact-name omission intentionally means no named route: there is
-    # no heuristic or LLM fallback hidden in this consumer.
+    # Destination recognition never rewrites the transcript. Fuzzy routing
+    # requires complete registered-recipient discovery and a unique result.
     addressable = text
+    if name and not hear_all and recipients is not None:
+        matches, method = resolve_recipients(text, recipients | {name.casefold()})
+        if name.casefold() not in matches:
+            return None
+        if method == "ambiguous":
+            payload = slim(event, name.casefold(), kind="routing_ambiguity")
+            payload["state_change_allowed"] = False
+            payload["routing_candidates"] = sorted(matches)
+            return payload
+        if method == "fuzzy":
+            payload = slim(event, name.casefold())
+            payload["routing_match"] = "fuzzy"
+            return payload
     claimed = assigned_name(text)
     if claimed:
         payload = slim(event, claimed, kind="name_assignment")
@@ -971,6 +1041,7 @@ def run(args: argparse.Namespace) -> int:
     normalizer = EvidenceNormalizer()
     event_trigger: BusEventTrigger | None = None
     deferred: tuple[dict[str, Any], int | None] | None = None
+    recipients: set[str] | None = None
 
     def deliver(payload: dict[str, Any], next_cursor: int | None) -> None:
         nonlocal deferred
@@ -1001,6 +1072,7 @@ def run(args: argparse.Namespace) -> int:
             hear_all=hear_all,
             drafts=args.drafts,
             debug=args.debug,
+            recipients=recipients,
         )
         if payload is None:
             if lease and next_cursor is not None:
@@ -1029,6 +1101,7 @@ def run(args: argparse.Namespace) -> int:
                 emit(payload)
         if args.once:
             last = None
+            recipients = registered_recipients(args.bridge_home, path)
             for raw in replay(path):
                 event = normalizer.normalize(parse_line(raw))
                 if event is None:
@@ -1039,6 +1112,7 @@ def run(args: argparse.Namespace) -> int:
                     hear_all=hear_all,
                     drafts=args.drafts,
                     debug=False,
+                    recipients=recipients,
                 )
                 if payload is not None:
                     last = payload
@@ -1080,6 +1154,8 @@ def run(args: argparse.Namespace) -> int:
                     offset = lease.cursor
                 previous_offset = offset
                 entries, offset = iter_new_lines(path, offset)
+                if entries:
+                    recipients = registered_recipients(args.bridge_home, path)
                 for raw, next_cursor in entries:
                     handle(raw, next_cursor)
                 if lease and not entries and offset != previous_offset:

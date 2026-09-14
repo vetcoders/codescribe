@@ -664,6 +664,25 @@ Codescribe** in Finder's Quick Actions menu. It uses the installed CLI with
 clipboard. Existing output files are preserved and reported as failures.
 Failed decodes leave no partial `.txt`, and other selected files continue.
 
+## Native chat recipient recognition
+
+Exact names and supported Polish suffixes remain case-insensitive and take
+precedence over approximate matches. Without an exact address, the native
+reader recognizes a unique registered name with one substitution, insertion,
+deletion or adjacent transposition in the opening word (optionally after
+`hej`, `cześć`, `hello` or `hey`). Approximation is restricted to names of
+4–32 characters; it does not search every ordinary word in the transcript.
+The envelope marks this result with `routing_match: "fuzzy"`.
+
+Recipient discovery includes persisted offline identities on the same bus,
+not just fresh heartbeats. A competing offline name must not send its messages
+to someone else. Names are discovered once per input batch. Incomplete or
+unreadable discovery disables approximate matching, leaving exact matching.
+Multiple approximate candidates produce `kind: "routing_ambiguity"`, the
+candidate list, and `state_change_allowed: false` for each candidate receiver.
+The source text and reducer evidence remain unchanged; this is destination
+recognition, not an ASR correction or proof that the words were spoken correctly.
+
 ## Native chat receiver acknowledgment
 
 For a provider/session-scoped `scripts/bus-demux.py` reader, stdout is transport,
