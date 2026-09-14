@@ -747,3 +747,30 @@ rollback, and asserts original bytes remain in the named backup plus both paths
 are surfaced. This is controlled fault-injection source, not a filesystem-crash
 receipt. Cleanup of generated stages remains best-effort; durable recovery of a
 process-killed transaction and full executable verification are still outstanding.
+
+## W1 structural re-entry: diagnostic receipt
+
+The newly read Founder history and current Dragon comparison require useful
+Copy debug info. Scope includes App.swift's existing callback, a pure report
+renderer, the configuration bridge's canonical settings-path accessor and direct
+tests. Configuration reporting must not masquerade as capture execution proof.
+Use the existing controller's last-serving verdict; do not invent another runtime
+owner. Do not include credentials, raw endpoint URLs or transcript content.
+Generated bindings and executable tests remain deferred until W2 closure.
+
+The callback now uses AppBuildInfo and a pure codescribeDebugInfo renderer.
+It shows commit/build time, configured ASR/engine/input and both LLM lanes, the
+canonical UserSettings settings path (via the bridge), app-data/notes paths,
+and the separate existing last-serving verdict. Missing execution evidence is
+explicitly not-yet-observed, never inferred from useLocalStt. It warns that the
+newly loaded configuration is not proof of the active capture snapshot.
+Raw STT URLs and transcript templates are not included. Local paths and labels
+remain visible with a review-before-sharing notice.
+
+Authored unexecuted Swift tests set Apple configuration and a Whisper serving
+verdict, verify both remain distinct, check build/path/lane fields, and ensure
+credential-bearing endpoint fixtures and template content are absent. Missing
+serving data stays explicitly unknown. The existing settings loader still runs
+on report generation; failure-safe diagnostics for a broken loader and a receipt
+of the exact active capture generation are not yet implemented. New bridge
+bindings, full gates and actual copied report inspection remain owed.

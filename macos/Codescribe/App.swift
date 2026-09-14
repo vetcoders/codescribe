@@ -391,22 +391,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
       Task { @MainActor in
         let recording = await hotkeys.isRecording()
         let settings = config.loadSettings()
-        let info = Bundle.main.infoDictionary
-        let version = info?["CFBundleShortVersionString"] as? String ?? "?"
-        let build = info?["CFBundleVersion"] as? String ?? "?"
-        let stt =
-          settings.useLocalStt
-          ? "local (\(settings.localModel))"
-          : "cloud (file: \(settings.sttFileEndpoint ?? "unset"), live: \(settings.sttLiveEndpoint ?? "unset"))"
-        let text = [
-          "codescribe debug info",
-          "app version: \(version) (\(build))",
-          "macOS: \(ProcessInfo.processInfo.operatingSystemVersionString)",
-          "recording: \(recording)",
-          "STT engine: \(stt)",
-          "config dir: \(config.configDir())",
-          "notes dir: \(notes.notesDir())",
-        ].joined(separator: "\n")
+        let text = codescribeDebugInfo(
+          build: .current(), osVersion: ProcessInfo.processInfo.operatingSystemVersionString,
+          recording: recording, settings: settings, lastServing: currentServingVerdict(),
+          settingsFile: config.settingsFilePath(), dataDirectory: config.configDir(),
+          notesDirectory: notes.notesDir()
+        )
         NSPasteboard.general.clearContents()
         NSPasteboard.general.setString(text, forType: .string)
       }
@@ -797,4 +787,43 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         app.processIdentifier != currentPID && !app.isTerminated
       }
   }
+}
+
+/// A bounded diagnostic projection, not a dump of configuration or credentials.
+@MainActor
+func codescribeDebugInfo(
+  build: AppBuildInfo, osVersion: String, recording: Bool, settings: CsSettings,
+  lastServing: CsLastServingVerdict?, settingsFile: String,
+  dataDirectory: String, notesDirectory: String
+) -> String {
+  var lines = [
+    "codescribe debug info",
+    "app version: \(build.version) (\(build.build))",
+    "source commit: \(build.commit)",
+    "built at: \(build.builtAt)",
+    "macOS: \(osVersion)",
+    "recording: \(recording)",
+    "configuration: loaded now; not proof of the active capture snapshot",
+    "configured ASR mode: \(settings.asrMode ?? "not specified")",
+    "configured STT engine: \(settings.sttEngine ?? "not specified")",
+    "configured input device: \(settings.audioInputDevice ?? "system default")",
+    "formatting enabled: \(settings.aiFormattingEnabled)",
+    "configured formatting policy: \(settings.formattingLevel ?? "not specified")",
+    "configured formatting provider: \(settings.llmFormattingProvider ?? "not specified")",
+    "configured formatting model: \(settings.llmFormattingModel ?? "not specified")",
+    "configured agent provider: \(settings.llmAssistiveProvider ?? "not specified")",
+    "configured agent model: \(settings.llmAssistiveModel ?? "not specified")",
+    "settings file: \(settingsFile)",
+    "app data dir: \(dataDirectory)",
+    "notes dir: \(notesDirectory)",
+  ]
+  if let lastServing {
+    lines.append("last completed serving engine: \(lastServing.engine)")
+    lines.append("last serving disposition: \(lastServing.disposition ?? "not reported")")
+    lines.append("last serving used alternate engine: \(lastServing.fallbackUsed)")
+  } else {
+    lines.append("last completed serving engine: not yet observed in this process")
+  }
+  lines.append("Contains local paths and configuration labels; review before sharing.")
+  return lines.joined(separator: "\n")
 }

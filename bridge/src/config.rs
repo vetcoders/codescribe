@@ -838,6 +838,12 @@ impl CodescribeConfig {
         Config::config_dir().to_string_lossy().to_string()
     }
 
+    /// Settings JSON belongs to the settings loader, not the app-data directory.
+    /// Resolves the path only; does not load credentials or create a file.
+    pub fn settings_file_path(&self) -> String {
+        UserSettings::settings_path().to_string_lossy().to_string()
+    }
+
     pub fn key_status(&self) -> CsKeyStatus {
         CsKeyStatus {
             llm_libraxis_api_key_set: keychain::key_present("LLM_LIBRAXIS_API_KEY"),

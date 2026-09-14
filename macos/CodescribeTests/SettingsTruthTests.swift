@@ -6,6 +6,49 @@ import XCTest
 
 @MainActor
 final class SettingsTruthTests: XCTestCase {
+  func testDebugReceiptSeparatesConfigurationFromServingAndOmitsEndpoints() {
+    var settings = CsSettings.sample
+    settings.asrMode = "local_power"
+    settings.sttEngine = "apple"
+    settings.formattingLevel = "max"
+    settings.llmFormattingModel = "format-model"
+    settings.llmAssistiveModel = "agent-model"
+    settings.sttFileEndpoint = "https://secret.invalid/file?token=do-not-copy"
+    settings.sttLiveEndpoint = "wss://secret.invalid/live?token=do-not-copy"
+    settings.transcriptTagTemplate = "private template content"
+    let text = codescribeDebugInfo(
+      build: AppBuildInfo(version: "1.2.3", build: "456", commit: "abc123", builtAt: "fixture-time"),
+      osVersion: "fixture-os", recording: true, settings: settings,
+      lastServing: CsLastServingVerdict(
+        engine: "local_whisper", routingMode: "off", disposition: "changed", fallbackUsed: true),
+      settingsFile: "/fixture/settings/settings.json", dataDirectory: "/fixture/data",
+      notesDirectory: "/fixture/notes"
+    )
+    XCTAssertTrue(text.contains("source commit: abc123"))
+    XCTAssertTrue(text.contains("built at: fixture-time"))
+    XCTAssertTrue(text.contains("configured STT engine: apple"))
+    XCTAssertTrue(text.contains("last completed serving engine: local_whisper"))
+    XCTAssertTrue(text.contains("not proof of the active capture snapshot"))
+    XCTAssertTrue(text.contains("configured formatting model: format-model"))
+    XCTAssertTrue(text.contains("configured agent model: agent-model"))
+    XCTAssertTrue(text.contains("settings file: /fixture/settings/settings.json"))
+    XCTAssertTrue(text.contains("app data dir: /fixture/data"))
+    XCTAssertFalse(text.contains("secret.invalid"))
+    XCTAssertFalse(text.contains("do-not-copy"))
+    XCTAssertFalse(text.contains("private template content"))
+  }
+
+  func testDebugReceiptDoesNotInferServingFromConfiguredEngine() {
+    let text = codescribeDebugInfo(
+      build: AppBuildInfo(version: "1", build: "1", commit: "unknown", builtAt: "unknown"),
+      osVersion: "fixture-os", recording: false, settings: .sample, lastServing: nil,
+      settingsFile: "/fixture/settings.json", dataDirectory: "/fixture/data", notesDirectory: "/fixture/notes"
+    )
+    XCTAssertTrue(text.contains("last completed serving engine: not yet observed in this process"))
+    XCTAssertFalse(text.contains("last serving disposition:"))
+    XCTAssertTrue(text.contains("review before sharing"))
+  }
+
   func testMaxApprovalInvalidationDuringReadIsNotLost() async {
     let request = PendingToolApproval(
       callID: "call", sessionID: "session", threadID: "consultation",
