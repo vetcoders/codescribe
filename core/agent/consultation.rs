@@ -26,7 +26,8 @@ use super::{
 pub type ConsultationEvents = Arc<dyn Fn(&str, &str, AgentUiEvent) + Send + Sync>;
 
 /// Immutable reading of known sealed occurrences in one capture interval.
-/// This is not a semantic turn verdict or proof of full speech coverage.
+/// Requires measured speech coverage of that interval, but is not a semantic
+/// turn verdict and does not certify lexical accuracy.
 /// Grouping preserves PCM identity; generated words are never assigned back
 /// to one arbitrary member. Construction neither mutates the ledger nor runs tools.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -47,9 +48,22 @@ impl SealedConsultationInput {
         session_id: &str,
         capture_epoch: u64,
         samples: std::ops::Range<u64>,
+        speech: &crate::audio::capture_receipt::AcousticSpeechEvidence,
     ) -> Result<Option<Self>> {
         ensure!(!session_id.is_empty() && capture_epoch != 0 && samples.start < samples.end,
             "invalid consultation capture interval");
+        // Ask the existing authority with the observer's entire actual extent.
+        // Trimming evidence here could falsely certify an unobserved tail.
+        let coverage = ledger.assess_seal_coverage(session_id, capture_epoch, speech, 0);
+        if coverage.status.unavailable_reason().is_some()
+            || !coverage.observed_samples.is_some_and(|end| end >= samples.end)
+            || coverage.uncovered_speech_ranges.iter().any(|gap|
+                gap.sample_start < samples.end && samples.start < gap.sample_end)
+        {
+            return Ok(None);
+        }
+        // Debt outside this candidate must not block earlier complete speech.
+        // Member frontier and recovery checks below still apply inside it.
         let occurrences = ledger.qualified_occurrences().chain(ledger.occurrences())
             .filter(|occurrence| occurrence.session == session_id
                 && occurrence.capture_epoch == capture_epoch
@@ -338,6 +352,17 @@ mod tests {
     use super::*;
     use crate::agent::{AgentEvent, Message, ThreadStore, ToolDefinition, ToolRegistry};
 
+    fn consultation_speech_evidence(end: u64) -> crate::audio::capture_receipt::AcousticSpeechEvidence {
+        use crate::audio::capture_receipt::{AcousticAvailability, AcousticSpeechEvidence, CaptureEvidenceIdentity};
+        AcousticSpeechEvidence::measured(
+            CaptureEvidenceIdentity::new("capture", 1), "synthetic-consultation",
+            AcousticAvailability::Observed { observed_samples: end },
+            vec![crate::stt::tail_provider::TailSampleRange {
+                session: "capture".into(), capture_epoch: 1, sample_start: 0, sample_end: end,
+            }],
+        )
+    }
+
     fn repeated_word_ledger(last_pending: bool) -> crate::pipeline::acoustic_ledger::AcousticLedger {
         use crate::pipeline::acoustic_ledger::{
             AcousticEvidence, AcousticLedger, EnergyCalibration, ObservationIdentity,
@@ -372,7 +397,7 @@ mod tests {
     #[test]
     fn sealed_group_preserves_five_distinct_equal_words_and_original_receipts() {
         let ledger = repeated_word_ledger(false);
-        let input = SealedConsultationInput::from_ledger(&ledger, "capture", 1, 0..80_000)
+        let input = SealedConsultationInput::from_ledger(&ledger, "capture", 1, 0..80_000, &consultation_speech_evidence(80_000))
             .unwrap().expect("known members are sealed");
         assert_eq!(input.text(), "Iwo Iwo Iwo Iwo Iwo");
         assert_eq!(input.members().len(), 5);
@@ -385,7 +410,7 @@ mod tests {
         assert_eq!(input.samples(), 0..80_000);
         assert_eq!(ledger.len(), 5, "reading must not merge ledger members");
         assert_eq!(
-            SealedConsultationInput::from_ledger(&ledger, "capture", 1, 0..80_000).unwrap(),
+            SealedConsultationInput::from_ledger(&ledger, "capture", 1, 0..80_000, &consultation_speech_evidence(80_000)).unwrap(),
             Some(input),
         );
     }
@@ -393,16 +418,34 @@ mod tests {
     #[test]
     fn sealed_group_waits_for_last_observer_and_refuses_clipped_members() {
         let pending = repeated_word_ledger(true);
-        assert!(SealedConsultationInput::from_ledger(&pending, "capture", 1, 0..80_000)
+        assert!(SealedConsultationInput::from_ledger(&pending, "capture", 1, 0..80_000, &consultation_speech_evidence(80_000))
             .unwrap().is_none());
         let ledger = repeated_word_ledger(false);
-        assert!(SealedConsultationInput::from_ledger(&ledger, "capture", 1, 1..80_000).is_err());
-        assert!(SealedConsultationInput::from_ledger(&ledger, "capture", 1, 0..79_999).is_err());
-        assert!(SealedConsultationInput::from_ledger(&ledger, "capture", 2, 0..80_000)
+        // A sealed prefix cannot certify speech beyond the last known word.
+        let longer = consultation_speech_evidence(96_000);
+        assert!(SealedConsultationInput::from_ledger(&ledger, "capture", 1, 0..96_000, &longer)
             .unwrap().is_none());
-        assert!(SealedConsultationInput::from_ledger(&ledger, "foreign", 1, 0..80_000)
+        // Later uncovered speech does not invalidate a fully covered prefix.
+        assert!(SealedConsultationInput::from_ledger(&ledger, "capture", 1, 0..80_000, &longer)
+            .unwrap().is_some());
+        assert!(SealedConsultationInput::from_ledger(&ledger, "capture", 1, 0..80_000,
+            &consultation_speech_evidence(79_999)).unwrap().is_none());
+        let unavailable = crate::audio::capture_receipt::AcousticSpeechEvidence::unavailable(
+            crate::audio::capture_receipt::CaptureEvidenceIdentity::new("capture", 1),
+            "synthetic-consultation",
+            crate::audio::capture_receipt::AcousticAvailability::NotObserved,
+        );
+        assert!(SealedConsultationInput::from_ledger(&ledger, "capture", 1, 0..80_000, &unavailable)
             .unwrap().is_none());
-        assert!(SealedConsultationInput::from_ledger(&ledger, "capture", 1, 10..10).is_err());
+        assert!(SealedConsultationInput::from_ledger(&pending, "capture", 1, 0..64_000,
+            &consultation_speech_evidence(80_000)).unwrap().is_some());
+        assert!(SealedConsultationInput::from_ledger(&ledger, "capture", 1, 1..80_000, &consultation_speech_evidence(80_000)).is_err());
+        assert!(SealedConsultationInput::from_ledger(&ledger, "capture", 1, 0..79_999, &consultation_speech_evidence(80_000)).is_err());
+        assert!(SealedConsultationInput::from_ledger(&ledger, "capture", 2, 0..80_000, &consultation_speech_evidence(80_000))
+            .unwrap().is_none());
+        assert!(SealedConsultationInput::from_ledger(&ledger, "foreign", 1, 0..80_000, &consultation_speech_evidence(80_000))
+            .unwrap().is_none());
+        assert!(SealedConsultationInput::from_ledger(&ledger, "capture", 1, 10..10, &consultation_speech_evidence(80_000)).is_err());
     }
 
     struct ObservedProvider {
