@@ -181,7 +181,8 @@ struct OverlayIntentRail: View {
         canInsert: state.canInsert,
         canCopy: state.canCopy,
         canRetranscribe: state.canRetranscribe,
-        canFormat: state.canFormat
+        canFormat: state.canFormat,
+        canSendToAgent: state.canSendToAgent
       )
   }
 
@@ -220,7 +221,8 @@ struct OverlayIntentRail: View {
     canInsert: Bool,
     canCopy: Bool,
     canRetranscribe: Bool,
-    canFormat: Bool
+    canFormat: Bool,
+    canSendToAgent: Bool = false
   ) -> [OverlayIntent] {
     switch phase {
     case .listening:
@@ -232,11 +234,13 @@ struct OverlayIntentRail: View {
         + (canCopy ? [.copy] : [])
         + (canRetranscribe ? [.retranscribe] : [])
         + (canFormat ? [.format] : [])
+        + (canSendToAgent ? [.sendToAgent] : [])
         + [.close]
     case .coverageRefused, .error:
       ((canPaste || canInsert) ? [.insertPaste] : [])
         + (canCopy ? [.copy] : [])
         + (canRetranscribe ? [.retranscribe] : [])
+        + (canSendToAgent ? [.sendToAgent] : [])
         + [.close]
     case .noSpeech:
       (canRetranscribe ? [.retranscribe] : []) + [.close]
@@ -298,6 +302,7 @@ extension OverlayIntent {
     case .insertPaste: "Insert transcript"
     case .retranscribe: "Retranscribe recording"
     case .format: "Format transcript"
+    case .sendToAgent: "Send transcript to Agent"
     case .recoverSuperseded: "Recover previous transcript"
     case .discardSuperseded: "Discard previous transcript"
     case .close: "Close overlay"
@@ -313,6 +318,7 @@ extension OverlayIntent {
     case .insertPaste: "Sends the projected transcript to the selected destination"
     case .retranscribe: "Requests another transcription of this recording"
     case .format: "Requests formatting between takes"
+    case .sendToAgent: "Sends the accepted transcript to Agent"
     case .recoverSuperseded:
       "Copies the retained previous take, including any unsaved edit, to the clipboard"
     case .discardSuperseded: "Drops the retained previous take without recovering it"
@@ -329,6 +335,7 @@ extension OverlayIntent {
     case .insertPaste: "arrow.down.doc"
     case .retranscribe: "arrow.clockwise"
     case .format: "textformat"
+    case .sendToAgent: "paperplane"
     case .recoverSuperseded: "clock.arrow.circlepath"
     case .discardSuperseded: "trash"
     case .close: "circle.fill"

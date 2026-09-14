@@ -138,6 +138,7 @@ final class OverlayEditKeyGateTests: XCTestCase {
         canCopy: !text.isEmpty,
         canRetranscribe: isFormatted,
         canFormat: isFormatted,
+        canSendToAgent: false,
         terminal: terminal,
         lifecycleTerminal: terminal,
         delivery: .unattempted,

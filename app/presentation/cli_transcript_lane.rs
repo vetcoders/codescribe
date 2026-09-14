@@ -234,6 +234,7 @@ impl CliTranscriptLane {
             can_copy: false,
             can_retranscribe: false,
             can_format: false,
+            can_send_to_agent: false,
             terminal: false,
             segments: Vec::new(),
             words: Vec::new(),

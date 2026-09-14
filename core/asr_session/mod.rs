@@ -205,14 +205,13 @@ fn layer1_decision_with_factory(
             (fallback, receipt)
         }
         RefinerMode::Off => {
-            receipt.refiner = "local_tail_patch";
             receipt.reason = match resolved.derivation {
                 ModeDerivation::ConsentMissingFallback => "consent_missing",
                 ModeDerivation::ConsentDeniedFallback => "consent_denied",
                 ModeDerivation::UnknownModeFallback => "asr_mode_invalid",
-                _ => "apple_only_phase1",
+                _ => "apple_only",
             };
-            (fallback, receipt)
+            (Layer1Decision::Disarmed, receipt)
         }
     }
 }

@@ -328,6 +328,8 @@ pub struct TranscriptBusEvidenceEvent {
     #[serde(default)]
     pub can_format: bool,
     #[serde(default)]
+    pub can_send_to_agent: bool,
+    #[serde(default)]
     pub terminal: bool,
     /// True only for the session's lifecycle terminal — the line that says the
     /// controller left this session.
@@ -429,6 +431,8 @@ pub struct CleanTranscriptEvent {
     pub can_retranscribe: bool,
     #[serde(default)]
     pub can_format: bool,
+    #[serde(default)]
+    pub can_send_to_agent: bool,
     #[serde(default)]
     pub terminal: bool,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
@@ -619,6 +623,7 @@ impl TranscriptBus {
                     can_copy: !revision.rendered_text.trim().is_empty(),
                     can_retranscribe: projection.can_retranscribe,
                     can_format: projection.can_format,
+                    can_send_to_agent: projection.can_send_to_agent,
                 })
                 .unwrap_or_else(|| {
                     self.projection_availability(
@@ -656,6 +661,7 @@ impl TranscriptBus {
                 can_copy: availability.can_copy,
                 can_retranscribe: availability.can_retranscribe,
                 can_format: availability.can_format,
+                can_send_to_agent: availability.can_send_to_agent,
                 terminal: is_user_revision,
                 // A revision revises the document; it never ends the session.
                 lifecycle_terminal: false,
@@ -852,6 +858,7 @@ impl TranscriptBus {
             can_copy: availability.can_copy,
             can_retranscribe: availability.can_retranscribe,
             can_format: availability.can_format,
+            can_send_to_agent: availability.can_send_to_agent,
             terminal: true,
             segments: Vec::new(),
             words: Vec::new(),
@@ -891,6 +898,7 @@ impl TranscriptBus {
                     can_copy: availability.can_copy,
                     can_retranscribe: availability.can_retranscribe,
                     can_format: availability.can_format,
+                    can_send_to_agent: availability.can_send_to_agent,
                     terminal: true,
                     lifecycle_terminal: true,
                     delivery,
@@ -907,6 +915,7 @@ impl TranscriptBus {
         terminal.can_copy = availability.can_copy;
         terminal.can_retranscribe = availability.can_retranscribe;
         terminal.can_format = availability.can_format;
+        terminal.can_send_to_agent = availability.can_send_to_agent;
         terminal.terminal = true;
         // This projection is cloned from the last committed evidence
         // event, which was not a lifecycle line. Say what it now is.
@@ -951,6 +960,7 @@ impl TranscriptBus {
                 can_copy: false,
                 can_retranscribe: false,
                 can_format: false,
+                can_send_to_agent: false,
                 terminal: false,
                 segments: Vec::new(),
                 words: Vec::new(),

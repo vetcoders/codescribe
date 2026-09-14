@@ -50,6 +50,8 @@ pub struct LifecycleRow {
     #[serde(default)]
     pub can_format: bool,
     #[serde(default)]
+    pub can_send_to_agent: bool,
+    #[serde(default)]
     pub terminal: bool,
 }
 
@@ -78,6 +80,8 @@ pub struct EvidenceRow {
     pub can_retranscribe: bool,
     #[serde(default)]
     pub can_format: bool,
+    #[serde(default)]
+    pub can_send_to_agent: bool,
     #[serde(default)]
     pub terminal: bool,
 }
@@ -116,6 +120,7 @@ pub struct TranscriptProjection {
     pub can_copy: bool,
     pub can_retranscribe: bool,
     pub can_format: bool,
+    pub can_send_to_agent: bool,
     pub terminal: bool,
 }
 
@@ -271,6 +276,7 @@ impl TranscriptProjectionReader {
                 can_copy: row.can_copy,
                 can_retranscribe: row.can_retranscribe,
                 can_format: row.can_format,
+                can_send_to_agent: row.can_send_to_agent,
                 terminal: row.terminal,
             };
             state.last_projection = Some(projection.clone());
@@ -327,6 +333,7 @@ impl TranscriptProjectionReader {
             can_copy: false,
             can_retranscribe: false,
             can_format: false,
+            can_send_to_agent: false,
             terminal: true,
         });
         projection.kind = TranscriptProjectionKind::TerminalSeal;
@@ -338,6 +345,7 @@ impl TranscriptProjectionReader {
         projection.can_copy = can_copy;
         projection.can_retranscribe = row.can_retranscribe;
         projection.can_format = can_format;
+        projection.can_send_to_agent = row.can_send_to_agent;
         projection.terminal = true;
         Some(projection)
     }
@@ -387,6 +395,7 @@ impl TranscriptProjectionReader {
             can_copy: row.can_copy,
             can_retranscribe: row.can_retranscribe,
             can_format: row.can_format,
+            can_send_to_agent: row.can_send_to_agent,
             terminal: row.terminal,
         };
         state.last_projection = Some(projection.clone());
@@ -631,6 +640,56 @@ mod tests {
             "rendered_text": rendered_text
         })
         .to_string()
+    }
+
+    #[test]
+    fn agent_send_permission_is_explicit_at_each_projection_boundary() {
+        for evidence_permission in [None, Some(false), Some(true)] {
+            for terminal_permission in [None, Some(false), Some(true)] {
+                let mut reader = TranscriptProjectionReader::new();
+                let mut row: serde_json::Value = serde_json::from_str(&evidence(
+                    "agent-permission",
+                    1,
+                    1,
+                    "record_ledger_terminal_seal",
+                    "accepted words",
+                ))
+                .unwrap();
+                row["terminal"] = true.into();
+                if let Some(permission) = evidence_permission {
+                    row["can_send_to_agent"] = permission.into();
+                }
+                let projection = reader.push_line(&row.to_string()).unwrap().unwrap();
+                assert_eq!(
+                    projection.can_send_to_agent,
+                    evidence_permission == Some(true)
+                );
+
+                let mut end: serde_json::Value =
+                    serde_json::from_str(&lifecycle("agent-permission", 2, "session_ended"))
+                        .unwrap();
+                if let Some(permission) = terminal_permission {
+                    end["can_send_to_agent"] = permission.into();
+                }
+                let projection = reader.push_line(&end.to_string()).unwrap().unwrap();
+                assert_eq!(projection.rendered_text, "accepted words");
+                assert_eq!(
+                    projection.can_send_to_agent,
+                    terminal_permission == Some(true)
+                );
+
+                // An accepted manual revision supplies its own permission; neither
+                // retained text nor a prior grant can authorize the revised document.
+                row["sequence"] = 3.into();
+                row["reducer_revision"] = 2.into();
+                row["reducer_action"] = "apply_manual_edit".into();
+                row["rendered_text"] = "edited words".into();
+                row.as_object_mut().unwrap().remove("can_send_to_agent");
+                let projection = reader.push_line(&row.to_string()).unwrap().unwrap();
+                assert_eq!(projection.rendered_text, "edited words");
+                assert!(!projection.can_send_to_agent);
+            }
+        }
     }
 
     fn replay(input: &str) -> Vec<String> {

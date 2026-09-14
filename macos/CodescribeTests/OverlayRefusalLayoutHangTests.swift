@@ -242,6 +242,7 @@ final class OverlayRefusalLayoutHangTests: XCTestCase {
       canCopy: true,
       canRetranscribe: false,
       canFormat: false,
+      canSendToAgent: false,
       terminal: false,
       lifecycleTerminal: false,
       delivery: .unattempted,

@@ -261,6 +261,7 @@ final class ComposerDeliveryJoinTests: XCTestCase {
         canCopy: !text.isEmpty,
         canRetranscribe: terminal,
         canFormat: !terminal,
+        canSendToAgent: false,
         terminal: terminal,
         lifecycleTerminal: lifecycleTerminal,
         delivery: delivery,

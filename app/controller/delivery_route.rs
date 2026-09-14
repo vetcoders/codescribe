@@ -177,6 +177,7 @@ pub(crate) struct TranscriptProjectionAvailability {
     pub can_copy: bool,
     pub can_retranscribe: bool,
     pub can_format: bool,
+    pub can_send_to_agent: bool,
 }
 
 /// Facts an overlay Insert / defer click may feed the throne.
@@ -291,6 +292,15 @@ pub(crate) fn resolve_transcript_projection_availability(
         can_copy: has_text,
         can_retranscribe: !take_in_progress && session_wav_exists,
         can_format: !take_in_progress && has_text,
+        can_send_to_agent: !take_in_progress
+            && matches!(
+                resolve_delivery_route(
+                    DeliveryIntent::OverlayToAgent,
+                    overlay_insert_facts(has_text, latched_target_is_self),
+                )
+                .route,
+                DeliveryRoute::AgentComposer
+            ),
     }
 }
 
@@ -555,6 +565,7 @@ mod tests {
                     can_copy: true,
                     can_retranscribe: false,
                     can_format: false,
+                    can_send_to_agent: false,
                 },
             ),
             (
@@ -566,6 +577,7 @@ mod tests {
                     can_copy: true,
                     can_retranscribe: true,
                     can_format: true,
+                    can_send_to_agent: true,
                 },
             ),
             (
@@ -577,6 +589,7 @@ mod tests {
                     can_copy: true,
                     can_retranscribe: true,
                     can_format: true,
+                    can_send_to_agent: true,
                 },
             ),
             (
@@ -588,6 +601,7 @@ mod tests {
                     can_copy: false,
                     can_retranscribe: true,
                     can_format: false,
+                    can_send_to_agent: false,
                 },
             ),
         ];

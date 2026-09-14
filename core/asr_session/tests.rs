@@ -557,8 +557,10 @@ fn production_layer1_decision_follows_resolved_asr_mode() {
             receipt.refiner,
             if armed {
                 "cloud_session"
-            } else {
+            } else if mode == "local_power" {
                 "local_tail_patch"
+            } else {
+                "off"
             }
         );
         let mut lane = RecorderLayer1Lane::open(decision, &fake_input());
@@ -572,6 +574,44 @@ fn production_layer1_decision_follows_resolved_asr_mode() {
         let (production, production_receipt) = super::layer1_decision(&snapshot);
         assert_eq!(matches!(production, Layer1Decision::Armed(_)), armed);
         assert_eq!(production_receipt, receipt);
+    }
+}
+
+#[test]
+#[serial_test::serial]
+fn apple_only_never_arms_a_refiner() {
+    use super::Layer1Decision;
+    use crate::config::{Config, UserSettings};
+
+    let root = tempfile::tempdir().unwrap();
+    let mut environment = Layer1TestEnv::new(root.path());
+    for phase in ["", "phase1", "off", "phase2"] {
+        environment.set("CODESCRIBE_LAYERED_TRANSCRIPTION", phase);
+        for (mode, consent) in [
+            ("apple_only", None),
+            ("apple_only", Some("granted")),
+            ("cloud", None),
+            ("cloud", Some("denied")),
+        ] {
+            UserSettings {
+                asr_mode: Some(mode.into()),
+                cloud_consent: consent.map(str::to_owned),
+                ..Default::default()
+            }
+            .save()
+            .unwrap();
+            let snapshot = Config::load_runtime_snapshot_without_keychain().unwrap();
+            let (decision, receipt) = super::layer1_decision_with_factory(&snapshot, |_, _| {
+                panic!("Apple-only or refused consent reached cloud construction")
+            });
+            assert!(
+                !decision.is_armed(),
+                "mode={mode}, consent={consent:?}, phase={phase}"
+            );
+            assert!(matches!(decision, Layer1Decision::Disarmed));
+            assert!(decision.local_tail_patch_disposition().is_none());
+            assert_eq!(receipt.refiner, "off");
+        }
     }
 }
 

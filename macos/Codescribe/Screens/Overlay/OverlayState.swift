@@ -179,6 +179,7 @@ enum OverlayIntent: String, Equatable, Hashable {
   case insertPaste = "insert-paste"
   case retranscribe
   case format
+  case sendToAgent = "send-to-agent"
   /// Hand one retained superseded take back to the user, or drop it on an
   /// explicit acknowledgement. These are the only two commands on the rail the
   /// reducer does not project: retained work is presentation-local by
@@ -285,6 +286,7 @@ final class OverlayState {
   private(set) var canCopy = false
   private(set) var canRetranscribe = false
   private(set) var canFormat = false
+  private(set) var canSendToAgent = false
   private(set) var terminal = false
   var vadActive: Bool = false  // drives the WaveformView pulse
   /// Live capture level for the waveform. NOT on purpose — the
@@ -878,6 +880,8 @@ final class OverlayState {
       relayRetranscribeIntent(pass: .fullHq)
     case .format:
       relayFormatIntent()
+    case .sendToAgent:
+      sendToAgent()
     case .recoverSuperseded:
       recoverSupersededTake()
     case .discardSuperseded:
@@ -1007,10 +1011,13 @@ final class OverlayState {
     restartAutoHideCountdown()
   }
 
-  func sendToAgent() {
+  @discardableResult
+  func sendToAgent() -> Task<Void, Never>? {
+    guard terminal, canSendToAgent, !isRevisionDraftDirty,
+      !revisionCommitPending, !formatterCommitPending else { return nil }
     // P0-D: capture user correction on FINAL for quality loop + lexicon learning.
     captureQualityIfEdited(action: "send")
-    deliverAgentTranscript()
+    return deliverAgentTranscript()
   }
 
   /// Caret-truth probe for the Insert self-paste guard. The overlay is a
@@ -1225,6 +1232,9 @@ final class OverlayState {
   func beginTranscriptEdit() {
     guard isTranscriptEditable, !isEditingTranscript else { return }
     isEditingTranscript = true
+    // Taking the final canvas for review requires an explicit Agent send,
+    // even after focus leaves or the reducer accepts the revision.
+    agentAutoSendCancelled = true
     revisionCommitError = nil
     cancelAutoHide()
   }
@@ -1547,7 +1557,7 @@ final class OverlayState {
     autoHideDeadline = nil
     if agentSessionArmed, agentFinalTranscriptAppeared {
       if !agentAutoSendCancelled {
-        deliverAgentTranscript()
+        sendToAgent()
       }
       return
     }
@@ -1585,20 +1595,26 @@ final class OverlayState {
     autoHideDeadline = nil
   }
 
-  private func deliverAgentTranscript() {
+  @discardableResult
+  private func deliverAgentTranscript() -> Task<Void, Never>? {
     let text = activeText.trimmingCharacters(in: .whitespacesAndNewlines)
     // No `agentSessionArmed` here: the explicit Send button is live for
     // every terminal overlay (dictation and formatting included), and the
     // controller falls back to the session trigger context when no
     // assistive context was armed (review P0-03). Auto-send remains gated
     // on the armed latch by its caller.
-    guard !agentDeliveryStarted, !text.isEmpty, let engine else { return }
+    guard !agentDeliveryStarted, !text.isEmpty, let engine else { return nil }
     agentDeliveryStarted = true
+    let generation = captureGeneration
     cancelAutoHide()
-    Task { @MainActor [weak self] in
+    return Task { @MainActor [weak self] in
       guard let self else { return }
       do {
-        if try await engine.sendAssistiveTranscript(text: text) {
+        let delivered = try await engine.sendAssistiveTranscript(text: text)
+        // Rust owns the completed send. These callbacks and flags only own
+        // this capture's presentation, never a successor's panel or latch.
+        guard generation == captureGeneration else { return }
+        if delivered {
           onSendToAgent?(text)
           onClose?()
         } else {
@@ -1606,6 +1622,7 @@ final class OverlayState {
           showToast("Agent delivery is no longer available")
         }
       } catch {
+        guard generation == captureGeneration else { return }
         agentDeliveryStarted = false
         showToast("Couldn't send to Agent")
       }
@@ -1792,6 +1809,7 @@ final class OverlayState {
     canCopy = false
     canRetranscribe = false
     canFormat = false
+    canSendToAgent = false
     mode = event.isError ? .error : .formatted
     terminal = event.terminal
     finalized = event.terminal
@@ -1968,6 +1986,7 @@ final class OverlayState {
     canCopy = projection.canCopy
     canRetranscribe = projection.canRetranscribe
     canFormat = projection.canFormat
+    canSendToAgent = projection.canSendToAgent
     terminal = projection.terminal
     // A document revision cannot consume the capture's pending stopped callback.
     // Preserve an already-finalized lifecycle when revising its document later.
@@ -2322,6 +2341,7 @@ final class OverlayState {
     canCopy = false
     canRetranscribe = false
     canFormat = false
+    canSendToAgent = false
     // The canvas is no longer editable, so AppKit will resign it; recording the
     // presentation truth here keeps the caret and the auto-hide hold honest.
     // `endTranscriptEdit` is idempotent, so the later resign cannot double-fire
@@ -2490,6 +2510,7 @@ final class OverlayState {
       canInsert: isFormatted,
       canCopy: !renderedText.isEmpty, canRetranscribe: phase == .noSpeech || isFormatted,
       canFormat: isFormatted,
+      canSendToAgent: isFormatted,
       terminal: terminal, lifecycleTerminal: terminal, delivery: .unattempted, acousticReceipts: [],
       sealCoverage: nil)
   }

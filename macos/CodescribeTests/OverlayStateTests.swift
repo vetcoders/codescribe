@@ -46,6 +46,7 @@ private final class OverlayStateTestEngine: DictationEngine {
   var sentAssistiveTexts: [String] = []
   var assistiveSendResult = true
   var onAssistiveSend: (() -> Void)?
+  var assistiveSendHandler: (() async throws -> Bool)?
   var revisionRequests: [RevisionRequest] = []
   var onRevision: (() -> Void)?
   var formatterRequests: [FormatterRequest] = []
@@ -152,6 +153,7 @@ private final class OverlayStateTestEngine: DictationEngine {
   func sendAssistiveTranscript(text: String) async throws -> Bool {
     sentAssistiveTexts.append(text)
     onAssistiveSend?()
+    if let assistiveSendHandler { return try await assistiveSendHandler() }
     return assistiveSendResult
   }
   func transcribeFile(path _: String) async throws -> CsTranscription {
@@ -267,6 +269,7 @@ final class OverlayStateTests: XCTestCase {
     canCopy: Bool? = nil,
     canRetranscribe: Bool = false,
     canFormat: Bool = false,
+    canSendToAgent: Bool? = nil,
     terminal: Bool = false,
     lifecycleTerminal: Bool? = nil,
     delivery: CsTranscriptDelivery = .unattempted,
@@ -327,6 +330,7 @@ final class OverlayStateTests: XCTestCase {
         canCopy: canCopy ?? !text.isEmpty,
         canRetranscribe: canRetranscribe,
         canFormat: canFormat,
+        canSendToAgent: canSendToAgent ?? (terminal && !text.isEmpty),
         terminal: terminal,
         lifecycleTerminal: lifecycleTerminal ?? (terminal && reducerAction != "apply_manual_edit"),
         delivery: delivery,
@@ -1595,6 +1599,118 @@ final class OverlayStateTests: XCTestCase {
     XCTAssertEqual(engine.sentAssistiveTexts, ["untouched final"])
   }
 
+  func testAgentDeadlineRequiresProjectedSendPermission() async {
+    let clock = OverlayStateTestClock()
+    let engine = OverlayStateTestEngine()
+    let state = OverlayState(nowProvider: { clock.now })
+    state.engine = engine
+    state.applyIndicatorMode(.assistive)
+    state.handleRecordingPreparing()
+    state.handleRecordingStarted()
+    projectText("not authorized", to: state, canSendToAgent: false, terminal: true)
+    state.finishControllerRecording()
+
+    clock.now = 5
+    state.fireAutoHideNowForTests(armedDeadline: 5)
+    // No actor suspension between the refused deadline and explicit send:
+    // an incorrect automatic send would already hold the delivery latch.
+    projectText("authorized revision", to: state, canSendToAgent: true, terminal: true,
+      lifecycleTerminal: false)
+    let delivery = state.sendToAgent()
+    XCTAssertNotNil(delivery)
+    await delivery?.value
+    XCTAssertEqual(engine.sentAssistiveTexts, ["authorized revision"])
+  }
+
+  func testAgentReviewCancelsAutoSendAfterFocusExitButAllowsExplicitSend() async {
+    let clock = OverlayStateTestClock()
+    let engine = OverlayStateTestEngine()
+    let state = OverlayState(nowProvider: { clock.now })
+    state.engine = engine
+    state.applyIndicatorMode(.assistive)
+    state.handleRecordingPreparing()
+    state.handleRecordingStarted()
+    projectText("reviewed final", to: state, terminal: true)
+    state.finishControllerRecording()
+    XCTAssertTrue(state.isTranscriptEditable)
+
+    state.beginTranscriptEdit()
+    state.endTranscriptEdit()
+    clock.now = 5
+    state.fireAutoHideNowForTests()
+    // Explicit send follows on the same actor. An incorrectly queued
+    // automatic send would already hold the latch and emit the old text.
+    projectText("reviewed revision", to: state, terminal: true, lifecycleTerminal: false)
+    let delivered = expectation(description: "reviewed transcript explicitly sent")
+    engine.onAssistiveSend = { delivered.fulfill() }
+    state.sendToAgent()
+    await fulfillment(of: [delivered], timeout: 1)
+    XCTAssertEqual(engine.sentAssistiveTexts, ["reviewed revision"])
+  }
+
+  func testAgentSendCompletionCannotDismissSuccessorCapture() async {
+    enum SendFailure: Error { case refused }
+    let results: [Result<Bool, Error>] = [.success(true), .success(false), .failure(SendFailure.refused)]
+    for result in results {
+      let engine = OverlayStateTestEngine()
+      let state = OverlayState()
+      state.engine = engine
+      state.applyIndicatorMode(.assistive)
+      state.handleRecordingPreparing()
+      state.handleRecordingStarted()
+      projectText("outgoing final", to: state, terminal: true)
+      state.finishControllerRecording()
+      var closes = 0
+      var presentations = 0
+      state.onClose = { closes += 1 }
+      state.onSendToAgent = { _ in presentations += 1 }
+      let suspended = expectation(description: "send suspended")
+      var completion: CheckedContinuation<Bool, Error>?
+      engine.assistiveSendHandler = {
+        try await withCheckedThrowingContinuation { continuation in
+          completion = continuation
+          suspended.fulfill()
+        }
+      }
+      let deliveryTask = state.sendToAgent()
+      XCTAssertNotNil(deliveryTask)
+      await fulfillment(of: [suspended], timeout: 1)
+      state.handleRecordingPreparing()
+      state.handleRecordingStarted()
+      let generation = state.captureGeneration
+      completion?.resume(with: result)
+      engine.assistiveSendHandler = nil
+      await deliveryTask?.value
+      XCTAssertEqual(state.captureGeneration, generation)
+      XCTAssertTrue(state.recording)
+      XCTAssertEqual(closes, 0)
+      XCTAssertEqual(presentations, 0)
+      XCTAssertNil(state.toast)
+      XCTAssertEqual(engine.sentAssistiveTexts, ["outgoing final"])
+    }
+  }
+
+  func testAgentRailRequiresProjectedPermissionAndRelaysExplicitSend() async {
+    let engine = OverlayStateTestEngine()
+    let state = OverlayState()
+    state.engine = engine
+    state.handleRecordingPreparing()
+    state.handleRecordingStarted()
+    projectText("retained final", to: state, canSendToAgent: false, terminal: true)
+    state.finishControllerRecording()
+    XCTAssertFalse(OverlayIntentRail.projectedIntents(for: state).contains(.sendToAgent))
+    XCTAssertNil(state.sendToAgent(), "direct invocation must also respect the producer")
+
+    projectText("accepted final", to: state, canSendToAgent: true, terminal: true,
+      lifecycleTerminal: false)
+    XCTAssertTrue(OverlayIntentRail.projectedIntents(for: state).contains(.sendToAgent))
+    let sent = expectation(description: "rail intent reached the engine")
+    engine.onAssistiveSend = { sent.fulfill() }
+    state.relayIntent(.sendToAgent)
+    await fulfillment(of: [sent], timeout: 1)
+    XCTAssertEqual(engine.sentAssistiveTexts, ["accepted final"])
+  }
+
   func testRustRenderedContextMarkerPassesThroughUnchanged() {
     let state = OverlayState()
     state.applyIndicatorMode(.assistive)
@@ -2150,6 +2266,7 @@ final class OverlayStateTests: XCTestCase {
         canCopy: !text.isEmpty,
         canRetranscribe: terminal,
         canFormat: !terminal,
+        canSendToAgent: false,
         terminal: terminal,
         lifecycleTerminal: terminal,
         delivery: .unattempted,

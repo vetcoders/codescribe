@@ -538,6 +538,7 @@ final class OverlayResizeHitTests: XCTestCase {
         canCopy: !text.isEmpty,
         canRetranscribe: false,
         canFormat: false,
+        canSendToAgent: false,
         terminal: false,
         lifecycleTerminal: false,
         delivery: .unattempted,

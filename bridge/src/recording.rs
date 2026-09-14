@@ -195,6 +195,7 @@ pub struct CsTranscriptProjectionEvent {
     pub can_copy: bool,
     pub can_retranscribe: bool,
     pub can_format: bool,
+    pub can_send_to_agent: bool,
     pub terminal: bool,
     /// True only for the session's lifecycle terminal. A terminal *revision* of
     /// the document is not the end of the capture, and only this flag tells the
@@ -357,6 +358,7 @@ impl CsTranscriptProjectionEvent {
             can_copy: event.can_copy,
             can_retranscribe: event.can_retranscribe,
             can_format: event.can_format,
+            can_send_to_agent: event.can_send_to_agent,
             terminal: event.terminal,
             lifecycle_terminal: event.lifecycle_terminal,
             delivery: CsTranscriptDelivery::from_bus_delivery(event.delivery),
@@ -981,6 +983,7 @@ mod tests {
             can_copy: true,
             can_retranscribe: true,
             can_format: true,
+            can_send_to_agent: true,
             terminal: true,
             lifecycle_terminal: true,
             delivery: TranscriptDelivery::ComposerPending,
@@ -1033,6 +1036,7 @@ mod tests {
                 can_copy: true,
                 can_retranscribe: true,
                 can_format: true,
+                can_send_to_agent: true,
                 terminal: true,
                 lifecycle_terminal: true,
                 delivery: CsTranscriptDelivery::ComposerPending,
