@@ -1,4 +1,5 @@
 import CryptoKit
+import Darwin
 import Foundation
 import XCTest
 
@@ -420,6 +421,51 @@ final class AgentBridgeInstallerTests: XCTestCase {
     XCTAssertEqual(try Data(contentsOf: outside.appendingPathComponent("SKILL.md")), original)
     XCTAssertFalse(FileManager.default.fileExists(
       atPath: home.appendingPathComponent(".codescribe/agent-bridge/receipt.json").path))
+  }
+
+  func testInstallationLeaseRefusesAnotherWriterAndReleasesAfterFailure() throws {
+    let payload = try makePayload()
+    let home = scratch.appendingPathComponent("install-lease")
+    let root = home.appendingPathComponent(".codescribe/agent-bridge")
+    try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+    let lockPath = root.appendingPathComponent("installation.lock").path
+    let descriptor = Darwin.open(lockPath, O_CREAT | O_RDWR, mode_t(0o600))
+    XCTAssertGreaterThanOrEqual(descriptor, 0)
+    guard descriptor >= 0 else { return }
+    defer { _ = Darwin.close(descriptor) }
+    XCTAssertEqual(Darwin.flock(descriptor, LOCK_EX | LOCK_NB), 0)
+    let installer = RealAgentBridgeInstaller(
+      resourceRoot: payload, homeDirectory: home, environment: [:])
+    XCTAssertThrowsError(try installer.install(selectedClients: [.codex]))
+    XCTAssertFalse(FileManager.default.fileExists(atPath: root.appendingPathComponent("runtime").path))
+    XCTAssertFalse(FileManager.default.fileExists(atPath: root.appendingPathComponent("receipt.json").path))
+    XCTAssertEqual(Darwin.flock(descriptor, LOCK_UN), 0)
+    // Missing manual folder fails after the installer acquires the lock.
+    XCTAssertThrowsError(try installer.adoptManualSkill(client: .codex))
+    XCTAssertEqual(Darwin.flock(descriptor, LOCK_EX | LOCK_NB), 0, "failure released ownership")
+    XCTAssertEqual(Darwin.flock(descriptor, LOCK_UN), 0)
+    _ = try installer.install(selectedClients: [.codex])
+    XCTAssertEqual(Darwin.flock(descriptor, LOCK_EX | LOCK_NB), 0, "success released ownership")
+    XCTAssertTrue(FileManager.default.fileExists(atPath: lockPath))
+    XCTAssertEqual(Darwin.flock(descriptor, LOCK_UN), 0)
+  }
+
+  func testInstallationRefusesSymlinkedLeaseWithoutTouchingItsTarget() throws {
+    let payload = try makePayload()
+    let home = scratch.appendingPathComponent("install-lock-symlink")
+    let root = home.appendingPathComponent(".codescribe/agent-bridge")
+    try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+    let outside = scratch.appendingPathComponent("outside-lock")
+    let original = Data("unrelated file".utf8)
+    try original.write(to: outside)
+    try FileManager.default.createSymbolicLink(
+      at: root.appendingPathComponent("installation.lock"), withDestinationURL: outside)
+    let installer = RealAgentBridgeInstaller(
+      resourceRoot: payload, homeDirectory: home, environment: [:])
+    XCTAssertThrowsError(try installer.install(selectedClients: [.codex]))
+    XCTAssertEqual(try Data(contentsOf: outside), original)
+    XCTAssertFalse(FileManager.default.fileExists(atPath: root.appendingPathComponent("runtime").path))
+    XCTAssertFalse(FileManager.default.fileExists(atPath: root.appendingPathComponent("receipt.json").path))
   }
 
   private func makePayload() throws -> URL {

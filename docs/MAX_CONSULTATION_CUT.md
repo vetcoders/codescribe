@@ -718,3 +718,17 @@ not a crash-recovery protocol: process death between renames, concurrent externa
 folder mutation and rollback I/O failure still require verification/hardening.
 No real home folder was adopted, no remote state changed, and no app was built
 or installed in this step. W2 gates and actual Creator interaction remain owed.
+
+The shared installer now acquires a non-blocking kernel flock on the persistent
+installation.lock before reading prior receipt ownership or staging/replacing
+payloads. This serializes participating processes using the same bridge root;
+the lock is not unlinked and the descriptor closes on success/error or process
+death. Symlink/non-regular lock targets refuse. Manual adoption unions the prior
+receipt's clients after acquiring ownership rather than relying only on the
+earlier UI snapshot. This is writer exclusion, not interrupted-transaction recovery.
+
+Authored unexecuted tests hold the same kernel lock to require refusal before
+payload/receipt creation, check release after both failed and successful install,
+preserve the lock inode's path, and refuse a symlinked lock without changing its
+target. The installation crash/rollback obligations above remain open. No gates,
+home-directory installation or Dragon mutation ran under this checkpoint.

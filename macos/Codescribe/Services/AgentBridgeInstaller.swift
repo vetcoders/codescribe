@@ -1,4 +1,5 @@
 import CryptoKit
+import Darwin
 import Foundation
 import OSLog
 
@@ -271,18 +272,25 @@ final class RealAgentBridgeInstaller: AgentBridgeInstalling {
       attributes: [.posixPermissions: 0o700]
     )
     try? fileManager.setAttributes([.posixPermissions: 0o700], ofItemAtPath: bridgeRoot.path)
+    let lease = try acquireInstallationLease()
+    defer {
+      _ = Darwin.flock(lease, LOCK_UN)
+      _ = Darwin.close(lease)
+    }
 
     let previousReceipt = validReceipt()
     let managedID = previousReceipt?.managedID ?? UUID().uuidString.lowercased()
-    let selected = selectedClients.sorted { $0.rawValue < $1.rawValue }
     let previouslySelected = Set(previousReceipt?.selectedClients ?? [])
-    let deselected = previouslySelected.subtracting(selectedClients)
+    // Adoption is additive, including clients committed before we got the lease.
+    let effectiveSelection = adopting == nil ? selectedClients : selectedClients.union(previouslySelected)
+    let selected = effectiveSelection.sorted { $0.rawValue < $1.rawValue }
+    let deselected = previouslySelected.subtracting(effectiveSelection)
 
     // Conflict discovery is deliberately complete before the first rename.
     if let adopting {
       try requireManualSkill(client: adopting)
     }
-    for client in selectedClients {
+    for client in effectiveSelection {
       let destination = client.skillDirectory(home: homeDirectory)
       if client != adopting, fileManager.fileExists(atPath: destination.path) {
         try requireManaged(
@@ -406,6 +414,25 @@ final class RealAgentBridgeInstaller: AgentBridgeInstalling {
     }
 
     return AgentBridgeAdoptionResult(status: status(), backupPaths: preservedBackups)
+  }
+
+  /// One kernel-owned writer across app processes. Keep the lock file: unlinking
+  /// it would allow two writers to lock different inodes at the same path.
+  private func acquireInstallationLease() throws -> Int32 {
+    let path = bridgeRoot.appendingPathComponent("installation.lock").path
+    let descriptor = Darwin.open(path, O_CREAT | O_RDWR | O_NOFOLLOW | O_CLOEXEC, mode_t(0o600))
+    guard descriptor >= 0 else {
+      throw AgentBridgeInstallationError.transaction("cannot open the installation lock")
+    }
+    var metadata = stat()
+    guard Darwin.fstat(descriptor, &metadata) == 0,
+      (metadata.st_mode & mode_t(S_IFMT)) == mode_t(S_IFREG),
+      Darwin.flock(descriptor, LOCK_EX | LOCK_NB) == 0
+    else {
+      _ = Darwin.close(descriptor)
+      throw AgentBridgeInstallationError.transaction("another installation is active or its lock is unavailable; try again after it finishes")
+    }
+    return descriptor
   }
 
   private func requireManualSkill(client: AgentBridgeClient) throws {
