@@ -422,6 +422,19 @@ captured handle on the previous conversation. A Max initialization failure keeps
 capture available without a tool executor and logs the refusal; no successful
 Agent execution is claimed from that path.
 
+SealedConsultationInput now reads known qualified/committed members of an
+explicit capture interval from the existing ledger. It retains each occurrence
+and its real seal id, ordered labels and the capture interval; repeated equal
+labels remain distinct members. Missing qualification, open observation frontier,
+text-recovery debt, absent seal or absent label returns not-yet-available.
+Crossing/overlapping members and invalid intervals are refused instead of clipped.
+An authored synthetic five-Iwo test checks exact member/receipt preservation;
+another covers pending Whisper, clipped intervals and foreign capture identity.
+Neither test has run and neither is physical-audio proof.
+This reader is not yet a production boundary consumer. It intentionally does
+not certify full acoustic coverage or semantic completeness and grants no
+execution permission. Those gates and the worker-to-host handoff remain open.
+
 These checkpoints are structural W1 work. Checkpoint hooks are bypassed in full:
 trailing-whitespace, end-of-file-fixer, check-merge-conflict, mixed-line-ending,
 detect-private-key (security), cargo-check, cargo-fmt, prettier and

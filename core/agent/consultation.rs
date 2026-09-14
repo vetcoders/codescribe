@@ -25,6 +25,80 @@ use super::{
 /// durable delivery succeeds; tool and text events do not authorize pasting.
 pub type ConsultationEvents = Arc<dyn Fn(&str, &str, AgentUiEvent) + Send + Sync>;
 
+/// Immutable reading of known sealed occurrences in one capture interval.
+/// This is not a semantic turn verdict or proof of full speech coverage.
+/// Grouping preserves PCM identity; generated words are never assigned back
+/// to one arbitrary member. Construction neither mutates the ledger nor runs tools.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SealedConsultationInput {
+    session_id: String,
+    capture_epoch: u64,
+    samples: std::ops::Range<u64>,
+    members: Vec<(crate::pipeline::acoustic_ledger::OccurrenceIdentity, String)>,
+    text: String,
+}
+
+impl SealedConsultationInput {
+    /// Read under the caller's ledger lock. None means known speech is not yet
+    /// fully labelled/sealed, or the interval contains no usable instruction.
+    /// A crossing member is refused: clipping would invent an acoustic identity.
+    pub fn from_ledger(
+        ledger: &crate::pipeline::acoustic_ledger::AcousticLedger,
+        session_id: &str,
+        capture_epoch: u64,
+        samples: std::ops::Range<u64>,
+    ) -> Result<Option<Self>> {
+        ensure!(!session_id.is_empty() && capture_epoch != 0 && samples.start < samples.end,
+            "invalid consultation capture interval");
+        let occurrences = ledger.qualified_occurrences().chain(ledger.occurrences())
+            .filter(|occurrence| occurrence.session == session_id
+                && occurrence.capture_epoch == capture_epoch
+                && occurrence.sample_start < samples.end
+                && samples.start < occurrence.sample_end)
+            .collect::<std::collections::BTreeSet<_>>();
+        if occurrences.is_empty() {
+            return Ok(None);
+        }
+        let mut members = Vec::with_capacity(occurrences.len());
+        let mut labels = Vec::with_capacity(occurrences.len());
+        let mut previous_end = samples.start;
+        for occurrence in occurrences {
+            ensure!(occurrence.sample_start >= previous_end && occurrence.sample_end <= samples.end,
+                "consultation interval crosses or overlaps an occurrence");
+            previous_end = occurrence.sample_end;
+            if !ledger.is_qualified(occurrence)
+                || ledger.text_recovery_pending(occurrence)
+                || !ledger.frontier_of(occurrence).is_some_and(|frontier| frontier.is_closed())
+            {
+                return Ok(None);
+            }
+            let Some(seal) = ledger.seal_of(occurrence) else { return Ok(None); };
+            let Some(label) = ledger.text_of(occurrence).filter(|label| !label.trim().is_empty()) else {
+                return Ok(None);
+            };
+            members.push((occurrence.clone(), seal.receipt_id.clone()));
+            labels.push(label.to_string());
+        }
+        Ok(Some(Self {
+            session_id: session_id.into(), capture_epoch, samples,
+            members, text: labels.join(" "),
+        }))
+    }
+
+    /// Exact capture session, never inferred from transcript text.
+    pub fn session_id(&self) -> &str { &self.session_id }
+    /// Recorder-owned clock epoch.
+    pub fn capture_epoch(&self) -> u64 { self.capture_epoch }
+    /// Candidate grouping interval, not a newly minted occurrence.
+    pub fn samples(&self) -> std::ops::Range<u64> { self.samples.clone() }
+    /// Every source occurrence paired with its existing seal receipt.
+    pub fn members(&self) -> &[(crate::pipeline::acoustic_ledger::OccurrenceIdentity, String)] {
+        &self.members
+    }
+    /// Ordered source labels, including repeated words from distinct PCM spans.
+    pub fn text(&self) -> &str { &self.text }
+}
+
 /// One admitted instruction, not an arbitrary partial ASR label.
 pub struct ConsultationTurn {
     pub id: String,
@@ -263,6 +337,73 @@ mod tests {
     use tokio::sync::Semaphore;
     use super::*;
     use crate::agent::{AgentEvent, Message, ThreadStore, ToolDefinition, ToolRegistry};
+
+    fn repeated_word_ledger(last_pending: bool) -> crate::pipeline::acoustic_ledger::AcousticLedger {
+        use crate::pipeline::acoustic_ledger::{
+            AcousticEvidence, AcousticLedger, EnergyCalibration, ObservationIdentity,
+            ObservationProducer, OccurrenceIdentity,
+        };
+        let mut ledger = AcousticLedger::new();
+        let calibration = EnergyCalibration::new("synthetic-consultation", 1.0, 1);
+        for index in 0..5u64 {
+            let occurrence = OccurrenceIdentity::new("capture", 1, index * 16_000, (index + 1) * 16_000);
+            let evidence = AcousticEvidence {
+                occurrence: occurrence.clone(), duration_ms: 1_000.0,
+                energy_integral: 100.0, mean_rms_dbfs: -20.0, peak_dbfs: -10.0,
+                vad_open_sample: Some(occurrence.sample_start),
+                vad_close_sample: Some(occurrence.sample_end),
+                evidence_calibration_version: calibration.version.clone(),
+            };
+            assert!(ledger.qualify(&evidence, &calibration).is_qualified());
+            let pending = last_pending && index == 4;
+            let mut producers = vec![ObservationProducer::Apple];
+            if pending { producers.push(ObservationProducer::Whisper); }
+            ledger.schedule_frontier(occurrence.clone(), producers);
+            assert!(ledger.admit(
+                &ObservationIdentity::new(ObservationProducer::Apple, index, 0, occurrence.clone()),
+                "Iwo",
+            ).grants_mutation());
+            ledger.note_frontier_return(&occurrence, ObservationProducer::Apple);
+            if !pending { ledger.seal(&occurrence).expect("synthetic closed member"); }
+        }
+        ledger
+    }
+
+    #[test]
+    fn sealed_group_preserves_five_distinct_equal_words_and_original_receipts() {
+        let ledger = repeated_word_ledger(false);
+        let input = SealedConsultationInput::from_ledger(&ledger, "capture", 1, 0..80_000)
+            .unwrap().expect("known members are sealed");
+        assert_eq!(input.text(), "Iwo Iwo Iwo Iwo Iwo");
+        assert_eq!(input.members().len(), 5);
+        for (index, (occurrence, seal)) in input.members().iter().enumerate() {
+            assert_eq!(occurrence.sample_start, index as u64 * 16_000);
+            assert_eq!(seal, &ledger.seal_of(occurrence).unwrap().receipt_id);
+        }
+        assert_eq!(input.session_id(), "capture");
+        assert_eq!(input.capture_epoch(), 1);
+        assert_eq!(input.samples(), 0..80_000);
+        assert_eq!(ledger.len(), 5, "reading must not merge ledger members");
+        assert_eq!(
+            SealedConsultationInput::from_ledger(&ledger, "capture", 1, 0..80_000).unwrap(),
+            Some(input),
+        );
+    }
+
+    #[test]
+    fn sealed_group_waits_for_last_observer_and_refuses_clipped_members() {
+        let pending = repeated_word_ledger(true);
+        assert!(SealedConsultationInput::from_ledger(&pending, "capture", 1, 0..80_000)
+            .unwrap().is_none());
+        let ledger = repeated_word_ledger(false);
+        assert!(SealedConsultationInput::from_ledger(&ledger, "capture", 1, 1..80_000).is_err());
+        assert!(SealedConsultationInput::from_ledger(&ledger, "capture", 1, 0..79_999).is_err());
+        assert!(SealedConsultationInput::from_ledger(&ledger, "capture", 2, 0..80_000)
+            .unwrap().is_none());
+        assert!(SealedConsultationInput::from_ledger(&ledger, "foreign", 1, 0..80_000)
+            .unwrap().is_none());
+        assert!(SealedConsultationInput::from_ledger(&ledger, "capture", 1, 10..10).is_err());
+    }
 
     struct ObservedProvider {
         requests: Arc<Mutex<Vec<Vec<Message>>>>,
