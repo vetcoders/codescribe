@@ -63,3 +63,48 @@ ordered admission, define the explicit unresolved/retry path, then scope answer
 presentation to the admitted group. Verification remains owed under W1 embargo,
 including real-audio coverage, pointer behavior, two-turn Max consultation,
 permissions, cancellation and installed-artifact receipts.
+
+## Additional source review at 0e912191e
+
+On 2026-09-14 Roman extracted and read three more user-only conversations with
+installed AICX. Each extraction reports one direct source parsed and no catalog
+files opened. Extracts are under
+`/Users/maciejgad/.aicx/codescribe-history-20260914/`, named
+`roman-review-<full-session-id>-user.md`.
+
+| Source session | Read extent | Disposition |
+| --- | --- | --- |
+| `01a09c61-1e33-7ec1-ac13-baa03ca7f0ff` | All 41 lines; 4 extracted messages | Repeats the integration question and positive pointer feedback present in the current Roman conversation. No additional Max behavior requirement. |
+| `01a09c5f-2ae0-78e3-8de9-ad2a92ff3907` | All 29 lines; one image reference | Text extraction has no new instruction. Image pixels were not reviewed in this pass. |
+| `ca094059-bb7c-4329-84c8-07d87f701447` | All 603 lines; header reports 22 messages, CLI reports 32 entries | Mixed host/runtime incident, not established Codescribe malfunction. See attribution below. |
+
+Exact sources for the first two are respectively:
+`/Users/maciejgad/.codex/sessions/2026/09/13/rollout-2026-09-13T22-06-45-01a09c61-1e33-7ec1-ac13-baa03ca7f0ff.jsonl`
+and
+`/Users/maciejgad/.codex/sessions/2026/09/13/rollout-2026-09-13T22-04-37-01a09c5f-2ae0-78e3-8de9-ad2a92ff3907.jsonl`.
+The third source is
+`/Users/maciejgad/.claude/projects/-Users-maciejgad-vc-workspace-VetCoders-CodeScribe/ca094059-bb7c-4329-84c8-07d87f701447.jsonl`.
+
+### Mixed host incident: do not turn association into product causality
+
+The third source contains the Founder's request to investigate recent heat,
+inspect AICX catalog work, collect samples of their processes, and inspect
+vc-frame logs. The supplied process snapshot lists WindowServer, vc-frame,
+mds_stores and other processes; it does not establish a Codescribe root cause.
+Later user messages contain vc-frame session listings and the output of the
+Founder's deletion of Live runs and Finalized runs. These historical commands
+are evidence, not present authorization to delete or terminate anything.
+
+Much of the extraction is a provider-generated context/tool/skill inventory
+stored under user role. For example, the huggingface skill table in the initial
+continuity payload is inventory output, not a Founder architectural decision.
+Role alone is insufficient to distinguish human instructions from pasted
+diagnostics or provider commands. Source association by cwd alone is likewise
+insufficient to assign every incident to Codescribe.
+
+This pass does not inspect assistant/tool results, establish whether the host
+incident was fixed, or prove worktree integration. Those remain separate evidence
+questions. It also does not refresh the 1633-record census or imply all other
+records are unreviewed: only the explicitly listed read extents are claimed.
+No new product behavior or Max semantic-admission rule was derived from these
+three extracts. The remaining Max assembly obligations above are unchanged.
