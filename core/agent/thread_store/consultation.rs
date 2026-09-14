@@ -29,6 +29,10 @@ pub(crate) struct ConsultationJournal {
 }
 
 impl ConsultationJournal {
+    pub(crate) fn has_completed_turns(&self) -> bool {
+        !self.state.completed.is_empty()
+    }
+
     pub(crate) fn open(store: &ThreadStore, id: &str) -> Result<Self> {
         validate_thread_id(id)?;
         let directory = store.threads_dir.join("consultations");

@@ -59,8 +59,8 @@ pub struct ConsultationRuntime {
 }
 
 impl ConsultationRuntime {
-    /// Start after the host has loaded the exact consultation history and
-    /// configured its tools/approvals. A corrupt restore must fail before here.
+    /// Start with a fresh session configured with tools/approvals. Load history
+    /// under the exclusive consultation lease, never from a pre-lock snapshot.
     /// The bounded FIFO is the execution order, not just the rendering order.
     pub fn start(
         id: String,
@@ -70,7 +70,10 @@ impl ConsultationRuntime {
         events: ConsultationEvents,
     ) -> Result<Self> {
         ensure!(!id.trim().is_empty(), "consultation identity is required");
+        ensure!(session.messages().is_empty(), "consultation history must be loaded under its lease");
         let journal = gateway.open_consultation(&id)?;
+        let history = gateway.restore_consultation(&id, journal.has_completed_turns())?;
+        session.restore_messages(history);
         session.bind_execution_thread(id.clone());
         let (tx, rx) = mpsc::channel(16);
         tokio::spawn(run_owner(id.clone(), session, ui_rx, gateway, journal, events, rx));

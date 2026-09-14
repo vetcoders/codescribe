@@ -102,6 +102,19 @@ pub struct ThreadDeliveryGateway {
 }
 
 impl ThreadDeliveryGateway {
+    /// Called only while holding the consultation lease. Never substitute an
+    /// empty history for a missing completed thread or an unreadable message.
+    pub(crate) fn restore_consultation(&self, id: &str, history_required: bool) -> Result<Vec<Message>> {
+        let path = self.store.thread_file_path(id)?;
+        if !path.try_exists()? {
+            anyhow::ensure!(!history_required, "Completed consultation history is missing");
+            return Ok(Vec::new());
+        }
+        let thread = self.store.load_thread(id)?;
+        anyhow::ensure!(thread.id == id && thread.mode == "max", "Consultation history identity or mode mismatch");
+        thread.messages.iter().map(ThreadMessage::try_to_message).collect()
+    }
+
     /// Lock the same store's consultation admission state before executing tools.
     pub(crate) fn open_consultation(&self, id: &str) -> Result<super::thread_store::consultation::ConsultationJournal> {
         super::thread_store::consultation::ConsultationJournal::open(&self.store, id)
@@ -393,6 +406,25 @@ mod tests {
 
     use super::*;
     use crate::agent::{ThreadIndex, ThreadIndexData, ThreadNote, TokenUsage};
+
+    #[test]
+    fn consultation_restore_requires_matching_history_and_mode() -> Result<()> {
+        let dir = TempDir::new()?;
+        let gateway = ThreadDeliveryGateway::new_in(dir.path())?;
+        assert!(gateway.restore_consultation("missing", true).is_err());
+        assert!(gateway.restore_consultation("fresh", false)?.is_empty());
+        let mut delivery = input("max-a", ThreadDeliverySource::MaxConsultation,
+            vec![message("user", "first", timestamp(1)), message("assistant", "answer", timestamp(1))], timestamp(1));
+        delivery.mode = "max".into();
+        gateway.deliver(delivery.clone())?;
+        let history = gateway.restore_consultation("max-a", true)?;
+        assert_eq!(history.len(), 2);
+        assert_eq!(history[1].role, Role::Assistant);
+        delivery.mode = "assistive".into();
+        gateway.deliver(delivery)?;
+        assert!(gateway.restore_consultation("max-a", true).is_err());
+        Ok(())
+    }
 
     /// Fixed UTC timestamp on 2026-07-19 at the given hour for deterministic tests.
     fn timestamp(hour: u32) -> DateTime<Utc> {

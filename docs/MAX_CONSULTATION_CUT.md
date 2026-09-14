@@ -165,8 +165,16 @@ Authored journal tests simulate owner drop/reopen, unfinished-turn refusal,
 completed-id replay refusal, concurrent ownership, malformed state and path
 escape. They have not run and are not actual process-kill/power-loss evidence.
 
-Outstanding: host-owned consultation selection/reset and strict history restore
-under the ownership lock; durable queued-but-not-started instructions; explicit
+History restore now occurs inside consultation start after acquiring its lease.
+A pre-populated session is rejected, as are missing completed history and a
+thread identity/mode mismatch. `ThreadMessage::try_to_message` validates roles
+and content shape before using the existing projection; unknown roles, malformed
+tool results and omitted image data cannot silently become user text. Authored
+tests cover those refusals and valid Max history restore; still not executed.
+Image asset existence and tool-call/result pairing need further validation.
+
+Outstanding: host-owned consultation selection/reset; durable
+queued-but-not-started instructions; explicit
 reconciliation of unresolved turns (never implicit replay); cancellation and
 install lease; host execution handoff on all three formatting paths; permission
 UI and live presentation/delivery wiring. The new owner is not connected to
