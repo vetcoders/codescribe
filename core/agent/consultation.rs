@@ -35,7 +35,7 @@ pub struct SealedConsultationInput {
     session_id: String,
     capture_epoch: u64,
     samples: std::ops::Range<u64>,
-    members: Vec<(crate::pipeline::acoustic_ledger::OccurrenceIdentity, String)>,
+    members: Vec<crate::pipeline::acoustic_ledger::ConsultationPresentationMember>,
     text: String,
 }
 
@@ -90,7 +90,11 @@ impl SealedConsultationInput {
             let Some(label) = ledger.text_of(occurrence).filter(|label| !label.trim().is_empty()) else {
                 return Ok(None);
             };
-            members.push((occurrence.clone(), seal.receipt_id.clone()));
+            members.push(crate::pipeline::acoustic_ledger::ConsultationPresentationMember {
+                occurrence: occurrence.clone(),
+                source_label: label.to_string(),
+                seal_receipt: seal.receipt_id.clone(),
+            });
             labels.push(label.to_string());
         }
         Ok(Some(Self {
@@ -106,7 +110,7 @@ impl SealedConsultationInput {
     /// Candidate grouping interval, not a newly minted occurrence.
     pub fn samples(&self) -> std::ops::Range<u64> { self.samples.clone() }
     /// Every source occurrence paired with its existing seal receipt.
-    pub fn members(&self) -> &[(crate::pipeline::acoustic_ledger::OccurrenceIdentity, String)] {
+    pub fn members(&self) -> &[crate::pipeline::acoustic_ledger::ConsultationPresentationMember] {
         &self.members
     }
     /// Ordered source labels, including repeated words from distinct PCM spans.
@@ -497,9 +501,10 @@ mod tests {
             .unwrap().expect("known members are sealed");
         assert_eq!(input.text(), "Iwo Iwo Iwo Iwo Iwo");
         assert_eq!(input.members().len(), 5);
-        for (index, (occurrence, seal)) in input.members().iter().enumerate() {
-            assert_eq!(occurrence.sample_start, index as u64 * 16_000);
-            assert_eq!(seal, &ledger.seal_of(occurrence).unwrap().receipt_id);
+        for (index, member) in input.members().iter().enumerate() {
+            assert_eq!(member.occurrence.sample_start, index as u64 * 16_000);
+            assert_eq!(member.seal_receipt, ledger.seal_of(&member.occurrence).unwrap().receipt_id);
+            assert_eq!(member.source_label, "Iwo");
         }
         assert_eq!(input.session_id(), "capture");
         assert_eq!(input.capture_epoch(), 1);
@@ -573,7 +578,7 @@ mod tests {
         ledger.seal(&last).unwrap();
         let recovered = queue.ready(&ledger, &speech).unwrap().unwrap();
         assert_eq!(recovered.text(), "Iwo");
-        assert_eq!(recovered.members()[0].0, last);
+        assert_eq!(recovered.members()[0].occurrence, last);
         queue.acknowledge(&recovered).unwrap();
         assert_eq!(queue.pending_groups(), 0);
         assert!(queue.ready(&ledger, &speech).unwrap().is_none());
@@ -656,6 +661,76 @@ mod tests {
         assert!(!silent.skip_measured_silence(&ledger, &measured));
         assert!(!silent.append_boundary(16_000).unwrap(), "a repeated boundary cannot reopen consumed silence");
         assert_eq!(ledger.len(), 0, "silence advancement must not fabricate a ledger occurrence");
+    }
+
+    #[test]
+    fn group_presentation_authenticates_members_without_rewriting_acoustic_labels() {
+        use crate::pipeline::acoustic_ledger::ConsultationPresentationInput;
+        let mut ledger = repeated_word_ledger(false);
+        let input = SealedConsultationInput::from_ledger(&ledger, "capture", 1, 0..80_000,
+            &consultation_speech_evidence(80_000)).unwrap().unwrap();
+        let members = input.members();
+        let mut bad_label = members.to_vec();
+        bad_label[1].source_label = "different".into();
+        let mut bad_seal = members.to_vec();
+        bad_seal[1].seal_receipt = "forged".into();
+        let mut foreign = members.to_vec();
+        foreign[1].occurrence.session = "foreign".into();
+        let mut epoch = members.to_vec();
+        epoch[1].occurrence.capture_epoch = 2;
+        let mut reversed = members.to_vec();
+        reversed.swap(1, 2);
+        let mut omitted = members.to_vec();
+        omitted.remove(2);
+        let mut duplicated = members.to_vec();
+        duplicated.insert(2, members[1].clone());
+        for invalid in [vec![], bad_label, bad_seal, foreign, epoch, reversed, omitted, duplicated] {
+            assert!(ledger.record_consultation_presentation(ConsultationPresentationInput {
+                consultation_id: "Max", turn_id: "first", source_revision: 4, revision: 5,
+                members: &invalid, rendered_text: "Prepared command",
+            }).is_err());
+            assert!(ledger.consultation_presentations().is_empty());
+        }
+        for (consultation_id, turn_id, source_revision, revision, rendered_text) in [
+            ("", "first", 4, 5, "answer"), ("Max", "", 4, 5, "answer"),
+            ("Max", "first", 4, 6, "answer"), ("Max", "first", 4, 5, " "),
+        ] {
+            assert!(ledger.record_consultation_presentation(ConsultationPresentationInput {
+                consultation_id, turn_id, source_revision, revision, members, rendered_text,
+            }).is_err());
+        }
+        let mut pending = repeated_word_ledger(true);
+        assert!(pending.record_consultation_presentation(ConsultationPresentationInput {
+            consultation_id: "Max", turn_id: "first", source_revision: 4, revision: 5,
+            members, rendered_text: "answer",
+        }).is_err());
+
+        let first = ledger.record_consultation_presentation(ConsultationPresentationInput {
+            consultation_id: "Max", turn_id: "first", source_revision: 4, revision: 5,
+            members: &members[..4], rendered_text: "Prepared command",
+        }).unwrap();
+        assert_eq!(first.members, members[..4]);
+        assert_eq!(first.rendered_text, "Prepared command");
+        assert_eq!(ledger.len(), 5);
+        for member in members {
+            assert_eq!(ledger.text_of(&member.occurrence), Some("Iwo"));
+            assert_eq!(ledger.seal_of(&member.occurrence).unwrap().receipt_id, member.seal_receipt);
+        }
+        for (turn_id, source) in [("first", &members[4..]), ("second", &members[3..])] {
+            assert!(ledger.record_consultation_presentation(ConsultationPresentationInput {
+                consultation_id: "Max", turn_id, source_revision: 8, revision: 9,
+                members: source, rendered_text: "another answer",
+            }).is_err(), "repeated turns and overlapping groups cannot issue a new receipt");
+        }
+        let second = ledger.record_consultation_presentation(ConsultationPresentationInput {
+            consultation_id: "Max", turn_id: "second", source_revision: 8, revision: 9,
+            members: &members[4..], rendered_text: "Second answer",
+        }).unwrap();
+        assert_ne!(first.receipt_id, second.receipt_id);
+        assert_eq!(ledger.consultation_presentations(), &[first, second]);
+        assert!(ledger.manual_document_revisions().is_empty());
+        assert!(ledger.manual_edits().is_empty());
+        assert!(ledger.incremental_shapings().is_empty());
     }
 
     struct ObservedProvider {

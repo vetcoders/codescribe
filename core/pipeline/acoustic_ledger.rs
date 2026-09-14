@@ -423,6 +423,7 @@ pub struct AcousticLedger {
     manual_edits: Vec<ManualEditReceipt>,
     manual_document_revisions: Vec<ManualDocumentRevisionReceipt>,
     incremental_shapings: Vec<IncrementalShapingReceipt>,
+    consultation_presentations: Vec<ConsultationPresentationReceipt>,
     derivations: Vec<OccurrenceDerivation>,
     latest_seal_coverage: Option<SealCoverageReceipt>,
     pending_text_recovery: BTreeSet<OccurrenceIdentity>,
@@ -1442,6 +1443,85 @@ impl AcousticLedger {
         &self.manual_document_revisions
     }
 
+    /// Authenticate an Agent answer's presentation source without rewriting
+    /// acoustic labels. The caller still owes coverage and execution/history
+    /// admission; this receipt proves only the exact sealed group and bytes.
+    pub fn record_consultation_presentation(
+        &mut self,
+        input: ConsultationPresentationInput<'_>,
+    ) -> Result<ConsultationPresentationReceipt, &'static str> {
+        if input.consultation_id.trim().is_empty() || input.turn_id.trim().is_empty() {
+            return Err("consultation_presentation_identity_missing");
+        }
+        if input.rendered_text.trim().is_empty() {
+            return Err("consultation_presentation_text_empty");
+        }
+        if input.source_revision.checked_add(1) != Some(input.revision) {
+            return Err("consultation_presentation_revision_nonconsecutive");
+        }
+        let Some(first) = input.members.first() else {
+            return Err("consultation_presentation_members_missing");
+        };
+        let session = &first.occurrence.session;
+        let epoch = first.occurrence.capture_epoch;
+        if session.is_empty() || epoch == 0 {
+            return Err("consultation_presentation_capture_missing");
+        }
+        let mut end = first.occurrence.sample_start;
+        for member in input.members {
+            let occurrence = &member.occurrence;
+            if &occurrence.session != session || occurrence.capture_epoch != epoch
+                || occurrence.sample_start < end || occurrence.sample_start >= occurrence.sample_end
+            {
+                return Err("consultation_presentation_member_order");
+            }
+            if !self.is_qualified(occurrence) || self.text_recovery_pending(occurrence)
+                || !self.frontier_of(occurrence).is_some_and(|frontier| frontier.is_closed())
+                || self.text_of(occurrence) != Some(member.source_label.as_str())
+                || member.source_label.trim().is_empty()
+                || self.seal_of(occurrence).is_none_or(|seal| seal.receipt_id != member.seal_receipt)
+            {
+                return Err("consultation_presentation_source_changed");
+            }
+            end = occurrence.sample_end;
+        }
+        let known = self.qualified_occurrences().chain(self.occurrences())
+            .filter(|occurrence| &occurrence.session == session && occurrence.capture_epoch == epoch
+                && occurrence.sample_start < end && first.occurrence.sample_start < occurrence.sample_end)
+            .collect::<BTreeSet<_>>();
+        if known.len() != input.members.len()
+            || !known.into_iter().eq(input.members.iter().map(|member| &member.occurrence))
+        {
+            return Err("consultation_presentation_members_incomplete");
+        }
+        if self.consultation_presentations.iter().any(|receipt|
+            receipt.consultation_id == input.consultation_id && receipt.turn_id == input.turn_id)
+        {
+            return Err("consultation_presentation_turn_repeated");
+        }
+        if self.consultation_presentations.iter().any(|receipt|
+            receipt.members.iter().any(|old| input.members.iter().any(|member|
+                old.occurrence == member.occurrence)))
+        {
+            return Err("consultation_presentation_group_overlaps");
+        }
+        let receipt = ConsultationPresentationReceipt {
+            receipt_id: format!("max-group-{session}-{epoch}-{}", self.consultation_presentations.len()),
+            consultation_id: input.consultation_id.to_string(),
+            turn_id: input.turn_id.to_string(),
+            source_revision: input.source_revision,
+            revision: input.revision,
+            members: input.members.to_vec(),
+            rendered_text: input.rendered_text.to_string(),
+        };
+        self.consultation_presentations.push(receipt.clone());
+        Ok(receipt)
+    }
+
+    pub fn consultation_presentations(&self) -> &[ConsultationPresentationReceipt] {
+        &self.consultation_presentations
+    }
+
     /// Authenticate one presentation shaping of a single sealed occurrence.
     ///
     /// This is deliberately *not* a whole-document revision. A live Light+ pass
@@ -2357,6 +2437,38 @@ pub struct ManualDocumentRevisionReceipt {
     /// Seals proving those source occurrences were terminal before the edit.
     pub source_seal_receipts: Vec<String>,
     /// Complete user-authored replacement bytes.
+    pub rendered_text: String,
+}
+
+/// One immutable acoustic source member claimed by a grouped Agent answer.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ConsultationPresentationMember {
+    pub occurrence: OccurrenceIdentity,
+    pub source_label: String,
+    pub seal_receipt: String,
+}
+
+/// Borrowed claim; only the ledger can record its authenticated receipt.
+pub struct ConsultationPresentationInput<'a> {
+    pub consultation_id: &'a str,
+    pub turn_id: &'a str,
+    pub source_revision: u64,
+    pub revision: u64,
+    pub members: &'a [ConsultationPresentationMember],
+    pub rendered_text: &'a str,
+}
+
+/// Presentation of a sealed group, not a whole-document edit or PCM label.
+/// Revision numbers describe reducer admission, not provider request timing.
+/// An unrelated suffix may advance the reducer while the answer is computed.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ConsultationPresentationReceipt {
+    pub receipt_id: String,
+    pub consultation_id: String,
+    pub turn_id: String,
+    pub source_revision: u64,
+    pub revision: u64,
+    pub members: Vec<ConsultationPresentationMember>,
     pub rendered_text: String,
 }
 
