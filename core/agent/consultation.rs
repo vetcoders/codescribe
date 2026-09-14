@@ -7,6 +7,7 @@
 //! creates a recorder, changes delivery destination or invents PCM identity.
 
 use std::sync::Arc;
+use std::path::PathBuf;
 
 use anyhow::{Context, Result, anyhow, ensure};
 use chrono::Utc;
@@ -68,6 +69,7 @@ impl ConsultationRuntime {
         ui_rx: mpsc::Receiver<AgentUiEvent>,
         gateway: ThreadDeliveryGateway,
         events: ConsultationEvents,
+        install_lease_path: PathBuf,
     ) -> Result<Self> {
         ensure!(!id.trim().is_empty(), "consultation identity is required");
         ensure!(session.messages().is_empty(), "consultation history must be loaded under its lease");
@@ -76,7 +78,9 @@ impl ConsultationRuntime {
         session.restore_messages(history);
         session.bind_execution_thread(id.clone());
         let (tx, rx) = mpsc::channel(16);
-        tokio::spawn(run_owner(id.clone(), session, ui_rx, gateway, journal, events, rx));
+        tokio::spawn(run_owner(ConsultationOwner {
+            id: id.clone(), session, ui_rx, gateway, journal, events, rx, install_lease_path,
+        }));
         Ok(Self { id, tx })
     }
 
@@ -98,21 +102,32 @@ impl ConsultationRuntime {
     }
 }
 
-async fn run_owner(
+struct ConsultationOwner {
     id: String,
-    mut session: AgentSession,
-    mut ui_rx: mpsc::Receiver<AgentUiEvent>,
+    session: AgentSession,
+    ui_rx: mpsc::Receiver<AgentUiEvent>,
     gateway: ThreadDeliveryGateway,
-    mut journal: ConsultationJournal,
+    journal: ConsultationJournal,
     events: ConsultationEvents,
-    mut rx: mpsc::Receiver<QueuedTurn>,
-) {
+    rx: mpsc::Receiver<QueuedTurn>,
+    install_lease_path: PathBuf,
+}
+
+async fn run_owner(owner: ConsultationOwner) {
+    let ConsultationOwner { id, mut session, mut ui_rx, gateway, mut journal,
+        events, mut rx, install_lease_path } = owner;
     let mut unsettled: Option<String> = None;
     while let Some(QueuedTurn { turn, reply }) = rx.recv().await {
         if let Some(reason) = &unsettled {
             let _ = reply.send(Err(anyhow!("consultation requires recovery: {reason}")));
             continue;
         }
+        // Refuse before any provider or tool work if installation already owns
+        // the file. Hold through history/journal settlement and the final reply.
+        let _install_lease = match crate::config::acquire_agent_turn_lease_at(&install_lease_path) {
+            Ok(lease) => lease,
+            Err(error) => { let _ = reply.send(Err(error)); continue; }
+        };
         if let Err(error) = journal.begin(&turn.id) {
             let _ = reply.send(Err(error));
             continue;
@@ -252,7 +267,7 @@ mod tests {
         let (ui_tx, ui_rx) = mpsc::channel(2);
         let session = AgentSession::new(Box::new(provider), Arc::new(ToolRegistry::new()), ui_tx);
         let runtime = ConsultationRuntime::start("consultation-a".into(), session, ui_rx,
-            ThreadDeliveryGateway::new_in(dir.path()).expect("gateway"), Arc::new(|_, _, _| {})).expect("runtime");
+            ThreadDeliveryGateway::new_in(dir.path()).expect("gateway"), Arc::new(|_, _, _| {}), dir.path().join("agent-turn.lock")).expect("runtime");
 
         let first = runtime.enqueue(turn("one", "Prepare a command, do not execute it.")).expect("first accepted");
         entered.acquire().await.expect("first entered").forget();
@@ -287,7 +302,7 @@ mod tests {
             release: Arc::new(Semaphore::new(1)), fail: true,
         }), Arc::new(ToolRegistry::new()), ui_tx);
         let runtime = ConsultationRuntime::start("consultation-b".into(), session, ui_rx,
-            ThreadDeliveryGateway::new_in(dir.path()).expect("gateway"), Arc::new(|_, _, _| {})).expect("runtime");
+            ThreadDeliveryGateway::new_in(dir.path()).expect("gateway"), Arc::new(|_, _, _| {}), dir.path().join("agent-turn.lock")).expect("runtime");
         for policy in [FormattingPolicy::Off, FormattingPolicy::Correction, FormattingPolicy::Smart] {
             let mut request = turn("not-max", "use tools");
             request.policy = policy;
@@ -297,6 +312,35 @@ mod tests {
         let second = runtime.enqueue(turn("two", "must not execute")).expect("queued");
         assert!(first.await.expect("first reply").is_err());
         assert!(second.await.expect("second reply").expect_err("recovery required").to_string().contains("requires recovery"));
+        assert_eq!(requests.lock().expect("requests").len(), 1);
+    }
+
+    #[tokio::test]
+    async fn installer_ownership_refuses_turn_before_provider_execution() {
+        use std::os::fd::AsRawFd;
+        let dir = tempfile::tempdir().expect("temp directory");
+        let lease_path = dir.path().join("agent-turn.lock");
+        let installer = std::fs::OpenOptions::new().read(true).write(true)
+            .create(true).truncate(false).open(&lease_path).expect("installer file");
+        // SAFETY: installer retains this valid descriptor until explicit drop.
+        assert_eq!(unsafe { libc::flock(installer.as_raw_fd(), libc::LOCK_EX | libc::LOCK_NB) }, 0);
+        let requests = Arc::new(Mutex::new(Vec::new()));
+        let (ui_tx, ui_rx) = mpsc::channel(2);
+        let session = AgentSession::new(Box::new(ObservedProvider {
+            requests: Arc::clone(&requests), entered: Arc::new(Semaphore::new(0)),
+            release: Arc::new(Semaphore::new(1)), fail: false,
+        }), Arc::new(ToolRegistry::new()), ui_tx);
+        let runtime = ConsultationRuntime::start("installer-case".into(), session, ui_rx,
+            ThreadDeliveryGateway::new_in(dir.path()).expect("gateway"),
+            Arc::new(|_, _, _| {}), lease_path).expect("runtime");
+        let refused = runtime.enqueue(turn("one", "prepare command")).expect("queued");
+        assert!(refused.await.expect("reply").is_err());
+        assert!(requests.lock().expect("requests").is_empty());
+        drop(installer);
+        // No effects were admitted, so explicitly resubmitting this instruction
+        // after installation is permitted; the owner does not auto-retry it.
+        let accepted = runtime.enqueue(turn("one", "prepare command")).expect("queued again");
+        assert!(accepted.await.expect("reply").is_ok());
         assert_eq!(requests.lock().expect("requests").len(), 1);
     }
 }

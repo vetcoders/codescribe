@@ -30,6 +30,7 @@ impl MaxConsultation {
         approval: Option<ToolApprovalHandler>,
         gateway: ThreadDeliveryGateway,
         events: ConsultationEvents,
+        install_lease_path: std::path::PathBuf,
     ) -> Result<Self> {
         let provider = super::create_provider_for_lane(settings, RuntimeLlmLaneKind::Formatting)?;
         let (tx, rx) = mpsc::channel(64);
@@ -37,7 +38,7 @@ impl MaxConsultation {
         if let Some(approval) = approval {
             session = session.with_tool_approval(id.clone(), approval);
         }
-        let runtime = ConsultationRuntime::start(id, session, rx, gateway, events)?;
+        let runtime = ConsultationRuntime::start(id, session, rx, gateway, events, install_lease_path)?;
         Ok(Self { runtime })
     }
 

@@ -1147,6 +1147,7 @@ impl RecordingController {
                         warn!(%error, "Max consultation failed");
                     }
                 }),
+                codescribe_core::config::agent_turn_lease_path(),
             )?;
             *selected = Some(Arc::new(consultation));
         }

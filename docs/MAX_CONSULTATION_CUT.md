@@ -197,6 +197,14 @@ still pass their answer through existing presentation revision admission.
 Chat, voice Agent and this Max host now use one `configured_registry` factory
 with the same persisted permissions, grant merge and decision-time hot reload.
 
+The retained owner now acquires the existing agent-turn install lease before
+writing its pending marker or invoking a provider. It holds that lease through
+history/journal settlement. A lock refusal returns without admitting effects;
+there is no automatic retry. The controller supplies the canonical lease path,
+while authored tests supply a temp path. An authored test holds the installer
+lock and checks zero provider calls, then explicit resubmission after release.
+This is still unexecuted; runtime install exclusion is not yet proven.
+
 The controller currently creates a fresh consultation id after process launch;
 durable selection/reset UI is not wired. Approval requests without a host broker
 remain refused. Its event callback currently reports errors only; streaming Max

@@ -125,11 +125,12 @@ async fn selected_agent_lane_roundtrip(lane: codescribe_core::config::RuntimeLlm
     if lane == codescribe_core::config::RuntimeLlmLaneKind::Formatting {
         use std::sync::Arc;
         use codescribe_core::agent::{ThreadDeliveryGateway, ToolRegistry};
-        let mut consultation = codescribe::agent::max_consultation::MaxConsultation::start(
+        let consultation = codescribe::agent::max_consultation::MaxConsultation::start(
             "max-http-fixture".into(), &runtime_settings,
             Arc::new(ToolRegistry::new()), None,
             ThreadDeliveryGateway::new_in(data_dir.path().join("threads")).expect("gateway"),
             Arc::new(|_, _, _| {}),
+            data_dir.path().join("agent-turn.lock"),
         ).expect("Max host starts");
         let result = consultation.enqueue("first".into(), "Reply with the single word: pong".into(),
             Vec::new(), &runtime_settings).expect("admitted")
