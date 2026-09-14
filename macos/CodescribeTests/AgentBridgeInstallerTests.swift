@@ -468,6 +468,37 @@ final class AgentBridgeInstallerTests: XCTestCase {
     XCTAssertFalse(FileManager.default.fileExists(atPath: root.appendingPathComponent("receipt.json").path))
   }
 
+  func testIncompleteRollbackReportsAndPreservesTheOriginalBackup() throws {
+    let payload = try makePayload()
+    for blockRemoval in [true, false] {
+      let home = scratch.appendingPathComponent("rollback-\(blockRemoval)")
+      let destination = home.appendingPathComponent(".codex/skills/codescribe")
+      try FileManager.default.createDirectory(at: destination, withIntermediateDirectories: true)
+      let original = Data("original user instructions".utf8)
+      try original.write(to: destination.appendingPathComponent("SKILL.md"))
+      try FileManager.default.createDirectory(
+        at: home.appendingPathComponent(".codescribe/agent-bridge/receipt.json"),
+        withIntermediateDirectories: true)
+      let manager = RefusingRollbackFileManager(destination: destination, blockRemoval: blockRemoval)
+      let installer = RealAgentBridgeInstaller(
+        resourceRoot: payload, homeDirectory: home, fileManager: manager, environment: [:])
+      var failure: String?
+      XCTAssertThrowsError(try installer.adoptManualSkill(client: .codex)) { error in
+        failure = error.localizedDescription
+      }
+      let backups = try FileManager.default.contentsOfDirectory(
+        at: destination.deletingLastPathComponent(), includingPropertiesForKeys: nil
+      ).filter { $0.lastPathComponent.hasPrefix(".codescribe.backup-") }
+      XCTAssertEqual(backups.count, 1)
+      let backup = try XCTUnwrap(backups.first)
+      XCTAssertEqual(try Data(contentsOf: backup.appendingPathComponent("SKILL.md")), original)
+      XCTAssertTrue(failure?.contains("Rollback incomplete") == true)
+      XCTAssertTrue(failure?.contains(backup.path) == true)
+      XCTAssertTrue(failure?.contains(destination.path) == true)
+      XCTAssertEqual(FileManager.default.fileExists(atPath: destination.path), blockRemoval)
+    }
+  }
+
   private func makePayload() throws -> URL {
     let payload = scratch.appendingPathComponent("payload-\(UUID().uuidString)", isDirectory: true)
     let helper = payload.appendingPathComponent("bin/bus-demux.py")
@@ -526,6 +557,33 @@ final class AgentBridgeInstallerTests: XCTestCase {
 
   private func sha256(_ data: Data) -> String {
     SHA256.hash(data: data).map { String(format: "%02x", $0) }.joined()
+  }
+}
+
+/// Test-only I/O fault injection. Immutable configuration retains FileManager's
+/// cross-thread contract; it does not add a production suppression or error path.
+private final class RefusingRollbackFileManager: FileManager, @unchecked Sendable {
+  private let destination: URL
+  private let blockRemoval: Bool
+
+  init(destination: URL, blockRemoval: Bool) {
+    self.destination = destination
+    self.blockRemoval = blockRemoval
+    super.init()
+  }
+
+  override func removeItem(at URL: URL) throws {
+    if blockRemoval, URL == destination {
+      throw CocoaError(.fileWriteNoPermission)
+    }
+    try super.removeItem(at: URL)
+  }
+
+  override func moveItem(at source: URL, to target: URL) throws {
+    if !blockRemoval, target == destination, source.lastPathComponent.hasPrefix(".codescribe.backup-") {
+      throw CocoaError(.fileWriteNoPermission)
+    }
+    try super.moveItem(at: source, to: target)
   }
 }
 

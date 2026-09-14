@@ -402,10 +402,16 @@ final class RealAgentBridgeInstaller: AgentBridgeInstalling {
         }
       }
     } catch {
-      rollback(records: records)
+      let recoveryFailures = rollback(records: records)
       try? fileManager.removeItem(at: runtimeStage)
       for stage in clientStages.values {
         try? fileManager.removeItem(at: stage)
+      }
+      if !recoveryFailures.isEmpty {
+        throw AgentBridgeInstallationError.transaction(
+          error.localizedDescription + "\nRollback incomplete. Preserve these paths for recovery:\n"
+            + recoveryFailures.joined(separator: "\n")
+        )
       }
       if let typed = error as? AgentBridgeInstallationError {
         throw typed
@@ -633,22 +639,34 @@ final class RealAgentBridgeInstaller: AgentBridgeInstalling {
         )
       )
     } catch {
-      if let backup {
-        try? fileManager.moveItem(at: backup, to: destination)
-      }
+      // Preserve this rename in the same rollback record as all prior steps.
+      // A failed stage move must not hide a failed restoration of the original.
+      records.append(ReplacementRecord(
+        destination: destination, backup: backup, installedReplacement: false))
       throw error
     }
   }
 
-  private func rollback(records: [ReplacementRecord]) {
+  private func rollback(records: [ReplacementRecord]) -> [String] {
+    var failures: [String] = []
     for record in records.reversed() {
       if record.installedReplacement, fileManager.fileExists(atPath: record.destination.path) {
-        try? fileManager.removeItem(at: record.destination)
+        do {
+          try fileManager.removeItem(at: record.destination)
+        } catch {
+          failures.append("Could not remove incomplete replacement at \(record.destination.path). Original: \(record.backup?.path ?? "no prior folder"). \(error.localizedDescription)")
+          continue
+        }
       }
-      if let backup = record.backup, fileManager.fileExists(atPath: backup.path) {
-        try? fileManager.moveItem(at: backup, to: record.destination)
+      if let backup = record.backup {
+        do {
+          try fileManager.moveItem(at: backup, to: record.destination)
+        } catch {
+          failures.append("Could not restore \(backup.path) to \(record.destination.path): \(error.localizedDescription)")
+        }
       }
     }
+    return failures
   }
 
   private func writeJSON<T: Encodable>(_ value: T, to url: URL) throws {

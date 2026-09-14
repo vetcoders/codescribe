@@ -732,3 +732,18 @@ payload/receipt creation, check release after both failed and successful install
 preserve the lock inode's path, and refuse a symlinked lock without changing its
 target. The installation crash/rollback obligations above remain open. No gates,
 home-directory installation or Dragon mutation ran under this checkpoint.
+
+Rollback now returns explicit recovery failures rather than discarding removal
+and restoration errors. A failed stage move records its prior rename in the same
+rollback sequence. Failed replacement removal preserves the original backup and
+does not attempt to restore onto the remaining destination. Failed restoration,
+including a missing backup, reports the exact backup and destination paths.
+The outer installation error states rollback is incomplete instead of presenting
+the original failure as if restoration had succeeded.
+
+An authored, unexecuted test injects removal and restoration failures through a
+test-only FileManager subclass, uses a final receipt-write failure to enter
+rollback, and asserts original bytes remain in the named backup plus both paths
+are surfaced. This is controlled fault-injection source, not a filesystem-crash
+receipt. Cleanup of generated stages remains best-effort; durable recovery of a
+process-killed transaction and full executable verification are still outstanding.
