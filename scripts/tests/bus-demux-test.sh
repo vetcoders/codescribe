@@ -151,7 +151,7 @@ seal "James, komenda po recovery." transcript_sealed 13
 second="$WORKDIR/second.jsonl"
 python3 "$DEMUX" \
   --bus "$BUS" --bridge-home "$BRIDGE_HOME" \
-  --provider codex --session codex-session-a --name james \
+  --provider codex --session codex-session-a --name changed \
   --drafts --from-start >"$second"
 python3 - "$first" "$second" <<'PY'
 import json, sys
@@ -159,6 +159,8 @@ first = [json.loads(line) for line in open(sys.argv[1], encoding="utf-8")]
 second = [json.loads(line) for line in open(sys.argv[2], encoding="utf-8")]
 assert [row["kind"] for row in second] == ["attach", "seal"], second
 assert second[0]["resumed"] is True, second[0]
+assert second[0]["name"] == "james", second[0]
+assert second[1]["audience"] == "james", second[1]
 assert second[0]["lease_id"] == first[0]["lease_id"], second[0]
 assert second[1]["sequence"] == 13, second[1]
 assert "komenda po recovery" in second[1]["text"], second[1]
@@ -179,7 +181,7 @@ assert third[0]["provider"] == "claude-code", third[0]
 assert [row["kind"] for row in third[1:]] == ["draft", "revised", "seal", "seal"], third
 PY
 
-# Active-name discovery is lease-derived and cleans stale leases without audio.
+# Active-name discovery expires presence without erasing recovery state.
 python3 - "$DEMUX" "$BUS" "$BRIDGE_HOME" <<'PY'
 import importlib.util, json, sys, time
 from pathlib import Path
@@ -198,10 +200,24 @@ module.atomic_json(stale, {
     "schema": module.LEASE_SCHEMA, "lease_id": "stale-lease", "name": "old",
     "active": True, "heartbeat_unix": time.time() - 999,
 })
-active = module.active_leases(Path(sys.argv[3]), 120, clean=True)
+active = module.active_leases(Path(sys.argv[3]), 120)
 assert {item["name"] for item in active} == {"iwo"}, active
-assert not stale.exists(), stale
+assert stale.exists(), stale
 lease.close()
+
+# Discovery after a long outage must preserve the bound name and unread cursor.
+saved = module.read_json(lease.path)
+saved.update(heartbeat_unix=time.time() - 999, active=True, cursor=17)
+module.atomic_json(lease.path, saved)
+assert module.active_leases(Path(sys.argv[3]), 120) == []
+restored = module.SessionLease(
+    root=Path(sys.argv[3]), provider="codex", provider_session_id="active-session",
+    name="different", bus=Path(sys.argv[2]), requested_id=None, ttl_seconds=120,
+    follow_from_end=True,
+)
+assert restored.resumed and restored.cursor == 17, restored.attach_receipt()
+assert restored.name == "iwo", restored.attach_receipt()
+restored.close()
 
 # --become may bind a name after attach; recovery with that name must reuse the
 # provider-session cursor rather than derive a second lease from the new name.

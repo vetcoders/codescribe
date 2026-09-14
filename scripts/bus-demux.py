@@ -612,9 +612,11 @@ def process_is_alive(pid: Any) -> bool:
     return True
 
 
-def active_leases(
-    root: Path, ttl_seconds: float, *, clean: bool = True
-) -> list[dict[str, Any]]:
+def active_leases(root: Path, ttl_seconds: float) -> list[dict[str, Any]]:
+    """Discover presence without deleting durable identity or recovery cursors.
+
+    A missed heartbeat means offline, not forgotten.
+    """
     leases: list[dict[str, Any]] = []
     now = time.time()
     lease_dir = root / "leases"
@@ -627,14 +629,9 @@ def active_leases(
         heartbeat = value.get("heartbeat_unix") if value else None
         fresh = (
             isinstance(heartbeat, (int, float))
-            and now - float(heartbeat) <= ttl_seconds
+            and 0 <= now - float(heartbeat) <= ttl_seconds
         )
         if not value or value.get("schema") != LEASE_SCHEMA or not fresh:
-            if clean:
-                try:
-                    path.unlink()
-                except OSError:
-                    pass
             continue
         if value.get("active") is True:
             leases.append(value)
@@ -710,7 +707,6 @@ class SessionLease:
                 except FileNotFoundError:
                     self.cursor = 0
             self.persist(active=True)
-            active_leases(root, ttl_seconds, clean=True)
         except BaseException:
             self._release_lock()
             raise
@@ -855,7 +851,7 @@ def run(args: argparse.Namespace) -> int:
         except (OSError, RuntimeError, ValueError) as error:
             sys.stderr.write(f"bus-demux: session lease refused: {error}\n")
             return 3
-        if lease.name and not name:
+        if lease.name:
             name = lease.name
             hear_all = False
         emit(lease.attach_receipt())
@@ -1056,7 +1052,7 @@ def main() -> int:
     if args.lease_ttl <= 0:
         parser.error("--lease-ttl must be positive")
     if args.active_names:
-        leases = active_leases(args.bridge_home, args.lease_ttl, clean=True)
+        leases = active_leases(args.bridge_home, args.lease_ttl)
         emit(
             {
                 "schema": ACTIVE_NAMES_SCHEMA,
