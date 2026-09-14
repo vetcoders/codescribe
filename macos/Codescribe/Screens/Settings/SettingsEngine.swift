@@ -33,6 +33,7 @@ protocol SettingsEngine {
   // Config writes (auto-tiered by the core router)
   func updateConfig(key: String, value: String) throws
   func updateConfigMany(entries: [CsConfigEntry]) throws
+  func beginNewMaxConsultation() async throws -> String
 
   // Live audio hardware truth + explicit unset for the preferred device.
   func loadAudioInputSnapshot() throws -> CsAudioInputSnapshot
@@ -132,6 +133,10 @@ final class RealSettingsEngine: SettingsEngine {
   /// Facade over the process-global controller slots; constructing it creates
   /// no listener, controller, or tap.
   private let hotkeys = CodescribeHotkeys()
+
+  func beginNewMaxConsultation() async throws -> String {
+    try await hotkeys.beginNewMaxConsultation()
+  }
 
   func loadSettings() -> CsSettings { config.loadSettings() }
   func configDir() -> String { config.configDir() }
@@ -290,6 +295,7 @@ struct MockSettingsEngine: SettingsEngine {
   var admissionReadiness: CsAdmissionReadiness = .sampleGranted
   var calibrationReport: CsEnergyCalibrationReport = .sample
   var calibrateEnergyObserver: ((UInt32) throws -> CsEnergyCalibrationReport)?
+  var beginNewMaxConsultationObserver: (() async throws -> String)?
   var resetPreviewValue: CsResetPreview = .sample
   var agentResetPreviewValue: CsAgentResetPreview = .sample
   var formattingSnapshot: CsPromptSnapshot = .sampleFormatting
@@ -310,6 +316,15 @@ struct MockSettingsEngine: SettingsEngine {
   var updateConfigObserver: ((String, String) throws -> Void)?
 
   func loadSettings() -> CsSettings { settingsLoader?() ?? settings }
+  func beginNewMaxConsultation() async throws -> String {
+    guard let beginNewMaxConsultationObserver else {
+      throw NSError(
+        domain: "Codescribe.Preview", code: 1,
+        userInfo: [NSLocalizedDescriptionKey: "Consultation reset is unavailable in this preview."]
+      )
+    }
+    return try await beginNewMaxConsultationObserver()
+  }
   func configDir() -> String { dir }
   func shouldShowOnboarding() -> Bool { onboarding }
   func onboardingMode() -> String? { mode }

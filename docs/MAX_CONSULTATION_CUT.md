@@ -263,6 +263,15 @@ if another clean terminal follows; provider and session chain ids are cleared
 on rejection. An authored test covers absent/dirty/mixed/clean terminals with
 an execution counter and a clean positive control. It has not run.
 
+The Creator panel now exposes New consultation only for enabled Max. Its
+existing SettingsViewModel awaits the SettingsEngine/Hotkeys backend, rejects
+duplicate requests while pending, and reports success only after acknowledgement.
+Errors remain visible without claiming reset. UI does not own consultation
+identity or delete history. Authored Swift tests cover pending re-entry, backend
+refusal and non-Max exclusion; they have not run. Swift binding generation and
+rendered interaction proof remain deferred to W2/W3. The earlier missing-button
+notes above describe prior checkpoints, not the current source state.
+
 These checkpoints are structural W1 work. Checkpoint hooks are bypassed in full:
 trailing-whitespace, end-of-file-fixer, check-merge-conflict, mixed-line-ending,
 detect-private-key (security), cargo-check, cargo-fmt, prettier and

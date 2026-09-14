@@ -957,6 +957,8 @@ final class SettingsViewModel: ObservableObject {
 
   @Published private(set) var permissions: PermissionSnapshot
   @Published private(set) var settings: CsSettings
+  @Published private(set) var newMaxConsultationPending = false
+  @Published private(set) var maxConsultationNotice: String?
   @Published private(set) var keyStatus: CsKeyStatus
   @Published private(set) var providers: [CsProviderOption]
   /// Speech-to-text lanes (File, Live): atomic endpoint + key rows on Providers.
@@ -1683,6 +1685,28 @@ final class SettingsViewModel: ObservableObject {
   }
 
   // MARK: - Creator mutations (write through the core router)
+
+  var maxConsultationEnabled: Bool {
+    settings.aiFormattingEnabled
+      && FormattingPolicyOption(storedValue: settings.formattingLevel) == .max
+  }
+
+  func beginNewMaxConsultation() async {
+    guard maxConsultationEnabled, !newMaxConsultationPending else { return }
+    guard let engine else {
+      maxConsultationNotice = "Consultation reset is unavailable."
+      return
+    }
+    newMaxConsultationPending = true
+    maxConsultationNotice = nil
+    defer { newMaxConsultationPending = false }
+    do {
+      _ = try await engine.beginNewMaxConsultation()
+      maxConsultationNotice = "New consultation started. Previous history is preserved."
+    } catch {
+      maxConsultationNotice = "Could not start a new consultation: \(error.localizedDescription)"
+    }
+  }
 
   func setLanguage(_ lang: CsLanguage) {
     settings.whisperLanguage = lang

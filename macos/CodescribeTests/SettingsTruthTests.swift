@@ -6,6 +6,86 @@ import XCTest
 
 @MainActor
 final class SettingsTruthTests: XCTestCase {
+  func testNewMaxConsultationWaitsForBackendAndRefusesDuplicateRequests() async {
+    var settings = CsSettings.sample
+    settings.aiFormattingEnabled = true
+    settings.formattingLevel = "max"
+    var calls = 0
+    var model: SettingsViewModel!
+    let engine = MockSettingsEngine(
+      settings: settings,
+      beginNewMaxConsultationObserver: {
+        calls += 1
+        XCTAssertTrue(model.newMaxConsultationPending)
+        XCTAssertNil(model.maxConsultationNotice)
+        await model.beginNewMaxConsultation()
+        XCTAssertEqual(calls, 1)
+        return "new-consultation-id"
+      }
+    )
+    model = SettingsViewModel(engine: engine)
+    model.refresh()
+
+    await model.beginNewMaxConsultation()
+
+    XCTAssertEqual(calls, 1)
+    XCTAssertFalse(model.newMaxConsultationPending)
+    XCTAssertEqual(
+      model.maxConsultationNotice,
+      "New consultation started. Previous history is preserved."
+    )
+    XCTAssertEqual(model.settings.formattingLevel, "max")
+  }
+
+  func testNewMaxConsultationReportsBackendRefusalWithoutSuccess() async {
+    var settings = CsSettings.sample
+    settings.aiFormattingEnabled = true
+    settings.formattingLevel = "max"
+    let model = SettingsViewModel(
+      engine: MockSettingsEngine(
+        settings: settings,
+        beginNewMaxConsultationObserver: {
+          throw NSError(
+            domain: "ConsultationTest", code: 1,
+            userInfo: [NSLocalizedDescriptionKey: "A turn is still active."]
+          )
+        }
+      )
+    )
+    model.refresh()
+    await model.beginNewMaxConsultation()
+
+    XCTAssertFalse(model.newMaxConsultationPending)
+    XCTAssertEqual(
+      model.maxConsultationNotice,
+      "Could not start a new consultation: A turn is still active."
+    )
+  }
+
+  func testNewMaxConsultationIsUnavailableOutsideEnabledMax() async {
+    for policy in ["off", "correction", "smart", "max"] {
+      var settings = CsSettings.sample
+      settings.formattingLevel = policy
+      settings.aiFormattingEnabled = policy != "max"
+      var calls = 0
+      let model = SettingsViewModel(
+        engine: MockSettingsEngine(
+          settings: settings,
+          beginNewMaxConsultationObserver: {
+            calls += 1
+            return "unexpected"
+          }
+        )
+      )
+      model.refresh()
+      XCTAssertFalse(model.maxConsultationEnabled)
+      await model.beginNewMaxConsultation()
+      XCTAssertEqual(calls, 0)
+      XCTAssertFalse(model.newMaxConsultationPending)
+      XCTAssertNil(model.maxConsultationNotice)
+    }
+  }
+
   /// The rail is a native `List(.sidebar)` now: selection fill, focus ring and
   /// keyboard navigation belong to AppKit, so the app owns only the CONTENT —
   /// which group a section sits in, its symbol, and what the search matches.

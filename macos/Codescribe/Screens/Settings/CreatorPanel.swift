@@ -51,7 +51,7 @@ struct CreatorPanel: View {
         }
         SettingsControlRow(
           title: "Auto Format",
-          subtitle: "Correction only, balanced editing, or maximum polish"
+          subtitle: "Correction, balanced editing, or a tool-enabled Max consultation"
         ) {
           Picker("", selection: formattingLevelBinding) {
             ForEach(FormattingPolicyOption.allCases) { policy in
@@ -62,6 +62,24 @@ struct CreatorPanel: View {
           .labelsHidden()
           .frame(width: 330)
           .disabled(!model.settings.aiFormattingEnabled)
+        }
+        if model.maxConsultationEnabled {
+          SettingsControlRow(
+            title: "Max consultation",
+            subtitle: "Continue across takes, or start fresh without deleting previous history."
+          ) {
+            Button(model.newMaxConsultationPending ? "Starting…" : "New consultation") {
+              Task { await model.beginNewMaxConsultation() }
+            }
+            .disabled(model.newMaxConsultationPending)
+            .accessibilityIdentifier("settings-new-max-consultation")
+          }
+          if let notice = model.maxConsultationNotice {
+            Text(notice)
+              .font(.callout)
+              .foregroundStyle(CSColor.textHigh)
+              .frame(maxWidth: .infinity, alignment: .leading)
+          }
         }
       }
       .padding(.top, CSSpace.control)
