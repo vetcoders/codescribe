@@ -1157,6 +1157,23 @@ final class SettingsViewModel: ObservableObject {
     }
   }
 
+  /// Called only after explicit confirmation to preserve and replace a manual copy.
+  func adoptCreatorManualSkill(for client: AgentBridgeClient) {
+    creatorAgentBridgeError = nil
+    creatorAgentBridgeNotice = nil
+    do {
+      let result = try creatorAgentBridge.adoptManualSkill(client: client)
+      creatorAgentBridgeStatus = result.status
+      creatorAgentBridgeNotice =
+        "Installed from this app. Original folder preserved at:\n"
+        + result.backupPaths.joined(separator: "\n")
+        + "\nReload your agent client's skills, then invoke /codescribe. Voice delivery is not yet verified."
+    } catch {
+      creatorAgentBridgeError = error.userFacingMessage
+      creatorAgentBridgeStatus = creatorAgentBridge.status()
+    }
+  }
+
   /// Re-read live state (permissions can change while the window is open).
   func refresh() {
     permissions = permissionProbe.snapshot()

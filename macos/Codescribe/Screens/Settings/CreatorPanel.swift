@@ -7,6 +7,7 @@ import SwiftUI
 
 struct CreatorPanel: View {
   @ObservedObject var model: SettingsViewModel
+  @State private var manualSkillClient: AgentBridgeClient?
 
   var body: some View {
     VStack(alignment: .leading, spacing: 0) {
@@ -118,6 +119,22 @@ struct CreatorPanel: View {
     .padding(.horizontal, CSSpace.xl)
     .padding(.vertical, CSSpace.section)
     .onAppear { model.refreshCreatorAgentBridge() }
+    .confirmationDialog(
+      "Replace a manually installed Codescribe skill?",
+      isPresented: Binding(
+        get: { manualSkillClient != nil },
+        set: { if !$0 { manualSkillClient = nil } }
+      ),
+      presenting: manualSkillClient
+    ) { client in
+      Button("Preserve original and install for \(client.displayName)") {
+        model.adoptCreatorManualSkill(for: client)
+        manualSkillClient = nil
+      }
+      Button("Cancel", role: .cancel) { manualSkillClient = nil }
+    } message: { client in
+      Text("The Codescribe skill folder for \(client.displayName) will be moved to a retained backup beside it, then replaced with the copy bundled in this app. Your other skills and agent configuration are not changed. No listener will be started.")
+    }
     .task { await model.refreshMaxToolApprovals() }
   }
 
@@ -137,6 +154,11 @@ struct CreatorPanel: View {
           }
           .disabled(!model.creatorAgentBridgeStatus.payloadAvailable)
           .accessibilityIdentifier("settings-agent-bridge-\(client.rawValue)")
+          if model.creatorAgentBridgeError != nil {
+            Button("Replace manual copy…") { manualSkillClient = client }
+              .disabled(!model.creatorAgentBridgeStatus.payloadAvailable)
+              .accessibilityIdentifier("settings-agent-bridge-adopt-\(client.rawValue)")
+          }
         }
       }
       Button("Refresh installation status", action: model.refreshCreatorAgentBridge)
@@ -145,7 +167,7 @@ struct CreatorPanel: View {
         .foregroundStyle(CSColor.textMutedAlt)
         .textSelection(.enabled)
       if let notice = model.creatorAgentBridgeNotice {
-        Text(notice).font(.callout).foregroundStyle(CSColor.textHigh)
+        Text(notice).font(.callout).foregroundStyle(CSColor.textHigh).textSelection(.enabled)
       }
       if let error = model.creatorAgentBridgeError {
         Text(error)

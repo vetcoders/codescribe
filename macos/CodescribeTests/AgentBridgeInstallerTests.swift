@@ -356,6 +356,72 @@ final class AgentBridgeInstallerTests: XCTestCase {
       atPath: home.appendingPathComponent(".codescribe/agent-bridge/receipt.json").path))
   }
 
+  func testExplicitManualAdoptionRetainsOriginalAcrossLaterUpdates() throws {
+    let payload = try makePayload()
+    let home = scratch.appendingPathComponent("manual-adoption")
+    let destination = home.appendingPathComponent(".codex/skills/codescribe")
+    try FileManager.default.createDirectory(at: destination, withIntermediateDirectories: true)
+    let original = Data("manual instructions with personal changes".utf8)
+    try original.write(to: destination.appendingPathComponent("SKILL.md"))
+    try Data("extra notes".utf8).write(to: destination.appendingPathComponent("notes.txt"))
+    let installer = RealAgentBridgeInstaller(
+      resourceRoot: payload, homeDirectory: home, environment: [:])
+    _ = try installer.install(selectedClients: [.claudeCode])
+    XCTAssertThrowsError(try installer.install(selectedClients: [.codex, .claudeCode]))
+    let result = try installer.adoptManualSkill(client: .codex)
+    XCTAssertEqual(result.backupPaths.count, 1)
+    XCTAssertEqual(Set(result.status.installedClients), [.codex, .claudeCode])
+    let backup = URL(fileURLWithPath: try XCTUnwrap(result.backupPaths.first))
+    XCTAssertEqual(try Data(contentsOf: backup.appendingPathComponent("SKILL.md")), original)
+    XCTAssertTrue(FileManager.default.fileExists(atPath: backup.appendingPathComponent("notes.txt").path))
+    XCTAssertEqual(try Data(contentsOf: destination.appendingPathComponent("SKILL.md")),
+      try Data(contentsOf: payload.appendingPathComponent("skills/codescribe/SKILL.md")))
+    _ = try installer.install(selectedClients: [.codex, .claudeCode])
+    XCTAssertEqual(try Data(contentsOf: backup.appendingPathComponent("SKILL.md")), original)
+    let receipt = try jsonObject(home.appendingPathComponent(".codescribe/agent-bridge/receipt.json"))
+    XCTAssertEqual(receipt["preserved_manual_backups"] as? [String], result.backupPaths)
+    XCTAssertThrowsError(try installer.adoptManualSkill(client: .codex), "managed folders are not manual copies")
+  }
+
+  func testManualAdoptionReceiptFailureRestoresOriginalFolder() throws {
+    let payload = try makePayload()
+    let home = scratch.appendingPathComponent("manual-failure")
+    let destination = home.appendingPathComponent(".codex/skills/codescribe")
+    try FileManager.default.createDirectory(at: destination, withIntermediateDirectories: true)
+    let original = Data("preserve on failure".utf8)
+    try original.write(to: destination.appendingPathComponent("SKILL.md"))
+    // A directory at the receipt path forces the final write to fail after replacements.
+    try FileManager.default.createDirectory(
+      at: home.appendingPathComponent(".codescribe/agent-bridge/receipt.json"),
+      withIntermediateDirectories: true)
+    let installer = RealAgentBridgeInstaller(
+      resourceRoot: payload, homeDirectory: home, environment: [:])
+    XCTAssertThrowsError(try installer.adoptManualSkill(client: .codex))
+    XCTAssertEqual(try Data(contentsOf: destination.appendingPathComponent("SKILL.md")), original)
+    XCTAssertFalse(FileManager.default.fileExists(
+      atPath: destination.appendingPathComponent(".codescribe-managed.json").path))
+    XCTAssertFalse(FileManager.default.fileExists(
+      atPath: home.appendingPathComponent(".codescribe/agent-bridge/runtime").path))
+  }
+
+  func testManualAdoptionRefusesRedirectedFolder() throws {
+    let payload = try makePayload()
+    let home = scratch.appendingPathComponent("manual-symlink")
+    let outside = scratch.appendingPathComponent("outside-skill")
+    try FileManager.default.createDirectory(at: outside, withIntermediateDirectories: true)
+    let original = Data("outside instructions".utf8)
+    try original.write(to: outside.appendingPathComponent("SKILL.md"))
+    let destination = home.appendingPathComponent(".codex/skills/codescribe")
+    try FileManager.default.createDirectory(at: destination.deletingLastPathComponent(), withIntermediateDirectories: true)
+    try FileManager.default.createSymbolicLink(at: destination, withDestinationURL: outside)
+    let installer = RealAgentBridgeInstaller(
+      resourceRoot: payload, homeDirectory: home, environment: [:])
+    XCTAssertThrowsError(try installer.adoptManualSkill(client: .codex))
+    XCTAssertEqual(try Data(contentsOf: outside.appendingPathComponent("SKILL.md")), original)
+    XCTAssertFalse(FileManager.default.fileExists(
+      atPath: home.appendingPathComponent(".codescribe/agent-bridge/receipt.json").path))
+  }
+
   private func makePayload() throws -> URL {
     let payload = scratch.appendingPathComponent("payload-\(UUID().uuidString)", isDirectory: true)
     let helper = payload.appendingPathComponent("bin/bus-demux.py")
@@ -418,6 +484,9 @@ final class AgentBridgeInstallerTests: XCTestCase {
 }
 
 private final class RecordingAgentBridgeInstaller: AgentBridgeInstalling {
+  func adoptManualSkill(client: AgentBridgeClient) throws -> AgentBridgeAdoptionResult {
+    throw AgentBridgeInstallationError.transaction("manual adoption not configured in this fixture")
+  }
   private(set) var installCalls: [Set<AgentBridgeClient>] = []
   private var current = AgentBridgeInstallationStatus(
     payloadAvailable: true,

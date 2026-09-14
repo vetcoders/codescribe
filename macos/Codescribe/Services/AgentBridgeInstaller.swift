@@ -43,9 +43,15 @@ struct AgentBridgeInstallationStatus: Equatable {
   )
 }
 
+struct AgentBridgeAdoptionResult {
+  let status: AgentBridgeInstallationStatus
+  let backupPaths: [String]
+}
+
 protocol AgentBridgeInstalling {
   func status() -> AgentBridgeInstallationStatus
   func install(selectedClients: Set<AgentBridgeClient>) throws -> AgentBridgeInstallationStatus
+  func adoptManualSkill(client: AgentBridgeClient) throws -> AgentBridgeAdoptionResult
 }
 
 enum AgentBridgeInstallationError: LocalizedError {
@@ -103,6 +109,7 @@ private struct AgentBridgeReceipt: Codable {
   let runtimePath: String
   let payloadFiles: [AgentBridgeManifestFile]
   let installedAt: String
+  let preservedManualBackups: [String]?
 
   enum CodingKeys: String, CodingKey {
     case schema
@@ -113,6 +120,7 @@ private struct AgentBridgeReceipt: Codable {
     case runtimePath = "runtime_path"
     case payloadFiles = "payload_files"
     case installedAt = "installed_at"
+    case preservedManualBackups = "preserved_manual_backups"
   }
 }
 
@@ -236,6 +244,19 @@ final class RealAgentBridgeInstaller: AgentBridgeInstalling {
   }
 
   func install(selectedClients: Set<AgentBridgeClient>) throws -> AgentBridgeInstallationStatus {
+    try install(selectedClients: selectedClients, adopting: nil).status
+  }
+
+  /// Only an explicit user-confirmed action may replace a manual skill folder.
+  /// The original directory is retained after success and restored on failure.
+  func adoptManualSkill(client: AgentBridgeClient) throws -> AgentBridgeAdoptionResult {
+    let selected = Set(status().installedClients).union([client])
+    return try install(selectedClients: selected, adopting: client)
+  }
+
+  private func install(
+    selectedClients: Set<AgentBridgeClient>, adopting: AgentBridgeClient?
+  ) throws -> AgentBridgeAdoptionResult {
     guard !selectedClients.isEmpty else {
       throw AgentBridgeInstallationError.selectionRequired
     }
@@ -258,9 +279,12 @@ final class RealAgentBridgeInstaller: AgentBridgeInstalling {
     let deselected = previouslySelected.subtracting(selectedClients)
 
     // Conflict discovery is deliberately complete before the first rename.
+    if let adopting {
+      try requireManualSkill(client: adopting)
+    }
     for client in selectedClients {
       let destination = client.skillDirectory(home: homeDirectory)
-      if fileManager.fileExists(atPath: destination.path) {
+      if client != adopting, fileManager.fileExists(atPath: destination.path) {
         try requireManaged(
           destination: destination,
           client: client
@@ -284,6 +308,7 @@ final class RealAgentBridgeInstaller: AgentBridgeInstalling {
     )
     var clientStages: [AgentBridgeClient: URL] = [:]
     var records: [ReplacementRecord] = []
+    var preservedBackups: [String] = []
 
     do {
       try fileManager.copyItem(at: resourceRoot, to: runtimeStage)
@@ -322,6 +347,7 @@ final class RealAgentBridgeInstaller: AgentBridgeInstalling {
       )
       for client in selected {
         guard let stage = clientStages[client] else { continue }
+        if client == adopting { try requireManualSkill(client: client) }
         try replace(
           destination: client.skillDirectory(home: homeDirectory),
           with: stage,
@@ -345,6 +371,11 @@ final class RealAgentBridgeInstaller: AgentBridgeInstalling {
           ($0.rawValue, $0.skillDirectory(home: homeDirectory).standardizedFileURL.path)
         }
       )
+      preservedBackups = records.compactMap { record in
+        guard let adopting, record.destination == adopting.skillDirectory(home: homeDirectory)
+        else { return nil }
+        return record.backup?.path
+      }
       let receipt = AgentBridgeReceipt(
         schema: Self.receiptSchema,
         bundleVersion: manifest.bundleVersion,
@@ -353,11 +384,14 @@ final class RealAgentBridgeInstaller: AgentBridgeInstalling {
         installedPaths: installedPaths,
         runtimePath: runtimeDirectory.standardizedFileURL.path,
         payloadFiles: manifest.files,
-        installedAt: ISO8601DateFormatter().string(from: Date())
+        installedAt: ISO8601DateFormatter().string(from: Date()),
+        preservedManualBackups: (previousReceipt?.preservedManualBackups ?? []) + preservedBackups
       )
       try writeJSON(receipt, to: receiptURL)
       for record in records where record.backup != nil {
-        try? fileManager.removeItem(at: record.backup!)
+        if !preservedBackups.contains(record.backup!.path) {
+          try? fileManager.removeItem(at: record.backup!)
+        }
       }
     } catch {
       rollback(records: records)
@@ -371,7 +405,26 @@ final class RealAgentBridgeInstaller: AgentBridgeInstalling {
       throw AgentBridgeInstallationError.transaction(error.localizedDescription)
     }
 
-    return status()
+    return AgentBridgeAdoptionResult(status: status(), backupPaths: preservedBackups)
+  }
+
+  private func requireManualSkill(client: AgentBridgeClient) throws {
+    let destination = client.skillDirectory(home: homeDirectory)
+    // Refuse redirected parents as well as a symlink at the selected folder.
+    let expected = client.skillDirectory(home: homeDirectory.resolvingSymlinksInPath()).standardizedFileURL
+    guard destination.resolvingSymlinksInPath().standardizedFileURL == expected,
+      let values = try? destination.resourceValues(forKeys: [.isDirectoryKey, .isSymbolicLinkKey]),
+      values.isDirectory == true, values.isSymbolicLink != true,
+      !fileManager.fileExists(atPath: destination.appendingPathComponent(".codescribe-managed.json").path),
+      let skill = try? destination.appendingPathComponent("SKILL.md")
+        .resourceValues(forKeys: [.isRegularFileKey, .isSymbolicLinkKey]),
+      skill.isRegularFile == true, skill.isSymbolicLink != true
+    else {
+      throw AgentBridgeInstallationError.conflict(
+        path: destination.path,
+        reason: "manual adoption requires an ordinary skill folder with SKILL.md and no managed marker"
+      )
+    }
   }
 
   private func verifiedManifest() throws -> AgentBridgeBundleManifest {

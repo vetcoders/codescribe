@@ -700,3 +700,21 @@ The SwiftUI skill guided reuse of existing model/service ownership; no alternate
 installer or settings authority was added. This is source-only, not installed
 or rendered proof. Manual-copy adoption and live notification delivery remain
 unfinished, and the full history census goal is still open.
+
+Manual-copy adoption is now authored through the existing installer transaction.
+Normal install/update still refuses an unowned folder. Creator exposes a separate
+confirmation after an installation error. Confirming permits one client's manual
+folder with a regular SKILL.md and no managed marker; redirected directories and
+managed folders refuse. Other managed clients remain selected. The transaction
+retains the renamed original after success and records its path in the receipt;
+subsequent managed updates preserve both the backup and its receipt reference.
+The UI shows the backup path without claiming that voice delivery was verified.
+
+Authored, unexecuted tests cover original content plus extra files surviving
+adoption and later update, the other client remaining installed, refusal of
+ordinary overwrite and repeated manual adoption, receipt-write failure restoring
+the original directory, and symlink refusal. Existing rollback is best-effort,
+not a crash-recovery protocol: process death between renames, concurrent external
+folder mutation and rollback I/O failure still require verification/hardening.
+No real home folder was adopted, no remote state changed, and no app was built
+or installed in this step. W2 gates and actual Creator interaction remain owed.
