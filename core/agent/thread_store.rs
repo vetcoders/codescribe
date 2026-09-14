@@ -17,6 +17,7 @@
 
 use std::fs;
 use std::io::Write;
+use std::os::unix::fs::OpenOptionsExt;
 use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result, bail};
@@ -1008,8 +1009,14 @@ fn atomic_write(path: &Path, data: &[u8]) -> Result<()> {
             .with_context(|| format!("Failed to create parent directory for {}", path.display()))?;
     }
 
-    let tmp = path.with_extension("tmp");
-    let mut file = fs::File::create(&tmp)
+    // Never truncate or follow a pre-existing staging path. Each writer owns
+    // a newly created sibling, including concurrent attachment writes.
+    let tmp = path.with_extension(format!("{}.tmp", uuid::Uuid::new_v4()));
+    let mut file = fs::OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .mode(0o600)
+        .open(&tmp)
         .with_context(|| format!("Failed to create temporary file {}", tmp.display()))?;
     file.write_all(data)
         .with_context(|| format!("Failed to write temporary file {}", tmp.display()))?;
@@ -1056,6 +1063,23 @@ mod tests {
     use tempfile::TempDir;
 
     use super::*;
+
+    #[test]
+    fn atomic_write_does_not_follow_preexisting_staging_symlink() -> Result<()> {
+        use std::os::unix::fs::{PermissionsExt, symlink};
+        let root = TempDir::new()?;
+        let outside = root.path().join("unrelated.txt");
+        fs::write(&outside, b"preserve unrelated content")?;
+        let destination = root.path().join("thread.json");
+        let staging = destination.with_extension("tmp");
+        symlink(&outside, &staging)?;
+        atomic_write(&destination, b"new thread")?;
+        assert_eq!(fs::read(&outside)?, b"preserve unrelated content");
+        assert_eq!(fs::read(&destination)?, b"new thread");
+        assert!(fs::symlink_metadata(staging)?.file_type().is_symlink());
+        assert_eq!(fs::metadata(&destination)?.permissions().mode() & 0o777, 0o600);
+        Ok(())
+    }
 
     #[test]
     fn executable_restore_does_not_promote_corrupt_roles_or_tool_payloads() {

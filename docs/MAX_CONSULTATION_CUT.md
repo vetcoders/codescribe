@@ -1086,3 +1086,25 @@ the example fix with `--no-verify`; the full skipped pre-commit/commit-msg contr
 are the same list recorded above. All still require final restoration. Foreign
 Swift binding changes and settings remain excluded. No push, verified delivery,
 or new structural-close claim is made by this checkpoint.
+
+## W2 security repair: exclusive temporary thread writes
+
+Follow-up on the full security gate found a concrete staging-path defect in
+ThreadStore::atomic_write: `File::create` follows a pre-existing predictable
+`.tmp` symlink and truncates its target. Thread ids being validated does not
+protect that sibling file. This directly affects durable Max history and
+attachment writes. Structural repair scope adds only this existing writer and
+its regression: unique UUID staging name, create_new, private 0600 mode, and
+the existing write/sync/rename/directory-sync sequence. No new storage owner.
+The authored test puts a staging symlink beside the destination and verifies
+the unrelated target survives, the destination receives the intended content,
+and the published file is private. It is not yet executed.
+
+The three remaining findings name read-only directory opens for fsync in the
+consultation store. Their paths originate from the store root, fixed directory
+names, canonical-child validation and validated thread ids. No external bytes
+are written by these opens. This is a source-level false-positive assessment
+of those particular sinks, not a claim that the scanner accepts it, nor a proof
+against hostile concurrent replacement of ancestor directories. No rule was
+disabled. Full security gate disposition remains pending the next scan.
+This checkpoint retains structural embargo and the hook-bypass accounting above.
