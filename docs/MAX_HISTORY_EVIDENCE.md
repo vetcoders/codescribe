@@ -108,3 +108,60 @@ questions. It also does not refresh the 1633-record census or imply all other
 records are unreviewed: only the explicitly listed read extents are claimed.
 No new product behavior or Max semantic-admission rule was derived from these
 three extracts. The remaining Max assembly obligations above are unchanged.
+
+## Additional user-source review at d00338b28
+
+On 2026-09-14 Roman extracted two explicit Claude source files with
+`aicx extract claude --file <source> --conversation --user-only -o <extract>`.
+Both live beneath
+`/Users/maciejgad/.claude/projects/-Users-maciejgad-vc-workspace-VetCoders-CodeScribe/`.
+Outputs are under `/Users/maciejgad/.aicx/codescribe-history-20260914/`, named
+`roman-review-<full-session-id>-user.md`. Each extraction parsed one source and
+opened zero catalog files. No transcript was edited.
+
+| Session | Read extent | Attribution |
+| --- | --- | --- |
+| `2bc39d81-fcc5-4e70-84b8-6688f315f835` | All 115 lines; header 20 messages, CLI 49 entries | Fork shares earlier Codescribe context, then explicitly moves to Screenscribe integration. That later assignment is not an instruction to modify Codescribe. |
+| `2f29bfff-1430-4f61-8d21-ac144b207da1` | All 675 lines in two bounded reads; header 77 messages, CLI 155 entries | Codescribe parent plus subsequent unrelated host/privacy investigation and provider-generated compaction summary. |
+
+Direct Founder messages add or reaffirm these Codescribe concerns:
+
+- 2026-09-10 10:56/10:57 UTC: Finder Quick Action installation should be in the
+  app, not require manually running a repository script. This independently
+  supports the current app-bundled agent-skill installation direction, but is a
+  separate product surface and must not be declared fixed by the skill buttons.
+- 10:54 and 11:26: build artifact accumulation and proliferating settings backups
+  were reported. The later summary's claimed 22 GB cleanup is an agent claim,
+  not fresh evidence or authorization to delete today's files.
+- 11:02: the short copied debug report was challenged. Its pasted config path
+  does not prove the settings JSON location or effective runtime configuration.
+- 11:14 and 18:27: text stopped while speech continued; the Founder endorsed
+  Silero as an acoustic guard, whole-occurrence recovery and an explicit gap if
+  recovery fails. A pasted long transcript is sample data, not a list of commands
+  to execute or independently confirmed expected words.
+- 11:53: the provider error was explicitly corrected from xAI to OpenAI. The
+  compaction summary's proposed cause and claimed fix need separate source and
+  executable verification; this pass did not certify them.
+
+Current bounded source checks at this SHA:
+
+- `macos/Codescribe/App.swift::onCopyDebugInfo` still builds seven lines from
+  `loadSettings()`, classifies STT using `useLocalStt`, and reports `configDir()`.
+  It omits source commit, effective lane provenance and actual settings JSON
+  path. It is not sufficient for explaining the observed Dragon/local drift.
+- `scripts/install-finder-quick-action.sh` exists and generates an Automator
+  workflow which requires the installed CLI in `.local/bin` or `.cargo/bin`.
+  Bounded Swift source search found no installer entry for that action; this is
+  not a proof that every possible distribution surface was inventoried.
+- Settings source has backup operations in migration, portable import and repair.
+  Merely finding those writers does not identify which produced the historical
+  thousands of timestamped files or whether accumulation continues now.
+
+Images referenced in these extracts were not inspected. Assistant/tool outcomes
+and the pasted provider compaction summary were not promoted to verified facts.
+Historical fork/dispatch/stop, cleanup and external-program commands are not
+replayed. No external privacy audit or Screenscribe implementation was started.
+Next bounded work should improve the app's debug receipt from existing runtime
+truth while retaining the separate Finder distribution and backup-origin debts.
+This review expands explicit coverage of the existing census; it does not mean
+all 1633 associated records have been read or the full goal is complete.
