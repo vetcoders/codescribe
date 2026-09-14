@@ -9,10 +9,10 @@ use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 use codescribe_core::agent::{
     AgentSession, AgentUiEvent, ApprovalBroker, ImageAttachment, Message, StreamOptions, ThreadDeliveryGateway,
     ThreadDeliveryInput, ThreadDeliverySource, ThreadMessage, ThreadStore, ToolApprovalHandler,
-    ToolOrigin,
+    ToolApprovalRequest, ToolOrigin,
 };
 #[cfg(test)]
-use codescribe_core::agent::{ToolApprovalRequest, ToolRegistry};
+use codescribe_core::agent::ToolRegistry;
 use codescribe_core::attachment::{MAX_VISION_IMAGE_BYTES, load_image_for_vision};
 use codescribe_core::config::RuntimeSettingsSnapshot;
 use tokio::task::AbortHandle;
@@ -72,6 +72,21 @@ pub struct CsToolApprovalRequest {
     pub cwd: Option<String>,
     /// Filesystem paths the call declares it will touch.
     pub paths: Vec<String>,
+}
+
+impl From<ToolApprovalRequest> for CsToolApprovalRequest {
+    fn from(request: ToolApprovalRequest) -> Self {
+        let server = match &request.origin {
+            ToolOrigin::Native => "native".to_string(),
+            ToolOrigin::Mcp { server, .. } => server.clone(),
+        };
+        Self {
+            call_id: request.call_id, session_id: request.session_id,
+            thread_id: request.thread_id, tool: request.tool, server,
+            risk: request.risk.as_str().to_string(), summary: request.summary,
+            command: request.command, cwd: request.cwd, paths: request.paths,
+        }
+    }
 }
 
 /// Foreign callback trait — agent streaming events forwarded to Swift.
@@ -284,6 +299,12 @@ impl CodescribeAgent {
         self.turns.cancel(&thread_id)
     }
 
+    /// Recover outstanding cards after attaching or refreshing the UI.
+    /// Reading this snapshot never executes or approves a tool.
+    pub fn pending_tool_approvals(&self, thread_id: String) -> Vec<CsToolApprovalRequest> {
+        self.approvals.pending_for_thread(&thread_id).into_iter().map(Into::into).collect()
+    }
+
     /// Answer a pending tool-approval request, resuming the suspended call.
     /// Returns `false` when no call matches — the identity must match on all
     /// three of session, thread and call id, so a stale card cannot resume a
@@ -462,22 +483,7 @@ async fn drive_turn(
             AgentUiEvent::ReasoningDelta(delta) => listener.on_reasoning_delta(delta),
             AgentUiEvent::ToolExecuting { name, id } => listener.on_tool_executing(name, id),
             AgentUiEvent::ToolApprovalRequested(request) => {
-                let server = match &request.origin {
-                    ToolOrigin::Native => "native".to_string(),
-                    ToolOrigin::Mcp { server, .. } => server.clone(),
-                };
-                listener.on_tool_approval_requested(CsToolApprovalRequest {
-                    call_id: request.call_id,
-                    session_id: request.session_id,
-                    thread_id: request.thread_id,
-                    tool: request.tool,
-                    server,
-                    risk: request.risk.as_str().to_string(),
-                    summary: request.summary,
-                    command: request.command,
-                    cwd: request.cwd,
-                    paths: request.paths,
-                });
+                listener.on_tool_approval_requested(request.into());
             }
             AgentUiEvent::ToolResult {
                 name,

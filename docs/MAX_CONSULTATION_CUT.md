@@ -292,6 +292,17 @@ token so stale cleanup cannot evict another request. Three authored tests cover
 these cases; existing bridge exact-key/cancel tests remain consumers of the
 relocated broker. None have run.
 
+Delivery inspection found that the existing app broadcast discards lagged events
+and events received without a Swift listener. It cannot be the sole memory of
+an approval card. ApprovalBroker now exposes an exact-thread pending snapshot
+from its existing pending map, retaining the original request preview. Chat's
+bridge exposes that snapshot and shares one request projection with callbacks.
+An authored test covers thread isolation, repeated reads, rejection and future
+drop. Reading a snapshot never approves or replays work. Max's host/UI wiring
+must use notifications plus this authoritative state, not notification-only
+approval delivery. Swift consumption and generated bindings remain outstanding;
+this does not yet prove recovery in the app.
+
 These checkpoints are structural W1 work. Checkpoint hooks are bypassed in full:
 trailing-whitespace, end-of-file-fixer, check-merge-conflict, mixed-line-ending,
 detect-private-key (security), cargo-check, cargo-fmt, prettier and

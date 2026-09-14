@@ -16,6 +16,8 @@ struct ApprovalKey {
 
 /// A tool call parked awaiting the user's decision.
 struct PendingApproval {
+    /// Original permission preview; snapshots never reconstruct it from text.
+    request: ToolApprovalRequest,
     /// Distinguishes this registration from a later use of the same key.
     token: Arc<()>,
     /// Resumes the suspended call with the verdict. Dropping this sender
@@ -117,9 +119,9 @@ impl ApprovalBroker {
             },
         };
         let key = ApprovalKey {
-            session_id: request.session_id,
-            thread_id: request.thread_id,
-            call_id: request.call_id,
+            session_id: request.session_id.clone(),
+            thread_id: request.thread_id.clone(),
+            call_id: request.call_id.clone(),
         };
         let (tx, rx) = tokio::sync::oneshot::channel();
         let token = Arc::new(());
@@ -129,7 +131,7 @@ impl ApprovalBroker {
                 return Box::pin(async { false });
             }
             pending.insert(key.clone(), PendingApproval {
-                tx, grant_target, token: Arc::clone(&token),
+                request, tx, grant_target, token: Arc::clone(&token),
             });
         }
         // Capture the guard before polling: dropping an unpolled future must
@@ -141,6 +143,18 @@ impl ApprovalBroker {
             let _guard = guard;
             rx.await.unwrap_or(false)
         })
+    }
+
+    /// Snapshot outstanding requests for exactly one conversation. UI recovery
+    /// after a missed notification reads this owner rather than replaying tools.
+    /// A snapshot grants nothing; resolve still requires an outstanding exact key.
+    pub fn pending_for_thread(&self, thread_id: &str) -> Vec<ToolApprovalRequest> {
+        let mut requests = recover(self.pending.lock()).values()
+            .filter(|entry| entry.request.thread_id == thread_id)
+            .map(|entry| entry.request.clone())
+            .collect::<Vec<_>>();
+        requests.sort_by(|a, b| (&a.session_id, &a.call_id).cmp(&(&b.session_id, &b.call_id)));
+        requests
     }
 
     /// Deliver a verdict to the exactly-matching pending call, returning `false`
@@ -230,6 +244,26 @@ mod tests {
             origin: ToolOrigin::Native, risk: crate::agent::ToolRisk::Mutating,
             summary: "write a file".into(), command: None, cwd: None, paths: vec![],
         }
+    }
+
+    #[tokio::test]
+    async fn snapshot_recovers_only_outstanding_requests_in_the_selected_thread() {
+        let broker = Arc::new(ApprovalBroker::default());
+        let expected = request();
+        let first = broker.begin(expected.clone());
+        let mut other = expected.clone();
+        other.thread_id = "other-thread".into();
+        let second = broker.begin(other.clone());
+        assert_eq!(broker.pending_for_thread("thread"), vec![expected]);
+        assert_eq!(broker.pending_for_thread("other-thread"), vec![other]);
+        assert!(broker.pending_for_thread("missing").is_empty());
+        // Re-reading is observational: it neither consumes nor approves a call.
+        assert_eq!(broker.pending_for_thread("thread").len(), 1);
+        assert!(broker.resolve("session", "thread", "call", false, false));
+        assert!(!first.await);
+        assert!(broker.pending_for_thread("thread").is_empty());
+        drop(second);
+        assert!(broker.pending_for_thread("other-thread").is_empty());
     }
 
     #[tokio::test]
