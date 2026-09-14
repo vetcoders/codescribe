@@ -50,13 +50,35 @@ pub struct ConsultationAnswer {
 struct QueuedTurn {
     turn: ConsultationTurn,
     reply: oneshot::Sender<Result<ConsultationAnswer>>,
+    pending: PendingTurn,
+}
+
+enum OwnerCommand {
+    Turn(QueuedTurn),
+    Close(oneshot::Sender<()>),
+}
+
+#[derive(Default)]
+struct Admission {
+    closed: bool,
+    pending: usize,
+}
+
+struct PendingTurn(Arc<std::sync::Mutex<Admission>>);
+
+impl Drop for PendingTurn {
+    fn drop(&mut self) {
+        let mut admission = self.0.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+        admission.pending -= 1;
+    }
 }
 
 /// Cloneable admission handle, deliberately not a second history owner.
 #[derive(Clone)]
 pub struct ConsultationRuntime {
     id: String,
-    tx: mpsc::Sender<QueuedTurn>,
+    tx: mpsc::Sender<OwnerCommand>,
+    admission: Arc<std::sync::Mutex<Admission>>,
 }
 
 impl ConsultationRuntime {
@@ -81,11 +103,26 @@ impl ConsultationRuntime {
         tokio::spawn(run_owner(ConsultationOwner {
             id: id.clone(), session, ui_rx, gateway, journal, events, rx, install_lease_path,
         }));
-        Ok(Self { id, tx })
+        Ok(Self { id, tx, admission: Arc::new(std::sync::Mutex::new(Admission::default())) })
     }
 
     pub fn id(&self) -> &str {
         &self.id
+    }
+
+    /// Close only when no accepted work remains. The acknowledgement is sent
+    /// after the owner drops its session and kernel journal lease. All cloned
+    /// handles become closed under the same lock used for turn admission.
+    pub async fn close_if_idle(&self) -> Result<()> {
+        {
+            let mut admission = self.admission.lock().map_err(|_| anyhow!("consultation admission lock poisoned"))?;
+            ensure!(!admission.closed, "consultation already closing or closed");
+            ensure!(admission.pending == 0, "consultation has pending work");
+            admission.closed = true;
+        }
+        let (reply, closed) = oneshot::channel();
+        self.tx.try_send(OwnerCommand::Close(reply)).map_err(|_| anyhow!("consultation owner unavailable during close"))?;
+        closed.await.context("consultation owner stopped without close acknowledgement")
     }
 
     /// Enqueue without starting a competing provider future. A full queue is
@@ -95,8 +132,14 @@ impl ConsultationRuntime {
         ensure!(turn.policy == FormattingPolicy::Max, "consultation tools require Max");
         ensure!(!turn.id.trim().is_empty(), "turn identity is required");
         ensure!(!turn.text.trim().is_empty() || !turn.attachments.is_empty(), "empty consultation turn");
+        {
+            let mut admission = self.admission.lock().map_err(|_| anyhow!("consultation admission lock poisoned"))?;
+            ensure!(!admission.closed, "consultation is closing or closed");
+            admission.pending += 1;
+        }
+        let pending = PendingTurn(Arc::clone(&self.admission));
         let (reply, receipt) = oneshot::channel();
-        self.tx.try_send(QueuedTurn { turn, reply })
+        self.tx.try_send(OwnerCommand::Turn(QueuedTurn { turn, reply, pending }))
             .map_err(|error| anyhow!("consultation admission failed: {error}"))?;
         Ok(receipt)
     }
@@ -109,7 +152,7 @@ struct ConsultationOwner {
     gateway: ThreadDeliveryGateway,
     journal: ConsultationJournal,
     events: ConsultationEvents,
-    rx: mpsc::Receiver<QueuedTurn>,
+    rx: mpsc::Receiver<OwnerCommand>,
     install_lease_path: PathBuf,
 }
 
@@ -117,8 +160,18 @@ async fn run_owner(owner: ConsultationOwner) {
     let ConsultationOwner { id, mut session, mut ui_rx, gateway, mut journal,
         events, mut rx, install_lease_path } = owner;
     let mut unsettled: Option<String> = None;
-    while let Some(QueuedTurn { turn, reply }) = rx.recv().await {
+    while let Some(command) = rx.recv().await {
+        let QueuedTurn { turn, reply, pending } = match command {
+            OwnerCommand::Turn(turn) => turn,
+            OwnerCommand::Close(reply) => {
+                drop(session);
+                drop(journal);
+                let _ = reply.send(());
+                return;
+            }
+        };
         if let Some(reason) = &unsettled {
+            drop(pending);
             let _ = reply.send(Err(anyhow!("consultation requires recovery: {reason}")));
             continue;
         }
@@ -126,9 +179,10 @@ async fn run_owner(owner: ConsultationOwner) {
         // the file. Hold through history/journal settlement and the final reply.
         let _install_lease = match crate::config::acquire_agent_turn_lease_at(&install_lease_path) {
             Ok(lease) => lease,
-            Err(error) => { let _ = reply.send(Err(error)); continue; }
+            Err(error) => { drop(pending); let _ = reply.send(Err(error)); continue; }
         };
         if let Err(error) = journal.begin(&turn.id) {
+            drop(pending);
             let _ = reply.send(Err(error));
             continue;
         }
@@ -143,6 +197,7 @@ async fn run_owner(owner: ConsultationOwner) {
         } else {
             events(&id, &turn_id, AgentUiEvent::Done);
         }
+        drop(pending);
         let _ = reply.send(result);
     }
 }
@@ -271,6 +326,7 @@ mod tests {
 
         let first = runtime.enqueue(turn("one", "Prepare a command, do not execute it.")).expect("first accepted");
         entered.acquire().await.expect("first entered").forget();
+        assert!(runtime.close_if_idle().await.is_err(), "active instruction cannot be detached");
         drop(first);
         let second = runtime.enqueue(turn("two", "Now change only the file name.")).expect("second accepted");
         assert_eq!(requests.lock().expect("requests").len(), 1);
@@ -290,6 +346,11 @@ mod tests {
         let duplicate = runtime.enqueue(turn("one", "Do not repeat tools.")).expect("queued");
         assert!(duplicate.await.expect("reply").is_err());
         assert_eq!(requests.lock().expect("requests").len(), 2);
+        let stale_handle = runtime.clone();
+        runtime.close_if_idle().await.expect("idle owner closes");
+        assert!(stale_handle.enqueue(turn("three", "must not resurrect closed owner")).is_err());
+        let gateway = ThreadDeliveryGateway::new_in(dir.path()).expect("gateway");
+        assert!(gateway.open_consultation("consultation-a").is_ok(), "close receipt releases journal lease");
     }
 
     #[tokio::test]
@@ -313,6 +374,9 @@ mod tests {
         assert!(first.await.expect("first reply").is_err());
         assert!(second.await.expect("second reply").expect_err("recovery required").to_string().contains("requires recovery"));
         assert_eq!(requests.lock().expect("requests").len(), 1);
+        runtime.close_if_idle().await.expect("failed owner can close without replay");
+        let gateway = ThreadDeliveryGateway::new_in(dir.path()).expect("gateway");
+        assert!(gateway.open_consultation("consultation-b").is_err(), "closing must not erase unresolved turn");
     }
 
     #[tokio::test]

@@ -225,6 +225,15 @@ Two controller call sites are connected in source, but the full product path is
 not verified. The journal protects before-effects admission, not all acknowledged
 in-memory queue entries; do not claim complete crash recovery yet.
 
+The owner now exposes `close_if_idle` for the future explicit reset path.
+Admission and close share a lock and a pending-work count. Close refuses queued
+or executing work, closes every cloned admission handle, and acknowledges only
+after releasing the session and journal lease. Pending-work guards also release
+their count if queue admission fails or the owner drops queued work. Closing a
+failed owner leaves its unresolved journal marker intact. Extended authored
+tests cover active refusal, stale handles, lease release and unresolved-state
+preservation. No UI reset is connected and these tests remain unexecuted.
+
 Live investigation: `schedule_formatter_after_terminal_label` submits exactly
 one PCM occurrence when its last earlier observer returns. This is not the end
 of a logical instruction. `EpochGate::Sleep` closes an Apple engine epoch after
