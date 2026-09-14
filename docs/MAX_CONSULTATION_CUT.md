@@ -1,9 +1,14 @@
 # Max consultation — implementation contract
 
-Status: structural implementation in progress; not assembled or verified.
+Current status (2026-09-14): integrated in `fix/seals-whales-and-agents`;
+static/Rust/Swift verification receipts below; installed build 1113 launched.
+Real-provider two-turn Max and cross-host voice acceptance remain unverified.
 Founder request: 2026-09-14, Roman conversation.
 Baseline: b91e9a947941371d0d51ba6cee1e3e68e7331e8c.
-Runtime: isolated Fleet Worktree `cut/roman-max-consultation`.
+Original runtime: isolated Fleet Worktree `cut/roman-max-consultation`.
+Current runtime: Living Tree `/Users/maciejgad/vc-workspace/vetcoders/codescribe`.
+The W0 and structural entries below are historical phase receipts, not current
+claims that the cut is still isolated. Latest acceptance receipts are at the end.
 
 ## W0 execution registration
 
@@ -1399,3 +1404,34 @@ workspace/all-target Clippy, Semgrep with the three reviewed exceptions,
 exactly the same three rule matches, now at lines 219, 229 and 264. The
 exceptions change reporting only; findings remain reproducible. This scoped
 control ran 100 rules on one file, not a second whole-repository scan.
+
+### Installed-app acceptance — 2026-09-14
+
+`CARGO_BUILD_JOBS=2 CARGO_INCREMENTAL=0 make install-if-idle` completed with
+exit 0 (`38-install-if-idle.log`, same W3 log directory). Native local-release
+FFI, STT sidecar and Swift application builds completed, followed by copy and
+signing of `/Applications/Codescribe.app`. The Voice Lab installer explicitly
+skipped example settings; no local settings profile was applied.
+
+Read directly from the installed Info.plist:
+
+- version: `0.15.1`;
+- build: `1113`;
+- source commit: `1a0023487` (full source SHA
+  `1a0023487dd40405a02462875257e7cd35905cd1`);
+- built at: `2026-09-14T19:52:15Z`.
+
+`codesign --verify --deep --strict --verbose=2` passed for the installed
+bundle and nested artifacts. Signing identity is Developer ID Application,
+team `MW223P3NPX`. This local install is not a newly notarized distribution
+DMG; an inherited ticket shown by codesign is not notarization proof for it.
+
+Before installation, the app was build 1050 (`b91e9a947`), PID 36223.
+After installation, the integrator acquired the agent-turn lease exclusively,
+rechecked bus idle, and requested cooperative Apple Event quit. The old PID
+disappeared; no kill signal was used. `open /Applications/Codescribe.app`
+started PID 49508, confirmed active 13 seconds later from the installed path.
+Only after signature, version and launch verification was the success ping
+played. This proves local install/start, not real-provider conversation,
+microphone correctness, lexical accuracy or Dragon parity. Those acceptance
+obligations remain open.
