@@ -11,6 +11,8 @@
 //! — decides allow / ask / deny, and [`thread_delivery`] persists the finished
 //! turn into [`thread_store`].
 
+/// Pending tool approvals shared by UI and consultation hosts.
+pub mod approval;
 /// On-disk store for image attachments referenced from conversation history.
 pub mod assets;
 /// Provider-neutral capability broker for canonical ops (`fs.read`, `repo.status`).
@@ -46,6 +48,7 @@ mod tool_output;
 /// Core conversation types: [`Role`], [`Message`], [`ContentBlock`].
 pub mod types;
 
+pub use approval::ApprovalBroker;
 pub use assets::AgentAssetStore;
 pub use capabilities::{
     AgentCapabilityPreferences, CapabilityOp, CapabilityProvider, CapabilityResolution,

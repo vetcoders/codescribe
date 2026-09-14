@@ -280,6 +280,18 @@ refusal and non-Max exclusion; they have not run. Swift binding generation and
 rendered interaction proof remain deferred to W2/W3. The earlier missing-button
 notes above describe prior checkpoints, not the current source state.
 
+The existing chat ApprovalBroker now lives in core/agent/approval.rs and the
+bridge imports it; its old implementation was removed rather than copied as
+a second broker. This makes the same permission suspension mechanism available
+to controller-owned Max. Max still has no host approval/event UI connected.
+During relocation, source inspection found that duplicate pending keys replaced
+old requests and their guards could remove a successor; dropping an unpolled
+future also left its card registered. Duplicate registration now refuses without
+replacement, guards are captured before polling, and each registration has a
+token so stale cleanup cannot evict another request. Three authored tests cover
+these cases; existing bridge exact-key/cancel tests remain consumers of the
+relocated broker. None have run.
+
 These checkpoints are structural W1 work. Checkpoint hooks are bypassed in full:
 trailing-whitespace, end-of-file-fixer, check-merge-conflict, mixed-line-ending,
 detect-private-key (security), cargo-check, cargo-fmt, prettier and
