@@ -84,6 +84,35 @@ struct CreatorPanel: View {
       }
       .padding(.top, CSSpace.control)
 
+      if model.maxConsultationEnabled || !model.maxToolApprovals.isEmpty {
+        SettingsSectionLabel("Max permissions")
+          .padding(.top, CSSpace.section)
+        Button(model.maxApprovalBusy ? "Refreshing…" : "Refresh pending requests") {
+          Task { await model.refreshMaxToolApprovals() }
+        }
+        .disabled(model.maxApprovalBusy)
+        .padding(.top, CSSpace.control)
+        ForEach(model.maxToolApprovals) { request in
+          ToolApprovalCard(
+            request: request,
+            reject: {
+              Task { await model.resolveMaxToolApproval(request, approved: false) }
+            },
+            allowOnce: {
+              Task { await model.resolveMaxToolApproval(request, approved: true) }
+            },
+            allowAlways: {
+              Task { await model.resolveMaxToolApproval(request, approved: true, remember: true) }
+            }
+          )
+          .disabled(model.maxApprovalBusy || model.maxApprovalError != nil)
+          .padding(.top, CSSpace.control)
+        }
+        if let error = model.maxApprovalError {
+          Text(error).foregroundStyle(CSColor.amber)
+        }
+      }
+
       SettingsSectionLabel("Quick start")
         .padding(.top, CSSpace.section)
       HStack(spacing: 10) {
@@ -110,6 +139,7 @@ struct CreatorPanel: View {
     }
     .padding(.horizontal, CSSpace.xl)
     .padding(.vertical, CSSpace.section)
+    .task { await model.refreshMaxToolApprovals() }
   }
 
   // MARK: - Bindings (read VM state, write through the router)

@@ -34,6 +34,10 @@ protocol SettingsEngine {
   func updateConfig(key: String, value: String) throws
   func updateConfigMany(entries: [CsConfigEntry]) throws
   func beginNewMaxConsultation() async throws -> String
+  func pendingMaxToolApprovals() async throws -> [PendingToolApproval]
+  func resolveMaxToolApproval(
+    _ request: PendingToolApproval, approved: Bool, remember: Bool
+  ) async throws -> Bool
 
   // Live audio hardware truth + explicit unset for the preferred device.
   func loadAudioInputSnapshot() throws -> CsAudioInputSnapshot
@@ -136,6 +140,25 @@ final class RealSettingsEngine: SettingsEngine {
 
   func beginNewMaxConsultation() async throws -> String {
     try await hotkeys.beginNewMaxConsultation()
+  }
+
+  func pendingMaxToolApprovals() async throws -> [PendingToolApproval] {
+    try await hotkeys.pendingMaxToolApprovals().map { request in
+      PendingToolApproval(
+        callID: request.callId, sessionID: request.sessionId, threadID: request.threadId,
+        tool: request.tool, server: request.server, risk: request.risk,
+        summary: request.summary, command: request.command, cwd: request.cwd, paths: request.paths
+      )
+    }
+  }
+
+  func resolveMaxToolApproval(
+    _ request: PendingToolApproval, approved: Bool, remember: Bool
+  ) async throws -> Bool {
+    try await hotkeys.resolveMaxToolApproval(
+      sessionId: request.sessionID, threadId: request.threadID, callId: request.callID,
+      approved: approved, remember: remember
+    )
   }
 
   func loadSettings() -> CsSettings { config.loadSettings() }
@@ -296,6 +319,8 @@ struct MockSettingsEngine: SettingsEngine {
   var calibrationReport: CsEnergyCalibrationReport = .sample
   var calibrateEnergyObserver: ((UInt32) throws -> CsEnergyCalibrationReport)?
   var beginNewMaxConsultationObserver: (() async throws -> String)?
+  var pendingMaxApprovalsObserver: (() async throws -> [PendingToolApproval])?
+  var resolveMaxApprovalObserver: ((PendingToolApproval, Bool, Bool) async throws -> Bool)?
   var resetPreviewValue: CsResetPreview = .sample
   var agentResetPreviewValue: CsAgentResetPreview = .sample
   var formattingSnapshot: CsPromptSnapshot = .sampleFormatting
@@ -316,6 +341,14 @@ struct MockSettingsEngine: SettingsEngine {
   var updateConfigObserver: ((String, String) throws -> Void)?
 
   func loadSettings() -> CsSettings { settingsLoader?() ?? settings }
+  func pendingMaxToolApprovals() async throws -> [PendingToolApproval] {
+    try await pendingMaxApprovalsObserver?() ?? []
+  }
+  func resolveMaxToolApproval(
+    _ request: PendingToolApproval, approved: Bool, remember: Bool
+  ) async throws -> Bool {
+    try await resolveMaxApprovalObserver?(request, approved, remember) ?? false
+  }
   func beginNewMaxConsultation() async throws -> String {
     guard let beginNewMaxConsultationObserver else {
       throw NSError(

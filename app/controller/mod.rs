@@ -816,6 +816,8 @@ pub struct RecordingController {
     /// Max conversation survives capture teardown; microphone lifetime is not
     /// conversation lifetime. No chat selection or OS focus changes this slot.
     max_consultation: Mutex<Option<Arc<crate::agent::max_consultation::MaxConsultation>>>,
+    /// The shared approval mechanism, scoped to this controller's Max owner.
+    max_approvals: Arc<codescribe_core::agent::ApprovalBroker>,
 
     /// Task handle for delayed hold-start (800ms default)
     hold_start_task: Arc<Mutex<Option<JoinHandle<()>>>>,
@@ -1089,6 +1091,7 @@ impl RecordingController {
             active_transcript_bus: Arc::new(RwLock::new(None)),
             active_presentation: Arc::new(RwLock::new(None)),
             max_consultation: Mutex::new(None),
+            max_approvals: Arc::default(),
             hold_start_task: Arc::new(Mutex::new(None)),
             hold_start_generation: Arc::new(AtomicU64::new(0)),
             start_transition_in_flight: Arc::new(AtomicBool::new(false)),
@@ -1138,11 +1141,14 @@ impl RecordingController {
         if selected.is_none() {
             let gateway = codescribe_core::agent::ThreadDeliveryGateway::new()?;
             let consultation_id = gateway.selected_max_consultation_id()?;
+            let approvals = Arc::clone(&self.max_approvals);
+            let approval_handler: codescribe_core::agent::ToolApprovalHandler =
+                Arc::new(move |request| approvals.begin(request));
             let consultation = crate::agent::max_consultation::MaxConsultation::start(
                 consultation_id,
                 settings,
                 Arc::new(crate::agent::tools::configured_registry()),
-                None,
+                Some(approval_handler),
                 gateway,
                 Arc::new(|_consultation, _turn, event| {
                     if let codescribe_core::agent::AgentUiEvent::Error(error) = event {
@@ -1154,6 +1160,31 @@ impl RecordingController {
             *selected = Some(Arc::new(consultation));
         }
         Ok(selected.clone())
+    }
+
+    /// Read pending Max cards without constructing a session or touching the mic.
+    pub async fn pending_max_tool_approvals(&self) -> Vec<codescribe_core::agent::ToolApprovalRequest> {
+        let selected = self.max_consultation.lock().await;
+        selected.as_ref().map(|consultation| {
+            self.max_approvals.pending_for_thread(consultation.id())
+        }).unwrap_or_default()
+    }
+
+    /// Resolve only a currently pending call belonging to the selected Max owner.
+    /// Exact-key matching remains inside the shared broker.
+    pub async fn resolve_max_tool_approval(
+        &self,
+        session_id: &str,
+        thread_id: &str,
+        call_id: &str,
+        approved: bool,
+        remember: bool,
+    ) -> bool {
+        let selected = self.max_consultation.lock().await;
+        if !selected.as_ref().is_some_and(|consultation| consultation.id() == thread_id) {
+            return false;
+        }
+        self.max_approvals.resolve(session_id, thread_id, call_id, approved, remember)
     }
 
     /// Explicit conversation reset, preserving the prior thread and any

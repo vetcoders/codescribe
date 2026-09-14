@@ -303,6 +303,23 @@ must use notifications plus this authoritative state, not notification-only
 approval delivery. Swift consumption and generated bindings remain outstanding;
 this does not yet prove recovery in the app.
 
+The controller now owns an ApprovalBroker instance for its retained Max session
+and passes its handler into AgentSession. Hotkeys exposes pending Max cards and
+exact-key resolution through the same FFI request projection. Snapshot reads do
+not create a controller/session or recorder. Resolution additionally requires
+the selected consultation id, so a card from another conversation is refused.
+Capture reset still refuses queued/executing work, including approval waits.
+The Creator settings panel now consumes the snapshot on appearance and explicit
+refresh, reusing ToolApprovalCard for Deny/Allow once/Always allow. The existing
+SettingsViewModel serializes refresh/verdict actions, preserves backend identity,
+reloads after verdict and disables stale cards after read failure. Authored Swift
+tests cover exact forwarding, removing settled cards, read failure and stale-key
+refusal; none have run. This is a manual recovery surface, not the required
+immediate live notification/overlay path. An unanswered request remains bounded
+by AgentSession's existing approval timeout and denies execution; do not install
+this intermediate state. Automatic notification/recovery, executable integration
+tests and generated bindings are still owed after W2.
+
 These checkpoints are structural W1 work. Checkpoint hooks are bypassed in full:
 trailing-whitespace, end-of-file-fixer, check-merge-conflict, mixed-line-ending,
 detect-private-key (security), cargo-check, cargo-fmt, prettier and

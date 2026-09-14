@@ -998,6 +998,36 @@ impl CodescribeHotkeys {
         .await?
     }
 
+    /// Snapshot current Max approval cards. No controller means no pending calls;
+    /// this read must never construct a recorder to populate a settings view.
+    pub async fn pending_max_tool_approvals(&self) -> Result<Vec<crate::agent::CsToolApprovalRequest>, CsError> {
+        application_runtime::run(async move {
+            let Some(controller) = current_controller(&shared_controller()) else {
+                return Vec::new();
+            };
+            controller.pending_max_tool_approvals().await.into_iter().map(Into::into).collect()
+        }).await
+    }
+
+    /// Answer a Max card using the exact session, consultation and call identity.
+    pub async fn resolve_max_tool_approval(
+        &self,
+        session_id: String,
+        thread_id: String,
+        call_id: String,
+        approved: bool,
+        remember: bool,
+    ) -> Result<bool, CsError> {
+        application_runtime::run(async move {
+            let Some(controller) = current_controller(&shared_controller()) else {
+                return false;
+            };
+            controller.resolve_max_tool_approval(
+                &session_id, &thread_id, &call_id, approved, remember,
+            ).await
+        }).await
+    }
+
     /// Explicitly start a fresh Max consultation without deleting old history.
     /// The controller refuses while capture, processing or accepted work is active.
     pub async fn begin_new_max_consultation(&self) -> Result<String, CsError> {

@@ -6,6 +6,74 @@ import XCTest
 
 @MainActor
 final class SettingsTruthTests: XCTestCase {
+  func testMaxApprovalForwardsExactIdentityAndRefreshesAfterVerdict() async {
+    let request = PendingToolApproval(
+      callID: "call", sessionID: "session", threadID: "consultation",
+      tool: "write_file", server: "native", risk: "mutating", summary: "write",
+      command: nil, cwd: nil, paths: ["/workspace/a"]
+    )
+    var pending = [request]
+    var resolutions = 0
+    let model = SettingsViewModel(
+      engine: MockSettingsEngine(
+        pendingMaxApprovalsObserver: { pending },
+        resolveMaxApprovalObserver: { received, approved, remember in
+          XCTAssertEqual(received, request)
+          XCTAssertTrue(approved)
+          XCTAssertFalse(remember)
+          resolutions += 1
+          pending = []
+          return true
+        }
+      )
+    )
+    await model.refreshMaxToolApprovals()
+    XCTAssertEqual(model.maxToolApprovals, [request])
+    await model.resolveMaxToolApproval(request, approved: true)
+    XCTAssertEqual(resolutions, 1)
+    XCTAssertTrue(model.maxToolApprovals.isEmpty)
+    XCTAssertNil(model.maxApprovalError)
+    XCTAssertFalse(model.maxApprovalBusy)
+    await model.resolveMaxToolApproval(request, approved: true)
+    XCTAssertEqual(resolutions, 1, "a removed card must not be submitted again")
+  }
+
+  func testMaxApprovalReadFailureDoesNotAuthorizeAStaleCard() async {
+    let request = PendingToolApproval(
+      callID: "call", sessionID: "session", threadID: "consultation",
+      tool: "write_file", server: "native", risk: "mutating", summary: "write",
+      command: nil, cwd: nil, paths: []
+    )
+    var failRead = false
+    var resolutions = 0
+    let model = SettingsViewModel(
+      engine: MockSettingsEngine(
+        pendingMaxApprovalsObserver: {
+          if failRead {
+            throw NSError(domain: "ApprovalTest", code: 1)
+          }
+          return [request]
+        },
+        resolveMaxApprovalObserver: { _, _, _ in
+          resolutions += 1
+          return false
+        }
+      )
+    )
+    await model.refreshMaxToolApprovals()
+    failRead = true
+    await model.refreshMaxToolApprovals()
+    XCTAssertNotNil(model.maxApprovalError)
+    await model.resolveMaxToolApproval(request, approved: true)
+    XCTAssertEqual(resolutions, 0)
+    failRead = false
+    await model.refreshMaxToolApprovals()
+    XCTAssertNil(model.maxApprovalError)
+    await model.resolveMaxToolApproval(request, approved: false)
+    XCTAssertEqual(resolutions, 1)
+    XCTAssertEqual(model.maxApprovalError, "This permission request is no longer active.")
+  }
+
   func testNewMaxConsultationWaitsForBackendAndRefusesDuplicateRequests() async {
     var settings = CsSettings.sample
     settings.aiFormattingEnabled = true

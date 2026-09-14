@@ -444,7 +444,7 @@ private struct QueuedTurnRow: View {
   }
 }
 
-private struct ToolApprovalCard: View {
+struct ToolApprovalCard: View {
   let request: PendingToolApproval
   let reject: () -> Void
   let allowOnce: () -> Void

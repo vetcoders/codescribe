@@ -959,6 +959,9 @@ final class SettingsViewModel: ObservableObject {
   @Published private(set) var settings: CsSettings
   @Published private(set) var newMaxConsultationPending = false
   @Published private(set) var maxConsultationNotice: String?
+  @Published private(set) var maxToolApprovals: [PendingToolApproval] = []
+  @Published private(set) var maxApprovalBusy = false
+  @Published private(set) var maxApprovalError: String?
   @Published private(set) var keyStatus: CsKeyStatus
   @Published private(set) var providers: [CsProviderOption]
   /// Speech-to-text lanes (File, Live): atomic endpoint + key rows on Providers.
@@ -1689,6 +1692,37 @@ final class SettingsViewModel: ObservableObject {
   var maxConsultationEnabled: Bool {
     settings.aiFormattingEnabled
       && FormattingPolicyOption(storedValue: settings.formattingLevel) == .max
+  }
+
+  func refreshMaxToolApprovals() async {
+    guard let engine, !maxApprovalBusy else { return }
+    maxApprovalBusy = true
+    defer { maxApprovalBusy = false }
+    do {
+      maxToolApprovals = try await engine.pendingMaxToolApprovals()
+      maxApprovalError = nil
+    } catch {
+      maxApprovalError = error.localizedDescription
+    }
+  }
+
+  func resolveMaxToolApproval(
+    _ request: PendingToolApproval, approved: Bool, remember: Bool = false
+  ) async {
+    guard let engine, !maxApprovalBusy, maxApprovalError == nil,
+      maxToolApprovals.contains(request)
+    else { return }
+    maxApprovalBusy = true
+    defer { maxApprovalBusy = false }
+    do {
+      let resolved = try await engine.resolveMaxToolApproval(
+        request, approved: approved, remember: remember
+      )
+      maxApprovalError = resolved ? nil : "This permission request is no longer active."
+      maxToolApprovals = try await engine.pendingMaxToolApprovals()
+    } catch {
+      maxApprovalError = error.localizedDescription
+    }
   }
 
   func beginNewMaxConsultation() async {
