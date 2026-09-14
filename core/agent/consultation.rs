@@ -156,6 +156,33 @@ impl ConsultationInputQueue {
         )
     }
 
+    /// Advance past measured silence only. Unknown audio, observed speech and
+    /// ledger occurrences all retain the front, even when no label exists.
+    /// This does not acknowledge an Agent turn or invent a seal.
+    pub fn skip_measured_silence(
+        &mut self,
+        ledger: &crate::pipeline::acoustic_ledger::AcousticLedger,
+        speech: &crate::audio::capture_receipt::AcousticSpeechEvidence,
+    ) -> bool {
+        let Some(end) = self.boundaries.front().copied() else { return false; };
+        let coverage = ledger.assess_seal_coverage(&self.session_id, self.capture_epoch, speech, 0);
+        if coverage.status.unavailable_reason().is_some()
+            || !coverage.observed_samples.is_some_and(|observed| observed >= end)
+            || speech.ranges().iter().any(|range|
+                range.sample_start < end && self.accepted_end < range.sample_end)
+            || ledger.qualified_occurrences().chain(ledger.occurrences()).any(|occurrence|
+                occurrence.session == self.session_id
+                    && occurrence.capture_epoch == self.capture_epoch
+                    && occurrence.sample_start < end
+                    && self.accepted_end < occurrence.sample_end)
+        {
+            return false;
+        }
+        self.accepted_end = end;
+        self.boundaries.pop_front();
+        true
+    }
+
     /// A semantic decision may join adjacent candidates, but cannot remove
     /// speech or merge their acoustic occurrences. Existing input snapshots
     /// cease to match the front and therefore cannot acknowledge this group.
@@ -572,6 +599,63 @@ mod tests {
         full.join_front().unwrap();
         assert!(full.append_boundary(17).unwrap(), "refused boundary remains retryable");
         assert_eq!(full.pending_groups(), 16);
+    }
+
+    #[test]
+    fn input_queue_skips_only_measured_empty_intervals() {
+        use crate::audio::capture_receipt::{AcousticAvailability, AcousticSpeechEvidence, CaptureEvidenceIdentity};
+        use crate::pipeline::acoustic_ledger::AcousticLedger;
+        use crate::stt::tail_provider::TailSampleRange;
+        let ledger = AcousticLedger::new();
+        let mut queue = ConsultationInputQueue::new("capture".into(), 1).unwrap();
+        queue.append_boundary(16_000).unwrap();
+        queue.append_boundary(32_000).unwrap();
+        for availability in [
+            AcousticAvailability::NotObserved,
+            AcousticAvailability::IdentityMismatch,
+            AcousticAvailability::Discontinuous { observed_samples: 32_000 },
+            AcousticAvailability::InvalidMeasurement { valid_samples: 32_000 },
+        ] {
+            let absent = AcousticSpeechEvidence::unavailable(
+                CaptureEvidenceIdentity::new("capture", 1), "synthetic", availability,
+            );
+            assert!(!queue.skip_measured_silence(&ledger, &absent));
+            assert_eq!(queue.pending_groups(), 2);
+        }
+        for (session, epoch, extent) in [("foreign", 1, 32_000), ("capture", 2, 32_000), ("capture", 1, 15_999)] {
+            let invalid = AcousticSpeechEvidence::measured(
+                CaptureEvidenceIdentity::new(session, epoch), "synthetic",
+                AcousticAvailability::Observed { observed_samples: extent }, vec![],
+            );
+            assert!(!queue.skip_measured_silence(&ledger, &invalid));
+            assert_eq!(queue.pending_groups(), 2);
+        }
+        assert!(!queue.skip_measured_silence(&ledger, &consultation_speech_evidence(32_000)),
+            "speech without ledger labels is not silence");
+        let measured = AcousticSpeechEvidence::measured(
+            CaptureEvidenceIdentity::new("capture", 1), "synthetic",
+            AcousticAvailability::Observed { observed_samples: 80_000 }, vec![],
+        );
+        assert!(!queue.skip_measured_silence(&repeated_word_ledger(true), &measured),
+            "ledger speech cannot be erased by an observer's empty range list");
+        let later_speech = AcousticSpeechEvidence::measured(
+            CaptureEvidenceIdentity::new("capture", 1), "synthetic",
+            AcousticAvailability::Observed { observed_samples: 32_000 },
+            vec![TailSampleRange { session: "capture".into(), capture_epoch: 1,
+                sample_start: 16_000, sample_end: 32_000 }],
+        );
+        assert!(queue.skip_measured_silence(&ledger, &later_speech));
+        assert_eq!(queue.pending_groups(), 1);
+        assert!(!queue.skip_measured_silence(&ledger, &later_speech));
+        assert_eq!(queue.pending_groups(), 1, "following speech must stay pending");
+
+        let mut silent = ConsultationInputQueue::new("capture".into(), 1).unwrap();
+        silent.append_boundary(16_000).unwrap();
+        assert!(silent.skip_measured_silence(&ledger, &measured));
+        assert_eq!(silent.pending_groups(), 0);
+        assert!(!silent.skip_measured_silence(&ledger, &measured));
+        assert!(!silent.append_boundary(16_000).unwrap(), "a repeated boundary cannot reopen consumed silence");
+        assert_eq!(ledger.len(), 0, "silence advancement must not fabricate a ledger occurrence");
     }
 
     struct ObservedProvider {
