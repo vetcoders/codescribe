@@ -1435,3 +1435,28 @@ Only after signature, version and launch verification was the success ping
 played. This proves local install/start, not real-provider conversation,
 microphone correctness, lexical accuracy or Dragon parity. Those acceptance
 obligations remain open.
+
+### Live-provider acceptance instrument — 2026-09-14
+
+The feature branch was pushed normally to origin at
+`c6a22f02bd4f9ea358170ebe31429e4f85bcb48d`; read-back matched, and all pre-push
+hooks passed (`39-feature-push.log`). No PR was opened. No Actions run existed
+for this SHA; the Rust/Semgrep push filters select main/develop.
+
+An initial ignored integration-test attempt could not acquire credentials:
+the production Keychain guard deliberately refuses test-harness executables
+(`40-live-max-two-turn.log`). No provider request or two-turn success followed.
+That uncommitted test was removed without changing the guard. The replacement
+is the explicit `examples/live_max_consultation.rs` diagnostic, described in
+`examples/README.md`. It uses copied settings and isolated history, production
+provider/Max/history owners, no executable tools, and two neutral turns.
+Its no-argument path exits 2 before host acquisition (`43-live-max-no-opt-in.log`),
+and scoped Clippy passed (`44-live-max-clippy.log`).
+
+The live invocation (`41-live-max-example.log`) compiled and started but is
+waiting for normal Keychain access, before the provider identity/request log.
+A sample of PID 93415 (`42-live-max-sample.txt`) traces the wait through
+Config loading, keychain load_bundle and SecItemCopyMatching. System permission
+has not been granted by the agent. This is an external permission boundary,
+not a successful live conversation or a proven provider failure. The installed
+app was not modified by this diagnostic; live acceptance remains open.
