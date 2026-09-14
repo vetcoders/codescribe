@@ -664,6 +664,41 @@ Codescribe** in Finder's Quick Actions menu. It uses the installed CLI with
 clipboard. Existing output files are preserved and reported as failures.
 Failed decodes leave no partial `.txt`, and other selected files continue.
 
+## Native chat receiver acknowledgment
+
+For a provider/session-scoped `scripts/bus-demux.py` reader, stdout is transport,
+not acknowledgment. Original addressed envelopes are stored in order in the
+existing lease's `pending` array before emission or advancement of the bus
+cursor. Restart replays unacknowledged envelopes with unchanged delivery IDs,
+text and draft/seal permissions. An unscoped diagnostic reader has no mailbox.
+
+After the receiving conversation durably accepts an envelope, acknowledge it
+using the same helper generation, bus, bridge home, provider and session:
+
+```sh
+python3 scripts/bus-demux.py --provider codex --session SESSION_ID --ack DELIVERY_ID
+```
+
+Pass `--bus` and `--bridge-home` as well when the reader used explicit overrides.
+The acknowledgment command does not attach a second follower. It refuses
+unknown delivery IDs and mismatched sessions/buses. Repeating a valid receipt
+is harmless. Receipt files under `acknowledgments/<lease_id>/` contain only
+lease and delivery IDs; they prevent a later projection of an acknowledged
+delivery from reentering the mailbox. The follower clears acknowledged pending
+text on its next loop or reattachment. Lease directories are private and files
+are mode 0600; unacknowledged transcript text persists across process exits.
+
+Pending storage is capped at 256 envelopes or 8 MiB of serialized envelope
+content. At capacity, the reader exits 4 without advancing past the undelivered
+event. Acknowledge received items, then resume the same lease. Do not delete
+recovery files or create a new provider session to clear this condition.
+
+An acknowledgment proves receipt, not execution of an external side effect.
+The conversation must retain delivery identity for its own execution discipline.
+These mechanics do not supply provider wakeup, and upgrading the source helper
+does not upgrade an already running follower. A generation without acknowledgment
+support must not be reported as using this protocol.
+
 ## C11 evidence boundary
 
 `484095ce` was the last executable-code cut before documentation successor

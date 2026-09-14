@@ -122,7 +122,7 @@ PY
 
 # A provider-scoped follower emits an attach receipt and all addressed live
 # envelopes, then persists the byte cursor. Reattachment consumes only lines
-# written after that cursor: no old command replay, no recovery gap.
+# written after that cursor, plus unacknowledged deliveries in original order.
 BRIDGE_HOME="$WORKDIR/agent-bridge"
 : >"$BUS"
 seal "James, szkic pierwszy." utterance_draft 10
@@ -145,6 +145,26 @@ assert lease_ids == {attach["lease_id"]}, rows
 assert rows[1]["state_change_allowed"] is False, rows[1]
 assert rows[2]["state_change_allowed"] is False, rows[2]
 assert rows[3]["state_change_allowed"] is True, rows[3]
+PY
+
+# Pipe delivery without acknowledgment must survive process restart unchanged.
+python3 "$DEMUX" --bus "$BUS" --bridge-home "$BRIDGE_HOME" \
+  --provider codex --session codex-session-a --name james \
+  --drafts --from-start >"$WORKDIR/unacknowledged.jsonl"
+python3 - "$DEMUX" "$BUS" "$BRIDGE_HOME" "$first" "$WORKDIR/unacknowledged.jsonl" <<'PY'
+import json, subprocess, sys
+demux, bus, root, first_path, replay_path = sys.argv[1:]
+first = [json.loads(line) for line in open(first_path)][1:]
+replayed = [json.loads(line) for line in open(replay_path)][1:]
+assert replayed == first, (first, replayed)
+for row in first:
+    args = ['python3', demux, '--bus', bus, '--bridge-home', root,
+            '--provider', 'codex', '--session', 'codex-session-a', '--ack', row['delivery_id']]
+    wrong = args.copy()
+    wrong[wrong.index('--session') + 1] = 'another-session'
+    assert subprocess.run(wrong, capture_output=True).returncode != 0
+    subprocess.run(args, capture_output=True, check=True)
+    subprocess.run(args, capture_output=True, check=True)  # repeat receipt is harmless
 PY
 
 seal "James, komenda po recovery." transcript_sealed 13
@@ -671,6 +691,53 @@ cli_live = write(
     ],
 )
 assert module.installation_idle(cli_live) is False
+PY
+
+# Acknowledgment works while the sole follower owns its lock. Capacity refusal
+# retains pending deliveries and leaves the next event unread for recovery.
+python3 - "$DEMUX" "$WORKDIR" <<'PY'
+import json, subprocess, sys, time
+from pathlib import Path
+demux, directory = sys.argv[1:]
+root = Path(directory) / 'ack-process'
+root.mkdir()
+bus = root / 'bus.jsonl'
+events = [dict(schema='codescribe.transcript.v1', sequence=i,
+               session_id='ack-process', utterance_id=str(i),
+               status='transcript_sealed', text='Roman, test fixture.')
+          for i in range(257)]
+bus.write_text(''.join(json.dumps(row)+'\n' for row in events))
+base = ['python3', demux, '--bus', str(bus), '--bridge-home', str(root),
+        '--provider', 'test', '--session', 'capacity', '--name', 'Roman']
+full = subprocess.run(base+['--from-start'], capture_output=True, text=True)
+assert full.returncode == 4, full.stderr
+state_path = next((root/'leases').glob('*.json'))
+state = json.loads(state_path.read_text())
+assert len(state['pending']) == 256 and state['cursor'] < bus.stat().st_size
+ack = base[:base.index('--name')]
+for payload in state['pending']:
+    subprocess.run(ack+['--ack', payload['delivery_id']], capture_output=True, check=True)
+recovered = subprocess.run(base+['--from-start'], capture_output=True, text=True, check=True)
+rows = [json.loads(line) for line in recovered.stdout.splitlines()]
+assert [row['sequence'] for row in rows[1:]] == [256], rows
+
+follower = subprocess.Popen(base+['--follow'], stdout=subprocess.DEVNULL, stderr=subprocess.PIPE)
+try:
+    deadline = time.monotonic()+5
+    while True:
+        state = json.loads(state_path.read_text())
+        if state['active'] and state['pid'] == follower.pid:
+            break
+        assert follower.poll() is None and time.monotonic() < deadline
+        time.sleep(.02)
+    subprocess.run(ack+['--ack', state['pending'][0]['delivery_id']],
+                   capture_output=True, check=True)
+    while json.loads(state_path.read_text())['pending']:
+        assert follower.poll() is None and time.monotonic() < deadline
+        time.sleep(.02)
+finally:
+    follower.terminate()
+    follower.communicate(timeout=5)
 PY
 
 echo "bus-demux: ok"

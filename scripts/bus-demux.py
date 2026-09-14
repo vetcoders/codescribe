@@ -577,6 +577,11 @@ def atomic_json(path: Path, payload: dict[str, Any]) -> None:
             os.fsync(handle.fileno())
         os.replace(temporary, path)
         path.chmod(0o600)
+        directory = os.open(path.parent, os.O_RDONLY)
+        try:
+            os.fsync(directory)
+        finally:
+            os.close(directory)
     finally:
         try:
             temporary.unlink()
@@ -685,6 +690,7 @@ class SessionLease:
             self.resumed = False
             self.cursor = 0
             self.last_sequence: Any = None
+            self.pending: dict[str, dict[str, Any]] = {}
             if previous and self._matches(previous):
                 heartbeat = previous.get("heartbeat_unix")
                 fresh = (
@@ -711,6 +717,20 @@ class SessionLease:
                 self.cursor = saved_cursor
                 self.last_sequence = previous.get("last_sequence")
                 self.name = previous.get("name") or self.name
+                pending = previous.get("pending", [])
+                if not isinstance(pending, list) or any(
+                    not isinstance(payload, dict)
+                    or not isinstance(payload.get("delivery_id"), str)
+                    or payload.get("lease_id") != self.lease_id
+                    or payload.get("provider") != self.provider
+                    or payload.get("provider_session_id") != self.provider_session_id
+                    or not re.fullmatch(r"[0-9a-f]{24}", payload["delivery_id"])
+                    for payload in pending
+                ):
+                    raise ValueError("invalid pending deliveries; recovery state preserved")
+                self.pending = {payload["delivery_id"]: payload for payload in pending}
+                if len(self.pending) != len(pending):
+                    raise ValueError("duplicate pending identities; recovery state preserved")
                 self.resumed = True
             elif follow_from_end:
                 try:
@@ -774,12 +794,44 @@ class SessionLease:
                 "bus": self.bus,
                 "cursor": self.cursor,
                 "last_sequence": self.last_sequence,
+                "pending": list(self.pending.values()),
                 "active": active,
                 "pid": os.getpid(),
                 "heartbeat_unix": time.time(),
                 "updated_at": utc_now(),
             },
         )
+
+    def queue_delivery(self, payload: dict[str, Any]) -> bool:
+        delivery_id = payload["delivery_id"]
+        if delivery_acknowledged(self.root, self.lease_id, delivery_id):
+            return False
+        if delivery_id in self.pending:
+            return False
+        pending_bytes = sum(
+            len(json.dumps(item, ensure_ascii=False).encode("utf-8"))
+            for item in self.pending.values()
+        )
+        if len(self.pending) >= 256 or pending_bytes + len(
+            json.dumps(payload, ensure_ascii=False).encode("utf-8")
+        ) > 8 * 1024 * 1024:
+            raise BufferError(
+                "pending mailbox is full; acknowledge received deliveries and resume "
+                "this same lease; the unread bus cursor is preserved"
+            )
+        self.pending[delivery_id] = payload
+        self.persist(active=True)
+        return True
+
+    def collect_acknowledgments(self) -> None:
+        completed = [
+            delivery_id for delivery_id in self.pending
+            if delivery_acknowledged(self.root, self.lease_id, delivery_id)
+        ]
+        if completed:
+            for delivery_id in completed:
+                del self.pending[delivery_id]
+            self.persist(active=True)
 
     def bind_name(self, name: str) -> None:
         self.name = name.casefold()
@@ -845,6 +897,41 @@ class SessionLease:
             self.persist(active=False)
         finally:
             self._release_lock()
+
+
+def delivery_acknowledged(root: Path, lease_id: str, delivery_id: str) -> bool:
+    receipt = read_json(root / "acknowledgments" / lease_id / f"{delivery_id}.json")
+    return receipt == {"lease_id": lease_id, "delivery_id": delivery_id}
+
+
+def acknowledge_delivery(args: argparse.Namespace) -> int:
+    delivery_id = args.ack
+    if not re.fullmatch(r"[0-9a-f]{24}", delivery_id):
+        raise ValueError("invalid delivery id")
+    lease_id = lease_identifier(args.provider, args.session)
+    state = read_json(args.bridge_home / "leases" / f"{lease_id}.json")
+    if (
+        not state
+        or state.get("schema") != LEASE_SCHEMA
+        or state.get("lease_id") != lease_id
+        or state.get("provider") != args.provider.casefold()
+        or state.get("provider_session_id") != args.session
+        or state.get("bus") != str(args.bus.expanduser().resolve(strict=False))
+    ):
+        raise ValueError("acknowledgment does not belong to this provider session and bus")
+    if not delivery_acknowledged(args.bridge_home, lease_id, delivery_id):
+        pending = state.get("pending", [])
+        if not isinstance(pending, list) or not any(
+            isinstance(payload, dict) and payload.get("delivery_id") == delivery_id
+            for payload in pending
+        ):
+            raise ValueError("delivery is not pending for this provider session")
+        atomic_json(
+            args.bridge_home / "acknowledgments" / lease_id / f"{delivery_id}.json",
+            {"lease_id": lease_id, "delivery_id": delivery_id},
+        )
+    emit({"kind": "acknowledged", "lease_id": lease_id, "delivery_id": delivery_id})
+    return 0
 
 
 def run(args: argparse.Namespace) -> int:
@@ -914,10 +1001,10 @@ def run(args: argparse.Namespace) -> int:
             sys.stderr.write(f"bus-demux: bound name={name}\n")
         if lease:
             lease.enrich(payload)
-        emit(payload)
-        # At-least-once delivery: advance the durable cursor only after stdout
-        # accepted and flushed the command. A crash or broken pipe may replay a
-        # command, but it can no longer erase one unseen by the provider.
+        if not lease or lease.queue_delivery(payload):
+            emit(payload)
+        # Read progress is independent of receipt. The original envelope is
+        # already durable and remains pending until its owner acknowledges it.
         if lease and next_cursor is not None:
             lease.persist(
                 active=True,
@@ -926,6 +1013,10 @@ def run(args: argparse.Namespace) -> int:
             )
 
     try:
+        if lease:
+            lease.collect_acknowledgments()
+            for payload in lease.pending.values():
+                emit(payload)
         if args.once:
             last = None
             for raw in replay(path):
@@ -945,7 +1036,8 @@ def run(args: argparse.Namespace) -> int:
                 return 1
             if lease:
                 lease.enrich(last)
-            emit(last)
+            if not lease or lease.queue_delivery(last):
+                emit(last)
             return 0
 
         if lease:
@@ -968,6 +1060,8 @@ def run(args: argparse.Namespace) -> int:
         sys.stderr.write("\n")
         last_heartbeat = time.monotonic()
         while True:
+            if lease:
+                lease.collect_acknowledgments()
             previous_offset = offset
             entries, offset = iter_new_lines(path, offset)
             for raw, next_cursor in entries:
@@ -983,6 +1077,9 @@ def run(args: argparse.Namespace) -> int:
             event_trigger.wait(timeout=1.0)
     except KeyboardInterrupt:
         return 130
+    except BufferError as error:
+        sys.stderr.write(f"bus-demux: {error}\n")
+        return 4
     finally:
         if event_trigger:
             event_trigger.close()
@@ -1040,6 +1137,7 @@ def main() -> int:
         "--session", help="stable provider-session id used for cursor recovery"
     )
     parser.add_argument("--lease", help="reattach to an explicit lease id")
+    parser.add_argument("--ack", help="acknowledge a delivery for --provider/--session")
     parser.add_argument(
         "--bridge-home", type=Path, default=None, help="override lease/receipt root"
     )
@@ -1071,6 +1169,14 @@ def main() -> int:
         parser.error("--provider and --session must be supplied together")
     if args.lease and not args.provider:
         parser.error("--lease requires --provider and --session")
+    if args.ack:
+        if not args.provider or args.follow or args.once or args.from_start:
+            parser.error("--ack requires --provider/--session and no read mode")
+        try:
+            return acknowledge_delivery(args)
+        except (OSError, ValueError) as error:
+            sys.stderr.write(f"bus-demux: acknowledgment refused: {error}\n")
+            return 3
     if args.lease_ttl <= 0:
         parser.error("--lease-ttl must be positive")
     if args.active_names:
