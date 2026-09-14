@@ -817,3 +817,17 @@ incomplete/failed/conflicting/oversized replies and attempted tool output.
 Cross-component tests must still prove empty tool definitions on the actual
 request, unchanged consultation history, stale-candidate rejection, no execution
 before durable queue admission, and completion while newer speech continues.
+
+At 8acba923c source follow-up traced both provider request builders: tools come
+only from the supplied definitions, with no hosted-search injection in these
+builders. The local Responses HTTP fixture now includes assessment between two
+durable consultation turns. It matches the formatting model, assessment prompt,
+single exact transcript input, absent tools and absent previous_response_id,
+then checks the assessed source identity and empty pending/retained queue.
+The next executed group must still report four history messages, preserving
+the distinction between classification and conversational execution. This new
+HTTP case is authored but unexecuted under W1. It does not prove Anthropic or
+account-auth endpoint behavior, live candidate invalidation, lexical correctness
+or bounded resource use. Codex account routing intentionally omits the requested
+output-token cap in the existing client; the 15-second assessment timeout and
+parser byte cap remain, but no 64-token server limit is claimed on that route.

@@ -57,6 +57,10 @@ async fn selected_agent_lane_roundtrip(lane: codescribe_core::config::RuntimeLlm
             Matcher::Regex("fixture-model".to_string()),
             Matcher::Regex("Reply with the single word: pong".to_string()),
         ]))
+        .match_request(|request| {
+            let body: serde_json::Value = serde_json::from_slice(request.body().unwrap()).unwrap();
+            !body["instructions"].as_str().unwrap_or("").starts_with("Classify whether")
+        })
         .with_status(200)
         .with_header("content-type", "text/event-stream")
         .with_body(response_body)
@@ -177,6 +181,55 @@ async fn selected_agent_lane_roundtrip(lane: codescribe_core::config::RuntimeLlm
                 sample_start: 0, sample_end: 32_000 }]);
         let input = SealedConsultationInput::from_ledger(&ledger.lock().unwrap(), "http-capture", 1,
             0..32_000, &speech).unwrap().unwrap();
+
+        // Assess through the same concrete HTTP provider, without admitting
+        // an execution turn. The following group still becomes history turn 2.
+        let assessment_response = [
+            "data: {\"type\":\"response.output_text.delta\",\"delta\":\"COMPLETE\"}",
+            "",
+            "data: {\"type\":\"response.output_text.done\",\"text\":\"COMPLETE\"}",
+            "",
+            "data: {\"type\":\"response.completed\",\"response\":{\"id\":\"assessment\",\"status\":\"completed\"}}",
+            "",
+            "data: [DONE]",
+            "",
+        ].join("\n");
+        let expected_text = input.text().to_string();
+        let assessment_mock = server.mock("POST", "/v1/responses")
+            .match_header("authorization", Matcher::Missing)
+            .match_request(move |request| {
+                let body: serde_json::Value = serde_json::from_slice(request.body().unwrap()).unwrap();
+                body["model"] == "fixture-model"
+                    && body["instructions"].as_str().unwrap_or("").starts_with("Classify whether")
+                    && body.get("tools").is_none()
+                    && body.get("previous_response_id").is_none()
+                    && body["max_output_tokens"] == 64
+                    && body["input"].as_array().is_some_and(|messages| {
+                        messages.len() == 1
+                            && messages[0]["content"][0]["text"].as_str().is_some_and(|text| {
+                                serde_json::from_str::<serde_json::Value>(text)
+                                    .is_ok_and(|input| input["transcript"] == expected_text)
+                            })
+                    })
+            })
+            .with_status(200)
+            .with_header("content-type", "text/event-stream")
+            .with_body(assessment_response)
+            .expect(1)
+            .create_async().await;
+        match consultation.assess_group(input.clone(), &runtime_settings).await.unwrap() {
+            codescribe_core::agent::consultation::ConsultationReadiness::Complete(assessed) => {
+                assert_eq!(assessed, input);
+            }
+            codescribe_core::agent::consultation::ConsultationReadiness::Continue(_) => {
+                panic!("clean COMPLETE fixture must retain the assessed input");
+            }
+        }
+        assessment_mock.assert_async().await;
+        let inspection = ThreadDeliveryGateway::new_in(data_dir.path().join("threads")).unwrap()
+            .inspect_consultation(consultation.id()).unwrap().unwrap();
+        assert!(inspection.pending_turn_id.is_none());
+        assert!(inspection.retained_inputs.is_empty());
         let pending = consultation.enqueue_group(input.clone(), &runtime_settings).unwrap();
         // The destination advances before applying the answer. Its open suffix
         // is not part of the Agent request and must remain untouched.
