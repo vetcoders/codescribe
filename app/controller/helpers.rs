@@ -486,7 +486,10 @@ fn initialize_agent_runtime(
     );
     registry.enable_policy_hot_reload();
 
-    let provider = crate::agent::create_default_provider(runtime_settings.as_ref())
+    let provider = crate::agent::create_provider_for_lane(
+        runtime_settings.as_ref(),
+        codescribe_core::config::RuntimeLlmLaneKind::Assistive,
+    )
         .context("Failed to create default agent provider")?;
     let (ui_tx, ui_rx) = mpsc::channel(AGENT_UI_CHANNEL_CAPACITY);
     let session = AgentSession::new(provider, Arc::new(registry), ui_tx);

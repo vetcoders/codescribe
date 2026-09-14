@@ -318,7 +318,10 @@ impl CodescribeAgent {
         // generation, and a key saved in Settings reaches the next send.
         let settings = self.current_settings();
         let assistive_lane = settings.llm_lanes().assistive();
-        let provider = codescribe::agent::create_default_provider(settings.as_ref())?;
+        let provider = codescribe::agent::create_provider_for_lane(
+            settings.as_ref(),
+            codescribe_core::config::RuntimeLlmLaneKind::Assistive,
+        )?;
         let mut registry = ToolRegistry::new();
         codescribe::agent::tools::register_all_tools(&mut registry);
         // settings.json agent.permissions + legacy tool_grants (always-allow).
