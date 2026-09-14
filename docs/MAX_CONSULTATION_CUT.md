@@ -65,8 +65,9 @@ take. There is no global original-plus-expanded paste requirement.
    Max behaving differently.
 4. All three currently use the one-shot formatter in
    `core/llm/ai_formatting.rs`. It receives neither consultation identity nor
-   an Agent tool executor. The built-in Max prompt expressly forbids answering
-   instructions and requires 1.5–3x expansion.
+   an Agent tool executor. The baseline Max prompt forbade answering
+   instructions and required 1.5–3x expansion; that prompt is now replaced in
+   this unassembled worktree, not in the installed app.
 5. `core/agent/session.rs::AgentSession` already owns history, provider chaining,
    tool round-trips and permission decisions. Reuse it; do not create another
    model/tool loop.
@@ -173,7 +174,17 @@ tool results and omitted image data cannot silently become user text. Authored
 tests cover those refusals and valid Max history restore; still not executed.
 Image asset existence and tool-call/result pairing need further validation.
 
-Outstanding: host-owned consultation selection/reset; durable
+`app/agent/max_consultation.rs` now constructs the real formatting provider and
+AgentSession using the host-supplied permission-configured registry/approval
+broker. Each admitted turn supplies its sealed model, prompt and provider;
+server-side chains reset while local history remains. There is no cached
+last-enqueued generation that could drift after a duplicate turn is refused.
+The built-in Max prompt now follows instructions, distinguishes command
+preparation from execution, and treats tool outputs as data. The authored local
+HTTP fixture now exercises this host through the queue and durable answer,
+not just its provider factory. It has not run; it uses an empty test registry.
+
+Outstanding: production host-owned consultation selection/reset; durable
 queued-but-not-started instructions; explicit
 reconciliation of unresolved turns (never implicit replay); cancellation and
 install lease; host execution handoff on all three formatting paths; permission

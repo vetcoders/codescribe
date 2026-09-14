@@ -11,6 +11,8 @@ use codescribe_core::llm::provider::WireFamily;
 
 /// Anthropic Messages-family assistive provider client.
 pub mod anthropic_provider;
+/// Formatting-lane host admission for the connected Max consultation.
+pub mod max_consultation;
 /// Resident agent-run monitor (progress, cancel, status surfaces).
 pub mod monitor;
 /// OpenAI Responses-family client (also carries xAI and other Responses vendors).

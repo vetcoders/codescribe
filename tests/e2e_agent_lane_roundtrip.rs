@@ -122,6 +122,24 @@ async fn selected_agent_lane_roundtrip(lane: codescribe_core::config::RuntimeLlm
             .as_millis(),
         2_000
     );
+    if lane == codescribe_core::config::RuntimeLlmLaneKind::Formatting {
+        use std::sync::Arc;
+        use codescribe_core::agent::{ThreadDeliveryGateway, ToolRegistry};
+        let mut consultation = codescribe::agent::max_consultation::MaxConsultation::start(
+            "max-http-fixture".into(), &runtime_settings,
+            Arc::new(ToolRegistry::new()), None,
+            ThreadDeliveryGateway::new_in(data_dir.path().join("threads")).expect("gateway"),
+            Arc::new(|_, _, _| {}),
+        ).expect("Max host starts");
+        let result = consultation.enqueue("first".into(), "Reply with the single word: pong".into(),
+            Vec::new(), &runtime_settings).expect("admitted")
+            .await.expect("owner response").expect("durable Max answer");
+        assert_eq!(result.text, "pong");
+        assert_eq!(result.delivery.message_count, 2);
+        assert_eq!(result.delivery.backend_id, consultation.id());
+        mock.assert_async().await;
+        return;
+    }
     let provider = create_provider_for_lane(&runtime_settings, lane)
         .expect("selected lane must be available (see the reported reason)");
 
