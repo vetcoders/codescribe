@@ -138,9 +138,25 @@ therefore introduce explicit turn admission before Max execution, not merely
 replace the function inside each existing job with an Agent call. Occurrence
 identity remains acoustic; consultation identity must not be inferred from it.
 
-Outstanding: consultation ownership and reset, serialized turn admission,
-durable pending/completed/failed state, host execution handoff on all three
-formatting paths, permission UI and live presentation/delivery wiring.
+The next structural step introduces `core/agent/consultation.rs`: one retained
+FIFO owner drives the existing AgentSession and drains its bounded UI channel.
+Dropping a reply receiver does not abort accepted work. Duplicate turn ids are
+refused in-process; a failed turn stops further execution pending recovery.
+Completed history goes through ThreadDeliveryGateway with an explicit
+MaxConsultation origin, and Done is emitted only after that receipt. Provider
+replacement happens in queue order. Non-Max admission is rejected.
+
+Authored (not executed) tests cover two queued turns with history, dropping the
+first reply receiver, completed history in the canonical store, duplicate-id
+refusal, failed-turn blocking and Off/Correction/Smart exclusion. These use a
+synthetic provider, not real clipboard or tool execution.
+
+Outstanding: host-owned consultation selection/reset and strict history restore,
+durable admission/pending/failed records and cross-restart replay protection,
+explicit cancellation and install lease, host execution handoff on all three
+formatting paths, permission UI and live presentation/delivery wiring. The new
+owner is not connected to production. Its in-memory failure/duplicate state is
+not crash recovery; completed-thread persistence alone does not close that gap.
 
 Both checkpoints are structural W1 work. Checkpoint hooks are bypassed in full:
 trailing-whitespace, end-of-file-fixer, check-merge-conflict, mixed-line-ending,

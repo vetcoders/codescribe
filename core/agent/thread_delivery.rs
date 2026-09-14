@@ -25,6 +25,8 @@ pub enum ThreadDeliverySource {
     VoiceAssistive,
     /// Typed turn sent from the chat composer.
     Composer,
+    /// A connected instruction-following Max formatting consultation.
+    MaxConsultation,
     /// Pre-gateway send path still routed here so nothing bypasses persistence.
     LegacyFallback,
     /// Resident run-monitor heartbeat re-entering an existing thread.
@@ -40,6 +42,7 @@ impl ThreadDeliverySource {
         match self {
             Self::VoiceAssistive => "voice-assistive",
             Self::Composer => "composer",
+            Self::MaxConsultation => "max-consultation",
             Self::LegacyFallback => "legacy-fallback",
             Self::Monitor => "run-monitor",
         }

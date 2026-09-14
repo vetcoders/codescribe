@@ -15,6 +15,8 @@
 pub mod assets;
 /// Provider-neutral capability broker for canonical ops (`fs.read`, `repo.status`).
 pub mod capabilities;
+/// Serialized Max consultation ownership over the existing Agent session.
+pub mod consultation;
 /// Streaming events: provider-level [`AgentEvent`] and UI-level [`AgentUiEvent`].
 pub mod event;
 /// Tool permission policy — the allow / ask / deny gateway.
