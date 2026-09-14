@@ -499,6 +499,28 @@ try:
     replay = module.slim(first, "lumen")
     lumen.enrich(replay)
     assert replay["delivery_id"] == lumen_payload["delivery_id"]
+    # Restart between terminal projection rows loses the in-memory coalescer,
+    # but must not manufacture a different command delivery identity.
+    restarted_seal = module.EvidenceNormalizer().normalize(
+        evidence(104, 3, module.TERMINAL_SEAL, 110)
+    )
+    seal_delivery = module.slim(seal_a, "lumen")
+    restarted_delivery = module.slim(restarted_seal, "lumen")
+    lumen.enrich(seal_delivery)
+    lumen.enrich(restarted_delivery)
+    assert seal_delivery["source_event_id"] != restarted_delivery["source_event_id"]
+    assert seal_delivery["delivery_id"] == restarted_delivery["delivery_id"]
+    next_seal = module.EvidenceNormalizer().normalize(
+        evidence(105, 4, module.TERMINAL_SEAL, 110)
+    )
+    next_delivery = module.slim(next_seal, "lumen")
+    lumen.enrich(next_delivery)
+    assert next_delivery["delivery_id"] != seal_delivery["delivery_id"]
+    assigned_delivery = module.slim(seal_a, "lumen", kind="name_assignment")
+    assigned_replay = module.slim(restarted_seal, "lumen", kind="name_assignment")
+    lumen.enrich(assigned_delivery)
+    lumen.enrich(assigned_replay)
+    assert assigned_delivery["delivery_id"] == assigned_replay["delivery_id"]
 finally:
     kimi.close()
     lumen.close()

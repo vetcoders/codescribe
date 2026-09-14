@@ -787,11 +787,22 @@ class SessionLease:
             "provider": self.provider,
             "provider_session_id": self.provider_session_id,
         }
+        # Terminal evidence projects once per document entry. After restart,
+        # a later row is the same delivery phase, not another command. Keep
+        # source_event_id intact for provenance while keying that delivery by
+        # the same reducer phase used by EvidenceNormalizer.
+        phase_id = payload.get("source_event_id")
+        if (
+            payload.get("producer_schema") == EVIDENCE_SCHEMA
+            and payload.get("reducer_action") == TERMINAL_SEAL
+            and payload.get("status") == SEALED
+        ):
+            phase_id = terminal_seal_identity(payload)
         payload["delivery_id"] = _identity(
             (
                 "native_bus_demux",
                 self.lease_id,
-                payload.get("source_event_id"),
+                phase_id,
                 payload.get("kind"),
                 payload.get("audience"),
             )
