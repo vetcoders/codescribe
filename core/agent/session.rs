@@ -163,6 +163,19 @@ impl AgentSession {
         &self.messages
     }
 
+    /// Change the sealed provider between turns without creating a new
+    /// consultation. History, tool receipts, approvals and local identity stay
+    /// on this session; response ids cannot cross provider/model boundaries.
+    /// The caller admits the new settings lane before constructing `provider`.
+    /// Exclusive access prevents a switch while `send` owns an active turn.
+    pub async fn replace_provider(&mut self, provider: Box<dyn AgentProvider>) {
+        // Clear the incoming client's chain before publishing it. If this await
+        // is cancelled, the current session and its provider remain untouched.
+        provider.restore_response_chain(None).await;
+        self.provider = provider;
+        self.thread_id = None;
+    }
+
     /// Seed the session with rehydrated history (thread reopen).
     ///
     /// Large tool outputs are spilled back to the store instead of being
@@ -1012,6 +1025,8 @@ mod tests {
     /// Test provider that dequeues a pre-scripted event batch per `stream` call.
     struct ScriptedProvider {
         scripted_events: Mutex<VecDeque<Vec<AgentEvent>>>,
+        received_messages: Arc<Mutex<Vec<Vec<Message>>>>,
+        response_chain: Mutex<Option<String>>,
     }
 
     impl ScriptedProvider {
@@ -1019,6 +1034,8 @@ mod tests {
         fn new(scripted_events: Vec<Vec<AgentEvent>>) -> Self {
             Self {
                 scripted_events: Mutex::new(scripted_events.into()),
+                received_messages: Arc::new(Mutex::new(Vec::new())),
+                response_chain: Mutex::new(None),
             }
         }
     }
@@ -1028,10 +1045,11 @@ mod tests {
         /// Pop the next scripted batch; empty queue yields an empty stream.
         async fn stream(
             &self,
-            _messages: &[Message],
+            messages: &[Message],
             _tools: &[ToolDefinition],
             _options: &StreamOptions,
         ) -> anyhow::Result<mpsc::Receiver<AgentEvent>> {
+            self.received_messages.lock().expect("messages lock").push(messages.to_vec());
             let events = self
                 .scripted_events
                 .lock()
@@ -1046,6 +1064,14 @@ mod tests {
                     .expect("test stream channel should accept scripted event");
             }
             Ok(rx)
+        }
+
+        async fn response_chain_id(&self) -> Option<String> {
+            self.response_chain.lock().expect("chain lock").clone()
+        }
+
+        async fn restore_response_chain(&self, id: Option<String>) {
+            *self.response_chain.lock().expect("chain lock") = id;
         }
 
         /// Wrap tool output as a user tool-result message (trait stub).
@@ -1247,6 +1273,54 @@ mod tests {
 
         assert_eq!(session.messages(), restored.as_slice());
         assert_eq!(session.thread_id(), None);
+    }
+
+    /// A settings switch keeps the consultation and sends its history to the
+    /// new provider without carrying either client's server-side response id.
+    #[tokio::test]
+    async fn provider_change_retains_consultation_and_replays_history() {
+        let (ui_tx, _ui_rx) = mpsc::channel(32);
+        let tools = Arc::new(ToolRegistry::new());
+        let approval: super::ToolApprovalHandler = Arc::new(|_| Box::pin(async { false }));
+        let mut session = AgentSession::new(
+            Box::new(ScriptedProvider::new(Vec::new())),
+            Arc::clone(&tools),
+            ui_tx,
+        ).with_tool_approval("max-consultation-a", Arc::clone(&approval));
+        let history = vec![
+            Message::new(Role::User, vec![ContentBlock::Text("Prepare git add, do not execute it.".into())]),
+            Message::new(Role::Assistant, vec![ContentBlock::Text("git add -- 'one.rs'".into())]),
+        ];
+        session.restore_messages(history.clone());
+        session.thread_id = Some("old-provider-response".into());
+        session.provider.restore_response_chain(Some("old-chain".into())).await;
+        let execution_session = session.execution_session_id.clone();
+        let replacement = ScriptedProvider::new(vec![vec![
+            AgentEvent::TextDone("git add -- 'two.rs'".into()),
+            AgentEvent::ResponseDone { response_id: Some("new-response".into()), clean: true },
+        ]]);
+        replacement.restore_response_chain(Some("unrelated-chain".into())).await;
+        let received = Arc::clone(&replacement.received_messages);
+
+        session.replace_provider(Box::new(replacement)).await;
+
+        assert_eq!(session.messages(), history.as_slice());
+        assert_eq!(session.thread_id(), None);
+        assert_eq!(session.snapshot_response_chain().await, None);
+        assert_eq!(session.execution_thread_id, "max-consultation-a");
+        assert_eq!(session.execution_session_id, execution_session);
+        assert!(Arc::ptr_eq(&session.tools, &tools));
+        assert!(Arc::ptr_eq(session.approval_handler.as_ref().expect("approval retained"), &approval));
+
+        let correction = "Use two.rs instead, still only prepare the command.";
+        session.send(correction.into(), Vec::new(), &StreamOptions::default()).await.expect("second turn");
+        let requests = received.lock().expect("messages lock");
+        assert_eq!(requests.len(), 1);
+        assert_eq!(&requests[0][..history.len()], history.as_slice());
+        assert_eq!(requests[0].last().expect("correction").content,
+            vec![ContentBlock::Text(correction.into())]);
+        assert_eq!(session.messages().len(), 4);
+        assert_eq!(session.thread_id(), Some("new-response"));
     }
 
     /// Spilled tool-output references stay as pointers; rehydrate does not rewrite disk.

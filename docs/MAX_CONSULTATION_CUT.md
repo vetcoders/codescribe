@@ -1,6 +1,6 @@
 # Max consultation — implementation contract
 
-Status: structural design, not implemented or verified.
+Status: structural implementation in progress; not assembled or verified.
 Founder request: 2026-09-14, Roman conversation.
 Baseline: b91e9a947941371d0d51ba6cee1e3e68e7331e8c.
 Runtime: isolated Fleet Worktree `cut/roman-max-consultation`.
@@ -73,10 +73,10 @@ take. There is no global original-plus-expanded paste requirement.
 6. `app/controller/helpers.rs::AgentRuntimeState` demonstrates durable thread
    recovery and serialized turns, but its shared slot follows Agent UI thread
    selection. Do not attach Max blindly to that slot.
-7. `app/agent/mod.rs::create_default_provider` explicitly selects the assistive
-   lane. Max must retain the immutable formatting lane's provider/model/auth
-   identity. Concrete provider `from_lane` constructors already accept a sealed
-   lane and request timing.
+7. `app/agent/mod.rs::create_provider_for_lane` now requires an explicit lane
+   and rejects tool-capable formatting outside Max. Existing chat consumers
+   select Assistive. Max must retain the immutable formatting lane's
+   provider/model/auth identity; its execution path is not connected yet.
 8. `app/agent/tools/clipboard.rs` already exposes `read_clipboard` and
    `write_clipboard`. Reuse registration and permission policy; do not use an
    unrelated eager clipboard snapshot as if it were a tool result.
@@ -120,6 +120,32 @@ take. There is no global original-plus-expanded paste requirement.
 - Real installed proof includes a clipboard read and two connected spoken
   turns, with tool receipts and the actual pasted output inspected.
 
-No Max source change, gate result, installation or integration is claimed by
-this document. Structural work follows the compile-embargo contract; executable
-verification requires the appropriate integration phase and exact SHA receipt.
+## Structural checkpoints and remaining assembly
+
+`e07ab4bf88f01429a6295f897093a92d99820f68` adds explicit provider-lane
+admission and authored provider-selection tests. It does not run Max turns.
+
+The next source step adds `AgentSession::replace_provider`: the existing session
+retains messages, local identity, tool registry and approval handler while the
+incoming provider's response chain and session response id are cleared. An
+authored test checks that the next request contains the prior conversation and
+the new correction. It does not prove persistence, clipboard execution or UI
+integration. No production caller uses this operation yet.
+
+The live formatter uses `FuturesOrdered` jobs per occurrence. Ordered completion
+does not prevent concurrent provider requests or tool effects. Assembly must
+therefore introduce explicit turn admission before Max execution, not merely
+replace the function inside each existing job with an Agent call. Occurrence
+identity remains acoustic; consultation identity must not be inferred from it.
+
+Outstanding: consultation ownership and reset, serialized turn admission,
+durable pending/completed/failed state, host execution handoff on all three
+formatting paths, permission UI and live presentation/delivery wiring.
+
+Both checkpoints are structural W1 work. Checkpoint hooks are bypassed in full:
+trailing-whitespace, end-of-file-fixer, check-merge-conflict, mixed-line-ending,
+detect-private-key (security), cargo-check, cargo-fmt, prettier and
+commit-msg-provenance. All remain verification obligations. Only source review
+and `git diff --check` have been performed for this step. No executable gate,
+installation or integration is claimed; those require W2 structural closure
+against the exact assembled SHA first.
