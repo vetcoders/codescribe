@@ -1,6 +1,6 @@
-//! Crash boundary for consultation execution. This stores turn identities only;
-//! messages remain exclusively in ThreadStore. Pending means potentially
-//! executed, never permission to replay after a restart.
+//! Crash boundary for consultation execution. Unfinished input is retained here;
+//! completed conversation history remains exclusively in ThreadStore. Pending
+//! means potentially executed, never permission to replay after a restart.
 
 use std::collections::BTreeSet;
 use std::fs::{self, File, OpenOptions};
@@ -19,6 +19,20 @@ use super::{ThreadStore, canonical_existing_child, validate_thread_id};
 struct AdmissionState {
     completed: BTreeSet<String>,
     pending: Option<String>,
+    #[serde(default)]
+    queued: Vec<QueuedInstruction>,
+}
+
+/// Recovery data, not an executable provider or permission grant. Never load
+/// credentials into this record. Group evidence requires ledger revalidation.
+#[derive(Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub(crate) struct QueuedInstruction {
+    pub turn_id: String,
+    pub input: crate::agent::Message,
+    pub provider_name: String,
+    pub options: serde_json::Value,
+    pub group: Option<serde_json::Value>,
 }
 
 #[derive(Serialize, Deserialize)]
@@ -103,6 +117,7 @@ fn persist_json(path: &Path, value: &impl Serialize) -> Result<()> {
 pub(crate) struct ConsultationJournal {
     path: PathBuf,
     state: AdmissionState,
+    write_uncertain: bool,
     // Kernel ownership dies with the process; the lock file must not be unlinked.
     _owner: File,
 }
@@ -122,14 +137,42 @@ impl ConsultationJournal {
             Err(error) if error.kind() == std::io::ErrorKind::NotFound => AdmissionState::default(),
             Err(error) => return Err(error).context("read consultation admission state"),
         };
-        let journal = Self { path, state, _owner: owner };
+        let journal = Self { path, state, write_uncertain: false, _owner: owner };
         ensure!(journal.state.pending.is_none(), "consultation requires recovery; unresolved turn {:?}", journal.state.pending);
+        ensure!(journal.state.queued.is_empty(), "consultation requires recovery; retained waiting instructions");
         Ok(journal)
     }
 
+    pub(crate) fn accept_input(&mut self, input: QueuedInstruction) -> Result<()> {
+        ensure!(!self.write_uncertain, "consultation journal write requires recovery");
+        ensure!(!input.turn_id.trim().is_empty(), "turn identity is required");
+        ensure!(!self.state.completed.contains(&input.turn_id)
+            && !self.state.queued.iter().any(|entry| entry.turn_id == input.turn_id),
+            "turn already admitted; refusing replay");
+        self.state.queued.push(input);
+        self.persist()
+    }
+
+    /// Only before begin, when the owner proves no provider/tool work started.
+    pub(crate) fn discard_unstarted(&mut self, turn: &str) -> Result<()> {
+        ensure!(!self.write_uncertain, "consultation journal write requires recovery");
+        ensure!(self.state.pending.is_none(), "cannot discard a potentially executed turn");
+        ensure!(self.state.queued.first().is_some_and(|entry| entry.turn_id == turn),
+            "consultation discard is out of order");
+        let input = self.state.queued.remove(0);
+        if let Err(error) = self.persist() {
+            self.state.queued.insert(0, input);
+            return Err(error);
+        }
+        Ok(())
+    }
+
     pub(crate) fn begin(&mut self, turn: &str) -> Result<()> {
+        ensure!(!self.write_uncertain, "consultation journal write requires recovery");
         ensure!(self.state.pending.is_none(), "consultation requires recovery");
         ensure!(!self.state.completed.contains(turn), "turn {turn} already completed; refusing replay");
+        ensure!(self.state.queued.first().is_some_and(|entry| entry.turn_id == turn),
+            "consultation execution is not the admitted front");
         self.state.pending = Some(turn.to_string());
         // Failure deliberately leaves in-memory pending set: do not execute
         // anything if the before-effects receipt could not be made durable.
@@ -137,18 +180,25 @@ impl ConsultationJournal {
     }
 
     pub(crate) fn complete(&mut self, turn: &str) -> Result<()> {
+        ensure!(!self.write_uncertain, "consultation journal write requires recovery");
         ensure!(self.state.pending.as_deref() == Some(turn), "consultation completion identity mismatch");
+        ensure!(self.state.queued.first().is_some_and(|entry| entry.turn_id == turn),
+            "consultation completion is not the admitted front");
+        let input = self.state.queued.remove(0);
         self.state.completed.insert(turn.to_string());
         self.state.pending = None;
         if let Err(error) = self.persist() {
             self.state.pending = Some(turn.to_string());
+            self.state.queued.insert(0, input);
             return Err(error);
         }
         Ok(())
     }
 
-    fn persist(&self) -> Result<()> {
-        persist_json(&self.path, &self.state)
+    fn persist(&mut self) -> Result<()> {
+        let result = persist_json(&self.path, &self.state);
+        if result.is_err() { self.write_uncertain = true; }
+        result
     }
 }
 
@@ -156,12 +206,78 @@ impl ConsultationJournal {
 mod tests {
     use super::*;
 
+    fn accept(journal: &mut ConsultationJournal, turn: &str) {
+        journal.accept_input(QueuedInstruction {
+            turn_id: turn.into(),
+            input: crate::agent::Message::new(crate::agent::Role::User,
+                vec![crate::agent::ContentBlock::Text("instruction".into())]),
+            provider_name: "fixture".into(), options: serde_json::json!({}), group: None,
+        }).unwrap();
+    }
+
+    #[test]
+    fn queued_input_survives_owner_drop_without_becoming_execution_permission() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = ThreadStore::new_in(dir.path()).unwrap();
+        let mut journal = ConsultationJournal::open(&store, "waiting").unwrap();
+        assert!(journal.begin("not-admitted").is_err());
+        accept(&mut journal, "one");
+        accept(&mut journal, "two");
+        assert!(journal.begin("two").is_err(), "execution must follow persisted order");
+        assert!(journal.complete("one").is_err(), "acceptance is not completion");
+        let path = dir.path().join("consultations/waiting.json");
+        let before = fs::read(&path).unwrap();
+        drop(journal);
+        assert!(ConsultationJournal::open(&store, "waiting").is_err());
+        assert_eq!(fs::read(path).unwrap(), before, "recovery refusal preserves every input");
+    }
+
+    #[test]
+    fn uncertain_acceptance_write_prevents_later_execution_or_overwrite() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = ThreadStore::new_in(dir.path()).unwrap();
+        let mut journal = ConsultationJournal::open(&store, "write-error").unwrap();
+        accept(&mut journal, "first");
+        let path = journal.path.clone();
+        let before = fs::read(&path).unwrap();
+        let mut second = journal.state.queued[0].clone();
+        second.turn_id = "second".into();
+        journal.path = dir.path().join("absent-parent/state.json");
+        assert!(journal.accept_input(second.clone()).is_err());
+        journal.path = path.clone();
+        assert!(journal.begin("first").is_err());
+        assert!(journal.discard_unstarted("first").is_err());
+        second.turn_id = "third".into();
+        assert!(journal.accept_input(second).is_err());
+        assert_eq!(fs::read(path).unwrap(), before, "uncertainty must not rewrite the last known durable input");
+        assert_eq!(journal.state.queued.len(), 2, "retain the attempted input until explicit recovery");
+    }
+
+    #[test]
+    fn only_unstarted_front_can_be_discarded_and_resubmitted() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = ThreadStore::new_in(dir.path()).unwrap();
+        let mut journal = ConsultationJournal::open(&store, "refused").unwrap();
+        accept(&mut journal, "one");
+        assert!(journal.discard_unstarted("other").is_err());
+        journal.discard_unstarted("one").unwrap();
+        accept(&mut journal, "one");
+        journal.begin("one").unwrap();
+        assert!(journal.discard_unstarted("one").is_err());
+        assert_eq!(journal.state.queued.len(), 1);
+        journal.complete("one").unwrap();
+        assert!(journal.state.queued.is_empty());
+        drop(journal);
+        assert!(ConsultationJournal::open(&store, "refused").is_ok());
+    }
+
     #[test]
     fn explicit_reset_requires_closed_owner_and_preserves_unresolved_history() {
         let dir = tempfile::tempdir().unwrap();
         let store = ThreadStore::new_in(dir.path()).unwrap();
         let old = selected_id(&store).unwrap();
         let mut journal = ConsultationJournal::open(&store, &old).unwrap();
+        accept(&mut journal, "unresolved");
         journal.begin("unresolved").unwrap();
         let journal_path = dir.path().join("consultations").join(format!("{old}.json"));
         let before = fs::read(&journal_path).unwrap();
@@ -183,6 +299,7 @@ mod tests {
         let store = ThreadStore::new_in(dir.path()).unwrap();
         let id = selected_id(&store).unwrap();
         let mut journal = ConsultationJournal::open(&store, &id).unwrap();
+        accept(&mut journal, "unresolved");
         journal.begin("unresolved").unwrap();
         drop(journal);
         drop(store);
@@ -210,6 +327,7 @@ mod tests {
         let store = ThreadStore::new_in(dir.path()).unwrap();
         let mut journal = ConsultationJournal::open(&store, "a").unwrap();
         assert!(ConsultationJournal::open(&store, "a").is_err());
+        accept(&mut journal, "one");
         journal.begin("one").unwrap();
         drop(journal);
         assert!(ConsultationJournal::open(&store, "a").is_err());
@@ -221,11 +339,13 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let store = ThreadStore::new_in(dir.path()).unwrap();
         let mut journal = ConsultationJournal::open(&store, "a").unwrap();
+        accept(&mut journal, "one");
         journal.begin("one").unwrap();
         journal.complete("one").unwrap();
         drop(journal);
         let mut reopened = ConsultationJournal::open(&store, "a").unwrap();
         assert!(reopened.begin("one").is_err());
+        accept(&mut reopened, "two");
         reopened.begin("two").unwrap();
     }
 

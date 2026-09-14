@@ -583,3 +583,37 @@ turn remains recovery-required. Reopen must never silently replay uncertain tool
 Group source receipts and multimodal input must also survive; do not store auth
 credentials or replacement-provider objects as recovery payloads. This schema
 and lifecycle work remains unfinished; no W2 closure is asserted.
+
+### Durable admission source implementation after 4678c6043
+
+Admission now reserves an mpsc slot, holds the shared admission ordering lock,
+and syncs QueuedInstruction through the existing ConsultationJournal before
+sending and returning a receiver. Queued records retain canonical user Message
+content (including image bytes), provider name, request knobs and grouped source
+receipts. They contain no provider object or extracted authentication material.
+The in-flight record stays queued while pending names its potentially executed
+turn; completion removes that record only after canonical history delivery.
+
+The execution owner alone holds a strong journal reference between operations;
+runtime handles retain a weak reference, so closed/stale clones do not hold its
+kernel lease. Admission and execution share the same journal lock. Pending-count
+cleanup uses an atomic counter so a closed mpsc receiver cannot synchronously
+re-enter the admission mutex while dropping a reserved send. Queue/channel order
+is serialized across durable acceptance. Duplicate ids now refuse synchronously.
+
+Reopen refuses any retained queued or pending work without changing the file or
+silently replaying effects. Installer refusal before begin explicitly removes
+only the unstarted front; failure to persist that removal blocks further work.
+Any uncertain journal write prevents later begin/accept/discard in this owner.
+The runtime's already-unsettled path retains queued inputs for recovery rather
+than executing or deleting them. Recovery UI/explicit reconciliation is still
+missing, and these records alone do not authorize automatic replay.
+
+Authored tests now cover persisted multimodal waiting input/model, grouped member
+receipts, retained source on owner drop, FIFO begin, refusal to discard a started
+turn, explicit resubmission after pre-execution refusal, and uncertain-write
+non-overwrite. Existing duplicate tests now assert the earlier synchronous refusal
+while retaining provider-call counts. None have executed under W1. The previous
+falsifier has an implementation to assess, not a passing receipt. Real process
+crash, disk failure, performance of synchronous fsync, full gates, production
+capture wiring and installed proof remain outstanding.

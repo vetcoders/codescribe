@@ -14,7 +14,7 @@ use chrono::Utc;
 use tokio::sync::{mpsc, oneshot};
 
 use crate::config::FormattingPolicy;
-use super::thread_store::consultation::ConsultationJournal;
+use super::thread_store::consultation::{ConsultationJournal, QueuedInstruction};
 use super::{
     AgentProvider, AgentSession, AgentUiEvent, ContentBlock, ImageAttachment,
     Role, StreamOptions, ThreadDeliveryGateway, ThreadDeliveryInput,
@@ -243,7 +243,7 @@ pub struct ConsultationAnswer {
     pub delivery: ThreadDeliveryReceipt,
 }
 
-/// An accepted FIFO entry, not durable completion or presentation permission.
+/// Durably accepted input, not completed execution or presentation permission.
 /// Keep this handle while capture advances. Dropping it does not cancel tools.
 pub struct PendingConsultationGroup {
     consultation_id: String,
@@ -290,15 +290,14 @@ enum OwnerCommand {
 #[derive(Default)]
 struct Admission {
     closed: bool,
-    pending: usize,
+    pending: Arc<std::sync::atomic::AtomicUsize>,
 }
 
-struct PendingTurn(Arc<std::sync::Mutex<Admission>>);
+struct PendingTurn(Arc<std::sync::atomic::AtomicUsize>);
 
 impl Drop for PendingTurn {
     fn drop(&mut self) {
-        let mut admission = self.0.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
-        admission.pending -= 1;
+        self.0.fetch_sub(1, std::sync::atomic::Ordering::SeqCst);
     }
 }
 
@@ -308,6 +307,8 @@ pub struct ConsultationRuntime {
     id: String,
     tx: mpsc::Sender<OwnerCommand>,
     admission: Arc<std::sync::Mutex<Admission>>,
+    // Stale admission handles must not retain the owner's kernel lease.
+    journal: std::sync::Weak<std::sync::Mutex<ConsultationJournal>>,
 }
 
 impl ConsultationRuntime {
@@ -328,11 +329,13 @@ impl ConsultationRuntime {
         let history = gateway.restore_consultation(&id, journal.has_completed_turns())?;
         session.restore_messages(history);
         session.bind_execution_thread(id.clone());
+        let journal = Arc::new(std::sync::Mutex::new(journal));
+        let journal_handle = Arc::downgrade(&journal);
         let (tx, rx) = mpsc::channel(16);
         tokio::spawn(run_owner(ConsultationOwner {
             id: id.clone(), session, ui_rx, gateway, journal, events, rx, install_lease_path,
         }));
-        Ok(Self { id, tx, admission: Arc::new(std::sync::Mutex::new(Admission::default())) })
+        Ok(Self { id, tx, admission: Arc::new(std::sync::Mutex::new(Admission::default())), journal: journal_handle })
     }
 
     pub fn id(&self) -> &str {
@@ -348,7 +351,18 @@ impl ConsultationRuntime {
     ) -> Result<PendingConsultationGroup> {
         ensure!(turn.id == input.turn_id_for_group(), "consultation group turn mismatch");
         ensure!(turn.text == input.text(), "consultation group source mismatch");
-        let reply = self.enqueue(turn)?;
+        let group = serde_json::json!({
+            "session_id": input.session_id(), "capture_epoch": input.capture_epoch(),
+            "sample_start": input.samples.start, "sample_end": input.samples.end,
+            "members": input.members().iter().map(|member| serde_json::json!({
+                "session_id": member.occurrence.session,
+                "capture_epoch": member.occurrence.capture_epoch,
+                "sample_start": member.occurrence.sample_start,
+                "sample_end": member.occurrence.sample_end,
+                "source_label": member.source_label, "seal_receipt": member.seal_receipt,
+            })).collect::<Vec<_>>(),
+        });
+        let reply = self.enqueue_recorded(turn, Some(group))?;
         Ok(PendingConsultationGroup { consultation_id: self.id.clone(), input, reply })
     }
 
@@ -359,7 +373,7 @@ impl ConsultationRuntime {
         {
             let mut admission = self.admission.lock().map_err(|_| anyhow!("consultation admission lock poisoned"))?;
             ensure!(!admission.closed, "consultation already closing or closed");
-            ensure!(admission.pending == 0, "consultation has pending work");
+            ensure!(admission.pending.load(std::sync::atomic::Ordering::SeqCst) == 0, "consultation has pending work");
             admission.closed = true;
         }
         let (reply, closed) = oneshot::channel();
@@ -367,22 +381,42 @@ impl ConsultationRuntime {
         closed.await.context("consultation owner stopped without close acknowledgement")
     }
 
-    /// Enqueue without starting a competing provider future. A full queue is
-    /// an explicit refusal, never silent loss. Dropping the returned receiver
-    /// does not revoke an already accepted instruction.
+    /// Reserve FIFO capacity and persist input before acknowledging acceptance.
+    /// A full queue refuses before the journal write. Dropping the returned
+    /// receiver does not revoke an already accepted instruction.
     pub fn enqueue(&self, turn: ConsultationTurn) -> Result<oneshot::Receiver<Result<ConsultationAnswer>>> {
+        self.enqueue_recorded(turn, None)
+    }
+
+    fn enqueue_recorded(&self, turn: ConsultationTurn, group: Option<serde_json::Value>)
+        -> Result<oneshot::Receiver<Result<ConsultationAnswer>>>
+    {
         ensure!(turn.policy == FormattingPolicy::Max, "consultation tools require Max");
         ensure!(!turn.id.trim().is_empty(), "turn identity is required");
         ensure!(!turn.text.trim().is_empty() || !turn.attachments.is_empty(), "empty consultation turn");
-        {
-            let mut admission = self.admission.lock().map_err(|_| anyhow!("consultation admission lock poisoned"))?;
-            ensure!(!admission.closed, "consultation is closing or closed");
-            admission.pending += 1;
-        }
-        let pending = PendingTurn(Arc::clone(&self.admission));
+        let admission = self.admission.lock().map_err(|_| anyhow!("consultation admission lock poisoned"))?;
+        ensure!(!admission.closed, "consultation is closing or closed");
+        // Reserve before writing; channel pressure must not create orphaned
+        // acceptance. This lock preserves journal order and channel send order.
+        let permit = self.tx.try_reserve().map_err(|error| anyhow!("consultation admission failed: {error}"))?;
+        let journal = self.journal.upgrade().context("consultation owner unavailable")?;
+        let mut content = vec![ContentBlock::Text(turn.text.clone())];
+        content.extend(turn.attachments.iter().map(|image| ContentBlock::Image {
+            data: image.data.clone(), media_type: image.media_type.clone(),
+        }));
+        journal.lock().map_err(|_| anyhow!("consultation journal lock poisoned"))?.accept_input(QueuedInstruction {
+            turn_id: turn.id.clone(), input: super::Message::new(Role::User, content),
+            provider_name: turn.provider_name.clone(), group,
+            options: serde_json::json!({ "model": turn.options.model, "system_prompt": turn.options.system_prompt,
+                "max_tokens": turn.options.max_tokens, "temperature": turn.options.temperature,
+                "reset_chain": turn.options.reset_chain }),
+        })?;
+        admission.pending.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        let pending = PendingTurn(Arc::clone(&admission.pending));
         let (reply, receipt) = oneshot::channel();
-        self.tx.try_send(OwnerCommand::Turn(QueuedTurn { turn, reply, pending }))
-            .map_err(|error| anyhow!("consultation admission failed: {error}"))?;
+        permit.send(OwnerCommand::Turn(QueuedTurn { turn, reply, pending }));
+        drop(journal);
+        drop(admission);
         Ok(receipt)
     }
 }
@@ -392,14 +426,14 @@ struct ConsultationOwner {
     session: AgentSession,
     ui_rx: mpsc::Receiver<AgentUiEvent>,
     gateway: ThreadDeliveryGateway,
-    journal: ConsultationJournal,
+    journal: Arc<std::sync::Mutex<ConsultationJournal>>,
     events: ConsultationEvents,
     rx: mpsc::Receiver<OwnerCommand>,
     install_lease_path: PathBuf,
 }
 
 async fn run_owner(owner: ConsultationOwner) {
-    let ConsultationOwner { id, mut session, mut ui_rx, gateway, mut journal,
+    let ConsultationOwner { id, mut session, mut ui_rx, gateway, journal,
         events, mut rx, install_lease_path } = owner;
     let mut unsettled: Option<String> = None;
     while let Some(command) = rx.recv().await {
@@ -421,16 +455,29 @@ async fn run_owner(owner: ConsultationOwner) {
         // the file. Hold through history/journal settlement and the final reply.
         let _install_lease = match crate::config::acquire_agent_turn_lease_at(&install_lease_path) {
             Ok(lease) => lease,
-            Err(error) => { drop(pending); let _ = reply.send(Err(error)); continue; }
+            Err(error) => {
+                let discarded = journal.lock().map_err(|_| anyhow!("consultation journal lock poisoned"))
+                    .and_then(|mut journal| journal.discard_unstarted(&turn.id));
+                if let Err(ref failure) = discarded { unsettled = Some(format!("{failure:#}")); }
+                drop(pending);
+                let _ = reply.send(Err(discarded.err().unwrap_or(error)));
+                continue;
+            }
         };
-        if let Err(error) = journal.begin(&turn.id) {
+        let begun = journal.lock().map_err(|_| anyhow!("consultation journal lock poisoned"))
+            .and_then(|mut journal| journal.begin(&turn.id));
+        if let Err(error) = begun {
+            unsettled = Some(format!("{error:#}"));
             drop(pending);
             let _ = reply.send(Err(error));
             continue;
         }
         let turn_id = turn.id.clone();
         let result = run_turn(&id, &mut session, &mut ui_rx, &gateway, &events, turn).await
-            .and_then(|answer| { journal.complete(&turn_id)?; Ok(answer) });
+            .and_then(|answer| {
+                journal.lock().map_err(|_| anyhow!("consultation journal lock poisoned"))?.complete(&turn_id)?;
+                Ok(answer)
+            });
         if let Err(error) = &result {
             // Do not roll back successful tool effects or automatically retry a
             // partially executed instruction. The host must resolve this state.
@@ -878,6 +925,11 @@ mod tests {
         input_queue.acknowledge(&later).unwrap();
         assert_eq!(input_queue.pending_groups(), 0);
         assert_eq!(requests.lock().unwrap().len(), 1);
+        let retained: serde_json::Value = serde_json::from_slice(
+            &std::fs::read(dir.path().join("consultations/group-history.json")).unwrap()).unwrap();
+        assert_eq!(retained["queued"][0]["group"]["members"].as_array().unwrap().len(), 4);
+        assert_eq!(retained["queued"][1]["group"]["members"][0]["sample_start"], 64_000);
+        assert_eq!(retained["queued"][1]["group"]["members"][0]["seal_receipt"], second.members()[0].seal_receipt);
         release.add_permits(1);
         let completed = pending.finish().await.unwrap();
         assert_eq!(completed.input(), &first);
@@ -890,8 +942,7 @@ mod tests {
         let completed = later.finish().await.unwrap();
         assert_eq!(completed.input(), &second);
         assert_eq!(completed.answer().delivery.message_count, 4);
-        let duplicate = runtime.enqueue_group(first.clone(), turn(&first.turn_id_for_group(), first.text())).unwrap();
-        assert!(duplicate.finish().await.is_err());
+        assert!(runtime.enqueue_group(first.clone(), turn(&first.turn_id_for_group(), first.text())).is_err());
         assert_eq!(requests.lock().unwrap().len(), 2);
         let stored = ThreadStore::new_in(dir.path()).unwrap().load_thread("group-history").unwrap();
         assert_eq!(stored.messages.len(), 4);
@@ -952,8 +1003,7 @@ mod tests {
         let stored = ThreadStore::new_in(dir.path()).expect("store").load_thread("consultation-a").expect("durable history");
         assert_eq!(stored.messages.len(), 4);
         assert_eq!(stored.mode, "max");
-        let duplicate = runtime.enqueue(turn("one", "Do not repeat tools.")).expect("queued");
-        assert!(duplicate.await.expect("reply").is_err());
+        assert!(runtime.enqueue(turn("one", "Do not repeat tools.")).is_err());
         assert_eq!(requests.lock().expect("requests").len(), 2);
         let stale_handle = runtime.clone();
         runtime.close_if_idle().await.expect("idle owner closes");
@@ -977,7 +1027,10 @@ mod tests {
             dir.path().join("agent-turn.lock")).unwrap();
         let first = runtime.enqueue(turn("first", "Prepare a command.")).unwrap();
         entered.acquire().await.unwrap().forget();
-        let second = runtime.enqueue(turn("second", "Change only the file name to Monika.txt.")).unwrap();
+        let mut correction = turn("second", "Change only the file name to Monika.txt.");
+        correction.attachments.push(ImageAttachment { data: vec![1, 2, 3], media_type: "image/png".into() });
+        correction.options.model = "selected-model".into();
+        let second = runtime.enqueue(correction).unwrap();
         assert_eq!(requests.lock().unwrap().len(), 1, "the second provider call has not started");
         // Read while the first provider is blocked. No sleep, completion or
         // graceful shutdown may be needed to persist an acknowledged input.
@@ -988,7 +1041,11 @@ mod tests {
             .expect("second instruction must survive loss of the in-memory channel");
         let input: Message = serde_json::from_value(waiting["input"].clone()).unwrap();
         assert_eq!(input.role, Role::User);
-        assert_eq!(input.content, vec![ContentBlock::Text("Change only the file name to Monika.txt.".into())]);
+        assert_eq!(input.content, vec![
+            ContentBlock::Text("Change only the file name to Monika.txt.".into()),
+            ContentBlock::Image { data: vec![1, 2, 3], media_type: "image/png".into() },
+        ]);
+        assert_eq!(waiting["options"]["model"], "selected-model");
         assert_eq!(journal["pending"], "first");
         release.add_permits(1);
         first.await.unwrap().unwrap();
