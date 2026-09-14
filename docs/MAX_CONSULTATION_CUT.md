@@ -1321,3 +1321,32 @@ This preserves the recovery requirement despite temporary-root path spelling.
 30-second limit. Prior runs slightly exceeded that limit, so timing headroom
 is narrow; no broad performance claim follows. The installed app and real
 cross-host voice flow remain unverified. Full make check is the next gate.
+
+### Full static gate terminal result — 2026-09-14
+
+At source HEAD `b4297b631908af7eef560692f958a3a0ada6db54`, the recovered
+`28-make-check.log` records a terminal failure, not a running scan. Rust and
+non-Rust format checks and workspace/all-target Clippy passed. Semgrep's final
+summary reports 1827 rules on 693 files and three blocking findings, all in
+`core/agent/thread_store/consultation.rs` at lines 217, 225 and 258. The initial
+scan plan listed 2936 rules; that is not the executed-rule count.
+
+Each reported sink opens a directory read-only and calls `sync_all`; these
+calls do not read file contents or create/truncate a file. This source-level
+observation does not certify the surrounding path construction, ancestor-race
+resistance, or security acceptance. No rule, suppression or sink spelling was
+changed to obtain a green result. Full `make check` remains failed.
+
+Because make stopped before the remaining checks, the integrator ran the two
+unchanged native registry scripts separately. `29-env-registry.log` passed
+with 136 registered variables; `30-gate-ledger.log` passed with 34 classified
+targets. Those successes do not override the security failure. Logs remain
+under `/tmp/codescribe-w3-20260914.kJy9Wj/`.
+
+A fresh read-only `bus-demux.py --assert-install-idle` returned exit 0.
+This was a point-in-time bus observation, not an installation lease or proof
+that the agent-turn lock is free. No app replacement, restart, push or success
+ping occurred. Tracked files were clean before this receipt; the local
+`docs/settings.json` profile remains untracked. Next: settle the concrete
+security findings, then perform idle-safe installed-artifact acceptance and
+the still-unproven live consultation scenarios.
