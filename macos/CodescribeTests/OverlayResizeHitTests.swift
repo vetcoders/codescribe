@@ -543,7 +543,8 @@ final class OverlayResizeHitTests: XCTestCase {
         lifecycleTerminal: false,
         delivery: .unattempted,
         acousticReceipts: [],
-        sealCoverage: nil
+        sealCoverage: nil,
+        consultationPresentations: []
       )
     )
   }

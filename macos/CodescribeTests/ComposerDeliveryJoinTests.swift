@@ -266,7 +266,8 @@ final class ComposerDeliveryJoinTests: XCTestCase {
         lifecycleTerminal: lifecycleTerminal,
         delivery: delivery,
         acousticReceipts: [receipt],
-        sealCoverage: nil
+        sealCoverage: nil,
+        consultationPresentations: []
       )
     )
   }

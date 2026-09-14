@@ -2512,7 +2512,7 @@ final class OverlayState {
       canFormat: isFormatted,
       canSendToAgent: isFormatted,
       terminal: terminal, lifecycleTerminal: terminal, delivery: .unattempted, acousticReceipts: [],
-      sealCoverage: nil)
+      sealCoverage: nil, consultationPresentations: [])
   }
 }
 

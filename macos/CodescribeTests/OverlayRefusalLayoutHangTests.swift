@@ -247,7 +247,8 @@ final class OverlayRefusalLayoutHangTests: XCTestCase {
       lifecycleTerminal: false,
       delivery: .unattempted,
       acousticReceipts: [receipt],
-      sealCoverage: nil
+      sealCoverage: nil,
+      consultationPresentations: []
     )
   }
 

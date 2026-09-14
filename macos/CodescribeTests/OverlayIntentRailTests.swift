@@ -652,7 +652,8 @@ final class OverlayIntentRailTests: XCTestCase {
         lifecycleTerminal: true,
         delivery: .unattempted,
         acousticReceipts: [],
-        sealCoverage: nil
+        sealCoverage: nil,
+        consultationPresentations: []
       )
     )
 
@@ -700,7 +701,8 @@ final class OverlayIntentRailTests: XCTestCase {
         lifecycleTerminal: terminal,
         delivery: .unattempted,
         acousticReceipts: [],
-        sealCoverage: nil
+        sealCoverage: nil,
+        consultationPresentations: []
       )
     )
     return state

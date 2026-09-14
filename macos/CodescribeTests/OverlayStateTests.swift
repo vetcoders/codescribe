@@ -278,7 +278,8 @@ final class OverlayStateTests: XCTestCase {
     reducerRevision: UInt64? = nil,
     reducerAction: String? = nil,
     manualEditReceipt: String? = nil,
-    sealCoverage: CsProjectedSealCoverageReceipt? = nil
+    sealCoverage: CsProjectedSealCoverageReceipt? = nil,
+    consultationPresentations: [CsProjectedConsultationPresentation] = []
   ) {
     nextProjectionSequence += 1
     let sequence = nextProjectionSequence
@@ -335,13 +336,45 @@ final class OverlayStateTests: XCTestCase {
         lifecycleTerminal: lifecycleTerminal ?? (terminal && reducerAction != "apply_manual_edit"),
         delivery: delivery,
         acousticReceipts: [receipt],
-        sealCoverage: sealCoverage
+        sealCoverage: sealCoverage,
+        consultationPresentations: consultationPresentations
       )
     )
   }
 
   // W2 contracts: synthetic projections enter the production boundary; unrun
   // until the integrator restores Swift gates and regenerates the bindings.
+  func testLiveConsultationProjectionPreservesGroupEvidenceWithoutEndingCapture() {
+    let state = OverlayState()
+    var ended: [String] = []
+    state.onCaptureEnded = { ended.append($0) }
+    let group = CsProjectedConsultationPresentation(
+      receiptId: "group-receipt", consultationId: "Max", turnId: "turn-1",
+      sourceRevision: 4, revision: 5,
+      members: [
+        CsProjectedConsultationMember(
+          sessionId: "max-live", captureEpoch: 1, sampleStart: 0, sampleEnd: 16_000,
+          sourceLabel: "Iwo", sealReceipt: "seal-1"),
+        CsProjectedConsultationMember(
+          sessionId: "max-live", captureEpoch: 1, sampleStart: 16_000, sampleEnd: 32_000,
+          sourceLabel: "Iwo", sealReceipt: "seal-2"),
+      ],
+      renderedText: "git add -- 'plik ze spacją.rs'")
+    let text = group.renderedText + " dalsze słowa"
+    projectText(text, to: state, sessionId: "max-live", reducerRevision: 5,
+      reducerAction: "apply_consultation_presentation", consultationPresentations: [group])
+    XCTAssertEqual(state.latestTranscriptProjection?.consultationPresentations, [group])
+    XCTAssertEqual(state.latestTranscriptProjection?.renderedText, text)
+    XCTAssertEqual(state.revisionDraft, text)
+    XCTAssertFalse(state.terminal)
+    XCTAssertTrue(ended.isEmpty)
+    projectText(text + " jutro", to: state, sessionId: "max-live", reducerRevision: 6,
+      consultationPresentations: [group])
+    XCTAssertEqual(state.latestTranscriptProjection?.consultationPresentations, [group])
+    XCTAssertEqual(state.revisionDraft, text + " jutro")
+    XCTAssertTrue(ended.isEmpty)
+  }
+
   func testComposerCallbackCarriesTheProjectionSessionIdentity() {
     let state = OverlayState()
     var identities: [String] = []
@@ -2271,7 +2304,8 @@ final class OverlayStateTests: XCTestCase {
         lifecycleTerminal: terminal,
         delivery: .unattempted,
         acousticReceipts: [receipt],
-        sealCoverage: nil
+        sealCoverage: nil,
+        consultationPresentations: []
       )
     )
   }

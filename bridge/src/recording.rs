@@ -8,7 +8,7 @@ use codescribe::presentation::status_projection::{
     PresentationStatusKind, PresentationStatusProjection,
 };
 use codescribe::presentation::transcript_bus::{
-    ProjectedAcousticReceipt, ProjectedPresentationReceipt, ProjectedSealCoverageReceipt,
+    ProjectedAcousticReceipt, ProjectedConsultationPresentation, ProjectedPresentationReceipt, ProjectedSealCoverageReceipt,
     TranscriptBusEvidenceEvent, TranscriptDelivery,
 };
 use codescribe_core::pipeline::contracts::{AnnotationKind, LayerSource, LayerSummary};
@@ -167,6 +167,44 @@ impl CsProjectedSealCoverageReceipt {
     }
 }
 
+/// Lossless group provenance. These are presentation sources, not alignment of
+/// generated answer words to PCM. Swift receives them without interpreting them.
+#[derive(uniffi::Record, Debug, Clone, PartialEq, Eq)]
+pub struct CsProjectedConsultationMember {
+    pub session_id: String,
+    pub capture_epoch: u64,
+    pub sample_start: u64,
+    pub sample_end: u64,
+    pub source_label: String,
+    pub seal_receipt: String,
+}
+
+#[derive(uniffi::Record, Debug, Clone, PartialEq, Eq)]
+pub struct CsProjectedConsultationPresentation {
+    pub receipt_id: String,
+    pub consultation_id: String,
+    pub turn_id: String,
+    pub source_revision: u64,
+    pub revision: u64,
+    pub members: Vec<CsProjectedConsultationMember>,
+    pub rendered_text: String,
+}
+
+impl CsProjectedConsultationPresentation {
+    fn from_bus_receipt(receipt: &ProjectedConsultationPresentation) -> Self {
+        Self {
+            receipt_id: receipt.receipt_id.clone(), consultation_id: receipt.consultation_id.clone(),
+            turn_id: receipt.turn_id.clone(), source_revision: receipt.source_revision,
+            revision: receipt.revision, rendered_text: receipt.rendered_text.clone(),
+            members: receipt.members.iter().map(|member| CsProjectedConsultationMember {
+                session_id: member.session_id.clone(), capture_epoch: member.capture_epoch,
+                sample_start: member.sample_start, sample_end: member.sample_end,
+                source_label: member.source_label.clone(), seal_receipt: member.seal_receipt.clone(),
+            }).collect(),
+        }
+    }
+}
+
 /// Bridge event schema for the one reducer-owned transcript projection. It
 /// carries the full render, phase, availability, terminal state, and evidence,
 /// but exposes no document mutation method.
@@ -207,6 +245,7 @@ pub struct CsTranscriptProjectionEvent {
     pub delivery: CsTranscriptDelivery,
     pub acoustic_receipts: Vec<CsProjectedAcousticReceipt>,
     pub seal_coverage: Option<CsProjectedSealCoverageReceipt>,
+    pub consultation_presentations: Vec<CsProjectedConsultationPresentation>,
 }
 
 /// Swift-visible mirror of [`TranscriptDelivery`]. One variant per controller
@@ -362,6 +401,8 @@ impl CsTranscriptProjectionEvent {
             terminal: event.terminal,
             lifecycle_terminal: event.lifecycle_terminal,
             delivery: CsTranscriptDelivery::from_bus_delivery(event.delivery),
+            consultation_presentations: event.consultation_presentations.iter()
+                .map(CsProjectedConsultationPresentation::from_bus_receipt).collect(),
             seal_coverage: event
                 .seal_coverage
                 .as_ref()
@@ -987,7 +1028,16 @@ mod tests {
             terminal: true,
             lifecycle_terminal: true,
             delivery: TranscriptDelivery::ComposerPending,
-            consultation_presentations: Vec::new(),
+            consultation_presentations: vec![ProjectedConsultationPresentation {
+                receipt_id: "max-group-receipt".into(), consultation_id: "Max".into(),
+                turn_id: "turn-5".into(), source_revision: 9, revision: 10,
+                rendered_text: "git add -- 'plik ze spacją.rs'".into(),
+                members: vec![codescribe::presentation::transcript_bus::ProjectedConsultationMember {
+                    session_id: "occurrence-session".into(), capture_epoch: 13,
+                    sample_start: 17, sample_end: 23, source_label: "Iwo".into(),
+                    seal_receipt: "seal-receipt".into(),
+                }],
+            }],
             acoustic_receipts: vec![ProjectedAcousticReceipt {
                 acoustic_serial_version: 2,
                 acoustic_serial: "sha256:acoustic".to_string(),
@@ -1041,6 +1091,16 @@ mod tests {
                 terminal: true,
                 lifecycle_terminal: true,
                 delivery: CsTranscriptDelivery::ComposerPending,
+                consultation_presentations: vec![CsProjectedConsultationPresentation {
+                    receipt_id: "max-group-receipt".into(), consultation_id: "Max".into(),
+                    turn_id: "turn-5".into(), source_revision: 9, revision: 10,
+                    rendered_text: "git add -- 'plik ze spacją.rs'".into(),
+                    members: vec![CsProjectedConsultationMember {
+                        session_id: "occurrence-session".into(), capture_epoch: 13,
+                        sample_start: 17, sample_end: 23, source_label: "Iwo".into(),
+                        seal_receipt: "seal-receipt".into(),
+                    }],
+                }],
                 seal_coverage: None,
                 acoustic_receipts: vec![CsProjectedAcousticReceipt {
                     acoustic_serial_version: 2,
