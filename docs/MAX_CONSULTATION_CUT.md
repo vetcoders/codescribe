@@ -172,7 +172,15 @@ thread identity/mode mismatch. `ThreadMessage::try_to_message` validates roles
 and content shape before using the existing projection; unknown roles, malformed
 tool results and omitted image data cannot silently become user text. Authored
 tests cover those refusals and valid Max history restore; still not executed.
-Image asset existence and tool-call/result pairing need further validation.
+Image asset existence needs further validation. Tool-call/result pairing is now
+checked at consultation restore: each assistant invocation must have exactly one
+following user-role result before conversation resumes. Duplicate invocation ids,
+orphan or repeated results, missing results, wrong roles and nested tool control
+blocks are refused. Result payloads cannot be mixed with new instruction text.
+Both registered providers currently produce this same role/block shape.
+An authored gateway test persists valid multi-tool and failed-tool exchanges plus
+malformed variants, then checks admission and byte-for-byte history preservation.
+It has not run; this is structural context validation, not live tool proof.
 
 `app/agent/max_consultation.rs` now constructs the real formatting provider and
 AgentSession using the host-supplied permission-configured registry/approval

@@ -122,7 +122,10 @@ impl ThreadDeliveryGateway {
         }
         let thread = self.store.load_thread(id)?;
         anyhow::ensure!(thread.id == id && thread.mode == "max", "Consultation history identity or mode mismatch");
-        thread.messages.iter().map(ThreadMessage::try_to_message).collect()
+        let messages = thread.messages.iter().map(ThreadMessage::try_to_message)
+            .collect::<Result<Vec<_>>>()?;
+        validate_consultation_tool_history(&messages)?;
+        Ok(messages)
     }
 
     /// Lock the same store's consultation admission state before executing tools.
@@ -377,6 +380,45 @@ fn strip_boilerplate_title(raw: &str) -> Option<String> {
     })
 }
 
+/// Completed consultation context must retain tool causality, not just valid JSON.
+/// Result payloads are data and may not introduce nested calls or results.
+fn validate_consultation_tool_history(messages: &[Message]) -> Result<()> {
+    let mut seen = std::collections::HashSet::new();
+    let mut pending = std::collections::HashSet::new();
+    for message in messages {
+        let has_results = message.content.iter()
+            .any(|block| matches!(block, ContentBlock::ToolResult { .. }));
+        if has_results {
+            anyhow::ensure!(message.role == Role::User,
+                "Consultation tool result has the wrong role");
+            for block in &message.content {
+                let ContentBlock::ToolResult { tool_use_id, content, .. } = block else {
+                    anyhow::bail!("Consultation tool results are mixed with unrelated content");
+                };
+                anyhow::ensure!(pending.remove(tool_use_id),
+                    "Consultation tool result has no unmatched prior invocation");
+                anyhow::ensure!(content.iter().all(|child| !matches!(
+                    child, ContentBlock::ToolUse { .. } | ContentBlock::ToolResult { .. }
+                )), "Consultation tool payload contains nested control blocks");
+            }
+        } else {
+            anyhow::ensure!(pending.is_empty(),
+                "Consultation continues before prior tool results are complete");
+            for block in &message.content {
+                if let ContentBlock::ToolUse { id, .. } = block {
+                    anyhow::ensure!(message.role == Role::Assistant,
+                        "Consultation tool invocation has the wrong role");
+                    anyhow::ensure!(seen.insert(id.clone()),
+                        "Consultation reuses a tool invocation identity");
+                    pending.insert(id.clone());
+                }
+            }
+        }
+    }
+    anyhow::ensure!(pending.is_empty(), "Completed consultation has unresolved tool calls");
+    Ok(())
+}
+
 /// Whether a line is preamble: a known prefix, or an all-caps header.
 fn is_boilerplate_line(line: &str) -> bool {
     let lower = line.to_lowercase();
@@ -416,6 +458,73 @@ mod tests {
 
     use super::*;
     use crate::agent::{ThreadIndex, ThreadIndexData, ThreadNote, TokenUsage};
+
+    #[test]
+    fn consultation_restore_checks_tool_causality_without_rewriting_history() -> Result<()> {
+        let dir = TempDir::new()?;
+        let gateway = ThreadDeliveryGateway::new_in(dir.path())?;
+        let call = |id: &str| ContentBlock::ToolUse {
+            id: id.into(), name: "read_clipboard".into(), input: json!({}),
+        };
+        let result = |id: &str| ContentBlock::ToolResult {
+            tool_use_id: id.into(), content: vec![ContentBlock::Text("a.rs".into())],
+            is_error: false,
+        };
+        let valid = vec![
+            Message::new(Role::User, vec![ContentBlock::Text("prepare a command".into())]),
+            Message::new(Role::Assistant, vec![call("a"), call("b")]),
+            Message::new(Role::User, vec![result("a")]),
+            Message::new(Role::User, vec![result("b")]),
+            Message::new(Role::Assistant, vec![ContentBlock::Text("git add -- a.rs".into())]),
+        ];
+        let mut cases = vec![(valid.clone(), true)];
+        let mut orphan = valid.clone();
+        orphan[2].content = vec![result("unknown")];
+        cases.push((orphan, false));
+        let mut duplicate_result = valid.clone();
+        duplicate_result[3].content = vec![result("a")];
+        cases.push((duplicate_result, false));
+        let mut duplicate_call = valid.clone();
+        duplicate_call[1].content = vec![call("a"), call("a")];
+        cases.push((duplicate_call, false));
+        let mut wrong_call_role = valid.clone();
+        wrong_call_role[1].role = Role::User;
+        cases.push((wrong_call_role, false));
+        let mut wrong_result_role = valid.clone();
+        wrong_result_role[2].role = Role::Assistant;
+        cases.push((wrong_result_role, false));
+        let mut missing = valid.clone();
+        missing.remove(3);
+        cases.push((missing, false));
+        cases.push((valid[..2].to_vec(), false));
+        let mut nested = valid.clone();
+        nested[2].content = vec![ContentBlock::ToolResult {
+            tool_use_id: "a".into(), content: vec![call("nested")], is_error: false,
+        }];
+        cases.push((nested, false));
+        let mut mixed = valid.clone();
+        mixed[2].content.push(ContentBlock::Text("new instruction".into()));
+        cases.push((mixed, false));
+        let mut failed_tool = valid.clone();
+        if let ContentBlock::ToolResult { is_error, .. } = &mut failed_tool[2].content[0] {
+            *is_error = true;
+        }
+        cases.push((failed_tool, true));
+
+        for (index, (messages, accepted)) in cases.into_iter().enumerate() {
+            let id = format!("causality-{index}");
+            let mut delivery = input(&id, ThreadDeliverySource::MaxConsultation,
+                messages.iter().map(ThreadMessage::from).collect(), timestamp(1));
+            delivery.mode = "max".into();
+            gateway.deliver(delivery)?;
+            let path = gateway.store.thread_file_path(&id)?;
+            let before = fs::read(&path)?;
+            assert_eq!(gateway.restore_consultation(&id, true).is_ok(), accepted,
+                "case {index}");
+            assert_eq!(fs::read(path)?, before, "restore must not repair stored evidence");
+        }
+        Ok(())
+    }
 
     #[test]
     fn consultation_restore_requires_matching_history_and_mode() -> Result<()> {
