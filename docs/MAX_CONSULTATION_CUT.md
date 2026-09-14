@@ -975,3 +975,11 @@ the full pre-commit and commit-msg entrypoints: whitespace/EOF/conflict/line-
 ending checks, private-key detection, cargo-check, cargo-fmt, Prettier and
 commit-message provenance. Full applicable gates, including security, must be
 restored after structural closure. No push or publication is certified here.
+
+The follow-up replaces `admit_assessed`'s arbitrary callback with typed
+`authorize_prepared`. Capture can no longer accidentally put disk work inside
+that callback. Staleness tests now observe the one-shot signal directly:
+changed source, insufficient coverage, resumed speech and a successor boundary
+must close it without authorization; disconnected execution must not advance
+the accepted prefix. These remain authored, unexecuted tests under the same
+structural embargo and checkpoint hook-bypass accounting above.

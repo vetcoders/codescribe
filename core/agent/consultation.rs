@@ -189,21 +189,19 @@ impl ConsultationInputQueue {
     /// Validate before authorizing a prepared candidate, not after tools start.
     /// The capture owner must hold its current ledger/observer state throughout
     /// this synchronous call and invalidate boundaries when speech resumes.
-    /// The callback may only authorize an already persisted handle: no I/O.
+    /// Accepts only an already persisted handle, never a caller callback.
     /// The returned handle remains the caller's responsibility: acknowledge it
     /// and retain it for completion, including if acknowledgement refuses.
-    /// CONTINUE, stale source and admission pressure never consume the front.
-    pub fn admit_assessed(
+    /// Stale source and lost authorization transport never consume the front.
+    pub fn authorize_prepared(
         &mut self,
-        assessment: ConsultationReadiness,
+        prepared: PreparedConsultationGroup,
         ledger: &crate::pipeline::acoustic_ledger::AcousticLedger,
         speech: &crate::audio::capture_receipt::AcousticSpeechEvidence,
-        admit: impl FnOnce(SealedConsultationInput) -> Result<PendingConsultationGroup>,
-    ) -> Result<Option<PendingConsultationGroup>> {
-        let ConsultationReadiness::Complete(input) = assessment else { return Ok(None); };
-        ensure!(self.ready(ledger, speech)?.as_ref() == Some(&input),
+    ) -> Result<PendingConsultationGroup> {
+        ensure!(self.ready(ledger, speech)?.as_ref() == Some(prepared.input()),
             "consultation assessment no longer matches current source");
-        admit(input).map(Some)
+        prepared.authorize()
     }
 
     /// Advance past measured silence only. Unknown audio, observed speech and
@@ -808,32 +806,44 @@ mod tests {
         let mut queue = ConsultationInputQueue::new("capture".into(), 1).unwrap();
         queue.append_boundary(64_000).unwrap();
         let first = queue.ready(&ledger, &speech).unwrap().unwrap();
-        let never_admit = |_: SealedConsultationInput| -> Result<PendingConsultationGroup> {
-            panic!("rejected assessment must not reach executor admission")
+        // Synthetic transport only: observe the authorization signal itself,
+        // not a callback whose behavior could hide premature execution.
+        let candidate = |input| {
+            let (authorize, observed) = oneshot::channel();
+            let (_reply, receipt) = oneshot::channel();
+            (PreparedConsultationGroup {
+                pending: PendingConsultationGroup {
+                    consultation_id: "synthetic".into(), input, reply: receipt,
+                }, authorize,
+            }, observed)
         };
-        assert!(queue.admit_assessed(ConsultationReadiness::Continue(first.clone()),
-            &ledger, &speech, never_admit).unwrap().is_none());
         assert_eq!(queue.pending_groups(), 1);
 
         let mut changed = first.clone();
         changed.text = "different assessed source".into();
-        assert!(queue.admit_assessed(ConsultationReadiness::Complete(changed),
-            &ledger, &speech, never_admit).is_err());
-        assert!(queue.admit_assessed(ConsultationReadiness::Complete(first.clone()),
-            &ledger, &consultation_speech_evidence(63_999), never_admit).is_err());
-        assert!(queue.admit_assessed(ConsultationReadiness::Complete(first.clone()),
-            &ledger, &speech, |_| anyhow::bail!("executor queue pressure")).is_err());
+        let (prepared, mut observed) = candidate(changed);
+        assert!(queue.authorize_prepared(prepared, &ledger, &speech).is_err());
+        assert_eq!(observed.try_recv(), Err(oneshot::error::TryRecvError::Closed));
+        let (prepared, mut observed) = candidate(first.clone());
+        assert!(queue.authorize_prepared(prepared,
+            &ledger, &consultation_speech_evidence(63_999)).is_err());
+        assert_eq!(observed.try_recv(), Err(oneshot::error::TryRecvError::Closed));
+        let (prepared, observed) = candidate(first.clone());
+        drop(observed);
+        assert!(queue.authorize_prepared(prepared, &ledger, &speech).is_err());
         assert_eq!(queue.ready(&ledger, &speech).unwrap(), Some(first.clone()));
 
         queue.resume_speech();
         assert!(queue.ready(&ledger, &speech).unwrap().is_none());
         assert!(!queue.append_boundary(64_000).unwrap(), "old tick cannot revive an assessment");
         assert!(queue.append_boundary(63_999).is_err());
-        assert!(queue.admit_assessed(ConsultationReadiness::Complete(first.clone()),
-            &ledger, &speech, never_admit).is_err());
+        let (prepared, mut observed) = candidate(first.clone());
+        assert!(queue.authorize_prepared(prepared, &ledger, &speech).is_err());
+        assert_eq!(observed.try_recv(), Err(oneshot::error::TryRecvError::Closed));
         queue.append_boundary(80_000).unwrap();
-        assert!(queue.admit_assessed(ConsultationReadiness::Complete(first),
-            &ledger, &speech, never_admit).is_err());
+        let (prepared, mut observed) = candidate(first);
+        assert!(queue.authorize_prepared(prepared, &ledger, &speech).is_err());
+        assert_eq!(observed.try_recv(), Err(oneshot::error::TryRecvError::Closed));
         let whole = queue.ready(&ledger, &speech).unwrap().unwrap();
         assert_eq!(whole.text(), "Iwo Iwo Iwo Iwo Iwo");
         assert_eq!(whole.members().len(), 5);
@@ -1089,10 +1099,7 @@ mod tests {
         let prepared = runtime.prepare_group(first.clone(), turn(&first.turn_id_for_group(), first.text())).unwrap();
         tokio::task::yield_now().await;
         assert!(requests.lock().unwrap().is_empty(), "persisted candidate has no execution authority");
-        let pending = input_queue.admit_assessed(
-            ConsultationReadiness::Complete(first.clone()), &ledger, &speech,
-            |_| prepared.authorize(),
-        ).unwrap().unwrap();
+        let pending = input_queue.authorize_prepared(prepared, &ledger, &speech).unwrap();
         assert_eq!(pending.input(), &first);
         input_queue.acknowledge(&pending).unwrap();
         assert_eq!(input_queue.pending_groups(), 1);
@@ -1101,10 +1108,7 @@ mod tests {
         assert_ne!(first.turn_id_for_group(), second.turn_id_for_group());
         entered.acquire().await.unwrap().forget();
         let prepared = runtime.prepare_group(second.clone(), turn(&second.turn_id_for_group(), second.text())).unwrap();
-        let later = input_queue.admit_assessed(
-            ConsultationReadiness::Complete(second.clone()), &ledger, &speech,
-            |_| prepared.authorize(),
-        ).unwrap().unwrap();
+        let later = input_queue.authorize_prepared(prepared, &ledger, &speech).unwrap();
         input_queue.acknowledge(&later).unwrap();
         assert_eq!(input_queue.pending_groups(), 0);
         assert_eq!(requests.lock().unwrap().len(), 1);

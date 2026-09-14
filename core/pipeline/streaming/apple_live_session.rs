@@ -222,17 +222,14 @@ impl LiveConsultationCapture {
                     }
                     // A stale assessment is expected after continuation. It
                     // never invokes the executor and never consumes the front.
-                    let assessment = ConsultationReadiness::Complete(prepared.input().clone());
-                    let accepted = self.queue.admit_assessed(assessment, &ledger, &speech,
-                        |_| prepared.authorize());
+                    let accepted = self.queue.authorize_prepared(prepared, &ledger, &speech);
                     match accepted {
-                        Ok(Some(pending)) => {
+                        Ok(pending) => {
                             let acknowledged = self.queue.acknowledge(&pending);
                             self.answers_pending += 1;
                             permit.send(LiveConsultationRequest::Finish(pending));
                             if acknowledged.is_err() { self.report_refusal(events); }
                         }
-                        Ok(None) => {}
                         Err(_) => self.report_refusal(events),
                     }
                 }
