@@ -12,7 +12,8 @@ use std::{collections::BTreeMap, io::Write as _, sync::Arc};
 use codescribe_core::llm::ai_formatting::{AiFormatResult, AiFormatStatus};
 use codescribe_core::llm::inline_format::{LabelProposalDisposition, OccurrenceLabelProposal};
 use codescribe_core::pipeline::acoustic_ledger::{
-    AcousticLedger, AcousticSerial, DocumentRevisionProvenance, IncrementalShapingInput,
+    AcousticLedger, AcousticSerial, ConsultationPresentationInput, ConsultationPresentationReceipt,
+    DocumentRevisionProvenance, IncrementalShapingInput,
     IncrementalShapingReceipt, LedgerSealReceipt, ManualDocumentRevisionReceipt, MutationReceipt,
     ObservationIdentity, ObservationProducer, OccurrenceIdentity, SealCoverageReceipt,
     TranscriptComparisonReceipt,
@@ -118,6 +119,9 @@ pub enum ReducerAction {
     ApplyUserRevision {
         receipt: ManualDocumentRevisionReceipt,
     },
+    ApplyConsultationPresentation {
+        receipt: ConsultationPresentationReceipt,
+    },
     /// One closed occurrence gained its deterministic presentation shape while
     /// the session is still open. Not a document edit: the receipt names one
     /// occurrence and the ledger label behind it is unchanged.
@@ -146,6 +150,7 @@ pub struct TranscriptRevision {
     pub rendered_text: String,
     pub seal_coverage: Option<SealCoverageReceipt>,
     pub comparison: Option<TranscriptComparisonReceipt>,
+    pub consultation_presentations: Vec<ConsultationPresentationReceipt>,
     // In-process reducer capability, never deserialized or exported as acoustic
     // evidence. Detects edits to any public snapshot field before publication.
     publication_digest: [u8; 32],
@@ -164,6 +169,7 @@ impl TranscriptRevision {
                     &self.rendered_text,
                     &self.seal_coverage,
                     &self.comparison,
+                    &self.consultation_presentations,
                 )
             )
             .as_bytes(),
@@ -183,6 +189,16 @@ impl TranscriptRevision {
         {
             return false;
         }
+        let mut grouped = std::collections::BTreeSet::new();
+        for receipt in &self.consultation_presentations {
+            if !ledger.consultation_presentations().contains(receipt)
+                || receipt.revision > self.revision
+                || !group_matches_entries(receipt, self.entries.iter())
+                || receipt.members.iter().any(|member| !grouped.insert(&member.occurrence))
+            {
+                return false;
+            }
+        }
         let mut left_context = String::new();
         for entry in &self.entries {
             if entry.occurrence.session != session
@@ -195,7 +211,12 @@ impl TranscriptRevision {
             {
                 return false;
             }
-            let presentation = if let Some(receipt) = &entry.presentation_receipt {
+            let group = self.consultation_presentations.iter().find(|receipt|
+                receipt.members.iter().any(|member| member.occurrence == entry.occurrence));
+            let presentation = if let Some(group) = group {
+                if entry.presentation_receipt.is_some() { return false; }
+                if group.members[0].occurrence == entry.occurrence { group.rendered_text.as_str() } else { "" }
+            } else if let Some(receipt) = &entry.presentation_receipt {
                 if receipt.occurrence != entry.occurrence
                     || receipt.session_id != session
                     || receipt.source_label != entry.label
@@ -244,6 +265,9 @@ impl TranscriptRevision {
                     entry.presentation_receipt.as_ref() == Some(receipt)
                         && receipt.revision == self.revision
                 })
+            }
+            ReducerAction::ApplyConsultationPresentation { receipt } => {
+                receipt.revision == self.revision && self.consultation_presentations.contains(receipt)
             }
             ReducerAction::ApplyUserRevision { receipt } => {
                 ledger.manual_document_revisions().contains(receipt)
@@ -420,6 +444,7 @@ pub struct TranscriptReducer {
     /// these shapes instead of replacing the document the way a single global
     /// override would.
     shaped_by_occurrence: BTreeMap<OccurrenceIdentity, ShapedPresentation>,
+    consultation_presentations: Vec<ConsultationPresentationReceipt>,
     revision: u64,
     ephemeral_preview: String,
     latest_seal_coverage: Option<SealCoverageReceipt>,
@@ -430,6 +455,18 @@ pub struct TranscriptReducer {
     terminal: bool,
     observed_seals: std::collections::BTreeSet<String>,
     applied_observations: Vec<ObservationIdentity>,
+}
+
+fn group_matches_entries<'a>(
+    receipt: &ConsultationPresentationReceipt,
+    entries: impl Iterator<Item = &'a TranscriptDocumentEntry>,
+) -> bool {
+    let (Some(first), Some(last)) = (receipt.members.first(), receipt.members.last()) else { return false; };
+    let entries = entries.filter(|entry| entry.occurrence >= first.occurrence
+        && entry.occurrence <= last.occurrence).collect::<Vec<_>>();
+    entries.len() == receipt.members.len() && entries.iter().zip(&receipt.members).all(|(entry, member)|
+        entry.occurrence == member.occurrence && entry.label == member.source_label
+            && entry.seal_receipt.is_some())
 }
 
 /// Preserve fragment bytes; only an absent inter-occurrence separator is added.
@@ -502,6 +539,7 @@ impl TranscriptReducer {
             rendered_text,
             seal_coverage: self.latest_seal_coverage.clone(),
             comparison: self.latest_comparison.clone(),
+            consultation_presentations: self.consultation_presentations.clone(),
             publication_digest: [0; 32],
         };
         snapshot.publication_digest = snapshot.digest();
@@ -676,8 +714,46 @@ impl TranscriptReducer {
             )
             .map_err(UserRevisionRefusal::LedgerRefusal)?;
         self.manual_rendered_text = Some(intent.rendered_text.clone());
+        self.consultation_presentations.clear();
+        self.shaped_by_occurrence.clear();
         self.manual_document_revision_receipt = Some(receipt.receipt_id.clone());
         Ok(self.revision_for_action(ReducerAction::ApplyUserRevision { receipt }))
+    }
+
+    /// Replace only the admitted sealed group. Later suffix revisions do not
+    /// invalidate its unchanged members; whole-document edits do.
+    pub fn apply_consultation_presentation(
+        &mut self,
+        ledger: &mut AcousticLedger,
+        input: ConsultationPresentationInput<'_>,
+    ) -> Result<TranscriptRevision, UserRevisionRefusal> {
+        if self.terminal {
+            return Err(UserRevisionRefusal::LedgerRefusal("consultation_capture_already_terminal"));
+        }
+        if self.manual_rendered_text.is_some() {
+            return Err(UserRevisionRefusal::LedgerRefusal("consultation_document_already_revised"));
+        }
+        let revision = self.revision.checked_add(1).ok_or(UserRevisionRefusal::RevisionExhausted)?;
+        let first = input.members.first().ok_or(UserRevisionRefusal::NoCommittedDocument)?;
+        if self.document_by_occurrence.keys().any(|occurrence|
+            occurrence.session != first.occurrence.session || occurrence.capture_epoch != first.occurrence.capture_epoch)
+        {
+            return Err(UserRevisionRefusal::SessionMismatch);
+        }
+        for member in input.members {
+            if !self.document_by_occurrence.get(&member.occurrence).is_some_and(|entry|
+                entry.label == member.source_label && entry.seal_receipt.as_ref() == Some(&member.seal_receipt))
+            {
+                return Err(UserRevisionRefusal::LedgerRefusal("consultation_source_not_projected"));
+            }
+        }
+        // Only the reducer chooses its next revision number, not the provider.
+        let receipt = ledger.record_consultation_presentation(ConsultationPresentationInput {
+            source_revision: self.revision, revision, ..input
+        }).map_err(UserRevisionRefusal::LedgerRefusal)?;
+        self.consultation_presentations.push(receipt.clone());
+        self.invalidate_stale_shapes();
+        Ok(self.revision_for_action(ReducerAction::ApplyConsultationPresentation { receipt }))
     }
 
     fn authenticated_revision_occurrences(
@@ -734,6 +810,11 @@ impl TranscriptReducer {
         // fight it for the same document.
         if self.manual_rendered_text.is_some() {
             return Err(IncrementalShapingRefusal::DocumentRevisionOwnsPresentation);
+        }
+        if self.consultation_presentations.iter().any(|receipt|
+            receipt.members.iter().any(|member| &member.occurrence == occurrence))
+        {
+            return Err(IncrementalShapingRefusal::AlreadyShaped);
         }
         let source_label = self
             .document_by_occurrence
@@ -1018,8 +1099,19 @@ impl TranscriptReducer {
     /// Drop dependent shapes when insertion/relabel changes their exact left
     /// context. Historical ledger receipts remain immutable and inspectable.
     fn invalidate_stale_shapes(&mut self) {
+        self.consultation_presentations.retain(|receipt|
+            group_matches_entries(receipt, self.document_by_occurrence.values()));
         let mut left = String::new();
         for (occurrence, entry) in &self.document_by_occurrence {
+            if let Some(group) = self.consultation_presentations.iter().find(|receipt|
+                receipt.members.iter().any(|member| &member.occurrence == occurrence))
+            {
+                self.shaped_by_occurrence.remove(occurrence);
+                if &group.members[0].occurrence == occurrence {
+                    append_exact_fragment(&mut left, &group.rendered_text);
+                }
+                continue;
+            }
             if self
                 .shaped_by_occurrence
                 .get(occurrence)
@@ -1045,6 +1137,11 @@ impl TranscriptReducer {
         occurrence: &OccurrenceIdentity,
         entry: &'entry TranscriptDocumentEntry,
     ) -> &'entry str {
+        if let Some(group) = self.consultation_presentations.iter().find(|receipt|
+            receipt.members.iter().any(|member| &member.occurrence == occurrence))
+        {
+            return if &group.members[0].occurrence == occurrence { &group.rendered_text } else { "" };
+        }
         match self.shaped_by_occurrence.get(occurrence) {
             Some(shaped) if shaped.source_label == entry.label => shaped.shaped_text.as_str(),
             _ => entry.label.as_str(),
@@ -1380,6 +1477,42 @@ impl PresentationEmitter {
             .ok_or(UserRevisionRefusal::AuthorityUnavailable)?;
         let mut ledger = ledger.lock().unwrap_or_else(|error| error.into_inner());
         self.commit_document_revision(&mut ledger, intent)
+    }
+
+    /// Publish a settled Agent answer through the same reducer, Bus and ordered
+    /// delivery worker. The caller must already own execution/history settlement.
+    pub fn apply_consultation_presentation(
+        &self,
+        input: ConsultationPresentationInput<'_>,
+    ) -> Result<UserRevisionCommit, UserRevisionRefusal> {
+        if self.literal_delivery() {
+            return Err(UserRevisionRefusal::FormatterUnavailable);
+        }
+        let ledger = self.acoustic_ledger.as_ref().ok_or(UserRevisionRefusal::AuthorityUnavailable)?;
+        let mut ledger = ledger.lock().unwrap_or_else(|error| error.into_inner());
+        let revision = self.session_state.lock().unwrap_or_else(|error| error.into_inner())
+            .apply_consultation_presentation(&mut ledger, input)?;
+        if !self.authenticates_revision(&revision, &ledger) {
+            return Err(UserRevisionRefusal::LedgerRefusal("publication_authentication_failed"));
+        }
+        if let Some(bus) = &self.transcript_bus {
+            let events = bus.publish_revision(&revision, &ledger);
+            if events.is_empty() {
+                return Err(UserRevisionRefusal::LedgerRefusal("bus_publication_refused"));
+            }
+            if let Some(callback) = &self.projection_callback {
+                for event in &events { callback(event); }
+            }
+        }
+        self.send_cmd(EmitterCmd::PublishCommittedRevision(revision.rendered_text.clone()));
+        let ReducerAction::ApplyConsultationPresentation { receipt } = &revision.action else {
+            unreachable!("group admission must mint a group action")
+        };
+        Ok(UserRevisionCommit {
+            session_id: receipt.members[0].occurrence.session.clone(),
+            source_revision: receipt.source_revision, revision: revision.revision,
+            rendered_text: revision.rendered_text.clone(), provenance_receipt: receipt.receipt_id.clone(),
+        })
     }
 
     /// The one whole-document revision corridor: reducer mints the revision
@@ -2208,6 +2341,78 @@ mod tests {
             label: label.to_string(),
             receipt,
         }
+    }
+
+    #[test]
+    fn group_answer_preserves_later_speech_and_authenticates_bus_publication() {
+        use codescribe_core::pipeline::acoustic_ledger::ConsultationPresentationMember;
+        let mut ledger = AcousticLedger::new();
+        let mut reducer = TranscriptReducer::default();
+        let mut members = Vec::new();
+        for (index, label) in ["iwo", "iwo", "dalsze słowa"].into_iter().enumerate() {
+            let occurrence = OccurrenceIdentity::new("group-live", 1,
+                index as u64 * 16_000, (index as u64 + 1) * 16_000);
+            let EngineEvent::LedgerMutation { observation, receipt, .. } =
+                admitted_mutation(&mut ledger, occurrence.clone(), index as u64, label) else { unreachable!() };
+            reducer.apply_ledger_mutation(&ledger, &observation, &receipt).unwrap();
+            if index < 2 {
+                ledger.schedule_frontier(occurrence.clone(), [ObservationProducer::Apple]);
+                ledger.note_frontier_return(&occurrence, ObservationProducer::Apple);
+                let seal = ledger.seal(&occurrence).unwrap().clone();
+                reducer.apply_ledger_seal(&seal).unwrap();
+                members.push(ConsultationPresentationMember {
+                    occurrence: occurrence.clone(), source_label: label.into(), seal_receipt: seal.receipt_id,
+                });
+                let _ = reducer.apply_incremental_shaping(&mut ledger, &occurrence);
+            }
+        }
+        let revision = reducer.apply_consultation_presentation(&mut ledger, ConsultationPresentationInput {
+            consultation_id: "Max", turn_id: "first", source_revision: 0, revision: 1,
+            members: &members, rendered_text: "Gotowe polecenie",
+        }).unwrap();
+        assert_eq!(revision.rendered_text, "Gotowe polecenie dalsze słowa");
+        assert_eq!(revision.entries.len(), 3);
+        assert!(revision.authenticates_publication(&ledger, "group-live"));
+        assert!(revision.entries[..2].iter().all(|entry| entry.presentation_receipt.is_none()));
+        assert_eq!(ledger.text_of(&members[0].occurrence), Some("iwo"));
+        assert_eq!(ledger.text_of(&members[1].occurrence), Some("iwo"));
+        assert!(!reducer.terminal);
+
+        let temp = tempfile::tempdir().unwrap();
+        let bus = TranscriptBus::open_at(TranscriptSession {
+            session_id: "group-live".into(), mode: TranscriptMode::Dictation,
+            has_latched_target: true, latched_target_is_self: false,
+        }, temp.path().join("groups.jsonl"), None).unwrap();
+        let mut forged = revision.clone();
+        forged.consultation_presentations[0].rendered_text = "forged".into();
+        forged.publication_digest = forged.digest();
+        assert!(bus.publish_revision(&forged, &ledger).is_empty());
+        let events = bus.publish_revision(&revision, &ledger);
+        assert_eq!(events.len(), 3);
+        for event in &events {
+            assert_eq!(event.reducer_action, "apply_consultation_presentation");
+            assert_eq!(event.rendered_text, revision.rendered_text);
+            assert_eq!(event.consultation_presentations[0].members.len(), 2);
+            assert_eq!(event.consultation_presentations[0].turn_id, "first");
+            assert!(!event.terminal && !event.lifecycle_terminal);
+            let encoded = serde_json::to_string(event).unwrap();
+            assert_eq!(serde_json::from_str::<TranscriptBusEvidenceEvent>(&encoded).unwrap(), *event);
+        }
+        assert!(bus.publish_revision(&revision, &ledger).is_empty());
+        assert!(reducer.apply_consultation_presentation(&mut ledger, ConsultationPresentationInput {
+            consultation_id: "Max", turn_id: "first", source_revision: 0, revision: 1,
+            members: &members, rendered_text: "duplicate",
+        }).is_err());
+        assert_eq!(ledger.consultation_presentations().len(), 1);
+
+        let later = OccurrenceIdentity::new("group-live", 1, 48_000, 64_000);
+        let EngineEvent::LedgerMutation { observation, receipt, .. } =
+            admitted_mutation(&mut ledger, later, 4, "jutro") else { unreachable!() };
+        let suffix = reducer.apply_ledger_mutation(&ledger, &observation, &receipt).unwrap();
+        assert_eq!(suffix.rendered_text, "Gotowe polecenie dalsze słowa jutro");
+        assert!(suffix.authenticates_publication(&ledger, "group-live"));
+        assert_eq!(bus.publish_revision(&suffix, &ledger).len(), 4);
+        assert_eq!(ledger.len(), 4);
     }
 
     fn raw_final(text: &str) -> EngineEvent {

@@ -11,7 +11,7 @@ use std::sync::Mutex;
 
 use chrono::{SecondsFormat, Utc};
 use codescribe_core::pipeline::acoustic_ledger::{
-    AcousticLedger, AcousticSerial, IncrementalShapingReceipt, SealCoverageReceipt,
+    AcousticLedger, AcousticSerial, ConsultationPresentationReceipt, IncrementalShapingReceipt, SealCoverageReceipt,
     TerminalFinalityRefusal, TranscriptComparisonReceipt,
 };
 use codescribe_core::pipeline::contracts::TranscriptSegment;
@@ -350,6 +350,45 @@ pub struct TranscriptBusEvidenceEvent {
     pub seal_coverage: Option<ProjectedSealCoverageReceipt>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub comparison: Option<ProjectedTranscriptComparisonReceipt>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub consultation_presentations: Vec<ProjectedConsultationPresentation>,
+}
+
+/// Group-level provenance, deliberately separate from per-word acoustic rows.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct ProjectedConsultationPresentation {
+    pub receipt_id: String,
+    pub consultation_id: String,
+    pub turn_id: String,
+    pub source_revision: u64,
+    pub revision: u64,
+    pub members: Vec<ProjectedConsultationMember>,
+    pub rendered_text: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct ProjectedConsultationMember {
+    pub session_id: String,
+    pub capture_epoch: u64,
+    pub sample_start: u64,
+    pub sample_end: u64,
+    pub source_label: String,
+    pub seal_receipt: String,
+}
+
+impl From<&ConsultationPresentationReceipt> for ProjectedConsultationPresentation {
+    fn from(receipt: &ConsultationPresentationReceipt) -> Self {
+        Self {
+            receipt_id: receipt.receipt_id.clone(), consultation_id: receipt.consultation_id.clone(),
+            turn_id: receipt.turn_id.clone(), source_revision: receipt.source_revision,
+            revision: receipt.revision, rendered_text: receipt.rendered_text.clone(),
+            members: receipt.members.iter().map(|member| ProjectedConsultationMember {
+                session_id: member.occurrence.session.clone(), capture_epoch: member.occurrence.capture_epoch,
+                sample_start: member.occurrence.sample_start, sample_end: member.occurrence.sample_end,
+                source_label: member.source_label.clone(), seal_receipt: member.seal_receipt.clone(),
+            }).collect(),
+        }
+    }
 }
 
 /// Where the stop path sent this take's committed document, as a state an
@@ -582,6 +621,7 @@ impl TranscriptBus {
             // manual edit and not a terminal revision: the words are unchanged,
             // the lifecycle is open, and the take is still being spoken.
             ReducerAction::ApplyIncrementalShaping { .. } => "apply_incremental_shaping",
+            ReducerAction::ApplyConsultationPresentation { .. } => "apply_consultation_presentation",
             ReducerAction::RecordContextMarker { .. } => "record_context_marker",
         };
         let is_user_revision = matches!(&revision.action, ReducerAction::ApplyUserRevision { .. });
@@ -684,6 +724,8 @@ impl TranscriptBus {
                     .comparison
                     .as_ref()
                     .map(ProjectedTranscriptComparisonReceipt::from),
+                consultation_presentations: revision.consultation_presentations.iter()
+                    .map(ProjectedConsultationPresentation::from).collect(),
             };
             if let Err(error) = self.write_evidence_event_locked(&mut writer, &event) {
                 self.log_write_error(error);
@@ -903,6 +945,7 @@ impl TranscriptBus {
                     lifecycle_terminal: true,
                     delivery,
                     acoustic_receipts: Vec::new(),
+                    consultation_presentations: Vec::new(),
                     seal_coverage: None,
                     comparison: None,
                 });

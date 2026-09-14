@@ -987,6 +987,7 @@ mod tests {
             terminal: true,
             lifecycle_terminal: true,
             delivery: TranscriptDelivery::ComposerPending,
+            consultation_presentations: Vec::new(),
             acoustic_receipts: vec![ProjectedAcousticReceipt {
                 acoustic_serial_version: 2,
                 acoustic_serial: "sha256:acoustic".to_string(),
