@@ -524,3 +524,20 @@ W1 remains open. Only source review and git diff --check are used; all executabl
 gates, generated bindings, installation and integration remain deferred. A local
 checkpoint bypasses the same complete hook entrypoints listed above, including
 detect-private-key security checking; it does not certify security or correctness.
+
+The public emitter group corridor now requires ConsultationGroupAnswer from
+the retained FIFO instead of caller-authored text/member parameters. It obtains
+consultation/turn identity from that correlated durable result; the reducer still
+owns current-member validation and revision numbers. A closed delivery worker
+refuses before mutating ledger presentation. This does not make publication and
+downstream delivery transactional if a worker fails after that admission check.
+
+The existing local HTTP Agent-lane fixture now includes a grouped Max turn after
+the first conversation turn, projects its sealed sources, adds later open speech,
+and applies the actual completed answer through emitter, Bus and delivery buffer.
+It asserts history count, source/group identity, untouched suffix, duplicate
+presentation refusal and closed-worker refusal without consuming the result.
+The HTTP request count remains exact. This cross-component test is authored but
+unexecuted under W1; its acoustic evidence is synthetic and its tool registry
+empty. It is not real microphone/clipboard proof. Production capture admission,
+semantic completion, durable pending input and stop/cancel settlement remain open.

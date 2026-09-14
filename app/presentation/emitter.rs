@@ -10,6 +10,7 @@
 use std::{collections::BTreeMap, io::Write as _, sync::Arc};
 
 use codescribe_core::llm::ai_formatting::{AiFormatResult, AiFormatStatus};
+use codescribe_core::agent::consultation::ConsultationGroupAnswer;
 use codescribe_core::llm::inline_format::{LabelProposalDisposition, OccurrenceLabelProposal};
 use codescribe_core::pipeline::acoustic_ledger::{
     AcousticLedger, AcousticSerial, ConsultationPresentationInput, ConsultationPresentationReceipt,
@@ -1480,18 +1481,32 @@ impl PresentationEmitter {
     }
 
     /// Publish a settled Agent answer through the same reducer, Bus and ordered
-    /// delivery worker. The caller must already own execution/history settlement.
+    /// delivery worker. Only the retained consultation's completed group result
+    /// can enter here; raw text cannot assert execution/history settlement.
     pub fn apply_consultation_presentation(
         &self,
-        input: ConsultationPresentationInput<'_>,
+        completed: &ConsultationGroupAnswer,
     ) -> Result<UserRevisionCommit, UserRevisionRefusal> {
         if self.literal_delivery() {
             return Err(UserRevisionRefusal::FormatterUnavailable);
         }
+        if !self.cmd_tx.lock().unwrap_or_else(|error| error.into_inner())
+            .as_ref().is_some_and(|sender| !sender.is_closed())
+        {
+            return Err(UserRevisionRefusal::LedgerRefusal("consultation_delivery_closed"));
+        }
         let ledger = self.acoustic_ledger.as_ref().ok_or(UserRevisionRefusal::AuthorityUnavailable)?;
         let mut ledger = ledger.lock().unwrap_or_else(|error| error.into_inner());
+        let answer = completed.answer();
         let revision = self.session_state.lock().unwrap_or_else(|error| error.into_inner())
-            .apply_consultation_presentation(&mut ledger, input)?;
+            .apply_consultation_presentation(&mut ledger, ConsultationPresentationInput {
+                consultation_id: &answer.delivery.backend_id,
+                turn_id: &answer.turn_id,
+                // The reducer chooses both revision numbers under its lock.
+                source_revision: 0, revision: 0,
+                members: completed.input().members(),
+                rendered_text: &answer.text,
+            })?;
         if !self.authenticates_revision(&revision, &ledger) {
             return Err(UserRevisionRefusal::LedgerRefusal("publication_authentication_failed"));
         }

@@ -60,7 +60,7 @@ async fn selected_agent_lane_roundtrip(lane: codescribe_core::config::RuntimeLlm
         .with_status(200)
         .with_header("content-type", "text/event-stream")
         .with_body(response_body)
-        .expect(1)
+        .expect(if lane == codescribe_core::config::RuntimeLlmLaneKind::Formatting { 2 } else { 1 })
         .create_async()
         .await;
 
@@ -138,6 +138,75 @@ async fn selected_agent_lane_roundtrip(lane: codescribe_core::config::RuntimeLlm
         assert_eq!(result.text, "pong");
         assert_eq!(result.delivery.message_count, 2);
         assert_eq!(result.delivery.backend_id, consultation.id());
+
+        // Exercise the group result through the public host capability and
+        // actual presentation owner, not a hand-built presentation receipt.
+        use codescribe::presentation::{PresentationEmitter, TranscriptBus, TranscriptMode, TranscriptSession};
+        use codescribe_core::agent::consultation::SealedConsultationInput;
+        use codescribe_core::ai_formatting::FormattingAgent;
+        use codescribe_core::audio::capture_receipt::{AcousticAvailability, AcousticSpeechEvidence, CaptureEvidenceIdentity};
+        use codescribe_core::pipeline::acoustic_ledger::{AcousticLedger, ObservationProducer, OccurrenceIdentity};
+        use codescribe_core::pipeline::contracts::{EngineEvent, EventSink};
+        use codescribe_core::stt::tail_provider::TailSampleRange;
+        let ledger = Arc::new(std::sync::Mutex::new(AcousticLedger::new()));
+        let delivery = Arc::new(tokio::sync::Mutex::new(String::new()));
+        let bus_path = data_dir.path().join("group-bus.jsonl");
+        let bus = Arc::new(TranscriptBus::open_at(TranscriptSession {
+            session_id: "http-capture".into(), mode: TranscriptMode::Dictation,
+            has_latched_target: true, latched_target_is_self: false,
+        }, bus_path.clone(), None).unwrap());
+        bus.publish_started();
+        let mut emitter = PresentationEmitter::new_with_authority(
+            Arc::clone(&delivery), None, None, Some(bus), Some(Arc::clone(&ledger)), None);
+        for (index, label) in ["Reply with the single word:", "pong"].into_iter().enumerate() {
+            let occurrence = OccurrenceIdentity::new("http-capture", 1,
+                index as u64 * 16_000, (index as u64 + 1) * 16_000);
+            let (mutation, seal) = {
+                let mut ledger = ledger.lock().unwrap();
+                let mutation = group_fixture_mutation(&mut ledger, occurrence.clone(), index as u64, label);
+                ledger.schedule_frontier(occurrence.clone(), [ObservationProducer::Apple]);
+                ledger.note_frontier_return(&occurrence, ObservationProducer::Apple);
+                (mutation, ledger.seal(&occurrence).unwrap().clone())
+            };
+            emitter.on_event(&mutation);
+            emitter.on_event(&EngineEvent::LedgerSeal { receipt: seal });
+        }
+        let speech = AcousticSpeechEvidence::measured(CaptureEvidenceIdentity::new("http-capture", 1),
+            "http-fixture", AcousticAvailability::Observed { observed_samples: 32_000 },
+            vec![TailSampleRange { session: "http-capture".into(), capture_epoch: 1,
+                sample_start: 0, sample_end: 32_000 }]);
+        let input = SealedConsultationInput::from_ledger(&ledger.lock().unwrap(), "http-capture", 1,
+            0..32_000, &speech).unwrap().unwrap();
+        let pending = consultation.enqueue_group(input.clone(), &runtime_settings).unwrap();
+        // The destination advances before applying the answer. Its open suffix
+        // is not part of the Agent request and must remain untouched.
+        let later = group_fixture_mutation(&mut ledger.lock().unwrap(),
+            OccurrenceIdentity::new("http-capture", 1, 32_000, 48_000), 2, "later words");
+        emitter.on_event(&later);
+        let completed = pending.finish().await.unwrap();
+        assert_eq!(completed.answer().delivery.message_count, 4);
+        assert_eq!(completed.input(), &input);
+        let mut closed = PresentationEmitter::new_with_authority(
+            Arc::new(tokio::sync::Mutex::new(String::new())), None, None, None,
+            Some(Arc::clone(&ledger)), None);
+        closed.finish().await;
+        assert_eq!(closed.apply_consultation_presentation(&completed),
+            Err(codescribe::presentation::emitter::UserRevisionRefusal::LedgerRefusal("consultation_delivery_closed")));
+        assert!(ledger.lock().unwrap().consultation_presentations().is_empty());
+        let commit = emitter.apply_consultation_presentation(&completed).unwrap();
+        assert_eq!(commit.rendered_text, "pong later words");
+        assert!(emitter.apply_consultation_presentation(&completed).is_err());
+        assert_eq!(ledger.lock().unwrap().consultation_presentations().len(), 1);
+        emitter.finish().await;
+        assert_eq!(delivery.lock().await.as_str(), "pong later words");
+        let rows = std::fs::read_to_string(bus_path).unwrap();
+        let row = rows.lines().map(|line| serde_json::from_str::<serde_json::Value>(line).unwrap())
+            .filter(|row| row["reducer_action"] == "apply_consultation_presentation").next_back().unwrap();
+        assert_eq!(row["rendered_text"], "pong later words");
+        assert_eq!(row["consultation_presentations"][0]["consultation_id"], consultation.id());
+        assert_eq!(row["consultation_presentations"][0]["turn_id"], input.turn_id_for_group());
+        assert_eq!(row["consultation_presentations"][0]["members"].as_array().unwrap().len(), 2);
+        consultation.close_if_idle().await.unwrap();
         mock.assert_async().await;
         return;
     }
@@ -179,6 +248,29 @@ async fn selected_agent_lane_roundtrip(lane: codescribe_core::config::RuntimeLlm
     assert_eq!(text.trim(), "pong");
     mock.assert_async().await;
     eprintln!("agent replied: {text}");
+}
+
+/// Synthetic acoustic evidence only; this does not claim a microphone roundtrip.
+fn group_fixture_mutation(
+    ledger: &mut codescribe_core::pipeline::acoustic_ledger::AcousticLedger,
+    occurrence: codescribe_core::pipeline::acoustic_ledger::OccurrenceIdentity,
+    request: u64,
+    label: &str,
+) -> codescribe_core::pipeline::contracts::EngineEvent {
+    use codescribe_core::pipeline::acoustic_ledger::{AcousticEvidence, EnergyCalibration,
+        ObservationIdentity, ObservationProducer};
+    let calibration = EnergyCalibration::new("http-fixture", 1.0, 1);
+    let evidence = AcousticEvidence { occurrence: occurrence.clone(), duration_ms: 1_000.0,
+        energy_integral: 10.0, mean_rms_dbfs: -12.0, peak_dbfs: -3.0,
+        vad_open_sample: Some(occurrence.sample_start), vad_close_sample: Some(occurrence.sample_end),
+        evidence_calibration_version: calibration.version.clone() };
+    assert!(ledger.qualify(&evidence, &calibration).is_qualified());
+    let observation = ObservationIdentity::new(ObservationProducer::Apple, request, 0, occurrence);
+    let receipt = ledger.admit(&observation, label);
+    assert!(receipt.grants_mutation());
+    codescribe_core::pipeline::contracts::EngineEvent::LedgerMutation {
+        observation, label: label.to_string(), receipt,
+    }
 }
 
 #[tokio::test]
