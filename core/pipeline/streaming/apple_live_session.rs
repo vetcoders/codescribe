@@ -471,6 +471,10 @@ const fn formatter_lane_is_armed(
 /// `schedule_formatter_after_terminal_label` cannot reserve a permit and no
 /// `Formatter` observer is ever scheduled on the ledger frontier. The turn is
 /// formatted once at terminal processing by the controller instead.
+/// Max also refuses this occurrence lane: consultation admission reads sealed
+/// groups, so scheduling its execution as a pre-seal observer would reverse
+/// that dependency and could run tools on isolated words. Its retained Agent
+/// capability belongs to the grouped consultation path, not this sender.
 fn live_formatter_lane_is_armed(
     capture_turn: CaptureTurnIntent,
     ai_formatting_enabled: bool,
@@ -478,6 +482,7 @@ fn live_formatter_lane_is_armed(
     lane_available: impl FnOnce() -> bool,
 ) -> bool {
     capture_turn.schedules_live_formatting()
+        && !matches!(policy, FormattingPolicy::Max)
         && formatter_lane_is_armed(ai_formatting_enabled, policy, true)
         && lane_available()
 }
@@ -4646,12 +4651,19 @@ mod c13a_lifecycle_tests {
             true,
         ));
 
+        // Keep a healthy receiver alive: Max must refuse this lane because of
+        // its policy, not because the transport happens to be unavailable.
+        let (max_tx, mut max_rx) = mpsc::channel(1);
+        let max_formatter = live_formatter_lane_is_armed(
+            CaptureTurnIntent::HandsFree, true, FormattingPolicy::Max, || true,
+        ).then_some(max_tx);
         for (session, formatter) in {
             let (closed_tx, closed_rx) = mpsc::channel(1);
             drop(closed_rx);
             [
                 ("formatter-disabled", None),
                 ("formatter-closed", Some(closed_tx)),
+                ("max-grouped-consultation", max_formatter),
             ]
         } {
             let (ev_tx, _ev_rx) = mpsc::unbounded_channel();
@@ -4672,6 +4684,7 @@ mod c13a_lifecycle_tests {
             );
             assert_eq!(state.formatter_awaiting_completion, 0);
         }
+        assert!(max_rx.try_recv().is_err(), "Max must not enqueue an occurrence job");
     }
 
     #[test]
@@ -9860,6 +9873,8 @@ mod composer_turn_formatter_arming_tests {
                 FormattingPolicy::Correction,
             ),
             (CaptureTurnIntent::HandsFree, true, FormattingPolicy::Off),
+            (CaptureTurnIntent::HandsFree, true, FormattingPolicy::Max),
+            (CaptureTurnIntent::SingleTurn, true, FormattingPolicy::Max),
         ] {
             assert!(!live_formatter_lane_is_armed(
                 intent,
