@@ -587,7 +587,7 @@ def atomic_json(path: Path, payload: dict[str, Any]) -> None:
 def read_json(path: Path) -> dict[str, Any] | None:
     try:
         value = json.loads(path.read_text(encoding="utf-8"))
-    except (FileNotFoundError, json.JSONDecodeError, OSError):
+    except (UnicodeDecodeError, json.JSONDecodeError, OSError):
         return None
     return value if isinstance(value, dict) else None
 
@@ -673,7 +673,12 @@ class SessionLease:
         self._acquire_lock()
         try:
             previous = read_json(self.path)
-            if previous and not self._matches(previous):
+            if previous is None and self.path.exists():
+                raise ValueError(
+                    f"lease {self.lease_id} has unreadable recovery state; "
+                    "preserved on disk, attachment refused"
+                )
+            if previous is not None and not self._matches(previous):
                 raise ValueError(
                     f"lease {self.lease_id} belongs to a different provider session or bus"
                 )

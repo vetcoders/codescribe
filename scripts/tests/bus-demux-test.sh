@@ -219,6 +219,24 @@ assert restored.resumed and restored.cursor == 17, restored.attach_receipt()
 assert restored.name == "iwo", restored.attach_receipt()
 restored.close()
 
+# A damaged state record is not a fresh session. Preserve its bytes and refuse
+# attachment rather than skipping unread commands by starting at EOF.
+for damaged in (b'{"cursor":', b'\xff\xfe', b'{}', b'[]'):
+    restored.path.write_bytes(damaged)
+    assert module.active_leases(Path(sys.argv[3]), 120) == []
+    try:
+        module.SessionLease(
+            root=Path(sys.argv[3]), provider="codex", provider_session_id="active-session",
+            name="iwo", bus=Path(sys.argv[2]), requested_id=None, ttl_seconds=120,
+            follow_from_end=True,
+        )
+    except ValueError as error:
+        assert "unreadable" in str(error) or "different provider" in str(error), error
+    else:
+        raise AssertionError("damaged recovery state was overwritten")
+    assert restored.path.read_bytes() == damaged
+module.atomic_json(restored.path, saved)
+
 # --become may bind a name after attach; recovery with that name must reuse the
 # provider-session cursor rather than derive a second lease from the new name.
 greeting = module.SessionLease(
