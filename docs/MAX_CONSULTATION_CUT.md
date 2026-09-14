@@ -1367,3 +1367,35 @@ The corrected `cargo test -p codescribe-core --lib agent::thread_store::consulta
 (`32-consultation-path-tests-core.log`, same W3 log directory). Runtime source,
 Semgrep rules and suppressions are unchanged; the three scanner findings
 remain an explicit acceptance obligation rather than a claimed fixed exploit.
+
+### Bounded Semgrep false-positive disposition — 2026-09-14
+
+The integrator now dispositions the three directory-sync reports as false
+positives for the reported content-access/path-traversal vulnerability. This
+is an agent review decision, not a Founder decision or a new security fix.
+The fresh JSON scan `35-consultation-semgrep.json` identifies rule revision
+`44TbL2Y` / `rv_id=1415500`; its dataflow traces originate at parameters
+`store` and `path`, not at a demonstrated HTTP input. All three reported
+descriptors are opened read-only, used immediately for `sync_all`, then
+dropped without reading or writing content. The configured storage root is
+intentional; children are fixed names or validated IDs, with canonical-child
+checks and no-follow state reads as exercised by the 15 passing tests.
+
+Three explicit `nosemgrep` annotations name only
+`rust.actix.path-traversal.tainted-path.tainted-path` at those exact calls.
+Each has an adjacent rationale. No file, function, other rule or content
+access is excluded; no production expression changed. This supersedes the
+earlier pending disposition and no-suppression observations. It is not a
+claim of resistance to concurrent directory replacement. Re-review the
+exceptions if path provenance or descriptor use changes. Full native
+`make check` is running again in `36-make-check-triaged.log`; a green result
+must be reported as including these reviewed exceptions, never as an
+unsuppressed zero-finding security scan.
+
+The full `36-make-check-triaged.log` completed with exit 0: formatting,
+workspace/all-target Clippy, Semgrep with the three reviewed exceptions,
+136-variable registry and 34-target gate ledger passed. The independent
+`37-consultation-unfiltered.json` scan with `--disable-nosem` still reports
+exactly the same three rule matches, now at lines 219, 229 and 264. The
+exceptions change reporting only; findings remain reproducible. This scoped
+control ran 100 rules on one file, not a second whole-repository scan.
