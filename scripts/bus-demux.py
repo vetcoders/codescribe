@@ -9,15 +9,15 @@ path below, not from a source checkout::
     --provider codex --session <provider-session-id> --name james --drafts --follow
 
 ``--provider`` plus ``--session`` enables a collision-safe lease, heartbeat,
-and byte cursor. Re-running the same command resumes after the last consumed
-bus line, including lines appended while the provider session was recovering.
+and byte cursor. Re-running the same command replays unacknowledged envelopes
+and resumes bus consumption. Use --ack with the same provider/session only
+after the receiving conversation accepts the complete delivery.
 Drafts are useful for live replies; only a ``transcript_sealed`` envelope sets
 ``state_change_allowed`` to true.
 
-Named routing requires an exact name in the immutable snapshot. When it is
-absent, this bridge deliberately does not guess an audience; whether unnamed
-sealed speech should later broadcast or await a human routing choice remains a
-product decision outside this consumer.
+Exact names take precedence. A unique one-edit opening name can match a
+registered recipient; competing matches produce a non-executable ambiguity
+notice. The original transcript is never rewritten.
 """
 
 from __future__ import annotations
@@ -1214,7 +1214,7 @@ def main() -> int:
         help="exit zero only when the whole canonical Bus proves installation-safe",
     )
     parser.add_argument(
-        "--name", default=None, help="bound agent name; exact snapshot match required"
+        "--name", default=None, help="bound name; exact or unique bounded opening-name match"
     )
     parser.add_argument("--all", action="store_true", help="promiscuous: every seal")
     parser.add_argument(

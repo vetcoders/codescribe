@@ -60,6 +60,37 @@ This mechanism has demonstrated delivery during an active turn. It does not
 establish wakeup after a final answer. Report that distinction and keep an
 active listening turn open when post-final wakeup is unavailable.
 
+## Acknowledge conversation receipt
+
+The session-scoped helper retains emitted envelopes until explicit receipt.
+After this conversation has received and accepted the complete envelope,
+retain its delivery ID and disposition in the conversation record, then run:
+
+```bash
+python3 ~/.codescribe/agent-bridge/runtime/bin/bus-demux.py \
+  --provider codex --session SESSION_ID --ack DELIVERY_ID
+```
+
+Use the actual provider/session and the same `--bus`/`--bridge-home` overrides
+as the follower. This command does not start another reader. A successful
+`acknowledged` receipt proves acceptance was recorded, not that a command was
+executed. Keep execution disposition separately; do not repeat a completed
+action when its envelope is replayed.
+
+Acknowledge accepted drafts and routing-ambiguity notices too, without
+promoting them to permission for state changes. Report ambiguous recipients
+and ask for a clear address instead of choosing one. Never acknowledge from
+the stdout pump before the conversation receives the message, from a delivery
+ID alone, or after a truncated/incomplete tool result. Unaccepted envelopes
+remain in the lease's ordered `pending` array and replay on reattachment.
+
+At 256 pending envelopes or 8 MiB, continuous following waits for receipts
+and resumes after space is freed. A non-following read exits 4; acknowledge
+accepted items and resume the same lease. Do not clear the queue by deleting
+lease files, creating another session, or acknowledging unread messages.
+If the installed helper lacks `--ack`, report a generation mismatch; do not
+pretend its stdout is durable conversational delivery.
+
 ## Diagnostic readers (observation only)
 
 `scripts/bus-tail.sh --all` combines the bus and application log for diagnosis.

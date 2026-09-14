@@ -1,6 +1,5 @@
 ---
 name: codescribe
-version: 0.5.0
 description: >
   Connects this chat agent to Codescribe's Transcript Bus with a named mailbox,
   provider wakeup and verified voice delivery. Also guides explicit CLI
@@ -8,9 +7,11 @@ description: >
   "named agent on the transcript bus", "transcribe last", or "dyktowanie do CLI".
   Editing this skill or the app is a repository task, not an instruction to
   start another listener.
-loctree_value: "primary repo map for structural/literal repository work"
-aicx_value: "intent, session, and decision-context retrieval"
-dogfooding: "required for repo-impacting work"
+metadata:
+  version: "0.5.1"
+  loctree_value: "primary repo map for structural/literal repository work"
+  aicx_value: "intent, session, and decision-context retrieval"
+  dogfooding: "required for repo-impacting work"
 ---
 
 <!-- fleet-imperative: v3 -->
@@ -100,6 +101,8 @@ include successful delivery, unavailable wakeup, and seal refusal.
    cursor, helper path, follower handle, and monitor handle.
 5. Verify a fresh named take reaches this conversation without a typed nudge.
    Distinguish live receipt from terminal permission; respond accordingly.
+   After accepting each complete envelope, acknowledge its delivery ID as
+   described in [Monitor](references/monitor.md#acknowledge-conversation-receipt).
 6. On recovery, restore both follower continuity and notification delivery.
    On an explicit stop, close owned handles and report listening stopped.
 
@@ -130,6 +133,7 @@ Automatic voice attachment is complete only when:
 - [ ] Monitor receipt identifies the mechanism that actually wakes this agent.
 - [ ] A fresh named utterance produces an agent reply without a typed nudge.
 - [ ] Draft/seal boundaries are preserved; recovery retains cursor and owner.
+- [ ] Accepted delivery IDs are acknowledged; unaccepted envelopes survive restart.
 
 Report the actual disposition: `attached_unverified`, `active_polling`,
 `listening_verified`, `blocked`, or `stopped`. These are reporting labels,
