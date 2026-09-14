@@ -1162,6 +1162,11 @@ impl RecordingController {
         Ok(selected.clone())
     }
 
+    /// Subscribe to invalidations; the broker remains the pending-state owner.
+    pub fn subscribe_max_approval_changes(&self) -> tokio::sync::watch::Receiver<u64> {
+        self.max_approvals.subscribe_changes()
+    }
+
     /// Read pending Max cards without constructing a session or touching the mic.
     pub async fn pending_max_tool_approvals(&self) -> Vec<codescribe_core::agent::ToolApprovalRequest> {
         let selected = self.max_consultation.lock().await;

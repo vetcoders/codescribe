@@ -962,6 +962,7 @@ final class SettingsViewModel: ObservableObject {
   @Published private(set) var maxToolApprovals: [PendingToolApproval] = []
   @Published private(set) var maxApprovalBusy = false
   @Published private(set) var maxApprovalError: String?
+  private var maxApprovalRefreshRequested = false
   @Published private(set) var keyStatus: CsKeyStatus
   @Published private(set) var providers: [CsProviderOption]
   /// Speech-to-text lanes (File, Live): atomic endpoint + key rows on Providers.
@@ -1695,15 +1696,20 @@ final class SettingsViewModel: ObservableObject {
   }
 
   func refreshMaxToolApprovals() async {
-    guard let engine, !maxApprovalBusy else { return }
+    guard let engine else { return }
+    maxApprovalRefreshRequested = true
+    guard !maxApprovalBusy else { return }
     maxApprovalBusy = true
     defer { maxApprovalBusy = false }
-    do {
-      maxToolApprovals = try await engine.pendingMaxToolApprovals()
-      maxApprovalError = nil
-    } catch {
-      maxApprovalError = error.localizedDescription
-    }
+    repeat {
+      maxApprovalRefreshRequested = false
+      do {
+        maxToolApprovals = try await engine.pendingMaxToolApprovals()
+        maxApprovalError = nil
+      } catch {
+        maxApprovalError = error.localizedDescription
+      }
+    } while maxApprovalRefreshRequested
   }
 
   func resolveMaxToolApproval(
@@ -1713,7 +1719,6 @@ final class SettingsViewModel: ObservableObject {
       maxToolApprovals.contains(request)
     else { return }
     maxApprovalBusy = true
-    defer { maxApprovalBusy = false }
     do {
       let resolved = try await engine.resolveMaxToolApproval(
         request, approved: approved, remember: remember
@@ -1722,6 +1727,10 @@ final class SettingsViewModel: ObservableObject {
       maxToolApprovals = try await engine.pendingMaxToolApprovals()
     } catch {
       maxApprovalError = error.localizedDescription
+    }
+    maxApprovalBusy = false
+    if maxApprovalRefreshRequested {
+      await refreshMaxToolApprovals()
     }
   }
 

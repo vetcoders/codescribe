@@ -85,32 +85,7 @@ struct CreatorPanel: View {
       .padding(.top, CSSpace.control)
 
       if model.maxConsultationEnabled || !model.maxToolApprovals.isEmpty {
-        SettingsSectionLabel("Max permissions")
-          .padding(.top, CSSpace.section)
-        Button(model.maxApprovalBusy ? "Refreshing…" : "Refresh pending requests") {
-          Task { await model.refreshMaxToolApprovals() }
-        }
-        .disabled(model.maxApprovalBusy)
-        .padding(.top, CSSpace.control)
-        ForEach(model.maxToolApprovals) { request in
-          ToolApprovalCard(
-            request: request,
-            reject: {
-              Task { await model.resolveMaxToolApproval(request, approved: false) }
-            },
-            allowOnce: {
-              Task { await model.resolveMaxToolApproval(request, approved: true) }
-            },
-            allowAlways: {
-              Task { await model.resolveMaxToolApproval(request, approved: true, remember: true) }
-            }
-          )
-          .disabled(model.maxApprovalBusy || model.maxApprovalError != nil)
-          .padding(.top, CSSpace.control)
-        }
-        if let error = model.maxApprovalError {
-          Text(error).foregroundStyle(CSColor.amber)
-        }
+        MaxApprovalCards(model: model).padding(.top, CSSpace.section)
       }
 
       SettingsSectionLabel("Quick start")
@@ -163,6 +138,39 @@ struct CreatorPanel: View {
           ?? FormattingPolicyOption.correction.rawValue
       },
       set: { model.setFormattingLevel($0) })
+  }
+}
+
+/// The same permission cards are used by settings recovery and automatic display.
+struct MaxApprovalCards: View {
+  @ObservedObject var model: SettingsViewModel
+
+  var body: some View {
+    VStack(alignment: .leading, spacing: CSSpace.control) {
+      SettingsSectionLabel("Max permissions")
+      Button(model.maxApprovalBusy ? "Refreshing…" : "Refresh pending requests") {
+        Task { await model.refreshMaxToolApprovals() }
+      }
+      .disabled(model.maxApprovalBusy)
+      ForEach(model.maxToolApprovals) { request in
+        ToolApprovalCard(
+          request: request,
+          reject: {
+            Task { await model.resolveMaxToolApproval(request, approved: false) }
+          },
+          allowOnce: {
+            Task { await model.resolveMaxToolApproval(request, approved: true) }
+          },
+          allowAlways: {
+            Task { await model.resolveMaxToolApproval(request, approved: true, remember: true) }
+          }
+        )
+        .disabled(model.maxApprovalBusy || model.maxApprovalError != nil)
+      }
+      if let error = model.maxApprovalError {
+        Text(error).foregroundStyle(CSColor.amber)
+      }
+    }
   }
 }
 

@@ -320,6 +320,20 @@ by AgentSession's existing approval timeout and denies execution; do not install
 this intermediate state. Automatic notification/recovery, executable integration
 tests and generated bindings are still owed after W2.
 
+Automatic permission display is now wired in source. ApprovalBroker emits a
+coalescing watch invalidation on pending-state changes, not token broadcast
+events. A late subscriber is initially marked changed; listener registration
+also requests a fresh snapshot. The controller-created forwarder terminates
+when its broker closes. Swift's app-lifetime listener refreshes a Max permission
+projection and passively reveals the existing Agent window when cards or a
+read error exist, without focusing the composer or changing chat selection.
+The same cards render in a separately labelled Max area and settings recovery.
+Notifications arriving during a snapshot/verdict request schedule another read
+rather than disappearing behind the busy guard. Authored tests cover late and
+coalesced notifications, re-entrant snapshot invalidation and separating Max
+refresh from chat summon. These tests remain unrun; first generated-binding,
+compile and real permission-window proof are still outstanding.
+
 These checkpoints are structural W1 work. Checkpoint hooks are bypassed in full:
 trailing-whitespace, end-of-file-fixer, check-merge-conflict, mixed-line-ending,
 detect-private-key (security), cargo-check, cargo-fmt, prettier and

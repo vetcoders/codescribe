@@ -76,9 +76,18 @@ impl GrantTarget {
 /// Holds every call awaiting a decision. Shared behind an `Arc` because a
 /// pending call's own guard must be able to evict its entry after the FFI
 /// object has moved on.
-#[derive(Default)]
 pub struct ApprovalBroker {
     pending: Mutex<HashMap<ApprovalKey, PendingApproval>>,
+    changed: tokio::sync::watch::Sender<u64>,
+}
+
+impl Default for ApprovalBroker {
+    fn default() -> Self {
+        Self {
+            pending: Mutex::new(HashMap::new()),
+            changed: tokio::sync::watch::channel(0).0,
+        }
+    }
 }
 
 /// Recover a poisoned lock instead of unwinding across the FFI boundary. A
@@ -93,6 +102,19 @@ fn recover<'a, T>(
 }
 
 impl ApprovalBroker {
+    /// Coalescing invalidation signal, not an event log or approval authority.
+    /// Subscribers always re-read pending state; late subscribers get an initial
+    /// invalidation so an already-pending card cannot remain invisible.
+    pub fn subscribe_changes(&self) -> tokio::sync::watch::Receiver<u64> {
+        let mut receiver = self.changed.subscribe();
+        receiver.mark_changed();
+        receiver
+    }
+
+    fn notify_changed(&self) {
+        self.changed.send_modify(|revision| *revision = revision.wrapping_add(1));
+    }
+
     /// Park a tool call and hand back the future its execution awaits.
     ///
     /// The future resolves to the user's verdict, or to `false` if the sender is
@@ -133,6 +155,7 @@ impl ApprovalBroker {
             pending.insert(key.clone(), PendingApproval {
                 request, tx, grant_target, token: Arc::clone(&token),
             });
+            self.notify_changed();
         }
         // Capture the guard before polling: dropping an unpolled future must
         // also evict its registration.
@@ -176,6 +199,7 @@ impl ApprovalBroker {
         let Some(entry) = recover(self.pending.lock()).remove(&key) else {
             return false;
         };
+        self.notify_changed();
         // Persist BEFORE resuming the call so a granted tool never races its
         // own next invocation against the write. Grant failure downgrades to
         // allow-once (the approval itself was explicit), never to a deny.
@@ -208,6 +232,7 @@ impl ApprovalBroker {
         for key in keys {
             pending.remove(&key);
         }
+        self.notify_changed();
     }
 }
 
@@ -229,6 +254,7 @@ impl Drop for PendingApprovalGuard {
             .is_some_and(|entry| Arc::ptr_eq(&entry.token, &self.token))
         {
             pending.remove(&self.key);
+            self.broker.notify_changed();
         }
     }
 }
@@ -244,6 +270,25 @@ mod tests {
             origin: ToolOrigin::Native, risk: crate::agent::ToolRisk::Mutating,
             summary: "write a file".into(), command: None, cwd: None, paths: vec![],
         }
+    }
+
+    #[tokio::test]
+    async fn change_subscription_recovers_late_and_coalesced_notifications() {
+        let broker = Arc::new(ApprovalBroker::default());
+        let pending = broker.begin(request());
+        let mut changes = broker.subscribe_changes();
+        assert!(changes.has_changed().unwrap());
+        changes.borrow_and_update();
+        assert_eq!(broker.pending_for_thread("thread").len(), 1);
+        drop(pending);
+        let successor = broker.begin(request());
+        // Multiple changes may collapse, but the current pending owner survives.
+        assert!(changes.has_changed().unwrap());
+        changes.borrow_and_update();
+        assert_eq!(broker.pending_for_thread("thread").len(), 1);
+        drop(successor);
+        assert!(changes.has_changed().unwrap());
+        assert!(broker.pending_for_thread("thread").is_empty());
     }
 
     #[tokio::test]

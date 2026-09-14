@@ -52,6 +52,8 @@ type SharedAppActionListener = Arc<RwLock<Option<Arc<dyn CsAppActionListener>>>>
 pub trait CsAppActionListener: Send + Sync {
     /// Bring the Agent surface forward. UI-only — must not touch the mic.
     fn on_show_agent(&self);
+    /// Pending Max permission state changed; re-read its authoritative snapshot.
+    fn on_max_approvals_changed(&self);
 }
 
 /// Capture ownership sentinel: no lane currently owns the microphone.
@@ -197,6 +199,7 @@ fn ensure_controller(
     let mut guard = controller_store.lock().unwrap_or_else(|e| e.into_inner());
     let controller = guard.get_or_insert_with(|| {
         let controller = Arc::new(RecordingController::new_without_keychain());
+        spawn_max_approval_forwarder(&controller, handle.clone());
         spawn_event_forwarder(Arc::clone(&controller), handle);
         controller
     });
@@ -204,6 +207,20 @@ fn ensure_controller(
         controller.request_capture_shutdown();
     }
     Arc::clone(controller)
+}
+
+/// Forward coalesced state invalidations, not lossy token-stream events.
+fn spawn_max_approval_forwarder(controller: &RecordingController, handle: Handle) {
+    let mut changes = controller.subscribe_max_approval_changes();
+    handle.spawn(async move {
+        while changes.changed().await.is_ok() {
+            let listener = shared_app_action_listener().read()
+                .unwrap_or_else(|error| error.into_inner()).as_ref().map(Arc::clone);
+            if let Some(listener) = listener {
+                listener.on_max_approvals_changed();
+            }
+        }
+    });
 }
 
 /// Snapshot the shared controller WITHOUT creating one. Query surfaces use this
@@ -821,7 +838,10 @@ impl CodescribeHotkeys {
     pub fn set_app_action_listener(&self, listener: Arc<dyn CsAppActionListener>) {
         let store = shared_app_action_listener();
         let mut guard = store.write().unwrap_or_else(|e| e.into_inner());
-        *guard = Some(listener);
+        *guard = Some(Arc::clone(&listener));
+        drop(guard);
+        // Registration may happen after the last change notification.
+        listener.on_max_approvals_changed();
     }
 
     /// Prompt-free warmup for the shared recording controller.
@@ -1605,6 +1625,7 @@ mod app_action_tests {
     }
 
     impl CsAppActionListener for CountingAppActionListener {
+        fn on_max_approvals_changed(&self) {}
         /// Count ShowAgent UI callbacks (no recording side effects).
         fn on_show_agent(&self) {
             self.show_agent_calls.fetch_add(1, Ordering::SeqCst);

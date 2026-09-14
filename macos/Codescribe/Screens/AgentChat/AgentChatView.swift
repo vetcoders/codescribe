@@ -6,6 +6,7 @@ import SwiftUI
 /// streamed `streamReply` turn through the injected `AgentChatEngine`.
 struct AgentChatView: View {
   @StateObject var store: AgentChatStore
+  private let maxPermissions: SettingsViewModel?
   /// Rail state survives window close/reopen and app relaunch. Collapse is
   /// the NATIVE split-view collapse (`columnVisibility = .detailOnly`) — the
   /// same mechanism the Settings window uses, so both windows speak one
@@ -20,8 +21,9 @@ struct AgentChatView: View {
   @AppStorage("AgentChat.alwaysOnTop.v1") private var isPinned = false
   @State private var columnVisibility: NavigationSplitViewVisibility = .all
 
-  init(store: AgentChatStore) {
+  init(store: AgentChatStore, maxPermissions: SettingsViewModel? = nil) {
     _store = StateObject(wrappedValue: store)
+    self.maxPermissions = maxPermissions
   }
 
   var body: some View {
@@ -45,6 +47,11 @@ struct AgentChatView: View {
       )
     }
     .navigationSplitViewStyle(.balanced)
+    .safeAreaInset(edge: .bottom) {
+      if let maxPermissions {
+        MaxPermissionPresentation(model: maxPermissions)
+      }
+    }
     .csFocusPolicy()
     .developerPowerCorner(padding: 8)
     .background(CSColor.glassBase)
@@ -69,6 +76,21 @@ struct AgentChatView: View {
     withAnimation {
       sidebarExpanded.toggle()
       columnVisibility = sidebarExpanded ? .all : .detailOnly
+    }
+  }
+}
+
+/// Separate Max permission projection; it never changes the selected chat thread.
+private struct MaxPermissionPresentation: View {
+  @ObservedObject var model: SettingsViewModel
+
+  var body: some View {
+    if !model.maxToolApprovals.isEmpty || model.maxApprovalError != nil {
+      ScrollView {
+        MaxApprovalCards(model: model)
+          .padding(CSSpace.card)
+      }
+      .frame(maxHeight: 260)
     }
   }
 }

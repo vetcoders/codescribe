@@ -6,6 +6,30 @@ import XCTest
 
 @MainActor
 final class SettingsTruthTests: XCTestCase {
+  func testMaxApprovalInvalidationDuringReadIsNotLost() async {
+    let request = PendingToolApproval(
+      callID: "call", sessionID: "session", threadID: "consultation",
+      tool: "write_file", server: "native", risk: "mutating", summary: "write",
+      command: nil, cwd: nil, paths: []
+    )
+    var reads = 0
+    var model: SettingsViewModel!
+    model = SettingsViewModel(
+      engine: MockSettingsEngine(pendingMaxApprovalsObserver: {
+        reads += 1
+        if reads == 1 {
+          await model.refreshMaxToolApprovals()
+          return []
+        }
+        return [request]
+      })
+    )
+    await model.refreshMaxToolApprovals()
+    XCTAssertEqual(reads, 2)
+    XCTAssertEqual(model.maxToolApprovals, [request])
+    XCTAssertFalse(model.maxApprovalBusy)
+  }
+
   func testMaxApprovalForwardsExactIdentityAndRefreshesAfterVerdict() async {
     let request = PendingToolApproval(
       callID: "call", sessionID: "session", threadID: "consultation",

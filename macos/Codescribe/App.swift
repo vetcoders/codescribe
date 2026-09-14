@@ -42,24 +42,33 @@ final class AgentSummonAction {
 /// UniFFI callbacks arrive off-main. This listener performs exactly one hop to
 /// the AppDelegate-owned action and carries no recording/model payload.
 final class AgentAppActionListener: CsAppActionListener, Sendable {
-  private let continuation: AsyncStream<Void>.Continuation
+  private enum Action: Sendable { case showAgent, maxApprovalsChanged }
+  private let continuation: AsyncStream<Action>.Continuation
   private let consumer: Task<Void, Never>
 
   @MainActor
   init(
+    maxApprovalsChanged: @escaping @MainActor @Sendable () async -> Void = {},
     summonAgent: @escaping @MainActor @Sendable () -> Void
   ) {
-    let channel = AsyncStream<Void>.makeStream()
+    let channel = AsyncStream<Action>.makeStream()
     continuation = channel.continuation
     consumer = Task { @MainActor in
-      for await _ in channel.stream {
-        summonAgent()
+      for await action in channel.stream {
+        switch action {
+        case .showAgent: summonAgent()
+        case .maxApprovalsChanged: await maxApprovalsChanged()
+        }
       }
     }
   }
 
   func onShowAgent() {
-    continuation.yield(())
+    continuation.yield(.showAgent)
+  }
+
+  func onMaxApprovalsChanged() {
+    continuation.yield(.maxApprovalsChanged)
   }
 
   func invalidate() {
@@ -144,6 +153,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
   // kill live voice-reply rendering. Held for the app's lifetime.
   private var voiceDeliveryListener: VoiceDeliveryListener?
   private var appActionListener: AgentAppActionListener?
+  private lazy var maxPermissionModel = SettingsViewModel(engine: RealSettingsEngine())
   private lazy var agentSummonAction = AgentSummonAction(
     store: model.chat,
     showAgent: { [weak self] in self?.showAgent() }
@@ -637,7 +647,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     // Wrap in TextScaleRoot so ⌘+/-/0 on the chat window scale the message
     // bodies + composer via `\.csTextScale`, independently of the overlay.
     let root = TextScaleRoot(controller: model.chatTextScale) {
-      AgentChatView(store: model.chat)
+      AgentChatView(store: model.chat, maxPermissions: maxPermissionModel)
         .preferredColorScheme(.dark)
     }
     let hosting = NSHostingController(rootView: root)
@@ -730,6 +740,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
   private func registerAppActions() {
     let action = agentSummonAction
     let listener = AgentAppActionListener(
+      maxApprovalsChanged: { [weak self] in
+        guard let self else { return }
+        await self.maxPermissionModel.refreshMaxToolApprovals()
+        if !self.maxPermissionModel.maxToolApprovals.isEmpty
+          || self.maxPermissionModel.maxApprovalError != nil
+        {
+          self.showAgent(activating: false)
+        }
+      },
       summonAgent: { [weak action] in
         action?.perform()
         appLogger.info("Agent summon command handled: window fronted and composer focus requested")
