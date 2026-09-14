@@ -1299,3 +1299,25 @@ feature. All generated additions were produced by native app-bindings; the
 untracked local settings profile remains excluded. W2 checkpoint uses
 --no-verify; all hook controls listed in the preceding W2 receipt are skipped
 again (including security) and return after closure. No push or installation.
+
+## W2_STRUCTURALLY_CLOSED — Swift consumer and rollback fixtures
+
+Roman closes this bounded structural re-entry against
+`4da254db95268d0118c1ac4fb0e7c83d22790b50` on 2026-09-14. The native-generated
+Swift/header pair consumes the committed Rust API; the fixture's projected
+permission matches the rail; rollback failure injection addresses the same
+filesystem destination as the installer. Positive/negative assertions retain
+their original behavior contracts. All gates return. This is readiness to
+verify, not a Swift pass, security acceptance, installation or full-goal closure.
+
+### Swift gate passed — 2026-09-14
+
+The rollback test now constructs the diagnostic backup path using the same
+destination spelling as the installer, verifies resolved file identity against
+the directory listing, and reads original bytes through that reported path.
+This preserves the recovery requirement despite temporary-root path spelling.
+`27-test-swift-recovery-path.log` / `27-swift-xcode.log` completed with exit 0:
+642 tests, one skipped, zero failures, 29.806 seconds under the unchanged
+30-second limit. Prior runs slightly exceeded that limit, so timing headroom
+is narrow; no broad performance claim follows. The installed app and real
+cross-host voice flow remain unverified. Full make check is the next gate.

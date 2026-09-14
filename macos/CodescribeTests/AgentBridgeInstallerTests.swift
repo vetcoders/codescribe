@@ -494,7 +494,13 @@ final class AgentBridgeInstallerTests: XCTestCase {
       let backup = try XCTUnwrap(backups.first)
       XCTAssertEqual(try Data(contentsOf: backup.appendingPathComponent("SKILL.md")), original)
       XCTAssertTrue(failure?.contains("Rollback incomplete") == true)
-      XCTAssertTrue(failure?.contains(backup.path) == true)
+      // Directory enumeration may canonicalize the temporary-root spelling.
+      // The diagnostic uses the destination spelling supplied to the installer.
+      let reportedBackup = destination.deletingLastPathComponent()
+        .appendingPathComponent(backup.lastPathComponent, isDirectory: true)
+      XCTAssertEqual(reportedBackup.resolvingSymlinksInPath(), backup.resolvingSymlinksInPath())
+      XCTAssertEqual(try Data(contentsOf: reportedBackup.appendingPathComponent("SKILL.md")), original)
+      XCTAssertTrue(failure?.contains(reportedBackup.path) == true, failure ?? "missing diagnostic")
       XCTAssertTrue(failure?.contains(destination.path) == true)
       XCTAssertEqual(FileManager.default.fileExists(atPath: destination.path), blockRemoval)
     }
