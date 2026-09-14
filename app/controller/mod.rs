@@ -1177,6 +1177,7 @@ impl RecordingController {
             &source,
             language.whisper_hint(),
             runtime_settings.as_ref(),
+            None,
         )
         .await;
         let _serial_guard = self.serial_lock.lock().await;
@@ -4545,6 +4546,7 @@ impl RecordingController {
             &source_text,
             language.whisper_hint(),
             runtime_settings.as_ref(),
+            None,
         )
         .await;
         match presentation.apply_formatter_revision(session_id, source_revision, result) {

@@ -855,6 +855,7 @@ pub(crate) async fn apple_stream_transcription_session(
                         &request.existing_label,
                         language.as_deref(),
                         runtime_settings.as_ref(),
+                        None,
                     )
                     .await;
                     FormatterCompletion::from_result(request, result)

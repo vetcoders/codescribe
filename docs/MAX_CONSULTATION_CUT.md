@@ -184,6 +184,16 @@ preparation from execution, and treats tool outputs as data. The authored local
 HTTP fixture now exercises this host through the queue and durable answer,
 not just its provider factory. It has not run; it uses an empty test registry.
 
+The shared policy formatter now accepts an explicit FormattingConsultation
+capability. Max routes to that capability before the text-only length/repetition
+and retry filters; the app Max host implements it. Missing capability returns
+Failed rather than running the one-shot prompt and pretending to be an Agent.
+Off/Correction/Smart cannot invoke the capability. An authored core test checks
+short correction admission, unchanged legitimate answers and those policy
+boundaries. All production call sites currently pass None: this is an explicitly
+unassembled state in which Max cannot run, not a release candidate. Next work
+must supply the retained host and exact turn identity from controller/capture.
+
 Outstanding: production host-owned consultation selection/reset; durable
 queued-but-not-started instructions; explicit
 reconciliation of unresolved turns (never implicit replay); cancellation and

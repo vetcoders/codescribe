@@ -46,7 +46,7 @@ impl MaxConsultation {
     /// All request knobs and provenance come from one immutable formatting
     /// snapshot. A chat provider selection cannot leak into this request.
     pub fn enqueue(
-        &mut self,
+        &self,
         turn_id: String,
         text: String,
         attachments: Vec<ImageAttachment>,
@@ -69,6 +69,15 @@ impl MaxConsultation {
             replacement_provider,
         })?;
         Ok(receipt)
+    }
+}
+
+#[async_trait::async_trait]
+impl codescribe_core::ai_formatting::FormattingAgent for MaxConsultation {
+    async fn execute(&self, turn_id: &str, text: &str, settings: &RuntimeSettingsSnapshot) -> Result<String> {
+        let answer = self.enqueue(turn_id.to_string(), text.to_string(), Vec::new(), settings)?
+            .await.context("Max consultation owner stopped before replying")??;
+        Ok(answer.text)
     }
 }
 

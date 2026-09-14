@@ -71,6 +71,19 @@ pub type AiStreamCallback = Arc<dyn Fn(&str) + Send + Sync>;
 /// Streaming reasoning-token callback, kept separate from assistant text.
 pub type AiReasoningCallback = Arc<dyn Fn(&str) + Send + Sync>;
 
+/// Host-owned Max execution capability. Core formatting never constructs
+/// platform tools or discovers a conversation through process-global state.
+#[async_trait::async_trait]
+pub trait FormattingAgent: Send + Sync {
+    async fn execute(&self, turn_id: &str, text: &str, settings: &RuntimeSettingsSnapshot) -> Result<String>;
+}
+
+/// Explicit consultation and turn selected by the presentation/capture host.
+pub struct FormattingConsultation<'a> {
+    pub agent: &'a dyn FormattingAgent,
+    pub turn_id: &'a str,
+}
+
 /// Result of a formatting request: the text to use plus how it was obtained.
 ///
 /// `text` is always safe to deliver — on failure it carries the cleaned input
@@ -1119,6 +1132,7 @@ pub async fn format_text_with_status_channels(
         runtime_settings,
         on_assistant_delta,
         on_reasoning_delta,
+        None,
     )
     .await
 }
@@ -1130,8 +1144,9 @@ pub async fn format_text_with_status_for_policy(
     text: &str,
     language: Option<&str>,
     runtime_settings: &RuntimeSettingsSnapshot,
+    consultation: Option<FormattingConsultation<'_>>,
 ) -> AiFormatResult {
-    format_text_with_status_channels_for_policy(text, language, false, runtime_settings, None, None)
+    format_text_with_status_channels_for_policy(text, language, false, runtime_settings, None, None, consultation)
         .await
 }
 
@@ -1155,8 +1170,24 @@ async fn format_text_with_status_channels_for_policy(
     runtime_settings: &RuntimeSettingsSnapshot,
     on_assistant_delta: Option<AiStreamCallback>,
     on_reasoning_delta: Option<AiReasoningCallback>,
+    consultation: Option<FormattingConsultation<'_>>,
 ) -> AiFormatResult {
     let policy = runtime_settings.formatting_policy();
+    if !assistive && policy == FormattingPolicy::Max {
+        // Commands and corrections must not pass through the text-only floor,
+        // repetition cleanup, expansion retries or refusal/echo filters.
+        let result = match consultation {
+            Some(context) => context.agent.execute(context.turn_id, text, runtime_settings).await,
+            None => Err(anyhow::anyhow!("Max consultation executor unavailable")),
+        };
+        return match result {
+            Ok(text) => AiFormatResult { text, reasoning_text: None, status: AiFormatStatus::Applied },
+            Err(error) => {
+                warn!(%error, "Max consultation did not produce an admitted answer");
+                AiFormatResult { text: text.to_string(), reasoning_text: None, status: AiFormatStatus::Failed }
+            }
+        };
+    }
     if !assistive && policy == FormattingPolicy::Off {
         return AiFormatResult {
             text: text.to_string(),
