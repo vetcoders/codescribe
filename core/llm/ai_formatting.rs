@@ -77,6 +77,16 @@ pub type AiReasoningCallback = Arc<dyn Fn(&str) + Send + Sync>;
 pub trait FormattingAgent: Send + Sync {
     async fn execute(&self, turn_id: &str, text: &str, settings: &RuntimeSettingsSnapshot) -> Result<String>;
 
+    /// Tool-free assessment; neither silence nor a seal alone establishes a
+    /// complete instruction. Unavailable assessment cannot authorize execution.
+    async fn assess_group(
+        &self,
+        _input: crate::agent::consultation::SealedConsultationInput,
+        _settings: &RuntimeSettingsSnapshot,
+    ) -> Result<crate::agent::consultation::ConsultationReadiness> {
+        anyhow::bail!("consultation readiness assessment unavailable")
+    }
+
     /// Synchronous FIFO admission, followed by separately awaited durable
     /// completion. Text-only executors cannot manufacture group/history proof.
     fn enqueue_group(

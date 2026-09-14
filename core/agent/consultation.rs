@@ -25,6 +25,14 @@ use super::{
 /// durable delivery succeeds; tool and text events do not authorize pasting.
 pub type ConsultationEvents = Arc<dyn Fn(&str, &str, AgentUiEvent) + Send + Sync>;
 
+/// Semantic assessment of one immutable candidate, not execution permission.
+/// Before enqueueing, the capture owner must match this input against fresh
+/// ledger truth and reject it if speech resumed or the candidate changed.
+pub enum ConsultationReadiness {
+    Complete(SealedConsultationInput),
+    Continue(SealedConsultationInput),
+}
+
 /// Immutable reading of known sealed occurrences in one capture interval.
 /// Requires measured speech coverage of that interval, but is not a semantic
 /// turn verdict and does not certify lexical accuracy.

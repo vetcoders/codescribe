@@ -789,3 +789,31 @@ Scope includes this bounded diagnostic bridge method and its direct Rust tests.
 Authored tests cover unsupported schema preservation, valid settings projection,
 and Swift report generation without configuration. All are unexecuted under W1;
 new bindings, W2 gates and installed-app clipboard proof remain outstanding.
+
+## W1 semantic admission mechanism
+
+Agent design choice: the existing FormattingAgent capability now offers
+assess_group, with a refusing default. Max uses a fresh client for the sealed
+formatting lane to classify the exact immutable candidate as COMPLETE or CONTINUE.
+The request has an empty tool list, an assessment-only prompt, a fresh response
+chain and a 15-second bound including request startup. It neither enters the
+retained AgentSession nor writes consultation history or executes tools.
+The result carries the exact sealed input assessed, not only an uncorrelated bool.
+
+This is a semantic suggestion, not execution authority. The live capture owner
+must invalidate the suggestion on resumed speech and compare the candidate to
+fresh ledger truth before durable FIFO admission. That caller is still absent;
+this checkpoint does not enable live Max or close W1. Model errors, timeout,
+unknown output, tool events, inconsistent final text, excessive output, missing
+clean terminal and events after terminal all refuse assessment. CONTINUE retains
+the pending instruction; the forthcoming owner must not discard it or retry on
+every audio quantum. A bounded observer-return trigger and stop/cancel handling
+remain required. The 64-token output limit and 15-second bound are unmeasured
+agent choices; provider support, real speech judgement and resource cost require
+W2/W4 evidence, not parser assertions. No punctuation-only rule replaces this.
+
+Three authored, unexecuted parser tests cover fragmented clean decisions,
+incomplete/failed/conflicting/oversized replies and attempted tool output.
+Cross-component tests must still prove empty tool definitions on the actual
+request, unchanged consultation history, stale-candidate rejection, no execution
+before durable queue admission, and completion while newer speech continues.
