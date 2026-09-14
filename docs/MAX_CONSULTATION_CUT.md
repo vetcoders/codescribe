@@ -831,3 +831,27 @@ account-auth endpoint behavior, live candidate invalidation, lexical correctness
 or bounded resource use. Codex account routing intentionally omits the requested
 output-token cap in the existing client; the 15-second assessment timeout and
 parser byte cap remain, but no 64-token server limit is claimed on that route.
+
+## W1 pre-execution source validation
+
+ConsultationInputQueue now checks COMPLETE against a fresh ledger reading before
+calling synchronous executor admission. CONTINUE, changed input, missing acoustic
+coverage and executor pressure retain the pending instruction. The caller retains
+the returned admission handle and acknowledges it separately; an acknowledgement
+failure must not drop that handle or authorize replay. The capture owner must
+serialize current observer/ledger state, admission and acknowledgement without an
+await or concurrent capture mutation between them.
+
+Recorder-observed resumed speech can invalidate all unaccepted candidate boundaries.
+The accepted prefix and last registered recorder-clock boundary are retained, so
+old ticks cannot revive an invalidated assessment and subsequent grouping includes
+all still-pending occurrences. No PCM identity, seal or transcript label is removed.
+This is a transport invalidation method, not a second speech detector.
+
+Authored negative cases cover CONTINUE, changed assessed text, incomplete observed
+audio, executor pressure, resumed speech and old clock ticks. The retained-runtime
+group test now admits both groups through the new check before acknowledging them.
+All tests remain unexecuted under W1. The live Apple capture owner still does not
+call these methods: observer-driven candidate production, assessment scheduling,
+resumed-speech invalidation, result presentation and stop/cancel settlement remain
+required before structural closure. This checkpoint is not installed or integrated.

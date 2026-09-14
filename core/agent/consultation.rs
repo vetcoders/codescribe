@@ -140,6 +140,7 @@ pub struct ConsultationInputQueue {
     session_id: String,
     capture_epoch: u64,
     accepted_end: u64,
+    last_boundary_end: u64,
     boundaries: std::collections::VecDeque<u64>,
 }
 
@@ -147,19 +148,29 @@ impl ConsultationInputQueue {
     pub fn new(session_id: String, capture_epoch: u64) -> Result<Self> {
         ensure!(!session_id.trim().is_empty() && capture_epoch != 0,
             "consultation input requires capture identity");
-        Ok(Self { session_id, capture_epoch, accepted_end: 0, boundaries: Default::default() })
+        Ok(Self { session_id, capture_epoch, accepted_end: 0,
+            last_boundary_end: 0, boundaries: Default::default() })
     }
 
     /// Register a recorder-clock boundary. Duplicate ticks are harmless;
     /// backwards boundaries and queue pressure are explicit refusals. The
     /// caller must retain a refused boundary and retry, not discard the audio.
     pub fn append_boundary(&mut self, end: u64) -> Result<bool> {
-        let last = self.boundaries.back().copied().unwrap_or(self.accepted_end);
+        let last = self.last_boundary_end;
         ensure!(end >= last, "consultation boundary moved backwards");
         if end == last { return Ok(false); }
         ensure!(self.boundaries.len() < 16, "consultation input queue is full");
         self.boundaries.push_back(end);
+        self.last_boundary_end = end;
         Ok(true)
+    }
+
+    /// Recorder-observed continuation invalidates all unaccepted candidates.
+    /// Preserve the accepted prefix and clock high-water mark: the next new
+    /// boundary includes all pending speech, without replaying accepted tools.
+    /// This changes grouping only, never ledger occurrences or their seals.
+    pub fn resume_speech(&mut self) {
+        self.boundaries.clear();
     }
 
     /// Re-read current ledger truth after each observer return. No cached
@@ -173,6 +184,25 @@ impl ConsultationInputQueue {
         SealedConsultationInput::from_ledger(
             ledger, &self.session_id, self.capture_epoch, self.accepted_end..end, speech,
         )
+    }
+
+    /// Validate before invoking durable admission, not after tools may start.
+    /// The capture owner must hold its current ledger/observer state throughout
+    /// this synchronous call and invalidate boundaries when speech resumes.
+    /// The returned handle remains the caller's responsibility: acknowledge it
+    /// and retain it for completion, including if acknowledgement refuses.
+    /// CONTINUE, stale source and admission pressure never consume the front.
+    pub fn admit_assessed(
+        &mut self,
+        assessment: ConsultationReadiness,
+        ledger: &crate::pipeline::acoustic_ledger::AcousticLedger,
+        speech: &crate::audio::capture_receipt::AcousticSpeechEvidence,
+        admit: impl FnOnce(SealedConsultationInput) -> Result<PendingConsultationGroup>,
+    ) -> Result<Option<PendingConsultationGroup>> {
+        let ConsultationReadiness::Complete(input) = assessment else { return Ok(None); };
+        ensure!(self.ready(ledger, speech)?.as_ref() == Some(&input),
+            "consultation assessment no longer matches current source");
+        admit(input).map(Some)
     }
 
     /// Advance past measured silence only. Unknown audio, observed speech and
@@ -732,6 +762,45 @@ mod tests {
     }
 
     #[test]
+    fn assessed_admission_refuses_stale_source_and_preserves_continuation() {
+        let ledger = repeated_word_ledger(false);
+        let speech = consultation_speech_evidence(80_000);
+        let mut queue = ConsultationInputQueue::new("capture".into(), 1).unwrap();
+        queue.append_boundary(64_000).unwrap();
+        let first = queue.ready(&ledger, &speech).unwrap().unwrap();
+        let never_admit = |_: SealedConsultationInput| -> Result<PendingConsultationGroup> {
+            panic!("rejected assessment must not reach executor admission")
+        };
+        assert!(queue.admit_assessed(ConsultationReadiness::Continue(first.clone()),
+            &ledger, &speech, never_admit).unwrap().is_none());
+        assert_eq!(queue.pending_groups(), 1);
+
+        let mut changed = first.clone();
+        changed.text = "different assessed source".into();
+        assert!(queue.admit_assessed(ConsultationReadiness::Complete(changed),
+            &ledger, &speech, never_admit).is_err());
+        assert!(queue.admit_assessed(ConsultationReadiness::Complete(first.clone()),
+            &ledger, &consultation_speech_evidence(63_999), never_admit).is_err());
+        assert!(queue.admit_assessed(ConsultationReadiness::Complete(first.clone()),
+            &ledger, &speech, |_| anyhow::bail!("executor queue pressure")).is_err());
+        assert_eq!(queue.ready(&ledger, &speech).unwrap(), Some(first.clone()));
+
+        queue.resume_speech();
+        assert!(queue.ready(&ledger, &speech).unwrap().is_none());
+        assert!(!queue.append_boundary(64_000).unwrap(), "old tick cannot revive an assessment");
+        assert!(queue.append_boundary(63_999).is_err());
+        assert!(queue.admit_assessed(ConsultationReadiness::Complete(first.clone()),
+            &ledger, &speech, never_admit).is_err());
+        queue.append_boundary(80_000).unwrap();
+        assert!(queue.admit_assessed(ConsultationReadiness::Complete(first),
+            &ledger, &speech, never_admit).is_err());
+        let whole = queue.ready(&ledger, &speech).unwrap().unwrap();
+        assert_eq!(whole.text(), "Iwo Iwo Iwo Iwo Iwo");
+        assert_eq!(whole.members().len(), 5);
+        assert_eq!(ledger.len(), 5);
+    }
+
+    #[test]
     fn input_queue_skips_only_measured_empty_intervals() {
         use crate::audio::capture_receipt::{AcousticAvailability, AcousticSpeechEvidence, CaptureEvidenceIdentity};
         use crate::pipeline::acoustic_ledger::AcousticLedger;
@@ -930,7 +999,13 @@ mod tests {
         assert!(requests.lock().unwrap().is_empty());
         assert_eq!(input_queue.pending_groups(), 2);
         assert_eq!(input_queue.ready(&ledger, &speech).unwrap(), Some(first.clone()));
-        let pending = runtime.enqueue_group(first.clone(), turn(&first.turn_id_for_group(), first.text())).unwrap();
+        let pending = input_queue.admit_assessed(
+            ConsultationReadiness::Complete(first.clone()), &ledger, &speech,
+            |input| {
+                let request = turn(&input.turn_id_for_group(), input.text());
+                runtime.enqueue_group(input, request)
+            },
+        ).unwrap().unwrap();
         assert_eq!(pending.input(), &first);
         input_queue.acknowledge(&pending).unwrap();
         assert_eq!(input_queue.pending_groups(), 1);
@@ -938,7 +1013,13 @@ mod tests {
         let second = input_queue.ready(&ledger, &speech).unwrap().unwrap();
         assert_ne!(first.turn_id_for_group(), second.turn_id_for_group());
         entered.acquire().await.unwrap().forget();
-        let later = runtime.enqueue_group(second.clone(), turn(&second.turn_id_for_group(), second.text())).unwrap();
+        let later = input_queue.admit_assessed(
+            ConsultationReadiness::Complete(second.clone()), &ledger, &speech,
+            |input| {
+                let request = turn(&input.turn_id_for_group(), input.text());
+                runtime.enqueue_group(input, request)
+            },
+        ).unwrap().unwrap();
         input_queue.acknowledge(&later).unwrap();
         assert_eq!(input_queue.pending_groups(), 0);
         assert_eq!(requests.lock().unwrap().len(), 1);
