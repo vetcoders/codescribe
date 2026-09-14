@@ -497,3 +497,30 @@ commit-msg-provenance. All remain verification obligations. Only source review
 and `git diff --check` have been performed for this step. No executable gate,
 installation or integration is claimed; those require W2 structural closure
 against the exact assembled SHA first.
+
+## Group execution handoff after 3762d829a
+
+The host FormattingAgent capability now has synchronous grouped FIFO admission,
+separate from waiting for its answer. Max uses the same request preparation and
+retained ConsultationRuntime as terminal requests. The group key uses capture
+session/epoch/sample interval, not recognized text or document revision.
+Admission checks exact source text and group key before enqueueing. The pending
+handle retains the immutable input, and completion checks both the turn key and
+the selected history id before exposing the answer with its durable receipt.
+Text-only implementations explicitly refuse this operation; they cannot turn a
+String result into group completion evidence.
+
+Authored, unexecuted tests cover two ordered groups, preserved equal-word PCM
+members, durable two-turn history, mismatched input/turn refusal, duplicate-key
+refusal without another provider call, and foreign reply/history rejection.
+These are synthetic provider/ledger fixtures, not clipboard, audio or tool proof.
+No production capture caller invokes this new operation yet. Boundary collection,
+semantic admission, queue acknowledgement, grouped presentation and stop/cancel
+settlement still need connection. Accepted but not started entries are still
+in memory; this checkpoint does not claim durable queue recovery. Overlapping
+candidate intervals must be excluded by the capture queue before admission.
+
+W1 remains open. Only source review and git diff --check are used; all executable
+gates, generated bindings, installation and integration remain deferred. A local
+checkpoint bypasses the same complete hook entrypoints listed above, including
+detect-private-key security checking; it does not certify security or correctness.

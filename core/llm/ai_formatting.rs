@@ -76,6 +76,16 @@ pub type AiReasoningCallback = Arc<dyn Fn(&str) + Send + Sync>;
 #[async_trait::async_trait]
 pub trait FormattingAgent: Send + Sync {
     async fn execute(&self, turn_id: &str, text: &str, settings: &RuntimeSettingsSnapshot) -> Result<String>;
+
+    /// Synchronous FIFO admission, followed by separately awaited durable
+    /// completion. Text-only executors cannot manufacture group/history proof.
+    fn enqueue_group(
+        &self,
+        _input: crate::agent::consultation::SealedConsultationInput,
+        _settings: &RuntimeSettingsSnapshot,
+    ) -> Result<crate::agent::consultation::PendingConsultationGroup> {
+        anyhow::bail!("grouped consultation execution unavailable")
+    }
 }
 
 /// Explicit consultation and turn selected by the presentation/capture host.

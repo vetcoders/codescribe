@@ -8,7 +8,7 @@ use tokio::sync::{mpsc, oneshot};
 use codescribe_core::agent::{AgentSession, ImageAttachment, StreamOptions,
     ThreadDeliveryGateway, ToolApprovalHandler, ToolRegistry};
 use codescribe_core::agent::consultation::{ConsultationAnswer, ConsultationEvents,
-    ConsultationRuntime, ConsultationTurn};
+    ConsultationRuntime, ConsultationTurn, PendingConsultationGroup, SealedConsultationInput};
 use codescribe_core::config::{FormattingPolicy, RuntimeLlmLaneKind,
     RuntimeSettingsSnapshot};
 
@@ -58,6 +58,15 @@ impl MaxConsultation {
         attachments: Vec<ImageAttachment>,
         settings: &RuntimeSettingsSnapshot,
     ) -> Result<oneshot::Receiver<Result<ConsultationAnswer>>> {
+        self.runtime.enqueue(Self::prepare_turn(turn_id, text, attachments, settings)?)
+    }
+
+    fn prepare_turn(
+        turn_id: String,
+        text: String,
+        attachments: Vec<ImageAttachment>,
+        settings: &RuntimeSettingsSnapshot,
+    ) -> Result<ConsultationTurn> {
         ensure!(settings.formatting_policy() == FormattingPolicy::Max, "Max consultation is not selected");
         let options = stream_options(settings)?;
         // Construct from this turn's seal. A cached "last enqueued generation"
@@ -65,7 +74,7 @@ impl MaxConsultation {
         // Local history preserves continuity; provider response chains are
         // deliberately reset when this request reaches the owner.
         let replacement_provider = Some(super::create_provider_for_lane(settings, RuntimeLlmLaneKind::Formatting)?);
-        let receipt = self.runtime.enqueue(ConsultationTurn {
+        Ok(ConsultationTurn {
             id: turn_id,
             policy: settings.formatting_policy(),
             text,
@@ -73,13 +82,22 @@ impl MaxConsultation {
             options,
             provider_name: settings.llm_lanes().formatting().provider().as_str().to_string(),
             replacement_provider,
-        })?;
-        Ok(receipt)
+        })
     }
 }
 
 #[async_trait::async_trait]
 impl codescribe_core::ai_formatting::FormattingAgent for MaxConsultation {
+    fn enqueue_group(
+        &self,
+        input: SealedConsultationInput,
+        settings: &RuntimeSettingsSnapshot,
+    ) -> Result<PendingConsultationGroup> {
+        let turn = Self::prepare_turn(input.turn_id_for_group(), input.text().to_string(),
+            Vec::new(), settings)?;
+        self.runtime.enqueue_group(input, turn)
+    }
+
     async fn execute(&self, turn_id: &str, text: &str, settings: &RuntimeSettingsSnapshot) -> Result<String> {
         let answer = self.enqueue(turn_id.to_string(), text.to_string(), Vec::new(), settings)?
             .await.context("Max consultation owner stopped before replying")??;

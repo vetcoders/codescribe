@@ -115,6 +115,13 @@ impl SealedConsultationInput {
     }
     /// Ordered source labels, including repeated words from distinct PCM spans.
     pub fn text(&self) -> &str { &self.text }
+
+    /// Stable execution key within the selected consultation. Source labels
+    /// and presentation revisions cannot mint another execution of this group.
+    pub fn turn_id_for_group(&self) -> String {
+        format!("capture-group:{}:{}:{}:{}:{}", self.session_id.len(),
+            self.session_id, self.capture_epoch, self.samples.start, self.samples.end)
+    }
 }
 
 /// Capture-local pending group boundaries. This owns transport order only;
@@ -235,6 +242,39 @@ pub struct ConsultationAnswer {
     pub delivery: ThreadDeliveryReceipt,
 }
 
+/// An accepted FIFO entry, not durable completion or presentation permission.
+/// Keep this handle while capture advances. Dropping it does not cancel tools.
+pub struct PendingConsultationGroup {
+    consultation_id: String,
+    input: SealedConsultationInput,
+    reply: oneshot::Receiver<Result<ConsultationAnswer>>,
+}
+
+impl PendingConsultationGroup {
+    pub fn input(&self) -> &SealedConsultationInput { &self.input }
+
+    /// No provider retry is performed here, including after a lost reply.
+    pub async fn finish(self) -> Result<ConsultationGroupAnswer> {
+        let answer = self.reply.await.context("consultation owner stopped before group reply")??;
+        ensure!(answer.turn_id == self.input.turn_id_for_group(), "consultation group turn mismatch");
+        ensure!(answer.delivery.backend_id == self.consultation_id, "consultation group history mismatch");
+        Ok(ConsultationGroupAnswer { input: self.input, answer })
+    }
+}
+
+/// Correlated source group and completed history. This is transport evidence;
+/// the reducer must still validate the current destination and member receipts.
+#[derive(Debug)]
+pub struct ConsultationGroupAnswer {
+    input: SealedConsultationInput,
+    answer: ConsultationAnswer,
+}
+
+impl ConsultationGroupAnswer {
+    pub fn input(&self) -> &SealedConsultationInput { &self.input }
+    pub fn answer(&self) -> &ConsultationAnswer { &self.answer }
+}
+
 struct QueuedTurn {
     turn: ConsultationTurn,
     reply: oneshot::Sender<Result<ConsultationAnswer>>,
@@ -296,6 +336,19 @@ impl ConsultationRuntime {
 
     pub fn id(&self) -> &str {
         &self.id
+    }
+
+    /// The capture host owes semantic admission before this call. Bind its
+    /// sealed source to the exact queued instruction before any effects occur.
+    pub fn enqueue_group(
+        &self,
+        input: SealedConsultationInput,
+        turn: ConsultationTurn,
+    ) -> Result<PendingConsultationGroup> {
+        ensure!(turn.id == input.turn_id_for_group(), "consultation group turn mismatch");
+        ensure!(turn.text == input.text(), "consultation group source mismatch");
+        let reply = self.enqueue(turn)?;
+        Ok(PendingConsultationGroup { consultation_id: self.id.clone(), input, reply })
     }
 
     /// Close only when no accepted work remains. The acknowledgement is sent
@@ -778,6 +831,77 @@ mod tests {
             id: id.into(), policy: FormattingPolicy::Max, text: text.into(),
             attachments: Vec::new(), options: StreamOptions::default(),
             provider_name: "observed".into(), replacement_provider: None,
+        }
+    }
+
+    #[tokio::test]
+    async fn grouped_queue_preserves_source_and_durable_answer_without_reexecution() {
+        let dir = tempfile::tempdir().expect("temp directory");
+        let requests = Arc::new(Mutex::new(Vec::new()));
+        let entered = Arc::new(Semaphore::new(0));
+        let release = Arc::new(Semaphore::new(0));
+        let provider = ObservedProvider { requests: Arc::clone(&requests),
+            entered: Arc::clone(&entered), release: Arc::clone(&release), fail: false };
+        let (ui_tx, ui_rx) = mpsc::channel(2);
+        let session = AgentSession::new(Box::new(provider), Arc::new(ToolRegistry::new()), ui_tx);
+        let runtime = ConsultationRuntime::start("group-history".into(), session, ui_rx,
+            ThreadDeliveryGateway::new_in(dir.path()).unwrap(), Arc::new(|_, _, _| {}),
+            dir.path().join("agent-turn.lock")).unwrap();
+        let ledger = repeated_word_ledger(false);
+        let speech = consultation_speech_evidence(80_000);
+        let first = SealedConsultationInput::from_ledger(&ledger, "capture", 1, 0..64_000, &speech)
+            .unwrap().unwrap();
+        let second = SealedConsultationInput::from_ledger(&ledger, "capture", 1, 64_000..80_000, &speech)
+            .unwrap().unwrap();
+        assert_ne!(first.turn_id_for_group(), second.turn_id_for_group());
+        assert!(runtime.enqueue_group(first.clone(), turn("wrong", first.text())).is_err());
+        assert!(runtime.enqueue_group(first.clone(), turn(&first.turn_id_for_group(), "changed source")).is_err());
+        assert!(requests.lock().unwrap().is_empty());
+        let pending = runtime.enqueue_group(first.clone(), turn(&first.turn_id_for_group(), first.text())).unwrap();
+        assert_eq!(pending.input(), &first);
+        entered.acquire().await.unwrap().forget();
+        let later = runtime.enqueue_group(second.clone(), turn(&second.turn_id_for_group(), second.text())).unwrap();
+        assert_eq!(requests.lock().unwrap().len(), 1);
+        release.add_permits(1);
+        let completed = pending.finish().await.unwrap();
+        assert_eq!(completed.input(), &first);
+        assert_eq!(completed.answer().turn_id, first.turn_id_for_group());
+        assert_eq!(completed.answer().delivery.backend_id, "group-history");
+        assert_eq!(completed.answer().delivery.message_count, 2);
+        assert_eq!(completed.answer().text, "prepared command");
+        // Presentation may discard this answer without discarding its history.
+        drop(completed);
+        let completed = later.finish().await.unwrap();
+        assert_eq!(completed.input(), &second);
+        assert_eq!(completed.answer().delivery.message_count, 4);
+        let duplicate = runtime.enqueue_group(first.clone(), turn(&first.turn_id_for_group(), first.text())).unwrap();
+        assert!(duplicate.finish().await.is_err());
+        assert_eq!(requests.lock().unwrap().len(), 2);
+        let stored = ThreadStore::new_in(dir.path()).unwrap().load_thread("group-history").unwrap();
+        assert_eq!(stored.messages.len(), 4);
+        assert_eq!(ledger.len(), 5);
+        for member in first.members().iter().chain(second.members()) {
+            assert_eq!(ledger.text_of(&member.occurrence), Some("Iwo"));
+        }
+        runtime.close_if_idle().await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn grouped_reply_refuses_foreign_turn_or_history() {
+        let ledger = repeated_word_ledger(false);
+        let input = SealedConsultationInput::from_ledger(&ledger, "capture", 1, 0..80_000,
+            &consultation_speech_evidence(80_000)).unwrap().unwrap();
+        for (turn_id, backend_id) in [
+            ("wrong".to_string(), "selected"),
+            (input.turn_id_for_group(), "foreign"),
+        ] {
+            let (tx, reply) = oneshot::channel();
+            tx.send(Ok(ConsultationAnswer { turn_id, text: "answer".into(),
+                delivery: ThreadDeliveryReceipt { backend_id: backend_id.into(), created: true,
+                    message_count: 2, updated_at: Utc::now(), first_exchange: true, title_eligible: true },
+            })).unwrap();
+            let pending = PendingConsultationGroup { consultation_id: "selected".into(), input: input.clone(), reply };
+            assert!(pending.finish().await.is_err());
         }
     }
 
