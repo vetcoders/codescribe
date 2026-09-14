@@ -350,6 +350,8 @@ impl AgentSession {
             let mut assistant_text = String::new();
             let mut reasoning_text = String::new();
             let mut text_done_seen = false;
+            let mut clean_terminal_seen = false;
+            let mut terminal_rejected = false;
 
             let mut pending_calls: HashMap<String, PendingToolCall> = HashMap::new();
             let mut tool_call_order: Vec<String> = Vec::new();
@@ -413,9 +415,11 @@ impl AgentSession {
                         // A dirty terminal (EOF/timeout, failed/incomplete) must
                         // not persist a poisoned chain id; clearing it forces the
                         // next turn to full-replay from local history (P1.6).
-                        if clean {
+                        if clean && !terminal_rejected {
+                            clean_terminal_seen = true;
                             self.thread_id = response_id;
                         } else {
+                            terminal_rejected = true;
                             if let Some(id) = response_id {
                                 warn!(
                                     "Agent dirty terminal: discarding response id {} and resetting chain (provider={})",
@@ -424,9 +428,11 @@ impl AgentSession {
                                 );
                             }
                             self.thread_id = None;
+                            self.provider.restore_response_chain(None).await;
                         }
                     }
                     AgentEvent::Error(message) => {
+                        self.provider.restore_response_chain(None).await;
                         // P2.13: reset the chain BEFORE returning. A provider
                         // Error (e.g. a failed/incomplete/cancelled terminal
                         // mapped to Error) must never leave `thread_id` pointing
@@ -457,6 +463,14 @@ impl AgentSession {
                         return Err(anyhow::anyhow!("Provider stream error: {message}"));
                     }
                 }
+            }
+
+            if !clean_terminal_seen || terminal_rejected {
+                self.thread_id = None;
+                self.provider.restore_response_chain(None).await;
+                return Err(anyhow::anyhow!(
+                    "Provider stream error: no authoritative clean terminal; refusing answer and tool execution"
+                ));
             }
 
             if !reasoning_text.trim().is_empty() {
@@ -1476,6 +1490,51 @@ mod tests {
         result.expect("a 30-round turn must complete under the default loop guard");
         drop(session);
         drain.await.expect("ui drain task should finish");
+    }
+
+    #[tokio::test]
+    async fn tool_execution_requires_clean_terminal_and_dirty_terminal_cannot_be_reversed() {
+        for terminals in [vec![], vec![false], vec![true, false], vec![false, true], vec![true]] {
+            let allowed = terminals == vec![true];
+            let calls = Arc::new(AtomicUsize::new(0));
+            let counted = Arc::clone(&calls);
+            let mut registry = ToolRegistry::new();
+            registry.register(ToolDefinition {
+                name: "count_call".into(), description: "Count execution".into(),
+                input_schema: json!({"type":"object"}),
+            }, Box::new(move |_| {
+                let counted = Arc::clone(&counted);
+                Box::pin(async move {
+                    counted.fetch_add(1, Ordering::SeqCst);
+                    vec![ToolResultContent::Text("counted".into())]
+                })
+            })).expect("register tool");
+            let mut first = vec![AgentEvent::ToolCallReady {
+                id: "call-1".into(), name: "count_call".into(), arguments: json!({}),
+            }];
+            first.extend(terminals.into_iter().map(|clean| AgentEvent::ResponseDone {
+                response_id: Some("candidate".into()), clean,
+            }));
+            let provider = ScriptedProvider::new(vec![first, vec![
+                AgentEvent::TextDone("finished".into()),
+                AgentEvent::ResponseDone { response_id: Some("finished".into()), clean: true },
+            ]]);
+            let (tx, mut rx) = mpsc::channel(32);
+            let mut session = AgentSession::new(Box::new(provider), Arc::new(registry), tx);
+            session.thread_id = Some("prior".into());
+            session.provider.restore_response_chain(Some("prior-chain".into())).await;
+            let result = session.send("count once".into(), Vec::new(), &StreamOptions::default()).await;
+            assert_eq!(result.is_ok(), allowed);
+            assert_eq!(calls.load(Ordering::SeqCst), usize::from(allowed));
+            if !allowed {
+                assert_eq!(session.thread_id(), None);
+                assert_eq!(session.snapshot_response_chain().await, None);
+                assert_eq!(session.messages().len(), 1);
+                while let Ok(event) = rx.try_recv() {
+                    assert!(!matches!(event, AgentUiEvent::Done | AgentUiEvent::ToolExecuting { .. }));
+                }
+            }
+        }
     }
 
     /// Text-only turn adopts a clean response id and emits TextDone + Done.

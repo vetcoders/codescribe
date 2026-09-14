@@ -214,13 +214,31 @@ must not be installed as a completed Max cut.
 
 Outstanding: production host-owned consultation selection/reset; durable
 queued-but-not-started instructions; explicit
-reconciliation of unresolved turns (never implicit replay); cancellation and
-install lease; host execution handoff on all three formatting paths; permission
-UI and live presentation/delivery wiring. The new owner is not connected to
-production. The journal protects before-effects admission, not all acknowledged
+reconciliation of unresolved turns (never implicit replay); cancellation;
+live turn admission; permission UI and streaming presentation/delivery wiring.
+Two controller call sites are connected in source, but the full product path is
+not verified. The journal protects before-effects admission, not all acknowledged
 in-memory queue entries; do not claim complete crash recovery yet.
 
-Both checkpoints are structural W1 work. Checkpoint hooks are bypassed in full:
+Live investigation: `schedule_formatter_after_terminal_label` submits exactly
+one PCM occurrence when its last earlier observer returns. This is not the end
+of a logical instruction. `EpochGate::Sleep` closes an Apple engine epoch after
+Silero silence and flushes Layer 1 coalescing, but does not wait for those
+refinements to finish. It is therefore not a ready-to-execute semantic verdict.
+Live admission must retain the member occurrences and wait for their observation
+frontiers; it must not substitute the first occurrence or a text-derived id.
+The current presentation formatter revision API is terminal-document-only, so
+the live result also needs an explicit admitted revision boundary.
+
+This investigation exposed an independent shared Agent bug: EOF or a dirty
+terminal without a following Error could reach Done and tool execution.
+AgentSession now requires a clean provider terminal before committing answer
+history or executing gathered tools. Any dirty terminal remains rejecting even
+if another clean terminal follows; provider and session chain ids are cleared
+on rejection. An authored test covers absent/dirty/mixed/clean terminals with
+an execution counter and a clean positive control. It has not run.
+
+These checkpoints are structural W1 work. Checkpoint hooks are bypassed in full:
 trailing-whitespace, end-of-file-fixer, check-merge-conflict, mixed-line-ending,
 detect-private-key (security), cargo-check, cargo-fmt, prettier and
 commit-msg-provenance. All remain verification obligations. Only source review
