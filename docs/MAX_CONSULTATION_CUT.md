@@ -855,3 +855,33 @@ All tests remain unexecuted under W1. The live Apple capture owner still does no
 call these methods: observer-driven candidate production, assessment scheduling,
 resumed-speech invalidation, result presentation and stop/cancel settlement remain
 required before structural closure. This checkpoint is not installed or integrated.
+
+## W1 completed-answer transport and capture-edge findings
+
+Source review at edfe50296 found two remaining connections that must not be
+approximated while wiring the live owner. SileroIngest.speech_live includes the
+chunk in which an utterance closed; it is not equivalent to an open utterance.
+The live owner must inspect the existing open/closed observations from the same
+SileroIngress, preserve the recorder clock, and wait for sealed ledger members.
+Neither EpochGate sleep nor a separate silence timer is a semantic turn verdict.
+
+The existing EventSink now carries typed completed consultation answers through
+an in-process method, outside serializable EngineEvent and raw IPC. Passive sinks
+declare zero consultation publishers. PresentationEmitter declares one and calls
+its existing reducer/Bus/ordered-delivery admission; no second document owner is
+introduced. FanoutEventSink counts publishers through nested fan-outs and refuses
+zero or multiple destinations before invoking any publication. Wiring counts stay
+constant for each sink lifetime; runtime destination availability remains the
+emitter's own refusal. This is not an OS-focus routing decision.
+
+Authored topology assertions use a completed retained-runtime result and cover
+zero publishers, duplicate references, nested ambiguity, one nested publisher,
+passive observers and propagation of a destination refusal. The existing local
+HTTP fixture now sends its completed group through FanoutEventSink to the actual
+PresentationEmitter, checks duplicate refusal and retains its ledger, Bus and
+delivery-buffer assertions. These tests are unexecuted, not runtime proof.
+
+The Apple worker still does not schedule grouped Max assessments or deliver their
+results. Next assembly must connect the recorder-observed candidate owner, bounded
+assessment scheduling, fresh-source admission, this completed-answer method and
+stop/cancel settlement. No structural-close, install or integration claim is made.

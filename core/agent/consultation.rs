@@ -1035,6 +1035,44 @@ mod tests {
         assert_eq!(completed.answer().delivery.backend_id, "group-history");
         assert_eq!(completed.answer().delivery.message_count, 2);
         assert_eq!(completed.answer().text, "prepared command");
+        // Exercise the sink topology using an actual retained-owner result,
+        // not a publicly constructible text-shaped execution receipt.
+        use crate::pipeline::contracts::{EngineEvent, EventSink};
+        use crate::pipeline::sinks::{CollectorEventSink, FanoutEventSink};
+        struct Destination {
+            calls: Mutex<Vec<String>>,
+            refuse: bool,
+        }
+        impl EventSink for Destination {
+            fn consultation_destinations(&self) -> usize { 1 }
+            fn on_consultation_completed(&self, completed: &ConsultationGroupAnswer) -> Result<()> {
+                self.calls.lock().unwrap().push(completed.answer().turn_id.clone());
+                ensure!(!self.refuse, "synthetic destination refusal");
+                Ok(())
+            }
+            fn on_event(&self, _: &EngineEvent) {}
+        }
+        let observer = Arc::new(CollectorEventSink::new());
+        assert!(observer.on_consultation_completed(&completed).is_err());
+        let zero = FanoutEventSink::new(vec![observer.clone()]);
+        assert!(zero.on_consultation_completed(&completed).is_err());
+        let destination = Arc::new(Destination { calls: Mutex::new(Vec::new()), refuse: false });
+        let duplicate = FanoutEventSink::pair(destination.clone(), destination.clone());
+        assert_eq!(duplicate.consultation_destinations(), 2);
+        assert!(duplicate.on_consultation_completed(&completed).is_err());
+        let nested = FanoutEventSink::pair(duplicate, destination.clone());
+        assert_eq!(nested.consultation_destinations(), 3);
+        assert!(nested.on_consultation_completed(&completed).is_err());
+        assert!(destination.calls.lock().unwrap().is_empty(), "validate before first publication");
+        let single = FanoutEventSink::pair(observer.clone(), destination.clone());
+        let nested_single = FanoutEventSink::pair(observer.clone(), single);
+        nested_single.on_consultation_completed(&completed).unwrap();
+        assert_eq!(*destination.calls.lock().unwrap(), vec![first.turn_id_for_group()]);
+        assert!(observer.events().is_empty(), "completed answers are not serializable engine events");
+        let refusing = Arc::new(Destination { calls: Mutex::new(Vec::new()), refuse: true });
+        assert!(FanoutEventSink::pair(observer, refusing.clone())
+            .on_consultation_completed(&completed).is_err());
+        assert_eq!(refusing.calls.lock().unwrap().len(), 1);
         // Presentation may discard this answer without discarding its history.
         drop(completed);
         let completed = later.finish().await.unwrap();

@@ -1744,6 +1744,14 @@ impl Drop for PresentationEmitter {
 }
 
 impl EventSink for PresentationEmitter {
+    fn consultation_destinations(&self) -> usize { 1 }
+
+    fn on_consultation_completed(&self, completed: &ConsultationGroupAnswer) -> anyhow::Result<()> {
+        self.apply_consultation_presentation(completed)
+            .map(|_| ())
+            .map_err(anyhow::Error::new)
+    }
+
     fn on_capture_opened(&self, session_id: &str, capture_epoch: u64) {
         if session_id.is_empty()
             || capture_epoch == 0

@@ -160,7 +160,7 @@ async fn selected_agent_lane_roundtrip(lane: codescribe_core::config::RuntimeLlm
             has_latched_target: true, latched_target_is_self: false,
         }, bus_path.clone(), None).unwrap());
         bus.publish_started();
-        let mut emitter = PresentationEmitter::new_with_authority(
+        let emitter = PresentationEmitter::new_with_authority(
             Arc::clone(&delivery), None, None, Some(bus), Some(Arc::clone(&ledger)), None);
         for (index, label) in ["Reply with the single word:", "pong"].into_iter().enumerate() {
             let occurrence = OccurrenceIdentity::new("http-capture", 1,
@@ -246,11 +246,18 @@ async fn selected_agent_lane_roundtrip(lane: codescribe_core::config::RuntimeLlm
         assert_eq!(closed.apply_consultation_presentation(&completed),
             Err(codescribe::presentation::emitter::UserRevisionRefusal::LedgerRefusal("consultation_delivery_closed")));
         assert!(ledger.lock().unwrap().consultation_presentations().is_empty());
-        let commit = emitter.apply_consultation_presentation(&completed).unwrap();
-        assert_eq!(commit.rendered_text, "pong later words");
-        assert!(emitter.apply_consultation_presentation(&completed).is_err());
+        let mut emitter = Arc::new(emitter);
+        let observer = Arc::new(codescribe_core::pipeline::sinks::CollectorEventSink::new());
+        let sink = codescribe_core::pipeline::sinks::FanoutEventSink::pair(
+            observer.clone(), emitter.clone());
+        assert_eq!(emitter.consultation_destinations(), 1);
+        assert!(closed.on_consultation_completed(&completed).is_err());
+        sink.on_consultation_completed(&completed).unwrap();
+        assert!(sink.on_consultation_completed(&completed).is_err());
+        assert!(observer.events().is_empty());
         assert_eq!(ledger.lock().unwrap().consultation_presentations().len(), 1);
-        emitter.finish().await;
+        drop(sink);
+        Arc::get_mut(&mut emitter).unwrap().finish().await;
         assert_eq!(delivery.lock().await.as_str(), "pong later words");
         let rows = std::fs::read_to_string(bus_path).unwrap();
         let row = rows.lines().map(|line| serde_json::from_str::<serde_json::Value>(line).unwrap())

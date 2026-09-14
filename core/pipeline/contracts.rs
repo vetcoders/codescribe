@@ -964,6 +964,22 @@ impl std::fmt::Display for DropKind {
 /// Implementations decide how to present events — typing animation,
 /// overlay updates, clipboard paste, IPC streaming, etc.
 pub trait EventSink: Send + Sync {
+    /// Number of configured consultation publishers below this sink. Passive
+    /// observers return zero. This must remain stable for the sink's lifetime;
+    /// it describes wiring, not focus or current delivery availability.
+    fn consultation_destinations(&self) -> usize { 0 }
+
+    /// In-process completed-answer delivery, deliberately absent from the
+    /// serializable EngineEvent protocol. The retained executor owns this
+    /// typed result; a bus row or arbitrary string cannot manufacture it.
+    /// Refusal preserves execution/history truth and never authorizes replay.
+    fn on_consultation_completed(
+        &self,
+        _completed: &crate::agent::consultation::ConsultationGroupAnswer,
+    ) -> anyhow::Result<()> {
+        anyhow::bail!("consultation presentation destination unavailable")
+    }
+
     /// Bind passive capture observers after the recorder opens successfully,
     /// before the transcription worker starts. This is not a document event,
     /// ledger receipt, or public IPC message.
