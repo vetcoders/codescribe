@@ -237,6 +237,24 @@ for damaged in (b'{"cursor":', b'\xff\xfe', b'{}', b'[]'):
     assert restored.path.read_bytes() == damaged
 module.atomic_json(restored.path, saved)
 
+# Recovery positions are byte offsets, not values to coerce or clamp.
+for invalid_cursor in (-1, True, 17.9, "17", None):
+    invalid = dict(saved, cursor=invalid_cursor)
+    module.atomic_json(restored.path, invalid)
+    before = restored.path.read_bytes()
+    try:
+        module.SessionLease(
+            root=Path(sys.argv[3]), provider="codex", provider_session_id="active-session",
+            name="iwo", bus=Path(sys.argv[2]), requested_id=None, ttl_seconds=120,
+            follow_from_end=True,
+        )
+    except ValueError as error:
+        assert "cursor" in str(error), error
+    else:
+        raise AssertionError(f"invalid cursor accepted: {invalid_cursor!r}")
+    assert restored.path.read_bytes() == before
+module.atomic_json(restored.path, saved)
+
 # --become may bind a name after attach; recovery with that name must reuse the
 # provider-session cursor rather than derive a second lease from the new name.
 greeting = module.SessionLease(

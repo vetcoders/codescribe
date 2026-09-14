@@ -702,7 +702,13 @@ class SessionLease:
                         f"lease {self.lease_id} is active in pid={other_pid}; "
                         "poll that follower handle"
                     )
-                self.cursor = max(0, int(previous.get("cursor", 0)))
+                saved_cursor = previous.get("cursor")
+                if type(saved_cursor) is not int or saved_cursor < 0:
+                    raise ValueError(
+                        f"lease {self.lease_id} has an invalid recovery cursor; "
+                        "preserved on disk, attachment refused"
+                    )
+                self.cursor = saved_cursor
                 self.last_sequence = previous.get("last_sequence")
                 self.name = previous.get("name") or self.name
                 self.resumed = True
