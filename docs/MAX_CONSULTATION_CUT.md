@@ -234,6 +234,17 @@ failed owner leaves its unresolved journal marker intact. Extended authored
 tests cover active refusal, stale handles, lease release and unresolved-state
 preservation. No UI reset is connected and these tests remain unexecuted.
 
+The explicit new-consultation backend now runs through controller and the
+CodescribeHotkeys bridge. It refuses non-idle capture/processing, awaits owner
+close, then compares the expected persisted selection under its selection lock.
+Another live owner or a stale selection refuses reset. A new id is persisted
+without altering the previous thread or journal, including unresolved markers.
+An authored test checks owner refusal, preserved journal bytes and stale-reset
+refusal. The bridge API is authored but Swift bindings are not regenerated under
+W1, and no user-facing button invokes it yet. Cancellation during owner close
+leaves the controller slot empty so a later attempt reopens durable selection
+instead of retaining a closed handle.
+
 Live investigation: `schedule_formatter_after_terminal_label` submits exactly
 one PCM occurrence when its last earlier observer returns. This is not the end
 of a logical instruction. `EpochGate::Sleep` closes an Apple engine epoch after

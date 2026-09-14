@@ -44,6 +44,11 @@ impl MaxConsultation {
 
     pub fn id(&self) -> &str { self.runtime.id() }
 
+    /// A reset must await this acknowledgement before changing selection.
+    pub async fn close_if_idle(&self) -> Result<()> {
+        self.runtime.close_if_idle().await
+    }
+
     /// All request knobs and provenance come from one immutable formatting
     /// snapshot. A chat provider selection cannot leak into this request.
     pub fn enqueue(

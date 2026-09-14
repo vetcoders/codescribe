@@ -1156,6 +1156,23 @@ impl RecordingController {
         Ok(selected.clone())
     }
 
+    /// Explicit conversation reset, preserving the prior thread and any
+    /// unresolved effects. Never interrupt recording or accepted Agent work.
+    pub async fn begin_new_max_consultation(&self) -> Result<String> {
+        let _serial = self.serial_lock.lock().await;
+        anyhow::ensure!(self.current_state().await == State::Idle, "cannot reset Max while recording or processing");
+        let mut selected = self.max_consultation.lock().await;
+        let gateway = codescribe_core::agent::ThreadDeliveryGateway::new()?;
+        let expected = gateway.selected_max_consultation_id()?;
+        if let Some(consultation) = selected.take() {
+            if let Err(error) = consultation.close_if_idle().await {
+                *selected = Some(consultation);
+                return Err(error);
+            }
+        }
+        gateway.begin_new_max_consultation(&expected)
+    }
+
     /// Commit an overlay edit through the retained terminal reducer. The
     /// session/revision pair is checked in Rust; text never selects authority.
     pub async fn apply_user_revision_from_overlay(

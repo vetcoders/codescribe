@@ -31,13 +31,8 @@ struct SelectedConsultation {
 /// first use mints an id; corrupt state and unresolved turns never choose a
 /// different conversation as a side effect of recovery.
 pub(crate) fn selected_id(store: &ThreadStore) -> Result<String> {
-    let directory = consultation_directory(store)?;
-    let selection_dir = directory.join("selection");
-    fs::create_dir_all(&selection_dir)?;
-    File::open(&directory)?.sync_all()?;
-    let selection_dir = canonical_existing_child(&directory, &selection_dir)?;
-    let _selection_owner = exclusive_owner(&selection_dir.join("owner.lock"))?;
-    let path = selection_dir.join("current.json");
+    let path = selection_path(store)?;
+    let _selection_owner = exclusive_owner(&path.with_file_name("owner.lock"))?;
     let selected: SelectedConsultation = match OpenOptions::new().read(true)
         .custom_flags(libc::O_NOFOLLOW).open(&path) {
         Ok(file) => serde_json::from_reader(file).context("corrupt Max consultation selection")?,
@@ -50,6 +45,33 @@ pub(crate) fn selected_id(store: &ThreadStore) -> Result<String> {
     };
     validate_thread_id(&selected.thread_id)?;
     Ok(selected.thread_id)
+}
+
+/// Explicit new-conversation action. Preserve the old journal and history,
+/// including unresolved effects; never reinterpret them as successful work.
+pub(crate) fn begin_new(store: &ThreadStore, expected: &str) -> Result<String> {
+    validate_thread_id(expected)?;
+    let path = selection_path(store)?;
+    let _selection_owner = exclusive_owner(&path.with_file_name("owner.lock"))?;
+    let file = OpenOptions::new().read(true).custom_flags(libc::O_NOFOLLOW).open(&path)?;
+    let selected: SelectedConsultation = serde_json::from_reader(file).context("corrupt Max consultation selection")?;
+    ensure!(selected.thread_id == expected, "Max consultation selection changed; refusing stale reset");
+    // Caller must first close its owner. Another process still owning that
+    // conversation also prevents reset, regardless of its apparent UI state.
+    let directory = consultation_directory(store)?;
+    let _old_owner = exclusive_owner(&directory.join(format!("{expected}.lock")))?;
+    let replacement = SelectedConsultation { thread_id: ThreadStore::generate_id() };
+    persist_json(&path, &replacement)?;
+    Ok(replacement.thread_id)
+}
+
+fn selection_path(store: &ThreadStore) -> Result<PathBuf> {
+    let directory = consultation_directory(store)?;
+    let selection_dir = directory.join("selection");
+    fs::create_dir_all(&selection_dir)?;
+    File::open(&directory)?.sync_all()?;
+    let selection_dir = canonical_existing_child(&directory, &selection_dir)?;
+    Ok(selection_dir.join("current.json"))
 }
 
 fn consultation_directory(store: &ThreadStore) -> Result<PathBuf> {
@@ -133,6 +155,27 @@ impl ConsultationJournal {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn explicit_reset_requires_closed_owner_and_preserves_unresolved_history() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = ThreadStore::new_in(dir.path()).unwrap();
+        let old = selected_id(&store).unwrap();
+        let mut journal = ConsultationJournal::open(&store, &old).unwrap();
+        journal.begin("unresolved").unwrap();
+        let journal_path = dir.path().join("consultations").join(format!("{old}.json"));
+        let before = fs::read(&journal_path).unwrap();
+        assert!(begin_new(&store, &old).is_err());
+        assert_eq!(selected_id(&store).unwrap(), old);
+        drop(journal);
+        let new = begin_new(&store, &old).unwrap();
+        assert_ne!(new, old);
+        assert_eq!(selected_id(&store).unwrap(), new);
+        assert_eq!(fs::read(&journal_path).unwrap(), before);
+        assert!(ConsultationJournal::open(&store, &old).is_err());
+        assert!(begin_new(&store, &old).is_err(), "stale reset cannot replace newer selection");
+        assert_eq!(selected_id(&store).unwrap(), new);
+    }
 
     #[test]
     fn selected_conversation_survives_reopen_and_pending_does_not_replace_it() {

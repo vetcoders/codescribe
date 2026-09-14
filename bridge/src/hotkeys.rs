@@ -998,6 +998,19 @@ impl CodescribeHotkeys {
         .await?
     }
 
+    /// Explicitly start a fresh Max consultation without deleting old history.
+    /// The controller refuses while capture, processing or accepted work is active.
+    pub async fn begin_new_max_consultation(&self) -> Result<String, CsError> {
+        application_runtime::run(async move {
+            let controller = current_controller(&shared_controller()).ok_or_else(|| CsError::Recording {
+                msg: "no recording controller for Max consultation reset".to_string(),
+            })?;
+            controller.begin_new_max_consultation().await.map_err(|error| CsError::Recording {
+                msg: error.to_string(),
+            })
+        }).await?
+    }
+
     /// Forward a macOS sleep/wake boundary to the active recorder, if any.
     ///
     /// Querying this surface never constructs the shared controller. The host

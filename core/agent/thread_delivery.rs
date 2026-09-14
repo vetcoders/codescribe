@@ -107,6 +107,11 @@ impl ThreadDeliveryGateway {
         super::thread_store::consultation::selected_id(&self.store)
     }
 
+    /// Select a fresh conversation only for an explicit, non-stale reset.
+    pub fn begin_new_max_consultation(&self, expected: &str) -> Result<String> {
+        super::thread_store::consultation::begin_new(&self.store, expected)
+    }
+
     /// Called only while holding the consultation lease. Never substitute an
     /// empty history for a missing completed thread or an unreadable message.
     pub(crate) fn restore_consultation(&self, id: &str, history_required: bool) -> Result<Vec<Message>> {
