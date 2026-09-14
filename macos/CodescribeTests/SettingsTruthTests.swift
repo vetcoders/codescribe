@@ -49,6 +49,23 @@ final class SettingsTruthTests: XCTestCase {
     XCTAssertTrue(text.contains("review before sharing"))
   }
 
+  func testDebugReceiptPreservesBuildAndServingWhenConfigurationIsUnavailable() {
+    let text = codescribeDebugInfo(
+      build: AppBuildInfo(version: "1", build: "2", commit: "source-sha", builtAt: "fixture-time"),
+      osVersion: "fixture-os", recording: false, settings: nil,
+      lastServing: CsLastServingVerdict(
+        engine: "apple", routingMode: "off", disposition: "unchanged", fallbackUsed: false),
+      settingsFile: "/fixture/settings.json", dataDirectory: "/fixture/data", notesDirectory: "/fixture/notes"
+    )
+    XCTAssertTrue(text.contains("configuration: unavailable"))
+    XCTAssertTrue(text.contains("source commit: source-sha"))
+    XCTAssertTrue(text.contains("last completed serving engine: apple"))
+    XCTAssertTrue(text.contains("settings file: /fixture/settings.json"))
+    XCTAssertFalse(text.contains("configured STT engine:"))
+    XCTAssertFalse(text.contains("system default"))
+    XCTAssertFalse(text.contains("configuration: resolved now"))
+  }
+
   func testMaxApprovalInvalidationDuringReadIsNotLost() async {
     let request = PendingToolApproval(
       callID: "call", sessionID: "session", threadID: "consultation",

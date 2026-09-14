@@ -390,7 +390,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     model.tray.onCopyDebugInfo = { [config, notes, hotkeys] in
       Task { @MainActor in
         let recording = await hotkeys.isRecording()
-        let settings = config.loadSettings()
+        let settings: CsSettings?
+        do {
+          settings = try config.loadDiagnosticSettings()
+        } catch {
+          // Report unavailability, not raw errors or invented default values.
+          settings = nil
+        }
         let text = codescribeDebugInfo(
           build: .current(), osVersion: ProcessInfo.processInfo.operatingSystemVersionString,
           recording: recording, settings: settings, lastServing: currentServingVerdict(),
@@ -792,7 +798,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 /// A bounded diagnostic projection, not a dump of configuration or credentials.
 @MainActor
 func codescribeDebugInfo(
-  build: AppBuildInfo, osVersion: String, recording: Bool, settings: CsSettings,
+  build: AppBuildInfo, osVersion: String, recording: Bool, settings: CsSettings?,
   lastServing: CsLastServingVerdict?, settingsFile: String,
   dataDirectory: String, notesDirectory: String
 ) -> String {
@@ -803,20 +809,26 @@ func codescribeDebugInfo(
     "built at: \(build.builtAt)",
     "macOS: \(osVersion)",
     "recording: \(recording)",
-    "configuration: loaded now; not proof of the active capture snapshot",
-    "configured ASR mode: \(settings.asrMode ?? "not specified")",
-    "configured STT engine: \(settings.sttEngine ?? "not specified")",
-    "configured input device: \(settings.audioInputDevice ?? "system default")",
-    "formatting enabled: \(settings.aiFormattingEnabled)",
-    "configured formatting policy: \(settings.formattingLevel ?? "not specified")",
-    "configured formatting provider: \(settings.llmFormattingProvider ?? "not specified")",
-    "configured formatting model: \(settings.llmFormattingModel ?? "not specified")",
-    "configured agent provider: \(settings.llmAssistiveProvider ?? "not specified")",
-    "configured agent model: \(settings.llmAssistiveModel ?? "not specified")",
     "settings file: \(settingsFile)",
     "app data dir: \(dataDirectory)",
     "notes dir: \(notesDirectory)",
   ]
+  if let settings {
+    lines += [
+      "configuration: resolved now; may include loader repairs; not proof of the active capture snapshot",
+      "configured ASR mode: \(settings.asrMode ?? "not specified")",
+      "configured STT engine: \(settings.sttEngine ?? "not specified")",
+      "configured input device: \(settings.audioInputDevice ?? "system default")",
+      "formatting enabled: \(settings.aiFormattingEnabled)",
+      "configured formatting policy: \(settings.formattingLevel ?? "not specified")",
+      "configured formatting provider: \(settings.llmFormattingProvider ?? "not specified")",
+      "configured formatting model: \(settings.llmFormattingModel ?? "not specified")",
+      "configured agent provider: \(settings.llmAssistiveProvider ?? "not specified")",
+      "configured agent model: \(settings.llmAssistiveModel ?? "not specified")",
+    ]
+  } else {
+    lines.append("configuration: unavailable; loader refused or a configuration refusal was recorded in this process")
+  }
   if let lastServing {
     lines.append("last completed serving engine: \(lastServing.engine)")
     lines.append("last serving disposition: \(lastServing.disposition ?? "not reported")")

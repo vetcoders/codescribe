@@ -774,3 +774,18 @@ serving data stays explicitly unknown. The existing settings loader still runs
 on report generation; failure-safe diagnostics for a broken loader and a receipt
 of the exact active capture generation are not yet implemented. New bridge
 bindings, full gates and actual copied report inspection remain owed.
+
+Diagnostic follow-up: source inspection disproved the suspected current panic
+path: load_runtime_snapshot returns Ok around the startup snapshot, including
+repair/refusal receipts. The diagnostic bridge now uses that same canonical
+startup loader without credential imports and refuses a projection if its
+receipt contains unrepairable configuration. Swift still copies build, paths
+and independently observed serving information, but omits configured values on
+refusal. Success is labelled resolved and potentially repaired, not a faithful
+raw-file read. Refusals are process-lifetime receipts, so this does not claim a
+fresh successful repair clears an earlier refusal. The canonical load can still
+perform its existing settings repairs; this is not a read-only disk inspector.
+Scope includes this bounded diagnostic bridge method and its direct Rust tests.
+Authored tests cover unsupported schema preservation, valid settings projection,
+and Swift report generation without configuration. All are unexecuted under W1;
+new bindings, W2 gates and installed-app clipboard proof remain outstanding.

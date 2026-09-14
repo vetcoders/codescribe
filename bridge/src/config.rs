@@ -691,6 +691,18 @@ impl CodescribeConfig {
         CsSettings::from_runtime_snapshot(&runtime)
     }
 
+    /// Diagnostic projection without credential imports. The canonical loader
+    /// may repair settings; a recorded refusal must not become apparent success.
+    pub fn load_diagnostic_settings(&self) -> Result<CsSettings, CsError> {
+        let runtime = Config::load_startup_runtime_snapshot(false);
+        if !runtime.repair_receipt().unrepairable.is_empty() {
+            return Err(CsError::Config {
+                msg: "Configuration refusal recorded in this process".into(),
+            });
+        }
+        Ok(CsSettings::from_runtime_snapshot(&runtime))
+    }
+
     /// Read the presentation preference from the canonical settings snapshot.
     pub fn overlay_expanded_by_default(&self) -> bool {
         Config::load_runtime_snapshot_without_keychain()
@@ -3232,6 +3244,40 @@ mod settings_snapshot_tests {
         assert_eq!(added.api_key_account, account);
         codescribe_core::config::migrate::migrate_if_needed(None, true);
         assert!(keychain::cached_runtime_key(&account).is_none());
+    }
+
+    #[test]
+    #[serial]
+    fn diagnostic_settings_refuse_unsupported_schema_without_exposing_source() {
+        let root = tempfile::tempdir().unwrap();
+        let _data = EnvGuard::set("CODESCRIBE_DATA_DIR", root.path());
+        let _env = EnvGuard::set("CODESCRIBE_ENV_PATH", root.path().join("absent.env"));
+        let source = br#"{"schema_version":999,"private_value":"do-not-copy"}"#;
+        let path = UserSettings::settings_path();
+        fs::write(&path, source).unwrap();
+        let result = CodescribeConfig {}.load_diagnostic_settings();
+        assert!(matches!(result, Err(CsError::Config { ref msg })
+            if msg == "Configuration refusal recorded in this process"));
+        assert_eq!(fs::read(path).unwrap(), source);
+    }
+
+    #[test]
+    #[serial]
+    fn diagnostic_settings_project_valid_saved_configuration() {
+        let root = tempfile::tempdir().unwrap();
+        let _data = EnvGuard::set("CODESCRIBE_DATA_DIR", root.path());
+        let _env = EnvGuard::set("CODESCRIBE_ENV_PATH", root.path().join("absent.env"));
+        UserSettings {
+            audio_input_device: Some("Diagnostic fixture mic".into()),
+            ..Default::default()
+        }
+        .save()
+        .unwrap();
+        let settings = CodescribeConfig {}.load_diagnostic_settings().unwrap();
+        assert_eq!(
+            settings.audio_input_device.as_deref(),
+            Some("Diagnostic fixture mic")
+        );
     }
 
     #[test]
