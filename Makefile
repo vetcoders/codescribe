@@ -1094,6 +1094,7 @@ verify:
 	echo "=== Verify (env registry) ==="; \
 	python3 -m unittest scripts/tests/test_env_registry.py; \
 	python3 -m unittest scripts/tests/test_data_asset_references.py; \
+	python3 -m unittest scripts/tests/test_sessions_dedupe.py; \
 	bash scripts/validate-envs.sh; \
 	echo "=== Verify (gate ledger) ==="; \
 	bash scripts/validate-gates.sh; \

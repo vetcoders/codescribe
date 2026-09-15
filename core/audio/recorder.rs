@@ -56,6 +56,7 @@
 //   - silence duration before auto-stop (Silero default profile)
 //   - AUTO_SILENCE: enable/disable silence detection (default: false)
 
+use crate::config::Config;
 use crate::vad;
 use anyhow::{Context, Result};
 use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
@@ -555,7 +556,7 @@ impl Recorder {
         let spill_tx = if has_streaming_callback
             && audio_spill_from_env_value(std::env::var("CODESCRIBE_AUDIO_SPILL").ok().as_deref())
         {
-            match SpillSink::spawn(native_sample_rate, &std::env::temp_dir()) {
+            match takes_dir().and_then(|dir| SpillSink::spawn(native_sample_rate, &dir)) {
                 Ok(sink) => {
                     let tx = sink.sender();
                     self.spill = Some(sink);
@@ -788,8 +789,8 @@ impl Recorder {
             num_frames, self.last_duration, self.actual_sample_rate
         );
 
-        // Create temp file
-        let temp_path = std::env::temp_dir().join(format!(
+        // Scratch WAV under ~/.codescribe/takes (or $CODESCRIBE_DATA_DIR/takes).
+        let temp_path = takes_dir()?.join(format!(
             "codescribe_recording_{}.wav",
             chrono::Utc::now().timestamp_millis()
         ));
@@ -845,7 +846,7 @@ impl Recorder {
         let sample_count = slice.len();
         let duration_sec = sample_count as f32 / self.actual_sample_rate as f32;
 
-        let temp_path = std::env::temp_dir().join(format!(
+        let temp_path = takes_dir()?.join(format!(
             "codescribe_segment_{}.wav",
             chrono::Utc::now().timestamp_millis()
         ));
@@ -903,6 +904,49 @@ impl Drop for Recorder {
 /// recorder keeps the whole take so `stop()` can write all of it.
 fn streaming_buffer_cap_samples(sample_rate: u32) -> usize {
     (sample_rate as usize).saturating_mul(STREAMING_BUFFER_CAP_SECONDS)
+}
+
+/// Scratch directory for take WAVs: `Config::config_dir()/takes`.
+///
+/// Honours `CODESCRIBE_DATA_DIR` (default `$HOME/.codescribe`). Created on
+/// demand with `create_dir_all`; failure is a readable error, never a panic.
+/// Used by the streaming spill, the stop-time buffer dump, and the segment
+/// snapshot. Filenames stay `codescribe_recording_<ms>.wav` /
+/// `codescribe_segment_<ms>.wav`.
+///
+/// Public so `tests/takes_dir.rs` can assert the path without a microphone.
+/// `cargo test --test takes_dir` compiles this crate without `--cfg test`,
+/// so a `#[cfg(test)] pub(crate)` re-export would not compile that verifier.
+pub fn takes_dir() -> Result<PathBuf> {
+    let dir = Config::config_dir().join("takes");
+    std::fs::create_dir_all(&dir)
+        .with_context(|| format!("failed to create take scratch directory {}", dir.display()))?;
+    Ok(dir)
+}
+
+/// Microphone-free production writer for `tests/takes_dir.rs`.
+///
+/// `Recorder::{start,stop,snapshot_wav}` need a live capture device.
+/// `SpillSink` stays private; this seam calls `SpillSink::spawn` with
+/// [`takes_dir`] and forwards `samples` on the existing writer thread
+/// (no disk I/O on a capture callback, no fsync).
+#[doc(hidden)]
+pub fn spill_take_wav_for_tests(samples: &[i16], sample_rate: u32) -> Result<PathBuf> {
+    let dir = takes_dir()?;
+    let sink = SpillSink::spawn(sample_rate, &dir)?;
+    if let Some(tx) = sink.sender() {
+        tx.send(samples.to_vec())
+            .map_err(|_| anyhow::anyhow!("audio spill sender closed before write"))?;
+    }
+    let (path, written) = sink
+        .finalize()
+        .ok_or_else(|| anyhow::anyhow!("audio spill finalize failed"))?;
+    anyhow::ensure!(
+        written == samples.len(),
+        "audio spill wrote {written} samples, expected {}",
+        samples.len()
+    );
+    Ok(path)
 }
 
 /// Parse `CODESCRIBE_AUDIO_SPILL`: ON by default; only `0`/`false`/`no`/`off`

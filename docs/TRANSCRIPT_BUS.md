@@ -649,6 +649,14 @@ order through the process-owned Whisper singleton. One failed file does not
 prevent later files from running; the batch exits nonzero if any file fails.
 Use `--no-bus` for archive batches that should not replace Copy-last.
 
+When the bus is on (the default), retention sniffs twelve bytes: `RIFF....WAVE`
+keeps the source bytes, otherwise `load_audio_file` writes a PCM-16 WAV at the
+decoded rate. SHA-256 of those retained WAV bytes is recorded in
+`sessions/.index/<sha256hex>` as the first `sessions/<session_id>.wav` name; a
+hit hard-links that inode to the new session name (copy on EXDEV/EPERM/EEXIST)
+so demux identity stays `sessions/<session_id>.wav`. `--no-bus` retains nothing,
+which is why the Finder Quick Action is unchanged.
+
 `--stream` prints and flushes newly admitted segments after each decode window,
 before starting the next window. These are file-verdict drafts, not live
 microphone observations. Overlapping windows use the same timestamp assembly
