@@ -69,6 +69,13 @@ struct Cli {
 
 #[derive(Debug, Subcommand)]
 enum Command {
+    /// Compare complete profile measurements; never certify release readiness.
+    Compare {
+        #[arg(long)]
+        baseline: PathBuf,
+        #[arg(long)]
+        candidate: PathBuf,
+    },
     /// Inventory audio and reference classes without running STT.
     Census {
         /// Corpus root. Repeat to combine roots.
@@ -502,6 +509,36 @@ fn main() -> ExitCode {
 
 fn run(cli: Cli) -> Result<()> {
     match cli.command {
+        Command::Compare {
+            baseline,
+            candidate,
+        } => {
+            let baseline_bytes = fs::read(&baseline).context("read baseline report")?;
+            let candidate_bytes = fs::read(&candidate).context("read candidate report")?;
+            if baseline_bytes == candidate_bytes {
+                bail!("comparison refused: identical reports are not independent measurements");
+            }
+            let before: ProfileReport =
+                serde_json::from_slice(&baseline_bytes).context("parse baseline profile report")?;
+            let after: ProfileReport = serde_json::from_slice(&candidate_bytes)
+                .context("parse candidate profile report")?;
+            let deltas = compare_profile_reports(&before, &after)?;
+            println!(
+                "{}",
+                serde_json::to_string_pretty(&serde_json::json!({
+                    "schema": "codescribe-corpus-comparison/v1",
+                    "scope": "observed_measurement_deltas_only",
+                    "release_readiness": "not_proven",
+                    "calibration_and_full_runtime_equivalence": "not_proven_by_profile_reports",
+                    "baseline_report_sha256": format!("{:x}", Sha256::digest(&baseline_bytes)),
+                    "candidate_report_sha256": format!("{:x}", Sha256::digest(&candidate_bytes)),
+                    "baseline_commit": before.commit,
+                    "candidate_commit": after.commit,
+                    "rows": deltas,
+                }))?
+            );
+            Ok(())
+        }
         Command::Census {
             roots,
             out,
@@ -581,6 +618,99 @@ fn run(cli: Cli) -> Result<()> {
 struct Discovery {
     census: CorpusCensus,
     selected: Vec<Clip>,
+}
+
+/// Exact input identity and complete executions are prerequisites even for
+/// descriptive deltas. Profile reports alone do not prove causal equivalence.
+fn compare_profile_reports(
+    before: &ProfileReport,
+    after: &ProfileReport,
+) -> Result<Vec<serde_json::Value>> {
+    for report in [before, after] {
+        validate_execution_counts(
+            report.requested_executions,
+            report.successful_executions,
+            report.failed_executions,
+        )?;
+        if report.schema != REPORT_SCHEMA
+            || report.engine_contract != ENGINE_CONTRACT_ID
+            || report.rows.len() != report.requested_executions
+            || !report.profile_observation_matches
+            || !report.input_hashes_unchanged
+            || report.reference_policy != "human"
+            || report.requested_runs_per_recording == 0
+            || report
+                .distinct_recordings
+                .checked_mul(report.requested_runs_per_recording)
+                != Some(report.requested_executions)
+        {
+            bail!("comparison refused: incomplete or unsupported profile evidence");
+        }
+    }
+    if before.profile != after.profile || before.apple_stt_bridge != after.apple_stt_bridge {
+        bail!("comparison refused: profile or Apple bridge artifact changed");
+    }
+    let index = |report: &ProfileReport| -> Result<BTreeMap<(String, String, usize), [f64; 3]>> {
+        let mut rows = BTreeMap::new();
+        for row in &report.rows {
+            if row.status != "ok"
+                || row.reference_kind != ReferenceKind::Human
+                || !row.audio_hash_unchanged
+                || !row.reference_hash_unchanged
+                || !row.wer.is_finite()
+                || !row.cer.is_finite()
+                || !row.wall_seconds.is_finite()
+                || row.wer < 0.0
+                || row.cer < 0.0
+                || row.wall_seconds < 0.0
+                || row.run == 0
+                || row.run > report.requested_runs_per_recording
+            {
+                bail!("comparison refused: invalid measurement row");
+            }
+            let key = (
+                row.audio_sha256.clone(),
+                row.reference_sha256.clone(),
+                row.run,
+            );
+            if rows
+                .insert(key, [row.wer, row.cer, row.wall_seconds])
+                .is_some()
+            {
+                bail!("comparison refused: duplicate input/run identity");
+            }
+        }
+        let mut recordings = BTreeMap::new();
+        for (audio, reference, _) in rows.keys() {
+            let entry = recordings.entry(audio).or_insert((reference, 0usize));
+            if entry.0 != reference {
+                bail!("comparison refused: one recording has conflicting references");
+            }
+            entry.1 += 1;
+        }
+        if recordings.len() != report.distinct_recordings
+            || recordings
+                .values()
+                .any(|(_, count)| *count != report.requested_runs_per_recording)
+        {
+            bail!("comparison refused: incomplete repeated-run coverage");
+        }
+        Ok(rows)
+    };
+    let old = index(before)?;
+    let new = index(after)?;
+    if old.keys().ne(new.keys()) {
+        bail!("comparison refused: audio, reference hashes or repeated-run set changed");
+    }
+    Ok(old.iter().map(|((audio, reference, run), values)| {
+        let current = &new[&(audio.clone(), reference.clone(), *run)];
+        serde_json::json!({
+            "audio_sha256": audio, "reference_sha256": reference, "run": run,
+            "baseline": {"wer": values[0], "cer": values[1], "wall_seconds": values[2]},
+            "candidate": {"wer": current[0], "cer": current[1], "wall_seconds": current[2]},
+            "delta": {"wer": current[0]-values[0], "cer": current[1]-values[1], "wall_seconds": current[2]-values[2]}
+        })
+    }).collect())
 }
 
 fn discover_corpus(
@@ -1926,6 +2056,85 @@ fn optional_score(value: Option<f64>) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn comparison_fixture() -> ProfileReport {
+        let root = tempfile::tempdir().unwrap();
+        let census = discover_corpus(&[root.path().to_owned()], ReferencePolicy::Human, None)
+            .unwrap()
+            .census;
+        let mut value: serde_json::Value = serde_json::from_str(
+            r#"{
+            "schema": "codescribe-corpus-parity/v3", "engine_contract": "the-engine/v1",
+            "generated_at": "synthetic", "commit": "synthetic", "profile": "apple_layer0",
+            "reference_policy": "human", "corpus": null, "distinct_recordings": 1,
+            "requested_runs_per_recording": 1, "requested_executions": 1,
+            "successful_executions": 1, "failed_executions": 0,
+            "total_audio_seconds_executed": 1.0, "total_tail_patches": 0,
+            "requested_layered": false, "observed_layered": false,
+            "profile_observation_matches": true, "mean_wer": 0.1, "mean_cer": 0.1,
+            "mean_character_parity": 0.9, "input_hashes_unchanged": true,
+            "settings_loaded": false, "dotenv_loaded": false, "keychain_disabled": true,
+            "apple_stt_bridge": {"label": "synthetic", "exists": true, "sha256": "abc"},
+            "quality_html": "synthetic.html",
+            "rows": [{
+                "opaque_id": "synthetic", "run": 1, "audio_sha256": "audio",
+                "reference_sha256": "reference", "reference_kind": "human",
+                "duration_seconds": 1.0, "sample_rate_hz": 16000, "status": "ok",
+                "error_class": null, "wall_seconds": 1.0, "events": 1, "previews": 1,
+                "sealed_finals": 1, "final_count": 1, "unique_final_id_count": 1,
+                "repeated_final_id_count": 0, "overlapping_final_window_count": 0,
+                "tail_patches": 0, "layer1_provider_armed": false,
+                "live_chars": 4, "adjudicated_chars": 4, "delivered_chars": 4,
+                "reference_tokens": 1, "delivered_tokens": 1, "token_ratio": 1.0,
+                "head_present": true, "tail_present": true, "wer": 0.1, "cer": 0.1,
+                "character_parity": 0.9, "teacher_similarity": 0.9,
+                "final_pass_attempted": false, "final_pass_skipped": true,
+                "audio_hash_unchanged": true, "reference_hash_unchanged": true
+            }]
+        }"#,
+        )
+        .unwrap();
+        value["corpus"] = serde_json::to_value(census).unwrap();
+        serde_json::from_value(value).unwrap()
+    }
+
+    #[test]
+    fn comparison_reports_deltas_and_refuses_changed_reference_or_failed_run() {
+        let before = comparison_fixture();
+        let mut after = comparison_fixture();
+        after.rows[0].wer = 0.3;
+        let result = compare_profile_reports(&before, &after).unwrap();
+        assert!((result[0]["delta"]["wer"].as_f64().unwrap() - 0.2).abs() < 1e-10);
+        after.rows[0].reference_sha256 = "different".into();
+        assert!(compare_profile_reports(&before, &after).is_err());
+        after = comparison_fixture();
+        after.rows[0].status = "error".into();
+        assert!(compare_profile_reports(&before, &after).is_err());
+        after = comparison_fixture();
+        after.failed_executions = 1;
+        assert!(compare_profile_reports(&before, &after).is_err());
+        after = comparison_fixture();
+        after.apple_stt_bridge.sha256 = Some("different".into());
+        assert!(compare_profile_reports(&before, &after).is_err());
+    }
+
+    #[test]
+    fn comparison_refuses_duplicate_rows_and_inconsistent_counts() {
+        let before = comparison_fixture();
+        let mut after = comparison_fixture();
+        after.requested_runs_per_recording = 2;
+        assert!(compare_profile_reports(&before, &after).is_err());
+        after.requested_executions = 2;
+        after.successful_executions = 2;
+        let duplicate =
+            serde_json::from_value(serde_json::to_value(&after.rows[0]).unwrap()).unwrap();
+        after.rows.push(duplicate);
+        assert!(compare_profile_reports(&after, &after).is_err());
+        after.rows[1].run = 2;
+        assert!(compare_profile_reports(&after, &after).is_ok());
+        after.rows[1].wer = f64::NAN;
+        assert!(compare_profile_reports(&after, &after).is_err());
+    }
 
     #[test]
     fn execution_completion_refuses_empty_failed_missing_or_excess_rows() {

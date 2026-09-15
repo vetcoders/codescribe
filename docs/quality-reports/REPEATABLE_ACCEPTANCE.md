@@ -20,7 +20,8 @@ flowchart TD
     D --> X[Retained failure report]
     G --> H[Execution completion status]
     X --> H
-    H --> I[Version-to-version acceptance: connection still missing]
+    H --> I[codescribe-corpus compare: descriptive deltas]
+    I --> R[Calibrated release acceptance: not proven]
     J[qube-report file Whisper evaluation] --> K[qube-daemon baseline and history]
     K -. different execution path .-> I
 ```
@@ -29,8 +30,9 @@ flowchart TD
 and history. Its local arm runs file Whisper; its scores do not certify the live
 Apple/controller path. `codescribe-teacher compare` compares supplied texts, not
 two versioned production runs. `codescribe-corpus` records audio/reference hashes,
-explicit profiles and per-execution outcomes, but has no cross-release comparison
-command yet. Seal Atlas makes PCM evidence visible; it does not turn missing
+explicit profiles and per-execution outcomes. Its `compare` command matches
+complete profile reports by audio hash, reference hash and run number. Seal Atlas
+makes PCM evidence visible; it does not turn missing
 measurements into proof or certify lexical accuracy by itself.
 
 ## What the command proves
@@ -73,7 +75,24 @@ connection remains to be implemented and verified. Historical WAVs without that
 evidence can still be useful for explicitly scoped text/engine experiments, not
 as proof of calibrated production delivery.
 
-## Comparison contract to implement
+## Compare retained profile reports
+
+```sh
+cargo run --bin codescribe-corpus -- compare \
+  --baseline /path/to/baseline/profile-apple-layer0.json \
+  --candidate /path/to/candidate/profile-apple-layer0.json
+```
+
+JSON is written to stdout without overwriting either input. The command refuses
+identical files, incomplete executions, duplicate/missing runs, changed reference
+sets, and changed profiles or Apple bridge artifacts. It reports per-run WER,
+CER and wall-time deltas, not an automatic accuracy threshold verdict. The output
+explicitly says release readiness and full runtime/calibration equivalence are
+not proven. Positive delta means the candidate value increased; interpretation
+requires the stated measurement scope. These descriptive comparisons do not
+replace the remaining calibration provenance and acceptance work below.
+
+## Full acceptance contract still to complete
 
 - Match audio and human-reference hashes; expose additions, removals and changes.
 - Record source/build, engine artifact, language, profile and calibration evidence.
