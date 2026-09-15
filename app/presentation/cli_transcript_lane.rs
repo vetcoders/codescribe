@@ -326,6 +326,9 @@ fn retain_temp_path(sessions_dir: &Path) -> PathBuf {
 }
 
 fn sniff_riff_wave(path: &Path) -> io::Result<bool> {
+    // path is the CLI source this run was told to transcribe (metadata-checked
+    // regular file) or a sessions-dir minted temp; reading it is the purpose.
+    // nosemgrep: rust.actix.path-traversal.tainted-path.tainted-path -- path is the user-named transcription source (metadata-checked regular file) or a minted sessions temp; reading it is the tool's function.
     let mut file = File::open(path)?;
     let mut header = [0u8; 12];
     let read = file.read(&mut header)?;
@@ -333,6 +336,9 @@ fn sniff_riff_wave(path: &Path) -> io::Result<bool> {
 }
 
 fn sha256_file(path: &Path) -> io::Result<String> {
+    // Same contract as sniff_riff_wave: the retained bytes we just wrote or
+    // the metadata-checked CLI source; hashing them is the dedupe identity.
+    // nosemgrep: rust.actix.path-traversal.tainted-path.tainted-path -- path is the user-named transcription source (metadata-checked regular file) or a minted sessions temp; hashing it is the dedupe identity.
     let mut file = File::open(path)?;
     let mut hasher = Sha256::new();
     let mut buf = vec![0u8; HASH_BUF_BYTES];
