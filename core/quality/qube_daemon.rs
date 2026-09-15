@@ -182,9 +182,7 @@ pub async fn run(config: QubeDaemonConfig) -> Result<PathBuf> {
 
     let history_path = resolve_history_path(&config.history_path, &config_root)?;
     let baseline_path = resolve_baseline(&config, &output_root, &config_root, &history_path)?;
-    let baseline_report = baseline_path
-        .as_ref()
-        .and_then(|path| load_report(path, &config_root).ok());
+    let baseline_report = load_baseline_report(baseline_path.as_deref(), &config_root)?;
 
     let (regressions, regression_summary) = analyze_regressions(
         &report,
@@ -248,6 +246,11 @@ fn load_report(path: &Path, root: &Path) -> Result<QualityReport> {
     let data = safe_read_to_string_bounded(path, root)
         .with_context(|| format!("Failed to read report {}", path.display()))?;
     serde_json::from_str(&data).context("Failed to parse report.json")
+}
+
+/// Only an absent selection means no baseline; failed evidence is an error.
+fn load_baseline_report(path: Option<&Path>, root: &Path) -> Result<Option<QualityReport>> {
+    path.map(|path| load_report(path, root)).transpose()
 }
 
 /// Resolve the report config's input/output directories against `root`.
@@ -1457,6 +1460,20 @@ mod tests {
             summary: ReportSummary::default(),
             entries,
         }
+    }
+
+    #[test]
+    fn selected_baseline_must_be_readable_and_valid() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let root = tmp.path().canonicalize().unwrap();
+        let path = root.join("baseline.json");
+        assert!(load_baseline_report(None, &root).unwrap().is_none());
+        assert!(load_baseline_report(Some(&path), &root).is_err());
+        std::fs::write(&path, "{truncated").unwrap();
+        let error = load_baseline_report(Some(&path), &root).unwrap_err();
+        assert!(error.to_string().contains("Failed to parse"));
+        std::fs::write(&path, serde_json::to_vec(&mock_report(vec![])).unwrap()).unwrap();
+        assert!(load_baseline_report(Some(&path), &root).unwrap().is_some());
     }
 
     /// State write must take the last non-empty history line as `latest_report`.
