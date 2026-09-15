@@ -78,8 +78,9 @@ fn spill_wav_lands_under_codescribe_takes_not_temp_dir() {
     let before = recording_names_in(&temp);
 
     let samples: Vec<i16> = vec![i16::MIN, -1, 0, 1, i16::MAX, 1234, -4321];
-    let path: PathBuf = codescribe_core::audio::recorder::spill_take_wav_for_tests(&samples, 16_000)
-        .expect("spill take wav");
+    let path: PathBuf =
+        codescribe_core::audio::recorder::spill_take_wav_for_tests(&samples, 16_000)
+            .expect("spill take wav");
 
     assert!(
         path.starts_with(&takes),
@@ -94,7 +95,11 @@ fn spill_wav_lands_under_codescribe_takes_not_temp_dir() {
         file_name.starts_with("codescribe_recording_") && file_name.ends_with(".wav"),
         "filename must stay codescribe_recording_<ms>.wav, got {file_name}"
     );
-    assert!(path.is_file(), "spill must produce a file: {}", path.display());
+    assert!(
+        path.is_file(),
+        "spill must produce a file: {}",
+        path.display()
+    );
 
     let read: Vec<i16> = hound::WavReader::open(&path)
         .expect("open spilled wav")

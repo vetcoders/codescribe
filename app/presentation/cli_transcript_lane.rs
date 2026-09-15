@@ -197,13 +197,7 @@ impl CliTranscriptLane {
         let retained_is_owned_temp = owned_temp.is_some();
         let installed = {
             let retained = owned_temp.as_deref().unwrap_or(source);
-            install_retained_identity(
-                id,
-                retained,
-                &dest,
-                sessions_dir,
-                retained_is_owned_temp,
-            )
+            install_retained_identity(id, retained, &dest, sessions_dir, retained_is_owned_temp)
         };
         match installed {
             Ok(consumed_owned_temp) => {
@@ -496,8 +490,8 @@ fn copy_to_minted_temp(from: &Path, tmp: &Path) -> io::Result<()> {
 }
 
 fn decode_container_to_wav(source: &Path, dest: &Path) -> io::Result<()> {
-    let (samples, sample_rate) = codescribe_core::audio::load_audio_file(source)
-        .map_err(io::Error::other)?;
+    let (samples, sample_rate) =
+        codescribe_core::audio::load_audio_file(source).map_err(io::Error::other)?;
     let written = write_pcm16_wav(dest, &samples, sample_rate);
     drop(samples);
     written
@@ -736,7 +730,10 @@ mod tests {
         assert_eq!(dest, sessions.join("cli-wav-01.wav"));
         assert_eq!(dest.file_name().unwrap(), "cli-wav-01.wav");
         assert_ne!(dest.file_name().unwrap(), "last_session.wav");
-        assert_eq!(std::fs::read(&dest).unwrap(), std::fs::read(&source).unwrap());
+        assert_eq!(
+            std::fs::read(&dest).unwrap(),
+            std::fs::read(&source).unwrap()
+        );
         assert!(!sessions.join("last_session.wav").exists());
     }
 
