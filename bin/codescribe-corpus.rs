@@ -961,6 +961,25 @@ fn run_matrix(args: MatrixArgs) -> Result<()> {
             args.profiles.len()
         );
     }
+    validate_execution_counts(
+        requested_executions,
+        successful_executions,
+        failed_executions,
+    )?;
+    if !config_unchanged {
+        bail!("corpus replay changed configuration; retained report is not an acceptance pass");
+    }
+    Ok(())
+}
+
+/// A completed measurement is not an accuracy verdict, but failed/missing
+/// executions must make the command fail after their reports are preserved.
+fn validate_execution_counts(requested: usize, successful: usize, failed: usize) -> Result<()> {
+    if requested == 0 || successful != requested || failed != 0 {
+        bail!(
+            "corpus replay incomplete: {successful}/{requested} successful, {failed} failed; see retained report"
+        );
+    }
     Ok(())
 }
 
@@ -1907,6 +1926,21 @@ fn optional_score(value: Option<f64>) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn execution_completion_refuses_empty_failed_missing_or_excess_rows() {
+        assert!(validate_execution_counts(2, 2, 0).is_ok());
+        for counts in [
+            (0, 0, 0),
+            (2, 0, 2),
+            (2, 1, 1),
+            (2, 1, 0),
+            (2, 3, 0),
+            (2, 2, 1),
+        ] {
+            assert!(validate_execution_counts(counts.0, counts.1, counts.2).is_err());
+        }
+    }
 
     #[test]
     fn corpus_discovers_both_human_reference_names() {
