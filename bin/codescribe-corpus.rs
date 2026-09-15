@@ -142,7 +142,7 @@ enum Command {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, ValueEnum)]
 #[serde(rename_all = "snake_case")]
 enum ReferencePolicy {
-    /// Only explicit `_human_transcription.txt` siblings are quality truth.
+    /// Only explicit adjacent human-reference files are quality truth.
     Human,
     /// Prefer explicit human truth, then admit same-stem historical TXT.
     HumanAndHistorical,
@@ -610,10 +610,9 @@ fn discover_corpus(
         let extension = lower_extension(path).unwrap_or_else(|| "unknown".to_string());
         *format_instances.entry(extension.clone()).or_insert(0) += 1;
         let audio_sha256 = sha256_file(path)?;
-        let human_path = reference_path(path, "_human_transcription.txt");
+        let human = resolve_human_reference(path)?;
         let historical_path = path.with_extension("txt");
         let apple_path = reference_path(path, "_apple_live_reference.txt");
-        let human = human_path.filter(|candidate| candidate.is_file());
         let historical = historical_path.is_file().then_some(historical_path);
         let has_apple_reference = apple_path.is_some_and(|candidate| candidate.is_file());
         human_reference_instances += usize::from(human.is_some());
@@ -745,6 +744,35 @@ fn lower_extension(path: &Path) -> Option<String> {
 fn reference_path(audio: &Path, suffix: &str) -> Option<PathBuf> {
     let stem = audio.file_stem()?.to_str()?;
     Some(audio.parent()?.join(format!("{stem}{suffix}")))
+}
+
+/// Match the adjacent human-reference names used by scripts/lib/data-assets.sh.
+/// Never choose between conflicting labels or treat an empty label as truth.
+fn resolve_human_reference(audio: &Path) -> Result<Option<PathBuf>> {
+    let mut selected: Option<(PathBuf, String)> = None;
+    for suffix in [
+        "_human_transcription.txt",
+        "_codescribe_raw_human_transcription_from_wav.txt",
+    ] {
+        let Some(candidate) = reference_path(audio, suffix) else {
+            continue;
+        };
+        let contents = match fs::read_to_string(&candidate) {
+            Ok(contents) => contents,
+            Err(error) if error.kind() == io::ErrorKind::NotFound => continue,
+            Err(error) => return Err(error).context("cannot read human reference"),
+        };
+        if contents.trim().is_empty() {
+            bail!("empty human reference");
+        }
+        if let Some((_, previous)) = &selected
+            && previous != &contents
+        {
+            bail!("conflicting adjacent human references");
+        }
+        selected = Some((candidate, contents));
+    }
+    Ok(selected.map(|(path, _)| path))
 }
 
 fn merge_duplicate(existing: &mut Clip, incoming: Clip) -> Result<()> {
@@ -1879,6 +1907,40 @@ fn optional_score(value: Option<f64>) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn corpus_discovers_both_human_reference_names() {
+        for suffix in [
+            "_human_transcription.txt",
+            "_codescribe_raw_human_transcription_from_wav.txt",
+        ] {
+            let root = tempfile::tempdir().unwrap();
+            let audio = root.path().join("take.wav");
+            fs::write(&audio, b"census hashes without decoding").unwrap();
+            fs::write(reference_path(&audio, suffix).unwrap(), "human truth").unwrap();
+            let found =
+                discover_corpus(&[root.path().to_owned()], ReferencePolicy::Human, None).unwrap();
+            assert_eq!(found.selected.len(), 1);
+            assert_eq!(found.census.distinct_human_paired, 1);
+        }
+    }
+
+    #[test]
+    fn human_reference_conflicts_and_empty_labels_are_refused() {
+        let root = tempfile::tempdir().unwrap();
+        let audio = root.path().join("take.wav");
+        let first = reference_path(&audio, "_human_transcription.txt").unwrap();
+        let second =
+            reference_path(&audio, "_codescribe_raw_human_transcription_from_wav.txt").unwrap();
+        assert!(resolve_human_reference(&audio).unwrap().is_none());
+        fs::write(&first, "truth").unwrap();
+        fs::write(&second, "truth").unwrap();
+        assert!(resolve_human_reference(&audio).unwrap().is_some());
+        fs::write(&second, "different").unwrap();
+        assert!(resolve_human_reference(&audio).is_err());
+        fs::write(&second, " \n\t").unwrap();
+        assert!(resolve_human_reference(&audio).is_err());
+    }
 
     #[test]
     fn profile_tokens_round_trip_without_hidden_defaults() {
