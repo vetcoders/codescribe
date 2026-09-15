@@ -23,7 +23,7 @@ flowchart TD
     H --> I[codescribe-corpus compare: descriptive deltas]
     I --> R[Calibrated release acceptance: not proven]
     J[qube-report file Whisper evaluation] --> K[qube-daemon baseline and history]
-    K -. different execution path .-> I
+    K --> Q[Qube analysis: separate report format and scope]
 ```
 
 `qube-daemon` contains baseline selection, regression analysis, tuning proposals
@@ -34,6 +34,13 @@ explicit profiles and per-execution outcomes. Its `compare` command matches
 complete profile reports by audio hash, reference hash and run number. Seal Atlas
 makes PCM evidence visible; it does not turn missing
 measurements into proof or certify lexical accuracy by itself.
+
+Qube reports are not inputs to `codescribe-corpus compare`. These are separate
+executable paths, not connected stages of one acceptance pipeline. Selected Qube
+baselines now fail on read/parse errors, unavailable targets or a canonical path
+equal to the current report. Qube still matches entry IDs rather than binding
+audio/reference hashes; its history reader tolerates malformed lines and hides
+read errors. Its zero-regression result is not production acceptance.
 
 ## What the command proves
 
@@ -74,6 +81,43 @@ recording-bound capture/calibration provenance. The admissible storage/replay
 connection remains to be implemented and verified. Historical WAVs without that
 evidence can still be useful for explicitly scoped text/engine experiments, not
 as proof of calibrated production delivery.
+
+The recorder sends mono `f32` to the live callback and writes converted `i16`
+samples to its archive. An archive hash establishes the replay input, not
+bit-identical live ingress. Keep archival replay and live capture checks separate.
+
+## Evidence checkpoint: 2026-09-15
+
+| Question                           | Observed evidence                                                                                                                           | Boundary                                                                                |
+| ---------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------- | --------------------------------------------------------------------------------------- |
+| Does the pointer race reproduce?   | Current pointer source in the supplied AppKit harness: rapid 8-cycle case settles to one updater; all nine started workers exit after hide. | Module harness, not installed-app hotkey/UI acceptance; transient overlap still occurs. |
+| Are human references discovered?   | Four existing fixtures selected as human after supporting both documented suffixes.                                                         | Discovery, not transcription accuracy.                                                  |
+| Does production replay complete?   | Two actual runs of one 86-second fixture failed with no deliverable ledger text.                                                            | No accuracy score; capture-bound calibration missing in replay.                         |
+| Are failures visible?              | Real negative command preserves its report and returns nonzero; count tests reject incomplete execution.                                    | Negative-path proof, not positive replay.                                               |
+| Can measurements be compared?      | Corpus comparison matches audio/reference/run identities and refuses failed inputs; synthetic unit tests verify deltas.                     | Positive real-audio comparison still missing.                                           |
+| Is the historical loop executable? | Qube baseline/history/tuning code exists; 37 module tests pass after baseline repairs.                                                      | File Whisper path; no full daemon/audio experiment in this investigation.               |
+
+Private experiment receipts are retained under
+`~/.vibecrafted/artifacts/vetcoders/codescribe/2026_0915/reports/quality-recovery/`.
+`STATUS.md` records exact commits and gate scope; `pointer/RECEIPT.md` separates
+current harness results from historical copied artifacts. No private audio or
+human transcript is committed here.
+
+## Next runtime cut, not yet implemented
+
+Use the existing recorder/session owners: freeze the actually admitted measured
+profile, capture path, session/epoch and timestamp at recording start; bind that
+evidence to the finalized archive at stop. Failure to persist evidence must retain
+the audio and report it as ineligible for calibrated replay, not lose the take.
+Validate schema, audio/profile hashes, sample dimensions, capture identity and
+calibration validity at the recorded time before replay. Do not introduce a
+second threshold owner or alter current live calibration expiry.
+
+Before calling this cut accepted, prove rejection of absent/tampered/foreign
+evidence and invalid-at-capture profiles, then repeat a fresh human-confirmed
+recording through the production path. A synthetic profile can test refusal logic
+but cannot replace the positive measured receipt. Recording requires the Founder;
+this investigation does not start the microphone automatically.
 
 ## Compare retained profile reports
 
