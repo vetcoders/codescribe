@@ -181,7 +181,12 @@ pub async fn run(config: QubeDaemonConfig) -> Result<PathBuf> {
     let report = load_report(&report_path, &config_root)?;
 
     let history_path = resolve_history_path(&config.history_path, &config_root)?;
-    let baseline_path = resolve_baseline(&config, &output_root, &config_root, &history_path)?;
+    let baseline_path = resolve_baseline(
+        config.baseline_report.as_deref(),
+        &output_root,
+        &config_root,
+        &history_path,
+    )?;
     let baseline_report = load_baseline_report(baseline_path.as_deref(), &config_root)?;
 
     let (regressions, regression_summary) = analyze_regressions(
@@ -285,30 +290,26 @@ fn resolve_history_path(path: &Path, root: &Path) -> Result<PathBuf> {
 /// The history candidate is rejected when it points at the run's own output —
 /// diffing a report against itself would report a perfectly healthy zero.
 fn resolve_baseline(
-    config: &QubeDaemonConfig,
+    explicit_baseline: Option<&Path>,
     output_dir: &Path,
     root: &Path,
     history_path: &Path,
 ) -> Result<Option<PathBuf>> {
-    if let Some(path) = config.baseline_report.as_ref() {
-        let resolved = resolve_report_path(path);
-        let bounded = safe_canonicalize_bounded(&resolved, root)
-            .with_context(|| format!("Baseline report must stay within {}", root.display()))?;
-        return Ok(Some(bounded));
-    }
-
-    let history = read_last_history(history_path, root)?;
-    let Some(history) = history else {
-        return Ok(None);
+    let candidate = if let Some(path) = explicit_baseline {
+        resolve_report_path(path)
+    } else {
+        let Some(history) = read_last_history(history_path, root)? else {
+            return Ok(None);
+        };
+        PathBuf::from(history.report_json)
     };
-    let history_path = PathBuf::from(&history.report_json);
-    if history_path.exists() && history_path != output_dir.join("report.json") {
-        let bounded = safe_canonicalize_bounded(&history_path, root)
-            .with_context(|| format!("Baseline report must stay within {}", root.display()))?;
-        return Ok(Some(bounded));
+    let bounded = safe_canonicalize_bounded(&candidate, root)
+        .with_context(|| format!("Baseline report unavailable or outside {}", root.display()))?;
+    let current = safe_canonicalize_bounded(&output_dir.join("report.json"), root)?;
+    if bounded == current {
+        anyhow::bail!("Baseline report is the current report; independent comparison required");
     }
-
-    Ok(None)
+    Ok(Some(bounded))
 }
 
 /// Accept either a report directory or the `report.json` inside it.
@@ -1474,6 +1475,43 @@ mod tests {
         assert!(error.to_string().contains("Failed to parse"));
         std::fs::write(&path, serde_json::to_vec(&mock_report(vec![])).unwrap()).unwrap();
         assert!(load_baseline_report(Some(&path), &root).unwrap().is_some());
+    }
+
+    #[test]
+    fn baseline_selection_refuses_missing_and_self_comparison() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let root = tmp.path().canonicalize().unwrap();
+        let output = root.join("current");
+        std::fs::create_dir(&output).unwrap();
+        let current = output.join("report.json");
+        std::fs::write(&current, "{}").unwrap();
+        let history = root.join("history.jsonl");
+        assert!(
+            resolve_baseline(None, &output, &root, &history)
+                .unwrap()
+                .is_none()
+        );
+        assert!(resolve_baseline(Some(&output), &output, &root, &history).is_err());
+        let previous = root.join("previous.json");
+        let entry = LoopHistoryEntry {
+            generated_at: "test".into(),
+            report_dir: root.display().to_string(),
+            report_json: previous.display().to_string(),
+            summary: ReportSummary::default(),
+        };
+        std::fs::write(&history, serde_json::to_vec(&entry).unwrap()).unwrap();
+        assert!(resolve_baseline(None, &output, &root, &history).is_err());
+        std::fs::write(&previous, "{}").unwrap();
+        assert_eq!(
+            resolve_baseline(None, &output, &root, &history).unwrap(),
+            Some(previous)
+        );
+        let entry = LoopHistoryEntry {
+            report_json: current.display().to_string(),
+            ..entry
+        };
+        std::fs::write(&history, serde_json::to_vec(&entry).unwrap()).unwrap();
+        assert!(resolve_baseline(None, &output, &root, &history).is_err());
     }
 
     /// State write must take the last non-empty history line as `latest_report`.
