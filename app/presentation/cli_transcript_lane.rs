@@ -201,10 +201,10 @@ impl CliTranscriptLane {
         };
         match installed {
             Ok(consumed_owned_temp) => {
-                if let Some(tmp) = owned_temp {
-                    if !consumed_owned_temp {
-                        let _ = fs::remove_file(tmp);
-                    }
+                if let Some(tmp) = owned_temp
+                    && !consumed_owned_temp
+                {
+                    let _ = fs::remove_file(tmp);
                 }
                 Ok(dest)
             }
@@ -385,9 +385,8 @@ fn write_index_atomic(index_dir: &Path, digest: &str, canonical_name: &str) -> i
         let _ = fs::remove_file(&tmp);
         return Err(err);
     }
-    fs::rename(&tmp, dest).map_err(|err| {
+    fs::rename(&tmp, dest).inspect_err(|_| {
         let _ = fs::remove_file(&tmp);
-        err
     })
 }
 
@@ -449,9 +448,8 @@ fn publish_retained_path(
         let _ = fs::remove_file(&tmp);
         return Err(err);
     }
-    fs::rename(&tmp, dest).map_err(|err| {
+    fs::rename(&tmp, dest).inspect_err(|_| {
         let _ = fs::remove_file(&tmp);
-        err
     })
 }
 
