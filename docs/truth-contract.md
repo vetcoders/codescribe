@@ -17,6 +17,7 @@ Cel:
 
   - Ostateczny transcript wybrany po zakończeniu nagrania.
   - To ten artefakt decyduje o zapisie, auto-paste i sidecarze prawdy.
+  - Sidecar to `<transcript>.truth.json` — schema v2, pisany przez core `take_truth`, czytany wyłącznie przez qube i testy.
 
 - `Transcript`
 
