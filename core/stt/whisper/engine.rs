@@ -879,6 +879,14 @@ impl LocalWhisperEngine {
             "planned VAD-aligned long-file decode windows"
         );
 
+        // One file-level log-mel pass (not per window). candle 0.9.2 pads each
+        // call; `file_level_log_mel` slices at 30 s and keeps real hops only.
+        let energy = {
+            let n_mels = self.config.num_mel_bins;
+            let mel_all = file_level_log_mel(&self.config, &samples, &self.mel_filters);
+            Some(super::energy::energy_timeline(&mel_all, n_mels, 10))
+        };
+
         let mut merged = RawTranscript::default();
         let mut covered_until_secs = 0.0_f32;
         let mut logprob_sum = 0.0_f32;
@@ -997,6 +1005,7 @@ impl LocalWhisperEngine {
             } else {
                 None
             },
+            energy,
         })
     }
 
@@ -1396,6 +1405,7 @@ impl LocalWhisperEngine {
             return Ok(RawTranscript {
                 avg_logprob,
                 compression_ratio: Some(final_ratio),
+                energy: None,
                 ..Default::default()
             });
         }
@@ -1405,8 +1415,43 @@ impl LocalWhisperEngine {
             segments,
             avg_logprob,
             compression_ratio: Some(final_ratio),
+            energy: None,
         })
     }
+}
+
+/// File-level log-mel in 30 s slices, concatenated on the frame axis.
+///
+/// candle-transformers 0.9.2 log-mel conversion does not truncate to 30 s. It pads
+/// `n_len` up to a multiple of 1500 frames (15 s) and then adds another 1500
+/// frames. A single call on a long file would therefore emit a longer timeline
+/// than the audio. Slicing at `N_SAMPLES` and keeping `chunk.len() / HOP_LENGTH`
+/// frames per slice keeps `frames.len() ≈ samples.len() / 160`.
+fn file_level_log_mel(config: &Config, samples: &[f32], mel_filters: &[f32]) -> Vec<f32> {
+    let n_mels = config.num_mel_bins;
+    if n_mels == 0 || samples.is_empty() {
+        return Vec::new();
+    }
+    let hop = whisper::HOP_LENGTH;
+    let mut bins: Vec<Vec<f32>> = vec![Vec::new(); n_mels];
+    for chunk in samples.chunks(whisper::N_SAMPLES) {
+        let padded = whisper::audio::pcm_to_mel(config, chunk, mel_filters);
+        let padded_frames = padded.len() / n_mels;
+        if padded_frames == 0 {
+            continue;
+        }
+        let take = (chunk.len() / hop).min(padded_frames);
+        for (bin, dest) in bins.iter_mut().enumerate() {
+            let start = bin * padded_frames;
+            dest.extend_from_slice(&padded[start..start + take]);
+        }
+    }
+    let n_frames = bins[0].len();
+    let mut out = Vec::with_capacity(n_mels.saturating_mul(n_frames));
+    for dest in bins {
+        out.extend(dest);
+    }
+    out
 }
 
 /// Load mel filters from an `.npz` on disk, opened through `safe_path`.
@@ -1951,6 +1996,7 @@ mod dedup_tests {
     fn requested_final_pass_reports_embedded_lexicon_changes() {
         let raw = RawTranscript {
             text: "doker".to_string(),
+            energy: None,
             ..Default::default()
         };
 
@@ -2305,6 +2351,7 @@ mod stt_live_first_v2_red {
                 start_ts: 15.0,
                 end_ts: 24.0,
             }],
+            energy: None,
             ..Default::default()
         };
         // Next window starts at 20 s; its decode of the 20–25 s overlap came out
@@ -2323,6 +2370,7 @@ mod stt_live_first_v2_red {
                     end_ts: 33.0,
                 },
             ],
+            energy: None,
             ..Default::default()
         };
         merge_chunk_transcripts(&mut out, next, 25.0)
@@ -2355,6 +2403,7 @@ mod stt_live_first_v2_red {
                 start_ts: 2.0,
                 end_ts: 10.0,
             }],
+            energy: None,
             ..Default::default()
         };
         let next = RawTranscript {
@@ -2376,6 +2425,7 @@ mod stt_live_first_v2_red {
                     end_ts: 13.0,
                 },
             ],
+            energy: None,
             ..Default::default()
         };
 
@@ -2401,10 +2451,12 @@ mod stt_live_first_v2_red {
                 start_ts: 0.0,
                 end_ts: 2.0,
             }],
+            energy: None,
             ..Default::default()
         };
         let next = RawTranscript {
             text: "two middle three".into(),
+            energy: None,
             ..Default::default()
         };
 
@@ -2428,6 +2480,7 @@ mod stt_live_first_v2_red {
     fn seam_merge_rejects_text_without_segment_provenance() {
         let mut out = RawTranscript {
             text: "one two three".into(),
+            energy: None,
             ..Default::default()
         };
         let next = RawTranscript {
@@ -2437,6 +2490,7 @@ mod stt_live_first_v2_red {
                 start_ts: 3.0,
                 end_ts: 4.0,
             }],
+            energy: None,
             ..Default::default()
         };
 
@@ -2462,10 +2516,12 @@ mod stt_live_first_v2_red {
                 start_ts: 0.0,
                 end_ts: 2.0,
             }],
+            energy: None,
             ..Default::default()
         };
         let middle = RawTranscript {
             text: "two middle three".into(),
+            energy: None,
             ..Default::default()
         };
         let tail = RawTranscript {
@@ -2482,6 +2538,7 @@ mod stt_live_first_v2_red {
                     end_ts: 4.0,
                 },
             ],
+            energy: None,
             ..Default::default()
         };
 

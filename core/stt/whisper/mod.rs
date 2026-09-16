@@ -26,6 +26,8 @@
 pub mod embedded;
 /// Local Candle Whisper engine implementation.
 mod engine;
+/// File-level log-mel energy timeline (spectrum row).
+pub mod energy;
 /// Encoder/decoder layer graph ported for local inference.
 mod model;
 /// Decoding hyperparameters (temperature, beam, language, …).
