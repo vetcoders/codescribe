@@ -14,6 +14,8 @@ pub mod light_plus;
 pub mod sinks;
 /// Live streaming session state for partial/final engine events.
 pub mod streaming;
+/// Take truth sidecar (`.truth.json`) — the schema-v2 observer contract.
+pub mod take_truth;
 
 // Re-export core event types for ergonomic access
 pub use contracts::{DropKind, EngineEvent, EventSink};

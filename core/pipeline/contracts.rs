@@ -44,6 +44,23 @@ pub struct RawTranscript {
     pub avg_logprob: Option<f32>,
     /// Compression ratio of the decoded text (high = repetitive/hallucinated).
     pub compression_ratio: Option<f32>,
+    /// Log-mel energy timeline measured on the same PCM the decoder saw.
+    /// Signal-side clock for the take-truth sidecar (`energy_sparkline`) and
+    /// `--inspect`; absent on engines that never touch the mel.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub energy: Option<EnergyTimeline>,
+}
+
+/// Per-frame log-mel energy over one decoded file.
+///
+/// `frames` averages all mel bins, `voice` only the bins covering roughly
+/// 300–3000 Hz. Produced by `core::stt::whisper::energy` from one `pcm_to_mel`
+/// pass; `hop_ms` names the frame hop in milliseconds (10 for the mel clock).
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Default)]
+pub struct EnergyTimeline {
+    pub hop_ms: u16,
+    pub frames: Vec<f32>,
+    pub voice: Vec<f32>,
 }
 
 /// A single segment from the STT engine (optional granularity).
@@ -268,6 +285,15 @@ pub struct VadVerdict {
     /// Sparkline visualisation of speech distribution (one char per 500ms window).
     #[serde(default, skip_serializing_if = "String::is_empty")]
     pub sparkline: String,
+    /// Fine Silero sparkline: one char per 32 ms `feed()` chunk, rendered from
+    /// `VadExtractStats.fine_probabilities`. Empty when the extraction ran on
+    /// a build without the fine clock.
+    #[serde(default)]
+    pub fine_sparkline: String,
+    /// Hop of `fine_sparkline` in milliseconds (Silero native 512 samples
+    /// @16 kHz = 32). Zero when no fine timeline was recorded.
+    #[serde(default)]
+    pub fine_hop_ms: u16,
 }
 
 /// Per-window silence semantics derived from Silero probabilities.
@@ -1495,6 +1521,8 @@ mod tests {
                 no_speech: true,
                 no_speech_reason: Some("vad_no_speech_detected".to_string()),
                 sparkline: String::new(),
+                fine_sparkline: String::new(),
+                fine_hop_ms: 0,
             }),
             TranscriptionSource::LocalFinalPass,
             TranscriptionEngineVerdict::whisper(TranscriptionEngineMode::EmbeddedDefault),
@@ -1538,6 +1566,8 @@ mod tests {
                 no_speech: false,
                 no_speech_reason: None,
                 sparkline: "▁▃▅▇█▇▅▃▁▁▃▅▇█▇▅▃▁▁".to_string(),
+                fine_sparkline: String::new(),
+                fine_hop_ms: 0,
             }),
             TranscriptionSource::LocalFinalPass,
             TranscriptionEngineVerdict::whisper(TranscriptionEngineMode::RuntimeFallback),
@@ -1648,6 +1678,8 @@ mod tests {
                 no_speech: false,
                 no_speech_reason: None,
                 sparkline: String::new(),
+                fine_sparkline: String::new(),
+                fine_hop_ms: 0,
             }),
             TranscriptionSource::LocalFinalPass,
             TranscriptionEngineVerdict::whisper(TranscriptionEngineMode::EmbeddedDefault),
@@ -1723,6 +1755,7 @@ mod tests {
                 }],
                 avg_logprob: Some(-0.35),
                 compression_ratio: Some(1.2),
+                energy: None,
             },
             Some(VadVerdict {
                 speech_pct: 78.0,
@@ -1731,6 +1764,8 @@ mod tests {
                 no_speech: false,
                 no_speech_reason: None,
                 sparkline: "▁▃▅▇█▇▅▃▁▁▃▅▇█▇▅▃▁▁".to_string(),
+                fine_sparkline: String::new(),
+                fine_hop_ms: 0,
             }),
             TranscriptionSource::LocalFinalPass,
             TranscriptionEngineVerdict::whisper(TranscriptionEngineMode::EmbeddedDefault),
@@ -1779,6 +1814,8 @@ mod tests {
                 no_speech: true,
                 no_speech_reason: Some("vad_no_speech_detected".to_string()),
                 sparkline: String::new(),
+                fine_sparkline: String::new(),
+                fine_hop_ms: 0,
             }),
             TranscriptionSource::LocalFinalPass,
             TranscriptionEngineVerdict::whisper(TranscriptionEngineMode::EmbeddedDefault),
@@ -1787,8 +1824,8 @@ mod tests {
 
         let json = serde_json::to_string(&verdict).expect("verdict must serialize");
         assert!(
-            !json.contains("sparkline"),
-            "empty sparkline should be omitted from JSON"
+            !json.contains("\"sparkline\":"),
+            "empty sparkline should be omitted from JSON (got {json})"
         );
 
         let restored: TranscriptionVerdict =
@@ -1818,6 +1855,8 @@ mod tests {
                 no_speech: false,
                 no_speech_reason: None,
                 sparkline: sparkline.to_string(),
+                fine_sparkline: String::new(),
+                fine_hop_ms: 0,
             }),
             TranscriptionSource::LocalFinalPass,
             TranscriptionEngineVerdict::whisper(TranscriptionEngineMode::EmbeddedDefault),
@@ -1882,6 +1921,8 @@ mod tests {
             no_speech: true,
             no_speech_reason: Some("vad_no_speech_detected".to_string()),
             sparkline: String::new(),
+            fine_sparkline: String::new(),
+            fine_hop_ms: 0,
         };
         let json = serde_json::to_string(&verdict).unwrap();
         // Empty sparkline must be elided by skip_serializing_if.
@@ -1909,6 +1950,8 @@ mod tests {
             no_speech: false,
             no_speech_reason: None,
             sparkline: sparkline.to_string(),
+            fine_sparkline: String::new(),
+            fine_hop_ms: 0,
         };
         let json = serde_json::to_string(&verdict).unwrap();
         assert!(json.contains("sparkline"));
@@ -2091,6 +2134,7 @@ mod tests {
                 }],
                 avg_logprob: Some(-0.4),
                 compression_ratio: Some(1.1),
+                energy: None,
             },
             None,
             TranscriptionSource::LocalFinalPass,
@@ -2106,5 +2150,102 @@ mod tests {
         assert_eq!(restored.confidence_flags, verdict.confidence_flags);
         assert!(restored.vad.is_none());
         assert!(restored.final_pass.is_none());
+    }
+
+    // ── Two clocks: EnergyTimeline + fine Silero fields (schema-v2 contract) ──
+
+    /// Energy timeline round-trips with hop, frames, and voice band intact.
+    #[test]
+    fn energy_timeline_serde_roundtrip() {
+        let timeline = EnergyTimeline {
+            hop_ms: 10,
+            frames: vec![-80.0, -42.5, -30.25],
+            voice: vec![-70.0, -40.0, -28.0],
+        };
+        let json = serde_json::to_string(&timeline).expect("serialize energy timeline");
+        let restored: EnergyTimeline =
+            serde_json::from_str(&json).expect("deserialize energy timeline");
+        assert_eq!(restored, timeline);
+    }
+
+    /// RawTranscript JSON from before the mel clock (no `energy` key) parses
+    /// with `energy: None`.
+    #[test]
+    fn raw_transcript_deserialize_accepts_missing_energy_via_default() {
+        let json = r#"{
+            "text": "cześć",
+            "segments": [],
+            "avg_logprob": -0.3,
+            "compression_ratio": 1.1
+        }"#;
+        let restored: RawTranscript = serde_json::from_str(json).unwrap();
+        assert!(restored.energy.is_none());
+        assert_eq!(restored.text, "cześć");
+    }
+
+    /// A present energy timeline survives the RawTranscript round-trip; a
+    /// `None` energy is omitted from the wire form entirely.
+    #[test]
+    fn raw_transcript_energy_roundtrip_and_none_elision() {
+        let rt = RawTranscript {
+            text: "zegar".to_string(),
+            energy: Some(EnergyTimeline {
+                hop_ms: 10,
+                frames: vec![-61.0, -33.0],
+                voice: vec![-55.0, -30.0],
+            }),
+            ..Default::default()
+        };
+        let json = serde_json::to_string(&rt).expect("serialize");
+        let restored: RawTranscript = serde_json::from_str(&json).expect("deserialize");
+        let energy = restored.energy.expect("energy survives round-trip");
+        assert_eq!(energy.hop_ms, 10);
+        assert_eq!(energy.frames, vec![-61.0, -33.0]);
+        assert_eq!(energy.voice, vec![-55.0, -30.0]);
+
+        let bare = serde_json::to_string(&RawTranscript::default()).expect("serialize default");
+        assert!(
+            !bare.contains("energy"),
+            "None energy must be omitted from JSON (got {bare})"
+        );
+    }
+
+    /// VadVerdict JSON from before the fine Silero clock (no `fine_*` keys)
+    /// parses with empty/zero defaults.
+    #[test]
+    fn vad_verdict_deserialize_accepts_missing_fine_fields_via_default() {
+        let json = r#"{
+            "speech_pct": 61.7,
+            "speech_windows": 3,
+            "total_windows": 5,
+            "no_speech": false,
+            "no_speech_reason": null,
+            "sparkline": "▁▃█▃▁"
+        }"#;
+        let restored: VadVerdict = serde_json::from_str(json).unwrap();
+        assert!(restored.fine_sparkline.is_empty());
+        assert_eq!(restored.fine_hop_ms, 0);
+        assert_eq!(restored.sparkline, "▁▃█▃▁");
+        assert!((restored.speech_pct - 61.7).abs() < f32::EPSILON);
+    }
+
+    /// Present fine-clock fields survive a VadVerdict serde round-trip.
+    #[test]
+    fn vad_verdict_fine_fields_serde_roundtrip() {
+        let verdict = VadVerdict {
+            speech_pct: 61.7,
+            speech_windows: 3,
+            total_windows: 5,
+            no_speech: false,
+            no_speech_reason: None,
+            sparkline: "▁▃█▃▁".to_string(),
+            fine_sparkline: "▁▁▃▅▅▃▁▁".to_string(),
+            fine_hop_ms: 32,
+        };
+        let json = serde_json::to_string(&verdict).unwrap();
+        let restored: VadVerdict = serde_json::from_str(&json).unwrap();
+        assert_eq!(restored.fine_sparkline, "▁▁▃▅▅▃▁▁");
+        assert_eq!(restored.fine_hop_ms, 32);
+        assert_eq!(restored.sparkline, "▁▃█▃▁");
     }
 }
