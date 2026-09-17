@@ -12,7 +12,10 @@ repos:
     rev: v5.0.0
     hooks:
       - id: trailing-whitespace
+        exclude: ^tests/fixtures/truth_sidecar_20260421\.json$
       - id: end-of-file-fixer
+        # Byte-verbatim April sidecar (sha256-checked); see .prettierignore.
+        exclude: ^tests/fixtures/truth_sidecar_20260421\.json$
       - id: check-merge-conflict
       - id: mixed-line-ending
       - id: detect-private-key
