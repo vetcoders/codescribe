@@ -1998,6 +1998,7 @@ fn collect_truth_sidecars(root: &Path) -> Result<BTreeMap<String, PathBuf>> {
 }
 
 fn visit_truth_sidecars(dir: &Path, out: &mut BTreeMap<String, PathBuf>) -> Result<()> {
+    // nosemgrep: rust.actix.path-traversal.tainted-path.tainted-path -- local regression CLI; dir is the operator's explicit --baseline-dir/--candidate-dir argument and the walk only reads *.truth.json sidecars.
     let entries = fs::read_dir(dir)
         .with_context(|| format!("Failed to read truth directory {}", dir.display()))?;
     for entry in entries {

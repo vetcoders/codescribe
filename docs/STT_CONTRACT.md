@@ -701,8 +701,7 @@ and installed real-audio evidence belong to the integrator.
 
 ## Take truth sidecar is an observer (2026-09-16)
 
-Every file take leaves a `<file>.truth.json` beside its input (`codescribe
-transcribe`, opt-out `--no-truth`), and the app daily archive writes
+Every file take leaves a `<file>.truth.json` beside its input (`codescribe transcribe`, opt-out `--no-truth`), and the app daily archive writes
 `<base>.txt.truth.json` next to the paired `*_raw.{m4a,wav}` + `*_raw.txt`
 whenever the caller hands the archive a `TakeTruth`. The sidecar is an
 OBSERVER projection of the `TranscriptionVerdict`; no delivery path reads it
