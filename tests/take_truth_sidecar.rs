@@ -39,7 +39,8 @@ fn april_sidecar_roundtrips_through_core_contract() {
     fs::write(&transcript, "placeholder transcript bytes").expect("write transcript");
     fs::copy(
         &fixture,
-        dir.path().join("211316_ogolnie-plan-ktory_raw.txt.truth.json"),
+        dir.path()
+            .join("211316_ogolnie-plan-ktory_raw.txt.truth.json"),
     )
     .expect("stage fixture");
 

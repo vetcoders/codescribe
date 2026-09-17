@@ -677,7 +677,9 @@ async fn process_pair(
         .as_ref()
         .and_then(|path| read_truth_sidecar(path).ok())
         .or_else(|| read_truth_sidecar(&audio_canon).ok());
-    let engine_mode = truth.as_ref().and_then(|sidecar| sidecar.engine_mode.clone());
+    let engine_mode = truth
+        .as_ref()
+        .and_then(|sidecar| sidecar.engine_mode.clone());
     let fallback_used = truth.as_ref().map(|sidecar| sidecar.fallback_used);
     let has_fine_sparkline = truth.as_ref().map(|sidecar| {
         sidecar
@@ -876,7 +878,9 @@ fn render_markdown(report: &QualityReport) -> String {
         report.environment.metrics_reference
     ));
     out.push_str("| File | WER raw | WER post | WER ai | WER cloud | CER raw | CER post | CER ai | CER cloud | engine_mode | fallback | fine | energy |\n");
-    out.push_str("| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |\n");
+    out.push_str(
+        "| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |\n",
+    );
 
     for entry in &report.entries {
         let m = &entry.metrics;
@@ -2423,8 +2427,8 @@ mod tests {
         assert!(rendered.contains("| stem |"));
     }
 
-    fn write_truth_sidecar(path: &Path, body: &str) {
-        fs::write(path, body).expect("write sidecar");
+    fn write_truth_sidecar(path: &Path, body: impl AsRef<str>) {
+        fs::write(path, body.as_ref()).expect("write sidecar");
     }
 
     fn v1_sidecar(avg_logprob: f32, sparkline: &str, fallback_used: bool) -> String {

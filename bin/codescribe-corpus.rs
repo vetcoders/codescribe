@@ -1488,6 +1488,10 @@ fn success_quality_entry(
             ..ReportMetrics::default()
         },
         errors: Vec::new(),
+        engine_mode: None,
+        fallback_used: None,
+        has_fine_sparkline: None,
+        has_energy_sparkline: None,
     }
 }
 
@@ -1510,6 +1514,10 @@ fn failure_quality_entry(execution: &ReplayExecutionContext<'_>, error: &str) ->
         raw_semantics: None,
         metrics: ReportMetrics::default(),
         errors: vec![error.to_string()],
+        engine_mode: None,
+        fallback_used: None,
+        has_fine_sparkline: None,
+        has_energy_sparkline: None,
     }
 }
 
@@ -2313,6 +2321,10 @@ mod tests {
                 ..ReportMetrics::default()
             },
             errors: Vec::new(),
+            engine_mode: None,
+            fallback_used: None,
+            has_fine_sparkline: None,
+            has_energy_sparkline: None,
         }];
         let report = build_quality_report(
             ReplayProfile::AppleLayer0,

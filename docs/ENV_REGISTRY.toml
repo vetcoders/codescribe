@@ -25,6 +25,13 @@ reload = "restart"
 category = "cli"
 description = "Optional Finder Quick Action CLI executable override; normally resolves ~/.local/bin/codescribe then ~/.cargo/bin/codescribe"
 
+[vars.COLUMNS]
+default = ""
+type = "string"
+reload = "restart"
+category = "cli"
+description = "Standard terminal column count set by the shell; `codescribe transcribe --inspect` reads it once per run to size the shared time axis (falls back to 100 when unset or not a number)"
+
 [vars.CODESCRIBE_REPLAY_WAV]
 default = ""
 type = "string"

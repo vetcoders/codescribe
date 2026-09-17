@@ -10,7 +10,7 @@ use std::path::PathBuf;
 
 use codescribe::config::Config;
 use codescribe::qube_report::{
-    compare_truth_dirs, LocalTranscriptionMode, MetricsReference, QualityReportConfig,
+    LocalTranscriptionMode, MetricsReference, QualityReportConfig, compare_truth_dirs,
     render_truth_comparison, run,
 };
 use codescribe_core::quality::overlay_quality::replay_corrections_through_extractor;

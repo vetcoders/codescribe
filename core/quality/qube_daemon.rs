@@ -1450,6 +1450,10 @@ mod tests {
             raw_semantics: None,
             metrics: ReportMetrics::default(),
             errors: vec![],
+            engine_mode: None,
+            fallback_used: None,
+            has_fine_sparkline: None,
+            has_energy_sparkline: None,
         }
     }
 

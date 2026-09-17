@@ -123,7 +123,15 @@ fn main() -> anyhow::Result<()> {
                     !files.is_empty(),
                     "missing <FILES> (or use `codescribe transcribe live`)"
                 );
-                transcribe_batch(&files, language.as_deref(), stream, !no_bus, raw, inspect, !no_truth)
+                transcribe_batch(
+                    &files,
+                    language.as_deref(),
+                    stream,
+                    !no_bus,
+                    raw,
+                    inspect,
+                    !no_truth,
+                )
             }
         },
     }
@@ -154,8 +162,15 @@ fn transcribe_batch(
                 println!();
             }
         }
-        if let Err(error) = transcribe(file, language, stream, publish_bus, raw, inspect, write_truth)
-        {
+        if let Err(error) = transcribe(
+            file,
+            language,
+            stream,
+            publish_bus,
+            raw,
+            inspect,
+            write_truth,
+        ) {
             eprintln!("FAILED {}: {error:#}", file.display());
             failures.push(file.display().to_string());
         }
@@ -651,7 +666,10 @@ const SPARKLINE_BARS: [char; 8] = ['▁', '▂', '▃', '▄', '▅', '▆', '�
 /// Level of one sparkline bar in the octile alphabet. Glyphs outside it (a
 /// space, the 500 ms `█▓░` row's chars) read as the floor.
 fn sparkline_level(bar: char) -> usize {
-    SPARKLINE_BARS.iter().position(|&candidate| candidate == bar).unwrap_or(0)
+    SPARKLINE_BARS
+        .iter()
+        .position(|&candidate| candidate == bar)
+        .unwrap_or(0)
 }
 
 /// Resample a bar sparkline to `width` chars, keeping the MAX level per
@@ -669,7 +687,11 @@ fn resample_sparkline_max(sparkline: &str, width: usize) -> String {
         let level = if start >= end {
             sparkline_level(chars[start.min(n - 1)])
         } else {
-            chars[start..end].iter().map(|&bar| sparkline_level(bar)).max().unwrap_or(0)
+            chars[start..end]
+                .iter()
+                .map(|&bar| sparkline_level(bar))
+                .max()
+                .unwrap_or(0)
         };
         out.push(SPARKLINE_BARS[level]);
     }
@@ -710,9 +732,7 @@ fn render_inspect(
         vad.map(|vad| {
             vad.fine_sparkline.chars().count() as f64 * f64::from(vad.fine_hop_ms) / 1000.0
         }),
-        energy.map(|timeline| {
-            timeline.frames.len() as f64 * f64::from(timeline.hop_ms) / 1000.0
-        }),
+        energy.map(|timeline| timeline.frames.len() as f64 * f64::from(timeline.hop_ms) / 1000.0),
     ]
     .into_iter()
     .flatten()
@@ -809,9 +829,7 @@ mod tests {
             EnergyTimeline, RawTranscript, TranscriptSegment, TranscriptionEngineMode,
             TranscriptionEngineVerdict, TranscriptionSource, TranscriptionVerdict, VadVerdict,
         };
-        let fine_sparkline: String = (0..388)
-            .map(|chunk| SPARKLINE_BARS[chunk % 8])
-            .collect();
+        let fine_sparkline: String = (0..388).map(|chunk| SPARKLINE_BARS[chunk % 8]).collect();
         TranscriptionVerdict::from_parts(
             "pierwsze drugie".to_string(),
             RawTranscript {
@@ -866,9 +884,19 @@ mod tests {
             .find(|line| line.starts_with("energy:"))
             .expect("energy row");
         assert_eq!(fine.chars().count(), energy.chars().count());
-        assert_eq!(fine.strip_prefix("fine:   ").expect("label").chars().count(), 40);
         assert_eq!(
-            energy.strip_prefix("energy: ").expect("label").chars().count(),
+            fine.strip_prefix("fine:   ")
+                .expect("label")
+                .chars()
+                .count(),
+            40
+        );
+        assert_eq!(
+            energy
+                .strip_prefix("energy: ")
+                .expect("label")
+                .chars()
+                .count(),
             40
         );
     }

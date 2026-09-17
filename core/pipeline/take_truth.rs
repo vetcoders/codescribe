@@ -82,10 +82,7 @@ pub struct TakeTruth {
     /// Confidence flags from the truth adjudicator. Typed tokens; older
     /// sidecars carrying unknown bare strings lose only those tokens, never
     /// the whole file (see `deserialize_confidence_flags_lenient`).
-    #[serde(
-        default,
-        deserialize_with = "deserialize_confidence_flags_lenient"
-    )]
+    #[serde(default, deserialize_with = "deserialize_confidence_flags_lenient")]
     pub confidence_flags: Vec<TranscriptionConfidenceFlag>,
     /// Silero 500 ms sparkline (one char per window, `█▓░ ` alphabet).
     #[serde(default)]
@@ -232,8 +229,7 @@ pub fn truth_sidecar_path(path: &Path) -> PathBuf {
 /// place, so a crash mid-write never leaves a truncated sidecar behind.
 pub fn write_truth_sidecar(path: &Path, truth: &TakeTruth) -> anyhow::Result<PathBuf> {
     let sidecar_path = truth_sidecar_path(path);
-    let payload =
-        serde_json::to_vec_pretty(truth).context("Failed to serialize truth sidecar")?;
+    let payload = serde_json::to_vec_pretty(truth).context("Failed to serialize truth sidecar")?;
     let tmp_path = sidecar_path.with_file_name(format!(
         ".{}.tmp",
         sidecar_path
