@@ -621,6 +621,8 @@ impl LocalWhisperEngine {
             no_speech,
             no_speech_reason: stats.no_speech_reason.clone(),
             sparkline: stats.sparkline.clone(),
+            fine_sparkline: stats.fine_sparkline.clone(),
+            fine_hop_ms: (stats.fine_hop_samples * 1000 / 16_000) as u16,
         };
 
         // Silero is the judge of whether there is anything to decode. Whisper on

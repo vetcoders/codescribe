@@ -61,6 +61,13 @@ enum Command {
         /// Literal words: skip the Light+ sentence shaping (the app's Ctrl-hold lane)
         #[arg(long)]
         raw: bool,
+        /// Print the take truth under one time axis: segments, the 32 ms Silero
+        /// row and the energy row (stderr, so stdout stays the transcript)
+        #[arg(long)]
+        inspect: bool,
+        /// Do not write the <file>.truth.json observer sidecar beside the input
+        #[arg(long)]
+        no_truth: bool,
         #[command(subcommand)]
         mode: Option<TranscribeMode>,
     },
@@ -89,19 +96,21 @@ fn main() -> anyhow::Result<()> {
             no_bus,
             json,
             raw,
+            inspect,
+            no_truth,
             mode,
         } => match mode {
             Some(TranscribeMode::Live) => {
                 anyhow::ensure!(
-                    files.is_empty() && !stream && !raw,
-                    "`transcribe live` does not accept a file, --stream or --raw (the app decides the lane)"
+                    files.is_empty() && !stream && !raw && !inspect && !no_truth,
+                    "`transcribe live` does not accept a file, --stream, --raw, --inspect or --no-truth (the app decides the lane)"
                 );
                 transcribe_live(language, json)
             }
             Some(TranscribeMode::Last) => {
                 anyhow::ensure!(
-                    files.is_empty() && !stream && !json && !raw,
-                    "`transcribe last` does not accept a file, --stream, --json or --raw"
+                    files.is_empty() && !stream && !json && !raw && !inspect && !no_truth,
+                    "`transcribe last` does not accept a file, --stream, --json, --raw, --inspect or --no-truth"
                 );
                 transcribe_last()
             }
@@ -114,7 +123,7 @@ fn main() -> anyhow::Result<()> {
                     !files.is_empty(),
                     "missing <FILES> (or use `codescribe transcribe live`)"
                 );
-                transcribe_batch(&files, language.as_deref(), stream, !no_bus, raw)
+                transcribe_batch(&files, language.as_deref(), stream, !no_bus, raw, inspect, !no_truth)
             }
         },
     }
@@ -128,6 +137,8 @@ fn transcribe_batch(
     stream: bool,
     publish_bus: bool,
     raw: bool,
+    inspect: bool,
+    write_truth: bool,
 ) -> anyhow::Result<()> {
     let mut failures = Vec::new();
     for (index, file) in files.iter().enumerate() {
@@ -143,7 +154,8 @@ fn transcribe_batch(
                 println!();
             }
         }
-        if let Err(error) = transcribe(file, language, stream, publish_bus, raw) {
+        if let Err(error) = transcribe(file, language, stream, publish_bus, raw, inspect, write_truth)
+        {
             eprintln!("FAILED {}: {error:#}", file.display());
             failures.push(file.display().to_string());
         }
@@ -475,9 +487,12 @@ fn transcribe(
     stream: bool,
     publish_bus: bool,
     raw: bool,
+    inspect: bool,
+    write_truth: bool,
 ) -> anyhow::Result<()> {
     use codescribe::presentation::cli_transcript_lane::CliTranscriptLane;
     use codescribe::presentation::transcript_bus::{TranscriptMode, TranscriptSessionEndReason};
+    use codescribe_core::pipeline::take_truth::{TakeTruth, write_truth_sidecar};
     use std::io::Write as _;
 
     anyhow::ensure!(file.exists(), "file not found: {}", file.display());
@@ -579,6 +594,29 @@ fn transcribe(
         !raw,
     );
 
+    // Every take leaves its observer card beside the source
+    // (`docs/truth-contract.md`): `<file>.truth.json` records what really
+    // produced this transcript. It is an OBSERVER projection of the verdict —
+    // no delivery path reads it back. A write failure is a warning on stderr,
+    // never a failed transcription.
+    if write_truth {
+        let truth = TakeTruth::from_verdict(&verdict, "CLI • Transcript", TRUTH_ENERGY_BUCKETS);
+        if let Err(error) = write_truth_sidecar(file, &truth) {
+            eprintln!(
+                "truth sidecar write failed for {}: {error:#}",
+                file.display()
+            );
+        }
+    }
+
+    if inspect {
+        let width = std::env::var("COLUMNS")
+            .ok()
+            .and_then(|columns| columns.parse::<usize>().ok())
+            .unwrap_or(INSPECT_DEFAULT_WIDTH);
+        eprint!("{}", render_inspect(&verdict, width));
+    }
+
     if let Some(lane) = lane.as_mut() {
         if let Err(error) = lane.publish_ended(TranscriptSessionEndReason::Completed) {
             eprintln!("bus end write failed: {error}");
@@ -603,6 +641,143 @@ fn final_stdout(stream: bool, streamed: &str, delivered: &str) -> Option<String>
     }
 }
 
+/// Terminal width for `--inspect` when `$COLUMNS` is unset or not a number.
+const INSPECT_DEFAULT_WIDTH: usize = 100;
+/// Energy sparkline width baked into CLI `.truth.json` sidecars.
+const TRUTH_ENERGY_BUCKETS: usize = 100;
+/// The shared octile bar alphabet (`▁` = floor, `█` = peak).
+const SPARKLINE_BARS: [char; 8] = ['▁', '▂', '▃', '▄', '▅', '▆', '▇', '█'];
+
+/// Level of one sparkline bar in the octile alphabet. Glyphs outside it (a
+/// space, the 500 ms `█▓░` row's chars) read as the floor.
+fn sparkline_level(bar: char) -> usize {
+    SPARKLINE_BARS.iter().position(|&candidate| candidate == bar).unwrap_or(0)
+}
+
+/// Resample a bar sparkline to `width` chars, keeping the MAX level per
+/// bucket: a 32 ms onset must survive aggregation, never average away.
+fn resample_sparkline_max(sparkline: &str, width: usize) -> String {
+    let chars: Vec<char> = sparkline.chars().collect();
+    let n = chars.len();
+    if n == 0 || width == 0 {
+        return String::new();
+    }
+    let mut out = String::with_capacity(width);
+    for bucket in 0..width {
+        let start = bucket * n / width;
+        let end = (bucket + 1) * n / width;
+        let level = if start >= end {
+            sparkline_level(chars[start.min(n - 1)])
+        } else {
+            chars[start..end].iter().map(|&bar| sparkline_level(bar)).max().unwrap_or(0)
+        };
+        out.push(SPARKLINE_BARS[level]);
+    }
+    out
+}
+
+/// `mm:ss.s` for the segment block of `--inspect`.
+fn format_inspect_ts(ts: f32) -> String {
+    let minutes = (ts / 60.0).floor() as u64;
+    let seconds = ts - minutes as f32 * 60.0;
+    format!("{minutes:02}:{seconds:04.1}")
+}
+
+/// Render the take truth under one time axis: a 5 s tick line, the segment
+/// block, then the 32 ms Silero row and the energy row resampled to `width`.
+/// The two sparkline rows always carry identical char length. With no VAD
+/// verdict (the Apple path never runs file final, but the shape exists) the
+/// fine row reports `fine: n/a` instead of inventing a clock.
+fn render_inspect(
+    verdict: &codescribe_core::pipeline::contracts::TranscriptionVerdict,
+    width: usize,
+) -> String {
+    let width = width.max(20);
+    let segments = &verdict.raw.segments;
+    let vad = verdict.vad.as_ref();
+    let fine = vad
+        .map(|vad| vad.fine_sparkline.as_str())
+        .filter(|sparkline| !sparkline.is_empty());
+    let energy = verdict
+        .raw
+        .energy
+        .as_ref()
+        .filter(|timeline| !timeline.frames.is_empty());
+
+    // One time axis: the longest clock the take recorded.
+    let duration_secs = [
+        segments.last().map(|segment| f64::from(segment.end_ts)),
+        vad.map(|vad| {
+            vad.fine_sparkline.chars().count() as f64 * f64::from(vad.fine_hop_ms) / 1000.0
+        }),
+        energy.map(|timeline| {
+            timeline.frames.len() as f64 * f64::from(timeline.hop_ms) / 1000.0
+        }),
+    ]
+    .into_iter()
+    .flatten()
+    .fold(0.0_f64, f64::max);
+
+    // A tick every 5 s, always one at zero: ceil(duration / 5) + 1 marks.
+    let tick_count = (duration_secs / 5.0).ceil() as usize + 1;
+    let column = |t: f64| -> usize {
+        if duration_secs <= 0.0 {
+            return 0;
+        }
+        ((t / duration_secs) * (width - 1) as f64)
+            .round()
+            .min((width - 1) as f64) as usize
+    };
+    let mut labels = vec![' '; width];
+    let mut ticks = vec!['.'; width];
+    for tick in 0..tick_count {
+        let col = column(tick as f64 * 5.0);
+        ticks[col] = '|';
+        let label = format!("{}s", tick * 5);
+        // A label that would fall off the right edge shifts left instead of
+        // truncating; the tick column itself never moves.
+        let start = col.min(width - label.chars().count());
+        for (offset, ch) in label.chars().enumerate() {
+            labels[start + offset] = ch;
+        }
+    }
+
+    let mut out = String::new();
+    out.push_str(labels.iter().collect::<String>().trim_end());
+    out.push('\n');
+    out.push_str(&ticks.iter().collect::<String>());
+    out.push('\n');
+    for segment in segments {
+        out.push_str(&format!(
+            "[{}–{}] {}\n",
+            format_inspect_ts(segment.start_ts),
+            format_inspect_ts(segment.end_ts),
+            segment.text
+        ));
+    }
+    // Equal-length labels keep the two sparkline rows at identical char length.
+    match fine {
+        Some(sparkline) => {
+            out.push_str("fine:   ");
+            out.push_str(&resample_sparkline_max(sparkline, width));
+            out.push('\n');
+        }
+        None => out.push_str("fine: n/a\n"),
+    }
+    match energy {
+        Some(timeline) => {
+            out.push_str("energy: ");
+            out.push_str(&codescribe_core::stt::whisper::energy::sparkline(
+                &timeline.frames,
+                width,
+            ));
+            out.push('\n');
+        }
+        None => out.push_str("energy: n/a\n"),
+    }
+    out
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -625,6 +800,127 @@ mod tests {
             final_stdout(false, "", "Pełny dokument"),
             Some("Pełny dokument".into())
         );
+    }
+
+    /// A file-mode verdict carrying both clocks: segments closing at 12.4 s,
+    /// a 32 ms fine row (388 chunks), and a 10 ms energy row (1240 frames).
+    fn inspect_verdict() -> codescribe_core::pipeline::contracts::TranscriptionVerdict {
+        use codescribe_core::pipeline::contracts::{
+            EnergyTimeline, RawTranscript, TranscriptSegment, TranscriptionEngineMode,
+            TranscriptionEngineVerdict, TranscriptionSource, TranscriptionVerdict, VadVerdict,
+        };
+        let fine_sparkline: String = (0..388)
+            .map(|chunk| SPARKLINE_BARS[chunk % 8])
+            .collect();
+        TranscriptionVerdict::from_parts(
+            "pierwsze drugie".to_string(),
+            RawTranscript {
+                text: "pierwsze drugie".to_string(),
+                segments: vec![
+                    TranscriptSegment {
+                        text: "pierwsze".to_string(),
+                        start_ts: 0.0,
+                        end_ts: 2.4,
+                    },
+                    TranscriptSegment {
+                        text: "drugie".to_string(),
+                        start_ts: 2.4,
+                        end_ts: 12.4,
+                    },
+                ],
+                avg_logprob: Some(-0.2),
+                energy: Some(EnergyTimeline {
+                    hop_ms: 10,
+                    frames: (0..1240).map(|frame| -80.0 + (frame % 50) as f32).collect(),
+                    voice: Vec::new(),
+                }),
+                ..Default::default()
+            },
+            Some(VadVerdict {
+                speech_pct: 61.0,
+                speech_windows: 10,
+                total_windows: 25,
+                no_speech: false,
+                no_speech_reason: None,
+                sparkline: "░███".to_string(),
+                fine_sparkline,
+                fine_hop_ms: 32,
+            }),
+            TranscriptionSource::LocalFinalPass,
+            TranscriptionEngineVerdict::whisper(TranscriptionEngineMode::EmbeddedDefault),
+            None,
+        )
+    }
+
+    /// The 32 ms Silero row and the energy row render at identical char
+    /// length (label included), each sparkline body exactly `width` chars.
+    #[test]
+    fn inspect_sparkline_rows_have_identical_length() {
+        let rendered = render_inspect(&inspect_verdict(), 40);
+        let fine = rendered
+            .lines()
+            .find(|line| line.starts_with("fine:"))
+            .expect("fine row");
+        let energy = rendered
+            .lines()
+            .find(|line| line.starts_with("energy:"))
+            .expect("energy row");
+        assert_eq!(fine.chars().count(), energy.chars().count());
+        assert_eq!(fine.strip_prefix("fine:   ").expect("label").chars().count(), 40);
+        assert_eq!(
+            energy.strip_prefix("energy: ").expect("label").chars().count(),
+            40
+        );
+    }
+
+    /// A 12.4 s take carries ceil(12.4 / 5) + 1 = 4 tick marks: 0s, 5s, 10s, 15s.
+    #[test]
+    fn inspect_tick_count_is_ceil_duration_over_five_plus_one() {
+        let rendered = render_inspect(&inspect_verdict(), 50);
+        assert_eq!(rendered.matches('|').count(), 4);
+        assert!(rendered.lines().next().expect("labels").contains("15s"));
+    }
+
+    /// No VAD verdict (the Apple shape) reports the fine row as n/a instead
+    /// of inventing a clock; the energy row still renders.
+    #[test]
+    fn inspect_without_vad_reports_fine_na() {
+        let mut verdict = inspect_verdict();
+        verdict.vad = None;
+        let rendered = render_inspect(&verdict, 40);
+        assert!(rendered.contains("fine: n/a"));
+        assert!(rendered.lines().any(|line| line.starts_with("energy: ")));
+    }
+
+    /// Max-per-bucket resampling: a lone peak survives aggregation, and an
+    /// upsampled row repeats its source chars instead of inventing data.
+    #[test]
+    fn resample_max_keeps_the_peak_of_each_bucket() {
+        assert_eq!(resample_sparkline_max("▁▁█▁", 2), "▁█");
+        assert_eq!(resample_sparkline_max("▂▄", 4), "▂▂▄▄");
+        assert_eq!(resample_sparkline_max("", 8), "");
+    }
+
+    /// `--inspect` and `--no-truth` parse as file-mode flags.
+    #[test]
+    fn inspect_and_no_truth_flags_parse() {
+        let cli = Cli::try_parse_from([
+            "codescribe",
+            "transcribe",
+            "a.wav",
+            "--inspect",
+            "--no-truth",
+        ])
+        .expect("flags should parse");
+        let Command::Transcribe {
+            inspect,
+            no_truth,
+            files,
+            ..
+        } = cli.command;
+        assert!(inspect);
+        assert!(no_truth);
+        assert_eq!(files.len(), 1);
     }
 
     #[test]

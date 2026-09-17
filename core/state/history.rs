@@ -12,6 +12,8 @@ use std::path::{Path, PathBuf};
 use std::process::Command;
 use tracing::{error, info, warn};
 
+use crate::pipeline::take_truth::{TakeTruth, write_truth_sidecar};
+
 /// Audio containers an archived recording may use: `m4a` normally, `wav` when
 /// encoding failed and the raw copy was kept as a fallback.
 const AUDIO_ARCHIVE_EXTENSIONS: &[&str] = &["m4a", "wav"];
@@ -878,17 +880,44 @@ pub fn archive_session_take_from_file(
     source: &mut fs::File,
     transcript: SessionTranscriptArchive<'_>,
 ) -> Option<PathBuf> {
+    archive_session_take_from_file_with_truth(source, transcript, None)
+}
+
+/// Archive the already admitted WAV and, when a take truth is supplied and the
+/// take persisted transcript text, write its observer card beside the text:
+/// `<base>.txt.truth.json` (`docs/truth-contract.md`).
+///
+/// The sidecar is written for the RETURNED archive path, so a collision-rename
+/// (`_raw_1`) still pairs correctly. It is an OBSERVER projection — no
+/// delivery path reads it back. An `Unavailable` take persists no text and
+/// grows no sidecar. A sidecar write failure is a warning, never an archive
+/// failure: the paired audio + text are already published at that point.
+pub fn archive_session_take_from_file_with_truth(
+    source: &mut fs::File,
+    transcript: SessionTranscriptArchive<'_>,
+    truth: Option<&TakeTruth>,
+) -> Option<PathBuf> {
     let now = Local::now();
     let (slug, kind, text) = archive_classification(transcript);
     let base = build_base_name(&now.format("%H%M%S").to_string(), &make_slug(slug, 3), kind);
-    archive_result(daily_archive::save(
+    let archived = archive_result(daily_archive::save(
         &crate::config::Config::config_dir(),
         source,
         &now,
         &base,
         text,
         crate::audio::archive::encode_wav_to_m4a,
-    ))
+    ));
+    if let (Some(audio), Some(truth), Some(_)) = (archived.as_ref(), truth, text) {
+        let transcript_path = audio.with_extension("txt");
+        if let Err(error) = write_truth_sidecar(&transcript_path, truth) {
+            warn!(
+                "truth sidecar write failed for {}: {error:#}",
+                transcript_path.display()
+            );
+        }
+    }
+    archived
 }
 
 fn archive_classification(
@@ -1254,6 +1283,79 @@ mod tests {
     #[cfg(unix)]
     fn refuse_encoder(_input: &mut fs::File, _output: &mut fs::File) -> Result<()> {
         anyhow::bail!("injected converter failure")
+    }
+
+    /// A committed take archived with a `TakeTruth` leaves `<base>.txt` and a
+    /// parseable `<base>.txt.truth.json` beside it; an `Unavailable` take
+    /// persists no text and grows no sidecar.
+    #[test]
+    #[serial]
+    #[cfg(unix)]
+    fn archived_committed_take_with_truth_writes_parseable_sidecar() {
+        use crate::pipeline::contracts::{
+            RawTranscript, TranscriptionEngineMode, TranscriptionEngineVerdict,
+            TranscriptionSource, TranscriptionVerdict, VadVerdict,
+        };
+        use crate::pipeline::take_truth::{read_truth_sidecar, truth_sidecar_path};
+
+        let tmp = TempDir::new().expect("tempdir");
+        let _guard = EnvGuard::set_to_temp_dir("CODESCRIBE_DATA_DIR", &tmp);
+        let source_path = tmp.path().join("source.wav");
+        fs::write(&source_path, b"take pcm").expect("source");
+
+        let verdict = TranscriptionVerdict::from_parts(
+            "zdanie".to_string(),
+            RawTranscript {
+                text: "zdanie".to_string(),
+                ..Default::default()
+            },
+            Some(VadVerdict {
+                speech_pct: 61.0,
+                speech_windows: 10,
+                total_windows: 25,
+                no_speech: false,
+                no_speech_reason: None,
+                sparkline: "░███".to_string(),
+                fine_sparkline: "▁▃█▃▁".to_string(),
+                fine_hop_ms: 32,
+            }),
+            TranscriptionSource::LocalFinalPass,
+            TranscriptionEngineVerdict::whisper(TranscriptionEngineMode::EmbeddedDefault),
+            None,
+        );
+        let truth = TakeTruth::from_verdict(&verdict, "Final-pass local • Transcript", 0);
+
+        let mut source = daily_archive::admit_source(&source_path).expect("admit");
+        let audio = archive_session_take_from_file_with_truth(
+            &mut source,
+            SessionTranscriptArchive::Committed("zdanie"),
+            Some(&truth),
+        )
+        .expect("archive");
+        let transcript_path = audio.with_extension("txt");
+        assert_eq!(
+            fs::read_to_string(&transcript_path).expect("txt persisted"),
+            "zdanie"
+        );
+        let restored = read_truth_sidecar(&transcript_path).expect("sidecar parses");
+        assert_eq!(restored, truth);
+
+        let mut unavailable_source = daily_archive::admit_source(&source_path).expect("admit");
+        let unavailable_audio = archive_session_take_from_file_with_truth(
+            &mut unavailable_source,
+            SessionTranscriptArchive::Unavailable("lane down"),
+            Some(&truth),
+        )
+        .expect("archive unavailable");
+        let unavailable_txt = unavailable_audio.with_extension("txt");
+        assert!(
+            !unavailable_txt.exists(),
+            "Unavailable persists no transcript text"
+        );
+        assert!(
+            !truth_sidecar_path(&unavailable_txt).exists(),
+            "Unavailable grows no truth sidecar"
+        );
     }
 
     #[test]
