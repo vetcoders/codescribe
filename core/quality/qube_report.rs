@@ -6,7 +6,7 @@
 use anyhow::{Context, Result, anyhow, bail};
 use chrono::{DateTime, Local};
 use serde::{Deserialize, Serialize};
-use std::collections::HashMap;
+use std::collections::{BTreeMap, HashMap};
 use std::fs;
 use std::path::{Path, PathBuf};
 
@@ -17,6 +17,7 @@ use crate::audio::load_audio_file;
 use crate::client;
 use crate::config::{Config, RuntimeSettingsSnapshot};
 use crate::pipeline::contracts::RawTranscript;
+use crate::pipeline::take_truth::{TakeTruth, read_truth_sidecar};
 use crate::safe_path::{
     safe_canonicalize_bounded, safe_copy_bounded, safe_prepare_path, safe_read_to_string_bounded,
     safe_symlink_or_copy_bounded, safe_write_bounded,
@@ -182,6 +183,50 @@ pub struct ReportEntry {
     pub raw_semantics: Option<ReportTranscriptSemantics>,
     pub metrics: ReportMetrics,
     pub errors: Vec<String>,
+    /// TakeTruth v2 engine provisioning path, when a sidecar sits beside the pair.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub engine_mode: Option<String>,
+    /// TakeTruth `fallback_used` from the sidecar, when one was readable.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub fallback_used: Option<bool>,
+    /// Whether the sidecar carried a non-empty fine (32 ms) Silero sparkline.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub has_fine_sparkline: Option<bool>,
+    /// Whether the sidecar carried a non-empty energy sparkline.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub has_energy_sparkline: Option<bool>,
+}
+
+/// One paired stem's delta between a baseline archive sidecar and a fresh run.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct TruthDelta {
+    pub stem: String,
+    pub baseline_sidecar: String,
+    pub candidate_sidecar: String,
+    pub delta_avg_logprob: Option<f32>,
+    pub sparkline_levenshtein: Option<usize>,
+    pub fallback_used_flip: bool,
+    pub adjacent_duplicate_per_1000_baseline: Option<f32>,
+    pub adjacent_duplicate_per_1000_candidate: Option<f32>,
+    pub delta_adjacent_duplicate_per_1000: Option<f32>,
+}
+
+/// Aggregates over [`TruthComparison::rows`]: counts plus median Δ`avg_logprob`.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct TruthComparisonSummary {
+    pub paired: usize,
+    pub baseline_only: usize,
+    pub candidate_only: usize,
+    pub median_delta_avg_logprob: Option<f32>,
+    pub fallback_flips: usize,
+    pub median_sparkline_levenshtein: Option<f32>,
+}
+
+/// Directory-vs-directory TakeTruth comparison used by `--baseline-dir` / `--candidate-dir`.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct TruthComparison {
+    pub rows: Vec<TruthDelta>,
+    pub summary: TruthComparisonSummary,
 }
 
 /// The same utterance as seen by each stage. Every field is optional: a stage may
@@ -628,6 +673,25 @@ async fn process_pair(
 
     write_artifacts(&id, ctx.artifacts_dir, ctx.output_root, &transcripts)?;
 
+    let truth = reference_canon
+        .as_ref()
+        .and_then(|path| read_truth_sidecar(path).ok())
+        .or_else(|| read_truth_sidecar(&audio_canon).ok());
+    let engine_mode = truth.as_ref().and_then(|sidecar| sidecar.engine_mode.clone());
+    let fallback_used = truth.as_ref().map(|sidecar| sidecar.fallback_used);
+    let has_fine_sparkline = truth.as_ref().map(|sidecar| {
+        sidecar
+            .fine_sparkline
+            .as_ref()
+            .is_some_and(|spark| !spark.is_empty())
+    });
+    let has_energy_sparkline = truth.as_ref().map(|sidecar| {
+        sidecar
+            .energy_sparkline
+            .as_ref()
+            .is_some_and(|spark| !spark.is_empty())
+    });
+
     Ok(ReportEntry {
         id,
         audio_path: audio_canon.to_string_lossy().to_string(),
@@ -640,6 +704,10 @@ async fn process_pair(
         raw_semantics,
         metrics,
         errors,
+        engine_mode,
+        fallback_used,
+        has_fine_sparkline,
+        has_energy_sparkline,
     })
 }
 
@@ -807,13 +875,13 @@ fn render_markdown(report: &QualityReport) -> String {
         "Metrics reference: {}\n\n",
         report.environment.metrics_reference
     ));
-    out.push_str("| File | WER raw | WER post | WER ai | WER cloud | CER raw | CER post | CER ai | CER cloud |\n");
-    out.push_str("| --- | --- | --- | --- | --- | --- | --- | --- | --- |\n");
+    out.push_str("| File | WER raw | WER post | WER ai | WER cloud | CER raw | CER post | CER ai | CER cloud | engine_mode | fallback | fine | energy |\n");
+    out.push_str("| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |\n");
 
     for entry in &report.entries {
         let m = &entry.metrics;
         out.push_str(&format!(
-            "| {} | {} | {} | {} | {} | {} | {} | {} | {} |\n",
+            "| {} | {} | {} | {} | {} | {} | {} | {} | {} | {} | {} | {} | {} |\n",
             entry.id,
             fmt_opt(m.raw_wer),
             fmt_opt(m.post_wer),
@@ -823,6 +891,19 @@ fn render_markdown(report: &QualityReport) -> String {
             fmt_opt(m.post_cer),
             fmt_opt(m.ai_cer),
             fmt_opt(m.cloud_cer),
+            entry.engine_mode.as_deref().unwrap_or("-"),
+            entry
+                .fallback_used
+                .map(|used| if used { "yes" } else { "no" })
+                .unwrap_or("-"),
+            entry
+                .has_fine_sparkline
+                .map(|present| if present { "yes" } else { "no" })
+                .unwrap_or("-"),
+            entry
+                .has_energy_sparkline
+                .map(|present| if present { "yes" } else { "no" })
+                .unwrap_or("-"),
         ));
     }
 
@@ -932,6 +1013,34 @@ pub fn render_html(report: &QualityReport, config: &QualityReportConfig) -> Stri
                 "<p class=\"meta\">Raw semantics: {} ({})</p>",
                 html_escape(&semantics.state.to_string()),
                 html_escape(reason)
+            ));
+        }
+        if entry.engine_mode.is_some()
+            || entry.fallback_used.is_some()
+            || entry.has_fine_sparkline.is_some()
+            || entry.has_energy_sparkline.is_some()
+        {
+            body.push_str(&format!(
+                "<p class=\"meta\">TakeTruth: engine_mode={} • fallback_used={} • fine={} • energy={}</p>",
+                html_escape(entry.engine_mode.as_deref().unwrap_or("-")),
+                html_escape(
+                    entry
+                        .fallback_used
+                        .map(|used| if used { "true" } else { "false" })
+                        .unwrap_or("-"),
+                ),
+                html_escape(
+                    entry
+                        .has_fine_sparkline
+                        .map(|present| if present { "yes" } else { "no" })
+                        .unwrap_or("-"),
+                ),
+                html_escape(
+                    entry
+                        .has_energy_sparkline
+                        .map(|present| if present { "yes" } else { "no" })
+                        .unwrap_or("-"),
+                ),
             ));
         }
         body.push_str(&format!(
@@ -1745,6 +1854,255 @@ fn levenshtein<T: Eq>(a: &[T], b: &[T]) -> usize {
     prev[b.len()]
 }
 
+/// Pair every `<stem>.truth.json` present in both directories.
+///
+/// Historical archive files are `<stem>_raw.txt.truth.json`; a fresh CLI run
+/// writes `<stem>_raw.m4a.truth.json` (or `.wav`). The pairing key strips
+/// `.truth.json` and then the media/text suffix so those two names meet.
+pub fn compare_truth_dirs(baseline: &Path, candidate: &Path) -> Result<TruthComparison> {
+    let baseline_map = collect_truth_sidecars(baseline)?;
+    let candidate_map = collect_truth_sidecars(candidate)?;
+
+    let mut rows = Vec::new();
+    for (stem, baseline_sidecar) in &baseline_map {
+        let Some(candidate_sidecar) = candidate_map.get(stem) else {
+            continue;
+        };
+        let baseline_truth = load_take_truth(baseline_sidecar).with_context(|| {
+            format!(
+                "Failed to read baseline sidecar {}",
+                baseline_sidecar.display()
+            )
+        })?;
+        let candidate_truth = load_take_truth(candidate_sidecar).with_context(|| {
+            format!(
+                "Failed to read candidate sidecar {}",
+                candidate_sidecar.display()
+            )
+        })?;
+        let delta_avg_logprob =
+            delta_opt_f32(baseline_truth.avg_logprob, candidate_truth.avg_logprob);
+        let sparkline_levenshtein = Some(sparkline_distance(
+            &baseline_truth.sparkline,
+            &candidate_truth.sparkline,
+        ));
+        let fallback_used_flip = baseline_truth.fallback_used != candidate_truth.fallback_used;
+        let adjacent_duplicate_per_1000_baseline =
+            paired_txt_adjacent_duplicate(baseline_sidecar, stem);
+        let adjacent_duplicate_per_1000_candidate =
+            paired_txt_adjacent_duplicate(candidate_sidecar, stem);
+        let delta_adjacent_duplicate_per_1000 = delta_opt_f32(
+            adjacent_duplicate_per_1000_baseline,
+            adjacent_duplicate_per_1000_candidate,
+        );
+        rows.push(TruthDelta {
+            stem: stem.clone(),
+            baseline_sidecar: baseline_sidecar.to_string_lossy().into_owned(),
+            candidate_sidecar: candidate_sidecar.to_string_lossy().into_owned(),
+            delta_avg_logprob,
+            sparkline_levenshtein,
+            fallback_used_flip,
+            adjacent_duplicate_per_1000_baseline,
+            adjacent_duplicate_per_1000_candidate,
+            delta_adjacent_duplicate_per_1000,
+        });
+    }
+
+    let fallback_flips = rows.iter().filter(|row| row.fallback_used_flip).count();
+    let median_delta_avg_logprob = median_f32(
+        rows.iter()
+            .filter_map(|row| row.delta_avg_logprob)
+            .collect(),
+    );
+    let median_sparkline_levenshtein = median_f32(
+        rows.iter()
+            .filter_map(|row| row.sparkline_levenshtein)
+            .map(|distance| distance as f32)
+            .collect(),
+    );
+    let baseline_only = baseline_map
+        .keys()
+        .filter(|stem| !candidate_map.contains_key(*stem))
+        .count();
+    let candidate_only = candidate_map
+        .keys()
+        .filter(|stem| !baseline_map.contains_key(*stem))
+        .count();
+
+    Ok(TruthComparison {
+        summary: TruthComparisonSummary {
+            paired: rows.len(),
+            baseline_only,
+            candidate_only,
+            median_delta_avg_logprob,
+            fallback_flips,
+            median_sparkline_levenshtein,
+        },
+        rows,
+    })
+}
+
+/// Markdown table plus a median-Δ summary for a [`TruthComparison`].
+pub fn render_truth_comparison(comparison: &TruthComparison) -> String {
+    let mut out = String::new();
+    out.push_str("# TakeTruth comparison\n\n");
+    out.push_str("| stem | Δ avg_logprob | sparkline Lev | fallback flip | adj-dup/1000 base | adj-dup/1000 cand |\n");
+    out.push_str("| --- | --- | --- | --- | --- | --- |\n");
+    for row in &comparison.rows {
+        out.push_str(&format!(
+            "| {} | {} | {} | {} | {} | {} |\n",
+            row.stem,
+            fmt_opt(row.delta_avg_logprob),
+            row.sparkline_levenshtein
+                .map(|distance| distance.to_string())
+                .unwrap_or_else(|| "-".to_string()),
+            if row.fallback_used_flip { "yes" } else { "no" },
+            fmt_opt(row.adjacent_duplicate_per_1000_baseline),
+            fmt_opt(row.adjacent_duplicate_per_1000_candidate),
+        ));
+    }
+    out.push_str("\n## Summary\n\n");
+    out.push_str(&format!("- paired: {}\n", comparison.summary.paired));
+    out.push_str(&format!(
+        "- baseline only: {}\n",
+        comparison.summary.baseline_only
+    ));
+    out.push_str(&format!(
+        "- candidate only: {}\n",
+        comparison.summary.candidate_only
+    ));
+    out.push_str(&format!(
+        "- median Δ avg_logprob: {}\n",
+        fmt_opt(comparison.summary.median_delta_avg_logprob)
+    ));
+    out.push_str(&format!(
+        "- fallback flips: {}\n",
+        comparison.summary.fallback_flips
+    ));
+    out.push_str(&format!(
+        "- median sparkline Levenshtein: {}\n",
+        fmt_opt(comparison.summary.median_sparkline_levenshtein)
+    ));
+    out
+}
+
+/// Collect `*.truth.json` files under `root`, keyed by the pairing stem.
+fn collect_truth_sidecars(root: &Path) -> Result<BTreeMap<String, PathBuf>> {
+    let mut out = BTreeMap::new();
+    visit_truth_sidecars(root, &mut out)?;
+    Ok(out)
+}
+
+fn visit_truth_sidecars(dir: &Path, out: &mut BTreeMap<String, PathBuf>) -> Result<()> {
+    let entries = fs::read_dir(dir)
+        .with_context(|| format!("Failed to read truth directory {}", dir.display()))?;
+    for entry in entries {
+        let entry = entry?;
+        let path = entry.path();
+        let name = entry.file_name();
+        let name = name.to_string_lossy();
+        if name.starts_with('.') {
+            continue;
+        }
+        if path.is_dir() {
+            visit_truth_sidecars(&path, out)?;
+            continue;
+        }
+        if let Some(stem) = truth_pair_stem(&name) {
+            out.entry(stem).or_insert(path);
+        }
+    }
+    Ok(())
+}
+
+/// `<stem>_raw.txt.truth.json` and `<stem>_raw.m4a.truth.json` share `<stem>_raw`.
+fn truth_pair_stem(file_name: &str) -> Option<String> {
+    let rest = file_name.strip_suffix(".truth.json")?;
+    let stem = rest
+        .strip_suffix(".txt")
+        .or_else(|| rest.strip_suffix(".m4a"))
+        .or_else(|| rest.strip_suffix(".wav"))
+        .or_else(|| rest.strip_suffix(".aac"))
+        .or_else(|| rest.strip_suffix(".mp3"))
+        .or_else(|| rest.strip_suffix(".flac"))
+        .unwrap_or(rest);
+    Some(stem.to_string())
+}
+
+fn artifact_path_for_sidecar(sidecar: &Path) -> Result<PathBuf> {
+    let name = sidecar
+        .file_name()
+        .and_then(|name| name.to_str())
+        .ok_or_else(|| anyhow!("sidecar path has no file name: {}", sidecar.display()))?;
+    let artifact = name
+        .strip_suffix(".truth.json")
+        .ok_or_else(|| anyhow!("not a .truth.json sidecar: {}", sidecar.display()))?;
+    Ok(sidecar.with_file_name(artifact))
+}
+
+fn load_take_truth(sidecar: &Path) -> Result<TakeTruth> {
+    let artifact = artifact_path_for_sidecar(sidecar)?;
+    read_truth_sidecar(&artifact)
+}
+
+fn paired_txt_adjacent_duplicate(sidecar: &Path, stem: &str) -> Option<f32> {
+    let parent = sidecar.parent()?;
+    let txt = parent.join(format!("{stem}.txt"));
+    if !txt.is_file() {
+        return None;
+    }
+    let text = fs::read_to_string(&txt).ok()?;
+    Some(adjacent_duplicate_per_1000(&text))
+}
+
+/// Lowercase, strip `.,!?;:"'`, count `w[i]==w[i+1]` with `len>1`, per 1 000 words.
+fn adjacent_duplicate_per_1000(text: &str) -> f32 {
+    let mut cleaned = String::with_capacity(text.len());
+    for ch in text.to_lowercase().chars() {
+        if matches!(ch, '.' | ',' | '!' | '?' | ';' | ':' | '"' | '\'') {
+            continue;
+        }
+        cleaned.push(ch);
+    }
+    let words: Vec<&str> = cleaned.split_whitespace().collect();
+    if words.is_empty() {
+        return 0.0;
+    }
+    let mut dups = 0usize;
+    for window in words.windows(2) {
+        if window[0] == window[1] && window[0].len() > 1 {
+            dups += 1;
+        }
+    }
+    (dups as f32) * 1000.0 / (words.len() as f32)
+}
+
+fn sparkline_distance(left: &str, right: &str) -> usize {
+    let left: Vec<char> = left.chars().collect();
+    let right: Vec<char> = right.chars().collect();
+    levenshtein(&left, &right)
+}
+
+fn delta_opt_f32(baseline: Option<f32>, candidate: Option<f32>) -> Option<f32> {
+    match (baseline, candidate) {
+        (Some(base), Some(cand)) => Some(cand - base),
+        _ => None,
+    }
+}
+
+fn median_f32(mut values: Vec<f32>) -> Option<f32> {
+    if values.is_empty() {
+        return None;
+    }
+    values.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
+    let mid = values.len() / 2;
+    if values.len() % 2 == 1 {
+        Some(values[mid])
+    } else {
+        Some((values[mid - 1] + values[mid]) / 2.0)
+    }
+}
+
 /// Escape the five HTML-significant characters. Every transcript, label, and path
 /// interpolated into the report page passes through here — the corpus is
 /// untrusted text and the report is a file the operator opens in a browser.
@@ -1908,6 +2266,10 @@ mod tests {
             }),
             metrics: ReportMetrics::default(),
             errors: Vec::new(),
+            engine_mode: None,
+            fallback_used: None,
+            has_fine_sparkline: None,
+            has_energy_sparkline: None,
         };
 
         totals.accumulate(&mk_entry(ReportTranscriptState::TextCommitted, None));
@@ -1967,5 +2329,150 @@ mod tests {
         let input = "<tag>&\"'";
         let escaped = html_escape(input);
         assert_eq!(escaped, "&lt;tag&gt;&amp;&quot;&#39;");
+    }
+
+    /// Adjacent-duplicate rate: one repeated word of length > 1 in three tokens.
+    #[test]
+    fn adjacent_duplicate_per_1000_counts_repeated_words() {
+        let rate = adjacent_duplicate_per_1000("Hello, hello world!");
+        assert!((rate - (1000.0 / 3.0)).abs() < 1e-4);
+        assert_eq!(adjacent_duplicate_per_1000("a a bb"), 0.0);
+    }
+
+    /// Historical `.txt.truth.json` and CLI `.m4a.truth.json` share one stem.
+    #[test]
+    fn truth_pair_stem_normalizes_archive_and_cli_names() {
+        assert_eq!(
+            truth_pair_stem("211316_plan_raw.txt.truth.json").as_deref(),
+            Some("211316_plan_raw")
+        );
+        assert_eq!(
+            truth_pair_stem("211316_plan_raw.m4a.truth.json").as_deref(),
+            Some("211316_plan_raw")
+        );
+        assert_eq!(truth_pair_stem("notes.txt"), None);
+    }
+
+    /// Three paired sidecars (v1 + v2, no audio) yield three rows and a median Δ.
+    #[test]
+    fn compare_truth_dirs_three_pairs_reports_median_delta() {
+        let baseline = tempfile::TempDir::new().expect("baseline tempdir");
+        let candidate = tempfile::TempDir::new().expect("candidate tempdir");
+
+        write_truth_sidecar(
+            &baseline.path().join("alpha_raw.txt.truth.json"),
+            v1_sidecar(-0.40, "░██", false),
+        );
+        write_truth_sidecar(
+            &candidate.path().join("alpha_raw.m4a.truth.json"),
+            v2_sidecar(-0.20, "░███", false, "embedded_default"),
+        );
+        fs::write(baseline.path().join("alpha_raw.txt"), "hello, hello world!").unwrap();
+
+        write_truth_sidecar(
+            &baseline.path().join("bravo_raw.txt.truth.json"),
+            v1_sidecar(-0.30, "░███", false),
+        );
+        write_truth_sidecar(
+            &candidate.path().join("bravo_raw.wav.truth.json"),
+            v2_sidecar(-0.30, "░███", true, "runtime_fallback"),
+        );
+
+        write_truth_sidecar(
+            &baseline.path().join("charlie_raw.txt.truth.json"),
+            v1_sidecar(-0.10, "░█", false),
+        );
+        write_truth_sidecar(
+            &candidate.path().join("charlie_raw.m4a.truth.json"),
+            v2_sidecar(-0.50, "░██", false, "embedded_default"),
+        );
+
+        let comparison =
+            compare_truth_dirs(baseline.path(), candidate.path()).expect("compare dirs");
+        assert_eq!(comparison.rows.len(), 3);
+        assert_eq!(comparison.summary.paired, 3);
+        assert_eq!(comparison.summary.baseline_only, 0);
+        assert_eq!(comparison.summary.candidate_only, 0);
+        assert_eq!(comparison.summary.fallback_flips, 1);
+        let median = comparison
+            .summary
+            .median_delta_avg_logprob
+            .expect("median Δ");
+        assert!((median - 0.0).abs() < 1e-5, "median Δ was {median}");
+
+        let alpha = comparison
+            .rows
+            .iter()
+            .find(|row| row.stem == "alpha_raw")
+            .expect("alpha row");
+        assert!((alpha.delta_avg_logprob.expect("alpha Δ") - 0.20).abs() < 1e-5);
+        assert_eq!(alpha.sparkline_levenshtein, Some(1));
+        assert!(!alpha.fallback_used_flip);
+        assert!(
+            (alpha
+                .adjacent_duplicate_per_1000_baseline
+                .expect("alpha adj")
+                - (1000.0 / 3.0))
+                .abs()
+                < 1e-4
+        );
+
+        let rendered = render_truth_comparison(&comparison);
+        assert!(rendered.contains("| alpha_raw |"));
+        assert!(rendered.contains("median Δ avg_logprob"));
+        assert!(rendered.contains("| stem |"));
+    }
+
+    fn write_truth_sidecar(path: &Path, body: &str) {
+        fs::write(path, body).expect("write sidecar");
+    }
+
+    fn v1_sidecar(avg_logprob: f32, sparkline: &str, fallback_used: bool) -> String {
+        format!(
+            r#"{{
+  "source": "local_final_pass",
+  "engine": "local_whisper",
+  "mode": "raw",
+  "fallback_class": null,
+  "fallback_used": {fallback_used},
+  "vad_speech_pct": 50.0,
+  "no_speech_reason": null,
+  "avg_logprob": {avg_logprob},
+  "confidence_flags": [],
+  "sparkline": "{sparkline}",
+  "commit_trigger": null,
+  "display_status": null
+}}"#
+        )
+    }
+
+    fn v2_sidecar(
+        avg_logprob: f32,
+        sparkline: &str,
+        fallback_used: bool,
+        engine_mode: &str,
+    ) -> String {
+        format!(
+            r#"{{
+  "schema_version": 2,
+  "source": "local_final_pass",
+  "engine": "whisper",
+  "mode": "raw",
+  "fallback_class": null,
+  "fallback_used": {fallback_used},
+  "vad_speech_pct": 50.0,
+  "no_speech_reason": null,
+  "avg_logprob": {avg_logprob},
+  "confidence_flags": [],
+  "sparkline": "{sparkline}",
+  "commit_trigger": null,
+  "display_status": "CLI • Transcript",
+  "engine_mode": "{engine_mode}",
+  "fine_sparkline": "▁▃▅",
+  "fine_hop_ms": 32,
+  "energy_sparkline": "▂▅█",
+  "energy_hop_ms": 10
+}}"#
+        )
     }
 }
