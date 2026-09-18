@@ -75,6 +75,16 @@ enum Command {
         #[command(subcommand)]
         mode: Option<TranscribeMode>,
     },
+    /// Inspect and compact the clean transcript bus
+    ///
+    /// The bus carries two records with opposite retention needs: the delivery
+    /// transcript, which is small and worth keeping, and the acoustic evidence,
+    /// which is ~93% of the bytes and is consumed within days. `compact` drops
+    /// aged evidence and keeps every delivery row.
+    Bus {
+        #[command(subcommand)]
+        action: BusAction,
+    },
     /// Inspect, replay and recover the custom pronunciation lexicon
     ///
     /// The lexicon is a PRE-LLM variant→canonical substitution table. It is
@@ -84,6 +94,24 @@ enum Command {
     Lexicon {
         #[command(subcommand)]
         action: LexiconAction,
+    },
+}
+
+#[derive(Subcommand)]
+enum BusAction {
+    /// Size, composition and span of the bus
+    Status,
+    /// Drop evidence rows older than the retention window
+    ///
+    /// Refuses while a session may be open, and discards its own work rather
+    /// than overwrite rows appended during the rewrite.
+    Compact {
+        /// Evidence retention in days
+        #[arg(long, default_value_t = codescribe::presentation::transcript_bus_maintenance::DEFAULT_EVIDENCE_RETENTION_DAYS)]
+        evidence_older_than: u32,
+        /// Report what would be dropped without rewriting the bus
+        #[arg(long)]
+        dry_run: bool,
     },
 }
 
@@ -179,7 +207,90 @@ fn main() -> anyhow::Result<()> {
                 )
             }
         },
+        Command::Bus { action } => run_bus(action),
         Command::Lexicon { action } => run_lexicon(action),
+    }
+}
+
+/// Transcript bus surface: what is in it, and how to get the space back.
+fn run_bus(action: BusAction) -> anyhow::Result<()> {
+    use codescribe::presentation::transcript_bus_maintenance::{bus_status, compact_bus};
+
+    let path = codescribe::presentation::transcript_bus::transcript_bus_path();
+    match action {
+        BusAction::Status => {
+            let status = bus_status(&path)?;
+            println!("bus: {}", status.path.display());
+            println!("size: {}", human_bytes(status.bytes));
+            println!(
+                "delivery rows: {} ({})",
+                status.delivery_rows,
+                human_bytes(status.delivery_bytes)
+            );
+            println!(
+                "evidence rows: {} ({})",
+                status.evidence_rows,
+                human_bytes(status.evidence_bytes)
+            );
+            if status.other_rows > 0 {
+                println!("other rows: {} (never compacted away)", status.other_rows);
+            }
+            if let (Some(first), Some(last)) = (&status.first_seen, &status.last_seen) {
+                println!("span: {first} .. {last}");
+            }
+            if !status.retention_preview.is_empty() {
+                println!("reclaimable by evidence retention window:");
+                for (days, bytes) in &status.retention_preview {
+                    println!("  {days:>3}d  {}", human_bytes(*bytes));
+                }
+            }
+            if status.wants_compaction() {
+                println!(
+                    "past the compaction threshold — pick a window and run \
+                     `codescribe bus compact --evidence-older-than <days>` \
+                     with Codescribe stopped"
+                );
+            }
+            Ok(())
+        }
+        BusAction::Compact {
+            evidence_older_than,
+            dry_run,
+        } => {
+            let report = compact_bus(&path, evidence_older_than, dry_run)?;
+            println!(
+                "rows: {} read, {} kept, {} aged-out evidence dropped",
+                report.rows_read, report.rows_kept, report.evidence_rows_dropped
+            );
+            println!(
+                "size: {} -> {} ({} reclaimed){}",
+                human_bytes(report.bytes_before),
+                human_bytes(report.bytes_after),
+                human_bytes(report.bytes_reclaimed()),
+                if report.applied {
+                    ""
+                } else {
+                    " — dry run, bus untouched"
+                }
+            );
+            Ok(())
+        }
+    }
+}
+
+/// Byte count an operator can read at a glance.
+fn human_bytes(bytes: u64) -> String {
+    const UNITS: [&str; 5] = ["B", "KiB", "MiB", "GiB", "TiB"];
+    let mut value = bytes as f64;
+    let mut unit = 0;
+    while value >= 1024.0 && unit + 1 < UNITS.len() {
+        value /= 1024.0;
+        unit += 1;
+    }
+    if unit == 0 {
+        format!("{bytes} B")
+    } else {
+        format!("{value:.1} {}", UNITS[unit])
     }
 }
 
