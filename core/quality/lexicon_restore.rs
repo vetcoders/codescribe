@@ -66,6 +66,7 @@ pub struct LexiconRestoreReport {
 /// A malformed line is warned about rather than fatal: a half-written row must
 /// not make a whole recovery impossible.
 fn read_rows(path: &Path) -> Result<Vec<LexiconRow>> {
+    // nosemgrep: rust.actix.path-traversal.tainted-path.tainted-path -- backup path is operator-supplied on the command line for offline recovery; matches the justified suppression on the replay reader in overlay_quality.rs.
     let text = match std::fs::read_to_string(path) {
         Ok(text) => text,
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(Vec::new()),

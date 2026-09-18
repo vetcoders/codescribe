@@ -71,8 +71,11 @@ pub fn run_lexicon_replay(
     tier_counts.sort_by(|a, b| b.1.cmp(&a.1).then_with(|| a.0.cmp(&b.0)));
 
     {
+        // nosemgrep: rust.actix.path-traversal.tainted-path.tainted-path -- the three tier paths are joined onto the operator's own `--out` directory; offline CLI, no public input.
         let mut accepted = std::fs::File::create(&accepted_path)?;
+        // nosemgrep: rust.actix.path-traversal.tainted-path.tainted-path -- see the accepted-tier note above.
         let mut review = std::fs::File::create(&review_path)?;
+        // nosemgrep: rust.actix.path-traversal.tainted-path.tainted-path -- see the accepted-tier note above.
         let mut rejected = std::fs::File::create(&rejected_path)?;
         for row in &table {
             let line = serde_json::json!({
@@ -95,6 +98,7 @@ pub fn run_lexicon_replay(
     }
 
     {
+        // nosemgrep: rust.actix.path-traversal.tainted-path.tainted-path -- report path is joined onto the same operator-supplied `--out` directory.
         let mut report = std::fs::File::create(&report_path)?;
         writeln!(report, "# Lexicon corrections replay")?;
         writeln!(report)?;

@@ -152,6 +152,7 @@ pub fn bus_status(path: &Path) -> Result<BusStatus> {
         last_seen: None,
         retention_preview: Vec::new(),
     };
+    // nosemgrep: rust.actix.path-traversal.tainted-path.tainted-path -- bus path comes from `transcript_bus_path()` or a test fixture, never from a request; this is a desktop CLI with no network input surface.
     let file = match std::fs::File::open(path) {
         Ok(file) => file,
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(status),
@@ -235,8 +236,10 @@ pub fn compact_bus(path: &Path, retention_days: u32, dry_run: bool) -> Result<Co
     let cutoff = cutoff_for(retention_days);
 
     let staged = path.with_extension("jsonl.compacting");
+    // nosemgrep: rust.actix.path-traversal.tainted-path.tainted-path -- staged path is derived from the bus path by `with_extension`, not from input.
     let mut out = std::fs::File::create(&staged)
         .with_context(|| format!("create staged bus {}", staged.display()))?;
+    // nosemgrep: rust.actix.path-traversal.tainted-path.tainted-path -- same local bus path already opened for status above.
     let source = std::fs::File::open(path)
         .with_context(|| format!("open transcript bus {}", path.display()))?;
 
