@@ -2,6 +2,11 @@
 
 This document describes the installation methods, configuration paths, and how the application locates its resources.
 
+> **Published/source split:** GitHub currently publishes `v0.13.3` as Latest.
+> The repository version is `0.14.1`, but a source version is not a public
+> release until the signed/notarized/stapled DMG, tag, appcast, and GitHub
+> Release have been cut and verified.
+
 ## Installation Methods
 
 ### Method 1: App Bundle From Source (Recommended for Development)
@@ -52,13 +57,32 @@ Production DMGs do not bake the developer surface.
 ### Method 3: DMG Distribution (For End Users)
 
 ```bash
-make dmg-signed       # Build signed DMG
-make notarize         # Notarize with Apple (requires Developer ID)
-# or one-shot:
-# make release-dmgs    # Build + sign + notarize standard and full DMGs
+make release-standard # One-shot slim: sign + notarize + staple + verify-dmg
+
+# Optional variants / lower-level debugging targets:
+make release-full     # Fat build with embedded Whisper
+make release-dmgs     # Standard + full
+make dmg-signed       # Signed DMG only; not yet a release artifact
+make notarize         # Notarize an existing signed DMG
 ```
 
-**Result**: standard `Codescribe_X.Y.Z-….dmg` (slim: Silero embedded, MiniLM signed as a runtime resource, Whisper via Settings download / cache) and optional `…_full.dmg` (embeds Whisper too). Daily operator flow is slim: `make release-stable` (sign + notarize + install that stapled `.app`). Do not chain `VAR=x make release && make dmg-signed` — make vars do not survive the `&&`.
+**Result**: standard `Codescribe_X.Y.Z-….dmg` (slim: Silero embedded,
+MiniLM signed as a runtime resource, Whisper via Settings download/cache) and
+optional `…_full.dmg` (embeds Whisper too). `make release-standard` is the
+canonical distribution cut. `make release-stable` adds installation of that
+same stapled Release `.app` into `/Applications`; it does not publish a tag or
+GitHub Release. Do not chain `VAR=x make release && make dmg-signed` — make
+variables do not survive the `&&`.
+
+Before calling any DMG production-ready, record four independent facts:
+
+1. Developer ID signature verification passed.
+2. Apple notarization was accepted.
+3. The ticket was stapled and validates offline.
+4. `verify-dmg` accepted the payload for the declared slim/full variant.
+
+An ad-hoc or local-development install can be useful for daily testing, but it
+does not satisfy those distribution facts.
 
 ### About panel commit stamp
 
@@ -100,6 +124,11 @@ Configuration is **tiered**:
 ```
 
 **Secrets** (API keys) are stored in **macOS Keychain** under service `com.vetcoders.codescribe`.
+
+Settings UI is the regular-user authority, Keychain is secret authority, and
+`.env` is an optional power-user override. When diagnostics disagree, inspect
+all three explicitly; file presence alone does not prove the running process
+loaded that value.
 
 ### Environment Variables (.env)
 

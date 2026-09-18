@@ -430,6 +430,41 @@ impl AccumulatingVad {
         }
     }
 
+    /// Sibling of [`feed_max`](Self::feed_max): same resampling, accumulator
+    /// drain, predict loop, `last_prob` updates and return value, plus a
+    /// hop-order push of every 512-sample chunk probability into `sink`.
+    ///
+    /// One call replaces `feed_max` when a caller needs both the 500 ms max
+    /// and Silero's native 32 ms timeline. Feeding the same window twice
+    /// would advance Silero v6 state and change the second result.
+    pub fn feed_trace(&mut self, samples: &[f32], sink: &mut Vec<f32>) -> f32 {
+        let resampled = if let Some(ref mut r) = self.resampler {
+            r.resample(samples)
+        } else {
+            samples.to_vec()
+        };
+        self.accumulator.extend_from_slice(&resampled);
+
+        let mut max_prob = 0.0f32;
+        let mut processed_any = false;
+        while self.accumulator.len() >= CHUNK_SIZE {
+            let chunk: Vec<f32> = self.accumulator.drain(..CHUNK_SIZE).collect();
+            if let Ok(prob) = self.vad.predict(&chunk) {
+                self.last_prob = prob;
+                max_prob = max_prob.max(prob);
+                processed_any = true;
+                sink.push(prob);
+            }
+        }
+        // No full chunk available this call (or all predicts errored): fall back
+        // to the latest known probability, matching `feed`'s sub-chunk behavior.
+        if processed_any {
+            max_prob
+        } else {
+            self.last_prob
+        }
+    }
+
     /// Current speech probability without feeding new audio.
     pub fn probability(&self) -> f32 {
         self.last_prob

@@ -1,14 +1,35 @@
-# Live vs seal
+# Live speech and permission to act
 
-Hold Fn is the event. Release is the seal. Same key as dictation paste.
+| Observed event                                        | Meaning for this agent                                               |
+| ----------------------------------------------------- | -------------------------------------------------------------------- |
+| `session_started`                                     | Recording lifecycle began                                            |
+| Draft/revision with `state_change_allowed: false`     | May respond conversationally or investigate read-only when addressed |
+| `transcript_sealed` with `state_change_allowed: true` | May perform the authorized voice-requested task                      |
+| Terminal refusal or `session_ended` without a seal    | No new voice-command execution permission                            |
+| Revision after a seal                                 | Not a new sealed command by itself                                   |
 
-| Bus status                              | Agent may                                                              |
-| --------------------------------------- | ---------------------------------------------------------------------- |
-| `session_started`                       | note that a take began                                                 |
-| `utterance_draft` / `utterance_revised` | reply in the ~5 s gap if named; `state_change_allowed=false`           |
-| `transcript_sealed`                     | `state_change_allowed=true`; only now install, kill, commit, or delete |
+Releasing Fn requests closure; it does not guarantee a successful terminal
+seal. Follow the emitted envelope, not elapsed silence, UI state, clipboard
+delivery, or a successful process exit.
 
-Hearing live ≠ acting live. "James wykasuj tę aplikację" in the middle of a
-sentence is not a command.
+On hearing the bound name in live text, acknowledge attention promptly when
+useful, then follow revisions until the thought is coherent. Do not wait for
+terminal sealing merely to answer conversationally, and do not interrupt every
+partial clause. A logical end supports a reply; it does not manufacture a seal
+or permission to mutate state.
 
-When no agent is on the demux, Fn is ordinary paste. The bus still writes.
+If recognition leaves the intended request uncertain, inspect the exact take's
+audio through the documented Codescribe CLI transcription path before treating
+the wording as reliable. Read references/cli.md for that operation. Preserve
+the audio session identity, disclose remaining ambiguity, and do not re-execute
+an already handled command because retranscription produced another event.
+
+The helper interprets both transcript schemas. Evidence rows can repeat the
+whole rendered document across entries; do not treat each row as a new command.
+A CLI file verdict is a separate producer/session. Do not describe that result
+as proof of successful live recording finalization or silently execute the
+same requested operation twice.
+
+Keep replies in this chat. Do not change focus or delivery routing to make the
+listener appear functional. The actual hotkey and paste policy belongs to the
+current app contracts; attaching an observer does not redefine it.

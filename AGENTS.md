@@ -1,82 +1,60 @@
 # Codescribe Local Agent Contract
 
-The Vetcoders Global Agent Charter is authoritative in this repository. This
-file adds only Codescribe-specific runtime laws and pointers; it does not create
-a second workflow, dispatch plane, or worktree policy.
+The Vetcoders Global Agent Charter is authoritative. This file adds only
+Codescribe-specific runtime laws, thrones of authority, release cadence, and canonical pointers.
 
-## Runtime truth
+## Naming & Authority (Founder decision 2026-08-28)
 
-- One shared checkout is the Living Tree. Do not create implementation
-  worktrees for this repository. Re-read touched files and preserve concurrent
-  work.
-- `RecordingController` is the single in-app microphone owner. Dictation,
-  Agent, and Assistive gestures may choose different downstream consumers, but
-  they must not create parallel recorders.
-- `PresentationEmitter` is the transcript reducer of record. The clean
-  Transcript Bus observes committed reducer events; UI previews, raw engine
-  text, and a second transcription pass are not transcript authority.
-- Delivery follows explicit operator intent. OS focus is not a substitute for
-  an Agent, canvas, clipboard, or paste route.
-- Swift recording state is derived from controller lifecycle. A terminal event
-  must always release mic state, UI phase, and Agent-thread ownership.
-- An Agent voice capture belongs to the thread selected when capture starts.
-  Browsing another thread must not steal the in-flight transcript.
-- Diagnostic and CLI consumers follow the Transcript Bus. They must not open a
-  competing microphone merely to observe Codescribe.app.
+- **Founder** = Maciej Gad and Monika Szymańska (human voice, decisions, buttons).
+- **Operator** is exclusively an AGENT role (`vc-operator`, integrator). Never call the Founder "operator".
+- **Prawo Cięcia**: Jeden tron na władzę, zero nowych warstw. Konkurent tronu jest bezwzględnie
+  USUWANY (`git rm` / wycięcie symbolu), nigdy opakowywany.
+- **Zakazane słowa w diffach, kodzie i commitach**: `shim`, `compat`, `legacy`, `adapter-for-old`,
+  `fallback-to-previous`, `bridge-until`, `TODO remove`. Każde = odrzucony cut. Żadnych fikuśnych garbatych wrapperów.
+- **Falsyfikator przed edycją**: test „pięć Iwo” (5 fizycznych wystąpień PCM → 5 w ledgerze → 5 w reducerze → 5 w delivery).
+- Zobacz `CANARY_MAP.md` oraz `AGENT_CANARY.md` dla pełnej mapy kolizji i 7 tronów.
+
+## Trony władzy (Runtime authority)
+
+- `acoustic_ledger.rs` (`core/pipeline/acoustic_ledger.rs`): jedyny tron tożsamości PCM (`OccurrenceIdentity`, `ObservationIdentity`, `MutationReceipt`). Tekst jest etykietą przypiętą do occurrence, nigdy kluczem identity.
+- **Seal authority**: predykat na energii PCM + dolinach Silero VAD na tym samym capture epoch, nigdy na równości stringów. Równość stringów nie tworzy, nie łączy i nie kasuje occurrence.
+- `RecordingController`: jedyny właściciel mikrofonu w aplikacji. Dictation, Agent i Assistive mogą routować downstream; żaden nie tworzy własnego recordera.
+- `PresentationEmitter` (`TranscriptReducer`): jedyny reducer dokumentu. `OverlayState.swift` to wyłącznie projekcja i malowanie UI bez własnego stanu dokumentu.
+- `TranscriptBus`: wyłącznie obserwator zatwierdzonych zdarzeń reducera. Zero reinterpretacji dokumentu.
+- `delivery_route.rs` (`app/controller/delivery_route.rs`): jedyny tron routingu delivery. Delivery kieruje się jawną intencją Foundera / użytkownika, nigdy samym fokusem OS.
+- `settings.json` → loader → immutable runtime snapshot: jedyne źródło konfiguracji runtime. Zero pięciogłosu.
+- Terminal events zwalniają stan mikrofonu, fazę UI i wątek Agenta.
 
 ## Canonical contracts
 
-- `docs/STT_CONTRACT.md` — engine and adjudication truth.
-- `docs/TRANSCRIPT_BUS.md` — clean event schema, privacy, and path resolution.
-- `docs/HOTKEYS_CONTRACT.md` — gesture, ownership, and mode routing.
-- `docs/DELIVERY_ROUTE.md` — destination selection when present on the active
-  stack.
-- `docs/ENV_REGISTRY.toml` — every supported environment variable.
+- `CANARY_MAP.md` — mapa kolizji, 20 konkurentów i 7 tronów.
+- `docs/STT_CONTRACT.md` — silniki i adjudykacja.
+- `docs/TRANSCRIPT_BUS.md` — czyste zdarzenia, prywatność i ścieżki.
+- `docs/HOTKEYS_CONTRACT.md` — gesty, ownership i tryby.
+- `docs/DELIVERY_ROUTE.md` — destination selection.
+- `docs/ENV_REGISTRY.toml` — rejestr zmiennych środowiskowych.
 
-When prose conflicts with executable behavior, establish runtime truth first,
-then update both the code and the relevant contract in the same cut.
+Po zmianach w API Rust bridge regeneruj bindingi Swift przez `make app-bindings`.
 
-## Working rules
+## Daily app and release cadence
 
-- Use Loctree before structural edits; use literal search only as the local
-  detail lens or explicit fallback.
-- Never revert unfamiliar dirty changes. Isolate responsibilities, verify each
-  coherent cut, and stage only the files that belong to its checkpoint.
-- Local implementation turns end in a scoped commit. Push that work to the
-  active branch. Do not merge to trunk, tag, or publish a GitHub Release
-  unless the operator asked. The daily notarized DMG below is the one
-  release artifact that does not wait for a second ask.
-- Generated UniFFI Swift bindings must match the Rust bridge. Run
-  `make app-bindings` after bridge API changes.
-
-## Install cadence (Maciej + Monika)
-
-Operator agreement 2026-08-19.
-
-- After each coherent cut that changes the app, run `make install-if-idle`
-  (or `make install-app` after a live-recording check). That is the daily
-  laptop binary. Do not wait to be asked.
-- **Refuse the install** when a Codescribe take is in flight. Authority is
-  the Transcript Bus: last session has `session_started` and no later
-  `transcript_sealed`. Never tear down `/Applications/Codescribe.app` mid-take.
-- A **notarized slim DMG for Monika is once per calendar day**, not every
-  commit and not "after a batch of key fixes". When the bus is idle, cut
-  `make release-standard` (sign + notarize + `verify-dmg`). One artifact
-  per day is enough; do not recut for later same-day commits unless the
-  operator asks. Say the path and staple result in the turn. That is a
-  local release artifact; still not a silent merge to trunk, tag, or
-  GitHub Release.
-- Ad-hoc `/Applications` from `install-app` is never "the Monika DMG".
+- Po spójnym cucie zmieniającym aplikację uruchom `make install-if-idle`. Odmawia
+  tylko podczas trwającego nagrywania (Transcript Bus) lub aktywnej tury agenta
+  (`~/.codescribe/agent-turn.lock`); samo działanie aplikacji nie blokuje (Founder, 2026-09-08).
+- Traktuj instalację jako wymagany odbiór dla Foundera przy każdym większym cucie.
+  Zweryfikuj wersję, build, commit, podpis i pomyślny start `/Applications/Codescribe.app`;
+  dopiero wtedy odtwórz `/usr/bin/afplay /System/Library/Sounds/Ping.aiff`.
+- Odmów instalacji, gdy trwa nagranie: aktywna sesja nie ma `session_ended`
+  (historyczny unpaired `transcript_sealed` nadal się liczy), trwa sesja `cli_file_verdict`
+  lub aplikacja trzyma blokadę runtime. Nigdy nie ubijaj aplikacji w trakcie take'a.
+- Co najwyżej jeden `make release-standard` (notaryzowany slim DMG) dziennie,
+  gdy bus jest idle. Wypuszczaj tylko na wyraźne polecenie Foundera.
+- Ad-hoc build `/Applications` to nie jest dystrybucyjny DMG. Produkcyjny DMG
+  wymaga podpisu, notaryzacji, sumy kontrolnej, staplingu i `verify-dmg`.
 
 ## Verification
 
-- `make check` — static formatting, Clippy, Semgrep, env registry, gate ledger.
-- `make verify` — hermetic Rust tests and doctests; this is the CI contract.
-- `make test-swift` — regenerate the ignored Xcode project, run phrase-restart
-  lockstep, then execute the Swift suite.
-- Host-only corpus, real-API, loopback, and parity targets are bench evidence,
-  not implicit merge gates. State explicitly which ones ran and which were not
-  available.
-- Production DMGs use the repository release contract, Developer ID signing,
-  notarization, checksum, and `verify-dmg`; never describe an ad-hoc package as
-  production.
+- `make check` — formatowanie, Clippy, Semgrep, rejestr env i gate ledger.
+- `make verify` — hermetyczne testy Rusta i doctesty (kontrakt CI).
+- `make test-swift` — regeneracja bindingów oraz pakiet testów Swifta (Swift 6 strict concurrency, warnings as errors).
+- Swift targets budują się bez wyciszania ostrzeżeń; warning suppressors są zabronione.

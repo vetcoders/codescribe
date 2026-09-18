@@ -1,0 +1,197 @@
+{
+  "schema": "codescribe.p0-b.five-iwo-fixture.v1",
+  "fixture": "tests/fixtures/p0_b_five_iwo.wav",
+  "wav_sha256": "b002d0655c60c5b2c6ef2e6503892339ee63dbd4c5c76f97d8af7130bba7002d",
+  "sample_rate": 16000,
+  "channels": 1,
+  "sample_format": "pcm_s16le",
+  "sample_count": 37600,
+  "label": "Iwo",
+  "expected_occurrences": 5,
+  "minimum_energy_integral": 25.0,
+  "minimum_valley_samples": 3200,
+  "bursts": [
+    {
+      "ordinal": 1,
+      "label": "Iwo",
+      "sample_start": 1600,
+      "sample_end": 5600,
+      "duration_ms": 250.0,
+      "energy_integral": 170.704017936,
+      "mean_rms_dbfs": -13.698162,
+      "peak_dbfs": -8.827305,
+      "vad_open_sample": 1600,
+      "vad_close_sample": 5600,
+      "evidence_calibration_version": "p0-b-synthetic-energy-v1"
+    },
+    {
+      "ordinal": 2,
+      "label": "Iwo",
+      "sample_start": 8800,
+      "sample_end": 12800,
+      "duration_ms": 250.0,
+      "energy_integral": 170.641571411,
+      "mean_rms_dbfs": -13.699751,
+      "peak_dbfs": -8.827305,
+      "vad_open_sample": 8800,
+      "vad_close_sample": 12800,
+      "evidence_calibration_version": "p0-b-synthetic-energy-v1"
+    },
+    {
+      "ordinal": 3,
+      "label": "Iwo",
+      "sample_start": 16000,
+      "sample_end": 20000,
+      "duration_ms": 250.0,
+      "energy_integral": 170.752711804,
+      "mean_rms_dbfs": -13.696924,
+      "peak_dbfs": -8.827305,
+      "vad_open_sample": 16000,
+      "vad_close_sample": 20000,
+      "evidence_calibration_version": "p0-b-synthetic-energy-v1"
+    },
+    {
+      "ordinal": 4,
+      "label": "Iwo",
+      "sample_start": 23200,
+      "sample_end": 27200,
+      "duration_ms": 250.0,
+      "energy_integral": 170.813294997,
+      "mean_rms_dbfs": -13.695383,
+      "peak_dbfs": -8.827305,
+      "vad_open_sample": 23200,
+      "vad_close_sample": 27200,
+      "evidence_calibration_version": "p0-b-synthetic-energy-v1"
+    },
+    {
+      "ordinal": 5,
+      "label": "Iwo",
+      "sample_start": 30400,
+      "sample_end": 34400,
+      "duration_ms": 250.0,
+      "energy_integral": 170.695738149,
+      "mean_rms_dbfs": -13.698373,
+      "peak_dbfs": -8.827305,
+      "vad_open_sample": 30400,
+      "vad_close_sample": 34400,
+      "evidence_calibration_version": "p0-b-synthetic-energy-v1"
+    }
+  ],
+  "vad_valleys": [
+    {
+      "sample_start": 5600,
+      "sample_end": 8800
+    },
+    {
+      "sample_start": 12800,
+      "sample_end": 16000
+    },
+    {
+      "sample_start": 20000,
+      "sample_end": 23200
+    },
+    {
+      "sample_start": 27200,
+      "sample_end": 30400
+    },
+    {
+      "sample_start": 34400,
+      "sample_end": 37600
+    }
+  ],
+  "provenance": {
+    "kind": "deterministic_mathematical_synthesis",
+    "generator": "scripts/generate-five-iwo-fixture.py",
+    "generator_version": 1,
+    "operator_recording": false,
+    "derived_from_human_audio": false,
+    "description": "Harmonic tone bursts with deterministic envelopes; labels are test metadata only."
+  },
+  "controls": [
+    {
+      "id": "N1",
+      "mutation": "five_disjoint_ranges_same_label",
+      "expected": "five"
+    },
+    {
+      "id": "N2",
+      "mutation": "replay_same_observation",
+      "expected": "refused"
+    },
+    {
+      "id": "N3",
+      "mutation": "whisper_relabels_same_range_before_seal",
+      "expected": "correct_one"
+    },
+    {
+      "id": "N4",
+      "mutation": "remove_energy",
+      "expected": "zero"
+    },
+    {
+      "id": "N5",
+      "mutation": "remove_vad_close",
+      "expected": "not_sealed"
+    },
+    {
+      "id": "N6",
+      "mutation": "leave_observation_frontier_open",
+      "expected": "not_sealed"
+    },
+    {
+      "id": "N7",
+      "mutation": "automatic_formatter_after_seal",
+      "expected": "refused"
+    },
+    {
+      "id": "N8",
+      "mutation": "manual_human_after_seal",
+      "expected": "accepted_with_provenance"
+    },
+    {
+      "id": "N9",
+      "mutation": "zero_fifth_burst",
+      "expected": "four_vs_five"
+    },
+    {
+      "id": "N10",
+      "mutation": "bus_energy_store_unavailable",
+      "expected": "project_ledger_evidence"
+    },
+    {
+      "id": "N11",
+      "mutation": "remove_acoustic_serial_field",
+      "expected": "fail_closed"
+    },
+    {
+      "id": "N12",
+      "mutation": "remove_layer_decision",
+      "expected": "fail_closed"
+    },
+    {
+      "id": "A1",
+      "mutation": "continuous_voiced_region",
+      "expected": "one_occurrence"
+    },
+    {
+      "id": "A2",
+      "mutation": "two_tokens_without_deep_valley",
+      "expected": "no_physical_split"
+    },
+    {
+      "id": "A3",
+      "mutation": "conflicting_labels_same_range",
+      "expected": "one_occurrence"
+    },
+    {
+      "id": "A4",
+      "mutation": "homophone_labels_same_range",
+      "expected": "one_occurrence"
+    },
+    {
+      "id": "A5",
+      "mutation": "below_threshold_noise",
+      "expected": "zero"
+    }
+  ]
+}

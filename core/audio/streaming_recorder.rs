@@ -12,12 +12,12 @@
 //! seconds) before releasing the sink. Dropping the sink early truncates the
 //! tail of the delivered text.
 
-use crate::asr_session::bootstrap::{GatewaySessionAvailability, layer1_decision_for_recording};
-use crate::asr_session::recorder::{
-    Layer1Decision, RecorderLifecycleEvents, RecorderLifecycleHandle, recorder_lifecycle_channel,
-};
+use crate::asr_session::recorder::{RecorderLifecycleHandle, recorder_lifecycle_channel};
 use crate::audio::recorder::{Recorder, RecorderConfig};
-use crate::config::UserSettings;
+use crate::config::{RuntimeSettingsSnapshot, UserSettings};
+use crate::pipeline::acoustic_ledger::AcousticLedger;
+#[cfg(test)]
+use crate::pipeline::acoustic_ledger::SealCoverageReceipt;
 use crate::pipeline::contracts::{EngineEvent, EventSink};
 use crate::pipeline::streaming::{
     SessionConfig, TailPatchSessionReceipt, collect_buffered_engine_events_with_config,
@@ -31,16 +31,188 @@ use tokio::sync::{Mutex, mpsc};
 use tokio::task::JoinHandle;
 use tracing::{debug, info, warn};
 
+/// How many turns one capture gesture owns.
+///
+/// This is per-take capture intent, never a stored preference and never a mode
+/// flag. It is decided by the surface that opened the microphone and frozen for
+/// exactly that take: the hands-free lanes keep the utterance-epoch contract
+/// they always had, and one composer gesture owns one explicit turn.
+///
+/// It deliberately does **not** describe destination, engine, or acoustic
+/// evidence. Silero segmentation, ledger qualification, and Layer 1 tail repair
+/// are unaffected by either variant — only the UI-visible epoch lifecycle and
+/// the *live* paid formatter lane read this.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum CaptureTurnIntent {
+    /// Hotkey toggle, hold, tray, and the assistive overlay.
+    ///
+    /// Trailing silence past the configured threshold closes an utterance
+    /// epoch, and every sealed occurrence may reach the live formatter as it
+    /// happens. This is the pre-existing behaviour of every non-composer lane.
+    #[default]
+    HandsFree,
+    /// One composer gesture, one explicit take.
+    ///
+    /// Silence never closes the take — only an explicit stop does — and no
+    /// paid formatting is launched per silence-delimited fragment. The turn is
+    /// formatted once at terminal processing instead.
+    SingleTurn,
+}
+
+impl CaptureTurnIntent {
+    /// The per-take utterance silence threshold this intent asks the recorder
+    /// for, given the configured hands-free value.
+    ///
+    /// `None` is the pipeline's legacy contract: one continuous stream for the
+    /// whole take, no epoch decisions at all. It is the *engine lifecycle* that
+    /// rests, not the VAD — Silero keeps running for identity and tail repair.
+    pub fn utterance_silence_sec(self, configured_sec: f32) -> Option<f32> {
+        match self {
+            Self::HandsFree => Some(configured_sec),
+            Self::SingleTurn => None,
+        }
+    }
+
+    /// Whether a sealed occurrence may open a paid formatter slot *while the
+    /// take is still live*.
+    ///
+    /// A one-turn take collects the whole turn and formats it once at terminal
+    /// processing, so per-fragment provider calls are refused at the arming
+    /// seam rather than deduplicated after the fact.
+    pub const fn schedules_live_formatting(self) -> bool {
+        matches!(self, Self::HandsFree)
+    }
+
+    /// Whether the take may be formatted once when it terminates.
+    ///
+    /// Exactly the complement of [`Self::schedules_live_formatting`]: a
+    /// hands-free take has already paid per occurrence and must not be charged
+    /// a second time at stop.
+    pub const fn formats_once_at_terminal(self) -> bool {
+        matches!(self, Self::SingleTurn)
+    }
+}
+
+/// Transport admission only: never invoke the executor while opening audio.
+fn live_max_capability(
+    intent: CaptureTurnIntent,
+    enabled: bool,
+    policy: crate::config::FormattingPolicy,
+    agent: Option<&Arc<dyn crate::ai_formatting::FormattingAgent>>,
+) -> Option<Arc<dyn crate::ai_formatting::FormattingAgent>> {
+    if intent.schedules_live_formatting()
+        && enabled
+        && policy == crate::config::FormattingPolicy::Max
+    {
+        agent.cloned()
+    } else {
+        None
+    }
+}
+
+/// Ledger refusal of the terminal transcript after a successful capture stop.
+///
+/// Raised by [`StreamingRecorder::stop`] when the acoustic ledger cannot
+/// authenticate an issued terminal seal. Complete coverage is not finality.
+/// The capture itself succeeded — `audio_path` is the take WAV
+/// already written to disk — which is why this is a typed error rather than a
+/// string: the stop path must retain that audio and close the take instead of
+/// reporting a recorder failure.
+#[derive(Debug, Clone)]
+pub struct TerminalSealRefused {
+    pub finality: crate::pipeline::acoustic_ledger::TerminalFinalityRefusal,
+    pub audio_path: Option<std::path::PathBuf>,
+    /// The committed live document at refusal time. The ledger refused the
+    /// seal, not the words: the controller may still hand this text to the
+    /// user as a degraded stop-path delivery. It is not a seal witness and is
+    /// never written back into the ledger or history as one.
+    pub committed_text: String,
+}
+
+impl std::fmt::Display for TerminalSealRefused {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            f,
+            "terminal transcript refused: {}",
+            self.finality.reason().as_str()
+        )?;
+        if let Some(receipt) = self.finality.coverage() {
+            write!(
+                f,
+                " ({}/{} samples covered; measured max gap {}; threshold {})",
+                receipt.covered_samples,
+                receipt.speech_samples,
+                receipt.max_uncovered_samples,
+                receipt.incomplete_threshold_samples
+            )?;
+        }
+        Ok(())
+    }
+}
+
+impl std::error::Error for TerminalSealRefused {}
+
+/// Producer-owned evidence after capture/archive or transcription-task failure.
+/// A saved WAV is recovery material, never proof of a successful transcript.
+/// There is deliberately no text field: the shared render buffer alone cannot
+/// authenticate a committed revision after a worker fails.
+#[derive(Debug)]
+pub struct CaptureStopFailure {
+    pub session_id: Option<String>,
+    pub capture_epoch: u64,
+    pub audio_path: Option<std::path::PathBuf>,
+    pub cause: anyhow::Error,
+    /// If archive finalization and the task both failed, keep both causes.
+    pub task_failure: Option<anyhow::Error>,
+}
+
+impl std::fmt::Display for CaptureStopFailure {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            f,
+            "capture processing failed: {:#}; committed text unavailable",
+            self.cause
+        )?;
+        if let Some(path) = &self.audio_path {
+            write!(f, "; source WAV retained at {}", path.display())?;
+        } else {
+            write!(f, "; no finalized WAV receipt")?;
+        }
+        if let Some(error) = &self.task_failure {
+            write!(f, "; transcription task also failed: {error:#}")?;
+        }
+        Ok(())
+    }
+}
+
+impl std::error::Error for CaptureStopFailure {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        Some(self.cause.as_ref())
+    }
+}
+
 // Keep enough raw audio queued to survive a cold Whisper load without dropping
 // the user's first words. The STT session drains this backlog once the model is ready.
 /// Channel depth for cold Whisper load: first words queue instead of drop.
 const AUDIO_BACKLOG_CHUNKS: usize = 2048;
+
+/// Engine that owns the live canvas for every session this recorder starts.
+///
+/// `transcription_session` has exactly one live route (Apple progressive), so
+/// the label is a constant today. It is still the recorder's fact, not the
+/// controller's: a future runtime engine switch changes this owner and the
+/// stop path keeps reporting whatever the session actually ran.
+pub const LIVE_STREAMING_ENGINE_LABEL: &str = "live_apple";
 
 /// Content-free witness returned by the production PCM replay seam.
 #[derive(Debug)]
 pub struct ProductionSessionReplay {
     /// Ordered event stream emitted by the same session implementation as live capture.
     pub events: Vec<EngineEvent>,
+    /// The exact ledger mutated by the replayed production session. Consumers
+    /// project these receipts; they must not reconstruct transcript authority
+    /// from the legacy text events beside them.
+    pub acoustic_ledger: Arc<StdMutex<AcousticLedger>>,
     /// Whether recording-start policy armed a Layer 1 provider before the
     /// single-use decision was consumed by the session.
     pub layer1_armed: bool,
@@ -49,37 +221,6 @@ pub struct ProductionSessionReplay {
     /// Typed local tail-patch arming and bounded-drain evidence emitted by the
     /// production session, when that session reached finality.
     pub tail_patch_receipt: Option<TailPatchSessionReceipt>,
-}
-
-/// Resolve the production Layer 1 decision for one recording.
-///
-/// Both the microphone owner and the replay seam call this symbol. Keeping the
-/// settings/consent/gateway decision here prevents an evaluation harness from
-/// silently substituting `Layer1Decision::Disarmed`.
-pub fn production_layer1_decision(
-    settings: &UserSettings,
-    gateway: GatewaySessionAvailability,
-) -> Layer1Decision {
-    layer1_decision_for_recording(settings, gateway)
-}
-
-/// Build the exact engine session configuration consumed by live capture.
-fn recording_session_config(
-    sample_rate: u32,
-    language: Option<String>,
-    stream_log_path: Option<std::path::PathBuf>,
-    utterance_silence_sec: Option<f32>,
-    layer1: Layer1Decision,
-    lifecycle_events: Option<RecorderLifecycleEvents>,
-) -> SessionConfig {
-    SessionConfig {
-        sample_rate,
-        language,
-        stream_log_path,
-        utterance_silence_sec,
-        layer1,
-        lifecycle_events,
-    }
 }
 
 /// Replay fixture PCM through the production recording-session cone.
@@ -93,29 +234,42 @@ pub async fn replay_production_session(
     sample_rate: u32,
     language: Option<String>,
     settings: &UserSettings,
-    gateway: GatewaySessionAvailability,
 ) -> Result<ProductionSessionReplay> {
-    let layer1 = production_layer1_decision(settings, gateway);
-    let layer1_armed = layer1.is_armed();
-    let streaming_engine_label = if crate::stt::active_engine_is_apple() {
-        "live_apple"
-    } else {
-        "streaming_whisper"
-    }
-    .to_string();
-    let utterance_silence_sec = settings.toggle_silence_sec.filter(|&sec| sec >= 0.5);
-    let config = recording_session_config(
-        sample_rate,
-        language,
-        None,
-        utterance_silence_sec,
-        layer1,
-        None,
+    let runtime_settings = Arc::new(
+        crate::config::Config::load_runtime_snapshot_without_keychain()
+            .map_err(|error| anyhow!("runtime settings snapshot refused: {error:?}"))?,
     );
+    let acoustic_ledger = Arc::new(StdMutex::new(AcousticLedger::new()));
+    let (layer1, _decision_receipt) = crate::asr_session::layer1_decision(&runtime_settings);
+    let layer1_armed = layer1.is_armed();
+    // `transcription_session` has one live canvas route: Apple progressive.
+    // Report the route we actually enter; never reconstruct it through the
+    // deleted global engine selector.
+    let streaming_engine_label = LIVE_STREAMING_ENGINE_LABEL.to_string();
+    let utterance_silence_sec = settings.toggle_silence_sec.filter(|&sec| sec >= 0.5);
+    let config = SessionConfig {
+        session_id: uuid::Uuid::new_v4().to_string(),
+        capture_epoch: 1,
+        runtime_settings,
+        live_formatting_agent: None,
+        acoustic_ledger: acoustic_ledger.clone(),
+        sample_rate,
+        capture_device_name: None,
+        language,
+        stream_log_path: None,
+        utterance_silence_sec,
+        // Replay reproduces a hands-free recording: the composer take is a UI
+        // gesture with no offline equivalent, so this seam never fabricates one.
+        capture_turn: CaptureTurnIntent::HandsFree,
+        layer1,
+        lifecycle_events: None,
+        terminal_audio: None,
+    };
     let events = collect_buffered_engine_events_with_config(samples, config).await?;
     let tail_patch_receipt = TailPatchSessionReceipt::from_events(&events);
     Ok(ProductionSessionReplay {
         events,
+        acoustic_ledger,
         layer1_armed,
         streaming_engine_label,
         tail_patch_receipt,
@@ -134,6 +288,10 @@ pub struct StreamingRecorder {
     sample_rate: u32,
     utterance_callback: Option<Arc<dyn Fn(String) + Send + Sync>>,
     utterance_silence_sec: Option<f32>,
+    /// How many turns the next/active take owns. Set by the surface that opened
+    /// the microphone and cleared back to the default between sessions, so a
+    /// one-turn composer take can never leak into the next hands-free one.
+    capture_turn: CaptureTurnIntent,
     /// Counter for audio chunks dropped due to channel backpressure.
     dropped_chunks: Arc<AtomicU64>,
     /// Sink used by `start_event_session`. Caller must configure it explicitly.
@@ -142,10 +300,25 @@ pub struct StreamingRecorder {
     /// block (linear, 0..~1). Runs on the CoreAudio callback thread — keep it
     /// cheap and non-blocking (a broadcast send, an atomic store).
     level_callback: Option<Arc<dyn Fn(f32) + Send + Sync>>,
-    /// Single-use Layer 1 decision consumed when the next session starts.
-    layer1_decision: StdMutex<Layer1Decision>,
     /// O(1) host lifecycle signal for the currently active session.
     lifecycle_handle: Option<RecorderLifecycleHandle>,
+    /// Session-frozen runtime truth. Set once by the controller before start.
+    runtime_settings: Option<Arc<RuntimeSettingsSnapshot>>,
+    /// Bound by the host after session authority; cleared on each new bind.
+    live_formatting_agent: Option<Arc<dyn crate::ai_formatting::FormattingAgent>>,
+    /// The one ledger instance shared by PCM capture, engines, and reducer.
+    acoustic_ledger: Option<Arc<StdMutex<AcousticLedger>>>,
+    /// Controller-owned session identity bound with the ledger.
+    authority_session_id: Option<String>,
+    /// Last capture-open epoch issued for the currently bound session.
+    /// Zero means this bind has not successfully opened capture yet.
+    capture_epoch: u64,
+    captured_samples: Arc<AtomicU64>,
+    terminal_audio_sender: Option<
+        std::sync::mpsc::Sender<
+            Result<crate::pipeline::streaming::live_audio_buffer::FinalizedPcmArchive, String>,
+        >,
+    >,
 }
 
 impl StreamingRecorder {
@@ -164,11 +337,18 @@ impl StreamingRecorder {
             sample_rate,
             utterance_callback: None,
             utterance_silence_sec: None,
+            capture_turn: CaptureTurnIntent::HandsFree,
             dropped_chunks: Arc::new(AtomicU64::new(0)),
             event_sink: None,
             level_callback: None,
-            layer1_decision: StdMutex::new(Layer1Decision::Disarmed),
             lifecycle_handle: None,
+            runtime_settings: None,
+            live_formatting_agent: None,
+            acoustic_ledger: None,
+            authority_session_id: None,
+            capture_epoch: 0,
+            captured_samples: Arc::new(AtomicU64::new(0)),
+            terminal_audio_sender: None,
         })
     }
 
@@ -187,26 +367,53 @@ impl StreamingRecorder {
             sample_rate,
             utterance_callback: None,
             utterance_silence_sec: None,
+            capture_turn: CaptureTurnIntent::HandsFree,
             dropped_chunks: Arc::new(AtomicU64::new(0)),
             event_sink: None,
             level_callback: None,
-            layer1_decision: StdMutex::new(Layer1Decision::Disarmed),
             lifecycle_handle: None,
+            runtime_settings: None,
+            live_formatting_agent: None,
+            acoustic_ledger: None,
+            authority_session_id: None,
+            capture_epoch: 0,
+            captured_samples: Arc::new(AtomicU64::new(0)),
+            terminal_audio_sender: None,
         })
     }
 
-    /// Join live settings truth with one minted gateway session for the next
-    /// recording. Missing/invalid/offline gateway state safely disarms Layer 1.
-    pub fn configure_layer1(
+    /// Bind the next capture to one immutable settings snapshot and one ledger.
+    pub fn bind_session_authority(
         &mut self,
-        settings: &UserSettings,
-        gateway: GatewaySessionAvailability,
+        session_id: String,
+        runtime_settings: Arc<RuntimeSettingsSnapshot>,
+    ) -> Arc<StdMutex<AcousticLedger>> {
+        let acoustic_ledger = Arc::new(StdMutex::new(AcousticLedger::new()));
+        self.capture_epoch = 0;
+        self.authority_session_id = Some(session_id);
+        self.runtime_settings = Some(runtime_settings);
+        self.live_formatting_agent = None;
+        self.acoustic_ledger = Some(Arc::clone(&acoustic_ledger));
+        acoustic_ledger
+    }
+
+    /// Supply the existing host executor without creating another Agent session.
+    /// The streaming lane still owes explicit whole-instruction admission.
+    pub fn set_live_formatting_agent(
+        &mut self,
+        agent: Option<Arc<dyn crate::ai_formatting::FormattingAgent>>,
     ) {
-        *self
-            .layer1_decision
-            .get_mut()
-            .unwrap_or_else(std::sync::PoisonError::into_inner) =
-            production_layer1_decision(settings, gateway);
+        self.live_formatting_agent = agent;
+    }
+
+    /// Borrow the ledger handle already bound for the next/active session.
+    pub fn acoustic_ledger_handle(&self) -> Option<Arc<StdMutex<AcousticLedger>>> {
+        self.acoustic_ledger.as_ref().map(Arc::clone)
+    }
+
+    /// Identity bound at capture open, not a latest-file or UI-slot lookup.
+    pub fn capture_identity(&self) -> (Option<&str>, u64) {
+        (self.authority_session_id.as_deref(), self.capture_epoch)
     }
 
     /// Store a per-utterance text callback.
@@ -228,6 +435,21 @@ impl StreamingRecorder {
         self.utterance_silence_sec = silence_sec;
     }
 
+    /// Declare how many turns the next take owns.
+    ///
+    /// Read when the session starts and frozen into `SessionConfig`, so it has
+    /// to be set before [`Self::start_event_session`]. The controller resets it
+    /// to [`CaptureTurnIntent::HandsFree`] between sessions: a one-turn
+    /// composer take must never widen into the hands-free take that follows it.
+    pub fn set_capture_turn_intent(&mut self, capture_turn: CaptureTurnIntent) {
+        self.capture_turn = capture_turn;
+    }
+
+    /// The capture intent frozen for the next/active take.
+    pub fn capture_turn_intent(&self) -> CaptureTurnIntent {
+        self.capture_turn
+    }
+
     /// Set the per-block input-level tap consumed by UI meters (overlay
     /// waveform). Configure before `start_event_session`; cleared alongside the
     /// other callbacks between sessions.
@@ -237,8 +459,9 @@ impl StreamingRecorder {
 
     /// Returns a cloned handle to the transcript buffer.
     ///
-    /// Used by `ControllerEventRouter` to update the buffer as previews arrive,
-    /// so `stop()` returns the accumulated text.
+    /// Shared delivery buffer. Only committed reducer projections may write it;
+    /// previews are ephemeral paint and `stop()` only reads the accumulated
+    /// committed rendering.
     pub fn transcript_buffer_handle(&self) -> Arc<Mutex<String>> {
         self.transcript_buffer.clone()
     }
@@ -246,6 +469,12 @@ impl StreamingRecorder {
     /// Set the event sink for the unified pipeline.
     pub fn set_event_sink(&mut self, sink: Option<Arc<dyn EventSink>>) {
         self.event_sink = sink;
+    }
+
+    /// Clone the active session sink so controller-owned presentation events
+    /// can enter the same ordered reducer/fanout as engine events.
+    pub fn event_sink_handle(&self) -> Option<Arc<dyn EventSink>> {
+        self.event_sink.clone()
     }
 
     /// Returns true when the underlying recorder still has an active audio stream.
@@ -265,6 +494,15 @@ impl StreamingRecorder {
                 .is_some_and(RecorderLifecycleHandle::note_sleep_wake)
     }
 
+    /// Engine label of the live route this recorder's sessions run on.
+    ///
+    /// The stop path publishes this as the serving truth for Settings
+    /// "Active STT"; it must never be reconstructed from the configured
+    /// `stt_engine` preference (see `controller::serving_status`).
+    pub fn streaming_engine_label(&self) -> &'static str {
+        LIVE_STREAMING_ENGINE_LABEL
+    }
+
     /// Start recording with the new event-based pipeline.
     ///
     /// Uses `transcription_session` which emits `EngineEvent`s to the configured
@@ -275,10 +513,28 @@ impl StreamingRecorder {
                 "start_event_session requires event_sink (set_event_sink(Some(...)) before start)"
             )
         })?;
+        let session_id = self
+            .authority_session_id
+            .clone()
+            .ok_or_else(|| anyhow!("start_event_session requires bound session authority"))?;
+        let runtime_settings = self
+            .runtime_settings
+            .as_ref()
+            .map(Arc::clone)
+            .ok_or_else(|| anyhow!("start_event_session requires RuntimeSettingsSnapshot"))?;
+        let acoustic_ledger = self
+            .acoustic_ledger
+            .as_ref()
+            .map(Arc::clone)
+            .ok_or_else(|| anyhow!("start_event_session requires AcousticLedger"))?;
+        let next_capture_epoch = self.capture_epoch.checked_add(1).ok_or_else(|| {
+            anyhow!("capture epoch overflow: no unused epoch remains for the bound session")
+        })?;
 
         // Clear previous transcript and reset drop counter
         *self.transcript_buffer.lock().await = String::new();
         self.dropped_chunks.store(0, Ordering::Relaxed);
+        self.captured_samples.store(0, Ordering::Relaxed);
 
         // Create channel for audio chunks. This is intentionally larger than a
         // normal live queue: cold STT initialization happens behind this buffer.
@@ -287,7 +543,9 @@ impl StreamingRecorder {
         // Setup callback to send audio data
         let dropped = Arc::clone(&self.dropped_chunks);
         let level_callback = self.level_callback.clone();
+        let captured_samples = Arc::clone(&self.captured_samples);
         self.recorder.set_callback(Box::new(move |data| {
+            captured_samples.fetch_add(data.len() as u64, Ordering::Relaxed);
             if let Some(ref level_cb) = level_callback {
                 level_cb(block_rms(data));
             }
@@ -301,9 +559,12 @@ impl StreamingRecorder {
 
         // Start actual audio stream
         self.recorder.start().await?;
+        self.capture_epoch = next_capture_epoch;
+        event_sink.on_capture_opened(&session_id, next_capture_epoch);
 
         // Update sample rate to match real input stream
         let actual_sample_rate = self.recorder.actual_sample_rate();
+        let capture_device_name = self.recorder.last_input_device().map(str::to_owned);
         crate::audio::capture_receipt::publish_open_capture_path(
             crate::audio::capture_receipt::CapturePathMeta::from_open_path(
                 actual_sample_rate,
@@ -321,26 +582,39 @@ impl StreamingRecorder {
 
         let log_path = stream_log_path();
         let utterance_silence_sec = self.utterance_silence_sec;
-
-        let layer1 = std::mem::take(
-            self.layer1_decision
-                .get_mut()
-                .unwrap_or_else(std::sync::PoisonError::into_inner),
+        let capture_turn = self.capture_turn;
+        let live_formatting_agent = live_max_capability(
+            capture_turn,
+            runtime_settings.values().ai_formatting_enabled,
+            runtime_settings.formatting_policy(),
+            self.live_formatting_agent.as_ref(),
         );
+
+        let (layer1, _decision_receipt) = crate::asr_session::layer1_decision(&runtime_settings);
         let (lifecycle_handle, lifecycle_events) = recorder_lifecycle_channel();
         self.lifecycle_handle = Some(lifecycle_handle);
+        let (terminal_tx, terminal_rx) = std::sync::mpsc::channel();
+        self.terminal_audio_sender = Some(terminal_tx);
         self.transcription_handle = Some(tokio::spawn(async move {
             transcription_session(
                 rx,
                 event_sink,
-                recording_session_config(
-                    actual_sample_rate,
+                SessionConfig {
+                    session_id,
+                    capture_epoch: next_capture_epoch,
+                    runtime_settings,
+                    live_formatting_agent,
+                    acoustic_ledger,
+                    sample_rate: actual_sample_rate,
+                    capture_device_name,
                     language,
-                    log_path,
+                    stream_log_path: log_path,
                     utterance_silence_sec,
+                    capture_turn,
                     layer1,
-                    Some(lifecycle_events),
-                ),
+                    lifecycle_events: Some(lifecycle_events),
+                    terminal_audio: Some(terminal_rx),
+                },
             )
             .await;
         }));
@@ -367,14 +641,47 @@ impl StreamingRecorder {
         }
 
         // 1. Stop recording (drops callback and sender)
-        let audio_path = self.recorder.stop().await?;
+        let stopped = self.recorder.stop().await;
+        self.complete_stop(stopped).await
+    }
+
+    /// The production stop tail. Tests inject only the recorder's archive
+    /// outcome; notification, task join, drain and failure selection stay here.
+    async fn complete_stop(
+        &mut self,
+        stopped: Result<Option<std::path::PathBuf>>,
+    ) -> Result<(String, Option<std::path::PathBuf>)> {
+        if let Some(sender) = self.terminal_audio_sender.take() {
+            let receipt = match &stopped {
+                Ok(Some(path)) => Ok(
+                    crate::pipeline::streaming::live_audio_buffer::FinalizedPcmArchive {
+                        session_id: self.authority_session_id.clone().unwrap_or_default(),
+                        capture_epoch: self.capture_epoch,
+                        sample_rate: self.sample_rate,
+                        sample_count: self.captured_samples.load(Ordering::Relaxed),
+                        path: path.clone(),
+                    },
+                ),
+                Ok(None) => Err("capture finalized without a WAV archive".into()),
+                Err(error) => Err(format!("capture archive finalization failed: {error}")),
+            };
+            let _ = sender.send(receipt);
+        }
         self.lifecycle_handle = None;
 
         // 2. Wait for worker to finish processing remaining chunks
-        if let Some(handle) = self.transcription_handle.take() {
+        // Borrow until joined: cancellation of a caller must not detach the
+        // handle. Named controller Stop keeps this future alive across expiry.
+        let task_failure = if let Some(handle) = self.transcription_handle.as_mut() {
             debug!("Waiting for transcription session task to finish...");
-            handle.await.context("Transcription session task failed")?;
-        }
+            handle
+                .await
+                .context("Transcription session task failed")
+                .err()
+        } else {
+            None
+        };
+        self.transcription_handle = None;
 
         // 3. Drain presentation layer.
         // PresentationEmitter's BufferedEmitter tick loop runs in a separate
@@ -395,15 +702,66 @@ impl StreamingRecorder {
         }
         self.event_sink = None;
 
-        // 4. Return collected transcript
-        let transcript = self.transcript_buffer.lock().await.clone();
-        Ok((transcript, audio_path))
-    }
+        // No early return may bypass the owned shutdown tail. Archive failure
+        // is primary when both operations failed; never invent a saved path.
+        let (audio_path, cause, task_failure) = match stopped {
+            Ok(path) => (path, task_failure, None),
+            Err(error) => (None, Some(error), task_failure),
+        };
+        if let Some(cause) = cause {
+            return Err(anyhow::Error::new(CaptureStopFailure {
+                session_id: self.authority_session_id.clone(),
+                capture_epoch: self.capture_epoch,
+                audio_path,
+                cause,
+                task_failure,
+            }));
+        }
 
-    /// Legacy alias for [`Self::stop_and_discard_path`].
-    #[deprecated(note = "use stop_and_discard_path instead")]
-    pub async fn stop_without_saving(&mut self) -> Result<String> {
-        self.stop_and_discard_path().await
+        let transcript = self.transcript_buffer.lock().await.clone();
+        let empty_capture = self.captured_samples.load(Ordering::Relaxed) == 0
+            && transcript.is_empty()
+            && self.acoustic_ledger.as_ref().is_none_or(|ledger| {
+                ledger
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner)
+                    .has_no_capture_facts()
+            });
+        if empty_capture {
+            return Ok((transcript, audio_path));
+        }
+        let finality = self.authority_session_id.as_deref().and_then(|session| {
+            self.acoustic_ledger.as_ref().map(|ledger| {
+                ledger
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner)
+                    .terminal_finality(session, self.capture_epoch)
+            })
+        });
+        match finality {
+            Some(crate::pipeline::acoustic_ledger::TerminalFinality::Sealed(_)) => {
+                Ok((transcript, audio_path))
+            }
+            Some(crate::pipeline::acoustic_ledger::TerminalFinality::ObservedSilence(_))
+                if transcript.is_empty() =>
+            {
+                Ok((transcript, audio_path))
+            }
+            Some(crate::pipeline::acoustic_ledger::TerminalFinality::Refused(finality)) => {
+                Err(anyhow::Error::new(TerminalSealRefused {
+                    finality,
+                    audio_path,
+                    committed_text: transcript,
+                }))
+            }
+            _ => Err(anyhow::Error::new(CaptureStopFailure {
+                session_id: self.authority_session_id.clone(),
+                capture_epoch: self.capture_epoch,
+                audio_path,
+                cause: anyhow!("recording terminal authority unavailable or inconsistent"),
+                task_failure: None,
+            })),
+        }
     }
 
     /// Stop the session and return only the transcript.
@@ -412,44 +770,7 @@ impl StreamingRecorder {
     /// The file itself is still written by the recorder — this discards the
     /// handle, it does not suppress the write.
     pub async fn stop_and_discard_path(&mut self) -> Result<String> {
-        info!("Stopping streaming recorder (discarding audio path)...");
-
-        // Report any dropped audio chunks
-        let drops = self.dropped_chunks.load(Ordering::Relaxed);
-        if drops > 0 {
-            warn!(
-                "Recording session: dropped {} audio chunk(s) due to backpressure",
-                drops
-            );
-        }
-
-        // 1. Stop recording (discard WAV path)
-        let _ = self.recorder.stop().await?;
-        self.lifecycle_handle = None;
-
-        // 2. Wait for worker to finish processing remaining chunks
-        if let Some(handle) = self.transcription_handle.take() {
-            debug!("Waiting for transcription session task to finish...");
-            handle.await.context("Transcription session task failed")?;
-        }
-
-        // 3. Drain presentation layer (same as stop() — see comment there).
-        if self.event_sink.is_some() {
-            let drain_deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(3);
-            loop {
-                let snapshot = self.transcript_buffer.lock().await.len();
-                tokio::time::sleep(std::time::Duration::from_millis(100)).await;
-                if self.transcript_buffer.lock().await.len() == snapshot
-                    || tokio::time::Instant::now() >= drain_deadline
-                {
-                    break;
-                }
-            }
-        }
-        self.event_sink = None;
-
-        // 4. Return collected transcript
-        let transcript = self.transcript_buffer.lock().await.clone();
+        let (transcript, _audio_path) = self.stop().await?;
         Ok(transcript)
     }
 }
@@ -480,32 +801,56 @@ mod tests {
     use super::*;
     use crate::audio::chunker::{SpeechEvent, SpeechSession, VadGateMode};
     use crate::audio::load_audio_file;
-    use crate::pipeline::streaming::transcribe_streaming_samples;
-    use crate::stt::whisper;
     use crate::vad;
     use serial_test::serial;
     use std::fs;
-    use std::path::{Path, PathBuf};
     use tokio::time::Duration;
 
-    /// The replay seam must consume the same recording-start decision as the
-    /// microphone path; a test-only `Disarmed` shortcut would make corpus
-    /// quality evidence adjacent to production again.
+    struct TransportOnlyAgent;
+
+    #[async_trait::async_trait]
+    impl crate::ai_formatting::FormattingAgent for TransportOnlyAgent {
+        async fn execute(
+            &self,
+            _turn_id: &str,
+            _text: &str,
+            _settings: &RuntimeSettingsSnapshot,
+        ) -> Result<String> {
+            panic!("transport must not execute an instruction");
+        }
+    }
+
     #[test]
-    fn replay_production_session_cannot_hardcode_disarmed_layer1() {
-        let source = include_str!("streaming_recorder.rs");
-        let replay_body = source
-            .split("pub async fn replay_production_session")
-            .nth(1)
-            .and_then(|tail| tail.split("impl StreamingRecorder").next())
-            .expect("production replay body remains present");
+    fn live_max_transport_preserves_owner_and_excludes_other_policies() {
+        use crate::config::FormattingPolicy;
+        let agent: Arc<dyn crate::ai_formatting::FormattingAgent> = Arc::new(TransportOnlyAgent);
+        for intent in [CaptureTurnIntent::HandsFree, CaptureTurnIntent::SingleTurn] {
+            for enabled in [false, true] {
+                for policy in [
+                    FormattingPolicy::Off,
+                    FormattingPolicy::Correction,
+                    FormattingPolicy::Smart,
+                    FormattingPolicy::Max,
+                ] {
+                    let selected = live_max_capability(intent, enabled, policy, Some(&agent));
+                    let admitted = intent == CaptureTurnIntent::HandsFree
+                        && enabled
+                        && policy == FormattingPolicy::Max;
+                    assert_eq!(selected.is_some(), admitted);
+                    if let Some(selected) = selected {
+                        assert!(Arc::ptr_eq(&selected, &agent));
+                    }
+                }
+            }
+        }
         assert!(
-            replay_body.contains("production_layer1_decision(settings, gateway)"),
-            "replay must resolve the same production Layer 1 policy as microphone capture"
-        );
-        assert!(
-            !replay_body.contains("Layer1Decision::Disarmed"),
-            "replay must not silently hard-code a disarmed Layer 1 lane"
+            live_max_capability(
+                CaptureTurnIntent::HandsFree,
+                true,
+                FormattingPolicy::Max,
+                None,
+            )
+            .is_none()
         );
     }
 
@@ -746,116 +1091,6 @@ mod tests {
         let _ = fs::remove_file(&wav_path);
     }
 
-    /// Corpus WER/CER: stream postprocess must not regress raw beyond the budget.
-    #[test]
-    #[serial]
-    fn test_stream_postprocess_corpus_pairs() {
-        if !env_bool("CODESCRIBE_E2E_CORPUS") {
-            eprintln!("Skipping corpus E2E (set CODESCRIBE_E2E_CORPUS=1 to enable)");
-            return;
-        }
-
-        let corpus_dir = corpus_root();
-        let date_filter = std::env::var("CODESCRIBE_E2E_CORPUS_DATE").ok();
-        let limit = env_usize("CODESCRIBE_E2E_CORPUS_LIMIT", 3);
-        let max_regression = env_f32("CODESCRIBE_E2E_CORPUS_MAX_REGRESSION", 0.05);
-
-        let pairs = collect_pairs(&corpus_dir, date_filter.as_deref(), limit);
-        if pairs.is_empty() {
-            eprintln!("No WAV+TXT pairs found in {}", corpus_dir.to_string_lossy());
-            return;
-        }
-
-        whisper::init().expect("Failed to init Whisper");
-        let language = std::env::var("CODESCRIBE_E2E_CORPUS_LANGUAGE").ok();
-        let mut failures = Vec::new();
-        let mut total_raw_wer = 0.0;
-        let mut total_post_wer = 0.0;
-        let mut total_raw_cer = 0.0;
-        let mut total_post_cer = 0.0;
-        let mut processed = 0usize;
-
-        for (wav_path, txt_path) in pairs {
-            let reference = fs::read_to_string(&txt_path)
-                .unwrap_or_else(|_| String::new())
-                .trim()
-                .to_string();
-            if reference.is_empty() {
-                eprintln!("Skipping empty reference: {}", txt_path.display());
-                continue;
-            }
-
-            let (samples, sample_rate) = load_audio_file(&wav_path).expect("Failed to load audio");
-
-            let raw =
-                transcribe_streaming_samples(&samples, sample_rate, language.as_deref(), None)
-                    .expect("Raw streaming transcription failed");
-            let mut postprocessor = crate::pipeline::stream_postprocess::StreamPostProcessor::new();
-            let post = transcribe_streaming_samples(
-                &samples,
-                sample_rate,
-                language.as_deref(),
-                Some(&mut postprocessor),
-            )
-            .expect("Post streaming transcription failed");
-
-            let (ref_tokens, ref_norm) = normalize_for_eval(&reference);
-            let (raw_tokens, raw_norm) = normalize_for_eval(&raw);
-            let (post_tokens, post_norm) = normalize_for_eval(&post);
-
-            let wer_raw = word_error_rate(&ref_tokens, &raw_tokens);
-            let wer_post = word_error_rate(&ref_tokens, &post_tokens);
-            let cer_raw = char_error_rate(&ref_norm, &raw_norm);
-            let cer_post = char_error_rate(&ref_norm, &post_norm);
-
-            processed += 1;
-            total_raw_wer += wer_raw;
-            total_post_wer += wer_post;
-            total_raw_cer += cer_raw;
-            total_post_cer += cer_post;
-
-            println!(
-                "Corpus: {}\n  WER raw={:.3} post={:.3} (Δ={:.3})\n  CER raw={:.3} post={:.3} (Δ={:.3})",
-                wav_path.file_name().unwrap_or_default().to_string_lossy(),
-                wer_raw,
-                wer_post,
-                wer_post - wer_raw,
-                cer_raw,
-                cer_post,
-                cer_post - cer_raw,
-            );
-
-            if wer_post > wer_raw + max_regression {
-                failures.push(format!(
-                    "{}: WER regression {:.3} > {:.3}",
-                    wav_path.display(),
-                    wer_post - wer_raw,
-                    max_regression
-                ));
-            }
-        }
-
-        if processed > 0 {
-            let denom = processed as f32;
-            let avg_raw_wer = total_raw_wer / denom;
-            let avg_post_wer = total_post_wer / denom;
-            let avg_raw_cer = total_raw_cer / denom;
-            let avg_post_cer = total_post_cer / denom;
-
-            println!(
-                "Average WER raw={:.3} post={:.3} | CER raw={:.3} post={:.3}",
-                avg_raw_wer, avg_post_wer, avg_raw_cer, avg_post_cer
-            );
-        }
-
-        if !failures.is_empty() {
-            panic!(
-                "Corpus postprocess regressions detected:\n{}",
-                failures.join("\n")
-            );
-        }
-    }
-
     /// Opt-in flag: true only for `1` or case-insensitive `true`.
     fn env_bool(key: &str) -> bool {
         std::env::var(key)
@@ -870,23 +1105,6 @@ mod tests {
             .ok()
             .and_then(|v| v.parse::<f32>().ok())
             .unwrap_or(default)
-    }
-
-    /// Parse env `usize`; unset or unparsable yields `default`.
-    fn env_usize(key: &str, default: usize) -> usize {
-        std::env::var(key)
-            .ok()
-            .and_then(|v| v.parse::<usize>().ok())
-            .unwrap_or(default)
-    }
-
-    /// Corpus dir: `CODESCRIBE_E2E_CORPUS_DIR` or `~/.codescribe/transcriptions`.
-    fn corpus_root() -> PathBuf {
-        if let Ok(dir) = std::env::var("CODESCRIBE_E2E_CORPUS_DIR") {
-            return PathBuf::from(shellexpand::tilde(&dir).into_owned());
-        }
-
-        crate::config::Config::config_dir().join("transcriptions")
     }
 
     /// Terminal no-speech / `*_failed.wav` names that must not score as VAD misses.
@@ -910,101 +1128,6 @@ mod tests {
             "03_algorytm-ma-zlozonosc.wav"
         ));
         assert!(!is_terminal_no_speech_artifact("dictation_failed.m4a"));
-    }
-
-    /// Collect newest WAV+TXT pairs under optional date filter and limit.
-    fn collect_pairs(
-        root: &Path,
-        date_filter: Option<&str>,
-        limit: usize,
-    ) -> Vec<(PathBuf, PathBuf)> {
-        let mut pairs = Vec::new();
-        if !root.exists() {
-            return pairs;
-        }
-
-        let mut subdirs = Vec::new();
-        if let Some(date) = date_filter {
-            let dir = root.join(date);
-            if dir.exists() {
-                subdirs.push(dir);
-            }
-        } else if let Ok(entries) = fs::read_dir(root) {
-            for entry in entries.flatten() {
-                let path = entry.path();
-                if path.is_dir() {
-                    subdirs.push(path);
-                }
-            }
-        }
-
-        subdirs.sort();
-
-        for dir in subdirs {
-            let Ok(entries) = fs::read_dir(&dir) else {
-                continue;
-            };
-            let mut wavs = Vec::new();
-            for entry in entries.flatten() {
-                let path = entry.path();
-                if path.extension().and_then(|s| s.to_str()) == Some("wav") {
-                    wavs.push(path);
-                }
-            }
-
-            wavs.sort();
-            for wav in wavs {
-                let stem = match wav.file_stem().and_then(|s| s.to_str()) {
-                    Some(stem) => stem,
-                    None => continue,
-                };
-                let txt = wav.with_file_name(format!("{stem}.txt"));
-                if txt.exists() {
-                    pairs.push((wav, txt));
-                }
-            }
-        }
-
-        if limit > 0 && pairs.len() > limit {
-            let start = pairs.len() - limit;
-            pairs = pairs[start..].to_vec();
-        }
-
-        pairs
-    }
-
-    /// Lowercase alphanumerics + whitespace for WER/CER token and char eval.
-    fn normalize_for_eval(text: &str) -> (Vec<String>, String) {
-        let mut normalized = String::with_capacity(text.len());
-        for ch in text.to_lowercase().chars() {
-            if ch.is_alphanumeric() || ch.is_whitespace() {
-                normalized.push(ch);
-            } else {
-                normalized.push(' ');
-            }
-        }
-        let tokens: Vec<String> = normalized
-            .split_whitespace()
-            .map(|t| t.to_string())
-            .collect();
-        let normalized = tokens.join(" ");
-        (tokens, normalized)
-    }
-
-    /// Word-level Levenshtein over `|reference|` (denom floored at 1).
-    fn word_error_rate(reference: &[String], hypothesis: &[String]) -> f32 {
-        let dist = levenshtein(reference, hypothesis);
-        let denom = reference.len().max(1) as f32;
-        dist as f32 / denom
-    }
-
-    /// Char-level Levenshtein over `|reference|` (denom floored at 1).
-    fn char_error_rate(reference: &str, hypothesis: &str) -> f32 {
-        let ref_chars: Vec<char> = reference.chars().collect();
-        let hyp_chars: Vec<char> = hypothesis.chars().collect();
-        let dist = levenshtein(&ref_chars, &hyp_chars);
-        let denom = ref_chars.len().max(1) as f32;
-        dist as f32 / denom
     }
 
     /// One VAD chunk in input sample-rate space — max allowed index drift.
@@ -1098,18 +1221,14 @@ mod tests {
                 accounted_speech_vad_samples =
                     accounted_speech_vad_samples.saturating_add(event_speech);
                 match event {
-                    SpeechEvent::Utterance(samples) => {
+                    SpeechEvent::Utterance => {
                         interim_events = interim_events.saturating_add(1);
-                        assert!(
-                            !samples.is_empty(),
-                            "busy interim event should never carry empty audio"
-                        );
                         assert!(
                             event_speech > 0,
                             "busy interim event should carry positive speech sample accounting"
                         );
                     }
-                    SpeechEvent::UtteranceFinal(_) => {
+                    SpeechEvent::UtteranceFinal => {
                         panic!("unexpected UtteranceFinal before flush in long-silence test")
                     }
                     SpeechEvent::Chunk(_) => {
@@ -1128,9 +1247,9 @@ mod tests {
         let flush_speech = session.take_event_speech_vad_samples();
         accounted_speech_vad_samples = accounted_speech_vad_samples.saturating_add(flush_speech);
 
-        let flush_len = match flush {
-            Some(SpeechEvent::UtteranceFinal(samples)) => samples.len(),
-            Some(SpeechEvent::Utterance(_)) => {
+        match flush {
+            Some(SpeechEvent::UtteranceFinal) => (),
+            Some(SpeechEvent::Utterance) => {
                 panic!("flush should emit final utterance event")
             }
             Some(SpeechEvent::Chunk(_)) => {
@@ -1138,7 +1257,6 @@ mod tests {
             }
             None => panic!("flush should preserve active Supervisor boundary under busy load"),
         };
-        assert!(flush_len > 0, "flush final event should include audio");
         assert!(
             flush_speech > 0,
             "flush final event should carry pending speech sample accounting"
@@ -1303,9 +1421,8 @@ mod tests {
             let speech_samples: usize = events
                 .iter()
                 .map(|e| match e {
-                    SpeechEvent::Utterance(s)
-                    | SpeechEvent::UtteranceFinal(s)
-                    | SpeechEvent::Chunk(s) => s.len(),
+                    SpeechEvent::Utterance | SpeechEvent::UtteranceFinal => 0,
+                    SpeechEvent::Chunk(s) => s.len(),
                 })
                 .sum();
             let speech_sec = speech_samples as f32 / sample_rate as f32;
@@ -1364,148 +1481,576 @@ mod tests {
 
         assert!(all_pass, "Some files had zero speech detection");
     }
+}
 
-    /// Test the categorical silence gate on data_assets WAV files.
-    ///
-    /// Simulates the live recording pipeline: feeds audio through SpeechSession
-    /// in Supervisor/Utterance mode, collects events with their speech_vad_samples,
-    /// and checks which chunks the silence gate would drop.
-    #[test]
-    #[serial]
-    fn test_silence_gate_on_data_assets() {
-        use crate::pipeline::streaming::should_drop_silence_chunk;
+#[cfg(test)]
+mod terminal_seal_refusal_tests {
+    use super::TerminalSealRefused;
+    use crate::pipeline::acoustic_ledger::{SealCoverageReceipt, SealCoverageStatus};
 
-        let data_dir =
-            std::path::PathBuf::from(shellexpand::tilde("~/.codescribe/data_assets").as_ref());
-        if !data_dir.exists() {
-            eprintln!("Skipping: no data_assets dir");
-            return;
+    fn refusal(audio_path: Option<std::path::PathBuf>) -> TerminalSealRefused {
+        let receipt = SealCoverageReceipt {
+            session_id: "e4060d87-fe0f-49fd-bbd5-eaea7e89ca17".to_string(),
+            capture_epoch: 0,
+            speech_samples: 2_696_704,
+            covered_samples: 585_216,
+            uncovered_speech_ranges: Vec::new(),
+            max_uncovered_samples: 2_111_488,
+            incomplete_threshold_samples: 12_000,
+            status: SealCoverageStatus::Incomplete,
+            speech_producer: "capture_energy".to_string(),
+            availability: "observed".to_string(),
+            observed_samples: Some(2_696_704),
+        };
+        let mut ledger = crate::pipeline::acoustic_ledger::AcousticLedger::new();
+        assert!(ledger.record_seal_coverage(receipt.clone()));
+        TerminalSealRefused {
+            finality: ledger
+                .terminal_finality(&receipt.session_id, receipt.capture_epoch)
+                .into_refusal()
+                .unwrap(),
+            audio_path,
+            committed_text: String::new(),
         }
-
-        let wavs: Vec<_> = [
-            "01_no-to-dobra.wav",
-            "02_kubernetes-wymaga-konfiguracji.wav",
-            "03_algorytm-ma-zlozonosc.wav",
-            "04_runda-3-czyli.wav",
-        ]
-        .iter()
-        .map(|f| data_dir.join(f))
-        .filter(|p| p.exists())
-        .collect();
-
-        if wavs.is_empty() {
-            eprintln!("Skipping: no WAV files found in data_assets");
-            return;
-        }
-
-        println!("\n╭─── Silence Gate Test (data_assets) ────────────────╮");
-
-        for wav_path in &wavs {
-            let fname = wav_path.file_name().unwrap_or_default().to_string_lossy();
-            let (samples, sample_rate) = match load_audio_file(wav_path) {
-                Ok(v) => v,
-                Err(e) => {
-                    println!("│ SKIP {} — {}", fname, e);
-                    continue;
-                }
-            };
-            let audio_sec = samples.len() as f32 / sample_rate as f32;
-
-            // Simulate live recording: feed audio in ~1024-sample callbacks
-            let callback_size = 1024usize;
-            let mut session = SpeechSession::new_utterance(sample_rate);
-            assert_eq!(session.gate_mode(), VadGateMode::Supervisor);
-
-            let mut events_with_speech = Vec::new();
-            let mut offset = 0usize;
-            while offset < samples.len() {
-                let end = (offset + callback_size).min(samples.len());
-                for event in session.feed(&samples[offset..end], sample_rate) {
-                    let speech_vad = session.take_event_speech_vad_samples();
-                    events_with_speech.push((event, speech_vad));
-                }
-                offset = end;
-            }
-            if let Some(event) = session.flush() {
-                let speech_vad = session.take_event_speech_vad_samples();
-                events_with_speech.push((event, speech_vad));
-            }
-
-            let mut dropped = 0usize;
-            let mut kept = 0usize;
-            let mut dropped_sec = 0.0f32;
-
-            println!("│");
-            println!("│ {} ({:.1}s)", fname, audio_sec);
-
-            for (i, (event, speech_vad_samples)) in events_with_speech.iter().enumerate() {
-                let chunk_len = match event {
-                    SpeechEvent::Utterance(s)
-                    | SpeechEvent::UtteranceFinal(s)
-                    | SpeechEvent::Chunk(s) => s.len(),
-                };
-                let is_final = matches!(event, SpeechEvent::UtteranceFinal(_));
-                let chunk_sec = chunk_len as f32 / sample_rate as f32;
-                let audio_16k = (chunk_len as f64 * f64::from(vad::VAD_SAMPLE_RATE)
-                    / f64::from(sample_rate)) as u64;
-                let ratio = if audio_16k > 0 {
-                    *speech_vad_samples as f32 / audio_16k as f32
-                } else {
-                    0.0
-                };
-
-                let would_drop = should_drop_silence_chunk(
-                    chunk_len,
-                    sample_rate,
-                    *speech_vad_samples,
-                    is_final,
-                );
-
-                let tag = if would_drop { "DROP" } else { "KEEP" };
-                let kind = if is_final { "Final" } else { "Interim" };
-                println!(
-                    "│   [{:2}] {} {}: {:.2}s speech_ratio={:.0}% (vad_samples={})",
-                    i,
-                    tag,
-                    kind,
-                    chunk_sec,
-                    ratio * 100.0,
-                    speech_vad_samples,
-                );
-
-                if would_drop {
-                    dropped += 1;
-                    dropped_sec += chunk_sec;
-                } else {
-                    kept += 1;
-                }
-            }
-
-            println!(
-                "│   → kept={} dropped={} (saved {:.1}s of Whisper inference on silence)",
-                kept, dropped, dropped_sec,
-            );
-        }
-
-        println!("│");
-        println!("╰────────────────────────────────────────────────────╯\n");
     }
 
-    /// Classic DP edit distance shared by WER and CER helpers.
-    fn levenshtein<T: Eq>(a: &[T], b: &[T]) -> usize {
-        let mut prev: Vec<usize> = (0..=b.len()).collect();
-        let mut cur = vec![0usize; b.len() + 1];
+    /// The controller tells a refused seal apart from a failed mic by type,
+    /// and the take WAV path survives the trip through `anyhow`.
+    #[test]
+    fn refusal_downcasts_through_anyhow_with_its_audio_path() {
+        let path = std::path::PathBuf::from("/tmp/codescribe_recording_1788315408813.wav");
+        let err = anyhow::Error::new(refusal(Some(path.clone())));
+        let refused = err
+            .downcast::<TerminalSealRefused>()
+            .expect("typed refusal survives anyhow");
+        assert_eq!(refused.audio_path.as_deref(), Some(path.as_path()));
+        assert_eq!(
+            refused.finality.coverage().unwrap().status,
+            SealCoverageStatus::Incomplete
+        );
+    }
 
-        for (i, item_a) in a.iter().enumerate() {
-            cur[0] = i + 1;
-            for (j, item_b) in b.iter().enumerate() {
-                let cost = if item_a == item_b { 0 } else { 1 };
-                cur[j + 1] =
-                    std::cmp::min(std::cmp::min(prev[j + 1] + 1, cur[j] + 1), prev[j] + cost);
-            }
-            prev.clone_from(&cur);
+    /// The message names the refused seal, never the recorder.
+    #[test]
+    fn refusal_message_names_the_seal_not_the_mic() {
+        let text = refusal(None).to_string();
+        assert!(text.starts_with("terminal transcript refused"), "{text}");
+        assert!(text.contains("585216/2696704"), "{text}");
+        assert!(!text.to_lowercase().contains("recorder"), "{text}");
+    }
+}
+
+/// W2 source contracts: UNRUN. Only capture/archive ingress is injected;
+/// complete_stop is the same notification/join/drain/error path used by stop.
+#[cfg(test)]
+mod capture_stop_failure_tests {
+    use super::*;
+    use crate::pipeline::acoustic_ledger::SealCoverageStatus;
+
+    fn recorder() -> StreamingRecorder {
+        let mut recorder = StreamingRecorder::new().unwrap();
+        recorder.authority_session_id = Some("capture-owner".into());
+        recorder.capture_epoch = 7;
+        recorder.captured_samples.store(4, Ordering::Relaxed);
+        recorder.lifecycle_handle = Some(recorder_lifecycle_channel().0);
+        recorder
+    }
+
+    fn write_wav(path: &std::path::Path) -> Vec<u8> {
+        let mut writer = hound::WavWriter::create(
+            path,
+            hound::WavSpec {
+                channels: 1,
+                sample_rate: 16_000,
+                bits_per_sample: 16,
+                sample_format: hound::SampleFormat::Int,
+            },
+        )
+        .unwrap();
+        for sample in [123_i16, -456, 789, -321] {
+            writer.write_sample(sample).unwrap();
         }
+        writer.finalize().unwrap();
+        std::fs::read(path).unwrap()
+    }
 
-        prev[b.len()]
+    fn assert_released(recorder: &StreamingRecorder) {
+        assert!(recorder.transcription_handle.is_none());
+        assert!(recorder.terminal_audio_sender.is_none());
+        assert!(recorder.lifecycle_handle.is_none());
+        assert!(recorder.event_sink.is_none());
+        assert!(!recorder.is_recording());
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn saved_wav_survives_task_panic_with_exact_identity_and_cause() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("take.wav");
+        let bytes = write_wav(&path);
+        let mut recorder = recorder();
+        recorder.sample_rate = 16_000;
+        let sink = Arc::new(crate::pipeline::sinks::CollectorEventSink::new());
+        let weak_sink = Arc::downgrade(&sink);
+        recorder.set_event_sink(Some(sink));
+        // Neither preview nor a raw buffer can become recovery transcript.
+        *recorder.transcript_buffer.lock().await = "UNAUTHENTICATED PREVIEW".into();
+        let (sender, receiver) = std::sync::mpsc::channel();
+        recorder.terminal_audio_sender = Some(sender);
+        recorder.transcription_handle = Some(tokio::spawn(async {
+            panic!("controlled transcription failure");
+        }));
+        let error = recorder
+            .complete_stop(Ok(Some(path.clone())))
+            .await
+            .unwrap_err();
+        let failure = error.downcast_ref::<CaptureStopFailure>().unwrap();
+        assert_eq!(failure.session_id.as_deref(), Some("capture-owner"));
+        assert_eq!(failure.capture_epoch, 7);
+        assert_eq!(failure.audio_path.as_deref(), Some(path.as_path()));
+        assert!(
+            failure
+                .cause
+                .downcast_ref::<tokio::task::JoinError>()
+                .unwrap()
+                .is_panic()
+        );
+        assert!(
+            error
+                .to_string()
+                .contains("controlled transcription failure")
+        );
+        assert!(!format!("{error:?}").contains("UNAUTHENTICATED PREVIEW"));
+        assert!(error.downcast_ref::<TerminalSealRefused>().is_none());
+        let archive = receiver.try_recv().unwrap().unwrap();
+        assert_eq!(archive.session_id, "capture-owner");
+        assert_eq!(archive.capture_epoch, 7);
+        assert_eq!(archive.path, path);
+        assert_eq!(archive.sample_count, 4);
+        assert_eq!(std::fs::read(&path).unwrap(), bytes);
+        assert_released(&recorder);
+        assert!(weak_sink.upgrade().is_none());
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn archive_failure_reaps_worker_and_preserves_both_errors_without_a_path() {
+        let mut recorder = recorder();
+        recorder.set_event_sink(Some(Arc::new(
+            crate::pipeline::sinks::CollectorEventSink::new(),
+        )));
+        let (sender, receiver) = std::sync::mpsc::channel();
+        recorder.terminal_audio_sender = Some(sender);
+        recorder.transcription_handle = Some(tokio::spawn(async {
+            panic!("secondary worker failure");
+        }));
+        let error = recorder
+            .complete_stop(Err(std::io::Error::new(
+                std::io::ErrorKind::PermissionDenied,
+                "archive denied",
+            )
+            .into()))
+            .await
+            .unwrap_err();
+        let failure = error.downcast_ref::<CaptureStopFailure>().unwrap();
+        assert_eq!(
+            failure
+                .cause
+                .downcast_ref::<std::io::Error>()
+                .unwrap()
+                .kind(),
+            std::io::ErrorKind::PermissionDenied
+        );
+        assert!(
+            failure
+                .task_failure
+                .as_ref()
+                .unwrap()
+                .downcast_ref::<tokio::task::JoinError>()
+                .unwrap()
+                .is_panic()
+        );
+        assert!(failure.audio_path.is_none());
+        assert!(
+            receiver
+                .try_recv()
+                .unwrap()
+                .unwrap_err()
+                .contains("archive denied")
+        );
+        assert_released(&recorder);
+    }
+
+    #[tokio::test]
+    async fn public_stop_routes_worker_failure_through_the_cleanup_tail() {
+        let mut recorder = recorder();
+        recorder.transcription_handle = Some(tokio::spawn(async {
+            panic!("public stop worker failure");
+        }));
+        // A never-opened device returns no archive. This exercises public stop
+        // without a microphone; the saved-WAV case injects archive ingress above.
+        let error = recorder.stop().await.unwrap_err();
+        let failure = error.downcast_ref::<CaptureStopFailure>().unwrap();
+        assert!(failure.audio_path.is_none());
+        assert_eq!(failure.session_id.as_deref(), Some("capture-owner"));
+        assert_eq!(failure.capture_epoch, 7);
+        assert!(
+            failure
+                .cause
+                .downcast_ref::<tokio::task::JoinError>()
+                .unwrap()
+                .is_panic()
+        );
+        assert_released(&recorder);
+    }
+
+    #[tokio::test]
+    async fn archive_failure_still_joins_a_successful_worker() {
+        let mut recorder = recorder();
+        let joined = Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let completed = Arc::clone(&joined);
+        recorder.transcription_handle = Some(tokio::spawn(async move {
+            completed.store(true, Ordering::SeqCst);
+        }));
+        let error = recorder
+            .complete_stop(Err(anyhow!("archive failed")))
+            .await
+            .unwrap_err();
+        assert!(joined.load(Ordering::SeqCst));
+        assert!(
+            error
+                .downcast_ref::<CaptureStopFailure>()
+                .unwrap()
+                .task_failure
+                .is_none()
+        );
+        assert_released(&recorder);
+    }
+
+    #[tokio::test]
+    async fn local_execution_join_survives_stop_retry_and_preserves_refused_wav() {
+        use crate::pipeline::streaming::session::LocalExecutionOwner;
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("owned-local.wav");
+        let bytes = write_wav(&path);
+        let mut recorder = recorder();
+        let mut ledger = AcousticLedger::new();
+        let receipt = SealCoverageReceipt {
+            session_id: "capture-owner".into(),
+            capture_epoch: 7,
+            speech_samples: 4,
+            covered_samples: 0,
+            uncovered_speech_ranges: vec![crate::stt::tail_provider::TailSampleRange {
+                session: "capture-owner".into(),
+                capture_epoch: 7,
+                sample_start: 0,
+                sample_end: 4,
+            }],
+            max_uncovered_samples: 4,
+            incomplete_threshold_samples: 1,
+            status: SealCoverageStatus::Incomplete,
+            speech_producer: "capture_energy".to_string(),
+            availability: "observed".to_string(),
+            observed_samples: Some(4),
+        };
+        assert!(ledger.record_seal_coverage(receipt.clone()));
+        recorder.acoustic_ledger = Some(Arc::new(StdMutex::new(ledger)));
+        let execution = Arc::new(LocalExecutionOwner::default());
+        let (entered_tx, entered_rx) = tokio::sync::oneshot::channel();
+        let (release_tx, release_rx) = std::sync::mpsc::channel();
+        let result = execution
+            .spawn(move |_| {
+                entered_tx.send(()).unwrap();
+                release_rx.recv().unwrap();
+                Ok("late label")
+            })
+            .unwrap();
+        entered_rx.await.unwrap();
+        drop(result); // closed ledger no longer consumes local labels
+        recorder.transcription_handle = Some(tokio::spawn(async move {
+            execution.close_and_join().await;
+        }));
+        let pending = tokio::time::timeout(
+            std::time::Duration::from_millis(20),
+            recorder.complete_stop(Ok(Some(path.clone()))),
+        )
+        .await;
+        let retained = recorder.transcription_handle.is_some();
+        release_tx.send(()).unwrap();
+        let error = recorder
+            .complete_stop(Ok(Some(path.clone())))
+            .await
+            .unwrap_err();
+        assert!(
+            pending.is_err(),
+            "Stop must await actual retained execution"
+        );
+        assert!(
+            retained,
+            "caller expiry must leave the session handle available for retry"
+        );
+        let refused = error.downcast_ref::<TerminalSealRefused>().unwrap();
+        assert_eq!(refused.finality.coverage(), Some(&receipt));
+        assert_eq!(refused.audio_path.as_ref(), Some(&path));
+        assert_eq!(std::fs::read(path).unwrap(), bytes);
+        assert_released(&recorder);
+    }
+
+    #[tokio::test]
+    async fn clean_stop_and_seal_refusal_keep_their_existing_outcomes() {
+        let mut recorder = recorder();
+        recorder.captured_samples.store(0, Ordering::Relaxed);
+        let stopped = recorder.complete_stop(Ok(None)).await.unwrap();
+        assert_eq!(stopped, (String::new(), None));
+        let mut ledger = AcousticLedger::new();
+        assert!(ledger.record_seal_coverage(SealCoverageReceipt {
+            session_id: "capture-owner".into(),
+            capture_epoch: 7,
+            speech_samples: 100,
+            covered_samples: 0,
+            uncovered_speech_ranges: Vec::new(),
+            max_uncovered_samples: 100,
+            incomplete_threshold_samples: 10,
+            status: SealCoverageStatus::Incomplete,
+            speech_producer: "capture_energy".to_string(),
+            availability: "observed".to_string(),
+            observed_samples: Some(100),
+        }));
+        recorder.acoustic_ledger = Some(Arc::new(StdMutex::new(ledger)));
+        let error = recorder.complete_stop(Ok(None)).await.unwrap_err();
+        assert!(error.downcast_ref::<TerminalSealRefused>().is_some());
+        assert!(error.downcast_ref::<CaptureStopFailure>().is_none());
+        assert_released(&recorder);
+    }
+
+    fn stop_finality_ledger(issued: bool, silence: bool) -> AcousticLedger {
+        stop_finality_ledger_with_label(issued, silence, true)
+    }
+
+    fn stop_finality_ledger_with_label(issued: bool, silence: bool, whole: bool) -> AcousticLedger {
+        use crate::audio::capture_receipt::{
+            AcousticAvailability, AcousticSpeechEvidence, CaptureEvidenceIdentity,
+        };
+        use crate::pipeline::acoustic_ledger::{
+            AcousticEvidence, EnergyCalibration, ObservationIdentity, ObservationProducer,
+            OccurrenceIdentity,
+        };
+        let mut ledger = AcousticLedger::new();
+        let occurrence = OccurrenceIdentity::new("capture-owner", 7, 0, 4);
+        if !silence {
+            let calibration = EnergyCalibration::new("stop-synthetic", 1.0, 1);
+            assert!(
+                ledger
+                    .qualify(
+                        &AcousticEvidence {
+                            occurrence: occurrence.clone(),
+                            duration_ms: 1.0,
+                            energy_integral: 100.0,
+                            mean_rms_dbfs: -20.0,
+                            peak_dbfs: -10.0,
+                            vad_open_sample: Some(0),
+                            vad_close_sample: Some(4),
+                            evidence_calibration_version: calibration.version.clone(),
+                        },
+                        &calibration
+                    )
+                    .is_qualified()
+            );
+            ledger.schedule_frontier(occurrence.clone(), [ObservationProducer::Whisper]);
+            ledger.admit(
+                &ObservationIdentity::new(
+                    ObservationProducer::Whisper,
+                    1,
+                    0,
+                    if whole {
+                        occurrence.clone()
+                    } else {
+                        OccurrenceIdentity::new("capture-owner", 7, 0, 2)
+                    },
+                ),
+                "committed words",
+            );
+            ledger.note_frontier_return(&occurrence, ObservationProducer::Whisper);
+            if whole {
+                ledger.seal(&occurrence).unwrap();
+            }
+        }
+        let speech = AcousticSpeechEvidence::measured(
+            CaptureEvidenceIdentity::new("capture-owner", 7),
+            "synthetic_stop_observer",
+            AcousticAvailability::Observed {
+                observed_samples: 4,
+            },
+            if silence {
+                vec![]
+            } else {
+                vec![crate::stt::tail_provider::TailSampleRange {
+                    session: "capture-owner".into(),
+                    capture_epoch: 7,
+                    sample_start: 0,
+                    sample_end: if whole { 4 } else { 2 },
+                }]
+            },
+        );
+        ledger.record_seal_coverage(ledger.assess_seal_coverage("capture-owner", 7, &speech, 0));
+        if issued {
+            ledger.seal_terminal("capture-owner", 7).unwrap();
+        }
+        ledger
+    }
+
+    #[tokio::test]
+    async fn complete_stop_refuses_label_missing_despite_complete_coverage() {
+        use crate::pipeline::acoustic_ledger::SealRefusal;
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("label-missing.wav");
+        let bytes = write_wav(&path);
+        let mut ledger = stop_finality_ledger_with_label(false, false, false);
+        assert!(ledger.latest_seal_coverage().unwrap().status.is_complete());
+        assert_eq!(
+            ledger.seal_terminal("capture-owner", 7),
+            Err(SealRefusal::LabelMissing)
+        );
+        let mut recorder = recorder();
+        recorder.acoustic_ledger = Some(Arc::new(StdMutex::new(ledger)));
+        *recorder.transcript_buffer.lock().await = "committed words".into();
+        let error = recorder
+            .complete_stop(Ok(Some(path.clone())))
+            .await
+            .unwrap_err();
+        let refusal = error.downcast_ref::<TerminalSealRefused>().unwrap();
+        assert!(refusal.finality.coverage().unwrap().status.is_complete());
+        assert_eq!(refusal.audio_path.as_ref(), Some(&path));
+        assert_eq!(std::fs::read(path).unwrap(), bytes);
+    }
+
+    #[tokio::test]
+    async fn complete_stop_requires_issued_terminal_receipt_and_preserves_wav() {
+        use crate::pipeline::acoustic_ledger::TerminalFinalityRefusalReason;
+        for issued in [false, true] {
+            let mut recorder = recorder();
+            let ledger = Arc::new(StdMutex::new(stop_finality_ledger(issued, false)));
+            recorder.acoustic_ledger = Some(ledger.clone());
+            *recorder.transcript_buffer.lock().await = "committed words".into();
+            let dir = tempfile::tempdir().unwrap();
+            let path = dir.path().join("real-stop-tail.wav");
+            let bytes = write_wav(&path);
+            let result = recorder.complete_stop(Ok(Some(path.clone()))).await;
+            if issued {
+                assert_eq!(
+                    result.unwrap(),
+                    ("committed words".into(), Some(path.clone()))
+                );
+            } else {
+                let error = result.unwrap_err();
+                let refusal = error.downcast_ref::<TerminalSealRefused>().unwrap();
+                assert_eq!(
+                    refusal.finality.reason(),
+                    TerminalFinalityRefusalReason::TerminalReceiptMissing
+                );
+                assert!(refusal.finality.coverage().unwrap().status.is_complete());
+                assert_eq!(refusal.audio_path.as_ref(), Some(&path));
+                assert_eq!(refusal.committed_text, "committed words");
+                assert!(
+                    ledger
+                        .lock()
+                        .unwrap()
+                        .terminal_finality("capture-owner", 7)
+                        .into_refusal()
+                        .is_some(),
+                    "Stop must not mint the missing terminal receipt"
+                );
+            }
+            assert_eq!(std::fs::read(&path).unwrap(), bytes);
+            assert_released(&recorder);
+        }
+    }
+
+    #[tokio::test]
+    async fn complete_stop_empty_text_is_not_proof_of_silence_or_authority() {
+        for has_measurement in [false, true] {
+            for text in ["", "unattributed words"] {
+                let mut recorder = recorder();
+                *recorder.transcript_buffer.lock().await = text.into();
+                if has_measurement {
+                    recorder.acoustic_ledger =
+                        Some(Arc::new(StdMutex::new(stop_finality_ledger(false, true))));
+                }
+                let result = recorder.complete_stop(Ok(None)).await;
+                if has_measurement && text.is_empty() {
+                    assert_eq!(result.unwrap(), (String::new(), None));
+                } else {
+                    assert!(result.unwrap_err().is::<CaptureStopFailure>());
+                }
+                assert_released(&recorder);
+            }
+        }
+        let mut recorder = recorder();
+        recorder.acoustic_ledger =
+            Some(Arc::new(StdMutex::new(stop_finality_ledger(false, false))));
+        assert!(
+            recorder
+                .complete_stop(Ok(None))
+                .await
+                .unwrap_err()
+                .is::<TerminalSealRefused>(),
+            "empty rendering cannot erase measured speech"
+        );
+    }
+
+    #[tokio::test]
+    async fn complete_stop_foreign_epoch_seal_cannot_authorize_current_capture() {
+        let mut recorder = recorder();
+        recorder.capture_epoch = 8;
+        recorder.acoustic_ledger = Some(Arc::new(StdMutex::new(stop_finality_ledger(true, false))));
+        *recorder.transcript_buffer.lock().await = "committed words".into();
+        let error = recorder.complete_stop(Ok(None)).await.unwrap_err();
+        let refusal = error.downcast_ref::<TerminalSealRefused>().unwrap();
+        assert_eq!(refusal.finality.capture_epoch(), 8);
+        assert!(refusal.finality.coverage().is_none());
+        assert_released(&recorder);
+    }
+
+    /// Missing acoustic measurement refuses the terminal transcript on the same
+    /// typed path as measured uncovered speech — and the committed words and
+    /// the take WAV survive it. A guard pinned to `Incomplete` alone would let
+    /// this outcome through as a success and lose the words.
+    #[tokio::test]
+    async fn unavailable_measurement_refuses_through_the_same_typed_path() {
+        use crate::pipeline::acoustic_ledger::AcousticEvidenceGap;
+
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("unavailable.wav");
+        let bytes = write_wav(&path);
+        let mut recorder = recorder();
+        *recorder.transcript_buffer.lock().await = "słowa które przetrwały".to_string();
+        let mut ledger = AcousticLedger::new();
+        let receipt = SealCoverageReceipt {
+            session_id: "capture-owner".into(),
+            capture_epoch: 7,
+            speech_samples: 0,
+            covered_samples: 0,
+            uncovered_speech_ranges: Vec::new(),
+            max_uncovered_samples: 0,
+            incomplete_threshold_samples: 4_000,
+            status: SealCoverageStatus::Unavailable(AcousticEvidenceGap::NotObserved),
+            speech_producer: "capture_energy".to_string(),
+            availability: "not_observed".to_string(),
+            observed_samples: None,
+        };
+        assert!(ledger.record_seal_coverage(receipt.clone()));
+        recorder.acoustic_ledger = Some(Arc::new(StdMutex::new(ledger)));
+
+        let error = recorder
+            .complete_stop(Ok(Some(path.clone())))
+            .await
+            .unwrap_err();
+        let refused = error
+            .downcast_ref::<TerminalSealRefused>()
+            .expect("unavailable measurement is a typed seal refusal");
+        assert_eq!(refused.finality.coverage(), Some(&receipt));
+        assert!(!refused.finality.coverage().unwrap().status.is_complete());
+        assert_eq!(refused.committed_text, "słowa które przetrwały");
+        assert_eq!(refused.audio_path.as_ref(), Some(&path));
+        assert_eq!(std::fs::read(path).unwrap(), bytes);
+        assert_released(&recorder);
     }
 }

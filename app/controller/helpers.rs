@@ -11,27 +11,23 @@ use tokio::sync::{Mutex as TokioMutex, mpsc};
 use tracing::{debug, info, warn};
 
 use crate::agent_delivery::{AgentDeliveryEvent, register_agent_delivery_turn};
+use crate::os::hold_badge::{BadgeMode, HoldBadgeConfig, show_hold_badge_with_config};
+use crate::os::tray_status;
 use anyhow::{Context, Result};
+#[cfg(test)]
+use codescribe_core::agent::ToolRegistry;
 use codescribe_core::agent::{
     AgentSession, AgentUiEvent, ImageAttachment, Message, StreamOptions, ThreadDeliveryGateway,
     ThreadDeliveryInput, ThreadDeliveryReceipt, ThreadDeliverySource, ThreadMessage, ThreadStore,
-    ToolRegistry,
 };
-use codescribe_core::config::Config;
-use codescribe_core::llm::lane_truth;
-use serde_json::json;
-
-use crate::os::hold_badge::{BadgeMode, HoldBadgeConfig, show_hold_badge_with_config};
-use crate::os::tray_status;
+use codescribe_core::config::{
+    Config, RuntimeLlmLane, RuntimeSettingsSnapshot, SettingsSnapshotDigest,
+};
 
 /// Global flag for current session mode.
 /// true = assistive (chat UI), false = non-assistive (simple transcription overlay)
 /// This is set before recording starts and checked by the delta callback.
 static IS_ASSISTIVE_SESSION: AtomicBool = AtomicBool::new(false);
-
-/// Global flag for conversation mode (full-duplex Moshi).
-/// When true, audio is routed to ConversationEngine instead of Whisper.
-static IS_CONVERSATION_SESSION: AtomicBool = AtomicBool::new(false);
 
 /// Set the current session mode (called before recording starts)
 pub fn set_assistive_session(is_assistive: bool) {
@@ -58,16 +54,6 @@ pub fn publish_recording_indicator(mode: BadgeMode, show_cursor_badge: bool) {
 /// Check if current session is assistive mode
 pub fn is_assistive_session() -> bool {
     IS_ASSISTIVE_SESSION.load(Ordering::SeqCst)
-}
-
-/// Set conversation mode flag (Moshi full-duplex)
-pub fn set_conversation_session(is_conversation: bool) {
-    IS_CONVERSATION_SESSION.store(is_conversation, Ordering::SeqCst);
-}
-
-/// Check if current session is conversation mode (Moshi)
-pub fn is_conversation_session() -> bool {
-    IS_CONVERSATION_SESSION.load(Ordering::SeqCst)
 }
 
 /// Route transcription delta to the active overlay.
@@ -119,6 +105,9 @@ struct AgentRuntime {
     session: AgentSession,
     ui_rx: mpsc::Receiver<AgentUiEvent>,
     thread_store_id: String,
+    /// Evidence for the immutable settings generation that constructed this
+    /// runtime's provider and request timing. The digest does not own settings.
+    settings_snapshot_digest: SettingsSnapshotDigest,
     /// Soft-degrade / retry flag: next send clears the provider chain and
     /// full-replays local history. User Stop does **not** set this — Stop
     /// restores the pre-turn chain snapshot instead (operator 2026-08-05).
@@ -126,13 +115,12 @@ struct AgentRuntime {
 }
 
 /// How a send path ended when it did not fail. Cancellation is an `Ok` outcome,
-/// not an error: user Stop is a normal exit that must skip persistence and the
-/// legacy fallback, which an `Err` would have triggered.
+/// not an error: user Stop is a normal exit that must skip persistence.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum AgentSendOutcome {
     /// The turn ran to completion; its thread is eligible for persistence.
     Completed,
-    /// The user stopped the turn. Nothing is persisted and no fallback runs.
+    /// The user stopped the turn. Nothing is persisted.
     Cancelled,
 }
 
@@ -184,15 +172,10 @@ pub(super) fn set_agent_send_in_flight_for_test(active: bool) {
 }
 
 impl AgentRuntimeState {
-    /// Production entry point to `ensure_runtime_with`, wired to the real
-    /// provider construction and the real ThreadStore. Returns the live runtime
-    /// plus whether this call recovered it from a degraded state.
-    fn ensure_runtime(&mut self) -> Result<(&mut AgentRuntime, bool)> {
-        self.ensure_runtime_with(initialize_agent_runtime, rehydrate_thread_messages)
-    }
-
-    /// Install a runtime if none is live. Ordinary consecutive sends reuse the
-    /// existing runtime untouched — identity and history never rotate here.
+    /// Reuse a live runtime only when it belongs to the selected settings
+    /// generation. Equal digests preserve the runtime byte-for-byte. A changed
+    /// digest rebuilds the provider/session before send while retaining the full
+    /// in-memory history and durable thread identity.
     ///
     /// A rebuild after `runtime = None` (hard degrade) rejoins the durable
     /// `thread_store_id` and rehydrates the last successfully persisted history
@@ -200,8 +183,9 @@ impl AgentRuntimeState {
     /// prior conversation instead of silently starting a new thread. A failed
     /// rehydration keeps the stable identity and surfaces explicit recovery
     /// evidence; it never mints a fresh thread id.
-    fn ensure_runtime_with<Init, Load>(
+    fn ensure_runtime_generation_with<Init, Load>(
         &mut self,
+        expected_settings_snapshot_digest: &SettingsSnapshotDigest,
         initialize_runtime: Init,
         load_persisted_history: Load,
     ) -> Result<(&mut AgentRuntime, bool)>
@@ -209,9 +193,55 @@ impl AgentRuntimeState {
         Init: FnOnce() -> Result<AgentRuntime>,
         Load: FnOnce(&str) -> Result<Option<Vec<Message>>>,
     {
+        if self.runtime.as_ref().is_some_and(|runtime| {
+            &runtime.settings_snapshot_digest == expected_settings_snapshot_digest
+        }) {
+            let runtime = self
+                .runtime
+                .as_mut()
+                .context("Agent runtime was not initialized")?;
+            return Ok((runtime, false));
+        }
+
+        // Reaching this point with a runtime means its provider belongs to an
+        // older settings generation. Preserve the authoritative in-memory
+        // history before constructing the current generation; disk may lag the
+        // completed turns already held by this session.
+        let rollover_context = self.runtime.as_ref().map(|runtime| {
+            let thread_store_id = self
+                .thread_store_id
+                .clone()
+                .unwrap_or_else(|| runtime.thread_store_id.clone());
+            (thread_store_id, runtime.session.messages().to_vec())
+        });
+
         let mut recovered_from_degraded = false;
-        if self.runtime.is_none() {
-            let mut runtime = initialize_runtime()?;
+        let mut runtime = initialize_runtime()?;
+        anyhow::ensure!(
+            &runtime.settings_snapshot_digest == expected_settings_snapshot_digest,
+            "Agent runtime initializer produced settings generation {} instead of expected {}",
+            runtime.settings_snapshot_digest.as_str(),
+            expected_settings_snapshot_digest.as_str()
+        );
+
+        if let Some((thread_store_id, messages)) = rollover_context {
+            let preserved_message_count = messages.len();
+            runtime.thread_store_id = thread_store_id.clone();
+            // This intentionally replaces any provisional session history and
+            // clears the new provider's response chain before the next send.
+            runtime.session.restore_messages(messages);
+            runtime
+                .session
+                .bind_execution_thread(thread_store_id.clone());
+            self.thread_store_id = Some(thread_store_id.clone());
+            info!(
+                thread_store_id = %thread_store_id,
+                recovery_class = "settings_generation_rollover",
+                preserved_message_count,
+                settings_snapshot_digest = %expected_settings_snapshot_digest.as_str(),
+                "Agent runtime rolled onto the selected settings generation"
+            );
+        } else {
             match self.thread_store_id.clone() {
                 Some(thread_store_id) => {
                     runtime.thread_store_id = thread_store_id.clone();
@@ -263,12 +293,13 @@ impl AgentRuntimeState {
                     .session
                     .bind_execution_thread(thread_store_id.clone());
             }
-            self.runtime = Some(runtime);
             if self.runtime_degraded {
                 self.runtime_degraded = false;
                 recovered_from_degraded = true;
             }
         }
+
+        self.runtime = Some(runtime);
         let runtime = self
             .runtime
             .as_mut()
@@ -440,21 +471,19 @@ fn load_thread_messages_from(
 
 /// Build a fresh agent runtime: full tool registry under the live permission
 /// policy (with hot reload), the configured default provider, and a bounded UI
-/// channel. The thread id minted here is provisional — `ensure_runtime_with`
+/// channel. The thread id minted here is provisional —
+/// `ensure_runtime_generation_with`
 /// overwrites it with the durable identity whenever one already exists.
-fn initialize_agent_runtime() -> Result<AgentRuntime> {
-    let mut registry = ToolRegistry::new();
-    crate::agent::tools::register_all_tools(&mut registry);
-    // B2: same policy load as the UniFFI bridge path — settings.json
-    // agent.permissions + legacy tool_grants always-allow keys.
-    registry.set_policy(
-        codescribe_core::agent::permissions::AgentPermissions::load()
-            .with_legacy_grants(codescribe_core::agent::tool_grants::load_granted()),
-    );
-    registry.enable_policy_hot_reload();
+fn initialize_agent_runtime(
+    runtime_settings: &Arc<RuntimeSettingsSnapshot>,
+) -> Result<AgentRuntime> {
+    let registry = crate::agent::tools::configured_registry();
 
-    let provider = crate::agent::create_default_provider()
-        .context("Failed to create default agent provider")?;
+    let provider = crate::agent::create_provider_for_lane(
+        runtime_settings.as_ref(),
+        codescribe_core::config::RuntimeLlmLaneKind::Assistive,
+    )
+    .context("Failed to create default agent provider")?;
     let (ui_tx, ui_rx) = mpsc::channel(AGENT_UI_CHANNEL_CAPACITY);
     let session = AgentSession::new(provider, Arc::new(registry), ui_tx);
 
@@ -462,6 +491,7 @@ fn initialize_agent_runtime() -> Result<AgentRuntime> {
         session,
         ui_rx,
         thread_store_id: ThreadStore::generate_id(),
+        settings_snapshot_digest: runtime_settings.digest().clone(),
         reset_chain_on_next_send: false,
     })
 }
@@ -473,16 +503,23 @@ fn initialize_agent_runtime() -> Result<AgentRuntime> {
 fn build_agent_stream_options(
     ai_assistive_max_tokens: i32,
     use_assistive_persona: bool,
+    runtime_settings: &RuntimeSettingsSnapshot,
 ) -> StreamOptions {
+    let assistive_lane = runtime_settings.llm_lanes().assistive();
     let max_tokens = u32::try_from(ai_assistive_max_tokens)
         .ok()
         .filter(|tokens| *tokens > 0);
 
-    let (_, model) = lane_truth::assistive_identity(&Config::load());
-
     StreamOptions {
-        model,
-        system_prompt: Some(compose_agent_system_prompt(use_assistive_persona)),
+        model: assistive_lane.model().to_string(),
+        system_prompt: Some(compose_agent_system_prompt(
+            use_assistive_persona,
+            runtime_settings
+                .ai_execution()
+                .formatter()
+                .assistive_prompt()
+                .composed_content(),
+        )),
         max_tokens,
         temperature: None,
         // First-attempt default: preserve conversational chain. Session retry
@@ -496,7 +533,7 @@ fn build_agent_stream_options(
 /// - `use_assistive_persona=true` (act-on-selection lane): base is `assistive.txt`.
 /// - `use_assistive_persona=false` (voice-chat lane, W10-D): agent persona only —
 ///   workspace + doctrine, no "text assistant" identity.
-fn compose_agent_system_prompt(use_assistive_persona: bool) -> String {
+fn compose_agent_system_prompt(use_assistive_persona: bool, assistive_prompt: &str) -> String {
     let workspace = crate::agent::tools::workspace::workspace_prompt_section();
     let doctrine = crate::agent::tools::doctrine::review_doctrine_prompt_section();
     // Measured Responses/streaming contract facts + the answer-first rule —
@@ -504,8 +541,7 @@ fn compose_agent_system_prompt(use_assistive_persona: bool) -> String {
     // clarification questionnaire (operator incident 2026-08-14).
     let api_truth = crate::agent::tools::api_truth::responses_api_prompt_section();
     if use_assistive_persona {
-        let base = crate::config::get_assistive_prompt();
-        format!("{base}\n\n{workspace}\n\n{doctrine}\n\n{api_truth}")
+        format!("{assistive_prompt}\n\n{workspace}\n\n{doctrine}\n\n{api_truth}")
     } else {
         format!(
             "You are the Codescribe agent. Answer and act on the user's spoken request using the available tools when helpful.\n\n{workspace}\n\n{doctrine}\n\n{api_truth}"
@@ -681,27 +717,17 @@ async fn apply_agent_ui_event(event: AgentUiEvent) {
     }
 }
 
-/// Collapse whitespace for a persisted thread message, returning `None` when
-/// nothing is left. Callers use that `None` to skip persistence entirely — a
-/// whitespace-only turn is not a conversation worth writing to disk.
-fn normalize_assistive_thread_text(text: &str) -> Option<String> {
-    let normalized = text.split_whitespace().collect::<Vec<_>>().join(" ");
-    if normalized.is_empty() {
-        None
-    } else {
-        Some(normalized)
-    }
-}
-
 /// Production persist hook: stamp the runtime's history with live assistive
 /// provider/model identity and upsert it through the delivery gateway. Called
 /// after a completed turn only — cancelled turns never reach here.
-fn deliver_runtime_thread(runtime: &AgentRuntime) -> Result<ThreadDeliveryReceipt> {
-    let (provider, model) = lane_truth::assistive_identity(&Config::load());
+fn deliver_runtime_thread(
+    runtime: &AgentRuntime,
+    assistive_lane: &RuntimeLlmLane,
+) -> Result<ThreadDeliveryReceipt> {
     ThreadDeliveryGateway::new()?.deliver(runtime_delivery_input(
         runtime,
-        provider.as_str().to_string(),
-        model,
+        assistive_lane.provider().as_str().to_string(),
+        assistive_lane.model().to_string(),
         Utc::now(),
     ))
 }
@@ -740,99 +766,12 @@ fn runtime_delivery_input(
     }
 }
 
-/// Build the two-message thread a legacy-formatter fallback persists. Returns
-/// `None` when either side normalizes to empty, so a half-turn is never written.
-/// The `legacy-fallback` metadata and `fallback` tag are deliberate: these
-/// threads did not come from the agent runtime and must stay distinguishable.
-fn legacy_assistive_delivery_input(
-    user_text: &str,
-    assistant_text: &str,
-    backend_id: String,
-    now: DateTime<Utc>,
-    model: String,
-) -> Option<ThreadDeliveryInput> {
-    let user_text = normalize_assistive_thread_text(user_text)?;
-    let assistant_text = normalize_assistive_thread_text(assistant_text)?;
-    let metadata = Some(json!({"source":"legacy-fallback"}));
-
-    Some(ThreadDeliveryInput {
-        backend_id,
-        messages: vec![
-            ThreadMessage {
-                role: "user".to_string(),
-                content: vec![json!({"type":"text","text":user_text})],
-                timestamp: now,
-                metadata: metadata.clone(),
-            },
-            ThreadMessage {
-                role: "assistant".to_string(),
-                content: vec![json!({"type":"text","text":assistant_text})],
-                timestamp: now,
-                metadata,
-            },
-        ],
-        provider: "legacy-formatter".to_string(),
-        model,
-        source: ThreadDeliverySource::LegacyFallback,
-        mode: "assistive".to_string(),
-        tags: vec![
-            "agent".to_string(),
-            "overlay".to_string(),
-            "fallback".to_string(),
-        ],
-        timestamp: now,
-    })
-}
-
-/// Gateway-injectable legacy fallback delivery, so tests can persist into a temp
-/// threads directory. `Ok(None)` means there was nothing worth persisting, which
-/// is a success — not a delivery failure.
-fn deliver_legacy_assistive_thread_with_gateway(
-    gateway: &ThreadDeliveryGateway,
-    user_text: &str,
-    assistant_text: &str,
-    backend_id: String,
-    now: DateTime<Utc>,
-    model: String,
-) -> Result<Option<ThreadDeliveryReceipt>> {
-    let Some(input) =
-        legacy_assistive_delivery_input(user_text, assistant_text, backend_id, now, model)
-    else {
-        return Ok(None);
-    };
-
-    gateway.deliver(input).map(Some)
-}
-
-/// Production legacy fallback delivery against the real ThreadStore. Mints a new
-/// thread id per fallback: the fallback has no agent runtime, so there is no
-/// durable conversation identity to rejoin.
-fn deliver_legacy_assistive_thread(
-    user_text: &str,
-    assistant_text: &str,
-) -> Result<Option<ThreadDeliveryReceipt>> {
-    let gateway = ThreadDeliveryGateway::new()?;
-    let now = Utc::now();
-    let (_, model) = lane_truth::assistive_identity(&Config::load());
-
-    deliver_legacy_assistive_thread_with_gateway(
-        &gateway,
-        user_text,
-        assistant_text,
-        ThreadStore::generate_id(),
-        now,
-        model,
-    )
-}
-
-/// Whether a failed agent send should be retried through the legacy formatter.
-/// A `Provider stream error:` means the provider already accepted the turn and
-/// failed mid-stream — replaying it through the formatter would answer the user
-/// twice. Everything else (runtime unavailable, init failure) never reached the
-/// provider, so the fallback is the only way to answer at all.
-fn agent_send_error_allows_legacy_fallback(error: &anyhow::Error) -> bool {
+/// Whether the provider stream has already emitted the terminal UI error.
+/// Initialization failures happen before the stream owns a UI turn and need one
+/// explicit terminal event at the controller boundary.
+fn agent_send_error_was_published(error: &anyhow::Error) -> bool {
     let message = error.to_string();
-    !message.starts_with("Provider stream error:")
+    message.starts_with("Provider stream error:")
 }
 
 /// P1.7: classify a send-path failure as transient (the provider blipped but
@@ -938,9 +877,18 @@ async fn run_agent_send_path(
     runtime_state: &mut AgentRuntimeState,
     text: String,
     stream_options: StreamOptions,
+    runtime_settings: &Arc<RuntimeSettingsSnapshot>,
 ) -> Result<AgentSendOutcome> {
-    run_agent_send_path_with_persist(runtime_state, text, stream_options, deliver_runtime_thread)
-        .await
+    let assistive_lane = runtime_settings.llm_lanes().assistive();
+    run_agent_send_path_with_persist(
+        runtime_state,
+        text,
+        stream_options,
+        runtime_settings.digest(),
+        || initialize_agent_runtime(runtime_settings),
+        |runtime| deliver_runtime_thread(runtime, assistive_lane),
+    )
+    .await
 }
 
 /// Drive one agent turn end to end, with an injectable persist hook so tests can
@@ -959,16 +907,23 @@ async fn run_agent_send_path(
 ///
 /// On failure the error is classified before degrading: transient blips keep the
 /// runtime and only reset the chain, hard failures drop it.
-async fn run_agent_send_path_with_persist<P, Delivery>(
+async fn run_agent_send_path_with_persist<Init, P, Delivery>(
     runtime_state: &mut AgentRuntimeState,
     text: String,
     mut stream_options: StreamOptions,
+    expected_settings_snapshot_digest: &SettingsSnapshotDigest,
+    initialize_runtime: Init,
     persist_runtime: P,
 ) -> Result<AgentSendOutcome>
 where
+    Init: FnOnce() -> Result<AgentRuntime>,
     P: FnOnce(&AgentRuntime) -> Result<Delivery>,
 {
-    let (runtime, recovered_from_degraded) = match runtime_state.ensure_runtime() {
+    let (runtime, recovered_from_degraded) = match runtime_state.ensure_runtime_generation_with(
+        expected_settings_snapshot_digest,
+        initialize_runtime,
+        rehydrate_thread_messages,
+    ) {
         Ok(state) => state,
         Err(error) => {
             runtime_state.mark_runtime_degraded("runtime_init_failed");
@@ -1012,6 +967,20 @@ where
             thread_id: thread_store_id.clone(),
             user_text: user_text.clone(),
         });
+        // Hold the agent-turn lease for the rest of this function: streaming,
+        // tools, Stop, error and persistence. `make install-if-idle` probes it
+        // and refuses while a turn is in flight (a merely running app no
+        // longer blocks installation — Founder, 2026-09-08). Fail-open: the
+        // lease guards the installer, never the conversation.
+        let _agent_turn_lease = match codescribe_core::config::acquire_agent_turn_lease() {
+            Ok(lease) => Some(lease),
+            Err(error) => {
+                warn!(
+                    "Agent turn lease unavailable (install guard blind for this turn): {error:#}"
+                );
+                None
+            }
+        };
         if !image_attachments.is_empty() {
             info!(
                 "Agent send: forwarding {} image(s) as vision input",
@@ -1123,12 +1092,12 @@ where
             Ok(AgentSendOutcome::Completed)
         }
         Err(error) => {
-            if !agent_send_error_allows_legacy_fallback(&error) {
+            if agent_send_error_was_published(&error) {
                 return Ok(AgentSendOutcome::Completed);
             }
             // P1.7: distinguish a transient provider blip (conversation still
             // valid -> keep messages, reset chain) from a hard failure (drop the
-            // runtime). Both still mark the UI degraded and fall back to legacy.
+            // runtime). Both mark the UI degraded; neither creates another route.
             if agent_send_error_is_transient(&error) {
                 runtime_state.mark_runtime_degraded_preserving_context("send_transient_failure");
             } else {
@@ -1139,102 +1108,26 @@ where
     }
 }
 
-/// Map a legacy formatter result to the assistant text that should be
-/// persisted, if any.
-///
-/// A `Failed` status carries no real assistant content (previously it was
-/// surfaced only as the "AI Failed" sentinel). A failed formatting attempt is
-/// NOT a conversation and must not be persisted (operator decision
-/// 2026-07-06): a dead API key would otherwise land a junk "AI Failed" thread
-/// on disk for every retry, producing 3-4 duplicate garbage threads per
-/// utterance. `Skipped` likewise has nothing to persist. Only genuine output
-/// (`Applied` / `AiNoop`, i.e. partial or full success) is persisted, exactly
-/// as before.
-fn legacy_fallback_assistant_text(
-    status: crate::ai_formatting::AiFormatStatus,
-    text: String,
-) -> Option<String> {
-    use crate::ai_formatting::AiFormatStatus;
-    match status {
-        AiFormatStatus::Applied | AiFormatStatus::AiNoop => Some(text),
-        AiFormatStatus::Failed | AiFormatStatus::Skipped => None,
-    }
-}
-
-const LEGACY_FALLBACK_UNAVAILABLE_MESSAGE: &str =
-    "Agent provider and fallback are unavailable. Check Settings → Providers.";
-
-/// Build the one terminal sequence the Swift Agent surface must receive after
-/// the runtime has handed a voice turn to the legacy formatter. The fallback
-/// used to persist its result without publishing anything, leaving the
-/// assistant placeholder permanently in `Thinking` after a fast provider/key
-/// failure. Keep this mapping pure so the terminal contract is testable without
-/// a live provider or a Swift listener.
-fn legacy_fallback_terminal_events(assistant_text: Option<&str>) -> Vec<AgentDeliveryEvent> {
-    match assistant_text
-        .map(str::trim)
-        .filter(|text| !text.is_empty())
-    {
-        Some(text) => vec![
-            AgentDeliveryEvent::TextDone(text.to_string()),
-            AgentDeliveryEvent::Done,
-        ],
-        None => vec![AgentDeliveryEvent::Error(
-            LEGACY_FALLBACK_UNAVAILABLE_MESSAGE.to_string(),
-        )],
-    }
-}
-
-fn publish_legacy_fallback_terminal(assistant_text: Option<&str>) {
-    for event in legacy_fallback_terminal_events(assistant_text) {
-        crate::agent_delivery::publish_agent_delivery_event(event);
-    }
-}
-
-/// Answer one turn through the legacy formatter instead of the agent runtime.
-/// Returns the assistant text only when there is genuine output to persist; a
-/// formatter failure logs and yields `None` rather than writing a junk thread.
-async fn run_legacy_send_path(
-    text: &str,
-    whisper_language: crate::config::Language,
-) -> Option<String> {
-    let result = crate::ai_formatting::format_text_with_status_channels(
-        text,
-        whisper_language.whisper_hint(),
-        true,
-        None,
-        None,
-    )
-    .await;
-
-    let status = result.status;
-    let assistant_text = legacy_fallback_assistant_text(status, result.text);
-    if assistant_text.is_none() && status == crate::ai_formatting::AiFormatStatus::Failed {
-        warn!(
-            "Legacy formatter failed; skipping thread persist for this attempt (a failed attempt is not a conversation)"
-        );
-    }
-    assistant_text
-}
-
-/// One complete voice-assistive turn including recovery policy: try the agent
-/// runtime, and on failure fall back to the legacy formatter. The runtime lock
-/// is held only for the agent attempt — the fallback runs outside it so a
-/// degraded provider cannot block the next turn from acquiring state. A
-/// cancelled turn short-circuits: no fallback, no persistence.
-async fn run_agent_send_with_fallback(
+/// One complete voice-assistive turn on the sole Agent route. Provider or
+/// initialization failure is terminal for this turn; it is never replayed by a
+/// second formatter authority.
+async fn run_agent_send(
     runtime_state: &Arc<TokioMutex<AgentRuntimeState>>,
+    runtime_settings: &Arc<RuntimeSettingsSnapshot>,
     text: String,
-    whisper_language: crate::config::Language,
     ai_assistive_max_tokens: i32,
     use_assistive_persona: bool,
 ) {
     let _send_guard = AgentSendInFlightGuard::new();
-    let stream_options = build_agent_stream_options(ai_assistive_max_tokens, use_assistive_persona);
+    let stream_options = build_agent_stream_options(
+        ai_assistive_max_tokens,
+        use_assistive_persona,
+        runtime_settings.as_ref(),
+    );
     let agent_result = {
         let mut guard = runtime_state.lock().await;
         // Route to the thread the user is looking at (operator contract
-        // 2026-08-13). No published selection → legacy bound conversation.
+        // 2026-08-13). No published selection keeps the bound conversation.
         let fresh_mint_requested = match assistive_target_thread() {
             Some(target) => {
                 let fresh = target.is_none();
@@ -1243,7 +1136,7 @@ async fn run_agent_send_with_fallback(
             }
             None => false,
         };
-        let result = run_agent_send_path(&mut guard, text.clone(), stream_options).await;
+        let result = run_agent_send_path(&mut guard, text, stream_options, runtime_settings).await;
         if fresh_mint_requested {
             // One conscious "+ New thread" = one thread: adopt the minted
             // identity as the target so the next utterance continues it. The
@@ -1256,35 +1149,14 @@ async fn run_agent_send_with_fallback(
     match agent_result {
         Ok(AgentSendOutcome::Completed) => {}
         Ok(AgentSendOutcome::Cancelled) => {
-            info!("Voice-assistive Agent turn cancelled; skipping fallback and persistence");
+            info!("Voice-assistive Agent turn cancelled; skipping persistence");
         }
         Err(error) => {
-            warn!("Agent fallback triggered: reason={}", error);
-            warn!(
-                "Agent runtime failed, switching this response to legacy fallback: {}",
-                error
-            );
-            debug!("Legacy fallback input length: {}", text.len());
-            let fallback_assistant_text = run_legacy_send_path(&text, whisper_language).await;
-            match fallback_assistant_text {
-                Some(assistant_text) => {
-                    match deliver_legacy_assistive_thread(&text, &assistant_text) {
-                        Ok(Some(receipt)) => {
-                            debug!(
-                                backend_thread_id = %receipt.backend_id,
-                                message_count = receipt.message_count,
-                                "Legacy assistive fallback delivered"
-                            );
-                            publish_legacy_fallback_terminal(Some(&assistant_text));
-                        }
-                        Ok(None) => publish_legacy_fallback_terminal(None),
-                        Err(error) => {
-                            warn!("Failed to deliver legacy assistive fallback thread: {error}");
-                            publish_legacy_fallback_terminal(None);
-                        }
-                    }
-                }
-                None => publish_legacy_fallback_terminal(None),
+            warn!("Agent runtime turn failed without alternate route: {error:#}");
+            if !agent_send_error_was_published(&error) {
+                crate::agent_delivery::publish_agent_delivery_event(AgentDeliveryEvent::Error(
+                    error.to_string(),
+                ));
             }
         }
     }
@@ -1292,27 +1164,23 @@ async fn run_agent_send_with_fallback(
 
 /// Controller entry point for the assistive lane: bind the turn to the shared
 /// process-global runtime so consecutive utterances continue one conversation,
-/// then run it with the fallback policy.
+/// then run it on the lane sealed by that controller's immutable snapshot.
 pub(crate) async fn send_assistive_with_agent_runtime_lane(
+    runtime_settings: Arc<RuntimeSettingsSnapshot>,
     text: String,
-    whisper_language: crate::config::Language,
+    _whisper_language: crate::config::Language,
     ai_assistive_max_tokens: i32,
     use_assistive_persona: bool,
 ) {
     let runtime_state = shared_agent_runtime_state();
-    run_agent_send_with_fallback(
+    run_agent_send(
         &runtime_state,
+        &runtime_settings,
         text,
-        whisper_language,
         ai_assistive_max_tokens,
         use_assistive_persona,
     )
     .await;
-}
-
-/// Every recorded mode writes the raw transcript corpus entry once.
-pub fn raw_save_enabled(_is_assistive: bool) -> bool {
-    true
 }
 
 // ═══════════════════════════════════════════════════════════
@@ -1323,118 +1191,6 @@ use chrono::SecondsFormat;
 use codescribe_core::ipc::{EngineEventWire, IpcEvent, IpcEventPayload};
 use codescribe_core::pipeline::contracts::{EngineEvent, EventSink};
 use tokio::sync::broadcast;
-
-/// Session-level engine stats snapshot used by controller decisions.
-#[derive(Debug, Clone, Default)]
-pub(crate) struct SessionEngineStats {
-    pub hallucination_drops: u64,
-    pub semantic_gate_drops: u64,
-    pub filtered_empty_drops: u64,
-    pub corrections_applied: u64,
-    pub total_utterances: u64,
-    pub dropped_audio_chunks: u64,
-    pub partial_runs_total: u64,
-    pub trigger_utterance_count: u64,
-    pub trigger_speech_count: u64,
-    pub trigger_timer_count: u64,
-    pub partial_stale_count: u64,
-    pub partial_coalesced_count: u64,
-    pub partial_dropped_count: u64,
-}
-
-/// How the last committed streaming text was sourced (adjudicator truth).
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) enum CompletenessCommitSource {
-    /// At least one `UtteranceFinal` landed in this session.
-    UtteranceFinal,
-    /// `SessionFinalised` sealed the buffer.
-    SessionFinalised,
-}
-
-impl CompletenessCommitSource {
-    /// Stable wire/log tag for this commit source.
-    pub(crate) fn as_str(self) -> &'static str {
-        match self {
-            Self::UtteranceFinal => "utterance_final",
-            Self::SessionFinalised => "session_finalised",
-        }
-    }
-}
-
-/// Engine warning code raised when the Layer 1 tail patch classified an
-/// under-commit retranscription and recovered speech it could **not** place on
-/// a demonstrably safe anchor (`core::stt::tail_patcher` →
-/// `core::pipeline::streaming::session`, W-C / commit `6d7eaa7f`).
-///
-/// Mirrored as a literal rather than imported: core's canonical
-/// `UNDER_COMMIT_WARNING_CODE` is `pub` inside a `pub(crate) mod session`, so it
-/// is not nameable from this crate and widening that visibility sits outside
-/// this cut's fence. Matched EXACTLY — the sibling `tail_patch_skipped` receipt
-/// and any future neighbouring code must not force residual gap fill.
-pub(crate) const UNDER_COMMIT_WARNING_CODE: &str = "tail_patch_under_commit";
-
-/// Session telemetry captured from `EngineEvent`s.
-#[derive(Debug, Clone, Default)]
-pub(crate) struct SessionTelemetrySnapshot {
-    pub no_speech_reason: Option<String>,
-    pub stats: Option<SessionEngineStats>,
-    /// Open Preview/Correction without a subsequent UtteranceFinal (pending tail).
-    pub pending_tail: bool,
-    /// Last adjudicator commit that sealed streaming text, if any.
-    pub last_commit_source: Option<CompletenessCommitSource>,
-    /// Characters accumulated from UtteranceFinal commits (coverage signal).
-    pub committed_chars: usize,
-    /// Audio boundary of committed streaming text: the monotonic max `end_ts`
-    /// across UtteranceFinal events. Smart-mode stop transcribes only the tail
-    /// after this point (append-only doctrine — committed text is immutable).
-    pub committed_through_secs: Option<f32>,
-    /// Layer 1 escalated an under-commit residual it could not place on a safe
-    /// anchor ([`UNDER_COMMIT_WARNING_CODE`]). Monotonic within one session:
-    /// once a hole is known no later healthy event may un-know it, because the
-    /// speech is already missing from the canvas the stop path is about to
-    /// deliver. `Default` starts it false by construction, so
-    /// [`reset_session_telemetry`] is the only thing that clears it and a new
-    /// recording can never inherit the previous session's residual demand.
-    pub residual_required: bool,
-}
-
-/// Telemetry handle shared between the engine's event sink and the controller
-/// that reads it. A blocking `StdMutex` on purpose: `EventSink::on_event` is
-/// sync, and every critical section here is a few field writes.
-pub(crate) type SharedSessionTelemetry = Arc<StdMutex<SessionTelemetrySnapshot>>;
-
-/// Empty telemetry for a new session.
-pub(crate) fn new_session_telemetry() -> SharedSessionTelemetry {
-    Arc::new(StdMutex::new(SessionTelemetrySnapshot::default()))
-}
-
-/// Clear telemetry between sessions. Resets the whole snapshot — including the
-/// committed audio boundary — so a new recording never inherits the previous
-/// session's tail position.
-pub(crate) fn reset_session_telemetry(shared: &SharedSessionTelemetry) {
-    let mut guard = shared.lock().unwrap_or_else(|e| e.into_inner());
-    *guard = SessionTelemetrySnapshot::default();
-}
-
-/// Copy the current telemetry out. Cloned rather than borrowed so controller
-/// decisions never read fields while the engine is still writing them.
-pub(crate) fn snapshot_session_telemetry(
-    shared: &SharedSessionTelemetry,
-) -> SessionTelemetrySnapshot {
-    shared.lock().unwrap_or_else(|e| e.into_inner()).clone()
-}
-
-/// Captures `NoSpeech`/`Stats` telemetry for controller-level routing decisions.
-pub(crate) struct SessionTelemetrySink {
-    shared: SharedSessionTelemetry,
-}
-
-impl SessionTelemetrySink {
-    /// Wrap a shared telemetry handle as an engine event sink.
-    pub(crate) fn new(shared: SharedSessionTelemetry) -> Self {
-        Self { shared }
-    }
-}
 
 /// Broadcasts sanitized engine events to IPC subscribers.
 pub(crate) struct IpcBroadcastSink {
@@ -1449,105 +1205,21 @@ impl IpcBroadcastSink {
 }
 
 impl EventSink for IpcBroadcastSink {
-    /// Stamp the event and publish it. A send failure is ignored on purpose:
+    /// Stamp and publish an event only when the core IPC owner declares it
+    /// wire-eligible. Ledger mutation/seal events remain on the in-process
+    /// fanout for `PresentationEmitter`; skipping them here is expected.
+    /// A send failure is ignored on purpose:
     /// "no IPC subscribers right now" is the normal state, not an engine error,
     /// and telemetry must never be able to stall the pipeline.
     fn on_event(&self, event: &EngineEvent) {
+        let Ok(wire_event) = EngineEventWire::try_from(event) else {
+            return;
+        };
         let ipc_event = IpcEvent {
             timestamp: chrono::Utc::now().to_rfc3339_opts(SecondsFormat::Millis, true),
-            payload: IpcEventPayload::Engine(EngineEventWire::from(event)),
+            payload: IpcEventPayload::Engine(wire_event),
         };
         let _ = self.tx.send(ipc_event);
-    }
-}
-
-impl EventSink for SessionTelemetrySink {
-    /// Fold one engine event into the session snapshot.
-    ///
-    /// Preview and Correction open a pending tail; only a commit closes it.
-    /// `committed_through_secs` advances as a monotonic max so an out-of-order
-    /// final cannot rewind the boundary, and non-finite `end_ts` values are
-    /// rejected outright — NaN would slip past the `current >= end_ts` guard and
-    /// overwrite a valid maximum, silently disabling Smart tail gap-fill for the
-    /// rest of the session. Unmatched events are ignored rather than
-    /// exhaustively listed, so new engine events cannot break the build here.
-    ///
-    /// `Warning` is the one event folded by code rather than by variant: only
-    /// [`UNDER_COMMIT_WARNING_CODE`] sets `residual_required`, and it sets it
-    /// monotonically. Every other warning falls through to the ignore arm.
-    fn on_event(&self, event: &EngineEvent) {
-        let mut guard = self.shared.lock().unwrap_or_else(|e| e.into_inner());
-        match event {
-            EngineEvent::NoSpeech { reason } => {
-                guard.no_speech_reason = Some(reason.clone());
-            }
-            // Preview / Correction leave an open tail until UtteranceFinal seals it.
-            EngineEvent::Preview { .. } | EngineEvent::Correction { .. } => {
-                guard.pending_tail = true;
-            }
-            EngineEvent::UtteranceFinal { text, end_ts, .. } => {
-                guard.pending_tail = false;
-                guard.last_commit_source = Some(CompletenessCommitSource::UtteranceFinal);
-                guard.committed_chars = guard
-                    .committed_chars
-                    .saturating_add(text.trim().chars().count());
-                // Monotonic max: an out-of-order final never rewinds the boundary.
-                // Non-finite end_ts must never poison it (parity with
-                // ComposerTranscript::note_committed_through): NaN falls through
-                // the `current >= end_ts` arm and would overwrite a valid max.
-                if end_ts.is_finite() {
-                    guard.committed_through_secs = Some(match guard.committed_through_secs {
-                        Some(current) if current >= *end_ts => current,
-                        _ => *end_ts,
-                    });
-                }
-            }
-            EngineEvent::SessionFinalised { .. } => {
-                guard.pending_tail = false;
-                guard.last_commit_source = Some(CompletenessCommitSource::SessionFinalised);
-            }
-            // Layer 1 recovered speech it could not place. Set-only: a hole
-            // found mid-session stays known until the session is reset, because
-            // the missing speech does not come back on its own. The exact code
-            // is the whole contract — a near-miss code must leave the flag false
-            // rather than put a Whisper pass on every stop path that logs a
-            // warning.
-            EngineEvent::Warning { code, .. } if code == UNDER_COMMIT_WARNING_CODE => {
-                guard.residual_required = true;
-            }
-            EngineEvent::Stats {
-                hallucination_drops,
-                semantic_gate_drops,
-                filtered_empty_drops,
-                corrections_applied,
-                total_utterances,
-                dropped_audio_chunks,
-                partial_runs_total,
-                trigger_utterance_count,
-                trigger_speech_count,
-                trigger_timer_count,
-                partial_stale_count,
-                partial_coalesced_count,
-                partial_dropped_count,
-            } => {
-                guard.stats = Some(SessionEngineStats {
-                    hallucination_drops: *hallucination_drops,
-                    semantic_gate_drops: *semantic_gate_drops,
-                    filtered_empty_drops: *filtered_empty_drops,
-                    corrections_applied: *corrections_applied,
-                    total_utterances: *total_utterances,
-                    dropped_audio_chunks: *dropped_audio_chunks,
-                    partial_runs_total: *partial_runs_total,
-                    trigger_utterance_count: *trigger_utterance_count,
-                    trigger_speech_count: *trigger_speech_count,
-                    trigger_timer_count: *trigger_timer_count,
-                    partial_stale_count: *partial_stale_count,
-                    partial_coalesced_count: *partial_coalesced_count,
-                    partial_dropped_count: *partial_dropped_count,
-                });
-            }
-            _ => {}
-        }
     }
 }
 
@@ -1565,6 +1237,7 @@ mod tests {
     use codescribe_core::agent::{
         AgentEvent, AgentProvider, ContentBlock, Message, Role, ToolDefinition, ToolResultContent,
     };
+    use serde_json::json;
     use std::collections::VecDeque;
     use std::sync::atomic::{AtomicBool, AtomicUsize};
 
@@ -1710,115 +1383,6 @@ mod tests {
         );
     }
 
-    /// A fallback thread must be persisted AND self-identifying: the receipt
-    /// reports a real two-message first exchange, and the stored thread carries
-    /// the `legacy-formatter` provider, the `fallback` tag, and per-message
-    /// `legacy-fallback` metadata that distinguish it from an agent turn.
-    #[test]
-    fn successful_legacy_fallback_delivers_explicit_metadata_and_receipt() {
-        let tmp = tempfile::TempDir::new().expect("temp dir should initialize");
-        let threads_dir = tmp.path().join("threads");
-        let gateway =
-            ThreadDeliveryGateway::new_in(&threads_dir).expect("gateway should initialize");
-        let now = Utc::now();
-        let receipt = deliver_legacy_assistive_thread_with_gateway(
-            &gateway,
-            "user prompt",
-            "assistant reply",
-            "t_2026-07-19_legacy-fallback".to_string(),
-            now,
-            "legacy-test-model".to_string(),
-        )
-        .expect("legacy fallback delivery should succeed")
-        .expect("non-empty fallback should produce a receipt");
-
-        assert!(receipt.created);
-        assert_eq!(receipt.message_count, 2);
-        assert_eq!(receipt.updated_at, now);
-        assert!(receipt.first_exchange);
-        assert!(receipt.title_eligible);
-
-        let store = ThreadStore::new_in(&threads_dir).expect("store should reopen");
-        let thread = store
-            .load_thread(&receipt.backend_id)
-            .expect("delivered fallback should load");
-        assert_eq!(thread.provider, "legacy-formatter");
-        assert_eq!(thread.model, "legacy-test-model");
-        assert!(thread.tags.iter().any(|tag| tag == "fallback"));
-        assert_eq!(thread.messages.len(), 2);
-        assert_eq!(thread.messages[0].role, "user");
-        assert_eq!(thread.messages[0].content[0]["type"], "text");
-        assert_eq!(thread.messages[0].content[0]["text"], "user prompt");
-        assert_eq!(
-            thread.messages[0].metadata,
-            Some(json!({"source":"legacy-fallback"}))
-        );
-        assert_eq!(thread.messages[1].role, "assistant");
-        assert_eq!(thread.messages[1].content[0]["type"], "text");
-        assert_eq!(thread.messages[1].content[0]["text"], "assistant reply");
-    }
-
-    /// Only genuine formatter output becomes a thread. `Failed` and `Skipped`
-    /// carry no conversation, and persisting them produced the junk "AI Failed"
-    /// threads (3-4 duplicates per utterance) a dead key used to generate.
-    #[test]
-    fn legacy_fallback_skips_persist_on_failed_status() {
-        use crate::ai_formatting::AiFormatStatus;
-
-        // Failed: the formatter produced no real assistant content (dead API
-        // key -> "AI Failed"). Nothing to persist, so no thread is written and
-        // no messages are built. This is the regression guard for the ~12 junk
-        // "AI Failed" threads (incl. 3-4 duplicates per utterance) the operator
-        // saw after a dead key drove every retry through the legacy fallback.
-        assert_eq!(
-            legacy_fallback_assistant_text(AiFormatStatus::Failed, "AI Failed".to_string()),
-            None
-        );
-
-        // Skipped: also nothing to persist.
-        assert_eq!(
-            legacy_fallback_assistant_text(AiFormatStatus::Skipped, String::new()),
-            None
-        );
-
-        // Applied / AiNoop: genuine output (partial or full success) is still
-        // persisted exactly as before.
-        assert_eq!(
-            legacy_fallback_assistant_text(AiFormatStatus::Applied, "formatted reply".to_string()),
-            Some("formatted reply".to_string())
-        );
-        assert_eq!(
-            legacy_fallback_assistant_text(AiFormatStatus::AiNoop, "verbatim reply".to_string()),
-            Some("verbatim reply".to_string())
-        );
-    }
-
-    /// A formatter fallback is still the terminal owner of the already-open
-    /// voice bubble. Success must fill and close it; failure must close it with
-    /// an actionable error. Neither branch may leave Swift in `Thinking`.
-    #[test]
-    fn legacy_fallback_always_publishes_a_terminal_ui_sequence() {
-        assert_eq!(
-            legacy_fallback_terminal_events(Some("  recovered reply  ")),
-            vec![
-                AgentDeliveryEvent::TextDone("recovered reply".to_string()),
-                AgentDeliveryEvent::Done,
-            ]
-        );
-        assert_eq!(
-            legacy_fallback_terminal_events(None),
-            vec![AgentDeliveryEvent::Error(
-                LEGACY_FALLBACK_UNAVAILABLE_MESSAGE.to_string()
-            )]
-        );
-        assert_eq!(
-            legacy_fallback_terminal_events(Some("  ")),
-            vec![AgentDeliveryEvent::Error(
-                LEGACY_FALLBACK_UNAVAILABLE_MESSAGE.to_string()
-            )]
-        );
-    }
-
     /// Provider that never emits anything: its event channel is closed
     /// immediately. Used where a session must exist but must not produce
     /// conversation history of its own.
@@ -1868,9 +1432,17 @@ mod tests {
         }
     }
 
-    /// A runtime bound to an explicit thread id and backed by the no-op
-    /// provider, for lifecycle tests that only care about identity handling.
-    fn runtime_with_thread_id(thread_store_id: &str) -> AgentRuntime {
+    /// Deterministic, valid-looking digest evidence for test runtime generations.
+    fn test_settings_snapshot_digest(marker: u8) -> SettingsSnapshotDigest {
+        SettingsSnapshotDigest::from_hex(format!("{marker:02x}").repeat(32))
+    }
+
+    /// A runtime bound to an explicit thread id and settings generation, backed
+    /// by the no-op provider for lifecycle tests.
+    fn runtime_with_thread_id_and_digest(
+        thread_store_id: &str,
+        settings_snapshot_digest: SettingsSnapshotDigest,
+    ) -> AgentRuntime {
         let (ui_tx, ui_rx) = mpsc::channel(8);
         let session = AgentSession::new(
             Box::new(NoopTestProvider),
@@ -1881,370 +1453,47 @@ mod tests {
             session,
             ui_rx,
             thread_store_id: thread_store_id.to_string(),
+            settings_snapshot_digest,
             reset_chain_on_next_send: false,
         }
     }
 
-    /// Every `Stats` counter must survive the fold field-for-field — the
-    /// controller routes on these numbers, so a dropped or transposed field is
-    /// a silent behaviour change. `NoSpeech` is captured alongside them.
-    #[test]
-    fn test_session_telemetry_sink_tracks_no_speech_and_stats() {
-        let shared = new_session_telemetry();
-        let sink = SessionTelemetrySink::new(Arc::clone(&shared));
-
-        sink.on_event(&EngineEvent::NoSpeech {
-            reason: "vad_no_speech_detected".to_string(),
-        });
-        sink.on_event(&EngineEvent::Stats {
-            dropped_audio_chunks: 3,
-            hallucination_drops: 2,
-            semantic_gate_drops: 1,
-            filtered_empty_drops: 4,
-            corrections_applied: 5,
-            total_utterances: 0,
-            partial_runs_total: 6,
-            trigger_utterance_count: 2,
-            trigger_speech_count: 3,
-            trigger_timer_count: 1,
-            partial_stale_count: 7,
-            partial_coalesced_count: 8,
-            partial_dropped_count: 9,
-        });
-
-        let snapshot = snapshot_session_telemetry(&shared);
-        assert_eq!(
-            snapshot.no_speech_reason.as_deref(),
-            Some("vad_no_speech_detected")
-        );
-        assert!(!snapshot.pending_tail);
-        assert!(snapshot.last_commit_source.is_none());
-        let stats = snapshot.stats.expect("stats should be captured");
-        assert_eq!(stats.hallucination_drops, 2);
-        assert_eq!(stats.semantic_gate_drops, 1);
-        assert_eq!(stats.filtered_empty_drops, 4);
-        assert_eq!(stats.corrections_applied, 5);
-        assert_eq!(stats.total_utterances, 0);
-        assert_eq!(stats.dropped_audio_chunks, 3);
-        assert_eq!(stats.partial_runs_total, 6);
-        assert_eq!(stats.trigger_utterance_count, 2);
-        assert_eq!(stats.trigger_speech_count, 3);
-        assert_eq!(stats.trigger_timer_count, 1);
-        assert_eq!(stats.partial_stale_count, 7);
-        assert_eq!(stats.partial_coalesced_count, 8);
-        assert_eq!(stats.partial_dropped_count, 9);
+    /// Default test generation for lifecycle cases that do not exercise
+    /// rollover explicitly.
+    fn runtime_with_thread_id(thread_store_id: &str) -> AgentRuntime {
+        runtime_with_thread_id_and_digest(thread_store_id, test_settings_snapshot_digest(1))
     }
 
-    /// The open-tail state machine: Preview and Correction open a tail, and only
-    /// a commit closes it — recording which commit did so. A Correction arriving
-    /// after a final re-opens the tail, because there is again uncommitted text.
+    /// Equal settings generation reuses the exact installed provider/session:
+    /// no initialization, identity rotation, history reset or rehydration.
     #[test]
-    fn test_session_telemetry_tracks_pending_tail_and_commit_source() {
-        let shared = new_session_telemetry();
-        let sink = SessionTelemetrySink::new(Arc::clone(&shared));
-
-        sink.on_event(&EngineEvent::Preview {
-            rev: 1,
-            text: "To jest".to_string(),
-        });
-        let open = snapshot_session_telemetry(&shared);
-        assert!(open.pending_tail, "preview leaves a pending tail");
-        assert!(open.last_commit_source.is_none());
-
-        sink.on_event(&EngineEvent::UtteranceFinal {
-            utterance_id: 1,
-            text: "To jest kompletne zdanie.".to_string(),
-            raw_text: "To jest kompletne zdanie.".to_string(),
-            start_ts: 0.0,
-            end_ts: 1.0,
-            segments: vec![],
-            vad_speech_pct: Some(80.0),
-            avg_logprob: None,
-            compression_ratio: None,
-            quality_gate_dropped: false,
-            confidence_flags: vec![],
-            acoustic: None,
-        });
-        let sealed = snapshot_session_telemetry(&shared);
-        assert!(!sealed.pending_tail);
-        assert_eq!(
-            sealed.last_commit_source,
-            Some(CompletenessCommitSource::UtteranceFinal)
-        );
-        assert_eq!(
-            sealed.committed_chars,
-            "To jest kompletne zdanie.".chars().count()
-        );
-
-        sink.on_event(&EngineEvent::Correction {
-            rev: 2,
-            text: "poprawka".to_string(),
-            previous_text: "To jest kompletne zdanie.".to_string(),
-        });
-        assert!(snapshot_session_telemetry(&shared).pending_tail);
-
-        sink.on_event(&EngineEvent::SessionFinalised {
-            session_id: "s1".to_string(),
-            layer_summary: Default::default(),
-        });
-        let finalised = snapshot_session_telemetry(&shared);
-        assert!(!finalised.pending_tail);
-        assert_eq!(
-            finalised.last_commit_source,
-            Some(CompletenessCommitSource::SessionFinalised)
-        );
-    }
-
-    /// Smart-mode tail transcription needs the audio boundary of committed
-    /// streaming text: the monotonic max `end_ts` across UtteranceFinal events.
-    /// Out-of-order finals must never pull the boundary backwards.
-    #[test]
-    fn test_session_telemetry_tracks_committed_through_secs_monotonic_max() {
-        let shared = new_session_telemetry();
-        let sink = SessionTelemetrySink::new(Arc::clone(&shared));
-
-        assert!(
-            snapshot_session_telemetry(&shared)
-                .committed_through_secs
-                .is_none(),
-            "default snapshot has no committed audio boundary"
-        );
-
-        let utterance_final =
-            |utterance_id: u64, start_ts: f32, end_ts: f32| EngineEvent::UtteranceFinal {
-                utterance_id,
-                text: "zdanie".to_string(),
-                raw_text: "zdanie".to_string(),
-                start_ts,
-                end_ts,
-                segments: vec![],
-                vad_speech_pct: Some(80.0),
-                avg_logprob: None,
-                compression_ratio: None,
-                quality_gate_dropped: false,
-                confidence_flags: vec![],
-                acoustic: None,
-            };
-
-        sink.on_event(&utterance_final(1, 0.0, 3.2));
-        assert_eq!(
-            snapshot_session_telemetry(&shared).committed_through_secs,
-            Some(3.2)
-        );
-
-        sink.on_event(&utterance_final(2, 3.2, 7.9));
-        assert_eq!(
-            snapshot_session_telemetry(&shared).committed_through_secs,
-            Some(7.9)
-        );
-
-        // Out-of-order final: boundary stays at the max already committed.
-        sink.on_event(&utterance_final(3, 4.0, 5.0));
-        assert_eq!(
-            snapshot_session_telemetry(&shared).committed_through_secs,
-            Some(7.9),
-            "committed boundary is a monotonic max, not the last value"
-        );
-
-        reset_session_telemetry(&shared);
-        assert!(
-            snapshot_session_telemetry(&shared)
-                .committed_through_secs
-                .is_none(),
-            "reset clears the committed audio boundary"
-        );
-    }
-
-    /// Parity with `ComposerTranscript::note_committed_through` (PR #69
-    /// review): a non-finite `end_ts` (NaN/±inf) must never poison or advance
-    /// the boundary. NaN falls through the `current >= end_ts` guard and would
-    /// otherwise OVERWRITE a valid max — silently degrading Smart tail
-    /// gap-fill to Skip for the rest of the session.
-    #[test]
-    fn test_session_telemetry_ignores_non_finite_end_ts() {
-        let shared = new_session_telemetry();
-        let sink = SessionTelemetrySink::new(Arc::clone(&shared));
-
-        let utterance_final =
-            |utterance_id: u64, start_ts: f32, end_ts: f32| EngineEvent::UtteranceFinal {
-                utterance_id,
-                text: "zdanie".to_string(),
-                raw_text: "zdanie".to_string(),
-                start_ts,
-                end_ts,
-                segments: vec![],
-                vad_speech_pct: Some(80.0),
-                avg_logprob: None,
-                compression_ratio: None,
-                quality_gate_dropped: false,
-                confidence_flags: vec![],
-                acoustic: None,
-            };
-
-        sink.on_event(&utterance_final(1, 0.0, 3.2));
-        sink.on_event(&utterance_final(2, 3.2, f32::NAN));
-        assert_eq!(
-            snapshot_session_telemetry(&shared).committed_through_secs,
-            Some(3.2),
-            "NaN end_ts must not overwrite the committed boundary"
-        );
-
-        sink.on_event(&utterance_final(3, 3.2, f32::INFINITY));
-        assert_eq!(
-            snapshot_session_telemetry(&shared).committed_through_secs,
-            Some(3.2),
-            "+inf end_ts must not advance the boundary"
-        );
-
-        sink.on_event(&utterance_final(4, 3.2, f32::NEG_INFINITY));
-        assert_eq!(
-            snapshot_session_telemetry(&shared).committed_through_secs,
-            Some(3.2),
-            "-inf end_ts must not disturb the boundary"
-        );
-
-        sink.on_event(&utterance_final(5, 3.2, 4.5));
-        assert_eq!(
-            snapshot_session_telemetry(&shared).committed_through_secs,
-            Some(4.5),
-            "finite finals keep advancing after non-finite noise"
-        );
-    }
-
-    /// The stop path's residual demand is folded by warning CODE, not by
-    /// variant. Three things are pinned here because each is a different way to
-    /// break the contract: exactly `tail_patch_under_commit` sets the flag, its
-    /// neighbours must not (a loose match would put a Whisper pass on the stop
-    /// path of every session that logs a warning), and once set no later event
-    /// may clear it — the speech Layer 1 could not place does not come back on
-    /// its own, so a clean final afterwards is not evidence the hole closed.
-    #[test]
-    fn test_session_telemetry_folds_only_the_exact_under_commit_warning() {
-        let warning = |code: &str| EngineEvent::Warning {
-            code: code.to_string(),
-            message: "committed_tokens=3 retranscribed_tokens=12".to_string(),
-        };
-        let utterance_final = || EngineEvent::UtteranceFinal {
-            utterance_id: 1,
-            text: "zdanie".to_string(),
-            raw_text: "zdanie".to_string(),
-            start_ts: 0.0,
-            end_ts: 1.0,
-            segments: vec![],
-            vad_speech_pct: Some(80.0),
-            avg_logprob: None,
-            compression_ratio: None,
-            quality_gate_dropped: false,
-            confidence_flags: vec![],
-            acoustic: None,
-        };
-
-        // Near misses: the sibling receipt code, a truncation, an extension, a
-        // case variant, a bare substring, and the empty code.
-        for code in [
-            "tail_patch_skipped",
-            "tail_patch_under_commi",
-            "tail_patch_under_commit_residual",
-            "TAIL_PATCH_UNDER_COMMIT",
-            "under_commit",
-            "",
-        ] {
-            let shared = new_session_telemetry();
-            let sink = SessionTelemetrySink::new(Arc::clone(&shared));
-            sink.on_event(&warning(code));
-            assert!(
-                !snapshot_session_telemetry(&shared).residual_required,
-                "warning code {code:?} must not demand residual gap fill"
-            );
-        }
-
-        let shared = new_session_telemetry();
-        let sink = SessionTelemetrySink::new(Arc::clone(&shared));
-        assert!(
-            !snapshot_session_telemetry(&shared).residual_required,
-            "a fresh session starts with no residual demand"
-        );
-
-        sink.on_event(&warning(UNDER_COMMIT_WARNING_CODE));
-        assert!(
-            snapshot_session_telemetry(&shared).residual_required,
-            "the exact Layer 1 under-commit code must fold to residual_required"
-        );
-
-        // Monotonic within the session: a clean commit, an unrelated warning
-        // and the session seal all arrive after the escalation and none of them
-        // may un-know it.
-        sink.on_event(&utterance_final());
-        sink.on_event(&warning("tail_patch_skipped"));
-        sink.on_event(&EngineEvent::SessionFinalised {
-            session_id: "s1".to_string(),
-            layer_summary: Default::default(),
-        });
-        assert!(
-            snapshot_session_telemetry(&shared).residual_required,
-            "later healthy events must not clear a hole Layer 1 already found"
-        );
-
-        // Only a new session clears it.
-        reset_session_telemetry(&shared);
-        assert!(
-            !snapshot_session_telemetry(&shared).residual_required,
-            "reset clears the residual demand so a new recording never inherits it"
-        );
-    }
-
-    /// Reset must clear every field, not just the obvious ones: leftover
-    /// `pending_tail` or `committed_chars` would make the next session's first
-    /// routing decision read the previous session's state.
-    #[test]
-    fn test_reset_session_telemetry_clears_snapshot() {
-        let shared = new_session_telemetry();
-        {
-            let mut guard = shared.lock().unwrap_or_else(|e| e.into_inner());
-            guard.no_speech_reason = Some("test".to_string());
-            guard.stats = Some(SessionEngineStats {
-                hallucination_drops: 1,
-                ..Default::default()
-            });
-            guard.pending_tail = true;
-            guard.last_commit_source = Some(CompletenessCommitSource::UtteranceFinal);
-            guard.committed_chars = 12;
-            guard.committed_through_secs = Some(41.0);
-            guard.residual_required = true;
-        }
-        reset_session_telemetry(&shared);
-
-        let snapshot = snapshot_session_telemetry(&shared);
-        assert!(snapshot.no_speech_reason.is_none());
-        assert!(snapshot.stats.is_none());
-        assert!(!snapshot.pending_tail);
-        assert!(snapshot.last_commit_source.is_none());
-        assert_eq!(snapshot.committed_chars, 0);
-        assert!(snapshot.committed_through_secs.is_none());
-        assert!(
-            !snapshot.residual_required,
-            "a stale residual demand would force a Whisper tail pass on the next session"
-        );
-    }
-
-    /// The per-turn generation machinery is removed: ordinary consecutive
-    /// ensures reuse the live runtime as-is — no identity rotation, no history
-    /// reset, no rehydration attempt.
-    #[test]
-    fn test_runtime_generation_machinery_removed_ordinary_ensures_reuse_runtime() {
+    fn equal_settings_digest_reuses_initialized_runtime() {
+        let expected_digest = test_settings_snapshot_digest(1);
         let mut runtime_state = AgentRuntimeState {
-            runtime: Some(runtime_with_thread_id("thread_existing")),
+            runtime: Some(runtime_with_thread_id_and_digest(
+                "thread_existing",
+                expected_digest.clone(),
+            )),
             thread_store_id: Some("thread_existing".to_string()),
             runtime_degraded: false,
         };
+        let installed_session = runtime_state
+            .runtime
+            .as_ref()
+            .map(|runtime| &runtime.session as *const AgentSession)
+            .expect("runtime should be installed");
         let init_calls = AtomicUsize::new(0);
 
         for _ in 0..2 {
             let (runtime, recovered) = runtime_state
-                .ensure_runtime_with(
+                .ensure_runtime_generation_with(
+                    &expected_digest,
                     || {
                         init_calls.fetch_add(1, Ordering::SeqCst);
-                        Ok(runtime_with_thread_id("thread_should_not_be_used"))
+                        Ok(runtime_with_thread_id_and_digest(
+                            "thread_should_not_be_used",
+                            expected_digest.clone(),
+                        ))
                     },
                     |_| -> Result<Option<Vec<Message>>> {
                         panic!("a live runtime must never trigger rehydration")
@@ -2252,6 +1501,14 @@ mod tests {
                 )
                 .expect("live runtime should be reused on ordinary consecutive sends");
             assert_eq!(runtime.thread_store_id, "thread_existing");
+            assert_eq!(
+                &runtime.settings_snapshot_digest, &expected_digest,
+                "cached runtime must carry the selected generation"
+            );
+            assert_eq!(
+                &runtime.session as *const AgentSession, installed_session,
+                "equal generation must reuse the exact installed session"
+            );
             assert!(!recovered);
         }
 
@@ -2262,11 +1519,69 @@ mod tests {
         );
     }
 
+    /// A later selected generation rebuilds exactly once before send, keeps the
+    /// complete in-memory conversation and durable thread identity, and clears
+    /// the provider response chain through `restore_messages`.
+    #[test]
+    fn changed_settings_digest_rolls_runtime_preserving_history_and_thread() {
+        let old_digest = test_settings_snapshot_digest(2);
+        let expected_digest = test_settings_snapshot_digest(3);
+        let old_runtime = seed_completed_runtime_with_digest("thread_existing", old_digest.clone());
+        let expected_messages = old_runtime.session.messages().to_vec();
+        assert_eq!(old_runtime.session.thread_id(), Some("resp_seed"));
+        let mut runtime_state = AgentRuntimeState {
+            runtime: Some(old_runtime),
+            thread_store_id: Some("thread_existing".to_string()),
+            runtime_degraded: false,
+        };
+        let init_calls = AtomicUsize::new(0);
+
+        {
+            let (runtime, recovered) = runtime_state
+                .ensure_runtime_generation_with(
+                    &expected_digest,
+                    || {
+                        init_calls.fetch_add(1, Ordering::SeqCst);
+                        Ok(seed_completed_runtime_with_digest(
+                            "thread_provisional",
+                            expected_digest.clone(),
+                        ))
+                    },
+                    |_| -> Result<Option<Vec<Message>>> {
+                        panic!("generation rollover must preserve in-memory history")
+                    },
+                )
+                .expect("changed generation should roll the runtime before send");
+
+            assert_eq!(init_calls.load(Ordering::SeqCst), 1);
+            assert_eq!(runtime.settings_snapshot_digest, expected_digest);
+            assert_ne!(runtime.settings_snapshot_digest, old_digest);
+            assert_eq!(runtime.thread_store_id, "thread_existing");
+            assert_eq!(runtime.session.messages(), expected_messages.as_slice());
+            assert_eq!(
+                runtime.session.thread_id(),
+                None,
+                "restoring preserved messages must clear the new provider chain"
+            );
+            assert!(
+                !recovered,
+                "normal generation rollover is not degradation recovery"
+            );
+        }
+
+        assert_eq!(
+            runtime_state.thread_store_id.as_deref(),
+            Some("thread_existing")
+        );
+        assert!(!runtime_state.runtime_degraded);
+    }
+
     /// Rebuilding after a degrade must rejoin the durable thread id and discard
     /// the id the fresh runtime minted — and it must clear the degraded flag,
     /// reporting `recovered = true` so the UI can retire the banner.
     #[test]
     fn test_runtime_recovery_clears_degraded_flag_on_reinit() {
+        let expected_digest = test_settings_snapshot_digest(1);
         let mut runtime_state = AgentRuntimeState {
             runtime: None,
             thread_store_id: Some("thread_stable".to_string()),
@@ -2275,7 +1590,8 @@ mod tests {
         let init_calls = AtomicUsize::new(0);
 
         let (runtime, recovered) = runtime_state
-            .ensure_runtime_with(
+            .ensure_runtime_generation_with(
+                &expected_digest,
                 || {
                     init_calls.fetch_add(1, Ordering::SeqCst);
                     Ok(runtime_with_thread_id("thread_freshly_minted"))
@@ -2293,16 +1609,15 @@ mod tests {
         assert!(!runtime_state.runtime_degraded);
     }
 
-    /// A mid-stream provider failure must NOT fall back: the provider already
-    /// took the turn, so re-running it through the legacy formatter would answer
-    /// the same utterance twice.
+    /// A mid-stream provider failure already owns and publishes the terminal UI
+    /// event, so the controller must not publish a duplicate terminal.
     #[test]
-    fn test_provider_stream_errors_skip_legacy_fallback() {
+    fn test_provider_stream_errors_are_already_published() {
         let error = anyhow::anyhow!(
             "Provider stream error: Agent SSE error internal_error: 'list' object has no attribute 'uid'"
         );
 
-        assert!(!agent_send_error_allows_legacy_fallback(&error));
+        assert!(agent_send_error_was_published(&error));
     }
 
     /// Provider that completes one clean turn so the seeded session ends up with
@@ -2368,7 +1683,10 @@ mod tests {
     /// from real state: non-empty history AND a set provider chain. Drives the
     /// seed turn on its own current-thread runtime so the helper stays callable
     /// from sync `#[test]` fns.
-    fn seed_completed_runtime(thread_store_id: &str) -> AgentRuntime {
+    fn seed_completed_runtime_with_digest(
+        thread_store_id: &str,
+        settings_snapshot_digest: SettingsSnapshotDigest,
+    ) -> AgentRuntime {
         let (ui_tx, ui_rx) = mpsc::channel(8);
         let mut session = AgentSession::new(
             Box::new(CompletingTestProvider),
@@ -2392,8 +1710,14 @@ mod tests {
             session,
             ui_rx,
             thread_store_id: thread_store_id.to_string(),
+            settings_snapshot_digest,
             reset_chain_on_next_send: false,
         }
+    }
+
+    /// Seed a completed runtime on the default non-rollover test generation.
+    fn seed_completed_runtime(thread_store_id: &str) -> AgentRuntime {
+        seed_completed_runtime_with_digest(thread_store_id, test_settings_snapshot_digest(1))
     }
 
     /// P1.7: a transient in-conversation failure must SOFT-degrade — keep the
@@ -2496,13 +1820,13 @@ mod tests {
         assert!(!is_agent_send_in_flight());
     }
 
-    /// Counterpart to the stream-error case: a runtime that never reached the
-    /// provider must fall back, otherwise the user gets no answer at all.
+    /// A runtime that never reached the provider still needs one explicit
+    /// terminal UI event from the controller boundary.
     #[test]
-    fn test_runtime_unavailable_errors_allow_legacy_fallback() {
+    fn test_runtime_unavailable_errors_need_terminal_publication() {
         let error = anyhow::anyhow!("Agent runtime unavailable");
 
-        assert!(agent_send_error_allows_legacy_fallback(&error));
+        assert!(!agent_send_error_was_published(&error));
     }
 
     /// Text with no attachment marker must come through byte-identical — the
@@ -2766,6 +2090,7 @@ mod tests {
 
         let _broadcast_guard = SEND_PATH_BROADCAST_LOCK.lock().await;
         let thread_id = "controller_voice_cancel_recovery";
+        let settings_snapshot_digest = test_settings_snapshot_digest(1);
         let tool_started = Arc::new(AtomicBool::new(false));
         let side_effect = Arc::new(AtomicBool::new(false));
         let reset_chain_flags = Arc::new(StdMutex::new(Vec::new()));
@@ -2839,6 +2164,7 @@ mod tests {
                 session,
                 ui_rx,
                 thread_store_id: thread_id.to_string(),
+                settings_snapshot_digest: settings_snapshot_digest.clone(),
                 reset_chain_on_next_send: false,
             }),
             thread_store_id: Some(thread_id.to_string()),
@@ -2848,11 +2174,14 @@ mod tests {
         let first_persist_count = Arc::clone(&persist_count);
         let mut delivery = subscribe_agent_delivery();
 
+        let driven_settings_snapshot_digest = settings_snapshot_digest.clone();
         let driven = tokio::spawn(async move {
             let result = run_agent_send_path_with_persist(
                 &mut state,
                 "cancel this".to_string(),
                 test_stream_options(),
+                &driven_settings_snapshot_digest,
+                unexpected_runtime_initialization,
                 move |_runtime| {
                     first_persist_count.fetch_add(1, Ordering::SeqCst);
                     Ok(())
@@ -2922,6 +2251,8 @@ mod tests {
             &mut state,
             "try again".to_string(),
             test_stream_options(),
+            &settings_snapshot_digest,
+            unexpected_runtime_initialization,
             move |_runtime| {
                 second_persist_count.fetch_add(1, Ordering::SeqCst);
                 Ok(())
@@ -2961,6 +2292,12 @@ mod tests {
         }
     }
 
+    fn unexpected_runtime_initialization() -> Result<AgentRuntime> {
+        Err(anyhow::anyhow!(
+            "test expected the installed Agent runtime to remain authoritative"
+        ))
+    }
+
     // ── Voice runtime identity and history continuity (W1-A) ────────────────
 
     /// A runtime on the scripted provider, bound to an explicit thread id and
@@ -2985,6 +2322,7 @@ mod tests {
             session,
             ui_rx,
             thread_store_id: thread_store_id.to_string(),
+            settings_snapshot_digest: test_settings_snapshot_digest(1),
             reset_chain_on_next_send: false,
         }
     }
@@ -3115,6 +2453,7 @@ mod tests {
     #[tokio::test]
     async fn voice_runtime_continuity() {
         let _broadcast_guard = SEND_PATH_BROADCAST_LOCK.lock().await;
+        let settings_snapshot_digest = test_settings_snapshot_digest(1);
         let tmp = tempfile::TempDir::new().expect("temp dir should initialize");
         let threads_dir = tmp.path().join("threads");
         let gateway =
@@ -3141,6 +2480,8 @@ mod tests {
                 &mut state,
                 text.to_string(),
                 test_stream_options(),
+                &settings_snapshot_digest,
+                unexpected_runtime_initialization,
                 |runtime| {
                     let receipt = gateway.deliver(runtime_delivery_input(
                         runtime,
@@ -3197,6 +2538,7 @@ mod tests {
     #[tokio::test]
     async fn hard_degrade_rehydrates_same_thread() {
         let _broadcast_guard = SEND_PATH_BROADCAST_LOCK.lock().await;
+        let settings_snapshot_digest = test_settings_snapshot_digest(1);
         let tmp = tempfile::TempDir::new().expect("temp dir should initialize");
         let threads_dir = tmp.path().join("threads");
         let gateway =
@@ -3213,7 +2555,8 @@ mod tests {
             runtime_degraded: false,
         };
         state
-            .ensure_runtime_with(
+            .ensure_runtime_generation_with(
+                &settings_snapshot_digest,
                 || {
                     Ok(scripted_runtime(
                         "t_test_stable",
@@ -3235,6 +2578,8 @@ mod tests {
             &mut state,
             "first question".to_string(),
             test_stream_options(),
+            &settings_snapshot_digest,
+            unexpected_runtime_initialization,
             |runtime| {
                 let receipt = gateway.deliver(runtime_delivery_input(
                     runtime,
@@ -3265,7 +2610,8 @@ mod tests {
         let second_inputs = Arc::new(StdMutex::new(Vec::new()));
         {
             let (runtime, recovered) = state
-                .ensure_runtime_with(
+                .ensure_runtime_generation_with(
+                    &settings_snapshot_digest,
                     || {
                         Ok(scripted_runtime(
                             "t_test_freshly_minted",
@@ -3292,6 +2638,8 @@ mod tests {
             &mut state,
             "second question".to_string(),
             test_stream_options(),
+            &settings_snapshot_digest,
+            unexpected_runtime_initialization,
             |runtime| {
                 let receipt = gateway.deliver(runtime_delivery_input(
                     runtime,
@@ -3369,6 +2717,7 @@ mod tests {
     /// never prompt/transcript content.
     #[test]
     fn rehydrate_failure_keeps_identity_and_logs_privacy_safe_recovery() {
+        let settings_snapshot_digest = test_settings_snapshot_digest(1);
         /// Tracing writer that appends into a shared buffer, so the test can
         /// read back what the lifecycle actually logged.
         struct SharedWriter(Arc<StdMutex<Vec<u8>>>);
@@ -3424,7 +2773,8 @@ mod tests {
         tracing::subscriber::with_default(subscriber, || {
             state.mark_runtime_degraded("test_hard_failure");
             let (runtime, recovered) = state
-                .ensure_runtime_with(
+                .ensure_runtime_generation_with(
+                    &settings_snapshot_digest,
                     || Ok(runtime_with_thread_id("t_test_should_be_overridden")),
                     |thread_store_id| load_thread_messages_from(&store, thread_store_id),
                 )

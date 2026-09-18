@@ -7,7 +7,7 @@
 //! - Proper error handling and logging
 
 use anyhow::{Context, Result};
-use futures_util::{SinkExt, StreamExt};
+use futures_util::StreamExt;
 use reqwest::Client;
 use reqwest::multipart::{Form, Part};
 use serde::{Deserialize, Serialize};
@@ -16,7 +16,6 @@ use std::sync::OnceLock;
 use std::time::{Duration, Instant};
 use tokio::fs::File;
 use tokio::io::AsyncReadExt;
-use tokio_tungstenite::{connect_async, tungstenite::Message};
 use tracing::{debug, error, info, warn};
 
 use crate::pipeline::contracts::{TranscriptionConfidenceFlag, TranscriptionSource};
@@ -26,36 +25,6 @@ use crate::pipeline::contracts::{TranscriptionConfidenceFlag, TranscriptionSourc
 fn canonicalize_path(path: &Path) -> Result<PathBuf> {
     path.canonicalize()
         .with_context(|| format!("Failed to resolve path: {}", path.display()))
-}
-
-/// Unencrypted WebSocket scheme prefix; built via concat so the literal never appears.
-const WS_SCHEME_PREFIX: &str = concat!("ws", "://");
-/// Encrypted WebSocket scheme prefix; always allowed for non-loopback hosts.
-const WSS_SCHEME_PREFIX: &str = "wss://";
-
-/// Reject plain WebSocket endpoints whose host is not a loopback address.
-///
-/// Encrypted WebSocket endpoints are always allowed. Plain WebSocket is only permitted for
-/// loopback hosts (`localhost`, `127.0.0.1`, `::1`) so credentials/audio never
-/// traverse the network unencrypted to a non-local backend.
-fn enforce_ws_scheme_loopback(endpoint_url: &str) -> Result<()> {
-    let url = reqwest::Url::parse(endpoint_url).context("STT endpoint is not a valid URL")?;
-    if url.scheme() != "ws" {
-        return Ok(());
-    }
-
-    let host = url
-        .host_str()
-        .map(|h| h.trim_matches(['[', ']']))
-        .unwrap_or_default();
-    if matches!(host, "localhost" | "127.0.0.1" | "::1") {
-        Ok(())
-    } else {
-        anyhow::bail!(
-            "Plain WebSocket is only allowed for loopback hosts; use wss:// for non-loopback endpoint '{}'",
-            endpoint_url
-        )
-    }
 }
 
 /// Maximum retry attempts for transcription requests
@@ -102,43 +71,20 @@ impl CloudTranscriptionVerdict {
     }
 }
 
-// ============================================================================
-// WebSocket STT Protocol Structures
-// ============================================================================
-
-/// WebSocket config message (sent first)
-#[derive(Serialize)]
-struct WsConfig {
-    #[serde(rename = "type")]
-    msg_type: &'static str,
-    language: String,
-    api_key: String,
-    /// Codescribe domain token. Hosts that do not accept it are not this path.
-    vocabulary: &'static str,
-}
-
-/// WebSocket end signal (sent after audio)
-#[derive(Serialize)]
-struct WsEnd {
-    #[serde(rename = "type")]
-    msg_type: &'static str,
-}
-
-/// WebSocket response message
-#[derive(Deserialize, Debug)]
-struct WsResponse {
-    #[serde(rename = "type")]
-    msg_type: String,
-    text: Option<String>,
-    error: Option<String>,
-}
-
-/// NDJSON chunk response
+/// NDJSON response line: `stt-jsonl-v1` (`type` = hello/ack/transcript.final/
+/// stream.closed/error) or the legacy `is_final` shape.
 #[derive(Deserialize, Debug)]
 struct NdjsonChunk {
+    #[serde(rename = "type")]
+    kind: Option<String>,
     text: Option<String>,
     is_final: Option<bool>,
     error: Option<String>,
+    message: Option<String>,
+    /// `stt-jsonl-v1` server-side identity of this stream (`resp_stt_…`),
+    /// carried on `transcript.final` and `stream.closed`. Logged so a take can
+    /// be traced on the gateway; never used for routing.
+    response_id: Option<String>,
 }
 
 /// Audio validation error type for pre-flight checks
@@ -240,25 +186,6 @@ fn get_client() -> &'static Client {
     })
 }
 
-/// Check if local Whisper engine is ready.
-///
-/// Returns:
-/// - `Ok(true)` if the engine is initialized (or initializes successfully)
-/// - `Ok(false)` if initialization fails
-pub async fn check_health() -> Result<bool> {
-    if crate::stt::whisper::singleton::is_initialized() {
-        return Ok(true);
-    }
-
-    match crate::stt::whisper::init() {
-        Ok(()) => Ok(true),
-        Err(e) => {
-            warn!("Whisper engine not ready: {}", e);
-            Ok(false)
-        }
-    }
-}
-
 /// Transcribe audio file using external STT with retry logic
 ///
 /// # Arguments
@@ -292,6 +219,7 @@ pub async fn check_health() -> Result<bool> {
 /// # Ok(())
 /// # }
 /// ```
+/// Endpoint and credential come from `Config::stt_lane`.
 pub async fn transcribe_cloud(
     path: &Path,
     language: Option<&str>,
@@ -334,7 +262,7 @@ fn is_retryable_error(error: &anyhow::Error) -> bool {
 /// Transcribe audio using external STT API
 ///
 /// Supports multiple protocols based on endpoint URL:
-/// - WebSocket schemes -> streaming (plain for localhost dev, encrypted for production)
+/// - WebSocket schemes are rejected; they belong to the separate Live lane
 /// - URL ending with `:stream` → NDJSON streaming HTTP
 /// - Otherwise → OpenAI-compatible multipart upload
 ///
@@ -351,38 +279,41 @@ async fn transcribe_external(
 ) -> Result<CloudTranscriptionVerdict> {
     info!("Using external STT endpoint: {}", endpoint_url);
 
-    // Read file into memory (shared by all protocols)
     let canonical_path = canonicalize_path(path)?;
-    // nosemgrep: rust.actix.path-traversal.tainted-path.tainted-path (path canonicalized above)
-    let mut file = File::open(&canonical_path)
-        .await
-        .context("Failed to open audio file")?;
-
-    let mut buffer = Vec::new();
-    file.read_to_end(&mut buffer)
-        .await
-        .context("Failed to read audio file")?;
-
-    // Pre-flight validation
-    if let Err(validation_error) = validate_audio(&buffer) {
-        error!("Audio validation failed: {}", validation_error);
-        crate::status::notify_status(crate::status::StatusSignal::Error);
-        anyhow::bail!("Audio validation failed: {}", validation_error);
-    }
-
     let lang = language.unwrap_or("pl");
 
-    // Dispatch based on protocol (plain WebSocket for localhost, encrypted WebSocket for production)
-    if endpoint_url.starts_with(WSS_SCHEME_PREFIX) || endpoint_url.starts_with(WS_SCHEME_PREFIX) {
-        // Plain WebSocket is only permitted for loopback hosts; reject otherwise.
-        enforce_ws_scheme_loopback(endpoint_url)?;
-        // WebSocket streaming
-        transcribe_websocket(endpoint_url, api_key, buffer, lang).await
-    } else if endpoint_url.ends_with(":stream") {
-        // NDJSON streaming HTTP
-        transcribe_ndjson(endpoint_url, api_key, buffer, lang).await
+    // File lane only: `:stream` is the NDJSON variant, anything else is multipart.
+    // Live sockets belong to the Live lane (`Config::stt_lane(SttLane::Live)`).
+    if endpoint_url.starts_with("ws") {
+        anyhow::bail!("a WebSocket socket is not a file transcription endpoint: {endpoint_url}");
+    }
+    // Resolve at the common file transport boundary so every caller follows
+    // the vendor's OAuth-first policy, including any direct internal callers.
+    let auth = if let Some(vendor) = super::speech::vendor_for_endpoint(endpoint_url) {
+        Some(super::speech::resolve_vendor_auth(vendor, Some(api_key)).await?)
     } else {
-        // OpenAI-compatible multipart upload
+        None
+    };
+    let api_key = auth.as_ref().map_or(api_key, |auth| auth.bearer.as_str());
+    if endpoint_url.ends_with(":stream") {
+        // NDJSON streaming HTTP: the file is decoded and sent in segments, so
+        // the whole-file upload cap of the multipart lane does not apply.
+        transcribe_ndjson(endpoint_url, api_key, &canonical_path, lang).await
+    } else {
+        // OpenAI-compatible multipart upload: one body, one backend cap.
+        // nosemgrep: rust.actix.path-traversal.tainted-path.tainted-path (path canonicalized above)
+        let mut file = File::open(&canonical_path)
+            .await
+            .context("Failed to open audio file")?;
+        let mut buffer = Vec::new();
+        file.read_to_end(&mut buffer)
+            .await
+            .context("Failed to read audio file")?;
+        if let Err(validation_error) = validate_audio(&buffer) {
+            error!("Audio validation failed: {}", validation_error);
+            crate::status::notify_status(crate::status::StatusSignal::Error);
+            anyhow::bail!("Audio validation failed: {}", validation_error);
+        }
         let filename = path
             .file_name()
             .and_then(|n| n.to_str())
@@ -392,133 +323,91 @@ async fn transcribe_external(
 }
 
 // ============================================================================
-// WebSocket Streaming STT
+// NDJSON Streaming HTTP STT
 // ============================================================================
 
-/// LEGACY STOP/RECOVERY ONLY: upload one completed audio file over WebSocket.
+/// Wire rate of the `:stream` lane (`stt-jsonl-v1`): PCM16 mono at 16 kHz.
+const NDJSON_SAMPLE_RATE: u32 = 16_000;
+/// Segment length for the `:stream` file lane. Measured 2026-09-09 on
+/// api.libraxis.cloud: 10-minute PCM16@16k segments (19 MB, 25 MB NDJSON)
+/// transcribe; one 20-minute body (51 MB) dies with nginx 500.
+const NDJSON_SEGMENT_SECONDS: usize = 600;
+/// A cut is moved back into the quietest 20 ms frame of this window so a
+/// segment boundary lands between words, not inside one.
+const NDJSON_SEGMENT_SEARCH_SECONDS: usize = 5;
+const NDJSON_QUIET_FRAME_SAMPLES: usize = 320;
+/// PCM bytes per `chunk` line, the size the operator's proven shell client uses.
+const NDJSON_CHUNK_BYTES: usize = 128 * 1024;
+
+/// Transcribe an audio file via the NDJSON streaming HTTP lane (`stt-jsonl-v1`).
 ///
-/// This is not the live Layer 1 session transport. Do not add microphone frame
-/// streaming, normalized session state, or live adjudication here; those belong
-/// to `crate::asr_session::cloud` behind `AsrSessionProvider`.
-///
-/// Protocol:
-/// 1. Connect to WebSocket
-/// 2. Send config JSON: {"type": "config", "language": "...", "api_key": "..."}
-/// 3. Send audio as binary message
-/// 4. Send end signal: {"type": "end"}
-/// 5. Receive partial/final responses until final or close
-async fn transcribe_websocket(
+/// The file is decoded and resampled to 16 kHz mono, cut into segments of at
+/// most [`NDJSON_SEGMENT_SECONDS`] at quiet points, and every segment is one
+/// request: `set` → `chunk`× → `end`, answered by `transcript.final`. The
+/// segment texts are joined in order. Long takes never travel as one body.
+async fn transcribe_ndjson(
     url: &str,
     api_key: &str,
-    audio_data: Vec<u8>,
+    path: &Path,
     language: &str,
 ) -> Result<CloudTranscriptionVerdict> {
     let start = Instant::now();
+    let decode_path = path.to_path_buf();
+    let (samples, sample_rate) =
+        tokio::task::spawn_blocking(move || crate::audio::load_audio_file(&decode_path))
+            .await
+            .context("audio decode task join error")??;
+    if samples.is_empty() {
+        anyhow::bail!("Audio validation failed: {}", AudioValidationError::Empty);
+    }
+    let samples = crate::audio::resample_to_16k(&samples, sample_rate);
+    let pcm: Vec<i16> = samples
+        .iter()
+        .map(|s| (s.clamp(-1.0, 1.0) * f32::from(i16::MAX)) as i16)
+        .collect();
+    let segments = split_pcm_at_quiet_points(
+        &pcm,
+        NDJSON_SEGMENT_SECONDS * NDJSON_SAMPLE_RATE as usize,
+        NDJSON_SEGMENT_SEARCH_SECONDS * NDJSON_SAMPLE_RATE as usize,
+    );
     info!(
-        "[WS STT] Connecting to {} ({} bytes, lang={})",
+        "[NDJSON STT] POST {} ({:.1}s @ {}Hz → {} segment(s), lang={})",
         url,
-        audio_data.len(),
+        pcm.len() as f64 / f64::from(NDJSON_SAMPLE_RATE),
+        NDJSON_SAMPLE_RATE,
+        segments.len(),
         language
     );
 
-    let (mut ws, response) = connect_async(url)
-        .await
-        .context("Failed to connect to WebSocket STT endpoint")?;
-
-    debug!(
-        "[WS STT] Connected in {:?}, status: {:?}",
-        start.elapsed(),
-        response.status()
-    );
-
-    // 1. Send config. Topic is the product domain, never classified from audio.
-    let config = WsConfig {
-        msg_type: "config",
-        language: language.to_string(),
-        api_key: api_key.to_string(),
-        vocabulary: crate::stt::request_vocabulary::CODESCRIBE_STT_VOCABULARY,
-    };
-    ws.send(Message::Text(serde_json::to_string(&config)?.into()))
-        .await
-        .context("Failed to send WebSocket config")?;
-
-    // 2. Send audio binary
-    info!(
-        "[WS STT] Sending {} bytes ({:.2} MB)",
-        audio_data.len(),
-        audio_data.len() as f64 / 1_000_000.0
-    );
-    ws.send(Message::Binary(audio_data.into()))
-        .await
-        .context("Failed to send audio data")?;
-
-    // 3. Signal end
-    let end = WsEnd { msg_type: "end" };
-    ws.send(Message::Text(serde_json::to_string(&end)?.into()))
-        .await
-        .context("Failed to send end signal")?;
-
-    // 4. Collect responses
-    let mut final_text = String::new();
-    let mut partial_count = 0u32;
-
-    while let Some(msg) = ws.next().await {
-        match msg? {
-            Message::Text(txt) => {
-                let resp: WsResponse = serde_json::from_str(&txt)
-                    .with_context(|| format!("Failed to parse WS response: {}", txt))?;
-
-                match resp.msg_type.as_str() {
-                    "partial" => {
-                        partial_count += 1;
-                        if let Some(t) = &resp.text {
-                            debug!("[WS STT] partial #{}: {} chars", partial_count, t.len());
-                            // TODO: callback for real-time UI updates
-                        }
-                    }
-                    "final" => {
-                        if let Some(t) = resp.text {
-                            final_text = t;
-                            info!(
-                                "[WS STT] Final: {} chars after {} partials",
-                                final_text.len(),
-                                partial_count
-                            );
-                        }
-                        break;
-                    }
-                    "error" => {
-                        let err_msg = resp.error.unwrap_or_else(|| "Unknown error".to_string());
-                        error!("[WS STT] Error: {}", err_msg);
-                        anyhow::bail!("WebSocket STT error: {}", err_msg);
-                    }
-                    other => {
-                        warn!("[WS STT] Unknown message type: {}", other);
-                    }
-                }
-            }
-            Message::Close(frame) => {
-                debug!("[WS STT] Connection closed: {:?}", frame);
-                break;
-            }
-            Message::Ping(data) => {
-                let _ = ws.send(Message::Pong(data)).await;
-            }
-            _ => {}
+    let mut texts: Vec<String> = Vec::with_capacity(segments.len());
+    for (index, segment) in segments.iter().enumerate() {
+        let text = transcribe_ndjson_segment(url, api_key, segment, language)
+            .await
+            .with_context(|| format!("segment {}/{}", index + 1, segments.len()))?;
+        info!(
+            "[NDJSON STT] segment {}/{}: {:.1}s → {} chars",
+            index + 1,
+            segments.len(),
+            segment.len() as f64 / f64::from(NDJSON_SAMPLE_RATE),
+            text.chars().count()
+        );
+        let text = text.trim();
+        if !text.is_empty() {
+            texts.push(text.to_string());
         }
     }
+    let final_text = texts.join(" ");
 
-    let _ = ws.close(None).await;
     let duration_ms = start.elapsed().as_millis();
-
     info!(
-        "[WS STT] Complete in {}ms: {} chars",
+        "[NDJSON STT] Complete in {}ms: {} chars over {} segment(s)",
         duration_ms,
-        final_text.len()
+        final_text.len(),
+        segments.len()
     );
 
     if final_text.is_empty() {
-        anyhow::bail!("No transcription received from WebSocket STT");
+        anyhow::bail!("No transcription received from NDJSON STT");
     }
 
     Ok(CloudTranscriptionVerdict::new(
@@ -528,102 +417,83 @@ async fn transcribe_websocket(
     ))
 }
 
-// ============================================================================
-// NDJSON Streaming HTTP STT
-// ============================================================================
+/// Cut PCM into slices of at most `segment_len` samples. Each cut is moved
+/// back, within `search_len` samples of the boundary, to the start of the
+/// quietest [`NDJSON_QUIET_FRAME_SAMPLES`] frame. Slices concatenate back to
+/// the input exactly.
+fn split_pcm_at_quiet_points(pcm: &[i16], segment_len: usize, search_len: usize) -> Vec<&[i16]> {
+    let mut segments = Vec::new();
+    let mut pos = 0;
+    while pcm.len() - pos > segment_len {
+        let boundary = pos + segment_len;
+        let window_start = boundary.saturating_sub(search_len).max(pos + 1);
+        let mut cut = boundary;
+        let mut quietest = u64::MAX;
+        let mut frame_start = window_start;
+        while frame_start + NDJSON_QUIET_FRAME_SAMPLES <= boundary {
+            let energy: u64 = pcm[frame_start..frame_start + NDJSON_QUIET_FRAME_SAMPLES]
+                .iter()
+                .map(|s| u64::from(s.unsigned_abs()))
+                .sum();
+            if energy < quietest {
+                quietest = energy;
+                cut = frame_start;
+            }
+            frame_start += NDJSON_QUIET_FRAME_SAMPLES;
+        }
+        segments.push(&pcm[pos..cut]);
+        pos = cut;
+    }
+    segments.push(&pcm[pos..]);
+    segments
+}
 
-/// Transcribe audio via NDJSON streaming HTTP
-///
-/// Protocol:
-/// 1. POST raw audio with Content-Type and x-api-key header
-/// 2. Stream response, parse newline-delimited JSON chunks
-/// 3. Return text from final chunk (is_final: true)
-async fn transcribe_ndjson(
+/// One `stt-jsonl-v1` request for one PCM16@16k segment.
+async fn transcribe_ndjson_segment(
     url: &str,
     api_key: &str,
-    audio_data: Vec<u8>,
+    pcm: &[i16],
     language: &str,
-) -> Result<CloudTranscriptionVerdict> {
+) -> Result<String> {
     use base64::{Engine, engine::general_purpose::STANDARD as BASE64};
 
-    let start = Instant::now();
-
-    // Parse WAV header to extract sample rate and PCM data
-    // WAV format: RIFF header (12 bytes) + fmt chunk (24+ bytes) + data chunk
-    if audio_data.len() < 44 {
-        anyhow::bail!("Audio data too short for WAV header");
-    }
-
-    // Verify RIFF header
-    if &audio_data[0..4] != b"RIFF" || &audio_data[8..12] != b"WAVE" {
-        anyhow::bail!("Invalid WAV file format");
-    }
-
-    // Extract sample rate from fmt chunk (bytes 24-27, little-endian)
-    let sample_rate = u32::from_le_bytes([
-        audio_data[24],
-        audio_data[25],
-        audio_data[26],
-        audio_data[27],
-    ]);
-
-    // Find data chunk start (skip header, typically 44 bytes but can vary)
-    let mut data_start = 12; // After "WAVE"
-    while data_start + 8 < audio_data.len() {
-        let chunk_id = &audio_data[data_start..data_start + 4];
-        let chunk_size = u32::from_le_bytes([
-            audio_data[data_start + 4],
-            audio_data[data_start + 5],
-            audio_data[data_start + 6],
-            audio_data[data_start + 7],
-        ]) as usize;
-
-        if chunk_id == b"data" {
-            data_start += 8; // Skip "data" + size
-            break;
-        }
-        data_start += 8 + chunk_size;
-    }
-
-    let pcm_data = &audio_data[data_start..];
-
-    info!(
-        "[NDJSON STT] POST {} ({} bytes PCM @ {}Hz, lang={})",
-        url,
-        pcm_data.len(),
-        sample_rate,
-        language
+    let bytes: Vec<u8> = pcm.iter().flat_map(|s| s.to_le_bytes()).collect();
+    let mut body = String::with_capacity(bytes.len() * 4 / 3 + 1024);
+    body.push_str(
+        &serde_json::json!({
+            "type": "set",
+            "language": language,
+            "sample_rate": NDJSON_SAMPLE_RATE,
+            "encoding": "pcm16",
+            "vad": false
+        })
+        .to_string(),
     );
-
-    // Build NDJSON payload with base64 audio
-    // Single chunk with all audio (could be chunked for streaming in future)
-    let audio_base64 = BASE64.encode(pcm_data);
-
-    let chunk_json = serde_json::json!({
-        "type": "chunk",
-        "audio_base64": audio_base64,
-        "sample_rate": sample_rate,
-        "encoding": "pcm16",
-        "language": language,
-        "request_vocabulary": crate::stt::request_vocabulary::CODESCRIBE_STT_VOCABULARY,
-        "last": true
-    });
-
-    let end_json = serde_json::json!({"type": "end"});
-
-    let ndjson_body = format!("{}\n{}\n", chunk_json, end_json);
-
+    body.push('\n');
+    for chunk in bytes.chunks(NDJSON_CHUNK_BYTES) {
+        body.push_str(
+            &serde_json::json!({"type": "chunk", "audio_base64": BASE64.encode(chunk)}).to_string(),
+        );
+        body.push('\n');
+    }
+    body.push_str(&serde_json::json!({"type": "end"}).to_string());
+    body.push('\n');
     debug!(
-        "[NDJSON STT] Sending {} bytes NDJSON ({} bytes base64)",
-        ndjson_body.len(),
-        audio_base64.len()
+        "[NDJSON STT] Sending {} bytes NDJSON ({} bytes PCM)",
+        body.len(),
+        bytes.len()
     );
 
-    let response = get_client()
+    let request = get_client()
         .post(url)
-        .header("x-api-key", api_key)
-        .header("Content-Type", "application/x-ndjson")
-        .body(ndjson_body)
+        .header("Content-Type", "application/x-ndjson");
+    let request = match crate::stt::tail_provider::stt_auth_mode(url) {
+        crate::stt::tail_provider::SttAuthMode::Unauthenticated => request,
+        crate::stt::tail_provider::SttAuthMode::Bearer => request.bearer_auth(api_key),
+        crate::stt::tail_provider::SttAuthMode::ApiKey => request.header("x-api-key", api_key),
+    };
+    let response = request
+        .body(body)
         .send()
         .await
         .context("Failed to send NDJSON STT request")?;
@@ -638,10 +508,10 @@ async fn transcribe_ndjson(
     // Stream and parse NDJSON
     let mut stream = response.bytes_stream();
     let mut buffer = Vec::new();
-    let mut final_text = String::new();
+    let mut final_text: Option<String> = None;
     let mut partial_count = 0u32;
 
-    while let Some(chunk) = stream.next().await {
+    'lines: while let Some(chunk) = stream.next().await {
         let bytes = chunk.context("Failed to read NDJSON chunk")?;
         buffer.extend_from_slice(&bytes);
 
@@ -660,7 +530,7 @@ async fn transcribe_ndjson(
                 let data = line_str.strip_prefix("data:").unwrap().trim();
                 if data == "[DONE]" {
                     debug!("[NDJSON STT] Received [DONE] marker");
-                    break;
+                    break 'lines;
                 }
                 data
             } else if line_str.starts_with("event:") {
@@ -672,19 +542,32 @@ async fn transcribe_ndjson(
             };
 
             if let Ok(chunk) = serde_json::from_str::<NdjsonChunk>(json_str) {
-                if let Some(err) = chunk.error {
+                if chunk.kind.as_deref() == Some("error") || chunk.error.is_some() {
+                    let err = chunk
+                        .error
+                        .or(chunk.message)
+                        .unwrap_or_else(|| "unspecified".to_string());
                     error!("[NDJSON STT] Error in stream: {}", err);
                     anyhow::bail!("NDJSON STT error: {}", err);
                 }
-
+                if chunk.kind.as_deref() == Some("stream.closed") {
+                    info!(
+                        "[NDJSON STT] stream.closed response_id={}",
+                        chunk.response_id.as_deref().unwrap_or("none")
+                    );
+                    break 'lines;
+                }
                 if let Some(text) = chunk.text {
-                    if chunk.is_final.unwrap_or(false) {
-                        final_text = text;
+                    if chunk.kind.as_deref() == Some("transcript.final")
+                        || chunk.is_final.unwrap_or(false)
+                    {
                         info!(
-                            "[NDJSON STT] Final: {} chars after {} partials",
-                            final_text.len(),
-                            partial_count
+                            "[NDJSON STT] Final: {} chars after {} partials response_id={}",
+                            text.len(),
+                            partial_count,
+                            chunk.response_id.as_deref().unwrap_or("none")
                         );
+                        final_text = Some(text);
                     } else {
                         partial_count += 1;
                         debug!(
@@ -698,22 +581,7 @@ async fn transcribe_ndjson(
         }
     }
 
-    let duration_ms = start.elapsed().as_millis();
-    info!(
-        "[NDJSON STT] Complete in {}ms: {} chars",
-        duration_ms,
-        final_text.len()
-    );
-
-    if final_text.is_empty() {
-        anyhow::bail!("No transcription received from NDJSON STT");
-    }
-
-    Ok(CloudTranscriptionVerdict::new(
-        final_text,
-        Some(duration_ms.min(u128::from(u64::MAX)) as u64),
-        None,
-    ))
+    final_text.ok_or_else(|| anyhow::anyhow!("No transcript.final received from NDJSON STT"))
 }
 
 // ============================================================================
@@ -726,6 +594,26 @@ async fn transcribe_ndjson(
 /// - file: audio file
 /// - model: whisper model name
 /// - language: optional language code
+pub(crate) fn stt_model(url: &str, override_model: Option<&str>) -> Option<String> {
+    use super::provider::ProviderKind;
+    let vendor = super::speech::vendor_for_endpoint(url);
+    if vendor == Some(ProviderKind::XaiResponses) {
+        return None; // xAI STT has no model request field.
+    }
+    let default = if vendor == Some(ProviderKind::OpenAiResponses) {
+        super::vendors::openai::DEFAULT_STT_MODEL
+    } else {
+        "mlx-community/whisper-large-v3-mlx"
+    };
+    Some(
+        override_model
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+            .unwrap_or(default)
+            .to_string(),
+    )
+}
+
 async fn transcribe_multipart(
     url: &str,
     api_key: &str,
@@ -753,14 +641,18 @@ async fn transcribe_multipart(
             .mime_str("audio/wav")
             .context("Failed to set MIME type")?;
 
-        // Model from env WHISPER_MODEL or default to non-turbo large-v3
-        let whisper_model = std::env::var("WHISPER_MODEL")
-            .unwrap_or_else(|_| "mlx-community/whisper-large-v3-mlx".to_string());
-
+        let whisper_model = stt_model(url, std::env::var("WHISPER_MODEL").ok().as_deref());
         let mut form = Form::new()
             .part("file", file_part)
-            .text("model", whisper_model.clone())
             .text("language", language.to_string());
+        if let Some(model) = &whisper_model {
+            form = form.text("model", model.clone());
+        }
+        if super::speech::vendor_for_endpoint(url)
+            == Some(super::provider::ProviderKind::OpenAiResponses)
+        {
+            form = form.text("response_format", "json");
+        }
         if let Some((field, value)) =
             crate::stt::request_vocabulary::codescribe_stt_vocabulary_form_part(url)
         {
@@ -783,7 +675,7 @@ async fn transcribe_multipart(
                 return Ok(CloudTranscriptionVerdict::new(
                     text,
                     Some(start.elapsed().as_millis().min(u128::from(u64::MAX)) as u64),
-                    Some(whisper_model.clone()),
+                    whisper_model.clone(),
                 ));
             }
             Err(e) => {
@@ -837,6 +729,10 @@ async fn transcribe_multipart_request(url: &str, api_key: &str, form: Form) -> R
 
     if !response.status().is_success() {
         let status = response.status();
+        // Vendor error bodies can echo request contents; keep diagnostics content-free.
+        if super::speech::vendor_for_endpoint(url).is_some() {
+            anyhow::bail!("Vendor STT transcription failed with status {}", status);
+        }
         let body = response
             .text()
             .await
@@ -862,44 +758,95 @@ async fn transcribe_multipart_request(url: &str, api_key: &str, form: Form) -> R
     Ok(transcribe_response.text)
 }
 
-/// Unit tests for WS loopback policy, audio preflight, retry classification, serde.
+/// Unit tests for audio preflight, retry classification, serde.
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn short_pcm_is_one_segment() {
+        let pcm = vec![1000i16; 16_000 * 30];
+        let segments = split_pcm_at_quiet_points(&pcm, 600 * 16_000, 5 * 16_000);
+        assert_eq!(segments.len(), 1);
+        assert_eq!(segments[0].len(), pcm.len());
+    }
+
+    #[test]
+    fn long_pcm_cuts_inside_the_quiet_gap_before_the_boundary() {
+        // 25 minutes of "speech" with a 400 ms hole at 9:58 and one at 19:57.
+        let rate = 16_000usize;
+        let mut pcm = vec![8000i16; 25 * 60 * rate];
+        let holes = [
+            (598 * rate, 598 * rate + 6_400),
+            (1_197 * rate, 1_197 * rate + 6_400),
+        ];
+        for (from, to) in holes {
+            pcm[from..to].fill(0);
+        }
+        let segments = split_pcm_at_quiet_points(&pcm, 600 * rate, 5 * rate);
+        assert_eq!(segments.len(), 3, "25 min at 10-min segments");
+        let first_cut = segments[0].len();
+        let second_cut = first_cut + segments[1].len();
+        assert!(
+            (holes[0].0..holes[0].1).contains(&first_cut),
+            "first cut {first_cut} not inside the 9:58 hole"
+        );
+        assert!(
+            (holes[1].0..holes[1].1).contains(&second_cut),
+            "second cut {second_cut} not inside the 19:57 hole"
+        );
+        for segment in &segments {
+            assert!(segment.len() <= 600 * rate);
+            assert!(!segment.is_empty());
+        }
+        let rebuilt: Vec<i16> = segments.concat();
+        assert_eq!(rebuilt, pcm, "segments must concatenate back to the input");
+    }
+
+    #[test]
+    fn ndjson_lines_parse_both_wire_shapes() {
+        let modern: NdjsonChunk =
+            serde_json::from_str(r#"{"type": "transcript.final", "text": "Dziękuję.", "duration_ms": null, "response_id": "r1"}"#)
+                .unwrap();
+        assert_eq!(modern.kind.as_deref(), Some("transcript.final"));
+        assert_eq!(modern.text.as_deref(), Some("Dziękuję."));
+        let legacy: NdjsonChunk =
+            serde_json::from_str(r#"{"text": "x", "is_final": true}"#).unwrap();
+        assert_eq!(legacy.is_final, Some(true));
+        let err: NdjsonChunk =
+            serde_json::from_str(r#"{"type": "error", "message": "boom"}"#).unwrap();
+        assert_eq!(err.kind.as_deref(), Some("error"));
+        assert_eq!(err.message.as_deref(), Some("boom"));
+    }
+
     use super::*;
 
-    /// Build a plain-WebSocket URL for loopback-policy tests without hardcoding the scheme.
-    fn plain_ws_url(authority: &str) -> String {
-        format!("{}{}", WS_SCHEME_PREFIX, authority)
+    #[test]
+    fn vendor_stt_model_selection_matches_wire_contract() {
+        assert_eq!(
+            stt_model("https://api.openai.com/v1/audio/transcriptions", None).as_deref(),
+            Some("gpt-4o-mini-transcribe")
+        );
+        assert_eq!(
+            stt_model(
+                "https://api.openai.com/v1/audio/transcriptions",
+                Some("custom")
+            )
+            .as_deref(),
+            Some("custom")
+        );
+        assert_eq!(stt_model("https://api.x.ai/v1/stt", Some("ignored")), None);
+        assert_eq!(
+            stt_model("https://custom.example/stt", None).as_deref(),
+            Some("mlx-community/whisper-large-v3-mlx")
+        );
     }
 
     #[test]
-    fn ws_config_names_programming_domain() {
-        let encoded = serde_json::to_value(&WsConfig {
-            msg_type: "config",
-            language: "pl".to_string(),
-            api_key: "unused".to_string(),
-            vocabulary: crate::stt::request_vocabulary::CODESCRIBE_STT_VOCABULARY,
-        })
-        .expect("serialize ws config");
-        assert_eq!(encoded["type"], "config");
-        assert_eq!(encoded["vocabulary"], "programming");
-        assert_ne!(encoded["vocabulary"], "veterinary");
-    }
-
-    /// Plain WebSocket only on loopback; non-loopback rejected; the secure scheme always ok.
-    #[test]
-    fn ws_plain_rejected_for_non_loopback() {
-        // Plain WebSocket to a non-loopback host must be rejected.
-        assert!(enforce_ws_scheme_loopback(&plain_ws_url("example.com:1234")).is_err());
-        assert!(enforce_ws_scheme_loopback(&plain_ws_url("192.168.1.10:1234")).is_err());
-
-        // Plain WebSocket to loopback hosts is allowed.
-        assert!(enforce_ws_scheme_loopback(&plain_ws_url("127.0.0.1:1234")).is_ok());
-        assert!(enforce_ws_scheme_loopback(&plain_ws_url("localhost:1234")).is_ok());
-        assert!(enforce_ws_scheme_loopback(&plain_ws_url("[::1]:1234")).is_ok());
-
-        // wss:// is always allowed regardless of host.
-        assert!(enforce_ws_scheme_loopback("wss://example.com:1234").is_ok());
+    fn xai_transcription_response_accepts_vendor_metadata() {
+        let response: TranscribeResponse = serde_json::from_str(
+            r#"{"text":"Repeated repeated","language":"en","duration":1.25,"words":[]}"#,
+        )
+        .unwrap();
+        assert_eq!(response.text, "Repeated repeated");
     }
 
     /// Empty buffer is rejected before any network call.

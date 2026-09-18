@@ -21,8 +21,6 @@
 //!   sequencing.
 //! - [`local_helper`] — the provider-compatible, injected child-process
 //!   boundary whose confirmed exit is the local-weight reclaim authority.
-//! - [`bootstrap`] — the recording-start join between persisted mode/consent
-//!   truth and a validated live endpoint.
 //! - [`recorder`] — the per-recording lane the live session drives: injected
 //!   [`recorder::Layer1Decision`], bounded non-blocking PCM fan-out, volatile
 //!   partial draft, and typed degrade paths that always land on canvas +
@@ -35,8 +33,7 @@
 //!
 //! No settings UI or local model. The Voice Lab wire is isolated behind the
 //! normalized provider contract; the mode/consent *records* live in
-//! `crate::config::cloud_asr` (the settings brain), while [`bootstrap`] joins
-//! that truth to the recorder.
+//! `crate::config::cloud_asr` (the settings brain).
 //!
 //! The existing whole-file `client::transcribe_cloud` API is **outside** this
 //! contract. It uploads one completed recording only for explicit retranscribe
@@ -52,8 +49,6 @@
 //! - Errors carry a typed kind and nothing else, so no transcript fragment,
 //!   audio, or credential can ride an error into a log line.
 
-/// Recording-start mode/consent/gateway integration for the real recorder path.
-pub mod bootstrap;
 /// Dedicated provider-neutral live cloud gateway transport and session adapter.
 pub mod cloud;
 /// Audio-egress consent gate in front of Layer 1 session construction (C2).
@@ -74,10 +69,6 @@ pub mod recorder;
 #[cfg(test)]
 mod tests;
 
-pub use bootstrap::{
-    GatewaySessionAvailability, gateway_session_availability, layer1_decision_for_recording,
-    layer1_decision_for_recording_with_layered_raw,
-};
 pub use cloud::{
     CloudGatewayTransport, CloudSessionLimits, CloudSessionTelemetry, GatewayConnection,
     GatewayErrorCode, GatewayEvent, GatewayPcmFrame, GatewaySessionConfig, GatewayTransportPoll,
@@ -87,8 +78,7 @@ pub use consent::{
     CloudEgressAuthorization, CloudSessionError, authorize_cloud_egress, refiner_for,
 };
 pub use events::{
-    AsrErrorKind, AsrSessionEvent, AudioRange, ErrorEvent, EventIdentity, SessionId,
-    TranscriptEvent, UsageEvent,
+    AsrErrorKind, AsrSessionEvent, AudioRange, ErrorEvent, SessionId, TranscriptEvent, UsageEvent,
 };
 pub use fake::FakeAsrSessionProvider;
 pub use ingest::{IngestVerdict, SessionIngest};
@@ -103,3 +93,125 @@ pub use recorder::{
     RecorderLayer1Lane, RecorderLifecycleEvent, RecorderLifecycleEvents, RecorderLifecycleHandle,
     apply_recorder_lifecycle_event, recorder_lifecycle_channel,
 };
+
+/// Content-free recording-start decision. Endpoints and credentials never
+/// enter this receipt, even when provider construction is refused.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Layer1DecisionReceipt {
+    pub asr_mode: &'static str,
+    pub refiner: &'static str,
+    pub reason: &'static str,
+    pub consent: &'static str,
+}
+
+/// Resolve and log Layer 1 exactly once before the recording lane opens.
+/// Both microphone capture and production replay consume this entrypoint.
+pub fn layer1_decision(
+    snapshot: &crate::config::RuntimeSettingsSnapshot,
+) -> (Layer1Decision, Layer1DecisionReceipt) {
+    let (decision, receipt) = layer1_decision_with_factory(snapshot, |snapshot, authorization| {
+        let values = snapshot.values();
+        let endpoint = values
+            .stt_live_endpoint
+            .as_deref()
+            .filter(|value| !value.trim().is_empty())
+            .ok_or("live_endpoint_missing")?;
+        let key = values
+            .stt_live_api_key
+            .as_deref()
+            .filter(|value| !value.trim().is_empty())
+            .ok_or("live_key_missing")?;
+        // This baseline speaks the Voice Lab live WebSocket directly. The
+        // connection is constructed from the loader's live lane, never env or the
+        // file-upload lane. Construction is dormant; open starts its worker.
+        let connection =
+            GatewayConnection::new(endpoint, key).map_err(|_| "live_connection_invalid")?;
+        let limits = CloudSessionLimits {
+            // Capture is native-rate, not necessarily 16 kHz: retain the
+            // bounded 200 ms frame budget through 192 kHz capture/replay.
+            max_frame_samples: 38_400,
+            ..CloudSessionLimits::default()
+        };
+        let transport = GatewayWebSocketTransport::new(connection, limits)
+            .map_err(|_| "cloud_transport_invalid")?;
+        let provider = LiveCloudAsrSession::new(transport, limits, authorization)
+            .map_err(|_| "cloud_provider_invalid")?;
+        Ok(Box::new(provider))
+    });
+    tracing::info!(
+        asr_mode = receipt.asr_mode,
+        refiner = receipt.refiner,
+        reason = receipt.reason,
+        consent = receipt.consent,
+        "layer1_decision"
+    );
+    (decision, receipt)
+}
+
+/// One policy body; tests replace only dormant cloud transport construction.
+fn layer1_decision_with_factory(
+    snapshot: &crate::config::RuntimeSettingsSnapshot,
+    cloud_factory: impl FnOnce(
+        &crate::config::RuntimeSettingsSnapshot,
+        CloudEgressAuthorization,
+    ) -> Result<Box<dyn AsrSessionProvider + Send>, &'static str>,
+) -> (Layer1Decision, Layer1DecisionReceipt) {
+    use crate::config::cloud_asr::{AudioEgressConsent, ModeDerivation};
+
+    // resolved_asr_mode delegates to the single resolve_asr_product_mode law.
+    let resolved = snapshot.user_settings().resolved_asr_mode();
+    let mut receipt = Layer1DecisionReceipt {
+        asr_mode: resolved.mode.as_str(),
+        refiner: "off",
+        reason: "layered_off",
+        consent: match resolved.consent {
+            AudioEgressConsent::Granted(_) => "granted",
+            AudioEgressConsent::Denied => "denied",
+            AudioEgressConsent::Unanswered => "missing",
+        },
+    };
+    let fallback = snapshot.local_tail_patch_decision();
+    if !fallback.is_armed() {
+        receipt.reason = match fallback.local_tail_patch_disposition() {
+            Some(LocalTailPatchDisposition::DegradedInvalidOverride) => "layered_invalid",
+            _ => "layered_off",
+        };
+        return (Layer1Decision::Disarmed, receipt);
+    }
+    match refiner_for(&resolved) {
+        RefinerMode::CloudSession => {
+            // Keep the non-constructible witness at the actual factory seam.
+            let provider = authorize_cloud_egress(&resolved.consent)
+                .map_err(|_| "consent_required")
+                .and_then(|authorization| cloud_factory(snapshot, authorization));
+            match provider {
+                Ok(provider) => {
+                    receipt.refiner = "cloud_session";
+                    receipt.reason = "cloud_ready";
+                    (Layer1Decision::Armed(provider), receipt)
+                }
+                Err(reason) => {
+                    receipt.reason = reason;
+                    // A failed cloud selection never silently loads local weights.
+                    (Layer1Decision::Disarmed, receipt)
+                }
+            }
+        }
+        RefinerMode::LocalHelper => {
+            // LocalHelperLauncher has no production implementation. The tail
+            // sidecar speaks a different protocol and is not an L1 helper.
+            receipt.refiner = "local_tail_patch";
+            receipt.reason = "local_helper_unavailable";
+            (fallback, receipt)
+        }
+        RefinerMode::Off => {
+            receipt.reason = match resolved.derivation {
+                ModeDerivation::ConsentMissingFallback => "consent_missing",
+                ModeDerivation::ConsentDeniedFallback => "consent_denied",
+                ModeDerivation::UnknownModeFallback => "asr_mode_invalid",
+                _ => "apple_only",
+            };
+            (Layer1Decision::Disarmed, receipt)
+        }
+    }
+}

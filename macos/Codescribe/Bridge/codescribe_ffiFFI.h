@@ -369,23 +369,30 @@ typedef void (*UniffiCallbackInterfaceCsAppActionListenerMethod0)(uint64_t, void
     );
 
 #endif
+#ifndef UNIFFI_FFIDEF_CALLBACK_INTERFACE_CS_APP_ACTION_LISTENER_METHOD1
+#define UNIFFI_FFIDEF_CALLBACK_INTERFACE_CS_APP_ACTION_LISTENER_METHOD1
+typedef void (*UniffiCallbackInterfaceCsAppActionListenerMethod1)(uint64_t, void* _Nonnull,
+        RustCallStatus *_Nonnull uniffiCallStatus
+    );
+
+#endif
 #ifndef UNIFFI_FFIDEF_CALLBACK_INTERFACE_CS_TRANSCRIPTION_LISTENER_METHOD0
 #define UNIFFI_FFIDEF_CALLBACK_INTERFACE_CS_TRANSCRIPTION_LISTENER_METHOD0
-typedef void (*UniffiCallbackInterfaceCsTranscriptionListenerMethod0)(uint64_t, void* _Nonnull,
+typedef void (*UniffiCallbackInterfaceCsTranscriptionListenerMethod0)(uint64_t, RustBuffer, void* _Nonnull,
         RustCallStatus *_Nonnull uniffiCallStatus
     );
 
 #endif
 #ifndef UNIFFI_FFIDEF_CALLBACK_INTERFACE_CS_TRANSCRIPTION_LISTENER_METHOD1
 #define UNIFFI_FFIDEF_CALLBACK_INTERFACE_CS_TRANSCRIPTION_LISTENER_METHOD1
-typedef void (*UniffiCallbackInterfaceCsTranscriptionListenerMethod1)(uint64_t, void* _Nonnull,
+typedef void (*UniffiCallbackInterfaceCsTranscriptionListenerMethod1)(uint64_t, RustBuffer, void* _Nonnull,
         RustCallStatus *_Nonnull uniffiCallStatus
     );
 
 #endif
 #ifndef UNIFFI_FFIDEF_CALLBACK_INTERFACE_CS_TRANSCRIPTION_LISTENER_METHOD2
 #define UNIFFI_FFIDEF_CALLBACK_INTERFACE_CS_TRANSCRIPTION_LISTENER_METHOD2
-typedef void (*UniffiCallbackInterfaceCsTranscriptionListenerMethod2)(uint64_t, void* _Nonnull,
+typedef void (*UniffiCallbackInterfaceCsTranscriptionListenerMethod2)(uint64_t, RustBuffer, void* _Nonnull,
         RustCallStatus *_Nonnull uniffiCallStatus
     );
 
@@ -399,49 +406,49 @@ typedef void (*UniffiCallbackInterfaceCsTranscriptionListenerMethod3)(uint64_t, 
 #endif
 #ifndef UNIFFI_FFIDEF_CALLBACK_INTERFACE_CS_TRANSCRIPTION_LISTENER_METHOD4
 #define UNIFFI_FFIDEF_CALLBACK_INTERFACE_CS_TRANSCRIPTION_LISTENER_METHOD4
-typedef void (*UniffiCallbackInterfaceCsTranscriptionListenerMethod4)(uint64_t, RustBuffer, void* _Nonnull,
+typedef void (*UniffiCallbackInterfaceCsTranscriptionListenerMethod4)(uint64_t, void* _Nonnull,
         RustCallStatus *_Nonnull uniffiCallStatus
     );
 
 #endif
 #ifndef UNIFFI_FFIDEF_CALLBACK_INTERFACE_CS_TRANSCRIPTION_LISTENER_METHOD5
 #define UNIFFI_FFIDEF_CALLBACK_INTERFACE_CS_TRANSCRIPTION_LISTENER_METHOD5
-typedef void (*UniffiCallbackInterfaceCsTranscriptionListenerMethod5)(uint64_t, RustBuffer, RustBuffer, void* _Nonnull,
+typedef void (*UniffiCallbackInterfaceCsTranscriptionListenerMethod5)(uint64_t, void* _Nonnull,
         RustCallStatus *_Nonnull uniffiCallStatus
     );
 
 #endif
 #ifndef UNIFFI_FFIDEF_CALLBACK_INTERFACE_CS_TRANSCRIPTION_LISTENER_METHOD6
 #define UNIFFI_FFIDEF_CALLBACK_INTERFACE_CS_TRANSCRIPTION_LISTENER_METHOD6
-typedef void (*UniffiCallbackInterfaceCsTranscriptionListenerMethod6)(uint64_t, uint64_t, RustBuffer, RustBuffer, RustBuffer, RustBuffer, void* _Nonnull,
+typedef void (*UniffiCallbackInterfaceCsTranscriptionListenerMethod6)(uint64_t, void* _Nonnull,
         RustCallStatus *_Nonnull uniffiCallStatus
     );
 
 #endif
 #ifndef UNIFFI_FFIDEF_CALLBACK_INTERFACE_CS_TRANSCRIPTION_LISTENER_METHOD7
 #define UNIFFI_FFIDEF_CALLBACK_INTERFACE_CS_TRANSCRIPTION_LISTENER_METHOD7
-typedef void (*UniffiCallbackInterfaceCsTranscriptionListenerMethod7)(uint64_t, uint64_t, uint64_t, uint64_t, RustBuffer, RustBuffer, void* _Nonnull,
+typedef void (*UniffiCallbackInterfaceCsTranscriptionListenerMethod7)(uint64_t, RustBuffer, RustBuffer, void* _Nonnull,
         RustCallStatus *_Nonnull uniffiCallStatus
     );
 
 #endif
 #ifndef UNIFFI_FFIDEF_CALLBACK_INTERFACE_CS_TRANSCRIPTION_LISTENER_METHOD8
 #define UNIFFI_FFIDEF_CALLBACK_INTERFACE_CS_TRANSCRIPTION_LISTENER_METHOD8
-typedef void (*UniffiCallbackInterfaceCsTranscriptionListenerMethod8)(uint64_t, uint64_t, uint64_t, RustBuffer, RustBuffer, void* _Nonnull,
+typedef void (*UniffiCallbackInterfaceCsTranscriptionListenerMethod8)(uint64_t, int8_t, void* _Nonnull,
         RustCallStatus *_Nonnull uniffiCallStatus
     );
 
 #endif
 #ifndef UNIFFI_FFIDEF_CALLBACK_INTERFACE_CS_TRANSCRIPTION_LISTENER_METHOD9
 #define UNIFFI_FFIDEF_CALLBACK_INTERFACE_CS_TRANSCRIPTION_LISTENER_METHOD9
-typedef void (*UniffiCallbackInterfaceCsTranscriptionListenerMethod9)(uint64_t, uint64_t, RustBuffer, void* _Nonnull,
+typedef void (*UniffiCallbackInterfaceCsTranscriptionListenerMethod9)(uint64_t, float, void* _Nonnull,
         RustCallStatus *_Nonnull uniffiCallStatus
     );
 
 #endif
 #ifndef UNIFFI_FFIDEF_CALLBACK_INTERFACE_CS_TRANSCRIPTION_LISTENER_METHOD10
 #define UNIFFI_FFIDEF_CALLBACK_INTERFACE_CS_TRANSCRIPTION_LISTENER_METHOD10
-typedef void (*UniffiCallbackInterfaceCsTranscriptionListenerMethod10)(uint64_t, RustBuffer, RustBuffer, void* _Nonnull,
+typedef void (*UniffiCallbackInterfaceCsTranscriptionListenerMethod10)(uint64_t, RustBuffer, void* _Nonnull,
         RustCallStatus *_Nonnull uniffiCallStatus
     );
 
@@ -449,34 +456,6 @@ typedef void (*UniffiCallbackInterfaceCsTranscriptionListenerMethod10)(uint64_t,
 #ifndef UNIFFI_FFIDEF_CALLBACK_INTERFACE_CS_TRANSCRIPTION_LISTENER_METHOD11
 #define UNIFFI_FFIDEF_CALLBACK_INTERFACE_CS_TRANSCRIPTION_LISTENER_METHOD11
 typedef void (*UniffiCallbackInterfaceCsTranscriptionListenerMethod11)(uint64_t, RustBuffer, void* _Nonnull,
-        RustCallStatus *_Nonnull uniffiCallStatus
-    );
-
-#endif
-#ifndef UNIFFI_FFIDEF_CALLBACK_INTERFACE_CS_TRANSCRIPTION_LISTENER_METHOD12
-#define UNIFFI_FFIDEF_CALLBACK_INTERFACE_CS_TRANSCRIPTION_LISTENER_METHOD12
-typedef void (*UniffiCallbackInterfaceCsTranscriptionListenerMethod12)(uint64_t, int8_t, void* _Nonnull,
-        RustCallStatus *_Nonnull uniffiCallStatus
-    );
-
-#endif
-#ifndef UNIFFI_FFIDEF_CALLBACK_INTERFACE_CS_TRANSCRIPTION_LISTENER_METHOD13
-#define UNIFFI_FFIDEF_CALLBACK_INTERFACE_CS_TRANSCRIPTION_LISTENER_METHOD13
-typedef void (*UniffiCallbackInterfaceCsTranscriptionListenerMethod13)(uint64_t, float, void* _Nonnull,
-        RustCallStatus *_Nonnull uniffiCallStatus
-    );
-
-#endif
-#ifndef UNIFFI_FFIDEF_CALLBACK_INTERFACE_CS_TRANSCRIPTION_LISTENER_METHOD14
-#define UNIFFI_FFIDEF_CALLBACK_INTERFACE_CS_TRANSCRIPTION_LISTENER_METHOD14
-typedef void (*UniffiCallbackInterfaceCsTranscriptionListenerMethod14)(uint64_t, RustBuffer, void* _Nonnull,
-        RustCallStatus *_Nonnull uniffiCallStatus
-    );
-
-#endif
-#ifndef UNIFFI_FFIDEF_CALLBACK_INTERFACE_CS_TRANSCRIPTION_LISTENER_METHOD15
-#define UNIFFI_FFIDEF_CALLBACK_INTERFACE_CS_TRANSCRIPTION_LISTENER_METHOD15
-typedef void (*UniffiCallbackInterfaceCsTranscriptionListenerMethod15)(uint64_t, RustBuffer, void* _Nonnull,
         RustCallStatus *_Nonnull uniffiCallStatus
     );
 
@@ -541,6 +520,7 @@ typedef struct UniffiVTableCallbackInterfaceCsAppActionListener {
     UniffiCallbackInterfaceFree _Nonnull uniffiFree;
     UniffiCallbackInterfaceClone _Nonnull uniffiClone;
     UniffiCallbackInterfaceCsAppActionListenerMethod0 _Nonnull onShowAgent;
+    UniffiCallbackInterfaceCsAppActionListenerMethod1 _Nonnull onMaxApprovalsChanged;
 } UniffiVTableCallbackInterfaceCsAppActionListener;
 
 #endif
@@ -549,22 +529,18 @@ typedef struct UniffiVTableCallbackInterfaceCsAppActionListener {
 typedef struct UniffiVTableCallbackInterfaceCsTranscriptionListener {
     UniffiCallbackInterfaceFree _Nonnull uniffiFree;
     UniffiCallbackInterfaceClone _Nonnull uniffiClone;
-    UniffiCallbackInterfaceCsTranscriptionListenerMethod0 _Nonnull onRecordingPreparing;
-    UniffiCallbackInterfaceCsTranscriptionListenerMethod1 _Nonnull onRecordingStarted;
-    UniffiCallbackInterfaceCsTranscriptionListenerMethod2 _Nonnull onRecordingStopped;
-    UniffiCallbackInterfaceCsTranscriptionListenerMethod3 _Nonnull onRecordingFinalising;
-    UniffiCallbackInterfaceCsTranscriptionListenerMethod4 _Nonnull onPreview;
-    UniffiCallbackInterfaceCsTranscriptionListenerMethod5 _Nonnull onCorrection;
-    UniffiCallbackInterfaceCsTranscriptionListenerMethod6 _Nonnull onFinal;
-    UniffiCallbackInterfaceCsTranscriptionListenerMethod7 _Nonnull onReplaceRange;
-    UniffiCallbackInterfaceCsTranscriptionListenerMethod8 _Nonnull onInsertAnnotation;
-    UniffiCallbackInterfaceCsTranscriptionListenerMethod9 _Nonnull onContextMarker;
-    UniffiCallbackInterfaceCsTranscriptionListenerMethod10 _Nonnull onSessionFinalised;
-    UniffiCallbackInterfaceCsTranscriptionListenerMethod11 _Nonnull onFinalTranscriptReady;
-    UniffiCallbackInterfaceCsTranscriptionListenerMethod12 _Nonnull onVadActive;
-    UniffiCallbackInterfaceCsTranscriptionListenerMethod13 _Nonnull onAudioLevel;
-    UniffiCallbackInterfaceCsTranscriptionListenerMethod14 _Nonnull onNoSpeech;
-    UniffiCallbackInterfaceCsTranscriptionListenerMethod15 _Nonnull onError;
+    UniffiCallbackInterfaceCsTranscriptionListenerMethod0 _Nonnull onTranscriptProjection;
+    UniffiCallbackInterfaceCsTranscriptionListenerMethod1 _Nonnull onPresentationStatus;
+    UniffiCallbackInterfaceCsTranscriptionListenerMethod2 _Nonnull onCompactProjection;
+    UniffiCallbackInterfaceCsTranscriptionListenerMethod3 _Nonnull onRecordingPreparing;
+    UniffiCallbackInterfaceCsTranscriptionListenerMethod4 _Nonnull onRecordingStarted;
+    UniffiCallbackInterfaceCsTranscriptionListenerMethod5 _Nonnull onRecordingStopped;
+    UniffiCallbackInterfaceCsTranscriptionListenerMethod6 _Nonnull onRecordingFinalising;
+    UniffiCallbackInterfaceCsTranscriptionListenerMethod7 _Nonnull onSessionFinalised;
+    UniffiCallbackInterfaceCsTranscriptionListenerMethod8 _Nonnull onVadActive;
+    UniffiCallbackInterfaceCsTranscriptionListenerMethod9 _Nonnull onAudioLevel;
+    UniffiCallbackInterfaceCsTranscriptionListenerMethod10 _Nonnull onNoSpeech;
+    UniffiCallbackInterfaceCsTranscriptionListenerMethod11 _Nonnull onError;
 } UniffiVTableCallbackInterfaceCsTranscriptionListener;
 
 #endif
@@ -621,6 +597,11 @@ uint64_t uniffi_codescribe_ffi_fn_method_codescribeagent_generate_thread_title(u
 #ifndef UNIFFI_FFIDEF_UNIFFI_CODESCRIBE_FFI_FN_METHOD_CODESCRIBEAGENT_IS_AVAILABLE
 #define UNIFFI_FFIDEF_UNIFFI_CODESCRIBE_FFI_FN_METHOD_CODESCRIBEAGENT_IS_AVAILABLE
 int8_t uniffi_codescribe_ffi_fn_method_codescribeagent_is_available(uint64_t ptr, RustCallStatus *_Nonnull out_status
+);
+#endif
+#ifndef UNIFFI_FFIDEF_UNIFFI_CODESCRIBE_FFI_FN_METHOD_CODESCRIBEAGENT_PENDING_TOOL_APPROVALS
+#define UNIFFI_FFIDEF_UNIFFI_CODESCRIBE_FFI_FN_METHOD_CODESCRIBEAGENT_PENDING_TOOL_APPROVALS
+RustBuffer uniffi_codescribe_ffi_fn_method_codescribeagent_pending_tool_approvals(uint64_t ptr, RustBuffer thread_id, RustCallStatus *_Nonnull out_status
 );
 #endif
 #ifndef UNIFFI_FFIDEF_UNIFFI_CODESCRIBE_FFI_FN_METHOD_CODESCRIBEAGENT_RESOLVE_TOOL_APPROVAL
@@ -683,6 +664,11 @@ void uniffi_codescribe_ffi_fn_free_codescribeconfig(uint64_t handle, RustCallSta
 #define UNIFFI_FFIDEF_UNIFFI_CODESCRIBE_FFI_FN_CONSTRUCTOR_CODESCRIBECONFIG_NEW
 uint64_t uniffi_codescribe_ffi_fn_constructor_codescribeconfig_new(RustCallStatus *_Nonnull out_status
 
+);
+#endif
+#ifndef UNIFFI_FFIDEF_UNIFFI_CODESCRIBE_FFI_FN_METHOD_CODESCRIBECONFIG_ADD_CUSTOM_PROVIDER
+#define UNIFFI_FFIDEF_UNIFFI_CODESCRIBE_FFI_FN_METHOD_CODESCRIBECONFIG_ADD_CUSTOM_PROVIDER
+RustBuffer uniffi_codescribe_ffi_fn_method_codescribeconfig_add_custom_provider(uint64_t ptr, RustBuffer draft, RustCallStatus *_Nonnull out_status
 );
 #endif
 #ifndef UNIFFI_FFIDEF_UNIFFI_CODESCRIBE_FFI_FN_METHOD_CODESCRIBECONFIG_ASSISTIVE_PROMPT_SNAPSHOT
@@ -755,14 +741,14 @@ RustBuffer uniffi_codescribe_ffi_fn_method_codescribeconfig_get_assistive_prompt
 RustBuffer uniffi_codescribe_ffi_fn_method_codescribeconfig_get_formatting_prompt(uint64_t ptr, RustCallStatus *_Nonnull out_status
 );
 #endif
-#ifndef UNIFFI_FFIDEF_UNIFFI_CODESCRIBE_FFI_FN_METHOD_CODESCRIBECONFIG_KEY_ACCOUNTS
-#define UNIFFI_FFIDEF_UNIFFI_CODESCRIBE_FFI_FN_METHOD_CODESCRIBECONFIG_KEY_ACCOUNTS
-RustBuffer uniffi_codescribe_ffi_fn_method_codescribeconfig_key_accounts(uint64_t ptr, RustCallStatus *_Nonnull out_status
-);
-#endif
 #ifndef UNIFFI_FFIDEF_UNIFFI_CODESCRIBE_FFI_FN_METHOD_CODESCRIBECONFIG_KEY_STATUS
 #define UNIFFI_FFIDEF_UNIFFI_CODESCRIBE_FFI_FN_METHOD_CODESCRIBECONFIG_KEY_STATUS
 RustBuffer uniffi_codescribe_ffi_fn_method_codescribeconfig_key_status(uint64_t ptr, RustCallStatus *_Nonnull out_status
+);
+#endif
+#ifndef UNIFFI_FFIDEF_UNIFFI_CODESCRIBE_FFI_FN_METHOD_CODESCRIBECONFIG_LOAD_DIAGNOSTIC_SETTINGS
+#define UNIFFI_FFIDEF_UNIFFI_CODESCRIBE_FFI_FN_METHOD_CODESCRIBECONFIG_LOAD_DIAGNOSTIC_SETTINGS
+RustBuffer uniffi_codescribe_ffi_fn_method_codescribeconfig_load_diagnostic_settings(uint64_t ptr, RustCallStatus *_Nonnull out_status
 );
 #endif
 #ifndef UNIFFI_FFIDEF_UNIFFI_CODESCRIBE_FFI_FN_METHOD_CODESCRIBECONFIG_LOAD_SETTINGS
@@ -775,11 +761,6 @@ RustBuffer uniffi_codescribe_ffi_fn_method_codescribeconfig_load_settings(uint64
 void uniffi_codescribe_ffi_fn_method_codescribeconfig_mark_onboarding_done(uint64_t ptr, RustCallStatus *_Nonnull out_status
 );
 #endif
-#ifndef UNIFFI_FFIDEF_UNIFFI_CODESCRIBE_FFI_FN_METHOD_CODESCRIBECONFIG_NORMALIZE_OPENAI_RESPONSES_ENDPOINT
-#define UNIFFI_FFIDEF_UNIFFI_CODESCRIBE_FFI_FN_METHOD_CODESCRIBECONFIG_NORMALIZE_OPENAI_RESPONSES_ENDPOINT
-RustBuffer uniffi_codescribe_ffi_fn_method_codescribeconfig_normalize_openai_responses_endpoint(uint64_t ptr, RustBuffer endpoint, RustCallStatus *_Nonnull out_status
-);
-#endif
 #ifndef UNIFFI_FFIDEF_UNIFFI_CODESCRIBE_FFI_FN_METHOD_CODESCRIBECONFIG_ONBOARDING_MODE
 #define UNIFFI_FFIDEF_UNIFFI_CODESCRIBE_FFI_FN_METHOD_CODESCRIBECONFIG_ONBOARDING_MODE
 RustBuffer uniffi_codescribe_ffi_fn_method_codescribeconfig_onboarding_mode(uint64_t ptr, RustCallStatus *_Nonnull out_status
@@ -788,6 +769,16 @@ RustBuffer uniffi_codescribe_ffi_fn_method_codescribeconfig_onboarding_mode(uint
 #ifndef UNIFFI_FFIDEF_UNIFFI_CODESCRIBE_FFI_FN_METHOD_CODESCRIBECONFIG_ONBOARDING_PROGRESS
 #define UNIFFI_FFIDEF_UNIFFI_CODESCRIBE_FFI_FN_METHOD_CODESCRIBECONFIG_ONBOARDING_PROGRESS
 uint32_t uniffi_codescribe_ffi_fn_method_codescribeconfig_onboarding_progress(uint64_t ptr, RustCallStatus *_Nonnull out_status
+);
+#endif
+#ifndef UNIFFI_FFIDEF_UNIFFI_CODESCRIBE_FFI_FN_METHOD_CODESCRIBECONFIG_OVERLAY_EXPANDED_BY_DEFAULT
+#define UNIFFI_FFIDEF_UNIFFI_CODESCRIBE_FFI_FN_METHOD_CODESCRIBECONFIG_OVERLAY_EXPANDED_BY_DEFAULT
+int8_t uniffi_codescribe_ffi_fn_method_codescribeconfig_overlay_expanded_by_default(uint64_t ptr, RustCallStatus *_Nonnull out_status
+);
+#endif
+#ifndef UNIFFI_FFIDEF_UNIFFI_CODESCRIBE_FFI_FN_METHOD_CODESCRIBECONFIG_REMOVE_CUSTOM_PROVIDER
+#define UNIFFI_FFIDEF_UNIFFI_CODESCRIBE_FFI_FN_METHOD_CODESCRIBECONFIG_REMOVE_CUSTOM_PROVIDER
+RustBuffer uniffi_codescribe_ffi_fn_method_codescribeconfig_remove_custom_provider(uint64_t ptr, RustBuffer id, RustCallStatus *_Nonnull out_status
 );
 #endif
 #ifndef UNIFFI_FFIDEF_UNIFFI_CODESCRIBE_FFI_FN_METHOD_CODESCRIBECONFIG_RESET_AGENT_DATA
@@ -840,6 +831,11 @@ void uniffi_codescribe_ffi_fn_method_codescribeconfig_restore_formatting_prompt_
 void uniffi_codescribe_ffi_fn_method_codescribeconfig_save_onboarding_progress(uint64_t ptr, uint32_t step, RustCallStatus *_Nonnull out_status
 );
 #endif
+#ifndef UNIFFI_FFIDEF_UNIFFI_CODESCRIBE_FFI_FN_METHOD_CODESCRIBECONFIG_SERVICE_KEY_ACCOUNTS
+#define UNIFFI_FFIDEF_UNIFFI_CODESCRIBE_FFI_FN_METHOD_CODESCRIBECONFIG_SERVICE_KEY_ACCOUNTS
+RustBuffer uniffi_codescribe_ffi_fn_method_codescribeconfig_service_key_accounts(uint64_t ptr, RustCallStatus *_Nonnull out_status
+);
+#endif
 #ifndef UNIFFI_FFIDEF_UNIFFI_CODESCRIBE_FFI_FN_METHOD_CODESCRIBECONFIG_SET_API_KEY
 #define UNIFFI_FFIDEF_UNIFFI_CODESCRIBE_FFI_FN_METHOD_CODESCRIBECONFIG_SET_API_KEY
 void uniffi_codescribe_ffi_fn_method_codescribeconfig_set_api_key(uint64_t ptr, RustBuffer account, RustBuffer secret, RustCallStatus *_Nonnull out_status
@@ -870,6 +866,11 @@ void uniffi_codescribe_ffi_fn_method_codescribeconfig_set_formatting_prompt(uint
 void uniffi_codescribe_ffi_fn_method_codescribeconfig_set_formatting_prompt_for_level(uint64_t ptr, RustBuffer level, RustBuffer content, RustCallStatus *_Nonnull out_status
 );
 #endif
+#ifndef UNIFFI_FFIDEF_UNIFFI_CODESCRIBE_FFI_FN_METHOD_CODESCRIBECONFIG_SET_LANE_PROVIDER
+#define UNIFFI_FFIDEF_UNIFFI_CODESCRIBE_FFI_FN_METHOD_CODESCRIBECONFIG_SET_LANE_PROVIDER
+void uniffi_codescribe_ffi_fn_method_codescribeconfig_set_lane_provider(uint64_t ptr, RustBuffer lane, RustBuffer provider_id, RustCallStatus *_Nonnull out_status
+);
+#endif
 #ifndef UNIFFI_FFIDEF_UNIFFI_CODESCRIBE_FFI_FN_METHOD_CODESCRIBECONFIG_SET_NOTES_MODE
 #define UNIFFI_FFIDEF_UNIFFI_CODESCRIBE_FFI_FN_METHOD_CODESCRIBECONFIG_SET_NOTES_MODE
 void uniffi_codescribe_ffi_fn_method_codescribeconfig_set_notes_mode(uint64_t ptr, int8_t enabled, RustCallStatus *_Nonnull out_status
@@ -878,6 +879,16 @@ void uniffi_codescribe_ffi_fn_method_codescribeconfig_set_notes_mode(uint64_t pt
 #ifndef UNIFFI_FFIDEF_UNIFFI_CODESCRIBE_FFI_FN_METHOD_CODESCRIBECONFIG_SET_ONBOARDING_MODE
 #define UNIFFI_FFIDEF_UNIFFI_CODESCRIBE_FFI_FN_METHOD_CODESCRIBECONFIG_SET_ONBOARDING_MODE
 void uniffi_codescribe_ffi_fn_method_codescribeconfig_set_onboarding_mode(uint64_t ptr, RustBuffer mode, RustCallStatus *_Nonnull out_status
+);
+#endif
+#ifndef UNIFFI_FFIDEF_UNIFFI_CODESCRIBE_FFI_FN_METHOD_CODESCRIBECONFIG_SET_OVERLAY_EXPANDED_BY_DEFAULT
+#define UNIFFI_FFIDEF_UNIFFI_CODESCRIBE_FFI_FN_METHOD_CODESCRIBECONFIG_SET_OVERLAY_EXPANDED_BY_DEFAULT
+int8_t uniffi_codescribe_ffi_fn_method_codescribeconfig_set_overlay_expanded_by_default(uint64_t ptr, int8_t enabled, RustCallStatus *_Nonnull out_status
+);
+#endif
+#ifndef UNIFFI_FFIDEF_UNIFFI_CODESCRIBE_FFI_FN_METHOD_CODESCRIBECONFIG_SETTINGS_FILE_PATH
+#define UNIFFI_FFIDEF_UNIFFI_CODESCRIBE_FFI_FN_METHOD_CODESCRIBECONFIG_SETTINGS_FILE_PATH
+RustBuffer uniffi_codescribe_ffi_fn_method_codescribeconfig_settings_file_path(uint64_t ptr, RustCallStatus *_Nonnull out_status
 );
 #endif
 #ifndef UNIFFI_FFIDEF_UNIFFI_CODESCRIBE_FFI_FN_METHOD_CODESCRIBECONFIG_SHOULD_SHOW_ONBOARDING
@@ -893,6 +904,11 @@ void uniffi_codescribe_ffi_fn_method_codescribeconfig_sign_out_account(uint64_t 
 #ifndef UNIFFI_FFIDEF_UNIFFI_CODESCRIBE_FFI_FN_METHOD_CODESCRIBECONFIG_START_ACCOUNT_LOGIN
 #define UNIFFI_FFIDEF_UNIFFI_CODESCRIBE_FFI_FN_METHOD_CODESCRIBECONFIG_START_ACCOUNT_LOGIN
 RustBuffer uniffi_codescribe_ffi_fn_method_codescribeconfig_start_account_login(uint64_t ptr, RustBuffer provider_id, RustCallStatus *_Nonnull out_status
+);
+#endif
+#ifndef UNIFFI_FFIDEF_UNIFFI_CODESCRIBE_FFI_FN_METHOD_CODESCRIBECONFIG_STT_LANES
+#define UNIFFI_FFIDEF_UNIFFI_CODESCRIBE_FFI_FN_METHOD_CODESCRIBECONFIG_STT_LANES
+RustBuffer uniffi_codescribe_ffi_fn_method_codescribeconfig_stt_lanes(uint64_t ptr, RustCallStatus *_Nonnull out_status
 );
 #endif
 #ifndef UNIFFI_FFIDEF_UNIFFI_CODESCRIBE_FFI_FN_METHOD_CODESCRIBECONFIG_TEST_API_KEY
@@ -915,6 +931,11 @@ void uniffi_codescribe_ffi_fn_method_codescribeconfig_update_config(uint64_t ptr
 void uniffi_codescribe_ffi_fn_method_codescribeconfig_update_config_many(uint64_t ptr, RustBuffer entries, RustCallStatus *_Nonnull out_status
 );
 #endif
+#ifndef UNIFFI_FFIDEF_UNIFFI_CODESCRIBE_FFI_FN_METHOD_CODESCRIBECONFIG_UPDATE_CUSTOM_PROVIDER
+#define UNIFFI_FFIDEF_UNIFFI_CODESCRIBE_FFI_FN_METHOD_CODESCRIBECONFIG_UPDATE_CUSTOM_PROVIDER
+RustBuffer uniffi_codescribe_ffi_fn_method_codescribeconfig_update_custom_provider(uint64_t ptr, RustBuffer id, RustBuffer draft, RustCallStatus *_Nonnull out_status
+);
+#endif
 #ifndef UNIFFI_FFIDEF_UNIFFI_CODESCRIBE_FFI_FN_CLONE_CODESCRIBEHOTKEYS
 #define UNIFFI_FFIDEF_UNIFFI_CODESCRIBE_FFI_FN_CLONE_CODESCRIBEHOTKEYS
 uint64_t uniffi_codescribe_ffi_fn_clone_codescribehotkeys(uint64_t handle, RustCallStatus *_Nonnull out_status
@@ -931,14 +952,39 @@ uint64_t uniffi_codescribe_ffi_fn_constructor_codescribehotkeys_new(RustCallStat
 
 );
 #endif
+#ifndef UNIFFI_FFIDEF_UNIFFI_CODESCRIBE_FFI_FN_METHOD_CODESCRIBEHOTKEYS_ADMISSION_READINESS
+#define UNIFFI_FFIDEF_UNIFFI_CODESCRIBE_FFI_FN_METHOD_CODESCRIBEHOTKEYS_ADMISSION_READINESS
+uint64_t uniffi_codescribe_ffi_fn_method_codescribehotkeys_admission_readiness(uint64_t ptr
+);
+#endif
 #ifndef UNIFFI_FFIDEF_UNIFFI_CODESCRIBE_FFI_FN_METHOD_CODESCRIBEHOTKEYS_AVAILABLE_BINDINGS
 #define UNIFFI_FFIDEF_UNIFFI_CODESCRIBE_FFI_FN_METHOD_CODESCRIBEHOTKEYS_AVAILABLE_BINDINGS
 RustBuffer uniffi_codescribe_ffi_fn_method_codescribehotkeys_available_bindings(uint64_t ptr, RustCallStatus *_Nonnull out_status
 );
 #endif
+#ifndef UNIFFI_FFIDEF_UNIFFI_CODESCRIBE_FFI_FN_METHOD_CODESCRIBEHOTKEYS_BEGIN_NEW_MAX_CONSULTATION
+#define UNIFFI_FFIDEF_UNIFFI_CODESCRIBE_FFI_FN_METHOD_CODESCRIBEHOTKEYS_BEGIN_NEW_MAX_CONSULTATION
+uint64_t uniffi_codescribe_ffi_fn_method_codescribehotkeys_begin_new_max_consultation(uint64_t ptr
+);
+#endif
+#ifndef UNIFFI_FFIDEF_UNIFFI_CODESCRIBE_FFI_FN_METHOD_CODESCRIBEHOTKEYS_CALIBRATE_ENERGY
+#define UNIFFI_FFIDEF_UNIFFI_CODESCRIBE_FFI_FN_METHOD_CODESCRIBEHOTKEYS_CALIBRATE_ENERGY
+uint64_t uniffi_codescribe_ffi_fn_method_codescribehotkeys_calibrate_energy(uint64_t ptr, uint32_t seconds
+);
+#endif
 #ifndef UNIFFI_FFIDEF_UNIFFI_CODESCRIBE_FFI_FN_METHOD_CODESCRIBEHOTKEYS_CANCEL_VOICE_TURN
 #define UNIFFI_FFIDEF_UNIFFI_CODESCRIBE_FFI_FN_METHOD_CODESCRIBEHOTKEYS_CANCEL_VOICE_TURN
 int8_t uniffi_codescribe_ffi_fn_method_codescribehotkeys_cancel_voice_turn(uint64_t ptr, RustBuffer thread_id, RustCallStatus *_Nonnull out_status
+);
+#endif
+#ifndef UNIFFI_FFIDEF_UNIFFI_CODESCRIBE_FFI_FN_METHOD_CODESCRIBEHOTKEYS_COMMIT_FORMATTER_REVISION
+#define UNIFFI_FFIDEF_UNIFFI_CODESCRIBE_FFI_FN_METHOD_CODESCRIBEHOTKEYS_COMMIT_FORMATTER_REVISION
+uint64_t uniffi_codescribe_ffi_fn_method_codescribehotkeys_commit_formatter_revision(uint64_t ptr, RustBuffer session_id, uint64_t source_revision
+);
+#endif
+#ifndef UNIFFI_FFIDEF_UNIFFI_CODESCRIBE_FFI_FN_METHOD_CODESCRIBEHOTKEYS_COMMIT_USER_REVISION
+#define UNIFFI_FFIDEF_UNIFFI_CODESCRIBE_FFI_FN_METHOD_CODESCRIBEHOTKEYS_COMMIT_USER_REVISION
+uint64_t uniffi_codescribe_ffi_fn_method_codescribehotkeys_commit_user_revision(uint64_t ptr, RustBuffer session_id, uint64_t source_revision, RustBuffer rendered_text
 );
 #endif
 #ifndef UNIFFI_FFIDEF_UNIFFI_CODESCRIBE_FFI_FN_METHOD_CODESCRIBEHOTKEYS_COPY_TEXT_TAGGED
@@ -951,19 +997,14 @@ uint64_t uniffi_codescribe_ffi_fn_method_codescribehotkeys_copy_text_tagged(uint
 uint64_t uniffi_codescribe_ffi_fn_method_codescribehotkeys_defer_text(uint64_t ptr, RustBuffer text
 );
 #endif
-#ifndef UNIFFI_FFIDEF_UNIFFI_CODESCRIBE_FFI_FN_METHOD_CODESCRIBEHOTKEYS_FORMAT_TEXT
-#define UNIFFI_FFIDEF_UNIFFI_CODESCRIBE_FFI_FN_METHOD_CODESCRIBEHOTKEYS_FORMAT_TEXT
-uint64_t uniffi_codescribe_ffi_fn_method_codescribehotkeys_format_text(uint64_t ptr, RustBuffer text, RustBuffer language
-);
-#endif
-#ifndef UNIFFI_FFIDEF_UNIFFI_CODESCRIBE_FFI_FN_METHOD_CODESCRIBEHOTKEYS_FORMAT_TEXT_FOR_LEVEL
-#define UNIFFI_FFIDEF_UNIFFI_CODESCRIBE_FFI_FN_METHOD_CODESCRIBEHOTKEYS_FORMAT_TEXT_FOR_LEVEL
-uint64_t uniffi_codescribe_ffi_fn_method_codescribehotkeys_format_text_for_level(uint64_t ptr, RustBuffer text, RustBuffer language, RustBuffer level
-);
-#endif
 #ifndef UNIFFI_FFIDEF_UNIFFI_CODESCRIBE_FFI_FN_METHOD_CODESCRIBEHOTKEYS_GET_MODE_BINDINGS
 #define UNIFFI_FFIDEF_UNIFFI_CODESCRIBE_FFI_FN_METHOD_CODESCRIBEHOTKEYS_GET_MODE_BINDINGS
 RustBuffer uniffi_codescribe_ffi_fn_method_codescribehotkeys_get_mode_bindings(uint64_t ptr, RustCallStatus *_Nonnull out_status
+);
+#endif
+#ifndef UNIFFI_FFIDEF_UNIFFI_CODESCRIBE_FFI_FN_METHOD_CODESCRIBEHOTKEYS_INSPECT_SELECTED_MAX_CONSULTATION
+#define UNIFFI_FFIDEF_UNIFFI_CODESCRIBE_FFI_FN_METHOD_CODESCRIBEHOTKEYS_INSPECT_SELECTED_MAX_CONSULTATION
+uint64_t uniffi_codescribe_ffi_fn_method_codescribehotkeys_inspect_selected_max_consultation(uint64_t ptr
 );
 #endif
 #ifndef UNIFFI_FFIDEF_UNIFFI_CODESCRIBE_FFI_FN_METHOD_CODESCRIBEHOTKEYS_IS_ACTIVE
@@ -1001,6 +1042,11 @@ uint64_t uniffi_codescribe_ffi_fn_method_codescribehotkeys_paste_target_app_name
 uint64_t uniffi_codescribe_ffi_fn_method_codescribehotkeys_paste_text(uint64_t ptr, RustBuffer text
 );
 #endif
+#ifndef UNIFFI_FFIDEF_UNIFFI_CODESCRIBE_FFI_FN_METHOD_CODESCRIBEHOTKEYS_PENDING_MAX_TOOL_APPROVALS
+#define UNIFFI_FFIDEF_UNIFFI_CODESCRIBE_FFI_FN_METHOD_CODESCRIBEHOTKEYS_PENDING_MAX_TOOL_APPROVALS
+uint64_t uniffi_codescribe_ffi_fn_method_codescribehotkeys_pending_max_tool_approvals(uint64_t ptr
+);
+#endif
 #ifndef UNIFFI_FFIDEF_UNIFFI_CODESCRIBE_FFI_FN_METHOD_CODESCRIBEHOTKEYS_PREWARM_RECORDING
 #define UNIFFI_FFIDEF_UNIFFI_CODESCRIBE_FFI_FN_METHOD_CODESCRIBEHOTKEYS_PREWARM_RECORDING
 uint64_t uniffi_codescribe_ffi_fn_method_codescribehotkeys_prewarm_recording(uint64_t ptr
@@ -1014,6 +1060,11 @@ int8_t uniffi_codescribe_ffi_fn_method_codescribehotkeys_rearm_after_permission_
 #ifndef UNIFFI_FFIDEF_UNIFFI_CODESCRIBE_FFI_FN_METHOD_CODESCRIBEHOTKEYS_RESET_BINDINGS_TO_DEFAULTS
 #define UNIFFI_FFIDEF_UNIFFI_CODESCRIBE_FFI_FN_METHOD_CODESCRIBEHOTKEYS_RESET_BINDINGS_TO_DEFAULTS
 void uniffi_codescribe_ffi_fn_method_codescribehotkeys_reset_bindings_to_defaults(uint64_t ptr, RustCallStatus *_Nonnull out_status
+);
+#endif
+#ifndef UNIFFI_FFIDEF_UNIFFI_CODESCRIBE_FFI_FN_METHOD_CODESCRIBEHOTKEYS_RESOLVE_MAX_TOOL_APPROVAL
+#define UNIFFI_FFIDEF_UNIFFI_CODESCRIBE_FFI_FN_METHOD_CODESCRIBEHOTKEYS_RESOLVE_MAX_TOOL_APPROVAL
+uint64_t uniffi_codescribe_ffi_fn_method_codescribehotkeys_resolve_max_tool_approval(uint64_t ptr, RustBuffer session_id, RustBuffer thread_id, RustBuffer call_id, int8_t approved, int8_t remember
 );
 #endif
 #ifndef UNIFFI_FFIDEF_UNIFFI_CODESCRIBE_FFI_FN_METHOD_CODESCRIBEHOTKEYS_SEND_ASSISTIVE_TRANSCRIPT
@@ -1056,6 +1107,11 @@ uint64_t uniffi_codescribe_ffi_fn_method_codescribehotkeys_start(uint64_t ptr
 uint64_t uniffi_codescribe_ffi_fn_method_codescribehotkeys_start_assistive_recording(uint64_t ptr
 );
 #endif
+#ifndef UNIFFI_FFIDEF_UNIFFI_CODESCRIBE_FFI_FN_METHOD_CODESCRIBEHOTKEYS_START_COMPOSER_TURN_RECORDING
+#define UNIFFI_FFIDEF_UNIFFI_CODESCRIBE_FFI_FN_METHOD_CODESCRIBEHOTKEYS_START_COMPOSER_TURN_RECORDING
+uint64_t uniffi_codescribe_ffi_fn_method_codescribehotkeys_start_composer_turn_recording(uint64_t ptr
+);
+#endif
 #ifndef UNIFFI_FFIDEF_UNIFFI_CODESCRIBE_FFI_FN_METHOD_CODESCRIBEHOTKEYS_START_RECORDING
 #define UNIFFI_FFIDEF_UNIFFI_CODESCRIBE_FFI_FN_METHOD_CODESCRIBEHOTKEYS_START_RECORDING
 uint64_t uniffi_codescribe_ffi_fn_method_codescribehotkeys_start_recording(uint64_t ptr
@@ -1064,6 +1120,11 @@ uint64_t uniffi_codescribe_ffi_fn_method_codescribehotkeys_start_recording(uint6
 #ifndef UNIFFI_FFIDEF_UNIFFI_CODESCRIBE_FFI_FN_METHOD_CODESCRIBEHOTKEYS_STOP
 #define UNIFFI_FFIDEF_UNIFFI_CODESCRIBE_FFI_FN_METHOD_CODESCRIBEHOTKEYS_STOP
 void uniffi_codescribe_ffi_fn_method_codescribehotkeys_stop(uint64_t ptr, RustCallStatus *_Nonnull out_status
+);
+#endif
+#ifndef UNIFFI_FFIDEF_UNIFFI_CODESCRIBE_FFI_FN_METHOD_CODESCRIBEHOTKEYS_STOP_COMPOSER_TURN_RECORDING
+#define UNIFFI_FFIDEF_UNIFFI_CODESCRIBE_FFI_FN_METHOD_CODESCRIBEHOTKEYS_STOP_COMPOSER_TURN_RECORDING
+uint64_t uniffi_codescribe_ffi_fn_method_codescribehotkeys_stop_composer_turn_recording(uint64_t ptr, RustBuffer handle
 );
 #endif
 #ifndef UNIFFI_FFIDEF_UNIFFI_CODESCRIBE_FFI_FN_METHOD_CODESCRIBEHOTKEYS_STOP_RECORDING
@@ -1425,6 +1486,11 @@ void uniffi_codescribe_ffi_fn_init_callback_vtable_csappactionlistener(const Uni
 void uniffi_codescribe_ffi_fn_method_csappactionlistener_on_show_agent(uint64_t ptr, RustCallStatus *_Nonnull out_status
 );
 #endif
+#ifndef UNIFFI_FFIDEF_UNIFFI_CODESCRIBE_FFI_FN_METHOD_CSAPPACTIONLISTENER_ON_MAX_APPROVALS_CHANGED
+#define UNIFFI_FFIDEF_UNIFFI_CODESCRIBE_FFI_FN_METHOD_CSAPPACTIONLISTENER_ON_MAX_APPROVALS_CHANGED
+void uniffi_codescribe_ffi_fn_method_csappactionlistener_on_max_approvals_changed(uint64_t ptr, RustCallStatus *_Nonnull out_status
+);
+#endif
 #ifndef UNIFFI_FFIDEF_UNIFFI_CODESCRIBE_FFI_FN_CLONE_CSTRANSCRIPTIONLISTENER
 #define UNIFFI_FFIDEF_UNIFFI_CODESCRIBE_FFI_FN_CLONE_CSTRANSCRIPTIONLISTENER
 uint64_t uniffi_codescribe_ffi_fn_clone_cstranscriptionlistener(uint64_t handle, RustCallStatus *_Nonnull out_status
@@ -1438,6 +1504,21 @@ void uniffi_codescribe_ffi_fn_free_cstranscriptionlistener(uint64_t handle, Rust
 #ifndef UNIFFI_FFIDEF_UNIFFI_CODESCRIBE_FFI_FN_INIT_CALLBACK_VTABLE_CSTRANSCRIPTIONLISTENER
 #define UNIFFI_FFIDEF_UNIFFI_CODESCRIBE_FFI_FN_INIT_CALLBACK_VTABLE_CSTRANSCRIPTIONLISTENER
 void uniffi_codescribe_ffi_fn_init_callback_vtable_cstranscriptionlistener(const UniffiVTableCallbackInterfaceCsTranscriptionListener* _Nonnull vtable
+);
+#endif
+#ifndef UNIFFI_FFIDEF_UNIFFI_CODESCRIBE_FFI_FN_METHOD_CSTRANSCRIPTIONLISTENER_ON_TRANSCRIPT_PROJECTION
+#define UNIFFI_FFIDEF_UNIFFI_CODESCRIBE_FFI_FN_METHOD_CSTRANSCRIPTIONLISTENER_ON_TRANSCRIPT_PROJECTION
+void uniffi_codescribe_ffi_fn_method_cstranscriptionlistener_on_transcript_projection(uint64_t ptr, RustBuffer event, RustCallStatus *_Nonnull out_status
+);
+#endif
+#ifndef UNIFFI_FFIDEF_UNIFFI_CODESCRIBE_FFI_FN_METHOD_CSTRANSCRIPTIONLISTENER_ON_PRESENTATION_STATUS
+#define UNIFFI_FFIDEF_UNIFFI_CODESCRIBE_FFI_FN_METHOD_CSTRANSCRIPTIONLISTENER_ON_PRESENTATION_STATUS
+void uniffi_codescribe_ffi_fn_method_cstranscriptionlistener_on_presentation_status(uint64_t ptr, RustBuffer event, RustCallStatus *_Nonnull out_status
+);
+#endif
+#ifndef UNIFFI_FFIDEF_UNIFFI_CODESCRIBE_FFI_FN_METHOD_CSTRANSCRIPTIONLISTENER_ON_COMPACT_PROJECTION
+#define UNIFFI_FFIDEF_UNIFFI_CODESCRIBE_FFI_FN_METHOD_CSTRANSCRIPTIONLISTENER_ON_COMPACT_PROJECTION
+void uniffi_codescribe_ffi_fn_method_cstranscriptionlistener_on_compact_projection(uint64_t ptr, RustBuffer event, RustCallStatus *_Nonnull out_status
 );
 #endif
 #ifndef UNIFFI_FFIDEF_UNIFFI_CODESCRIBE_FFI_FN_METHOD_CSTRANSCRIPTIONLISTENER_ON_RECORDING_PREPARING
@@ -1460,44 +1541,9 @@ void uniffi_codescribe_ffi_fn_method_cstranscriptionlistener_on_recording_stoppe
 void uniffi_codescribe_ffi_fn_method_cstranscriptionlistener_on_recording_finalising(uint64_t ptr, RustCallStatus *_Nonnull out_status
 );
 #endif
-#ifndef UNIFFI_FFIDEF_UNIFFI_CODESCRIBE_FFI_FN_METHOD_CSTRANSCRIPTIONLISTENER_ON_PREVIEW
-#define UNIFFI_FFIDEF_UNIFFI_CODESCRIBE_FFI_FN_METHOD_CSTRANSCRIPTIONLISTENER_ON_PREVIEW
-void uniffi_codescribe_ffi_fn_method_cstranscriptionlistener_on_preview(uint64_t ptr, RustBuffer text, RustCallStatus *_Nonnull out_status
-);
-#endif
-#ifndef UNIFFI_FFIDEF_UNIFFI_CODESCRIBE_FFI_FN_METHOD_CSTRANSCRIPTIONLISTENER_ON_CORRECTION
-#define UNIFFI_FFIDEF_UNIFFI_CODESCRIBE_FFI_FN_METHOD_CSTRANSCRIPTIONLISTENER_ON_CORRECTION
-void uniffi_codescribe_ffi_fn_method_cstranscriptionlistener_on_correction(uint64_t ptr, RustBuffer text, RustBuffer previous_text, RustCallStatus *_Nonnull out_status
-);
-#endif
-#ifndef UNIFFI_FFIDEF_UNIFFI_CODESCRIBE_FFI_FN_METHOD_CSTRANSCRIPTIONLISTENER_ON_FINAL
-#define UNIFFI_FFIDEF_UNIFFI_CODESCRIBE_FFI_FN_METHOD_CSTRANSCRIPTIONLISTENER_ON_FINAL
-void uniffi_codescribe_ffi_fn_method_cstranscriptionlistener_on_final(uint64_t ptr, uint64_t utterance_id, RustBuffer text, RustBuffer avg_logprob, RustBuffer speech_pct, RustBuffer confidence_flags, RustCallStatus *_Nonnull out_status
-);
-#endif
-#ifndef UNIFFI_FFIDEF_UNIFFI_CODESCRIBE_FFI_FN_METHOD_CSTRANSCRIPTIONLISTENER_ON_REPLACE_RANGE
-#define UNIFFI_FFIDEF_UNIFFI_CODESCRIBE_FFI_FN_METHOD_CSTRANSCRIPTIONLISTENER_ON_REPLACE_RANGE
-void uniffi_codescribe_ffi_fn_method_cstranscriptionlistener_on_replace_range(uint64_t ptr, uint64_t utterance_id, uint64_t start, uint64_t end, RustBuffer text, RustBuffer source, RustCallStatus *_Nonnull out_status
-);
-#endif
-#ifndef UNIFFI_FFIDEF_UNIFFI_CODESCRIBE_FFI_FN_METHOD_CSTRANSCRIPTIONLISTENER_ON_INSERT_ANNOTATION
-#define UNIFFI_FFIDEF_UNIFFI_CODESCRIBE_FFI_FN_METHOD_CSTRANSCRIPTIONLISTENER_ON_INSERT_ANNOTATION
-void uniffi_codescribe_ffi_fn_method_cstranscriptionlistener_on_insert_annotation(uint64_t ptr, uint64_t utterance_id, uint64_t position, RustBuffer text, RustBuffer kind, RustCallStatus *_Nonnull out_status
-);
-#endif
-#ifndef UNIFFI_FFIDEF_UNIFFI_CODESCRIBE_FFI_FN_METHOD_CSTRANSCRIPTIONLISTENER_ON_CONTEXT_MARKER
-#define UNIFFI_FFIDEF_UNIFFI_CODESCRIBE_FFI_FN_METHOD_CSTRANSCRIPTIONLISTENER_ON_CONTEXT_MARKER
-void uniffi_codescribe_ffi_fn_method_cstranscriptionlistener_on_context_marker(uint64_t ptr, uint64_t position, RustBuffer marker, RustCallStatus *_Nonnull out_status
-);
-#endif
 #ifndef UNIFFI_FFIDEF_UNIFFI_CODESCRIBE_FFI_FN_METHOD_CSTRANSCRIPTIONLISTENER_ON_SESSION_FINALISED
 #define UNIFFI_FFIDEF_UNIFFI_CODESCRIBE_FFI_FN_METHOD_CSTRANSCRIPTIONLISTENER_ON_SESSION_FINALISED
 void uniffi_codescribe_ffi_fn_method_cstranscriptionlistener_on_session_finalised(uint64_t ptr, RustBuffer session_id, RustBuffer layer_summary, RustCallStatus *_Nonnull out_status
-);
-#endif
-#ifndef UNIFFI_FFIDEF_UNIFFI_CODESCRIBE_FFI_FN_METHOD_CSTRANSCRIPTIONLISTENER_ON_FINAL_TRANSCRIPT_READY
-#define UNIFFI_FFIDEF_UNIFFI_CODESCRIBE_FFI_FN_METHOD_CSTRANSCRIPTIONLISTENER_ON_FINAL_TRANSCRIPT_READY
-void uniffi_codescribe_ffi_fn_method_cstranscriptionlistener_on_final_transcript_ready(uint64_t ptr, RustBuffer text, RustCallStatus *_Nonnull out_status
 );
 #endif
 #ifndef UNIFFI_FFIDEF_UNIFFI_CODESCRIBE_FFI_FN_METHOD_CSTRANSCRIPTIONLISTENER_ON_VAD_ACTIVE
@@ -1582,6 +1628,18 @@ RustBuffer uniffi_codescribe_ffi_fn_func_audio_input_snapshot(RustCallStatus *_N
 RustBuffer uniffi_codescribe_ffi_fn_func_commit_overlay_quality_record(RustBuffer raw_text, RustBuffer delivered_text, RustBuffer edited_text, RustBuffer action, RustBuffer formatting_level, RustBuffer edit_provenance, RustBuffer avg_logprob, RustBuffer speech_pct, RustBuffer confidence_flags, RustCallStatus *_Nonnull out_status
 );
 #endif
+#ifndef UNIFFI_FFIDEF_UNIFFI_CODESCRIBE_FFI_FN_FUNC_CONFIG_REPAIR_RECEIPT_JSON
+#define UNIFFI_FFIDEF_UNIFFI_CODESCRIBE_FFI_FN_FUNC_CONFIG_REPAIR_RECEIPT_JSON
+RustBuffer uniffi_codescribe_ffi_fn_func_config_repair_receipt_json(RustCallStatus *_Nonnull out_status
+
+);
+#endif
+#ifndef UNIFFI_FFIDEF_UNIFFI_CODESCRIBE_FFI_FN_FUNC_CONFIG_REPAIR_SUMMARY
+#define UNIFFI_FFIDEF_UNIFFI_CODESCRIBE_FFI_FN_FUNC_CONFIG_REPAIR_SUMMARY
+RustBuffer uniffi_codescribe_ffi_fn_func_config_repair_summary(RustCallStatus *_Nonnull out_status
+
+);
+#endif
 #ifndef UNIFFI_FFIDEF_UNIFFI_CODESCRIBE_FFI_FN_FUNC_CURRENT_SERVING_VERDICT
 #define UNIFFI_FFIDEF_UNIFFI_CODESCRIBE_FFI_FN_FUNC_CURRENT_SERVING_VERDICT
 RustBuffer uniffi_codescribe_ffi_fn_func_current_serving_verdict(RustCallStatus *_Nonnull out_status
@@ -1591,11 +1649,6 @@ RustBuffer uniffi_codescribe_ffi_fn_func_current_serving_verdict(RustCallStatus 
 #ifndef UNIFFI_FFIDEF_UNIFFI_CODESCRIBE_FFI_FN_FUNC_DOWNLOAD_WHISPER_MODEL
 #define UNIFFI_FFIDEF_UNIFFI_CODESCRIBE_FFI_FN_FUNC_DOWNLOAD_WHISPER_MODEL
 uint64_t uniffi_codescribe_ffi_fn_func_download_whisper_model(RustBuffer listener
-);
-#endif
-#ifndef UNIFFI_FFIDEF_UNIFFI_CODESCRIBE_FFI_FN_FUNC_LANE_TRUTH_SNAPSHOT
-#define UNIFFI_FFIDEF_UNIFFI_CODESCRIBE_FFI_FN_FUNC_LANE_TRUTH_SNAPSHOT
-RustBuffer uniffi_codescribe_ffi_fn_func_lane_truth_snapshot(RustBuffer lane, RustCallStatus *_Nonnull out_status
 );
 #endif
 #ifndef UNIFFI_FFIDEF_UNIFFI_CODESCRIBE_FFI_FN_FUNC_LEXICON_CUSTOM_ENTRIES
@@ -1653,15 +1706,37 @@ int8_t uniffi_codescribe_ffi_fn_func_request_mic_permission(RustCallStatus *_Non
 
 );
 #endif
+#ifndef UNIFFI_FFIDEF_UNIFFI_CODESCRIBE_FFI_FN_FUNC_RUNTIME_LLM_LANE
+#define UNIFFI_FFIDEF_UNIFFI_CODESCRIBE_FFI_FN_FUNC_RUNTIME_LLM_LANE
+RustBuffer uniffi_codescribe_ffi_fn_func_runtime_llm_lane(RustBuffer lane, RustCallStatus *_Nonnull out_status
+);
+#endif
 #ifndef UNIFFI_FFIDEF_UNIFFI_CODESCRIBE_FFI_FN_FUNC_SHUTDOWN_APPLICATION_RUNTIME
 #define UNIFFI_FFIDEF_UNIFFI_CODESCRIBE_FFI_FN_FUNC_SHUTDOWN_APPLICATION_RUNTIME
 RustBuffer uniffi_codescribe_ffi_fn_func_shutdown_application_runtime(RustCallStatus *_Nonnull out_status
 
 );
 #endif
+#ifndef UNIFFI_FFIDEF_UNIFFI_CODESCRIBE_FFI_FN_FUNC_SPEAK_TEXT
+#define UNIFFI_FFIDEF_UNIFFI_CODESCRIBE_FFI_FN_FUNC_SPEAK_TEXT
+uint64_t uniffi_codescribe_ffi_fn_func_speak_text(RustBuffer text
+);
+#endif
+#ifndef UNIFFI_FFIDEF_UNIFFI_CODESCRIBE_FFI_FN_FUNC_SPEECH_AVAILABILITY
+#define UNIFFI_FFIDEF_UNIFFI_CODESCRIBE_FFI_FN_FUNC_SPEECH_AVAILABILITY
+RustBuffer uniffi_codescribe_ffi_fn_func_speech_availability(RustCallStatus *_Nonnull out_status
+
+);
+#endif
 #ifndef UNIFFI_FFIDEF_UNIFFI_CODESCRIBE_FFI_FN_FUNC_START_APPLICATION_RUNTIME
 #define UNIFFI_FFIDEF_UNIFFI_CODESCRIBE_FFI_FN_FUNC_START_APPLICATION_RUNTIME
 RustBuffer uniffi_codescribe_ffi_fn_func_start_application_runtime(RustCallStatus *_Nonnull out_status
+
+);
+#endif
+#ifndef UNIFFI_FFIDEF_UNIFFI_CODESCRIBE_FFI_FN_FUNC_STOP_SPEAKING
+#define UNIFFI_FFIDEF_UNIFFI_CODESCRIBE_FFI_FN_FUNC_STOP_SPEAKING
+void uniffi_codescribe_ffi_fn_func_stop_speaking(RustCallStatus *_Nonnull out_status
 
 );
 #endif
@@ -1949,6 +2024,18 @@ uint16_t uniffi_codescribe_ffi_checksum_func_commit_overlay_quality_record(void
 
 );
 #endif
+#ifndef UNIFFI_FFIDEF_UNIFFI_CODESCRIBE_FFI_CHECKSUM_FUNC_CONFIG_REPAIR_RECEIPT_JSON
+#define UNIFFI_FFIDEF_UNIFFI_CODESCRIBE_FFI_CHECKSUM_FUNC_CONFIG_REPAIR_RECEIPT_JSON
+uint16_t uniffi_codescribe_ffi_checksum_func_config_repair_receipt_json(void
+
+);
+#endif
+#ifndef UNIFFI_FFIDEF_UNIFFI_CODESCRIBE_FFI_CHECKSUM_FUNC_CONFIG_REPAIR_SUMMARY
+#define UNIFFI_FFIDEF_UNIFFI_CODESCRIBE_FFI_CHECKSUM_FUNC_CONFIG_REPAIR_SUMMARY
+uint16_t uniffi_codescribe_ffi_checksum_func_config_repair_summary(void
+
+);
+#endif
 #ifndef UNIFFI_FFIDEF_UNIFFI_CODESCRIBE_FFI_CHECKSUM_FUNC_CURRENT_SERVING_VERDICT
 #define UNIFFI_FFIDEF_UNIFFI_CODESCRIBE_FFI_CHECKSUM_FUNC_CURRENT_SERVING_VERDICT
 uint16_t uniffi_codescribe_ffi_checksum_func_current_serving_verdict(void
@@ -1958,12 +2045,6 @@ uint16_t uniffi_codescribe_ffi_checksum_func_current_serving_verdict(void
 #ifndef UNIFFI_FFIDEF_UNIFFI_CODESCRIBE_FFI_CHECKSUM_FUNC_DOWNLOAD_WHISPER_MODEL
 #define UNIFFI_FFIDEF_UNIFFI_CODESCRIBE_FFI_CHECKSUM_FUNC_DOWNLOAD_WHISPER_MODEL
 uint16_t uniffi_codescribe_ffi_checksum_func_download_whisper_model(void
-
-);
-#endif
-#ifndef UNIFFI_FFIDEF_UNIFFI_CODESCRIBE_FFI_CHECKSUM_FUNC_LANE_TRUTH_SNAPSHOT
-#define UNIFFI_FFIDEF_UNIFFI_CODESCRIBE_FFI_CHECKSUM_FUNC_LANE_TRUTH_SNAPSHOT
-uint16_t uniffi_codescribe_ffi_checksum_func_lane_truth_snapshot(void
 
 );
 #endif
@@ -2027,15 +2108,39 @@ uint16_t uniffi_codescribe_ffi_checksum_func_request_mic_permission(void
 
 );
 #endif
+#ifndef UNIFFI_FFIDEF_UNIFFI_CODESCRIBE_FFI_CHECKSUM_FUNC_RUNTIME_LLM_LANE
+#define UNIFFI_FFIDEF_UNIFFI_CODESCRIBE_FFI_CHECKSUM_FUNC_RUNTIME_LLM_LANE
+uint16_t uniffi_codescribe_ffi_checksum_func_runtime_llm_lane(void
+
+);
+#endif
 #ifndef UNIFFI_FFIDEF_UNIFFI_CODESCRIBE_FFI_CHECKSUM_FUNC_SHUTDOWN_APPLICATION_RUNTIME
 #define UNIFFI_FFIDEF_UNIFFI_CODESCRIBE_FFI_CHECKSUM_FUNC_SHUTDOWN_APPLICATION_RUNTIME
 uint16_t uniffi_codescribe_ffi_checksum_func_shutdown_application_runtime(void
 
 );
 #endif
+#ifndef UNIFFI_FFIDEF_UNIFFI_CODESCRIBE_FFI_CHECKSUM_FUNC_SPEAK_TEXT
+#define UNIFFI_FFIDEF_UNIFFI_CODESCRIBE_FFI_CHECKSUM_FUNC_SPEAK_TEXT
+uint16_t uniffi_codescribe_ffi_checksum_func_speak_text(void
+
+);
+#endif
+#ifndef UNIFFI_FFIDEF_UNIFFI_CODESCRIBE_FFI_CHECKSUM_FUNC_SPEECH_AVAILABILITY
+#define UNIFFI_FFIDEF_UNIFFI_CODESCRIBE_FFI_CHECKSUM_FUNC_SPEECH_AVAILABILITY
+uint16_t uniffi_codescribe_ffi_checksum_func_speech_availability(void
+
+);
+#endif
 #ifndef UNIFFI_FFIDEF_UNIFFI_CODESCRIBE_FFI_CHECKSUM_FUNC_START_APPLICATION_RUNTIME
 #define UNIFFI_FFIDEF_UNIFFI_CODESCRIBE_FFI_CHECKSUM_FUNC_START_APPLICATION_RUNTIME
 uint16_t uniffi_codescribe_ffi_checksum_func_start_application_runtime(void
+
+);
+#endif
+#ifndef UNIFFI_FFIDEF_UNIFFI_CODESCRIBE_FFI_CHECKSUM_FUNC_STOP_SPEAKING
+#define UNIFFI_FFIDEF_UNIFFI_CODESCRIBE_FFI_CHECKSUM_FUNC_STOP_SPEAKING
+uint16_t uniffi_codescribe_ffi_checksum_func_stop_speaking(void
 
 );
 #endif
@@ -2066,6 +2171,12 @@ uint16_t uniffi_codescribe_ffi_checksum_method_codescribeagent_generate_thread_t
 #ifndef UNIFFI_FFIDEF_UNIFFI_CODESCRIBE_FFI_CHECKSUM_METHOD_CODESCRIBEAGENT_IS_AVAILABLE
 #define UNIFFI_FFIDEF_UNIFFI_CODESCRIBE_FFI_CHECKSUM_METHOD_CODESCRIBEAGENT_IS_AVAILABLE
 uint16_t uniffi_codescribe_ffi_checksum_method_codescribeagent_is_available(void
+
+);
+#endif
+#ifndef UNIFFI_FFIDEF_UNIFFI_CODESCRIBE_FFI_CHECKSUM_METHOD_CODESCRIBEAGENT_PENDING_TOOL_APPROVALS
+#define UNIFFI_FFIDEF_UNIFFI_CODESCRIBE_FFI_CHECKSUM_METHOD_CODESCRIBEAGENT_PENDING_TOOL_APPROVALS
+uint16_t uniffi_codescribe_ffi_checksum_method_codescribeagent_pending_tool_approvals(void
 
 );
 #endif
@@ -2102,6 +2213,12 @@ uint16_t uniffi_codescribe_ffi_checksum_method_codescribeagentstatus_capability_
 #ifndef UNIFFI_FFIDEF_UNIFFI_CODESCRIBE_FFI_CHECKSUM_METHOD_CODESCRIBEAGENTSTATUS_MCP_STATUS
 #define UNIFFI_FFIDEF_UNIFFI_CODESCRIBE_FFI_CHECKSUM_METHOD_CODESCRIBEAGENTSTATUS_MCP_STATUS
 uint16_t uniffi_codescribe_ffi_checksum_method_codescribeagentstatus_mcp_status(void
+
+);
+#endif
+#ifndef UNIFFI_FFIDEF_UNIFFI_CODESCRIBE_FFI_CHECKSUM_METHOD_CODESCRIBECONFIG_ADD_CUSTOM_PROVIDER
+#define UNIFFI_FFIDEF_UNIFFI_CODESCRIBE_FFI_CHECKSUM_METHOD_CODESCRIBECONFIG_ADD_CUSTOM_PROVIDER
+uint16_t uniffi_codescribe_ffi_checksum_method_codescribeconfig_add_custom_provider(void
 
 );
 #endif
@@ -2189,15 +2306,15 @@ uint16_t uniffi_codescribe_ffi_checksum_method_codescribeconfig_get_formatting_p
 
 );
 #endif
-#ifndef UNIFFI_FFIDEF_UNIFFI_CODESCRIBE_FFI_CHECKSUM_METHOD_CODESCRIBECONFIG_KEY_ACCOUNTS
-#define UNIFFI_FFIDEF_UNIFFI_CODESCRIBE_FFI_CHECKSUM_METHOD_CODESCRIBECONFIG_KEY_ACCOUNTS
-uint16_t uniffi_codescribe_ffi_checksum_method_codescribeconfig_key_accounts(void
-
-);
-#endif
 #ifndef UNIFFI_FFIDEF_UNIFFI_CODESCRIBE_FFI_CHECKSUM_METHOD_CODESCRIBECONFIG_KEY_STATUS
 #define UNIFFI_FFIDEF_UNIFFI_CODESCRIBE_FFI_CHECKSUM_METHOD_CODESCRIBECONFIG_KEY_STATUS
 uint16_t uniffi_codescribe_ffi_checksum_method_codescribeconfig_key_status(void
+
+);
+#endif
+#ifndef UNIFFI_FFIDEF_UNIFFI_CODESCRIBE_FFI_CHECKSUM_METHOD_CODESCRIBECONFIG_LOAD_DIAGNOSTIC_SETTINGS
+#define UNIFFI_FFIDEF_UNIFFI_CODESCRIBE_FFI_CHECKSUM_METHOD_CODESCRIBECONFIG_LOAD_DIAGNOSTIC_SETTINGS
+uint16_t uniffi_codescribe_ffi_checksum_method_codescribeconfig_load_diagnostic_settings(void
 
 );
 #endif
@@ -2213,12 +2330,6 @@ uint16_t uniffi_codescribe_ffi_checksum_method_codescribeconfig_mark_onboarding_
 
 );
 #endif
-#ifndef UNIFFI_FFIDEF_UNIFFI_CODESCRIBE_FFI_CHECKSUM_METHOD_CODESCRIBECONFIG_NORMALIZE_OPENAI_RESPONSES_ENDPOINT
-#define UNIFFI_FFIDEF_UNIFFI_CODESCRIBE_FFI_CHECKSUM_METHOD_CODESCRIBECONFIG_NORMALIZE_OPENAI_RESPONSES_ENDPOINT
-uint16_t uniffi_codescribe_ffi_checksum_method_codescribeconfig_normalize_openai_responses_endpoint(void
-
-);
-#endif
 #ifndef UNIFFI_FFIDEF_UNIFFI_CODESCRIBE_FFI_CHECKSUM_METHOD_CODESCRIBECONFIG_ONBOARDING_MODE
 #define UNIFFI_FFIDEF_UNIFFI_CODESCRIBE_FFI_CHECKSUM_METHOD_CODESCRIBECONFIG_ONBOARDING_MODE
 uint16_t uniffi_codescribe_ffi_checksum_method_codescribeconfig_onboarding_mode(void
@@ -2228,6 +2339,18 @@ uint16_t uniffi_codescribe_ffi_checksum_method_codescribeconfig_onboarding_mode(
 #ifndef UNIFFI_FFIDEF_UNIFFI_CODESCRIBE_FFI_CHECKSUM_METHOD_CODESCRIBECONFIG_ONBOARDING_PROGRESS
 #define UNIFFI_FFIDEF_UNIFFI_CODESCRIBE_FFI_CHECKSUM_METHOD_CODESCRIBECONFIG_ONBOARDING_PROGRESS
 uint16_t uniffi_codescribe_ffi_checksum_method_codescribeconfig_onboarding_progress(void
+
+);
+#endif
+#ifndef UNIFFI_FFIDEF_UNIFFI_CODESCRIBE_FFI_CHECKSUM_METHOD_CODESCRIBECONFIG_OVERLAY_EXPANDED_BY_DEFAULT
+#define UNIFFI_FFIDEF_UNIFFI_CODESCRIBE_FFI_CHECKSUM_METHOD_CODESCRIBECONFIG_OVERLAY_EXPANDED_BY_DEFAULT
+uint16_t uniffi_codescribe_ffi_checksum_method_codescribeconfig_overlay_expanded_by_default(void
+
+);
+#endif
+#ifndef UNIFFI_FFIDEF_UNIFFI_CODESCRIBE_FFI_CHECKSUM_METHOD_CODESCRIBECONFIG_REMOVE_CUSTOM_PROVIDER
+#define UNIFFI_FFIDEF_UNIFFI_CODESCRIBE_FFI_CHECKSUM_METHOD_CODESCRIBECONFIG_REMOVE_CUSTOM_PROVIDER
+uint16_t uniffi_codescribe_ffi_checksum_method_codescribeconfig_remove_custom_provider(void
 
 );
 #endif
@@ -2291,6 +2414,12 @@ uint16_t uniffi_codescribe_ffi_checksum_method_codescribeconfig_save_onboarding_
 
 );
 #endif
+#ifndef UNIFFI_FFIDEF_UNIFFI_CODESCRIBE_FFI_CHECKSUM_METHOD_CODESCRIBECONFIG_SERVICE_KEY_ACCOUNTS
+#define UNIFFI_FFIDEF_UNIFFI_CODESCRIBE_FFI_CHECKSUM_METHOD_CODESCRIBECONFIG_SERVICE_KEY_ACCOUNTS
+uint16_t uniffi_codescribe_ffi_checksum_method_codescribeconfig_service_key_accounts(void
+
+);
+#endif
 #ifndef UNIFFI_FFIDEF_UNIFFI_CODESCRIBE_FFI_CHECKSUM_METHOD_CODESCRIBECONFIG_SET_API_KEY
 #define UNIFFI_FFIDEF_UNIFFI_CODESCRIBE_FFI_CHECKSUM_METHOD_CODESCRIBECONFIG_SET_API_KEY
 uint16_t uniffi_codescribe_ffi_checksum_method_codescribeconfig_set_api_key(void
@@ -2327,6 +2456,12 @@ uint16_t uniffi_codescribe_ffi_checksum_method_codescribeconfig_set_formatting_p
 
 );
 #endif
+#ifndef UNIFFI_FFIDEF_UNIFFI_CODESCRIBE_FFI_CHECKSUM_METHOD_CODESCRIBECONFIG_SET_LANE_PROVIDER
+#define UNIFFI_FFIDEF_UNIFFI_CODESCRIBE_FFI_CHECKSUM_METHOD_CODESCRIBECONFIG_SET_LANE_PROVIDER
+uint16_t uniffi_codescribe_ffi_checksum_method_codescribeconfig_set_lane_provider(void
+
+);
+#endif
 #ifndef UNIFFI_FFIDEF_UNIFFI_CODESCRIBE_FFI_CHECKSUM_METHOD_CODESCRIBECONFIG_SET_NOTES_MODE
 #define UNIFFI_FFIDEF_UNIFFI_CODESCRIBE_FFI_CHECKSUM_METHOD_CODESCRIBECONFIG_SET_NOTES_MODE
 uint16_t uniffi_codescribe_ffi_checksum_method_codescribeconfig_set_notes_mode(void
@@ -2336,6 +2471,18 @@ uint16_t uniffi_codescribe_ffi_checksum_method_codescribeconfig_set_notes_mode(v
 #ifndef UNIFFI_FFIDEF_UNIFFI_CODESCRIBE_FFI_CHECKSUM_METHOD_CODESCRIBECONFIG_SET_ONBOARDING_MODE
 #define UNIFFI_FFIDEF_UNIFFI_CODESCRIBE_FFI_CHECKSUM_METHOD_CODESCRIBECONFIG_SET_ONBOARDING_MODE
 uint16_t uniffi_codescribe_ffi_checksum_method_codescribeconfig_set_onboarding_mode(void
+
+);
+#endif
+#ifndef UNIFFI_FFIDEF_UNIFFI_CODESCRIBE_FFI_CHECKSUM_METHOD_CODESCRIBECONFIG_SET_OVERLAY_EXPANDED_BY_DEFAULT
+#define UNIFFI_FFIDEF_UNIFFI_CODESCRIBE_FFI_CHECKSUM_METHOD_CODESCRIBECONFIG_SET_OVERLAY_EXPANDED_BY_DEFAULT
+uint16_t uniffi_codescribe_ffi_checksum_method_codescribeconfig_set_overlay_expanded_by_default(void
+
+);
+#endif
+#ifndef UNIFFI_FFIDEF_UNIFFI_CODESCRIBE_FFI_CHECKSUM_METHOD_CODESCRIBECONFIG_SETTINGS_FILE_PATH
+#define UNIFFI_FFIDEF_UNIFFI_CODESCRIBE_FFI_CHECKSUM_METHOD_CODESCRIBECONFIG_SETTINGS_FILE_PATH
+uint16_t uniffi_codescribe_ffi_checksum_method_codescribeconfig_settings_file_path(void
 
 );
 #endif
@@ -2354,6 +2501,12 @@ uint16_t uniffi_codescribe_ffi_checksum_method_codescribeconfig_sign_out_account
 #ifndef UNIFFI_FFIDEF_UNIFFI_CODESCRIBE_FFI_CHECKSUM_METHOD_CODESCRIBECONFIG_START_ACCOUNT_LOGIN
 #define UNIFFI_FFIDEF_UNIFFI_CODESCRIBE_FFI_CHECKSUM_METHOD_CODESCRIBECONFIG_START_ACCOUNT_LOGIN
 uint16_t uniffi_codescribe_ffi_checksum_method_codescribeconfig_start_account_login(void
+
+);
+#endif
+#ifndef UNIFFI_FFIDEF_UNIFFI_CODESCRIBE_FFI_CHECKSUM_METHOD_CODESCRIBECONFIG_STT_LANES
+#define UNIFFI_FFIDEF_UNIFFI_CODESCRIBE_FFI_CHECKSUM_METHOD_CODESCRIBECONFIG_STT_LANES
+uint16_t uniffi_codescribe_ffi_checksum_method_codescribeconfig_stt_lanes(void
 
 );
 #endif
@@ -2381,15 +2534,51 @@ uint16_t uniffi_codescribe_ffi_checksum_method_codescribeconfig_update_config_ma
 
 );
 #endif
+#ifndef UNIFFI_FFIDEF_UNIFFI_CODESCRIBE_FFI_CHECKSUM_METHOD_CODESCRIBECONFIG_UPDATE_CUSTOM_PROVIDER
+#define UNIFFI_FFIDEF_UNIFFI_CODESCRIBE_FFI_CHECKSUM_METHOD_CODESCRIBECONFIG_UPDATE_CUSTOM_PROVIDER
+uint16_t uniffi_codescribe_ffi_checksum_method_codescribeconfig_update_custom_provider(void
+
+);
+#endif
+#ifndef UNIFFI_FFIDEF_UNIFFI_CODESCRIBE_FFI_CHECKSUM_METHOD_CODESCRIBEHOTKEYS_ADMISSION_READINESS
+#define UNIFFI_FFIDEF_UNIFFI_CODESCRIBE_FFI_CHECKSUM_METHOD_CODESCRIBEHOTKEYS_ADMISSION_READINESS
+uint16_t uniffi_codescribe_ffi_checksum_method_codescribehotkeys_admission_readiness(void
+
+);
+#endif
 #ifndef UNIFFI_FFIDEF_UNIFFI_CODESCRIBE_FFI_CHECKSUM_METHOD_CODESCRIBEHOTKEYS_AVAILABLE_BINDINGS
 #define UNIFFI_FFIDEF_UNIFFI_CODESCRIBE_FFI_CHECKSUM_METHOD_CODESCRIBEHOTKEYS_AVAILABLE_BINDINGS
 uint16_t uniffi_codescribe_ffi_checksum_method_codescribehotkeys_available_bindings(void
 
 );
 #endif
+#ifndef UNIFFI_FFIDEF_UNIFFI_CODESCRIBE_FFI_CHECKSUM_METHOD_CODESCRIBEHOTKEYS_BEGIN_NEW_MAX_CONSULTATION
+#define UNIFFI_FFIDEF_UNIFFI_CODESCRIBE_FFI_CHECKSUM_METHOD_CODESCRIBEHOTKEYS_BEGIN_NEW_MAX_CONSULTATION
+uint16_t uniffi_codescribe_ffi_checksum_method_codescribehotkeys_begin_new_max_consultation(void
+
+);
+#endif
+#ifndef UNIFFI_FFIDEF_UNIFFI_CODESCRIBE_FFI_CHECKSUM_METHOD_CODESCRIBEHOTKEYS_CALIBRATE_ENERGY
+#define UNIFFI_FFIDEF_UNIFFI_CODESCRIBE_FFI_CHECKSUM_METHOD_CODESCRIBEHOTKEYS_CALIBRATE_ENERGY
+uint16_t uniffi_codescribe_ffi_checksum_method_codescribehotkeys_calibrate_energy(void
+
+);
+#endif
 #ifndef UNIFFI_FFIDEF_UNIFFI_CODESCRIBE_FFI_CHECKSUM_METHOD_CODESCRIBEHOTKEYS_CANCEL_VOICE_TURN
 #define UNIFFI_FFIDEF_UNIFFI_CODESCRIBE_FFI_CHECKSUM_METHOD_CODESCRIBEHOTKEYS_CANCEL_VOICE_TURN
 uint16_t uniffi_codescribe_ffi_checksum_method_codescribehotkeys_cancel_voice_turn(void
+
+);
+#endif
+#ifndef UNIFFI_FFIDEF_UNIFFI_CODESCRIBE_FFI_CHECKSUM_METHOD_CODESCRIBEHOTKEYS_COMMIT_FORMATTER_REVISION
+#define UNIFFI_FFIDEF_UNIFFI_CODESCRIBE_FFI_CHECKSUM_METHOD_CODESCRIBEHOTKEYS_COMMIT_FORMATTER_REVISION
+uint16_t uniffi_codescribe_ffi_checksum_method_codescribehotkeys_commit_formatter_revision(void
+
+);
+#endif
+#ifndef UNIFFI_FFIDEF_UNIFFI_CODESCRIBE_FFI_CHECKSUM_METHOD_CODESCRIBEHOTKEYS_COMMIT_USER_REVISION
+#define UNIFFI_FFIDEF_UNIFFI_CODESCRIBE_FFI_CHECKSUM_METHOD_CODESCRIBEHOTKEYS_COMMIT_USER_REVISION
+uint16_t uniffi_codescribe_ffi_checksum_method_codescribehotkeys_commit_user_revision(void
 
 );
 #endif
@@ -2405,21 +2594,15 @@ uint16_t uniffi_codescribe_ffi_checksum_method_codescribehotkeys_defer_text(void
 
 );
 #endif
-#ifndef UNIFFI_FFIDEF_UNIFFI_CODESCRIBE_FFI_CHECKSUM_METHOD_CODESCRIBEHOTKEYS_FORMAT_TEXT
-#define UNIFFI_FFIDEF_UNIFFI_CODESCRIBE_FFI_CHECKSUM_METHOD_CODESCRIBEHOTKEYS_FORMAT_TEXT
-uint16_t uniffi_codescribe_ffi_checksum_method_codescribehotkeys_format_text(void
-
-);
-#endif
-#ifndef UNIFFI_FFIDEF_UNIFFI_CODESCRIBE_FFI_CHECKSUM_METHOD_CODESCRIBEHOTKEYS_FORMAT_TEXT_FOR_LEVEL
-#define UNIFFI_FFIDEF_UNIFFI_CODESCRIBE_FFI_CHECKSUM_METHOD_CODESCRIBEHOTKEYS_FORMAT_TEXT_FOR_LEVEL
-uint16_t uniffi_codescribe_ffi_checksum_method_codescribehotkeys_format_text_for_level(void
-
-);
-#endif
 #ifndef UNIFFI_FFIDEF_UNIFFI_CODESCRIBE_FFI_CHECKSUM_METHOD_CODESCRIBEHOTKEYS_GET_MODE_BINDINGS
 #define UNIFFI_FFIDEF_UNIFFI_CODESCRIBE_FFI_CHECKSUM_METHOD_CODESCRIBEHOTKEYS_GET_MODE_BINDINGS
 uint16_t uniffi_codescribe_ffi_checksum_method_codescribehotkeys_get_mode_bindings(void
+
+);
+#endif
+#ifndef UNIFFI_FFIDEF_UNIFFI_CODESCRIBE_FFI_CHECKSUM_METHOD_CODESCRIBEHOTKEYS_INSPECT_SELECTED_MAX_CONSULTATION
+#define UNIFFI_FFIDEF_UNIFFI_CODESCRIBE_FFI_CHECKSUM_METHOD_CODESCRIBEHOTKEYS_INSPECT_SELECTED_MAX_CONSULTATION
+uint16_t uniffi_codescribe_ffi_checksum_method_codescribehotkeys_inspect_selected_max_consultation(void
 
 );
 #endif
@@ -2465,6 +2648,12 @@ uint16_t uniffi_codescribe_ffi_checksum_method_codescribehotkeys_paste_text(void
 
 );
 #endif
+#ifndef UNIFFI_FFIDEF_UNIFFI_CODESCRIBE_FFI_CHECKSUM_METHOD_CODESCRIBEHOTKEYS_PENDING_MAX_TOOL_APPROVALS
+#define UNIFFI_FFIDEF_UNIFFI_CODESCRIBE_FFI_CHECKSUM_METHOD_CODESCRIBEHOTKEYS_PENDING_MAX_TOOL_APPROVALS
+uint16_t uniffi_codescribe_ffi_checksum_method_codescribehotkeys_pending_max_tool_approvals(void
+
+);
+#endif
 #ifndef UNIFFI_FFIDEF_UNIFFI_CODESCRIBE_FFI_CHECKSUM_METHOD_CODESCRIBEHOTKEYS_PREWARM_RECORDING
 #define UNIFFI_FFIDEF_UNIFFI_CODESCRIBE_FFI_CHECKSUM_METHOD_CODESCRIBEHOTKEYS_PREWARM_RECORDING
 uint16_t uniffi_codescribe_ffi_checksum_method_codescribehotkeys_prewarm_recording(void
@@ -2480,6 +2669,12 @@ uint16_t uniffi_codescribe_ffi_checksum_method_codescribehotkeys_rearm_after_per
 #ifndef UNIFFI_FFIDEF_UNIFFI_CODESCRIBE_FFI_CHECKSUM_METHOD_CODESCRIBEHOTKEYS_RESET_BINDINGS_TO_DEFAULTS
 #define UNIFFI_FFIDEF_UNIFFI_CODESCRIBE_FFI_CHECKSUM_METHOD_CODESCRIBEHOTKEYS_RESET_BINDINGS_TO_DEFAULTS
 uint16_t uniffi_codescribe_ffi_checksum_method_codescribehotkeys_reset_bindings_to_defaults(void
+
+);
+#endif
+#ifndef UNIFFI_FFIDEF_UNIFFI_CODESCRIBE_FFI_CHECKSUM_METHOD_CODESCRIBEHOTKEYS_RESOLVE_MAX_TOOL_APPROVAL
+#define UNIFFI_FFIDEF_UNIFFI_CODESCRIBE_FFI_CHECKSUM_METHOD_CODESCRIBEHOTKEYS_RESOLVE_MAX_TOOL_APPROVAL
+uint16_t uniffi_codescribe_ffi_checksum_method_codescribehotkeys_resolve_max_tool_approval(void
 
 );
 #endif
@@ -2531,6 +2726,12 @@ uint16_t uniffi_codescribe_ffi_checksum_method_codescribehotkeys_start_assistive
 
 );
 #endif
+#ifndef UNIFFI_FFIDEF_UNIFFI_CODESCRIBE_FFI_CHECKSUM_METHOD_CODESCRIBEHOTKEYS_START_COMPOSER_TURN_RECORDING
+#define UNIFFI_FFIDEF_UNIFFI_CODESCRIBE_FFI_CHECKSUM_METHOD_CODESCRIBEHOTKEYS_START_COMPOSER_TURN_RECORDING
+uint16_t uniffi_codescribe_ffi_checksum_method_codescribehotkeys_start_composer_turn_recording(void
+
+);
+#endif
 #ifndef UNIFFI_FFIDEF_UNIFFI_CODESCRIBE_FFI_CHECKSUM_METHOD_CODESCRIBEHOTKEYS_START_RECORDING
 #define UNIFFI_FFIDEF_UNIFFI_CODESCRIBE_FFI_CHECKSUM_METHOD_CODESCRIBEHOTKEYS_START_RECORDING
 uint16_t uniffi_codescribe_ffi_checksum_method_codescribehotkeys_start_recording(void
@@ -2540,6 +2741,12 @@ uint16_t uniffi_codescribe_ffi_checksum_method_codescribehotkeys_start_recording
 #ifndef UNIFFI_FFIDEF_UNIFFI_CODESCRIBE_FFI_CHECKSUM_METHOD_CODESCRIBEHOTKEYS_STOP
 #define UNIFFI_FFIDEF_UNIFFI_CODESCRIBE_FFI_CHECKSUM_METHOD_CODESCRIBEHOTKEYS_STOP
 uint16_t uniffi_codescribe_ffi_checksum_method_codescribehotkeys_stop(void
+
+);
+#endif
+#ifndef UNIFFI_FFIDEF_UNIFFI_CODESCRIBE_FFI_CHECKSUM_METHOD_CODESCRIBEHOTKEYS_STOP_COMPOSER_TURN_RECORDING
+#define UNIFFI_FFIDEF_UNIFFI_CODESCRIBE_FFI_CHECKSUM_METHOD_CODESCRIBEHOTKEYS_STOP_COMPOSER_TURN_RECORDING
+uint16_t uniffi_codescribe_ffi_checksum_method_codescribehotkeys_stop_composer_turn_recording(void
 
 );
 #endif
@@ -2843,6 +3050,30 @@ uint16_t uniffi_codescribe_ffi_checksum_method_csappactionlistener_on_show_agent
 
 );
 #endif
+#ifndef UNIFFI_FFIDEF_UNIFFI_CODESCRIBE_FFI_CHECKSUM_METHOD_CSAPPACTIONLISTENER_ON_MAX_APPROVALS_CHANGED
+#define UNIFFI_FFIDEF_UNIFFI_CODESCRIBE_FFI_CHECKSUM_METHOD_CSAPPACTIONLISTENER_ON_MAX_APPROVALS_CHANGED
+uint16_t uniffi_codescribe_ffi_checksum_method_csappactionlistener_on_max_approvals_changed(void
+
+);
+#endif
+#ifndef UNIFFI_FFIDEF_UNIFFI_CODESCRIBE_FFI_CHECKSUM_METHOD_CSTRANSCRIPTIONLISTENER_ON_TRANSCRIPT_PROJECTION
+#define UNIFFI_FFIDEF_UNIFFI_CODESCRIBE_FFI_CHECKSUM_METHOD_CSTRANSCRIPTIONLISTENER_ON_TRANSCRIPT_PROJECTION
+uint16_t uniffi_codescribe_ffi_checksum_method_cstranscriptionlistener_on_transcript_projection(void
+
+);
+#endif
+#ifndef UNIFFI_FFIDEF_UNIFFI_CODESCRIBE_FFI_CHECKSUM_METHOD_CSTRANSCRIPTIONLISTENER_ON_PRESENTATION_STATUS
+#define UNIFFI_FFIDEF_UNIFFI_CODESCRIBE_FFI_CHECKSUM_METHOD_CSTRANSCRIPTIONLISTENER_ON_PRESENTATION_STATUS
+uint16_t uniffi_codescribe_ffi_checksum_method_cstranscriptionlistener_on_presentation_status(void
+
+);
+#endif
+#ifndef UNIFFI_FFIDEF_UNIFFI_CODESCRIBE_FFI_CHECKSUM_METHOD_CSTRANSCRIPTIONLISTENER_ON_COMPACT_PROJECTION
+#define UNIFFI_FFIDEF_UNIFFI_CODESCRIBE_FFI_CHECKSUM_METHOD_CSTRANSCRIPTIONLISTENER_ON_COMPACT_PROJECTION
+uint16_t uniffi_codescribe_ffi_checksum_method_cstranscriptionlistener_on_compact_projection(void
+
+);
+#endif
 #ifndef UNIFFI_FFIDEF_UNIFFI_CODESCRIBE_FFI_CHECKSUM_METHOD_CSTRANSCRIPTIONLISTENER_ON_RECORDING_PREPARING
 #define UNIFFI_FFIDEF_UNIFFI_CODESCRIBE_FFI_CHECKSUM_METHOD_CSTRANSCRIPTIONLISTENER_ON_RECORDING_PREPARING
 uint16_t uniffi_codescribe_ffi_checksum_method_cstranscriptionlistener_on_recording_preparing(void
@@ -2867,51 +3098,9 @@ uint16_t uniffi_codescribe_ffi_checksum_method_cstranscriptionlistener_on_record
 
 );
 #endif
-#ifndef UNIFFI_FFIDEF_UNIFFI_CODESCRIBE_FFI_CHECKSUM_METHOD_CSTRANSCRIPTIONLISTENER_ON_PREVIEW
-#define UNIFFI_FFIDEF_UNIFFI_CODESCRIBE_FFI_CHECKSUM_METHOD_CSTRANSCRIPTIONLISTENER_ON_PREVIEW
-uint16_t uniffi_codescribe_ffi_checksum_method_cstranscriptionlistener_on_preview(void
-
-);
-#endif
-#ifndef UNIFFI_FFIDEF_UNIFFI_CODESCRIBE_FFI_CHECKSUM_METHOD_CSTRANSCRIPTIONLISTENER_ON_CORRECTION
-#define UNIFFI_FFIDEF_UNIFFI_CODESCRIBE_FFI_CHECKSUM_METHOD_CSTRANSCRIPTIONLISTENER_ON_CORRECTION
-uint16_t uniffi_codescribe_ffi_checksum_method_cstranscriptionlistener_on_correction(void
-
-);
-#endif
-#ifndef UNIFFI_FFIDEF_UNIFFI_CODESCRIBE_FFI_CHECKSUM_METHOD_CSTRANSCRIPTIONLISTENER_ON_FINAL
-#define UNIFFI_FFIDEF_UNIFFI_CODESCRIBE_FFI_CHECKSUM_METHOD_CSTRANSCRIPTIONLISTENER_ON_FINAL
-uint16_t uniffi_codescribe_ffi_checksum_method_cstranscriptionlistener_on_final(void
-
-);
-#endif
-#ifndef UNIFFI_FFIDEF_UNIFFI_CODESCRIBE_FFI_CHECKSUM_METHOD_CSTRANSCRIPTIONLISTENER_ON_REPLACE_RANGE
-#define UNIFFI_FFIDEF_UNIFFI_CODESCRIBE_FFI_CHECKSUM_METHOD_CSTRANSCRIPTIONLISTENER_ON_REPLACE_RANGE
-uint16_t uniffi_codescribe_ffi_checksum_method_cstranscriptionlistener_on_replace_range(void
-
-);
-#endif
-#ifndef UNIFFI_FFIDEF_UNIFFI_CODESCRIBE_FFI_CHECKSUM_METHOD_CSTRANSCRIPTIONLISTENER_ON_INSERT_ANNOTATION
-#define UNIFFI_FFIDEF_UNIFFI_CODESCRIBE_FFI_CHECKSUM_METHOD_CSTRANSCRIPTIONLISTENER_ON_INSERT_ANNOTATION
-uint16_t uniffi_codescribe_ffi_checksum_method_cstranscriptionlistener_on_insert_annotation(void
-
-);
-#endif
-#ifndef UNIFFI_FFIDEF_UNIFFI_CODESCRIBE_FFI_CHECKSUM_METHOD_CSTRANSCRIPTIONLISTENER_ON_CONTEXT_MARKER
-#define UNIFFI_FFIDEF_UNIFFI_CODESCRIBE_FFI_CHECKSUM_METHOD_CSTRANSCRIPTIONLISTENER_ON_CONTEXT_MARKER
-uint16_t uniffi_codescribe_ffi_checksum_method_cstranscriptionlistener_on_context_marker(void
-
-);
-#endif
 #ifndef UNIFFI_FFIDEF_UNIFFI_CODESCRIBE_FFI_CHECKSUM_METHOD_CSTRANSCRIPTIONLISTENER_ON_SESSION_FINALISED
 #define UNIFFI_FFIDEF_UNIFFI_CODESCRIBE_FFI_CHECKSUM_METHOD_CSTRANSCRIPTIONLISTENER_ON_SESSION_FINALISED
 uint16_t uniffi_codescribe_ffi_checksum_method_cstranscriptionlistener_on_session_finalised(void
-
-);
-#endif
-#ifndef UNIFFI_FFIDEF_UNIFFI_CODESCRIBE_FFI_CHECKSUM_METHOD_CSTRANSCRIPTIONLISTENER_ON_FINAL_TRANSCRIPT_READY
-#define UNIFFI_FFIDEF_UNIFFI_CODESCRIBE_FFI_CHECKSUM_METHOD_CSTRANSCRIPTIONLISTENER_ON_FINAL_TRANSCRIPT_READY
-uint16_t uniffi_codescribe_ffi_checksum_method_cstranscriptionlistener_on_final_transcript_ready(void
 
 );
 #endif

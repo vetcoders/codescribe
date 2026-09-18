@@ -27,6 +27,8 @@ NO_EMBED=0
 EMBED_WHISPER=0
 EMBED_WHISPER_EXPLICIT=0
 DMG_SUFFIX=""
+RECEIPT=""
+RECEIPT_RUN=""
 
 usage() {
   cat <<EOF
@@ -38,6 +40,8 @@ Whisper is NOT baked into the standard DMG (~1GB saved); users download it
 from Settings → Dictation when they want local Candle Whisper.
 
 Options:
+  --receipt <path>    Write invocation artifact data only after success
+  --receipt-run <id>  Required unique invocation ID with --receipt
   --sign              Codesign the .app (requires Developer ID)
   --notarize          Notarize the DMG (requires NOTARY_PROFILE)
   --identity <name>   Override codesign identity
@@ -51,6 +55,8 @@ EOF
 
 while [[ $# -gt 0 ]]; do
   case "$1" in
+    --receipt) RECEIPT="$2"; shift 2;;
+    --receipt-run) RECEIPT_RUN="$2"; shift 2;;
     --sign) SIGN=1; shift 1;;
     --notarize) NOTARIZE=1; shift 1;;
     --identity) IDENTITY="$2"; shift 2;;
@@ -62,6 +68,14 @@ while [[ $# -gt 0 ]]; do
     *) echo "Unknown arg: $1" >&2; usage; exit 1;;
   esac
 done
+
+# A caller must allocate a fresh private receipt path for each invocation.
+if [[ -n "$RECEIPT" || -n "$RECEIPT_RUN" ]]; then
+  if [[ "$RECEIPT" != /* || ! "$RECEIPT_RUN" =~ ^[a-zA-Z0-9._-]+$ || -e "$RECEIPT" || -L "$RECEIPT" || "$NO_EMBED" -eq 1 ]]; then
+    echo "ERROR: receipt needs a fresh absolute path, invocation ID and public variant" >&2
+    exit 1
+  fi
+fi
 
 if [[ "$NO_EMBED" -eq 1 && "$EMBED_WHISPER_EXPLICIT" -eq 1 ]]; then
   echo "ERROR: --no-embed and --embed-whisper cannot be used together" >&2
@@ -166,4 +180,13 @@ echo "SHA-256: $(cat "$DMG_PATH.sha256")"
 if [[ "$NOTARIZE" -eq 1 ]]; then
   echo "Notarizing DMG with profile: $NOTARY_PROFILE"
   NOTARY_PROFILE="$NOTARY_PROFILE" "$ROOT_DIR/scripts/notarize.sh" "$DMG_PATH" "$APP_PATH"
+fi
+
+# These are the producer's frozen source version/path, never a late HEAD lookup
+# or a rewritten bundle stamp. The payload verifier still checks bundle version.
+if [[ -n "$RECEIPT" ]]; then
+  VARIANT=slim
+  if [[ "$EMBED_WHISPER" -eq 1 ]]; then VARIANT=full; fi
+  bash "$ROOT_DIR/scripts/lib/release-artifact-receipt.sh" write \
+    "$RECEIPT" "$RECEIPT_RUN" "$VARIANT" "$VERSION" "$DMG_PATH"
 fi

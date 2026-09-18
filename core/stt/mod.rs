@@ -1,9 +1,8 @@
 //! Speech-to-text engine router.
 //!
-//! Three backends live behind one call surface — Candle Whisper, ONNX Whisper,
-//! and Apple SpeechAnalyzer — selected by `CODESCRIBE_STT_ENGINE`. Unset or
-//! `auto` resolves through [`default_engine`]: Apple when its runtime *and*
-//! bridge are both reachable, otherwise Candle.
+//! Two backends live behind one call surface — Candle Whisper and Apple
+//! SpeechAnalyzer. The automatic policy resolves through [`default_engine`]:
+//! Apple when its runtime *and* bridge are both reachable, otherwise Candle.
 //!
 //! ## The lane split (product truth, not an implementation detail)
 //!
@@ -16,33 +15,18 @@
 //!   `CODESCRIBE_STT_ENGINE=apple`; measured on long Polish dictation, Apple's
 //!   URL recognizer collapses the take to a tail fragment.
 //!
-//! ## Append-only tail gap-fill
-//!
-//! [`resolve_tail_gap_boundary`], [`whisper_tail_gap_transcribe_file`] and
-//! [`append_tail_gap`] implement the Smart-mode primitive: transcribe only the
-//! *uncommitted* tail and append it. Committed text is immutable, so a missing
-//! commit boundary must resolve to a skip rather than a whole-file re-pass
-//! appended onto text the user already sees.
-
 /// Bounded read-only view of active W2-04 Agent session-name leases.
 pub mod active_names;
-/// Candle Whisper singleton adapter implementing `TranscriptionAdapter`.
-pub mod adapter;
 /// Apple SpeechAnalyzer live STT bridge (letter-level canvas; live lane only).
 pub mod apple_stt;
-/// ONNX Whisper runtime adapter selected via `CODESCRIBE_STT_ENGINE=onnx`.
-pub mod onnx_adapter;
-/// Whisper sentence shape onto committed Apple words — punctuation only.
-pub mod punctuation_transplant;
+pub mod lanes;
 /// Explicit cloud/loopback STT topic token. Client-owned; never from audio.
 pub mod request_vocabulary;
-/// Serialized STT request scheduler: live, commit, and refine lanes with
-/// supersede semantics for stale requests and thermal-pressure backoff.
-pub mod scheduler;
 /// Layer-1 on-the-go Whisper tail-patch helpers for append-only gap fill.
 pub mod tail_patcher;
 /// Typed, time-ranged provider seam for Whisper tail-patch windows.
 pub mod tail_provider;
+pub use lanes::{ResolvedSttLane, SttEndpointError, SttLane, validate_stt_endpoint};
 /// Candle Whisper engine, singleton, and file final-pass routes.
 pub mod whisper;
 
@@ -50,12 +34,70 @@ pub mod whisper;
 mod fleet_red_contracts;
 
 use crate::pipeline::contracts::RawTranscript;
-use crate::pipeline::contracts::TranscriptionAdapter;
-use std::sync::OnceLock;
 use tracing::warn;
 
-/// Env key selecting STT backend (`candle`/`whisper`/`onnx`/`apple`/`auto`).
-const ENV_STT_ENGINE: &str = "CODESCRIBE_STT_ENGINE";
+/// Cooperative control belongs to an execution request/session, never to the
+/// singleton. Clones share cancellation and the earliest terminal deadline.
+/// Default controls keep ordinary public file callers unlimited.
+#[derive(Clone, Debug, Default)]
+pub(crate) struct LocalExecutionControl {
+    cancelled: std::sync::Arc<std::sync::atomic::AtomicBool>,
+    deadline: std::sync::Arc<std::sync::Mutex<Option<std::time::Instant>>>,
+    #[cfg(test)]
+    cancel_at: Option<LocalExecutionBoundary>,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum LocalExecutionBoundary {
+    Window,
+    Token,
+}
+
+impl LocalExecutionControl {
+    pub(crate) fn cancel(&self) {
+        self.cancelled
+            .store(true, std::sync::atomic::Ordering::Release);
+    }
+
+    pub(crate) fn limit_until(&self, deadline: std::time::Instant) -> std::time::Instant {
+        let mut current = self
+            .deadline
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let deadline = current.map_or(deadline, |old| old.min(deadline));
+        *current = Some(deadline);
+        deadline
+    }
+
+    pub(crate) fn checkpoint(&self, _boundary: LocalExecutionBoundary) -> anyhow::Result<()> {
+        #[cfg(test)]
+        if self.cancel_at == Some(_boundary) {
+            self.cancel();
+        }
+        self.check()
+    }
+
+    #[cfg(test)]
+    pub(crate) fn cancelling_at(boundary: LocalExecutionBoundary) -> Self {
+        Self {
+            cancel_at: Some(boundary),
+            ..Self::default()
+        }
+    }
+
+    pub(crate) fn check(&self) -> anyhow::Result<()> {
+        let deadline = *self
+            .deadline
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        anyhow::ensure!(
+            !self.cancelled.load(std::sync::atomic::Ordering::Acquire)
+                && deadline.is_none_or(|deadline| std::time::Instant::now() < deadline),
+            "local execution cancelled or drain deadline expired"
+        );
+        Ok(())
+    }
+}
 
 /// Which STT backend the router dispatches to.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -63,33 +105,8 @@ enum SttEngine {
     /// Candle Whisper — the local model. Only engine that honours an
     /// `initial_prompt`, and the only legal file final-pass route.
     Candle,
-    /// ONNX Whisper runtime.
-    Onnx,
     /// Apple SpeechAnalyzer via the external bridge; live lane only.
     Apple,
-}
-
-/// Resolve the active engine: an explicit `CODESCRIBE_STT_ENGINE` value when it
-/// names one, otherwise the platform auto policy.
-fn selected_engine() -> SttEngine {
-    match std::env::var(ENV_STT_ENGINE) {
-        Ok(value) => requested_engine(&value).unwrap_or_else(default_engine),
-        Err(_) => default_engine(),
-    }
-}
-
-/// Parse an explicit engine request. `""` and `"auto"` yield `None` (defer to
-/// the auto policy); an unrecognized value falls back to Candle rather than
-/// failing the recording.
-fn requested_engine(value: &str) -> Option<SttEngine> {
-    match value.trim().to_ascii_lowercase().as_str() {
-        "onnx" => SttEngine::Onnx,
-        "apple" => SttEngine::Apple,
-        "candle" | "whisper" => SttEngine::Candle,
-        "" | "auto" => return None,
-        _ => SttEngine::Candle,
-    }
-    .into()
 }
 
 /// Auto policy: Apple only when it can actually run, otherwise Candle.
@@ -105,84 +122,14 @@ fn default_engine() -> SttEngine {
     }
 }
 
-/// Get the active STT adapter based on `CODESCRIBE_STT_ENGINE` env var or auto policy.
-///
-/// - `"onnx"` → initializes ONNX engine + returns `OnnxWhisperAdapter`
-/// - `"apple"` → initializes SpeechAnalyzer bridge + returns Apple adapter
-/// - unset/`"auto"` → Apple on supported macOS, otherwise Candle
-/// - anything else → `WhisperSingletonAdapter` (candle)
-///
-/// Apple path gracefully falls back to Candle if unavailable.
-pub fn get_adapter() -> anyhow::Result<Box<dyn TranscriptionAdapter>> {
-    match selected_engine() {
-        SttEngine::Onnx => {
-            onnx_adapter::init()?;
-            Ok(Box::new(onnx_adapter::OnnxWhisperAdapter::new()))
-        }
-        SttEngine::Apple => run_apple_or_whisper(
-            "get_adapter",
-            || {
-                apple_stt::init()?;
-                Ok(Box::new(apple_stt::AppleSpeechAnalyzerAdapter::new())
-                    as Box<dyn TranscriptionAdapter>)
-            },
-            || {
-                Ok(Box::new(adapter::WhisperSingletonAdapter::new())
-                    as Box<dyn TranscriptionAdapter>)
-            },
-        ),
-        SttEngine::Candle => Ok(Box::new(adapter::WhisperSingletonAdapter::new())),
-    }
-}
-
 // ── Engine-level router ──────────────────────────────────────────────────────
 //
-// These functions dispatch to candle, ONNX, or Apple SpeechAnalyzer based on
-// `CODESCRIBE_STT_ENGINE` plus the default auto policy. They match the call semantics of
+// These functions dispatch to Candle or Apple SpeechAnalyzer under the default
+// auto policy. They match the call semantics of
 // `LocalWhisperEngine::transcribe_with_language` (chunk) and
 // `transcribe_long_with_language` (utterance/correction).
 //
 // Used by `pipeline::streaming` to keep backend selection transparent.
-
-/// Warn once per process that Apple was requested but Candle is serving.
-/// Latched through a `OnceLock` so a per-chunk fallback cannot flood the log.
-fn warn_apple_fallback(context: &str, error: &anyhow::Error) {
-    /// Process-once latch so repeated fallbacks do not flood tracing logs.
-    static WARNED: OnceLock<()> = OnceLock::new();
-    WARNED.get_or_init(|| {
-        warn!(
-            "Apple STT requested but unavailable during {}: {}. Falling back to Candle Whisper.",
-            context, error
-        );
-    });
-}
-
-/// Run `apple_path`, silently degrading to `whisper_fallback` when the Apple
-/// runtime is missing or the attempt fails.
-///
-/// This is the *setup*-phase helper (adapter construction, engine init) where a
-/// swap is invisible and harmless. Live transcription uses
-/// [`run_apple_live_only`] instead, so a failure surfaces rather than quietly
-/// re-routing the user's dictation to another engine.
-fn run_apple_or_whisper<T>(
-    context: &str,
-    apple_path: impl FnOnce() -> anyhow::Result<T>,
-    whisper_fallback: impl FnOnce() -> anyhow::Result<T>,
-) -> anyhow::Result<T> {
-    if !apple_stt::is_runtime_available() {
-        let err = anyhow::anyhow!("SpeechAnalyzer runtime not available on this host");
-        warn_apple_fallback(context, &err);
-        return whisper_fallback();
-    }
-
-    match apple_path() {
-        Ok(value) => Ok(value),
-        Err(err) => {
-            warn_apple_fallback(context, &err);
-            whisper_fallback()
-        }
-    }
-}
 
 /// Prefer Apple for live. On hard Apple failure with real audio, **emergency**
 /// Candle recovery keeps the session alive (no empty toast / dead overlay).
@@ -212,49 +159,13 @@ fn run_apple_live_only<T>(
     })
 }
 
-/// Apple-first long transcription with emergency Whisper only when Apple hard-fails
-/// and there is real audio to recover from.
-fn apple_live_or_emergency_whisper(
-    context: &str,
-    audio: &[f32],
-    sample_rate: u32,
-    language: Option<&str>,
-) -> anyhow::Result<RawTranscript> {
-    match run_apple_live_only(context, || {
-        apple_stt::transcribe_long_with_segments(audio, sample_rate, language)
-    }) {
-        Ok(raw) => Ok(raw),
-        Err(err) if !audio.is_empty() && sample_rate > 0 => {
-            warn!(
-                "Apple live hard-fail during {context} — emergency Whisper recovery ({:#})",
-                err
-            );
-            candle_transcribe_long_with_segments(audio, sample_rate, language).map_err(|werr| {
-                werr.context(format!(
-                    "Apple live failed and emergency Whisper also failed during {context}: {err:#}"
-                ))
-            })
-        }
-        Err(err) => Err(err),
-    }
-}
-
-/// Preferential engine label for UI honesty (`local_apple` / `local_whisper` / …).
-pub fn preferred_engine_label() -> &'static str {
-    match selected_engine() {
-        SttEngine::Apple => "local_apple",
-        SttEngine::Onnx => "local_whisper",
-        SttEngine::Candle => "local_whisper",
-    }
-}
-
 /// Preflight before starting a recording when live engine is Apple.
 ///
 /// Fails **before** REC so we never open an empty overlay that dies mid-take.
 /// Whisper is not substituted here — recovery is a separate stop-path cut when
 /// audio already exists.
 pub fn preflight_apple_live_ready() -> anyhow::Result<()> {
-    if !matches!(selected_engine(), SttEngine::Apple) {
+    if !matches!(default_engine(), SttEngine::Apple) {
         return Ok(());
     }
     if !apple_stt::is_runtime_available() {
@@ -278,23 +189,10 @@ pub fn preflight_apple_live_ready() -> anyhow::Result<()> {
     })
 }
 
-/// Warn once that a domain-vocabulary `initial_prompt` is being dropped —
-/// only Candle Whisper can consume one.
-fn warn_initial_prompt_unsupported(engine: &str) {
-    /// Process-once latch so repeated fallbacks do not flood tracing logs.
-    static WARNED: OnceLock<()> = OnceLock::new();
-    WARNED.get_or_init(|| {
-        warn!(
-            "STT initial_prompt is supported only by Candle Whisper; {} route will ignore it.",
-            engine
-        );
-    });
-}
-
 // FORGOTTEN-GEM(vc-prune 2026-06-10): parked code, intentionally kept —
 // the whole synchronous one-shot transcription contract (transcribe_chunk /
-// try_transcribe_long_with_segments across whisper/apple/onnx providers) is
-// parked: runtime uses the scheduler+streaming path. Kept as the documented
+// try_transcribe_long_with_segments across Whisper/Apple providers) is parked:
+// runtime uses the streaming session path. Kept as the documented
 // provider contract for CLI/batch revival; operator decides revive-or-delete.
 /// Candle chunk transcription through the Whisper singleton.
 #[allow(dead_code)]
@@ -317,183 +215,14 @@ fn candle_transcribe_long_with_segments(
     whisper::singleton::transcribe_with_segments(audio, sample_rate, language)
 }
 
-/// Candle long-audio transcription seeded with a per-call domain vocabulary.
-fn candle_transcribe_long_with_segments_with_initial_prompt(
+fn candle_transcribe_controlled(
     audio: &[f32],
     sample_rate: u32,
     language: Option<&str>,
     initial_prompt: Option<String>,
+    control: &LocalExecutionControl,
 ) -> anyhow::Result<RawTranscript> {
-    whisper::singleton::transcribe_with_segments_with_initial_prompt(
-        audio,
-        sample_rate,
-        language,
-        initial_prompt,
-    )
-}
-
-/// Whisper-transcribe an audio slice after VAD trims it to speech.
-///
-/// Returns an empty transcript when VAD finds no speech, short-circuiting
-/// before any model load — a silent tail must never pay for weights.
-pub(crate) fn whisper_tail_patch_transcribe(
-    audio: &[f32],
-    sample_rate: u32,
-    language: Option<&str>,
-) -> anyhow::Result<RawTranscript> {
-    tail_provider::transcribe_legacy_window(audio, sample_rate, language)
-}
-
-/// First sample index of the uncommitted tail, clamped into `0..=total_samples`.
-///
-/// `from_secs` is the end timestamp of the last **committed** utterance. A
-/// non-positive boundary means nothing is committed yet (whole file); a
-/// boundary past the recording yields `total_samples` (empty tail).
-fn tail_gap_start_index(total_samples: usize, sample_rate: u32, from_secs: f32) -> usize {
-    if sample_rate == 0 || !from_secs.is_finite() || from_secs <= 0.0 {
-        return 0;
-    }
-    let offset = (from_secs as f64) * (sample_rate as f64);
-    if offset >= total_samples as f64 {
-        return total_samples;
-    }
-    (offset.round() as usize).min(total_samples)
-}
-
-/// Where a Smart-mode tail gap-fill is allowed to start — or whether it is
-/// allowed at all.
-#[derive(Debug, Clone, Copy, PartialEq)]
-pub enum TailGapBoundary {
-    /// Transcribe the audio from this (positive) committed boundary onward.
-    From(f32),
-    /// No boundary, but the streaming canvas is EMPTY — gap-filling the whole
-    /// session into nothing is still an append, so it is legal.
-    WholeSessionBootstrap,
-    /// No boundary and a non-empty canvas: any Whisper pass here would be a
-    /// whole-file re-pass landing on committed text. Honest skip instead.
-    Skip,
-}
-
-/// Resolve the tail gap-fill boundary from session telemetry — the guard that
-/// keeps Smart mode out of full-file re-pass territory.
-///
-/// `committed_through_secs` is the end timestamp of the last committed
-/// utterance; it is `None` (or non-positive/non-finite) whenever the session
-/// produced no usable commit evidence — `no_commit_source`, `no_coverage`,
-/// `empty`. Treating that as `0.0` and calling the tail primitive transcribes
-/// the WHOLE file and appends it to the existing streaming text: exactly the
-/// replacement/duplication the append-only overlay doctrine forbids outside
-/// `FINAL_PASS_MODE=Always`.
-pub fn resolve_tail_gap_boundary(
-    committed_through_secs: Option<f32>,
-    streaming_is_empty: bool,
-) -> TailGapBoundary {
-    match committed_through_secs {
-        Some(secs) if secs.is_finite() && secs > 0.0 => TailGapBoundary::From(secs),
-        _ if streaming_is_empty => TailGapBoundary::WholeSessionBootstrap,
-        _ => TailGapBoundary::Skip,
-    }
-}
-
-/// Comparison key for overlap detection: lowercased, edge punctuation stripped.
-fn overlap_key(word: &str) -> String {
-    word.trim_matches(|c: char| !c.is_alphanumeric())
-        .to_lowercase()
-}
-
-/// Number of leading `tail` words that repeat the trailing `committed` words.
-///
-/// Returns the LONGEST such overlap. Comparison is case-insensitive and ignores
-/// leading/trailing punctuation; only the count is returned — the caller keeps
-/// the tail's original words for whatever remains.
-fn leading_overlap_words(committed: &[String], tail: &[String]) -> usize {
-    let max = committed.len().min(tail.len());
-    for len in (1..=max).rev() {
-        let c_start = committed.len() - len;
-        if committed[c_start..] == tail[..len] {
-            return len;
-        }
-    }
-    0
-}
-
-/// Append a tail gap-fill to committed streaming text — **append only**.
-///
-/// The canonical composer for whatever [`whisper_tail_gap_transcribe_file`]
-/// returns. Both Smart-mode stop lanes (the controller and the UniFFI composer
-/// voice-note lane) call THIS — a bare tail must never be fed to
-/// `quality::merge_live_whisper`, which is built for full transcripts vs the live
-/// floor and collapses the boundary Delete+Insert pair into a Substitute that
-/// discards the whisper token.
-///
-/// The overlay doctrine (AGENTS.md, THE ONE RULE): committed text is immutable.
-/// Whatever Whisper produced for the uncommitted tail is joined onto the end with
-/// exactly one space; the trimmed streaming text is always an untouched prefix of
-/// the result. Empty/blank tail → streaming unchanged. Empty/blank streaming → the
-/// trimmed tail alone.
-///
-/// **Overlap dedup**: streaming text can already contain uncommitted preview
-/// words for the same audio the tail-gap re-transcribes (`pending_tail`). Before
-/// joining, the longest leading word-run of the tail that repeats the trailing
-/// words of the streaming text is dropped **from the tail**. The streaming side
-/// is never touched — dedup only ever shortens what gets appended.
-pub fn append_tail_gap(streaming: &str, tail: &str) -> String {
-    let committed = streaming.trim();
-    let addition = tail.trim();
-    if addition.is_empty() {
-        return committed.to_string();
-    }
-    if committed.is_empty() {
-        return addition.to_string();
-    }
-
-    let tail_words: Vec<&str> = addition.split_whitespace().collect();
-    let committed_keys: Vec<String> = committed.split_whitespace().map(overlap_key).collect();
-    let tail_keys: Vec<String> = tail_words.iter().map(|w| overlap_key(w)).collect();
-    let overlap = leading_overlap_words(&committed_keys, &tail_keys);
-
-    let remaining = &tail_words[overlap..];
-    if remaining.is_empty() {
-        // The tail is entirely contained in the committed suffix: nothing new.
-        return committed.to_string();
-    }
-    format!("{committed} {}", remaining.join(" "))
-}
-
-/// Transcribe **only the uncommitted tail** of a recording — the Smart-mode
-/// per-utterance gap-fill primitive.
-///
-/// Loads `path`, drops everything before `from_secs` (the end of the last
-/// committed utterance) and runs [`whisper_tail_patch_transcribe`] on that
-/// slice alone. The result is meant to be **appended** to committed streaming
-/// text; committed text is immutable (append-only overlay doctrine).
-///
-/// Boundaries:
-/// - `from_secs <= 0.0` → the whole file (nothing committed yet).
-/// - `from_secs` at/after the recording end → `Ok(RawTranscript::default())`
-///   without touching Whisper.
-///
-/// This must never be handed the full file when a positive boundary exists —
-/// a full-file re-pass is `FINAL_PASS_MODE=Always` territory only.
-pub fn whisper_tail_gap_transcribe_file(
-    path: &std::path::Path,
-    from_secs: f32,
-    language: Option<&str>,
-) -> anyhow::Result<RawTranscript> {
-    let (samples, sample_rate) = crate::audio::load_audio_file(path)?;
-    let start = tail_gap_start_index(samples.len(), sample_rate, from_secs);
-    let tail = &samples[start..];
-    if tail.is_empty() {
-        tracing::debug!(
-            "tail-gap transcribe: nothing uncommitted after {:.3}s in {} ({} samples @ {} Hz)",
-            from_secs,
-            path.display(),
-            samples.len(),
-            sample_rate
-        );
-        return Ok(RawTranscript::default());
-    }
-    whisper_tail_patch_transcribe(tail, sample_rate, language)
+    whisper::singleton::transcribe_controlled(audio, sample_rate, language, initial_prompt, control)
 }
 
 /// Non-blocking Candle long transcription: yields an error instead of waiting
@@ -511,11 +240,8 @@ fn candle_try_transcribe_long_with_segments(
 
 /// Initialize whichever STT engine is active by env.
 pub fn init_active_engine() -> anyhow::Result<()> {
-    match selected_engine() {
-        SttEngine::Onnx => onnx_adapter::init(),
-        SttEngine::Apple => {
-            run_apple_or_whisper("init_active_engine", apple_stt::init, whisper::init)
-        }
+    match default_engine() {
+        SttEngine::Apple => apple_stt::init(),
         SttEngine::Candle => whisper::init(),
     }
 }
@@ -536,32 +262,40 @@ pub fn transcribe_file_verdict(
     path: &std::path::Path,
     language: Option<&str>,
 ) -> anyhow::Result<crate::pipeline::contracts::TranscriptionVerdict> {
+    transcribe_file_verdict_observed(path, language, &mut |_| Ok(()))
+}
+
+/// File final-pass with incremental observation of admitted decode windows.
+pub fn transcribe_file_verdict_observed(
+    path: &std::path::Path,
+    language: Option<&str>,
+    on_segments: &mut dyn FnMut(
+        &[crate::pipeline::contracts::TranscriptSegment],
+    ) -> anyhow::Result<()>,
+) -> anyhow::Result<crate::pipeline::contracts::TranscriptionVerdict> {
     use crate::pipeline::contracts::FileTranscriptionOptions;
 
-    match selected_engine() {
-        SttEngine::Onnx => {
-            // ONNX has no dedicated file-verdict path; use Candle Whisper for file final-pass.
-            whisper::transcribe_file_verdict(path, language, FileTranscriptionOptions::default())
-        }
+    match default_engine() {
         SttEngine::Apple => {
             // Do not route file final through Apple — even as "primary with Whisper
             // fallback". Apple file STT is not a product final path.
             tracing::info!(
                 "file final-pass forced to Whisper (Apple is live-only; SFSpeechURL is not final)"
             );
-            whisper::transcribe_file_verdict(path, language, FileTranscriptionOptions::default())
+            whisper::transcribe_file_verdict_observed(
+                path,
+                language,
+                FileTranscriptionOptions::default(),
+                on_segments,
+            )
         }
-        SttEngine::Candle => {
-            whisper::transcribe_file_verdict(path, language, FileTranscriptionOptions::default())
-        }
+        SttEngine::Candle => whisper::transcribe_file_verdict_observed(
+            path,
+            language,
+            FileTranscriptionOptions::default(),
+            on_segments,
+        ),
     }
-}
-
-/// Whether the **live** router is on the Apple lane (buffer / progressive).
-///
-/// Not a signal to run Apple on file final-pass — see [`transcribe_file_verdict`].
-pub fn active_engine_is_apple() -> bool {
-    matches!(selected_engine(), SttEngine::Apple)
 }
 
 /// Sample rate of the synthetic warmup buffer.
@@ -584,7 +318,7 @@ const WARMUP_SAMPLE_RATE: u32 = 16_000;
 pub fn prewarm_active_engine() -> anyhow::Result<()> {
     let warmup = synthetic_warmup_audio();
 
-    match selected_engine() {
+    match default_engine() {
         SttEngine::Apple => {
             // Init + warm Apple only. Do not fall through to Whisper on failure
             // (that would load multi-GB weights at startup and block when the
@@ -600,20 +334,6 @@ pub fn prewarm_active_engine() -> anyhow::Result<()> {
                 Err(error) => tracing::warn!(
                     "STT Apple warmup inference failed (non-fatal; whisper stays lazy): {error:#}"
                 ),
-            }
-            Ok(())
-        }
-        SttEngine::Onnx => {
-            onnx_adapter::init()?;
-            match onnx_adapter::transcribe_long_with_segments(
-                &warmup,
-                WARMUP_SAMPLE_RATE,
-                Some("en"),
-            ) {
-                Ok(_) => tracing::info!("STT active-engine warmup inference complete (onnx)"),
-                Err(error) => {
-                    tracing::warn!("STT ONNX warmup inference failed (non-fatal): {error:#}")
-                }
             }
             Ok(())
         }
@@ -651,27 +371,10 @@ pub(crate) fn transcribe_chunk(
     sample_rate: u32,
     language: Option<&str>,
 ) -> anyhow::Result<String> {
-    match selected_engine() {
-        SttEngine::Onnx => onnx_adapter::transcribe_chunk(audio, sample_rate, language),
-        SttEngine::Apple => {
-            match run_apple_live_only("transcribe_chunk", || {
-                apple_stt::transcribe_chunk(audio, sample_rate, language)
-            }) {
-                Ok(t) => Ok(t),
-                Err(err) if !audio.is_empty() && sample_rate > 0 => {
-                    warn!(
-                        "Apple live hard-fail during transcribe_chunk — emergency Whisper recovery ({:#})",
-                        err
-                    );
-                    candle_transcribe_chunk(audio, sample_rate, language).map_err(|werr| {
-                        werr.context(format!(
-                            "Apple live failed and emergency Whisper also failed during transcribe_chunk: {err:#}"
-                        ))
-                    })
-                }
-                Err(err) => Err(err),
-            }
-        }
+    match default_engine() {
+        SttEngine::Apple => run_apple_live_only("transcribe_chunk", || {
+            apple_stt::transcribe_chunk(audio, sample_rate, language)
+        }),
         SttEngine::Candle => candle_transcribe_chunk(audio, sample_rate, language),
     }
 }
@@ -682,54 +385,11 @@ pub(crate) fn transcribe_long_with_segments(
     sample_rate: u32,
     language: Option<&str>,
 ) -> anyhow::Result<RawTranscript> {
-    match selected_engine() {
-        SttEngine::Onnx => {
-            onnx_adapter::transcribe_long_with_segments(audio, sample_rate, language)
-        }
-        SttEngine::Apple => apple_live_or_emergency_whisper(
-            "transcribe_long_with_segments",
-            audio,
-            sample_rate,
-            language,
-        ),
+    match default_engine() {
+        SttEngine::Apple => run_apple_live_only("transcribe_long_with_segments", || {
+            apple_stt::transcribe_long_with_segments(audio, sample_rate, language)
+        }),
         SttEngine::Candle => candle_transcribe_long_with_segments(audio, sample_rate, language),
-    }
-}
-
-/// Transcribe long audio while seeding Candle Whisper with a per-call domain
-/// vocabulary prompt. Non-Candle engines keep their existing behavior.
-pub(crate) fn transcribe_long_with_segments_with_initial_prompt(
-    audio: &[f32],
-    sample_rate: u32,
-    language: Option<&str>,
-    initial_prompt: Option<String>,
-) -> anyhow::Result<RawTranscript> {
-    if initial_prompt.is_none() {
-        return transcribe_long_with_segments(audio, sample_rate, language);
-    }
-
-    match selected_engine() {
-        SttEngine::Onnx => {
-            warn_initial_prompt_unsupported("ONNX");
-            onnx_adapter::transcribe_long_with_segments(audio, sample_rate, language)
-        }
-        SttEngine::Apple => {
-            // Live/commit/refine under Apple: primary Apple; emergency Whisper
-            // only when the bridge hard-fails with real audio (keeps session alive).
-            warn_initial_prompt_unsupported("Apple SpeechAnalyzer");
-            apple_live_or_emergency_whisper(
-                "transcribe_long_with_segments_with_initial_prompt",
-                audio,
-                sample_rate,
-                language,
-            )
-        }
-        SttEngine::Candle => candle_transcribe_long_with_segments_with_initial_prompt(
-            audio,
-            sample_rate,
-            language,
-            initial_prompt,
-        ),
     }
 }
 
@@ -740,123 +400,18 @@ pub(crate) fn try_transcribe_long_with_segments(
     sample_rate: u32,
     language: Option<&str>,
 ) -> anyhow::Result<RawTranscript> {
-    match selected_engine() {
-        SttEngine::Onnx => {
-            onnx_adapter::try_transcribe_long_with_segments(audio, sample_rate, language)
-        }
-        SttEngine::Apple => apple_live_or_emergency_whisper(
-            "try_transcribe_long_with_segments",
-            audio,
-            sample_rate,
-            language,
-        ),
+    match default_engine() {
+        SttEngine::Apple => run_apple_live_only("try_transcribe_long_with_segments", || {
+            apple_stt::transcribe_long_with_segments(audio, sample_rate, language)
+        }),
         SttEngine::Candle => candle_try_transcribe_long_with_segments(audio, sample_rate, language),
     }
 }
 
-/// Engine-selection, live-only, and Smart-mode tail-gap doctrine unit tests.
+/// Live-only and Smart-mode tail-gap doctrine unit tests.
 #[cfg(test)]
 mod tests {
     use super::*;
-    use serial_test::serial;
-
-    /// Restores `CODESCRIBE_STT_ENGINE` after each serial engine-selection test.
-    struct EnvGuard {
-        previous: Option<String>,
-    }
-
-    impl EnvGuard {
-        /// Clear the STT engine env var for the duration of the test, then restore.
-        fn unset() -> Self {
-            let previous = std::env::var(ENV_STT_ENGINE).ok();
-            unsafe { std::env::remove_var(ENV_STT_ENGINE) };
-            Self { previous }
-        }
-
-        /// Pin `CODESCRIBE_STT_ENGINE` to `value` for this test scope, then restore.
-        fn set(value: &str) -> Self {
-            let previous = std::env::var(ENV_STT_ENGINE).ok();
-            unsafe { std::env::set_var(ENV_STT_ENGINE, value) };
-            Self { previous }
-        }
-    }
-
-    impl Drop for EnvGuard {
-        /// Restore the prior env value (or remove the key) when the guard leaves scope.
-        fn drop(&mut self) {
-            match self.previous.as_deref() {
-                Some(value) => unsafe { std::env::set_var(ENV_STT_ENGINE, value) },
-                None => unsafe { std::env::remove_var(ENV_STT_ENGINE) },
-            }
-        }
-    }
-
-    /// Unset engine env must resolve through the platform Apple-or-Candle auto policy.
-    #[test]
-    #[serial]
-    fn selected_engine_defaults_to_platform_auto_policy() {
-        let _guard = EnvGuard::unset();
-        let expected = if apple_stt::is_runtime_available() && apple_stt::is_bridge_resolvable() {
-            SttEngine::Apple
-        } else {
-            SttEngine::Candle
-        };
-        assert_eq!(selected_engine(), expected);
-    }
-
-    /// Explicit candle/onnx/apple env values must pin the selected engine.
-    #[test]
-    #[serial]
-    fn selected_engine_respects_explicit_overrides() {
-        let _guard = EnvGuard::set("candle");
-        assert_eq!(selected_engine(), SttEngine::Candle);
-
-        unsafe { std::env::set_var(ENV_STT_ENGINE, "onnx") };
-        assert_eq!(selected_engine(), SttEngine::Onnx);
-
-        unsafe { std::env::set_var(ENV_STT_ENGINE, "apple") };
-        assert_eq!(selected_engine(), SttEngine::Apple);
-    }
-
-    /// `auto` alias defers to the same platform default as an unset env.
-    #[test]
-    #[serial]
-    fn selected_engine_auto_alias_uses_platform_default() {
-        let _guard = EnvGuard::set("auto");
-        assert_eq!(selected_engine(), default_engine());
-    }
-
-    /// Non-Apple preference must not require Apple bridge/TCC preflight.
-    #[test]
-    #[serial]
-    fn preflight_apple_live_ready_is_noop_when_engine_is_not_apple() {
-        let _guard = EnvGuard::set("whisper");
-        preflight_apple_live_ready().expect("Whisper preference must not require Apple preflight");
-        assert_eq!(preferred_engine_label(), "local_whisper");
-    }
-
-    /// Baseline guard: Apple is already the selected prewarm lane and the real
-    /// prewarm entrypoint must not cross the heavyweight Whisper initializer.
-    /// The initializer counter is compiled only for tests; no model is loaded.
-    #[test]
-    #[serial]
-    fn fleet_red_apple_prewarm_never_loads_whisper() {
-        let _guard = EnvGuard::set("apple");
-        assert_eq!(selected_engine(), SttEngine::Apple);
-
-        whisper::singleton::reset_test_init_calls();
-        let _apple_probe = prewarm_active_engine();
-        assert_eq!(
-            whisper::singleton::test_init_calls(),
-            0,
-            "Apple prewarm must never initialize Whisper"
-        );
-        assert_eq!(
-            whisper::singleton::test_load_calls(),
-            0,
-            "Apple prewarm must never attempt to load Whisper weights"
-        );
-    }
 
     /// Live-only helper surfaces Apple bridge failures instead of silent swap.
     #[test]
@@ -881,15 +436,11 @@ mod tests {
         // must call whisper::transcribe_file_verdict only (no apple_stt file).
         // data_assets/02: Apple URL final 66c beat live 26c and still lost human 600c+.
         let src = include_str!("mod.rs");
-        let apple_arm = src
-            .split("SttEngine::Apple =>")
-            .nth(2) // third occurrence ≈ file-final match arm after live helpers
-            .unwrap_or("");
-        // Fall back: scan the function body by name.
+        // Include the observed implementation delegated to by the plain file
+        // entry point. A prefix split would stop at its similarly named helper.
         let fn_body = src
-            .split("pub fn transcribe_file_verdict")
-            .nth(1)
-            .and_then(|s| s.split("pub fn active_engine_is_apple").next())
+            .split_once("pub fn transcribe_file_verdict(")
+            .and_then(|(_, s)| s.split("const WARMUP_SAMPLE_RATE").next())
             .unwrap_or("");
         assert!(
             fn_body.contains("forced to Whisper") || fn_body.contains("file final-pass forced"),
@@ -899,202 +450,5 @@ mod tests {
             !fn_body.contains("apple_stt::transcribe_file_verdict"),
             "transcribe_file_verdict must not call apple_stt file path (Apple is live-only)"
         );
-        let _ = apple_arm;
-    }
-
-    // ═══════════════════════════════════════════════════════
-    // Smart-mode tail-gap primitive (append-only doctrine)
-    // ═══════════════════════════════════════════════════════
-
-    /// Tail start index clamps non-positive/beyond-duration boundaries safely.
-    #[test]
-    fn tail_gap_start_index_is_clamped_sample_math() {
-        // Whole file: a non-positive boundary means "nothing committed yet".
-        assert_eq!(tail_gap_start_index(32_000, 16_000, 0.0), 0);
-        assert_eq!(tail_gap_start_index(32_000, 16_000, -3.5), 0);
-
-        // Mid-file boundary: sample_rate × secs.
-        assert_eq!(tail_gap_start_index(32_000, 16_000, 1.0), 16_000);
-        assert_eq!(tail_gap_start_index(32_000, 16_000, 1.5), 24_000);
-        assert_eq!(tail_gap_start_index(96_000, 48_000, 0.5), 24_000);
-
-        // Beyond the audio: clamped to len (empty tail, never a panic).
-        assert_eq!(tail_gap_start_index(32_000, 16_000, 9.0), 32_000);
-        assert_eq!(tail_gap_start_index(0, 16_000, 1.0), 0);
-
-        // Degenerate sample rate cannot produce a bogus offset.
-        assert_eq!(tail_gap_start_index(32_000, 0, 1.0), 0);
-    }
-
-    /// Silent WAV tail short-circuits to empty transcript without model load.
-    #[test]
-    fn whisper_tail_gap_transcribe_file_returns_empty_for_silent_tail() {
-        // ~2s of digital silence @16k: VAD finds no speech, so the gap-fill
-        // short-circuits before any Whisper model load.
-        let dir = tempfile::tempdir().expect("tempdir");
-        let path = dir.path().join("silence.wav");
-        let samples = vec![0.0f32; 32_000];
-        crate::tts::AudioPlayer::save_wav(&samples, 16_000, &path).expect("save_wav");
-
-        let out = whisper_tail_gap_transcribe_file(&path, 0.5, Some("pl"))
-            .expect("silent tail must not error");
-        assert!(
-            out.text.trim().is_empty(),
-            "silent tail must yield empty transcript, got {:?}",
-            out.text
-        );
-        assert!(
-            out.segments.is_empty(),
-            "silent tail must yield no segments"
-        );
-    }
-
-    /// Boundary past file duration yields empty gap-fill, never an error.
-    #[test]
-    fn whisper_tail_gap_transcribe_file_beyond_duration_is_empty() {
-        let dir = tempfile::tempdir().expect("tempdir");
-        let path = dir.path().join("silence.wav");
-        let samples = vec![0.0f32; 32_000];
-        crate::tts::AudioPlayer::save_wav(&samples, 16_000, &path).expect("save_wav");
-
-        // Boundary past the end of the recording: nothing uncommitted remains.
-        let out = whisper_tail_gap_transcribe_file(&path, 30.0, Some("pl"))
-            .expect("out-of-range boundary must not error");
-        assert!(out.text.is_empty());
-        assert!(out.segments.is_empty());
-    }
-
-    /// THE DOCTRINE MATRIX: a missing/zero commit boundary must never turn a
-    /// Smart-mode gap-fill into a whole-file Whisper pass appended onto existing
-    /// streaming text. Bootstrap (empty canvas) is the only legal whole-session
-    /// gap-fill; everything else with no boundary is an honest skip.
-    #[test]
-    fn resolve_tail_gap_boundary_matrix() {
-        // Positive boundary → tail from that boundary, in both canvas states.
-        assert_eq!(
-            resolve_tail_gap_boundary(Some(4.25), false),
-            TailGapBoundary::From(4.25)
-        );
-        assert_eq!(
-            resolve_tail_gap_boundary(Some(4.25), true),
-            TailGapBoundary::From(4.25)
-        );
-        assert_eq!(
-            resolve_tail_gap_boundary(Some(f32::MIN_POSITIVE), false),
-            TailGapBoundary::From(f32::MIN_POSITIVE)
-        );
-
-        // No boundary + EMPTY canvas → whole-session bootstrap is a legal append.
-        assert_eq!(
-            resolve_tail_gap_boundary(None, true),
-            TailGapBoundary::WholeSessionBootstrap
-        );
-        assert_eq!(
-            resolve_tail_gap_boundary(Some(0.0), true),
-            TailGapBoundary::WholeSessionBootstrap
-        );
-        assert_eq!(
-            resolve_tail_gap_boundary(Some(-1.0), true),
-            TailGapBoundary::WholeSessionBootstrap
-        );
-        assert_eq!(
-            resolve_tail_gap_boundary(Some(f32::NAN), true),
-            TailGapBoundary::WholeSessionBootstrap
-        );
-        assert_eq!(
-            resolve_tail_gap_boundary(Some(f32::INFINITY), true),
-            TailGapBoundary::WholeSessionBootstrap
-        );
-
-        // No boundary + NON-EMPTY canvas → skip. A whole-file re-pass appended
-        // onto committed text is forbidden outside Always mode.
-        assert_eq!(
-            resolve_tail_gap_boundary(None, false),
-            TailGapBoundary::Skip
-        );
-        assert_eq!(
-            resolve_tail_gap_boundary(Some(0.0), false),
-            TailGapBoundary::Skip
-        );
-        assert_eq!(
-            resolve_tail_gap_boundary(Some(-0.001), false),
-            TailGapBoundary::Skip
-        );
-        assert_eq!(
-            resolve_tail_gap_boundary(Some(f32::NAN), false),
-            TailGapBoundary::Skip
-        );
-        assert_eq!(
-            resolve_tail_gap_boundary(Some(f32::NEG_INFINITY), false),
-            TailGapBoundary::Skip
-        );
-    }
-
-    /// Append-only property: the trimmed streaming text is ALWAYS an untouched
-    /// prefix of the result. No engine, no "better" text, may rewrite it.
-    #[test]
-    fn append_tail_gap_never_mutates_committed_prefix() {
-        let cases = [
-            ("Pacjent ma goraczke", "i wymioty od rana"),
-            ("raz dwa", "trzy cztery"),
-            ("Badanie krwi wykazalo", "Wykazalo, podwyzszone leukocyty"),
-            ("a b a b", "a b c"),
-            ("Pierwsze zdanie.  ", "  Drugie zdanie."),
-        ];
-        for (streaming, tail) in cases {
-            let out = append_tail_gap(streaming, tail);
-            assert!(
-                out.starts_with(streaming.trim()),
-                "committed prefix mutated: streaming={streaming:?} tail={tail:?} out={out:?}"
-            );
-        }
-    }
-
-    /// A bare tail is APPENDED verbatim — the exact regression `merge_live_whisper`
-    /// caused on the composer lane (it dropped the boundary word).
-    #[test]
-    fn append_tail_gap_appends_whole_tail() {
-        assert_eq!(
-            append_tail_gap("raz dwa", "trzy cztery"),
-            "raz dwa trzy cztery"
-        );
-        assert_eq!(
-            append_tail_gap("Pacjent ma goraczke", "i wymioty od rana"),
-            "Pacjent ma goraczke i wymioty od rana"
-        );
-    }
-
-    /// Preview words already on the canvas are deduped from the TAIL side only,
-    /// word-granular, longest run wins.
-    #[test]
-    fn append_tail_gap_dedups_overlapping_preview_words() {
-        assert_eq!(
-            append_tail_gap("Pacjent ma goraczke i", "goraczke i wymioty od rana"),
-            "Pacjent ma goraczke i wymioty od rana"
-        );
-        // Case- and edge-punctuation-insensitive comparison.
-        assert_eq!(
-            append_tail_gap("Badanie krwi wykazalo", "Wykazalo, podwyzszone leukocyty"),
-            "Badanie krwi wykazalo podwyzszone leukocyty"
-        );
-        // Tail fully contained in the committed suffix: nothing new to add.
-        assert_eq!(
-            append_tail_gap("Pierwsze zdanie i drugie zdanie", "drugie zdanie"),
-            "Pierwsze zdanie i drugie zdanie"
-        );
-    }
-
-    /// Empty operands: blank tail leaves streaming alone, blank streaming yields
-    /// the trimmed tail alone, both blank yields empty.
-    #[test]
-    fn append_tail_gap_empty_operands() {
-        assert_eq!(append_tail_gap("Pierwsze zdanie.", ""), "Pierwsze zdanie.");
-        assert_eq!(
-            append_tail_gap("Pierwsze zdanie.", "   \n "),
-            "Pierwsze zdanie."
-        );
-        assert_eq!(append_tail_gap("", "sam ogon"), "sam ogon");
-        assert_eq!(append_tail_gap("   ", "  sam ogon  "), "sam ogon");
-        assert_eq!(append_tail_gap("", ""), "");
     }
 }

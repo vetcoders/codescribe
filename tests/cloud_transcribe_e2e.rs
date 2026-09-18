@@ -5,7 +5,7 @@
 //! - one real-cloud opt-in E2E test (requires credentials)
 //!
 //! Real-cloud E2E enable:
-//!   CODESCRIBE_E2E_CLOUD=1 STT_ENDPOINT=... STT_API_KEY=... cargo test --test cloud_transcribe_e2e
+//!   CODESCRIBE_E2E_CLOUD=1 STT_FILE_ENDPOINT=... STT_FILE_API_KEY=... cargo test --test cloud_transcribe_e2e
 
 use std::io::Write;
 use std::path::PathBuf;
@@ -168,19 +168,19 @@ async fn test_cloud_transcribe_e2e() {
         return;
     }
 
-    let endpoint = match std::env::var("STT_ENDPOINT") {
+    let endpoint = match std::env::var("STT_FILE_ENDPOINT") {
         Ok(val) if !val.trim().is_empty() => val,
         _ => {
-            eprintln!("Skipping cloud E2E (STT_ENDPOINT missing)");
+            eprintln!("Skipping cloud E2E (STT_FILE_ENDPOINT missing)");
             return;
         }
     };
-    let api_key = std::env::var("STT_API_KEY").unwrap_or_default();
+    let api_key = std::env::var("STT_FILE_API_KEY").unwrap_or_default();
     if codescribe_core::stt::tail_provider::stt_auth_mode(&endpoint)
         != codescribe_core::stt::tail_provider::SttAuthMode::Unauthenticated
         && api_key.trim().is_empty()
     {
-        eprintln!("Skipping cloud E2E (STT_API_KEY missing for remote endpoint)");
+        eprintln!("Skipping cloud E2E (STT_FILE_API_KEY missing for remote endpoint)");
         return;
     }
 

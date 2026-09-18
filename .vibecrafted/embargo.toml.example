@@ -1,0 +1,5 @@
+plan_id = "overlay-canvas-v1"
+phase = "W1"
+deferred_gates = ["cargo-check", "cargo-fmt", "cargo-clippy", "prettier"]
+attestation = "open"
+recovery_ref = "embargo/overlay-canvas-v1"

@@ -143,6 +143,7 @@ impl LiveAudioBuffer {
 
     /// Release everything before `secs` — audio already committed downstream
     /// can never be re-cut, so holding it is pure footprint.
+    #[cfg(test)]
     pub(crate) fn committed_through(&mut self, secs: f32) {
         let Some(index) = self.index_for(secs) else {
             return;
@@ -445,6 +446,118 @@ mod tests {
             );
 
             prev_end = end_ts;
+        }
+    }
+}
+
+/// Finalized recorder-owned WAV receipt. Constructed after capture stops, never
+/// in its callback. Identity and count are measured by the capture owner.
+#[derive(Debug)]
+pub struct FinalizedPcmArchive {
+    pub(crate) session_id: String,
+    pub(crate) capture_epoch: u64,
+    pub(crate) sample_rate: u32,
+    pub(crate) sample_count: u64,
+    pub(crate) path: std::path::PathBuf,
+}
+
+pub(crate) struct OwnedTerminalPcm {
+    samples: Vec<f32>,
+}
+
+impl FinalizedPcmArchive {
+    pub(crate) fn load(
+        self,
+        session: &str,
+        epoch: u64,
+        rate: u32,
+        count: u64,
+    ) -> anyhow::Result<OwnedTerminalPcm> {
+        anyhow::ensure!(
+            self.session_id == session
+                && self.capture_epoch == epoch
+                && self.sample_rate == rate
+                && self.sample_count == count,
+            "terminal archive identity/rate/sample-count mismatch"
+        );
+        let reader = hound::WavReader::open(&self.path)?;
+        let spec = reader.spec();
+        anyhow::ensure!(
+            spec.channels == 1
+                && spec.sample_rate == rate
+                && spec.bits_per_sample == 16
+                && spec.sample_format == hound::SampleFormat::Int,
+            "terminal archive must be recorder-native mono i16 at capture rate"
+        );
+        anyhow::ensure!(
+            u64::from(reader.duration()) == count,
+            "terminal archive WAV length mismatch"
+        );
+        // The recorder quantizes by multiplying by i16::MAX and truncating.
+        // Decode on the same scale: sample positions are identical; values are
+        // quantized, not claimed byte-identical to the live f32 samples.
+        let samples = reader
+            .into_samples::<i16>()
+            .map(|sample| sample.map(|sample| f32::from(sample) / f32::from(i16::MAX)))
+            .collect::<Result<Vec<_>, _>>()?;
+        Ok(OwnedTerminalPcm { samples })
+    }
+}
+
+impl OwnedTerminalPcm {
+    pub(crate) fn window(&self, start: u64, end: u64) -> Option<ResolvedAudioWindow> {
+        if end < start {
+            return None;
+        }
+        let samples = self
+            .samples
+            .get(usize::try_from(start).ok()?..usize::try_from(end).ok()?)?;
+        Some(ResolvedAudioWindow {
+            samples: samples.to_vec(),
+            sample_start: start,
+            sample_end: end,
+        })
+    }
+}
+
+#[cfg(test)]
+mod archive_tests {
+    use super::*;
+    #[test]
+    fn archive_identity_and_i16_sample_clock_are_checked() {
+        let file = tempfile::NamedTempFile::new().unwrap();
+        let pcm = [-1.0_f32, -0.25, 0.0, 0.25, 1.0];
+        let mut wav = hound::WavWriter::create(
+            file.path(),
+            hound::WavSpec {
+                channels: 1,
+                sample_rate: 48_000,
+                bits_per_sample: 16,
+                sample_format: hound::SampleFormat::Int,
+            },
+        )
+        .unwrap();
+        for sample in pcm {
+            wav.write_sample((sample * i16::MAX as f32) as i16).unwrap();
+        }
+        wav.finalize().unwrap();
+        let receipt = || FinalizedPcmArchive {
+            session_id: "owned".into(),
+            capture_epoch: 3,
+            sample_rate: 48_000,
+            sample_count: 5,
+            path: file.path().into(),
+        };
+        assert!(receipt().load("foreign", 3, 48_000, 5).is_err());
+        assert!(receipt().load("owned", 4, 48_000, 5).is_err());
+        assert!(receipt().load("owned", 3, 16_000, 5).is_err());
+        assert!(receipt().load("owned", 3, 48_000, 4).is_err());
+        let owned = receipt().load("owned", 3, 48_000, 5).unwrap();
+        assert!(owned.window(0, 6).is_none());
+        let window = owned.window(1, 4).unwrap();
+        assert_eq!((window.sample_start, window.sample_end), (1, 4));
+        for (actual, expected) in window.samples.iter().zip(&pcm[1..4]) {
+            assert!((actual - expected).abs() <= 1.0 / i16::MAX as f32);
         }
     }
 }

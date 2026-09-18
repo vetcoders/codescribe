@@ -4,11 +4,8 @@
 //! `stt::fleet_red_contracts`: ordering, duplicate-final idempotence, bounded
 //! ranges, payload-free errors, and the canvas/refiner split.
 
-use serial_test::serial;
-
 use super::events::{
-    AsrErrorKind, AsrSessionEvent, AudioRange, ErrorEvent, EventIdentity, SessionId,
-    TranscriptEvent, UsageEvent,
+    AsrErrorKind, AsrSessionEvent, AudioRange, ErrorEvent, SessionId, TranscriptEvent, UsageEvent,
 };
 use super::fake::FakeAsrSessionProvider;
 use super::ingest::{IngestVerdict, SessionIngest};
@@ -16,23 +13,17 @@ use super::provider::{
     AsrSessionProvider, CanvasEngine, LayerSelection, RefinerMode, SessionInput,
 };
 
-/// Env key the STT router reads to pick the live canvas engine.
-const ENV_STT_ENGINE: &str = "CODESCRIBE_STT_ENGINE";
-
 /// Session id used across the ordering tests.
 fn session() -> SessionId {
     SessionId::new("session-a").expect("non-blank session id")
 }
 
-/// Identity in the shared test session for `utterance` at `sequence`.
-fn identity(utterance: u64, sequence: u64) -> EventIdentity {
-    EventIdentity::new(session(), utterance, sequence)
-}
-
 /// Partial hypothesis for `utterance` at `sequence`.
 fn partial(utterance: u64, sequence: u64, text: &str) -> AsrSessionEvent {
     AsrSessionEvent::Partial(TranscriptEvent {
-        identity: identity(utterance, sequence),
+        session_id: session(),
+        utterance_id: utterance,
+        sequence_id: sequence,
         text: text.to_string(),
         range: None,
     })
@@ -41,7 +32,9 @@ fn partial(utterance: u64, sequence: u64, text: &str) -> AsrSessionEvent {
 /// Sealing final for `utterance` at `sequence`.
 fn final_event(utterance: u64, sequence: u64, text: &str) -> AsrSessionEvent {
     AsrSessionEvent::Final(TranscriptEvent {
-        identity: identity(utterance, sequence),
+        session_id: session(),
+        utterance_id: utterance,
+        sequence_id: sequence,
         text: text.to_string(),
         range: None,
     })
@@ -50,34 +43,11 @@ fn final_event(utterance: u64, sequence: u64, text: &str) -> AsrSessionEvent {
 /// Typed failure for `utterance` at `sequence`.
 fn error_event(utterance: u64, sequence: u64, kind: AsrErrorKind) -> AsrSessionEvent {
     AsrSessionEvent::Error(ErrorEvent {
-        identity: identity(utterance, sequence),
+        session_id: session(),
+        utterance_id: utterance,
+        sequence_id: sequence,
         kind,
     })
-}
-
-/// Restores `CODESCRIBE_STT_ENGINE` after a canvas-selection test.
-struct EngineEnvGuard {
-    /// Value the key held before the test pinned it.
-    previous: Option<String>,
-}
-
-impl EngineEnvGuard {
-    /// Pin the router's engine selector for this test scope.
-    fn set(value: &str) -> Self {
-        let previous = std::env::var(ENV_STT_ENGINE).ok();
-        unsafe { std::env::set_var(ENV_STT_ENGINE, value) };
-        Self { previous }
-    }
-}
-
-impl Drop for EngineEnvGuard {
-    /// Restore the prior value (or remove the key) when the guard leaves scope.
-    fn drop(&mut self) {
-        match self.previous.as_deref() {
-            Some(value) => unsafe { std::env::set_var(ENV_STT_ENGINE, value) },
-            None => unsafe { std::env::remove_var(ENV_STT_ENGINE) },
-        }
-    }
 }
 
 // ═══════════════════════════════════════════════════════════
@@ -200,7 +170,9 @@ fn foreign_session_events_are_refused() {
     let mut ingest = SessionIngest::new(session());
     let foreign = SessionId::new("session-b").expect("non-blank session id");
     let event = AsrSessionEvent::Final(TranscriptEvent {
-        identity: EventIdentity::new(foreign, 7, 1),
+        session_id: foreign,
+        utterance_id: 1,
+        sequence_id: 1,
         text: "z innej sesji".to_string(),
         range: None,
     });
@@ -287,7 +259,9 @@ fn errors_are_typed_with_no_free_form_payload() {
 #[test]
 fn usage_events_carry_accounting_only() {
     let usage = UsageEvent {
-        identity: identity(0, 9),
+        session_id: session(),
+        utterance_id: 0,
+        sequence_id: 9,
         audio_secs: 12.5,
         billable_units: Some(13),
     };
@@ -295,7 +269,7 @@ fn usage_events_carry_accounting_only() {
     assert_eq!(event.as_token(), "usage");
     assert!(!event.is_transcript());
     assert!(!event.is_final());
-    assert_eq!(event.identity().sequence_id(), 9);
+    assert_eq!(event.sequence_id(), 9);
 }
 
 /// Finality is a variant, so every consumer has to decide about it explicitly.
@@ -347,39 +321,6 @@ fn refiner_mode_defaults_to_off_and_classifies_audio_egress() {
     assert!(RefinerMode::CloudSession.sends_audio_off_device());
     assert_eq!(CanvasEngine::AppleSpeech.as_token(), "apple_speech");
     assert_eq!(RefinerMode::CloudSession.as_token(), "cloud_session");
-}
-
-/// The canvas axis is read from the live router, and the router's selector has
-/// no say over the refiner axis.
-#[test]
-#[serial]
-fn active_canvas_is_read_from_the_router_and_leaves_the_refiner_alone() {
-    let _guard = EngineEnvGuard::set("candle");
-    let selection = LayerSelection::for_active_canvas(RefinerMode::CloudSession);
-    assert_eq!(selection.canvas(), CanvasEngine::LocalWhisper);
-    assert_eq!(selection.refiner(), RefinerMode::CloudSession);
-
-    unsafe { std::env::set_var(ENV_STT_ENGINE, "apple") };
-    let selection = LayerSelection::for_active_canvas(RefinerMode::CloudSession);
-    assert_eq!(selection.canvas(), CanvasEngine::AppleSpeech);
-    assert_eq!(
-        selection.refiner(),
-        RefinerMode::CloudSession,
-        "the canvas selector must not reach the refiner axis"
-    );
-
-    // And the refiner axis cannot reach back: every mode reports the same
-    // canvas under the same router state.
-    for refiner in [
-        RefinerMode::Off,
-        RefinerMode::CloudSession,
-        RefinerMode::LocalHelper,
-    ] {
-        assert_eq!(
-            LayerSelection::for_active_canvas(refiner).canvas(),
-            CanvasEngine::AppleSpeech
-        );
-    }
 }
 
 // ═══════════════════════════════════════════════════════════
@@ -441,7 +382,7 @@ fn fake_provider_emits_a_monotonic_session() {
     assert_eq!(tail[0], final_event(1, 3, "pacjent ma goraczke"));
     match &tail[1] {
         AsrSessionEvent::Usage(usage) => {
-            assert_eq!(usage.identity.sequence_id(), 4, "usage stays monotonic");
+            assert_eq!(usage.sequence_id, 4, "usage stays monotonic");
             assert_eq!(usage.audio_secs, 1.5);
             assert_eq!(usage.billable_units, None);
         }
@@ -513,4 +454,324 @@ fn fake_provider_stream_survives_a_replayed_tail() {
         ingest.sealed_final(2).map(|event| event.text.as_str()),
         Some("trzy cztery")
     );
+}
+
+/// Restore every test overlay, including on a failed assertion.
+struct Layer1TestEnv {
+    saved: Vec<(&'static str, Option<std::ffi::OsString>)>,
+}
+
+impl Layer1TestEnv {
+    fn new(root: &std::path::Path) -> Self {
+        let overlays = [
+            ("CODESCRIBE_DATA_DIR", root.as_os_str().to_owned()),
+            (
+                "CODESCRIBE_ENV_PATH",
+                root.join("absent.env").into_os_string(),
+            ),
+            ("CODESCRIBE_LAYERED_TRANSCRIPTION", "phase1".into()),
+            ("STT_TAIL_PROVIDER", "inprocess".into()),
+            ("STT_LIVE_ENDPOINT", "wss://gateway.invalid/live".into()),
+            ("STT_LIVE_API_KEY", "fixture-live-key".into()),
+        ];
+        let mut saved = Vec::new();
+        for (key, value) in overlays {
+            saved.push((key, std::env::var_os(key)));
+            // SAFETY: callers hold the suite's serial environment lock.
+            unsafe { std::env::set_var(key, value) };
+        }
+        Self { saved }
+    }
+}
+
+impl Drop for Layer1TestEnv {
+    fn drop(&mut self) {
+        for (key, value) in self.saved.iter().rev() {
+            // SAFETY: callers hold the suite's serial environment lock.
+            unsafe {
+                match value {
+                    Some(value) => std::env::set_var(key, value),
+                    None => std::env::remove_var(key),
+                }
+            }
+        }
+    }
+}
+
+#[test]
+#[serial_test::serial]
+fn production_layer1_decision_follows_resolved_asr_mode() {
+    use super::{Layer1Decision, RecorderLayer1Lane};
+    use crate::config::{Config, UserSettings};
+
+    let root = tempfile::tempdir().unwrap();
+    let _environment = Layer1TestEnv::new(root.path());
+    for (mode, consent, expected_reason, armed) in [
+        ("cloud", Some("granted"), "cloud_ready", true),
+        ("cloud", None, "consent_missing", false),
+        (
+            "local_power",
+            Some("granted"),
+            "local_helper_unavailable",
+            false,
+        ),
+    ] {
+        let settings = UserSettings {
+            asr_mode: Some(mode.into()),
+            cloud_consent: consent.map(str::to_owned),
+            layered_transcription: Some("phase1".into()),
+            stt_live_endpoint: Some("wss://gateway.invalid/live".into()),
+            ..Default::default()
+        };
+        settings.save().unwrap();
+        let snapshot = Config::load_runtime_snapshot_without_keychain().unwrap();
+        let mut factory_calls = 0;
+        let (decision, receipt) =
+            super::layer1_decision_with_factory(&snapshot, |snapshot, _authorization| {
+                factory_calls += 1;
+                assert_eq!(
+                    snapshot.values().stt_live_endpoint.as_deref(),
+                    Some("wss://gateway.invalid/live")
+                );
+                assert_eq!(
+                    snapshot.values().stt_live_api_key.as_deref(),
+                    Some("fixture-live-key")
+                );
+                Ok(Box::new(FakeAsrSessionProvider::with_script(
+                    RefinerMode::CloudSession,
+                    vec![partial(1, 1, "live fixture")],
+                )))
+            });
+        assert_eq!(factory_calls, usize::from(armed));
+        assert_eq!(matches!(&decision, Layer1Decision::Armed(_)), armed);
+        assert_eq!(receipt.reason, expected_reason);
+        assert_eq!(
+            receipt.consent,
+            if consent.is_some() {
+                "granted"
+            } else {
+                "missing"
+            }
+        );
+        assert_eq!(
+            receipt.refiner,
+            if armed {
+                "cloud_session"
+            } else if mode == "local_power" {
+                "local_tail_patch"
+            } else {
+                "off"
+            }
+        );
+        let mut lane = RecorderLayer1Lane::open(decision, &fake_input());
+        lane.offer_pcm(&[0.1; 160]);
+        lane.poll();
+        assert_eq!(lane.telemetry().frames_forwarded, u64::from(armed));
+        assert_eq!(lane.telemetry().partials_applied, u64::from(armed));
+
+        // The public production entrypoint must share the same policy and
+        // construct a dormant real provider, without connecting in this test.
+        let (production, production_receipt) = super::layer1_decision(&snapshot);
+        assert_eq!(matches!(production, Layer1Decision::Armed(_)), armed);
+        assert_eq!(production_receipt, receipt);
+    }
+}
+
+#[test]
+#[serial_test::serial]
+fn apple_only_never_arms_a_refiner() {
+    use super::Layer1Decision;
+    use crate::config::{Config, UserSettings};
+
+    let root = tempfile::tempdir().unwrap();
+    let mut environment = Layer1TestEnv::new(root.path());
+    for phase in ["", "phase1", "off", "phase2"] {
+        environment.set("CODESCRIBE_LAYERED_TRANSCRIPTION", phase);
+        for (mode, consent) in [
+            ("apple_only", None),
+            ("apple_only", Some("granted")),
+            ("cloud", None),
+            ("cloud", Some("denied")),
+        ] {
+            UserSettings {
+                asr_mode: Some(mode.into()),
+                cloud_consent: consent.map(str::to_owned),
+                ..Default::default()
+            }
+            .save()
+            .unwrap();
+            let snapshot = Config::load_runtime_snapshot_without_keychain().unwrap();
+            let (decision, receipt) = super::layer1_decision_with_factory(&snapshot, |_, _| {
+                panic!("Apple-only or refused consent reached cloud construction")
+            });
+            assert!(
+                !decision.is_armed(),
+                "mode={mode}, consent={consent:?}, phase={phase}"
+            );
+            assert!(matches!(decision, Layer1Decision::Disarmed));
+            assert!(decision.local_tail_patch_disposition().is_none());
+            assert_eq!(receipt.refiner, "off");
+        }
+    }
+}
+
+impl Layer1TestEnv {
+    fn set(&mut self, key: &'static str, value: &str) {
+        self.saved.push((key, std::env::var_os(key)));
+        // SAFETY: callers hold the suite's serial environment lock.
+        unsafe { std::env::set_var(key, value) };
+    }
+}
+
+#[test]
+#[serial_test::serial]
+fn production_layer1_refusals_never_construct_a_cloud_provider() {
+    use super::Layer1Decision;
+    use crate::config::{Config, UserSettings};
+
+    let root = tempfile::tempdir().unwrap();
+    let mut environment = Layer1TestEnv::new(root.path());
+    for (consent, phase, reason) in [
+        ("denied", "phase1", "consent_denied"),
+        ("granted", "off", "layered_off"),
+        ("granted", "phase2", "layered_invalid"),
+    ] {
+        environment.set("CODESCRIBE_LAYERED_TRANSCRIPTION", phase);
+        UserSettings {
+            asr_mode: Some("cloud".into()),
+            cloud_consent: Some(consent.into()),
+            ..Default::default()
+        }
+        .save()
+        .unwrap();
+        let snapshot = Config::load_runtime_snapshot_without_keychain().unwrap();
+        let (decision, receipt) = super::layer1_decision_with_factory(&snapshot, |_, _| {
+            panic!("refused selection reached cloud construction")
+        });
+        assert!(!matches!(decision, Layer1Decision::Armed(_)));
+        assert_eq!(receipt.reason, reason);
+        assert_eq!(receipt.consent, consent);
+    }
+
+    environment.set("CODESCRIBE_LAYERED_TRANSCRIPTION", "phase1");
+    let snapshot = Config::load_runtime_snapshot_without_keychain().unwrap();
+    let (decision, receipt) =
+        super::layer1_decision_with_factory(&snapshot, |_, _| Err("live_connection_invalid"));
+    assert!(matches!(decision, Layer1Decision::Disarmed));
+    assert_eq!(receipt.reason, "live_connection_invalid");
+    assert_eq!(receipt.refiner, "off");
+
+    // A sealed snapshot remains authoritative after process inputs change.
+    environment.set("STT_LIVE_ENDPOINT", "not-a-websocket");
+    environment.set("STT_LIVE_API_KEY", "");
+    let (decision, receipt) = super::layer1_decision(&snapshot);
+    assert!(matches!(decision, Layer1Decision::Armed(_)));
+    assert_eq!(receipt.reason, "cloud_ready");
+}
+
+#[test]
+#[serial_test::serial]
+fn production_layer1_cloud_forwards_native_pcm_over_real_websocket() {
+    use super::{Layer1Decision, RecorderLayer1Lane};
+    use crate::config::{Config, UserSettings};
+    use std::time::{Duration, Instant};
+    use tokio_tungstenite::tungstenite::Message;
+
+    let root = tempfile::tempdir().unwrap();
+    let mut environment = Layer1TestEnv::new(root.path());
+    let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    listener.set_nonblocking(true).unwrap();
+    let endpoint = format!(
+        // WHY: test-only loopback server on 127.0.0.1 with no TLS and no network egress;
+        // WHEN: unit tests only; WHERE: the production lane takes the wss:// live endpoint
+        // from the loader snapshot, never this literal (semgrep detect-insecure-websocket).
+        "ws://{}/v1/audio/transcribe", // nosemgrep: javascript.lang.security.detect-insecure-websocket.detect-insecure-websocket
+        listener.local_addr().unwrap()
+    );
+    environment.set("STT_LIVE_ENDPOINT", &endpoint);
+    UserSettings {
+        asr_mode: Some("cloud".into()),
+        cloud_consent: Some("granted".into()),
+        stt_live_endpoint: Some(endpoint),
+        ..Default::default()
+    }
+    .save()
+    .unwrap();
+    let snapshot = Config::load_runtime_snapshot_without_keychain().unwrap();
+    let (decision, receipt) = super::layer1_decision(&snapshot);
+    assert!(matches!(decision, Layer1Decision::Armed(_)));
+    assert_eq!(receipt.refiner, "cloud_session");
+
+    let (received_tx, received_rx) = std::sync::mpsc::channel();
+    let server = std::thread::spawn(move || {
+        let deadline = Instant::now() + Duration::from_secs(5);
+        let stream = loop {
+            match listener.accept() {
+                Ok((stream, _)) => break stream,
+                Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {
+                    assert!(Instant::now() < deadline, "cloud connection never arrived");
+                    std::thread::sleep(Duration::from_millis(5));
+                }
+                Err(error) => panic!("loopback accept failed: {error}"),
+            }
+        };
+        stream.set_nonblocking(false).unwrap();
+        stream
+            .set_read_timeout(Some(Duration::from_secs(5)))
+            .unwrap();
+        stream
+            .set_write_timeout(Some(Duration::from_secs(5)))
+            .unwrap();
+        let mut socket = tokio_tungstenite::tungstenite::accept(stream).unwrap();
+        let Message::Text(start) = socket.read().unwrap() else {
+            panic!("missing set frame")
+        };
+        let start: serde_json::Value = serde_json::from_str(&start).unwrap();
+        assert_eq!(start["type"], "set");
+        assert_eq!(start["sample_rate"], 88_200);
+        let Message::Text(chunk) = socket.read().unwrap() else {
+            panic!("missing PCM frame")
+        };
+        let chunk: serde_json::Value = serde_json::from_str(&chunk).unwrap();
+        assert_eq!(chunk["type"], "chunk");
+        received_tx.send(()).unwrap();
+        socket
+            .send(Message::Text(
+                r#"{"type":"transcript.partial","text":"loopback fixture"}"#.into(),
+            ))
+            .unwrap();
+        while let Ok(message) = socket.read() {
+            if let Message::Text(text) = message {
+                let value: serde_json::Value = serde_json::from_str(&text).unwrap();
+                if value["type"] == "end" {
+                    socket
+                        .send(Message::Text(
+                            r#"{"type":"session.ended","session_id":"session-a"}"#.into(),
+                        ))
+                        .unwrap();
+                    break;
+                }
+            }
+        }
+    });
+    let mut input = fake_input();
+    input.sample_rate = 88_200;
+    let mut lane = RecorderLayer1Lane::open(decision, &input);
+    assert!(lane.is_live());
+    // Native-rate 100 ms frame exceeds the old 16 kHz-only 3200-sample budget.
+    lane.offer_pcm(&[0.1; 8_820]);
+    received_rx.recv_timeout(Duration::from_secs(5)).unwrap();
+    let deadline = Instant::now() + Duration::from_secs(5);
+    while lane.telemetry().partials_applied == 0 && Instant::now() < deadline {
+        lane.poll();
+        std::thread::sleep(Duration::from_millis(5));
+    }
+    assert_eq!(lane.telemetry().frames_forwarded, 1);
+    assert_eq!(lane.telemetry().partials_applied, 1);
+    assert_eq!(lane.telemetry().provider_errors, 0);
+    let outcome = lane.stop();
+    assert_eq!(outcome.telemetry().frames_forwarded, 1);
+    assert_eq!(outcome.telemetry().partials_applied, 1);
+    assert_eq!(outcome.degrade_reason(), None);
+    server.join().unwrap();
 }

@@ -41,21 +41,39 @@ final class AgentSummonAction {
 
 /// UniFFI callbacks arrive off-main. This listener performs exactly one hop to
 /// the AppDelegate-owned action and carries no recording/model payload.
-final class AgentAppActionListener: CsAppActionListener, @unchecked Sendable {
-  private let summonAgent: @MainActor () -> Void
+final class AgentAppActionListener: CsAppActionListener, Sendable {
+  private enum Action: Sendable { case showAgent, maxApprovalsChanged }
+  private let continuation: AsyncStream<Action>.Continuation
+  private let consumer: Task<Void, Never>
 
+  @MainActor
   init(
-    summonAgent: @escaping @MainActor () -> Void
+    maxApprovalsChanged: @escaping @MainActor @Sendable () async -> Void = {},
+    summonAgent: @escaping @MainActor @Sendable () -> Void
   ) {
-    self.summonAgent = summonAgent
+    let channel = AsyncStream<Action>.makeStream()
+    continuation = channel.continuation
+    consumer = Task { @MainActor in
+      for await action in channel.stream {
+        switch action {
+        case .showAgent: summonAgent()
+        case .maxApprovalsChanged: await maxApprovalsChanged()
+        }
+      }
+    }
   }
 
   func onShowAgent() {
-    DispatchQueue.main.async {
-      MainActor.assumeIsolated {
-        self.summonAgent()
-      }
-    }
+    continuation.yield(.showAgent)
+  }
+
+  func onMaxApprovalsChanged() {
+    continuation.yield(.maxApprovalsChanged)
+  }
+
+  func invalidate() {
+    continuation.finish()
+    consumer.cancel()
   }
 }
 
@@ -135,6 +153,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
   // kill live voice-reply rendering. Held for the app's lifetime.
   private var voiceDeliveryListener: VoiceDeliveryListener?
   private var appActionListener: AgentAppActionListener?
+  private lazy var maxPermissionModel = SettingsViewModel(engine: RealSettingsEngine())
   private lazy var agentSummonAction = AgentSummonAction(
     store: model.chat,
     showAgent: { [weak self] in self?.showAgent() }
@@ -190,7 +209,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         "Application runtime started with \(runtime.workerCount, privacy: .public) workers: \(runtime.workerNames.joined(separator: ","), privacy: .public)"
       )
     } catch {
-      appLogger.fault("Application runtime failed to start: \(error.localizedDescription, privacy: .public)")
+      appLogger.fault(
+        "Application runtime failed to start: \(error.localizedDescription, privacy: .public)")
       NSApp.terminate(nil)
       return
     }
@@ -261,7 +281,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
       NSApp.setActivationPolicy(.regular)
     }
     NSApp.activate(ignoringOtherApps: true)
-    SpeechRecognitionPermission.request { [weak self] state in
+    Task { @MainActor [weak self] in
+      let state = await SpeechRecognitionPermission.request()
       guard let self else { return }
       if priorPolicy == .accessory {
         // Restore accessory only when the user has not enabled Dock icon.
@@ -369,23 +390,19 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     model.tray.onCopyDebugInfo = { [config, notes, hotkeys] in
       Task { @MainActor in
         let recording = await hotkeys.isRecording()
-        let settings = config.loadSettings()
-        let info = Bundle.main.infoDictionary
-        let version = info?["CFBundleShortVersionString"] as? String ?? "?"
-        let build = info?["CFBundleVersion"] as? String ?? "?"
-        let stt =
-          settings.useLocalStt
-          ? "local (\(settings.localModel))"
-          : "cloud (\(settings.sttEndpoint ?? "default"))"
-        let text = [
-          "codescribe debug info",
-          "app version: \(version) (\(build))",
-          "macOS: \(ProcessInfo.processInfo.operatingSystemVersionString)",
-          "recording: \(recording)",
-          "STT engine: \(stt)",
-          "config dir: \(config.configDir())",
-          "notes dir: \(notes.notesDir())",
-        ].joined(separator: "\n")
+        let settings: CsSettings?
+        do {
+          settings = try config.loadDiagnosticSettings()
+        } catch {
+          // Report unavailability, not raw errors or invented default values.
+          settings = nil
+        }
+        let text = codescribeDebugInfo(
+          build: .current(), osVersion: ProcessInfo.processInfo.operatingSystemVersionString,
+          recording: recording, settings: settings, lastServing: currentServingVerdict(),
+          settingsFile: config.settingsFilePath(), dataDirectory: config.configDir(),
+          notesDirectory: notes.notesDir()
+        )
         NSPasteboard.general.clearContents()
         NSPasteboard.general.setString(text, forType: .string)
       }
@@ -482,7 +499,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     // touching the lazy handle here would construct the bridge at teardown
     // purely to stop something that was never running.
     guard !shouldExitForDuplicate, !Self.isRunningTests else { return }
-    VoiceLabRuntime.stopOwnedProcess()
+    model.chat.invalidate()
+    appActionListener?.invalidate()
+    voiceDeliveryListener?.invalidate()
+    trayStatus.invalidate()
+    Task { await VoiceLabRuntime.shared.stopOwnedProcess() }
     hotkeys.stop()
     sleepWakeObserver?.invalidate()
     sleepWakeObserver = nil
@@ -622,7 +643,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     // Wrap in TextScaleRoot so ⌘+/-/0 on the chat window scale the message
     // bodies + composer via `\.csTextScale`, independently of the overlay.
     let root = TextScaleRoot(controller: model.chatTextScale) {
-      AgentChatView(store: model.chat)
+      AgentChatView(store: model.chat, maxPermissions: maxPermissionModel)
         .preferredColorScheme(.dark)
     }
     let hosting = NSHostingController(rootView: root)
@@ -715,6 +736,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
   private func registerAppActions() {
     let action = agentSummonAction
     let listener = AgentAppActionListener(
+      maxApprovalsChanged: { [weak self] in
+        guard let self else { return }
+        await self.maxPermissionModel.refreshMaxToolApprovals()
+        if !self.maxPermissionModel.maxToolApprovals.isEmpty
+          || self.maxPermissionModel.maxApprovalError != nil
+        {
+          self.showAgent(activating: false)
+        }
+      },
       summonAgent: { [weak action] in
         action?.perform()
         appLogger.info("Agent summon command handled: window fronted and composer focus requested")
@@ -763,4 +793,49 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         app.processIdentifier != currentPID && !app.isTerminated
       }
   }
+}
+
+/// A bounded diagnostic projection, not a dump of configuration or credentials.
+@MainActor
+func codescribeDebugInfo(
+  build: AppBuildInfo, osVersion: String, recording: Bool, settings: CsSettings?,
+  lastServing: CsLastServingVerdict?, settingsFile: String,
+  dataDirectory: String, notesDirectory: String
+) -> String {
+  var lines = [
+    "codescribe debug info",
+    "app version: \(build.version) (\(build.build))",
+    "source commit: \(build.commit)",
+    "built at: \(build.builtAt)",
+    "macOS: \(osVersion)",
+    "recording: \(recording)",
+    "settings file: \(settingsFile)",
+    "app data dir: \(dataDirectory)",
+    "notes dir: \(notesDirectory)",
+  ]
+  if let settings {
+    lines += [
+      "configuration: resolved now; may include loader repairs; not proof of the active capture snapshot",
+      "configured ASR mode: \(settings.asrMode ?? "not specified")",
+      "configured STT engine: \(settings.sttEngine ?? "not specified")",
+      "configured input device: \(settings.audioInputDevice ?? "system default")",
+      "formatting enabled: \(settings.aiFormattingEnabled)",
+      "configured formatting policy: \(settings.formattingLevel ?? "not specified")",
+      "configured formatting provider: \(settings.llmFormattingProvider ?? "not specified")",
+      "configured formatting model: \(settings.llmFormattingModel ?? "not specified")",
+      "configured agent provider: \(settings.llmAssistiveProvider ?? "not specified")",
+      "configured agent model: \(settings.llmAssistiveModel ?? "not specified")",
+    ]
+  } else {
+    lines.append("configuration: unavailable; loader refused or a configuration refusal was recorded in this process")
+  }
+  if let lastServing {
+    lines.append("last completed serving engine: \(lastServing.engine)")
+    lines.append("last serving disposition: \(lastServing.disposition ?? "not reported")")
+    lines.append("last serving used alternate engine: \(lastServing.fallbackUsed)")
+  } else {
+    lines.append("last completed serving engine: not yet observed in this process")
+  }
+  lines.append("Contains local paths and configuration labels; review before sharing.")
+  return lines.joined(separator: "\n")
 }

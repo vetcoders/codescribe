@@ -9,7 +9,6 @@
 use std::net::{IpAddr, Ipv4Addr, SocketAddr, TcpListener, TcpStream};
 use std::path::PathBuf;
 use std::process::{Child, Command, Stdio};
-use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Mutex, OnceLock};
 use std::time::{Duration, Instant};
 
@@ -21,7 +20,7 @@ use reqwest::blocking::multipart::{Form, Part};
 use serde::{Deserialize, Serialize};
 use tokio_tungstenite::tungstenite::{Message, accept, client};
 
-use crate::pipeline::contracts::{RawTranscript, TranscriptSegment};
+use crate::pipeline::contracts::RawTranscript;
 
 /// Environment key selecting the tail-patch provider.
 pub const STT_TAIL_PROVIDER_ENV: &str = "STT_TAIL_PROVIDER";
@@ -63,60 +62,13 @@ pub fn stt_auth_mode(endpoint: &str) -> SttAuthMode {
         }
         Some(host)
             if host.eq_ignore_ascii_case("api.openai.com")
-                || host.eq_ignore_ascii_case("api.libraxis.cloud") =>
+                || host.eq_ignore_ascii_case("api.libraxis.cloud")
+                || host.eq_ignore_ascii_case("api.x.ai") =>
         {
             SttAuthMode::Bearer
         }
         _ => SttAuthMode::ApiKey,
     }
-}
-
-/// Map a live WebSocket STT URL onto the multipart file probe.
-///
-/// Settings → Test is always OpenAI-compatible `POST /v1/audio/transcriptions`.
-/// `http`/`https` stay. `ws`/`wss` whose path ends in `/transcribe` invert
-/// scheme and path — same rewrite for every host. Loopback `:8446` (Voice Lab
-/// socket) becomes `:8444` (file worker). Other live sockets stay as-is so
-/// [`validate_remote_endpoint`] still fail-closes them.
-pub fn file_probe_endpoint(endpoint: &str) -> String {
-    let Ok(mut url) = Url::parse(endpoint) else {
-        return endpoint.to_string();
-    };
-    let host = url
-        .host_str()
-        .unwrap_or_default()
-        .trim_matches(['[', ']'])
-        .to_owned();
-    match url.scheme() {
-        "http" | "https" => return url.to_string(),
-        "ws" | "wss" => {}
-        _ => return endpoint.to_string(),
-    }
-
-    let loopback = host.eq_ignore_ascii_case("localhost")
-        || host
-            .parse::<IpAddr>()
-            .is_ok_and(|address| address.is_loopback());
-    let http_scheme = if url.scheme() == "wss" {
-        "https"
-    } else {
-        "http"
-    };
-
-    if !url.path().ends_with("/transcribe") {
-        return endpoint.to_string();
-    }
-    if url.set_scheme(http_scheme).is_err() {
-        return endpoint.to_string();
-    }
-    let path = url.path().trim_end_matches("transcribe").to_string() + "transcriptions";
-    url.set_path(&path);
-    url.set_query(None);
-    url.set_fragment(None);
-    if loopback && url.port() == Some(8446) && url.set_port(Some(8444)).is_err() {
-        return endpoint.to_string();
-    }
-    url.to_string()
 }
 
 const SIDECAR_PROTOCOL_VERSION: u8 = 1;
@@ -132,11 +84,6 @@ pub const MAX_TAIL_PROVIDER_TEXT_BYTES: usize = 64 * 1024;
 pub const MAX_TAIL_PROVIDER_SEGMENTS: usize = 2_048;
 /// Maximum bytes accepted for an identity/session or evidence revision token.
 pub const MAX_TAIL_PROVIDER_ID_BYTES: usize = 256;
-
-/// Compatibility request counter until W13-3A threads capture identity into
-/// the live call site. It prevents unrelated legacy windows from sharing an
-/// idempotency key; explicit callers should supply their own identity.
-static LEGACY_REQUEST_ID: AtomicU64 = AtomicU64::new(1);
 
 /// Provider incarnation chosen for a tail-patch request.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -206,13 +153,6 @@ impl TailSampleRange {
             && self.capture_epoch == other.capture_epoch
             && self.sample_start < other.sample_end
             && other.sample_start < self.sample_end
-    }
-
-    /// Same epoch, no shared samples. Identical lexical text is still two observations.
-    pub fn is_disjoint(&self, other: &Self) -> bool {
-        self.session == other.session
-            && self.capture_epoch == other.capture_epoch
-            && !self.overlaps(other)
     }
 }
 
@@ -295,7 +235,6 @@ pub struct TailProviderPayload {
     pub segments: Vec<TimedTailSegment>,
     pub avg_logprob: Option<f32>,
     pub compression_ratio: Option<f32>,
-    pub quality_gate_dropped: bool,
     pub provider_id: TailProviderId,
     pub elapsed_ms: u64,
     pub evidence: TailProviderEvidence,
@@ -361,31 +300,6 @@ impl TailProviderPayload {
         }
         Ok(())
     }
-
-    /// Adapter back to the legacy seconds-based pipeline contract.
-    pub fn into_raw_transcript(self, sample_rate: u32) -> Result<RawTranscript> {
-        if sample_rate == 0 {
-            bail!("tail provider sample_rate must be non-zero");
-        }
-        self.validate()?;
-        let request_start = self.identity.range.sample_start;
-        let rate = sample_rate as f64;
-        Ok(RawTranscript {
-            text: self.text,
-            segments: self
-                .segments
-                .into_iter()
-                .map(|segment| TranscriptSegment {
-                    text: segment.text,
-                    start_ts: ((segment.range.sample_start - request_start) as f64 / rate) as f32,
-                    end_ts: ((segment.range.sample_end - request_start) as f64 / rate) as f32,
-                })
-                .collect(),
-            avg_logprob: self.avg_logprob,
-            compression_ratio: self.compression_ratio,
-            quality_gate_dropped: self.quality_gate_dropped,
-        })
-    }
 }
 
 /// Metadata for one bounded transcription request. PCM stays borrowed and is
@@ -431,6 +345,34 @@ pub trait TailProvider: Send + Sync {
 #[derive(Debug, Default)]
 pub struct InProcessTailProvider;
 
+/// Reject a broken segment clock. Rendered text remains diagnostic payload;
+/// it must never become a manufactured whole-request coverage witness.
+fn coarsen_invalid_in_process_segments(
+    request_range: &TailSampleRange,
+    text: &str,
+    segments: Vec<TimedTailSegment>,
+) -> Vec<TimedTailSegment> {
+    let mut previous_end = request_range.sample_start;
+    let fine_clock_is_valid = !segments.is_empty()
+        && segments.iter().all(|segment| {
+            let non_empty = segment.range.sample_end > segment.range.sample_start;
+            let ordered = segment.range.sample_start >= previous_end;
+            previous_end = segment.range.sample_end;
+            non_empty && ordered && request_range.contains(&segment.range)
+        });
+    if fine_clock_is_valid || segments.is_empty() || text.trim().is_empty() {
+        return segments;
+    }
+
+    tracing::warn!(
+        segment_count = segments.len(),
+        sample_start = request_range.sample_start,
+        sample_end = request_range.sample_end,
+        "tail_provider_segment_clock_refused"
+    );
+    Vec::new()
+}
+
 impl TailProvider for InProcessTailProvider {
     fn provider_id(&self) -> TailProviderId {
         TailProviderId::InProcess
@@ -441,18 +383,32 @@ impl TailProvider for InProcessTailProvider {
         request: &TailProviderRequest,
         pcm: &[f32],
     ) -> Result<TailProviderPayload> {
+        self.transcribe_controlled(request, pcm, &super::LocalExecutionControl::default())
+    }
+}
+
+impl InProcessTailProvider {
+    pub(crate) fn transcribe_controlled(
+        &self,
+        request: &TailProviderRequest,
+        pcm: &[f32],
+        control: &super::LocalExecutionControl,
+    ) -> Result<TailProviderPayload> {
+        control.check()?;
         request.validate_pcm(pcm)?;
         let started = Instant::now();
         let (speech, _, speech_index) =
             crate::vad::extract_speech_indexed(pcm, request.sample_rate);
+        control.check()?;
         let raw = if speech.is_empty() {
             RawTranscript::default()
         } else {
-            super::candle_transcribe_long_with_segments_with_initial_prompt(
+            super::candle_transcribe_controlled(
                 &speech,
                 request.sample_rate,
                 request.language.as_deref(),
-                crate::pipeline::stream_postprocess::whisper_initial_prompt(),
+                None,
+                control,
             )?
         };
         let request_range = &request.identity.range;
@@ -466,15 +422,16 @@ impl TailProvider for InProcessTailProvider {
         let segments = raw
             .segments
             .into_iter()
-            .filter_map(|segment| {
+            .map(|segment| {
                 let compacted_start = to_sample(segment.start_ts);
                 let compacted_end = to_sample(segment.end_ts).max(compacted_start);
                 let (source_start, source_end) = crate::vad::map_compacted_sample_range(
                     &speech_index,
                     compacted_start,
                     compacted_end,
-                )?;
-                Some(TimedTailSegment {
+                )
+                .ok_or_else(|| anyhow!("Whisper segment has no source PCM mapping"))?;
+                Ok(TimedTailSegment {
                     text: segment.text,
                     range: TailSampleRange {
                         session: request_range.session.clone(),
@@ -484,14 +441,14 @@ impl TailProvider for InProcessTailProvider {
                     },
                 })
             })
-            .collect();
+            .collect::<Result<Vec<_>>>()?;
+        let segments = coarsen_invalid_in_process_segments(request_range, &raw.text, segments);
         let payload = TailProviderPayload {
             identity: request.identity.clone(),
             text: raw.text,
             segments,
             avg_logprob: raw.avg_logprob,
             compression_ratio: raw.compression_ratio,
-            quality_gate_dropped: raw.quality_gate_dropped,
             provider_id: self.provider_id(),
             elapsed_ms: started.elapsed().as_millis().min(u64::MAX as u128) as u64,
             evidence: TailProviderEvidence {
@@ -503,6 +460,7 @@ impl TailProvider for InProcessTailProvider {
             },
         };
         payload.validate()?;
+        control.check()?;
         Ok(payload)
     }
 }
@@ -1076,22 +1034,21 @@ impl RemoteTailProvider {
         let endpoint = endpoint.into();
         validate_remote_endpoint(&endpoint)?;
         let api_key = api_key.into();
-        if stt_auth_mode(&endpoint) != SttAuthMode::Unauthenticated && api_key.trim().is_empty() {
-            bail!("STT_API_KEY is required for remote tail provider");
+        if stt_auth_mode(&endpoint) != SttAuthMode::Unauthenticated
+            && crate::llm::speech::vendor_for_endpoint(&endpoint).is_none()
+            && api_key.trim().is_empty()
+        {
+            bail!("STT_FILE_API_KEY is required for remote tail provider");
         }
         Ok(Self { endpoint, api_key })
     }
 
     fn from_config() -> Result<Self> {
         let config = crate::config::Config::load();
-        let endpoint = config
-            .stt_endpoint
-            .filter(|value| !value.trim().is_empty())
-            .unwrap_or_else(|| DEFAULT_LOCAL_REMOTE_ENDPOINT.to_string());
-        let api_key = config
-            .stt_api_key
-            .filter(|value| !value.trim().is_empty())
-            .unwrap_or_default();
+        let (endpoint, api_key) = config
+            .stt_lane(super::SttLane::File)
+            .map(|row| (row.endpoint, row.api_key.unwrap_or_default()))
+            .unwrap_or_else(|| (DEFAULT_LOCAL_REMOTE_ENDPOINT.to_string(), String::new()));
         Self::new(endpoint, api_key)
     }
 }
@@ -1110,18 +1067,48 @@ impl TailProvider for RemoteTailProvider {
         let started = Instant::now();
         let wav = pcm16_wav(pcm, request.sample_rate)?;
         let language = request.language.as_deref().unwrap_or("pl");
-        let model = std::env::var("WHISPER_MODEL")
-            .unwrap_or_else(|_| "mlx-community/whisper-large-v3-mlx".to_string());
+        let model = crate::llm::client::stt_model(
+            &self.endpoint,
+            std::env::var("WHISPER_MODEL").ok().as_deref(),
+        );
+        let vendor = crate::llm::speech::vendor_for_endpoint(&self.endpoint);
+        // This provider is synchronous (including reqwest::blocking below).
+        // Production enters through compute_tail_patch_job_with's owned native worker
+        // in pipeline/streaming/session.rs, never the async session executor.
+        // The local runtime therefore refreshes OAuth without nesting block_on.
+        let auth = if let Some(vendor) = vendor {
+            Some(
+                tokio::runtime::Builder::new_current_thread()
+                    .enable_all()
+                    .build()?
+                    .block_on(crate::llm::speech::resolve_vendor_auth(
+                        vendor,
+                        Some(&self.api_key),
+                    ))?,
+            )
+        } else {
+            None
+        };
+        let bearer = auth
+            .as_ref()
+            .map_or(self.api_key.as_str(), |auth| auth.bearer.as_str());
         let file = Part::bytes(wav)
             .file_name("tail-window.wav")
             .mime_str("audio/wav")?;
         let mut form = Form::new()
             .part("file", file)
-            .text("model", model.clone())
-            .text("language", language.to_string())
-            .text("response_format", "verbose_json");
-        if let Some(prompt) = crate::pipeline::stream_postprocess::whisper_initial_prompt() {
-            form = form.text("prompt", prompt);
+            .text("language", language.to_string());
+        if let Some(model) = &model {
+            form = form.text("model", model.clone());
+        }
+        match vendor {
+            Some(crate::llm::provider::ProviderKind::XaiResponses) => {}
+            Some(crate::llm::provider::ProviderKind::OpenAiResponses) => {
+                form = form.text("response_format", "json");
+            }
+            _ => {
+                form = form.text("response_format", "verbose_json");
+            }
         }
         if let Some((field, value)) =
             crate::stt::request_vocabulary::codescribe_stt_vocabulary_form_part(&self.endpoint)
@@ -1135,7 +1122,7 @@ impl TailProvider for RemoteTailProvider {
             .post(&self.endpoint);
         let http_request = match stt_auth_mode(&self.endpoint) {
             SttAuthMode::Unauthenticated => http_request,
-            SttAuthMode::Bearer => http_request.bearer_auth(&self.api_key),
+            SttAuthMode::Bearer => http_request.bearer_auth(bearer),
             SttAuthMode::ApiKey => http_request.header("x-api-key", &self.api_key),
         };
         let response = http_request
@@ -1178,12 +1165,11 @@ impl TailProvider for RemoteTailProvider {
             segments,
             avg_logprob: response.avg_logprob,
             compression_ratio: response.compression_ratio,
-            quality_gate_dropped: false,
             provider_id: TailProviderId::Remote,
             elapsed_ms: started.elapsed().as_millis().min(u64::MAX as u128) as u64,
             evidence: TailProviderEvidence {
                 source: TailEvidenceSource::Whisper,
-                revision: Some(model),
+                revision: model,
                 stability: TailEvidenceStability::Final,
                 timing_quality: TailTimingQuality::ExactSampleRange,
                 avg_logprob: response.avg_logprob,
@@ -1213,18 +1199,7 @@ struct RemoteTailSegment {
 }
 
 pub(crate) fn validate_remote_endpoint(endpoint: &str) -> Result<()> {
-    let url = Url::parse(endpoint).context("invalid remote STT endpoint")?;
-    let host = url
-        .host_str()
-        .ok_or_else(|| anyhow!("remote STT endpoint has no host"))?
-        .trim_matches(['[', ']']);
-    let loopback = host == "localhost" || host.parse::<IpAddr>().is_ok_and(|ip| ip.is_loopback());
-    if url.scheme() != "https" && !(url.scheme() == "http" && loopback) {
-        bail!("remote STT endpoint requires HTTPS except on loopback");
-    }
-    if !url.username().is_empty() || url.password().is_some() {
-        bail!("remote STT endpoint must not contain credentials");
-    }
+    super::validate_stt_endpoint(super::SttLane::File, endpoint)?;
     Ok(())
 }
 
@@ -1272,7 +1247,48 @@ pub fn transcribe_configured(
         Err(std::env::VarError::NotPresent) => TailProviderId::InProcess,
         Err(error) => return Err(error.into()),
     };
-    let inprocess = InProcessTailProvider;
+    transcribe_selected(provider_id, request, pcm)
+}
+
+/// Execute the transport selected by the recording snapshot without rereading
+/// the provider selector between jobs or during terminal closure.
+pub(crate) fn transcribe_selected(
+    provider_id: TailProviderId,
+    request: &TailProviderRequest,
+    pcm: &[f32],
+) -> Result<TailProviderPayload> {
+    transcribe_selected_controlled(
+        provider_id,
+        request,
+        pcm,
+        &super::LocalExecutionControl::default(),
+    )
+}
+
+struct ControlledInProcess<'a>(&'a super::LocalExecutionControl);
+
+impl TailProvider for ControlledInProcess<'_> {
+    fn provider_id(&self) -> TailProviderId {
+        TailProviderId::InProcess
+    }
+
+    fn transcribe(
+        &self,
+        request: &TailProviderRequest,
+        pcm: &[f32],
+    ) -> Result<TailProviderPayload> {
+        InProcessTailProvider.transcribe_controlled(request, pcm, self.0)
+    }
+}
+
+pub(crate) fn transcribe_selected_controlled(
+    provider_id: TailProviderId,
+    request: &TailProviderRequest,
+    pcm: &[f32],
+    control: &super::LocalExecutionControl,
+) -> Result<TailProviderPayload> {
+    control.check()?;
+    let inprocess = ControlledInProcess(control);
     let outcome = match provider_id {
         TailProviderId::InProcess => {
             let started = Instant::now();
@@ -1317,6 +1333,7 @@ pub fn transcribe_configured(
         },
         TailProviderId::Fake => unreachable!("fake is injectable, never selected from config"),
     };
+    control.check()?;
     let payload = outcome.payload;
     tracing::info!(
         requested_provider = outcome.receipt.requested_provider.as_str(),
@@ -1341,35 +1358,17 @@ pub fn transcribe_configured(
     Ok(payload)
 }
 
-/// Compatibility adapter for current call sites. W13-3A replaces this local
-/// identity with the real capture session/epoch and absolute window range.
-pub(crate) fn transcribe_legacy_window(
-    pcm: &[f32],
-    sample_rate: u32,
-    language: Option<&str>,
-) -> Result<RawTranscript> {
-    let request = TailProviderRequest {
-        identity: TailRequestIdentity {
-            request_id: LEGACY_REQUEST_ID.fetch_add(1, Ordering::Relaxed),
-            range: TailSampleRange {
-                session: "legacy_tail_patch".to_string(),
-                capture_epoch: 0,
-                sample_start: 0,
-                sample_end: pcm.len() as u64,
-            },
-        },
-        sample_rate,
-        language: language.map(str::to_owned),
-    };
-    transcribe_configured(&request, pcm)?.into_raw_transcript(sample_rate)
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
 
     #[test]
     fn stt_auth_mode_follows_endpoint_owner() {
+        assert_eq!(
+            stt_auth_mode("https://api.x.ai/v1/stt"),
+            SttAuthMode::Bearer
+        );
+        assert_eq!(stt_auth_mode("wss://api.x.ai/v1/stt"), SttAuthMode::Bearer);
         assert_eq!(
             stt_auth_mode("https://api.openai.com/v1/audio/transcriptions"),
             SttAuthMode::Bearer
@@ -1409,34 +1408,121 @@ mod tests {
     }
 
     #[test]
-    fn file_probe_endpoint_inverts_known_live_sockets() {
-        assert_eq!(
-            file_probe_endpoint("https://api.libraxis.cloud/v1/audio/transcriptions"),
-            "https://api.libraxis.cloud/v1/audio/transcriptions"
+    fn recovery_overlapping_segments_never_manufacture_request_witness() {
+        let range = TailSampleRange {
+            session: "synthetic".into(),
+            capture_epoch: 1,
+            sample_start: 0,
+            sample_end: 32_000,
+        };
+        let segments = vec![
+            TimedTailSegment {
+                text: "Iwo".into(),
+                range: TailSampleRange {
+                    sample_end: 20_000,
+                    ..range.clone()
+                },
+            },
+            TimedTailSegment {
+                text: "Iwo".into(),
+                range: TailSampleRange {
+                    sample_start: 16_000,
+                    ..range.clone()
+                },
+            },
+        ];
+        let result = coarsen_invalid_in_process_segments(&range, "Iwo Iwo", segments);
+        assert!(
+            result.is_empty(),
+            "invalid timing must not manufacture a whole-request occurrence"
         );
+    }
+
+    #[test]
+    fn invalid_in_process_segment_clock_retains_only_diagnostic_text() {
+        let range = TailSampleRange {
+            session: "gap-recovery".into(),
+            capture_epoch: 7,
+            sample_start: 1_265_152,
+            sample_end: 8_838_144,
+        };
+        let segments = vec![
+            TimedTailSegment {
+                text: "pierwszy przebieg".into(),
+                range: TailSampleRange {
+                    sample_start: 1_265_152,
+                    sample_end: 3_000_000,
+                    ..range.clone()
+                },
+            },
+            TimedTailSegment {
+                text: "poprawiony przebieg".into(),
+                range: TailSampleRange {
+                    sample_start: 2_900_000,
+                    sample_end: 4_200_000,
+                    ..range.clone()
+                },
+            },
+        ];
+
+        let coarsened =
+            coarsen_invalid_in_process_segments(&range, "pełny poprawny tekst", segments);
+
+        assert!(coarsened.is_empty());
+        let payload = TailProviderPayload {
+            identity: TailRequestIdentity {
+                request_id: u64::MAX,
+                range: range.clone(),
+            },
+            text: "pełny poprawny tekst".into(),
+            segments: coarsened,
+            avg_logprob: None,
+            compression_ratio: None,
+            provider_id: TailProviderId::InProcess,
+            elapsed_ms: 0,
+            evidence: TailProviderEvidence {
+                source: TailEvidenceSource::Whisper,
+                revision: None,
+                stability: TailEvidenceStability::Final,
+                timing_quality: TailTimingQuality::CompactedSpeechRelative,
+                avg_logprob: None,
+            },
+        };
+        payload
+            .validate()
+            .expect("diagnostic text without occurrence witnesses validates");
+    }
+
+    #[test]
+    fn valid_in_process_segment_clock_keeps_its_granularity() {
+        let range = TailSampleRange {
+            session: "ordered".into(),
+            capture_epoch: 2,
+            sample_start: 100,
+            sample_end: 500,
+        };
+        let segments = vec![
+            TimedTailSegment {
+                text: "jeden".into(),
+                range: TailSampleRange {
+                    sample_start: 120,
+                    sample_end: 240,
+                    ..range.clone()
+                },
+            },
+            TimedTailSegment {
+                text: "dwa".into(),
+                range: TailSampleRange {
+                    sample_start: 260,
+                    sample_end: 480,
+                    ..range.clone()
+                },
+            },
+        ];
+
         assert_eq!(
-            file_probe_endpoint("wss://api.libraxis.cloud/v1/audio/transcribe"),
-            "https://api.libraxis.cloud/v1/audio/transcriptions"
-        );
-        assert_eq!(
-            file_probe_endpoint("ws://127.0.0.1:8000/v1/audio/transcribe"),
-            "http://127.0.0.1:8000/v1/audio/transcriptions"
-        );
-        assert_eq!(
-            file_probe_endpoint("ws://127.0.0.1:8446/v1/audio/transcribe"),
-            "http://127.0.0.1:8444/v1/audio/transcriptions"
-        );
-        assert_eq!(
-            file_probe_endpoint("wss://localhost:8446/v1/audio/transcribe"),
-            "https://localhost:8444/v1/audio/transcriptions"
-        );
-        assert_eq!(
-            file_probe_endpoint("wss://stt.example.test/v1/audio/transcribe"),
-            "https://stt.example.test/v1/audio/transcriptions"
-        );
-        assert_eq!(
-            file_probe_endpoint("wss://stt.example.test/v1/audio/live"),
-            "wss://stt.example.test/v1/audio/live"
+            coarsen_invalid_in_process_segments(&range, "jeden dwa", segments.clone()),
+            segments
         );
     }
 
@@ -1465,7 +1551,6 @@ mod tests {
             }],
             avg_logprob: Some(-0.21),
             compression_ratio: Some(1.12),
-            quality_gate_dropped: false,
             provider_id: TailProviderId::Fake,
             elapsed_ms: 7,
             evidence: TailProviderEvidence {
@@ -1547,7 +1632,6 @@ mod tests {
             ],
             avg_logprob: None,
             compression_ratio: None,
-            quality_gate_dropped: false,
             provider_id: TailProviderId::Fake,
             elapsed_ms: 0,
             evidence: TailProviderEvidence {

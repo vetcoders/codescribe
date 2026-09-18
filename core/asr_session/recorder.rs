@@ -43,7 +43,6 @@ use tracing::{info, warn};
 use super::events::{AsrErrorKind, AsrSessionEvent, TranscriptEvent};
 use super::ingest::{IngestVerdict, SessionIngest};
 use super::provider::{AsrSessionProvider, RefinerMode, SessionInput};
-use crate::quality::{Layer1MergedDelivery, merge_live_layer1};
 
 /// Consecutive overflowed frames tolerated before the lane degrades.
 ///
@@ -145,11 +144,6 @@ impl Layer1Decision {
         )
     }
 
-    /// Whether the generic provider fan-out lane (Cloud) is armed.
-    pub fn is_provider_armed(&self) -> bool {
-        matches!(self, Self::Armed(_))
-    }
-
     /// Recording-start local tail-patch disposition, when local power was the
     /// selected product mode.
     pub fn local_tail_patch_disposition(&self) -> Option<LocalTailPatchDisposition> {
@@ -171,7 +165,8 @@ pub enum LocalTailPatchDisposition {
     NotApplicable,
     /// Local power's product default: Apple live plus local Whisper patches.
     ArmedDefault,
-    /// Explicit `phase1`..`phase4` compatibility token armed the same lane.
+    /// Explicit `phase1` compatibility token armed the same lane. Reserved
+    /// later phases are degraded until they acquire their own runtime owner.
     ArmedPhase(u8),
     /// Local power was selected but an explicit hard-off token disabled its
     /// required patcher. This is degraded, never a healthy Apple-only state.
@@ -318,35 +313,6 @@ impl Layer1SessionOutcome {
     /// Why the lane degraded, when it did.
     pub fn degrade_reason(&self) -> Option<Layer1DegradeReason> {
         self.degrade
-    }
-
-    /// The refiner's transcript candidate: sealed finals joined in order.
-    ///
-    /// `None` when the session produced no accepted finals — the caller keeps
-    /// the canvas untouched rather than merging against an empty candidate.
-    pub fn refined_transcript(&self) -> Option<String> {
-        if self.finals.is_empty() {
-            return None;
-        }
-        Some(
-            self.finals
-                .iter()
-                .map(|event| event.text.trim())
-                .filter(|text| !text.is_empty())
-                .collect::<Vec<_>>()
-                .join(" "),
-        )
-    }
-
-    /// Route the outcome through the integrated doctrine-safe truth seam.
-    ///
-    /// This is [`merge_live_layer1`]: the committed live floor is immutable,
-    /// Layer 1 text may fill aligned gaps and extend the tail, and a
-    /// substitution always keeps the live token. Callers deliver
-    /// [`Layer1MergedDelivery::text`]; they never deliver the raw candidate.
-    pub fn adjudicate_against_live_floor(&self, live_floor: &str) -> Layer1MergedDelivery {
-        let candidate = self.refined_transcript();
-        merge_live_layer1(live_floor, candidate.as_deref().unwrap_or(""))
     }
 }
 
@@ -599,12 +565,11 @@ impl RecorderLayer1Lane {
             IngestVerdict::Accepted => match event {
                 AsrSessionEvent::Partial(transcript) => {
                     self.telemetry.partials_applied += 1;
-                    self.draft
-                        .insert(transcript.identity.utterance_id(), transcript.text);
+                    self.draft.insert(transcript.utterance_id, transcript.text);
                 }
                 AsrSessionEvent::Final(transcript) => {
                     self.telemetry.finals_accepted += 1;
-                    self.draft.remove(&transcript.identity.utterance_id());
+                    self.draft.remove(&transcript.utterance_id);
                     self.finals.push(transcript);
                 }
                 AsrSessionEvent::Error(error) => {
@@ -678,12 +643,9 @@ fn session_fatal(kind: AsrErrorKind) -> bool {
 
 #[cfg(test)]
 mod tests {
-    use super::super::events::{
-        ErrorEvent, EventIdentity, SessionId, TranscriptEvent as Transcript,
-    };
+    use super::super::events::{ErrorEvent, SessionId, TranscriptEvent as Transcript};
     use super::super::fake::FakeAsrSessionProvider;
     use super::*;
-    use crate::quality::Layer1MergeMode;
 
     /// Session identity every fixture in this module records under.
     fn session_id() -> SessionId {
@@ -699,15 +661,12 @@ mod tests {
         }
     }
 
-    /// Identity triple within the fixture session.
-    fn identity(utterance_id: u64, sequence_id: u64) -> EventIdentity {
-        EventIdentity::new(session_id(), utterance_id, sequence_id)
-    }
-
     /// Partial event fixture.
     fn partial(utterance_id: u64, sequence_id: u64, text: &str) -> AsrSessionEvent {
         AsrSessionEvent::Partial(Transcript {
-            identity: identity(utterance_id, sequence_id),
+            session_id: session_id(),
+            utterance_id,
+            sequence_id,
             text: text.to_string(),
             range: None,
         })
@@ -716,7 +675,9 @@ mod tests {
     /// Final event fixture.
     fn final_event(utterance_id: u64, sequence_id: u64, text: &str) -> AsrSessionEvent {
         AsrSessionEvent::Final(Transcript {
-            identity: identity(utterance_id, sequence_id),
+            session_id: session_id(),
+            utterance_id,
+            sequence_id,
             text: text.to_string(),
             range: None,
         })
@@ -725,7 +686,9 @@ mod tests {
     /// Typed error event fixture.
     fn error_event(sequence_id: u64, kind: AsrErrorKind) -> AsrSessionEvent {
         AsrSessionEvent::Error(ErrorEvent {
-            identity: identity(0, sequence_id),
+            session_id: session_id(),
+            utterance_id: 0,
+            sequence_id,
             kind,
         })
     }
@@ -754,7 +717,6 @@ mod tests {
         assert_eq!(lane.state(), Layer1LaneState::Stopped);
         assert!(outcome.finals().is_empty());
         assert!(outcome.degrade_reason().is_none());
-        assert!(outcome.refined_transcript().is_none());
     }
 
     /// A provider whose open fails is dropped and the recording proceeds
@@ -1006,8 +968,12 @@ mod tests {
         assert_eq!(lane.state(), Layer1LaneState::Stopped);
         assert_eq!(outcome.finals().len(), 2);
         assert_eq!(
-            outcome.refined_transcript().as_deref(),
-            Some("pacjent ma goraczke podano plyny")
+            outcome
+                .finals()
+                .iter()
+                .map(|event| event.text.as_str())
+                .collect::<Vec<_>>(),
+            vec!["pacjent ma goraczke", "podano plyny"]
         );
         assert!(
             outcome.degrade_reason().is_none(),
@@ -1039,44 +1005,6 @@ mod tests {
             outcome.degrade_reason(),
             Some(Layer1DegradeReason::Disconnect(AsrErrorKind::Transport))
         );
-    }
-
-    /// The outcome routes through the T0 truth seam: the committed live floor
-    /// is immutable and Layer 1 text only fills the tail/gaps.
-    #[test]
-    fn outcome_adjudication_preserves_the_live_floor() {
-        let mut lane = RecorderLayer1Lane::open(
-            armed(vec![final_event(
-                1,
-                1,
-                "pacjent ma goraczke i wymioty od wczoraj",
-            )]),
-            &input(),
-        );
-        let outcome = lane.stop();
-
-        let live_floor = "pacjent ma goraczke";
-        let merged = outcome.adjudicate_against_live_floor(live_floor);
-        assert_eq!(merged.mode, Layer1MergeMode::LiveFloorGapFill);
-        assert!(
-            merged.text.starts_with(live_floor),
-            "committed live text must survive adjudication verbatim"
-        );
-        assert!(
-            merged.text.contains("wymioty"),
-            "the provider tail may extend the floor"
-        );
-    }
-
-    /// With no finals the outcome refuses to fabricate a candidate, and the
-    /// seam reports the live floor untouched.
-    #[test]
-    fn empty_outcome_leaves_the_live_floor_alone() {
-        let mut lane = RecorderLayer1Lane::open(Layer1Decision::Disarmed, &input());
-        let outcome = lane.stop();
-        let merged = outcome.adjudicate_against_live_floor("pacjent ma goraczke");
-        assert_eq!(merged.mode, Layer1MergeMode::LiveOnly);
-        assert_eq!(merged.text, "pacjent ma goraczke");
     }
 
     /// Stopping a degraded or unarmed lane is a quiet no-op path — the stop

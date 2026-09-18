@@ -79,6 +79,9 @@ pub struct ResponsesStreamingManager<'a> {
     endpoint: &'a str,
     api_key: &'a str,
     auth_header_mode: AuthHeaderMode,
+    /// Lane-specific request headers beyond auth (e.g. the Codex backend's
+    /// `ChatGPT-Account-ID` and `originator`). Applied to every request.
+    extra_headers: Vec<(String, String)>,
     callbacks: StreamCallbacks,
     initial_response_timeout: Duration,
     inter_chunk_timeout: Duration,
@@ -103,6 +106,7 @@ impl<'a> ResponsesStreamingManager<'a> {
             endpoint,
             api_key,
             auth_header_mode: AuthHeaderMode::BearerAndApiKey,
+            extra_headers: Vec::new(),
             callbacks,
             initial_response_timeout,
             inter_chunk_timeout,
@@ -112,6 +116,12 @@ impl<'a> ResponsesStreamingManager<'a> {
     /// Override the auth header shape (builder style).
     pub fn with_auth_header_mode(mut self, auth_header_mode: AuthHeaderMode) -> Self {
         self.auth_header_mode = auth_header_mode;
+        self
+    }
+
+    /// Attach lane-specific headers to every request (builder style).
+    pub fn with_extra_headers(mut self, extra_headers: Vec<(String, String)>) -> Self {
+        self.extra_headers = extra_headers;
         self
     }
 
@@ -128,11 +138,14 @@ impl<'a> ResponsesStreamingManager<'a> {
     pub async fn stream<T: Serialize>(&self, request: &T) -> Result<ResponsesStreamOutput> {
         let endpoint_url =
             validated_endpoint_url(self.endpoint).context("Invalid Responses API endpoint URL")?;
-        let request_builder = apply_auth_headers(
-            // nosemgrep: rust.actix.ssrf.reqwest-taint.reqwest-taint -- URL is validated by `validated_endpoint_url`.
-            self.client.post(endpoint_url.clone()),
-            self.api_key,
-            self.auth_header_mode,
+        let request_builder = apply_extra_headers(
+            apply_auth_headers(
+                // nosemgrep: rust.actix.ssrf.reqwest-taint.reqwest-taint -- URL is validated by `validated_endpoint_url`.
+                self.client.post(endpoint_url.clone()),
+                self.api_key,
+                self.auth_header_mode,
+            ),
+            &self.extra_headers,
         )
         .header("Content-Type", "application/json")
         .header("Accept", "text/event-stream")
@@ -452,27 +465,20 @@ impl<'a> ResponsesStreamingManager<'a> {
 
         let (tx, rx) = mpsc::channel(256);
 
-        let client = self.client.clone();
-        let endpoint = self.endpoint.to_string();
-        let api_key = self.api_key.to_string();
-        let auth_header_mode = self.auth_header_mode;
+        let transport = AgentStreamTransport {
+            client: self.client.clone(),
+            endpoint: self.endpoint.to_string(),
+            api_key: self.api_key.to_string(),
+            auth_header_mode: self.auth_header_mode,
+            extra_headers: self.extra_headers.clone(),
+            initial_response_timeout: self.initial_response_timeout,
+            inter_chunk_timeout: self.inter_chunk_timeout,
+        };
         let callbacks = self.callbacks.clone();
-        let initial_response_timeout = self.initial_response_timeout;
-        let inter_chunk_timeout = self.inter_chunk_timeout;
 
         tokio::spawn(async move {
-            if let Err(error) = run_agent_stream(
-                client,
-                endpoint,
-                api_key,
-                auth_header_mode,
-                callbacks,
-                initial_response_timeout,
-                inter_chunk_timeout,
-                request_payload,
-                tx.clone(),
-            )
-            .await
+            if let Err(error) =
+                run_agent_stream(transport, callbacks, request_payload, tx.clone()).await
             {
                 let _ = tx.send(AgentEvent::Error(error.to_string())).await;
             }
@@ -640,6 +646,21 @@ impl<'a> ResponsesStreamingManager<'a> {
     }
 }
 
+/// Everything one spawned agent SSE turn owns about its transport.
+///
+/// Bundled because the task entry point took nine positional arguments; the
+/// six transport values always travel together and are moved into the task as
+/// a unit, so a struct is the honest shape.
+struct AgentStreamTransport {
+    client: Client,
+    endpoint: String,
+    api_key: String,
+    auth_header_mode: AuthHeaderMode,
+    extra_headers: Vec<(String, String)>,
+    initial_response_timeout: Duration,
+    inter_chunk_timeout: Duration,
+}
+
 /// Body of the task spawned by [`ResponsesStreamingManager::stream_agent`].
 ///
 /// Owns the socket for one agent turn: parses each SSE chunk into an
@@ -647,27 +668,31 @@ impl<'a> ResponsesStreamingManager<'a> {
 /// dirty terminal (failed / incomplete / cancelled) it emits
 /// `ResponseDone { clean: false }` so both chain-reset paths run — see
 /// `dirty_terminal_response_id`.
-// allow(too_many_arguments): task entry point for one agent SSE stream; all
-// eight values are owned moves into the spawned task.
-#[allow(clippy::too_many_arguments)]
 async fn run_agent_stream(
-    client: Client,
-    endpoint: String,
-    api_key: String,
-    auth_header_mode: AuthHeaderMode,
+    transport: AgentStreamTransport,
     callbacks: StreamCallbacks,
-    initial_response_timeout: Duration,
-    inter_chunk_timeout: Duration,
     request_payload: serde_json::Value,
     tx: mpsc::Sender<AgentEvent>,
 ) -> Result<()> {
+    let AgentStreamTransport {
+        client,
+        endpoint,
+        api_key,
+        auth_header_mode,
+        extra_headers,
+        initial_response_timeout,
+        inter_chunk_timeout,
+    } = transport;
     let endpoint_url =
         validated_endpoint_url(&endpoint).context("Invalid agent streaming endpoint URL")?;
-    let request_builder = apply_auth_headers(
-        // nosemgrep: rust.actix.ssrf.reqwest-taint.reqwest-taint -- URL is validated by `validated_endpoint_url`.
-        client.post(endpoint_url),
-        &api_key,
-        auth_header_mode,
+    let request_builder = apply_extra_headers(
+        apply_auth_headers(
+            // nosemgrep: rust.actix.ssrf.reqwest-taint.reqwest-taint -- URL is validated by `validated_endpoint_url`.
+            client.post(endpoint_url),
+            &api_key,
+            auth_header_mode,
+        ),
+        &extra_headers,
     )
     .header("Content-Type", "application/json")
     .header("Accept", "text/event-stream")
@@ -687,7 +712,7 @@ async fn run_agent_stream(
     if !response.status().is_success() {
         let status = response.status();
         let body = response.text().await.unwrap_or_default();
-        anyhow::bail!("Agent SSE HTTP {} - {}", status, body);
+        anyhow::bail!("Agent SSE HTTP {}: {}", status, summarize_error_body(&body));
     }
 
     let mut tool_tracker = ToolCallTracker::default();
@@ -879,6 +904,18 @@ fn apply_auth_headers(
         AuthHeaderMode::BearerAndApiKey => builder.header("x-api-key", api_key),
         AuthHeaderMode::BearerOnly => builder,
     }
+}
+
+/// Lane-specific headers on top of auth; an empty list is a no-op.
+fn apply_extra_headers(
+    builder: reqwest::RequestBuilder,
+    extra_headers: &[(String, String)],
+) -> reqwest::RequestBuilder {
+    extra_headers
+        .iter()
+        .fold(builder, |builder, (name, value)| {
+            builder.header(name, value)
+        })
 }
 
 /// SSRF gate for every outgoing request in this module.
@@ -1682,6 +1719,40 @@ fn extract_output_channels(output: &[StreamOutputItem]) -> (String, Option<Strin
 }
 
 /// Unit and mockito SSE tests for auth, channel extraction, and agent events.
+/// The human line out of a provider's error body.
+///
+/// Vendors answer a refused request with `{"error":{"message":…,"type":…}}`;
+/// the operator reads the message and the type, never the escaped JSON with
+/// its `\n` and `null` fields (Founder 2026-09-09 16:15, a 401 rendered as
+/// a raw blob in the chat bubble). A body that is not that shape is passed
+/// through trimmed, and an empty body reads as the status alone.
+fn summarize_error_body(body: &str) -> String {
+    let trimmed = body.trim();
+    if let Ok(value) = serde_json::from_str::<serde_json::Value>(trimmed)
+        && let Some(message) = value
+            .pointer("/error/message")
+            .and_then(serde_json::Value::as_str)
+            .map(str::trim)
+            .filter(|message| !message.is_empty())
+    {
+        let kind = value
+            .pointer("/error/type")
+            .or_else(|| value.pointer("/error/code"))
+            .and_then(serde_json::Value::as_str)
+            .map(str::trim)
+            .filter(|kind| !kind.is_empty());
+        return match kind {
+            Some(kind) => format!("{message} ({kind})"),
+            None => message.to_string(),
+        };
+    }
+    if trimmed.is_empty() {
+        "no response body".to_string()
+    } else {
+        trimmed.to_string()
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::{
@@ -1771,6 +1842,49 @@ mod tests {
         assert_eq!(output.assistant_text, "Reasoned fallback");
         assert_eq!(output.reasoning_text.as_deref(), Some("Reasoned fallback"));
         assert_eq!(output.response_id.as_deref(), Some("resp_reasoning"));
+        mock.assert_async().await;
+    }
+
+    /// The Libraxis gateway emits extra `response.route.queued|waiting|terminal`
+    /// events and `event:` lines (live capture 2026-09-07, §B.3). The parser
+    /// must ignore them and still deliver the text, the response id, and a
+    /// clean completion — the fixture is the raw stream, byte for byte.
+    #[tokio::test]
+    async fn responses_stream_tolerates_libraxis_route_events() {
+        let mut server = mockito::Server::new_async().await;
+        let mock = server
+            .mock("POST", "/v1/responses")
+            .with_status(200)
+            .with_header("content-type", "text/event-stream")
+            .with_body(include_str!(
+                "vendors/fixtures/libraxis_responses_sse_live_2026-09-07.txt"
+            ))
+            .create_async()
+            .await;
+        let endpoint = format!("{}/v1/responses", server.url());
+        let client = Client::new();
+        let manager = ResponsesStreamingManager::new(
+            &client,
+            &endpoint,
+            "test-key",
+            StreamCallbacks {
+                assistant: None,
+                reasoning: None,
+            },
+            Duration::from_secs(1),
+            Duration::from_secs(1),
+        );
+
+        let output = manager
+            .stream(&json!({"model": "buddy", "stream": true}))
+            .await
+            .expect("gateway route events must not break the stream");
+
+        assert_eq!(output.assistant_text, "pong");
+        assert_eq!(
+            output.response_id.as_deref(),
+            Some("resp_5e0ec282055e4cffb8c27b9c4a901550")
+        );
         mock.assert_async().await;
     }
 
@@ -2387,6 +2501,37 @@ mod tests {
             private_https
                 .to_string()
                 .contains("Private/internal endpoint URLs are not allowed")
+        );
+    }
+
+    #[test]
+    fn summarize_error_body_reads_the_vendor_message_not_the_blob() {
+        let openai_401 = r#"{
+  "error": {
+    "message": "You have insufficient permissions for this operation. Missing scopes: api.responses.write.",
+    "type": "invalid_request_error",
+    "param": null,
+    "code": null
+  }
+}"#;
+        assert_eq!(
+            super::summarize_error_body(openai_401),
+            "You have insufficient permissions for this operation. Missing scopes: api.responses.write. (invalid_request_error)"
+        );
+        assert_eq!(
+            super::summarize_error_body(
+                r#"{"error":{"message":"rate limited","code":"rate_limit"}}"#
+            ),
+            "rate limited (rate_limit)"
+        );
+        assert_eq!(
+            super::summarize_error_body("  upstream down  "),
+            "upstream down"
+        );
+        assert_eq!(super::summarize_error_body(""), "no response body");
+        assert_eq!(
+            super::summarize_error_body(r#"{"error":{"message":""}}"#),
+            r#"{"error":{"message":""}}"#
         );
     }
 }

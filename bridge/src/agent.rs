@@ -6,14 +6,15 @@ use std::collections::HashMap;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 
+#[cfg(test)]
+use codescribe_core::agent::ToolRegistry;
 use codescribe_core::agent::{
-    AgentSession, AgentUiEvent, ImageAttachment, Message, StreamOptions, ThreadDeliveryGateway,
-    ThreadDeliveryInput, ThreadDeliverySource, ThreadMessage, ThreadStore, ToolApprovalHandler,
-    ToolApprovalRequest, ToolOrigin, ToolRegistry,
+    AgentSession, AgentUiEvent, ApprovalBroker, ImageAttachment, Message, StreamOptions,
+    ThreadDeliveryGateway, ThreadDeliveryInput, ThreadDeliverySource, ThreadMessage, ThreadStore,
+    ToolApprovalHandler, ToolApprovalRequest, ToolOrigin,
 };
 use codescribe_core::attachment::{MAX_VISION_IMAGE_BYTES, load_image_for_vision};
-use codescribe_core::llm::lane_truth::assistive_identity;
-use codescribe_core::llm::provider::provider_supports_vision;
+use codescribe_core::config::RuntimeSettingsSnapshot;
 use tokio::task::AbortHandle;
 
 use crate::{CsError, application_runtime};
@@ -73,6 +74,27 @@ pub struct CsToolApprovalRequest {
     pub paths: Vec<String>,
 }
 
+impl From<ToolApprovalRequest> for CsToolApprovalRequest {
+    fn from(request: ToolApprovalRequest) -> Self {
+        let server = match &request.origin {
+            ToolOrigin::Native => "native".to_string(),
+            ToolOrigin::Mcp { server, .. } => server.clone(),
+        };
+        Self {
+            call_id: request.call_id,
+            session_id: request.session_id,
+            thread_id: request.thread_id,
+            tool: request.tool,
+            server,
+            risk: request.risk.as_str().to_string(),
+            summary: request.summary,
+            command: request.command,
+            cwd: request.cwd,
+            paths: request.paths,
+        }
+    }
+}
+
 /// Foreign callback trait — agent streaming events forwarded to Swift.
 /// Mirrors `AgentUiEvent`; the Swift side must hop these onto the main actor.
 #[uniffi::export(with_foreign)]
@@ -98,8 +120,15 @@ pub trait CsAgentListener: Send + Sync {
 }
 
 /// Thin handle to the codescribe agent engine.
-#[derive(uniffi::Object, Default, Clone)]
+#[derive(uniffi::Object, Clone)]
 pub struct CodescribeAgent {
+    /// Construction-time settings seal, kept ONLY as the fallback when a
+    /// fresh per-call reload fails. Every surface reads settings through
+    /// [`Self::current_settings`], so a key saved in Settings after launch
+    /// reaches the very next call — the sealed-for-life snapshot was the
+    /// 2026-09-04 agent-chat 401 (seal-lifecycle smear: Settings probed live,
+    /// the controller rolled on digest change, this bridge never refreshed).
+    runtime_settings: Arc<RuntimeSettingsSnapshot>,
     /// In-flight turns keyed by thread id, so `cancel_turn` can abort them.
     /// Shared (`Arc`) because each turn's RAII guard must be able to deregister
     /// itself even while the FFI object stays borrowed by other calls.
@@ -109,26 +138,56 @@ pub struct CodescribeAgent {
     approvals: Arc<ApprovalBroker>,
 }
 
+impl Default for CodescribeAgent {
+    fn default() -> Self {
+        let runtime_settings = codescribe_core::config::Config::load_runtime_snapshot()
+            .expect("canonical runtime settings must load for CodescribeAgent");
+        Self {
+            runtime_settings: Arc::new(runtime_settings),
+            turns: Arc::default(),
+            approvals: Arc::default(),
+        }
+    }
+}
+
+impl CodescribeAgent {
+    /// One coherent settings seal for THIS call: a fresh loader pass
+    /// (settings.json → env → Keychain, same precedence as boot), falling
+    /// back to the construction-time seal only when the reload fails. Fresh
+    /// per call, sealed within a call — the same generation contract the
+    /// controller enforces via `ensure_runtime_generation_with`.
+    fn current_settings(&self) -> Arc<RuntimeSettingsSnapshot> {
+        match codescribe_core::config::Config::load_runtime_snapshot() {
+            Ok(fresh) => Arc::new(fresh),
+            Err(err) => {
+                tracing::warn!(
+                    "runtime settings reload failed; serving construction-time seal: {err:#}"
+                );
+                Arc::clone(&self.runtime_settings)
+            }
+        }
+    }
+}
+
 #[uniffi::export]
 impl CodescribeAgent {
-    /// Construct the FFI handle. Only initialises logging — provider, tools and
-    /// config are resolved lazily per send, so building the Swift app model
-    /// never triggers a Keychain prompt.
+    /// Construct the FFI handle. Settings are re-sealed freshly on every
+    /// call via [`Self::current_settings`]; the snapshot loaded here is only
+    /// the fallback for a failed reload.
     #[uniffi::constructor]
     pub fn new() -> Self {
         codescribe::logging::init_logging();
         Self::default()
     }
 
-    /// True when the assistive lane can currently reach a provider. Resolved
-    /// fresh on every call (settings → env → Keychain via lane_truth), so a
-    /// Settings save flips this on the very next send — no restart, no stale
-    /// bootstrap env. A key-optional local endpoint counts as available.
+    /// True when the assistive lane can reach its provider under the CURRENT
+    /// settings (fresh reload). A key-optional local endpoint counts as
+    /// available.
     pub fn is_available(&self) -> bool {
-        // Warm settings + Keychain only when the agent surface is actually used.
-        // Constructing the Swift app model must not trigger a keychain prompt.
-        let _ = codescribe_core::config::Config::load();
-        codescribe::agent::assistive_unavailable_reason().is_none()
+        self.current_settings()
+            .llm_lanes()
+            .assistive()
+            .request_available()
     }
 
     /// Availability of the assistive lane as one record: `available` mirrors
@@ -136,8 +195,9 @@ impl CodescribeAgent {
     /// reason when the lane cannot reach a model (which lane, endpoint or key
     /// is missing — never a generic "add an API key"). Empty when ready.
     pub fn availability(&self) -> CsAgentAvailability {
-        let _ = codescribe_core::config::Config::load();
-        match codescribe::agent::assistive_unavailable_reason() {
+        let settings = self.current_settings();
+        let lane = settings.llm_lanes().assistive();
+        match codescribe::agent::assistive_unavailable_reason(lane) {
             None => CsAgentAvailability {
                 available: true,
                 detail: String::new(),
@@ -153,8 +213,13 @@ impl CodescribeAgent {
     /// formatting lane. The core call has its own 8-second timeout and never
     /// participates in the assistive or formatting response chains.
     pub async fn generate_thread_title(&self, text: String) -> Result<Option<String>, CsError> {
+        let runtime_settings = self.current_settings();
         application_runtime::run(async move {
-            Ok(codescribe_core::llm::ai_formatting::generate_thread_title(&text).await?)
+            Ok(codescribe_core::llm::ai_formatting::generate_thread_title(
+                &text,
+                runtime_settings.llm_lanes().formatting(),
+            )
+            .await?)
         })
         .await?
     }
@@ -208,7 +273,12 @@ impl CodescribeAgent {
     ) -> Result<String, CsError> {
         let agent = self.clone();
         application_runtime::run(async move {
-            let images = validate_composer_attachments(&attachments)?;
+            let settings = agent.current_settings();
+            let assistive_lane = settings.llm_lanes().assistive();
+            let images = validate_composer_attachments(
+                &attachments,
+                assistive_lane.supports_vision(assistive_lane.model()),
+            )?;
             agent.run_stream(text, thread_id, images, listener).await
         })
         .await?
@@ -233,6 +303,16 @@ impl CodescribeAgent {
     pub fn cancel_turn(&self, thread_id: String) -> bool {
         self.approvals.cancel_thread(&thread_id);
         self.turns.cancel(&thread_id)
+    }
+
+    /// Recover outstanding cards after attaching or refreshing the UI.
+    /// Reading this snapshot never executes or approves a tool.
+    pub fn pending_tool_approvals(&self, thread_id: String) -> Vec<CsToolApprovalRequest> {
+        self.approvals
+            .pending_for_thread(&thread_id)
+            .into_iter()
+            .map(Into::into)
+            .collect()
     }
 
     /// Answer a pending tool-approval request, resuming the suspended call.
@@ -266,18 +346,16 @@ impl CodescribeAgent {
         attachments: Vec<ImageAttachment>,
         listener: Arc<dyn CsAgentListener>,
     ) -> Result<String, CsError> {
-        // Keep provider construction behavior identical to the old eager
-        // constructor path, but delay it until the user sends a message.
-        let config = codescribe_core::config::Config::load();
-        let provider = codescribe::agent::create_default_provider()?;
-        let mut registry = ToolRegistry::new();
-        codescribe::agent::tools::register_all_tools(&mut registry);
-        // settings.json agent.permissions + legacy tool_grants (always-allow).
-        registry.set_policy(
-            codescribe_core::agent::permissions::AgentPermissions::load()
-                .with_legacy_grants(codescribe_core::agent::tool_grants::load_granted()),
-        );
-        registry.enable_policy_hot_reload();
+        // One fresh seal for the WHOLE turn: lane identity, provider
+        // credential, stream options and persistence labels all read the same
+        // generation, and a key saved in Settings reaches the next send.
+        let settings = self.current_settings();
+        let assistive_lane = settings.llm_lanes().assistive();
+        let provider = codescribe::agent::create_provider_for_lane(
+            settings.as_ref(),
+            codescribe_core::config::RuntimeLlmLaneKind::Assistive,
+        )?;
+        let registry = codescribe::agent::tools::configured_registry();
         let (ui_tx, ui_rx) = tokio::sync::mpsc::channel::<AgentUiEvent>(64);
         let approvals = Arc::clone(&self.approvals);
         let approval_handler: ToolApprovalHandler =
@@ -316,7 +394,10 @@ impl CodescribeAgent {
         // controller path uses (build_agent_stream_options), so a Swift chat send
         // is not stripped of the WORKSPACE-augmented assistive prompt and the
         // configured `ai_assistive_max_tokens`.
-        let options = build_bridge_stream_options(config.ai_assistive_max_tokens);
+        let options = build_bridge_stream_options(
+            settings.values().ai_assistive_max_tokens,
+            settings.as_ref(),
+        );
 
         let turn = PreparedTurn {
             session,
@@ -334,7 +415,13 @@ impl CodescribeAgent {
         // purpose: its partial messages are discarded, so the thread on disk
         // keeps the last completed-turn state (today's only cancel trigger is
         // thread deletion, where persisting would resurrect the thread).
-        deliver_completed_thread(thread_id, messages).await;
+        deliver_completed_thread(
+            thread_id,
+            messages,
+            assistive_lane.provider().as_str().to_string(),
+            assistive_lane.model().to_string(),
+        )
+        .await;
         Ok(final_text)
     }
 }
@@ -406,22 +493,7 @@ async fn drive_turn(
             AgentUiEvent::ReasoningDelta(delta) => listener.on_reasoning_delta(delta),
             AgentUiEvent::ToolExecuting { name, id } => listener.on_tool_executing(name, id),
             AgentUiEvent::ToolApprovalRequested(request) => {
-                let server = match &request.origin {
-                    ToolOrigin::Native => "native".to_string(),
-                    ToolOrigin::Mcp { server, .. } => server.clone(),
-                };
-                listener.on_tool_approval_requested(CsToolApprovalRequest {
-                    call_id: request.call_id,
-                    session_id: request.session_id,
-                    thread_id: request.thread_id,
-                    tool: request.tool,
-                    server,
-                    risk: request.risk.as_str().to_string(),
-                    summary: request.summary,
-                    command: request.command,
-                    cwd: request.cwd,
-                    paths: request.paths,
-                });
+                listener.on_tool_approval_requested(request.into());
             }
             AgentUiEvent::ToolResult {
                 name,
@@ -448,79 +520,6 @@ async fn drive_turn(
     }
 }
 
-/// Exact identity of one suspended tool call. All three components participate
-/// in equality: a decision must not resume a same-named call on another thread
-/// or from an earlier session.
-#[derive(Debug, Clone, PartialEq, Eq, Hash)]
-struct ApprovalKey {
-    session_id: String,
-    thread_id: String,
-    call_id: String,
-}
-
-/// A tool call parked awaiting the user's decision.
-struct PendingApproval {
-    /// Resumes the suspended call with the verdict. Dropping this sender
-    /// instead resolves the call to `false` — the fail-closed path used when a
-    /// thread is cancelled.
-    tx: tokio::sync::oneshot::Sender<bool>,
-    /// Where an "always allow" for this call is persisted.
-    grant_target: GrantTarget,
-}
-
-/// Durable target for the approval card's "remember" checkbox. Native tools now
-/// reach the gate too (review P1-06), so they need a persist path of their own —
-/// otherwise "always allow" would silently do nothing and re-ask every turn.
-enum GrantTarget {
-    /// MCP: writes `agent.permissions.tools[server:tool]` and dual-writes
-    /// `tool_grants.json` so the existing revoke UI stays truthful.
-    Mcp {
-        server: String,
-        upstream_tool: String,
-    },
-    /// Native: writes `agent.permissions.tools[native:<name>]` only — there is
-    /// no upstream server to grant against.
-    Native { identity: String },
-}
-
-impl GrantTarget {
-    /// Write the always-allow grant to its durable home.
-    fn persist(&self) -> anyhow::Result<()> {
-        use codescribe_core::agent::permissions::{AgentPermissions, PermissionLevel};
-        match self {
-            Self::Mcp {
-                server,
-                upstream_tool,
-            } => AgentPermissions::remember_allow(server, upstream_tool),
-            Self::Native { identity } => {
-                AgentPermissions::set_tool_level(identity, PermissionLevel::Allow)
-            }
-        }
-    }
-
-    /// Log-friendly identifier for the grant target (`server:tool`, or the
-    /// native tool identity).
-    fn label(&self) -> String {
-        match self {
-            Self::Mcp {
-                server,
-                upstream_tool,
-            } => format!("{server}:{upstream_tool}"),
-            Self::Native { identity } => identity.clone(),
-        }
-    }
-}
-
-/// Suspension point between the Rust tool gateway and the Swift approval card.
-///
-/// Holds every call awaiting a decision. Shared behind an `Arc` because a
-/// pending call's own guard must be able to evict its entry after the FFI
-/// object has moved on.
-#[derive(Default)]
-struct ApprovalBroker {
-    pending: Mutex<HashMap<ApprovalKey, PendingApproval>>,
-}
-
 /// Recover a poisoned lock instead of unwinding across the FFI boundary. A
 /// panicking `expect` here aborts the whole SwiftUI host — for bookkeeping maps
 /// whose worst-case damage is a stale entry, that trade is wrong (review
@@ -530,119 +529,6 @@ fn recover<'a, T>(
     result: Result<MutexGuard<'a, T>, PoisonError<MutexGuard<'a, T>>>,
 ) -> MutexGuard<'a, T> {
     result.unwrap_or_else(PoisonError::into_inner)
-}
-
-impl ApprovalBroker {
-    /// Park a tool call and hand back the future its execution awaits.
-    ///
-    /// The future resolves to the user's verdict, or to `false` if the sender is
-    /// dropped — an unanswered call is never an implicit allow. A guard inside
-    /// the future evicts the entry however it completes, so an abandoned call
-    /// leaves no stale row behind.
-    fn begin(
-        self: &Arc<Self>,
-        request: ToolApprovalRequest,
-    ) -> codescribe_core::agent::ToolApprovalFuture {
-        let grant_target = match &request.origin {
-            ToolOrigin::Mcp {
-                server,
-                upstream_tool,
-            } => GrantTarget::Mcp {
-                server: server.clone(),
-                upstream_tool: upstream_tool.clone(),
-            },
-            ToolOrigin::Native => GrantTarget::Native {
-                identity: codescribe_core::agent::permissions::tool_identity(
-                    &request.origin,
-                    &request.tool,
-                ),
-            },
-        };
-        let key = ApprovalKey {
-            session_id: request.session_id,
-            thread_id: request.thread_id,
-            call_id: request.call_id,
-        };
-        let (tx, rx) = tokio::sync::oneshot::channel();
-        recover(self.pending.lock()).insert(key.clone(), PendingApproval { tx, grant_target });
-        let broker = Arc::clone(self);
-        Box::pin(async move {
-            let _guard = PendingApprovalGuard {
-                broker: Arc::clone(&broker),
-                key: key.clone(),
-            };
-            rx.await.unwrap_or(false)
-        })
-    }
-
-    /// Deliver a verdict to the exactly-matching pending call, returning `false`
-    /// when none matches. Persisting a remembered grant happens before the call
-    /// resumes, so the tool's next invocation cannot race its own grant write.
-    fn resolve(
-        &self,
-        session_id: &str,
-        thread_id: &str,
-        call_id: &str,
-        approved: bool,
-        remember: bool,
-    ) -> bool {
-        let key = ApprovalKey {
-            session_id: session_id.to_string(),
-            thread_id: thread_id.to_string(),
-            call_id: call_id.to_string(),
-        };
-        let Some(entry) = recover(self.pending.lock()).remove(&key) else {
-            return false;
-        };
-        // Persist BEFORE resuming the call so a granted tool never races its
-        // own next invocation against the write. Grant failure downgrades to
-        // allow-once (the approval itself was explicit), never to a deny.
-        // Persist BEFORE resuming so a remembered grant never races the next
-        // identical call. Writes settings.json agent.permissions.tools[key]
-        // (product source of truth) and dual-writes tool_grants.json.
-        if approved
-            && remember
-            && let Err(error) = entry.grant_target.persist()
-        {
-            tracing::warn!(
-                %error,
-                target = entry.grant_target.label(),
-                "tool grant persist failed; allowing once"
-            );
-        }
-        entry.tx.send(approved).is_ok()
-    }
-
-    /// Drop every approval pending on `thread_id`. Each dropped sender resolves
-    /// its call to "not approved", so cancelling a thread can never leave a tool
-    /// waiting on a card the user will never see again.
-    fn cancel_thread(&self, thread_id: &str) {
-        let mut pending = recover(self.pending.lock());
-        let keys = pending
-            .keys()
-            .filter(|key| key.thread_id == thread_id)
-            .cloned()
-            .collect::<Vec<_>>();
-        for key in keys {
-            pending.remove(&key);
-        }
-    }
-}
-
-/// Evicts a pending approval from the broker when its awaiting future finishes
-/// — answered, cancelled, or dropped. Without it, an abandoned call would keep
-/// its row forever and a later card could resolve a call nobody is awaiting.
-struct PendingApprovalGuard {
-    broker: Arc<ApprovalBroker>,
-    key: ApprovalKey,
-}
-
-impl Drop for PendingApprovalGuard {
-    /// Remove this call's pending row so a finished awaiter cannot be resolved
-    /// again by a stale Swift approval card.
-    fn drop(&mut self) {
-        recover(self.broker.pending.lock()).remove(&self.key);
-    }
 }
 
 /// In-flight turn bookkeeping behind [`CodescribeAgent::cancel_turn`].
@@ -743,16 +629,23 @@ impl Drop for TurnGuard {
 
 /// Build the assistive stream options for a bridge chat send, honoring the same
 /// assistive system prompt and token cap the in-app controller path uses
-/// (`app/controller/helpers.rs::build_agent_stream_options`). Model is left empty
-/// so the provider resolves it from `LLM_ASSISTIVE_MODEL` (identical default to
-/// the controller), keeping both send paths behaviorally aligned.
-fn build_bridge_stream_options(ai_assistive_max_tokens: i32) -> StreamOptions {
+/// (`app/controller/helpers.rs::build_agent_stream_options`).
+fn build_bridge_stream_options(
+    ai_assistive_max_tokens: i32,
+    runtime_settings: &RuntimeSettingsSnapshot,
+) -> StreamOptions {
     let max_tokens = u32::try_from(ai_assistive_max_tokens)
         .ok()
         .filter(|tokens| *tokens > 0);
     StreamOptions {
-        model: String::new(),
-        system_prompt: Some(compose_agent_system_prompt()),
+        model: runtime_settings.llm_lanes().assistive().model().to_string(),
+        system_prompt: Some(compose_agent_system_prompt(
+            runtime_settings
+                .ai_execution()
+                .formatter()
+                .assistive_prompt()
+                .composed_content(),
+        )),
         max_tokens,
         temperature: None,
         reset_chain: false,
@@ -767,12 +660,11 @@ fn build_bridge_stream_options(ai_assistive_max_tokens: i32) -> StreamOptions {
 /// GitHub-connector fallback, and the measured Responses/streaming API ground
 /// truth with the answer-first rule (operator incident 2026-08-14: a spoken
 /// engine question got a clarification questionnaire instead of an answer).
-fn compose_agent_system_prompt() -> String {
-    let base = codescribe_core::config::prompts::get_assistive_prompt();
+fn compose_agent_system_prompt(assistive_prompt: &str) -> String {
     let workspace = codescribe::agent::tools::workspace::workspace_prompt_section();
     let doctrine = codescribe::agent::tools::doctrine::review_doctrine_prompt_section();
     let api_truth = codescribe::agent::tools::api_truth::responses_api_prompt_section();
-    format!("{base}\n\n{workspace}\n\n{doctrine}\n\n{api_truth}")
+    format!("{assistive_prompt}\n\n{workspace}\n\n{doctrine}\n\n{api_truth}")
 }
 
 /// Load + validate composer attachments into vision `ImageAttachment`s.
@@ -783,6 +675,7 @@ fn compose_agent_system_prompt() -> String {
 /// degraded message. Also gates on the selected model's vision capability.
 fn validate_composer_attachments(
     attachments: &[CsAttachment],
+    supports_vision: bool,
 ) -> Result<Vec<ImageAttachment>, CsError> {
     if attachments.is_empty() {
         return Ok(Vec::new());
@@ -799,11 +692,8 @@ fn validate_composer_attachments(
     }
 
     // Vision gate: refuse (readable error) rather than silently drop the images
-    // when the configured assistive model cannot read them. Lane identity comes
-    // from lane_truth (fresh settings), not the frozen bootstrap env.
-    let config = codescribe_core::config::Config::load();
-    let (provider, model) = assistive_identity(&config);
-    if !provider_supports_vision(provider, &model) {
+    // when the sealed assistive model cannot read them.
+    if !supports_vision {
         return Err(CsError::Agent {
             msg: "The selected model can't read images. Switch to a vision-capable \
                   model in Settings, or remove the attachment before sending."
@@ -845,7 +735,12 @@ fn attachment_label(path: &str) -> String {
 /// Deliver the completed composer turn through core's single durable gateway.
 /// Blocking filesystem work stays off the async executor and remains
 /// best-effort because the reply has already reached the user.
-async fn deliver_completed_thread(thread_id: String, messages: Vec<Message>) {
+async fn deliver_completed_thread(
+    thread_id: String,
+    messages: Vec<Message>,
+    provider: String,
+    model: String,
+) {
     let result = tokio::task::spawn_blocking(move || -> anyhow::Result<Option<_>> {
         // `now` is sourced from the freshest message timestamp the session
         // stamped (`Some(Utc::now())` per turn), avoiding a direct `chrono`
@@ -855,8 +750,6 @@ async fn deliver_completed_thread(thread_id: String, messages: Vec<Message>) {
             return Ok(None);
         };
 
-        let config = codescribe_core::config::Config::load();
-        let (provider, model) = assistive_identity(&config);
         let persisted_messages = messages
             .iter()
             .map(|message| {
@@ -871,7 +764,7 @@ async fn deliver_completed_thread(thread_id: String, messages: Vec<Message>) {
         let receipt = ThreadDeliveryGateway::new()?.deliver(ThreadDeliveryInput {
             backend_id: thread_id,
             messages: persisted_messages,
-            provider: provider.as_str().to_string(),
+            provider,
             model,
             source: ThreadDeliverySource::Composer,
             mode: "assistive".to_string(),
@@ -916,11 +809,57 @@ mod tests {
         }
     }
 
+    fn validate_test_attachments(
+        attachments: &[CsAttachment],
+    ) -> Result<Vec<ImageAttachment>, CsError> {
+        validate_composer_attachments(attachments, true)
+    }
+
     /// An empty attachment list must yield zero vision payloads, not invent one.
     #[test]
     fn empty_attachments_yield_no_images() {
-        let images = validate_composer_attachments(&[]).unwrap();
+        let images = validate_test_attachments(&[]).unwrap();
         assert!(images.is_empty());
+    }
+
+    #[test]
+    fn composer_rejects_images_when_sealed_lane_disallows_vision() {
+        let attachments = [CsAttachment {
+            path: "/not-loaded.png".into(),
+        }];
+        let error = validate_composer_attachments(&attachments, false).unwrap_err();
+        assert!(error.to_string().contains("can't read images"));
+    }
+
+    /// Effect witness for the 2026-09-04 seal-lifecycle 401: a credential that
+    /// appears AFTER the handle is constructed must reach the very next call.
+    /// The witness is the resolved lane credential (what the request would
+    /// send), using the same provider account write as Settings.
+    #[test]
+    #[serial_test::serial]
+    fn fresh_seal_sees_a_key_saved_after_construction() {
+        let agent = CodescribeAgent::default();
+        let account = agent
+            .current_settings()
+            .llm_lanes()
+            .assistive()
+            .credential()
+            .key_account()
+            .to_string();
+        let previous = codescribe_core::config::keychain::cached_runtime_key(&account);
+        codescribe_core::config::keychain::save_key(&account, "witness-fresh-seal").unwrap();
+        let fresh = agent.current_settings();
+        if let Some(previous) = previous {
+            codescribe_core::config::keychain::save_key(&account, &previous).unwrap();
+        } else {
+            codescribe_core::config::keychain::delete_key(&account).unwrap();
+        }
+        assert_eq!(
+            fresh.llm_lanes().assistive().credential().api_key(),
+            Some("witness-fresh-seal"),
+            "a key saved after construction must be visible to the next call \
+             (sealed-for-life snapshot = the agent-chat 401)"
+        );
     }
 
     /// A readable PNG path loads through core vision loading into one attachment.
@@ -930,7 +869,7 @@ mod tests {
         let png = dir.join("shot.png");
         std::fs::write(&png, b"\x89PNG\r\n\x1a\nfake").unwrap();
 
-        let images = validate_composer_attachments(&[cs(&png)]).unwrap();
+        let images = validate_test_attachments(&[cs(&png)]).unwrap();
         assert_eq!(images.len(), 1);
         assert_eq!(images[0].media_type, "image/png");
         assert!(!images[0].data.is_empty());
@@ -946,7 +885,7 @@ mod tests {
         std::fs::write(&txt, b"hello").unwrap();
         let missing = dir.join("gone.png");
 
-        let err = validate_composer_attachments(&[cs(&txt), cs(&missing)]).unwrap_err();
+        let err = validate_test_attachments(&[cs(&txt), cs(&missing)]).unwrap_err();
         let CsError::Agent { msg } = err else {
             panic!("expected a readable agent error");
         };
@@ -967,7 +906,7 @@ mod tests {
                 path: format!("/tmp/x{i}.png"),
             })
             .collect();
-        let err = validate_composer_attachments(&attachments).unwrap_err();
+        let err = validate_test_attachments(&attachments).unwrap_err();
         let CsError::Agent { msg } = err else {
             panic!("expected a readable agent error");
         };

@@ -21,10 +21,15 @@
 pub mod cloud_asr;
 /// Serde default helpers and default model/endpoint constants.
 mod defaults;
-/// Stop-path final-pass routing mode shared by controller and bridge lanes.
-pub mod final_pass;
+/// Measured, versioned acoustic calibration artifact (the `EnergyCalibration`
+/// source of the runtime settings throne).
+pub mod energy_calibration;
+/// Process/install interlock preventing runtime and bundle replacement overlap.
+mod install_interlock;
 /// macOS Keychain storage for API keys (not plaintext `.env`).
 pub mod keychain;
+/// One-shot legacy LLM lane fields → provider registry shape.
+mod llm_migration;
 /// Load/save: defaults, settings.json, optional `.env`, process env overrides.
 mod loader;
 /// One-time legacy `.env` import into settings.json + Keychain.
@@ -36,18 +41,23 @@ pub mod portable;
 /// On-disk prompt files (formatting, smart formatting, assistive): built-in
 /// defaults, user overrides, snapshots, and restore-to-default.
 pub mod prompts;
+/// Backup-first launch repair and its diagnostic receipt.
+pub mod repair;
 /// GUI-managed user settings JSON (regular-user tier).
 pub mod settings;
 /// Process-wide app-data I/O fence used by destructive reset.
 pub mod storage_reset;
+/// One-shot STT transport and credential migration.
+pub mod stt_migration;
 /// Config enums and the main `Config` struct definitions.
 mod types;
 
-pub use defaults::{
-    DEFAULT_ASSISTIVE_MODEL, DEFAULT_FORMATTING_MODEL, DEFAULT_LLM_MODEL,
-    DEFAULT_OPENAI_RESPONSES_ENDPOINT, default_assistive_model, default_formatting_model,
-    default_llm_endpoint, default_llm_endpoint_option, default_llm_model,
+pub use loader::{
+    CapturedLaneCredential, CapturedRuntimeInputs, StartupAcquisitionProbe,
+    note_startup_acquisition,
 };
+pub use prompts::{CapturedPrompt, CapturedRuntimePrompts};
+
 // Re-export types
 pub use types::{
     Config, DeferredInsertShortcut, HoldArmModifier, ModeBinding, OverlayPositionMode,
@@ -58,19 +68,35 @@ pub use cloud_asr::{
     AsrProductMode, AudioEgressConsent, ConsentSource, GatewayMintError, GatewaySessionMint,
     ModeDerivation, ResolvedAsrMode, resolve_asr_product_mode,
 };
-pub use final_pass::{FinalPassRoutingMode, final_pass_routing_mode};
+pub use energy_calibration::{
+    ENERGY_CALIBRATION_FILE_NAME, ENERGY_CALIBRATION_SCHEMA, EnergyCalibrationArtifact,
+    EnergyCalibrationProfile, EnergyCalibrationRefusal, EnergyCalibrationStatus,
+    SealedEnergyCalibration, energy_calibration_path,
+};
+pub use install_interlock::{
+    AGENT_TURN_LEASE_FILE_NAME, AgentTurnLease, AppRuntimeInstallLease,
+    INSTALL_INTERLOCK_FILE_NAME, acquire_agent_turn_lease, acquire_agent_turn_lease_at,
+    acquire_app_runtime_install_lease, acquire_app_runtime_install_lease_at, agent_turn_lease_path,
+    install_interlock_path,
+};
 pub use portable::{
     ImportPlan, PortableProfile, export_portable, import_portable_apply, import_portable_dry_run,
     write_portable_export,
 };
-pub use settings::{FormattingPolicy, UserSettings};
+pub use settings::{
+    FormattingPolicy, PromptSource, RemovedCustomProvider, RuntimeAiExecution,
+    RuntimeAiRequestTiming, RuntimeFormatterExecution, RuntimeLlmCredential, RuntimeLlmLane,
+    RuntimeLlmLaneKind, RuntimeLlmLanes, RuntimeSealedPrompt, RuntimeSettingsSnapshot,
+    SettingsLoaderInput, SettingsSnapshotDigest, SettingsSnapshotProvenance,
+    SettingsSnapshotValidation, SettingsSnapshotValidationError, UserSettings,
+};
 pub use storage_reset::{AppDataResetGuard, begin_app_data_reset};
 pub use types::Language;
 
 // Re-export prompts API (public API for GUI apps)
 pub use prompts::{
     DEFAULT_ASSISTIVE_PROMPT, DEFAULT_FORMATTING_PROMPT, DEFAULT_MAX_FORMATTING_PROMPT,
-    DEFAULT_SMART_FORMATTING_PROMPT, PromptKind, PromptSnapshot, PromptSource, PromptWriteReason,
+    DEFAULT_SMART_FORMATTING_PROMPT, PromptKind, PromptSnapshot, PromptWriteReason,
     get_assistive_prompt, get_assistive_prompt_path, get_formatting_prompt,
     get_formatting_prompt_for_policy, get_formatting_prompt_path,
     get_formatting_prompt_path_for_policy, open_prompt_file, open_prompts_folder, prompt_snapshot,

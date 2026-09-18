@@ -40,6 +40,8 @@ mod notes;
 mod quality;
 /// Dictation / STT streaming into the Swift app.
 mod recording;
+/// Vendor speech synthesis and cancellation.
+mod speech;
 /// Thread persistence and history for agent chats.
 mod threads;
 /// Menu-bar tray status payloads and listener.
@@ -57,6 +59,8 @@ pub use quality::{
     overlay_highlights_enabled, quality_finalize_correction, quality_recent_records,
     quality_teach_span,
 };
+pub use recording::{CsCaptureHandle, CsConditionalStop, CsTranscriptDelivery};
+pub use speech::{CsSpeechResult, speak_text, speech_availability, stop_speaking};
 pub use tray_status::{
     CodescribeTrayStatus, CsTrayStatusKind, CsTrayStatusListener, CsTrayStatusPayload,
     CsTrayStatusTone,
@@ -111,6 +115,7 @@ pub fn application_runtime_snapshot() -> Result<CsApplicationRuntimeSnapshot, Cs
 #[uniffi::export]
 pub fn shutdown_application_runtime() -> Result<CsApplicationRuntimeSnapshot, CsError> {
     config::cancel_pending_account_login_for_shutdown();
+    speech::stop_speaking();
     hotkeys::shutdown_application_controller()?;
     application_runtime::shutdown()
 }
@@ -127,6 +132,14 @@ impl From<anyhow::Error> for CsError {
 impl From<std::io::Error> for CsError {
     /// Map I/O failures onto the Config error variant.
     fn from(error: std::io::Error) -> Self {
+        CsError::Config {
+            msg: error.to_string(),
+        }
+    }
+}
+
+impl From<codescribe_core::config::SettingsSnapshotValidationError> for CsError {
+    fn from(error: codescribe_core::config::SettingsSnapshotValidationError) -> Self {
         CsError::Config {
             msg: error.to_string(),
         }
@@ -163,17 +176,6 @@ impl From<CsLanguage> for codescribe_core::config::Language {
             CsLanguage::Auto => codescribe_core::config::Language::Auto,
             CsLanguage::Polish => codescribe_core::config::Language::Polish,
             CsLanguage::English => codescribe_core::config::Language::English,
-        }
-    }
-}
-
-impl CsLanguage {
-    /// Two-letter code (`"pl"` / `"en"`) as the core uses it.
-    pub fn as_code(&self) -> &'static str {
-        match self {
-            CsLanguage::Auto => "auto",
-            CsLanguage::Polish => "pl",
-            CsLanguage::English => "en",
         }
     }
 }

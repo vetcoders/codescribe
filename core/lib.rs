@@ -72,15 +72,17 @@ pub mod llm;
 pub mod mcp;
 /// Process memory hygiene after heavy STT/TTS work returns buffers.
 pub mod memory;
-/// Transcription pipeline: engine contracts, streaming, dedup, post-processing,
-/// and event sinks.
+/// Transcription pipeline: engine contracts, streaming, the acoustic ledger,
+/// highlight spans, and event sinks.
 pub mod pipeline;
 /// Transcript quality: overlay scoring, the qube daemon and its report, and the
 /// teacher merge between live and Whisper text.
 pub mod quality;
+/// Neutral process-runtime state shared with platform adapters.
+pub mod runtime;
 /// Conversation state tracking and voice-chat history helpers.
 pub mod state;
-/// Speech-to-text engine router (Candle, ONNX, Apple live backends).
+/// Speech-to-text engine router (Candle and Apple live backends).
 pub mod stt;
 /// Transcript tagging helpers for paste-delivery wrappers.
 pub mod transcript_tagging;
@@ -105,7 +107,7 @@ pub mod stt_api {
     };
     pub use crate::stt::whisper::{
         detect_language, get_model_path, init, transcribe, transcribe_file_verdict,
-        transcribe_streaming, transcribe_with_segments,
+        transcribe_with_segments,
     };
 }
 
@@ -176,6 +178,5 @@ pub use config::{get_assistive_prompt_path, get_formatting_prompt_path, reset_to
 
 pub use llm::{ai_formatting, client};
 pub use pipeline::contracts;
-pub use pipeline::stream_postprocess;
 pub use quality::{engine_contract, overlay_quality, qube_daemon, qube_report};
 pub use util::{safe_path, status};

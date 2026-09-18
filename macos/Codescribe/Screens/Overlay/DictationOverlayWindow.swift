@@ -6,19 +6,134 @@ import SwiftUI
 // This is a FACTORY ONLY. Summon/dismiss wiring (hotkey, placement, focus handoff,
 // activation policy) belongs to the orchestrator in App.swift — this file just
 // builds a correctly-configured panel whose content is `DictationOverlayView`,
-// with a clear background so the `.ultraThinMaterial` inside `GlassPanel` blurs
-// whatever is underneath.
+// with a clear background so the appearance-aware material inside the SwiftUI
+// sheet blurs whatever is underneath.
 
-/// Borderless, non-activating panel that can still become key so the overlay's
-/// buttons (Copy / Send to Agent / Close) receive clicks without stealing app focus.
+/// Borderless, non-activating panel. Buttons receive clicks without the panel
+/// ever being key; the panel becomes key ONLY while the transcript canvas is
+/// being edited (`takeKeyForEdit` / `releaseKeyAfterEdit`, driven by the
+/// canvas's first-responder transitions), and hands the keyboard back to the
+/// previous app the moment editing ends.
 final class FloatingOverlayPanel: NSPanel, NSWindowDelegate {
   var onUserMove: (() -> Void)?
   var onUserResize: (() -> Void)?
   fileprivate var presence: OverlayPresence?
+  private var dragStart: (mouse: NSPoint, frame: NSRect)?
+  private var expandedSize: NSSize?
+  var sizeForPersistence: NSSize { expandedSize ?? frame.size }
+
+  /// Preserve the top edge and size where the selected display can contain them.
+  func setCollapsed(_ collapsed: Bool) {
+    guard collapsed != (expandedSize != nil) else { return }
+    let wasApplyingFrame = OverlayController.isApplyingFrame
+    OverlayController.isApplyingFrame = true
+    defer { OverlayController.isApplyingFrame = wasApplyingFrame }
+    let top = frame.maxY
+    let size: NSSize
+    if collapsed {
+      // A hidden editor must not keep accepting the Founder's keystrokes.
+      makeFirstResponder(nil)
+      releaseKeyAfterEdit()
+      expandedSize = frame.size
+      size = NSSize(width: frame.width, height: DictationOverlayWindow.collapsedHeight)
+      minSize = NSSize(width: DictationOverlayWindow.minSize.width, height: size.height)
+      contentMinSize = minSize
+      styleMask.remove(.resizable)
+    } else {
+      size = expandedSize ?? DictationOverlayWindow.defaultSize
+      expandedSize = nil
+      minSize = DictationOverlayWindow.minSize
+      contentMinSize = minSize
+      styleMask.insert(.resizable)
+    }
+    let proposed = NSRect(
+      x: frame.minX, y: top - size.height, width: size.width, height: size.height)
+    let restored =
+      collapsed
+      ? proposed
+      : DictationOverlayWindow.visibleExpansionFrame(
+        proposed, in: screen?.visibleFrame ?? NSScreen.main?.visibleFrame)
+    setFrame(restored, display: true)
+  }
+
+  func startPresence() {
+    presence?.start()
+  }
+
+  func invalidatePresence() {
+    presence?.invalidate()
+  }
 
   override var canBecomeKey: Bool { allowsKeyForEdit }
   override var canBecomeMain: Bool { false }
-  var allowsKeyForEdit = false
+  /// The single writer is the edit gate below. Any other path leaves the caret
+  /// in the previous app.
+  private(set) var allowsKeyForEdit = false
+
+  /// The transcript canvas became first responder for an edit.
+  func takeKeyForEdit() {
+    allowsKeyForEdit = true
+    if !isKeyWindow { makeKey() }
+  }
+
+  /// The canvas resigned. Drop key status so keystrokes return to the app the
+  /// user was dictating into.
+  func releaseKeyAfterEdit() {
+    guard allowsKeyForEdit else { return }
+    allowsKeyForEdit = false
+    if isKeyWindow { resignKey() }
+  }
+
+  /// Key left from outside (click in another app, panel ordered out): close
+  /// the edit by resigning the canvas, which schedules its focus-exit commit.
+  func windowDidResignKey(_ notification: Notification) {
+    guard allowsKeyForEdit else { return }
+    allowsKeyForEdit = false
+    makeFirstResponder(nil)
+  }
+
+  /// A non-activating panel does not turn SwiftUI background hits into window
+  /// motion, so intercept only explicit AppKit drag regions.
+  /// Native transcript descendants, SwiftUI control descendants and the
+  /// container's own resize band continue through ordinary AppKit dispatch
+  /// untouched.
+  override func sendEvent(_ event: NSEvent) {
+    if event.type == .leftMouseDown { dragStart = nil }
+    switch event.type {
+    case .leftMouseDown where isWindowDragHit(at: event.locationInWindow):
+      dragStart = (screenPoint(for: event), frame)
+    case .leftMouseDragged where dragStart != nil:
+      guard let dragStart else { return }
+      let current = screenPoint(for: event)
+      setFrameOrigin(
+        NSPoint(
+          x: dragStart.frame.minX + current.x - dragStart.mouse.x,
+          y: dragStart.frame.minY + current.y - dragStart.mouse.y
+        )
+      )
+    case .leftMouseUp where dragStart != nil:
+      dragStart = nil
+    default:
+      super.sendEvent(event)
+    }
+  }
+
+  func isWindowDragHit(at point: NSPoint) -> Bool {
+    guard let contentView, let hit = contentView.hitTest(point) else { return false }
+    // `OverlayContentContainer.hitTest` answers with itself only inside the
+    // resize band; that click belongs to its `mouseDown` (edge tracking), so a
+    // container hit is never a drag handle.
+    if hit === contentView { return false }
+    return hit is OverlayWindowDragRegionView
+  }
+
+  private func screenPoint(for event: NSEvent) -> NSPoint {
+    if let point = event.cgEvent?.location {
+      // Quartz is top-left/y-down; AppKit window origins are bottom-left/y-up.
+      return NSPoint(x: point.x, y: -point.y)
+    }
+    return convertPoint(toScreen: event.locationInWindow)
+  }
 
   func windowDidMove(_ notification: Notification) {
     onUserMove?()
@@ -68,12 +183,17 @@ private final class OverlayContentContainer: NSView {
   /// AppKit's borderless resize strip is ~1–2 px. Claim the 12 pt band first
   /// so SwiftUI / movable-background do not steal the edge.
   override func hitTest(_ point: NSPoint) -> NSView? {
-    if OverlayResizeHit.edge(at: point, in: bounds) != nil { return self }
+    if window?.styleMask.contains(.resizable) == true,
+      OverlayResizeHit.edge(at: point, in: bounds) != nil
+    {
+      return self
+    }
     return super.hitTest(point)
   }
 
   override func resetCursorRects() {
     discardCursorRects()
+    guard window?.styleMask.contains(.resizable) == true else { return }
     for (rect, cursor) in OverlayResizeHit.cursorRects(in: bounds) {
       addCursorRect(rect, cursor: cursor)
     }
@@ -94,26 +214,31 @@ private final class OverlayContentContainer: NSView {
 }
 
 enum DictationOverlayWindow {
-  /// Hard floor for the panel's content size — below this the glass chrome and
-  /// compact action row overlap. Enforced for user edge-drag (`minSize`/`contentMinSize`)
-  /// AND for every programmatic `setFrame` via `clamp(_:to:)` (AppKit does not
-  /// apply `minSize` to programmatic frames).
-  /// Height raised 250 → 300 so the live-transcript body keeps its reserved floor
-  /// (`DictationOverlayView.bodyMinHeight` = waveform block + ~3 transcript
-  /// lines) without the content column overflowing the window and squaring the
-  /// glass corners. U22 kept 300 in lockstep: the action row slimmed by ~16pt
-  /// and `bodyMinHeight` grew 114 → 130 by the same amount, so the chrome +
-  /// body sum is unchanged (and the view now carries a terminal window-frame
-  /// clip as the structural backstop). Width floor (320) is unchanged.
-  static let minSize = NSSize(width: 320, height: 300)
+  static let collapsedHeight: CGFloat = 46
+
+  /// Shared geometry seam: a low-dragged/bottom-anchored bar must not unfold
+  /// below the display. Keep its top unchanged whenever the full frame fits.
+  static func visibleExpansionFrame(_ proposed: NSRect, in visible: NSRect?) -> NSRect {
+    guard let visible else { return proposed }
+    let size = NSSize(
+      width: min(proposed.width, visible.width), height: min(proposed.height, visible.height))
+    return NSRect(
+      origin: OverlayPlacement.clampOrigin(proposed.origin, size: size, in: visible), size: size)
+  }
+  /// Hard floor for the panel's content size. Enforced for user edge-drag
+  /// (`minSize`/`contentMinSize`) AND for every programmatic `setFrame` via
+  /// `clamp(_:to:)` (AppKit does not apply `minSize` to programmatic frames).
+  /// Slim chrome cut: modeMeta + bottom action row removed; waveform moved into
+  /// the primary bar. Height 300 → 260 keeps `bodyMinHeight` (~3 transcript
+  /// lines) without the old action-layer mass. Width floor (320) is unchanged.
+  static let minSize = NSSize(width: 320, height: 260)
   /// First-launch content size (no persisted value yet). LANDSCAPE rectangle —
-  /// operator spec: the resting state is a horizontal bar (waveform + a few
+  /// Founder spec: the resting state is a horizontal bar (waveform + a few
   /// transcript lines), never a portrait column. Resizing persists, so users
   /// who prefer a tall panel drag it once and keep it.
-  static let defaultSize = NSSize(width: 470, height: 330)
-  /// Bumped v4 → v5: v4 shipped a portrait default by mistake; the restored
-  /// landscape default must take effect once over that persisted shape.
-  private static let sizeDefaultsKey = "DictationOverlayPanel.contentSize.v5"
+  static let defaultSize = NSSize(width: 470, height: 280)
+  /// Bumped v5 → v6: slim evidence chrome lowers the resting landscape height.
+  private static let sizeDefaultsKey = "DictationOverlayPanel.contentSize.v6"
 
   /// Build the floating overlay panel around an injected `OverlayState`.
   /// The state's `engine`, `onClose`, and `onSendToAgent` are wired by the
@@ -155,6 +280,7 @@ enum DictationOverlayWindow {
       defer: false
     )
     panel.delegate = panel
+    state.onCollapseChanged = { [weak panel] collapsed in panel?.setCollapsed(collapsed) }
     panel.onUserMove = { [weak state] in
       guard !OverlayController.isApplyingFrame else { return }
       state?.userDraggedOverlay()
@@ -179,7 +305,7 @@ enum DictationOverlayWindow {
     // Transparent chrome so the SwiftUI glass material is the only surface.
     panel.isOpaque = false
     panel.backgroundColor = .clear
-    panel.hasShadow = false  // GlassPanel paints its own deep shadow.
+    panel.hasShadow = false  // The SwiftUI sheet paints its own adaptive shadow.
 
     // Float above normal windows, ride along every Space, never take app focus.
     // sharingType stays readable so PrintScreen can see the panel; presence
@@ -189,7 +315,8 @@ enum DictationOverlayWindow {
     panel.collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary, .stationary]
     panel.isFloatingPanel = true
     panel.hidesOnDeactivate = false
-    panel.isMovableByWindowBackground = true  // chrome drag handles + empty background
+    // One explicit AppKit path owns dragging on every supported OS version.
+    panel.isMovableByWindowBackground = false
 
     panel.titleVisibility = .hidden
     panel.titlebarAppearsTransparent = true
@@ -200,6 +327,8 @@ enum DictationOverlayWindow {
     let presence = OverlayPresence(panel: panel)
     presence.start()
     panel.presence = presence
+
+    if state.isCollapsed { panel.setCollapsed(true) }
 
     // Size is window-owned (user-resizable) — do NOT resize to fittingSize each frame.
     return panel
@@ -220,8 +349,10 @@ enum DictationOverlayWindow {
   }
 
   /// Restore the user's last content size (clamped), or the default on first launch.
-  static func restoredContentSize(for screen: NSScreen? = NSScreen.main) -> NSSize {
-    let defaults = UserDefaults.standard
+  static func restoredContentSize(
+    for screen: NSScreen? = NSScreen.main,
+    defaults: UserDefaults = .standard
+  ) -> NSSize {
     let width = defaults.double(forKey: sizeDefaultsKey + ".w")
     let height = defaults.double(forKey: sizeDefaultsKey + ".h")
     let raw = (width > 0 && height > 0) ? NSSize(width: width, height: height) : defaultSize
@@ -229,8 +360,7 @@ enum DictationOverlayWindow {
   }
 
   /// Persist the current content size so it survives relaunch. Called on hide().
-  static func persist(size: NSSize) {
-    let defaults = UserDefaults.standard
+  static func persist(size: NSSize, defaults: UserDefaults = .standard) {
     defaults.set(Double(size.width), forKey: sizeDefaultsKey + ".w")
     defaults.set(Double(size.height), forKey: sizeDefaultsKey + ".h")
   }
@@ -293,6 +423,7 @@ final class OverlayPresence {
   }
 
   func start() {
+    guard localMonitor == nil, globalMonitor == nil, workspaceObserver == nil else { return }
     localMonitor = NSEvent.addLocalMonitorForEvents(matching: .keyDown) { [weak self] event in
       self?.noteScreenshotIfNeeded(event)
       return event
@@ -310,13 +441,18 @@ final class OverlayPresence {
     apply()
   }
 
-  deinit {
+  func invalidate() {
     if let localMonitor { NSEvent.removeMonitor(localMonitor) }
     if let globalMonitor { NSEvent.removeMonitor(globalMonitor) }
     if let workspaceObserver {
       NSWorkspace.shared.notificationCenter.removeObserver(workspaceObserver)
     }
+    localMonitor = nil
+    globalMonitor = nil
+    workspaceObserver = nil
     captureTimer?.invalidate()
+    captureTimer = nil
+    captureUntil = nil
   }
 
   private func noteScreenshotIfNeeded(_ event: NSEvent) {
@@ -350,9 +486,9 @@ final class OverlayPresence {
 }
 
 /// Geometry for a fat resize band on a borderless panel. AppKit's own strip
-/// is one or two pixels; this is the operator-visible target (macOS 15+).
+/// is one or two pixels; this is a forgiving visible-surface target (macOS 15+).
 enum OverlayResizeHit: Sendable {
-  static let band: CGFloat = 12
+  static let band: CGFloat = 16
 
   enum Edge: Sendable, Equatable {
     case left, right, top, bottom
@@ -409,6 +545,7 @@ enum OverlayResizeHit: Sendable {
     return frame
   }
 
+  @MainActor
   static func cursorRects(in bounds: NSRect, band: CGFloat = band) -> [(NSRect, NSCursor)] {
     let b = band
     let w = bounds.width
@@ -425,6 +562,7 @@ enum OverlayResizeHit: Sendable {
     ]
   }
 
+  @MainActor
   static func cursor(for edge: Edge) -> NSCursor {
     if #available(macOS 15.0, *) {
       let position: NSCursor.FrameResizePosition
@@ -469,78 +607,6 @@ enum OverlayResizeHit: Sendable {
         minSize: window.minSize
       )
       window.setFrame(frame, display: true)
-    }
-  }
-}
-
-/// Chrome hit target: the view itself moves the window. Interactive siblings
-/// (buttons, editor) sit above it and keep their clicks.
-struct OverlayDragHandle: NSViewRepresentable {
-  func makeNSView(context: Context) -> OverlayDragHandleView {
-    OverlayDragHandleView()
-  }
-
-  func updateNSView(_ nsView: OverlayDragHandleView, context: Context) {}
-}
-
-final class OverlayDragHandleView: NSView {
-  override var mouseDownCanMoveWindow: Bool { true }
-  override var isOpaque: Bool { false }
-  override func acceptsFirstMouse(for event: NSEvent?) -> Bool { true }
-}
-
-/// The overlay becomes key only while the user is editing the transcript.
-/// Any other click leaves the caret in the previous app.
-struct OverlayKeyGate: NSViewRepresentable {
-  var editing: Bool
-  var onResign: () -> Void
-
-  func makeNSView(context: Context) -> OverlayKeyGateView {
-    let view = OverlayKeyGateView()
-    view.onResign = onResign
-    return view
-  }
-
-  func updateNSView(_ nsView: OverlayKeyGateView, context: Context) {
-    nsView.onResign = onResign
-    nsView.apply(editing: editing)
-  }
-}
-
-final class OverlayKeyGateView: NSView {
-  var onResign: (() -> Void)?
-  private var resignObserver: NSObjectProtocol?
-
-  override func viewDidMoveToWindow() {
-    super.viewDidMoveToWindow()
-    if let resignObserver {
-      NotificationCenter.default.removeObserver(resignObserver)
-      self.resignObserver = nil
-    }
-    guard let window else { return }
-    resignObserver = NotificationCenter.default.addObserver(
-      forName: NSWindow.didResignKeyNotification,
-      object: window,
-      queue: .main
-    ) { [weak self] _ in
-      self?.onResign?()
-    }
-  }
-
-  func apply(editing: Bool) {
-    guard let panel = window as? FloatingOverlayPanel else { return }
-    panel.allowsKeyForEdit = editing
-    if editing {
-      if !panel.isKeyWindow { panel.makeKey() }
-    } else if panel.isKeyWindow {
-      panel.makeFirstResponder(nil)
-      panel.resignKey()
-    }
-  }
-
-  deinit {
-    if let resignObserver {
-      NotificationCenter.default.removeObserver(resignObserver)
     }
   }
 }

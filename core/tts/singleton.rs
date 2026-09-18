@@ -198,13 +198,6 @@ pub fn play(text: &str) -> Result<()> {
     audio_player.play(&samples, super::SAMPLE_RATE)
 }
 
-/// Synthesize and play with specific speaker (blocking)
-pub fn play_with_speaker(text: &str, speaker_idx: usize) -> Result<()> {
-    let samples = synthesize_with_speaker(text, speaker_idx)?;
-    let audio_player = player()?;
-    audio_player.play(&samples, super::SAMPLE_RATE)
-}
-
 /// Environment-tolerant coverage of the fallback path resolver.
 #[cfg(test)]
 mod tests {

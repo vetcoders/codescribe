@@ -101,6 +101,75 @@ final class AudioPanelTests: XCTestCase {
     )
   }
 
+  func testReadinessCockpitShowsEveryPrerequisiteAtOnce() {
+    let ready = audioReadinessSteps(
+      input: .sample,
+      microphonePermission: .granted,
+      admission: .sampleGranted,
+      dictationShortcut: "Hold Fn/Globe"
+    )
+    XCTAssertEqual(ready.map(\.id), [.microphone, .calibration, .sealLane, .recording])
+    XCTAssertEqual(ready.map(\.tone), [.healthy, .healthy, .healthy, .healthy])
+    XCTAssertEqual(ready.last?.title, "Ready to record")
+    XCTAssertTrue(ready.last?.detail.contains("Hold Fn/Globe") == true)
+
+    let missing = audioReadinessSteps(
+      input: .sample,
+      microphonePermission: .granted,
+      admission: .sampleMissing,
+      dictationShortcut: "Hold Fn/Globe"
+    )
+    XCTAssertEqual(missing[0].tone, .healthy)
+    XCTAssertEqual(missing[1].tone, .unavailable)
+    XCTAssertEqual(missing[2].tone, .healthy)
+    XCTAssertEqual(missing[3].tone, .unavailable)
+    XCTAssertTrue(missing[1].title.contains("Calibration"))
+
+    let checking = audioReadinessSteps(
+      input: .sample,
+      microphonePermission: .granted,
+      admission: nil,
+      dictationShortcut: "Hold Fn/Globe"
+    )
+    XCTAssertEqual(checking.map(\.tone), [.healthy, .fallback, .fallback, .fallback])
+
+    let denied = audioReadinessSteps(
+      input: .sample,
+      microphonePermission: .denied,
+      admission: .sampleGranted,
+      dictationShortcut: "Hold Fn/Globe"
+    )
+    XCTAssertEqual(denied[0].tone, .unavailable)
+    XCTAssertEqual(denied[1].tone, .fallback)
+    XCTAssertEqual(denied[2].tone, .fallback)
+    XCTAssertEqual(denied[3].tone, .unavailable)
+    XCTAssertTrue(denied[0].detail.contains("Privacy & Security"))
+
+    let vadUnavailable = CsAdmissionReadiness(
+      ready: false,
+      code: "admission_seal_vad_unavailable",
+      message: "Silero VAD failed to load",
+      deviceName: "Fixture Mic",
+      sampleRate: 48_000,
+      calibrationVersion: "cal-fixture",
+      calibrationStatus: "sealed",
+      calibrationPath: "/tmp/calibration.json",
+      calibratedDevices: ["Fixture Mic"],
+      sealLaneArmed: true,
+      sealLaneSettingArmed: true,
+      sealLaneSource: "settings",
+      sealLaneEnv: "CODESCRIBE_SILERO_FUSION"
+    )
+    let vadSteps = audioReadinessSteps(
+      input: .sample,
+      microphonePermission: .granted,
+      admission: vadUnavailable,
+      dictationShortcut: "Hold Fn/Globe"
+    )
+    XCTAssertEqual(vadSteps[2].tone, .unavailable)
+    XCTAssertEqual(vadSteps[2].title, "Silero VAD did not load")
+  }
+
   func testResetUsesDedicatedUnsetContractNotEmptyStringWrite() {
     var resetCalls = 0
     var writes: [(String, String)] = []
@@ -143,5 +212,144 @@ final class AudioPanelTests: XCTestCase {
         "BEEP_ON_START", "SOUND_VOLUME",
       ])
     XCTAssertEqual(writes.map(\.1), ["0", "0.40"])
+  }
+}
+
+@MainActor
+final class AcousticAdmissionPanelTests: XCTestCase {
+  private func readiness(
+    armed: Bool,
+    settingArmed: Bool,
+    source: String,
+    message: String = "seal lane disarmed"
+  ) -> CsAdmissionReadiness {
+    CsAdmissionReadiness(
+      ready: false,
+      code: "admission_seal_lane_disarmed",
+      message: message,
+      deviceName: "Fixture Mic",
+      sampleRate: 48_000,
+      calibrationVersion: "cal2-fixture",
+      calibrationStatus: "sealed",
+      calibrationPath: "/tmp/calibration.json",
+      calibratedDevices: ["Fixture Mic"],
+      sealLaneArmed: armed,
+      sealLaneSettingArmed: settingArmed,
+      sealLaneSource: source,
+      sealLaneEnv: "CODESCRIBE_SILERO_FUSION"
+    )
+  }
+
+  func testAdmissionRowWordsTheControllerBlockerWithoutDeciding() {
+    let missing = admissionDisplayState(.sampleMissing)
+    XCTAssertEqual(missing.tone, .unavailable)
+    XCTAssertEqual(missing.title, "Microphone not calibrated yet")
+    XCTAssertTrue(missing.detail.contains("Calibrate microphone"))
+
+    let granted = admissionDisplayState(.sampleGranted)
+    XCTAssertEqual(granted.tone, .healthy)
+    XCTAssertTrue(granted.title.contains("MacBook Pro Microphone"))
+    XCTAssertTrue(granted.detail.contains("cal1-macbook-pro-microphone-1@48000hz"))
+
+    let pending = admissionDisplayState(nil)
+    XCTAssertEqual(pending.tone, .fallback)
+  }
+
+  func testRefreshAdmissionReadsEngineVerdict() async {
+    var engine = MockSettingsEngine()
+    engine.admissionReadiness = .sampleMissing
+    let model = SettingsViewModel(engine: engine, permissionProbe: MockPermissionProbe(.allGranted))
+    XCTAssertNil(model.admission)
+
+    await model.refreshAdmission()
+
+    XCTAssertEqual(model.admission?.code, "admission_calibration_missing")
+    XCTAssertFalse(model.admission?.ready ?? true)
+  }
+
+  func testSealLaneControlDistinguishesSettingsFromReadOnlyOverride() {
+    let settingsOff = readiness(armed: false, settingArmed: false, source: "settings")
+    XCTAssertEqual(
+      sealLaneControlState(settingsOff),
+      SealLaneControlState(
+        isOn: false,
+        isEnabled: true,
+        detail: "Required for committed utterances; stored in Settings."
+      )
+    )
+    XCTAssertEqual(
+      admissionDisplayState(settingsOff).title,
+      "Seal lane is off in Settings › Audio"
+    )
+
+    let overrideOff = readiness(armed: false, settingArmed: true, source: "env_override")
+    let overrideState = sealLaneControlState(overrideOff)
+    XCTAssertTrue(overrideState.isOn, "toggle shows the stored product setting")
+    XCTAssertFalse(overrideState.isEnabled, "env override makes Settings read-only")
+    XCTAssertTrue(overrideState.detail.contains("CODESCRIBE_SILERO_FUSION"))
+    XCTAssertTrue(admissionDisplayState(overrideOff).title.contains("override"))
+  }
+
+  func testSealLaneActionUsesTheCanonicalConfigWriter() {
+    var writes: [(String, String)] = []
+    let model = SettingsViewModel(
+      engine: MockSettingsEngine(
+        updateConfigObserver: { key, value in writes.append((key, value)) }
+      ),
+      permissionProbe: MockPermissionProbe(.allGranted)
+    )
+
+    model.setSealLaneArmed(false)
+    model.setSealLaneArmed(true)
+
+    XCTAssertEqual(writes.map(\.0), ["CODESCRIBE_SILERO_FUSION", "CODESCRIBE_SILERO_FUSION"])
+    XCTAssertEqual(writes.map(\.1), ["0", "1"])
+  }
+
+  func testRunCalibrationStoresNoticeAndRereadsAdmission() async {
+    var engine = MockSettingsEngine()
+    var requestedSeconds: [UInt32] = []
+    engine.admissionReadiness = .sampleGranted
+    engine.calibrateEnergyObserver = { seconds in
+      requestedSeconds.append(seconds)
+      return .sample
+    }
+    let model = SettingsViewModel(engine: engine, permissionProbe: MockPermissionProbe(.allGranted))
+
+    await model.runCalibration()
+
+    XCTAssertEqual(requestedSeconds, [SettingsViewModel.calibrationCaptureSeconds])
+    XCTAssertFalse(model.calibrationPending)
+    XCTAssertNil(model.calibrationStartedAt)
+    XCTAssertTrue(model.calibrationNotice?.contains("-54.3 dBFS") == true)
+    XCTAssertTrue(model.calibrationNotice?.contains("peak -12.5 dBFS") == true)
+    XCTAssertEqual(model.admission?.code, "admission_granted")
+  }
+
+  func testCalibrationProgressIsBoundedAndCountsDownHonestly() {
+    XCTAssertEqual(SettingsViewModel.calibrationProgress(elapsedSeconds: -1), 0)
+    XCTAssertEqual(SettingsViewModel.calibrationProgress(elapsedSeconds: 5), 0.5)
+    XCTAssertEqual(SettingsViewModel.calibrationProgress(elapsedSeconds: 20), 1)
+    XCTAssertEqual(SettingsViewModel.calibrationRemainingSeconds(elapsedSeconds: 0), 10)
+    XCTAssertEqual(SettingsViewModel.calibrationRemainingSeconds(elapsedSeconds: 9.2), 1)
+    XCTAssertEqual(SettingsViewModel.calibrationRemainingSeconds(elapsedSeconds: 12), 0)
+  }
+
+  func testRunCalibrationRefusalIsSurfacedNotHidden() async {
+    var engine = MockSettingsEngine()
+    engine.admissionReadiness = .sampleMissing
+    engine.calibrateEnergyObserver = { _ in
+      throw NSError(
+        domain: "Calibration", code: 1,
+        userInfo: [
+          NSLocalizedDescriptionKey: "calibration_refused: only 0.4s of active speech measured"
+        ])
+    }
+    let model = SettingsViewModel(engine: engine, permissionProbe: MockPermissionProbe(.allGranted))
+
+    await model.runCalibration()
+
+    XCTAssertTrue(model.calibrationNotice?.hasPrefix("Calibration refused") == true)
+    XCTAssertEqual(model.admission?.code, "admission_calibration_missing")
   }
 }

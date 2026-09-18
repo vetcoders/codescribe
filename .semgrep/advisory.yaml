@@ -1,0 +1,19 @@
+# Advisory house rule — NOT in the blocking gate.
+# WHY: 2026-09-08 measurement: 714 hits, 625 in test code, 89 in production
+# (monitor.rs 37, codescribe-corpus.rs 16, …). Blocking would freeze every push
+# until that debt is paid; hiding it would bury the signal. So it runs on demand:
+#   make semgrep-house
+# WHEN: promote back into .semgrep.yaml once production hits reach 0.
+rules:
+  - id: local.rust.no-unwrap
+    languages: [rust]
+    message: Avoid unwrap(); use ? or expect with context
+    severity: INFO
+    paths:
+      exclude:
+        - "tests/**"
+        - "**/tests.rs"
+        - "examples/**"
+        - "core/examples/**"
+    patterns:
+      - pattern: $X.unwrap()

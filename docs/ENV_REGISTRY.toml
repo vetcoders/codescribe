@@ -16,7 +16,35 @@
 
 [meta]
 version = "1.2.0"
-updated = "2026-08-22"
+updated = "2026-08-27"
+
+[vars.CODESCRIBE_BIN]
+default = ""
+type = "string"
+reload = "restart"
+category = "cli"
+description = "Optional Finder Quick Action CLI executable override; normally resolves ~/.local/bin/codescribe then ~/.cargo/bin/codescribe"
+
+[vars.COLUMNS]
+default = ""
+type = "string"
+reload = "restart"
+category = "cli"
+description = "Standard terminal column count set by the shell; `codescribe transcribe --inspect` reads it once per run to size the shared time axis (falls back to 100 when unset or not a number)"
+
+[vars.CODESCRIBE_REPLAY_WAV]
+default = ""
+type = "string"
+reload = "restart"
+category = "test"
+description = "Private local archived WAV for explicitly ignored acoustic and live-producer recovery benches; never a production capture source or an upload."
+
+[vars.CODESCRIBE_STREAM_TEST_WAV]
+default = ""
+type = "string"
+reload = "restart"
+category = "test"
+description = "Private multi-window WAV for the ignored real CLI streaming timing and verdict-parity test"
 
 # ═══════════════════════════════════════════════════════════════════════════════
 # Application async runtime
@@ -120,29 +148,7 @@ reload = "hot"
 category = "streaming"
 description = "Maximum words emitted per tick (buffered mode)"
 
-[vars.CODESCRIBE_MAX_INFERENCE_CONCURRENCY]
-default = "1"
-type = "u64"
-reload = "hot"
-category = "streaming"
-description = "Maximum number of concurrent inference tasks in streaming pipeline (clamped to 1-4)"
 range = "1-4"
-
-[vars.CODESCRIBE_STREAM_CHUNK_SEC]
-default = "4.0"
-type = "f32"
-reload = "hot"
-category = "streaming"
-description = "Streaming chunk duration in seconds (utterance cadence)"
-range = "0.5-30.0"
-
-[vars.CODESCRIBE_STREAM_OVERLAP_RATIO]
-default = "0.25"
-type = "f32"
-reload = "hot"
-category = "streaming"
-description = "Overlap ratio between chunks"
-range = "0.05-0.8"
 
 [vars.CODESCRIBE_STREAM_SIMILARITY]
 default = "0.93"
@@ -186,12 +192,6 @@ reload = "hot"
 category = "streaming"
 description = "Strip trailing ':D' hallucinations from streaming output"
 
-[vars.CODESCRIBE_BUFFERED_CORRECTION_PREFIX]
-default = "0.50"
-type = "f32"
-reload = "hot"
-category = "streaming"
-description = "Prefix ratio required to accept buffered correction"
 range = "0.4-0.9"
 
 [vars.CODESCRIBE_BUFFERED_INTERIM_SEC]
@@ -230,14 +230,7 @@ default = "2.0"
 type = "f32"
 reload = "hot"
 category = "vad"
-description = "Trailing silence threshold before the tail filter can drop a low-speech suffix"
-
-[vars.CODESCRIBE_TAIL_DROP_ENABLED]
-default = "1"
-type = "bool"
-reload = "hot"
-category = "vad"
-description = "Enable low-speech trailing-tail removal after the Silero gate"
+description = "Trailing silence threshold for Silero VAD timing evidence"
 
 [vars.TRANSCRIPTION_OVERLAY_ENABLED]
 default = "1"
@@ -278,12 +271,41 @@ reload = "hot"
 category = "llm"
 description = "Shared OpenAI model fallback for LLM lanes"
 
+[vars.LLM_LIBRAXIS_API_KEY]
+default = ""
+type = "secret"
+reload = "hot"
+category = "llm"
+description = "Libraxis vendor key account (Settings › Providers / Keychain bundle); env is a fallback, never the URL"
+
+[vars.LLM_OPENAI_API_KEY]
+default = ""
+type = "secret"
+reload = "hot"
+category = "llm"
+description = "OpenAI vendor key account (Settings › Providers / Keychain bundle); env is a fallback, never the URL"
+
+[vars.LLM_XAI_API_KEY]
+default = ""
+type = "secret"
+secret = true
+reload = "hot"
+category = "llm"
+description = "xAI vendor key account (Settings › Providers / Keychain bundle); env is a fallback, never the URL. xAI (Grok) API key for the assistive/agent lane when LLM_ASSISTIVE_PROVIDER=xai-responses. Stored in the Codescribe Keychain bundle under its own account, so it coexists with the OpenAI and Anthropic keys"
+
+[vars.LLM_ANTHROPIC_API_KEY]
+default = ""
+type = "secret"
+reload = "hot"
+category = "llm"
+description = "Anthropic vendor key account (Settings › Providers / Keychain bundle); env is a fallback, never the URL. Anthropic Messages API key account shared by Anthropic formatting and assistive lanes"
+
 [vars.LLM_API_KEY]
 default = ""
 type = "secret"
 reload = "hot"
 category = "llm"
-description = "Shared/main OpenAI API key account; prefer Settings / macOS Keychain"
+description = "RETIRED alias of LLM_OPENAI_API_KEY (warned, removed after 2026-10-15)"
 
 [vars.LLM_FORMATTING_ENDPOINT]
 default = ""
@@ -311,7 +333,7 @@ default = ""
 type = "secret"
 reload = "hot"
 category = "llm"
-description = "Formatting-lane OpenAI API key account; prefer Settings / macOS Keychain"
+description = "RETIRED alias of LLM_OPENAI_API_KEY (warned, removed after 2026-10-15); lanes select a provider, keys live per provider"
 
 [vars.LLM_ASSISTIVE_ENDPOINT]
 default = ""
@@ -339,14 +361,7 @@ default = ""
 type = "secret"
 reload = "hot"
 category = "llm"
-description = "Assistive OpenAI API key account; prefer Settings / macOS Keychain"
-
-[vars.LLM_ANTHROPIC_API_KEY]
-default = ""
-type = "secret"
-reload = "hot"
-category = "llm"
-description = "Anthropic Messages API key account shared by Anthropic formatting and assistive lanes"
+description = "RETIRED alias of LLM_OPENAI_API_KEY (warned, removed after 2026-10-15); lanes select a provider, keys live per provider"
 
 [vars.LLM_TEMPERATURE]
 default = ""
@@ -367,8 +382,8 @@ default = ""
 type = "string"
 reload = "restart"
 category = "stt"
-description = "Legacy migration-only alias rewritten to STT_ENDPOINT"
-deprecated = "STT_ENDPOINT"
+description = "Legacy migration-only alias; rewritten in .env to STT_FILE_ENDPOINT"
+deprecated = "STT_FILE_ENDPOINT"
 
 [vars.LLM_SERVER_URL]
 default = ""
@@ -439,7 +454,7 @@ default = ""
 type = "string"
 reload = "restart"
 category = "stt"
-description = "Initial prompt hint for Whisper decoding (ignored by ONNX adapter)"
+description = "Initial prompt hint for local Whisper decoding"
 
 [vars.CODESCRIBE_STT_INITIAL_PROMPT_ENABLED]
 default = "0"
@@ -456,25 +471,18 @@ category = "stt"
 description = "W13-6B span-based overlay highlight layer (lexicon-corrected words + Silero speech-gap pustki) and one-click send-span-to-Teach. Default OFF. No new permission prompts; consumes ReplaceRange/on_final/VAD data already crossing the bridge after W13-3A."
 
 [vars.CODESCRIBE_SILERO_FUSION]
-default = "0"
-type = "bool"
-reload = "restart"
-category = "stt"
-description = "W13-3B Silero-identity seal authority. Default OFF pending the operator live A/B required by the original THE_ENGINE_ROADMAP. Armed: Supervisor edges mint utterance ids at Apple PCM ingress, cumulative Apple finals are sliced by time onto those ranges, sealed spans carry silero_utterance_id, and Whisper/Apple fuse by span overlap (agreements + clear gap fills; unresolved alternatives are receipted). The session Silero still runs whenever hands-free silence arms the engine lifecycle."
-
-[vars.CODESCRIBE_SILERO_FUSION_CONTEXT]
-default = "utterance"
-type = "string"
-reload = "restart"
-category = "stt"
-description = "Bounded-context A/B for W13-3B Whisper windows: utterance (default), left_pad, or stable_prompt. Left pad never crosses a Silero-sized silence fence."
-
-[vars.CODESCRIBE_SPAN_IDEMPOTENCE]
 default = "1"
 type = "bool"
 reload = "restart"
 category = "stt"
-description = "Sealed-span replay refusal + in-span loop fence. Default ON: the live seal path refuses a replayed PCM-range / request identity and fences non-progressing timestamps or decode failure. Content-similar offers on a new identity are WARN-preserved. Set 0/false/off only as a diagnostic escape hatch."
+description = "Optional power-user override of the product-owned audio.seal_lane_armed setting (supported production default: ON). Unset defers to Settings; when present, both 0 and 1 win over Settings. Armed: Supervisor edges mint utterance ids at Apple PCM ingress, cumulative Apple finals are sliced by time onto those ranges, sealed spans carry silero_utterance_id, and Whisper/Apple fuse by span overlap (agreements + clear gap fills; unresolved alternatives are receipted). The session Silero still runs whenever hands-free silence arms the engine lifecycle."
+
+[vars.CODESCRIBE_SILERO_FUSION_CONTEXT]
+default = "symmetric_pad"
+type = "string"
+reload = "restart"
+category = "stt"
+description = "Bounded decode context for W13-3B Whisper windows. Unset or unrecognised resolves to symmetric_pad: 400 ms of audio on each side of the Silero utterance. Recognised tokens (trimmed, case-insensitive): utterance_only | utterance-only | exact; left_pad | left-pad | pad; stable_prompt | stable-text | prompt. NOTE the earlier entry documented a token 'utterance' that the parser does not know — it falls through to symmetric_pad; the exact-audio token is utterance_only. Every mode is context only: the window a decoder may hear is clipped at the 0.55 s long-silence fence, at end of captured PCM, and at both neighbouring utterances, while occurrence identity stays minted from the unpadded utterance range and is never widened by it. Two neighbours' contexts may overlap inside the gap between them; neither may reach a sample the other owns. The 400 ms figure is the selected default, not yet a measured optimum — short-word, fence/neighbour, retention and long-take measurements are outstanding."
 
 [vars.CODESCRIBE_WHISPER_IDLE_UNLOAD_SECS]
 default = "1800"
@@ -519,26 +527,12 @@ reload = "restart"
 category = "stt"
 description = "Directory containing all models; a leading ~/ expands to the user home directory"
 
-[vars.CODESCRIBE_EMBED_MODEL]
-default = ""
-type = "string"
-reload = "rebuild"
-category = "stt"
-description = "Whisper model name embedded at build time (core/build.rs fat SKU path)"
-
-[vars.CODESCRIBE_ONNX_MODEL_PATH]
-default = ""
-type = "string"
-reload = "restart"
-category = "stt"
-description = "Override path to the ONNX Whisper model directory (onnx engine)"
-
 [vars.CODESCRIBE_STT_ENGINE]
 default = "auto"
 type = "string"
 reload = "restart"
 category = "stt"
-description = "STT engine: auto (Apple on supported macOS, Candle fallback), candle, onnx, or apple"
+description = "STT engine: auto (Apple on supported macOS, Candle fallback), whisper/candle, or apple"
 
 [vars.CODESCRIBE_ASR_MODE]
 default = ""
@@ -566,7 +560,7 @@ default = ""
 type = "string"
 reload = "hot"
 category = "stt"
-description = "Promoted compatibility override for live local Whisper refinement. Product mode owns the default: Local Power with Apple/Auto arms the exact-span Apple progressive patcher when unset or phase1; explicit off/0/false/no and malformed values produce a named degraded disposition. Apple-only does not arm it. Direct Whisper on the VAD/scheduler path is already the primary engine and refuses a second unbound mutation lane. Phases 2..4 remain reserved. Orthogonal to FINAL_PASS_MODE; normal stop performs no whole-file pass. Runtime truth is the per-session tail_patch_session_receipt, not UI state."
+description = "Promoted compatibility override for live local Whisper refinement. Product mode owns the default: Local Power with Apple/Auto arms the Layer 1 tail-provider observation on the Apple-ledger session when unset or phase1; explicit off/0/false/no and malformed values produce a named degraded disposition. Apple-only does not arm it. This token does not select or restore a VAD/scheduler route. Phases 2..4 remain reserved. Orthogonal to FINAL_PASS_MODE; normal stop performs no whole-file pass. Runtime truth is the per-session tail_patch_session_receipt, not UI state."
 
 [vars.CODESCRIBE_SEAL_ATLAS_DUMP]
 default = ""
@@ -582,27 +576,6 @@ reload = "hot"
 category = "llm"
 description = "W13-1 live inline-format buffer master switch. Default OFF; a default flip is an operator decision."
 
-[vars.CODESCRIBE_INLINE_FORMAT_CHUNK_TIMEOUT_MS]
-default = "10000"
-type = "int"
-reload = "hot"
-category = "llm"
-description = "Per-chunk inline-format LLM timeout in milliseconds; timeout keeps the raw chunk."
-
-[vars.CODESCRIBE_INLINE_FORMAT_FLUSH_TIMEOUT_MS]
-default = "2500"
-type = "int"
-reload = "hot"
-category = "llm"
-description = "Stop-path budget in milliseconds for draining queued inline-format chunks."
-
-[vars.CODESCRIBE_INLINE_FORMAT_TAIL_TIMEOUT_MS]
-default = "15000"
-type = "int"
-reload = "hot"
-category = "llm"
-description = "Stop-path budget in milliseconds for the final inline-format tail request."
-
 [vars.CODESCRIBE_RESPONSES_PROBE_URL]
 default = ""
 type = "string"
@@ -615,7 +588,7 @@ default = "inprocess"
 type = "string"
 reload = "hot"
 category = "stt"
-description = "Tail-patch provider selector: inprocess | sidecar | remote. Sidecar and remote fall back to inprocess with typed receipts. Default remains inprocess; flipping it is an operator decision."
+description = "Tail-patch provider selector: inprocess | sidecar | remote. Sidecar and remote fall back to inprocess with typed receipts. Selection is frozen in the recording settings snapshot; changes apply to the next snapshot. Default remains inprocess."
 
 [vars.CODESCRIBE_STT_SIDECAR_BIN]
 default = ""
@@ -645,62 +618,6 @@ reload = "hot"
 category = "stt"
 description = "Layer 1 small-edit budget: a substitution-shaped tail patch touching at most this many tokens bypasses the MAX_CHANGE_RATIO cap. The ratio alone structurally starves short utterances (any 1-word fix on a 1-3-token commit is >=50% change — measured 2026-08-12: 116 skips, 0 applied). Pure insertions never use this budget"
 
-[vars.CODESCRIBE_STT_THERMAL_GOVERNOR_ENABLED]
-default = "1"
-type = "bool"
-reload = "restart"
-category = "stt"
-description = "Enable thermal-aware STT scheduling backoff"
-
-[vars.CODESCRIBE_STT_MIN_INFER_INTERVAL_MS]
-default = "90"
-type = "int"
-reload = "restart"
-category = "stt"
-description = "Minimum interval between live preview STT inference jobs in milliseconds"
-
-[vars.CODESCRIBE_STT_COMMIT_MIN_INTERVAL_MS]
-default = "180"
-type = "int"
-reload = "restart"
-category = "stt"
-description = "Minimum interval between committed/final STT inference jobs in milliseconds"
-
-[vars.CODESCRIBE_STT_REFINE_MIN_INTERVAL_MS]
-default = "240"
-type = "int"
-reload = "restart"
-category = "stt"
-description = "Minimum interval between refinement STT inference jobs in milliseconds"
-
-[vars.CODESCRIBE_STT_THERMAL_NOMINAL_MULT]
-default = "0.0"
-type = "float"
-reload = "restart"
-category = "stt"
-description = "Thermal duty-cycle multiplier for nominal system thermal pressure; 0.0 disables nominal backoff"
-
-[vars.CODESCRIBE_STT_THERMAL_FAIR_MULT]
-default = "1.0"
-type = "float"
-reload = "restart"
-category = "stt"
-description = "Thermal multiplier for fair system thermal pressure"
-
-[vars.CODESCRIBE_STT_THERMAL_SERIOUS_MULT]
-default = "2.0"
-type = "float"
-reload = "restart"
-category = "stt"
-description = "Thermal multiplier for serious system thermal pressure"
-
-[vars.CODESCRIBE_STT_THERMAL_CRITICAL_MULT]
-default = "4.0"
-type = "float"
-reload = "restart"
-category = "stt"
-description = "Thermal multiplier for critical system thermal pressure"
-
 [vars.BENCH_STT_FIXTURES]
 default = "auto"
 type = "string"
@@ -729,41 +646,6 @@ reload = "restart"
 category = "test"
 description = "scripts/bench-stt.sh Whisper language hint for bench probes"
 
-[vars.BENCH_STT_LATENCY_MANIFEST]
-default = ""
-type = "string"
-reload = "restart"
-category = "test"
-description = "Internal bench hook: fixture manifest path for the scheduler-lane latency probe"
-
-[vars.BENCH_STT_LATENCY_OUT]
-default = ""
-type = "string"
-reload = "restart"
-category = "test"
-description = "Internal bench hook: TSV output path for the scheduler-lane latency probe"
-
-[vars.CODESCRIBE_BENCH_FORCE_PROMPT]
-default = "0"
-type = "bool"
-reload = "restart"
-category = "test"
-description = "scripts/bench-stt.sh prompted-WER probe: generate deterministic fixture prompt when runtime prompt is disabled or empty"
-
-[vars.CODESCRIBE_BENCH_RUNTIME_PROMPT_TERM_LIMIT]
-default = ""
-type = "int"
-reload = "restart"
-category = "test"
-description = "scripts/bench-stt.sh prompted-WER probe: trim active runtime prompt to the first N deterministic terms; unset uses the full prompt"
-
-[vars.CODESCRIBE_BENCH_PROMPT_MAX_WER_DELTA_PP]
-default = "5.0"
-type = "float"
-reload = "restart"
-category = "test"
-description = "scripts/bench-stt.sh prompted-WER probe: fail when active prompt increases WER above this percentage-point threshold"
-
 [vars.CODESCRIBE_APPLE_STT_BRIDGE]
 default = ""
 type = "string"
@@ -790,7 +672,7 @@ default = "stream"
 type = "string"
 reload = "restart"
 category = "stt"
-description = "Apple live session transport: stream (AudioBuffer live) or wav (legacy VAD+scheduler escape hatch)"
+description = "Apple live session transport A/B: stream uses live AudioBuffer delivery; wav uses the older Apple transcribe_live temp-WAV request bridge and does not restore the deleted VAD/scheduler pipeline"
 
 [vars.CODESCRIBE_APPLE_DICTATION_TRANSCRIBER]
 default = "0"
@@ -799,47 +681,47 @@ reload = "restart"
 category = "stt"
 description = "Arm the DictationTranscriber PoC lane (W4-A) — the SpeechAnalyzer module behind SYSTEM dictation, the only Apple analyzer whose catalog carries pl-PL. Default off: unarmed, the backend fall-through is byte-for-byte the shipped SFSpeech order. Read by both the Rust side and the inherited bridge child, so one key arms the whole path. Not a shipped default — flipping it is an operator decision"
 
-[vars.CODESCRIBE_ONNX_CPU_ONLY]
-default = "0"
-type = "bool"
-reload = "restart"
-category = "stt"
-description = "Force ONNX to use CPU only (no GPU/Metal)"
-
-[vars.CODESCRIBE_ONNX_MODEL_PATH]
+[vars.STT_FILE_ENDPOINT]
 default = ""
 type = "string"
 reload = "restart"
 category = "stt"
-description = "Custom path to ONNX Whisper model"
+description = "File transcription endpoint: HTTPS multipart or NDJSON :stream; HTTP only on loopback"
 
-[vars.CODESCRIBE_ONNX_QUANT]
+[vars.STT_LIVE_ENDPOINT]
 default = ""
 type = "string"
 reload = "restart"
 category = "stt"
-description = "ONNX quantization level (e.g. q4, q8)"
+description = "Live transcript WebSocket endpoint: WSS; WS only on loopback"
 
-[vars.CODESCRIBE_ONNX_REPO]
-default = "onnx-community/whisper-large-v3-turbo"
-type = "string"
+[vars.STT_FILE_API_KEY]
+default = ""
+type = "secret"
 reload = "restart"
 category = "stt"
-description = "HuggingFace repo for ONNX model download"
+description = "File transcription key; prefer Settings / macOS Keychain"
+
+[vars.STT_LIVE_API_KEY]
+default = ""
+type = "secret"
+reload = "restart"
+category = "stt"
+description = "Live transcript key; prefer Settings / macOS Keychain"
 
 [vars.STT_ENDPOINT]
 default = ""
 type = "string"
 reload = "restart"
 category = "stt"
-description = "Canonical STT service endpoint. Explicit retranscribe and STT_TAIL_PROVIDER=remote use multipart file upload; normal cloud recording maps the known Libraxis or loopback endpoint to its live Voice Lab WebSocket. OpenAI multipart endpoints are never treated as live WSS."
+description = "RETIRED alias routed to File/Live by scheme (warned, removed after 2026-10-15)"
 
 [vars.STT_API_KEY]
 default = ""
 type = "secret"
 reload = "restart"
 category = "stt"
-description = "Cloud STT API key; prefer Settings / macOS Keychain"
+description = "RETIRED alias filling missing File/Live keys (warned, removed after 2026-10-15)"
 
 [vars.FINAL_PASS_MODE]
 default = "smart"
@@ -1046,14 +928,6 @@ reload = "restart"
 category = "llm"
 description = "Override the Anthropic OAuth issuer base URL used for account login (proxies and staging only)"
 
-[vars.LLM_XAI_API_KEY]
-default = ""
-type = "string"
-reload = "hot"
-category = "llm"
-secret = true
-description = "xAI (Grok) API key for the assistive/agent lane when LLM_ASSISTIVE_PROVIDER=xai-responses. Stored in the Codescribe Keychain bundle under its own account, so it coexists with the OpenAI and Anthropic keys"
-
 [vars.LLM_XAI_ENDPOINT]
 default = "https://api.x.ai/v1/responses"
 type = "string"
@@ -1091,24 +965,24 @@ description = "How to send transcripts (streaming|end_of_utterance)"
 
 [vars.CODESCRIBE_AI_MAX_RETRIES]
 default = "3"
-type = "u64"
+type = "u32"
 reload = "hot"
 category = "llm"
-description = "Max retries for AI formatting attempts (total attempts = retries + 1)"
+description = "Extra AI formatting attempts (total attempts = retries + 1); loader seals valid overlays into the next selected runtime snapshot"
 
 [vars.CODESCRIBE_AI_RETRY_DELAY_MS]
 default = "2000"
 type = "u64"
 reload = "hot"
 category = "llm"
-description = "Delay between AI retries (ms)"
+description = "Delay between AI retries (ms); loader seals valid overlays into the next selected runtime snapshot"
 
 [vars.CODESCRIBE_AI_ATTEMPT_TIMEOUT_MS]
 default = "30000"
 type = "u64"
 reload = "hot"
 category = "llm"
-description = "Per-attempt timeout for non-Ollama AI requests (ms)"
+description = "Shared formatter and Agent per-attempt timeout (ms); loader seals valid overlays into the next selected runtime snapshot"
 
 [vars.CODESCRIBE_AI_OLLAMA_ATTEMPT_TIMEOUT_MS]
 default = "5000"
@@ -1122,7 +996,7 @@ default = "30000"
 type = "u64"
 reload = "hot"
 category = "llm"
-description = "Max idle time between SSE chunks before attempt is failed (ms)"
+description = "Shared formatter and Agent max idle time between SSE chunks (ms); loader seals valid overlays into the next selected runtime snapshot"
 
 [vars.CODESCRIBE_AGENT_BRIDGE_HOME]
 default = ""
@@ -1130,6 +1004,13 @@ type = "string"
 reload = "hot"
 category = "storage"
 description = "Optional absolute override for the agent bridge home used by active-name leases and bus demultiplexing; unset resolves the normal user data path"
+
+[vars.CODESCRIBE_CODEX_BACKEND_ENDPOINT]
+default = "https://chatgpt.com/backend-api/codex/responses"
+type = "string"
+reload = "hot"
+category = "llm"
+description = "Full Responses endpoint URL override for the Agent's signed-in OpenAI account (Codex backend) lane; does not affect the API-key lane endpoint. Read from the process environment on each account-lane stream request. Leading/trailing whitespace is trimmed; unset, empty or whitespace-only values use the default. Use only a trusted destination: the account bearer token is sent to this URL."
 
 [vars.CODESCRIBE_AGENT_USE_PREVIOUS_RESPONSE_ID]
 default = "1"
@@ -1483,7 +1364,7 @@ default = ""
 type = "string"
 reload = "rebuild"
 category = "build"
-description = "Whisper model to embed (HF repo or local path)"
+description = "Whisper model selected at build time by core/build.rs for the opt-in fat SKU: model name, HF repo ID (owner/repo), or local directory (absolute, ~/, or relative to core/; a bare name falls back to core/models/). Empty uses the compiled default model name. A complete CODESCRIBE_MODEL_PATH override wins, then composed models directories, then a complete HF cache snapshot, then the local path"
 
 [vars.CODESCRIBE_NO_EMBED]
 default = "0"
@@ -1583,48 +1464,6 @@ description = "Enable AppKit/UI tests gated by CODESCRIBE_UI_TESTS"
 # ═══════════════════════════════════════════════════════════════════════════════
 # Opt-in E2E / developer probes
 # ═══════════════════════════════════════════════════════════════════════════════
-
-[vars.CODESCRIBE_E2E_CORPUS]
-default = "0"
-type = "bool"
-reload = "restart"
-category = "test"
-description = "Enable the real WAV/TXT corpus regression probe"
-
-[vars.CODESCRIBE_E2E_CORPUS_DATE]
-default = ""
-type = "string"
-reload = "restart"
-category = "test"
-description = "Optional date filter for the corpus regression probe"
-
-[vars.CODESCRIBE_E2E_CORPUS_DIR]
-default = ""
-type = "string"
-reload = "restart"
-category = "test"
-description = "Optional corpus directory override for WAV/TXT regression pairs"
-
-[vars.CODESCRIBE_E2E_CORPUS_LANGUAGE]
-default = ""
-type = "string"
-reload = "restart"
-category = "test"
-description = "Optional Whisper language hint for corpus regression runs"
-
-[vars.CODESCRIBE_E2E_CORPUS_LIMIT]
-default = "3"
-type = "usize"
-reload = "restart"
-category = "test"
-description = "Maximum number of corpus pairs processed by one E2E run"
-
-[vars.CODESCRIBE_E2E_CORPUS_MAX_REGRESSION]
-default = "0.05"
-type = "f32"
-reload = "restart"
-category = "test"
-description = "Maximum accepted WER/CER regression ratio for the corpus probe"
 
 [vars.CODESCRIBE_E2E_LANG]
 default = "pl"
@@ -1784,18 +1623,46 @@ default = ""
 type = "string"
 reload = "rebuild"
 category = "install"
-description = "Optional override of the org Voice Lab git URL. Empty = probe https://github.com/vetcoders/voice-lab.git and git@github.com:vetcoders/voice-lab.git, HTTPS first when gh git_protocol is https (this laptop), SSH first when it is ssh (Monika). Only those two org URLs are accepted."
+description = "Optional override of the org Voice Lab git URL. Empty = probe https://github.com/vetcoders/voice-lab.git and git@github.com:vetcoders/voice-lab.git, with the gh git_protocol transport first. Only those two org URLs are accepted."
 
 [vars.CODESCRIBE_VOICE_LAB_SRC]
 default = ""
 type = "string"
 reload = "rebuild"
 category = "install"
-description = "Existing Voice Lab checkout used by make install-app instead of cloning (~/.codescribe/src/voice-lab)"
+description = "Existing Voice Lab checkout used by installation, bundle pack embedding, and development launch config seeding instead of cloning (~/.codescribe/src/voice-lab)"
 
 [vars.VOICE_LAB_INSTALL_SETTINGS]
 default = ""
 type = "string"
 reload = "rebuild"
 category = "install"
-description = "Voice Lab settings seed: empty=copy pack if missing and fill empty engine keys; 1=overwrite settings.json; 0=never touch Application Support"
+description = "Retired installer toggle; ignored. Codescribe now merges empty engine fields from its bundled operator pack at launch, with a backup. Installation never overwrites app settings."
+
+[vars.SPEECH_TTS_VOICE_OPENAI]
+default = "cedar"
+type = "string"
+reload = "hot"
+category = "llm"
+description = "OpenAI voice for assistant speech."
+
+[vars.SPEECH_TTS_VOICE_XAI]
+default = "eve"
+type = "string"
+reload = "hot"
+category = "llm"
+description = "xAI voice_id for assistant speech."
+
+[vars.SPEECH_TTS_SPEED]
+default = "1.25"
+type = "f32"
+reload = "hot"
+category = "llm"
+description = "Speech speed multiplier. OpenAI range 0.25–4.0; xAI 0.7–1.5. Invalid values refuse synthesis."
+
+[vars.SPEECH_TTS_MODEL_OPENAI]
+default = "gpt-4o-mini-tts-2025-12-15"
+type = "string"
+reload = "hot"
+category = "llm"
+description = "OpenAI assistant speech model; xAI accepts no model field."

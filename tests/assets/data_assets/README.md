@@ -7,6 +7,8 @@ clips (`NN_slug.wav`, mono 44.1 kHz s16) paired with reference transcripts:
 
 - `NN_slug_human_transcription.txt` — what was actually said (vocabulary
   coverage reference),
+- `NN_slug_codescribe_raw_human_transcription_from_wav.txt` — the human
+  reference filename used by the four-clip benchmark corpus,
 - `NN_slug_apple_live_reference.txt` — verbatim output of the SYSTEM Apple
   live dictation for the same audio (engine-parity reference).
 
@@ -27,6 +29,11 @@ the `ENGINE_*` Makefile targets:
 Shell consumers share one implementation — `scripts/lib/data-assets.sh`
 (`dir` / `resolve <fixture>`), pinned by `tests/data_assets_resolution.rs`.
 Rust tests carry the same order in their own `data_assets_dir()` helpers.
+The shell benchmark resolves either human reference name with
+`reference <audio-path>`. References must be adjacent to the selected WAV.
+If both exist, they must be byte-identical; empty or conflicting references
+stop selection with exit 4. Missing references return 3. This naming support
+does not change separately hash-pinned Rust fixture sets.
 Hardcoding tier 3 is what left `make test-engine-parity` reporting
 `fixture not found` on hosts whose home corpus held the clip — the tier
 gitignore keeps empty by design is the one that got baked into the harness.

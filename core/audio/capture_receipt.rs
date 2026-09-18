@@ -9,11 +9,12 @@
 //! WARN `capture_level_low` is a quality receipt. It must never join
 //! [`USER_TERMINAL_WARNING_CODES`](crate::pipeline::contracts::USER_TERMINAL_WARNING_CODES).
 
-use std::sync::{Mutex, OnceLock};
+use std::sync::{Arc, Mutex, OnceLock};
 
 use tracing::{info, warn};
 
 use crate::pipeline::contracts::{EngineEvent, EventSink};
+use crate::stt::tail_provider::TailSampleRange;
 
 /// Session-end receipt code (log line + last-snapshot key).
 pub const CAPTURE_LEVEL_RECEIPT_CODE: &str = "capture_level_receipt";
@@ -27,12 +28,15 @@ pub const DEFAULT_CAPTURE_LEVEL_LOW_DB: f32 = -52.0;
 pub const DIGITAL_ZERO_ABS: f32 = 1.0e-8;
 /// Linear RMS below this is not active speech (~−80 dBFS).
 pub const ACTIVE_SPEECH_LINEAR_FLOOR: f32 = 1.0e-4;
+/// Adjacent active hops separated only by an ordinary word-edge pause stay one
+/// measured speech span. Seal coverage separately tolerates a smaller 250 ms
+/// uncovered edge; this merge is not transcript-dependent.
+pub const ACTIVE_SPEECH_MERGE_GAP_MS: u64 = 200;
 /// Near-full-scale samples count as clipping.
 pub const CLIP_ABS: f32 = 0.99;
 
 static LAST_RECEIPT: OnceLock<Mutex<Option<CaptureLevelReceipt>>> = OnceLock::new();
 static LAST_OPEN_PATH: OnceLock<Mutex<Option<CapturePathMeta>>> = OnceLock::new();
-static SESSION_ENERGY: OnceLock<Mutex<SessionEnergyClock>> = OnceLock::new();
 
 /// One capture hop on the session PCM axis. Intensity lives here, not on tokens.
 #[derive(Debug, Clone, Copy)]
@@ -45,6 +49,337 @@ struct EnergyHop {
 #[derive(Debug, Default)]
 struct SessionEnergyClock {
     hops: Vec<EnergyHop>,
+    /// PCM this owner actually ingested. Zero means nothing was ever measured,
+    /// which is a different fact from "measured, and it was silent".
+    observed_samples: u64,
+    /// Start of the earliest hop that carried non-finite PCM, if any.
+    ///
+    /// Validity is **positional**, not a total. `push_samples` substitutes zero
+    /// for every non-finite sample before measuring, so a contaminated hop
+    /// reports a depressed RMS and reads as silence. Counting those samples and
+    /// comparing the total against the whole observed extent — the shape this
+    /// field replaces — hid exactly that: one invalid second inside a
+    /// two-second take never reached the threshold, so the unmeasurable second
+    /// was certified silent. What the reader needs is where the measurement
+    /// stopped being trustworthy, which is this.
+    first_invalid_sample: Option<u64>,
+}
+
+/// Producer token for the capture energy ladder.
+pub const CAPTURE_ENERGY_PRODUCER: &str = "capture_energy";
+
+/// Identity one capture-evidence owner is bound to.
+///
+/// A reader supplies the identity it expects and the owner answers whether it
+/// matches. This is the whole difference from the previous shape, where the
+/// caller's own session/epoch were stamped onto whatever hops happened to sit
+/// in a process-global ladder.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CaptureEvidenceIdentity {
+    pub session: String,
+    pub capture_epoch: u64,
+}
+
+impl CaptureEvidenceIdentity {
+    /// Bind an identity for one take.
+    pub fn new(session: impl Into<String>, capture_epoch: u64) -> Self {
+        Self {
+            session: session.into(),
+            capture_epoch,
+        }
+    }
+
+    /// Whether this identity names exactly the requested take.
+    pub fn matches(&self, session: &str, capture_epoch: u64) -> bool {
+        self.session == session && self.capture_epoch == capture_epoch
+    }
+}
+
+/// Whether an acoustic observer measured a take, and how much of it.
+///
+/// Absence of speech and absence of measurement are separate states. Only
+/// [`Self::Observed`] may support a silence claim, and only up to
+/// `observed_samples`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum AcousticAvailability {
+    /// The observer ingested `observed_samples` of contiguous PCM for the
+    /// bound identity. An empty range set here is measured silence.
+    Observed { observed_samples: u64 },
+    /// No PCM ever reached this observer for the bound identity.
+    NotObserved,
+    /// A measurement exists, but it names a different session or epoch.
+    IdentityMismatch,
+    /// PCM arrived and some of it was non-finite, so this observer's
+    /// measurement cannot be trusted for the take.
+    ///
+    /// Non-finite input is substituted with zero before measurement, which
+    /// makes an unmeasurable region indistinguishable from a silent one. The
+    /// observer therefore refuses the whole take rather than certifying the
+    /// part it could still read: an invalid region is not silence whether it
+    /// arrives first, last, or between two valid ones. `valid_samples` is the
+    /// contiguous extent measured before the first invalid sample — diagnostic
+    /// only, never a coverage extent.
+    InvalidMeasurement { valid_samples: u64 },
+    /// PCM arrived with a hole — some captured audio never reached this
+    /// observer, either because a chunk skipped ahead or because the extent
+    /// stops short of the capture the take produced. The unobserved part cannot
+    /// be certified either way.
+    Discontinuous { observed_samples: u64 },
+}
+
+impl AcousticAvailability {
+    /// Contiguous extent this observer may speak for, if any.
+    pub fn observed_samples(self) -> Option<u64> {
+        match self {
+            Self::Observed { observed_samples } => Some(observed_samples),
+            Self::NotObserved
+            | Self::IdentityMismatch
+            | Self::InvalidMeasurement { .. }
+            | Self::Discontinuous { .. } => None,
+        }
+    }
+
+    /// Stable token for logs and projections.
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Observed { .. } => "observed",
+            Self::NotObserved => "not_observed",
+            Self::IdentityMismatch => "identity_mismatch",
+            Self::InvalidMeasurement { .. } => "invalid_measurement",
+            Self::Discontinuous { .. } => "discontinuous",
+        }
+    }
+}
+
+/// Owner-authenticated speech evidence for exactly one take.
+///
+/// Both the identity and the availability state come from the observer that
+/// did the measuring. A consumer cannot upgrade availability, and an empty
+/// [`Self::ranges`] means silence only when the availability says the observer
+/// was actually there.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct AcousticSpeechEvidence {
+    identity: CaptureEvidenceIdentity,
+    producer: &'static str,
+    availability: AcousticAvailability,
+    ranges: Vec<TailSampleRange>,
+}
+
+impl AcousticSpeechEvidence {
+    /// Mint evidence from an observer's own measurement.
+    ///
+    /// Only the two acoustic observers (this module's energy ladder and the
+    /// session's single Silero ingress) call this in production; the ranges
+    /// must already be on the observer's own PCM clock.
+    pub fn measured(
+        identity: CaptureEvidenceIdentity,
+        producer: &'static str,
+        availability: AcousticAvailability,
+        ranges: Vec<TailSampleRange>,
+    ) -> Self {
+        Self {
+            identity,
+            producer,
+            availability,
+            ranges,
+        }
+    }
+
+    /// Evidence that carries no measurement. Ranges are dropped: an
+    /// unavailable observer has nothing to say about where speech was.
+    pub fn unavailable(
+        identity: CaptureEvidenceIdentity,
+        producer: &'static str,
+        availability: AcousticAvailability,
+    ) -> Self {
+        debug_assert!(
+            availability.observed_samples().is_none(),
+            "an observed measurement must carry its ranges"
+        );
+        Self {
+            identity,
+            producer,
+            availability,
+            ranges: Vec::new(),
+        }
+    }
+
+    pub fn identity(&self) -> &CaptureEvidenceIdentity {
+        &self.identity
+    }
+
+    pub fn producer(&self) -> &'static str {
+        self.producer
+    }
+
+    pub fn availability(&self) -> AcousticAvailability {
+        self.availability
+    }
+
+    pub fn ranges(&self) -> &[TailSampleRange] {
+        &self.ranges
+    }
+
+    /// Whether this observer measured a contiguous extent it may speak for.
+    /// A `true` answer says nothing about whether it heard any speech.
+    pub fn is_observed(&self) -> bool {
+        self.availability.observed_samples().is_some()
+    }
+
+    /// Whether this observer measured speech (not just measured).
+    pub fn observed_speech(&self) -> bool {
+        self.is_observed() && !self.ranges.is_empty()
+    }
+}
+
+/// Shared, identity-bound owner of one take's capture energy ladder.
+///
+/// The production writer is the async capture arm and the production reader is
+/// the blocking Apple worker thread, so this is one handle both sides hold —
+/// not a process-global slot with a reset entrypoint. Cloning shares the same
+/// measurement; it does not fork a second authority.
+#[derive(Debug, Clone)]
+pub struct CaptureEnergyOwner {
+    identity: Arc<CaptureEvidenceIdentity>,
+    clock: Arc<Mutex<SessionEnergyClock>>,
+}
+
+impl CaptureEnergyOwner {
+    /// Open the energy ladder for one capture epoch.
+    pub fn bind(session: impl Into<String>, capture_epoch: u64) -> Self {
+        Self {
+            identity: Arc::new(CaptureEvidenceIdentity::new(session, capture_epoch)),
+            clock: Arc::new(Mutex::new(SessionEnergyClock::default())),
+        }
+    }
+
+    /// Identity this ladder measures. A successor take binds its own owner.
+    pub fn identity(&self) -> &CaptureEvidenceIdentity {
+        &self.identity
+    }
+
+    fn record_hop(&self, sample_start: u64, sample_end: u64, rms: f32, nonfinite: u64) {
+        let mut clock = self.clock.lock().unwrap_or_else(|e| e.into_inner());
+        clock.observed_samples = clock.observed_samples.max(sample_end);
+        if nonfinite > 0 {
+            // The hop is contaminated wherever the invalid samples sat inside
+            // it, so the trustworthy prefix ends where the hop begins. Hops
+            // arrive in capture order but `min` keeps this true regardless.
+            let first = clock.first_invalid_sample.get_or_insert(sample_start);
+            *first = (*first).min(sample_start);
+        }
+        if sample_end <= sample_start || !rms.is_finite() || rms < 0.0 {
+            return;
+        }
+        clock.hops.push(EnergyHop {
+            sample_start,
+            sample_end,
+            rms,
+        });
+    }
+
+    /// Mean RMS of hops overlapping `[sample_start, sample_end)`, as dBFS.
+    ///
+    /// Missing hops, inverted ranges, or a silent window return `None`. This is
+    /// intensity on the PCM clock — not a confidence score.
+    pub fn session_energy_db(&self, sample_start: u64, sample_end: u64) -> Option<f32> {
+        if sample_end <= sample_start {
+            return None;
+        }
+        let clock = self.clock.lock().unwrap_or_else(|e| e.into_inner());
+        let mut weighted = 0.0_f64;
+        let mut covered = 0.0_f64;
+        for hop in &clock.hops {
+            let lo = hop.sample_start.max(sample_start);
+            let hi = hop.sample_end.min(sample_end);
+            if hi <= lo {
+                continue;
+            }
+            let width = (hi - lo) as f64;
+            weighted += f64::from(hop.rms) * width;
+            covered += width;
+        }
+        if covered <= 0.0 {
+            return None;
+        }
+        let db = linear_to_db((weighted / covered) as f32);
+        db.is_finite().then_some(db)
+    }
+
+    /// Active-speech evidence measured by this take's capture energy ladder.
+    ///
+    /// `session` / `capture_epoch` are the identity the caller **expects**; a
+    /// mismatch is reported as [`AcousticAvailability::IdentityMismatch`] and
+    /// no range is relabelled. This exposes the existing detector on the
+    /// canonical PCM clock; it does not run a second VAD or read transcript
+    /// text.
+    pub fn session_active_speech_ranges(
+        &self,
+        session: &str,
+        capture_epoch: u64,
+        sample_rate: u32,
+    ) -> AcousticSpeechEvidence {
+        let identity = (*self.identity).clone();
+        if !self.identity.matches(session, capture_epoch) {
+            return AcousticSpeechEvidence::unavailable(
+                identity,
+                CAPTURE_ENERGY_PRODUCER,
+                AcousticAvailability::IdentityMismatch,
+            );
+        }
+        let merge_gap = u64::from(sample_rate).saturating_mul(ACTIVE_SPEECH_MERGE_GAP_MS) / 1_000;
+        let clock = self.clock.lock().unwrap_or_else(|e| e.into_inner());
+        if clock.observed_samples == 0 {
+            return AcousticSpeechEvidence::unavailable(
+                identity,
+                CAPTURE_ENERGY_PRODUCER,
+                AcousticAvailability::NotObserved,
+            );
+        }
+        if let Some(first_invalid) = clock.first_invalid_sample {
+            // One invalid region is enough. Publishing the valid prefix as a
+            // measurement would hand the ledger an extent that stops short of
+            // the capture without saying so, which is the same certified-silence
+            // lie one step further down.
+            return AcousticSpeechEvidence::unavailable(
+                identity,
+                CAPTURE_ENERGY_PRODUCER,
+                AcousticAvailability::InvalidMeasurement {
+                    valid_samples: first_invalid,
+                },
+            );
+        }
+        let mut ranges: Vec<(u64, u64)> = Vec::new();
+        for hop in clock
+            .hops
+            .iter()
+            .filter(|hop| hop.rms >= ACTIVE_SPEECH_LINEAR_FLOOR)
+        {
+            if let Some((_, previous_end)) = ranges.last_mut()
+                && hop.sample_start <= previous_end.saturating_add(merge_gap)
+            {
+                *previous_end = (*previous_end).max(hop.sample_end);
+            } else {
+                ranges.push((hop.sample_start, hop.sample_end));
+            }
+        }
+        AcousticSpeechEvidence::measured(
+            identity,
+            CAPTURE_ENERGY_PRODUCER,
+            AcousticAvailability::Observed {
+                observed_samples: clock.observed_samples,
+            },
+            ranges
+                .into_iter()
+                .map(|(sample_start, sample_end)| TailSampleRange {
+                    session: session.to_string(),
+                    capture_epoch,
+                    sample_start,
+                    sample_end,
+                })
+                .collect(),
+        )
+    }
 }
 
 fn last_receipt_slot() -> &'static Mutex<Option<CaptureLevelReceipt>> {
@@ -53,62 +388,6 @@ fn last_receipt_slot() -> &'static Mutex<Option<CaptureLevelReceipt>> {
 
 fn last_open_path_slot() -> &'static Mutex<Option<CapturePathMeta>> {
     LAST_OPEN_PATH.get_or_init(|| Mutex::new(None))
-}
-
-fn session_energy_slot() -> &'static Mutex<SessionEnergyClock> {
-    SESSION_ENERGY.get_or_init(|| Mutex::new(SessionEnergyClock::default()))
-}
-
-/// Open a new capture epoch's energy ladder. Call at live-session start only.
-pub fn begin_session_energy_clock() {
-    *session_energy_slot()
-        .lock()
-        .unwrap_or_else(|e| e.into_inner()) = SessionEnergyClock::default();
-}
-
-fn record_session_energy_hop(sample_start: u64, sample_end: u64, rms: f32) {
-    if sample_end <= sample_start || !rms.is_finite() || rms < 0.0 {
-        return;
-    }
-    session_energy_slot()
-        .lock()
-        .unwrap_or_else(|e| e.into_inner())
-        .hops
-        .push(EnergyHop {
-            sample_start,
-            sample_end,
-            rms,
-        });
-}
-
-/// Mean RMS of hops overlapping `[sample_start, sample_end)`, as dBFS.
-///
-/// Missing hops, inverted ranges, or a silent window return `None`. This is
-/// intensity on the PCM clock — not a confidence score.
-pub fn session_energy_db(sample_start: u64, sample_end: u64) -> Option<f32> {
-    if sample_end <= sample_start {
-        return None;
-    }
-    let hops = session_energy_slot()
-        .lock()
-        .unwrap_or_else(|e| e.into_inner());
-    let mut weighted = 0.0_f64;
-    let mut covered = 0.0_f64;
-    for hop in &hops.hops {
-        let lo = hop.sample_start.max(sample_start);
-        let hi = hop.sample_end.min(sample_end);
-        if hi <= lo {
-            continue;
-        }
-        let width = (hi - lo) as f64;
-        weighted += f64::from(hop.rms) * width;
-        covered += width;
-    }
-    if covered <= 0.0 {
-        return None;
-    }
-    let db = linear_to_db((weighted / covered) as f32);
-    db.is_finite().then_some(db)
 }
 
 /// Remember the live capture path (device / rate / channels) without a new TCC prompt.
@@ -121,14 +400,6 @@ pub fn publish_open_capture_path(meta: CapturePathMeta) {
 /// Last opened capture path, if the recorder published one this process.
 pub fn last_open_capture_path() -> Option<CapturePathMeta> {
     last_open_path_slot()
-        .lock()
-        .unwrap_or_else(|e| e.into_inner())
-        .clone()
-}
-
-/// Last finalized capture receipt in this process, if any.
-pub fn last_capture_level_receipt() -> Option<CaptureLevelReceipt> {
-    last_receipt_slot()
         .lock()
         .unwrap_or_else(|e| e.into_inner())
         .clone()
@@ -221,8 +492,15 @@ impl CapturePathMeta {
 }
 
 /// Running per-buffer capture stats. Cheap enough for the CoreAudio callback.
+///
+/// The accumulator is the **writer** of session acoustic evidence, so the
+/// binding lives here rather than on the read path: an unbound accumulator
+/// (guided calibration) still produces its full statistical receipt, but its
+/// hops never reach a take's ladder.
 #[derive(Debug, Default)]
 pub struct CaptureLevelAccumulator {
+    /// Owner this writer feeds. `None` = statistics-only (calibration).
+    energy: Option<CaptureEnergyOwner>,
     sample_count: u64,
     digital_zero_samples: u64,
     clipping_samples: u64,
@@ -236,9 +514,23 @@ pub struct CaptureLevelAccumulator {
 }
 
 impl CaptureLevelAccumulator {
-    /// Empty accumulator for one session.
+    /// Statistics-only accumulator. Measures the buffer, owns no take.
+    ///
+    /// Guided energy calibration uses this: its numbers must stay available
+    /// without a live take's acoustic evidence inheriting them.
     pub fn new() -> Self {
         Self::default()
+    }
+
+    /// Accumulator bound to one capture epoch's energy ladder.
+    ///
+    /// Every hop this writer measures lands in `owner`, and only there. The
+    /// reader on the worker thread holds a clone of the same owner.
+    pub fn bound_to(owner: &CaptureEnergyOwner) -> Self {
+        Self {
+            energy: Some(owner.clone()),
+            ..Self::default()
+        }
     }
 
     /// Ingest one captured block (mono f32, already downmixed).
@@ -249,9 +541,15 @@ impl CaptureLevelAccumulator {
         let mut sum_sq = 0.0_f64;
         let mut zeros = 0_u64;
         let mut clips = 0_u64;
+        let mut nonfinite = 0_u64;
         let mut peak = 0.0_f32;
         for sample in samples {
-            let x = if sample.is_finite() { *sample } else { 0.0 };
+            let x = if sample.is_finite() {
+                *sample
+            } else {
+                nonfinite += 1;
+                0.0
+            };
             let abs = x.abs();
             if abs <= DIGITAL_ZERO_ABS {
                 zeros += 1;
@@ -267,7 +565,9 @@ impl CaptureLevelAccumulator {
         let rms = (sum_sq / samples.len() as f64).sqrt() as f32;
         let sample_start = self.sample_count;
         self.sample_count += samples.len() as u64;
-        record_session_energy_hop(sample_start, self.sample_count, rms);
+        if let Some(owner) = self.energy.as_ref() {
+            owner.record_hop(sample_start, self.sample_count, rms, nonfinite);
+        }
         self.digital_zero_samples += zeros;
         self.clipping_samples += clips;
         if peak > self.peak_linear {
@@ -479,10 +779,13 @@ mod tests {
     /// it. Attenuated speech below −52 dB warns. The WARN is never terminal.
     #[test]
     fn w13_capture_receipt_active_speech() {
+        // W13-5: quality receipts never become terminal. The list may only
+        // hold true engine-warning terminal codes. Admission refusals use the
+        // typed presentation-status projection instead of this side-channel.
         assert_eq!(
             USER_TERMINAL_WARNING_CODES,
             &["transcription_failed"],
-            "W13-5 must not enlarge the terminal-warning list"
+            "W13-5 must not enlarge the terminal-warning list beyond take-terminal codes"
         );
         assert!(
             !warning_is_user_terminal(CAPTURE_LEVEL_LOW_CODE),
@@ -599,19 +902,257 @@ mod tests {
 
     #[test]
     fn session_energy_db_is_pcm_range_intensity() {
-        begin_session_energy_clock();
-        let mut acc = CaptureLevelAccumulator::new();
+        let owner = CaptureEnergyOwner::bind("intensity", 1);
+        let mut acc = CaptureLevelAccumulator::bound_to(&owner);
         acc.push_samples(&vec![0.0; 160]);
         acc.push_samples(&vec![0.1; 160]);
         acc.push_samples(&vec![0.0; 160]);
         assert!(
-            session_energy_db(0, 160).is_none(),
+            owner.session_energy_db(0, 160).is_none(),
             "digital-zero hops have no finite dBFS"
         );
-        let speech = session_energy_db(160, 320).expect("speech hop");
+        let speech = owner.session_energy_db(160, 320).expect("speech hop");
         assert!(speech.is_finite());
-        assert!(session_energy_db(480, 640).is_none());
-        begin_session_energy_clock();
-        assert!(session_energy_db(160, 320).is_none());
+        assert!(owner.session_energy_db(480, 640).is_none());
+        let successor = CaptureEnergyOwner::bind("intensity", 2);
+        assert!(
+            successor.session_energy_db(160, 320).is_none(),
+            "a successor epoch opens its own ladder"
+        );
+    }
+
+    /// Captured zeros and no samples at all are different facts. The first is a
+    /// measurement whose answer is "no speech"; the second is no measurement.
+    #[test]
+    fn measured_silence_and_absent_measurement_have_different_availability() {
+        let silent = CaptureEnergyOwner::bind("availability", 1);
+        let mut writer = CaptureLevelAccumulator::bound_to(&silent);
+        writer.push_samples(&vec![0.0; 16_000]);
+        let measured = silent.session_active_speech_ranges("availability", 1, 16_000);
+        assert_eq!(
+            measured.availability(),
+            AcousticAvailability::Observed {
+                observed_samples: 16_000
+            }
+        );
+        assert!(measured.ranges().is_empty(), "zeros are never speech");
+        assert!(measured.is_observed());
+        assert!(!measured.observed_speech());
+
+        let absent = CaptureEnergyOwner::bind("availability", 1);
+        let unmeasured = absent.session_active_speech_ranges("availability", 1, 16_000);
+        assert_eq!(
+            unmeasured.availability(),
+            AcousticAvailability::NotObserved,
+            "a ladder nobody fed has measured nothing"
+        );
+        assert!(unmeasured.ranges().is_empty());
+        assert!(!unmeasured.is_observed());
+    }
+
+    /// A buffer of NaN/inf is mapped to zero for measurement, so it must not be
+    /// allowed to read as measured silence — in any position.
+    ///
+    /// Position is the whole point. The previous shape compared the non-finite
+    /// total against the whole observed extent, so an invalid region vanished
+    /// from the verdict as soon as enough valid PCM arrived on either side of
+    /// it; the ladder then published a zero-RMS hop and the take sealed as
+    /// silent audio nobody had actually measured.
+    #[test]
+    fn invalid_samples_cannot_certify_measured_silence_in_any_position() {
+        let owner = CaptureEnergyOwner::bind("invalid", 1);
+        let mut writer = CaptureLevelAccumulator::bound_to(&owner);
+        writer.push_samples(&vec![f32::NAN; 320]);
+        writer.push_samples(&vec![f32::INFINITY; 320]);
+        assert_eq!(
+            owner
+                .session_active_speech_ranges("invalid", 1, 16_000)
+                .availability(),
+            AcousticAvailability::InvalidMeasurement { valid_samples: 0 },
+            "NaN and infinities are equally unmeasurable, and nothing valid \
+             preceded them"
+        );
+
+        // A finite buffer afterwards measures its own extent, but it cannot
+        // retro-validate what came before it.
+        writer.push_samples(&vec![0.0; 320]);
+        assert_eq!(
+            owner
+                .session_active_speech_ranges("invalid", 1, 16_000)
+                .availability(),
+            AcousticAvailability::InvalidMeasurement { valid_samples: 0 },
+            "valid PCM after an invalid region does not make that region silent"
+        );
+
+        // Valid first, then invalid: the trustworthy prefix is reported as a
+        // diagnostic and the take is still refused.
+        let mixed = CaptureEnergyOwner::bind("mixed", 1);
+        let mut mixed_writer = CaptureLevelAccumulator::bound_to(&mixed);
+        mixed_writer.push_samples(&vec![0.25; 320]);
+        mixed_writer.push_samples(&vec![f32::NEG_INFINITY; 320]);
+        let evidence = mixed.session_active_speech_ranges("mixed", 1, 16_000);
+        assert_eq!(
+            evidence.availability(),
+            AcousticAvailability::InvalidMeasurement { valid_samples: 320 },
+            "the first 320 samples were measurable; the take is not"
+        );
+        assert!(
+            evidence.ranges().is_empty(),
+            "refused evidence publishes no speech, not even the valid prefix's"
+        );
+        assert!(!evidence.is_observed());
+
+        // One invalid sample inside an otherwise valid hop is enough: zero
+        // substitution has already depressed that hop's RMS, so its silence
+        // and its speech are equally unreliable.
+        let one_bad = CaptureEnergyOwner::bind("one-bad", 1);
+        let mut one_bad_writer = CaptureLevelAccumulator::bound_to(&one_bad);
+        one_bad_writer.push_samples(&vec![0.25; 320]);
+        let mut contaminated = vec![0.25f32; 320];
+        contaminated[17] = f32::NAN;
+        one_bad_writer.push_samples(&contaminated);
+        assert_eq!(
+            one_bad
+                .session_active_speech_ranges("one-bad", 1, 16_000)
+                .availability(),
+            AcousticAvailability::InvalidMeasurement { valid_samples: 320 },
+        );
+
+        // Valid silence keeps its measurement and keeps succeeding.
+        let quiet = CaptureEnergyOwner::bind("quiet", 1);
+        let mut quiet_writer = CaptureLevelAccumulator::bound_to(&quiet);
+        quiet_writer.push_samples(&vec![0.0; 640]);
+        let quiet_evidence = quiet.session_active_speech_ranges("quiet", 1, 16_000);
+        assert_eq!(
+            quiet_evidence.availability(),
+            AcousticAvailability::Observed {
+                observed_samples: 640
+            },
+            "measured silence is a measurement; only invalid input is not"
+        );
+        assert!(quiet_evidence.is_observed());
+        assert!(quiet_evidence.ranges().is_empty());
+    }
+
+    /// The reader supplies the identity it expects; the owner refuses to answer
+    /// for a foreign take instead of stamping the caller's labels onto its hops.
+    #[test]
+    fn foreign_identity_is_refused_not_relabelled() {
+        let owner = CaptureEnergyOwner::bind("owner-take", 7);
+        let mut writer = CaptureLevelAccumulator::bound_to(&owner);
+        writer.push_samples(&[0.25; 160]);
+
+        for (session, epoch) in [("owner-take", 8), ("other-take", 7)] {
+            let evidence = owner.session_active_speech_ranges(session, epoch, 16_000);
+            assert_eq!(
+                evidence.availability(),
+                AcousticAvailability::IdentityMismatch,
+                "{session}/{epoch} is not this owner's take"
+            );
+            assert!(evidence.ranges().is_empty());
+            assert_eq!(evidence.identity().session, "owner-take");
+            assert_eq!(evidence.identity().capture_epoch, 7);
+        }
+
+        let mine = owner.session_active_speech_ranges("owner-take", 7, 16_000);
+        assert!(mine.observed_speech());
+        assert_eq!(mine.ranges()[0].session, "owner-take");
+        assert_eq!(mine.ranges()[0].capture_epoch, 7);
+    }
+
+    /// Guided calibration measures its own buffer and contaminates no take.
+    #[test]
+    fn calibration_accumulator_cannot_append_to_a_live_take() {
+        let live = CaptureEnergyOwner::bind("live-take", 1);
+        let mut calibration = CaptureLevelAccumulator::new();
+        calibration.push_samples(&[0.25; 16_000]);
+        let receipt = calibration.finalize(CapturePathMeta {
+            device_name: "EarPods".into(),
+            sample_rate: 16_000,
+            channels: 1,
+        });
+        assert_eq!(
+            receipt.sample_count, 16_000,
+            "calibration keeps its statistics"
+        );
+        assert!(receipt.active_speech_median_db.is_finite());
+        assert_eq!(
+            live.session_active_speech_ranges("live-take", 1, 16_000)
+                .availability(),
+            AcousticAvailability::NotObserved,
+            "an unbound writer may not appear in a take's acoustic evidence"
+        );
+    }
+
+    /// Production writes on the async capture arm and reads on the blocking
+    /// Apple worker thread. Prove the same bound owner crosses that boundary,
+    /// and that a concurrently created successor cannot inherit the writes.
+    #[test]
+    fn bound_owner_crosses_threads_and_successor_stays_separate() {
+        let owner = CaptureEnergyOwner::bind("cross-thread", 3);
+        let successor = CaptureEnergyOwner::bind("cross-thread", 4);
+        let written = std::sync::Arc::new(std::sync::Barrier::new(2));
+
+        let writer_owner = owner.clone();
+        let writer_gate = std::sync::Arc::clone(&written);
+        let writer = std::thread::spawn(move || {
+            let mut accumulator = CaptureLevelAccumulator::bound_to(&writer_owner);
+            accumulator.push_samples(&[0.25; 160]);
+            accumulator.push_samples(&[0.0; 160]);
+            writer_gate.wait();
+        });
+
+        let reader_owner = owner.clone();
+        let reader_successor = successor.clone();
+        let reader_gate = std::sync::Arc::clone(&written);
+        let reader = std::thread::spawn(move || {
+            reader_gate.wait();
+            let evidence = reader_owner.session_active_speech_ranges("cross-thread", 3, 16_000);
+            let successor_evidence =
+                reader_successor.session_active_speech_ranges("cross-thread", 4, 16_000);
+            (evidence, successor_evidence)
+        });
+
+        writer.join().expect("writer thread");
+        let (evidence, successor_evidence) = reader.join().expect("reader thread");
+
+        assert_eq!(
+            evidence.availability(),
+            AcousticAvailability::Observed {
+                observed_samples: 320
+            },
+            "the reader thread must see the writer thread's extent"
+        );
+        assert_eq!(evidence.ranges().len(), 1);
+        assert_eq!(
+            (
+                evidence.ranges()[0].sample_start,
+                evidence.ranges()[0].sample_end
+            ),
+            (0, 160),
+            "the silent second hop is not speech"
+        );
+        assert_eq!(
+            successor_evidence.availability(),
+            AcousticAvailability::NotObserved,
+            "a successor epoch may not inherit predecessor availability"
+        );
+    }
+
+    /// Unavailable evidence carries no ranges: an observer that was not there
+    /// cannot also report where speech was.
+    #[test]
+    fn unavailable_evidence_carries_no_ranges() {
+        let evidence = AcousticSpeechEvidence::unavailable(
+            CaptureEvidenceIdentity::new("no-observer", 1),
+            CAPTURE_ENERGY_PRODUCER,
+            AcousticAvailability::NotObserved,
+        );
+        assert!(evidence.ranges().is_empty());
+        assert!(!evidence.is_observed());
+        assert!(!evidence.observed_speech());
+        assert_eq!(evidence.availability().observed_samples(), None);
+        assert_eq!(evidence.availability().as_str(), "not_observed");
+        assert_eq!(evidence.producer(), CAPTURE_ENERGY_PRODUCER);
     }
 }

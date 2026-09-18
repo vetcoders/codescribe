@@ -1,0 +1,14 @@
+{
+  "source": "local_final_pass",
+  "engine": "local_whisper",
+  "mode": "raw",
+  "fallback_class": null,
+  "fallback_used": false,
+  "vad_speech_pct": 61.714287,
+  "no_speech_reason": null,
+  "avg_logprob": -0.26560482,
+  "confidence_flags": [],
+  "sparkline": "  ░███ ▓█████░ ░█▓ █▓░█   ███▓░▓██▓█▓▓█░ ░██▓▓ █░█░ ░▓██▓███░█▓██  ▓    █▓▓░ ███▓  ░███░░  ▓▓▓█▓▓░█ █   █░█████ ██ ██▓  ███▓░██░▓█     ░███▓█▓█▓██▓░█    ▓███▓    ██████ ▓       █ ██ █▓▓██░▓ ██▓██▓ ░████░  ░ ▓ █░ ██░ ░█░░█▓ █▓░██░░█▓ ▓ ░▓ ▓░█░ ███░ ████ █  █▓█▓ ███▓ █ ░ ▓ ██████████ ▓███▓░██ ██▓ ███ ████▓█ ░▓█▓███ ▓▓███▓█▓▓░█░██▓██░   ░   ░██ ▓▓█░██",
+  "commit_trigger": null,
+  "display_status": "Final-pass local • Transcript"
+}

@@ -16,12 +16,6 @@ pub const DEFAULT_MODEL: &str = "whisper-large-v3-turbo";
 /// the Settings → Dictation download. fp16 weights: no q8→F32 dequantization
 /// on load, at the cost of a larger download than the q8 repo.
 pub const DEFAULT_WHISPER_REPO: &str = "mlx-community/whisper-large-v3-turbo";
-/// Former quantized model alias retained only for source compatibility.
-#[deprecated(note = "quantized Whisper is unsupported; no runtime fallback uses this alias")]
-pub const LEGACY_MODEL: &str = "whisper-large-v3-turbo-mlx-q8";
-/// Former quantized model repository retained only for source compatibility.
-#[deprecated(note = "quantized Whisper is unsupported; no runtime fallback uses this repository")]
-pub const LEGACY_WHISPER_REPO: &str = "LibraxisAI/whisper-large-v3-turbo-mlx-q8";
 /// Official Transformers tokenizer paired with Whisper large-v3-turbo.
 pub(crate) const TOKENIZER_WHISPER_REPO: &str = "openai/whisper-large-v3-turbo";
 /// Pinned OpenAI Whisper asset. The checksum is asserted by the installer.

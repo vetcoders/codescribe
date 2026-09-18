@@ -1,9 +1,9 @@
 [workspace]
 resolver = "2"
-members = [".", "core", "bridge"]
+members = [".", "core", "bridge", "tools/structural-ast"]
 
 [workspace.package]
-version = "0.14.1"
+version = "0.15.1"
 edition = "2024"
 rust-version = "1.88"
 authors = ["Vetcoders <hello@vetcoders.io>"]
@@ -19,7 +19,7 @@ tracing = "0.1"
 
 [package]
 name = "codescribe"
-version = "0.14.1"
+version = "0.15.1"
 edition = "2024"
 rust-version.workspace = true
 description = "Speech-to-text for macOS — SwiftUI front-end over a Rust engine (UniFFI bridge)"
@@ -61,10 +61,6 @@ codescribe_core = { package = "codescribe-core", path = "core" }
 # Async runtime
 tokio = { version = "1", features = ["full", "test-util"] }
 
-# System tray
-tray-icon = "0.21"
-muda = "0.17"  # Menu for tray
-tao = "0.34"   # Event loop for tray (required on macOS)
 
 # Global hotkeys - using core-graphics CGEventTap directly
 # rdev = "0.5"  # DISABLED - crashes on macOS 26.2 (TSMGetInputSourceProperty from wrong thread)
@@ -138,7 +134,6 @@ block2 = "0.6"
 dispatch = "0.2"
 
 [dev-dependencies]
-codescribe_core = { package = "codescribe-core", path = "core", features = ["offline_eval"] }
 tempfile = "3"
 mockito = "1"
 serial_test = "3"
@@ -155,7 +150,12 @@ opt-level = "z"
 lto = true
 codegen-units = 1
 panic = "abort"
-strip = true
+# Xcode 27 ld (ld-27036) refuses to link against a dylib whose LC_SYMTAB.stroff
+# is not 8-aligned ("mis-aligned LINKEDIT string pool"). With LTO, rustc's
+# strip leaves stroff at 4 mod 8 for both `true` (27909956) and `"debuginfo"`
+# (29600852) — measured 2026-09-05 on libcodescribe_ffi.dylib. Unstripped
+# links; symbols cost ~10 MB in the dylib. `-ld_classic` is gone in Xcode 27.
+strip = false
 
 # Optimized source-install profile. This deliberately has a distinct Cargo
 # profile name so core/build.rs can keep production `release` artifacts
@@ -164,10 +164,9 @@ strip = true
 # artifact; scripts/build-dmg.sh and CI use the literal `release` profile.
 [profile.local-release]
 inherits = "release"
-# rustc `strip = true` leaves LC_SYMTAB.stroff unaligned. Xcode 27's ld
-# (ld-27036) then dies: "mis-aligned LINKEDIT string pool". Daily
-# `make install-app` uses this profile; keep symbols so the dylib links.
-# Dist `release` still strips — `make release-standard` is a separate cut.
+# Daily `make install-app` uses this profile. `strip = false` is inherited
+# from `release` since 2026-09-05 (see the note there); kept explicit so a
+# future change to `release` cannot silently break the daily install link.
 strip = false
 
 # Diagnostic / crash-reproduction profile.

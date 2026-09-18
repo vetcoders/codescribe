@@ -1,12 +1,17 @@
 //! Pipeline contracts — shared data types for the transcription pipeline.
 //!
 //! These types define the boundaries between pipeline stages:
-//!   AudioChunk → SpeechUtterance → RawTranscript → TranscriptDelta → DeltaSink
+//!   AudioChunk → RawTranscript → TranscriptDelta → DeltaSink
 //!
 //! Vibecrafted with AI Agents by Vetcoders (c)2026 Vetcoders
 
 use serde::{Deserialize, Serialize};
 
+use crate::llm::inline_format::OccurrenceLabelProposal;
+use crate::pipeline::acoustic_ledger::{
+    LedgerSealReceipt, MutationReceipt, ObservationIdentity, SealCoverageReceipt,
+    TranscriptComparisonReceipt,
+};
 use crate::stt::tail_provider::TailSampleRange;
 
 // ═══════════════════════════════════════════════════════════
@@ -24,22 +29,6 @@ pub struct AudioChunk {
     pub end_ts: f32,
 }
 
-/// A complete speech utterance (after VAD gating / silence detection).
-#[derive(Debug, Clone)]
-pub struct SpeechUtterance {
-    pub samples: Vec<f32>,
-    pub sample_rate: u32,
-    pub start_ts: f32,
-    pub end_ts: f32,
-}
-
-impl SpeechUtterance {
-    /// Duration in seconds.
-    pub fn duration(&self) -> f32 {
-        self.end_ts - self.start_ts
-    }
-}
-
 // ═══════════════════════════════════════════════════════════
 // STT stage
 // ═══════════════════════════════════════════════════════════
@@ -55,8 +44,23 @@ pub struct RawTranscript {
     pub avg_logprob: Option<f32>,
     /// Compression ratio of the decoded text (high = repetitive/hallucinated).
     pub compression_ratio: Option<f32>,
-    /// True when the quality gate (logprob + compression) dropped this result.
-    pub quality_gate_dropped: bool,
+    /// Log-mel energy timeline measured on the same PCM the decoder saw.
+    /// Signal-side clock for the take-truth sidecar (`energy_sparkline`) and
+    /// `--inspect`; absent on engines that never touch the mel.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub energy: Option<EnergyTimeline>,
+}
+
+/// Per-frame log-mel energy over one decoded file.
+///
+/// `frames` averages all mel bins, `voice` only the bins covering roughly
+/// 300–3000 Hz. Produced by `core::stt::whisper::energy` from one `pcm_to_mel`
+/// pass; `hop_ms` names the frame hop in milliseconds (10 for the mel clock).
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Default)]
+pub struct EnergyTimeline {
+    pub hop_ms: u16,
+    pub frames: Vec<f32>,
+    pub voice: Vec<f32>,
 }
 
 /// A single segment from the STT engine (optional granularity).
@@ -144,12 +148,6 @@ pub enum TranscriptionConfidenceFlag {
     // ── Engine-owned (derived inside the transcription engine) ──
     VeryLowSpeech,
     PossibleHallucinationLogprob,
-    QualityGateDropped,
-    /// Silero-based post-filter dropped one or more Whisper segments
-    /// that fell inside classified trailing silence.
-    SileroDroppedTailHallucinations {
-        count: u32,
-    },
 
     // ── App-level provenance (surfaced by controller truth adjudication) ──
     /// Hold path attempted a final-pass against the saved WAV but the
@@ -183,10 +181,6 @@ impl std::fmt::Display for TranscriptionConfidenceFlag {
             Self::VeryLowSpeech => write!(f, "very_low_speech"),
             Self::PossibleHallucinationLogprob => {
                 write!(f, "possible_hallucination_logprob")
-            }
-            Self::QualityGateDropped => write!(f, "quality_gate_dropped"),
-            Self::SileroDroppedTailHallucinations { count } => {
-                write!(f, "silero_dropped_tail_hallucinations:{count}")
             }
             Self::LocalFinalPassUnavailable => write!(f, "local_final_pass_unavailable"),
             Self::CloudFallbackUsed => write!(f, "cloud_fallback_used"),
@@ -263,11 +257,8 @@ impl TranscriptionVerdict {
         engine: TranscriptionEngineVerdict,
         final_pass: Option<FinalPassVerdict>,
     ) -> Self {
-        let confidence_flags = collect_confidence_flags(
-            vad.as_ref().map(|vad| vad.speech_pct),
-            raw.avg_logprob,
-            raw.quality_gate_dropped,
-        );
+        let confidence_flags =
+            collect_confidence_flags(vad.as_ref().map(|vad| vad.speech_pct), raw.avg_logprob);
         Self {
             text,
             raw,
@@ -277,28 +268,6 @@ impl TranscriptionVerdict {
             final_pass,
             confidence_flags,
         }
-    }
-
-    /// Build a verdict and append typed Silero drop telemetry when the
-    /// file-level post-filter removed tail hallucinations.
-    pub fn from_parts_with_silero_drops(
-        text: String,
-        raw: RawTranscript,
-        vad: Option<VadVerdict>,
-        source: TranscriptionSource,
-        engine: TranscriptionEngineVerdict,
-        final_pass: Option<FinalPassVerdict>,
-        tail_drop_count: u32,
-    ) -> Self {
-        let mut verdict = Self::from_parts(text, raw, vad, source, engine, final_pass);
-        if tail_drop_count > 0 {
-            verdict.confidence_flags.push(
-                TranscriptionConfidenceFlag::SileroDroppedTailHallucinations {
-                    count: tail_drop_count,
-                },
-            );
-        }
-        verdict
     }
 }
 
@@ -316,6 +285,15 @@ pub struct VadVerdict {
     /// Sparkline visualisation of speech distribution (one char per 500ms window).
     #[serde(default, skip_serializing_if = "String::is_empty")]
     pub sparkline: String,
+    /// Fine Silero sparkline: one char per 32 ms `feed()` chunk, rendered from
+    /// `VadExtractStats.fine_probabilities`. Empty when the extraction ran on
+    /// a build without the fine clock.
+    #[serde(default)]
+    pub fine_sparkline: String,
+    /// Hop of `fine_sparkline` in milliseconds (Silero native 512 samples
+    /// @16 kHz = 32). Zero when no fine timeline was recorded.
+    #[serde(default)]
+    pub fine_hop_ms: u16,
 }
 
 /// Per-window silence semantics derived from Silero probabilities.
@@ -461,7 +439,6 @@ impl TranscriptionEngineVerdict {
 pub(crate) fn collect_confidence_flags(
     vad_speech_pct: Option<f32>,
     avg_logprob: Option<f32>,
-    quality_gate_dropped: bool,
 ) -> Vec<TranscriptionConfidenceFlag> {
     let mut flags = Vec::new();
 
@@ -471,10 +448,6 @@ pub(crate) fn collect_confidence_flags(
 
     if avg_logprob.is_some_and(|avg| avg <= POSSIBLE_HALLUCINATION_LOGPROB) {
         flags.push(TranscriptionConfidenceFlag::PossibleHallucinationLogprob);
-    }
-
-    if quality_gate_dropped {
-        flags.push(TranscriptionConfidenceFlag::QualityGateDropped);
     }
 
     flags
@@ -583,22 +556,8 @@ impl std::fmt::Display for TranscriptDelta {
 }
 
 // ═══════════════════════════════════════════════════════════
-// Traits (adapter boundaries)
+// Traits (sink boundaries)
 // ═══════════════════════════════════════════════════════════
-
-/// Adapter for speech-to-text engines.
-///
-/// Implementations: `LocalWhisperEngine` (current), future cloud STT providers.
-pub trait TranscriptionAdapter: Send + Sync {
-    /// Transcribe one VAD-bounded utterance. `language` is a BCP-47-ish hint
-    /// (`None` = engine autodetect). Returns the untouched engine output;
-    /// postprocessing belongs to later pipeline stages.
-    fn transcribe(
-        &self,
-        utterance: &SpeechUtterance,
-        language: Option<&str>,
-    ) -> anyhow::Result<RawTranscript>;
-}
 
 /// Sink for transcript deltas (UI, IPC, clipboard, etc).
 ///
@@ -679,19 +638,28 @@ pub enum AcousticSpanGrain {
     Utterance,
 }
 
-/// One lexical hypothesis pinned to the canonical capture PCM clock.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-pub struct AcousticTranscriptSpan {
-    pub text: String,
-    pub range: TailSampleRange,
-    pub grain: AcousticSpanGrain,
+/// Live acoustic integrity projected by the session's one Silero observer.
+/// No phase grants transcript mutation or terminal delivery permission.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum SpeechIntegrityPhase {
+    Unavailable,
+    Listening,
+    Tracking,
+    Stalled,
+    Recovering,
+    Unresolved,
 }
 
-/// Acoustic identity of one committed utterance and its honest-grain spans.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-pub struct AcousticTranscriptIdentity {
-    pub range: TailSampleRange,
-    pub spans: Vec<AcousticTranscriptSpan>,
+/// Content-free progress evidence scoped to a physical capture.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SpeechIntegrity {
+    pub session_id: String,
+    pub capture_epoch: u64,
+    pub sequence: u64,
+    pub acoustic_speech_ms_since_text_advance: u64,
+    pub pending_occurrences: u64,
+    pub phase: SpeechIntegrityPhase,
 }
 
 /// Events emitted by the transcription engine.
@@ -703,6 +671,35 @@ pub struct AcousticTranscriptIdentity {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum EngineEvent {
+    /// Live acoustic-versus-text integrity, never transcript mutation authority.
+    SpeechIntegrity { evidence: SpeechIntegrity },
+    /// The only transcript mutation input. Engines submit an observation to
+    /// `AcousticLedger`; this event carries its exact receipt to the reducer.
+    #[serde(skip)]
+    LedgerMutation {
+        observation: ObservationIdentity,
+        label: String,
+        receipt: MutationReceipt,
+    },
+    /// Ledger-owned finality. Reducer, Bus, bridge, and Swift only project it.
+    #[serde(skip)]
+    LedgerSeal { receipt: LedgerSealReceipt },
+    /// Ledger coverage compared with the measured capture speech span. This is
+    /// evidence, not a free-form transcript mutation.
+    #[serde(skip)]
+    SealCoverage {
+        receipt: SealCoverageReceipt,
+        comparison: Option<TranscriptComparisonReceipt>,
+    },
+    /// Proposal-only output from the sole automatic post-ASR author. The
+    /// reducer may admit it only through the ledger and only for coordinates
+    /// of an occurrence that already exists.
+    #[serde(skip)]
+    OccurrenceLabelProposal { proposal: OccurrenceLabelProposal },
+    /// Presentation-only context captured at a character position in the
+    /// committed document. The transcript reducer owns rendering and anchoring.
+    #[serde(skip)]
+    ContextMarker { position: usize, label: String },
     /// VAD detected speech start.
     VadStart { speech_prob: f32, ts_ms: u64 },
     /// VAD detected speech end.
@@ -715,8 +712,8 @@ pub enum EngineEvent {
     SidebandEvidence { evidence: SidebandEvidence },
     /// Session or utterance completed without usable speech content.
     ///
-    /// Emitted when VAD sees no speech at all, or when speech-like segments are
-    /// fully rejected by quality gates/hallucination filters.
+    /// Emitted when VAD sees no speech at all, or when an observed session ends
+    /// without committed text for another recorded reason.
     NoSpeech { reason: String },
 
     /// Interim preview — latest transcription of the current utterance.
@@ -761,8 +758,7 @@ pub enum EngineEvent {
     /// - `text` is the final post-processed utterance text.
     /// - `vad_speech_pct` preserves how much of the utterance Silero classified
     ///   as speech, so consumers do not have to reverse-engineer silence risk.
-    /// - `confidence_flags` carries the engine-owned truth derived from VAD
-    ///   speech ratio plus Whisper quality-gate metadata.
+    /// - `confidence_flags` carries VAD and decoder diagnostic metadata.
     /// - After this event, the engine clears its internal accumulated_text.
     /// - Sinks must reset `last_preview` to empty (next Preview starts fresh).
     /// - In toggle mode, the utterance callback processes this text (AI/clipboard).
@@ -778,12 +774,7 @@ pub enum EngineEvent {
         vad_speech_pct: Option<f32>,
         avg_logprob: Option<f32>,
         compression_ratio: Option<f32>,
-        quality_gate_dropped: bool,
         confidence_flags: Vec<TranscriptionConfidenceFlag>,
-        /// Canonical PCM identity. `None` is legacy/unanchored evidence and is
-        /// surfaced as a failed Transcript Bus coverage receipt.
-        #[serde(default, skip_serializing_if = "Option::is_none")]
-        acoustic: Option<AcousticTranscriptIdentity>,
     },
 
     /// Replace a bounded char range inside an already-committed utterance.
@@ -823,7 +814,6 @@ pub enum EngineEvent {
     Stats {
         dropped_audio_chunks: u64,
         hallucination_drops: u64,
-        semantic_gate_drops: u64,
         filtered_empty_drops: u64,
         corrections_applied: u64,
         total_utterances: u64,
@@ -1000,6 +990,29 @@ impl std::fmt::Display for DropKind {
 /// Implementations decide how to present events — typing animation,
 /// overlay updates, clipboard paste, IPC streaming, etc.
 pub trait EventSink: Send + Sync {
+    /// Number of configured consultation publishers below this sink. Passive
+    /// observers return zero. This must remain stable for the sink's lifetime;
+    /// it describes wiring, not focus or current delivery availability.
+    fn consultation_destinations(&self) -> usize {
+        0
+    }
+
+    /// In-process completed-answer delivery, deliberately absent from the
+    /// serializable EngineEvent protocol. The retained executor owns this
+    /// typed result; a bus row or arbitrary string cannot manufacture it.
+    /// Refusal preserves execution/history truth and never authorizes replay.
+    fn on_consultation_completed(
+        &self,
+        _completed: &crate::agent::consultation::ConsultationGroupAnswer,
+    ) -> anyhow::Result<()> {
+        anyhow::bail!("consultation presentation destination unavailable")
+    }
+
+    /// Bind passive capture observers after the recorder opens successfully,
+    /// before the transcription worker starts. This is not a document event,
+    /// ledger receipt, or public IPC message.
+    fn on_capture_opened(&self, _session_id: &str, _capture_epoch: u64) {}
+
     /// Receive one semantic engine event. Called from the engine's own thread,
     /// so implementations must not block — presentation work belongs on the
     /// consumer's queue, not on this call.
@@ -1173,20 +1186,6 @@ mod tests {
         assert_eq!(buf, after);
     }
 
-    // ── SpeechUtterance ──
-
-    /// `SpeechUtterance::duration` is end_ts − start_ts in seconds.
-    #[test]
-    fn utterance_duration() {
-        let u = SpeechUtterance {
-            samples: vec![0.0; 16000],
-            sample_rate: 16000,
-            start_ts: 1.5,
-            end_ts: 2.5,
-        };
-        assert!((u.duration() - 1.0).abs() < f32::EPSILON);
-    }
-
     // ── RawTranscript ──
 
     /// Default raw transcript is empty text with no segments.
@@ -1244,7 +1243,6 @@ mod tests {
         let event = EngineEvent::Stats {
             dropped_audio_chunks: 2,
             hallucination_drops: 3,
-            semantic_gate_drops: 1,
             filtered_empty_drops: 0,
             corrections_applied: 4,
             total_utterances: 10,
@@ -1273,7 +1271,7 @@ mod tests {
         }
     }
 
-    /// UtteranceFinal carries text, VAD%, logprob, and quality-gate fields.
+    /// UtteranceFinal carries text, VAD%, and decoder diagnostics.
     #[test]
     fn engine_event_utterance_final_roundtrip() {
         let event = EngineEvent::UtteranceFinal {
@@ -1290,9 +1288,7 @@ mod tests {
             vad_speech_pct: Some(84.0),
             avg_logprob: Some(-0.35),
             compression_ratio: Some(1.2),
-            quality_gate_dropped: false,
             confidence_flags: Vec::new(),
-            acoustic: None,
         };
         if let EngineEvent::UtteranceFinal {
             utterance_id,
@@ -1304,7 +1300,6 @@ mod tests {
             vad_speech_pct,
             avg_logprob,
             compression_ratio,
-            quality_gate_dropped,
             confidence_flags,
             ..
         } = event
@@ -1318,7 +1313,6 @@ mod tests {
             assert_eq!(vad_speech_pct, Some(84.0));
             assert_eq!(avg_logprob, Some(-0.35));
             assert_eq!(compression_ratio, Some(1.2));
-            assert!(!quality_gate_dropped);
             assert!(confidence_flags.is_empty());
         } else {
             panic!("Expected UtteranceFinal variant");
@@ -1484,42 +1478,25 @@ mod tests {
 
     // ── RawTranscript confidence metadata ──
 
-    /// Default confidence fields are unset / not quality-dropped.
+    /// Default decoder diagnostics are unset.
     #[test]
     fn raw_transcript_default_has_no_confidence() {
         let rt = RawTranscript::default();
         assert!(rt.avg_logprob.is_none());
         assert!(rt.compression_ratio.is_none());
-        assert!(!rt.quality_gate_dropped);
     }
 
-    /// Raw transcript can carry logprob + compression without a drop flag.
+    /// Raw transcript carries logprob and compression as diagnostics.
     #[test]
     fn raw_transcript_carries_confidence_metadata() {
         let rt = RawTranscript {
             text: "test".to_string(),
             avg_logprob: Some(-0.35),
             compression_ratio: Some(1.2),
-            quality_gate_dropped: false,
             ..Default::default()
         };
         assert_eq!(rt.avg_logprob, Some(-0.35));
         assert_eq!(rt.compression_ratio, Some(1.2));
-        assert!(!rt.quality_gate_dropped);
-    }
-
-    /// Quality-gate drop keeps metrics so consumers can still diagnose.
-    #[test]
-    fn raw_transcript_quality_gate_dropped_preserves_metadata() {
-        let rt = RawTranscript {
-            avg_logprob: Some(-1.5),
-            compression_ratio: Some(4.0),
-            quality_gate_dropped: true,
-            ..Default::default()
-        };
-        assert!(rt.text.is_empty());
-        assert!(rt.quality_gate_dropped);
-        assert!(rt.avg_logprob.unwrap() < -1.0);
     }
 
     /// Default file options leave final-pass mode at `None` (opt-in only).
@@ -1544,6 +1521,8 @@ mod tests {
                 no_speech: true,
                 no_speech_reason: Some("vad_no_speech_detected".to_string()),
                 sparkline: String::new(),
+                fine_sparkline: String::new(),
+                fine_hop_ms: 0,
             }),
             TranscriptionSource::LocalFinalPass,
             TranscriptionEngineVerdict::whisper(TranscriptionEngineMode::EmbeddedDefault),
@@ -1578,7 +1557,6 @@ mod tests {
                 text: "Cześć".to_string(),
                 avg_logprob: Some(-0.25),
                 compression_ratio: Some(1.1),
-                quality_gate_dropped: false,
                 ..Default::default()
             },
             Some(VadVerdict {
@@ -1588,6 +1566,8 @@ mod tests {
                 no_speech: false,
                 no_speech_reason: None,
                 sparkline: "▁▃▅▇█▇▅▃▁▁▃▅▇█▇▅▃▁▁".to_string(),
+                fine_sparkline: String::new(),
+                fine_hop_ms: 0,
             }),
             TranscriptionSource::LocalFinalPass,
             TranscriptionEngineVerdict::whisper(TranscriptionEngineMode::RuntimeFallback),
@@ -1602,7 +1582,6 @@ mod tests {
         assert_eq!(verdict.text, "Cześć");
         assert!(!verdict.vad.as_ref().unwrap().no_speech);
         assert_eq!(verdict.raw.avg_logprob, Some(-0.25));
-        assert!(!verdict.raw.quality_gate_dropped);
         assert!(verdict.confidence_flags.is_empty());
         assert_eq!(
             verdict.final_pass.as_ref().unwrap().mode,
@@ -1676,10 +1655,6 @@ mod tests {
             "possible_hallucination_logprob"
         );
         assert_eq!(
-            TranscriptionConfidenceFlag::QualityGateDropped.to_string(),
-            "quality_gate_dropped"
-        );
-        assert_eq!(
             TranscriptionConfidenceFlag::UnverifiedStream.to_string(),
             "unverified_stream"
         );
@@ -1694,7 +1669,6 @@ mod tests {
                 text: "podejrzany wynik".to_string(),
                 avg_logprob: Some(-1.2),
                 compression_ratio: Some(4.0),
-                quality_gate_dropped: true,
                 ..Default::default()
             },
             Some(VadVerdict {
@@ -1704,6 +1678,8 @@ mod tests {
                 no_speech: false,
                 no_speech_reason: None,
                 sparkline: String::new(),
+                fine_sparkline: String::new(),
+                fine_hop_ms: 0,
             }),
             TranscriptionSource::LocalFinalPass,
             TranscriptionEngineVerdict::whisper(TranscriptionEngineMode::EmbeddedDefault),
@@ -1715,38 +1691,7 @@ mod tests {
             vec![
                 TranscriptionConfidenceFlag::VeryLowSpeech,
                 TranscriptionConfidenceFlag::PossibleHallucinationLogprob,
-                TranscriptionConfidenceFlag::QualityGateDropped,
             ]
-        );
-    }
-
-    /// Silero tail-drop count appends SileroDroppedTailHallucinations flag.
-    #[test]
-    fn verdict_from_parts_with_silero_drops_adds_typed_flag() {
-        let verdict = TranscriptionVerdict::from_parts_with_silero_drops(
-            "krótki tekst".to_string(),
-            RawTranscript {
-                text: "krótki tekst".to_string(),
-                ..Default::default()
-            },
-            Some(VadVerdict {
-                speech_pct: 64.0,
-                speech_windows: 8,
-                total_windows: 12,
-                no_speech: false,
-                no_speech_reason: None,
-                sparkline: "▁▃▅▇█▇".to_string(),
-            }),
-            TranscriptionSource::LocalFinalPass,
-            TranscriptionEngineVerdict::whisper(TranscriptionEngineMode::EmbeddedDefault),
-            None,
-            2,
-        );
-
-        assert!(
-            verdict.confidence_flags.contains(
-                &TranscriptionConfidenceFlag::SileroDroppedTailHallucinations { count: 2 }
-            )
         );
     }
 
@@ -1765,18 +1710,15 @@ mod tests {
             vad_speech_pct: Some(4.0),
             avg_logprob: Some(-0.85),
             compression_ratio: Some(2.5),
-            quality_gate_dropped: false,
             confidence_flags: vec![
                 TranscriptionConfidenceFlag::VeryLowSpeech,
                 TranscriptionConfidenceFlag::PossibleHallucinationLogprob,
             ],
-            acoustic: None,
         };
         if let EngineEvent::UtteranceFinal {
             vad_speech_pct,
             avg_logprob,
             compression_ratio,
-            quality_gate_dropped,
             confidence_flags,
             ..
         } = event
@@ -1787,55 +1729,11 @@ mod tests {
                 compression_ratio.unwrap() > 2.0,
                 "high compression must survive"
             );
-            assert!(!quality_gate_dropped);
             assert_eq!(
                 confidence_flags,
                 vec![
                     TranscriptionConfidenceFlag::VeryLowSpeech,
                     TranscriptionConfidenceFlag::PossibleHallucinationLogprob,
-                ]
-            );
-        }
-    }
-
-    /// Quality-gate-dropped UtteranceFinal still ships logprob metadata.
-    #[test]
-    fn utterance_final_quality_gate_truth() {
-        let event = EngineEvent::UtteranceFinal {
-            utterance_id: 1,
-            text: String::new(),
-            raw_text: String::new(),
-            start_ts: 0.0,
-            end_ts: 1.0,
-            segments: Vec::new(),
-            vad_speech_pct: Some(3.0),
-            avg_logprob: Some(-1.5),
-            compression_ratio: Some(4.0),
-            quality_gate_dropped: true,
-            confidence_flags: vec![
-                TranscriptionConfidenceFlag::VeryLowSpeech,
-                TranscriptionConfidenceFlag::PossibleHallucinationLogprob,
-                TranscriptionConfidenceFlag::QualityGateDropped,
-            ],
-            acoustic: None,
-        };
-        if let EngineEvent::UtteranceFinal {
-            vad_speech_pct,
-            quality_gate_dropped,
-            avg_logprob,
-            confidence_flags,
-            ..
-        } = event
-        {
-            assert_eq!(vad_speech_pct, Some(3.0));
-            assert!(quality_gate_dropped, "gate drop must be visible in event");
-            assert!(avg_logprob.unwrap() < -1.0);
-            assert_eq!(
-                confidence_flags,
-                vec![
-                    TranscriptionConfidenceFlag::VeryLowSpeech,
-                    TranscriptionConfidenceFlag::PossibleHallucinationLogprob,
-                    TranscriptionConfidenceFlag::QualityGateDropped,
                 ]
             );
         }
@@ -1857,7 +1755,7 @@ mod tests {
                 }],
                 avg_logprob: Some(-0.35),
                 compression_ratio: Some(1.2),
-                quality_gate_dropped: false,
+                energy: None,
             },
             Some(VadVerdict {
                 speech_pct: 78.0,
@@ -1866,6 +1764,8 @@ mod tests {
                 no_speech: false,
                 no_speech_reason: None,
                 sparkline: "▁▃▅▇█▇▅▃▁▁▃▅▇█▇▅▃▁▁".to_string(),
+                fine_sparkline: String::new(),
+                fine_hop_ms: 0,
             }),
             TranscriptionSource::LocalFinalPass,
             TranscriptionEngineVerdict::whisper(TranscriptionEngineMode::EmbeddedDefault),
@@ -1914,6 +1814,8 @@ mod tests {
                 no_speech: true,
                 no_speech_reason: Some("vad_no_speech_detected".to_string()),
                 sparkline: String::new(),
+                fine_sparkline: String::new(),
+                fine_hop_ms: 0,
             }),
             TranscriptionSource::LocalFinalPass,
             TranscriptionEngineVerdict::whisper(TranscriptionEngineMode::EmbeddedDefault),
@@ -1922,8 +1824,8 @@ mod tests {
 
         let json = serde_json::to_string(&verdict).expect("verdict must serialize");
         assert!(
-            !json.contains("sparkline"),
-            "empty sparkline should be omitted from JSON"
+            !json.contains("\"sparkline\":"),
+            "empty sparkline should be omitted from JSON (got {json})"
         );
 
         let restored: TranscriptionVerdict =
@@ -1953,6 +1855,8 @@ mod tests {
                 no_speech: false,
                 no_speech_reason: None,
                 sparkline: sparkline.to_string(),
+                fine_sparkline: String::new(),
+                fine_hop_ms: 0,
             }),
             TranscriptionSource::LocalFinalPass,
             TranscriptionEngineVerdict::whisper(TranscriptionEngineMode::EmbeddedDefault),
@@ -2017,6 +1921,8 @@ mod tests {
             no_speech: true,
             no_speech_reason: Some("vad_no_speech_detected".to_string()),
             sparkline: String::new(),
+            fine_sparkline: String::new(),
+            fine_hop_ms: 0,
         };
         let json = serde_json::to_string(&verdict).unwrap();
         // Empty sparkline must be elided by skip_serializing_if.
@@ -2044,6 +1950,8 @@ mod tests {
             no_speech: false,
             no_speech_reason: None,
             sparkline: sparkline.to_string(),
+            fine_sparkline: String::new(),
+            fine_hop_ms: 0,
         };
         let json = serde_json::to_string(&verdict).unwrap();
         assert!(json.contains("sparkline"));
@@ -2101,14 +2009,13 @@ mod tests {
         }
     }
 
-    /// All TranscriptionConfidenceFlag variants (incl. payload) serde.
+    /// All TranscriptionConfidenceFlag variants serde.
     #[test]
     fn confidence_flag_serde_roundtrip_covers_all_variants() {
         let cases = [
             // Engine-owned
             TranscriptionConfidenceFlag::VeryLowSpeech,
             TranscriptionConfidenceFlag::PossibleHallucinationLogprob,
-            TranscriptionConfidenceFlag::QualityGateDropped,
             // App-level provenance (new in 0.9.3)
             TranscriptionConfidenceFlag::LocalFinalPassUnavailable,
             TranscriptionConfidenceFlag::CloudFallbackUsed,
@@ -2131,27 +2038,6 @@ mod tests {
                 "serde snake_case must match Display"
             );
         }
-
-        let structured = TranscriptionConfidenceFlag::SileroDroppedTailHallucinations { count: 3 };
-        let json = serde_json::to_value(structured).expect("serialize structured flag");
-        assert_eq!(
-            json,
-            serde_json::json!({
-                "silero_dropped_tail_hallucinations": {
-                    "count": 3
-                }
-            })
-        );
-        let restored: TranscriptionConfidenceFlag =
-            serde_json::from_value(json).expect("deserialize structured flag");
-        assert_eq!(
-            restored,
-            TranscriptionConfidenceFlag::SileroDroppedTailHallucinations { count: 3 }
-        );
-        assert_eq!(
-            structured.to_string(),
-            "silero_dropped_tail_hallucinations:3"
-        );
     }
 
     /// Legacy plain string confidence tokens still deserialize.
@@ -2169,10 +2055,6 @@ mod tests {
             (
                 "\"possible_hallucination_logprob\"",
                 TranscriptionConfidenceFlag::PossibleHallucinationLogprob,
-            ),
-            (
-                "\"quality_gate_dropped\"",
-                TranscriptionConfidenceFlag::QualityGateDropped,
             ),
             (
                 "\"local_final_pass_unavailable\"",
@@ -2252,7 +2134,7 @@ mod tests {
                 }],
                 avg_logprob: Some(-0.4),
                 compression_ratio: Some(1.1),
-                quality_gate_dropped: false,
+                energy: None,
             },
             None,
             TranscriptionSource::LocalFinalPass,
@@ -2268,5 +2150,102 @@ mod tests {
         assert_eq!(restored.confidence_flags, verdict.confidence_flags);
         assert!(restored.vad.is_none());
         assert!(restored.final_pass.is_none());
+    }
+
+    // ── Two clocks: EnergyTimeline + fine Silero fields (schema-v2 contract) ──
+
+    /// Energy timeline round-trips with hop, frames, and voice band intact.
+    #[test]
+    fn energy_timeline_serde_roundtrip() {
+        let timeline = EnergyTimeline {
+            hop_ms: 10,
+            frames: vec![-80.0, -42.5, -30.25],
+            voice: vec![-70.0, -40.0, -28.0],
+        };
+        let json = serde_json::to_string(&timeline).expect("serialize energy timeline");
+        let restored: EnergyTimeline =
+            serde_json::from_str(&json).expect("deserialize energy timeline");
+        assert_eq!(restored, timeline);
+    }
+
+    /// RawTranscript JSON from before the mel clock (no `energy` key) parses
+    /// with `energy: None`.
+    #[test]
+    fn raw_transcript_deserialize_accepts_missing_energy_via_default() {
+        let json = r#"{
+            "text": "cześć",
+            "segments": [],
+            "avg_logprob": -0.3,
+            "compression_ratio": 1.1
+        }"#;
+        let restored: RawTranscript = serde_json::from_str(json).unwrap();
+        assert!(restored.energy.is_none());
+        assert_eq!(restored.text, "cześć");
+    }
+
+    /// A present energy timeline survives the RawTranscript round-trip; a
+    /// `None` energy is omitted from the wire form entirely.
+    #[test]
+    fn raw_transcript_energy_roundtrip_and_none_elision() {
+        let rt = RawTranscript {
+            text: "zegar".to_string(),
+            energy: Some(EnergyTimeline {
+                hop_ms: 10,
+                frames: vec![-61.0, -33.0],
+                voice: vec![-55.0, -30.0],
+            }),
+            ..Default::default()
+        };
+        let json = serde_json::to_string(&rt).expect("serialize");
+        let restored: RawTranscript = serde_json::from_str(&json).expect("deserialize");
+        let energy = restored.energy.expect("energy survives round-trip");
+        assert_eq!(energy.hop_ms, 10);
+        assert_eq!(energy.frames, vec![-61.0, -33.0]);
+        assert_eq!(energy.voice, vec![-55.0, -30.0]);
+
+        let bare = serde_json::to_string(&RawTranscript::default()).expect("serialize default");
+        assert!(
+            !bare.contains("energy"),
+            "None energy must be omitted from JSON (got {bare})"
+        );
+    }
+
+    /// VadVerdict JSON from before the fine Silero clock (no `fine_*` keys)
+    /// parses with empty/zero defaults.
+    #[test]
+    fn vad_verdict_deserialize_accepts_missing_fine_fields_via_default() {
+        let json = r#"{
+            "speech_pct": 61.7,
+            "speech_windows": 3,
+            "total_windows": 5,
+            "no_speech": false,
+            "no_speech_reason": null,
+            "sparkline": "▁▃█▃▁"
+        }"#;
+        let restored: VadVerdict = serde_json::from_str(json).unwrap();
+        assert!(restored.fine_sparkline.is_empty());
+        assert_eq!(restored.fine_hop_ms, 0);
+        assert_eq!(restored.sparkline, "▁▃█▃▁");
+        assert!((restored.speech_pct - 61.7).abs() < f32::EPSILON);
+    }
+
+    /// Present fine-clock fields survive a VadVerdict serde round-trip.
+    #[test]
+    fn vad_verdict_fine_fields_serde_roundtrip() {
+        let verdict = VadVerdict {
+            speech_pct: 61.7,
+            speech_windows: 3,
+            total_windows: 5,
+            no_speech: false,
+            no_speech_reason: None,
+            sparkline: "▁▃█▃▁".to_string(),
+            fine_sparkline: "▁▁▃▅▅▃▁▁".to_string(),
+            fine_hop_ms: 32,
+        };
+        let json = serde_json::to_string(&verdict).unwrap();
+        let restored: VadVerdict = serde_json::from_str(&json).unwrap();
+        assert_eq!(restored.fine_sparkline, "▁▁▃▅▅▃▁▁");
+        assert_eq!(restored.fine_hop_ms, 32);
+        assert_eq!(restored.sparkline, "▁▃█▃▁");
     }
 }

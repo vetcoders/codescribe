@@ -37,7 +37,6 @@ fn fake_payload(request: &TailProviderRequest, text: &str) -> TailProviderPayloa
         }],
         avg_logprob: Some(-0.1),
         compression_ratio: Some(1.0),
-        quality_gate_dropped: false,
         provider_id: TailProviderId::Fake,
         elapsed_ms: 3,
         evidence: TailProviderEvidence {

@@ -1,16 +1,42 @@
 //! User-facing settings stored as JSON (GUI-managed).
 //!
 //! These are the "regular user" tier. Power users override via ~/.codescribe/.env.
+//!
+//! # Immutable settings part set
+//!
+//! Declared owners live in this file and in `loader.rs`. Session consumers
+//! borrow one selected generation. No second default owner, synchronizer, or
+//! mutable runtime bus may return.
+//!
+//! | Part | Owner symbol / surface | Role |
+//! |---|---|---|
+//! | Persisted intent | [`UserSettings`] | durable `settings.json` choices |
+//! | Loader input | [`SettingsLoaderInput`] | one-shot load envelope for the core loader |
+//! | Immutable snapshot | [`RuntimeSettingsSnapshot`] | session-frozen runtime truth |
+//! | Provenance | [`SettingsSnapshotProvenance`] | source attribution for the snapshot |
+//! | Digest | [`SettingsSnapshotDigest`] | integrity fingerprint for bus/session evidence |
+//! | Validation | [`SettingsSnapshotValidation`] | admit/refuse contract before snapshot seal |
 
-use super::types::{ModeBinding, ShortcutBinding, WorkMode, default_mode_bindings};
+use super::types::{Config, ModeBinding, ShortcutBinding, WorkMode, default_mode_bindings};
 use directories::BaseDirs;
 use serde::{Deserialize, Serialize};
+use std::fmt;
 use std::fs::{self, File, OpenOptions};
 use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::sync::{Mutex, MutexGuard, OnceLock};
+use std::time::Duration;
 use tracing::{debug, info, warn};
 use uuid::Uuid;
+
+use crate::llm::provider::{
+    CustomProvider, ProviderError, ProviderKind, ProviderRef, ResolvedProvider, WireFamily,
+};
+use crate::pipeline::acoustic_ledger::EnergyCalibration;
+
+use super::energy_calibration::{
+    EnergyCalibrationRefusal, EnergyCalibrationStatus, SealedEnergyCalibration,
+};
 
 /// Serialize settings read/migrate/write transactions. A V1 load writes a
 /// backup and a V3 replacement, so it is a writer even though the public API is
@@ -88,6 +114,37 @@ impl FormattingPolicy {
 /// chosen contract (removed 2026-08-09).
 pub const DEFAULT_AGENT_WORKSPACE_ROOT: &str = "~/.codescribe";
 
+/// Power-user override for the product-owned Silero seal lane.
+///
+/// The durable field lives at `audio.seal_lane_armed` in `settings.json` and
+/// defaults to armed. This environment token is deliberately the exception to
+/// the normal promoted-key rule: when present in `.env` or process env it still
+/// wins in either direction, but Settings writes never create or rewrite it.
+pub const SILERO_FUSION_ENV: &str = "CODESCRIBE_SILERO_FUSION";
+
+/// Supported production default for the mandatory committed-utterance lane.
+pub const DEFAULT_SEAL_LANE_ARMED: bool = true;
+
+/// Source of the effective seal-lane verdict in one immutable settings generation.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SealLaneSource {
+    Settings,
+    EnvOverride,
+}
+
+impl SealLaneSource {
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Settings => "settings",
+            Self::EnvOverride => "env_override",
+        }
+    }
+}
+
+fn default_seal_lane_armed() -> Option<bool> {
+    Some(DEFAULT_SEAL_LANE_ARMED)
+}
+
 /// Trim workspace-root entries and discard empty rows while preserving the
 /// operator's order. This is the canonical normalization boundary shared by
 /// persistence, the agent tools, and readiness.
@@ -108,8 +165,20 @@ pub fn parse_agent_workspace_roots(value: &str) -> Vec<String> {
     normalize_agent_workspace_roots(value.split(':'))
 }
 
-/// Regular-user settings (JSON, GUI-managed).
-/// All fields are Option — None means "use default or .env override".
+/// Persisted user intent (`settings.json`) — W1-A part, single owner.
+///
+/// # Part contract
+/// - **inputs:** explicit GUI/bridge edits and validated migration writes
+/// - **outputs:** sparse Option fields consumed only by the one core loader
+/// - **forbidden authority:** must not resolve runtime defaults/env precedence;
+///   must not act as a live mutable session snapshot; must not own PCM,
+///   reducer, formatter, or delivery decisions
+/// - **intended W2 consumers:** `core/config/loader.rs` (sole reader that
+///   builds [`RuntimeSettingsSnapshot`]); Swift/bridge edit transport may
+///   write intent but cannot mint session truth
+///
+/// All fields are Option — None means "use default or documented env override"
+/// at loader time, never at consumer time.
 #[derive(Debug, Clone, Serialize, Deserialize, Default, PartialEq)]
 #[serde(default)]
 pub struct UserSettings {
@@ -142,16 +211,26 @@ pub struct UserSettings {
     pub sound_volume: Option<f32>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub formatting_level: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub llm_endpoint: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub llm_model: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub llm_assistive_endpoint: Option<String>,
+    /// Assistive lane model; `None` ⇒ the provider's default (vendor) or
+    /// "no model selected" (custom).
     #[serde(skip_serializing_if = "Option::is_none")]
     pub llm_assistive_model: Option<String>,
+    /// Assistive lane provider reference (`ProviderRef` spelling); `None` ⇒ OpenAI.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub llm_assistive_provider: Option<String>,
+    /// Formatting lane provider reference (`ProviderRef` spelling); `None` ⇒ OpenAI.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub llm_formatting_provider: Option<String>,
+    /// Operator-defined providers (`providers.custom[]` on disk). Vendor
+    /// endpoints are pinned in code and never appear here.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub llm_custom_providers: Vec<CustomProvider>,
+    /// Durable, secret-free relocation intent until the Keychain write succeeds.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub pending_key_moves: Vec<super::keychain::KeyMove>,
+    /// Secret-free first-import receipts; source files retain credential values.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub pending_env_key_imports: Vec<super::migrate::PendingEnvKeyImport>,
     /// Optional override for the OpenAI OAuth client id (non-secret app identity).
     /// `None` falls through to env, then the shipped Codex CLI public app id
     /// (see `NOTICE`). Env `CODESCRIBE_OPENAI_OAUTH_CLIENT_ID` is the dev fallback.
@@ -173,6 +252,9 @@ pub struct UserSettings {
     pub show_dock_icon: Option<bool>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub transcription_overlay_enabled: Option<bool>,
+    /// Start the overlay with its transcript visible; absence means compact.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub overlay_expanded_by_default: Option<bool>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub tray_start_assistive: Option<bool>,
     // Promoted 2026-08-11: these lived only in `.env`, so the tray/settings
@@ -191,19 +273,28 @@ pub struct UserSettings {
 
     // ── Promoted from .env (settings.json is now source of truth) ──
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub llm_formatting_endpoint: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
     pub llm_formatting_model: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub use_local_stt: Option<bool>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub local_model: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub stt_endpoint: Option<String>,
+    pub stt_file_endpoint: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub stt_live_endpoint: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub transcript_send_mode: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub audio_input_device: Option<String>,
+    /// Product-owned arming of the mandatory Silero seal lane. Missing legacy
+    /// values migrate to the supported production default (`true`). The
+    /// `CODESCRIBE_SILERO_FUSION` power-user override is resolved only by the
+    /// immutable snapshot loader and always wins when present.
+    #[serde(
+        default = "default_seal_lane_armed",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub seal_lane_armed: Option<bool>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub sound_name: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -309,6 +400,840 @@ pub struct UserSettings {
     pub agent_capabilities: Option<crate::agent::capabilities::AgentCapabilityPreferences>,
 }
 
+/// One-shot loader input envelope — W1-A part, declared for the core loader.
+///
+/// # Part contract
+/// - **inputs:** settings.json path, optional env-file permission, process-env
+///   override permission (keys must already be registered in `docs/ENV_REGISTRY.toml`)
+/// - **outputs:** material handed to the single loader pass that emits
+///   [`RuntimeSettingsSnapshot`]
+/// - **forbidden authority:** must not retain mutable runtime state; must not
+///   re-read files mid-take; must not invent a second default owner or
+///   synchronizer; must not select engines/routes/text
+/// - **intended W2 consumers:** `core/config/loader.rs` only, once, at
+///   app/session start or explicit next-session reload
+///
+/// W1 places the type. No loader call site is connected here.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SettingsLoaderInput {
+    /// Canonical path of persisted intent (`settings.json`).
+    pub settings_path: PathBuf,
+    /// When true, the loader may seed missing keys from the optional `.env` file.
+    pub allow_env_file: bool,
+    /// When true, registered process-env overrides may win over persisted intent.
+    pub allow_process_env_overrides: bool,
+}
+
+/// Source attribution for one immutable runtime settings snapshot — W1-A part.
+///
+/// # Part contract
+/// - **inputs:** path/digest of persisted intent, names of applied env overrides
+///   (never secret values), whether code defaults filled gaps, load timestamp
+/// - **outputs:** provenance carried inside [`RuntimeSettingsSnapshot`]
+/// - **forbidden authority:** must not reinterpret precedence; must not mutate
+///   snapshot values; must not stand in for bus/session identity
+/// - **intended W2 consumers:** snapshot constructors in the core loader;
+///   Transcript Bus session evidence; diagnostics that display source lineage
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SettingsSnapshotProvenance {
+    /// Absolute path of the `settings.json` that contributed persisted intent.
+    pub settings_json_path: Option<PathBuf>,
+    /// SHA-256 of the persisted intent bytes when a file was read.
+    pub settings_json_sha256: Option<String>,
+    /// Registered env override *names* applied during the load (values omitted).
+    pub env_overlay_keys: Vec<String>,
+    /// True when documented code defaults filled any absent field.
+    pub defaults_applied: bool,
+    /// Unix epoch milliseconds when the loader sealed this provenance.
+    pub loaded_at_unix_ms: u64,
+    /// Path the loader consulted for the acoustic calibration artifact.
+    pub energy_calibration_path: PathBuf,
+    /// SHA-256 of the sealed calibration artifact; `None` when missing/refused.
+    pub energy_calibration_sha256: Option<String>,
+}
+
+/// Integrity fingerprint of one immutable runtime settings snapshot — W1-A part.
+///
+/// # Part contract
+/// - **inputs:** canonical non-secret snapshot material selected by the loader
+/// - **outputs:** opaque digest string for session evidence and reproducibility
+/// - **forbidden authority:** must not carry secrets; must not decide settings
+///   values; must not act as a second settings store
+/// - **intended W2 consumers:** [`RuntimeSettingsSnapshot`]; Transcript Bus
+///   session evidence; operator take envelopes (digest only)
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub struct SettingsSnapshotDigest(String);
+
+impl SettingsSnapshotDigest {
+    /// Wrap an already-computed digest string. W2 owns the hashing algorithm.
+    pub fn from_hex(hex: impl Into<String>) -> Self {
+        Self(hex.into())
+    }
+
+    /// Borrow the digest text for evidence sinks.
+    pub fn as_str(&self) -> &str {
+        &self.0
+    }
+}
+
+/// Validation contract that admits or refuses a candidate snapshot — W1-A part.
+///
+/// # Part contract
+/// - **inputs:** resolved [`Config`] candidate plus [`SettingsSnapshotProvenance`]
+/// - **outputs:** `Ok(())` admit or [`SettingsSnapshotValidationError`] refuse
+/// - **forbidden authority:** must not repair by inventing defaults beyond the
+///   documented loader rules; must not write `settings.json`; must not wire
+///   consumers
+/// - **intended W2 consumers:** the single loader path immediately before minting
+///   [`RuntimeSettingsSnapshot`]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct SettingsSnapshotValidation;
+
+/// Why a candidate runtime settings snapshot was refused.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum SettingsSnapshotValidationError {
+    /// A field failed the documented sanitize/range/enum contract.
+    InvalidField { field: &'static str, reason: String },
+    /// Precedence inputs conflicted in a way the loader must not silently heal.
+    ConflictingSources { detail: String },
+}
+
+impl std::fmt::Display for SettingsSnapshotValidationError {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::InvalidField { field, .. } => {
+                write!(formatter, "runtime settings field '{field}' was refused")
+            }
+            Self::ConflictingSources { .. } => {
+                formatter.write_str("runtime settings sources conflict")
+            }
+        }
+    }
+}
+
+impl std::error::Error for SettingsSnapshotValidationError {}
+
+impl SettingsSnapshotValidation {
+    /// Structural admit gate. W1 declares the contract; W2 supplies full rules.
+    ///
+    /// The current body only refuses an empty digest placeholder so the part is
+    /// executable without becoming a second default owner.
+    pub fn admit(
+        _values: &Config,
+        _provenance: &SettingsSnapshotProvenance,
+        digest: &SettingsSnapshotDigest,
+    ) -> Result<(), SettingsSnapshotValidationError> {
+        if digest.as_str().trim().is_empty() {
+            return Err(SettingsSnapshotValidationError::InvalidField {
+                field: "digest",
+                reason: "settings snapshot digest must be non-empty".to_string(),
+            });
+        }
+        Ok(())
+    }
+}
+
+/// Outcome of [`UserSettings::remove_custom_provider`]: the row that was
+/// removed and the lanes that pointed at it (now reset to the default vendor).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RemovedCustomProvider {
+    pub provider: CustomProvider,
+    pub lanes_reset: Vec<RuntimeLlmLaneKind>,
+}
+
+/// Stable identity of one resolved LLM lane inside the immutable settings throne.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum RuntimeLlmLaneKind {
+    Formatting,
+    Assistive,
+}
+
+impl RuntimeLlmLaneKind {
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Formatting => "formatting",
+            Self::Assistive => "assistive",
+        }
+    }
+}
+
+/// Credential identity and seal-time facts for one LLM lane.
+///
+/// The secret stays private, has no serde implementation, and is redacted from
+/// `Debug`. The account identity is immutable; request senders resolve that
+/// account again at send time so a controller created without Keychain access
+/// cannot keep emitting unauthenticated requests for its whole lifetime.
+#[derive(Clone, PartialEq, Eq)]
+pub struct RuntimeLlmCredential {
+    key_account: String,
+    api_key: Option<String>,
+    account_auth: bool,
+}
+
+impl RuntimeLlmCredential {
+    pub(super) fn seal(
+        key_account: impl Into<String>,
+        api_key: Option<String>,
+        account_auth: bool,
+    ) -> Self {
+        Self {
+            key_account: key_account.into(),
+            api_key,
+            account_auth,
+        }
+    }
+
+    pub fn key_account(&self) -> &str {
+        &self.key_account
+    }
+
+    pub fn api_key(&self) -> Option<&str> {
+        self.api_key.as_deref()
+    }
+
+    /// Resolve the credential at the explicit secret-use boundary.
+    ///
+    /// This is deliberately not the seal-time [`Self::api_key`] value. Settings
+    /// may save, rotate, or remove a Keychain secret while a controller or
+    /// provider handle remains resident; every outgoing request must observe
+    /// that current truth without rebuilding the lane topology.
+    pub fn request_api_key(&self) -> Option<String> {
+        super::keychain::runtime_key(&self.key_account)
+    }
+
+    pub const fn account_auth(&self) -> bool {
+        self.account_auth
+    }
+}
+
+impl fmt::Debug for RuntimeLlmCredential {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("RuntimeLlmCredential")
+            .field("key_account", &self.key_account)
+            .field("api_key_present", &self.api_key.is_some())
+            .field("account_auth", &self.account_auth)
+            .finish()
+    }
+}
+
+/// One fully resolved LLM lane. Provider (reference, wire, endpoint), model,
+/// and account identity are immutable. Only the secret behind that account is
+/// refreshed at the explicit request boundary through
+/// [`RuntimeLlmCredential::request_api_key`].
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RuntimeLlmLane {
+    lane: RuntimeLlmLaneKind,
+    provider: ResolvedProvider,
+    model: String,
+    credential: RuntimeLlmCredential,
+    available: bool,
+    unavailable_reason: Option<String>,
+}
+
+impl RuntimeLlmLane {
+    pub(super) fn seal(
+        lane: RuntimeLlmLaneKind,
+        provider: ResolvedProvider,
+        model: String,
+        credential: RuntimeLlmCredential,
+        available: bool,
+        unavailable_reason: Option<String>,
+    ) -> Self {
+        Self {
+            lane,
+            provider,
+            model,
+            credential,
+            available,
+            unavailable_reason,
+        }
+    }
+
+    pub const fn lane(&self) -> RuntimeLlmLaneKind {
+        self.lane
+    }
+
+    /// The provider this lane points at: a vendor or `custom:<id>`.
+    pub fn provider(&self) -> &ProviderRef {
+        &self.provider.reference
+    }
+
+    /// Picker label of the provider (vendor display name or custom row name).
+    pub fn provider_display_name(&self) -> &str {
+        &self.provider.display_name
+    }
+
+    /// The vendor, when the provider is one; `None` for a Custom provider.
+    pub fn vendor(&self) -> Option<ProviderKind> {
+        self.provider.reference.vendor()
+    }
+
+    pub const fn wire_family(&self) -> WireFamily {
+        self.provider.wire
+    }
+
+    pub fn endpoint(&self) -> &str {
+        &self.provider.endpoint
+    }
+
+    pub fn model(&self) -> &str {
+        &self.model
+    }
+
+    pub fn credential(&self) -> &RuntimeLlmCredential {
+        &self.credential
+    }
+
+    pub const fn available(&self) -> bool {
+        self.available
+    }
+
+    /// Whether `model` may receive image input on this lane (§B.2): vendor
+    /// capability policy, permissive for Custom providers.
+    pub fn supports_vision(&self, model: &str) -> bool {
+        self.provider.supports_vision(model)
+    }
+
+    /// Whether a request can be sent under the credential truth that exists
+    /// now, rather than only under the truth observed when this lane was sealed.
+    pub fn request_available(&self) -> bool {
+        self.credential.account_auth()
+            || self.credential.request_api_key().is_some()
+            || !self.provider.key_required
+    }
+
+    pub fn unavailable_reason(&self) -> Option<&str> {
+        self.unavailable_reason.as_deref()
+    }
+
+    pub(super) fn digest_material(&self) -> String {
+        format!(
+            "{}|{}|{:?}|{}|{}|{}|{}|{}|{}",
+            self.lane.as_str(),
+            self.provider.reference,
+            self.provider.wire,
+            self.provider.endpoint,
+            self.model,
+            self.credential.key_account,
+            self.credential.api_key.is_some(),
+            self.credential.account_auth,
+            self.available,
+        )
+    }
+}
+
+/// The complete LLM part set sealed exactly once by the settings loader.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RuntimeLlmLanes {
+    formatting: RuntimeLlmLane,
+    assistive: RuntimeLlmLane,
+}
+
+impl RuntimeLlmLanes {
+    pub(super) fn seal(formatting: RuntimeLlmLane, assistive: RuntimeLlmLane) -> Self {
+        debug_assert_eq!(formatting.lane(), RuntimeLlmLaneKind::Formatting);
+        debug_assert_eq!(assistive.lane(), RuntimeLlmLaneKind::Assistive);
+        Self {
+            formatting,
+            assistive,
+        }
+    }
+
+    pub fn lane(&self, lane: RuntimeLlmLaneKind) -> &RuntimeLlmLane {
+        match lane {
+            RuntimeLlmLaneKind::Formatting => &self.formatting,
+            RuntimeLlmLaneKind::Assistive => &self.assistive,
+        }
+    }
+
+    pub fn formatting(&self) -> &RuntimeLlmLane {
+        &self.formatting
+    }
+
+    pub fn assistive(&self) -> &RuntimeLlmLane {
+        &self.assistive
+    }
+
+    pub(super) fn digest_material(&self) -> String {
+        format!(
+            "{}\n{}",
+            self.formatting.digest_material(),
+            self.assistive.digest_material(),
+        )
+    }
+}
+
+/// Where the content of a resolved prompt actually came from.
+///
+/// Runtime execution records this typed evidence rather than carrying an
+/// absolute path or raw I/O error text into the selected generation.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PromptSource {
+    /// A non-empty operator override on disk.
+    CustomFile,
+    /// The compiled-in default: no file, or a file that was empty.
+    BuiltInFallback,
+    /// The file exists but could not be read; the default was used instead.
+    ReadError,
+}
+
+impl PromptSource {
+    /// Stable identifier for digest material, logs, and telemetry.
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::CustomFile => "custom_file",
+            Self::BuiltInFallback => "built_in_fallback",
+            Self::ReadError => "read_error",
+        }
+    }
+}
+
+/// One prompt sealed for a selected runtime generation.
+///
+/// Content is intentionally private and omitted from `Debug`. Consumers may
+/// borrow the exact attempt-zero bytes but cannot mutate or re-resolve them.
+#[derive(Clone, PartialEq, Eq)]
+pub struct RuntimeSealedPrompt {
+    composed_content: String,
+    source: PromptSource,
+    composed_sha256: String,
+    base_sha256: String,
+    tuning_sha256: Option<String>,
+}
+
+impl RuntimeSealedPrompt {
+    pub(super) fn seal(
+        composed_content: String,
+        source: PromptSource,
+        composed_sha256: String,
+        base_sha256: String,
+        tuning_sha256: Option<String>,
+    ) -> Self {
+        Self {
+            composed_content,
+            source,
+            composed_sha256,
+            base_sha256,
+            tuning_sha256,
+        }
+    }
+
+    pub fn composed_content(&self) -> &str {
+        &self.composed_content
+    }
+
+    pub const fn source(&self) -> PromptSource {
+        self.source
+    }
+
+    pub fn composed_sha256(&self) -> &str {
+        &self.composed_sha256
+    }
+
+    pub fn base_sha256(&self) -> &str {
+        &self.base_sha256
+    }
+
+    pub fn tuning_sha256(&self) -> Option<&str> {
+        self.tuning_sha256.as_deref()
+    }
+
+    fn digest_material(&self) -> String {
+        format!(
+            "source={}|composed_sha256={}|base_sha256={}|tuning_sha256={}",
+            self.source.as_str(),
+            self.composed_sha256,
+            self.base_sha256,
+            self.tuning_sha256.as_deref().unwrap_or("none"),
+        )
+    }
+}
+
+impl fmt::Debug for RuntimeSealedPrompt {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("RuntimeSealedPrompt")
+            .field("source", &self.source)
+            .field("composed_sha256", &self.composed_sha256)
+            .field("base_sha256", &self.base_sha256)
+            .field("tuning_sha256", &self.tuning_sha256)
+            .finish()
+    }
+}
+
+/// Formatter prompt and retry truth for one selected generation.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RuntimeFormatterExecution {
+    formatting_prompt: Option<RuntimeSealedPrompt>,
+    assistive_prompt: RuntimeSealedPrompt,
+    max_retries: u32,
+    retry_delay: Duration,
+}
+
+impl RuntimeFormatterExecution {
+    pub(super) fn seal(
+        formatting_prompt: Option<RuntimeSealedPrompt>,
+        assistive_prompt: RuntimeSealedPrompt,
+        max_retries: u32,
+        retry_delay: Duration,
+    ) -> Self {
+        Self {
+            formatting_prompt,
+            assistive_prompt,
+            max_retries,
+            retry_delay,
+        }
+    }
+
+    pub fn formatting_prompt(&self) -> Option<&RuntimeSealedPrompt> {
+        self.formatting_prompt.as_ref()
+    }
+
+    pub fn assistive_prompt(&self) -> &RuntimeSealedPrompt {
+        &self.assistive_prompt
+    }
+
+    pub const fn max_retries(&self) -> u32 {
+        self.max_retries
+    }
+
+    pub const fn retry_delay(&self) -> Duration {
+        self.retry_delay
+    }
+
+    fn digest_material(&self) -> String {
+        let formatting = self
+            .formatting_prompt
+            .as_ref()
+            .map(RuntimeSealedPrompt::digest_material)
+            .unwrap_or_else(|| "off".to_string());
+        format!(
+            "formatting_prompt={formatting}\nassistive_prompt={}\nmax_retries={}\nretry_delay_ms={}",
+            self.assistive_prompt.digest_material(),
+            self.max_retries,
+            self.retry_delay.as_millis(),
+        )
+    }
+}
+
+/// Shared request timing for formatter and Agent providers in one generation.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RuntimeAiRequestTiming {
+    attempt_timeout: Duration,
+    inter_chunk_timeout: Duration,
+}
+
+impl RuntimeAiRequestTiming {
+    pub(super) const fn seal(attempt_timeout: Duration, inter_chunk_timeout: Duration) -> Self {
+        Self {
+            attempt_timeout,
+            inter_chunk_timeout,
+        }
+    }
+
+    pub const fn attempt_timeout(&self) -> Duration {
+        self.attempt_timeout
+    }
+
+    pub const fn inter_chunk_timeout(&self) -> Duration {
+        self.inter_chunk_timeout
+    }
+
+    fn digest_material(&self) -> String {
+        format!(
+            "attempt_timeout_ms={}\ninter_chunk_timeout_ms={}",
+            self.attempt_timeout.as_millis(),
+            self.inter_chunk_timeout.as_millis(),
+        )
+    }
+}
+
+/// All AI execution facts owned by one immutable runtime settings generation.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RuntimeAiExecution {
+    formatter: RuntimeFormatterExecution,
+    request_timing: RuntimeAiRequestTiming,
+}
+
+impl RuntimeAiExecution {
+    pub(super) fn seal(
+        formatter: RuntimeFormatterExecution,
+        request_timing: RuntimeAiRequestTiming,
+    ) -> Self {
+        Self {
+            formatter,
+            request_timing,
+        }
+    }
+
+    pub const fn formatter(&self) -> &RuntimeFormatterExecution {
+        &self.formatter
+    }
+
+    pub const fn request_timing(&self) -> &RuntimeAiRequestTiming {
+        &self.request_timing
+    }
+
+    pub(super) fn digest_material(&self) -> String {
+        format!(
+            "{}\n{}",
+            self.formatter.digest_material(),
+            self.request_timing.digest_material(),
+        )
+    }
+}
+
+/// Immutable per-session runtime settings snapshot — the settings throne.
+///
+/// # Part contract
+/// - **inputs:** one validated [`Config`] from the single core loader pass,
+///   [`SettingsSnapshotProvenance`], and [`SettingsSnapshotDigest`]
+/// - **outputs:** frozen session truth for recording, lanes, bridge projection,
+///   and Swift runtime rows
+/// - **forbidden authority:** must not reread `settings.json`/env; must not
+///   normalize defaults independently; must not mutate during an in-flight take;
+///   must not own PCM identity, document reduction, formatter authorship, or
+///   delivery routing; must not resurrect deleted parallel settings resolvers or
+///   mutable settings-propagation buses
+/// - **intended W2 consumers:** recording controller / session start, bridge
+///   projection, Swift runtime rows, STT/LLM lanes, Transcript Bus session
+///   evidence (digest + provenance only at the bus)
+///
+/// Hot edits create a *new* snapshot for the next recording session. An
+/// in-flight take keeps this value and every AI retry/request fact it selected.
+#[derive(Debug, Clone)]
+pub struct RuntimeSettingsSnapshot {
+    /// Resolved runtime values after defaults + allowed env overlays.
+    values: Config,
+    repair_receipt: super::repair::RepairReceipt,
+    /// Persisted intent captured by the same loader pass for consumers whose
+    /// policy constructors still accept the public settings schema.
+    user_settings: UserSettings,
+    /// Resolved provider, protocol, endpoint, model, credential, and
+    /// availability facts for every LLM lane.
+    llm_lanes: RuntimeLlmLanes,
+    /// Effective formatting policy resolved by the same loader pass. Runtime
+    /// consumers may not reconstruct this from process env or persisted rows.
+    formatting_policy: FormattingPolicy,
+    /// Prompt, retry, and shared Agent/formatter request facts sealed by the
+    /// same loader pass as the selected lanes and policy.
+    ai_execution: RuntimeAiExecution,
+    /// Where the values came from.
+    provenance: SettingsSnapshotProvenance,
+    /// Integrity fingerprint for session evidence.
+    digest: SettingsSnapshotDigest,
+    /// Measured acoustic calibration truth read by the same loader pass.
+    /// `Missing`/`Refused` are explicit fail-closed states the admission gate
+    /// names before any microphone opens; nothing here invents a floor.
+    energy_calibration: SealedEnergyCalibration,
+    /// Effective mandatory-lane verdict after `settings.json` plus the optional
+    /// power-user env override. Consumers never re-read either source.
+    seal_lane_armed: bool,
+    local_tail_patch: crate::asr_session::recorder::LocalTailPatchDisposition,
+    tail_provider: Option<crate::stt::tail_provider::TailProviderId>,
+}
+
+/// Everything one loader pass resolved, handed to [`RuntimeSettingsSnapshot::seal_loaded`]
+/// as a unit so no part can be sealed from a different pass.
+#[derive(Clone)]
+pub(crate) struct RuntimeSnapshotParts {
+    pub(crate) repair_receipt: super::repair::RepairReceipt,
+    pub(crate) values: Config,
+    pub(crate) user_settings: UserSettings,
+    pub(crate) llm_lanes: RuntimeLlmLanes,
+    pub(crate) formatting_policy: FormattingPolicy,
+    pub(crate) ai_execution: RuntimeAiExecution,
+    pub(crate) provenance: SettingsSnapshotProvenance,
+    pub(crate) digest: SettingsSnapshotDigest,
+    pub(crate) energy_calibration: SealedEnergyCalibration,
+    pub(crate) seal_lane_armed: bool,
+    pub(crate) local_tail_patch: crate::asr_session::recorder::LocalTailPatchDisposition,
+    pub(crate) tail_provider: Option<crate::stt::tail_provider::TailProviderId>,
+}
+
+impl RuntimeSettingsSnapshot {
+    /// Seal values plus persisted intent, AI execution facts, and measured
+    /// acoustic calibration truth in the sole settings-loader writer.
+    pub(crate) fn seal_loaded(
+        parts: RuntimeSnapshotParts,
+    ) -> Result<Self, SettingsSnapshotValidationError> {
+        let RuntimeSnapshotParts {
+            repair_receipt,
+            values,
+            user_settings,
+            llm_lanes,
+            formatting_policy,
+            ai_execution,
+            provenance,
+            digest,
+            energy_calibration,
+            seal_lane_armed,
+            local_tail_patch,
+            tail_provider,
+        } = parts;
+        SettingsSnapshotValidation::admit(&values, &provenance, &digest)?;
+        Ok(Self {
+            repair_receipt,
+            values,
+            user_settings,
+            llm_lanes,
+            formatting_policy,
+            ai_execution,
+            provenance,
+            digest,
+            energy_calibration,
+            seal_lane_armed,
+            local_tail_patch,
+            tail_provider,
+        })
+    }
+
+    /// A refused launch remains inspectable, but may not admit capture.
+    pub(crate) fn refused_startup(
+        mut parts: RuntimeSnapshotParts,
+        error: SettingsSnapshotValidationError,
+        settings_path: PathBuf,
+    ) -> Self {
+        parts
+            .repair_receipt
+            .unrepairable
+            .push(super::repair::ConfigUnrepairable {
+                path: settings_path,
+                reason: error.to_string(),
+            });
+        parts.seal_lane_armed = false;
+        let RuntimeSnapshotParts {
+            repair_receipt,
+            values,
+            user_settings,
+            llm_lanes,
+            formatting_policy,
+            ai_execution,
+            provenance,
+            digest,
+            energy_calibration,
+            seal_lane_armed,
+            local_tail_patch,
+            tail_provider,
+        } = parts;
+        Self {
+            repair_receipt,
+            values,
+            user_settings,
+            llm_lanes,
+            formatting_policy,
+            ai_execution,
+            provenance,
+            digest,
+            energy_calibration,
+            seal_lane_armed,
+            local_tail_patch,
+            tail_provider,
+        }
+    }
+
+    /// Repair facts captured for this generation, independent of later process state.
+    pub fn repair_receipt(&self) -> &super::repair::RepairReceipt {
+        &self.repair_receipt
+    }
+
+    /// Recording-start local Whisper decision, frozen by the sole loader.
+    pub fn local_tail_patch_decision(&self) -> crate::asr_session::recorder::Layer1Decision {
+        crate::asr_session::recorder::Layer1Decision::LocalTailPatch(self.local_tail_patch)
+    }
+
+    /// Frozen transport selection. Invalid configuration disarms the local lane.
+    pub fn tail_provider(&self) -> Option<crate::stt::tail_provider::TailProviderId> {
+        self.tail_provider
+    }
+
+    /// Borrow the frozen runtime values.
+    pub fn values(&self) -> &Config {
+        &self.values
+    }
+
+    /// Borrow persisted intent frozen beside the effective values.
+    pub fn user_settings(&self) -> &UserSettings {
+        &self.user_settings
+    }
+
+    /// Borrow all resolved LLM lanes from the immutable settings throne.
+    pub fn llm_lanes(&self) -> &RuntimeLlmLanes {
+        &self.llm_lanes
+    }
+
+    /// Effective per-take formatter policy from the immutable settings throne.
+    pub const fn formatting_policy(&self) -> FormattingPolicy {
+        self.formatting_policy
+    }
+
+    /// Borrow the AI execution facts sealed for this exact generation.
+    pub const fn ai_execution(&self) -> &RuntimeAiExecution {
+        &self.ai_execution
+    }
+
+    /// Borrow provenance for evidence sinks.
+    pub fn provenance(&self) -> &SettingsSnapshotProvenance {
+        &self.provenance
+    }
+
+    /// Borrow the digest for Transcript Bus / take envelopes.
+    pub fn digest(&self) -> &SettingsSnapshotDigest {
+        &self.digest
+    }
+
+    /// Loader verdict on the acoustic calibration artifact (sealed / missing /
+    /// refused) for status surfaces and the admission gate.
+    pub fn energy_calibration_status(&self) -> &EnergyCalibrationStatus {
+        self.energy_calibration.status()
+    }
+
+    /// The sealed calibration truth (artifact + status) for this generation.
+    pub fn energy_calibration(&self) -> &SealedEnergyCalibration {
+        &self.energy_calibration
+    }
+
+    /// Effective mandatory-lane truth selected by this immutable generation.
+    pub const fn seal_lane_armed(&self) -> bool {
+        self.seal_lane_armed
+    }
+
+    /// Product setting behind the effective value, before an env override.
+    pub fn seal_lane_setting_armed(&self) -> bool {
+        self.user_settings
+            .seal_lane_armed
+            .unwrap_or(DEFAULT_SEAL_LANE_ARMED)
+    }
+
+    /// Whether the effective value came from Settings or the power-user env
+    /// override. Provenance records names only; no env value is exposed.
+    pub fn seal_lane_source(&self) -> SealLaneSource {
+        if self
+            .provenance
+            .env_overlay_keys
+            .iter()
+            .any(|key| key == SILERO_FUSION_ENV)
+        {
+            SealLaneSource::EnvOverride
+        } else {
+            SealLaneSource::Settings
+        }
+    }
+
+    /// The ledger calibration for one live capture path at its actual rate,
+    /// or the precise refusal. This is the only way a session obtains an
+    /// [`EnergyCalibration`]; there is no default.
+    pub fn energy_calibration_for_capture(
+        &self,
+        device_name: &str,
+        sample_rate: u32,
+    ) -> Result<EnergyCalibration, EnergyCalibrationRefusal> {
+        self.energy_calibration
+            .for_capture(device_name, sample_rate)
+    }
+}
+
 /// On-disk shape of `settings.json`: the same state as [`UserSettings`], but
 /// grouped by domain instead of flat.
 ///
@@ -319,7 +1244,7 @@ pub struct UserSettings {
 /// scars of exactly that failure.
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 #[serde(default)]
-struct SettingsV2 {
+pub(super) struct SettingsV2 {
     schema_version: u32,
     #[serde(skip_serializing_if = "Option::is_none")]
     interaction: Option<InteractionV2>,
@@ -336,6 +1261,21 @@ struct SettingsV2 {
     /// Agent runtime preferences (tool permissions gateway, …).
     #[serde(skip_serializing_if = "Option::is_none")]
     agent: Option<AgentV2>,
+    /// Operator-defined LLM providers; vendors are pinned in code.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    providers: Option<ProvidersV2>,
+}
+
+/// `providers` section: `custom[]` rows, each `{id, name, wire, endpoint}`.
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+#[serde(default)]
+struct ProvidersV2 {
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    custom: Vec<CustomProvider>,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pending_key_moves: Vec<super::keychain::KeyMove>,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pending_env_key_imports: Vec<super::migrate::PendingEnvKeyImport>,
 }
 
 /// `agent` section. Written only when at least one of its parts is present, so
@@ -419,16 +1359,12 @@ struct SpeechV2 {
     assistive: Option<AssistiveV2>,
     #[serde(skip_serializing_if = "Option::is_none")]
     emission: Option<EmissionV2>,
-    // De-ghosted (2026-05-30): base/default LLM endpoint + model (distinct from the
-    // formatting/assistive overrides). Previously dropped on V2 round-trip.
-    #[serde(skip_serializing_if = "Option::is_none")]
-    llm_endpoint: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    llm_model: Option<String>,
+    // Legacy `llm_endpoint` / `llm_model` (shared lane fallback) are read only
+    // by the one-shot migration in `load_unlocked` and never written back.
 }
 
 /// Which recognizer runs and how. `mode` is the legacy local/cloud switch;
-/// `stt_engine` is the newer three-way selector that supersedes it. Both are
+/// `stt_engine` is the newer product selector that supersedes it. Both are
 /// kept because existing files on disk still carry the former.
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 #[serde(default)]
@@ -438,7 +1374,9 @@ struct SpeechEngineV2 {
     #[serde(skip_serializing_if = "Option::is_none")]
     local_model_id: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
-    cloud_transcription_endpoint: Option<String>,
+    file_transcription_endpoint: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    live_transcription_endpoint: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     cloud_max_upload_mb: Option<u64>,
     // De-ghosted (2026-05-30): Whisper model id (distinct from local_model_id path).
@@ -461,9 +1399,22 @@ struct SpeechEngineV2 {
     gateway_session_url: Option<String>,
 }
 
+/// Normalize the only accepted local STT engine settings.
+///
+/// `candle` is the low-level spelling of the user-facing `whisper` route.
+/// Retired or unknown selectors are rejected rather than kept as dormant
+/// compatibility values that a future router could accidentally revive.
+pub(crate) fn normalize_stt_engine(value: &str) -> Option<String> {
+    match value.trim().to_ascii_lowercase().as_str() {
+        "auto" => Some("auto".to_string()),
+        "apple" => Some("apple".to_string()),
+        "whisper" | "candle" => Some("whisper".to_string()),
+        _ => None,
+    }
+}
+
 /// LLM post-processing of the transcript: whether it runs, how aggressively,
-/// and against which endpoint. The endpoint/model here override the base
-/// `speech.llm_*` pair for the formatting lane only.
+/// and on which provider + model. Legacy `llm_endpoint` is migration-only.
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 #[serde(default)]
 struct FormattingV2 {
@@ -476,23 +1427,21 @@ struct FormattingV2 {
     #[serde(skip_serializing_if = "Option::is_none")]
     level: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
-    llm_endpoint: Option<String>,
+    llm_provider: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     llm_model: Option<String>,
 }
 
-/// The assistive lane's own provider triple. Separate from formatting so the
-/// two lanes can run on different models — and so a key written for one lane
-/// cannot quietly serve the other.
+/// The assistive lane's own provider + model. Separate from formatting so the
+/// two lanes can run on different providers. Legacy `llm_endpoint` is
+/// migration-only.
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 #[serde(default)]
 struct AssistiveV2 {
     #[serde(skip_serializing_if = "Option::is_none")]
-    llm_endpoint: Option<String>,
+    provider: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     llm_model: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    provider: Option<String>,
 }
 
 /// Pacing of text as it lands in the target app: buffering delay, typing
@@ -517,6 +1466,11 @@ struct EmissionV2 {
 struct AudioV2 {
     #[serde(skip_serializing_if = "Option::is_none")]
     input_device_id: Option<String>,
+    #[serde(
+        default = "default_seal_lane_armed",
+        skip_serializing_if = "Option::is_none"
+    )]
+    seal_lane_armed: Option<bool>,
     #[serde(skip_serializing_if = "Option::is_none")]
     feedback: Option<FeedbackV2>,
 }
@@ -544,6 +1498,8 @@ struct UiV2 {
     show_dock_icon: Option<bool>,
     #[serde(skip_serializing_if = "Option::is_none")]
     transcription_overlay_enabled: Option<bool>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    overlay_expanded_by_default: Option<bool>,
     #[serde(skip_serializing_if = "Option::is_none")]
     tray_start_assistive: Option<bool>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -639,14 +1595,12 @@ pub const PROMOTED_SETTINGS_KEYS: &[&str] = &[
     "RESTORE_CLIPBOARD",
     "RESTORE_CLIPBOARD_DELAY_MS",
     "CODESCRIBE_DEFERRED_INSERT_SHORTCUT",
-    // LLM endpoints
-    "LLM_ENDPOINT",
-    "LLM_MODEL",
-    "LLM_ASSISTIVE_ENDPOINT",
-    "LLM_ASSISTIVE_MODEL",
-    "LLM_ASSISTIVE_PROVIDER",
-    "LLM_FORMATTING_ENDPOINT",
+    // LLM lanes: provider reference + model per lane. Endpoints are not
+    // settings — vendors pin them in code, custom rows carry their own.
+    "LLM_FORMATTING_PROVIDER",
     "LLM_FORMATTING_MODEL",
+    "LLM_ASSISTIVE_PROVIDER",
+    "LLM_ASSISTIVE_MODEL",
     // Account-login OAuth client ids — non-secret app identities, so they live
     // in settings.json (NOT the Keychain); env stays the dev fallback.
     "LLM_OPENAI_OAUTH_CLIENT_ID",
@@ -656,8 +1610,11 @@ pub const PROMOTED_SETTINGS_KEYS: &[&str] = &[
     "USE_LOCAL_STT",
     "LOCAL_MODEL",
     "STT_ENDPOINT",
+    "STT_FILE_ENDPOINT",
+    "STT_LIVE_ENDPOINT",
     "TRANSCRIPT_SEND_MODE",
     "AUDIO_INPUT_DEVICE",
+    SILERO_FUSION_ENV,
     "HISTORY_ENABLED",
     "QUICK_NOTES_ENABLED",
     "QUICK_NOTES_SAVE_ONLY",
@@ -701,7 +1658,7 @@ impl UserSettings {
     /// `schema_version: 3` and normalized values, so re-saving an older file
     /// upgrades it in place. Every field added to `UserSettings` must be routed
     /// here and in [`Self::from_v2`], or it ghosts on the next round-trip.
-    fn to_v2(&self) -> SettingsV2 {
+    pub(super) fn to_v2(&self) -> SettingsV2 {
         let normalized_mode_bindings = self.mode_bindings_normalized();
         SettingsV2 {
             schema_version: 3,
@@ -730,7 +1687,8 @@ impl UserSettings {
                         .use_local_stt
                         .map(|v| if v { "local_whisper" } else { "cloud_whisper" }.to_string()),
                     local_model_id: self.local_model.clone(),
-                    cloud_transcription_endpoint: self.stt_endpoint.clone(),
+                    file_transcription_endpoint: self.stt_file_endpoint.clone(),
+                    live_transcription_endpoint: self.stt_live_endpoint.clone(),
                     cloud_max_upload_mb: self.backend_max_upload_mb,
                     whisper_model: self.whisper_model.clone(),
                     stt_engine: self.stt_engine.clone(),
@@ -749,13 +1707,12 @@ impl UserSettings {
                         .as_deref()
                         .and_then(|value| FormattingPolicy::parse(value).ok())
                         .map(|policy| policy.as_str().to_string()),
-                    llm_endpoint: self.llm_formatting_endpoint.clone(),
+                    llm_provider: self.llm_formatting_provider.clone(),
                     llm_model: self.llm_formatting_model.clone(),
                 }),
                 assistive: Some(AssistiveV2 {
-                    llm_endpoint: self.llm_assistive_endpoint.clone(),
-                    llm_model: self.llm_assistive_model.clone(),
                     provider: self.llm_assistive_provider.clone(),
+                    llm_model: self.llm_assistive_model.clone(),
                 }),
                 emission: Some(EmissionV2 {
                     buffer_delay_ms: self.buffer_delay_ms,
@@ -763,11 +1720,10 @@ impl UserSettings {
                     emit_words_max: self.emit_words_max,
                     interim_cadence_sec: self.buffered_interim_sec,
                 }),
-                llm_endpoint: self.llm_endpoint.clone(),
-                llm_model: self.llm_model.clone(),
             }),
             audio: Some(AudioV2 {
                 input_device_id: self.audio_input_device.clone(),
+                seal_lane_armed: self.seal_lane_armed,
                 feedback: Some(FeedbackV2 {
                     beep_on_start: self.beep_on_start,
                     sound_name: self.sound_name.clone(),
@@ -778,6 +1734,7 @@ impl UserSettings {
                 chat_zoom: self.chat_zoom,
                 show_dock_icon: self.show_dock_icon,
                 transcription_overlay_enabled: self.transcription_overlay_enabled,
+                overlay_expanded_by_default: self.overlay_expanded_by_default,
                 tray_start_assistive: self.tray_start_assistive,
                 hold_indicator: self.hold_indicator,
                 hold_badge_size: self.hold_badge_size,
@@ -809,6 +1766,14 @@ impl UserSettings {
                     capabilities,
                 }),
             },
+            providers: (!self.llm_custom_providers.is_empty()
+                || !self.pending_key_moves.is_empty()
+                || !self.pending_env_key_imports.is_empty())
+            .then(|| ProvidersV2 {
+                custom: self.llm_custom_providers.clone(),
+                pending_key_moves: self.pending_key_moves.clone(),
+                pending_env_key_imports: self.pending_env_key_imports.clone(),
+            }),
         }
     }
 
@@ -820,7 +1785,7 @@ impl UserSettings {
     /// back to the product defaults (`apple` / `smart`). An empty
     /// `speech.engine: {}` used to leave them unset, handing the decision to
     /// whatever the environment happened to say.
-    fn from_v2(v2: SettingsV2) -> Self {
+    pub(super) fn from_v2(v2: SettingsV2) -> Self {
         Self {
             whisper_language: v2.speech.as_ref().and_then(|s| s.language.clone()),
             hold_exclusive: v2
@@ -888,13 +1853,26 @@ impl UserSettings {
                 .and_then(|f| f.level.as_deref())
                 .and_then(|value| FormattingPolicy::parse(value).ok())
                 .map(|policy| policy.as_str().to_string()),
-            llm_endpoint: v2.speech.as_ref().and_then(|s| s.llm_endpoint.clone()),
-            llm_model: v2.speech.as_ref().and_then(|s| s.llm_model.clone()),
-            llm_assistive_endpoint: v2
+            llm_formatting_provider: v2
                 .speech
                 .as_ref()
-                .and_then(|s| s.assistive.as_ref())
-                .and_then(|a| a.llm_endpoint.clone()),
+                .and_then(|s| s.formatting.as_ref())
+                .and_then(|f| f.llm_provider.clone()),
+            llm_custom_providers: v2
+                .providers
+                .as_ref()
+                .map(|p| p.custom.clone())
+                .unwrap_or_default(),
+            pending_key_moves: v2
+                .providers
+                .as_ref()
+                .map(|p| p.pending_key_moves.clone())
+                .unwrap_or_default(),
+            pending_env_key_imports: v2
+                .providers
+                .as_ref()
+                .map(|p| p.pending_env_key_imports.clone())
+                .unwrap_or_default(),
             llm_assistive_model: v2
                 .speech
                 .as_ref()
@@ -912,6 +1890,10 @@ impl UserSettings {
                 .as_ref()
                 .and_then(|ui| ui.transcription_overlay_enabled),
             tray_start_assistive: v2.ui.as_ref().and_then(|ui| ui.tray_start_assistive),
+            overlay_expanded_by_default: v2
+                .ui
+                .as_ref()
+                .and_then(|ui| ui.overlay_expanded_by_default),
             hold_indicator: v2.ui.as_ref().and_then(|ui| ui.hold_indicator),
             hold_badge_size: v2.ui.as_ref().and_then(|ui| ui.hold_badge_size),
             deferred_insert_shortcut: v2
@@ -926,11 +1908,6 @@ impl UserSettings {
                 .interaction
                 .as_ref()
                 .and_then(|interaction| interaction.restore_clipboard_delay_ms),
-            llm_formatting_endpoint: v2
-                .speech
-                .as_ref()
-                .and_then(|s| s.formatting.as_ref())
-                .and_then(|f| f.llm_endpoint.clone()),
             llm_formatting_model: v2
                 .speech
                 .as_ref()
@@ -948,13 +1925,23 @@ impl UserSettings {
                 .as_ref()
                 .and_then(|s| s.engine.as_ref())
                 .and_then(|e| e.local_model_id.clone()),
-            stt_endpoint: v2
+            stt_file_endpoint: v2
                 .speech
                 .as_ref()
                 .and_then(|s| s.engine.as_ref())
-                .and_then(|e| e.cloud_transcription_endpoint.clone()),
+                .and_then(|e| e.file_transcription_endpoint.clone()),
+            stt_live_endpoint: v2
+                .speech
+                .as_ref()
+                .and_then(|s| s.engine.as_ref())
+                .and_then(|e| e.live_transcription_endpoint.clone()),
             transcript_send_mode: v2.interaction.as_ref().and_then(|i| i.send_mode.clone()),
             audio_input_device: v2.audio.as_ref().and_then(|a| a.input_device_id.clone()),
+            seal_lane_armed: v2
+                .audio
+                .as_ref()
+                .and_then(|audio| audio.seal_lane_armed)
+                .or(Some(DEFAULT_SEAL_LANE_ARMED)),
             sound_name: v2
                 .audio
                 .as_ref()
@@ -1020,8 +2007,8 @@ impl UserSettings {
                 .speech
                 .as_ref()
                 .and_then(|s| s.engine.as_ref())
-                .and_then(|e| e.stt_engine.clone())
-                .filter(|s| !s.trim().is_empty())
+                .and_then(|e| e.stt_engine.as_deref())
+                .and_then(normalize_stt_engine)
                 .or_else(|| Some("apple".to_string())),
             final_pass_mode: v2
                 .speech
@@ -1066,7 +2053,7 @@ impl UserSettings {
     /// Reject a file that would load into nonsense: unsupported schema version,
     /// out-of-range zoom, or an unparseable formatting level. Runs on both read
     /// and write, so a bad value can neither be loaded nor persisted.
-    fn validate_v2(v2: &SettingsV2) -> anyhow::Result<()> {
+    pub(super) fn validate_v2(v2: &SettingsV2) -> anyhow::Result<()> {
         if v2.schema_version != 2 && v2.schema_version != 3 {
             anyhow::bail!("settings schema_version must be 2 or 3")
         }
@@ -1089,7 +2076,7 @@ impl UserSettings {
     /// Write via temp file plus rename, so a crash mid-write leaves the previous
     /// `settings.json` intact rather than a truncated one the app would treat
     /// as corrupt and silently replace with defaults.
-    fn write_json_atomic(path: &Path, json: &str) -> anyhow::Result<()> {
+    pub(super) fn write_json_atomic(path: &Path, json: &str) -> anyhow::Result<()> {
         Self::write_json_atomic_with(path, json, |from, to| fs::rename(from, to))
     }
 
@@ -1113,14 +2100,28 @@ impl UserSettings {
             Uuid::new_v4()
         ));
         let outcome = (|| -> anyhow::Result<()> {
-            let mut file = OpenOptions::new().create_new(true).write(true).open(&tmp)?;
+            let mut options = OpenOptions::new();
+            options.create_new(true).write(true);
+            #[cfg(unix)]
+            {
+                use std::os::unix::fs::OpenOptionsExt;
+                options.mode(0o600);
+            }
+            let mut file = options.open(&tmp)?;
             file.write_all(json.as_bytes())?;
             file.sync_all()?;
             drop(file);
             rename(&tmp, path)?;
-            // `parent` is derived only from the canonical internal settings
-            // path above; opening it read-only is the durability fsync, not a
-            // request-controlled file lookup.
+            // WHY: `parent` is derived only from the canonical internal
+            // settings path above (CODESCRIBE_DATA_DIR / Application Support),
+            // never from request or user input; opening it read-only is the
+            // directory fsync that makes the rename durable.
+            // WHEN: the pre-push gate (`semgrep scan --config auto --error`)
+            // flags this line as rust.actix path traversal (2026-09-08, after
+            // the vc-prune silencer strip); the local `--config auto` run does
+            // not, so the waiver must survive both.
+            // WHERE: this fsync only — the write above targets `tmp`, which is
+            // created with `create_new`.
             // nosemgrep: rust.actix.path-traversal.tainted-path.tainted-path
             File::open(parent)?.sync_all()?;
             Ok(())
@@ -1150,11 +2151,13 @@ impl UserSettings {
 
     /// Returns the path to `settings.json`.
     pub fn settings_path() -> PathBuf {
+        super::loader::note_startup_acquisition("settings path/repair registry");
         Self::settings_dir().join("settings.json")
     }
 
     /// Loads settings from disk. Returns `Default` on any error.
     pub fn load() -> Self {
+        super::loader::note_startup_acquisition("user settings file");
         let _data_io = match super::storage_reset::begin_app_data_io() {
             Ok(guard) => guard,
             Err(error) => {
@@ -1169,9 +2172,14 @@ impl UserSettings {
     /// Load while the settings transaction lock and app-data admission are held.
     fn load_unlocked() -> Self {
         let path = Self::settings_path();
+        super::repair::record(super::repair::repair_settings(
+            &path,
+            super::repair::operator_pack().as_deref(),
+        ));
         match fs::read_to_string(&path) {
             Ok(contents) => match serde_json::from_str::<serde_json::Value>(&contents) {
                 Ok(value) => {
+                    let value_for_legacy = value.clone();
                     if value.get("schema_version").is_some() {
                         match serde_json::from_value::<SettingsV2>(value) {
                             Ok(v2) => {
@@ -1180,7 +2188,12 @@ impl UserSettings {
                                     return Self::default();
                                 }
                                 debug!("Loaded settings V2 from {}", path.display());
-                                Self::from_v2(v2)
+                                let mut settings = Self::from_v2(v2);
+                                Self::migrate_legacy_llm_lanes_once(
+                                    &value_for_legacy,
+                                    &mut settings,
+                                );
+                                settings
                             }
                             Err(e) => {
                                 warn!("Failed to parse settings V2 at {}: {e}", path.display());
@@ -1197,7 +2210,14 @@ impl UserSettings {
                                         backup_path.display()
                                     );
                                 }
-                                if let Err(e) = v1.save_unlocked() {
+                                let mut settings = Self::from_v2(v1.to_v2());
+                                // Keep the legacy endpoint mapping until its durable key
+                                // relocation intent is part of the first V2 write.
+                                Self::migrate_legacy_llm_lanes_once(
+                                    &value_for_legacy,
+                                    &mut settings,
+                                );
+                                if let Err(e) = settings.save_unlocked() {
                                     warn!("Failed hard-migrating settings V1 -> V2: {e}");
                                 } else {
                                     info!(
@@ -1205,7 +2225,7 @@ impl UserSettings {
                                         backup_path.display()
                                     );
                                 }
-                                Self::from_v2(v1.to_v2())
+                                settings
                             }
                             Err(e) => {
                                 debug!("Failed to parse {}: {e}, using defaults", path.display());
@@ -1224,16 +2244,226 @@ impl UserSettings {
                     "No settings file at {} ({e}), using defaults",
                     path.display()
                 );
-                Self::default()
+                let mut settings = Self::default();
+                if e.kind() == std::io::ErrorKind::NotFound {
+                    super::stt_migration::migrate_legacy_stt_lanes_once(&mut settings);
+                }
+                settings
             }
         }
+    }
+
+    /// Run the one-shot legacy LLM lane migration when the raw document still
+    /// carries endpoint fields and persist the new shape with pending key moves
+    /// for the loader's Keychain step. Idempotent: the saved file has no legacy
+    /// fields, so the next load finds nothing to migrate.
+    fn migrate_legacy_llm_lanes_once(raw: &serde_json::Value, settings: &mut Self) {
+        let legacy = super::llm_migration::SpeechV2Legacy::from_json(raw);
+        // Prepare both migrations before either serializer can discard the other
+        // domain's legacy fields. A crash between saves must not lose LLM intent.
+        let moves = if legacy.needs_migration() {
+            super::llm_migration::migrate_legacy_llm_lanes(&legacy, settings)
+        } else {
+            Vec::new()
+        };
+        super::stt_migration::migrate_legacy_stt_lanes_once(settings);
+        if !legacy.needs_migration() {
+            return;
+        }
+        settings.pending_key_moves.extend(moves);
+        match settings.save_unlocked() {
+            // Hand back exactly what the next load will read: `to_v2` normalizes
+            // on the way out (mode bindings and friends), so the first post-migration
+            // load must not differ from the second.
+            Ok(()) => info!(
+                "Migrated legacy LLM lane fields to the provider registry (formatting={:?}, assistive={:?}, custom_rows={})",
+                settings.llm_formatting_provider,
+                settings.llm_assistive_provider,
+                settings.llm_custom_providers.len()
+            ),
+            Err(error) => warn!("Failed to persist migrated LLM lanes: {error}"),
+        }
+        *settings = Self::from_v2(settings.to_v2());
+    }
+
+    /// Acknowledge relocation only after the secret store confirms its write.
+    /// Re-read under the settings lock so acknowledgment preserves newer edits.
+    pub(crate) fn settle_pending_key_moves() -> anyhow::Result<usize> {
+        Self::settle_pending_key_moves_with(super::keychain::apply_key_moves)
+    }
+
+    /// Re-read under the settings lock and acknowledge only completed imports.
+    pub(crate) fn settle_pending_env_key_imports() -> anyhow::Result<()> {
+        let _data_io = super::storage_reset::begin_app_data_io()?;
+        let _settings_io = settings_io_lock();
+        let mut latest = Self::load_unlocked();
+        while let Some(row) = latest.pending_env_key_imports.first() {
+            super::migrate::import_pending_env_key(row)?;
+            latest.pending_env_key_imports.remove(0);
+            latest.save_unlocked()?;
+        }
+        Ok(())
+    }
+
+    /// Explicit credential intent supersedes queued imports under the same lock
+    /// used by settlement. Store actions must not acquire Settings themselves.
+    pub fn with_credential_edit<T>(
+        account: &str,
+        edit: impl FnOnce(&mut Self) -> anyhow::Result<T>,
+    ) -> anyhow::Result<T> {
+        Self::with_credential_edit_persistence(account, edit, Self::save_unlocked)
+    }
+
+    fn with_credential_edit_persistence<T>(
+        account: &str,
+        edit: impl FnOnce(&mut Self) -> anyhow::Result<T>,
+        persist: impl Fn(&Self) -> anyhow::Result<()>,
+    ) -> anyhow::Result<T> {
+        let _data_io = super::storage_reset::begin_app_data_io()?;
+        let _settings_io = settings_io_lock();
+        let mut latest = Self::read_persisted_settings()?.unwrap_or_default();
+        if latest.cancel_pending_credential_imports(account) {
+            // Cancellation is durable even if the following explicit store
+            // action fails. A failed cancellation forbids that store action.
+            persist(&latest)?;
+        }
+        let before_edit = latest.clone();
+        let result = edit(&mut latest)?;
+        if latest != before_edit {
+            persist(&latest)?;
+        }
+        Ok(result)
+    }
+
+    pub fn cancel_pending_credential_imports(&mut self, account: &str) -> bool {
+        let before = self.pending_env_key_imports.len() + self.pending_key_moves.len();
+        self.pending_env_key_imports
+            .retain(|row| row.target != account);
+        self.pending_key_moves.retain(|row| row.to != account);
+        before != self.pending_env_key_imports.len() + self.pending_key_moves.len()
+    }
+
+    fn settle_pending_key_moves_with(
+        apply: impl FnOnce(&[super::keychain::KeyMove]) -> anyhow::Result<usize>,
+    ) -> anyhow::Result<usize> {
+        let _data_io = super::storage_reset::begin_app_data_io()?;
+        let _settings_io = settings_io_lock();
+        let mut latest = Self::load_unlocked();
+        if latest.pending_key_moves.is_empty() {
+            return Ok(0);
+        }
+        let changed = apply(&latest.pending_key_moves)?;
+        latest.pending_key_moves.clear();
+        latest.save_unlocked()?;
+        Ok(changed)
+    }
+
+    /// Add a Custom provider row. The id is derived from the name and must be
+    /// unique across existing rows.
+    pub fn add_custom_provider(&mut self, row: CustomProvider) -> Result<(), ProviderError> {
+        if self
+            .llm_custom_providers
+            .iter()
+            .any(|existing| existing.id == row.id)
+        {
+            return Err(ProviderError::DuplicateId(row.id));
+        }
+        self.llm_custom_providers.push(row);
+        Ok(())
+    }
+
+    /// Update a Custom provider in place. The id (and so the Keychain account
+    /// and every lane pointer) is immutable; the new endpoint is validated and
+    /// normalized for `wire` exactly as on creation.
+    pub fn update_custom_provider(
+        &mut self,
+        id: &str,
+        name: &str,
+        wire: WireFamily,
+        endpoint: &str,
+    ) -> Result<CustomProvider, ProviderError> {
+        let validated = CustomProvider::new(name, wire, endpoint)?;
+        let row = self
+            .llm_custom_providers
+            .iter_mut()
+            .find(|row| row.id == id)
+            .ok_or_else(|| ProviderError::UnknownProvider(id.to_string()))?;
+        row.name = validated.name;
+        row.wire = validated.wire;
+        row.endpoint = validated.endpoint;
+        Ok(row.clone())
+    }
+
+    /// Remove a Custom provider row. Lanes pointing at it are reset to `None`
+    /// (the loader then falls back to the default vendor) and reported, so the
+    /// caller can also drop the row's Keychain account.
+    pub fn remove_custom_provider(
+        &mut self,
+        id: &str,
+    ) -> Result<RemovedCustomProvider, ProviderError> {
+        let index = self
+            .llm_custom_providers
+            .iter()
+            .position(|row| row.id == id)
+            .ok_or_else(|| ProviderError::UnknownProvider(id.to_string()))?;
+        let provider = self.llm_custom_providers.remove(index);
+        self.cancel_pending_credential_imports(&provider.key_account());
+        let pointer = ProviderRef::Custom(provider.id.clone()).as_string();
+        let mut lanes_reset = Vec::new();
+        if self.llm_formatting_provider.as_deref() == Some(pointer.as_str()) {
+            self.llm_formatting_provider = None;
+            lanes_reset.push(RuntimeLlmLaneKind::Formatting);
+        }
+        if self.llm_assistive_provider.as_deref() == Some(pointer.as_str()) {
+            self.llm_assistive_provider = None;
+            lanes_reset.push(RuntimeLlmLaneKind::Assistive);
+        }
+        Ok(RemovedCustomProvider {
+            provider,
+            lanes_reset,
+        })
     }
 
     /// Persists current settings to disk as pretty-printed JSON.
     pub fn save(&self) -> anyhow::Result<()> {
         let _data_io = super::storage_reset::begin_app_data_io()?;
         let _settings_io = settings_io_lock();
-        self.save_unlocked()
+        let mut next = self.clone();
+        if let Some(durable) = Self::read_persisted_settings()? {
+            // Ordinary stale Settings snapshots cannot reissue canceled or
+            // acknowledged migration intent. Only its locked owner changes it.
+            next.pending_env_key_imports = durable.pending_env_key_imports;
+            next.pending_key_moves = durable.pending_key_moves;
+            let owns = |account: &str| {
+                !crate::llm::provider::is_custom_key_account(account)
+                    || next
+                        .llm_custom_providers
+                        .iter()
+                        .any(|p| p.key_account() == account)
+            };
+            next.pending_env_key_imports.retain(|row| owns(&row.target));
+            next.pending_key_moves.retain(|row| owns(&row.to));
+        }
+        next.save_unlocked()
+    }
+
+    /// Mutation authority cannot treat an unreadable document as empty settings.
+    /// No repair or credential acquisition is performed by this strict reader.
+    fn read_persisted_settings() -> anyhow::Result<Option<Self>> {
+        let raw = match fs::read_to_string(Self::settings_path()) {
+            Ok(raw) => raw,
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+            Err(error) => return Err(error.into()),
+        };
+        let value: serde_json::Value = serde_json::from_str(&raw)?;
+        let settings = if value.get("schema_version").is_some() {
+            let v2: SettingsV2 = serde_json::from_value(value)?;
+            Self::validate_v2(&v2)?;
+            Self::from_v2(v2)
+        } else {
+            serde_json::from_value(value)?
+        };
+        Ok(Some(settings))
     }
 
     /// Remove only Agent-owned fields from the persisted JSON document.
@@ -1314,7 +2544,7 @@ impl UserSettings {
     }
 
     /// Persist while the settings transaction lock and app-data admission are held.
-    fn save_unlocked(&self) -> anyhow::Result<()> {
+    pub(super) fn save_unlocked(&self) -> anyhow::Result<()> {
         let dir = Self::settings_dir();
         fs::create_dir_all(&dir)?;
         let path = Self::settings_path();
@@ -1436,11 +2666,9 @@ impl UserSettings {
         let before = self.clone();
         match key {
             "WHISPER_LANGUAGE" => self.whisper_language = Some(value.to_owned()),
-            "LLM_ENDPOINT" => self.llm_endpoint = Some(value.to_owned()),
-            "LLM_MODEL" => self.llm_model = Some(value.to_owned()),
-            "LLM_ASSISTIVE_ENDPOINT" => self.llm_assistive_endpoint = Some(value.to_owned()),
             "LLM_ASSISTIVE_MODEL" => self.llm_assistive_model = Some(value.to_owned()),
             "LLM_ASSISTIVE_PROVIDER" => self.llm_assistive_provider = Some(value.to_owned()),
+            "LLM_FORMATTING_PROVIDER" => self.llm_formatting_provider = Some(value.to_owned()),
             "LLM_OPENAI_OAUTH_CLIENT_ID" => {
                 // Empty clears back to the shipped Codex CLI public app id.
                 let trimmed = value.trim();
@@ -1474,16 +2702,48 @@ impl UserSettings {
                 }
             }
             "TRANSCRIPT_TAG_TEMPLATE" => self.transcript_tag_template = Some(value.to_owned()),
-            "LLM_FORMATTING_ENDPOINT" => self.llm_formatting_endpoint = Some(value.to_owned()),
             "LLM_FORMATTING_MODEL" => self.llm_formatting_model = Some(value.to_owned()),
             "LOCAL_MODEL" => self.local_model = Some(value.to_owned()),
-            "STT_ENDPOINT" => self.stt_endpoint = Some(value.to_owned()),
+            "STT_ENDPOINT" => {
+                (self.stt_file_endpoint, self.stt_live_endpoint) =
+                    super::stt_migration::split_retired_stt_endpoint(value);
+            }
+            "STT_FILE_ENDPOINT" | "STT_LIVE_ENDPOINT" => {
+                let lane = if key == "STT_FILE_ENDPOINT" {
+                    crate::stt::SttLane::File
+                } else {
+                    crate::stt::SttLane::Live
+                };
+                let endpoint = if value.trim().is_empty() {
+                    None
+                } else {
+                    match crate::stt::validate_stt_endpoint(lane, value) {
+                        Ok(endpoint) => Some(endpoint),
+                        Err(error) => {
+                            warn!(%error, "Rejected STT endpoint write");
+                            return;
+                        }
+                    }
+                };
+                match lane {
+                    crate::stt::SttLane::File => self.stt_file_endpoint = endpoint,
+                    crate::stt::SttLane::Live => self.stt_live_endpoint = endpoint,
+                }
+            }
             "TRANSCRIPT_SEND_MODE" => self.transcript_send_mode = Some(value.to_owned()),
             "AUDIO_INPUT_DEVICE" => self.audio_input_device = Some(value.to_owned()),
             "SOUND_NAME" => self.sound_name = Some(value.to_owned()),
             "WHISPER_MODEL" => self.whisper_model = Some(value.to_owned()),
             "ONBOARDING_MODE" => self.onboarding_mode = Some(value.to_owned()),
-            "CODESCRIBE_STT_ENGINE" => self.stt_engine = Some(value.to_owned()),
+            "CODESCRIBE_STT_ENGINE" => match normalize_stt_engine(value) {
+                Some(normalized) => self.stt_engine = Some(normalized),
+                None => {
+                    warn!(
+                        "Rejected STT engine write (expected auto|apple|whisper|candle): {value}"
+                    );
+                    return;
+                }
+            },
             "FINAL_PASS_MODE" | "CODESCRIBE_FINAL_PASS_MODE" => {
                 let normalized = value.trim().to_ascii_lowercase();
                 match normalized.as_str() {
@@ -1608,6 +2868,7 @@ impl UserSettings {
             "RESTORE_CLIPBOARD" => self.restore_clipboard = Some(value),
             "HOLD_EXCLUSIVE" => self.hold_exclusive = Some(value),
             "USE_LOCAL_STT" => self.use_local_stt = Some(value),
+            SILERO_FUSION_ENV => self.seal_lane_armed = Some(value),
             "HISTORY_ENABLED" => self.history_enabled = Some(value),
             "QUICK_NOTES_ENABLED" => self.quick_notes_enabled = Some(value),
             "QUICK_NOTES_SAVE_ONLY" => self.quick_notes_save_only = Some(value),
@@ -1699,7 +2960,9 @@ fn remove_json_keys_at(
 /// disk. All tests are `#[serial]`: the data dir is selected by process env.
 #[cfg(test)]
 mod tests {
-    use super::{FormattingPolicy, UserSettings, is_promoted_key};
+    use super::{
+        DEFAULT_SEAL_LANE_ARMED, FormattingPolicy, SILERO_FUSION_ENV, UserSettings, is_promoted_key,
+    };
     use crate::config::{ShortcutBinding, WorkMode};
     use serial_test::serial;
     use std::fs;
@@ -1717,6 +2980,105 @@ mod tests {
             std::env::remove_var("TOGGLE_TRIGGER");
         }
         tmp
+    }
+
+    #[test]
+    #[serial]
+    fn failed_credential_cancellation_persistence_forbids_store_mutation() {
+        let _tmp = setup_isolated_data_dir();
+        let settings = UserSettings {
+            pending_env_key_imports: vec![crate::config::migrate::PendingEnvKeyImport {
+                env_path: std::path::PathBuf::from("/tmp/synthetic-selected.env"),
+                source: "STT_FILE_API_KEY".into(),
+                target: "STT_FILE_API_KEY".into(),
+            }],
+            ..UserSettings::default()
+        };
+        settings.save().unwrap();
+        let called = std::cell::Cell::new(false);
+        let error = UserSettings::with_credential_edit_persistence(
+            "STT_FILE_API_KEY",
+            |_| {
+                called.set(true);
+                Ok(())
+            },
+            |_| anyhow::bail!("synthetic cancellation persistence refusal"),
+        );
+        assert!(error.is_err());
+        assert!(!called.get());
+        assert_eq!(
+            UserSettings::load().pending_env_key_imports,
+            settings.pending_env_key_imports
+        );
+        let failed_store: anyhow::Result<()> =
+            UserSettings::with_credential_edit("STT_FILE_API_KEY", |_| {
+                anyhow::bail!("synthetic store refusal")
+            });
+        assert!(failed_store.is_err());
+        assert!(UserSettings::load().pending_env_key_imports.is_empty());
+        // An older Settings view cannot revive the canceled import afterward.
+        settings.save().unwrap();
+        assert!(UserSettings::load().pending_env_key_imports.is_empty());
+    }
+
+    #[test]
+    #[serial]
+    fn unreadable_or_invalid_settings_refuse_credential_mutation_before_store() {
+        let root = setup_isolated_data_dir();
+        let path = UserSettings::settings_path();
+        for invalid in ["{", r#"{"schema_version":99}"#] {
+            fs::write(&path, invalid).unwrap();
+            let called = std::cell::Cell::new(false);
+            let result = UserSettings::with_credential_edit("STT_FILE_API_KEY", |_| {
+                called.set(true);
+                Ok(())
+            });
+            assert!(result.is_err());
+            assert!(!called.get());
+            assert_eq!(fs::read_to_string(&path).unwrap(), invalid);
+        }
+        fs::remove_file(&path).unwrap();
+        fs::create_dir(&path).unwrap();
+        let called = std::cell::Cell::new(false);
+        let result = UserSettings::with_credential_edit("STT_FILE_API_KEY", |_| {
+            called.set(true);
+            Ok(())
+        });
+        assert!(result.is_err());
+        assert!(!called.get());
+        assert!(path.is_dir());
+        drop(root);
+    }
+
+    /// Legacy schema-v3 files have no seal-lane field. Loading them performs
+    /// the semantic migration to the armed product default, and the next
+    /// canonical write materializes that value under `audio`.
+    #[test]
+    #[serial]
+    fn seal_lane_field_migrates_and_round_trips_through_v2_schema() {
+        let _tmp = setup_isolated_data_dir();
+        let path = UserSettings::settings_path();
+        fs::write(&path, r#"{"schema_version":3,"audio":{}}"#)
+            .expect("write legacy schema-v3 settings");
+
+        let mut loaded = UserSettings::load();
+        assert_eq!(loaded.seal_lane_armed, Some(DEFAULT_SEAL_LANE_ARMED));
+        assert!(is_promoted_key(SILERO_FUSION_ENV));
+
+        loaded.save().expect("materialize migrated seal-lane field");
+        let migrated: serde_json::Value =
+            serde_json::from_str(&fs::read_to_string(&path).expect("read migrated settings"))
+                .expect("parse migrated settings");
+        assert_eq!(
+            migrated
+                .pointer("/audio/seal_lane_armed")
+                .and_then(serde_json::Value::as_bool),
+            Some(true)
+        );
+
+        loaded.set_bool(SILERO_FUSION_ENV, false);
+        let reloaded = UserSettings::load();
+        assert_eq!(reloaded.seal_lane_armed, Some(false));
     }
 
     #[test]
@@ -2097,8 +3459,16 @@ mod tests {
             quick_notes_save_only: Some(true),
             agent_enter_sends: Some(false),
             whisper_model: Some("whisper-large-v3-turbo".to_string()),
-            llm_endpoint: Some("https://api.example/v1/responses".to_string()),
-            llm_model: Some("gpt-4.1".to_string()),
+            llm_formatting_provider: Some("custom:my-local".to_string()),
+            llm_formatting_model: Some("gpt-4.1".to_string()),
+            llm_custom_providers: vec![
+                crate::llm::provider::CustomProvider::new(
+                    "my.local",
+                    crate::llm::provider::WireFamily::OpenAiResponses,
+                    "https://my.local:8080/v1",
+                )
+                .expect("valid custom row"),
+            ],
             ..Default::default()
         };
         settings.save().expect("save settings");
@@ -2112,10 +3482,240 @@ mod tests {
             Some("whisper-large-v3-turbo")
         );
         assert_eq!(
-            loaded.llm_endpoint.as_deref(),
-            Some("https://api.example/v1/responses")
+            loaded.llm_formatting_provider.as_deref(),
+            Some("custom:my-local")
         );
-        assert_eq!(loaded.llm_model.as_deref(), Some("gpt-4.1"));
+        assert_eq!(loaded.llm_formatting_model.as_deref(), Some("gpt-4.1"));
+        assert_eq!(loaded.llm_custom_providers.len(), 1);
+        assert_eq!(
+            loaded.llm_custom_providers[0].endpoint,
+            "https://my.local:8080/v1/responses"
+        );
+    }
+
+    /// §F witness (name kept from the plan): a legacy settings.json whose lanes
+    /// sit on the Libraxis host under an `openai-responses` label migrates once
+    /// on load. Per §B.3 the Libraxis host is a vendor, so both lanes land on
+    /// `libraxis-responses` with zero custom rows; an unknown host (`my.local`)
+    /// becomes the one Custom row. The written file carries no legacy field and
+    /// a second load changes nothing.
+    #[test]
+    #[serial]
+    fn legacy_libraxis_under_openai_migrates_to_custom_row() {
+        let _tmp = setup_isolated_data_dir();
+        let path = UserSettings::settings_path();
+        let legacy = serde_json::json!({
+            "schema_version": 3,
+            "speech": {
+                "llm_endpoint": "https://api.libraxis.com/v1/responses",
+                "llm_model": "buddy",
+                "formatting": { "level": "smart", "llm_model": "buddy" },
+                "assistive": {
+                    "llm_endpoint": "https://api.libraxis.com/v1/responses",
+                    "llm_model": "buddy",
+                    "provider": "openai-responses"
+                }
+            }
+        });
+        fs::write(&path, legacy.to_string()).expect("seed legacy settings");
+
+        let loaded = UserSettings::load();
+        assert_eq!(
+            loaded.llm_formatting_provider.as_deref(),
+            Some("libraxis-responses")
+        );
+        assert_eq!(loaded.llm_formatting_model.as_deref(), Some("buddy"));
+        assert_eq!(
+            loaded.llm_assistive_provider.as_deref(),
+            Some("libraxis-responses")
+        );
+        assert_eq!(loaded.llm_assistive_model.as_deref(), Some("buddy"));
+        assert!(loaded.llm_custom_providers.is_empty());
+        assert_eq!(loaded.formatting_level.as_deref(), Some("smart"));
+
+        let written = fs::read_to_string(&path).expect("read migrated settings");
+        let written_json: serde_json::Value =
+            serde_json::from_str(&written).expect("parse migrated settings");
+        for pointer in [
+            "/speech/llm_endpoint",
+            "/speech/llm_model",
+            "/speech/assistive/llm_endpoint",
+            "/speech/formatting/llm_endpoint",
+        ] {
+            assert!(
+                written_json.pointer(pointer).is_none(),
+                "legacy field written back: {pointer}"
+            );
+        }
+        assert_eq!(
+            written_json
+                .pointer("/speech/formatting/llm_provider")
+                .and_then(serde_json::Value::as_str),
+            Some("libraxis-responses")
+        );
+        assert_eq!(
+            loaded.pending_key_moves.len(),
+            3,
+            "three legacy key moves durably retained for the loader"
+        );
+
+        // Second load: same settings and durable moves, without rewriting.
+        let again = UserSettings::load();
+        assert_eq!(again, loaded);
+        assert_eq!(
+            fs::read_to_string(&path).expect("read settings after second load"),
+            written
+        );
+        assert_eq!(again.pending_key_moves, loaded.pending_key_moves);
+
+        // Unknown host on the assistive lane → one Custom row.
+        let self_hosted = serde_json::json!({
+            "schema_version": 3,
+            "speech": {
+                "assistive": {
+                    "llm_endpoint": "https://my.local:8080/v1/responses",
+                    "llm_model": "qwen",
+                    "provider": "openai-responses"
+                }
+            }
+        });
+        fs::write(&path, self_hosted.to_string()).expect("seed self-hosted settings");
+        let loaded = UserSettings::load();
+        assert_eq!(
+            loaded.llm_assistive_provider.as_deref(),
+            Some("custom:my-local")
+        );
+        assert_eq!(loaded.llm_custom_providers.len(), 1);
+        assert_eq!(loaded.llm_custom_providers[0].name, "my.local");
+        let written_json: serde_json::Value =
+            serde_json::from_str(&fs::read_to_string(&path).expect("read")).expect("parse");
+        assert_eq!(
+            written_json
+                .pointer("/providers/custom/0/id")
+                .and_then(serde_json::Value::as_str),
+            Some("my-local")
+        );
+    }
+
+    #[test]
+    #[serial]
+    fn key_relocation_failure_survives_reload_and_preserves_later_settings_edits() {
+        let _tmp = setup_isolated_data_dir();
+        fs::write(
+            UserSettings::settings_path(),
+            serde_json::json!({
+                "schema_version": 3,
+                "speech": {"assistive": {
+                    "llm_endpoint": "http://localhost:9000/v1/responses",
+                    "llm_model": "local-model"
+                }}
+            })
+            .to_string(),
+        )
+        .unwrap();
+        let expected_moves = UserSettings::load().pending_key_moves;
+        assert!(!expected_moves.is_empty());
+        let failure = UserSettings::settle_pending_key_moves_with(|moves| {
+            assert_eq!(moves, expected_moves);
+            anyhow::bail!("simulated Keychain denial")
+        });
+        assert!(failure.is_err());
+
+        // No process-local queue participates: reconstruct the exact retry from disk.
+        let mut reloaded = UserSettings::load();
+        assert_eq!(reloaded.pending_key_moves, expected_moves);
+        reloaded.sound_volume = Some(0.42);
+        reloaded.save().unwrap();
+        UserSettings::settle_pending_key_moves_with(|moves| {
+            assert_eq!(moves, expected_moves);
+            Ok(moves.len())
+        })
+        .unwrap();
+        let settled = UserSettings::load();
+        assert!(settled.pending_key_moves.is_empty());
+        assert_eq!(settled.sound_volume, Some(0.42));
+        assert_eq!(settled.llm_assistive_model.as_deref(), Some("local-model"));
+        UserSettings::settle_pending_key_moves_with(|_| panic!("already acknowledged")).unwrap();
+    }
+
+    #[test]
+    #[serial]
+    fn v1_migration_persists_key_relocation_with_the_provider_mapping() {
+        let _tmp = setup_isolated_data_dir();
+        fs::write(
+            UserSettings::settings_path(),
+            serde_json::json!({
+                "llm_assistive_endpoint": "http://localhost:9000/v1/responses",
+                "llm_assistive_model": "old-model"
+            })
+            .to_string(),
+        )
+        .unwrap();
+        let loaded = UserSettings::load();
+        assert_eq!(loaded.llm_assistive_model.as_deref(), Some("old-model"));
+        assert!(loaded.pending_key_moves.iter().any(|step| {
+            step.from == "LLM_ASSISTIVE_API_KEY" && step.to == "LLM_CUSTOM_LOCALHOST_API_KEY"
+        }));
+        let again = UserSettings::load();
+        assert_eq!(again.pending_key_moves, loaded.pending_key_moves);
+        assert_eq!(again.llm_assistive_provider, loaded.llm_assistive_provider);
+        assert!(
+            UserSettings::settings_dir()
+                .join("settings.v1.bak.json")
+                .exists()
+        );
+    }
+
+    /// Custom rows: duplicate ids are refused, the id survives an update, and
+    /// removing a row resets the lanes that pointed at it.
+    #[test]
+    fn custom_provider_crud_keeps_ids_and_resets_lanes_on_remove() {
+        use crate::llm::provider::{CustomProvider, ProviderError, WireFamily};
+        let mut settings = UserSettings::default();
+        let row = CustomProvider::new(
+            "My Local",
+            WireFamily::OpenAiResponses,
+            "http://my.local:8080/v1",
+        )
+        .expect("valid row");
+        settings
+            .add_custom_provider(row.clone())
+            .expect("first add");
+        assert_eq!(
+            settings.add_custom_provider(row.clone()),
+            Err(ProviderError::DuplicateId("my-local".to_string()))
+        );
+
+        let updated = settings
+            .update_custom_provider(
+                "my-local",
+                "Renamed Box",
+                WireFamily::AnthropicMessages,
+                "https://box.example/v1",
+            )
+            .expect("update");
+        assert_eq!(updated.id, "my-local", "id is immutable");
+        assert_eq!(updated.name, "Renamed Box");
+        assert_eq!(updated.endpoint, "https://box.example/v1/messages");
+        assert_eq!(
+            settings.update_custom_provider("nope", "x", WireFamily::OpenAiResponses, "http://h"),
+            Err(ProviderError::UnknownProvider("nope".to_string()))
+        );
+
+        settings.llm_formatting_provider = Some("custom:my-local".to_string());
+        settings.llm_assistive_provider = Some("openai-responses".to_string());
+        let removed = settings.remove_custom_provider("my-local").expect("remove");
+        assert_eq!(removed.provider.id, "my-local");
+        assert_eq!(
+            removed.lanes_reset,
+            vec![super::RuntimeLlmLaneKind::Formatting]
+        );
+        assert_eq!(settings.llm_formatting_provider, None);
+        assert_eq!(
+            settings.llm_assistive_provider.as_deref(),
+            Some("openai-responses")
+        );
+        assert!(settings.llm_custom_providers.is_empty());
     }
 
     /// The STT selector keys survive the `speech.engine` round-trip, and the
@@ -2319,6 +3919,29 @@ mod tests {
                 .and_then(|v| v.as_bool()),
             Some(false)
         );
+    }
+
+    #[test]
+    #[serial]
+    fn overlay_expansion_preference_roundtrips_in_ui_without_changing_visibility() {
+        let _tmp = setup_isolated_data_dir();
+        assert_eq!(UserSettings::load().overlay_expanded_by_default, None);
+        for expanded in [true, false] {
+            let settings = UserSettings {
+                overlay_expanded_by_default: Some(expanded),
+                transcription_overlay_enabled: Some(true),
+                ..UserSettings::default()
+            };
+            settings.save().expect("persist overlay preference");
+            let loaded = UserSettings::load();
+            assert_eq!(loaded.overlay_expanded_by_default, Some(expanded));
+            assert_eq!(loaded.transcription_overlay_enabled, Some(true));
+            let persisted: serde_json::Value =
+                serde_json::from_str(&fs::read_to_string(UserSettings::settings_path()).unwrap())
+                    .unwrap();
+            assert_eq!(persisted["ui"]["overlay_expanded_by_default"], expanded);
+            assert!(persisted.get("overlay_expanded_by_default").is_none());
+        }
     }
 
     /// Same section contract for the tray's starting lane.
@@ -2661,5 +4284,52 @@ mod tests {
         let resolved = cloud_no_consent.resolved_asr_mode();
         assert_eq!(resolved.mode, AsrProductMode::AppleOnly);
         assert_eq!(resolved.derivation, ModeDerivation::ConsentMissingFallback);
+    }
+}
+
+#[cfg(test)]
+mod captured_sealer_tests {
+    use super::*;
+    use crate::config::{CapturedRuntimeInputs, StartupAcquisitionProbe};
+
+    #[test]
+    fn sole_sealer_keeps_nonempty_digest_check_and_explicit_refusal_path() {
+        let probe = StartupAcquisitionProbe::forbid();
+        let root = PathBuf::from("/fixture/sealer");
+        let snapshot = Config::runtime_snapshot_from_captured(CapturedRuntimeInputs::defaults_at(
+            root.clone(),
+            42,
+        ));
+        let parts = RuntimeSnapshotParts {
+            repair_receipt: snapshot.repair_receipt,
+            values: snapshot.values,
+            user_settings: snapshot.user_settings,
+            llm_lanes: snapshot.llm_lanes,
+            formatting_policy: snapshot.formatting_policy,
+            ai_execution: snapshot.ai_execution,
+            provenance: snapshot.provenance,
+            digest: SettingsSnapshotDigest::from_hex(String::new()),
+            energy_calibration: snapshot.energy_calibration,
+            seal_lane_armed: true,
+            local_tail_patch: snapshot.local_tail_patch,
+            tail_provider: snapshot.tail_provider,
+        };
+        let error = RuntimeSettingsSnapshot::seal_loaded(parts.clone()).unwrap_err();
+        assert!(matches!(
+            &error,
+            SettingsSnapshotValidationError::InvalidField {
+                field: "digest",
+                ..
+            }
+        ));
+        let refused =
+            RuntimeSettingsSnapshot::refused_startup(parts, error, root.join("settings.json"));
+        assert!(!refused.seal_lane_armed());
+        assert_eq!(refused.repair_receipt().unrepairable.len(), 1);
+        assert_eq!(
+            refused.repair_receipt().unrepairable[0].path,
+            root.join("settings.json")
+        );
+        assert!(probe.attempts().is_empty());
     }
 }

@@ -63,6 +63,10 @@ private struct CSFocusPolicyMonitor: NSViewRepresentable {
   }
 
   func updateNSView(_ nsView: CSFocusPolicyMonitorView, context: Context) {}
+
+  static func dismantleNSView(_ nsView: CSFocusPolicyMonitorView, coordinator: ()) {
+    nsView.invalidate()
+  }
 }
 
 @MainActor
@@ -92,10 +96,8 @@ private final class CSFocusPolicyMonitorView: NSView {
     }
   }
 
-  deinit {
-    if let mouseMonitor {
-      NSEvent.removeMonitor(mouseMonitor)
-    }
+  func invalidate() {
+    removeMouseMonitor()
   }
 
   private func removeMouseMonitor() {
@@ -151,7 +153,7 @@ struct CSFocusRingButtonStyle: ButtonStyle {
 extension ButtonStyle where Self == CSFocusRingButtonStyle {
   /// Plain-look button carrying the Codescribe focus ring. Use instead of
   /// `.plain` on custom-drawn chips, cards, and segments.
-  static func csFocusRing(cornerRadius: CGFloat) -> CSFocusRingButtonStyle {
+  static func csFocusRing(cornerRadius: CGFloat = CSRadius.chip) -> CSFocusRingButtonStyle {
     CSFocusRingButtonStyle(cornerRadius: cornerRadius)
   }
 }
@@ -165,9 +167,24 @@ extension View {
   /// ride on the Button itself, paired here with the style so the two can't
   /// drift apart (adopting the style alone leaves the system ring stacked
   /// on top of ours — operator screenshot 2026-08-09, the "stodoła").
-  func csFocusRing(cornerRadius: CGFloat) -> some View {
+  func csFocusRing(cornerRadius: CGFloat = CSRadius.chip) -> some View {
     buttonStyle(.csFocusRing(cornerRadius: cornerRadius))
       .focusEffectDisabled()
+  }
+
+  /// Settings / panel card chrome. Five panels used to re-declare the same
+  /// fill + hairline at 12/14/15pt padding. One modifier, one radius, one fill.
+  func csSettingsCard(padding: CGFloat = CSSpace.card) -> some View {
+    self
+      .padding(padding)
+      .background(
+        RoundedRectangle(cornerRadius: CSRadius.card, style: .continuous)
+          .fill(CSColor.surfaceRaised(0.025))
+      )
+      .overlay(
+        RoundedRectangle(cornerRadius: CSRadius.card, style: .continuous)
+          .strokeBorder(CSColor.hairline(), lineWidth: 1)
+      )
   }
 }
 
@@ -219,6 +236,7 @@ struct ModeDot: View {
 
 /// Status pill with a softpulsing dot and an optional expanding ripple ring.
 struct StatusPill: View {
+  @Environment(\.accessibilityReduceMotion) private var reduceMotion
   let text: String
   var color: Color = CSColor.oliveLight
   var rippling: Bool = false
@@ -229,7 +247,7 @@ struct StatusPill: View {
   var body: some View {
     HStack(spacing: 6) {
       ZStack {
-        if rippling {
+        if rippling && !reduceMotion {
           Circle().strokeBorder(color, lineWidth: 1)
             .frame(width: 9, height: 9)
             .scaleEffect(ripple ? 2.7 : 0.5)
@@ -258,6 +276,7 @@ struct StatusPill: View {
     .clipShape(Capsule())
     .onAppear { syncStatusAnimations() }
     .onChange(of: rippling) { _, _ in syncStatusAnimations() }
+    .onChange(of: reduceMotion) { _, _ in syncStatusAnimations() }
   }
 
   /// `pulse` and `ripple` drive `.repeatForever` animations. They must run ONLY
@@ -269,7 +288,7 @@ struct StatusPill: View {
   /// Gate it on `rippling` and, when inactive, snap the state back with animation
   /// disabled so the in-flight repeatForever is torn down rather than left running.
   private func syncStatusAnimations() {
-    if rippling {
+    if rippling && !reduceMotion {
       withAnimation(CSMotion.softpulse) { pulse = true }
       withAnimation(CSMotion.ripple) { ripple = true }
     } else {

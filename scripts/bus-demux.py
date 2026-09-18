@@ -9,10 +9,15 @@ path below, not from a source checkout::
     --provider codex --session <provider-session-id> --name james --drafts --follow
 
 ``--provider`` plus ``--session`` enables a collision-safe lease, heartbeat,
-and byte cursor. Re-running the same command resumes after the last consumed
-bus line, including lines appended while the provider session was recovering.
+and byte cursor. Re-running the same command replays unacknowledged envelopes
+and resumes bus consumption. Use --ack with the same provider/session only
+after the receiving conversation accepts the complete delivery.
 Drafts are useful for live replies; only a ``transcript_sealed`` envelope sets
 ``state_change_allowed`` to true.
+
+Exact names take precedence. A unique one-edit opening name can match a
+registered recipient; competing matches produce a non-executable ambiguity
+notice. The original transcript is never rewritten.
 """
 
 from __future__ import annotations
@@ -23,13 +28,23 @@ import hashlib
 import json
 import os
 import re
+import select
 import sys
 import time
 from pathlib import Path
 from typing import Any, Iterator
 
 BUS_FILENAME = "transcript-events.jsonl"
+CLEAN_SCHEMA = "codescribe.transcript.v1"
+#: The app has written its words here since 2026-08-27 22:36. A follower that
+#: knows only CLEAN_SCHEMA sees lifecycle rows and reports nothing for a real
+#: take — deaf, while looking healthy.
+EVIDENCE_SCHEMA = "codescribe.transcript-evidence.v1"
+TERMINAL_SEAL = "record_ledger_terminal_seal"
+INSTALL_INTERLOCK_FILENAME = "install-runtime.lock"
+AGENT_TURN_LEASE_FILENAME = "agent-turn.lock"
 SEALED = "transcript_sealed"
+CLI_FILE_VERDICT_SOURCE = "cli_file_verdict"
 LIVE_STATUSES = ("utterance_draft", "utterance_revised")
 LEASE_SCHEMA = "codescribe.agent-bridge.lease.v1"
 ATTACH_SCHEMA = "codescribe.agent-bridge.attach.v1"
@@ -41,17 +56,139 @@ ASSIGN_RE = re.compile(
     r"you(?:['’]re|\s+are)|cześć|hello)\s+([A-Za-zĄĆĘŁŃÓŚŹŻąćęłńóśźż]{2,32})"
 )
 SAFE_LEASE_RE = re.compile(r"^[a-zA-Z0-9_-]{8,80}$")
+LAST_SESSION_WAV = "last_session.wav"
+BUS_PATH_ENV_KEYS = (
+    "CODESCRIBE_TRANSCRIPT_BUS_PATH",
+    "XDG_STATE_HOME",
+    "CODESCRIBE_DATA_DIR",
+)
+
+
+def _config_dir(env: dict[str, str]) -> Path:
+    if "CODESCRIBE_DATA_DIR" in env:
+        raw = env["CODESCRIBE_DATA_DIR"]
+        path = Path(os.path.expanduser(raw))
+        # Rust's canonicalize rejects an empty PathBuf instead of treating it
+        # as cwd. Preserve that relative-path edge case exactly.
+        if raw:
+            try:
+                return path.resolve(strict=True)
+            except OSError:
+                pass
+        return path
+    return Path.home() / ".codescribe"
+
+
+def _env_path(seed_env: dict[str, str]) -> Path:
+    if "CODESCRIBE_ENV_PATH" in seed_env:
+        return Path(os.path.expanduser(seed_env["CODESCRIBE_ENV_PATH"]))
+    return _config_dir(seed_env) / ".env"
+
+
+def _parse_env_file(path: Path) -> dict[str, str]:
+    try:
+        canonical = path.resolve(strict=True)
+        contents = canonical.read_text(encoding="utf-8")
+    except (OSError, UnicodeDecodeError):
+        return {}
+
+    parsed: dict[str, str] = {}
+    for raw in contents.splitlines():
+        line = raw.strip()
+        if not line or line.startswith("#") or "=" not in line:
+            continue
+        key, value = line.split("=", 1)
+        parsed[key.strip()] = value.strip().strip('"').strip("'")
+    return parsed
+
+
+def _runtime_path_env() -> dict[str, str]:
+    # Config::load_with_keychain_population derives the dotenv path from the
+    # process environment first, then injects non-promoted keys only when the
+    # process did not already define them (an explicit empty value still wins).
+    runtime_env = dict(os.environ)
+    env_path = _env_path(runtime_env)
+    if env_path.exists():
+        file_env = _parse_env_file(env_path)
+        for key in BUS_PATH_ENV_KEYS:
+            if key not in runtime_env and key in file_env:
+                runtime_env[key] = file_env[key]
+    return runtime_env
 
 
 def bus_path() -> Path:
-    for key in ("CODESCRIBE_TRANSCRIPT_BUS_PATH", "CODESCRIBE_TRANSCRIPT_BUS"):
-        raw = os.environ.get(key, "").strip()
-        if raw:
-            return Path(os.path.expanduser(raw))
-    xdg = os.environ.get("XDG_STATE_HOME", "").strip()
+    env = _runtime_path_env()
+    explicit = env.get("CODESCRIBE_TRANSCRIPT_BUS_PATH", "").strip()
+    if explicit:
+        return Path(os.path.expanduser(explicit))
+    xdg = env.get("XDG_STATE_HOME", "").strip()
     if xdg:
         return Path(os.path.expanduser(xdg)) / "codescribe" / BUS_FILENAME
-    return Path.home() / ".codescribe" / BUS_FILENAME
+    return _config_dir(env) / BUS_FILENAME
+
+
+def install_interlock_path() -> Path:
+    # The app acquires this before dotenv bootstrap. Keep the lease at one
+    # process-independent per-user path so data-dir overrides cannot split the
+    # installer and runtime onto different lock files.
+    return Path.home() / ".codescribe" / INSTALL_INTERLOCK_FILENAME
+
+
+def agent_turn_lease_path() -> Path:
+    # Held shared by the app only while an agent turn streams or runs tools.
+    # Same invariant directory as the runtime interlock.
+    return install_interlock_path().with_name(AGENT_TURN_LEASE_FILENAME)
+
+
+def installation_idle(path: Path) -> bool:
+    """True when no current take is in flight.
+
+    One microphone: the live app take is the most recently started app
+    session that has not ended or sealed. Historical ``session_started``
+    rows without terminals are abandoned (crash / pre-lifecycle-terminal
+    buses), not a live recording — treating them as live makes
+    ``install-if-idle`` refuse forever after the first missing end.
+
+    CLI ``cli_file_verdict`` sessions may run while the app records and
+    do not hold the install flock. Any unpaired CLI session is live.
+    """
+    if not path.exists():
+        return True
+    if not path.is_file():
+        return False
+    open_cli: set[str] = set()
+    live_app: str | None = None
+    try:
+        with path.open(encoding="utf-8", errors="strict") as handle:
+            for raw in handle:
+                raw = raw.strip()
+                if not raw:
+                    continue
+                try:
+                    event = json.loads(raw)
+                except json.JSONDecodeError:
+                    return False
+                if not isinstance(event, dict):
+                    return False
+                status = event.get("status")
+                if status not in ("session_started", "session_ended", SEALED):
+                    continue
+                session_id = event.get("session_id")
+                if not isinstance(session_id, str) or not session_id:
+                    return False
+                is_cli = event.get("source") == CLI_FILE_VERDICT_SOURCE
+                if status == "session_started":
+                    if is_cli:
+                        open_cli.add(session_id)
+                    else:
+                        live_app = session_id
+                elif is_cli:
+                    open_cli.discard(session_id)
+                elif session_id == live_app:
+                    live_app = None
+    except (OSError, UnicodeDecodeError):
+        return False
+    return live_app is None and not open_cli
 
 
 def bridge_home() -> Path:
@@ -79,6 +216,63 @@ def addressed_to(text: str, name: str) -> bool:
     return name_pat(name).search(text or "") is not None
 
 
+def resolve_recipients(text: str, names: set[str]) -> tuple[set[str], str]:
+    """Exact addresses win; a distorted opening vocative must be unique."""
+    names = {name.casefold() for name in names if name}
+    exact = {name for name in names if addressed_to(text, name)}
+    if exact:
+        return exact, "exact"
+    opening = re.match(
+        r"(?i)^\s*(?:(?:hej|cześć|hello|hey)\s*[,!:]?\s+)?([^\W\d_]{4,32})\b",
+        text,
+    )
+    if not opening:
+        return set(), "none"
+    token = opening.group(1).casefold()
+
+    def one_edit(left: str, right: str) -> bool:
+        if abs(len(left) - len(right)) > 1:
+            return False
+        if len(left) == len(right):
+            differences = [i for i, pair in enumerate(zip(left, right)) if pair[0] != pair[1]]
+            return len(differences) <= 1 or (
+                len(differences) == 2
+                and differences[1] == differences[0] + 1
+                and left[differences[0]] == right[differences[1]]
+                and left[differences[1]] == right[differences[0]]
+            )
+        shorter, longer = sorted((left, right), key=len)
+        return any(longer[:i] + longer[i + 1:] == shorter for i in range(len(longer)))
+
+    candidates = {
+        name for name in names
+        if 4 <= len(name) <= 32
+        and any(one_edit(token, name + suffix) for suffix in ("", "ie", "owi", "a", "em", "u"))
+    }
+    return candidates, "fuzzy" if len(candidates) == 1 else "ambiguous" if candidates else "none"
+
+
+def registered_recipients(root: Path, bus: Path) -> set[str] | None:
+    """Offline names still reserve their address; incomplete discovery forbids guessing."""
+    names: set[str] = set()
+    resolved_bus = str(bus.expanduser().resolve(strict=False))
+    try:
+        for path in (root / "leases").glob("*.json"):
+            value = read_json(path)
+            if not value or value.get("schema") != LEASE_SCHEMA:
+                return None
+            if value.get("bus") != resolved_bus:
+                continue
+            name = value.get("name")
+            if name is not None and not isinstance(name, str):
+                return None
+            if name:
+                names.add(name.casefold())
+    except OSError:
+        return None
+    return names
+
+
 def event_kind(status: Any) -> str:
     return {
         "utterance_draft": "draft",
@@ -87,11 +281,39 @@ def event_kind(status: Any) -> str:
     }.get(str(status), "event")
 
 
+def valid_session_audio_id(session_id: Any) -> str | None:
+    """Same alphabet as the controller retain path. Never a filesystem path."""
+    if not isinstance(session_id, str):
+        return None
+    if not SAFE_LEASE_RE.fullmatch(session_id):
+        return None
+    return session_id
+
+
+def assigned_session_wav(
+    event: dict[str, Any], env: dict[str, str] | None = None
+) -> str | None:
+    """Map a Bus take to its own wav. ``last_session.wav`` is never identity."""
+    env = env if env is not None else dict(os.environ)
+    sid = valid_session_audio_id(
+        event.get("session_id") or event.get("occurrence_session_id")
+    )
+    if not sid:
+        return None
+    explicit = event.get("wav")
+    if isinstance(explicit, str) and explicit.strip():
+        path = Path(os.path.expanduser(explicit.strip()))
+        if path.name != LAST_SESSION_WAV:
+            return str(path)
+    return str(_config_dir(env) / "sessions" / f"{sid}.wav")
+
+
 def slim(
     event: dict[str, Any], audience: str, kind: str | None = None
 ) -> dict[str, Any]:
     status = event.get("status")
-    return {
+    producer_schema = event.get("producer_schema") or event.get("schema")
+    payload = {
         "schema": EVENT_SCHEMA,
         "audience": audience,
         "kind": kind or event_kind(status),
@@ -101,9 +323,30 @@ def slim(
         "utterance_id": event.get("utterance_id"),
         "emitted_at": event.get("emitted_at"),
         "mode": event.get("mode"),
-        "text": event.get("text") or "",
+        # Keep producer provenance and reducer coordinates observable.  This
+        # bridge is a consumer: neither field is ours to rewrite.
+        "source": event.get("source"),
+        "producer_schema": producer_schema,
+        "source_event_id": event.get("source_event_id") or source_event_identity(event),
+        "text": event.get("text") if isinstance(event.get("text"), str) else "",
         "state_change_allowed": status == SEALED,
     }
+    wav = assigned_session_wav(event)
+    if wav:
+        payload["wav"] = wav
+    if producer_schema == EVIDENCE_SCHEMA:
+        payload.update(
+            {
+                "reducer_revision": event.get("reducer_revision"),
+                "reducer_action": event.get("reducer_action"),
+                "occurrence_session_id": event.get("occurrence_session_id"),
+                "capture_epoch": event.get("capture_epoch"),
+                "sample_start": event.get("sample_start"),
+                "sample_end": event.get("sample_end"),
+                "document_index": event.get("document_index"),
+            }
+        )
+    return payload
 
 
 def parse_line(raw: str) -> dict[str, Any] | None:
@@ -116,9 +359,107 @@ def parse_line(raw: str) -> dict[str, Any] | None:
         return None
     if not isinstance(event, dict):
         return None
-    if event.get("schema") not in (None, "codescribe.transcript.v1"):
+    if event.get("schema") not in (CLEAN_SCHEMA, EVIDENCE_SCHEMA):
         return None
     return event
+
+
+def _identity(parts: tuple[Any, ...]) -> str:
+    """Stable opaque identity from authoritative metadata, never transcript text."""
+    encoded = "\0".join("" if part is None else str(part) for part in parts)
+    return hashlib.sha256(encoded.encode("utf-8")).hexdigest()[:24]
+
+
+def source_event_identity(event: dict[str, Any]) -> str:
+    """Identify one Bus observation without comparing its rendered payload."""
+    if event.get("schema") == EVIDENCE_SCHEMA:
+        return _identity(
+            (
+                "evidence",
+                event.get("session_id"),
+                event.get("sequence"),
+                event.get("reducer_revision"),
+                event.get("reducer_action"),
+                event.get("occurrence_session_id"),
+                event.get("capture_epoch"),
+                event.get("sample_start"),
+                event.get("sample_end"),
+                event.get("document_index"),
+            )
+        )
+    return _identity(
+        (
+            "clean",
+            event.get("session_id"),
+            event.get("sequence"),
+            event.get("utterance_id"),
+            event.get("status"),
+        )
+    )
+
+
+def terminal_seal_identity(event: dict[str, Any]) -> str:
+    """One terminal reducer phase, even when its receipt projects many rows."""
+    return _identity(
+        (
+            "terminal-seal",
+            event.get("session_id"),
+            event.get("reducer_revision"),
+            event.get("reducer_action"),
+        )
+    )
+
+
+class EvidenceNormalizer:
+    """Translate ``transcript-evidence.v1`` rows into the shape the bridge speaks.
+
+    ``rendered_text`` is an immutable full snapshot from the reducer.  The
+    bridge forwards it verbatim; it never infers a delta, ordering, revision,
+    or finality from characters.  Terminal rows are coalesced only by the
+    reducer's stable terminal phase identity, because one terminal receipt can
+    project once per document entry.
+    """
+
+    def __init__(self) -> None:
+        self._terminal_seals: set[str] = set()
+
+    def normalize(self, event: dict[str, Any] | None) -> dict[str, Any] | None:
+        if event is None or event.get("schema") != EVIDENCE_SCHEMA:
+            return event
+        document = event.get("rendered_text")
+        if not isinstance(document, str):
+            return None
+        if str(event.get("reducer_action") or "") == TERMINAL_SEAL:
+            seal_id = terminal_seal_identity(event)
+            if seal_id in self._terminal_seals:
+                return None
+            self._terminal_seals.add(seal_id)
+            return self._as_clean(event, SEALED, document)
+        return self._as_clean(event, LIVE_STATUSES[1], document)
+
+    def _as_clean(
+        self, event: dict[str, Any], status: str, text: str
+    ) -> dict[str, Any]:
+        return {
+            "schema": CLEAN_SCHEMA,
+            "sequence": event.get("sequence"),
+            "session_id": event.get("session_id"),
+            "mode": event.get("mode"),
+            "utterance_id": source_event_identity(event),
+            "emitted_at": event.get("emitted_at"),
+            "status": status,
+            "text": text,
+            "source": event.get("source"),
+            "producer_schema": event.get("schema"),
+            "source_event_id": source_event_identity(event),
+            "reducer_revision": event.get("reducer_revision"),
+            "reducer_action": event.get("reducer_action"),
+            "occurrence_session_id": event.get("occurrence_session_id"),
+            "capture_epoch": event.get("capture_epoch"),
+            "sample_start": event.get("sample_start"),
+            "sample_end": event.get("sample_end"),
+            "document_index": event.get("document_index"),
+        }
 
 
 def emit(payload: dict[str, Any]) -> None:
@@ -133,11 +474,28 @@ def consider(
     hear_all: bool,
     drafts: bool,
     debug: bool,
+    recipients: set[str] | None = None,
 ) -> dict[str, Any] | None:
     status = event.get("status")
     if status != SEALED and not (drafts and status in LIVE_STATUSES):
         return None
     text = event.get("text") or ""
+    # Destination recognition never rewrites the transcript. Fuzzy routing
+    # requires complete registered-recipient discovery and a unique result.
+    addressable = text
+    if name and not hear_all and recipients is not None:
+        matches, method = resolve_recipients(text, recipients | {name.casefold()})
+        if name.casefold() not in matches:
+            return None
+        if method == "ambiguous":
+            payload = slim(event, name.casefold(), kind="routing_ambiguity")
+            payload["state_change_allowed"] = False
+            payload["routing_candidates"] = sorted(matches)
+            return payload
+        if method == "fuzzy":
+            payload = slim(event, name.casefold())
+            payload["routing_match"] = "fuzzy"
+            return payload
     claimed = assigned_name(text)
     if claimed:
         payload = slim(event, claimed, kind="name_assignment")
@@ -145,7 +503,7 @@ def consider(
         if (
             hear_all
             or (name and claimed == name.casefold())
-            or addressed_to(text, name or "")
+            or addressed_to(addressable, name or "")
         ):
             return payload
         if debug:
@@ -153,7 +511,7 @@ def consider(
         return None
     if hear_all:
         return slim(event, "*")
-    if name and addressed_to(text, name):
+    if name and addressed_to(addressable, name):
         return slim(event, name.casefold())
     if debug and status == SEALED:
         sys.stderr.write("bus-demux: drop unnamed-or-other seal\n")
@@ -167,7 +525,10 @@ def iter_new_lines(path: Path, offset: int) -> tuple[list[tuple[str, int]], int]
     except FileNotFoundError:
         return [], offset
     if size < offset:
-        offset = 0
+        # Rotation/truncation is an authority boundary. Replaying the new file
+        # from byte zero could disclose sealed commands that predate this
+        # provider lease, so resume at the new EOF and wait for fresh events.
+        return [], size
     entries: list[tuple[str, int]] = []
     with path.open("rb") as handle:
         handle.seek(offset)
@@ -179,6 +540,79 @@ def iter_new_lines(path: Path, offset: int) -> tuple[list[tuple[str, int]], int]
                 break
             entries.append((raw.decode("utf-8", errors="replace"), handle.tell()))
     return entries, entries[-1][1] if entries else offset
+
+
+class BusEventTrigger:
+    """Block on an OS file event; interval sleep is a non-macOS fallback only."""
+
+    def __init__(self, path: Path, fallback_interval: float) -> None:
+        self.path = path
+        self.fallback_interval = max(0.01, fallback_interval)
+        self.mode = "interval-fallback"
+        self._queue: Any | None = None
+        self._descriptor: int | None = None
+        self._arm_kqueue()
+
+    def _arm_kqueue(self) -> None:
+        if not hasattr(select, "kqueue") or self._queue is not None:
+            return
+        descriptor: int | None = None
+        queue: Any | None = None
+        try:
+            descriptor = os.open(self.path, os.O_RDONLY)
+            queue = select.kqueue()
+            notes = (
+                select.KQ_NOTE_WRITE
+                | select.KQ_NOTE_EXTEND
+                | select.KQ_NOTE_RENAME
+                | select.KQ_NOTE_DELETE
+                | select.KQ_NOTE_REVOKE
+            )
+            change = select.kevent(
+                descriptor,
+                filter=select.KQ_FILTER_VNODE,
+                flags=select.KQ_EV_ADD | select.KQ_EV_CLEAR,
+                fflags=notes,
+            )
+            queue.control([change], 0, 0)
+        except OSError:
+            if queue is not None:
+                queue.close()
+            if descriptor is not None:
+                os.close(descriptor)
+            return
+        self._descriptor = descriptor
+        self._queue = queue
+        self.mode = "kqueue-vnode"
+
+    def wait(self, timeout: float) -> bool:
+        """Return true when the bus emitted a filesystem event."""
+
+        if self._queue is None:
+            time.sleep(min(self.fallback_interval, timeout))
+            self._arm_kqueue()
+            return False
+        try:
+            events = self._queue.control(None, 1, timeout)
+        except OSError:
+            self.close()
+            self._arm_kqueue()
+            return False
+        if events and events[0].fflags & (
+            select.KQ_NOTE_RENAME | select.KQ_NOTE_DELETE | select.KQ_NOTE_REVOKE
+        ):
+            self.close()
+            self._arm_kqueue()
+        return bool(events)
+
+    def close(self) -> None:
+        if self._queue is not None:
+            self._queue.close()
+            self._queue = None
+        if self._descriptor is not None:
+            os.close(self._descriptor)
+            self._descriptor = None
+        self.mode = "interval-fallback"
 
 
 def replay(path: Path) -> Iterator[str]:
@@ -213,6 +647,11 @@ def atomic_json(path: Path, payload: dict[str, Any]) -> None:
             os.fsync(handle.fileno())
         os.replace(temporary, path)
         path.chmod(0o600)
+        directory = os.open(path.parent, os.O_RDONLY)
+        try:
+            os.fsync(directory)
+        finally:
+            os.close(directory)
     finally:
         try:
             temporary.unlink()
@@ -223,7 +662,7 @@ def atomic_json(path: Path, payload: dict[str, Any]) -> None:
 def read_json(path: Path) -> dict[str, Any] | None:
     try:
         value = json.loads(path.read_text(encoding="utf-8"))
-    except (FileNotFoundError, json.JSONDecodeError, OSError):
+    except (UnicodeDecodeError, json.JSONDecodeError, OSError):
         return None
     return value if isinstance(value, dict) else None
 
@@ -248,9 +687,11 @@ def process_is_alive(pid: Any) -> bool:
     return True
 
 
-def active_leases(
-    root: Path, ttl_seconds: float, *, clean: bool = True
-) -> list[dict[str, Any]]:
+def active_leases(root: Path, ttl_seconds: float) -> list[dict[str, Any]]:
+    """Discover presence without deleting durable identity or recovery cursors.
+
+    A missed heartbeat means offline, not forgotten.
+    """
     leases: list[dict[str, Any]] = []
     now = time.time()
     lease_dir = root / "leases"
@@ -263,14 +704,9 @@ def active_leases(
         heartbeat = value.get("heartbeat_unix") if value else None
         fresh = (
             isinstance(heartbeat, (int, float))
-            and now - float(heartbeat) <= ttl_seconds
+            and 0 <= now - float(heartbeat) <= ttl_seconds
         )
         if not value or value.get("schema") != LEASE_SCHEMA or not fresh:
-            if clean:
-                try:
-                    path.unlink()
-                except OSError:
-                    pass
             continue
         if value.get("active") is True:
             leases.append(value)
@@ -298,7 +734,12 @@ class SessionLease:
         self.name = name.casefold() if name else None
         self.bus = str(bus.expanduser().resolve(strict=False))
         self.ttl_seconds = ttl_seconds
-        self.lease_id = requested_id or lease_identifier(provider, provider_session_id)
+        canonical_lease_id = lease_identifier(provider, provider_session_id)
+        if requested_id and requested_id != canonical_lease_id:
+            raise ValueError(
+                "explicit lease id does not belong to this provider session"
+            )
+        self.lease_id = canonical_lease_id
         if not SAFE_LEASE_RE.fullmatch(self.lease_id):
             raise ValueError("lease id must be 8-80 letters, digits, '_' or '-'")
         self.path = root / "leases" / f"{self.lease_id}.json"
@@ -307,13 +748,19 @@ class SessionLease:
         self._acquire_lock()
         try:
             previous = read_json(self.path)
-            if previous and not self._matches(previous):
+            if previous is None and self.path.exists():
+                raise ValueError(
+                    f"lease {self.lease_id} has unreadable recovery state; "
+                    "preserved on disk, attachment refused"
+                )
+            if previous is not None and not self._matches(previous):
                 raise ValueError(
                     f"lease {self.lease_id} belongs to a different provider session or bus"
                 )
             self.resumed = False
             self.cursor = 0
             self.last_sequence: Any = None
+            self.pending: dict[str, dict[str, Any]] = {}
             if previous and self._matches(previous):
                 heartbeat = previous.get("heartbeat_unix")
                 fresh = (
@@ -331,9 +778,29 @@ class SessionLease:
                         f"lease {self.lease_id} is active in pid={other_pid}; "
                         "poll that follower handle"
                     )
-                self.cursor = max(0, int(previous.get("cursor", 0)))
+                saved_cursor = previous.get("cursor")
+                if type(saved_cursor) is not int or saved_cursor < 0:
+                    raise ValueError(
+                        f"lease {self.lease_id} has an invalid recovery cursor; "
+                        "preserved on disk, attachment refused"
+                    )
+                self.cursor = saved_cursor
                 self.last_sequence = previous.get("last_sequence")
                 self.name = previous.get("name") or self.name
+                pending = previous.get("pending", [])
+                if not isinstance(pending, list) or any(
+                    not isinstance(payload, dict)
+                    or not isinstance(payload.get("delivery_id"), str)
+                    or payload.get("lease_id") != self.lease_id
+                    or payload.get("provider") != self.provider
+                    or payload.get("provider_session_id") != self.provider_session_id
+                    or not re.fullmatch(r"[0-9a-f]{24}", payload["delivery_id"])
+                    for payload in pending
+                ):
+                    raise ValueError("invalid pending deliveries; recovery state preserved")
+                self.pending = {payload["delivery_id"]: payload for payload in pending}
+                if len(self.pending) != len(pending):
+                    raise ValueError("duplicate pending identities; recovery state preserved")
                 self.resumed = True
             elif follow_from_end:
                 try:
@@ -341,7 +808,6 @@ class SessionLease:
                 except FileNotFoundError:
                     self.cursor = 0
             self.persist(active=True)
-            active_leases(root, ttl_seconds, clean=True)
         except BaseException:
             self._release_lock()
             raise
@@ -398,12 +864,44 @@ class SessionLease:
                 "bus": self.bus,
                 "cursor": self.cursor,
                 "last_sequence": self.last_sequence,
+                "pending": list(self.pending.values()),
                 "active": active,
                 "pid": os.getpid(),
                 "heartbeat_unix": time.time(),
                 "updated_at": utc_now(),
             },
         )
+
+    def queue_delivery(self, payload: dict[str, Any]) -> bool:
+        delivery_id = payload["delivery_id"]
+        if delivery_acknowledged(self.root, self.lease_id, delivery_id):
+            return False
+        if delivery_id in self.pending:
+            return False
+        pending_bytes = sum(
+            len(json.dumps(item, ensure_ascii=False).encode("utf-8"))
+            for item in self.pending.values()
+        )
+        if len(self.pending) >= 256 or pending_bytes + len(
+            json.dumps(payload, ensure_ascii=False).encode("utf-8")
+        ) > 8 * 1024 * 1024:
+            raise BufferError(
+                "pending mailbox is full; acknowledge received deliveries and resume "
+                "this same lease; the unread bus cursor is preserved"
+            )
+        self.pending[delivery_id] = payload
+        self.persist(active=True)
+        return True
+
+    def collect_acknowledgments(self) -> None:
+        completed = [
+            delivery_id for delivery_id in self.pending
+            if delivery_acknowledged(self.root, self.lease_id, delivery_id)
+        ]
+        if completed:
+            for delivery_id in completed:
+                del self.pending[delivery_id]
+            self.persist(active=True)
 
     def bind_name(self, name: str) -> None:
         self.name = name.casefold()
@@ -413,13 +911,35 @@ class SessionLease:
         payload["lease_id"] = self.lease_id
         payload["provider"] = self.provider
         payload["provider_session_id"] = self.provider_session_id
-        identity = "\0".join(
-            str(payload.get(key) or "")
-            for key in ("session_id", "utterance_id", "sequence", "status", "audience")
+        # A delivery belongs to one lease owner and one source-event phase.
+        # This namespaces native bridge output away from a manual rail while
+        # the lease lock refuses a simultaneous second native owner.
+        payload["delivery_owner"] = {
+            "rail": "native_bus_demux",
+            "lease_id": self.lease_id,
+            "provider": self.provider,
+            "provider_session_id": self.provider_session_id,
+        }
+        # Terminal evidence projects once per document entry. After restart,
+        # a later row is the same delivery phase, not another command. Keep
+        # source_event_id intact for provenance while keying that delivery by
+        # the same reducer phase used by EvidenceNormalizer.
+        phase_id = payload.get("source_event_id")
+        if (
+            payload.get("producer_schema") == EVIDENCE_SCHEMA
+            and payload.get("reducer_action") == TERMINAL_SEAL
+            and payload.get("status") == SEALED
+        ):
+            phase_id = terminal_seal_identity(payload)
+        payload["delivery_id"] = _identity(
+            (
+                "native_bus_demux",
+                self.lease_id,
+                phase_id,
+                payload.get("kind"),
+                payload.get("audience"),
+            )
         )
-        payload["delivery_id"] = hashlib.sha256(identity.encode("utf-8")).hexdigest()[
-            :24
-        ]
 
     def attach_receipt(self) -> dict[str, Any]:
         names = sorted(
@@ -449,6 +969,41 @@ class SessionLease:
             self._release_lock()
 
 
+def delivery_acknowledged(root: Path, lease_id: str, delivery_id: str) -> bool:
+    receipt = read_json(root / "acknowledgments" / lease_id / f"{delivery_id}.json")
+    return receipt == {"lease_id": lease_id, "delivery_id": delivery_id}
+
+
+def acknowledge_delivery(args: argparse.Namespace) -> int:
+    delivery_id = args.ack
+    if not re.fullmatch(r"[0-9a-f]{24}", delivery_id):
+        raise ValueError("invalid delivery id")
+    lease_id = lease_identifier(args.provider, args.session)
+    state = read_json(args.bridge_home / "leases" / f"{lease_id}.json")
+    if (
+        not state
+        or state.get("schema") != LEASE_SCHEMA
+        or state.get("lease_id") != lease_id
+        or state.get("provider") != args.provider.casefold()
+        or state.get("provider_session_id") != args.session
+        or state.get("bus") != str(args.bus.expanduser().resolve(strict=False))
+    ):
+        raise ValueError("acknowledgment does not belong to this provider session and bus")
+    if not delivery_acknowledged(args.bridge_home, lease_id, delivery_id):
+        pending = state.get("pending", [])
+        if not isinstance(pending, list) or not any(
+            isinstance(payload, dict) and payload.get("delivery_id") == delivery_id
+            for payload in pending
+        ):
+            raise ValueError("delivery is not pending for this provider session")
+        atomic_json(
+            args.bridge_home / "acknowledgments" / lease_id / f"{delivery_id}.json",
+            {"lease_id": lease_id, "delivery_id": delivery_id},
+        )
+    emit({"kind": "acknowledged", "lease_id": lease_id, "delivery_id": delivery_id})
+    return 0
+
+
 def run(args: argparse.Namespace) -> int:
     path: Path = args.bus
     name: str | None = args.name.casefold() if args.name else None
@@ -475,21 +1030,41 @@ def run(args: argparse.Namespace) -> int:
         except (OSError, RuntimeError, ValueError) as error:
             sys.stderr.write(f"bus-demux: session lease refused: {error}\n")
             return 3
-        if lease.name and not name:
+        if lease.name:
             name = lease.name
             hear_all = False
         emit(lease.attach_receipt())
 
-    def handle(raw: str, next_cursor: int | None = None) -> None:
-        nonlocal name, hear_all
-        event = parse_line(raw)
+    # One normalizer for the whole run: the evidence grain is stateful (it
+    # remembers each session's document and whether its seal was reported), and
+    # a fresh one per line would re-emit the entire document every time.
+    normalizer = EvidenceNormalizer()
+    event_trigger: BusEventTrigger | None = None
+    deferred: tuple[dict[str, Any], int | None] | None = None
+    recipients: set[str] | None = None
+
+    def deliver(payload: dict[str, Any], next_cursor: int | None) -> None:
+        nonlocal deferred
+        try:
+            if not lease or lease.queue_delivery(payload):
+                emit(payload)
+        except BufferError:
+            # Preserve the already normalized envelope. Re-normalizing its
+            # raw evidence row would suppress a terminal phase on retry.
+            deferred = (payload, next_cursor)
+            raise
         if lease and next_cursor is not None:
             lease.persist(
-                active=True,
-                cursor=next_cursor,
-                sequence=event.get("sequence") if event else None,
+                active=True, cursor=next_cursor, sequence=payload.get("sequence")
             )
+        deferred = None
+
+    def handle(raw: str, next_cursor: int | None = None) -> None:
+        nonlocal name, hear_all
+        event = normalizer.normalize(parse_line(raw))
         if event is None:
+            if lease and next_cursor is not None:
+                lease.persist(active=True, cursor=next_cursor)
             return
         payload = consider(
             event,
@@ -497,8 +1072,15 @@ def run(args: argparse.Namespace) -> int:
             hear_all=hear_all,
             drafts=args.drafts,
             debug=args.debug,
+            recipients=recipients,
         )
         if payload is None:
+            if lease and next_cursor is not None:
+                lease.persist(
+                    active=True,
+                    cursor=next_cursor,
+                    sequence=event.get("sequence"),
+                )
             return
         if args.become and payload.get("kind") == "name_assignment" and not name:
             name = str(payload["name"])
@@ -508,13 +1090,20 @@ def run(args: argparse.Namespace) -> int:
             sys.stderr.write(f"bus-demux: bound name={name}\n")
         if lease:
             lease.enrich(payload)
-        emit(payload)
+        # Read progress is independent of receipt. The original envelope is
+        # made durable before emission and remains pending until acknowledged.
+        deliver(payload, next_cursor)
 
     try:
+        if lease:
+            lease.collect_acknowledgments()
+            for payload in lease.pending.values():
+                emit(payload)
         if args.once:
             last = None
+            recipients = registered_recipients(args.bridge_home, path)
             for raw in replay(path):
-                event = parse_line(raw)
+                event = normalizer.normalize(parse_line(raw))
                 if event is None:
                     continue
                 payload = consider(
@@ -523,6 +1112,7 @@ def run(args: argparse.Namespace) -> int:
                     hear_all=hear_all,
                     drafts=args.drafts,
                     debug=False,
+                    recipients=recipients,
                 )
                 if payload is not None:
                     last = payload
@@ -530,7 +1120,8 @@ def run(args: argparse.Namespace) -> int:
                 return 1
             if lease:
                 lease.enrich(last)
-            emit(last)
+            if not lease or lease.queue_delivery(last):
+                emit(last)
             return 0
 
         if lease:
@@ -545,22 +1136,55 @@ def run(args: argparse.Namespace) -> int:
 
         sys.stderr.write(
             f"bus-demux: bus={path} name={name or '*'} follow={int(args.follow)}"
-            f" lease={lease.lease_id if lease else '-'}\n"
+            f" lease={lease.lease_id if lease else '-'}"
         )
+        if args.follow:
+            event_trigger = BusEventTrigger(path, args.interval)
+            sys.stderr.write(f" trigger={event_trigger.mode}")
+        sys.stderr.write("\n")
         last_heartbeat = time.monotonic()
+        waiting_for_ack = False
         while True:
-            entries, offset = iter_new_lines(path, offset)
-            for raw, next_cursor in entries:
-                handle(raw, next_cursor)
+            if lease:
+                lease.collect_acknowledgments()
+            try:
+                if deferred is not None:
+                    deliver(*deferred)
+                    assert lease is not None
+                    offset = lease.cursor
+                previous_offset = offset
+                entries, offset = iter_new_lines(path, offset)
+                if entries:
+                    recipients = registered_recipients(args.bridge_home, path)
+                for raw, next_cursor in entries:
+                    handle(raw, next_cursor)
+                if lease and not entries and offset != previous_offset:
+                    lease.persist(active=True, cursor=offset)
+            except BufferError:
+                if not args.follow:
+                    raise
+                assert lease is not None
+                offset = lease.cursor
+                if not waiting_for_ack:
+                    sys.stderr.write("bus-demux: mailbox full; waiting for acknowledgment\n")
+                waiting_for_ack = True
+            else:
+                waiting_for_ack = False
             if not args.follow:
                 return 0
             if lease and time.monotonic() - last_heartbeat >= 1.0:
                 lease.persist(active=True, cursor=offset)
                 last_heartbeat = time.monotonic()
-            time.sleep(args.interval)
+            assert event_trigger is not None
+            event_trigger.wait(timeout=1.0)
     except KeyboardInterrupt:
         return 130
+    except BufferError as error:
+        sys.stderr.write(f"bus-demux: {error}\n")
+        return 4
     finally:
+        if event_trigger:
+            event_trigger.close()
         if lease:
             lease.close()
 
@@ -568,8 +1192,29 @@ def run(args: argparse.Namespace) -> int:
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--bus", type=Path, default=None, help="override bus path")
+    authority = parser.add_mutually_exclusive_group()
+    authority.add_argument(
+        "--print-bus-path",
+        action="store_true",
+        help="print the canonical runtime-equivalent bus path and exit",
+    )
+    authority.add_argument(
+        "--print-install-interlock-path",
+        action="store_true",
+        help="print the runtime-equivalent app/install interlock path and exit",
+    )
+    authority.add_argument(
+        "--print-agent-turn-lease-path",
+        action="store_true",
+        help="print the runtime-equivalent agent-turn lease path and exit",
+    )
+    authority.add_argument(
+        "--assert-install-idle",
+        action="store_true",
+        help="exit zero only when the whole canonical Bus proves installation-safe",
+    )
     parser.add_argument(
-        "--name", default=None, help="bound agent name (kielbasa filter)"
+        "--name", default=None, help="bound name; exact or unique bounded opening-name match"
     )
     parser.add_argument("--all", action="store_true", help="promiscuous: every seal")
     parser.add_argument(
@@ -594,6 +1239,7 @@ def main() -> int:
         "--session", help="stable provider-session id used for cursor recovery"
     )
     parser.add_argument("--lease", help="reattach to an explicit lease id")
+    parser.add_argument("--ack", help="acknowledge a delivery for --provider/--session")
     parser.add_argument(
         "--bridge-home", type=Path, default=None, help="override lease/receipt root"
     )
@@ -608,16 +1254,35 @@ def main() -> int:
     args = parser.parse_args()
     if args.bus is None:
         args.bus = bus_path()
+    if args.print_bus_path:
+        print(args.bus)
+        return 0
+    if args.print_install_interlock_path:
+        print(install_interlock_path())
+        return 0
+    if args.print_agent_turn_lease_path:
+        print(agent_turn_lease_path())
+        return 0
+    if args.assert_install_idle:
+        return 0 if installation_idle(args.bus) else 2
     if args.bridge_home is None:
         args.bridge_home = bridge_home()
     if bool(args.provider) != bool(args.session):
         parser.error("--provider and --session must be supplied together")
     if args.lease and not args.provider:
         parser.error("--lease requires --provider and --session")
+    if args.ack:
+        if not args.provider or args.follow or args.once or args.from_start:
+            parser.error("--ack requires --provider/--session and no read mode")
+        try:
+            return acknowledge_delivery(args)
+        except (OSError, ValueError) as error:
+            sys.stderr.write(f"bus-demux: acknowledgment refused: {error}\n")
+            return 3
     if args.lease_ttl <= 0:
         parser.error("--lease-ttl must be positive")
     if args.active_names:
-        leases = active_leases(args.bridge_home, args.lease_ttl, clean=True)
+        leases = active_leases(args.bridge_home, args.lease_ttl)
         emit(
             {
                 "schema": ACTIVE_NAMES_SCHEMA,

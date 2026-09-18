@@ -43,34 +43,6 @@ impl VadTimeline {
             .any(|class| class == VadClass::TrailingSilence)
     }
 
-    /// Most frequent class across `[start_sec, end_sec)`, or `None` when the
-    /// range covers no windows.
-    pub fn dominant_class(&self, start_sec: f32, end_sec: f32) -> Option<VadClass> {
-        let mut speech = 0usize;
-        let mut utterance_gap = 0usize;
-        let mut sentence_boundary = 0usize;
-        let mut trailing = 0usize;
-
-        for class in self.range_slice(start_sec, end_sec) {
-            match class {
-                VadClass::Speech => speech += 1,
-                VadClass::UtteranceGap => utterance_gap += 1,
-                VadClass::SentenceBoundary => sentence_boundary += 1,
-                VadClass::TrailingSilence => trailing += 1,
-            }
-        }
-
-        [
-            (VadClass::Speech, speech),
-            (VadClass::UtteranceGap, utterance_gap),
-            (VadClass::SentenceBoundary, sentence_boundary),
-            (VadClass::TrailingSilence, trailing),
-        ]
-        .into_iter()
-        .max_by_key(|(_, count)| *count)
-        .and_then(|(class, count)| (count > 0).then_some(class))
-    }
-
     /// Clamp a time range onto the class vector, always yielding at least one
     /// window when the timeline is non-empty. Non-finite bounds fold to zero.
     fn range_slice(&self, start_sec: f32, end_sec: f32) -> &[VadClass] {

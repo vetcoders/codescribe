@@ -37,10 +37,45 @@ use crate::llm::provider::ProviderKind;
 use base64::Engine;
 
 /// Browser page after a successful OAuth callback — tells the user to close it.
+///
+/// The authorization code arrives in the query string; the page scrubs it
+/// from the address bar on load so a screenshot or a browser history entry
+/// never carries it, then tries to close itself (browsers only honour that
+/// for script-opened tabs, so the fallback line stays).
 const SUCCESS_HTML: &str = r#"<!doctype html>
 <html lang="en">
-<head><meta charset="utf-8"><title>Codescribe signed in</title></head>
-<body><h1>Codescribe signed in</h1><p>You can close this window.</p></body>
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="robots" content="noindex">
+<title>Codescribe signed in</title>
+<style>
+  :root { color-scheme: dark; }
+  html, body { height: 100%; margin: 0; }
+  body {
+    display: grid; place-items: center;
+    background: #0f1115; color: #e6e6e6;
+    font: 15px/1.5 ui-monospace, "SF Mono", Menlo, monospace;
+  }
+  main { text-align: center; padding: 32px; }
+  .brand { display: inline-flex; align-items: center; gap: 10px; font-size: 18px; font-weight: 600; }
+  .dot { width: 9px; height: 9px; border-radius: 50%; background: #e8845b; }
+  h1 { font-size: 22px; font-weight: 600; margin: 24px 0 8px; }
+  p { margin: 0; color: #9a9a9a; }
+  .ok { color: #9dc98f; }
+</style>
+</head>
+<body>
+<main>
+  <div class="brand"><span class="dot"></span>codescribe</div>
+  <h1><span class="ok">Signed in.</span> Back to Codescribe.</h1>
+  <p>You can close this window.</p>
+</main>
+<script>
+  try { history.replaceState(null, "", location.pathname); } catch (_) {}
+  setTimeout(function () { try { window.close(); } catch (_) {} }, 800);
+</script>
+</body>
 </html>"#;
 
 /// One loopback login attempt. `provider` is the identity the resulting tokens

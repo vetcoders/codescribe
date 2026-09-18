@@ -1,0 +1,2691 @@
+{
+  "schema": "codescribe.acoustic-structure-stages.v1",
+  "retired_reference_symbols": [
+    "span_idempotence",
+    "progressive_seal",
+    "stream_postprocess",
+    "live_assembly",
+    "quality_delivery",
+    "acoustic_identity",
+    "punctuation_transplant",
+    "semantic_guard",
+    "quality_gate",
+    "silero_filter",
+    "lane_truth",
+    "assistive_delivery",
+    "overlay_paste",
+    "ConfigChangeBus",
+    "projection_authority_witness",
+    "rustProjectionAuthorityWitness"
+  ],
+  "forbidden_executable_literals": ["#if false", "if false"],
+  "stages": {
+    "demolished": {
+      "required_absent": [
+        "AcousticTranscriptIdentity",
+        "SpanIdempotenceLedger",
+        "EventIdentity",
+        "revision_tolerant_known_prefix",
+        "reconcile_sealed_text",
+        "committedSegments",
+        "finalizeTranscript"
+      ],
+      "required_present": [
+        {
+          "symbol": "AcousticLedger",
+          "owner": "core/pipeline/acoustic_ledger.rs",
+          "cardinality": 1
+        }
+      ],
+      "require_canary_classification": true
+    },
+    "assembled": {
+      "required_absent": [
+        "AcousticTranscriptIdentity",
+        "SpanIdempotenceLedger",
+        "EventIdentity",
+        "revision_tolerant_known_prefix",
+        "reconcile_sealed_text",
+        "committedSegments",
+        "finalizeTranscript"
+      ],
+      "required_present": [
+        {
+          "symbol": "AcousticLedger",
+          "owner": "core/pipeline/acoustic_ledger.rs",
+          "cardinality": 1
+        },
+        {
+          "symbol": "OccurrenceIdentity",
+          "owner": "core/pipeline/acoustic_ledger.rs",
+          "cardinality": 1
+        },
+        {
+          "symbol": "ObservationIdentity",
+          "owner": "core/pipeline/acoustic_ledger.rs",
+          "cardinality": 1
+        },
+        {
+          "symbol": "AcousticSerial",
+          "owner": "core/pipeline/acoustic_ledger.rs",
+          "cardinality": 1
+        },
+        {
+          "symbol": "WordEvidenceReceipt",
+          "owner": "core/pipeline/acoustic_ledger.rs",
+          "cardinality": 1
+        },
+        {
+          "symbol": "LayerDecisionReceipt",
+          "owner": "core/pipeline/acoustic_ledger.rs",
+          "cardinality": 1
+        },
+        {
+          "symbol": "ManualEditReceipt",
+          "owner": "core/pipeline/acoustic_ledger.rs",
+          "cardinality": 1
+        },
+        {
+          "symbol": "ObservationFrontier",
+          "owner": "core/pipeline/acoustic_ledger.rs",
+          "cardinality": 1
+        },
+        {
+          "symbol": "LedgerSealReceipt",
+          "owner": "core/pipeline/acoustic_ledger.rs",
+          "cardinality": 1
+        },
+        {
+          "symbol": "SealCoverageReceipt",
+          "owner": "core/pipeline/acoustic_ledger.rs",
+          "cardinality": 1
+        },
+        {
+          "symbol": "TranscriptComparisonReceipt",
+          "owner": "core/pipeline/acoustic_ledger.rs",
+          "cardinality": 1
+        },
+        {
+          "symbol": "RuntimeSettingsSnapshot",
+          "owner": "core/config/settings.rs",
+          "cardinality": 1
+        },
+        {
+          "symbol": "SettingsSnapshotProvenance",
+          "owner": "core/config/settings.rs",
+          "cardinality": 1
+        },
+        {
+          "symbol": "SettingsSnapshotDigest",
+          "owner": "core/config/settings.rs",
+          "cardinality": 1
+        },
+        {
+          "symbol": "TranscriptReducer",
+          "owner": "app/presentation/emitter.rs",
+          "cardinality": 1
+        },
+        {
+          "symbol": "TranscriptDocumentEntry",
+          "owner": "app/presentation/emitter.rs",
+          "cardinality": 1
+        },
+        {
+          "symbol": "TranscriptRevision",
+          "owner": "app/presentation/emitter.rs",
+          "cardinality": 1
+        },
+        {
+          "symbol": "ReducerAction",
+          "owner": "app/presentation/emitter.rs",
+          "cardinality": 1
+        },
+        {
+          "symbol": "ProjectedAcousticReceipt",
+          "owner": "app/presentation/transcript_bus.rs",
+          "cardinality": 1
+        },
+        {
+          "symbol": "TranscriptBusEvidenceEvent",
+          "owner": "app/presentation/transcript_bus.rs",
+          "cardinality": 1
+        },
+        {
+          "symbol": "ProjectedSealCoverageReceipt",
+          "owner": "app/presentation/transcript_bus.rs",
+          "cardinality": 1
+        },
+        {
+          "symbol": "OccurrenceLabelProposal",
+          "owner": "core/llm/inline_format.rs",
+          "cardinality": 1
+        },
+        {
+          "symbol": "DeliveryRoute",
+          "owner": "app/controller/delivery_route.rs",
+          "cardinality": 1
+        }
+      ],
+      "required_unwired": [
+        {
+          "symbol": "AcousticSerial",
+          "owner_files": ["core/pipeline/acoustic_ledger.rs"]
+        },
+        {
+          "symbol": "TranscriptRevision",
+          "owner_files": ["app/presentation/emitter.rs"]
+        },
+        {
+          "symbol": "RuntimeSettingsSnapshot",
+          "owner_files": ["core/config/settings.rs"]
+        },
+        {
+          "symbol": "OccurrenceLabelProposal",
+          "owner_files": ["core/llm/inline_format.rs"]
+        }
+      ]
+    },
+    "wired": {
+      "required_absent": [
+        "AcousticTranscriptIdentity",
+        "SpanIdempotenceLedger",
+        "EventIdentity",
+        "revision_tolerant_known_prefix",
+        "reconcile_sealed_text",
+        "committedSegments",
+        "finalizeTranscript"
+      ],
+      "required_present": [
+        {
+          "symbol": "AcousticLedger",
+          "owner": "core/pipeline/acoustic_ledger.rs",
+          "cardinality": 1
+        },
+        {
+          "symbol": "AcousticSerial",
+          "owner": "core/pipeline/acoustic_ledger.rs",
+          "cardinality": 1
+        },
+        {
+          "symbol": "WordEvidenceReceipt",
+          "owner": "core/pipeline/acoustic_ledger.rs",
+          "cardinality": 1
+        },
+        {
+          "symbol": "LayerDecisionReceipt",
+          "owner": "core/pipeline/acoustic_ledger.rs",
+          "cardinality": 1
+        },
+        {
+          "symbol": "LedgerSealReceipt",
+          "owner": "core/pipeline/acoustic_ledger.rs",
+          "cardinality": 1
+        },
+        {
+          "symbol": "SealCoverageReceipt",
+          "owner": "core/pipeline/acoustic_ledger.rs",
+          "cardinality": 1
+        },
+        {
+          "symbol": "TranscriptComparisonReceipt",
+          "owner": "core/pipeline/acoustic_ledger.rs",
+          "cardinality": 1
+        },
+        {
+          "symbol": "RuntimeSettingsSnapshot",
+          "owner": "core/config/settings.rs",
+          "cardinality": 1
+        },
+        {
+          "symbol": "RecordingController",
+          "owner": "app/controller/mod.rs",
+          "cardinality": 1
+        },
+        {
+          "symbol": "TranscriptReducer",
+          "owner": "app/presentation/emitter.rs",
+          "cardinality": 1
+        },
+        {
+          "symbol": "TranscriptRevision",
+          "owner": "app/presentation/emitter.rs",
+          "cardinality": 1
+        },
+        {
+          "symbol": "TranscriptBusEvidenceEvent",
+          "owner": "app/presentation/transcript_bus.rs",
+          "cardinality": 1
+        },
+        {
+          "symbol": "ProjectedSealCoverageReceipt",
+          "owner": "app/presentation/transcript_bus.rs",
+          "cardinality": 1
+        },
+        {
+          "symbol": "OccurrenceLabelProposal",
+          "owner": "core/llm/inline_format.rs",
+          "cardinality": 1
+        },
+        {
+          "symbol": "DeliveryRoute",
+          "owner": "app/controller/delivery_route.rs",
+          "cardinality": 1
+        }
+      ],
+      "required_edges": [
+        {
+          "symbol": "AcousticLedger",
+          "consumers": [
+            "core/audio/streaming_recorder.rs",
+            "core/pipeline/streaming/apple_live_session.rs"
+          ]
+        },
+        {
+          "symbol": "AcousticSerial",
+          "consumers": [
+            "app/presentation/emitter.rs",
+            "app/presentation/transcript_bus.rs"
+          ]
+        },
+        {
+          "symbol": "TranscriptRevision",
+          "consumers": ["app/presentation/transcript_bus.rs"]
+        },
+        {
+          "symbol": "RuntimeSettingsSnapshot",
+          "consumers": [
+            "core/audio/streaming_recorder.rs",
+            "core/pipeline/streaming/apple_live_session.rs",
+            "app/controller/mod.rs"
+          ]
+        },
+        {
+          "symbol": "OccurrenceLabelProposal",
+          "consumers": ["app/presentation/emitter.rs"],
+          "forbidden_consumers": ["app/controller/delivery_route.rs"]
+        },
+        {
+          "symbol": "DeliveryRoute",
+          "consumers": ["app/controller/mod.rs"]
+        }
+      ],
+      "required_corridors": [
+        {
+          "name": "settings_to_capture_admission",
+          "hops": [
+            {
+              "symbol": "load_runtime_snapshot_with_keychain_population",
+              "file": "core/config/loader.rs",
+              "signature_contains": "fn load_runtime_snapshot_with_keychain_population(",
+              "required_code": [
+                "let input = Self::capture_runtime_inputs(populate_keychain)",
+                "let snapshot = Self::resolve_runtime_snapshot_with_capture(|| input)"
+              ]
+            },
+            {
+              "symbol": "capture_runtime_inputs",
+              "file": "core/config/loader.rs",
+              "signature_contains": "fn capture_runtime_inputs(",
+              "required_code": [
+                "let (values, user_settings) = Self::capture_config_and_settings(populate_keychain)",
+                "let energy_calibration_path = energy_calibration_path()",
+                "let energy_calibration = SealedEnergyCalibration::load(&energy_calibration_path)",
+                "let mut input = CapturedRuntimeInputs {",
+                "values,",
+                "user_settings,",
+                "energy_calibration_path,",
+                "energy_calibration,"
+              ]
+            },
+            {
+              "symbol": "resolve_runtime_snapshot_with_capture",
+              "file": "core/config/loader.rs",
+              "signature_contains": "fn resolve_runtime_snapshot_with_capture(",
+              "required_code": [
+                "capture: impl FnOnce() -> CapturedRuntimeInputs",
+                "Self::runtime_snapshot_from_captured(capture())"
+              ]
+            },
+            {
+              "symbol": "runtime_snapshot_from_captured",
+              "file": "core/config/loader.rs",
+              "signature_contains": "pub fn runtime_snapshot_from_captured(",
+              "required_code": [
+                "mut input: CapturedRuntimeInputs",
+                "energy_calibration_path: input.energy_calibration_path.clone()",
+                "energy_calibration_sha256: input.energy_calibration.sha256().map(str::to_owned)",
+                "input.energy_calibration.digest_material()",
+                "let digest = SettingsSnapshotDigest::from_hex(sha256_hex(digest_material.as_bytes()))",
+                "energy_calibration: input.energy_calibration",
+                "RuntimeSettingsSnapshot::seal_loaded(RuntimeSnapshotParts {",
+                "provenance: parts.provenance",
+                "digest: parts.digest",
+                "energy_calibration: parts.energy_calibration"
+              ]
+            },
+            {
+              "symbol": "seal_loaded",
+              "file": "core/config/settings.rs",
+              "signature_contains": "pub(crate) fn seal_loaded(",
+              "required_code": [
+                "energy_calibration",
+                "SettingsSnapshotValidation::admit(&values, &provenance, &digest)?",
+                "Ok(Self {",
+                "provenance",
+                "digest",
+                "energy_calibration"
+              ]
+            },
+            {
+              "symbol": "admit",
+              "file": "core/config/settings.rs",
+              "signature_contains": "pub fn admit(",
+              "required_code": [
+                "digest: &SettingsSnapshotDigest",
+                "if digest.as_str().trim().is_empty()",
+                "field: \"digest\"",
+                "Ok(())"
+              ]
+            },
+            {
+              "symbol": "profile_at",
+              "file": "core/config/energy_calibration.rs",
+              "required_code": [
+                "EnergyCalibrationStatus::Sealed",
+                "EnergyCalibrationStatus::Missing",
+                "EnergyCalibrationStatus::Refused",
+                "if artifact.updated_at_unix_ms > now_unix_ms",
+                "artifact.profile_for_device(device_name)",
+                "profile.validate_time(now_unix_ms)?"
+              ]
+            },
+            {
+              "symbol": "validate_time",
+              "file": "core/config/energy_calibration.rs",
+              "required_code": [
+                "if self.measured_at_unix_ms > now_unix_ms",
+                "let age_ms = now_unix_ms - self.measured_at_unix_ms",
+                "if age_ms > self.validity.max_age_ms",
+                "EnergyCalibrationRefusal::Stale",
+                "Ok(())"
+              ]
+            },
+            {
+              "symbol": "for_capture_at",
+              "file": "core/config/energy_calibration.rs",
+              "signature_contains": "pub fn for_capture_at(",
+              "required_code": [
+                "let profile = self.profile_at(&capture.device_name, now_unix_ms)?",
+                "profile.validate_capture_path(capture)?",
+                "profile.ledger_calibration(capture.sample_rate)"
+              ]
+            },
+            {
+              "symbol": "evaluate_probed_admission_at",
+              "file": "app/controller/admission.rs",
+              "required_code": [
+                "snapshot.energy_calibration()",
+                ".for_capture_at(&capture, now_unix_ms)",
+                "if !seal_lane.armed",
+                "if !seal_lane.vad_available",
+                "Ok(AdmissionGrant {",
+                "calibration_version: calibration.version"
+              ]
+            },
+            {
+              "symbol": "evaluate_admission_readiness",
+              "file": "app/controller/admission.rs",
+              "required_code": [
+                "capture.map_err(|reason| AdmissionBlocker::CaptureDeviceUnavailable { reason })?",
+                "let now_unix_ms = calibration_now_unix_ms()",
+                "evaluate_probed_admission_at(snapshot, capture, seal_lane, now_unix_ms)"
+              ]
+            },
+            {
+              "symbol": "evaluate_live_admission",
+              "file": "app/controller/admission.rs",
+              "required_code": [
+                "codescribe_core::audio::recorder::probe_input_capture_path()",
+                "codescribe_core::pipeline::streaming::seal_lane_probe(snapshot)",
+                "evaluate_admission_readiness(snapshot, capture, seal_lane)"
+              ]
+            },
+            {
+              "symbol": "evaluate_live_admission_arc",
+              "file": "app/controller/admission.rs",
+              "required_code": [
+                "snapshot: &Arc<RuntimeSettingsSnapshot>",
+                "evaluate_live_admission(snapshot)"
+              ]
+            },
+            {
+              "symbol": "admission_readiness",
+              "file": "app/controller/mod.rs",
+              "signature_contains": "pub async fn admission_readiness(",
+              "required_code": [
+                "let snapshot = self.runtime_settings_arc().await",
+                "tokio::task::spawn_blocking(move || admission::evaluate_live_admission_arc(&snapshot))"
+              ]
+            }
+          ],
+          "required_invocations": [
+            {
+              "callee": "capture_runtime_inputs",
+              "callee_file": "core/config/loader.rs",
+              "caller": "load_runtime_snapshot_with_keychain_population",
+              "caller_file": "core/config/loader.rs",
+              "minimum_count": 1
+            },
+            {
+              "callee": "resolve_runtime_snapshot_with_capture",
+              "callee_file": "core/config/loader.rs",
+              "caller": "load_runtime_snapshot_with_keychain_population",
+              "caller_file": "core/config/loader.rs",
+              "minimum_count": 1
+            },
+            {
+              "callee": "runtime_snapshot_from_captured",
+              "callee_file": "core/config/loader.rs",
+              "caller": "resolve_runtime_snapshot_with_capture",
+              "caller_file": "core/config/loader.rs",
+              "minimum_count": 1
+            },
+            {
+              "callee": "seal_loaded",
+              "callee_file": "core/config/settings.rs",
+              "caller": "runtime_snapshot_from_captured",
+              "caller_file": "core/config/loader.rs",
+              "minimum_count": 1
+            },
+            {
+              "callee": "admit",
+              "callee_file": "core/config/settings.rs",
+              "caller": "seal_loaded",
+              "caller_file": "core/config/settings.rs",
+              "minimum_count": 1
+            },
+            {
+              "callee": "validate_time",
+              "callee_file": "core/config/energy_calibration.rs",
+              "caller": "profile_at",
+              "caller_file": "core/config/energy_calibration.rs",
+              "minimum_count": 1
+            },
+            {
+              "callee": "profile_at",
+              "callee_file": "core/config/energy_calibration.rs",
+              "caller": "for_capture_at",
+              "caller_file": "core/config/energy_calibration.rs",
+              "minimum_count": 1
+            },
+            {
+              "callee": "validate_capture_path",
+              "callee_file": "core/config/energy_calibration.rs",
+              "caller": "for_capture_at",
+              "caller_file": "core/config/energy_calibration.rs",
+              "minimum_count": 1
+            },
+            {
+              "callee": "ledger_calibration",
+              "callee_file": "core/config/energy_calibration.rs",
+              "caller": "for_capture_at",
+              "caller_file": "core/config/energy_calibration.rs",
+              "minimum_count": 1
+            },
+            {
+              "callee": "for_capture_at",
+              "callee_file": "core/config/energy_calibration.rs",
+              "caller": "evaluate_probed_admission_at",
+              "caller_file": "app/controller/admission.rs",
+              "minimum_count": 1
+            },
+            {
+              "callee": "evaluate_probed_admission_at",
+              "callee_file": "app/controller/admission.rs",
+              "caller": "evaluate_admission_readiness",
+              "caller_file": "app/controller/admission.rs",
+              "minimum_count": 1
+            },
+            {
+              "callee": "evaluate_admission_readiness",
+              "callee_file": "app/controller/admission.rs",
+              "caller": "evaluate_live_admission",
+              "caller_file": "app/controller/admission.rs",
+              "minimum_count": 1
+            },
+            {
+              "callee": "evaluate_live_admission",
+              "callee_file": "app/controller/admission.rs",
+              "caller": "evaluate_live_admission_arc",
+              "caller_file": "app/controller/admission.rs",
+              "minimum_count": 1
+            },
+            {
+              "callee": "evaluate_live_admission_arc",
+              "callee_file": "app/controller/admission.rs",
+              "caller": "schedule_hold_start",
+              "caller_file": "app/controller/mod.rs",
+              "minimum_count": 1
+            },
+            {
+              "callee": "evaluate_live_admission_arc",
+              "callee_file": "app/controller/admission.rs",
+              "caller": "admission_readiness",
+              "caller_file": "app/controller/mod.rs",
+              "minimum_count": 1
+            },
+            {
+              "callee": "admission_readiness",
+              "callee_file": "app/controller/mod.rs",
+              "caller": "start_toggle_recording",
+              "caller_file": "app/controller/mod.rs",
+              "minimum_count": 1
+            }
+          ],
+          "ordering": [
+            {
+              "caller": "start_toggle_recording",
+              "caller_file": "app/controller/mod.rs",
+              "before": {
+                "corridor": "settings_to_capture_admission",
+                "callee": "admission_readiness"
+              },
+              "after": {
+                "corridor": "capture_to_ledger",
+                "callee": "bind_session_authority"
+              },
+              "barrier": {
+                "required_code": "let mut recorder_guard = self.recorder.lock().await",
+                "selection": "last_before_after"
+              }
+            },
+            {
+              "caller": "start_toggle_recording",
+              "caller_file": "app/controller/mod.rs",
+              "before": {
+                "corridor": "settings_to_capture_admission",
+                "callee": "admission_readiness"
+              },
+              "after": {
+                "corridor": "capture_to_ledger",
+                "callee": "start_event_session"
+              },
+              "barrier": {
+                "required_code": "let mut recorder_guard = self.recorder.lock().await",
+                "selection": "last_before_after"
+              }
+            },
+            {
+              "caller": "schedule_hold_start",
+              "caller_file": "app/controller/mod.rs",
+              "before": {
+                "corridor": "settings_to_capture_admission",
+                "callee": "evaluate_live_admission_arc"
+              },
+              "after": {
+                "corridor": "capture_to_ledger",
+                "callee": "bind_session_authority"
+              },
+              "barrier": {
+                "required_code": "let mut rec_guard = recorder.lock().await",
+                "selection": "last_before_after"
+              }
+            },
+            {
+              "caller": "schedule_hold_start",
+              "caller_file": "app/controller/mod.rs",
+              "before": {
+                "corridor": "settings_to_capture_admission",
+                "callee": "evaluate_live_admission_arc"
+              },
+              "after": {
+                "corridor": "capture_to_ledger",
+                "callee": "start_event_session"
+              },
+              "barrier": {
+                "required_code": "let mut rec_guard = recorder.lock().await",
+                "selection": "last_before_after"
+              }
+            }
+          ]
+        },
+        {
+          "name": "capture_to_ledger",
+          "hops": [
+            {
+              "symbol": "bind_session_authority",
+              "file": "core/audio/streaming_recorder.rs",
+              "required_code": [
+                "session_id: String",
+                "runtime_settings: Arc<RuntimeSettingsSnapshot>",
+                "let acoustic_ledger = Arc::new(StdMutex::new(AcousticLedger::new()))",
+                "self.capture_epoch = 0",
+                "self.authority_session_id = Some(session_id)",
+                "self.runtime_settings = Some(runtime_settings)",
+                "self.acoustic_ledger = Some(Arc::clone(&acoustic_ledger))"
+              ]
+            },
+            {
+              "symbol": "start_event_session",
+              "file": "core/audio/streaming_recorder.rs",
+              "required_code": [
+                "let next_capture_epoch = self.capture_epoch.checked_add(1)",
+                "tx.try_send(data.to_vec())",
+                "self.recorder.start().await?",
+                "self.capture_epoch = next_capture_epoch",
+                "let actual_sample_rate = self.recorder.actual_sample_rate()",
+                "let capture_device_name = self.recorder.last_input_device().map(str::to_owned)",
+                "transcription_session(",
+                "session_id",
+                "capture_epoch: next_capture_epoch",
+                "runtime_settings",
+                "acoustic_ledger"
+              ]
+            },
+            {
+              "symbol": "transcription_session",
+              "file": "core/pipeline/streaming/session.rs",
+              "required_code": [
+                "chunk_receiver: mpsc::Receiver<Vec<f32>>",
+                "config: SessionConfig",
+                "super::apple_live_session::apple_stream_transcription_session(",
+                "chunk_receiver",
+                "event_sink",
+                "config"
+              ]
+            },
+            {
+              "symbol": "apple_stream_transcription_session",
+              "file": "core/pipeline/streaming/apple_live_session.rs",
+              "required_code": [
+                "session_id",
+                "capture_epoch",
+                "runtime_settings",
+                "acoustic_ledger",
+                "sample_rate",
+                "capture_device_name",
+                "let settings_digest = runtime_settings.digest().as_str().to_string()",
+                "apple_stream_worker(",
+                "AppleWorkerConfig {",
+                "session_id: worker_session_id",
+                "capture_epoch",
+                "runtime_settings",
+                "acoustic_ledger"
+              ]
+            },
+            {
+              "symbol": "apple_stream_worker",
+              "file": "core/pipeline/streaming/apple_live_session.rs",
+              "required_code": [
+                "capture_device_name",
+                "session_id",
+                "capture_epoch",
+                "runtime_settings",
+                "acoustic_ledger",
+                "debug_assert_eq!(settings_digest, runtime_settings.digest().as_str())",
+                "runtime_settings.energy_calibration_for_capture(device, sample_rate)",
+                "SileroIngress::new(sample_rate, state.session_id.clone(), state.capture_epoch)",
+                "samples_seen += samples.len() as u64",
+                "state.audio.push(&samples)",
+                "fusion.ingest(&samples, samples_seen)",
+                "emit_stream_events(events, &ev_tx, &mut state, audio_secs)",
+                ".seal_terminal(&state.session_id, state.capture_epoch)",
+                "EngineEvent::LedgerSeal { receipt }"
+              ]
+            },
+            {
+              "symbol": "seal_utterance_final",
+              "file": "core/pipeline/streaming/apple_live_session.rs",
+              "required_code": [
+                "if state.fusion_seal_armed {",
+                "if segments.is_empty() {",
+                "return false;",
+                "seal_sliced_by_silero(state, ev_tx, &segments);",
+                "return true;",
+                "let mut cursor = state.last_apple_segment_end;",
+                "for mut segment in segments {",
+                "let apple_range = TailSampleRange {",
+                "session: state.session_id.clone()",
+                "capture_epoch: state.capture_epoch",
+                "sample_start: span_sample_start",
+                "sample_end: span_sample_end",
+                "let ledger_occurrence = OccurrenceIdentity::from(&span_range)",
+                "let apple_admitted = admit_ledger_label(",
+                "EnergyAdmission::QualifyFromOwnedPcm"
+              ]
+            },
+            {
+              "symbol": "seal_sliced_by_silero",
+              "file": "core/pipeline/streaming/apple_live_session.rs",
+              "required_code": [
+                "let Some(fusion) = state.fusion.as_ref() else {",
+                "return false;",
+                "let utterances = fusion.ledger().utterances();",
+                "if disjoint.is_empty()",
+                "&& state.silero_slice_revision.as_ref().is_some_and(|(len, last)| {",
+                "*len == utterances.len() && last.as_ref() == utterances.last()",
+                "return true;",
+                "state.silero_slice_revision = Some((utterances.len(), utterances.last().cloned()));",
+                "let ledger = fusion.ledger().clone();",
+                "reconcile_silero_ledger(state, ev_tx, &ledger, disjoint)"
+              ]
+            },
+            {
+              "symbol": "reconcile_silero_ledger",
+              "file": "core/pipeline/streaming/apple_live_session.rs",
+              "required_code": [
+                "if ledger.utterances().iter().any(|utterance| {",
+                "utterance.range.session != state.session_id",
+                "|| utterance.range.capture_epoch != state.capture_epoch",
+                "code: RefinementFailure::InvalidIdentity.code().into()",
+                "return false;",
+                "let apple_words = apple_segments_on_pcm_clock(state, disjoint);",
+                "let (sliced, leftover) = slice_apple_words(ledger, &fusion_words);",
+                "for silero in ledger",
+                ".filter(|utterance| utterance.closed)",
+                "let has_apple_label = !text.trim().is_empty();",
+                "let occurrence = OccurrenceIdentity::from(&silero.range);",
+                "if !qualify_owned_occurrence(state, &occurrence) {",
+                "RefinementFailure::PcmUnavailable",
+                "RefinementFailure::QualificationRefused",
+                "state.fail_refinement(ev_tx, utterance_id, &occurrence, reason);",
+                "state.reconciled_silero.insert(utterance_id);",
+                "continue;",
+                "let apple_admitted = if has_apple_label {",
+                "admit_ledger_label(",
+                "energy: EnergyAdmission::RequireExistingQualification,",
+                "let request_range = bound_context_range(&silero.range, context, pad_samples, &bounds);",
+                "state.window_by_samples(request_range.sample_start, request_range.sample_end)"
+              ]
+            },
+            {
+              "symbol": "qualify_owned_occurrence",
+              "file": "core/pipeline/streaming/apple_live_session.rs",
+              "required_code": [
+                "if occurrence.session != state.session_id || occurrence.capture_epoch != state.capture_epoch {",
+                "return false;",
+                "let Some(calibration) = state.energy_calibration.as_ref() else {",
+                "return false;",
+                "if ledger.is_qualified(occurrence) {",
+                "return true;",
+                "let Some(window) = state.window_by_samples(occurrence.sample_start, occurrence.sample_end)",
+                "return false;",
+                "if window.samples.is_empty() {",
+                "return false;",
+                "let energy_integral = window",
+                "let mean_rms = (energy_integral / window.samples.len() as f64).sqrt();",
+                "let peak = window",
+                ".fold(0.0_f64, f64::max);",
+                "let evidence = AcousticEvidence {",
+                "occurrence: occurrence.clone(),",
+                "duration_ms: occurrence.sample_len() as f64 * 1_000.0 / state.sample_rate.max(1) as f64,",
+                "mean_rms_dbfs: dbfs(mean_rms),",
+                "peak_dbfs: dbfs(peak),",
+                "vad_open_sample: Some(occurrence.sample_start),",
+                "vad_close_sample: Some(occurrence.sample_end),",
+                "evidence_calibration_version: calibration.version.clone(),",
+                "if !ledger.qualify(&evidence, calibration).is_qualified() {",
+                "return false;"
+              ]
+            },
+            {
+              "symbol": "admit_ledger_label",
+              "file": "core/pipeline/streaming/apple_live_session.rs",
+              "required_code": [
+                "let LabelAdmission {",
+                "let occurrence = observation.occurrence.clone();",
+                "let producer = observation.producer;",
+                "if occurrence.session != state.session_id || occurrence.capture_epoch != state.capture_epoch {",
+                "return None;",
+                "EnergyAdmission::QualifyFromOwnedPcm | EnergyAdmission::QualifyFinalPassGap",
+                ") && !qualify_owned_occurrence(state, &occurrence)",
+                "return None;",
+                "if !ledger.is_qualified(&occurrence) {",
+                "return None;",
+                "let receipt = ledger.admit(&observation, label);",
+                "EngineEvent::LedgerMutation {",
+                "let closed = ledger.note_frontier_return(&occurrence, producer);",
+                "EngineEvent::LedgerSeal { receipt: seal }",
+                "Some(receipt)"
+              ]
+            },
+            {
+              "symbol": "qualify",
+              "file": "core/pipeline/acoustic_ledger.rs",
+              "required_code": [
+                "if !occurrence.is_anchored()",
+                "if evidence.evidence_calibration_version != calibration.version",
+                "if evidence.energy_integral < calibration.min_energy_integral",
+                "evidence.vad_open_sample",
+                "AdmissionRefusal::VadDidNotOpen",
+                "let serial = AcousticSerial::mint(evidence)",
+                "self.evidence.insert(occurrence.clone(), serial.clone())"
+              ]
+            },
+            {
+              "symbol": "mint",
+              "file": "core/pipeline/acoustic_ledger.rs",
+              "signature_contains": "pub fn mint(evidence: &AcousticEvidence) -> Self",
+              "required_code": [
+                "let digest = Self::digest_of(evidence)",
+                "occurrence: evidence.occurrence.clone()",
+                "duration_ms: evidence.duration_ms",
+                "energy_integral: evidence.energy_integral",
+                "mean_rms_dbfs: evidence.mean_rms_dbfs",
+                "peak_dbfs: evidence.peak_dbfs",
+                "vad_open_sample: evidence.vad_open_sample",
+                "vad_close_sample: evidence.vad_close_sample",
+                "evidence_calibration_version: evidence.evidence_calibration_version.clone()"
+              ]
+            }
+          ],
+          "required_invocations": [
+            {
+              "callee": "bind_session_authority",
+              "callee_file": "core/audio/streaming_recorder.rs",
+              "caller": "schedule_hold_start",
+              "caller_file": "app/controller/mod.rs",
+              "minimum_count": 1
+            },
+            {
+              "callee": "start_event_session",
+              "callee_file": "core/audio/streaming_recorder.rs",
+              "caller": "schedule_hold_start",
+              "caller_file": "app/controller/mod.rs",
+              "minimum_count": 1
+            },
+            {
+              "callee": "transcription_session",
+              "callee_file": "core/pipeline/streaming/session.rs",
+              "caller": "start_event_session",
+              "caller_file": "core/audio/streaming_recorder.rs",
+              "minimum_count": 1
+            },
+            {
+              "callee": "apple_stream_transcription_session",
+              "callee_file": "core/pipeline/streaming/apple_live_session.rs",
+              "caller": "transcription_session",
+              "caller_file": "core/pipeline/streaming/session.rs",
+              "minimum_count": 1
+            },
+            {
+              "callee": "apple_stream_worker",
+              "callee_file": "core/pipeline/streaming/apple_live_session.rs",
+              "caller": "apple_stream_transcription_session",
+              "caller_file": "core/pipeline/streaming/apple_live_session.rs",
+              "minimum_count": 1
+            },
+            {
+              "callee": "emit_stream_events",
+              "callee_file": "core/pipeline/streaming/apple_live_session.rs",
+              "caller": "apple_stream_worker",
+              "caller_file": "core/pipeline/streaming/apple_live_session.rs",
+              "minimum_count": 1
+            },
+            {
+              "callee": "seal_utterance_final",
+              "callee_file": "core/pipeline/streaming/apple_live_session.rs",
+              "caller": "emit_stream_events",
+              "caller_file": "core/pipeline/streaming/apple_live_session.rs",
+              "minimum_count": 1
+            },
+            {
+              "callee": "seal_sliced_by_silero",
+              "callee_file": "core/pipeline/streaming/apple_live_session.rs",
+              "caller": "apple_stream_worker",
+              "caller_file": "core/pipeline/streaming/apple_live_session.rs",
+              "minimum_count": 2
+            },
+            {
+              "callee": "reconcile_silero_ledger",
+              "callee_file": "core/pipeline/streaming/apple_live_session.rs",
+              "caller": "seal_sliced_by_silero",
+              "caller_file": "core/pipeline/streaming/apple_live_session.rs",
+              "minimum_count": 1
+            },
+            {
+              "callee": "qualify_owned_occurrence",
+              "callee_file": "core/pipeline/streaming/apple_live_session.rs",
+              "caller": "reconcile_silero_ledger",
+              "caller_file": "core/pipeline/streaming/apple_live_session.rs",
+              "minimum_count": 1
+            },
+            {
+              "callee": "admit_ledger_label",
+              "callee_file": "core/pipeline/streaming/apple_live_session.rs",
+              "caller": "reconcile_silero_ledger",
+              "caller_file": "core/pipeline/streaming/apple_live_session.rs",
+              "minimum_count": 2
+            },
+            {
+              "callee": "qualify_owned_occurrence",
+              "callee_file": "core/pipeline/streaming/apple_live_session.rs",
+              "caller": "admit_ledger_label",
+              "caller_file": "core/pipeline/streaming/apple_live_session.rs",
+              "minimum_count": 1
+            },
+            {
+              "callee": "qualify",
+              "callee_file": "core/pipeline/acoustic_ledger.rs",
+              "caller": "qualify_owned_occurrence",
+              "caller_file": "core/pipeline/streaming/apple_live_session.rs",
+              "minimum_count": 1
+            },
+            {
+              "callee": "mint",
+              "callee_file": "core/pipeline/acoustic_ledger.rs",
+              "caller": "qualify",
+              "caller_file": "core/pipeline/acoustic_ledger.rs",
+              "minimum_count": 1
+            },
+            {
+              "callee": "bind_session_authority",
+              "callee_file": "core/audio/streaming_recorder.rs",
+              "caller": "start_toggle_recording",
+              "caller_file": "app/controller/mod.rs",
+              "minimum_count": 1
+            },
+            {
+              "callee": "start_event_session",
+              "callee_file": "core/audio/streaming_recorder.rs",
+              "caller": "start_toggle_recording",
+              "caller_file": "app/controller/mod.rs",
+              "minimum_count": 1
+            }
+          ],
+          "ordering": [
+            {
+              "caller": "reconcile_silero_ledger",
+              "caller_file": "core/pipeline/streaming/apple_live_session.rs",
+              "before": {
+                "corridor": "capture_to_ledger",
+                "callee": "qualify_owned_occurrence"
+              },
+              "after": {
+                "corridor": "capture_to_ledger",
+                "callee": "admit_ledger_label"
+              },
+              "barrier": {
+                "required_code": "state.fail_refinement(ev_tx, utterance_id, &occurrence, reason);",
+                "selection": "last_before_after"
+              }
+            },
+            {
+              "caller": "reconcile_silero_ledger",
+              "caller_file": "core/pipeline/streaming/apple_live_session.rs",
+              "before": {
+                "corridor": "capture_to_ledger",
+                "callee": "qualify_owned_occurrence"
+              },
+              "after": {
+                "corridor": "capture_to_ledger",
+                "callee": "admit_ledger_label"
+              },
+              "barrier": {
+                "required_code": "if ledger.is_sealed(&occurrence) {",
+                "selection": "last_before_after"
+              }
+            }
+          ]
+        },
+        {
+          "name": "seal_to_delivery",
+          "hops": [
+            {
+              "symbol": "on_event",
+              "file": "app/presentation/emitter.rs",
+              "required_code": [
+                "EngineEvent::LedgerSeal { receipt }",
+                ".apply_ledger_seal(receipt)",
+                "let Some(revision) = revision else",
+                "if let Some(bus) = &self.transcript_bus",
+                "let events = bus.publish_revision(&revision, &ledger)",
+                "callback(event)"
+              ]
+            },
+            {
+              "symbol": "apply_ledger_seal",
+              "file": "app/presentation/emitter.rs",
+              "required_code": [
+                "receipt: &LedgerSealReceipt",
+                "entry.seal_receipt = Some(receipt.receipt_id.clone())",
+                "ReducerAction::RecordLedgerSeal {",
+                "seal_receipt: receipt.receipt_id.clone()",
+                "terminal: !receipt.is_occurrence_seal()"
+              ]
+            },
+            {
+              "symbol": "publish_revision",
+              "file": "app/presentation/transcript_bus.rs",
+              "required_code": [
+                "ReducerAction::RecordLedgerSeal { terminal: true, .. } => \"record_ledger_terminal_seal\"",
+                "ledger.serial_of(&entry.occurrence)",
+                "rendered_text: revision.rendered_text.clone()",
+                "acoustic_receipts: vec![Self::project_serial(",
+                "ReducerAction::RecordLedgerSeal { terminal: true, .. }",
+                "writer.sealed = true"
+              ]
+            },
+            {
+              "symbol": "project_serial",
+              "file": "app/presentation/transcript_bus.rs",
+              "required_code": [
+                "serial: &AcousticSerial",
+                "ProjectedAcousticReceipt {",
+                "session_id: serial.occurrence.session.clone()",
+                "capture_epoch: serial.occurrence.capture_epoch",
+                "sample_start: serial.occurrence.sample_start",
+                "sample_end: serial.occurrence.sample_end",
+                "seal_receipt"
+              ]
+            },
+            {
+              "symbol": "build_recording_event_sink",
+              "file": "app/controller/mod.rs",
+              "required_code": [
+                "event: &crate::presentation::transcript_bus::TranscriptBusEvidenceEvent",
+                "Self::broadcast_transcript_projection(&projection_broadcast, event)",
+                "Some(projection_callback)"
+              ]
+            },
+            {
+              "symbol": "broadcast_transcript_projection",
+              "file": "app/controller/mod.rs",
+              "required_code": [
+                "serde_json::to_string(event)",
+                "event_broadcast.send(IpcEvent",
+                "IpcEventPayload::TranscriptProjection { json }"
+              ]
+            },
+            {
+              "symbol": "forward_event_to_listener",
+              "file": "bridge/src/hotkeys.rs",
+              "required_code": [
+                "IpcEventPayload::TranscriptProjection { json }",
+                "serde_json::from_str::< codescribe::presentation::transcript_bus::TranscriptBusEvidenceEvent",
+                "listener.on_transcript_projection(CsTranscriptProjectionEvent::from_bus_event(&event))"
+              ]
+            },
+            {
+              "symbol": "from_bus_receipt",
+              "file": "bridge/src/recording.rs",
+              "signature_contains": "fn from_bus_receipt(receipt: &ProjectedAcousticReceipt) -> Self",
+              "required_code": [
+                "fn from_bus_receipt(receipt: &ProjectedAcousticReceipt) -> Self",
+                "session_id: receipt.session_id.clone()",
+                "capture_epoch: receipt.capture_epoch",
+                "sample_start: receipt.sample_start",
+                "sample_end: receipt.sample_end",
+                "seal_receipt: receipt.seal_receipt.clone()"
+              ]
+            },
+            {
+              "symbol": "from_bus_event",
+              "file": "bridge/src/recording.rs",
+              "required_code": [
+                "fn from_bus_event(event: &TranscriptBusEvidenceEvent) -> Self",
+                "reducer_action: event.reducer_action.clone()",
+                "rendered_text: event.rendered_text.clone()",
+                "event.acoustic_receipts.iter().map(CsProjectedAcousticReceipt::from_bus_receipt).collect()"
+              ]
+            },
+            {
+              "symbol": "onTranscriptProjection",
+              "file": "macos/Codescribe/Screens/Overlay/OverlayState.swift",
+              "required_code": [
+                "func onTranscriptProjection(event: CsTranscriptProjectionEvent)",
+                "continuation.yield(.transcriptProjection(event))"
+              ]
+            },
+            {
+              "symbol": "applyTranscriptProjection",
+              "file": "macos/Codescribe/Screens/Overlay/OverlayState.swift",
+              "signature_contains": "func applyTranscriptProjection",
+              "required_code": [
+                "func applyTranscriptProjection(_ projection: CsTranscriptProjectionEvent)",
+                "latestTranscriptProjection = projection",
+                "mode = OverlayMode(rawValue: projection.phase) ?? mode",
+                "terminal = projection.terminal",
+                "revisionDraft = projection.renderedText"
+              ]
+            },
+            {
+              "symbol": "activeText",
+              "file": "macos/Codescribe/Screens/Overlay/OverlayState.swift",
+              "signature_contains": "var activeText",
+              "required_code": ["formattedText"]
+            },
+            {
+              "symbol": "DictationOverlayView",
+              "file": "macos/Codescribe/Screens/Overlay/DictationOverlayView.swift",
+              "signature_contains": "struct DictationOverlayView: View",
+              "required_code": [
+                "var body: some View",
+                "OverlayIntentRail(",
+                "intents: OverlayIntentRail.projectedIntents(for: state)",
+                "onIntent: state.relayIntent"
+              ]
+            },
+            {
+              "symbol": "OverlayIntentRail",
+              "file": "macos/Codescribe/Screens/Overlay/OverlayIntentRail.swift",
+              "required_code": [
+                "struct OverlayIntentRail: View",
+                "ForEach(intents, id: \\.self)",
+                "dispatch(intent)",
+                "func dispatch(_ intent: OverlayIntent)",
+                "onIntent(intent)"
+              ]
+            },
+            {
+              "symbol": "relayIntent",
+              "file": "macos/Codescribe/Screens/Overlay/OverlayState.swift",
+              "required_code": [
+                "func relayIntent(_ intent: OverlayIntent)",
+                "case .insertPaste:",
+                "relayInsertPasteIntent()"
+              ]
+            },
+            {
+              "symbol": "relayInsertPasteIntent",
+              "file": "macos/Codescribe/Screens/Overlay/OverlayState.swift",
+              "required_code": [
+                "private func relayInsertPasteIntent()",
+                "guard let engine else { return }",
+                "let text = activeText",
+                "let shouldDefer = insertCaretInCodescribeProbe()",
+                "if shouldDefer",
+                "engine.deferText(text: text)",
+                "engine.pasteText(text: text)"
+              ]
+            },
+            {
+              "symbol": "paste_text",
+              "file": "bridge/src/hotkeys.rs",
+              "required_code": [
+                "pub async fn paste_text(&self, text: String) -> Result<CsPasteResult, CsError>",
+                "controller.paste_text_from_overlay(text)",
+                ".map(CsPasteResult::from)"
+              ]
+            },
+            {
+              "symbol": "paste_text_from_overlay",
+              "file": "app/controller/mod.rs",
+              "required_code": [],
+              "ast_contract": "paste_text_from_overlay"
+            },
+            {
+              "symbol": "execute_clipboard_paste",
+              "file": "app/controller/mod.rs",
+              "required_code": [],
+              "ast_contract": "execute_clipboard_paste"
+            },
+            {
+              "symbol": "overlay_insert_facts",
+              "file": "app/controller/delivery_route.rs",
+              "required_code": [
+                "has_text",
+                "latched_target_is_self",
+                "auto_paste_enabled: false",
+                "overlay_enabled: true",
+                "live_stream_session: false",
+                "commit_required: false"
+              ]
+            },
+            {
+              "symbol": "resolve_delivery_route",
+              "file": "app/controller/delivery_route.rs",
+              "required_code": [
+                "if !facts.has_text || facts.no_speech",
+                "DeliveryRoute::ArchiveOnly",
+                "DeliveryIntent::OverlayToAgent",
+                "DeliveryRoute::AgentComposer",
+                "DeliveryIntent::OverlayInsert => overlay_insert_route(facts)"
+              ]
+            },
+            {
+              "symbol": "overlay_insert_route",
+              "file": "app/controller/delivery_route.rs",
+              "required_code": [
+                "if facts.latched_target_is_self",
+                "route: DeliveryRoute::DeferredInsert",
+                "reason: \"refuse_paste_into_self\"",
+                "route: DeliveryRoute::ClipboardPaste",
+                "reason: \"explicit_insert\""
+              ]
+            },
+            {
+              "symbol": "paste_and_restore",
+              "file": "app/os/clipboard.rs",
+              "required_code": [
+                "pub fn paste_and_restore(text: &str) -> Result<()>",
+                "paste_text_smart(text, true)"
+              ]
+            },
+            {
+              "symbol": "paste_text_smart",
+              "file": "app/os/clipboard.rs",
+              "required_code": [
+                "if text.is_empty()",
+                "let snapshot = if restore",
+                "set_clipboard_with_epoch(text)",
+                "simulate_cmd_v()",
+                "if let Some(snapshot) = snapshot",
+                "schedule_clipboard_restore(snapshot, paste_epoch, delay)"
+              ]
+            }
+          ],
+          "required_invocations": [
+            {
+              "callee": "apply_ledger_seal",
+              "callee_file": "app/presentation/emitter.rs",
+              "caller": "on_event",
+              "caller_file": "app/presentation/emitter.rs",
+              "minimum_count": 1
+            },
+            {
+              "callee": "publish_revision",
+              "callee_file": "app/presentation/transcript_bus.rs",
+              "caller": "on_event",
+              "caller_file": "app/presentation/emitter.rs",
+              "minimum_count": 1
+            },
+            {
+              "callee": "project_serial",
+              "callee_file": "app/presentation/transcript_bus.rs",
+              "caller": "publish_revision",
+              "caller_file": "app/presentation/transcript_bus.rs",
+              "minimum_count": 1
+            },
+            {
+              "callee": "from_bus_event",
+              "callee_file": "bridge/src/recording.rs",
+              "caller": "forward_event_to_listener",
+              "caller_file": "bridge/src/hotkeys.rs",
+              "minimum_count": 1
+            },
+            {
+              "callee": "from_bus_receipt",
+              "callee_file": "bridge/src/recording.rs",
+              "caller": "from_bus_event",
+              "caller_file": "bridge/src/recording.rs",
+              "minimum_count": 1
+            },
+            {
+              "callee": "applyTranscriptProjection",
+              "callee_file": "macos/Codescribe/Screens/Overlay/OverlayState.swift",
+              "caller": "apply",
+              "caller_file": "macos/Codescribe/Screens/Overlay/OverlayState.swift",
+              "minimum_count": 1
+            },
+            {
+              "callee": "OverlayIntentRail",
+              "callee_file": "macos/Codescribe/Screens/Overlay/OverlayIntentRail.swift",
+              "caller": "body",
+              "caller_file": "macos/Codescribe/Screens/Overlay/DictationOverlayView.swift",
+              "minimum_count": 1
+            },
+            {
+              "callee": "dispatch",
+              "callee_file": "macos/Codescribe/Screens/Overlay/OverlayIntentRail.swift",
+              "caller": "body",
+              "caller_file": "macos/Codescribe/Screens/Overlay/OverlayIntentRail.swift",
+              "minimum_count": 1
+            },
+            {
+              "callee": "onIntent",
+              "callee_file": "macos/Codescribe/Screens/Overlay/OverlayIntentRail.swift",
+              "caller": "dispatch",
+              "caller_file": "macos/Codescribe/Screens/Overlay/OverlayIntentRail.swift",
+              "minimum_count": 1
+            },
+            {
+              "callee": "relayIntent",
+              "callee_file": "macos/Codescribe/Screens/Overlay/OverlayState.swift",
+              "caller": "body",
+              "caller_file": "macos/Codescribe/Screens/Overlay/DictationOverlayView.swift",
+              "minimum_count": 1
+            },
+            {
+              "callee": "relayInsertPasteIntent",
+              "callee_file": "macos/Codescribe/Screens/Overlay/OverlayState.swift",
+              "caller": "relayIntent",
+              "caller_file": "macos/Codescribe/Screens/Overlay/OverlayState.swift",
+              "minimum_count": 1
+            },
+            {
+              "callee": "paste_text_from_overlay",
+              "callee_file": "app/controller/mod.rs",
+              "caller": "paste_text",
+              "caller_file": "bridge/src/hotkeys.rs",
+              "minimum_count": 1
+            },
+            {
+              "callee": "overlay_insert_facts",
+              "callee_file": "app/controller/delivery_route.rs",
+              "caller": "paste_text_from_overlay",
+              "caller_file": "app/controller/mod.rs",
+              "minimum_count": 1
+            },
+            {
+              "callee": "resolve_delivery_route",
+              "callee_file": "app/controller/delivery_route.rs",
+              "caller": "paste_text_from_overlay",
+              "caller_file": "app/controller/mod.rs",
+              "minimum_count": 1
+            },
+            {
+              "callee": "overlay_insert_route",
+              "callee_file": "app/controller/delivery_route.rs",
+              "caller": "resolve_delivery_route",
+              "caller_file": "app/controller/delivery_route.rs",
+              "minimum_count": 1
+            },
+            {
+              "callee": "paste_and_restore",
+              "callee_file": "app/os/clipboard.rs",
+              "caller": "execute_clipboard_paste",
+              "caller_file": "app/controller/mod.rs",
+              "minimum_count": 1
+            },
+            {
+              "callee": "paste_text_smart",
+              "callee_file": "app/os/clipboard.rs",
+              "caller": "paste_and_restore",
+              "caller_file": "app/os/clipboard.rs",
+              "minimum_count": 1
+            },
+            {
+              "caller": "paste_text_from_overlay",
+              "caller_file": "app/controller/mod.rs",
+              "callee": "execute_clipboard_paste",
+              "callee_file": "app/controller/mod.rs",
+              "minimum_count": 1
+            }
+          ]
+        },
+        {
+          "name": "ledger_to_bus_projection",
+          "hops": [
+            {
+              "symbol": "mint",
+              "file": "core/pipeline/acoustic_ledger.rs",
+              "signature_contains": "pub fn mint(evidence: &AcousticEvidence) -> Self",
+              "required_code": [
+                "let digest = Self::digest_of(evidence)",
+                "occurrence: evidence.occurrence.clone()",
+                "duration_ms: evidence.duration_ms",
+                "energy_integral: evidence.energy_integral",
+                "mean_rms_dbfs: evidence.mean_rms_dbfs",
+                "peak_dbfs: evidence.peak_dbfs",
+                "vad_open_sample: evidence.vad_open_sample",
+                "vad_close_sample: evidence.vad_close_sample",
+                "evidence_calibration_version: evidence.evidence_calibration_version.clone()"
+              ]
+            },
+            {
+              "symbol": "revision_for_action",
+              "file": "app/presentation/emitter.rs",
+              "required_code": [
+                "fn revision_for_action(&mut self, action: ReducerAction) -> TranscriptRevision",
+                "self.revision = self.revision.saturating_add(1)",
+                "let rendered_text = self.committed_rendered_text()",
+                "TranscriptRevision {",
+                "revision: self.revision",
+                "action",
+                "entries",
+                "rendered_text"
+              ]
+            },
+            {
+              "symbol": "on_event",
+              "file": "app/presentation/emitter.rs",
+              "required_code": [
+                "apply_ledger_mutation(&ledger, observation, receipt)",
+                "apply_ledger_seal(receipt)",
+                "apply_occurrence_label_proposal(&mut ledger, proposal)",
+                "bus.publish_revision(&revision, &ledger)",
+                "callback(event)"
+              ]
+            },
+            {
+              "symbol": "project_serial",
+              "file": "app/presentation/transcript_bus.rs",
+              "required_code": [
+                "serial: &AcousticSerial",
+                "ProjectedAcousticReceipt {",
+                "acoustic_serial_version: serial.version",
+                "acoustic_serial: serial.digest.clone()",
+                "session_id: serial.occurrence.session.clone()",
+                "capture_epoch: serial.occurrence.capture_epoch",
+                "sample_start: serial.occurrence.sample_start",
+                "sample_end: serial.occurrence.sample_end",
+                "duration_ms: serial.duration_ms.max(0.0) as u64",
+                "energy_integral: serial.energy_integral",
+                "mean_rms_dbfs: serial.mean_rms_dbfs as f32",
+                "peak_dbfs: serial.peak_dbfs as f32",
+                "vad_open_sample: serial.vad_open_sample.unwrap_or(serial.occurrence.sample_start)",
+                "vad_close_sample: serial.vad_close_sample.unwrap_or(serial.occurrence.sample_end)",
+                "evidence_calibration_version: serial.evidence_calibration_version.clone()",
+                "word_evidence_receipts",
+                "layer_decision_receipts",
+                "seal_receipt",
+                "manual_edit_receipt"
+              ]
+            },
+            {
+              "symbol": "publish_revision",
+              "file": "app/presentation/transcript_bus.rs",
+              "required_code": [
+                "revision: &TranscriptRevision",
+                "ledger: &AcousticLedger",
+                "ledger.serial_of(&entry.occurrence)",
+                "let event = TranscriptBusEvidenceEvent {",
+                "reducer_revision: revision.revision",
+                "rendered_text: revision.rendered_text.clone()",
+                "acoustic_receipts: vec![Self::project_serial(",
+                "emitted.push(event)"
+              ]
+            }
+          ],
+          "required_invocations": [
+            {
+              "callee": "revision_for_action",
+              "callee_file": "app/presentation/emitter.rs",
+              "caller": "apply_ledger_mutation",
+              "caller_file": "app/presentation/emitter.rs"
+            },
+            {
+              "callee": "revision_for_action",
+              "callee_file": "app/presentation/emitter.rs",
+              "caller": "apply_ledger_seal",
+              "caller_file": "app/presentation/emitter.rs"
+            },
+            {
+              "callee": "publish_revision",
+              "callee_file": "app/presentation/transcript_bus.rs",
+              "caller": "on_event",
+              "caller_file": "app/presentation/emitter.rs"
+            },
+            {
+              "callee": "project_serial",
+              "callee_file": "app/presentation/transcript_bus.rs",
+              "caller": "publish_revision",
+              "caller_file": "app/presentation/transcript_bus.rs"
+            }
+          ]
+        },
+        {
+          "name": "speech_coverage_to_terminal_truth",
+          "hops": [
+            {
+              "symbol": "repair_terminal_seal_coverage",
+              "file": "core/pipeline/streaming/apple_live_session.rs",
+              "required_code": [
+                "repair_terminal_seal_coverage_with(",
+                "|request, pcm, control| InProcessTailProvider.transcribe_controlled(request, pcm, control)"
+              ]
+            },
+            {
+              "symbol": "coverage_speech_evidence",
+              "file": "core/pipeline/streaming/apple_live_session.rs",
+              "signature_contains": "fn coverage_speech_evidence(",
+              "required_code": [
+                "let captured_samples = state.audio.session_sample_end();",
+                "state.capture_energy.session_active_speech_ranges(",
+                "AcousticAvailability::InvalidMeasurement { .. }",
+                "return capture_energy;",
+                "let acoustic = fusion.acoustic_speech_evidence();",
+                "if acoustic.observed_speech()",
+                "return within_capture(acoustic, captured_samples);",
+                "within_capture(capture_energy, captured_samples)"
+              ]
+            },
+            {
+              "symbol": "within_capture",
+              "file": "core/pipeline/streaming/apple_live_session.rs",
+              "signature_contains": "fn within_capture(",
+              "required_code": [
+                "let Some(observed_samples) = evidence.availability().observed_samples() else",
+                "return evidence;",
+                "if observed_samples >= captured_samples",
+                "return evidence;",
+                "AcousticSpeechEvidence::unavailable(",
+                "AcousticAvailability::Discontinuous { observed_samples }"
+              ]
+            },
+            {
+              "symbol": "assess_seal_coverage",
+              "file": "core/pipeline/acoustic_ledger.rs",
+              "required_code": [
+                "speech: &AcousticSpeechEvidence",
+                "SealCoverageStatus::Unavailable(gap)",
+                "if !speech.identity().matches(session, capture_epoch)",
+                "let Some(observed_samples) = speech.availability().observed_samples() else",
+                "self.committed.keys()",
+                "refuse(AcousticEvidenceGap::PartialObservation)",
+                "SealCoverageStatus::Incomplete",
+                "speech_samples.saturating_sub(uncovered_samples)",
+                "uncovered_speech_ranges: uncovered"
+              ]
+            },
+            {
+              "symbol": "seal_terminal",
+              "file": "core/pipeline/acoustic_ledger.rs",
+              "required_code": [
+                "coverage.status == SealCoverageStatus::Incomplete",
+                "coverage.status.unavailable_reason().is_some()",
+                "return Err(SealRefusal::CoverageIncomplete)",
+                "self.seal(occurrence)?"
+              ]
+            },
+            {
+              "symbol": "on_event",
+              "file": "app/presentation/emitter.rs",
+              "required_code": [
+                "EngineEvent::SealCoverage {",
+                ".apply_seal_coverage(receipt, comparison.as_ref())",
+                "bus.publish_revision(&revision, &ledger)"
+              ]
+            },
+            {
+              "symbol": "apply_seal_coverage",
+              "file": "app/presentation/emitter.rs",
+              "required_code": [
+                "self.latest_seal_coverage = Some(receipt.clone())",
+                "self.latest_comparison = Some(comparison.clone())",
+                "ReducerAction::RecordSealCoverage {"
+              ]
+            },
+            {
+              "symbol": "publish_revision",
+              "file": "app/presentation/transcript_bus.rs",
+              "required_code": [
+                "ReducerAction::RecordSealCoverage { .. } => \"seal_coverage\"",
+                "seal_coverage: revision.seal_coverage.as_ref().map(ProjectedSealCoverageReceipt::from)",
+                "comparison: revision.comparison.as_ref().map(ProjectedTranscriptComparisonReceipt::from)"
+              ]
+            },
+            {
+              "symbol": "stop",
+              "file": "core/audio/streaming_recorder.rs",
+              "required_code": [],
+              "ast_contract": "stop"
+            },
+            {
+              "symbol": "complete_stop",
+              "file": "core/audio/streaming_recorder.rs",
+              "required_code": [],
+              "ast_contract": "complete_stop"
+            }
+          ],
+          "required_invocations": [
+            {
+              "callee": "repair_terminal_seal_coverage",
+              "callee_file": "core/pipeline/streaming/apple_live_session.rs",
+              "caller": "apple_stream_worker",
+              "caller_file": "core/pipeline/streaming/apple_live_session.rs"
+            },
+            {
+              "callee": "repair_terminal_seal_coverage_with",
+              "callee_file": "core/pipeline/streaming/apple_live_session.rs",
+              "caller": "repair_terminal_seal_coverage",
+              "caller_file": "core/pipeline/streaming/apple_live_session.rs"
+            },
+            {
+              "callee": "coverage_speech_evidence",
+              "callee_file": "core/pipeline/streaming/apple_live_session.rs",
+              "caller": "repair_terminal_seal_coverage_with",
+              "caller_file": "core/pipeline/streaming/apple_live_session.rs"
+            },
+            {
+              "callee": "coverage_speech_evidence",
+              "callee_file": "core/pipeline/streaming/apple_live_session.rs",
+              "caller": "publish_terminal_coverage",
+              "caller_file": "core/pipeline/streaming/apple_live_session.rs"
+            },
+            {
+              "callee": "session_active_speech_ranges",
+              "callee_file": "core/audio/capture_receipt.rs",
+              "caller": "coverage_speech_evidence",
+              "caller_file": "core/pipeline/streaming/apple_live_session.rs"
+            },
+            {
+              "callee": "within_capture",
+              "callee_file": "core/pipeline/streaming/apple_live_session.rs",
+              "caller": "coverage_speech_evidence",
+              "caller_file": "core/pipeline/streaming/apple_live_session.rs",
+              "minimum_count": 2
+            },
+            {
+              "callee": "assess_seal_coverage",
+              "callee_file": "core/pipeline/acoustic_ledger.rs",
+              "caller": "repair_terminal_seal_coverage_with",
+              "caller_file": "core/pipeline/streaming/apple_live_session.rs",
+              "minimum_count": 2
+            },
+            {
+              "callee": "record_seal_coverage",
+              "callee_file": "core/pipeline/acoustic_ledger.rs",
+              "caller": "repair_terminal_seal_coverage_with",
+              "caller_file": "core/pipeline/streaming/apple_live_session.rs",
+              "minimum_count": 2
+            },
+            {
+              "callee": "admit_full_pass_gap_segments",
+              "callee_file": "core/pipeline/streaming/apple_live_session.rs",
+              "caller": "repair_terminal_seal_coverage_with",
+              "caller_file": "core/pipeline/streaming/apple_live_session.rs"
+            },
+            {
+              "callee": "window_by_samples",
+              "callee_file": "core/pipeline/streaming/apple_live_session.rs",
+              "caller": "repair_terminal_seal_coverage_with",
+              "caller_file": "core/pipeline/streaming/apple_live_session.rs"
+            },
+            {
+              "callee": "apply_seal_coverage",
+              "callee_file": "app/presentation/emitter.rs",
+              "caller": "on_event",
+              "caller_file": "app/presentation/emitter.rs"
+            },
+            {
+              "callee": "publish_revision",
+              "callee_file": "app/presentation/transcript_bus.rs",
+              "caller": "on_event",
+              "caller_file": "app/presentation/emitter.rs"
+            },
+            {
+              "callee": "terminal_finality",
+              "callee_file": "core/pipeline/acoustic_ledger.rs",
+              "caller": "complete_stop",
+              "caller_file": "core/audio/streaming_recorder.rs"
+            },
+            {
+              "caller": "stop",
+              "caller_file": "core/audio/streaming_recorder.rs",
+              "callee": "complete_stop",
+              "callee_file": "core/audio/streaming_recorder.rs",
+              "minimum_count": 1
+            }
+          ]
+        },
+        {
+          "name": "bus_to_swift_projection",
+          "hops": [
+            {
+              "symbol": "build_recording_event_sink",
+              "file": "app/controller/mod.rs",
+              "required_code": [
+                "event: &crate::presentation::transcript_bus::TranscriptBusEvidenceEvent",
+                "Self::broadcast_transcript_projection(&projection_broadcast, event)",
+                "Some(projection_callback)"
+              ]
+            },
+            {
+              "symbol": "broadcast_transcript_projection",
+              "file": "app/controller/mod.rs",
+              "required_code": [
+                "serde_json::to_string(event)",
+                "event_broadcast.send(IpcEvent",
+                "IpcEventPayload::TranscriptProjection { json }"
+              ]
+            },
+            {
+              "symbol": "forward_event_to_listener",
+              "file": "bridge/src/hotkeys.rs",
+              "required_code": [
+                "IpcEventPayload::TranscriptProjection { json }",
+                "serde_json::from_str::< codescribe::presentation::transcript_bus::TranscriptBusEvidenceEvent",
+                "listener.on_transcript_projection(CsTranscriptProjectionEvent::from_bus_event(&event))"
+              ]
+            },
+            {
+              "symbol": "from_bus_receipt",
+              "file": "bridge/src/recording.rs",
+              "signature_contains": "fn from_bus_receipt(receipt: &ProjectedAcousticReceipt) -> Self",
+              "required_code": [
+                "fn from_bus_receipt(receipt: &ProjectedAcousticReceipt) -> Self",
+                "acoustic_serial_version: receipt.acoustic_serial_version",
+                "acoustic_serial: receipt.acoustic_serial.clone()",
+                "session_id: receipt.session_id.clone()",
+                "capture_epoch: receipt.capture_epoch",
+                "sample_start: receipt.sample_start",
+                "sample_end: receipt.sample_end",
+                "duration_ms: receipt.duration_ms",
+                "energy_integral: receipt.energy_integral",
+                "mean_rms_dbfs: receipt.mean_rms_dbfs",
+                "peak_dbfs: receipt.peak_dbfs",
+                "vad_open_sample: receipt.vad_open_sample",
+                "vad_close_sample: receipt.vad_close_sample",
+                "evidence_calibration_version: receipt.evidence_calibration_version.clone()",
+                "word_evidence_receipts: receipt.word_evidence_receipts.clone()",
+                "layer_decision_receipts: receipt.layer_decision_receipts.clone()",
+                "seal_receipt: receipt.seal_receipt.clone()",
+                "manual_edit_receipt: receipt.manual_edit_receipt.clone()"
+              ]
+            },
+            {
+              "symbol": "from_bus_event",
+              "file": "bridge/src/recording.rs",
+              "required_code": [
+                "fn from_bus_event(event: &TranscriptBusEvidenceEvent) -> Self",
+                "schema: event.schema.clone()",
+                "sequence: event.sequence",
+                "emitted_at: event.emitted_at.clone()",
+                "session_id: event.session_id.clone()",
+                "event.mode",
+                "reducer_revision: event.reducer_revision",
+                "reducer_action: event.reducer_action.clone()",
+                "occurrence_session_id: event.occurrence_session_id.clone()",
+                "capture_epoch: event.capture_epoch",
+                "sample_start: event.sample_start",
+                "sample_end: event.sample_end",
+                "document_index: event.document_index",
+                "label: event.label.clone()",
+                "rendered_text: event.rendered_text.clone()",
+                "event.acoustic_receipts.iter().map(CsProjectedAcousticReceipt::from_bus_receipt).collect()"
+              ]
+            },
+            {
+              "symbol": "onTranscriptProjection",
+              "file": "macos/Codescribe/Screens/Overlay/OverlayState.swift",
+              "required_code": [
+                "func onTranscriptProjection(event: CsTranscriptProjectionEvent)",
+                "continuation.yield(.transcriptProjection(event))"
+              ]
+            },
+            {
+              "symbol": "applyTranscriptProjection",
+              "file": "macos/Codescribe/Screens/Overlay/OverlayState.swift",
+              "signature_contains": "func applyTranscriptProjection",
+              "required_code": [
+                "func applyTranscriptProjection(_ projection: CsTranscriptProjectionEvent)",
+                "latestTranscriptProjection = projection",
+                "mode = OverlayMode(rawValue: projection.phase) ?? mode",
+                "terminal = projection.terminal",
+                "revisionDraft = projection.renderedText"
+              ]
+            }
+          ],
+          "required_invocations": [
+            {
+              "callee": "from_bus_event",
+              "callee_file": "bridge/src/recording.rs",
+              "caller": "forward_event_to_listener",
+              "caller_file": "bridge/src/hotkeys.rs"
+            },
+            {
+              "callee": "from_bus_receipt",
+              "callee_file": "bridge/src/recording.rs",
+              "caller": "from_bus_event",
+              "caller_file": "bridge/src/recording.rs"
+            },
+            {
+              "callee": "applyTranscriptProjection",
+              "callee_file": "macos/Codescribe/Screens/Overlay/OverlayState.swift",
+              "caller": "apply",
+              "caller_file": "macos/Codescribe/Screens/Overlay/OverlayState.swift"
+            }
+          ]
+        }
+      ],
+      "require_zero_dangling": true
+    }
+  },
+  "tool_contract": {
+    "receipt_version": "codescribe.acoustic-structure-receipt.v3",
+    "superseded_versions": ["codescribe.acoustic-structure-receipt.v2"],
+    "legacy_schema": "tests/fixtures/acoustic_structure_receipt.schema.json",
+    "neutral_ast_command": [
+      "cargo",
+      "run",
+      "--offline",
+      "--locked",
+      "--package",
+      "codescribe-structural-ast",
+      "--bin",
+      "codescribe-structural-ast",
+      "--quiet"
+    ],
+    "receipt_schema": {
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "$id": "https://vetcoders.io/schemas/codescribe/acoustic-structure-receipt.v3.json",
+      "title": "Codescribe acoustic structure receipt with neutral AST evidence",
+      "type": "object",
+      "additionalProperties": false,
+      "$defs": {
+        "residueRow": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "file",
+            "line",
+            "matched_identifier",
+            "needle",
+            "relation",
+            "match_role",
+            "scope_classification",
+            "class",
+            "fail_gate",
+            "review_required",
+            "reason"
+          ],
+          "properties": {
+            "file": {
+              "type": "string",
+              "minLength": 1
+            },
+            "line": {
+              "type": "integer",
+              "minimum": 1
+            },
+            "matched_identifier": {
+              "type": "string",
+              "minLength": 1
+            },
+            "needle": {
+              "type": "string",
+              "minLength": 1
+            },
+            "relation": {
+              "enum": [
+                "snake_infix",
+                "snake_prefix",
+                "snake_suffix",
+                "pascal_twin",
+                "filename",
+                "verbatim_substring"
+              ]
+            },
+            "match_role": {
+              "type": "string",
+              "minLength": 1
+            },
+            "scope_classification": {
+              "type": "string",
+              "minLength": 1
+            },
+            "class": {
+              "enum": [
+                "executable_authority",
+                "executable_consumer",
+                "canonical_edge",
+                "harmless_historical_name",
+                "diagnostic_or_log_label",
+                "comment_or_string",
+                "test_only_mutant",
+                "fixture",
+                "verifier_self_literal",
+                "unclassified_requires_review"
+              ]
+            },
+            "fail_gate": {
+              "const": false
+            },
+            "review_required": {
+              "type": "boolean"
+            },
+            "reason": {
+              "type": "string",
+              "minLength": 1
+            }
+          },
+          "allOf": [
+            {
+              "if": {
+                "properties": {
+                  "class": {
+                    "const": "unclassified_requires_review"
+                  }
+                },
+                "required": ["class"]
+              },
+              "then": {
+                "properties": {
+                  "review_required": {
+                    "const": true
+                  }
+                }
+              },
+              "else": {
+                "properties": {
+                  "review_required": {
+                    "const": false
+                  }
+                }
+              }
+            }
+          ]
+        },
+        "residueRows": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/residueRow"
+          }
+        },
+        "residueSummary": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "evidence_complete",
+            "query_count",
+            "complete_query_count",
+            "truncated_query_count",
+            "total_count",
+            "unclassified_count",
+            "review_required_count",
+            "class_counts",
+            "needle_counts"
+          ],
+          "properties": {
+            "evidence_complete": {
+              "const": true
+            },
+            "query_count": {
+              "type": "integer",
+              "minimum": 0
+            },
+            "complete_query_count": {
+              "type": "integer",
+              "minimum": 0
+            },
+            "truncated_query_count": {
+              "const": 0
+            },
+            "total_count": {
+              "type": "integer",
+              "minimum": 0
+            },
+            "unclassified_count": {
+              "type": "integer",
+              "minimum": 0
+            },
+            "review_required_count": {
+              "type": "integer",
+              "minimum": 0
+            },
+            "class_counts": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": [
+                "executable_authority",
+                "executable_consumer",
+                "canonical_edge",
+                "harmless_historical_name",
+                "diagnostic_or_log_label",
+                "comment_or_string",
+                "test_only_mutant",
+                "fixture",
+                "verifier_self_literal",
+                "unclassified_requires_review"
+              ],
+              "properties": {
+                "executable_authority": {
+                  "type": "integer",
+                  "minimum": 0
+                },
+                "executable_consumer": {
+                  "type": "integer",
+                  "minimum": 0
+                },
+                "canonical_edge": {
+                  "type": "integer",
+                  "minimum": 0
+                },
+                "harmless_historical_name": {
+                  "type": "integer",
+                  "minimum": 0
+                },
+                "diagnostic_or_log_label": {
+                  "type": "integer",
+                  "minimum": 0
+                },
+                "comment_or_string": {
+                  "type": "integer",
+                  "minimum": 0
+                },
+                "test_only_mutant": {
+                  "type": "integer",
+                  "minimum": 0
+                },
+                "fixture": {
+                  "type": "integer",
+                  "minimum": 0
+                },
+                "verifier_self_literal": {
+                  "type": "integer",
+                  "minimum": 0
+                },
+                "unclassified_requires_review": {
+                  "type": "integer",
+                  "minimum": 0
+                }
+              }
+            },
+            "needle_counts": {
+              "type": "object",
+              "additionalProperties": {
+                "type": "integer",
+                "minimum": 0
+              }
+            }
+          }
+        },
+        "neutralContract": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["symbol", "accepted", "events", "failures"],
+          "properties": {
+            "symbol": {
+              "enum": [
+                "paste_text_from_overlay",
+                "execute_clipboard_paste",
+                "stop",
+                "complete_stop"
+              ]
+            },
+            "accepted": {
+              "type": "boolean"
+            },
+            "events": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              }
+            },
+            "failures": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              }
+            }
+          }
+        },
+        "neutralInvocation": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "command",
+            "cwd",
+            "source_sha256",
+            "input_sha256",
+            "build_policy",
+            "target_dir",
+            "jobs",
+            "incremental"
+          ],
+          "properties": {
+            "command": {
+              "const": [
+                "cargo",
+                "run",
+                "--offline",
+                "--locked",
+                "--package",
+                "codescribe-structural-ast",
+                "--bin",
+                "codescribe-structural-ast",
+                "--quiet"
+              ]
+            },
+            "cwd": {
+              "type": "string",
+              "minLength": 1
+            },
+            "source_sha256": {
+              "type": "string",
+              "pattern": "^[0-9a-f]{64}$"
+            },
+            "input_sha256": {
+              "type": "string",
+              "pattern": "^[0-9a-f]{64}$"
+            },
+            "build_policy": {
+              "const": "cargo-run-current-sources-offline-locked"
+            },
+            "target_dir": {
+              "type": "string",
+              "pattern": "^/(?!.*(?:^|/)\\.{1,2}(?:/|$))(?!.*[\\u0000-\\u001f\\u007f~$\\\\:])[^/\\s](?:[^/]*[^/\\s])?(?:/[^/\\s](?:[^/]*[^/\\s])?)*$"
+            },
+            "jobs": {
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 1024
+            },
+            "incremental": {
+              "oneOf": [
+                {
+                  "type": "null"
+                },
+                {
+                  "type": "integer",
+                  "enum": [0, 1]
+                }
+              ]
+            }
+          }
+        },
+        "neutralEvidence": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "schema",
+            "identity",
+            "accepted",
+            "contracts",
+            "failures",
+            "invocation",
+            "macro_imports"
+          ],
+          "properties": {
+            "schema": {
+              "const": "codescribe.structural-ast-evidence.v1"
+            },
+            "identity": {
+              "const": "codescribe-structural-ast/0.1.0;syn=2.0.118;grammar=2"
+            },
+            "accepted": {
+              "type": "boolean"
+            },
+            "contracts": {
+              "type": "array",
+              "minItems": 4,
+              "maxItems": 4,
+              "items": {
+                "$ref": "#/$defs/neutralContract"
+              }
+            },
+            "failures": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              }
+            },
+            "invocation": {
+              "$ref": "#/$defs/neutralInvocation"
+            },
+            "macro_imports": {
+              "type": "array",
+              "minItems": 2,
+              "maxItems": 2,
+              "items": {
+                "type": "object"
+              }
+            }
+          }
+        }
+      },
+      "required": [
+        "schema",
+        "stage",
+        "scope",
+        "verdict",
+        "expected_verdict",
+        "conformant",
+        "repo",
+        "branch",
+        "head",
+        "dirty_fingerprint",
+        "loctree_version",
+        "loctree_snapshot_fingerprint",
+        "expected_parts",
+        "observed_parts",
+        "expected_owners",
+        "observed_owners",
+        "forbidden_symbols",
+        "forbidden_hits",
+        "forbidden_literal_hits",
+        "residue_by_substring",
+        "consumer_paths",
+        "corridor_paths",
+        "bypass_paths",
+        "unwired_paths",
+        "dangling_references",
+        "unresolved_module_declarations",
+        "canary_rows_observed",
+        "unclassified_canary_rows",
+        "failures",
+        "assessment",
+        "command_inventory",
+        "command_policy",
+        "neutral_ast"
+      ],
+      "properties": {
+        "$schema": {
+          "const": "tests/fixtures/acoustic_throne_stages.json#/tool_contract/receipt_schema"
+        },
+        "schema": {
+          "const": "codescribe.acoustic-structure-receipt.v3"
+        },
+        "stage": {
+          "enum": ["demolished", "assembled", "wired"]
+        },
+        "scope": {
+          "oneOf": [
+            {
+              "enum": ["settings", "acoustic", "document", "text-delivery"]
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "verdict": {
+          "enum": [
+            "OLD_AUTHORITY_REMOVED",
+            "STRUCTURALLY_COMPLETE_NOT_WIRED",
+            "STRUCTURALLY_WIRED",
+            "STRUCTURALLY_NONCONFORMANT"
+          ]
+        },
+        "expected_verdict": {
+          "enum": [
+            "OLD_AUTHORITY_REMOVED",
+            "STRUCTURALLY_COMPLETE_NOT_WIRED",
+            "STRUCTURALLY_WIRED"
+          ]
+        },
+        "conformant": {
+          "type": "boolean"
+        },
+        "repo": {
+          "type": ["string", "null"]
+        },
+        "branch": {
+          "type": ["string", "null"]
+        },
+        "head": {
+          "type": ["string", "null"]
+        },
+        "dirty_fingerprint": {
+          "type": ["string", "null"]
+        },
+        "loctree_version": {
+          "type": ["string", "null"]
+        },
+        "loctree_snapshot_fingerprint": {
+          "type": ["string", "null"]
+        },
+        "expected_parts": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "observed_parts": {
+          "type": "object"
+        },
+        "expected_owners": {
+          "type": "object",
+          "additionalProperties": {
+            "type": "string"
+          }
+        },
+        "observed_owners": {
+          "type": "object",
+          "additionalProperties": {
+            "type": "array"
+          }
+        },
+        "forbidden_symbols": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "forbidden_hits": {
+          "type": "object"
+        },
+        "forbidden_literal_hits": {
+          "type": "object",
+          "additionalProperties": {
+            "type": "array",
+            "items": {
+              "type": "string",
+              "minLength": 1
+            }
+          }
+        },
+        "residue_by_substring": {
+          "type": "object",
+          "required": ["summary"],
+          "properties": {
+            "summary": {
+              "$ref": "#/$defs/residueSummary"
+            }
+          },
+          "additionalProperties": {
+            "$ref": "#/$defs/residueRows"
+          }
+        },
+        "consumer_paths": {
+          "type": "object"
+        },
+        "corridor_paths": {
+          "type": "object",
+          "additionalProperties": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["hops", "invocations"],
+            "properties": {
+              "hops": {
+                "type": "array",
+                "minItems": 1,
+                "items": {
+                  "type": "object",
+                  "additionalProperties": false,
+                  "required": [
+                    "symbol",
+                    "file",
+                    "signature_contains",
+                    "body_count",
+                    "start_line",
+                    "production_definition",
+                    "required_code",
+                    "missing_code",
+                    "required_code_in_order",
+                    "dead_code_markers",
+                    "unreachable_required_code"
+                  ],
+                  "properties": {
+                    "symbol": {
+                      "type": "string",
+                      "minLength": 1
+                    },
+                    "file": {
+                      "type": "string",
+                      "minLength": 1
+                    },
+                    "signature_contains": {
+                      "type": ["string", "null"]
+                    },
+                    "body_count": {
+                      "type": "integer",
+                      "minimum": 0
+                    },
+                    "start_line": {
+                      "type": ["integer", "null"],
+                      "minimum": 1
+                    },
+                    "production_definition": {
+                      "type": "boolean"
+                    },
+                    "required_code": {
+                      "type": "array",
+                      "minItems": 0,
+                      "items": {
+                        "type": "string",
+                        "minLength": 1
+                      }
+                    },
+                    "missing_code": {
+                      "type": "array",
+                      "items": {
+                        "type": "string",
+                        "minLength": 1
+                      }
+                    },
+                    "required_code_in_order": {
+                      "type": "boolean"
+                    },
+                    "dead_code_markers": {
+                      "type": "array",
+                      "items": {
+                        "type": "string",
+                        "minLength": 1
+                      }
+                    },
+                    "unreachable_required_code": {
+                      "type": "array",
+                      "items": {
+                        "type": "object",
+                        "additionalProperties": false,
+                        "required": ["required_code", "reason"],
+                        "properties": {
+                          "required_code": {
+                            "type": "string",
+                            "minLength": 1
+                          },
+                          "reason": {
+                            "type": "string",
+                            "minLength": 1
+                          }
+                        }
+                      }
+                    },
+                    "ast_contract": {
+                      "oneOf": [
+                        {
+                          "type": "null"
+                        },
+                        {
+                          "$ref": "#/$defs/neutralContract"
+                        }
+                      ]
+                    }
+                  },
+                  "allOf": [
+                    {
+                      "if": {
+                        "properties": {
+                          "required_code": {
+                            "maxItems": 0
+                          }
+                        }
+                      },
+                      "then": {
+                        "required": ["ast_contract"],
+                        "properties": {
+                          "ast_contract": {
+                            "$ref": "#/$defs/neutralContract"
+                          }
+                        }
+                      }
+                    }
+                  ]
+                }
+              },
+              "invocations": {
+                "type": "array",
+                "minItems": 1,
+                "items": {
+                  "type": "object",
+                  "additionalProperties": false,
+                  "required": [
+                    "callee",
+                    "callee_file",
+                    "caller",
+                    "caller_file",
+                    "minimum_count",
+                    "callee_definition_in_file",
+                    "observed_count",
+                    "observed_lines"
+                  ],
+                  "properties": {
+                    "callee": {
+                      "type": "string",
+                      "minLength": 1
+                    },
+                    "callee_file": {
+                      "type": "string",
+                      "minLength": 1
+                    },
+                    "caller": {
+                      "type": "string",
+                      "minLength": 1
+                    },
+                    "caller_file": {
+                      "type": "string",
+                      "minLength": 1
+                    },
+                    "minimum_count": {
+                      "type": "integer",
+                      "minimum": 1
+                    },
+                    "callee_definition_in_file": {
+                      "type": "boolean"
+                    },
+                    "observed_count": {
+                      "type": "integer",
+                      "minimum": 0
+                    },
+                    "observed_lines": {
+                      "type": "array",
+                      "items": {
+                        "type": "integer",
+                        "minimum": 1
+                      }
+                    }
+                  }
+                }
+              },
+              "ordering": {
+                "type": "array",
+                "items": {
+                  "type": "object"
+                }
+              }
+            }
+          }
+        },
+        "bypass_paths": {
+          "type": "object"
+        },
+        "unwired_paths": {
+          "type": "object"
+        },
+        "dangling_references": {
+          "oneOf": [
+            {
+              "type": "array"
+            },
+            {
+              "type": "string"
+            }
+          ]
+        },
+        "unresolved_module_declarations": {
+          "type": "array"
+        },
+        "canary_rows_observed": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "unclassified_canary_rows": {
+          "oneOf": [
+            {
+              "type": "array"
+            },
+            {
+              "type": "string"
+            }
+          ]
+        },
+        "failures": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "assessment": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["build", "lint", "unit", "swift", "runtime"],
+          "properties": {
+            "build": {
+              "const": "NOT_ASSESSED"
+            },
+            "lint": {
+              "const": "NOT_ASSESSED"
+            },
+            "unit": {
+              "const": "NOT_ASSESSED"
+            },
+            "swift": {
+              "const": "NOT_ASSESSED"
+            },
+            "runtime": {
+              "const": "NOT_ASSESSED"
+            }
+          }
+        },
+        "command_inventory": {
+          "type": "array",
+          "minItems": 1,
+          "items": {
+            "anyOf": [
+              {
+                "type": "string",
+                "pattern": "^loct "
+              },
+              {
+                "const": "cargo run --offline --locked --package codescribe-structural-ast --bin codescribe-structural-ast --quiet"
+              }
+            ]
+          }
+        },
+        "command_policy": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "allowed_executable",
+            "all_commands_allowed",
+            "neutral_ast_command"
+          ],
+          "properties": {
+            "allowed_executable": {
+              "const": "loct"
+            },
+            "all_commands_allowed": {
+              "const": true
+            },
+            "neutral_ast_command": {
+              "const": [
+                "cargo",
+                "run",
+                "--offline",
+                "--locked",
+                "--package",
+                "codescribe-structural-ast",
+                "--bin",
+                "codescribe-structural-ast",
+                "--quiet"
+              ]
+            }
+          }
+        },
+        "neutral_ast": {
+          "oneOf": [
+            {
+              "type": "null"
+            },
+            {
+              "$ref": "#/$defs/neutralEvidence"
+            }
+          ]
+        }
+      },
+      "allOf": [
+        {
+          "if": {
+            "properties": {
+              "command_inventory": {
+                "contains": {
+                  "const": "cargo run --offline --locked --package codescribe-structural-ast --bin codescribe-structural-ast --quiet"
+                }
+              }
+            }
+          },
+          "then": {
+            "properties": {
+              "neutral_ast": {
+                "$ref": "#/$defs/neutralEvidence"
+              }
+            }
+          }
+        }
+      ]
+    }
+  }
+}

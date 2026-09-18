@@ -87,8 +87,10 @@ targets:
         CODE_SIGN_STYLE: Manual
         CODE_SIGN_IDENTITY: "Codescribe Dev"
         ENABLE_HARDENED_RUNTIME: NO
-        SWIFT_VERSION: 5.0
-        SWIFT_OBJC_BRIDGING_HEADER: $(SRCROOT)/Codescribe/Bridge/codescribe_ffiFFI.h
+        SWIFT_VERSION: 6.0
+        SWIFT_STRICT_CONCURRENCY: complete
+        SWIFT_TREAT_WARNINGS_AS_ERRORS: YES
+        SWIFT_OBJC_BRIDGING_HEADER: $(SRCROOT)/Codescribe/Codescribe-Bridging-Header.h
         OTHER_LDFLAGS: "-lcodescribe_ffi"
         # Runpath so the app finds the @rpath-id'd dylib both when run from Xcode
         # (against target/debug) and when distributed (embedded in Frameworks by
@@ -120,6 +122,9 @@ targets:
     settings:
       base:
         GENERATE_INFOPLIST_FILE: YES
+        SWIFT_VERSION: 6.0
+        SWIFT_STRICT_CONCURRENCY: complete
+        SWIFT_TREAT_WARNINGS_AS_ERRORS: YES
 # Without an explicit scheme the test bundle is unreachable: xcodegen emits no
 # scheme for bundle.unit-test targets, and old-style `-target` builds cannot
 # resolve SPM dependencies. `xcodebuild test -scheme Codescribe` is the entry.

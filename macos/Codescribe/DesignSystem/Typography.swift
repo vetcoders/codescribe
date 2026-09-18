@@ -27,10 +27,8 @@ enum CSFont {
   static let title = ui(15, .bold)
   static let bodyLg = ui(18, .regular)
   static let body = ui(14, .regular)
-  static let bodyStrong = ui(13, .semibold)
   static let eyebrow = mono(11, .semibold)  // tracking .18–.24em at call site
   static let metaMono = mono(11, .medium)
-  static let tagMono = mono(10, .semibold)
 }
 
 // Eyebrow label: mono, uppercase, wide tracking, olive — the section marker.

@@ -20,10 +20,10 @@ struct AgentStatusSection: View {
 
       // Agentic readiness verdict + per-prerequisite rows.
       statusCard(rows: model.agentReadiness.rows)
-        .padding(.top, 11)
+        .padding(.top, CSSpace.control)
 
       SettingsSectionLabel("Capability matrix")
-        .padding(.top, 22)
+        .padding(.top, CSSpace.section)
       Text("Native substrate vs enrichment providers (IntelliJ optional).")
         .font(CSFont.ui(11.5))
         .foregroundStyle(CSColor.textFaint)
@@ -32,7 +32,7 @@ struct AgentStatusSection: View {
         .padding(.top, 8)
 
       SettingsSectionLabel("MCP servers")
-        .padding(.top, 22)
+        .padding(.top, CSSpace.section)
       Text(model.mcpStatus.configPathDisplay)
         .font(CSFont.mono(10, .medium))
         .foregroundStyle(CSColor.textFaint)
@@ -92,7 +92,7 @@ struct AgentStatusSection: View {
             .foregroundStyle(CSColor.textFaint)
         }
       }
-      .csFocusRing(cornerRadius: 8)
+      .csFocusRing()
       .help("Cached initialize + tools/list result per configured server")
 
       if probesExpanded {
@@ -128,7 +128,7 @@ struct AgentStatusSection: View {
             .strokeBorder(CSColor.hairline(0.08), lineWidth: 1)
         )
       }
-      .csFocusRing(cornerRadius: 8)
+      .csFocusRing()
     }
   }
 
@@ -173,9 +173,9 @@ struct AgentStatusSection: View {
         }
       }
     }
-    .clipShape(RoundedRectangle(cornerRadius: 13, style: .continuous))
+    .clipShape(RoundedRectangle(cornerRadius: CSRadius.composer, style: .continuous))
     .overlay(
-      RoundedRectangle(cornerRadius: 13, style: .continuous)
+      RoundedRectangle(cornerRadius: CSRadius.composer, style: .continuous)
         .strokeBorder(CSColor.hairline(0.07), lineWidth: 1)
     )
   }
@@ -192,9 +192,9 @@ struct AgentStatusSection: View {
         AgentStatusRow(row: row)
       }
     }
-    .clipShape(RoundedRectangle(cornerRadius: 13, style: .continuous))
+    .clipShape(RoundedRectangle(cornerRadius: CSRadius.composer, style: .continuous))
     .overlay(
-      RoundedRectangle(cornerRadius: 13, style: .continuous)
+      RoundedRectangle(cornerRadius: CSRadius.composer, style: .continuous)
         .strokeBorder(CSColor.hairline(0.07), lineWidth: 1)
     )
   }

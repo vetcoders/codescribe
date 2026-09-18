@@ -4,6 +4,13 @@
 
 use std::sync::Arc;
 
+use codescribe::presentation::status_projection::{
+    PresentationStatusKind, PresentationStatusProjection,
+};
+use codescribe::presentation::transcript_bus::{
+    ProjectedAcousticReceipt, ProjectedConsultationPresentation, ProjectedPresentationReceipt,
+    ProjectedSealCoverageReceipt, TranscriptBusEvidenceEvent, TranscriptDelivery,
+};
 use codescribe_core::pipeline::contracts::{AnnotationKind, LayerSource, LayerSummary};
 use cpal::traits::{DeviceTrait, HostTrait};
 
@@ -16,6 +23,433 @@ pub struct CsTranscription {
     pub text: String,
     /// Detected (or requested) language code, e.g. `"pl"` / `"en"`.
     pub language: String,
+}
+
+/// UniFFI-safe, immutable projection of one ledger-owned acoustic receipt.
+/// W2 copies the matching Bus fields byte-for-byte; the bridge cannot admit,
+/// reconcile, seal, or otherwise reinterpret this evidence.
+#[derive(uniffi::Record, Debug, Clone, PartialEq)]
+pub struct CsProjectedAcousticReceipt {
+    pub acoustic_serial_version: u16,
+    pub acoustic_serial: String,
+    pub session_id: String,
+    pub capture_epoch: u64,
+    pub sample_start: u64,
+    pub sample_end: u64,
+    pub duration_ms: u64,
+    pub energy_integral: f64,
+    pub mean_rms_dbfs: f32,
+    pub peak_dbfs: f32,
+    pub vad_open_sample: u64,
+    pub vad_close_sample: u64,
+    pub evidence_calibration_version: String,
+    pub word_evidence_receipts: Vec<String>,
+    pub layer_decision_receipts: Vec<String>,
+    pub seal_receipt: Option<String>,
+    pub manual_edit_receipt: Option<String>,
+    pub presentation_receipt: Option<CsProjectedPresentationReceipt>,
+}
+
+/// Presentation proof remains separate from acoustic evidence and human edits.
+#[derive(uniffi::Record, Debug, Clone, PartialEq, Eq)]
+pub struct CsProjectedPresentationReceipt {
+    pub receipt_id: String,
+    pub provenance: String,
+    pub session_id: String,
+    pub source_revision: u64,
+    pub revision: u64,
+    pub capture_epoch: u64,
+    pub sample_start: u64,
+    pub sample_end: u64,
+    pub source_seal_receipt: String,
+    pub source_label: String,
+    pub left_context: String,
+    pub left_context_sha256: String,
+    pub shaped_text: String,
+}
+
+impl CsProjectedPresentationReceipt {
+    fn from_bus_receipt(receipt: &ProjectedPresentationReceipt) -> Self {
+        Self {
+            receipt_id: receipt.receipt_id.clone(),
+            provenance: receipt.provenance.clone(),
+            session_id: receipt.session_id.clone(),
+            source_revision: receipt.source_revision,
+            revision: receipt.revision,
+            capture_epoch: receipt.capture_epoch,
+            sample_start: receipt.sample_start,
+            sample_end: receipt.sample_end,
+            source_seal_receipt: receipt.source_seal_receipt.clone(),
+            source_label: receipt.source_label.clone(),
+            left_context: receipt.left_context.clone(),
+            left_context_sha256: receipt.left_context_sha256.clone(),
+            shaped_text: receipt.shaped_text.clone(),
+        }
+    }
+}
+
+/// Typed projection of the existing Bus coverage tokens. Unknown/legacy data
+/// never becomes complete. This bridge does not assess acoustic evidence.
+#[derive(uniffi::Enum, Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CsSealCoverageStatus {
+    Unknown,
+    Complete,
+    Incomplete,
+    Unavailable,
+}
+
+#[derive(uniffi::Enum, Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CsCoverageUnavailableReason {
+    Unknown,
+    NotObserved,
+    IdentityMismatch,
+    InvalidMeasurement,
+    PartialObservation,
+}
+
+#[derive(uniffi::Record, Debug, Clone, PartialEq, Eq)]
+pub struct CsProjectedSealCoverageRange {
+    pub sample_start: u64,
+    pub sample_end: u64,
+}
+
+#[derive(uniffi::Record, Debug, Clone, PartialEq)]
+pub struct CsProjectedSealCoverageReceipt {
+    pub status: CsSealCoverageStatus,
+    pub unavailable_reason: Option<CsCoverageUnavailableReason>,
+    pub speech_samples: u64,
+    pub covered_samples: u64,
+    pub uncovered_speech_ranges: Vec<CsProjectedSealCoverageRange>,
+    pub max_uncovered_samples: u64,
+    pub incomplete_threshold_samples: u64,
+    pub speech_producer: String,
+    pub availability: String,
+    pub observed_samples: Option<u64>,
+    pub coverage_ratio: Option<f64>,
+}
+
+impl CsProjectedSealCoverageReceipt {
+    fn from_bus_receipt(receipt: &ProjectedSealCoverageReceipt) -> Self {
+        Self {
+            status: match receipt.status.as_str() {
+                "complete" => CsSealCoverageStatus::Complete,
+                "incomplete" => CsSealCoverageStatus::Incomplete,
+                "unavailable" => CsSealCoverageStatus::Unavailable,
+                _ => CsSealCoverageStatus::Unknown,
+            },
+            unavailable_reason: receipt
+                .unavailable_reason
+                .as_deref()
+                .map(|reason| match reason {
+                    "not_observed" => CsCoverageUnavailableReason::NotObserved,
+                    "identity_mismatch" => CsCoverageUnavailableReason::IdentityMismatch,
+                    "invalid_measurement" => CsCoverageUnavailableReason::InvalidMeasurement,
+                    "partial_observation" => CsCoverageUnavailableReason::PartialObservation,
+                    _ => CsCoverageUnavailableReason::Unknown,
+                }),
+            speech_samples: receipt.speech_samples,
+            covered_samples: receipt.covered_samples,
+            uncovered_speech_ranges: receipt
+                .uncovered_speech_ranges
+                .iter()
+                .map(|range| CsProjectedSealCoverageRange {
+                    sample_start: range.sample_start,
+                    sample_end: range.sample_end,
+                })
+                .collect(),
+            max_uncovered_samples: receipt.max_uncovered_samples,
+            incomplete_threshold_samples: receipt.incomplete_threshold_samples,
+            speech_producer: receipt.speech_producer.clone(),
+            availability: receipt.availability.clone(),
+            observed_samples: receipt.observed_samples,
+            coverage_ratio: receipt.coverage_ratio,
+        }
+    }
+}
+
+/// Lossless group provenance. These are presentation sources, not alignment of
+/// generated answer words to PCM. Swift receives them without interpreting them.
+#[derive(uniffi::Record, Debug, Clone, PartialEq, Eq)]
+pub struct CsProjectedConsultationMember {
+    pub session_id: String,
+    pub capture_epoch: u64,
+    pub sample_start: u64,
+    pub sample_end: u64,
+    pub source_label: String,
+    pub seal_receipt: String,
+}
+
+#[derive(uniffi::Record, Debug, Clone, PartialEq, Eq)]
+pub struct CsProjectedConsultationPresentation {
+    pub receipt_id: String,
+    pub consultation_id: String,
+    pub turn_id: String,
+    pub source_revision: u64,
+    pub revision: u64,
+    pub members: Vec<CsProjectedConsultationMember>,
+    pub rendered_text: String,
+}
+
+impl CsProjectedConsultationPresentation {
+    fn from_bus_receipt(receipt: &ProjectedConsultationPresentation) -> Self {
+        Self {
+            receipt_id: receipt.receipt_id.clone(),
+            consultation_id: receipt.consultation_id.clone(),
+            turn_id: receipt.turn_id.clone(),
+            source_revision: receipt.source_revision,
+            revision: receipt.revision,
+            rendered_text: receipt.rendered_text.clone(),
+            members: receipt
+                .members
+                .iter()
+                .map(|member| CsProjectedConsultationMember {
+                    session_id: member.session_id.clone(),
+                    capture_epoch: member.capture_epoch,
+                    sample_start: member.sample_start,
+                    sample_end: member.sample_end,
+                    source_label: member.source_label.clone(),
+                    seal_receipt: member.seal_receipt.clone(),
+                })
+                .collect(),
+        }
+    }
+}
+
+/// Bridge event schema for the one reducer-owned transcript projection. It
+/// carries the full render, phase, availability, terminal state, and evidence,
+/// but exposes no document mutation method.
+///
+/// Input is `TranscriptBusEvidenceEvent`; output is the foreign listener
+/// callback below. UniFFI binding regeneration is deferred to plan attestation.
+#[derive(uniffi::Record, Debug, Clone, PartialEq)]
+pub struct CsTranscriptProjectionEvent {
+    pub schema: String,
+    pub sequence: u64,
+    pub emitted_at: String,
+    pub session_id: String,
+    pub mode: String,
+    pub reducer_revision: u64,
+    pub reducer_action: String,
+    pub occurrence_session_id: String,
+    pub capture_epoch: u64,
+    pub sample_start: u64,
+    pub sample_end: u64,
+    pub document_index: u64,
+    pub label: String,
+    pub rendered_text: String,
+    pub phase: String,
+    pub can_paste: bool,
+    pub can_insert: bool,
+    pub can_copy: bool,
+    pub can_retranscribe: bool,
+    pub can_format: bool,
+    pub can_send_to_agent: bool,
+    pub terminal: bool,
+    /// True only for the session's lifecycle terminal. A terminal *revision* of
+    /// the document is not the end of the capture, and only this flag tells the
+    /// two apart without reading an action string.
+    pub lifecycle_terminal: bool,
+    /// Controller-owned delivery disposition, forwarded verbatim. Swift branches
+    /// on this typed state; the human-facing `label` above stays presentation and
+    /// never carries control meaning.
+    pub delivery: CsTranscriptDelivery,
+    pub acoustic_receipts: Vec<CsProjectedAcousticReceipt>,
+    pub seal_coverage: Option<CsProjectedSealCoverageReceipt>,
+    pub consultation_presentations: Vec<CsProjectedConsultationPresentation>,
+}
+
+/// Swift-visible mirror of [`TranscriptDelivery`]. One variant per controller
+/// disposition, so no consumer has to parse a label to learn a destination.
+#[derive(uniffi::Enum, Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CsTranscriptDelivery {
+    /// No stop-path delivery ran for this take.
+    Unattempted,
+    /// Destined for the Agent composer draft of the capturing thread, and not
+    /// yet admitted by it. This is an obligation, never a success claim.
+    ComposerPending,
+    /// A system sink accepted the text at the OS boundary.
+    SinkAccepted,
+    /// No sink took the text; it stays recoverable.
+    Retained,
+}
+
+/// The controller-admitted identity of one capture.
+///
+/// Issued by `start_composer_turn_recording` and required by the conditional
+/// stop. Swift holds it as opaque evidence: it proves *which* take a gesture
+/// opened, so a stop can be refused when a different take now owns the mic.
+#[derive(uniffi::Record, Debug, Clone, PartialEq, Eq)]
+pub struct CsCaptureHandle {
+    pub capture_id: String,
+}
+
+/// Typed outcome of a conditional stop. Every variant is a state the caller can
+/// act on; none of them is an error string to match. A failed transport may
+/// retry the same handle to join/retrieve the retained controller operation.
+/// Stopped acknowledges processing, not consumption of addressed delivery.
+#[derive(uniffi::Enum, Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CsConditionalStop {
+    /// The identity matched the live capture and the stop path ran.
+    Stopped,
+    /// A different capture owns the microphone. It was left running.
+    ForeignCapture,
+    /// Nothing is capturing. Nothing was stopped and nothing was started.
+    NoLiveCapture,
+    /// This capture is already inside its own stop path. Not stopped twice.
+    AlreadyStopping,
+    /// A tracked controller task still owes settlement. Keep capture ownership.
+    Pending,
+    /// No task was admitted. Keep the handle; an explicit retry is safe.
+    AdmissionUnavailable,
+}
+
+/// Passive, typed product status from Rust presentation authority. This is a
+/// sibling of transcript projection, not a transcript event: it carries no
+/// reducer revision or acoustic evidence and exposes no repair command.
+#[derive(uniffi::Record, Debug, Clone, PartialEq, Eq)]
+pub struct CsPresentationStatusEvent {
+    pub schema: String,
+    pub emitted_at: String,
+    pub session_id: Option<String>,
+    pub kind: String,
+    pub code: String,
+    pub status_label: String,
+    pub headline: String,
+    pub message: String,
+    pub is_error: bool,
+    pub terminal: bool,
+    pub calibration_version: Option<String>,
+}
+
+/// Capture-bound ephemeral paint. No document or delivery mutation is exposed.
+#[derive(uniffi::Record, Debug, Clone, PartialEq, Eq)]
+pub struct CsCompactProjection {
+    pub session_id: String,
+    pub capture_epoch: u64,
+    pub sequence: u64,
+    pub text: String,
+    pub degraded: bool,
+}
+
+impl From<codescribe::presentation::emitter::CompactProjection> for CsCompactProjection {
+    fn from(value: codescribe::presentation::emitter::CompactProjection) -> Self {
+        Self {
+            session_id: value.session_id,
+            capture_epoch: value.capture_epoch,
+            sequence: value.sequence,
+            text: value.text,
+            degraded: value.degraded,
+        }
+    }
+}
+
+impl CsProjectedAcousticReceipt {
+    pub(crate) fn from_bus_receipt(receipt: &ProjectedAcousticReceipt) -> Self {
+        Self {
+            acoustic_serial_version: receipt.acoustic_serial_version,
+            acoustic_serial: receipt.acoustic_serial.clone(),
+            session_id: receipt.session_id.clone(),
+            capture_epoch: receipt.capture_epoch,
+            sample_start: receipt.sample_start,
+            sample_end: receipt.sample_end,
+            duration_ms: receipt.duration_ms,
+            energy_integral: receipt.energy_integral,
+            mean_rms_dbfs: receipt.mean_rms_dbfs,
+            peak_dbfs: receipt.peak_dbfs,
+            vad_open_sample: receipt.vad_open_sample,
+            vad_close_sample: receipt.vad_close_sample,
+            evidence_calibration_version: receipt.evidence_calibration_version.clone(),
+            word_evidence_receipts: receipt.word_evidence_receipts.clone(),
+            layer_decision_receipts: receipt.layer_decision_receipts.clone(),
+            seal_receipt: receipt.seal_receipt.clone(),
+            manual_edit_receipt: receipt.manual_edit_receipt.clone(),
+            presentation_receipt: receipt
+                .presentation_receipt
+                .as_ref()
+                .map(CsProjectedPresentationReceipt::from_bus_receipt),
+        }
+    }
+}
+
+impl CsTranscriptDelivery {
+    /// One total mapping. A new Rust disposition must be given a Swift variant
+    /// here rather than silently collapsing into an existing one.
+    pub(crate) fn from_bus_delivery(delivery: TranscriptDelivery) -> Self {
+        match delivery {
+            TranscriptDelivery::Unattempted => Self::Unattempted,
+            TranscriptDelivery::ComposerPending => Self::ComposerPending,
+            TranscriptDelivery::SinkAccepted => Self::SinkAccepted,
+            TranscriptDelivery::Retained => Self::Retained,
+        }
+    }
+}
+
+impl CsTranscriptProjectionEvent {
+    pub(crate) fn from_bus_event(event: &TranscriptBusEvidenceEvent) -> Self {
+        Self {
+            schema: event.schema.clone(),
+            sequence: event.sequence,
+            emitted_at: event.emitted_at.clone(),
+            session_id: event.session_id.clone(),
+            mode: format!("{:?}", event.mode).to_lowercase(),
+            reducer_revision: event.reducer_revision,
+            reducer_action: event.reducer_action.clone(),
+            occurrence_session_id: event.occurrence_session_id.clone(),
+            capture_epoch: event.capture_epoch,
+            sample_start: event.sample_start,
+            sample_end: event.sample_end,
+            document_index: event.document_index,
+            label: event.label.clone(),
+            rendered_text: event.rendered_text.clone(),
+            phase: event.phase.as_str().to_string(),
+            can_paste: event.can_paste,
+            can_insert: event.can_insert,
+            can_copy: event.can_copy,
+            can_retranscribe: event.can_retranscribe,
+            can_format: event.can_format,
+            can_send_to_agent: event.can_send_to_agent,
+            terminal: event.terminal,
+            lifecycle_terminal: event.lifecycle_terminal,
+            delivery: CsTranscriptDelivery::from_bus_delivery(event.delivery),
+            consultation_presentations: event
+                .consultation_presentations
+                .iter()
+                .map(CsProjectedConsultationPresentation::from_bus_receipt)
+                .collect(),
+            seal_coverage: event
+                .seal_coverage
+                .as_ref()
+                .map(CsProjectedSealCoverageReceipt::from_bus_receipt),
+            acoustic_receipts: event
+                .acoustic_receipts
+                .iter()
+                .map(CsProjectedAcousticReceipt::from_bus_receipt)
+                .collect(),
+        }
+    }
+}
+
+impl CsPresentationStatusEvent {
+    pub(crate) fn from_projection(event: &PresentationStatusProjection) -> Self {
+        let kind = match event.kind {
+            PresentationStatusKind::AdmissionRefused => "admission_refused",
+            PresentationStatusKind::CalibrationSucceeded => "calibration_succeeded",
+            PresentationStatusKind::CalibrationFailed => "calibration_failed",
+        };
+        Self {
+            schema: event.schema.clone(),
+            emitted_at: event.emitted_at.clone(),
+            session_id: event.session_id.clone(),
+            kind: kind.to_string(),
+            code: event.code.clone(),
+            status_label: event.status_label.clone(),
+            headline: event.headline.clone(),
+            message: event.message.clone(),
+            is_error: event.is_error,
+            terminal: event.terminal,
+            calibration_version: event.calibration_version.clone(),
+        }
+    }
 }
 
 /// Live audio-input resolution used by Settings. `runtime_device` is resolved
@@ -32,6 +466,47 @@ pub struct CsAudioInputSnapshot {
     /// False when settings.json and the recorder's process-env selector differ.
     /// The UI must then show the current runtime device, not the saved wish.
     pub runtime_configuration_matches: bool,
+}
+
+/// Admission readiness of the next product recording, projected for Settings,
+/// the overlay, and the tray. `ready == false` carries exactly one blocker
+/// (`code` + `message` with the action) — the same verdict the controller
+/// applies before it opens a microphone. Never a second decision.
+#[derive(uniffi::Record, Debug, Clone, PartialEq)]
+pub struct CsAdmissionReadiness {
+    pub ready: bool,
+    /// `admission_granted` or the blocker code (`admission_*`).
+    pub code: String,
+    /// User-readable explanation + action (empty when granted).
+    pub message: String,
+    pub device_name: Option<String>,
+    pub sample_rate: Option<u32>,
+    pub calibration_version: Option<String>,
+    /// Loader verdict on the calibration artifact: `sealed` / `missing` / `refused`.
+    pub calibration_status: String,
+    pub calibration_path: String,
+    pub calibrated_devices: Vec<String>,
+    /// Effective value after the optional power-user override.
+    pub seal_lane_armed: bool,
+    /// Persisted Settings › Audio value before an override.
+    pub seal_lane_setting_armed: bool,
+    /// `settings` or `env_override`.
+    pub seal_lane_source: String,
+    pub seal_lane_env: String,
+}
+
+/// What a guided calibration measured and stored (levels and counts only).
+#[derive(uniffi::Record, Debug, Clone, PartialEq)]
+pub struct CsEnergyCalibrationReport {
+    pub device_name: String,
+    pub sample_rate: u32,
+    pub measured_seconds: f32,
+    pub active_speech_median_dbfs: f32,
+    pub noise_floor_dbfs: Option<f32>,
+    pub peak_dbfs: f32,
+    pub existence_threshold_dbfs: f32,
+    pub version: String,
+    pub path: String,
 }
 
 /// Whether local Whisper weights are ready (embedded or on-disk). Used by
@@ -326,37 +801,33 @@ fn transcribe_file_hq(path: String) -> Result<CsTranscription, CsError> {
     })
 }
 
-async fn transcribe_file_cloud(path: String) -> Result<CsTranscription, CsError> {
-    let config = codescribe_core::config::Config::load();
-    let endpoint = config
-        .stt_endpoint
-        .clone()
-        .filter(|value| !value.trim().is_empty());
-    let key = config
-        .stt_api_key
-        .clone()
-        .filter(|value| !value.trim().is_empty())
-        .unwrap_or_default();
-    let Some(endpoint) = endpoint else {
+fn cloud_file_lane(
+    config: &codescribe_core::config::Config,
+) -> Result<codescribe_core::stt::lanes::ResolvedSttLane, CsError> {
+    let lane = config
+        .stt_lane(codescribe_core::stt::lanes::SttLane::File)
+        .ok_or_else(|| CsError::Recording {
+            msg: "Cloud pass needs a file transcription endpoint (Providers › Speech-to-text)"
+                .into(),
+        })?;
+    if lane.key_missing() {
         return Err(CsError::Recording {
-            msg: "Cloud pass needs STT_ENDPOINT".to_string(),
-        });
-    };
-    // Same invert as Settings → Test: a stored Voice Lab socket is not a
-    // multipart URL. Public HTTPS file URLs stay file.
-    let endpoint = codescribe_core::stt::tail_provider::file_probe_endpoint(&endpoint);
-    if codescribe_core::stt::tail_provider::stt_auth_mode(&endpoint)
-        != codescribe_core::stt::tail_provider::SttAuthMode::Unauthenticated
-        && key.is_empty()
-    {
-        return Err(CsError::Recording {
-            msg: "Cloud pass needs STT_API_KEY for this endpoint".to_string(),
+            msg: "Cloud pass needs STT_FILE_API_KEY for this endpoint".into(),
         });
     }
-    let verdict =
-        codescribe::client::transcribe_cloud(std::path::Path::new(&path), None, &endpoint, &key)
-            .await
-            .map_err(|e| CsError::Recording { msg: e.to_string() })?;
+    Ok(lane)
+}
+
+async fn transcribe_file_cloud(path: String) -> Result<CsTranscription, CsError> {
+    let lane = cloud_file_lane(&codescribe_core::config::Config::load())?;
+    let verdict = codescribe::client::transcribe_cloud(
+        std::path::Path::new(&path),
+        None,
+        &lane.endpoint,
+        lane.api_key.as_deref().unwrap_or_default(),
+    )
+    .await
+    .map_err(|e| CsError::Recording { msg: e.to_string() })?;
     Ok(CsTranscription {
         text: verdict.text,
         language: "und".to_string(),
@@ -383,31 +854,87 @@ mod retranscribe_tests {
         ));
     }
 
-    #[test]
-    fn cloud_pass_inverts_voice_lab_socket_to_file() {
-        assert_eq!(
-            codescribe_core::stt::tail_provider::file_probe_endpoint(
-                "ws://127.0.0.1:8446/v1/audio/transcribe"
-            ),
-            "http://127.0.0.1:8444/v1/audio/transcriptions"
+    /// Real instrument, not a seam: both overlay Retranscribe passes over a
+    /// real session WAV. HQ = local Whisper file pass; Cloud = the File STT
+    /// lane with the operator's real endpoint and key (`Config::load`, may
+    /// open Keychain). Prints the verdicts so a human can read them.
+    ///
+    ///   PROOF_WAV=~/.codescribe/sessions/<id>.wav \
+    ///   cargo test -p codescribe-ffi -- --ignored --nocapture retranscribe_passes_on_real_session_audio
+    #[tokio::test(flavor = "multi_thread")]
+    #[ignore = "real audio + real STT credentials"]
+    async fn retranscribe_passes_on_real_session_audio() {
+        let wav = std::env::var("PROOF_WAV").unwrap_or_else(|_| {
+            codescribe_core::config::Config::config_dir()
+                .join("last_session.wav")
+                .to_string_lossy()
+                .into_owned()
+        });
+        assert!(
+            std::path::Path::new(&wav).exists(),
+            "PROOF_WAV missing: {wav}"
         );
-        assert_eq!(
-            codescribe_core::stt::tail_provider::file_probe_endpoint(
-                "https://api.libraxis.cloud/v1/audio/transcriptions"
-            ),
-            "https://api.libraxis.cloud/v1/audio/transcriptions"
+
+        let hq = transcribe_session_file(format!("hq:{wav}"))
+            .await
+            .expect("HQ file pass");
+        eprintln!("HQ pass: {} chars: {:?}", hq.text.chars().count(), hq.text);
+        assert!(
+            !hq.text.trim().is_empty(),
+            "HQ pass returned no text for real speech"
         );
+
+        match transcribe_session_file(format!("cloud:{wav}")).await {
+            Ok(cloud) => {
+                eprintln!(
+                    "Cloud pass: {} chars: {:?}",
+                    cloud.text.chars().count(),
+                    cloud.text
+                );
+                assert!(
+                    !cloud.text.trim().is_empty(),
+                    "Cloud pass answered with no text for real speech"
+                );
+            }
+            Err(err) => panic!("Cloud pass failed: {err}"),
+        }
     }
 
     #[test]
-    fn remapped_loopback_file_url_names_programming_vocabulary() {
-        let endpoint = codescribe_core::stt::tail_provider::file_probe_endpoint(
-            "ws://127.0.0.1:8446/v1/audio/transcribe",
+    fn cloud_pass_reads_the_file_lane_only() {
+        let mut config = codescribe_core::config::Config {
+            stt_live_endpoint: Some("wss://api.libraxis.cloud/v1/audio/transcribe".into()),
+            stt_live_api_key: Some("live-only-key".into()),
+            ..Default::default()
+        };
+        assert!(
+            cloud_file_lane(&config)
+                .unwrap_err()
+                .to_string()
+                .contains("file transcription endpoint")
         );
-        assert_eq!(endpoint, "http://127.0.0.1:8444/v1/audio/transcriptions");
+        config.stt_file_endpoint =
+            Some("https://api.libraxis.cloud/v1/audio/transcriptions".into());
+        assert!(
+            cloud_file_lane(&config)
+                .unwrap_err()
+                .to_string()
+                .contains("STT_FILE_API_KEY")
+        );
+        config.stt_file_api_key = Some("file-only-key".into());
+        let lane = cloud_file_lane(&config).unwrap();
+        assert_eq!(Some(&lane.endpoint), config.stt_file_endpoint.as_ref());
+        assert_eq!(lane.api_key.as_deref(), Some("file-only-key"));
+        config.stt_file_api_key = None;
+        config.stt_file_endpoint = Some("http://127.0.0.1:8444/v1/audio/transcriptions".into());
+        let lane = cloud_file_lane(&config).unwrap();
+        assert_eq!(
+            lane.endpoint,
+            "http://127.0.0.1:8444/v1/audio/transcriptions"
+        );
         assert_eq!(
             codescribe_core::stt::request_vocabulary::codescribe_stt_vocabulary_form_part(
-                &endpoint
+                &lane.endpoint
             ),
             Some(("vocabulary", "programming"))
         );
@@ -416,12 +943,9 @@ mod retranscribe_tests {
 
 /// Foreign callback trait — dictation events forwarded to Swift.
 ///
-/// Distilled from the engine's richer `EngineEvent` stream:
-/// - `on_preview` carries the latest interim/corrected utterance text
-///   (replace-not-append semantics).
-/// - `on_final` carries a completed (VAD-bounded) utterance together with its
-///   `utterance_id`, so committed sinks can stamp the segment identity that
-///   later `on_replace_range` / `on_insert_annotation` patches target.
+/// `on_transcript_projection` is the sole transcript callback. Raw preview,
+/// final, correction, patch, and annotation events remain on the IPC stream as
+/// diagnostics; they do not cross this product-facing callback boundary.
 /// - `on_vad_active` flips when speech starts/ends.
 /// - `on_no_speech` fires when a session/utterance produced no usable speech.
 /// - `on_error` carries recoverable engine warnings.
@@ -429,6 +953,14 @@ mod retranscribe_tests {
 /// The Swift side must hop these onto the main actor.
 #[uniffi::export(with_foreign)]
 pub trait CsTranscriptionListener: Send + Sync {
+    /// Immutable reducer/ledger projection. Swift may display it but cannot
+    /// mutate, seal, or reinterpret transcript truth through this callback.
+    fn on_transcript_projection(&self, event: CsTranscriptProjectionEvent);
+    /// Typed product status. Swift may display it but receives no settings or
+    /// repair command through this passive projection.
+    fn on_presentation_status(&self, event: CsPresentationStatusEvent);
+    /// Ordered passive compact paint from the opened recorder capture.
+    fn on_compact_projection(&self, event: CsCompactProjection);
     /// The engine is spinning up capture; no audio is flowing yet.
     fn on_recording_preparing(&self);
     /// The microphone is live and utterances may start arriving.
@@ -443,51 +975,8 @@ pub trait CsTranscriptionListener: Send + Sync {
     /// Swift-driven Finish path enters that phase itself; this is the native-path
     /// counterpart. Surfaces with no post-capture phase may leave it a no-op.
     fn on_recording_finalising(&self);
-    /// Latest interim text for the utterance in flight. Replace-not-append: each
-    /// call supersedes the previous preview rather than extending it.
-    fn on_preview(&self, text: String);
-    /// An already-previewed utterance was revised; `previous_text` is what the
-    /// surface currently shows, so it can locate and swap the right span.
-    fn on_correction(&self, text: String, previous_text: String);
-    /// Completed VAD-bounded utterance. Optional STT quality fields feed the
-    /// overlay confidence badge + quality-loop meta (LL-D); empty when unknown.
-    fn on_final(
-        &self,
-        utterance_id: u64,
-        text: String,
-        avg_logprob: Option<f32>,
-        speech_pct: Option<f32>,
-        confidence_flags: Vec<String>,
-    );
-    /// Bounded patch of an already-committed utterance: replace `[start, end)`
-    /// within the segment stamped `utterance_id`. `source` names the layer that
-    /// produced it, so the surface can attribute or style the edit.
-    fn on_replace_range(
-        &self,
-        utterance_id: u64,
-        start: u64,
-        end: u64,
-        text: String,
-        source: CsLayerSource,
-    );
-    /// Insert an annotation (hesitation pause, paralingual marker) at `position`
-    /// inside the segment stamped `utterance_id`, without replacing any text.
-    fn on_insert_annotation(
-        &self,
-        utterance_id: u64,
-        position: u64,
-        text: String,
-        kind: CsAnnotationKind,
-    );
-    /// Insert a context-bucket marker at the global transcript character
-    /// position captured when the agent combo was pressed.
-    fn on_context_marker(&self, position: u64, marker: String);
     /// The session closed; `layer_summary` carries the per-layer edit counters.
     fn on_session_finalised(&self, session_id: String, layer_summary: CsLayerSummary);
-    /// Authoritative post-stop transcript (LocalFinalPass `final_formatted_text`):
-    /// the SAME clean text that is pasted/delivered and written to history. Surfaces
-    /// fire it once per dictation stop so the overlay FINAL matches delivery/Copy.
-    fn on_final_transcript_ready(&self, text: String);
     /// Voice activity started (`true`) or stopped (`false`).
     fn on_vad_active(&self, active: bool);
     /// Live microphone input level: RMS of one captured audio block (linear,
@@ -521,6 +1010,435 @@ pub fn request_mic_permission() -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use codescribe::presentation::transcript_bus::{
+        TranscriptDelivery, TranscriptMode, TranscriptProjectionPhase,
+    };
+
+    #[test]
+    fn bus_projection_conversion_preserves_every_authority_field() {
+        let event = TranscriptBusEvidenceEvent {
+            schema: "codescribe.transcript-evidence.v1".to_string(),
+            sequence: 7,
+            emitted_at: "2026-08-27T12:00:00Z".to_string(),
+            session_id: "bus-session".to_string(),
+            mode: TranscriptMode::Agent,
+            reducer_revision: 11,
+            reducer_action: "apply_ledger_decision".to_string(),
+            occurrence_session_id: "occurrence-session".to_string(),
+            capture_epoch: 13,
+            sample_start: 17,
+            sample_end: 23,
+            document_index: 29,
+            label: "Iwo".to_string(),
+            rendered_text: "Iwo".to_string(),
+            phase: TranscriptProjectionPhase::Formatted,
+            can_paste: true,
+            can_insert: true,
+            can_copy: true,
+            can_retranscribe: true,
+            can_format: true,
+            can_send_to_agent: true,
+            terminal: true,
+            lifecycle_terminal: true,
+            delivery: TranscriptDelivery::ComposerPending,
+            consultation_presentations: vec![ProjectedConsultationPresentation {
+                receipt_id: "max-group-receipt".into(),
+                consultation_id: "Max".into(),
+                turn_id: "turn-5".into(),
+                source_revision: 9,
+                revision: 10,
+                rendered_text: "git add -- 'plik ze spacją.rs'".into(),
+                members: vec![
+                    codescribe::presentation::transcript_bus::ProjectedConsultationMember {
+                        session_id: "occurrence-session".into(),
+                        capture_epoch: 13,
+                        sample_start: 17,
+                        sample_end: 23,
+                        source_label: "Iwo".into(),
+                        seal_receipt: "seal-receipt".into(),
+                    },
+                ],
+            }],
+            acoustic_receipts: vec![ProjectedAcousticReceipt {
+                acoustic_serial_version: 2,
+                acoustic_serial: "sha256:acoustic".to_string(),
+                session_id: "occurrence-session".to_string(),
+                capture_epoch: 13,
+                sample_start: 17,
+                sample_end: 23,
+                duration_ms: 31,
+                energy_integral: 37.5,
+                mean_rms_dbfs: -41.0,
+                peak_dbfs: -43.0,
+                vad_open_sample: 47,
+                vad_close_sample: 53,
+                evidence_calibration_version: "energy-calibration.v2".to_string(),
+                word_evidence_receipts: vec!["word-receipt".to_string()],
+                layer_decision_receipts: vec!["layer-receipt".to_string()],
+                seal_receipt: Some("seal-receipt".to_string()),
+                manual_edit_receipt: Some("manual-edit-receipt".to_string()),
+                presentation_receipt: None,
+            }],
+            seal_coverage: None,
+            comparison: None,
+        };
+
+        let projected = CsTranscriptProjectionEvent::from_bus_event(&event);
+
+        assert_eq!(
+            projected,
+            CsTranscriptProjectionEvent {
+                schema: "codescribe.transcript-evidence.v1".to_string(),
+                sequence: 7,
+                emitted_at: "2026-08-27T12:00:00Z".to_string(),
+                session_id: "bus-session".to_string(),
+                mode: "agent".to_string(),
+                reducer_revision: 11,
+                reducer_action: "apply_ledger_decision".to_string(),
+                occurrence_session_id: "occurrence-session".to_string(),
+                capture_epoch: 13,
+                sample_start: 17,
+                sample_end: 23,
+                document_index: 29,
+                label: "Iwo".to_string(),
+                rendered_text: "Iwo".to_string(),
+                phase: "formatted".to_string(),
+                can_paste: true,
+                can_insert: true,
+                can_copy: true,
+                can_retranscribe: true,
+                can_format: true,
+                can_send_to_agent: true,
+                terminal: true,
+                lifecycle_terminal: true,
+                delivery: CsTranscriptDelivery::ComposerPending,
+                consultation_presentations: vec![CsProjectedConsultationPresentation {
+                    receipt_id: "max-group-receipt".into(),
+                    consultation_id: "Max".into(),
+                    turn_id: "turn-5".into(),
+                    source_revision: 9,
+                    revision: 10,
+                    rendered_text: "git add -- 'plik ze spacją.rs'".into(),
+                    members: vec![CsProjectedConsultationMember {
+                        session_id: "occurrence-session".into(),
+                        capture_epoch: 13,
+                        sample_start: 17,
+                        sample_end: 23,
+                        source_label: "Iwo".into(),
+                        seal_receipt: "seal-receipt".into(),
+                    }],
+                }],
+                seal_coverage: None,
+                acoustic_receipts: vec![CsProjectedAcousticReceipt {
+                    acoustic_serial_version: 2,
+                    acoustic_serial: "sha256:acoustic".to_string(),
+                    session_id: "occurrence-session".to_string(),
+                    capture_epoch: 13,
+                    sample_start: 17,
+                    sample_end: 23,
+                    duration_ms: 31,
+                    energy_integral: 37.5,
+                    mean_rms_dbfs: -41.0,
+                    peak_dbfs: -43.0,
+                    vad_open_sample: 47,
+                    vad_close_sample: 53,
+                    evidence_calibration_version: "energy-calibration.v2".to_string(),
+                    word_evidence_receipts: vec!["word-receipt".to_string()],
+                    layer_decision_receipts: vec!["layer-receipt".to_string()],
+                    seal_receipt: Some("seal-receipt".to_string()),
+                    manual_edit_receipt: Some("manual-edit-receipt".to_string()),
+                    presentation_receipt: None,
+                }],
+            }
+        );
+    }
+
+    #[test]
+    fn nonempty_ledger_shaping_survives_the_actual_bus_to_bridge_mapping() {
+        use codescribe::presentation::emitter::TranscriptReducer;
+        use codescribe::presentation::transcript_bus::{TranscriptBus, TranscriptSession};
+        use codescribe_core::pipeline::acoustic_ledger::{
+            AcousticEvidence, AcousticLedger, EnergyCalibration, ObservationIdentity,
+            ObservationProducer, OccurrenceIdentity,
+        };
+        let mut ledger = AcousticLedger::new();
+        let mut reducer = TranscriptReducer::default();
+        let occurrence = OccurrenceIdentity::new("bridge-shaping", 3, 32_000, 48_000);
+        let calibration = EnergyCalibration::new("bridge-fixture", 1.0, 1);
+        let evidence = AcousticEvidence {
+            occurrence: occurrence.clone(),
+            duration_ms: 1_000.0,
+            energy_integral: 10.0,
+            mean_rms_dbfs: -12.0,
+            peak_dbfs: -3.0,
+            vad_open_sample: Some(32_000),
+            vad_close_sample: Some(48_000),
+            evidence_calibration_version: calibration.version.clone(),
+        };
+        assert!(ledger.qualify(&evidence, &calibration).is_qualified());
+        let observation =
+            ObservationIdentity::new(ObservationProducer::Apple, 1, 0, occurrence.clone());
+        let mutation = ledger.admit(&observation, "zażółć gęślą");
+        reducer
+            .apply_ledger_mutation(&ledger, &observation, &mutation)
+            .unwrap();
+        ledger.schedule_frontier(occurrence.clone(), [ObservationProducer::Apple]);
+        assert!(ledger.note_frontier_return(&occurrence, ObservationProducer::Apple));
+        let seal = ledger.seal(&occurrence).unwrap().clone();
+        reducer.apply_ledger_seal(&seal).unwrap();
+        let revision = reducer
+            .apply_incremental_shaping(&mut ledger, &occurrence)
+            .unwrap();
+        let temp = tempfile::tempdir().unwrap();
+        let bus = TranscriptBus::open_at(
+            TranscriptSession {
+                session_id: "bridge-shaping".to_string(),
+                mode: TranscriptMode::Agent,
+                has_latched_target: false,
+                latched_target_is_self: false,
+            },
+            temp.path().join("bus"),
+            None,
+        )
+        .unwrap();
+        let events = bus.publish_revision(&revision, &ledger);
+        assert_eq!(events.len(), 1);
+        let projected = CsTranscriptProjectionEvent::from_bus_event(&events[0]);
+        let actual = projected.acoustic_receipts[0]
+            .presentation_receipt
+            .as_ref()
+            .unwrap();
+        let minted = &ledger.incremental_shapings()[0];
+        assert_eq!(
+            actual,
+            &CsProjectedPresentationReceipt {
+                receipt_id: minted.receipt_id.clone(),
+                provenance: "light-plus".to_string(),
+                session_id: "bridge-shaping".to_string(),
+                source_revision: minted.source_revision,
+                revision: minted.revision,
+                capture_epoch: 3,
+                sample_start: 32_000,
+                sample_end: 48_000,
+                source_seal_receipt: seal.receipt_id,
+                source_label: "zażółć gęślą".to_string(),
+                left_context: String::new(),
+                left_context_sha256: minted.left_context_sha256.clone(),
+                shaped_text: "Zażółć gęślą.".to_string(),
+            }
+        );
+        assert_eq!(projected.rendered_text, actual.shaped_text);
+        assert!(projected.acoustic_receipts[0].manual_edit_receipt.is_none());
+        assert_eq!(projected.phase, "listening");
+        assert!(!projected.terminal && !projected.lifecycle_terminal);
+        assert_eq!(projected.delivery, CsTranscriptDelivery::Unattempted);
+    }
+
+    fn coverage_bus_fixture(
+        availability: codescribe_core::audio::capture_receipt::AcousticAvailability,
+    ) -> (TranscriptBusEvidenceEvent, TranscriptBusEvidenceEvent) {
+        use codescribe::presentation::emitter::TranscriptReducer;
+        use codescribe::presentation::transcript_bus::{TranscriptBus, TranscriptSession};
+        use codescribe_core::pipeline::acoustic_ledger::{
+            AcousticEvidence, AcousticLedger, EnergyCalibration, ObservationIdentity,
+            ObservationProducer, OccurrenceIdentity,
+        };
+        let mut ledger = AcousticLedger::new();
+        let mut reducer = TranscriptReducer::default();
+        let occurrence = OccurrenceIdentity::new("bridge-shaping", 3, 32_000, 48_000);
+        let calibration = EnergyCalibration::new("bridge-fixture", 1.0, 1);
+        let evidence = AcousticEvidence {
+            occurrence: occurrence.clone(),
+            duration_ms: 1_000.0,
+            energy_integral: 10.0,
+            mean_rms_dbfs: -12.0,
+            peak_dbfs: -3.0,
+            vad_open_sample: Some(32_000),
+            vad_close_sample: Some(48_000),
+            evidence_calibration_version: calibration.version.clone(),
+        };
+        assert!(ledger.qualify(&evidence, &calibration).is_qualified());
+        let observation =
+            ObservationIdentity::new(ObservationProducer::Apple, 1, 0, occurrence.clone());
+        let mutation = ledger.admit(&observation, "zażółć gęślą");
+        reducer
+            .apply_ledger_mutation(&ledger, &observation, &mutation)
+            .unwrap();
+        ledger.schedule_frontier(occurrence.clone(), [ObservationProducer::Apple]);
+        assert!(ledger.note_frontier_return(&occurrence, ObservationProducer::Apple));
+        let seal = ledger.seal(&occurrence).unwrap().clone();
+        reducer.apply_ledger_seal(&seal).unwrap();
+        reducer
+            .apply_incremental_shaping(&mut ledger, &occurrence)
+            .unwrap();
+        let temp = tempfile::tempdir().unwrap();
+        let bus = TranscriptBus::open_at(
+            TranscriptSession {
+                session_id: "bridge-shaping".to_string(),
+                mode: TranscriptMode::Agent,
+                has_latched_target: false,
+                latched_target_is_self: false,
+            },
+            temp.path().join("bus"),
+            None,
+        )
+        .unwrap();
+
+        use codescribe_core::audio::capture_receipt::{
+            AcousticSpeechEvidence, CaptureEvidenceIdentity,
+        };
+        use codescribe_core::stt::tail_provider::TailSampleRange;
+        let speech = AcousticSpeechEvidence::measured(
+            CaptureEvidenceIdentity::new("bridge-shaping", 3),
+            "capture_energy",
+            availability,
+            vec![TailSampleRange {
+                session: "bridge-shaping".into(),
+                capture_epoch: 3,
+                sample_start: 32_000,
+                sample_end: 64_000,
+            }],
+        );
+        let coverage = ledger.assess_seal_coverage("bridge-shaping", 3, &speech, 4_000);
+        assert!(ledger.record_seal_coverage(coverage.clone()));
+        let revision = reducer.apply_seal_coverage(&coverage, None);
+        bus.publish_started();
+        let events = bus.publish_revision(&revision, &ledger);
+        assert_eq!(events.len(), 1);
+        let terminal = bus.publish_ended(
+            codescribe::presentation::transcript_bus::TranscriptSessionEndReason::CoverageRefused,
+            true, TranscriptDelivery::ComposerPending,
+        ).unwrap();
+        assert!(bus.publish_ended(
+            codescribe::presentation::transcript_bus::TranscriptSessionEndReason::CoverageRefused,
+            true, TranscriptDelivery::ComposerPending,
+        ).is_none(), "the producer emits one lifecycle terminal");
+        (events[0].clone(), terminal)
+    }
+
+    #[test]
+    fn incomplete_coverage_crosses_real_bus_and_bridge_with_lifecycle_order() {
+        use codescribe_core::audio::capture_receipt::AcousticAvailability;
+        let (document, terminal) = coverage_bus_fixture(AcousticAvailability::Observed {
+            observed_samples: 64_000,
+        });
+        assert_eq!(terminal.reducer_revision, document.reducer_revision);
+        assert_eq!(terminal.capture_epoch, document.capture_epoch);
+        assert!(terminal.sequence > document.sequence);
+        let projected = CsTranscriptProjectionEvent::from_bus_event(&terminal);
+        let coverage = projected.seal_coverage.unwrap();
+        assert_eq!(coverage.status, CsSealCoverageStatus::Incomplete);
+        assert_eq!(coverage.unavailable_reason, None);
+        assert_eq!(coverage.coverage_ratio, Some(0.5));
+        assert_eq!(coverage.speech_samples, 32_000);
+        assert_eq!(coverage.covered_samples, 16_000);
+        assert_eq!(
+            coverage.uncovered_speech_ranges,
+            vec![CsProjectedSealCoverageRange {
+                sample_start: 48_000,
+                sample_end: 64_000
+            }]
+        );
+        assert_eq!(coverage.max_uncovered_samples, 16_000);
+        assert_eq!(coverage.incomplete_threshold_samples, 4_000);
+        assert_eq!(coverage.observed_samples, Some(64_000));
+        assert_eq!(coverage.speech_producer, "capture_energy");
+        assert_eq!(coverage.availability, "observed");
+        assert_eq!(projected.rendered_text, document.rendered_text);
+        assert_eq!(projected.phase, "coverage_refused");
+        assert!(projected.lifecycle_terminal);
+        assert_eq!(projected.delivery, CsTranscriptDelivery::ComposerPending);
+    }
+
+    #[test]
+    fn every_unavailable_coverage_reason_crosses_real_bus_and_bridge_without_ratio() {
+        use codescribe_core::audio::capture_receipt::AcousticAvailability;
+        for (availability, expected) in [
+            (
+                AcousticAvailability::NotObserved,
+                CsCoverageUnavailableReason::NotObserved,
+            ),
+            (
+                AcousticAvailability::IdentityMismatch,
+                CsCoverageUnavailableReason::IdentityMismatch,
+            ),
+            (
+                AcousticAvailability::InvalidMeasurement {
+                    valid_samples: 32_000,
+                },
+                CsCoverageUnavailableReason::InvalidMeasurement,
+            ),
+            (
+                AcousticAvailability::Discontinuous {
+                    observed_samples: 32_000,
+                },
+                CsCoverageUnavailableReason::PartialObservation,
+            ),
+        ] {
+            let (document, terminal) = coverage_bus_fixture(availability);
+            let projected = CsTranscriptProjectionEvent::from_bus_event(&terminal);
+            let coverage = projected.seal_coverage.unwrap();
+            assert_eq!(coverage.status, CsSealCoverageStatus::Unavailable);
+            assert_eq!(coverage.unavailable_reason, Some(expected));
+            assert_eq!(coverage.coverage_ratio, None);
+            assert_eq!(coverage.observed_samples, None);
+            assert_eq!(coverage.speech_samples, 0);
+            assert_eq!(coverage.covered_samples, 0);
+            assert!(coverage.uncovered_speech_ranges.is_empty());
+            assert_eq!(coverage.max_uncovered_samples, 0);
+            assert_eq!(coverage.incomplete_threshold_samples, 4_000);
+            assert_eq!(coverage.speech_producer, "capture_energy");
+            assert_eq!(coverage.availability, availability.as_str());
+            assert_eq!(projected.rendered_text, document.rendered_text);
+            assert_eq!(projected.phase, "coverage_refused");
+            assert_eq!(projected.delivery, CsTranscriptDelivery::ComposerPending);
+        }
+    }
+
+    #[test]
+    fn legacy_and_unknown_coverage_never_become_complete() {
+        use codescribe_core::audio::capture_receipt::AcousticAvailability;
+        let (_, mut event) = coverage_bus_fixture(AcousticAvailability::NotObserved);
+        event.seal_coverage = None;
+        assert!(
+            CsTranscriptProjectionEvent::from_bus_event(&event)
+                .seal_coverage
+                .is_none()
+        );
+        let (_, mut event) = coverage_bus_fixture(AcousticAvailability::NotObserved);
+        event.seal_coverage.as_mut().unwrap().status = "future_status".into();
+        event.seal_coverage.as_mut().unwrap().unavailable_reason = Some("future_reason".into());
+        let coverage = CsTranscriptProjectionEvent::from_bus_event(&event)
+            .seal_coverage
+            .unwrap();
+        assert_eq!(coverage.status, CsSealCoverageStatus::Unknown);
+        assert_eq!(
+            coverage.unavailable_reason,
+            Some(CsCoverageUnavailableReason::Unknown)
+        );
+        assert_eq!(coverage.coverage_ratio, None);
+    }
+
+    #[test]
+    fn presentation_status_conversion_preserves_rust_owned_copy_and_classification() {
+        let event = PresentationStatusProjection::admission_refused(
+            Some("session-1".to_string()),
+            "admission_calibration_unusable",
+            "capture generation changed — Re-run Calibrate microphone in Settings › Audio",
+        );
+
+        let projected = CsPresentationStatusEvent::from_projection(&event);
+
+        assert_eq!(projected.schema, "codescribe.presentation-status.v1");
+        assert_eq!(projected.session_id.as_deref(), Some("session-1"));
+        assert_eq!(projected.kind, "admission_refused");
+        assert_eq!(projected.code, "admission_calibration_unusable");
+        assert_eq!(projected.status_label, "recording blocked");
+        assert!(projected.message.contains("Settings › Audio"));
+        assert!(projected.is_error);
+        assert!(projected.terminal);
+        assert_eq!(projected.calibration_version, None);
+    }
 
     #[test]
     fn audio_input_resolution_reports_live_match_and_unavailable_fallback() {

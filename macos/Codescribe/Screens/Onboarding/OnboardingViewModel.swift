@@ -190,28 +190,15 @@ final class OnboardingViewModel: ObservableObject {
     providers.first { $0.id == selectedProviderId } ?? providers.first
   }
 
-  var agentBridgeUsesPolishCopy: Bool { selectedLanguage == .polish }
-
-  var agentBridgeTitle: String {
-    agentBridgeUsesPolishCopy
-      ? "Połącz Codescribe z agentem."
-      : "Connect Codescribe to your agent."
-  }
+  var agentBridgeTitle: String { "Connect Codescribe to your agent." }
 
   var agentBridgeExplanation: String {
-    if agentBridgeUsesPolishCopy {
-      return "Agent słyszy szkice na żywo tylko wtedy, gdy zwracasz się do niego po imieniu. "
-        + "Może odpowiedzieć w przerwie, ale instalację, commit, usuwanie i inne zmiany "
-        + "wykonuje dopiero po transcript_sealed."
-    }
-    return "The named agent can hear live drafts and reply during the pause. Installation, "
+    "The named agent can hear live drafts and reply during the pause. Installation, "
       + "commits, deletion, and every other state-changing action wait for transcript_sealed."
   }
 
   var agentBridgeButtonTitle: String {
-    agentBridgeStatus.installedClients.isEmpty
-      ? (agentBridgeUsesPolishCopy ? "Zainstaluj wybrane" : "Install selected")
-      : (agentBridgeUsesPolishCopy ? "Zainstaluj ponownie" : "Reinstall selected")
+    agentBridgeStatus.installedClients.isEmpty ? "Install selected" : "Update selected"
   }
 
   // MARK: - Lifecycle refresh
@@ -267,7 +254,7 @@ final class OnboardingViewModel: ObservableObject {
       agentBridgeStatus = try agentBridge.install(selectedClients: selectedAgentClients)
       agentBridgeError = nil
     } catch {
-      agentBridgeError = error.localizedDescription
+      agentBridgeError = error.userFacingMessage
       agentBridgeStatus = agentBridge.status()
     }
   }
@@ -397,7 +384,8 @@ final class OnboardingViewModel: ObservableObject {
   func grantPermission(for kind: PermissionKind) {
     let state = permissions.state(kind)
     if state == .notDetermined, kind.supportsInAppPermissionRequest {
-      kind.requestInApp { [weak self] _ in
+      Task { @MainActor [weak self] in
+        _ = await kind.requestInApp()
         self?.reprobePermissions()
       }
       return
@@ -427,7 +415,7 @@ final class OnboardingViewModel: ObservableObject {
     do {
       try engine.setOnboardingMode(onboardingMode.value)
     } catch {
-      lastError = error.localizedDescription
+      lastError = error.userFacingMessage
     }
   }
 
@@ -444,7 +432,7 @@ final class OnboardingViewModel: ObservableObject {
     do {
       try engine.updateConfig(key: "WHISPER_LANGUAGE", value: selectedLanguage.shortCode)
     } catch {
-      lastError = error.localizedDescription
+      lastError = error.userFacingMessage
     }
   }
 
@@ -465,7 +453,7 @@ final class OnboardingViewModel: ObservableObject {
       try hotkeys.setModeBinding(mode: .formatting, binding: formatting)
       try hotkeys.setModeBinding(mode: .assistive, binding: assistive)
     } catch {
-      lastError = error.localizedDescription
+      lastError = error.userFacingMessage
     }
   }
 
@@ -476,7 +464,7 @@ final class OnboardingViewModel: ObservableObject {
     do {
       try engine.updateConfig(key: "LLM_ASSISTIVE_PROVIDER", value: id)
     } catch {
-      lastError = error.localizedDescription
+      lastError = error.userFacingMessage
     }
   }
 
@@ -494,7 +482,7 @@ final class OnboardingViewModel: ObservableObject {
       apiKeyDraft = ""
       keyStatus = engine.keyStatus()
     } catch {
-      lastError = error.localizedDescription
+      lastError = error.userFacingMessage
     }
   }
 }

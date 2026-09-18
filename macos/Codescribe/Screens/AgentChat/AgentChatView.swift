@@ -3,12 +3,10 @@ import SwiftUI
 
 /// Agent Chat MVP shell. `NavigationSplitView`: local in-memory thread rail ↔
 /// thread view. Turns render You / Tool-activity / Assistant; `send` routes a
-/// single-shot `formatText(_:assistive:)` round-trip through the injected
-/// `AgentChatEngine`, then simulates a word-reveal stream. See AgentChatStore
-/// for the full FFI-gap note (no streaming / threads / tools backend yet —
-/// real streaming chat is a tracked core-change follow-up).
+/// streamed `streamReply` turn through the injected `AgentChatEngine`.
 struct AgentChatView: View {
   @StateObject var store: AgentChatStore
+  private let maxPermissions: SettingsViewModel?
   /// Rail state survives window close/reopen and app relaunch. Collapse is
   /// the NATIVE split-view collapse (`columnVisibility = .detailOnly`) — the
   /// same mechanism the Settings window uses, so both windows speak one
@@ -23,8 +21,9 @@ struct AgentChatView: View {
   @AppStorage("AgentChat.alwaysOnTop.v1") private var isPinned = false
   @State private var columnVisibility: NavigationSplitViewVisibility = .all
 
-  init(store: AgentChatStore) {
+  init(store: AgentChatStore, maxPermissions: SettingsViewModel? = nil) {
     _store = StateObject(wrappedValue: store)
+    self.maxPermissions = maxPermissions
   }
 
   var body: some View {
@@ -48,11 +47,21 @@ struct AgentChatView: View {
       )
     }
     .navigationSplitViewStyle(.balanced)
+    .safeAreaInset(edge: .bottom) {
+      if let maxPermissions {
+        MaxPermissionPresentation(model: maxPermissions)
+      }
+    }
     .csFocusPolicy()
-    .developerPowerCorner(padding: 12)
+    .developerPowerCorner(padding: 8)
     .background(CSColor.glassBase)
     .background(AgentWindowCapabilities(isPinned: isPinned))
-    .frame(minWidth: 760, idealWidth: 960, minHeight: 560, idealHeight: 600)
+    .frame(
+      minWidth: AgentWindowMetrics.minWidth,
+      idealWidth: AgentWindowMetrics.idealWidth,
+      minHeight: AgentWindowMetrics.minHeight,
+      idealHeight: AgentWindowMetrics.idealHeight
+    )
     .task {
       // Point-in-time marker: correlate with the adjacent "thread index
       // load" / "selected thread load" durations in the same log stream.
@@ -69,6 +78,34 @@ struct AgentChatView: View {
       columnVisibility = sidebarExpanded ? .all : .detailOnly
     }
   }
+}
+
+/// Separate Max permission projection; it never changes the selected chat thread.
+private struct MaxPermissionPresentation: View {
+  @ObservedObject var model: SettingsViewModel
+
+  var body: some View {
+    if !model.maxToolApprovals.isEmpty || model.maxApprovalError != nil {
+      ScrollView {
+        MaxApprovalCards(model: model)
+          .padding(CSSpace.card)
+      }
+      .frame(maxHeight: 260)
+    }
+  }
+}
+
+/// Desktop-utility window floor for Agent. Named so the split-view rail
+/// (expanded min 200) plus a usable detail column stay a single invariant.
+enum AgentWindowMetrics {
+  static let minWidth: CGFloat = 640
+  static let minHeight: CGFloat = 440
+  static let idealWidth: CGFloat = 840
+  static let idealHeight: CGFloat = 520
+  /// Traffic-light cluster when the rail is `.detailOnly` under
+  /// `fullSizeContentView` — the sidebar toggle lives in the detail chrome
+  /// and must stay clickable after native collapse.
+  static let collapsedTrafficLightClearance: CGFloat = 70
 }
 
 /// The rail's two presentation states and the column geometry each owns. Pure,
@@ -116,7 +153,7 @@ private struct AgentWindowCapabilities: NSViewRepresentable {
   }
 }
 
-// MARK: - Detail (header · title bar · messages · composer)
+// MARK: - Detail (chrome · messages · composer)
 
 private struct ThreadDetail: View {
   @ObservedObject var store: AgentChatStore
@@ -136,10 +173,16 @@ private struct ThreadDetail: View {
 
   var body: some View {
     VStack(spacing: 0) {
-      header
-      titleBar
+      chrome
       if let thread = store.currentThread {
-        MessageList(threadID: thread.id, messages: thread.messages) { messageID in
+        MessageList(
+          threadID: thread.id,
+          messages: thread.messages,
+          speechUnavailableReason: store.speechUnavailableReason,
+          speakingMessageID: store.speakingMessageID,
+          onSpeak: { message in Task { await store.speak(message) } },
+          onStopSpeaking: { store.stopSpeaking() }
+        ) { messageID in
           store.toggleRenderMode(messageID: messageID, in: thread.id)
         }
       } else {
@@ -152,8 +195,8 @@ private struct ThreadDetail: View {
             save: { store.editQueuedTurn(queued.id, text: $0) },
             cancel: { store.cancelQueuedTurn(queued.id) }
           )
-          .padding(.horizontal, 20)
-          .padding(.bottom, 6)
+          .padding(.horizontal, 14)
+          .padding(.bottom, 4)
         }
       }
       ForEach(store.currentToolApprovals) { request in
@@ -165,13 +208,24 @@ private struct ThreadDetail: View {
             store.resolveToolApproval(request, approved: true, remember: true)
           }
         )
-        .padding(.horizontal, 20)
-        .padding(.bottom, 10)
+        .padding(.horizontal, 14)
+        .padding(.bottom, 6)
       }
       Composer(store: store, overlay: AppModel.shared.overlay.state)
     }
     .frame(maxWidth: .infinity, maxHeight: .infinity)
     .background(CSColor.glassBase)
+    .alert(
+      "Speech unavailable",
+      isPresented: Binding(
+        get: { store.speechError != nil },
+        set: { if !$0 { store.speechError = nil } }
+      )
+    ) {
+      Button("OK") { store.speechError = nil }
+    } message: {
+      Text(store.speechError ?? "")
+    }
     .alert("Rename thread", isPresented: $isRenaming) {
       TextField("Thread title", text: $renameText)
       Button("Rename") {
@@ -181,33 +235,49 @@ private struct ThreadDetail: View {
     }
   }
 
-  // Header: sidebar toggle · live status pill · width density · Settings · thread menu
-  private var header: some View {
-    HStack(spacing: 12) {
+  // One compact chrome row: sidebar · title · live pill · pin / settings / thread.
+  private var chrome: some View {
+    HStack(spacing: 8) {
       Button(action: toggleSidebar) {
         Image(systemName: "sidebar.leading")
-          .font(.system(size: 14, weight: .medium))
+          .font(.system(size: 13, weight: .medium))
       }
-      .csFocusRing(cornerRadius: 8)
-      .foregroundStyle(isSidebarExpanded ? CSColor.textBody : CSColor.textFaint)
+      .csFocusRing()
+      .foregroundStyle(isSidebarExpanded ? CSColor.chromeAccent : CSColor.textFaint)
       .keyboardShortcut("s", modifiers: [.command, .control])
       .help(isSidebarExpanded ? "Collapse sidebar (⌃⌘S)" : "Expand sidebar (⌃⌘S)")
       .accessibilityLabel("Toggle Sidebar")
       .accessibilityValue(isSidebarExpanded ? "Expanded" : "Compact")
 
-      StaticStatusPill(text: status.label, color: status.color)
-      Spacer()
-      HStack(spacing: 14) {
+      Text(store.currentThread?.title ?? "—")
+        .font(CSFont.ui(13, .semibold))
+        .foregroundStyle(ChatPalette.nameActive)
+        .lineLimit(1)
+        .truncationMode(.tail)
+        .layoutPriority(1)
+
+      if turnCount > 0 {
+        Text("· \(turnCount)")
+          .font(CSFont.mono(10, .medium))
+          .foregroundStyle(CSColor.textFaintAlt)
+          .fixedSize()
+      }
+
+      liveStatusPill
+
+      Spacer(minLength: 8)
+
+      HStack(spacing: 10) {
         widthModeMenu
 
         Button {
           isPinned.toggle()
         } label: {
           Image(systemName: isPinned ? "pin.fill" : "pin")
-            .font(.system(size: 14, weight: .medium))
+            .font(.system(size: 13, weight: .medium))
             .foregroundStyle(isPinned ? CSColor.chromeAccent : CSColor.textFaint)
         }
-        .csFocusRing(cornerRadius: 8)
+        .csFocusRing()
         .help(isPinned ? "Disable Always on Top" : "Enable Always on Top")
         .accessibilityLabel(
           isPinned ? "Agent pinned, disable Always on Top" : "Agent unpinned, enable Always on Top"
@@ -215,17 +285,21 @@ private struct ThreadDetail: View {
         .accessibilityValue(isPinned ? "Pinned" : "Unpinned")
 
         Button(action: { openSettings() }) {
-          CSIconView(icon: .settings, size: 16)
+          CSIconView(icon: .settings, size: 14)
         }
-        .csFocusRing(cornerRadius: 8)
+        .csFocusRing()
         .help("Settings")
 
         threadMenu
       }
-      .foregroundStyle(CSColor.textFaint)
+      .foregroundStyle(CSColor.chromeAccent)
     }
-    .padding(.horizontal, 18)
-    .padding(.vertical, 14)
+    .padding(
+      .leading,
+      isSidebarExpanded ? 12 : AgentWindowMetrics.collapsedTrafficLightClearance
+    )
+    .padding(.trailing, 12)
+    .padding(.vertical, 6)
     .overlay(alignment: .bottom) {
       Rectangle().fill(CSColor.hairline(0.06)).frame(height: 1)
     }
@@ -275,7 +349,7 @@ private struct ThreadDetail: View {
         Button("Delete Thread", role: .destructive) { store.delete(thread) }
       }
     } label: {
-      CSIconView(icon: .more, size: 16, weight: .bold)
+      CSIconView(icon: .more, size: 14, weight: .bold)
     }
     .menuStyle(.borderlessButton)
     .menuIndicator(.hidden)
@@ -295,29 +369,16 @@ private struct ThreadDetail: View {
     NSWorkspace.shared.activateFileViewerSelecting([URL(fileURLWithPath: path)])
   }
 
-  // Live status: Idle → Thinking → Streaming → Stopping.
-  private var status: (label: String, color: Color) {
-    if store.isCancelling { return ("Stopping", CSColor.textFaintAlt) }
-    if store.isStreaming { return ("Streaming", CSColor.terracottaLight) }
-    if store.isThinking { return ("Thinking", CSColor.amber) }
-    return ("Idle", CSColor.oliveLight)
-  }
-
-  // Title bar: thread title · turn count
-  private var titleBar: some View {
-    HStack(spacing: 10) {
-      Text(store.currentThread?.title ?? "—")
-        .font(CSFont.ui(14, .semibold))
-        .foregroundStyle(ChatPalette.nameActive)
-      Text("· \(turnCount) turns")
-        .font(CSFont.mono(11, .medium))
-        .foregroundStyle(CSColor.textFaintAlt)
-      Spacer()
-    }
-    .padding(.horizontal, 20)
-    .padding(.vertical, 12)
-    .overlay(alignment: .bottom) {
-      Rectangle().fill(CSColor.hairline(0.04)).frame(height: 1)
+  /// Live status only. Idle is silent chrome — the always-on olive pill was
+  /// a second title row's worth of empty studio.
+  @ViewBuilder
+  private var liveStatusPill: some View {
+    if store.isCancelling {
+      StaticStatusPill(text: "Stopping", color: CSColor.textFaintAlt)
+    } else if store.isStreaming {
+      StatusPill(text: "Streaming", color: CSColor.terracottaLight, rippling: true)
+    } else if store.isThinking {
+      StatusPill(text: "Thinking", color: CSColor.amber, rippling: true)
     }
   }
 
@@ -359,11 +420,11 @@ private struct QueuedTurnRow: View {
       Spacer()
       if isEditing {
         Button("Save") { commitEdit() }
-          .csFocusRing(cornerRadius: 8)
+          .csFocusRing()
           .font(CSFont.mono(10, .semibold))
           .foregroundStyle(CSColor.oliveLight)
         Button("Cancel") { isEditing = false }
-          .csFocusRing(cornerRadius: 8)
+          .csFocusRing()
           .font(CSFont.mono(10, .medium))
           .foregroundStyle(CSColor.textFaintAlt)
       } else {
@@ -372,7 +433,7 @@ private struct QueuedTurnRow: View {
             .font(.system(size: 13))
             .foregroundStyle(CSColor.textFaintAlt)
         }
-        .csFocusRing(cornerRadius: 8)
+        .csFocusRing()
         .help("Edit queued message")
         .accessibilityLabel("Edit queued message")
       }
@@ -381,7 +442,7 @@ private struct QueuedTurnRow: View {
           .font(.system(size: 13))
           .foregroundStyle(CSColor.textFaintAlt)
       }
-      .csFocusRing(cornerRadius: 8)
+      .csFocusRing()
       .help("Cancel queued message")
       .accessibilityLabel("Cancel queued message")
     }
@@ -405,7 +466,7 @@ private struct QueuedTurnRow: View {
   }
 }
 
-private struct ToolApprovalCard: View {
+struct ToolApprovalCard: View {
   let request: PendingToolApproval
   let reject: () -> Void
   let allowOnce: () -> Void
@@ -457,7 +518,7 @@ private struct ToolApprovalCard: View {
           .buttonStyle(.borderedProminent)
       }
     }
-    .padding(14)
+    .padding(CSSpace.card)
     .background(CSColor.surfaceRaised(0.04))
     .overlay(
       RoundedRectangle(cornerRadius: CSRadius.card, style: .continuous)
@@ -472,7 +533,7 @@ private struct ToolApprovalCard: View {
 #if DEBUG
   #Preview("Agent Chat") {
     AgentChatView(store: AgentChatStore(engine: MockChatEngine()))
-      .frame(width: 960, height: 600)
+      .frame(width: 840, height: 520)
       .preferredColorScheme(.dark)
   }
 #endif

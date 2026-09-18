@@ -24,14 +24,14 @@
 
 /// Optional build-time embedded Whisper weight bytes (fat/offline SKUs).
 pub mod embedded;
+/// File-level log-mel energy timeline (spectrum row).
+pub mod energy;
 /// Local Candle Whisper engine implementation.
 mod engine;
 /// Encoder/decoder layer graph ported for local inference.
 mod model;
 /// Decoding hyperparameters (temperature, beam, language, …).
 mod params;
-/// Silero VAD post-filter for file-level Whisper segments.
-pub mod silero_filter;
 /// Process-wide engine singleton and public transcribe API.
 pub mod singleton;
 /// Timestamp token helpers for segmented decoder output.
@@ -41,14 +41,7 @@ pub mod timing;
 
 // Public API exports
 pub use engine::LocalWhisperEngine; // Kept for advanced usage if needed
-pub use engine::append_with_overlap_dedup;
-pub(crate) use engine::dedup_repetitions;
-pub(crate) use engine::{
-    VadWindowPlanConfig, merge_chunk_transcripts, plan_vad_aligned_windows_with_config,
-    silence_spans_from_vad_probabilities,
-};
 pub use params::DecodingParams; // Kept for params config if needed
-pub use silero_filter::{SileroFilterOutcome, map_whisper_segments_to_silero};
 pub use timing::{FinalPassTiming, take_final_pass_timing};
 
 // Re-export singleton functions at module level (main API).
@@ -58,5 +51,5 @@ pub use timing::{FinalPassTiming, take_final_pass_timing};
 // provisioning provenance do not collapse back into plain text.
 pub use singleton::{
     detect_language, get_model_path, init, is_initialized, transcribe, transcribe_file_verdict,
-    transcribe_streaming, transcribe_with_segments,
+    transcribe_file_verdict_observed, transcribe_with_segments,
 };

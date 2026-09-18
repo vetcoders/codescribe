@@ -7,7 +7,7 @@
 .PHONY: all build release release-codescribe release-codescribe-embedded release-qube app app-bindings install install-no-embed config install-app install-if-idle install-voice-lab \
         start stop restart status logs logs-follow \
         bump bump-patch bump-minor bump-major version \
-        lint format test test-quick test-e2e test-e2e-real test-sse test-sse-release test-responses-live test-sse-heavy test-formatting test-all \
+        lint format test test-quick test-e2e test-e2e-real test-e2e-roundtrip test-sse test-sse-release test-responses-live test-sse-heavy test-formatting test-structural-verifier test-transcript-bus-path test-all \
         test-engine test-engine-apple test-engine-candle test-teacher \
         demo demo-raw demo-assistive check verify semgrep fix clean help corpus-census test-corpus-parity \
         dist-preflight dist-preflight-signed verify-canaries smoke-canaries \
@@ -158,6 +158,7 @@ install:
 	 CODESCRIBE_LOCAL_INSTALL=1 cargo install --path . --force
 	@mkdir -p ~/.codescribe
 	@$(MAKE) hooks
+	@./scripts/install-finder-quick-action.sh
 	@echo "Installed: qube tools $$(grep '^version' $(VERSION_FILE) | head -1 | sed 's/.*\"\(.*\)\"/v\1/')"
 	@echo "Note: Whisper is not embedded — download via Settings → Dictation or make download-model"
 
@@ -167,6 +168,7 @@ install-no-embed:
 	 CODESCRIBE_NO_EMBED=1 CODESCRIBE_LOCAL_INSTALL=1 cargo install --path . --force
 	@mkdir -p ~/.codescribe
 	@$(MAKE) hooks
+	@./scripts/install-finder-quick-action.sh
 	@echo "Installed: qube tools $$(grep '^version' $(VERSION_FILE) | head -1 | sed 's/.*\"\(.*\)\"/v\1/')"
 	@echo "Note: Set CODESCRIBE_MODEL_PATH at runtime if Whisper is needed"
 
@@ -338,18 +340,21 @@ bump-major:
 #
 # gate: check class=static ci=no -- cargo fmt, prettier, clippy, semgrep, validate-envs, validate-gates; executes ZERO tests
 # gate: lint class=static ci=no -- cargo fmt --check + clippy on the workspace + verify-swift-format; no tests
-# gate: semgrep class=static ci=no -- semgrep scan --config auto (semgrep.yml runs semgrep directly, not this target)
-# gate: verify class=hermetic ci=yes -- workspace tests, doctests, model-promotion regression, env registry + this ledger; rust.yml runs it
+# gate: semgrep class=static ci=no -- semgrep scan --config auto --config .semgrep.yaml (semgrep.yml runs semgrep directly, not this target)
+# gate: verify class=hermetic ci=yes -- structural-verifier + Bus-path/install-guard instruments, workspace tests, doctests, model-promotion regression, env registry + ledger/counterexample harness; rust.yml runs it
+# gate: test-structural-verifier class=hermetic ci=no -- Python unit/mutant suite for the Loctree-only acoustic structural instrument; reads repo files only, no runtime
+# gate: test-transcript-bus-path class=hermetic ci=no -- shell/Python path-precedence and install-guard fail-closed tests in an isolated HOME; never installs the app
 # gate: verify-canaries class=hermetic ci=no -- claim-vs-execution canaries that read repo files only (scripts/canaries.sh); each row is born from a named incident
 # gate: verify-swift-format class=static ci=no -- swift-format lint --strict over macos/Codescribe + macos/CodescribeTests; skips the generated UniFFI binding; no Swift tests (that is test-swift)
 # gate: smoke-canaries class=operator ci=no -- verify-canaries + host rows: dist inputs, appcast feed, live-store purity, Sparkle key parity, keychain domain cleanliness (scripts/canaries.sh --host)
 # gate: test-keychain-session class=hermetic ci=no -- ephemeral signing-keychain contract (scripts/tests/keychain-session-test.sh) against a FAKE security binary and a temp HOME; touches no real keychain
 # gate: verify-dmg class=operator ci=no -- fail-closed payload check against an already-built DMG; release.yml runs the same check via scripts/verify-dmg-payload.sh, not via this target
-# gate: test class=operator ci=no -- workspace tests + #[ignore] real-API tests + STT pipeline; sources ~/.codescribe/.env and opens Console
+# gate: test class=operator ci=no -- workspace tests with heavy cases ignored; no dotenv or forced opt-ins; opens Console
 # gate: test-quick class=operator ci=no -- workspace tests only, but still sources ~/.codescribe/.env and opens Console
-# gate: test-all class=operator ci=no -- test + ignored + STT pipeline + SSE streaming; needs LLM keys
+# gate: test-all class=operator ci=no -- same workspace selection as test; heavy/API lanes require explicit targets
 # gate: test-e2e class=operator ci=no -- e2e tests in release profile; sources the operator dotenv
 # gate: test-e2e-real class=operator ci=no -- e2e against real LLM APIs; needs LLM_API_KEY and LLM_ASSISTIVE_API_KEY
+# gate: test-e2e-roundtrip class=operator ci=no -- #[ignore] lanes of e2e_vad_flow (private data_assets corpus) + e2e_round_trip (TTS/CSM, Whisper, MiniLM models; sets CODESCRIBE_E2E_ROUNDTRIP=1); no LLM keys; fails, never skips, when a model or clip is missing
 # gate: test-sse class=operator ci=no -- live SSE streaming against a real endpoint
 # gate: test-sse-release class=operator ci=no -- test-sse in the release profile
 # gate: test-sse-heavy class=operator ci=no -- test-sse release + Responses chain/resume
@@ -466,21 +471,17 @@ echo "╚═══════════════════════�
 open -a Console "$$LOG"
 endef
 
+# Ordinary selection never sweeps --ignored or enables STT/API/model work.
+# Even an inherited round-trip opt-in leaves those cases ignored here; select
+# test-e2e-roundtrip explicitly for heavy evidence. `verify` remains the CI gate.
 test:
 	@$(TEST_SETUP); \
 	set -o pipefail; \
-	echo "=== Tests (workspace) ===" | tee -a "$$LOG"; \
-	$(ENV_LOAD); $(APPLY_TEST_LLM); \
+	echo "=== Tests (workspace; heavy cases remain ignored) ===" | tee -a "$$LOG"; \
 	cargo test --workspace --all-targets -- --nocapture 2>&1 | tee -a "$$LOG"; test_rc=$${PIPESTATUS[0]}; \
 	if [[ $$test_rc -ne 0 ]]; then exit $$test_rc; fi; \
-	echo "=== Tests (ignored / real API) ===" | tee -a "$$LOG"; \
-	$(ENV_LOAD); $(APPLY_TEST_LLM); \
-	cargo test --workspace --all-targets -- --ignored --nocapture 2>&1 | tee -a "$$LOG"; test_rc=$${PIPESTATUS[0]}; \
-	if [[ $$test_rc -ne 0 ]]; then exit $$test_rc; fi; \
-	echo "=== Full Pipeline (STT) ===" | tee -a "$$LOG"; \
-	$(ENV_LOAD); CODESCRIBE_E2E_STT=1 \
-	cargo test --test e2e_full_pipeline -- --nocapture 2>&1 | tee -a "$$LOG"; test_rc=$${PIPESTATUS[0]}; \
-	if [[ $$test_rc -ne 0 ]]; then exit $$test_rc; fi; \
+	echo "Heavy round-trip NOT RUN: requires explicit test-e2e-roundtrip (sets CODESCRIBE_E2E_ROUNDTRIP=1)." | tee -a "$$LOG"; \
+	echo "Real API/STT/SSE evidence requires the dedicated bench targets." | tee -a "$$LOG"; \
 	echo "Done. Log: $$LOG" | tee -a "$$LOG"
 
 test-quick:
@@ -508,6 +509,22 @@ test-e2e-real:
 	echo "Requires: LLM_API_KEY, LLM_ASSISTIVE_API_KEY" | tee -a "$$LOG"; \
 	$(ENV_LOAD); $(APPLY_TEST_LLM); \
 	cargo test e2e --release -- --ignored --nocapture 2>&1 | tee -a "$$LOG"; test_rc=$${PIPESTATUS[0]}; \
+	if [[ $$test_rc -ne 0 ]]; then exit $$test_rc; fi; \
+	echo "Done. Log: $$LOG" | tee -a "$$LOG"
+
+# Opt-in lanes that plain `cargo test` reports as `ignored`. Both suites fail
+# loudly when their inputs are missing (no silent `return Ok(())`), so a green
+# run here means the models and the corpus were actually exercised.
+test-e2e-roundtrip:
+	@$(TEST_SETUP); \
+	set -o pipefail; \
+	echo "=== VAD flow (private corpus, --ignored) ===" | tee -a "$$LOG"; \
+	$(ENV_LOAD); CODESCRIBE_E2E_ROUNDTRIP=1 \
+	cargo test --test e2e_vad_flow -- --ignored --nocapture 2>&1 | tee -a "$$LOG"; test_rc=$${PIPESTATUS[0]}; \
+	if [[ $$test_rc -ne 0 ]]; then exit $$test_rc; fi; \
+	echo "=== Round-trip TTS→STT→embed (--ignored) ===" | tee -a "$$LOG"; \
+	$(ENV_LOAD); CODESCRIBE_E2E_ROUNDTRIP=1 \
+	cargo test --test e2e_round_trip -- --ignored --nocapture 2>&1 | tee -a "$$LOG"; test_rc=$${PIPESTATUS[0]}; \
 	if [[ $$test_rc -ne 0 ]]; then exit $$test_rc; fi; \
 	echo "Done. Log: $$LOG" | tee -a "$$LOG"
 
@@ -586,7 +603,6 @@ endef
 # Fast: pure assembly + stream-floor + always-on e2e contracts (no STT / no Apple).
 test-engine:
 	@echo "=== Core engine (unit + always-on contracts, no STT) ==="
-	@cargo test -p codescribe-core --lib live_assembly -- --nocapture
 	@cargo test -p codescribe-core --lib apply_final_boundary -- --nocapture
 	@cargo test --test e2e_overlay_delivery_parity -- --nocapture
 	@echo "OK — freezed+append + single-final-tail fail bar green."
@@ -902,51 +918,10 @@ SWIFT_TEST_CODESIGN_IDENTITY ?= -
 SWIFT_TEST_MAX_SECONDS ?= 30
 .PHONY: test-swift
 test-swift: $(ENGINE_BRIDGE)
-	@set -o pipefail; \
-	$(TEST_DATA_DIR_SETUP); \
-	echo "=== Apple phrase-restart Rust/Swift lockstep self-test ==="; \
-	$(ENGINE_BRIDGE) --phrase-restart-self-test || exit $$?; \
-	if [ ! -f target/$(PROFILE)/libcodescribe_ffi.dylib ]; then \
-	  echo "test-swift: target/$(PROFILE)/libcodescribe_ffi.dylib is missing." >&2; \
-	  echo "test-swift: run 'make app-bindings' (or 'make app') first." >&2; \
-	  exit 2; \
-	fi; \
-	if ! command -v xcodegen >/dev/null 2>&1; then \
-	  echo "test-swift: xcodegen is required because the Xcode project is generated, not committed." >&2; \
-	  exit 2; \
-	fi; \
-	echo "=== Regenerating Xcode project from project.yml ==="; \
-	( cd macos && xcodegen generate ) || exit $$?; \
-	echo "=== Swift front-end tests (CodescribeTests) ==="; \
-	cd macos && xcodebuild test \
-	  -scheme Codescribe \
-	  -destination 'platform=macOS,arch=arm64' \
-	  CODE_SIGN_IDENTITY="$(SWIFT_TEST_CODESIGN_IDENTITY)" \
-	  $(SWIFT_TEST_ARGS) 2>&1 | tee $(SWIFT_TEST_LOG) | \
-	  grep -E "^Test Case .* (failed|error)|Executed [0-9]+ tests|^\*\* TEST|error:"; \
-	rc=$${PIPESTATUS[0]}; \
-	executed=$$(grep -oE 'Executed [0-9]+ test' $(SWIFT_TEST_LOG) | tail -1 | grep -oE '[0-9]+'); \
-	if [ "$$rc" -eq 0 ] && [ "$${executed:-0}" -eq 0 ]; then \
-	  echo "test-swift: xcodebuild said TEST SUCCEEDED but executed 0 tests." >&2; \
-	  echo "test-swift: a -only-testing filter that matches nothing exits 0 — that is a" >&2; \
-	  echo "test-swift: silent pass, not a green gate. Check SWIFT_TEST_ARGS." >&2; \
-	  rc=3; \
-	fi; \
-	secs=$$(sed -nE 's/^.*Executed [0-9]+ tests?,.* in ([0-9.]+) \([0-9.]+\) seconds.*$$/\1/p' $(SWIFT_TEST_LOG) | tail -1); \
-	slowest=$$(sed -nE "s/^.*CodescribeTests\.([A-Za-z0-9_]+) ([A-Za-z0-9_]+)\]' passed \(([0-9.]+) seconds\)\..*$$/\3 \1.\2/p" $(SWIFT_TEST_LOG) | sort -rn | head -1); \
-	echo "test-swift: full log $(SWIFT_TEST_LOG) (rc=$$rc, executed=$${executed:-0}, seconds=$${secs:-unknown})"; \
-	if [ -n "$$slowest" ]; then echo "test-swift: slowest test $$slowest"; fi; \
-	if [ "$$rc" -eq 0 ] && [ -n "$$secs" ] && \
-	   awk -v s="$$secs" -v m="$(SWIFT_TEST_MAX_SECONDS)" 'BEGIN{exit !(s>m)}'; then \
-	  echo "test-swift: suite took $$secs s, over the $(SWIFT_TEST_MAX_SECONDS) s budget." >&2; \
-	  echo "test-swift: green-but-slow is the shape this gate exists to catch — a 10x swing" >&2; \
-	  echo "test-swift: here has meant the core is doing real (blocking) work for a test run," >&2; \
-	  echo "test-swift: not that the machine is busy. Check the slowest test above, then" >&2; \
-	  echo "test-swift: core/config/keychain.rs::in_xctest_host and macos/CodescribeTests/README.md." >&2; \
-	  echo "test-swift: if the host really is loaded: make test-swift SWIFT_TEST_MAX_SECONDS=90" >&2; \
-	  rc=4; \
-	fi; \
-	exit $$rc
+	@$(TEST_DATA_DIR_SETUP); \
+	$(SHELL) scripts/test-swift.sh "$(PROFILE)" "$(ENGINE_BRIDGE)" \
+	  "$(SWIFT_TEST_CODESIGN_IDENTITY)" "$(SWIFT_TEST_MAX_SECONDS)" \
+	  "$(SWIFT_TEST_LOG)" $(SWIFT_TEST_ARGS)
 
 # Apple live engine proof.
 #
@@ -1031,25 +1006,15 @@ test-teacher:
 	@cargo run --bin codescribe-teacher -- proof --html /tmp/codescribe-teacher.html
 	@echo "HTML: /tmp/codescribe-teacher.html  (open /tmp/codescribe-teacher.html)"
 
+# "all" means all workspace targets, not permission to activate ignored lanes.
 test-all:
 	@$(TEST_SETUP); \
 	set -o pipefail; \
-	echo "=== Full Test Suite ===" | tee -a "$$LOG"; \
-	$(ENV_LOAD); $(APPLY_TEST_LLM); \
+	echo "=== Tests (workspace; heavy cases remain ignored) ===" | tee -a "$$LOG"; \
 	cargo test --workspace --all-targets -- --nocapture 2>&1 | tee -a "$$LOG"; test_rc=$${PIPESTATUS[0]}; \
 	if [[ $$test_rc -ne 0 ]]; then exit $$test_rc; fi; \
-	echo "=== Ignored / Real API ===" | tee -a "$$LOG"; \
-	$(ENV_LOAD); $(APPLY_TEST_LLM); \
-	cargo test --workspace --all-targets -- --ignored --nocapture 2>&1 | tee -a "$$LOG"; test_rc=$${PIPESTATUS[0]}; \
-	if [[ $$test_rc -ne 0 ]]; then exit $$test_rc; fi; \
-	echo "=== Full Pipeline (STT) ===" | tee -a "$$LOG"; \
-	$(ENV_LOAD); CODESCRIBE_E2E_STT=1 \
-	cargo test --test e2e_full_pipeline -- --nocapture 2>&1 | tee -a "$$LOG"; test_rc=$${PIPESTATUS[0]}; \
-	if [[ $$test_rc -ne 0 ]]; then exit $$test_rc; fi; \
-	echo "=== SSE Streaming ===" | tee -a "$$LOG"; \
-	$(ENV_LOAD); $(APPLY_TEST_LLM); \
-	cargo test e2e_sse --release -- --ignored --nocapture 2>&1 | tee -a "$$LOG"; test_rc=$${PIPESTATUS[0]}; \
-	if [[ $$test_rc -ne 0 ]]; then exit $$test_rc; fi; \
+	echo "Heavy round-trip NOT RUN: requires explicit test-e2e-roundtrip (sets CODESCRIBE_E2E_ROUNDTRIP=1)." | tee -a "$$LOG"; \
+	echo "Real API/STT/SSE evidence requires the dedicated bench targets." | tee -a "$$LOG"; \
 	echo "Done. Log: $$LOG" | tee -a "$$LOG"
 
 demo:
@@ -1079,7 +1044,7 @@ check:
 	@echo "=== Clippy (workspace, all targets) ==="
 	@cargo clippy --workspace --all-targets -- -D warnings
 	@echo "=== Semgrep ==="
-	@semgrep scan --config auto --error .
+	@semgrep scan --config auto --config .semgrep.yaml --error .
 	@echo "=== Env registry ==="
 	@bash scripts/validate-envs.sh
 	@echo "=== Gate ledger ==="
@@ -1112,6 +1077,12 @@ check:
 verify:
 	@set -eo pipefail; \
 	$(TEST_DATA_DIR_SETUP); \
+	echo "=== Verify (structural verifier instrument) ==="; \
+	python3 -m unittest scripts/tests/test_verify_acoustic_throne_structure.py; \
+	echo "=== Verify (live Loctree acoustic throne receipt) ==="; \
+	python3 scripts/verify-acoustic-throne-structure.py wired; \
+	echo "=== Verify (Transcript Bus path + install guard) ==="; \
+	bash scripts/tests/transcript-bus-path-test.sh; \
 	echo "=== Verify (hermetic: workspace tests) ==="; \
 	CODESCRIBE_NO_EMBED=1 CODESCRIBE_DISABLE_KEYCHAIN=1 \
 	  cargo test --workspace --all-targets; \
@@ -1121,13 +1092,23 @@ verify:
 	echo "=== Verify (Whisper model promotion) ==="; \
 	bash scripts/tests/download-model-test.sh; \
 	echo "=== Verify (env registry) ==="; \
+	python3 -m unittest scripts/tests/test_env_registry.py; \
+	python3 -m unittest scripts/tests/test_data_asset_references.py; \
+	python3 -m unittest scripts/tests/test_sessions_dedupe.py; \
 	bash scripts/validate-envs.sh; \
 	echo "=== Verify (gate ledger) ==="; \
 	bash scripts/validate-gates.sh; \
+	bash scripts/tests/validate-gates-test.sh; \
 	echo ""; \
 	echo "verify: hermetic gate passed."; \
 	echo "verify: NOT covered here — every class=operator target in the GATE LEDGER"; \
 	echo "verify: (parity bars, Swift front-end suite, host smoke, real-API e2e)."
+
+test-structural-verifier:
+	@python3 -m unittest scripts/tests/test_verify_acoustic_throne_structure.py
+
+test-transcript-bus-path:
+	@bash scripts/tests/transcript-bus-path-test.sh
 
 # Print the classified verification surface. Asserts nothing, so it carries no
 # ledger row of its own — it only shows the ledger `check` and `verify` enforce.
@@ -1164,6 +1145,11 @@ canary-catalog:
 
 semgrep:
 	@semgrep scan --config auto --error --quiet .
+
+# Not a verification target (advisory, never blocking) — deliberately absent from the GATE LEDGER.
+semgrep-house:
+	@echo "Advisory house rules (non-blocking) — see .semgrep/advisory.yaml"
+	@semgrep scan --config .semgrep/advisory.yaml --metrics=off . || true
 
 fix:
 	@echo "=== Format Fix (Rust) ==="
@@ -1254,12 +1240,13 @@ help:
 	@printf '\n'
 	@printf '  $(HELP_C_YELLOW)%s$(HELP_C_RESET)\n' 'QUALITY — BENCH INSTRUMENTS (this host only, never a merge gate)'
 	@printf '%s\n' '  Full classification: make -s gate-ledger'
-	@printf '    $(HELP_C_GREEN)%-18s$(HELP_C_RESET) %s\n' 'test' 'Full suite incl. ignored real-API tests (sources ~/.codescribe/.env)'
+	@printf '    $(HELP_C_GREEN)%-18s$(HELP_C_RESET) %s\n' 'test' 'Workspace tests; heavy cases ignored, no forced opt-ins'
 	@printf '    $(HELP_C_GREEN)%-18s$(HELP_C_RESET) %s\n' 'test-quick' 'Workspace tests, no real API (sources ~/.codescribe/.env)'
 	@printf '    $(HELP_C_GREEN)%-18s$(HELP_C_RESET) %s\n' 'test-swift' 'SwiftUI suite + phrase-restart lockstep (needs Xcode + ffi dylib)'
 	@printf '    $(HELP_C_GREEN)%-18s$(HELP_C_RESET) %s\n' 'smoke-macos27' 'Host smoke after an OS/Xcode bump (SMOKE_ARGS=--with-inference)'
 	@printf '    $(HELP_C_GREEN)%-18s$(HELP_C_RESET) %s\n' 'test-e2e' 'Run E2E tests (mock)'
 	@printf '    $(HELP_C_GREEN)%-18s$(HELP_C_RESET) %s\n' 'test-e2e-real' 'Run E2E tests with real API (needs LLM_*_API_KEY)'
+	@printf '    $(HELP_C_GREEN)%-18s$(HELP_C_RESET) %s\n' 'test-e2e-roundtrip' 'Run #[ignore] VAD corpus + TTS/STT/embed round-trip lanes (local models, no LLM keys)'
 	@printf '    $(HELP_C_GREEN)%-18s$(HELP_C_RESET) %s\n' 'test-sse' 'Run SSE streaming tests (real API)'
 	@printf '%s\n' '  make test-formatting Run AI formatting tests'
 	@printf '    $(HELP_C_GREEN)%-18s$(HELP_C_RESET) %s\n' 'test-engine' 'Core freezed+append unit bar (fast, no STT)'
@@ -1269,7 +1256,7 @@ help:
 	@printf '    $(HELP_C_GREEN)%-18s$(HELP_C_RESET) %s\n' 'corpus-census' 'Inventory both private corpus roots; hashes/counts only'
 	@printf '    $(HELP_C_GREEN)%-18s$(HELP_C_RESET) %s\n' 'test-corpus-parity' 'Isolated production replay (profiles/runs/recordings are explicit vars)'
 	@printf '    $(HELP_C_GREEN)%-18s$(HELP_C_RESET) %s\n' 'test-teacher' 'Teacher CLI proof HTML (live×whisper×human)'
-	@printf '    $(HELP_C_GREEN)%-18s$(HELP_C_RESET) %s\n' 'test-all' 'Run full test suite'
+	@printf '    $(HELP_C_GREEN)%-18s$(HELP_C_RESET) %s\n' 'test-all' 'All workspace targets; heavy/API evidence requires explicit bench targets'
 
 # ============================================================================
 # Release & Distribution
@@ -1330,18 +1317,16 @@ dmg-signed: dist-preflight-signed
 # opt-in via Settings → Dictation download (or make download-model).
 # Ends with the fail-closed payload gate (signed ≠ complete; see 0.13.2 MiniLM miss).
 release-standard: dist-preflight-signed
-	@CODESCRIBE_CODESIGN_IDENTITY="$(CODESCRIBE_DIST_CODESIGN_IDENTITY)" \
+	@set -eu; \
+	receipt_dir=$$(mktemp -d "$${TMPDIR:-/tmp}/codescribe-release.XXXXXXXXXX"); \
+	trap 'rm -rf "$$receipt_dir"' EXIT; \
+	trap 'exit 130' INT; trap 'exit 143' TERM; \
+	run_id=$${receipt_dir##*/}; \
+	CODESCRIBE_CODESIGN_IDENTITY="$(CODESCRIBE_DIST_CODESIGN_IDENTITY)" \
 	 CODESCRIBE_LICENSE_PUBLIC_KEY_HEX="$(CODESCRIBE_DIST_LICENSE_KEY)" \
 	 SPARKLE_ED_PUBLIC_KEY="$(CODESCRIBE_DIST_SPARKLE_KEY)" \
-	 ./scripts/build-dmg.sh --sign --notarize
-	@VERSION=$$(awk -F '"' '/^version[[:space:]]*=/{print $$2; exit}' Cargo.toml); \
-	HEAD_SHA=$$(git rev-parse --short=9 HEAD 2>/dev/null || echo nogit); \
-	DMG=$$(ls -t Codescribe_$${VERSION}-*-$${HEAD_SHA}.dmg 2>/dev/null | head -1); \
-	if [ -z "$$DMG" ]; then \
-		echo "ERROR: no slim DMG for HEAD $$HEAD_SHA / version $$VERSION after build"; \
-		exit 1; \
-	fi; \
-	./scripts/verify-dmg-payload.sh "$$DMG" --variant slim --version "$$VERSION"
+	 ./scripts/build-dmg.sh --sign --notarize --receipt "$$receipt_dir/artifact" --receipt-run "$$run_id"; \
+	bash scripts/lib/release-artifact-receipt.sh verify "$$receipt_dir/artifact" "$$run_id" slim
 
 # Install the already-built Release .app without re-signing. Re-signing with
 # Apple Development (install-app) drops the notarization ticket and gives the
@@ -1381,18 +1366,16 @@ release-stable: release-standard install-app-release
 # Ends with the fail-closed payload gate (full = Silero + Whisper embedded,
 # MiniLM runtime resource).
 release-full: dist-preflight-signed ensure-models
-	@CODESCRIBE_CODESIGN_IDENTITY="$(CODESCRIBE_DIST_CODESIGN_IDENTITY)" \
+	@set -eu; \
+	receipt_dir=$$(mktemp -d "$${TMPDIR:-/tmp}/codescribe-release.XXXXXXXXXX"); \
+	trap 'rm -rf "$$receipt_dir"' EXIT; \
+	trap 'exit 130' INT; trap 'exit 143' TERM; \
+	run_id=$${receipt_dir##*/}; \
+	CODESCRIBE_CODESIGN_IDENTITY="$(CODESCRIBE_DIST_CODESIGN_IDENTITY)" \
 	 CODESCRIBE_LICENSE_PUBLIC_KEY_HEX="$(CODESCRIBE_DIST_LICENSE_KEY)" \
 	 SPARKLE_ED_PUBLIC_KEY="$(CODESCRIBE_DIST_SPARKLE_KEY)" \
-	 ./scripts/build-dmg.sh --sign --notarize --embed-whisper --dmg-suffix _full
-	@VERSION=$$(awk -F '"' '/^version[[:space:]]*=/{print $$2; exit}' Cargo.toml); \
-	HEAD_SHA=$$(git rev-parse --short=9 HEAD 2>/dev/null || echo nogit); \
-	DMG=$$(ls -t Codescribe_$${VERSION}-*-$${HEAD_SHA}_full.dmg 2>/dev/null | head -1); \
-	if [ -z "$$DMG" ]; then \
-		echo "ERROR: no full DMG for HEAD $$HEAD_SHA / version $$VERSION after build"; \
-		exit 1; \
-	fi; \
-	./scripts/verify-dmg-payload.sh "$$DMG" --variant full --version "$$VERSION"
+	 ./scripts/build-dmg.sh --sign --notarize --embed-whisper --dmg-suffix _full --receipt "$$receipt_dir/artifact" --receipt-run "$$run_id"; \
+	bash scripts/lib/release-artifact-receipt.sh verify "$$receipt_dir/artifact" "$$run_id" full
 
 # Both public variants: slim first, then fat _full.
 release-dmgs: release-standard release-full
@@ -1438,3 +1421,9 @@ download-embedder:
 
 ensure-models:
 	@./scripts/ensure-models.sh
+
+# Hermetic release producer/consumer contract; run only after W2 closure.
+# gate: test-release-artifact-receipt class=hermetic ci=no -- actual release recipes and producer with isolated external-tool stand-ins
+.PHONY: test-release-artifact-receipt
+test-release-artifact-receipt:
+	@bash scripts/tests/release-artifact-receipt-test.sh

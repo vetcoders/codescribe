@@ -208,16 +208,12 @@ fn e2e_responses_enabled() -> bool {
 }
 
 async fn discover_live_targets(client: &Client) -> Vec<LiveTarget> {
-    let preferred_model = env_non_empty(&[
-        "CODESCRIBE_E2E_RESPONSES_MODEL",
-        "LLM_FORMATTING_MODEL",
-        "LLM_MODEL",
-    ]);
+    let preferred_model =
+        env_non_empty(&["CODESCRIBE_E2E_RESPONSES_MODEL", "LLM_FORMATTING_MODEL"]);
     let api_key = env_non_empty(&[
         "CODESCRIBE_E2E_RESPONSES_API_KEY",
-        "LLM_FORMATTING_API_KEY",
-        "LLM_ASSISTIVE_API_KEY",
-        "LLM_API_KEY",
+        "LLM_LIBRAXIS_API_KEY",
+        "LLM_OPENAI_API_KEY",
     ])
     .unwrap_or_else(|| "local-test-key".to_string());
 

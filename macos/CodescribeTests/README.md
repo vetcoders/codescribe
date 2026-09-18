@@ -134,8 +134,10 @@ should branch on non-zero, not on the specific code.
 337 tests across 30 Swift files, including the two surfaces the W12 plan could
 previously only verify by compilation:
 
-- `OverlayStateTests.swift` — the overlay marker rebase (`renderedOffset`,
-  `rebaseContextMarkers`, `liveTextOffset`). 60 tests.
+- `OverlayStateTests.swift` — admission of complete Rust-owned transcript
+  projections, sequence/session fences, acoustic-receipt requirements, and
+  display/delivery behavior. The suite does not make Swift a transcript reducer:
+  corrections, patches, and transcript markers are already reduced upstream.
 - `ComposerMicTests.swift` — the composer `onReplaceRange` path, including the
   `firstIndex` → `lastIndex` alignment. 11 tests.
 

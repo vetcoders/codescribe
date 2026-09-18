@@ -636,7 +636,7 @@ mod tests {
     /// Child env strips LLM API secrets while preserving PATH for tools.
     #[test]
     fn sanitized_child_env_drops_llm_secrets_but_keeps_path() {
-        let secret_key = "LLM_ASSISTIVE_API_KEY";
+        let secret_key = "LLM_OPENAI_API_KEY";
         let secret_value = "super-secret-test-value-pr68";
         let previous = std::env::var(secret_key).ok();
         // SAFETY: test-only env mutation, restored before return.

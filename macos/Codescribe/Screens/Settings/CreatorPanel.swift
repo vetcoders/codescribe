@@ -7,6 +7,7 @@ import SwiftUI
 
 struct CreatorPanel: View {
   @ObservedObject var model: SettingsViewModel
+  @State private var manualSkillClient: AgentBridgeClient?
 
   var body: some View {
     VStack(alignment: .leading, spacing: 0) {
@@ -18,7 +19,7 @@ struct CreatorPanel: View {
         .padding(.top, 6)
 
       SettingsSectionLabel("Permission checklist")
-        .padding(.top, 22)
+        .padding(.top, CSSpace.section)
       VStack(spacing: 8) {
         ForEach([
           PermissionKind.microphone,
@@ -34,10 +35,10 @@ struct CreatorPanel: View {
           )
         }
       }
-      .padding(.top, 11)
+      .padding(.top, CSSpace.control)
 
       SettingsSectionLabel("Voice & formatting")
-        .padding(.top, 24)
+        .padding(.top, CSSpace.section)
       VStack(spacing: 8) {
         LanguageIdentityRow(selection: languageBinding)
         SettingsControlRow(
@@ -51,7 +52,7 @@ struct CreatorPanel: View {
         }
         SettingsControlRow(
           title: "Auto Format",
-          subtitle: "Correction only, balanced editing, or maximum polish"
+          subtitle: "Correction, balanced editing, or a tool-enabled Max consultation"
         ) {
           Picker("", selection: formattingLevelBinding) {
             ForEach(FormattingPolicyOption.allCases) { policy in
@@ -63,11 +64,36 @@ struct CreatorPanel: View {
           .frame(width: 330)
           .disabled(!model.settings.aiFormattingEnabled)
         }
+        if model.maxConsultationEnabled {
+          SettingsControlRow(
+            title: "Max consultation",
+            subtitle: "Continue across takes, or start fresh without deleting previous history."
+          ) {
+            Button(model.newMaxConsultationPending ? "Starting…" : "New consultation") {
+              Task { await model.beginNewMaxConsultation() }
+            }
+            .disabled(model.newMaxConsultationPending)
+            .accessibilityIdentifier("settings-new-max-consultation")
+          }
+          if let notice = model.maxConsultationNotice {
+            Text(notice)
+              .font(.callout)
+              .foregroundStyle(CSColor.textHigh)
+              .frame(maxWidth: .infinity, alignment: .leading)
+          }
+        }
       }
-      .padding(.top, 11)
+      .padding(.top, CSSpace.control)
+
+      if model.maxConsultationEnabled || !model.maxToolApprovals.isEmpty {
+        MaxApprovalCards(model: model).padding(.top, CSSpace.section)
+      }
+
+      agentBridgeSection
+        .padding(.top, CSSpace.section)
 
       SettingsSectionLabel("Quick start")
-        .padding(.top, 24)
+        .padding(.top, CSSpace.section)
       HStack(spacing: 10) {
         QuickStartCard(
           icon: .mic,
@@ -88,10 +114,68 @@ struct CreatorPanel: View {
           accessibilityId: "settings-quickstart-tune-shortcuts"
         ) { model.performQuickStart(.tuneShortcuts) }
       }
-      .padding(.top, 11)
+      .padding(.top, CSSpace.control)
     }
-    .padding(.horizontal, 28)
-    .padding(.vertical, 24)
+    .padding(.horizontal, CSSpace.xl)
+    .padding(.vertical, CSSpace.section)
+    .onAppear { model.refreshCreatorAgentBridge() }
+    .confirmationDialog(
+      "Replace a manually installed Codescribe skill?",
+      isPresented: Binding(
+        get: { manualSkillClient != nil },
+        set: { if !$0 { manualSkillClient = nil } }
+      ),
+      presenting: manualSkillClient
+    ) { client in
+      Button("Preserve original and install for \(client.displayName)") {
+        model.adoptCreatorManualSkill(for: client)
+        manualSkillClient = nil
+      }
+      Button("Cancel", role: .cancel) { manualSkillClient = nil }
+    } message: { client in
+      Text("The Codescribe skill folder for \(client.displayName) will be moved to a retained backup beside it, then replaced with the copy bundled in this app. Your other skills and agent configuration are not changed. No listener will be started.")
+    }
+    .task { await model.refreshMaxToolApprovals() }
+  }
+
+  private var agentBridgeSection: some View {
+    VStack(alignment: .leading, spacing: CSSpace.control) {
+      SettingsSectionLabel("Connect your coding agent")
+      Text("Install the Codescribe skill and bus helper from this app. No repository clone or manual file copying is needed.")
+        .font(.callout)
+        .foregroundStyle(CSColor.textHigh)
+      ForEach(AgentBridgeClient.allCases) { client in
+        SettingsControlRow(
+          title: client.displayName,
+          subtitle: "Named voice messages to your existing conversation"
+        ) {
+          Button(model.creatorAgentBridgeStatus.installedClients.contains(client) ? "Update skill" : "Install skill") {
+            model.installCreatorAgentBridge(for: client)
+          }
+          .disabled(!model.creatorAgentBridgeStatus.payloadAvailable)
+          .accessibilityIdentifier("settings-agent-bridge-\(client.rawValue)")
+          if model.creatorAgentBridgeError != nil {
+            Button("Replace manual copy…") { manualSkillClient = client }
+              .disabled(!model.creatorAgentBridgeStatus.payloadAvailable)
+              .accessibilityIdentifier("settings-agent-bridge-adopt-\(client.rawValue)")
+          }
+        }
+      }
+      Button("Refresh installation status", action: model.refreshCreatorAgentBridge)
+      Text(model.creatorAgentBridgeStatus.detail)
+        .font(.caption)
+        .foregroundStyle(CSColor.textMutedAlt)
+        .textSelection(.enabled)
+      if let notice = model.creatorAgentBridgeNotice {
+        Text(notice).font(.callout).foregroundStyle(CSColor.textHigh).textSelection(.enabled)
+      }
+      if let error = model.creatorAgentBridgeError {
+        Text(error)
+          .font(.callout)
+          .foregroundStyle(CSColor.terracottaLight)
+          .textSelection(.enabled)
+      }
+    }
   }
 
   // MARK: - Bindings (read VM state, write through the router)
@@ -115,6 +199,39 @@ struct CreatorPanel: View {
           ?? FormattingPolicyOption.correction.rawValue
       },
       set: { model.setFormattingLevel($0) })
+  }
+}
+
+/// The same permission cards are used by settings recovery and automatic display.
+struct MaxApprovalCards: View {
+  @ObservedObject var model: SettingsViewModel
+
+  var body: some View {
+    VStack(alignment: .leading, spacing: CSSpace.control) {
+      SettingsSectionLabel("Max permissions")
+      Button(model.maxApprovalBusy ? "Refreshing…" : "Refresh pending requests") {
+        Task { await model.refreshMaxToolApprovals() }
+      }
+      .disabled(model.maxApprovalBusy)
+      ForEach(model.maxToolApprovals) { request in
+        ToolApprovalCard(
+          request: request,
+          reject: {
+            Task { await model.resolveMaxToolApproval(request, approved: false) }
+          },
+          allowOnce: {
+            Task { await model.resolveMaxToolApproval(request, approved: true) }
+          },
+          allowAlways: {
+            Task { await model.resolveMaxToolApproval(request, approved: true, remember: true) }
+          }
+        )
+        .disabled(model.maxApprovalBusy || model.maxApprovalError != nil)
+      }
+      if let error = model.maxApprovalError {
+        Text(error).foregroundStyle(CSColor.amber)
+      }
+    }
   }
 }
 
@@ -223,7 +340,7 @@ private struct LanguageIdentityPicker: View {
               )
           )
         }
-        .csFocusRing(cornerRadius: 8)
+        .csFocusRing()
         .accessibilityLabel(choice.accessibilityLabel)
         .accessibilityValue(choice.accessibilityValue(isSelected: isSelected))
         .accessibilityAddTraits(isSelected ? [.isSelected] : [])
@@ -292,7 +409,10 @@ private struct PermissionChecklistRow: View {
       } else {
         Button {
           if state == .notDetermined, kind.supportsInAppPermissionRequest {
-            kind.requestInApp { _ in onStateChanged?() }
+            Task { @MainActor in
+              _ = await kind.requestInApp()
+              onStateChanged?()
+            }
           } else {
             kind.openSystemSettings()
           }
@@ -305,7 +425,7 @@ private struct PermissionChecklistRow: View {
           .font(CSFont.mono(11, .semibold))
           .foregroundStyle(CSColor.terracottaLight)
         }
-        .csFocusRing(cornerRadius: 8)
+        .csFocusRing()
       }
     }
     .padding(.horizontal, 15)
@@ -390,7 +510,7 @@ private struct QuickStartCard: View {
   #Preview("Creator panel") {
     ScrollView { CreatorPanel(model: .preview) }
       .frame(width: 720, height: 620)
-      .background(SettingsView.windowGradient)
+      .background(CSColor.windowWash)
       .preferredColorScheme(.dark)
   }
 #endif

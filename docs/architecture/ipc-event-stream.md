@@ -8,6 +8,8 @@ that embed the codescribe engine.
 - Wire schema authority: `core/ipc/types.rs` (`IpcEvent`, `IpcEventPayload`, `EngineEventWire`)
 - Runtime entrypoint authority: `core/audio/streaming_recorder.rs`
 - Engine event model authority: `core/pipeline/contracts.rs` (`EngineEvent`, `EventSink`)
+- Committed transcript authority: occurrence-ledger revisions published by
+  `app/presentation/transcript_bus.rs::TranscriptBus::publish_revision`
 
 ## Runtime Contract (Single Path)
 
@@ -16,8 +18,7 @@ There is exactly one supported live runtime path:
 1. `StreamingRecorder::set_event_sink(Some(...))`
 2. `StreamingRecorder::start_event_session(...)`
 3. `pipeline::streaming::transcription_session(...)`
-4. `SttScheduler` serializes inference work
-5. `EventSink` fanout distributes `EngineEvent` to presentation, IPC and session telemetry sinks
+4. `EventSink` fanout distributes `EngineEvent` to presentation, IPC and session telemetry sinks
 
 Controller wiring uses the same contract for hold/toggle sessions:
 
@@ -120,7 +121,38 @@ Engine events are tagged with `type`:
 }
 ```
 
-`segments` come from native Whisper timestamp tokens (`<|0.00|>` ... `<|30.00|>`) and are available for both Candle and ONNX STT paths.
+`segments` come from native Whisper timestamp tokens (`<|0.00|>` ... `<|30.00|>`) on the Candle STT path.
+
+Engine events are observational transport, not a transcript document API.
+`Preview` is overlay-only. `UtteranceFinal`, `Correction`, `ReplaceRange`, and
+`InsertAnnotation` are diagnostics/observations; clients must not fold them into
+product text. Only an occurrence-authenticated reducer revision may become
+committed Bus projection and delivery truth.
+
+## Transcript Projection Event
+
+Committed canvas state uses the existing `transcript_projection` IPC payload.
+Its `json` member is one serialized `codescribe.transcript-evidence.v1`
+snapshot; no second text or lifecycle channel is authoritative:
+
+```json
+{
+  "Event": {
+    "timestamp": "2026-09-04T12:00:00.000Z",
+    "event": "transcript_projection",
+    "json": "{\"schema\":\"codescribe.transcript-evidence.v1\",\"reducer_revision\":20,\"rendered_text\":\"Committed document\",\"phase\":\"formatted\",\"can_paste\":true,\"can_insert\":true,\"can_copy\":true,\"can_retranscribe\":true,\"can_format\":true,\"terminal\":true}"
+  }
+}
+```
+
+The full projection also carries Bus sequence/time, session/mode, reducer
+action, occurrence coordinates, document index, label, and acoustic receipts.
+Open revisions are `listening`; a terminal ledger seal is `finalizing`; only
+the controller's `session_ended` transition produces `terminal=true` and the
+final `formatted`, `no_speech`, or `error` phase. All five action flags are
+computed in Rust from committed text, take/audio facts, and
+`resolve_delivery_route`. Hosts paint those values verbatim and do not derive
+availability from focus, raw engine text, or receipt presence.
 
 ## Security and Sanitization
 
@@ -146,9 +178,12 @@ For old integrations that still depend on legacy callbacks or worker symbols:
 
 1. Replace `set_delta_callback(...)` wiring with `set_event_sink(Some(Arc<dyn EventSink>))`.
 2. Start sessions via `start_event_session(...)`.
-3. If you only consume text deltas, bridge explicitly with `DeltaSinkAdapter`.
-4. Consume `NoSpeech` and `Stats` from engine events (session telemetry sink), not from ad-hoc worker state.
+3. Consume `NoSpeech` and `Stats` from engine events (session telemetry sink), not from ad-hoc worker state.
+4. Observe committed text through ledger-authenticated Transcript Bus projection; do not build a raw-event text reducer.
 5. Treat `vad_fallback` and other removed wire variants as hard errors.
+
+`DeltaSinkAdapter` no longer exists. The draft Bus API and arbitrary-text seal
+API no longer exist either; no compatibility replacement is provided.
 
 ## Versioning
 
@@ -165,3 +200,7 @@ Recommended policy:
 1. Keep old fields for at least one host release cycle.
 2. Gate new behavior behind tolerant parsing on the consumer side.
 3. Document every wire change in this file and changelog.
+
+The current C11 source cut was performed under a compiler/runtime embargo. Its
+actual commit hash lives only in the durable C11 report; compiler, tests,
+runtime, app, and release behavior are `NOT_ASSESSED`.

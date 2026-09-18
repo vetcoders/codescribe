@@ -149,18 +149,27 @@ for target in test test-quick test-e2e test-e2e-real test-sse test-formatting \
     fi
 done
 
-swift_recipe="$(make_target_block 'test-swift')"
-if [[ "$swift_recipe" != *'test-swift: $(ENGINE_BRIDGE)'* ]]; then
-    fail "test-swift must build the canonical Apple STT bridge dependency"
-fi
-if [[ "${swift_recipe%%xcodebuild test*}" != *'$(ENGINE_BRIDGE) --phrase-restart-self-test || exit $$?'* ]]; then
-    fail "test-swift must fail-fast on the phrase-restart Swift lockstep self-test before XCTest"
-fi
-if [[ "${swift_recipe%%xcodebuild test*}" != *'$(TEST_DATA_DIR_SETUP)'* ]]; then
-    fail "test-swift must export its isolated data directory before xcodebuild test"
-fi
-if [[ "${swift_recipe%%xcodebuild test*}" != *'xcodegen generate'* ]]; then
-    fail "test-swift must regenerate the ignored Xcode project so new Swift tests enter XCTest"
+# Closed source contract, not a general Make/shell parser. Python's standard
+# library compares complete reviewed productions; it never evaluates Make,
+# sources the helper, or executes a target. Bash 3.2 remains the shell contract.
+# The standalone test-swift rule must pass the prerequisite bridge as argument 2
+# in the SAME shell after TEST_DATA_DIR_SETUP. Duplicate/conditional definitions,
+# includes/eval and alternate shell settings are outside this bounded language.
+# Helper stages in the module consume the WHOLE body in order (including the result
+# pipeline), so a function, early exit, here-doc, dead branch, alias or swallowed
+# failure cannot lend its tokens to a successful path. Only blank/comment lines
+# BETWEEN complete stages are ignored; continuation and quoted payload bytes
+# inside a stage are exact. Safe equivalent rewrites need a reviewed production
+# update plus counterexamples, rather than a permissive token-search fallback.
+# Assumptions: ordinary Bash/Make/tool semantics and trusted caller overrides;
+# this validates repository source, not arbitrary MAKEFLAGS/BASH_ENV or tools.
+# Resolve verifier code beside this entrypoint without changing candidate cwd.
+SWIFT_GATE_MODULE="$(dirname "${BASH_SOURCE[0]}")/validate_swift_gate.py"
+if [[ ! -f "$SWIFT_GATE_MODULE" || ! -r "$SWIFT_GATE_MODULE" ]]; then
+    fail "test-swift [module-missing]: verifier module is missing or unreadable: $SWIFT_GATE_MODULE"
+elif ! python3 "$SWIFT_GATE_MODULE" "$MAKEFILE"; then
+    echo "  ✗ test-swift [module-failure]: verifier process failed: $SWIFT_GATE_MODULE" >&2
+    fail "test-swift connected Make/helper contract could not be established"
 fi
 
 # ---------------------------------------------------------------------------

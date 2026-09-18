@@ -49,7 +49,7 @@ Grant in: System Settings > Privacy & Security
 
 ### Mode Behavior
 
-- **RAW mode (Fn)**: Fast dictation. Transcript is pasted as-is (only local repetition cleanup).
+- **RAW mode (Fn)**: Fast dictation. RAW mode preserves decoded text, including intentional repetition, for occurrence-aware downstream adjudication.
   Ignores AI_FORMATTING_ENABLED setting.
 - **Toggle mode (Double Option)**: Respects the AI Formatting toggle. If enabled, sends to AI
   for formatting. If disabled, pastes raw.

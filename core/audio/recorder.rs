@@ -56,6 +56,7 @@
 //   - silence duration before auto-stop (Silero default profile)
 //   - AUTO_SILENCE: enable/disable silence detection (default: false)
 
+use crate::config::Config;
 use crate::vad;
 use anyhow::{Context, Result};
 use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
@@ -261,6 +262,70 @@ pub type AudioCallback = Box<dyn Fn(&[f32]) + Send + Sync + 'static>;
 /// until [`Recorder::stop`] writes them to a temp WAV;
 /// [`Recorder::snapshot_wav`] can slice the buffer without interrupting
 /// capture.
+/// Resolve the input device exactly as a recording start would: an
+/// A named `AUDIO_INPUT_DEVICE` must be present. The system default is used
+/// only without an explicit selection. Shared by [`Recorder::start`] and
+/// [`probe_input_capture_path`], so disappearance before stream opening refuses.
+fn select_input_device(host: &cpal::Host) -> Result<(Device, String)> {
+    let preferred = std::env::var("AUDIO_INPUT_DEVICE")
+        .ok()
+        .map(|s| s.trim().to_string())
+        .filter(|s| !s.is_empty());
+
+    let device = resolve_capture_device(
+        preferred.as_deref(),
+        || {
+            Ok(host
+                .input_devices()
+                .context("Failed to enumerate input devices")?
+                .filter_map(|device| {
+                    let name = device.description().ok()?.to_string();
+                    Some((device, name))
+                }))
+        },
+        || host.default_input_device(),
+    )?;
+
+    let device_name = device
+        .description()
+        .map(|d| d.to_string())
+        .unwrap_or_else(|_| "Unknown".to_string());
+    Ok((device, device_name))
+}
+
+fn resolve_capture_device<T, I: Iterator<Item = (T, String)>>(
+    preferred: Option<&str>,
+    named_devices: impl FnOnce() -> Result<I>,
+    default_device: impl FnOnce() -> Option<T>,
+) -> Result<T> {
+    if let Some(preferred) = preferred {
+        let needle = preferred.to_lowercase();
+        named_devices()?
+            .find(|(_, name)| name == preferred || name.to_lowercase().contains(&needle))
+            .map(|(device, _)| device)
+            .with_context(|| format!("Requested audio input device is unavailable: {preferred}"))
+    } else {
+        default_device().context("No input device available")
+    }
+}
+
+/// Identity of the capture path a recording would open right now — device
+/// name, native sample rate, native channels — without opening a stream or
+/// prompting for permission. The admission gate resolves the calibration
+/// profile from this before any microphone is touched.
+pub fn probe_input_capture_path() -> Result<crate::audio::capture_receipt::CapturePathMeta> {
+    let host = cpal::default_host();
+    let (device, device_name) = select_input_device(&host)?;
+    let supported = device
+        .default_input_config()
+        .context("Failed to get default input config")?;
+    Ok(crate::audio::capture_receipt::CapturePathMeta {
+        device_name,
+        sample_rate: supported.sample_rate(),
+        channels: supported.channels().max(1),
+    })
+}
+
 pub struct Recorder {
     pub config: RecorderConfig,
     buffer: AudioBuffer,
@@ -418,43 +483,10 @@ impl Recorder {
         self.diagnostics = RecorderDiagnostics::default();
         self.warn_inert_vad_stop_callback("Recorder start");
 
-        // Select input device
+        // Select input device — the same policy the admission probe uses, so
+        // readiness can never disagree with the device a take would open.
         let host = cpal::default_host();
-
-        let preferred = std::env::var("AUDIO_INPUT_DEVICE")
-            .ok()
-            .map(|s| s.trim().to_string())
-            .filter(|s| !s.is_empty());
-
-        let device = if let Some(preferred) = preferred {
-            let devices = host
-                .input_devices()
-                .context("Failed to enumerate input devices")?;
-
-            let mut selected: Option<Device> = None;
-            for d in devices {
-                if let Ok(desc) = d.description() {
-                    let name = desc.to_string();
-                    if name == preferred || name.to_lowercase().contains(&preferred.to_lowercase())
-                    {
-                        selected = Some(d);
-                        break;
-                    }
-                }
-            }
-
-            selected
-                .or_else(|| host.default_input_device())
-                .context("No input device available")?
-        } else {
-            host.default_input_device()
-                .context("No input device available")?
-        };
-
-        let device_name = device
-            .description()
-            .map(|d| d.to_string())
-            .unwrap_or_else(|_| "Unknown".to_string());
+        let (device, device_name) = select_input_device(&host)?;
         info!("Using input device: {}", device_name);
         self.last_input_device = device_name;
 
@@ -524,7 +556,7 @@ impl Recorder {
         let spill_tx = if has_streaming_callback
             && audio_spill_from_env_value(std::env::var("CODESCRIBE_AUDIO_SPILL").ok().as_deref())
         {
-            match SpillSink::spawn(native_sample_rate, &std::env::temp_dir()) {
+            match takes_dir().and_then(|dir| SpillSink::spawn(native_sample_rate, &dir)) {
                 Ok(sink) => {
                     let tx = sink.sender();
                     self.spill = Some(sink);
@@ -757,8 +789,8 @@ impl Recorder {
             num_frames, self.last_duration, self.actual_sample_rate
         );
 
-        // Create temp file
-        let temp_path = std::env::temp_dir().join(format!(
+        // Scratch WAV under ~/.codescribe/takes (or $CODESCRIBE_DATA_DIR/takes).
+        let temp_path = takes_dir()?.join(format!(
             "codescribe_recording_{}.wav",
             chrono::Utc::now().timestamp_millis()
         ));
@@ -814,7 +846,7 @@ impl Recorder {
         let sample_count = slice.len();
         let duration_sec = sample_count as f32 / self.actual_sample_rate as f32;
 
-        let temp_path = std::env::temp_dir().join(format!(
+        let temp_path = takes_dir()?.join(format!(
             "codescribe_segment_{}.wav",
             chrono::Utc::now().timestamp_millis()
         ));
@@ -832,18 +864,6 @@ impl Recorder {
             sample_count,
             duration_sec,
         }))
-    }
-
-    /// Current sample count in the buffer.
-    ///
-    /// Use as `from_offset` for the next `snapshot_wav` call when you want to
-    /// start a fresh segment without saving anything yet. Returns 0 on poisoned
-    /// lock (recoverable).
-    pub fn current_sample_offset(&self) -> usize {
-        let buf = self.buffer.lock().unwrap_or_else(|e| e.into_inner());
-        self.buffer_start_offset
-            .load(Ordering::SeqCst)
-            .saturating_add(buf.len())
     }
 }
 
@@ -884,6 +904,49 @@ impl Drop for Recorder {
 /// recorder keeps the whole take so `stop()` can write all of it.
 fn streaming_buffer_cap_samples(sample_rate: u32) -> usize {
     (sample_rate as usize).saturating_mul(STREAMING_BUFFER_CAP_SECONDS)
+}
+
+/// Scratch directory for take WAVs: `Config::config_dir()/takes`.
+///
+/// Honours `CODESCRIBE_DATA_DIR` (default `$HOME/.codescribe`). Created on
+/// demand with `create_dir_all`; failure is a readable error, never a panic.
+/// Used by the streaming spill, the stop-time buffer dump, and the segment
+/// snapshot. Filenames stay `codescribe_recording_<ms>.wav` /
+/// `codescribe_segment_<ms>.wav`.
+///
+/// Public so `tests/takes_dir.rs` can assert the path without a microphone.
+/// `cargo test --test takes_dir` compiles this crate without `--cfg test`,
+/// so a `#[cfg(test)] pub(crate)` re-export would not compile that verifier.
+pub fn takes_dir() -> Result<PathBuf> {
+    let dir = Config::config_dir().join("takes");
+    std::fs::create_dir_all(&dir)
+        .with_context(|| format!("failed to create take scratch directory {}", dir.display()))?;
+    Ok(dir)
+}
+
+/// Microphone-free production writer for `tests/takes_dir.rs`.
+///
+/// `Recorder::{start,stop,snapshot_wav}` need a live capture device.
+/// `SpillSink` stays private; this seam calls `SpillSink::spawn` with
+/// [`takes_dir`] and forwards `samples` on the existing writer thread
+/// (no disk I/O on a capture callback, no fsync).
+#[doc(hidden)]
+pub fn spill_take_wav_for_tests(samples: &[i16], sample_rate: u32) -> Result<PathBuf> {
+    let dir = takes_dir()?;
+    let sink = SpillSink::spawn(sample_rate, &dir)?;
+    if let Some(tx) = sink.sender() {
+        tx.send(samples.to_vec())
+            .map_err(|_| anyhow::anyhow!("audio spill sender closed before write"))?;
+    }
+    let (path, written) = sink
+        .finalize()
+        .ok_or_else(|| anyhow::anyhow!("audio spill finalize failed"))?;
+    anyhow::ensure!(
+        written == samples.len(),
+        "audio spill wrote {written} samples, expected {}",
+        samples.len()
+    );
+    Ok(path)
 }
 
 /// Parse `CODESCRIBE_AUDIO_SPILL`: ON by default; only `0`/`false`/`no`/`off`
@@ -1100,6 +1163,54 @@ pub fn wav_duration_secs(path: &Path) -> Option<f32> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn explicit_capture_device_never_opens_system_default() {
+        for devices in [vec![], vec![(1, "MacBook Microphone".to_string())]] {
+            assert!(
+                resolve_capture_device(
+                    Some("BlackHole 2ch"),
+                    || Ok(devices.into_iter()),
+                    || panic!("explicit input must never consult system default")
+                )
+                .is_err()
+            );
+        }
+        assert_eq!(
+            resolve_capture_device(
+                Some("blackhole 2ch"),
+                || Ok(vec![(7, "BlackHole 2ch".to_string())].into_iter()),
+                || panic!("named match owns capture")
+            )
+            .unwrap(),
+            7
+        );
+    }
+
+    #[test]
+    fn unselected_capture_uses_default_without_enumerating() {
+        assert_eq!(
+            resolve_capture_device(
+                None,
+                || -> Result<std::vec::IntoIter<(u8, String)>> {
+                    panic!("no named-device enumeration")
+                },
+                || Some(9)
+            )
+            .unwrap(),
+            9
+        );
+        assert!(
+            resolve_capture_device(
+                None,
+                || -> Result<std::vec::IntoIter<(u8, String)>> {
+                    panic!("no named-device enumeration")
+                },
+                || None
+            )
+            .is_err()
+        );
+    }
 
     // Note: RMS tests removed - now using Silero VAD (see vad module tests)
 

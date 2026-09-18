@@ -46,58 +46,16 @@ struct CopiedSelectionPayload {
     image_png: Option<Vec<u8>>,
 }
 
-/// A cached context plus the instant it was captured, so staleness can be
-/// judged at read time rather than by a background sweep.
+/// One foreign frontmost-app observation. The name is useful only while an
+/// overlay is taking focus; retaining it across unrelated takes can paste into
+/// the wrong application.
 #[derive(Debug, Clone)]
-struct TimedAssistiveContext {
+struct TimedFrontmostApp {
     captured_at: std::time::Instant,
-    ctx: AssistiveContext,
+    name: String,
 }
 
-/// Process-wide slot holding at most one recent capture. A poisoned lock is
-/// recovered rather than propagated — losing context must never panic a
-/// recording.
-fn recent_assistive_context_store() -> &'static Mutex<Option<TimedAssistiveContext>> {
-    /// Process-wide once-cell for the most recent timed assistive context.
-    static STORE: OnceLock<Mutex<Option<TimedAssistiveContext>>> = OnceLock::new();
-    STORE.get_or_init(|| Mutex::new(None))
-}
-
-/// Store the latest assistive context for short-lived follow-up prompts in chat.
-pub fn store_recent_assistive_context(ctx: &AssistiveContext) {
-    let mut guard = recent_assistive_context_store()
-        .lock()
-        .unwrap_or_else(|e| e.into_inner());
-    *guard = Some(TimedAssistiveContext {
-        captured_at: std::time::Instant::now(),
-        ctx: ctx.clone(),
-    });
-}
-
-/// Return the latest assistive context if it is still fresh.
-pub fn get_recent_assistive_context(max_age: Duration) -> Option<AssistiveContext> {
-    let mut guard = recent_assistive_context_store()
-        .lock()
-        .unwrap_or_else(|e| e.into_inner());
-    let entry = guard.as_ref()?;
-
-    if entry.captured_at.elapsed() <= max_age {
-        return Some(entry.ctx.clone());
-    }
-
-    // Drop stale data to avoid leaking old context into later prompts.
-    *guard = None;
-    None
-}
-
-/// Drop the cached context so one test cannot observe another's capture.
-#[cfg(test)]
-fn clear_recent_assistive_context_for_tests() {
-    let mut guard = recent_assistive_context_store()
-        .lock()
-        .unwrap_or_else(|e| e.into_inner());
-    *guard = None;
-}
+const LAST_FOREIGN_FRONTMOST_MAX_AGE: Duration = Duration::from_secs(3);
 
 /// Injected OS selection for unit tests (production capture is skipped).
 #[cfg(test)]
@@ -200,7 +158,7 @@ pub fn capture_assistive_context_with_image_with_prior_frontmost(
     let copy_delay_ms = env_u64("ASSISTIVE_CONTEXT_COPY_DELAY_MS", 150);
 
     let current_frontmost_app = if include_app {
-        frontmost_app_name()
+        current_frontmost_app_name()
     } else {
         None
     };
@@ -268,7 +226,7 @@ pub fn capture_frontmost_app_only_with_prior_frontmost(
 
     let include_app = env_flag("ASSISTIVE_CONTEXT_INCLUDE_APP", true);
     let current_frontmost_app = if include_app {
-        current_frontmost_app_name().or_else(frontmost_app_name)
+        current_frontmost_app_name()
     } else {
         None
     };
@@ -292,8 +250,8 @@ pub(crate) fn paste_latch_from_frontmost(
     app.filter(|name| !is_codescribe_app(name))
 }
 
-fn last_foreign_frontmost_store() -> &'static Mutex<Option<String>> {
-    static STORE: OnceLock<Mutex<Option<String>>> = OnceLock::new();
+fn last_foreign_frontmost_store() -> &'static Mutex<Option<TimedFrontmostApp>> {
+    static STORE: OnceLock<Mutex<Option<TimedFrontmostApp>>> = OnceLock::new();
     STORE.get_or_init(|| Mutex::new(None))
 }
 
@@ -307,14 +265,22 @@ fn remember_foreign_frontmost(name: Option<&str>) {
     let mut guard = last_foreign_frontmost_store()
         .lock()
         .unwrap_or_else(|e| e.into_inner());
-    *guard = Some(name.to_string());
+    *guard = Some(TimedFrontmostApp {
+        captured_at: std::time::Instant::now(),
+        name: name.to_string(),
+    });
 }
 
 fn last_foreign_frontmost() -> Option<String> {
-    last_foreign_frontmost_store()
+    let mut guard = last_foreign_frontmost_store()
         .lock()
-        .unwrap_or_else(|e| e.into_inner())
-        .clone()
+        .unwrap_or_else(|e| e.into_inner());
+    let entry = guard.as_ref()?;
+    if entry.captured_at.elapsed() <= LAST_FOREIGN_FRONTMOST_MAX_AGE {
+        return Some(entry.name.clone());
+    }
+    *guard = None;
+    None
 }
 
 /// Activate a running app by localized name without sending Apple Events.
@@ -369,12 +335,11 @@ fn activate_running_app_by_name(app_name: &str) -> bool {
 
 /// Best-effort app activation by localized app name.
 ///
-/// Native NSRunningApplication activation is primary because it avoids
-/// Automation TCC. osascript remains a compatibility fallback.
+/// Uses only NSRunningApplication. A remembered target that is no longer
+/// running must fail closed; `tell application ... activate` would relaunch a
+/// stale target and turn a best-effort paste into an unrelated side effect.
 #[cfg(target_os = "macos")]
 pub fn activate_app_by_name(app_name: &str) -> bool {
-    use std::process::Command;
-
     let app_name = app_name.trim();
     if app_name.is_empty() || app_name.eq_ignore_ascii_case("codescribe") {
         return false;
@@ -388,35 +353,8 @@ pub fn activate_app_by_name(app_name: &str) -> bool {
         return true;
     }
 
-    warn!(
-        app_name,
-        "Native app activation did not land; trying osascript compatibility fallback"
-    );
-
-    let escaped = app_name.replace('\\', "\\\\").replace('\"', "\\\"");
-    let script = format!("tell application \"{}\" to activate", escaped);
-
-    match Command::new("osascript").args(["-e", &script]).output() {
-        Ok(out) => {
-            if out.status.success() {
-                true
-            } else {
-                warn!(
-                    "osascript activation fallback failed for '{}': exit={:?}",
-                    app_name,
-                    out.status.code()
-                );
-                false
-            }
-        }
-        Err(e) => {
-            warn!(
-                "osascript activation fallback failed for '{}': {}",
-                app_name, e
-            );
-            false
-        }
-    }
+    warn!(app_name, "Paste target is not a running application");
+    false
 }
 
 /// Non-macOS stub: there is no app-activation path off macOS.
@@ -428,10 +366,12 @@ pub fn activate_app_by_name(_app_name: &str) -> bool {
 /// Localized name of the app currently owning focus, via
 /// `NSWorkspace.frontmostApplication.localizedName`.
 ///
-/// This is the runtime-truth signal for "is the right window focused yet?",
-/// unlike the `System Events` osascript query which is slower and rides the
-/// Automation TCC path. Returns `None` when AppKit is unavailable or there is
-/// no frontmost app.
+/// This is the runtime-truth signal for "is the right window focused yet?"
+/// and the only frontmost-app reader in the crate (the `System Events`
+/// osascript query is gone: it spawned a process per call, rode the
+/// Automation TCC path and returned the process name, which could differ from
+/// this localized name and defeat the latch-vs-observation comparison).
+/// Returns `None` when AppKit is unavailable or there is no frontmost app.
 #[cfg(target_os = "macos")]
 fn nsworkspace_frontmost_app_name() -> Option<String> {
     use objc::runtime::{Class, Object};
@@ -529,9 +469,13 @@ fn normalized_app_name(app_name: Option<String>) -> Option<String> {
         .filter(|name| !name.is_empty())
 }
 
-/// Whether this app name is Codescribe itself — the guard against capturing
-/// our own overlay as if it were the user's document.
-fn is_codescribe_app(app_name: &str) -> bool {
+/// Whether this app name is Codescribe itself (the localized name of **this
+/// process**). One owner for the whole crate: the capture latch skips its own
+/// overlay here, and the delivery transport uses it to skip
+/// `NSRunningApplication` activate (we are already running). Not a paste
+/// veto — the Agent window is a legal Cmd+V sink; the overlay-canvas veto is
+/// the Swift caret probe.
+pub fn is_codescribe_app(app_name: &str) -> bool {
     app_name.trim().eq_ignore_ascii_case("codescribe")
 }
 
@@ -711,49 +655,6 @@ pub fn build_assistive_input(
 /// path, no Automation TCC). `None` when the signal is unavailable.
 pub(crate) fn current_frontmost_app_name() -> Option<String> {
     nsworkspace_frontmost_app_name()
-}
-
-/// Frontmost app name via the `System Events` osascript query.
-///
-/// Slower than [`nsworkspace_frontmost_app_name`] and it rides the Automation
-/// TCC path, so a denial shows up here as a failed query rather than an error.
-/// Returns `None` on any failure — best-effort by design.
-#[cfg(target_os = "macos")]
-fn frontmost_app_name() -> Option<String> {
-    use std::process::Command;
-
-    // This is best-effort. It may fail if System Events is restricted.
-    let output = Command::new("osascript")
-        .args([
-            "-e",
-            r#"tell application "System Events" to name of first application process whose frontmost is true"#,
-        ])
-        .output()
-        .map_err(|e| {
-            warn!("frontmost_app_name: failed to run osascript: {}", e);
-            e
-        })
-        .ok()?;
-
-    if !output.status.success() {
-        // System Events query failing here typically means a silent Automation
-        // TCC denial (errAEEventNotPermitted, -1743). Log at warn so the cause
-        // of a missing frontmost app is observable.
-        warn!(
-            "frontmost_app_name: System Events query failed: exit={:?} (possible Automation TCC denial)",
-            output.status.code()
-        );
-        return None;
-    }
-
-    let s = String::from_utf8_lossy(&output.stdout).trim().to_string();
-    (!s.is_empty()).then_some(s)
-}
-
-/// Non-macOS stub: no frontmost-app concept to query.
-#[cfg(not(target_os = "macos"))]
-fn frontmost_app_name() -> Option<String> {
-    None
 }
 
 /// Read the current selection, preferring Accessibility and falling back to a
@@ -1119,6 +1020,32 @@ mod tests {
         );
     }
 
+    /// The overlay may reuse a just-observed foreign app, but not a target
+    /// retained from an unrelated take.
+    #[test]
+    #[serial]
+    fn foreign_frontmost_cache_expires_instead_of_pasting_to_stale_target() {
+        remember_foreign_frontmost(Some("Terminal"));
+        assert_eq!(last_foreign_frontmost().as_deref(), Some("Terminal"));
+
+        let mut guard = last_foreign_frontmost_store()
+            .lock()
+            .unwrap_or_else(|error| error.into_inner());
+        guard.as_mut().expect("cached target").captured_at = std::time::Instant::now()
+            .checked_sub(LAST_FOREIGN_FRONTMOST_MAX_AGE + Duration::from_millis(1))
+            .expect("valid past instant");
+        drop(guard);
+
+        assert_eq!(last_foreign_frontmost(), None);
+        assert!(
+            last_foreign_frontmost_store()
+                .lock()
+                .unwrap_or_else(|error| error.into_inner())
+                .is_none(),
+            "stale target must be deleted, not returned again"
+        );
+    }
+
     /// When Codescribe is current, prior frontmost app is preferred and restore flagged.
     #[test]
     fn effective_frontmost_prefers_prior_when_codescribe_is_current() {
@@ -1255,43 +1182,5 @@ mod tests {
 
         assert_eq!(app.as_deref(), Some("Codescribe"));
         assert!(!should_restore);
-    }
-
-    /// Fresh cache TTL returns the stored context unchanged.
-    #[test]
-    #[serial]
-    fn recent_assistive_context_roundtrips_while_fresh() {
-        clear_recent_assistive_context_for_tests();
-
-        let ctx = AssistiveContext {
-            frontmost_app: Some("Safari".to_string()),
-            selected_text: Some("selected".to_string()),
-        };
-        store_recent_assistive_context(&ctx);
-
-        assert_eq!(
-            get_recent_assistive_context(Duration::from_secs(1)),
-            Some(ctx)
-        );
-    }
-
-    /// Expired cache entry is dropped so later prompts cannot leak old context.
-    #[test]
-    #[serial]
-    fn stale_recent_assistive_context_is_cleared() {
-        clear_recent_assistive_context_for_tests();
-
-        let ctx = AssistiveContext {
-            frontmost_app: Some("Codescribe".to_string()),
-            selected_text: Some("old".to_string()),
-        };
-        store_recent_assistive_context(&ctx);
-
-        assert_eq!(get_recent_assistive_context(Duration::ZERO), None);
-        assert_eq!(
-            get_recent_assistive_context(Duration::from_secs(1)),
-            None,
-            "stale entry should be cleared from the cache"
-        );
     }
 }

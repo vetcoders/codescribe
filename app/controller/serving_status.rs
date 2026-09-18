@@ -11,12 +11,42 @@ use std::sync::{Arc, OnceLock, RwLock};
 pub struct LastServingVerdict {
     /// Actual engine label (`local_apple`, `local_whisper`, `streaming_whisper`, `cloud_stt`).
     pub engine: String,
-    /// Final-pass routing mode that governed the stop (`smart` / `always` / `off`).
+    /// Route that governed the stop: `live` for the reducer/ledger live lane
+    /// (no final pass runs there today), or a final-pass mode
+    /// (`smart` / `always` / `off`) when one governs the stop again.
     pub routing_mode: String,
     /// Final-pass disposition when one ran (`skipped`, `changed`, …).
     pub disposition: Option<String>,
     /// True when the serving engine was a runtime fallback (e.g. Apple→Whisper).
     pub fallback_used: bool,
+}
+
+/// Route label for a stop served entirely by the live lane.
+pub const LIVE_ROUTING_MODE: &str = "live";
+
+impl LastServingVerdict {
+    /// Verdict for a take served by the live streaming session.
+    ///
+    /// `streaming_engine_label` is the recorder's own route label
+    /// (`StreamingRecorder::streaming_engine_label`, e.g. `live_apple`). The
+    /// live route has one engine and no runtime switch, so `fallback_used` is
+    /// false and there is no final-pass disposition. The recorder's `live_*`
+    /// vocabulary is folded into the `local_*` engine vocabulary this owner and
+    /// the Swift formatter share; any other label passes through verbatim so an
+    /// unknown route renders as itself instead of as a guess.
+    pub fn from_live_session(streaming_engine_label: &str) -> Self {
+        let engine = match streaming_engine_label {
+            "live_apple" => "local_apple".to_string(),
+            "live_whisper" => "local_whisper".to_string(),
+            other => other.to_string(),
+        };
+        Self {
+            engine,
+            routing_mode: LIVE_ROUTING_MODE.to_string(),
+            disposition: None,
+            fallback_used: false,
+        }
+    }
 }
 
 /// Push listener for serving-status changes (see [`set_serving_status_sink`]).
@@ -76,6 +106,17 @@ pub fn clear_last_serving() {
     *guard = None;
 }
 
+/// Serialize tests that read or clear the process-global store. Tests run on
+/// parallel threads; without this, one test's `clear_last_serving` lands
+/// between another's publish and read. Async-aware so async stop-path tests
+/// may hold it across awaits (`lock().await`); sync tests use `blocking_lock`.
+#[cfg(test)]
+pub fn test_store_lock() -> &'static tokio::sync::Mutex<()> {
+    /// Lazy once-cell for the test-only store serialization lock.
+    static LOCK: OnceLock<tokio::sync::Mutex<()>> = OnceLock::new();
+    LOCK.get_or_init(|| tokio::sync::Mutex::new(()))
+}
+
 // Label formatting lives Swift-side (`formatActiveSTT` in SettingsViewModel,
 // covered by SettingsTruthTests) — one display owner, no duplicate here.
 
@@ -87,6 +128,7 @@ mod tests {
     /// `publish_last_serving` is visible to `current_last_serving` until cleared.
     #[test]
     fn publish_and_current_roundtrip() {
+        let _serialized = test_store_lock().blocking_lock();
         clear_last_serving();
         assert!(current_last_serving().is_none());
         publish_last_serving(LastServingVerdict {
@@ -101,5 +143,19 @@ mod tests {
         assert_eq!(current.disposition.as_deref(), Some("unchanged"));
         assert!(!current.fallback_used);
         clear_last_serving();
+    }
+
+    /// The recorder's `live_apple` route folds into the shared `local_apple`
+    /// engine vocabulary; an unknown route label is reported verbatim.
+    #[test]
+    fn live_session_verdict_folds_recorder_label_into_engine_vocabulary() {
+        let apple = LastServingVerdict::from_live_session("live_apple");
+        assert_eq!(apple.engine, "local_apple");
+        assert_eq!(apple.routing_mode, LIVE_ROUTING_MODE);
+        assert_eq!(apple.disposition, None);
+        assert!(!apple.fallback_used);
+
+        let unknown = LastServingVerdict::from_live_session("live_moshi");
+        assert_eq!(unknown.engine, "live_moshi");
     }
 }

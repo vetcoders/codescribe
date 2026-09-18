@@ -59,19 +59,6 @@ impl WorkMode {
     pub fn is_assistive(&self) -> bool {
         matches!(self, Self::Assistive)
     }
-
-    /// Whether the mode pastes by default. Assistive sends to the agent, so it
-    /// never auto-pastes; the user preference and controller-owned vetoes still
-    /// apply on top of this (see [`Config::auto_paste_enabled`]).
-    pub fn defaults_to_auto_paste(&self) -> bool {
-        !self.is_assistive()
-    }
-
-    /// Whether the mode requires an LLM round-trip regardless of the global AI
-    /// formatting switch: formatting rewrites the text, assistive answers it.
-    pub fn forces_ai(&self) -> bool {
-        matches!(self, Self::Formatting | Self::Assistive)
-    }
 }
 
 impl FromStr for WorkMode {
@@ -584,8 +571,11 @@ pub struct Config {
     #[serde(default = "default_local_model")]
     pub local_model: String,
 
-    /// Cloud STT endpoint used when cloud is selected as the committed verdict path.
-    pub stt_endpoint: Option<String>,
+    /// Atomic File and Live rows frozen into each runtime snapshot.
+    pub stt_file_endpoint: Option<String>,
+    pub stt_file_api_key: Option<String>,
+    pub stt_live_endpoint: Option<String>,
+    pub stt_live_api_key: Option<String>,
 
     /// Opt-in Whisper domain-vocabulary initial prompt.
     ///
@@ -594,16 +584,6 @@ pub struct Config {
     /// for diagnosis and future retuning.
     #[serde(default = "default_stt_initial_prompt_enabled")]
     pub stt_initial_prompt_enabled: bool,
-
-    /// Full LLM endpoint URL (default: https://api.openai.com/v1/responses)
-    #[serde(default = "default_llm_endpoint_option")]
-    pub llm_endpoint: Option<String>,
-
-    /// API key for cloud LLM providers
-    pub llm_api_key: Option<String>,
-
-    /// API key for cloud STT providers used on the committed verdict path
-    pub stt_api_key: Option<String>,
 
     // ===== Clipboard =====
     /// Whether to restore previous clipboard after paste
@@ -668,11 +648,11 @@ impl Default for Config {
             quick_notes_save_only: false,
             use_local_stt: true,
             local_model: default_local_model(),
-            stt_endpoint: None,
+            stt_file_endpoint: None,
+            stt_live_endpoint: None,
             stt_initial_prompt_enabled: default_stt_initial_prompt_enabled(),
-            llm_endpoint: Some(default_llm_endpoint()),
-            llm_api_key: None,
-            stt_api_key: None,
+            stt_file_api_key: None,
+            stt_live_api_key: None,
             restore_clipboard: default_restore_clipboard(),
             restore_clipboard_delay_ms: default_restore_clipboard_delay_ms(),
             start_at_login: false,
@@ -708,7 +688,6 @@ impl Config {
 #[cfg(test)]
 mod tests {
     use super::{Config, DeferredInsertShortcut, ShortcutBinding};
-    use crate::config::DEFAULT_OPENAI_RESPONSES_ENDPOINT;
 
     /// Legacy shortcut aliases must fail parse so old broken names do not resurrect.
     #[test]
@@ -772,15 +751,6 @@ mod tests {
         assert_eq!("cmd".parse(), Ok(HoldArmModifier::Cmd));
         assert_eq!("command".parse(), Ok(HoldArmModifier::Cmd));
         assert!("nope".parse::<HoldArmModifier>().is_err());
-    }
-
-    /// Default LLM endpoint is the OpenAI Responses URL, not chat/completions.
-    #[test]
-    fn default_config_uses_openai_responses_endpoint() {
-        assert_eq!(
-            Config::default().llm_endpoint.as_deref(),
-            Some(DEFAULT_OPENAI_RESPONSES_ENDPOINT)
-        );
     }
 
     /// Default disables Whisper initial_prompt (WER collapse guard, W2-F).

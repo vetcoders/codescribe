@@ -27,7 +27,7 @@ final class SystemSleepWakeObserver {
 
   func start() {
     guard tokens.isEmpty, let workspace else { return }
-    let handler: (Notification) -> Void = { [weak self] _ in
+    let handler: @Sendable (Notification) -> Void = { [weak self] _ in
       MainActor.assumeIsolated { self?.scheduleBoundary() }
     }
     tokens = [
@@ -47,7 +47,7 @@ final class SystemSleepWakeObserver {
   }
 
   func invalidate() {
-    tokens.forEach(center.removeObserver)
+    for token in tokens { center.removeObserver(token) }
     tokens.removeAll()
     boundaryScheduled = false
   }
@@ -56,9 +56,11 @@ final class SystemSleepWakeObserver {
     guard !boundaryScheduled else { return }
     boundaryScheduled = true
     DispatchQueue.main.async { [weak self] in
-      guard let self else { return }
-      self.boundaryScheduled = false
-      self.onBoundary()
+      MainActor.assumeIsolated {
+        guard let self else { return }
+        self.boundaryScheduled = false
+        self.onBoundary()
+      }
     }
   }
 }

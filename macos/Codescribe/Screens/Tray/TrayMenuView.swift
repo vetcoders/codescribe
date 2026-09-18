@@ -21,7 +21,9 @@ struct TrayMenuView: View {
     GlassPanel(cornerRadius: CSRadius.tray) {
       VStack(spacing: 0) {
         statusHeader
-        trayStatusRow
+        if trayStatus.showsDetailStatusRow {
+          trayStatusRow
+        }
         TrayDivider(top: 3, bottom: 5)
 
         primaryActions
@@ -38,7 +40,7 @@ struct TrayMenuView: View {
         }
         if DeveloperSurface.isEnabled() {
           TrayRow(icon: .diagnostics, title: "Voice Lab…") {
-            VoiceLabRuntime.openConsole()
+            Task { await VoiceLabRuntime.shared.openConsole() }
           }
         }
         TrayRow(icon: .setupWizard, title: "Setup Wizard…") { viewModel.onOpenSetupWizard() }
@@ -83,7 +85,7 @@ struct TrayMenuView: View {
       }
     }
     .padding(.horizontal, 12)
-    .padding(.top, 11)
+    .padding(.top, CSSpace.control)
     .padding(.bottom, 10)
   }
 
@@ -394,13 +396,8 @@ private struct TrayNoteStatusRow: View {
   #Preview("Tray · Idle") {
     let vm = TrayViewModel(engine: MockTrayEngine(recording: false), isRecording: false)
     TrayMenuView(viewModel: vm, trayStatus: .preview())
-      .padding(40)
-      .background(
-        LinearGradient(
-          colors: [Color(hex: 0x15110E), Color(hex: 0x0B0C10), Color(hex: 0x0D1012)],
-          startPoint: .topLeading, endPoint: .bottomTrailing
-        )
-      )
+      .padding(CSSpace.previewInset)
+      .background(CSColor.windowWash)
       .onAppear { FontLoader.register() }
   }
 
@@ -410,13 +407,8 @@ private struct TrayNoteStatusRow: View {
       viewModel: vm,
       trayStatus: .preview(kind: .listening, tone: .active, label: "Status: Recording...")
     )
-    .padding(40)
-    .background(
-      LinearGradient(
-        colors: [Color(hex: 0x15110E), Color(hex: 0x0B0C10), Color(hex: 0x0D1012)],
-        startPoint: .topLeading, endPoint: .bottomTrailing
-      )
-    )
+    .padding(CSSpace.previewInset)
+    .background(CSColor.windowWash)
     .onAppear { FontLoader.register() }
   }
 #endif

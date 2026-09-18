@@ -51,13 +51,13 @@ struct EnginePanel: View {
         .padding(.top, 6)
 
       runtimeRows
-        .padding(.top, 20)
+        .padding(.top, CSSpace.lg)
         .onAppear { model.refreshServingStatus() }
 
       SettingsSectionLabel("Engine controls")
-        .padding(.top, 22)
+        .padding(.top, CSSpace.section)
       engineControls
-        .padding(.top, 11)
+        .padding(.top, CSSpace.control)
 
       collapsibleSection(
         title: "Local Whisper model",
@@ -110,8 +110,8 @@ struct EnginePanel: View {
       }
       .padding(.top, 16)
     }
-    .padding(.horizontal, 28)
-    .padding(.vertical, 24)
+    .padding(.horizontal, CSSpace.xl)
+    .padding(.vertical, CSSpace.section)
   }
 
   /// Section chrome: label is the disclosure chevron host; body mounts only when open.
@@ -122,12 +122,12 @@ struct EnginePanel: View {
   ) -> some View {
     DisclosureGroup(isExpanded: isExpanded) {
       content()
-        .padding(.top, 11)
+        .padding(.top, CSSpace.control)
     } label: {
       SettingsSectionLabel(title)
     }
     .tint(CSColor.chromeAccent)
-    .padding(.top, 22)
+    .padding(.top, CSSpace.section)
   }
 
   // MARK: Runtime key/value rows (STT truth only — LLM truth lives in Providers)
@@ -146,9 +146,9 @@ struct EnginePanel: View {
         key: "Whisper language", value: model.whisperLanguageCode,
         tint: true, mono: true, trailing: .none)
     }
-    .clipShape(RoundedRectangle(cornerRadius: 13, style: .continuous))
+    .clipShape(RoundedRectangle(cornerRadius: CSRadius.composer, style: .continuous))
     .overlay(
-      RoundedRectangle(cornerRadius: 13, style: .continuous)
+      RoundedRectangle(cornerRadius: CSRadius.composer, style: .continuous)
         .strokeBorder(CSColor.hairline(0.07), lineWidth: 1)
     )
   }
@@ -159,8 +159,7 @@ struct EnginePanel: View {
 
   // MARK: Engine controls
 
-  /// Selectable engines. "onnx" is deliberately NOT exposed (experimental,
-  /// frozen); "auto" defers to the core policy (Apple live when available).
+  /// Selectable engines. "auto" defers to the core policy (Apple live when available).
   private static let sttEngineOptions: [(id: String, label: String)] = [
     ("auto", "Auto"),
     ("apple", "Apple (live)"),
@@ -257,8 +256,7 @@ struct EnginePanel: View {
       }
       SettingsControlRow(
         title: "Whole-session final pass",
-        subtitle:
-          "Off. This controls only a full-file decode after Stop; live Whisper refinement continues during the take."
+        subtitle: wholeSessionFinalPassSubtitle(asrModeId: model.asrModeId)
       ) {
         Text("Off")
           .font(CSFont.mono(11, .medium))
@@ -468,9 +466,7 @@ struct EnginePanel: View {
       }
       .tint(CSColor.chromeAccent)
     }
-    .padding(15)
-    .background(card)
-    .overlay(cardBorder)
+    .csSettingsCard()
   }
 
   private var presetBinding: Binding<PreviewTimingPreset> {
@@ -571,23 +567,11 @@ struct EnginePanel: View {
       )
       .font(CSFont.ui(11.5, .medium))
       .foregroundStyle(model.cloudConsentGranted ? CSColor.oliveLight : CSColor.amber)
-      SttEndpointRow(
-        current: model.sttEndpoint,
-        onSave: { model.setSttEndpoint($0) }
-      )
-      SettingsUrlRow(
-        title: "Gateway session URL",
-        keyLabel: "CODESCRIBE_ASR_GATEWAY_URL",
-        current: model.asrGatewayUrl,
-        placeholder: "https://…/session",
-        help:
-          "Session-mint endpoint for live Cloud Layer 1. Not the WSS socket. Clearing restores unset.",
-        onSave: { model.setAsrGatewayUrl($0) }
-      )
+      Text("Endpoints and keys live on Providers › Speech-to-text Cloud Service.")
+        .font(CSFont.ui(11.5))
+        .foregroundStyle(CSColor.textMutedAlt)
     }
-    .padding(15)
-    .background(card)
-    .overlay(cardBorder)
+    .csSettingsCard()
   }
 
   // MARK: Hands-free silence (Apple engine epoch — TOGGLE_SILENCE_SEC)
@@ -615,9 +599,7 @@ struct EnginePanel: View {
         .accessibilityLabel("Hands-free silence duration")
         .accessibilityValue(String(format: "%.1f seconds", model.settings.toggleSilenceSec))
     }
-    .padding(15)
-    .background(card)
-    .overlay(cardBorder)
+    .csSettingsCard()
   }
 
   private var silenceBinding: Binding<Double> {
@@ -627,14 +609,6 @@ struct EnginePanel: View {
     )
   }
 
-  private var card: some ShapeStyle {
-    CSColor.surfaceRaised(0.025)
-  }
-
-  private var cardBorder: some View {
-    RoundedRectangle(cornerRadius: CSRadius.card, style: .continuous)
-      .strokeBorder(CSColor.hairline(0.07), lineWidth: 1)
-  }
 }
 
 // MARK: - Permission matrix cell
@@ -681,7 +655,10 @@ private struct PermissionMatrixCell: View {
       // Same grant path as onboarding: in-app dialog while undetermined,
       // System Settings deep-link once macOS will no longer re-prompt.
       if state == .notDetermined, kind.supportsInAppPermissionRequest {
-        kind.requestInApp { _ in onStateChanged?() }
+        Task { @MainActor in
+          _ = await kind.requestInApp()
+          onStateChanged?()
+        }
       } else {
         kind.openSystemSettings()
       }
@@ -693,7 +670,7 @@ private struct PermissionMatrixCell: View {
   #Preview("Dictation panel") {
     ScrollView { EnginePanel(model: .preview(.engine)) }
       .frame(width: 720, height: 620)
-      .background(SettingsView.windowGradient)
+      .background(CSColor.windowWash)
       .preferredColorScheme(.dark)
   }
 #endif

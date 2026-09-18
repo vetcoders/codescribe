@@ -58,4 +58,63 @@ final class OverlayPlacementTests: XCTestCase {
     let clamped = OverlayPlacement.clampOrigin(inside, size: size, in: visible)
     XCTAssertEqual(clamped, inside)
   }
+
+  @MainActor
+  func testAnchorSelectionMovesTheRealPanelAndFreeMotionPersistsADrag() throws {
+    let oldAnchor = OverlayPlacement.anchor
+    let oldFreeMotion = OverlayPlacement.freeMotion
+    let oldOrigin = OverlayPlacement.restoredOrigin(size: .zero, on: nil)
+    defer {
+      OverlayPlacement.anchor = oldAnchor
+      OverlayPlacement.freeMotion = oldFreeMotion
+      if let oldOrigin {
+        OverlayPlacement.persistOrigin(oldOrigin)
+      } else {
+        OverlayPlacement.clearPersistedOrigin()
+      }
+    }
+
+    let state = OverlayState.previewListening()
+    let panel = try XCTUnwrap(
+      DictationOverlayWindow.make(
+        state: state,
+        textScale: TextScaleController(key: "OverlayPlacementTests.textScale")
+      ) as? FloatingOverlayPanel
+    )
+    defer { panel.invalidatePresence() }
+    let controller = OverlayController(
+      state: state,
+      engine: nil,
+      overlayEnabledProvider: { true },
+      assistiveStatusProvider: { false },
+      panelFactory: { _, _ in panel },
+      orderPanelFront: { _ in },
+      orderPanelOut: { _ in }
+    )
+    controller.show()
+
+    let screen = try XCTUnwrap(NSScreen.main)
+    state.selectPlacementAnchor(.bottomLeft)
+    XCTAssertFalse(state.freeMotion)
+    XCTAssertEqual(
+      panel.frame.origin,
+      OverlayPlacement.origin(for: .bottomLeft, size: panel.frame.size, on: screen)
+    )
+
+    state.selectFreeMotion()
+    let dragged = OverlayPlacement.clampOrigin(
+      NSPoint(x: screen.visibleFrame.midX, y: screen.visibleFrame.midY),
+      size: panel.frame.size,
+      in: screen.visibleFrame
+    )
+    panel.setFrameOrigin(dragged)
+    panel.onUserMove?()
+
+    XCTAssertTrue(state.freeMotion)
+    let restored = try XCTUnwrap(
+      OverlayPlacement.restoredOrigin(size: panel.frame.size, on: screen)
+    )
+    XCTAssertEqual(restored.x, dragged.x, accuracy: 1)
+    XCTAssertEqual(restored.y, dragged.y, accuracy: 1)
+  }
 }

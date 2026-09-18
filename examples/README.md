@@ -4,6 +4,30 @@ This directory contains practical examples demonstrating how to use the codescri
 
 ## Available Examples
 
+### `live_max_consultation.rs`
+
+Explicit live-provider acceptance for two Max turns. Requires an existing Max
+formatting configuration and its normal credentials; provider usage may be billed.
+
+```bash
+cargo run --example live_max_consultation -- --run
+```
+
+Without `--run`, it exits before reading settings or credentials. The example
+copies settings into a temporary directory and uses the production provider,
+Max owner and history store. It asks for a neutral random code to be remembered,
+then requires that exact code on the second turn and four settled messages in
+the same consultation. It verifies that the source settings bytes did not change.
+Existing process overrides still apply; optional live `.env` and prompt files
+are not copied. This is therefore not a claim of parity with customized prompts.
+
+The normal Keychain permission prompt may require a human decision. Do not
+disable the test-harness Keychain guard or copy secrets into a test fixture.
+This example has no executable tools and does not read the clipboard, record
+audio, paste text, or prove GUI/bus/cross-host acceptance. Temporary history is
+removed on normal exit. Request timeouts are 90 seconds per turn; system
+Keychain interaction occurs before those requests and may wait for permission.
+
 ### `config_demo.rs`
 
 Demonstrates the `Config` module: loading config from `.env`/defaults, parsing the `Language` enum, and saving a single value back via `save_to_env`.

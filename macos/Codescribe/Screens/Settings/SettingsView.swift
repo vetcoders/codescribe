@@ -21,6 +21,7 @@ struct SettingsView: View {
   @StateObject private var model: SettingsViewModel
   @State private var columnVisibility: NavigationSplitViewVisibility = .all
   @State private var search: String = ""
+  @State private var pendingScrollAnchor: SettingsAnchor?
 
   init(model: SettingsViewModel? = nil) {
     _model = StateObject(wrappedValue: model ?? SettingsViewModel())
@@ -47,7 +48,6 @@ struct SettingsView: View {
       }
     }
     .csFocusPolicy()
-    .developerPowerCorner(padding: 12)
     .frame(minWidth: 880, maxWidth: .infinity, minHeight: 620, maxHeight: .infinity)
     .background(SettingsWindowCapabilities())
     // The panels still paint hand-picked dark tokens, so the window stays
@@ -58,6 +58,11 @@ struct SettingsView: View {
     .onAppear {
       model.refresh()
       consumePendingDeepLink()
+    }
+    .task {
+      // The health footer must include the controller's real recording
+      // admission verdict even when Audio is not the selected section.
+      await model.refreshAdmission()
     }
     .onReceive(NotificationCenter.default.publisher(for: SettingsDeepLink.pendingSectionDidChange))
     { _ in
@@ -161,54 +166,53 @@ struct SettingsView: View {
 
   private func consumePendingDeepLink() {
     guard let target = SettingsDeepLink.consume() else { return }
-    model.select(target)
+    model.select(target.section)
+    pendingScrollAnchor = target.anchor
   }
 
   @ViewBuilder
   private var detail: some View {
-    ScrollView {
-      Group {
-        switch model.section.destination {
-        case .dictation:
-          EnginePanel(model: model)
-        case .shortcuts:
-          ShortcutsPanel(model: model)
-        case .providers:
-          KeysPanel(model: model)
-        case .agent:
-          AgentPanel(model: model)
-        case .prompts:
-          PromptPanel(model: model)
-        case .user:
-          UserPanel(model: model)
-        case .dictionary:
-          VoiceLabPanel(model: model)
-        case .audio:
-          AudioPanel(model: model)
-        case .license:
-          LicensePanel(model: model)
-        case .creator:
-          CreatorPanel(model: model)
-        case .lab:
-          LabPanel()
+    ScrollViewReader { proxy in
+      ScrollView {
+        Group {
+          switch model.section.destination {
+          case .dictation:
+            EnginePanel(model: model)
+          case .shortcuts:
+            ShortcutsPanel(model: model)
+          case .providers:
+            ProvidersPanel(model: model)
+          case .agent:
+            AgentPanel(model: model)
+          case .prompts:
+            PromptPanel(model: model)
+          case .user:
+            UserPanel(model: model)
+          case .dictionary:
+            VoiceLabPanel(model: model)
+          case .audio:
+            AudioPanel(model: model)
+          case .license:
+            LicensePanel(model: model)
+          case .creator:
+            CreatorPanel(model: model)
+          case .lab:
+            LabPanel()
+          }
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+      }
+      .scrollContentBackground(.hidden)
+      .onChange(of: pendingScrollAnchor) { _, anchor in
+        guard let anchor else { return }
+        DispatchQueue.main.async {
+          proxy.scrollTo(anchor, anchor: .top)
+          pendingScrollAnchor = nil
         }
       }
-      .frame(maxWidth: .infinity, alignment: .leading)
     }
-    .scrollContentBackground(.hidden)
-    .background(Self.windowGradient)
+    .background(CSColor.windowWash)
   }
-
-  /// linear-gradient(135deg,#15110e,#0b0c10 55%,#0d1012) from the mock.
-  static let windowGradient = LinearGradient(
-    stops: [
-      .init(color: Color(hex: 0x15110E), location: 0.0),
-      .init(color: Color(hex: 0x0B0C10), location: 0.55),
-      .init(color: Color(hex: 0x0D1012), location: 1.0),
-    ],
-    startPoint: .topLeading,
-    endPoint: .bottomTrailing
-  )
 }
 
 /// SwiftUI's Settings scene can silently keep the content-sized AppKit style
@@ -265,7 +269,7 @@ private struct SettingsHealthFooter: View {
         } label: {
           content(health)
         }
-        .csFocusRing(cornerRadius: 8)
+        .csFocusRing()
         .help("Open \(target.title) settings")
       } else {
         content(health)

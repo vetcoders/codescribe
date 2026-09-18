@@ -20,6 +20,9 @@ use std::process::Command;
 use tracing::{info, warn};
 use uuid::Uuid;
 
+pub use super::settings::PromptSource;
+use super::settings::{FormattingPolicy, RuntimeSealedPrompt};
+
 // Default prompts (fallback if file missing/empty)
 /// Built-in prompt for [`FormattingPolicy::Correction`] — the conservative rung.
 ///
@@ -170,31 +173,6 @@ impl PromptKind {
     }
 }
 
-/// Where the content of a resolved prompt actually came from.
-///
-/// Recorded so a surprising prompt can be traced to an override, a fallback, or
-/// a silently unreadable file — the three cases look identical downstream.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum PromptSource {
-    /// A non-empty operator override on disk.
-    CustomFile,
-    /// The compiled-in default: no file, or a file that was empty.
-    BuiltInFallback,
-    /// The file exists but could not be read; the default was used instead.
-    ReadError,
-}
-
-impl PromptSource {
-    /// Stable identifier for logs and telemetry.
-    pub const fn as_str(self) -> &'static str {
-        match self {
-            Self::CustomFile => "custom_file",
-            Self::BuiltInFallback => "built_in_fallback",
-            Self::ReadError => "read_error",
-        }
-    }
-}
-
 /// A resolved prompt plus the provenance of its content.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct PromptSnapshot {
@@ -254,6 +232,7 @@ fn ensure_prompts_dir() -> std::io::Result<()> {
 /// Reads never create the file, so an untouched install keeps tracking the
 /// built-in default as it changes.
 pub fn prompt_snapshot(kind: PromptKind) -> PromptSnapshot {
+    super::loader::note_startup_acquisition("prompt file");
     let path = prompts_dir().join(kind.filename());
     match fs::read_to_string(&path) {
         Ok(content) => {
@@ -301,6 +280,7 @@ pub fn prompt_snapshot(kind: PromptKind) -> PromptSnapshot {
 /// Used for the `*_tuning.txt` appendices, which are additive and therefore
 /// have no built-in default to fall back to.
 fn load_optional(filename: &str) -> Option<String> {
+    super::loader::note_startup_acquisition("prompt tuning file");
     let path = prompts_dir().join(filename);
     match fs::read_to_string(&path) {
         Ok(content) => {
@@ -312,6 +292,108 @@ fn load_optional(filename: &str) -> Option<String> {
             }
         }
         Err(_) => None,
+    }
+}
+
+/// Captured prompt source, before shared composition and hashing. No I/O on construction.
+#[derive(Clone)]
+pub struct CapturedPrompt {
+    pub content: String,
+    pub source: PromptSource,
+    pub tuning: Option<String>,
+}
+
+impl CapturedPrompt {
+    pub fn builtin(kind: PromptKind) -> Self {
+        Self {
+            content: kind.default_content().to_string(),
+            source: PromptSource::BuiltInFallback,
+            tuning: None,
+        }
+    }
+
+    fn capture(kind: PromptKind, tuning_filename: &str) -> Self {
+        let snapshot = prompt_snapshot(kind);
+        Self {
+            content: snapshot.content,
+            source: snapshot.source,
+            tuning: load_optional(tuning_filename),
+        }
+    }
+
+    fn seal(&self) -> RuntimeSealedPrompt {
+        let base_sha256 = sha256_hex(self.content.as_bytes());
+        let tuning = self
+            .tuning
+            .as_deref()
+            .map(str::trim)
+            .filter(|s| !s.is_empty());
+        let tuning_sha256 = tuning.map(str::as_bytes).map(sha256_hex);
+        let mut composed_content = self.content.clone();
+        if let Some(tuning) = tuning {
+            composed_content.push_str("\n\n");
+            composed_content.push_str(tuning);
+        }
+        let composed_sha256 = sha256_hex(composed_content.as_bytes());
+        RuntimeSealedPrompt::seal(
+            composed_content,
+            self.source,
+            composed_sha256,
+            base_sha256,
+            tuning_sha256,
+        )
+    }
+}
+
+/// All policy rungs are explicit; resolution never substitutes host prompt files.
+#[derive(Clone)]
+pub struct CapturedRuntimePrompts {
+    pub correction: CapturedPrompt,
+    pub smart: CapturedPrompt,
+    pub max: CapturedPrompt,
+    pub assistive: CapturedPrompt,
+}
+
+impl Default for CapturedRuntimePrompts {
+    fn default() -> Self {
+        Self {
+            correction: CapturedPrompt::builtin(PromptKind::Formatting),
+            smart: CapturedPrompt::builtin(PromptKind::FormattingSmart),
+            max: CapturedPrompt::builtin(PromptKind::FormattingMax),
+            assistive: CapturedPrompt::builtin(PromptKind::Assistive),
+        }
+    }
+}
+
+impl CapturedRuntimePrompts {
+    /// Read only the selected rung and assistive source, matching normal startup.
+    pub(crate) fn capture(policy: FormattingPolicy) -> Self {
+        super::loader::note_startup_acquisition("prompt files");
+        let mut prompts = Self::default();
+        if let Some(kind) = PromptKind::for_formatting_policy(policy) {
+            let captured = CapturedPrompt::capture(kind, "formatting_tuning.txt");
+            match policy {
+                FormattingPolicy::Correction => prompts.correction = captured,
+                FormattingPolicy::Smart => prompts.smart = captured,
+                FormattingPolicy::Max => prompts.max = captured,
+                FormattingPolicy::Off => unreachable!(),
+            }
+        }
+        prompts.assistive = CapturedPrompt::capture(PromptKind::Assistive, "assistive_tuning.txt");
+        prompts
+    }
+
+    pub(crate) fn seal(
+        &self,
+        policy: FormattingPolicy,
+    ) -> (Option<RuntimeSealedPrompt>, RuntimeSealedPrompt) {
+        let formatting = match policy {
+            FormattingPolicy::Off => None,
+            FormattingPolicy::Correction => Some(self.correction.seal()),
+            FormattingPolicy::Smart => Some(self.smart.seal()),
+            FormattingPolicy::Max => Some(self.max.seal()),
+        };
+        (formatting, self.assistive.seal())
     }
 }
 
@@ -925,5 +1007,47 @@ mod tests {
                 .lines()
                 .any(|line| line.contains("\"status\":\"failed\""))
         );
+    }
+}
+
+#[cfg(test)]
+mod captured_prompt_tests {
+    use super::*;
+    use crate::config::StartupAcquisitionProbe;
+
+    #[test]
+    fn captured_composition_hashes_exact_bytes_and_retains_source() {
+        let probe = StartupAcquisitionProbe::forbid();
+        let captured = CapturedPrompt {
+            content: "base bytes\n".into(),
+            source: PromptSource::ReadError,
+            tuning: Some("  tuning bytes\n ".into()),
+        };
+        let sealed = captured.seal();
+        assert_eq!(sealed.composed_content(), "base bytes\n\n\ntuning bytes");
+        assert_eq!(sealed.base_sha256(), sha256_hex(b"base bytes\n"));
+        assert_eq!(
+            sealed.tuning_sha256(),
+            Some(sha256_hex(b"tuning bytes").as_str())
+        );
+        assert_eq!(
+            sealed.composed_sha256(),
+            sha256_hex(sealed.composed_content().as_bytes())
+        );
+        assert_eq!(sealed.source(), PromptSource::ReadError);
+        assert!(probe.attempts().is_empty());
+    }
+
+    #[test]
+    fn captured_off_bypasses_formatting_and_empty_tuning_does_not_change_base() {
+        let probe = StartupAcquisitionProbe::forbid();
+        let mut prompts = CapturedRuntimePrompts::default();
+        prompts.assistive.tuning = Some(" \n ".into());
+        let (formatting, assistive) = prompts.seal(FormattingPolicy::Off);
+        assert!(formatting.is_none());
+        assert_eq!(assistive.composed_content(), DEFAULT_ASSISTIVE_PROMPT);
+        assert_eq!(assistive.base_sha256(), assistive.composed_sha256());
+        assert!(assistive.tuning_sha256().is_none());
+        assert!(probe.attempts().is_empty());
     }
 }

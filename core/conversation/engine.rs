@@ -533,11 +533,6 @@ impl ConversationEngine {
         &self.context
     }
 
-    /// Get mutable access to context
-    pub fn context_mut(&mut self) -> &mut ConversationContext {
-        &mut self.context
-    }
-
     /// Set system prompt
     pub fn set_system_prompt(&mut self, prompt: &str) {
         self.context.set_system_prompt(prompt);

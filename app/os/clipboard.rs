@@ -2,13 +2,10 @@
 //
 // Purpose: Provides clipboard operations and paste simulation for macOS
 //
-// Note: Some functions are not yet wired up to main.rs (pending integration)
-//
 // Dependencies: arboard (clipboard access), core-graphics (keyboard simulation)
 //
 // Key Components:
 // - paste_and_restore: Smart paste with clipboard snapshot and restoration
-// - paste_text: Simple paste with optional restore
 // - copy: Copy text to clipboard
 // - paste: Paste without simulation
 // - ClipboardSnapshot: Captures and restores all clipboard formats
@@ -164,9 +161,9 @@ pub(crate) struct SyntheticPastePreflight {
 }
 
 impl SyntheticPastePreflight {
-    /// Both signals must hold; either one missing means the keystroke is dropped.
+    /// Either signal holding allows synthetic event delivery.
     pub(crate) fn can_post_events(self) -> bool {
-        self.cg_post_event_access && self.ax_trusted
+        self.cg_post_event_access || self.ax_trusted
     }
 }
 
@@ -207,17 +204,6 @@ fn get_restore_delay() -> Duration {
         .and_then(|s| s.parse::<u64>().ok())
         .unwrap_or(DEFAULT_RESTORE_DELAY_MS);
     Duration::from_millis(delay_ms)
-}
-
-/// Checks if clipboard restore is enabled via environment variable
-fn is_restore_enabled() -> bool {
-    std::env::var("RESTORE_CLIPBOARD")
-        .ok()
-        .map(|v| {
-            let lower = v.to_lowercase();
-            !matches!(lower.as_str(), "0" | "false" | "no" | "off")
-        })
-        .unwrap_or(true) // Default: enabled
 }
 
 /// Clipboard snapshot containing all available formats
@@ -506,7 +492,7 @@ fn schedule_clipboard_restore(
 
 /// Smart paste with configurable clipboard restoration
 ///
-/// This is a more flexible version of paste_text that allows you to control
+/// This is the lower-level form of [`paste_and_restore`] that lets the caller control
 /// whether the clipboard is restored. Useful when you want to paste multiple
 /// times without fighting clipboard restoration.
 ///
@@ -568,31 +554,6 @@ pub fn paste_text_smart(text: &str, restore: bool) -> Result<()> {
     }
 
     Ok(())
-}
-
-/// Pastes text into the currently active application
-///
-/// This function implements a sophisticated paste operation:
-/// 1. Saves current clipboard content (if restore is enabled)
-/// 2. Sets clipboard to new text
-/// 3. Simulates Cmd+V keypress
-/// 4. Waits briefly for paste to complete
-/// 5. Simulates Right Arrow to deselect pasted text
-/// 6. Restores original clipboard content after configurable delay
-///
-/// The clipboard restore can be disabled by setting RESTORE_CLIPBOARD=0
-/// The restore delay can be configured via RESTORE_CLIPBOARD_DELAY_MS
-///
-/// # Arguments
-/// * `text` - The text to paste
-///
-/// # Errors
-/// Returns error if clipboard or keyboard simulation fails
-///
-/// # Platform Support
-/// Currently macOS-only. Uses Cmd modifier for paste simulation.
-pub fn paste_text(text: &str) -> Result<()> {
-    paste_text_smart(text, is_restore_enabled())
 }
 
 /// Pastes text and always restores the previous clipboard content

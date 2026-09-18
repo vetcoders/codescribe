@@ -40,6 +40,7 @@ use codescribe_core::agent::{
     AgentEvent, AgentProvider, ContentBlock, ImageAsset, Message, Role, StreamOptions,
     ToolDefinition,
 };
+use codescribe_core::config::{RuntimeAiRequestTiming, RuntimeLlmLane, keychain};
 use codescribe_core::llm::provider::{ProviderKind, capability_policy};
 
 /// Value of the mandatory `anthropic-version` header.
@@ -53,10 +54,6 @@ const ANTHROPIC_VERSION: &str = "2023-06-01";
 /// against this same limit, which made the old 8192 doubly throttling.
 const DEFAULT_MAX_TOKENS: u32 = 128_000;
 
-/// How long to wait for response headers before giving up.
-const DEFAULT_INITIAL_RESPONSE_TIMEOUT_MS: u64 = 90_000;
-/// How long a started stream may stall between chunks before giving up.
-const DEFAULT_INTER_CHUNK_TIMEOUT_MS: u64 = 90_000;
 /// Transport-level ceiling on the whole request; generous, since a long tool
 /// turn is legitimate and the finer timeouts above do the real policing.
 const STREAM_REQUEST_TIMEOUT: Duration = Duration::from_secs(3600);
@@ -71,8 +68,10 @@ pub struct AnthropicProvider {
     client: Client,
     /// Messages endpoint URL; validated before every send.
     endpoint: String,
-    /// Sent as `x-api-key`. Anthropic always authenticates, so this is required.
+    /// Fixed key used only by direct internal fixtures.
     api_key: String,
+    /// Keychain/env account resolved anew for every request in production.
+    api_key_account: Option<String>,
     /// Pinned API version sent with each request.
     anthropic_version: String,
     /// Model used when the caller leaves `StreamOptions::model` blank.
@@ -86,29 +85,21 @@ pub struct AnthropicProvider {
 }
 
 impl AnthropicProvider {
-    /// Build from the resolved assistive lane (fresh settings → env →
-    /// Keychain). Anthropic always authenticates, so a missing key is a
-    /// readable error naming the exact account — the availability gate
-    /// reports the same reason before a send is ever attempted.
+    /// Build from the resolved assistive lane topology. Anthropic always
+    /// authenticates, but the key is resolved at send time so a resident
+    /// provider observes Settings saves and rotations immediately.
     pub fn from_lane(
-        lane: codescribe_core::llm::lane_truth::AssistiveLaneSnapshot,
+        lane: &RuntimeLlmLane,
+        request_timing: &RuntimeAiRequestTiming,
     ) -> Result<Self> {
-        let api_key = lane
-            .api_key
-            .context("Anthropic API key (assistive) is required. Set LLM_ANTHROPIC_API_KEY.")?;
-        let endpoint = lane.endpoint;
+        let api_key_account = Some(lane.credential().key_account().to_string());
+        let endpoint = lane.endpoint().to_string();
         // Model comes from the shared assistive-lane setting; Settings supplies a
         // Claude model when the assistive provider is Anthropic.
-        let default_model = lane.model;
+        let default_model = lane.model().to_string();
 
-        let initial_response_timeout = Duration::from_millis(parse_env_u64(
-            "CODESCRIBE_AI_ATTEMPT_TIMEOUT_MS",
-            DEFAULT_INITIAL_RESPONSE_TIMEOUT_MS,
-        ));
-        let inter_chunk_timeout = Duration::from_millis(parse_env_u64(
-            "CODESCRIBE_AI_INTER_CHUNK_TIMEOUT_MS",
-            DEFAULT_INTER_CHUNK_TIMEOUT_MS,
-        ));
+        let initial_response_timeout = request_timing.attempt_timeout();
+        let inter_chunk_timeout = request_timing.inter_chunk_timeout();
 
         let client = Client::builder()
             .timeout(STREAM_REQUEST_TIMEOUT)
@@ -125,7 +116,8 @@ impl AnthropicProvider {
         Ok(Self {
             client,
             endpoint,
-            api_key,
+            api_key: String::new(),
+            api_key_account,
             anthropic_version: ANTHROPIC_VERSION.to_string(),
             default_model,
             default_max_tokens: DEFAULT_MAX_TOKENS,
@@ -188,24 +180,26 @@ impl AgentProvider for AnthropicProvider {
         let (tx, rx) = mpsc::channel(256);
         let client = self.client.clone();
         let endpoint = self.endpoint.clone();
-        let api_key = self.api_key.clone();
-        let anthropic_version = self.anthropic_version.clone();
-        let initial_response_timeout = self.initial_response_timeout;
-        let inter_chunk_timeout = self.inter_chunk_timeout;
+        let api_key = self
+            .api_key_account
+            .as_deref()
+            .and_then(keychain::runtime_key)
+            .unwrap_or_else(|| self.api_key.clone());
+        anyhow::ensure!(
+            !api_key.trim().is_empty(),
+            "Anthropic API key (assistive) is required. Set LLM_ANTHROPIC_API_KEY."
+        );
+        let transport = AnthropicStreamTransport {
+            client,
+            endpoint,
+            api_key,
+            anthropic_version: self.anthropic_version.clone(),
+            initial_response_timeout: self.initial_response_timeout,
+            inter_chunk_timeout: self.inter_chunk_timeout,
+        };
 
         tokio::spawn(async move {
-            if let Err(error) = run_anthropic_stream(
-                client,
-                endpoint,
-                api_key,
-                anthropic_version,
-                initial_response_timeout,
-                inter_chunk_timeout,
-                body,
-                tx.clone(),
-            )
-            .await
-            {
+            if let Err(error) = run_anthropic_stream(transport, body, tx.clone()).await {
                 let _ = tx.send(AgentEvent::Error(error.to_string())).await;
             }
         });
@@ -517,6 +511,20 @@ fn role_str(role: Role) -> &'static str {
 
 // allow(too_many_arguments): task entry point for one Anthropic SSE stream; all
 // values are owned moves into the spawned task.
+/// Everything one spawned Anthropic SSE turn owns about its transport.
+///
+/// Bundled because the task entry point took eight positional arguments; the
+/// six transport values always travel together and are moved into the task as
+/// a unit, so a struct is the honest shape.
+struct AnthropicStreamTransport {
+    client: Client,
+    endpoint: String,
+    api_key: String,
+    anthropic_version: String,
+    initial_response_timeout: Duration,
+    inter_chunk_timeout: Duration,
+}
+
 /// Drive one Messages SSE stream, emitting [`AgentEvent`]s onto `tx`.
 ///
 /// Reads the byte stream line by line, keying off each `data:` payload's own
@@ -531,17 +539,19 @@ fn role_str(role: Role) -> &'static str {
 /// # Errors
 /// Returns an error for an invalid endpoint, a failed or non-2xx request, a
 /// read failure, or any of the three timeouts firing.
-#[allow(clippy::too_many_arguments)]
 async fn run_anthropic_stream(
-    client: Client,
-    endpoint: String,
-    api_key: String,
-    anthropic_version: String,
-    initial_response_timeout: Duration,
-    inter_chunk_timeout: Duration,
+    transport: AnthropicStreamTransport,
     request_body: Value,
     tx: mpsc::Sender<AgentEvent>,
 ) -> Result<()> {
+    let AnthropicStreamTransport {
+        client,
+        endpoint,
+        api_key,
+        anthropic_version,
+        initial_response_timeout,
+        inter_chunk_timeout,
+    } = transport;
     let endpoint_url =
         validate_anthropic_endpoint(&endpoint).context("Invalid Anthropic endpoint URL")?;
     let request_builder = client
@@ -930,14 +940,6 @@ fn validate_anthropic_endpoint(endpoint: &str) -> Result<reqwest::Url> {
     Ok(url)
 }
 
-/// Read a `u64` env override, falling back on absent or unparseable values.
-fn parse_env_u64(key: &str, default: u64) -> u64 {
-    std::env::var(key)
-        .ok()
-        .and_then(|value| value.trim().parse::<u64>().ok())
-        .unwrap_or(default)
-}
-
 // ── SSE wire types ───────────────────────────────────────────────────────────
 
 /// One decoded SSE `data:` payload.
@@ -1028,6 +1030,49 @@ mod tests {
     use codescribe_core::agent::AgentAssetStore;
     use serde_json::json;
     use std::time::Duration;
+
+    /// Restores process env after a serial request-boundary test.
+    struct ScopedEnv {
+        previous: Vec<(&'static str, Option<std::ffi::OsString>)>,
+    }
+
+    impl ScopedEnv {
+        fn new() -> Self {
+            Self {
+                previous: Vec::new(),
+            }
+        }
+
+        fn set(&mut self, key: &'static str, value: impl AsRef<std::ffi::OsStr>) {
+            self.previous.push((key, std::env::var_os(key)));
+            // SAFETY: the only test using this helper is serial and restores
+            // every value before leaving its scope.
+            unsafe { std::env::set_var(key, value) };
+        }
+
+        fn remove(&mut self, key: &'static str) {
+            self.previous.push((key, std::env::var_os(key)));
+            // SAFETY: same serial, scope-bound invariant as `set`.
+            unsafe { std::env::remove_var(key) };
+        }
+    }
+
+    impl Drop for ScopedEnv {
+        fn drop(&mut self) {
+            for (key, previous) in self.previous.drain(..).rev() {
+                match previous {
+                    Some(value) => {
+                        // SAFETY: restoring the value captured by this serial test.
+                        unsafe { std::env::set_var(key, value) };
+                    }
+                    None => {
+                        // SAFETY: restoring the absent state captured by this serial test.
+                        unsafe { std::env::remove_var(key) };
+                    }
+                }
+            }
+        }
+    }
 
     /// Test helper: one-block text message with the given role.
     fn text_message(role: Role, text: &str) -> Message {
@@ -1426,12 +1471,53 @@ mod tests {
             client: Client::new(),
             endpoint: endpoint.to_string(),
             api_key: "test-key".to_string(),
+            api_key_account: None,
             anthropic_version: ANTHROPIC_VERSION.to_string(),
             default_model: "claude-opus-4-8".to_string(),
             default_max_tokens: 1024,
             initial_response_timeout: Duration::from_secs(2),
             inter_chunk_timeout: Duration::from_secs(2),
         }
+    }
+
+    #[tokio::test]
+    #[serial_test::serial]
+    async fn agent_provider_fetches_the_anthropic_key_after_construction_before_sending() {
+        const TEST_KEY_ACCOUNT: &str = "CODESCRIBE_TEST_ANTHROPIC_REQUEST_KEY";
+        let mut server = mockito::Server::new_async().await;
+        let endpoint = format!("{}/v1/messages", server.url());
+        let mut env = ScopedEnv::new();
+        env.remove(TEST_KEY_ACCOUNT);
+        let mut provider = provider_for(&endpoint);
+        provider.api_key.clear();
+        provider.api_key_account = Some(TEST_KEY_ACCOUNT.to_string());
+
+        env.set(TEST_KEY_ACCOUNT, "synthetic-anthropic-agent-key");
+        let body = [
+            r#"data: {"type":"message_start","message":{"id":"msg_live_key"}}"#,
+            "",
+            r#"data: {"type":"message_stop"}"#,
+            "",
+        ]
+        .join("\n");
+        let mock = server
+            .mock("POST", "/v1/messages")
+            .match_header("x-api-key", "synthetic-anthropic-agent-key")
+            .match_header("anthropic-version", ANTHROPIC_VERSION)
+            .expect(1)
+            .with_status(200)
+            .with_header("content-type", "text/event-stream")
+            .with_body(body)
+            .create_async()
+            .await;
+
+        let messages = vec![text_message(Role::User, "request-time Anthropic key")];
+        let mut rx = provider
+            .stream(&messages, &[], &StreamOptions::default())
+            .await
+            .expect("Anthropic agent request should start");
+        while rx.recv().await.is_some() {}
+        mock.assert_async().await;
     }
 
     #[tokio::test]

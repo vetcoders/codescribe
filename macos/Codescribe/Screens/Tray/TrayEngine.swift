@@ -40,6 +40,7 @@ struct TrayTranscript: Identifiable {
   var id: String { path }
 }
 
+@MainActor
 protocol TrayEngine: AnyObject {
   /// True when the assistive LLM provider can be built (gates "Show Agent").
   func isAgentAvailable() -> Bool

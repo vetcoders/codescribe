@@ -89,6 +89,11 @@ final class TrayStatusStore: ObservableObject {
     onChange?(status)
   }
 
+  func invalidate() {
+    listener?.invalidate()
+    listener = nil
+  }
+
   var compactLabel: String {
     status.menuLabel.replacingOccurrences(of: "Status: ", with: "")
   }
@@ -137,6 +142,18 @@ final class TrayStatusStore: ObservableObject {
     case .starting, .listening, .processing:
       return true
     case .idle, .success, .error, .thermal, .hotkeyConflict:
+      return false
+    }
+  }
+
+  /// Compact extra row under the wordmark + pill. The pill already carries
+  /// idle / success / listening / processing (and starting); only
+  /// warning / critical kinds keep a detail row.
+  var showsDetailStatusRow: Bool {
+    switch status.kind {
+    case .error, .thermal, .hotkeyConflict:
+      return true
+    case .starting, .idle, .listening, .processing, .success:
       return false
     }
   }
@@ -193,18 +210,27 @@ final class TrayStatusStore: ObservableObject {
   #endif
 }
 
-final class TrayStatusListener: CsTrayStatusListener, @unchecked Sendable {
-  private let onStatus: @MainActor (CsTrayStatusPayload) -> Void
+final class TrayStatusListener: CsTrayStatusListener, Sendable {
+  private let continuation: AsyncStream<CsTrayStatusPayload>.Continuation
+  private let consumer: Task<Void, Never>
 
-  init(onStatus: @escaping @MainActor (CsTrayStatusPayload) -> Void) {
-    self.onStatus = onStatus
+  @MainActor
+  init(onStatus: @escaping @MainActor @Sendable (CsTrayStatusPayload) -> Void) {
+    let channel = AsyncStream<CsTrayStatusPayload>.makeStream()
+    continuation = channel.continuation
+    consumer = Task { @MainActor in
+      for await status in channel.stream {
+        onStatus(status)
+      }
+    }
   }
 
   func onTrayStatus(status: CsTrayStatusPayload) {
-    DispatchQueue.main.async {
-      MainActor.assumeIsolated {
-        self.onStatus(status)
-      }
-    }
+    continuation.yield(status)
+  }
+
+  func invalidate() {
+    continuation.finish()
+    consumer.cancel()
   }
 }

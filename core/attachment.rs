@@ -104,24 +104,6 @@ impl Attachment {
         }
     }
 
-    /// Create an attachment with an explicit kind (for connectors).
-    pub fn with_kind(path: PathBuf, kind: AttachmentKind, source: AttachmentSource) -> Self {
-        let display_name = path
-            .file_name()
-            .map(|n| n.to_string_lossy().to_string())
-            .unwrap_or_else(|| path.to_string_lossy().to_string());
-
-        let size_bytes = std::fs::metadata(&path).map(|m| m.len()).unwrap_or(0);
-
-        Self {
-            path,
-            kind,
-            source,
-            display_name,
-            size_bytes,
-        }
-    }
-
     /// Extract paths from a slice of attachments (for `build_attachments_block`).
     pub fn paths(attachments: &[Attachment]) -> Vec<PathBuf> {
         attachments.iter().map(|a| a.path.clone()).collect()
@@ -154,11 +136,6 @@ impl Attachment {
                 .collect();
             format!("{truncated}…")
         }
-    }
-
-    /// Check if this attachment has the same path as another.
-    pub fn same_path(&self, other: &Path) -> bool {
-        self.path == other
     }
 
     /// Returns `true` if the file exceeds the maximum attachment size.
@@ -338,38 +315,6 @@ impl AttachmentStore {
         Ok(dir)
     }
 
-    /// Save clipboard image data to disk and return the path.
-    ///
-    /// File name: `clipboard_{timestamp}.{ext}`
-    pub fn save_clipboard_image(data: &[u8], ext: &str) -> Result<PathBuf> {
-        let dir = Self::ensure_dir()?;
-        let ts = SystemTime::now()
-            .duration_since(SystemTime::UNIX_EPOCH)
-            .unwrap_or_default()
-            .as_millis();
-        // Sanitize ext: only allow alphanumeric chars (no path separators).
-        let safe_ext: String = ext
-            .chars()
-            .filter(|c| c.is_ascii_alphanumeric())
-            .take(10)
-            .collect();
-        let safe_ext = if safe_ext.is_empty() {
-            "bin"
-        } else {
-            &safe_ext
-        };
-        let name = format!("clipboard_{ts}.{safe_ext}");
-        let path = dir.join(&name);
-        std::fs::write(&path, data)
-            .with_context(|| format!("Failed to save clipboard image: {}", path.display()))?;
-        debug!(
-            "Saved clipboard image: {} ({} bytes)",
-            path.display(),
-            data.len()
-        );
-        Ok(path)
-    }
-
     /// Save fetched content (GitHub blob, URL snapshot) to disk.
     ///
     /// File name: `{prefix}_{sanitized_name}`
@@ -395,52 +340,6 @@ impl AttachmentStore {
     /// Save text content to disk (convenience for URL snapshots).
     pub fn save_text(text: &str, name: &str, prefix: &str) -> Result<PathBuf> {
         Self::save_fetched(text.as_bytes(), name, prefix)
-    }
-
-    /// Delete old stored attachments (files older than `max_age_days`).
-    pub fn cleanup_old(max_age_days: u32) {
-        let dir = Self::store_dir();
-        if !dir.exists() {
-            return;
-        }
-
-        let cutoff = std::time::Duration::from_secs(max_age_days as u64 * 86400);
-        let now = SystemTime::now();
-
-        let entries = match std::fs::read_dir(&dir) {
-            Ok(e) => e,
-            Err(e) => {
-                warn!("Failed to read attachments dir for cleanup: {}", e);
-                return;
-            }
-        };
-
-        let mut removed = 0u32;
-        for entry in entries.flatten() {
-            let Ok(meta) = entry.metadata() else {
-                continue;
-            };
-            let Ok(modified) = meta.modified() else {
-                continue;
-            };
-            if let Ok(age) = now.duration_since(modified)
-                && age > cutoff
-            {
-                let path = entry.path();
-                if std::fs::remove_file(&path).is_ok() {
-                    removed += 1;
-                } else {
-                    tracing::warn!("Attachment cleanup: failed to delete {}", path.display());
-                }
-            }
-        }
-
-        if removed > 0 {
-            debug!(
-                "Attachment cleanup: removed {} files older than {} days",
-                removed, max_age_days
-            );
-        }
     }
 }
 

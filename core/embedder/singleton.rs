@@ -86,9 +86,10 @@ fn load_engine() -> Result<EmbedderEngine> {
     // Measured 2026-08-09 on macOS 27.0 / Metal: this exact model returned 384
     // dimensions of NaN for EVERY input, while the same weights on the CPU
     // returned unit-norm vectors with sensible similarities (cargo/kargo 0.836).
-    // Nothing surfaced, because the sole consumer — the semantic dedup gate —
-    // compares against a threshold, and every comparison with NaN is false: the
-    // gate reported `gate_drops=0` across 378 real deliveries and read as
+    // Nothing surfaced, because the consumer of the day — the semantic dedup
+    // gate, since demolished in `ac6d399b3` — compared against a threshold, and
+    // every comparison with NaN is false: the gate reported `gate_drops=0`
+    // across 378 real deliveries and read as
     // "nothing to drop" rather than "I am blind". A 471 MB model was loaded on
     // every delivery to compute nothing.
     //
@@ -187,9 +188,10 @@ pub fn init() -> Result<()> {
 
 /// Load the engine off the caller's thread, ignoring the outcome.
 ///
-/// The semantic guard is the only consumer, and it runs *after* AI formatting
-/// returns — so a cold engine put its whole load on the stop path, in series
-/// behind the model call. Measured 2026-08-12: `semantic_guard took_ms=1127`,
+/// Historical note: the semantic guard — the only consumer, deleted in
+/// `ac6d399b3` — ran *after* AI formatting returned, so a cold engine put its
+/// whole load on the stop path, in series behind the model call. There is no
+/// production caller today. Measured 2026-08-12: `semantic_guard took_ms=1127`,
 /// of which ~1.0s was `Embedder initialized from embedded model`, against 0.13s
 /// of actual comparison.
 ///

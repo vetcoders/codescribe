@@ -24,8 +24,8 @@
 //! - Without `CODESCRIBE_APPLE_STT_BRIDGE` the worker spawns by bare name,
 //!   fails, and the session mills the whole take against a dead engine before
 //!   admitting it at stop time.
-//! - Take audio survives in `/var/folders/**/codescribe_recording_<epoch_ms>.wav`
-//!   (the audio spill); copy it out before the OS purges the directory.
+//! - Take audio survives in `$CODESCRIBE_DATA_DIR/takes/codescribe_recording_<epoch_ms>.wav`
+//!   (the audio spill; default `$HOME/.codescribe/takes`).
 //!
 //! W13-0: when the replay emits `UtteranceFinal.segments`, this harness prints
 //! a word-span histogram (duration / overlap / restart). That is the only
@@ -49,7 +49,6 @@ async fn replay_operator_take() {
         std::path::Path::new(&wav),
         Some("pl".to_string()),
         &settings,
-        codescribe_core::asr_session::GatewaySessionAvailability::Unavailable,
         codescribe::controller::production_replay::ProductionReplayLane::AppleLexicon,
     )
     .await

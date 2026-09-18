@@ -60,9 +60,6 @@ Poniższe działają „same z siebie” — jeśli ich nie ustawisz, aplikacja 
 
 **Streaming (chunky)**
 
-- `CODESCRIBE_STREAM_CHUNK_SEC` – domyślnie `3.0` (HOT RELOADED)
-- `CODESCRIBE_STREAM_OVERLAP_RATIO` – domyślnie `0.2` (HOT RELOADED)
-- `CODESCRIBE_MAX_INFERENCE_CONCURRENCY` – domyślnie `1` (HOT RELOADED; clamp `1..4`)
 - `CODESCRIBE_BUFFER_DELAY_MS` – domyślnie `280` (HOT RELOADED)
 - `CODESCRIBE_TYPING_CPS` – domyślnie `90` (HOT RELOADED)
 - `CODESCRIBE_EMIT_WORDS_MAX` – max słów na tick (buffered), domyślnie `2` (HOT RELOADED)
@@ -168,10 +165,10 @@ i runtime nie może znaleźć Whispera przez cache / config:
 - `USE_LOCAL_STT` (RESTART NEEDED)
 - `LOCAL_MODEL`, `WHISPER_MODEL` (RESTART NEEDED)
 - `WHISPER_LANGUAGE` (HOT RELOADED; default `auto`; applies to the next capture. `auto` leaves language detection to Whisper for mixed-language dictation.)
-- `CODESCRIBE_WHISPER_INITIAL_PROMPT` (RESTART NEEDED; alias legacy: `WHISPER_INITIAL_PROMPT`; ignorowane przez ONNX)
+- `CODESCRIBE_WHISPER_INITIAL_PROMPT` (RESTART NEEDED; alias legacy: `WHISPER_INITIAL_PROMPT`)
 - `STT_ENDPOINT`, `STT_API_KEY` (RESTART NEEDED)
-- `FINAL_PASS_MODE` (legacy; `always|smart|off`; alias `CODESCRIBE_FINAL_PASS_MODE`) — zachowany do migracji ustawień, ale zwykły stop nie wykonuje już żadnego file-passu. Pełny WAV trafia do STT wyłącznie po jawnej akcji Retranscribe (Overlay/Dictionary/Teacher). Live refinement wybiera osobny `CODESCRIBE_LAYERED_TRANSCRIPTION`; słownik/lexicon zawsze działa w postprocess.
-- `CODESCRIBE_LAYERED_TRANSCRIPTION` (HOT RELOADED; promoted compatibility override) — Local Power + Apple/Auto uzbraja dokładnie ogrodzony Whisper tail-patch przy braku wartości lub `phase1`; jawne `off`/`0`/`false`/`no` albo błędny token daje named degraded state. Apple-only nie uzbraja lane. Bezpośredni Whisper na VAD/scheduler jest primary engine i odmawia drugiej, unbound mutation lane. Per-take prawdą jest `tail_patch_session_receipt`, nie stan UI. Final pass pozostaje ortogonalny.
+- `FINAL_PASS_MODE` (legacy; `always|smart|off`; alias `CODESCRIBE_FINAL_PASS_MODE`) — zachowany do migracji ustawień, ale zwykły stop nie wykonuje już żadnego file-passu. Pełny plik trafia do STT wyłącznie przez jawne powierzchnie Dictionary/Teacher/Voice Lab/CLI; daily Overlay nie ma file-pass writera. Live refinement wybiera osobny `CODESCRIBE_LAYERED_TRANSCRIPTION`; słownik/lexicon zawsze działa w postprocess.
+- `CODESCRIBE_LAYERED_TRANSCRIPTION` (HOT RELOADED; promoted compatibility override) — Local Power + Apple/Auto uzbraja ograniczoną obserwację Whisper Layer 1 na retained PCM wewnątrz normalnej sesji Apple-ledger przy braku wartości lub `phase1`; jawne `off`/`0`/`false`/`no` albo błędny token daje named degraded state. Apple-only nie uzbraja lane. Ten token nie wybiera bezpośredniego silnika, drugiego dispatchera ani osobnej ścieżki mikrofonu. Per-take prawdą jest `tail_patch_session_receipt`, nie stan UI. Final pass pozostaje ortogonalny.
 - `STT_TAIL_PROVIDER` (HOT RELOADED; default `inprocess`) — wybiera implementację kontraktu tail-patch: `inprocess`, nadzorowany lokalny `sidecar` po WebSocket albo `remote` po multipart. Awaria sidecara/remote przechodzi do in-process z typed receiptem; zmiana defaultu pozostaje guzikiem operatora.
 - `CODESCRIBE_STT_SIDECAR_BIN` (RESTART NEEDED; dev only) — jawna ścieżka do helpera; aplikacja dystrybucyjna automatycznie znajduje `codescribe-stt-sidecar` obok własnego executable.
 - `CODESCRIBE_TAIL_PATCH_MAX_CHANGE_RATIO` (HOT RELOADED; default `0.5`) — próg bezpieczeństwa Layer 1: jeśli udział zmienionych znaków wobec zatwierdzonej wypowiedzi przekracza tę wartość, cała łatka jest **odrzucana** zamiast nałożona. Dzięki temu rozbieżna re-transkrypcja nigdy nie nadpisze żywego płótna.
@@ -182,9 +179,6 @@ i runtime nie może znaleźć Whispera przez cache / config:
 
 ### Streaming / VAD / buffer
 
-- `CODESCRIBE_STREAM_CHUNK_SEC` (HOT RELOADED)
-- `CODESCRIBE_STREAM_OVERLAP_RATIO` (HOT RELOADED)
-- `CODESCRIBE_MAX_INFERENCE_CONCURRENCY` (HOT RELOADED; clamp `1..4`)
 - `CODESCRIBE_BUFFER_DELAY_MS` (HOT RELOADED)
 - `CODESCRIBE_TYPING_CPS` (HOT RELOADED)
 - VAD internals: hardcoded (no env knobs)
@@ -207,7 +201,8 @@ i runtime nie może znaleźć Whispera przez cache / config:
 - `LLM_USE_STREAMING` (HOT RELOADED)
 - `AI_MAX_TOKENS`, `AI_ASSISTIVE_MAX_TOKENS` (RESTART NEEDED)
 - `TRANSCRIPT_SEND_MODE` (RESTART NEEDED)
-- `CODESCRIBE_AI_MAX_RETRIES`, `CODESCRIBE_AI_RETRY_DELAY_MS`, `CODESCRIBE_AI_ATTEMPT_TIMEOUT_MS`, `CODESCRIBE_AI_OLLAMA_ATTEMPT_TIMEOUT_MS` (HOT RELOADED)
+- `CODESCRIBE_AI_MAX_RETRIES`, `CODESCRIBE_AI_RETRY_DELAY_MS`, `CODESCRIBE_AI_ATTEMPT_TIMEOUT_MS`, `CODESCRIBE_AI_INTER_CHUNK_TIMEOUT_MS` (HOT — valid values are read once by the canonical loader and sealed into the next selected `RuntimeSettingsSnapshot`; formatter and Agent share the two request timeouts)
+- `CODESCRIBE_AI_OLLAMA_ATTEMPT_TIMEOUT_MS` (registry-only zero-reader residue; no runtime consumer in this cut)
 - `CODESCRIBE_RESPONSES_PROBE_URL` (HOT RELOADED; default pusty = oficjalny endpoint providera) — opcjonalny cel sondy _zdolności_ Responses (puste body ⇒ 400/401). Nie bramkuje sign-in: OAuth zapisuje tożsamość wiersza; zapis do Responses to osobny lane/klucz.
 
 ### Hotkeys
@@ -288,12 +283,6 @@ make test-sse
 
 - `CODESCRIBE_E2E_OLLAMA` (RESTART NEEDED)
 - `CODESCRIBE_E2E_RUN_MEDIUM` (RESTART NEEDED)
-- `CODESCRIBE_E2E_CORPUS` (RESTART NEEDED)
-- `CODESCRIBE_E2E_CORPUS_DATE` (RESTART NEEDED)
-- `CODESCRIBE_E2E_CORPUS_LIMIT` (RESTART NEEDED)
-- `CODESCRIBE_E2E_CORPUS_MAX_REGRESSION` (RESTART NEEDED)
-- `CODESCRIBE_E2E_CORPUS_LANGUAGE` (RESTART NEEDED)
-- `CODESCRIBE_E2E_CORPUS_DIR` (RESTART NEEDED)
 
 ### Logging (legacy)
 
@@ -332,7 +321,6 @@ STT_API_KEY=...
 **4) Strojenie streaming / powtórki**
 
 ```
-CODESCRIBE_STREAM_CHUNK_SEC=12
 CODESCRIBE_STREAM_SIMILARITY=0.90
 CODESCRIBE_STREAM_NOVELTY=0.20
 ```
@@ -342,5 +330,4 @@ CODESCRIBE_STREAM_NOVELTY=0.20
 ## Report expectation (dla wdrożeniowca)
 
 - Jeśli coś nie działa: sprawdź `~/.codescribe/.env` i porównaj z sekcją „B” i „C”.
-- Jeśli pojawiają się powtórki: zwiększ `CODESCRIBE_STREAM_CHUNK_SEC`.
 - Jeśli brak AI: sprawdź czy `LLM_*` są ustawione.

@@ -185,17 +185,6 @@ impl ModifierFlags {
         }
     }
 
-    /// Control held, everything else released — the shape of the default
-    /// dictation hold.
-    pub fn ctrl_only() -> Self {
-        Self {
-            ctrl: true,
-            alt: false,
-            shift: false,
-            cmd: false,
-        }
-    }
-
     /// Check if the current flags match the required flags
     ///
     /// `exclusive` decides the comparison: exact equality (extra modifiers
@@ -397,11 +386,6 @@ impl HotkeyDetector {
                 modifiers,
             } => self.handle_flags_changed(now, key, modifiers, config),
         }
-    }
-
-    /// Whether a hold gesture is currently running.
-    pub fn is_combo_active(&self) -> bool {
-        self.hold_active
     }
 
     /// Handle a non-modifier key press.
@@ -1229,7 +1213,7 @@ mod tests {
                 mode: HoldMode::Raw,
             })
         );
-        assert!(!detector.is_combo_active());
+        assert!(!detector.hold_active);
     }
 
     #[test]
@@ -1413,19 +1397,14 @@ mod tests {
     }
 
     #[test]
-    /// ModifierFlags::ctrl_only marks only the Control bit.
-    fn test_modifier_flags_ctrl_only() {
-        let flags = ModifierFlags::ctrl_only();
-        assert!(flags.ctrl);
-        assert!(!flags.alt);
-        assert!(!flags.shift);
-        assert!(!flags.cmd);
-    }
-
-    #[test]
     /// Exclusive match requires exact flag equality with the binding requirement.
     fn test_matches_exclusive_mode() {
-        let required = ModifierFlags::ctrl_only();
+        let required = ModifierFlags {
+            ctrl: true,
+            alt: false,
+            shift: false,
+            cmd: false,
+        };
         let current = ModifierFlags {
             ctrl: true,
             alt: false,
@@ -1454,7 +1433,12 @@ mod tests {
     #[test]
     /// Non-exclusive match allows extra modifiers beyond the required set.
     fn test_matches_non_exclusive_mode() {
-        let required = ModifierFlags::ctrl_only();
+        let required = ModifierFlags {
+            ctrl: true,
+            alt: false,
+            shift: false,
+            cmd: false,
+        };
         let current = ModifierFlags {
             ctrl: true,
             alt: true,
@@ -1940,7 +1924,7 @@ mod tests {
             ),
             None
         );
-        assert!(!detector.is_combo_active());
+        assert!(!detector.hold_active);
     }
 
     #[test]
@@ -1965,10 +1949,7 @@ mod tests {
             ),
             None
         );
-        assert!(
-            !detector.is_combo_active(),
-            "Ctrl alone must not arm HoldCtrlAlt"
-        );
+        assert!(!detector.hold_active, "Ctrl alone must not arm HoldCtrlAlt");
 
         assert_eq!(
             detector.feed(
@@ -1984,7 +1965,7 @@ mod tests {
                 mode: HoldMode::Raw,
             })
         );
-        assert!(detector.is_combo_active());
+        assert!(detector.hold_active);
     }
 
     #[test]

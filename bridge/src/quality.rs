@@ -161,17 +161,26 @@ pub struct CsTokenConfidence {
 /// Persist one overlay correction: the quality record always lands, while lexicon
 /// learning is gated by explicit teach action plus the N-correction threshold.
 ///
-/// Only explicit Correction-level teach gestures can contribute word pairs;
-/// higher levels are recorded as evidence with `pairs_learned = 0`, because a
-/// creative rewrite is not a transcription fix and would poison the lexicon.
-/// A qualifying teach remains evidence until its identical pair reaches the
-/// configured threshold. An unrecognised `formatting_level` is rejected before
-/// anything is written.
+/// Word pairs can be proposed by an explicit Teach gesture, a legacy
+/// `manual_human` edit, or a reducer-authenticated `user-edit-*` receipt; an
+/// auto-format result without that provenance is only evidence. Automatic
+/// promotion waits until the same normalized pair reaches the configured
+/// correction threshold. The separate Dictionary Teach command is an explicit
+/// bulk-promotion override. An unrecognised `formatting_level` is rejected
+/// before anything is written.
 ///
 /// The confidence fields (`avg_logprob`, `speech_pct`, `confidence_flags`) are
 /// stored alongside the text so later analysis can correlate corrections with how
 /// unsure the engine was.
 #[uniffi::export]
+// allow(too_many_arguments): WHY — this is the UniFFI ABI the Swift overlay
+// calls; the nine parameters are the nine columns of one quality receipt, and
+// collapsing them means exporting a new `uniffi::Record` and changing the
+// generated Swift signature at every overlay call site. WHEN — re-added
+// 2026-09-08 by the vc-prune Wave 5 silencer strip after clippy fired `too many
+// arguments (9/7)`; the lint is authentic, the fix is simply not a Rust-only
+// cut. WHERE — must land together with the `OverlayCorrectionInput` cut in
+// `core/quality/overlay_quality.rs` and the Swift callers under `macos/`.
 #[allow(clippy::too_many_arguments)]
 pub fn commit_overlay_quality_record(
     raw_text: String,

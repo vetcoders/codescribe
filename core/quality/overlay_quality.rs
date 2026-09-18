@@ -1,7 +1,8 @@
 //! P0-D Quality loop MVP: capture user corrections from overlay FINAL transcript edits.
 //! Writes quality records (raw, delivered, edited) to ~/.codescribe/quality/*.jsonl
 //! Extracts lexicon candidates (delivered→edited) and appends safe rules to the
-//! custom lexicon (lexicon.custom.jsonl) that StreamPostProcessor / apply_lexicon already consumes.
+//! custom lexicon (`lexicon.custom.jsonl`) loaded by the current
+//! `custom_lexicon_entries` path and its bridge/quality readers.
 //!
 //! Privacy: purely local, no network, no secrets, no audio.
 //! No new Settings knobs (three identical human teaches by default; VoiceLab UI later).
@@ -179,6 +180,16 @@ impl QualityRecord {
     /// An unavailable clock yields `timestamp_ms == 0` rather than a panic: the
     /// correction itself is the evidence, and refusing to record it because the
     /// system clock misbehaved would lose the operator's actual work.
+    // allow(too_many_arguments): WHY — ten positional parameters are the
+    // telescoping tail of `new` -> `new_with_confidence`; every one is a column
+    // of the quality JSONL row, not a behaviour switch. WHEN — re-added
+    // 2026-09-08 by the vc-prune Wave 5 silencer strip after clippy fired
+    // `too many arguments (9/7)`; the strip confirms the lint is authentic, not
+    // a false positive. WHERE — the fix is one `OverlayCorrectionInput` struct
+    // shared with `commit_overlay_correction_with_confidence` /
+    // `_with_provenance` below and threaded through `bridge/src/quality.rs:189`
+    // (the UniFFI entry). That crosses the FFI signature and was out of budget
+    // for a silencer-strip cut; it is filed as the wave's headline smell.
     #[allow(clippy::too_many_arguments)]
     pub fn new_with_confidence(
         raw_text: String,
@@ -438,6 +449,50 @@ pub fn custom_lexicon_entries() -> Result<Vec<CustomLexiconEntry>> {
     }
 
     Ok(entries)
+}
+
+/// Rewrite `text` with every custom-lexicon `variant → canonical` rule.
+///
+/// Word-boundary, case-insensitive. Longer variants win first so a short
+/// mishearing cannot eat a longer phrase. Load failure is identity: STT text
+/// still ships. This is L2 — a later observer on already-heard words — not a
+/// second decoder.
+pub fn apply_custom_lexicon(text: &str) -> String {
+    if text.is_empty() {
+        return String::new();
+    }
+    let Ok(mut entries) = custom_lexicon_entries() else {
+        return text.to_string();
+    };
+    entries.sort_by(|left, right| {
+        right
+            .variant
+            .chars()
+            .count()
+            .cmp(&left.variant.chars().count())
+            .then_with(|| left.variant.cmp(&right.variant))
+    });
+    let mut rewritten = text.to_string();
+    let mut seen = HashSet::new();
+    for entry in entries {
+        let variant = entry.variant.trim();
+        let canonical = entry.canonical.trim();
+        if variant.is_empty() || canonical.is_empty() {
+            continue;
+        }
+        if unicode_casefold_eq(variant, canonical) {
+            continue;
+        }
+        let key = normalized_variant(variant);
+        if !seen.insert(key) {
+            continue;
+        }
+        let Ok(pattern) = regex::Regex::new(&format!(r"(?i)\b{}\b", regex::escape(variant))) else {
+            continue;
+        };
+        rewritten = pattern.replace_all(&rewritten, canonical).into_owned();
+    }
+    rewritten
 }
 
 /// Extract candidate lexicon pairs (variant → canonical) from a user correction.
@@ -851,8 +906,7 @@ fn record_is_human_lexicon_teach(record: &QualityRecord) -> bool {
         .meta
         .get("edit_provenance")
         .and_then(serde_json::Value::as_str)
-        .map(str::trim)
-        == Some("manual_human")
+        .is_some_and(edit_provenance_value_is_manual)
     {
         return true;
     }
@@ -1166,7 +1220,12 @@ fn overlay_commit_teaches_lexicon(_mode: &str, action: Option<&str>) -> bool {
 }
 
 fn edit_provenance_is_manual(edit_provenance: Option<&str>) -> bool {
-    edit_provenance.map(str::trim) == Some("manual_human")
+    edit_provenance.is_some_and(edit_provenance_value_is_manual)
+}
+
+fn edit_provenance_value_is_manual(provenance: &str) -> bool {
+    let provenance = provenance.trim();
+    provenance == "manual_human" || provenance.starts_with("user-edit-")
 }
 
 /// High-level: save the quality record for the overlay edit AND feed lexicon candidates.
@@ -1219,6 +1278,13 @@ pub fn commit_overlay_correction_with_level(
 
 /// Like [`commit_overlay_correction_with_level`], plus optional STT confidence
 /// fields recorded on the quality JSONL line (W11-C / LL-D).
+// allow(too_many_arguments): WHY — rung three of the four-rung telescoping
+// chain `commit_overlay_correction` -> `_with_level` -> `_with_confidence` ->
+// `_with_provenance`, each rung adding parameters rather than a payload type.
+// WHEN — re-added 2026-09-08 by the vc-prune Wave 5 silencer strip (clippy:
+// `too many arguments (10/7)`). WHERE — collapses together with
+// `new_with_confidence` and `_with_provenance` once `OverlayCorrectionInput`
+// exists; do not add a fifth rung.
 #[allow(clippy::too_many_arguments)]
 pub fn commit_overlay_correction_with_confidence(
     raw_text: &str,
@@ -1249,6 +1315,13 @@ pub fn commit_overlay_correction_with_confidence(
 
 /// Persist one overlay receipt while keeping delivery action separate from the
 /// explicit editor provenance that alone may vote in the three-confirmation gate.
+// allow(too_many_arguments): WHY — the widest rung of the telescoping chain
+// (11 parameters) and the only one production reaches from outside this file,
+// via the UniFFI export at `bridge/src/quality.rs:189`. WHEN — re-added
+// 2026-09-08 by the vc-prune Wave 5 silencer strip (clippy: `too many
+// arguments (11/7)`). WHERE — changing this signature changes the Swift-facing
+// ABI, so the `OverlayCorrectionInput` cut must land here and in
+// `bridge/src/quality.rs` in one commit.
 #[allow(clippy::too_many_arguments)]
 pub fn commit_overlay_correction_with_provenance(
     raw_text: &str,
@@ -1980,11 +2053,6 @@ mod tests {
                 && entry.canonical == "Junie"
                 && entry.source == LEXICON_SOURCE_CORRECTION
         }));
-        assert_eq!(
-            crate::pipeline::stream_postprocess::apply_lexicon("to uni agentka mówi"),
-            "to Junie mówi",
-            "the third teach must rewrite a later word-boundary transcript"
-        );
         let refreshed = super::teach_span("UNI AGENTKA", "Junie", "lexicon_corrected")
             .expect("later identical teach leaves the promoted rule alone");
         assert_eq!(refreshed.pairs_learned, 0, "promotion occurs exactly once");
@@ -2019,7 +2087,7 @@ mod tests {
 
     #[test]
     #[serial]
-    fn ordinary_manual_overlay_edits_vote_three_times_and_promote_once() {
+    fn ledger_receipted_overlay_edits_vote_three_times_and_promote_once() {
         let temp_dir = tempfile::tempdir().expect("temp");
         let _guard = EnvRestore::capture("CODESCRIBE_DATA_DIR");
         let temp_root = temp_dir.path().canonicalize().unwrap();
@@ -2042,13 +2110,13 @@ mod tests {
             .unwrap()
         };
 
-        let first = commit("copy", Some("manual_human"));
+        let first = commit("revision", Some("user-edit-session-7-8-0"));
         assert_eq!(first.confirmation_progress(), Some((1, 3)));
         assert_eq!(first.pairs_learned, 0);
-        let second = commit("paste", Some("manual_human"));
+        let second = commit("revision", Some("user-edit-session-8-9-1"));
         assert_eq!(second.confirmation_progress(), Some((2, 3)));
         assert_eq!(second.pairs_learned, 0);
-        let third = commit("close", Some("manual_human"));
+        let third = commit("revision", Some("user-edit-session-9-10-2"));
         assert_eq!(third.confirmation_progress(), Some((3, 3)));
         assert_eq!(third.pairs_learned, 1);
 
@@ -2071,14 +2139,14 @@ mod tests {
                 .meta
                 .get("action")
                 .and_then(serde_json::Value::as_str),
-            Some("copy")
+            Some("revision")
         );
         assert_eq!(
             records[0]
                 .meta
                 .get("edit_provenance")
                 .and_then(serde_json::Value::as_str),
-            Some("manual_human")
+            Some("user-edit-session-7-8-0")
         );
     }
 
@@ -2285,6 +2353,36 @@ mod tests {
         );
     }
 
+    /// Whisper's grog/Grok collision is a dictionary rewrite, not a decoder hint.
+    #[test]
+    #[serial]
+    fn apply_custom_lexicon_rewrites_grog_to_grok() {
+        let temp_dir = tempfile::tempdir().expect("temp");
+        let _guard = EnvRestore::capture("CODESCRIBE_DATA_DIR");
+        let temp_root = temp_dir.path().canonicalize().unwrap();
+        unsafe {
+            std::env::set_var("CODESCRIBE_DATA_DIR", &temp_root);
+        }
+        let lexicon_path = Config::config_dir().join("lexicon.custom.jsonl");
+        fs::create_dir_all(lexicon_path.parent().expect("lexicon parent")).expect("lexicon dir");
+        fs::write(
+            &lexicon_path,
+            r#"{"term":"Grok","mispronunciations":["grog"],"source":"manual"}
+"#,
+        )
+        .expect("write grok rule");
+
+        assert_eq!(
+            apply_custom_lexicon("grog. Wydaje mi się, że jesteś raczej w swoim natywnym grog.cli"),
+            "Grok. Wydaje mi się, że jesteś raczej w swoim natywnym Grok.cli"
+        );
+        assert_eq!(apply_custom_lexicon("Grog, daj znać"), "Grok, daj znać");
+        assert_eq!(
+            apply_custom_lexicon("agrog is not a word-boundary hit"),
+            "agrog is not a word-boundary hit"
+        );
+    }
+
     /// Empty and emptied lexicon rows are dropped on the next rewrite (W11-B husks).
     #[test]
     #[serial]
@@ -2479,7 +2577,7 @@ mod tests {
             .unwrap_or_else(|_| temp_dir.path().to_path_buf());
 
         // SAFETY: test-only, #[serial] guarantees exclusive access; mirrors EnvGuard/EnvRestore
-        // pattern used elsewhere (e.g. lane_truth, stream_postprocess). Process-env mutation
+        // pattern used elsewhere in test-only configuration guards. Process-env mutation
         // is the documented way to drive CODESCRIBE_DATA_DIR for hermetic isolation tests.
         unsafe {
             std::env::set_var("CODESCRIBE_DATA_DIR", &temp_root);

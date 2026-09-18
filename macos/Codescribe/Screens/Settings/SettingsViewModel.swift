@@ -78,6 +78,15 @@ enum LocalWhisperRuntimeState: Equatable {
 
 let localWhisperLivePatchingRuntimeValue = "phase1"
 
+func wholeSessionFinalPassSubtitle(asrModeId: String) -> String {
+  if asrModeId == "local_power" {
+    return
+      "Off. This controls only a full-file decode after Stop; live Whisper refinement continues during the take."
+  }
+  return
+    "Off. No full-file decode runs after Stop. Apple live remains the only transcription lane for this mode."
+}
+
 func resolveLocalWhisperRuntimeState(
   asrModeId: String,
   sttEngineId: String,
@@ -230,7 +239,7 @@ enum SettingsPanelDestination: Equatable {
 /// Testable ownership contract for the two settings surfaces that used to be
 /// mixed together. This is UI metadata only; it never participates in storage.
 enum SettingsPanelCapability: Hashable {
-  case apiKeys
+  case providers
   case llmLanes
   case workspaceRoots
   case agentStatus
@@ -522,6 +531,7 @@ struct SettingsHealthState: Equatable {
 /// muted "unknown" state.
 func healthState(
   stt: Bool?,
+  recording: Bool?,
   keys: SettingsKeyState,
   agent: Bool?
 ) -> SettingsHealthState {
@@ -530,6 +540,13 @@ func healthState(
       level: .offline,
       message: "speech engine: unavailable",
       targetSection: .engine
+    )
+  }
+  if recording == false {
+    return SettingsHealthState(
+      level: .offline,
+      message: "recording setup: action needed",
+      targetSection: .audio
     )
   }
   if keys == .missing {
@@ -546,11 +563,11 @@ func healthState(
       targetSection: .engine
     )
   }
-  if stt == nil || keys == .unknown || agent == nil {
+  if stt == nil || recording == nil || keys == .unknown || agent == nil {
     return SettingsHealthState(
       level: .unknown,
-      message: "system health: unknown",
-      targetSection: .engine
+      message: recording == nil ? "recording setup: checking" : "system health: unknown",
+      targetSection: recording == nil ? .audio : .engine
     )
   }
   return SettingsHealthState(
@@ -605,127 +622,116 @@ func resetImpactSummary(_ preview: CsResetPreview) -> String {
     + "\(preview.threads) \(threads) (\(String(format: "%.1f", megabytes)) MB)"
 }
 
+enum SettingsAnchor: String, Hashable {
+  case audioInput
+  case audioReadiness
+}
+
+struct SettingsDeepLinkTarget: Equatable {
+  let section: SettingsSection
+  let anchor: SettingsAnchor?
+}
+
 /// One-shot deep-link target for the Settings window. A surface outside Settings
-/// (e.g. the onboarding wizard routing the user to MCP setup) sets this before
-/// opening or focusing the window; `SettingsView` consumes it once on appear and
-/// whenever an already-open window receives a new target. Nil means "open on the
-/// last/default section".
+/// can name both the owning section and an exact repair surface inside it.
 @MainActor
 enum SettingsDeepLink {
   static let pendingSectionDidChange = Notification.Name(
     "codescribe.settingsDeepLink.pendingSectionDidChange")
   static let agentConfigurationSection: SettingsSection = .agent
 
-  static var pendingSection: SettingsSection? {
+  private static var pendingTarget: SettingsDeepLinkTarget? {
     didSet {
-      guard pendingSection != nil else { return }
+      guard pendingTarget != nil else { return }
       NotificationCenter.default.post(name: pendingSectionDidChange, object: nil)
     }
   }
 
+  /// Compatibility surface for section-only callers. Assigning it deliberately
+  /// clears any older anchor so unrelated deep links cannot inherit one.
+  static var pendingSection: SettingsSection? {
+    get { pendingTarget?.section }
+    set {
+      pendingTarget = newValue.map { SettingsDeepLinkTarget(section: $0, anchor: nil) }
+    }
+  }
+
+  static func present(_ section: SettingsSection, anchor: SettingsAnchor? = nil) {
+    pendingTarget = SettingsDeepLinkTarget(section: section, anchor: anchor)
+  }
+
   /// Take the pending target (if any), clearing it so a later open is unaffected.
-  static func consume() -> SettingsSection? {
-    guard let target = pendingSection else { return nil }
-    pendingSection = nil
+  static func consume() -> SettingsDeepLinkTarget? {
+    guard let target = pendingTarget else { return nil }
+    pendingTarget = nil
     return target
   }
 }
 
-enum LLMLane: String, CaseIterable, Identifiable {
+/// The two request lanes (D4: no Main fallback lane). A lane binds a provider
+/// reference (`vendor id` | `custom:<id>`) and a model; the endpoint is the
+/// provider's, never the lane's.
+enum LLMLane: String, CaseIterable, Identifiable, Hashable {
   case assistive
   case formatting
-  case main
 
   var id: String { rawValue }
 
-  var bridgeLane: CsLlmLane {
-    switch self {
-    case .assistive: return .assistive
-    case .formatting: return .formatting
-    case .main: return .main
-    }
-  }
+  var bridgeLane: CsLlmLane { self == .assistive ? .assistive : .formatting }
 
-  var title: String {
-    switch self {
-    case .assistive: return "Assistive"
-    case .formatting: return "Formatting"
-    case .main: return "Main"
-    }
-  }
+  var title: String { self == .assistive ? "Assistive" : "Formatting" }
 
   var subtitle: String {
-    switch self {
-    case .assistive: return "Agent and voice-assistant requests"
-    case .formatting: return "Transcript cleanup and formatting"
-    case .main: return "Default LLM fallback lane"
-    }
+    self == .assistive
+      ? "Agent and voice-assistant requests" : "Transcript cleanup and formatting"
   }
 
-  var endpointKey: String {
-    switch self {
-    case .assistive: return "LLM_ASSISTIVE_ENDPOINT"
-    case .formatting: return "LLM_FORMATTING_ENDPOINT"
-    case .main: return "LLM_ENDPOINT"
-    }
+  var providerKey: String {
+    self == .assistive ? "LLM_ASSISTIVE_PROVIDER" : "LLM_FORMATTING_PROVIDER"
   }
 
-  var modelKey: String {
-    switch self {
-    case .assistive: return "LLM_ASSISTIVE_MODEL"
-    case .formatting: return "LLM_FORMATTING_MODEL"
-    case .main: return "LLM_MODEL"
-    }
-  }
+  var modelKey: String { self == .assistive ? "LLM_ASSISTIVE_MODEL" : "LLM_FORMATTING_MODEL" }
 
-  var endpointPath: WritableKeyPath<CsSettings, String?> {
-    switch self {
-    case .assistive: return \CsSettings.llmAssistiveEndpoint
-    case .formatting: return \CsSettings.llmFormattingEndpoint
-    case .main: return \CsSettings.llmEndpoint
-    }
-  }
-
+  // Spelled out as `if` on purpose: the ternary over two key-path literals
+  // crashes the type checker ("failed to produce diagnostic", Xcode 27).
   var modelPath: WritableKeyPath<CsSettings, String?> {
-    switch self {
-    case .assistive: return \CsSettings.llmAssistiveModel
-    case .formatting: return \CsSettings.llmFormattingModel
-    case .main: return \CsSettings.llmModel
-    }
+    if self == .assistive { return \CsSettings.llmAssistiveModel }
+    return \CsSettings.llmFormattingModel
   }
 }
 
-/// One read model for a request lane. Both Settings panels consume this snapshot,
-/// so provider resolution, model discovery, and manual-entry rules cannot drift.
+/// One read model for a request lane: the loader-sealed runtime truth plus the
+/// registry row and the latest discovery for that provider. Both Settings
+/// panels consume this snapshot, so resolution cannot drift between them.
 struct LLMLaneModel {
   let lane: LLMLane
-  let providerId: String
+  let runtime: CsRuntimeLlmLane
   let provider: CsProviderOption?
-  let resolvedEndpoint: String
   let configuredModel: String
-  let resolvedModel: String
-  let discoveryEndpoint: String
   let discovery: CsModelDiscovery
 
+  var providerId: String { runtime.providerId }
+  var providerDisplayName: String { provider?.displayName ?? runtime.providerDisplayName }
+  var resolvedEndpoint: String { runtime.endpoint }
+  var resolvedModel: String { runtime.model }
   var modelOptions: [CsModelOption] { discovery.models }
 
-  var manualModelReason: String? {
-    guard providerId == "openai-responses" else { return nil }
-    guard URL(string: resolvedEndpoint)?.host?.lowercased() == "api.openai.com" else {
-      return "Custom endpoint — enter its model ID manually"
-    }
-    guard lane == .assistive || resolvedEndpoint == discoveryEndpoint else {
-      return "Endpoint differs from OpenAI discovery — enter its model ID manually"
-    }
-    return nil
+  /// Discovery drives the Menu only when it is fresh and non-empty; the Model ID
+  /// field stays beside it either way (custom hosts may publish no list).
+  var usesDiscoveredPicker: Bool { !modelOptions.isEmpty && discovery.status == "fresh" }
+
+  var availabilityDescription: String {
+    if !runtime.available { return runtime.unavailableReason ?? "unavailable" }
+    if runtime.accountAuth { return "account" }
+    if runtime.keyPresent { return "API key" }
+    return "no key required"
   }
 
-  var usesDiscoveredPicker: Bool {
-    manualModelReason == nil && !modelOptions.isEmpty && discovery.status == "fresh"
+  var availabilityTint: Color {
+    runtime.available ? CSColor.oliveLight : CSColor.terracottaLight
   }
 
   var discoveryDescription: String {
-    if let manualModelReason { return manualModelReason }
     switch discovery.status {
     case "fresh":
       let count = modelOptions.count
@@ -866,10 +872,6 @@ enum AppRelaunch {
   }
 }
 
-private struct BackgroundSettingsEngine: @unchecked Sendable {
-  let engine: SettingsEngine
-}
-
 extension CsWhisperModelStatus {
   /// Placeholder for canvas / engine-less previews (no network, no disk probe).
   static let sampleUnavailable = CsWhisperModelStatus(
@@ -882,12 +884,18 @@ extension CsWhisperModelStatus {
   )
 }
 
-/// Bridges UniFFI download callbacks onto the main-actor SettingsViewModel.
-final class WhisperDownloadProgressSink: CsWhisperDownloadListener, @unchecked Sendable {
-  weak var model: SettingsViewModel?
+private enum WhisperDownloadEvent: Sendable {
+  case progress(detail: String, fraction: Double?)
+  case complete(path: String)
+}
 
-  init(model: SettingsViewModel) {
-    self.model = model
+/// Value-only UniFFI callback adapter; the view model owns the one ordered
+/// MainActor consumer.
+final class WhisperDownloadProgressSink: CsWhisperDownloadListener, Sendable {
+  private let continuation: AsyncStream<WhisperDownloadEvent>.Continuation
+
+  fileprivate init(continuation: AsyncStream<WhisperDownloadEvent>.Continuation) {
+    self.continuation = continuation
   }
 
   func onProgress(file: String, bytesDone: UInt64, bytesTotal: Int64) {
@@ -905,18 +913,15 @@ final class WhisperDownloadProgressSink: CsWhisperDownloadListener, @unchecked S
     } else {
       detail = String(format: "%@ · %.0f MB", file, mbDone)
     }
-    DispatchQueue.main.async { [weak self] in
-      self?.model?.applyWhisperDownloadProgress(detail: detail, fraction: fraction)
-    }
+    continuation.yield(.progress(detail: detail, fraction: fraction))
   }
 
   func onComplete(path: String) {
-    DispatchQueue.main.async { [weak self] in
-      self?.model?.applyWhisperDownloadProgress(
-        detail: "Saved · \(path)",
-        fraction: 1.0
-      )
-    }
+    continuation.yield(.complete(path: path))
+  }
+
+  func finish() {
+    continuation.finish()
   }
 }
 
@@ -951,10 +956,24 @@ final class SettingsViewModel: ObservableObject {
   }
 
   @Published private(set) var permissions: PermissionSnapshot
+  @Published private(set) var creatorAgentBridgeStatus = AgentBridgeInstallationStatus.unavailable
+  @Published private(set) var creatorAgentBridgeError: String?
+  @Published private(set) var creatorAgentBridgeNotice: String?
   @Published private(set) var settings: CsSettings
+  @Published private(set) var newMaxConsultationPending = false
+  @Published private(set) var maxConsultationNotice: String?
+  @Published private(set) var maxToolApprovals: [PendingToolApproval] = []
+  @Published private(set) var maxApprovalBusy = false
+  @Published private(set) var maxApprovalError: String?
+  private var maxApprovalRefreshRequested = false
   @Published private(set) var keyStatus: CsKeyStatus
   @Published private(set) var providers: [CsProviderOption]
+  /// Speech-to-text lanes (File, Live): atomic endpoint + key rows on Providers.
+  @Published private(set) var sttLanes: [CsSttLane]
   @Published private var modelDiscoveries: [String: CsModelDiscovery] = [:]
+  /// Set when removing a custom provider bounced one or more lanes back to the
+  /// default vendor (bridge `lanesReset`). Cleared on the next lane edit.
+  @Published private(set) var laneResetNotice: String?
   @Published private(set) var configDir: String
   @Published private(set) var needsOnboarding: Bool
   @Published private(set) var agentReadiness: CsAgenticReadiness
@@ -986,6 +1005,14 @@ final class SettingsViewModel: ObservableObject {
   @Published private(set) var voiceLabTeachMessage: String?
   @Published private(set) var audioInput: CsAudioInputSnapshot
   @Published private(set) var audioInputReadError: String?
+  /// The controller's own admission verdict (nil until the first refresh).
+  @Published private(set) var admission: CsAdmissionReadiness?
+  @Published private(set) var admissionReadError: String?
+  /// A guided calibration capture is in flight (the mic is open ~10 s).
+  @Published private(set) var calibrationPending: Bool = false
+  @Published private(set) var calibrationStartedAt: Date?
+  /// Last calibration outcome, success or refusal, for the Audio row.
+  @Published private(set) var calibrationNotice: String?
   @Published private(set) var resetPreview: CsResetPreview
   @Published private(set) var agentResetPreview: CsAgentResetPreview
   @Published private(set) var licenseStatus: CsLicenseStatus
@@ -1009,6 +1036,7 @@ final class SettingsViewModel: ObservableObject {
   /// 0...1 when Content-Length is known; nil for indeterminate.
   @Published private(set) var whisperDownloadFraction: Double?
   private var whisperDownloadSink: WhisperDownloadProgressSink?
+  private var whisperDownloadEventTask: Task<Void, Never>?
 
   // MARK: - Hotkeys (mode bindings)
 
@@ -1027,32 +1055,29 @@ final class SettingsViewModel: ObservableObject {
   var appVersion: String { buildInfo.version }
 
   private let engine: SettingsEngine?
+  private let creatorAgentBridge: AgentBridgeInstalling
   private let permissionProbe: PermissionProbing
   private let agentStatus: AgentStatusEngine?
   private let mcpAdmin: MCPAdminEngine?
   private let hotkeys: HotkeysEngine?
   private let licenseService: LicenseService
-  private let laneTruthProvider: (CsLlmLane) -> CsLaneTruthSnapshot
+  private let runtimeLlmLaneProvider: (CsLlmLane) -> CsRuntimeLlmLane
+  /// Sealed runtime lane projections for this refresh. `llmLane` is read from
+  /// SwiftUI `body` (once per menu item); the FFI load is not.
+  private var runtimeLaneCache: [LLMLane: CsRuntimeLlmLane] = [:]
   private var modelDiscoveryGenerations: [String: Int] = [:]
-  private var assistiveModelEditGeneration = 0
-  private var pendingAssistiveModelSelection:
-    (
-      providerId: String,
-      modelEditGeneration: Int
-    )?
-  private var holdBadgeObserver: NSObjectProtocol?
-  private var servingStatusObserver: NSObjectProtocol?
 
   init(
     engine: SettingsEngine? = nil,
+    creatorAgentBridge: AgentBridgeInstalling = RealAgentBridgeInstaller(),
     permissionProbe: PermissionProbing = NativePermissionProbe(),
     agentStatus: AgentStatusEngine? = nil,
     mcpAdmin: MCPAdminEngine? = nil,
     hotkeys: HotkeysEngine? = nil,
     licenseService: LicenseService? = nil,
     buildInfo: AppBuildInfo = .current(),
-    laneTruthProvider: @escaping (CsLlmLane) -> CsLaneTruthSnapshot = { lane in
-      laneTruthSnapshot(lane: lane)
+    runtimeLlmLaneProvider: @escaping (CsLlmLane) -> CsRuntimeLlmLane = { lane in
+      runtimeLlmLane(lane: lane)
     },
     servingStatusProvider: @escaping () -> LastServingVerdict? = {
       guard let verdict = currentServingVerdict() else { return nil }
@@ -1065,13 +1090,14 @@ final class SettingsViewModel: ObservableObject {
     }
   ) {
     self.engine = engine
+    self.creatorAgentBridge = creatorAgentBridge
     self.permissionProbe = permissionProbe
     self.agentStatus = agentStatus
     self.mcpAdmin = mcpAdmin
     self.hotkeys = hotkeys
     self.licenseService = licenseService ?? .preview
     self.buildInfo = buildInfo
-    self.laneTruthProvider = laneTruthProvider
+    self.runtimeLlmLaneProvider = runtimeLlmLaneProvider
     self.servingStatusProvider = servingStatusProvider
 
     // Reading the settings snapshot is passive: it does not write config
@@ -1086,6 +1112,7 @@ final class SettingsViewModel: ObservableObject {
     )
     self.keyStatus = .sampleAllSet
     self.providers = CsProviderOption.sampleProviders
+    self.sttLanes = engine?.sttLanes() ?? [.sampleFile, .sampleLive]
     self.configDir = ""
     self.needsOnboarding = false
     self.agentReadiness = .sample
@@ -1094,38 +1121,56 @@ final class SettingsViewModel: ObservableObject {
     self.voiceLabReadError = nil
     self.audioInput = .sample
     self.audioInputReadError = nil
+    self.admission = nil
+    self.admissionReadError = nil
     self.resetPreview = .sample
     self.agentResetPreview = .sample
     self.licenseStatus = self.licenseService.status
-    // K4: tray cycles arrive on the bus; reload Settings badge display.
-    // Register after every stored property is initialized (Swift init order).
-    holdBadgeObserver = NotificationCenter.default.addObserver(
-      forName: ConfigChangeBus.holdBadgeDidChange,
-      object: nil,
-      queue: .main
-    ) { [weak self] _ in
-      MainActor.assumeIsolated {
-        self?.reloadHoldBadgeFromDisk()
-      }
-    }
-    servingStatusObserver = NotificationCenter.default.addObserver(
-      forName: ConfigChangeBus.servingStatusDidChange,
-      object: nil,
-      queue: .main
-    ) { [weak self] _ in
-      MainActor.assumeIsolated {
-        self?.refreshServingStatus()
-      }
-    }
     lastServingVerdict = servingStatusProvider()
   }
 
-  deinit {
-    if let holdBadgeObserver {
-      NotificationCenter.default.removeObserver(holdBadgeObserver)
+  /// Passive inspection of the bundled installer; never attaches an agent.
+  func refreshCreatorAgentBridge() {
+    creatorAgentBridgeStatus = creatorAgentBridge.status()
+  }
+
+  /// Add/update one client while preserving other managed clients. Creator
+  /// has no implicit deselection or deletion action.
+  func installCreatorAgentBridge(for client: AgentBridgeClient) {
+    let current = creatorAgentBridge.status()
+    creatorAgentBridgeStatus = current
+    creatorAgentBridgeError = nil
+    creatorAgentBridgeNotice = nil
+    guard current.payloadAvailable else {
+      creatorAgentBridgeError = current.detail
+      return
     }
-    if let servingStatusObserver {
-      NotificationCenter.default.removeObserver(servingStatusObserver)
+    do {
+      let clients = Set(current.installedClients).union([client])
+      creatorAgentBridgeStatus = try creatorAgentBridge.install(selectedClients: clients)
+      creatorAgentBridgeNotice =
+        "Skill installed from this app. Reload skills in your agent client, then invoke /codescribe. "
+        + "Installation does not attach a listener or verify voice delivery."
+    } catch {
+      creatorAgentBridgeError = error.userFacingMessage
+      creatorAgentBridgeStatus = creatorAgentBridge.status()
+    }
+  }
+
+  /// Called only after explicit confirmation to preserve and replace a manual copy.
+  func adoptCreatorManualSkill(for client: AgentBridgeClient) {
+    creatorAgentBridgeError = nil
+    creatorAgentBridgeNotice = nil
+    do {
+      let result = try creatorAgentBridge.adoptManualSkill(client: client)
+      creatorAgentBridgeStatus = result.status
+      creatorAgentBridgeNotice =
+        "Installed from this app. Original folder preserved at:\n"
+        + result.backupPaths.joined(separator: "\n")
+        + "\nReload your agent client's skills, then invoke /codescribe. Voice delivery is not yet verified."
+    } catch {
+      creatorAgentBridgeError = error.userFacingMessage
+      creatorAgentBridgeStatus = creatorAgentBridge.status()
     }
   }
 
@@ -1141,9 +1186,10 @@ final class SettingsViewModel: ObservableObject {
       applyLoadedSettings(engine.loadSettings())
       keyStatus = engine.keyStatus()
       providers = engine.availableProviders()
+      sttLanes = engine.sttLanes()
       configDir = engine.configDir()
       needsOnboarding = engine.shouldShowOnboarding()
-      refreshModelDiscoveries(providerIds: [llmLane(.assistive).providerId, "openai-responses"])
+      refreshModelDiscoveries(providerIds: LLMLane.allCases.map { llmLane($0).providerId })
       refreshVoiceLab()
       refreshAudioInput()
     }
@@ -1191,8 +1237,20 @@ final class SettingsViewModel: ObservableObject {
     whisperDownloadDetail = "Starting download…"
     whisperDownloadFraction = nil
     lastError = nil
-    let sink = WhisperDownloadProgressSink(model: self)
+    let channel = AsyncStream<WhisperDownloadEvent>.makeStream()
+    let sink = WhisperDownloadProgressSink(continuation: channel.continuation)
     whisperDownloadSink = sink
+    whisperDownloadEventTask = Task { @MainActor [weak self] in
+      for await event in channel.stream {
+        guard let self else { return }
+        switch event {
+        case .progress(let detail, let fraction):
+          self.applyWhisperDownloadProgress(detail: detail, fraction: fraction)
+        case .complete(let path):
+          self.applyWhisperDownloadProgress(detail: "Saved · \(path)", fraction: 1.0)
+        }
+      }
+    }
     Task { @MainActor [weak self] in
       guard let self else { return }
       do {
@@ -1208,8 +1266,13 @@ final class SettingsViewModel: ObservableObject {
         self.whisperDownloadDetail = "Download failed"
         self.whisperDownloadFraction = nil
       }
+      sink.finish()
+      if let eventTask = self.whisperDownloadEventTask {
+        await eventTask.value
+      }
       self.whisperDownloadInFlight = false
       self.whisperDownloadSink = nil
+      self.whisperDownloadEventTask = nil
     }
   }
 
@@ -1334,14 +1397,11 @@ final class SettingsViewModel: ObservableObject {
   /// back on the main actor; a stale list for a moment beats a frozen app.
   func reloadToolPermissions() {
     guard let mcpAdmin else { return }
-    Task.detached(priority: .userInitiated) { [weak self] in
-      let policy = mcpAdmin.getPermissionPolicy()
-      let capabilities = mcpAdmin.listToolCapabilities()
-      await MainActor.run { [weak self] in
-        guard let self else { return }
-        self.permissionPolicy = policy
-        self.toolCapabilities = capabilities
-      }
+    Task { @MainActor [weak self] in
+      let (policy, capabilities) = await mcpAdmin.loadPermissionSurface()
+      guard let self else { return }
+      self.permissionPolicy = policy
+      self.toolCapabilities = capabilities
     }
   }
 
@@ -1451,7 +1511,7 @@ final class SettingsViewModel: ObservableObject {
     // page == nil and render whole.
     page = SettingsPage.pages(in: target).first
     if target == .agent {
-      refreshAssistiveModelDiscovery()
+      refreshModelDiscoveries(providerIds: LLMLane.allCases.map { llmLane($0).providerId })
     }
     if target == .engine {
       refreshServingStatus()
@@ -1593,13 +1653,13 @@ final class SettingsViewModel: ObservableObject {
     formatActiveSTT(lastServing: lastServingVerdict)
   }
 
-  /// STT is "healthy" (olive dot) when a local model is configured, or when a
-  /// cloud endpoint is set. Runtime serving truth comes from the shared
-  /// controller snapshot, not this configuration-only health estimate.
+  /// STT is "healthy" (olive dot) when a local model is configured, or when
+  /// either cloud lane has an endpoint. Runtime serving truth comes from the
+  /// shared controller snapshot, not this configuration-only health estimate.
   var sttHealthy: Bool {
-    settings.useLocalStt
-      ? !settings.localModel.isEmpty
-      : (settings.sttEndpoint?.isEmpty == false)
+    if settings.useLocalStt { return !settings.localModel.isEmpty }
+    return settings.sttFileEndpoint?.isEmpty == false
+      || settings.sttLiveEndpoint?.isEmpty == false
   }
 
   var whisperLanguageCode: String { settings.whisperLanguage.shortCode }
@@ -1612,99 +1672,63 @@ final class SettingsViewModel: ObservableObject {
   private var assistiveKeyState: SettingsKeyState {
     guard let provider = llmLane(.assistive).provider else { return .unknown }
     let keyAvailable =
-      provider.accountSignedIn
-      || provider.apiKeySet
-      || keyStatus.isSet(account: provider.apiKeyAccount)
+      provider.accountSignedIn || provider.apiKeySet || !provider.keyRequired
     return keyAvailable ? .available : .missing
   }
 
   var settingsHealth: SettingsHealthState {
     healthState(
       stt: sttHealthy,
+      recording: admissionReadError == nil ? admission?.ready : nil,
       keys: assistiveKeyState,
       agent: agentReadiness.ready
     )
   }
 
-  /// Effective lane state after provider/shared fallbacks.
+  /// Effective lane state: loader-sealed runtime truth + registry row +
+  /// discovery for THAT lane's provider (vendor or custom alike, D2).
   func llmLane(_ lane: LLMLane) -> LLMLaneModel {
-    let truth = laneTruthProvider(lane.bridgeLane)
-    let providerId = truth.providerId
+    let runtime: CsRuntimeLlmLane
+    if let cached = runtimeLaneCache[lane] {
+      runtime = cached
+    } else {
+      let loaded = runtimeLlmLaneProvider(lane.bridgeLane)
+      runtimeLaneCache[lane] = loaded
+      runtime = loaded
+    }
     let configuredModel =
       settings[keyPath: lane.modelPath]?
       .trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
-    let discoveryProviderId = lane == .assistive ? providerId : "openai-responses"
-
     return LLMLaneModel(
       lane: lane,
-      providerId: providerId,
-      provider: providers.first { $0.id == providerId } ?? providers.first,
-      resolvedEndpoint: truth.endpoint,
+      runtime: runtime,
+      provider: providers.first { $0.id == runtime.providerId },
       configuredModel: configuredModel,
-      resolvedModel: truth.model,
-      discoveryEndpoint: lane == .assistive
-        ? truth.endpoint
-        : resolvedOpenAIEndpoint(for: .assistive),
-      discovery: modelDiscoveries[discoveryProviderId]
-        ?? CsModelDiscovery.sample(for: discoveryProviderId)
+      discovery: modelDiscoveries[runtime.providerId]
+        ?? CsModelDiscovery.sample(for: runtime.providerId)
     )
   }
 
-  private func refreshAssistiveModelDiscovery(includeOpenAI: Bool = false) {
-    let providerId = llmLane(.assistive).providerId
-    refreshModelDiscoveries(
-      providerIds: includeOpenAI ? [providerId, "openai-responses"] : [providerId])
-  }
-
-  private func resolvedOpenAIEndpoint(for lane: LLMLane) -> String {
-    // P2-05: lane/shared/default resolution stays here (UI settings surface);
-    // suffix normalization is now delegated to core via FFI (single truth in
-    // lane_truth::normalize_openai_responses_endpoint, exposed in bridge/config).
-    let laneValue =
-      settings[keyPath: lane.endpointPath]?
-      .trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
-    let sharedValue =
-      settings[keyPath: LLMLane.main.endpointPath]?
-      .trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
-    let base =
-      !laneValue.isEmpty
-      ? laneValue
-      : (!sharedValue.isEmpty
-        ? sharedValue
-        : "https://api.openai.com/v1/responses")
-
-    if let engine {
-      return engine.normalizeOpenaiResponsesEndpoint(base)
+  /// Bind a lane to a provider (vendor id or `custom:<id>`); the bridge validates
+  /// and persists `LLM_<LANE>_PROVIDER`. The stored model belonged to the previous
+  /// provider, so it is cleared (integrator decision, W1-T3R).
+  func setLaneProvider(_ providerId: String, for lane: LLMLane) {
+    guard let engine else { return }
+    do {
+      try engine.setLaneProvider(lane: lane.bridgeLane, providerId: providerId)
+    } catch {
+      lastError = String(describing: error)
+      return
     }
-    // Fallback for previews / no-engine (kept tiny; real path always has engine).
-    // NOTE: suffix list duplication removed (L2 over-correct); core lane_truth::normalize
-    // (via bridge) is the single source of truth for responses endpoint. Fallback does
-    // minimal /v1 strip only to avoid duplicating known-suffixes array.
-    var b = base.trimmingCharacters(in: .whitespacesAndNewlines.union(.init(charactersIn: "/")))
-    if b.hasSuffix("/v1") { b.removeLast(3) }
-    return b + "/v1/responses"
-  }
-
-  /// Persist an endpoint override for one LLM lane. Whitespace-only input is
-  /// the reset signal: the core removes the optional JSON path so the next
-  /// resolved fallback becomes effective immediately.
-  func setLLMEndpoint(_ value: String, for lane: LLMLane) {
-    let trimmed = value.trimmingCharacters(in: .whitespacesAndNewlines)
-    settings[keyPath: lane.endpointPath] = trimmed.isEmpty ? nil : trimmed
-    persist(lane.endpointKey, trimmed)
+    laneResetNotice = nil
+    setLLMModel("", for: lane)
+    refreshModelDiscovery(providerId: providerId)
     refreshAgentStatus()
-    if lane == .assistive {
-      refreshAssistiveModelDiscovery(includeOpenAI: true)
-    }
   }
 
-  /// Persist a model override for one LLM lane. Empty clears the JSON override.
+  /// Persist a model for one LLM lane. Empty clears the JSON override.
   func setLLMModel(_ value: String, for lane: LLMLane) {
     let trimmed = value.trimmingCharacters(in: .whitespacesAndNewlines)
-    if lane == .assistive {
-      assistiveModelEditGeneration += 1
-      pendingAssistiveModelSelection = nil
-    }
     settings[keyPath: lane.modelPath] = trimmed.isEmpty ? nil : trimmed
     persist(lane.modelKey, trimmed)
   }
@@ -1715,18 +1739,68 @@ final class SettingsViewModel: ObservableObject {
       ?? "invalid policy"
   }
 
-  /// Any LLM/STT provider key present (GitHub token is shown separately).
-  var apiKeysStored: Bool {
-    keyStatus.llmApiKeySet || keyStatus.llmAssistiveApiKeySet
-      || keyStatus.llmAnthropicApiKeySet || keyStatus.llmFormattingApiKeySet
-      || keyStatus.sttApiKeySet
-  }
-
-  var apiKeysDescription: String {
-    apiKeysStored ? "Stored in Keychain" : "Not configured"
-  }
-
   // MARK: - Creator mutations (write through the core router)
+
+  var maxConsultationEnabled: Bool {
+    settings.aiFormattingEnabled
+      && FormattingPolicyOption(storedValue: settings.formattingLevel) == .max
+  }
+
+  func refreshMaxToolApprovals() async {
+    guard let engine else { return }
+    maxApprovalRefreshRequested = true
+    guard !maxApprovalBusy else { return }
+    maxApprovalBusy = true
+    defer { maxApprovalBusy = false }
+    repeat {
+      maxApprovalRefreshRequested = false
+      do {
+        maxToolApprovals = try await engine.pendingMaxToolApprovals()
+        maxApprovalError = nil
+      } catch {
+        maxApprovalError = error.localizedDescription
+      }
+    } while maxApprovalRefreshRequested
+  }
+
+  func resolveMaxToolApproval(
+    _ request: PendingToolApproval, approved: Bool, remember: Bool = false
+  ) async {
+    guard let engine, !maxApprovalBusy, maxApprovalError == nil,
+      maxToolApprovals.contains(request)
+    else { return }
+    maxApprovalBusy = true
+    do {
+      let resolved = try await engine.resolveMaxToolApproval(
+        request, approved: approved, remember: remember
+      )
+      maxApprovalError = resolved ? nil : "This permission request is no longer active."
+      maxToolApprovals = try await engine.pendingMaxToolApprovals()
+    } catch {
+      maxApprovalError = error.localizedDescription
+    }
+    maxApprovalBusy = false
+    if maxApprovalRefreshRequested {
+      await refreshMaxToolApprovals()
+    }
+  }
+
+  func beginNewMaxConsultation() async {
+    guard maxConsultationEnabled, !newMaxConsultationPending else { return }
+    guard let engine else {
+      maxConsultationNotice = "Consultation reset is unavailable."
+      return
+    }
+    newMaxConsultationPending = true
+    maxConsultationNotice = nil
+    defer { newMaxConsultationPending = false }
+    do {
+      _ = try await engine.beginNewMaxConsultation()
+      maxConsultationNotice = "New consultation started. Previous history is preserved."
+    } catch {
+      maxConsultationNotice = "Could not start a new consultation: \(error.localizedDescription)"
+    }
+  }
 
   func setLanguage(_ lang: CsLanguage) {
     settings.whisperLanguage = lang
@@ -1802,6 +1876,67 @@ final class SettingsViewModel: ObservableObject {
     refreshAudioInput()
   }
 
+  // MARK: - Acoustic admission (controller truth, never a second decision)
+
+  /// Seconds of normal speech the guided calibration captures.
+  static let calibrationCaptureSeconds: UInt32 = 10
+
+  static func calibrationProgress(elapsedSeconds: TimeInterval) -> Double {
+    min(max(elapsedSeconds / Double(calibrationCaptureSeconds), 0), 1)
+  }
+
+  static func calibrationRemainingSeconds(elapsedSeconds: TimeInterval) -> Int {
+    max(Int(ceil(Double(calibrationCaptureSeconds) - elapsedSeconds)), 0)
+  }
+
+  func refreshAdmission() async {
+    guard let engine else { return }
+    do {
+      admission = try await engine.loadAdmissionReadiness()
+      admissionReadError = nil
+    } catch {
+      admissionReadError = String(describing: error)
+    }
+  }
+
+  /// Persist the product's mandatory-lane policy through the existing config
+  /// router. The bridge resolves any power-user env override separately; this
+  /// action never creates, edits, or clears that override.
+  func setSealLaneArmed(_ armed: Bool) {
+    persist("CODESCRIBE_SILERO_FUSION", armed ? "1" : "0")
+  }
+
+  /// Run the guided calibration through the real recorder path, then re-read
+  /// admission so the row reflects the controller's verdict, not a guess.
+  func runCalibration() async {
+    guard let engine, !calibrationPending else { return }
+    calibrationPending = true
+    calibrationStartedAt = Date()
+    calibrationNotice = nil
+    defer {
+      calibrationPending = false
+      calibrationStartedAt = nil
+    }
+    do {
+      let report = try await engine.calibrateEnergy(
+        seconds: Self.calibrationCaptureSeconds)
+      calibrationNotice = Self.calibrationSummary(report)
+    } catch {
+      calibrationNotice = "Calibration refused: \(error)"
+    }
+    await refreshAdmission()
+  }
+
+  /// One-line, number-honest summary of a stored calibration profile.
+  static func calibrationSummary(_ report: CsEnergyCalibrationReport) -> String {
+    let speech = String(format: "%.1f", report.activeSpeechMedianDbfs)
+    let peak = String(format: "%.1f", report.peakDbfs)
+    let floor = String(format: "%.1f", report.existenceThresholdDbfs)
+    let seconds = String(format: "%.1f", report.measuredSeconds)
+    return
+      "Calibrated \(report.deviceName): speech \(speech) dBFS, peak \(peak) dBFS over \(seconds) s → existence floor \(floor) dBFS"
+  }
+
   func resetAudioInputDevice() {
     guard let engine else { return }
     do {
@@ -1853,29 +1988,19 @@ final class SettingsViewModel: ObservableObject {
     guard let engine, !voiceLabTeachPending else { return }
     voiceLabTeachPending = true
     voiceLabTeachMessage = nil
-    let backgroundEngine = BackgroundSettingsEngine(engine: engine)
-
-    DispatchQueue.global(qos: .userInitiated).async { [backgroundEngine] in
-      let outcome: Result<CsDictionaryTeachResult, Error>
+    Task { @MainActor [weak self] in
+      guard let self else { return }
       do {
-        outcome = .success(try backgroundEngine.engine.teachDictionaryFromStore())
-      } catch {
-        outcome = .failure(error)
-      }
-
-      DispatchQueue.main.async { [weak self] in
-        guard let self else { return }
+        let result = try await engine.teachDictionaryFromStoreAsync()
         self.voiceLabTeachPending = false
-        switch outcome {
-        case .success(let result):
-          self.voiceLabTeachMessage =
-            "Taught +\(result.fromCorrections) from corrections, +\(result.fromProposed) from proposed → \(result.totalRules) live rules (\(result.rulesFromCorrectionSource) correction-sourced)."
-          self.refreshVoiceLab()
-        case .failure(let error):
-          let message = String(describing: error)
-          self.voiceLabTeachMessage = "Teach failed: \(message)"
-          self.lastError = message
-        }
+        self.voiceLabTeachMessage =
+          "Taught +\(result.fromCorrections) from corrections, +\(result.fromProposed) from proposed → \(result.totalRules) live rules (\(result.rulesFromCorrectionSource) correction-sourced)."
+        self.refreshVoiceLab()
+      } catch {
+        self.voiceLabTeachPending = false
+        let message = String(describing: error)
+        self.voiceLabTeachMessage = "Teach failed: \(message)"
+        self.lastError = message
       }
     }
   }
@@ -1992,7 +2117,7 @@ final class SettingsViewModel: ObservableObject {
   var sttEngineId: String {
     let raw = (settings.sttEngine ?? "apple").lowercased()
     switch raw {
-    case "auto", "apple", "whisper", "candle", "onnx": return raw == "candle" ? "whisper" : raw
+    case "auto", "apple", "whisper", "candle": return raw == "candle" ? "whisper" : raw
     default: return "apple"
     }
   }
@@ -2029,7 +2154,6 @@ final class SettingsViewModel: ObservableObject {
     switch id.lowercased() {
     case "auto": normalized = "auto"
     case "whisper", "candle": normalized = "whisper"
-    case "onnx": normalized = "onnx"
     default: normalized = "apple"
     }
     settings.sttEngine = normalized
@@ -2054,10 +2178,6 @@ final class SettingsViewModel: ObservableObject {
       persist("CODESCRIBE_STT_ENGINE", normalized)
     }
   }
-
-  /// Legacy stop-file-pass token. Settings no longer exposes Always/Smart/Off.
-  /// If a value must persist, write `off` — `smart` is a dead migration token.
-  var finalPassModeId: String { "off" }
 
   func setFinalPassMode(_ id: String) {
     _ = id
@@ -2170,12 +2290,11 @@ final class SettingsViewModel: ObservableObject {
   ///
   /// K3 (W10-E): persists immediately; takes effect at the *next* badge show
   /// (no live redraw of a visible caret badge).
-  /// K4: posts `ConfigChangeBus.holdBadgeDidChange` so the tray reflects it.
+  /// Peer surfaces re-read the same persisted snapshot when they appear.
   func setHoldBadgeOption(_ option: HoldBadgeOption) {
     guard let size = option.size else {
       settings.holdIndicator = false
       persist("HOLD_INDICATOR", "0")
-      ConfigChangeBus.postHoldBadgeChanged()
       return
     }
     settings.holdIndicator = true
@@ -2184,14 +2303,6 @@ final class SettingsViewModel: ObservableObject {
       CsConfigEntry(key: "HOLD_INDICATOR", value: "1"),
       CsConfigEntry(key: "HOLD_BADGE_SIZE", value: String(size)),
     ])
-    ConfigChangeBus.postHoldBadgeChanged()
-  }
-
-  /// Reload badge fields from the engine after a peer surface (tray) wrote them.
-  func reloadHoldBadgeFromDisk() {
-    guard let engine else { return }
-    applyLoadedSettings(engine.loadSettings())
-    objectWillChange.send()
   }
 
   /// Assistive-arm modifier on the hold base: `"shift"` (default) or `"cmd"`.
@@ -2239,15 +2350,12 @@ final class SettingsViewModel: ObservableObject {
     persist("AGENT_WORKSPACE_ROOTS", cleaned.joined(separator: ":"))
   }
 
-  /// Current cloud STT endpoint override, empty when the provider default applies.
-  var sttEndpoint: String { settings.sttEndpoint ?? "" }
-
-  /// Persist the cloud STT endpoint (`STT_ENDPOINT`). Blank clears the override
-  /// so cloud lanes fall back to the provider default. Restart-scoped, like the
-  /// env contract says — the field exists so the key's companion endpoint no
-  /// longer requires hand-editing ~/.codescribe/.env.
-  func setSttEndpoint(_ value: String) {
-    persist("STT_ENDPOINT", value.trimmingCharacters(in: .whitespaces))
+  /// Persist one lane's endpoint (`STT_FILE_ENDPOINT` / `STT_LIVE_ENDPOINT`). Blank
+  /// clears; the bridge validates the scheme per lane and a rejection lands in `lastError`.
+  func setSttLaneEndpoint(_ id: String, _ value: String) {
+    guard let lane = sttLanes.first(where: { $0.id == id }) else { return }
+    persist(lane.endpointWireKey, value.trimmingCharacters(in: .whitespaces))
+    if let engine { sttLanes = engine.sttLanes() }
   }
 
   private func persist(_ key: String, _ value: String) {
@@ -2278,44 +2386,90 @@ final class SettingsViewModel: ObservableObject {
     deferredInsertShortcut = DeferredInsertShortcutOption(
       wireId: loaded.deferredInsertShortcut
     )
+    runtimeLaneCache.removeAll()
   }
 
   // MARK: - Keys (Keychain-backed; secrets never read back)
 
-  /// Friendly labels for the canonical Keychain accounts.
+  /// Labels for the static Keychain accounts; custom rows render "API key" on their card.
   static func keyLabel(for account: String) -> String {
     switch account {
-    case "LLM_API_KEY": return "LLM API key"
-    case "STT_API_KEY": return "Speech-to-text API key"
-    case "LLM_FORMATTING_API_KEY": return "Formatting API key"
-    case "LLM_ASSISTIVE_API_KEY": return "Assistive API key (OpenAI)"
-    case "LLM_ANTHROPIC_API_KEY": return "Anthropic API key"
+    case "LLM_LIBRAXIS_API_KEY": return "Libraxis API key"
+    case "LLM_OPENAI_API_KEY": return "OpenAI API key"
     case "LLM_XAI_API_KEY": return "xAI (Grok) API key"
+    case "LLM_ANTHROPIC_API_KEY": return "Anthropic API key"
+    case "STT_FILE_API_KEY": return "File transcription key"
+    case "STT_LIVE_API_KEY": return "Live transcript key"
     case "GITHUB_TOKEN": return "GitHub token"
     default: return account
     }
   }
 
-  var keyAccounts: [String] { engine?.keyAccounts() ?? [] }
+  // MARK: - Provider registry (Settings › Providers)
 
-  // MARK: - Agent provider selection (assistive lane)
+  /// Factory-pinned vendors in registry order.
+  var vendorProviders: [CsProviderOption] { providers.filter { $0.kind == "vendor" } }
 
-  func setAssistiveProvider(_ id: String) {
-    settings.llmAssistiveProvider = id
-    persist("LLM_ASSISTIVE_PROVIDER", id)
-    // The stored model belonged to the previous provider; keeping it would make
-    // the first send hit a model the new provider doesn't serve. Clear it so
-    // the provider default applies immediately, then
-    // allow only a fresh discovery to re-anchor it. Any manual model edit
-    // cancels this pending auto-selection.
-    setLLMModel("", for: .assistive)
-    pendingAssistiveModelSelection = (
-      providerId: id,
-      modelEditGeneration: assistiveModelEditGeneration
-    )
-    refreshModelDiscoveries(providerIds: [id, "openai-responses"])
+  /// Operator-defined rows (`custom:<id>`), unbounded.
+  var customProviders: [CsProviderOption] { providers.filter { $0.kind == "custom" } }
+
+  /// Non-provider Keychain accounts (GitHub). STT keys ride on `sttLanes`.
+  var serviceKeyAccounts: [String] { engine?.serviceKeyAccounts() ?? [] }
+
+  /// Lane-picker dot: credential present or key-optional host → green; else red.
+  static func availabilityTint(for provider: CsProviderOption) -> Color {
+    provider.apiKeySet || provider.accountSignedIn || !provider.keyRequired
+      ? CSColor.oliveLight : CSColor.terracottaLight
+  }
+
+  /// Bridge rows take the bare slug; the picker id carries the `custom:` prefix (§D 17:55Z).
+  private static func customRowId(_ providerId: String) -> String {
+    providerId.hasPrefix("custom:") ? String(providerId.dropFirst("custom:".count)) : providerId
+  }
+
+  /// Validation is the bridge's; the thrown error is the form's message, not a modal.
+  func addCustomProvider(_ draft: CsCustomProviderDraft) throws {
+    guard let engine else { return }
+    _ = try engine.addCustomProvider(draft: draft)
+    reloadProviders(engine)
+  }
+
+  func updateCustomProvider(id: String, _ draft: CsCustomProviderDraft) throws {
+    guard let engine else { return }
+    _ = try engine.updateCustomProvider(id: Self.customRowId(id), draft: draft)
+    reloadProviders(engine)
+    refreshModelDiscovery(providerId: id)
+  }
+
+  /// Removes the row and its key; lanes that pointed at it come back as `lanesReset`.
+  func removeCustomProvider(id: String) {
+    guard let engine else { return }
+    do {
+      let removal = try engine.removeCustomProvider(id: Self.customRowId(id))
+      reloadProviders(engine)
+      let lanes = removal.lanesReset.map { lane in
+        LLMLane.allCases.first { $0.bridgeLane == lane }?.title ?? "\(lane)"
+      }
+      laneResetNotice =
+        lanes.isEmpty
+        ? nil
+        : "\(lanes.joined(separator: " and ")) lane\(lanes.count == 1 ? "" : "s") reset to the default vendor — the custom provider was removed"
+      refreshModelDiscoveries(providerIds: LLMLane.allCases.map { llmLane($0).providerId })
+    } catch {
+      lastError = String(describing: error)
+    }
+  }
+
+  /// Settings + presence + registry after any provider/key mutation.
+  private func reloadProviders(_ engine: SettingsEngine) {
+    applyLoadedSettings(engine.loadSettings())
+    keyStatus = engine.keyStatus()
+    providers = engine.availableProviders()
+    sttLanes = engine.sttLanes()
     refreshAgentStatus()
   }
+
+  // MARK: - Keys (Keychain-backed; secrets never read back)
 
   func saveKey(account: String, secret: String) {
     let trimmed = secret.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -2323,12 +2477,8 @@ final class SettingsViewModel: ObservableObject {
     do {
       try engine.setApiKey(account: account, secret: trimmed)
       keyProbeResults[account] = nil
-      keyStatus = engine.keyStatus()
-      providers = engine.availableProviders()
-      if account == llmLane(.assistive).provider?.apiKeyAccount {
-        refreshAssistiveModelDiscovery()
-      }
-      refreshAgentStatus()
+      reloadProviders(engine)
+      refreshDiscovery(forAccount: account)
     } catch {
       lastError = String(describing: error)
     }
@@ -2339,55 +2489,40 @@ final class SettingsViewModel: ObservableObject {
     do {
       try engine.clearApiKey(account: account)
       keyProbeResults[account] = nil
-      keyStatus = engine.keyStatus()
-      providers = engine.availableProviders()
-      if account == llmLane(.assistive).provider?.apiKeyAccount {
-        refreshAssistiveModelDiscovery()
-      }
-      refreshAgentStatus()
+      reloadProviders(engine)
+      refreshDiscovery(forAccount: account)
     } catch {
       lastError = String(describing: error)
     }
   }
 
+  /// A key changed hands: the provider owning that account may list differently now.
+  private func refreshDiscovery(forAccount account: String) {
+    guard let provider = providers.first(where: { $0.apiKeyAccount == account }) else { return }
+    refreshModelDiscovery(providerId: provider.id)
+  }
+
   func testKey(account: String) {
     guard let engine else { return }
     guard !keyProbePending.contains(account) else { return }
-    let backgroundEngine = BackgroundSettingsEngine(engine: engine)
     keyProbePending.insert(account)
-
-    DispatchQueue.global(qos: .userInitiated).async { [backgroundEngine, account] in
-      let result: Result<CsApiKeyProbeResult, Error>
+    Task { @MainActor [weak self] in
+      guard let self else { return }
       do {
-        result = .success(try backgroundEngine.engine.testApiKey(account: account))
-      } catch {
-        result = .failure(error)
-      }
-
-      DispatchQueue.main.async { [weak self] in
-        guard let self else { return }
+        let probe = try await engine.testApiKeyAsync(account: account)
         self.keyProbePending.remove(account)
-        switch result {
-        case .success(let probe):
-          self.keyProbeResults[account] = probe
-        case .failure(let error):
-          self.keyProbeResults[account] = CsApiKeyProbeResult(
-            account: account,
-            status: .network,
-            message: String(describing: error),
-            probedEndpoint: nil
-          )
-          self.lastError = String(describing: error)
-        }
+        self.keyProbeResults[account] = probe
+      } catch {
+        self.keyProbePending.remove(account)
+        self.keyProbeResults[account] = CsApiKeyProbeResult(
+          account: account,
+          status: .network,
+          message: String(describing: error),
+          probedEndpoint: nil
+        )
+        self.lastError = String(describing: error)
       }
     }
-  }
-
-  /// Match any assistive provider row whose Keychain API-key account equals
-  /// `account`. Used so OpenAI, Anthropic, and xAI each render their own
-  /// account-login row under their key card (not OpenAI-only).
-  func providerForKeyAccount(_ account: String) -> CsProviderOption? {
-    providers.first { $0.apiKeyAccount == account }
   }
 
   /// Full "Sign in with ChatGPT" click-through: start the local callback
@@ -2414,43 +2549,25 @@ final class SettingsViewModel: ObservableObject {
     accountLoginNotices[providerId] = nil
     NSWorkspace.shared.open(url)
 
-    let backgroundEngine = BackgroundSettingsEngine(engine: engine)
-    DispatchQueue.global(qos: .userInitiated).async { [backgroundEngine, providerId] in
-      let outcome: Result<CsAccountLoginResult, Error>
+    Task { @MainActor [weak self] in
+      guard let self else { return }
       do {
-        outcome = .success(
-          try backgroundEngine.engine.awaitAccountLogin(
-            providerId: providerId,
-            // P2-09: 300s chosen as pragmatic cap for OAuth browser roundtrip
-            // (user may need to 2FA, switch windows, consent). No new Settings
-            // knob (per charter). Cancel path: second start or sign-out flow
-            // or app close (server is torn down on timeout/failure).
-            // Discovery (P2-08) uses the same await; partial cancel support
-            // exists via pending set + supersede in core.
-            timeoutSeconds: 300
-          )
+        let login = try await engine.awaitAccountLoginAsync(
+          providerId: providerId,
+          // P2-09: 300s is the cap for OAuth browser roundtrip and 2FA.
+          timeoutSeconds: 300
         )
-      } catch {
-        outcome = .failure(error)
-      }
-
-      DispatchQueue.main.async { [weak self] in
-        guard let self else { return }
         self.accountLoginPending.remove(providerId)
-        switch outcome {
-        case .success(let login):
-          // "signed_in" needs no banner — the row status flips on the
-          // provider refresh below. Everything else is surfaced as-is.
-          self.accountLoginNotices[providerId] =
-            login.status == "signed_in" ? nil : login.message
-        case .failure(let error):
-          self.accountLoginNotices[providerId] = String(describing: error)
-        }
-        if let engine = self.engine {
-          self.providers = engine.availableProviders()
-        }
-        self.refreshAgentStatus()
+        self.accountLoginNotices[providerId] =
+          login.status == "signed_in" ? nil : login.message
+      } catch {
+        self.accountLoginPending.remove(providerId)
+        self.accountLoginNotices[providerId] = String(describing: error)
       }
+      if let currentEngine = self.engine {
+        self.providers = currentEngine.availableProviders()
+      }
+      self.refreshAgentStatus()
     }
   }
 
@@ -2492,9 +2609,13 @@ final class SettingsViewModel: ObservableObject {
     refreshAgentStatus()
   }
 
+  /// Re-run discovery for one provider (vendor or custom).
+  func refreshModelDiscovery(providerId: String) {
+    refreshModelDiscoveries(providerIds: [providerId])
+  }
+
   /// The single discovery path for every lane/provider. Generation checks drop
-  /// stale network results. Provider-switch auto-selection is held separately
-  /// so a newer endpoint refresh inherits it while a manual model edit cancels it.
+  /// stale network results.
   private func refreshModelDiscoveries(providerIds: [String]) {
     let providerIds = Array(Set(providerIds))
     var generations: [String: Int] = [:]
@@ -2504,12 +2625,7 @@ final class SettingsViewModel: ObservableObject {
     }
     guard let engine else {
       for providerId in providerIds {
-        let discovery = CsModelDiscovery.sample(for: providerId)
-        modelDiscoveries[providerId] = discovery
-        applyPendingAssistiveModelSelection(
-          providerId: providerId,
-          discovery: discovery
-        )
+        modelDiscoveries[providerId] = CsModelDiscovery.sample(for: providerId)
       }
       return
     }
@@ -2524,57 +2640,25 @@ final class SettingsViewModel: ObservableObject {
       modelDiscoveries[providerId] = loading
     }
 
-    let backgroundEngine = BackgroundSettingsEngine(engine: engine)
-    DispatchQueue.global(qos: .userInitiated).async {
-      [backgroundEngine, providerIds, generations] in
-      let discoveries = providerIds.map { providerId in
-        (providerId, backgroundEngine.engine.discoverModels(providerId: providerId))
+    Task { @MainActor [weak self] in
+      var discoveries: [(String, CsModelDiscovery)] = []
+      for providerId in providerIds {
+        discoveries.append(
+          (providerId, await engine.discoverModelsAsync(providerId: providerId))
+        )
       }
-
-      DispatchQueue.main.async { [weak self, discoveries, generations] in
-        guard let self else { return }
-        for (providerId, discovery) in discoveries {
-          guard self.modelDiscoveryGenerations[providerId] == generations[providerId] else {
-            continue
-          }
-          self.modelDiscoveries[providerId] = discovery
-          self.applyPendingAssistiveModelSelection(
-            providerId: providerId,
-            discovery: discovery
-          )
+      guard let self else { return }
+      for (providerId, discovery) in discoveries {
+        guard self.modelDiscoveryGenerations[providerId] == generations[providerId] else {
+          continue
         }
+        self.modelDiscoveries[providerId] = discovery
       }
     }
-  }
-
-  private func applyPendingAssistiveModelSelection(
-    providerId: String,
-    discovery: CsModelDiscovery
-  ) {
-    guard let pending = pendingAssistiveModelSelection,
-      pending.providerId == providerId
-    else { return }
-
-    let activeProviderId = settings.llmAssistiveProvider ?? "openai-responses"
-    guard pending.modelEditGeneration == assistiveModelEditGeneration,
-      activeProviderId == providerId
-    else {
-      pendingAssistiveModelSelection = nil
-      return
-    }
-
-    guard discovery.status == "fresh",
-      let firstModel = discovery.models.first?.id,
-      !firstModel.isEmpty
-    else { return }
-
-    setLLMModel(firstModel, for: .assistive)
   }
 
   // MARK: - Prompts (editable BASE prompts)
 
-  func formattingPrompt() -> String { formattingPromptSnapshot().content }
-  func assistivePrompt() -> String { assistivePromptSnapshot().content }
   func formattingPromptSnapshot() -> CsPromptSnapshot {
     engine?.formattingPromptSnapshot() ?? .sampleFormatting
   }
@@ -2671,13 +2755,15 @@ final class SettingsViewModel: ObservableObject {
       agentStatus: MockAgentStatusEngine(),
       mcpAdmin: MockMCPAdminEngine(),
       hotkeys: MockHotkeysEngine(),
-      laneTruthProvider: { lane in
-        CsLaneTruthSnapshot(
+      runtimeLlmLaneProvider: { lane in
+        CsRuntimeLlmLane(
           lane: lane,
           providerId: "openai-responses",
+          providerDisplayName: "OpenAI",
+          wire: "responses",
           endpoint: "https://api.openai.com/v1/responses",
           model: "gpt-5.2",
-          keyAccount: "LLM_ASSISTIVE_API_KEY",
+          keyAccount: "LLM_OPENAI_API_KEY",
           keyPresent: true,
           accountAuth: false,
           available: true,

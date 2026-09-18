@@ -1,6 +1,11 @@
 use std::fs;
 
-use codescribe::{ai_formatting, config::prompts, state::history};
+use codescribe::{
+    ai_formatting,
+    config::{Config, UserSettings, prompts},
+    state::history,
+};
+use codescribe_core::llm::provider::{CustomProvider, WireFamily};
 
 use mockito::Matcher;
 use serial_test::serial;
@@ -72,13 +77,19 @@ fn e2e_prompts_are_file_backed_and_history_uses_config_dir() {
         std::env::set_var("CODESCRIBE_AI_MAX_RETRIES", "0");
         // Keep some slack for local CI variability.
         std::env::set_var("CODESCRIBE_AI_ATTEMPT_TIMEOUT_MS", "2000");
-        std::env::set_var("LLM_ENDPOINT", &endpoint);
-        std::env::set_var("LLM_FORMATTING_ENDPOINT", &endpoint);
-        std::env::set_var("LLM_MODEL", "test-model");
-        std::env::set_var("LLM_FORMATTING_MODEL", "test-model");
-        std::env::set_var("LLM_API_KEY", "test-key");
-        std::env::set_var("LLM_FORMATTING_API_KEY", "test-key");
+        std::env::set_var("CODESCRIBE_DISABLE_KEYCHAIN", "1");
+        std::env::remove_var("LLM_FORMATTING_PROVIDER");
+        std::env::remove_var("LLM_FORMATTING_MODEL");
     }
+    // The mock host is a key-optional Custom provider row the formatting lane
+    // points at through settings.json.
+    let row = CustomProvider::new("History Box", WireFamily::OpenAiResponses, &endpoint)
+        .expect("valid custom row");
+    let mut settings = UserSettings::load();
+    settings.add_custom_provider(row).expect("add custom row");
+    settings.llm_formatting_provider = Some("custom:history-box".to_string());
+    settings.llm_formatting_model = Some("test-model".to_string());
+    settings.save().expect("persist lane settings");
 
     let m = server
         .mock("POST", "/v1/responses")
@@ -102,7 +113,13 @@ data: [DONE]
         .enable_all()
         .build()
         .expect("tokio runtime");
-    let formatted = rt.block_on(ai_formatting::format_text(&raw, None, false));
+    let runtime_settings = Config::load_runtime_snapshot().expect("seal runtime settings");
+    let formatted = rt.block_on(ai_formatting::format_text(
+        &raw,
+        None,
+        false,
+        &runtime_settings,
+    ));
 
     // Ensure the LLM endpoint was actually called (i.e., we didn't silently fall back).
     m.assert();

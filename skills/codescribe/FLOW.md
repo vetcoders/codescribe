@@ -1,50 +1,25 @@
-# `codescribe` attach flow
+# Codescribe attach flow
 
-> Foundation skill. No `vibecrafted codescribe <agent>` worker.
-
-## Flow
+Foundation skill; execute in this conversation.
 
 ```mermaid
 flowchart TD
-    A[Agent session starts] --> B{Codescribe.app + bus file?}
-    B -->|no| C[Ask human: odpal apkę i licencję]
-    C --> D{Retry ok?}
-    D -->|no| E[Fail loud]
-    D -->|yes| F["installed bus-demux --provider --session --become --drafts --follow"]
-    B -->|yes| F
-    F --> G[Ask human for a name in this chat]
-    G --> H[Greet once]
-    H --> I["--name stem --follow"]
-    I --> J[Fn down: drafts live; state_change_allowed false]
-    J --> K{Addresses my name?}
-    K -->|yes| L[May reply in ~5s gap]
-    K -->|no| J
-    J --> M[Fn up: transcript_sealed; state_change_allowed true]
-    M --> N[Only now: side effects]
+    A[Attach requested] --> B[Resolve app, bus, helper, provider session]
+    B --> C{Wake-capable monitor available?}
+    C -->|yes| D[Bind name and one follower lease]
+    C -->|no| E[Report limitation; active polling while turn stays open]
+    D --> F[Fresh named take]
+    F --> G{Agent receives notification and replies without typed nudge?}
+    G -->|yes| H[listening_verified]
+    G -->|no| I[Report failing hop; attached_unverified]
+    H --> J{Envelope permits state change?}
+    J -->|draft or refusal| K[Conversation and read-only work]
+    J -->|genuine seal| L[Execute authorized task]
 ```
 
-## Routes
+Recovery preserves the provider session, lease and cursor and rechecks monitor
+delivery. Explicit stop closes owned handles. Neither recovery nor an observer
+creates a second microphone.
 
-| Entry         | Args     | Produces                         | Exit          |
-| ------------- | -------- | -------------------------------- | ------------- |
-| `/codescribe` | none     | agent attached, named, listening | in-session    |
-| Worker CLI    | **none** | —                                | do not invent |
-
-### Escalation edges
-
-- Repo surgery after attach → `vc-justdo` / `vc-implement` (not this skill)
-- Session orientation of the checkout → `vc-init`
-- In-app Agent window → Codescribe Assistive / `⌘⇧Space`, not this skill
-
-### Session artifacts
-
-- Bus: `~/.codescribe/transcript-events.jsonl` (`CODESCRIBE_TRANSCRIPT_BUS_PATH` wins)
-- Follower stdout: one JSON object per matching event (kielbasa)
-- Lease/cursor: `~/.codescribe/agent-bridge/leases/<lease-id>.json`
-- Recovery: preserve/poll the follower handle; reattach with the same provider session
-
-### Anti-patterns
-
-- Fake `vibecrafted codescribe <agent>`
-- Second microphone / Voice Lab
-- Acting on a half utterance
+Procedures: [attach](references/attach.md), [monitor](references/monitor.md),
+[live vs seal](references/live-vs-seal.md), [CLI](references/cli.md).

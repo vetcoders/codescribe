@@ -29,7 +29,6 @@ use codescribe::qube_report::{
     ReportEnvironment, ReportMetrics, ReportSummary, ReportTranscriptSemantics,
     ReportTranscriptState, ReportTranscripts, render_html as render_qube_html,
 };
-use codescribe_core::asr_session::GatewaySessionAvailability;
 use codescribe_core::config::UserSettings;
 use codescribe_core::pipeline::contracts::{EngineEvent, LayerSource};
 use codescribe_core::quality::engine_contract::{CORPUS_REPORT_SCHEMA, ENGINE_CONTRACT_ID};
@@ -42,14 +41,12 @@ use sha2::{Digest, Sha256};
 
 const REPORT_SCHEMA: &str = CORPUS_REPORT_SCHEMA;
 const AUDIO_EXTENSIONS: [&str; 3] = ["wav", "m4a", "mp3"];
-const CONTROLLED_ENV: [&str; 14] = [
+const CONTROLLED_ENV: [&str; 12] = [
     "CODESCRIBE_STT_ENGINE",
     "CODESCRIBE_LAYERED_TRANSCRIPTION",
     "STT_TAIL_PROVIDER",
     "CODESCRIBE_SILERO_FUSION",
     "CODESCRIBE_SILERO_FUSION_CONTEXT",
-    "CODESCRIBE_SPAN_IDEMPOTENCE",
-    "CODESCRIBE_INLINE_FORMAT",
     "CODESCRIBE_STT_INITIAL_PROMPT_ENABLED",
     "FINAL_PASS_MODE",
     "CODESCRIBE_FINAL_PASS_MODE",
@@ -72,6 +69,13 @@ struct Cli {
 
 #[derive(Debug, Subcommand)]
 enum Command {
+    /// Compare complete profile measurements; never certify release readiness.
+    Compare {
+        #[arg(long)]
+        baseline: PathBuf,
+        #[arg(long)]
+        candidate: PathBuf,
+    },
     /// Inventory audio and reference classes without running STT.
     Census {
         /// Corpus root. Repeat to combine roots.
@@ -145,7 +149,7 @@ enum Command {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, ValueEnum)]
 #[serde(rename_all = "snake_case")]
 enum ReferencePolicy {
-    /// Only explicit `_human_transcription.txt` siblings are quality truth.
+    /// Only explicit adjacent human-reference files are quality truth.
     Human,
     /// Prefer explicit human truth, then admit same-stem historical TXT.
     HumanAndHistorical,
@@ -226,10 +230,6 @@ impl ReplayProfile {
             Self::AppleLayer1FusionStablePrompt => "stable_prompt",
             _ => "utterance_only",
         }
-    }
-
-    const fn idempotence(self) -> bool {
-        matches!(self, Self::AppleLayer1FusionIdempotent)
     }
 
     const fn stop_lane(self) -> ProductionReplayLane {
@@ -405,8 +405,6 @@ struct ExecutionRow {
     teacher_similarity: f64,
     final_pass_attempted: bool,
     final_pass_skipped: bool,
-    lexicon_rewrites: u64,
-    gate_drops: u64,
     audio_hash_unchanged: bool,
     reference_hash_unchanged: bool,
 }
@@ -457,7 +455,7 @@ struct MatrixReport {
     permission_request_apis_called_by_tool: bool,
     tcc_database_inspected: bool,
     permission_state_proven_unchanged: bool,
-    quality_gate: &'static str,
+    measurement_policy: &'static str,
     coverage: CoverageContract,
 }
 
@@ -511,6 +509,36 @@ fn main() -> ExitCode {
 
 fn run(cli: Cli) -> Result<()> {
     match cli.command {
+        Command::Compare {
+            baseline,
+            candidate,
+        } => {
+            let baseline_bytes = fs::read(&baseline).context("read baseline report")?;
+            let candidate_bytes = fs::read(&candidate).context("read candidate report")?;
+            if baseline_bytes == candidate_bytes {
+                bail!("comparison refused: identical reports are not independent measurements");
+            }
+            let before: ProfileReport =
+                serde_json::from_slice(&baseline_bytes).context("parse baseline profile report")?;
+            let after: ProfileReport = serde_json::from_slice(&candidate_bytes)
+                .context("parse candidate profile report")?;
+            let deltas = compare_profile_reports(&before, &after)?;
+            println!(
+                "{}",
+                serde_json::to_string_pretty(&serde_json::json!({
+                    "schema": "codescribe-corpus-comparison/v1",
+                    "scope": "observed_measurement_deltas_only",
+                    "release_readiness": "not_proven",
+                    "calibration_and_full_runtime_equivalence": "not_proven_by_profile_reports",
+                    "baseline_report_sha256": format!("{:x}", Sha256::digest(&baseline_bytes)),
+                    "candidate_report_sha256": format!("{:x}", Sha256::digest(&candidate_bytes)),
+                    "baseline_commit": before.commit,
+                    "candidate_commit": after.commit,
+                    "rows": deltas,
+                }))?
+            );
+            Ok(())
+        }
         Command::Census {
             roots,
             out,
@@ -592,6 +620,99 @@ struct Discovery {
     selected: Vec<Clip>,
 }
 
+/// Exact input identity and complete executions are prerequisites even for
+/// descriptive deltas. Profile reports alone do not prove causal equivalence.
+fn compare_profile_reports(
+    before: &ProfileReport,
+    after: &ProfileReport,
+) -> Result<Vec<serde_json::Value>> {
+    for report in [before, after] {
+        validate_execution_counts(
+            report.requested_executions,
+            report.successful_executions,
+            report.failed_executions,
+        )?;
+        if report.schema != REPORT_SCHEMA
+            || report.engine_contract != ENGINE_CONTRACT_ID
+            || report.rows.len() != report.requested_executions
+            || !report.profile_observation_matches
+            || !report.input_hashes_unchanged
+            || report.reference_policy != "human"
+            || report.requested_runs_per_recording == 0
+            || report
+                .distinct_recordings
+                .checked_mul(report.requested_runs_per_recording)
+                != Some(report.requested_executions)
+        {
+            bail!("comparison refused: incomplete or unsupported profile evidence");
+        }
+    }
+    if before.profile != after.profile || before.apple_stt_bridge != after.apple_stt_bridge {
+        bail!("comparison refused: profile or Apple bridge artifact changed");
+    }
+    let index = |report: &ProfileReport| -> Result<BTreeMap<(String, String, usize), [f64; 3]>> {
+        let mut rows = BTreeMap::new();
+        for row in &report.rows {
+            if row.status != "ok"
+                || row.reference_kind != ReferenceKind::Human
+                || !row.audio_hash_unchanged
+                || !row.reference_hash_unchanged
+                || !row.wer.is_finite()
+                || !row.cer.is_finite()
+                || !row.wall_seconds.is_finite()
+                || row.wer < 0.0
+                || row.cer < 0.0
+                || row.wall_seconds < 0.0
+                || row.run == 0
+                || row.run > report.requested_runs_per_recording
+            {
+                bail!("comparison refused: invalid measurement row");
+            }
+            let key = (
+                row.audio_sha256.clone(),
+                row.reference_sha256.clone(),
+                row.run,
+            );
+            if rows
+                .insert(key, [row.wer, row.cer, row.wall_seconds])
+                .is_some()
+            {
+                bail!("comparison refused: duplicate input/run identity");
+            }
+        }
+        let mut recordings = BTreeMap::new();
+        for (audio, reference, _) in rows.keys() {
+            let entry = recordings.entry(audio).or_insert((reference, 0usize));
+            if entry.0 != reference {
+                bail!("comparison refused: one recording has conflicting references");
+            }
+            entry.1 += 1;
+        }
+        if recordings.len() != report.distinct_recordings
+            || recordings
+                .values()
+                .any(|(_, count)| *count != report.requested_runs_per_recording)
+        {
+            bail!("comparison refused: incomplete repeated-run coverage");
+        }
+        Ok(rows)
+    };
+    let old = index(before)?;
+    let new = index(after)?;
+    if old.keys().ne(new.keys()) {
+        bail!("comparison refused: audio, reference hashes or repeated-run set changed");
+    }
+    Ok(old.iter().map(|((audio, reference, run), values)| {
+        let current = &new[&(audio.clone(), reference.clone(), *run)];
+        serde_json::json!({
+            "audio_sha256": audio, "reference_sha256": reference, "run": run,
+            "baseline": {"wer": values[0], "cer": values[1], "wall_seconds": values[2]},
+            "candidate": {"wer": current[0], "cer": current[1], "wall_seconds": current[2]},
+            "delta": {"wer": current[0]-values[0], "cer": current[1]-values[1], "wall_seconds": current[2]-values[2]}
+        })
+    }).collect())
+}
+
 fn discover_corpus(
     roots: &[PathBuf],
     policy: ReferencePolicy,
@@ -619,10 +740,9 @@ fn discover_corpus(
         let extension = lower_extension(path).unwrap_or_else(|| "unknown".to_string());
         *format_instances.entry(extension.clone()).or_insert(0) += 1;
         let audio_sha256 = sha256_file(path)?;
-        let human_path = reference_path(path, "_human_transcription.txt");
+        let human = resolve_human_reference(path)?;
         let historical_path = path.with_extension("txt");
         let apple_path = reference_path(path, "_apple_live_reference.txt");
-        let human = human_path.filter(|candidate| candidate.is_file());
         let historical = historical_path.is_file().then_some(historical_path);
         let has_apple_reference = apple_path.is_some_and(|candidate| candidate.is_file());
         human_reference_instances += usize::from(human.is_some());
@@ -754,6 +874,35 @@ fn lower_extension(path: &Path) -> Option<String> {
 fn reference_path(audio: &Path, suffix: &str) -> Option<PathBuf> {
     let stem = audio.file_stem()?.to_str()?;
     Some(audio.parent()?.join(format!("{stem}{suffix}")))
+}
+
+/// Match the adjacent human-reference names used by scripts/lib/data-assets.sh.
+/// Never choose between conflicting labels or treat an empty label as truth.
+fn resolve_human_reference(audio: &Path) -> Result<Option<PathBuf>> {
+    let mut selected: Option<(PathBuf, String)> = None;
+    for suffix in [
+        "_human_transcription.txt",
+        "_codescribe_raw_human_transcription_from_wav.txt",
+    ] {
+        let Some(candidate) = reference_path(audio, suffix) else {
+            continue;
+        };
+        let contents = match fs::read_to_string(&candidate) {
+            Ok(contents) => contents,
+            Err(error) if error.kind() == io::ErrorKind::NotFound => continue,
+            Err(error) => return Err(error).context("cannot read human reference"),
+        };
+        if contents.trim().is_empty() {
+            bail!("empty human reference");
+        }
+        if let Some((_, previous)) = &selected
+            && previous != &contents
+        {
+            bail!("conflicting adjacent human references");
+        }
+        selected = Some((candidate, contents));
+    }
+    Ok(selected.map(|(path, _)| path))
 }
 
 fn merge_duplicate(existing: &mut Clip, incoming: Clip) -> Result<()> {
@@ -918,7 +1067,7 @@ fn run_matrix(args: MatrixArgs) -> Result<()> {
         permission_request_apis_called_by_tool: false,
         tcc_database_inspected: false,
         permission_state_proven_unchanged: false,
-        quality_gate: "measurement_only_operator_decides",
+        measurement_policy: "measurement_only_operator_decides",
         coverage: CoverageContract::default(),
     };
     let report_path = args.out_dir.join("report.json");
@@ -942,6 +1091,25 @@ fn run_matrix(args: MatrixArgs) -> Result<()> {
             args.profiles.len()
         );
     }
+    validate_execution_counts(
+        requested_executions,
+        successful_executions,
+        failed_executions,
+    )?;
+    if !config_unchanged {
+        bail!("corpus replay changed configuration; retained report is not an acceptance pass");
+    }
+    Ok(())
+}
+
+/// A completed measurement is not an accuracy verdict, but failed/missing
+/// executions must make the command fail after their reports are preserved.
+fn validate_execution_counts(requested: usize, successful: usize, failed: usize) -> Result<()> {
+    if requested == 0 || successful != requested || failed != 0 {
+        bail!(
+            "corpus replay incomplete: {successful}/{requested} successful, {failed} failed; see retained report"
+        );
+    }
     Ok(())
 }
 
@@ -954,6 +1122,12 @@ fn configure_profile_environment(
         command.env_remove(key);
     }
     if !matches!(profile, ReplayProfile::AppleLayer1Remote) {
+        command
+            .env_remove("STT_FILE_API_KEY")
+            .env_remove("STT_LIVE_API_KEY");
+        command.env_remove("STT_FILE_ENDPOINT");
+        command.env_remove("STT_LIVE_ENDPOINT");
+        // Retired aliases must not re-enable cloud access in an offline profile.
         command.env_remove("STT_API_KEY");
         command.env_remove("STT_ENDPOINT");
         command.env_remove("CODESCRIBE_STT_ENDPOINT");
@@ -973,11 +1147,6 @@ fn configure_profile_environment(
             if profile.fusion() { "on" } else { "off" },
         )
         .env("CODESCRIBE_SILERO_FUSION_CONTEXT", profile.fusion_context())
-        .env(
-            "CODESCRIBE_SPAN_IDEMPOTENCE",
-            if profile.idempotence() { "on" } else { "off" },
-        )
-        .env("CODESCRIBE_INLINE_FORMAT", "off")
         .env("CODESCRIBE_STT_INITIAL_PROMPT_ENABLED", "off")
         .env("CODESCRIBE_APPLE_STT_ALLOW_DOWNLOAD", "0")
         .env(
@@ -1081,7 +1250,6 @@ async fn run_worker(args: WorkerArgs) -> Result<()> {
                 &clip.path,
                 Some(args.language.clone()),
                 &settings,
-                GatewaySessionAvailability::Unavailable,
                 args.profile.stop_lane(),
             )
             .await;
@@ -1319,8 +1487,11 @@ fn success_quality_entry(
             post_cer: Some(post_cer),
             ..ReportMetrics::default()
         },
-        postprocess_stats: Some(replay.postprocess_stats.clone()),
         errors: Vec::new(),
+        engine_mode: None,
+        fallback_used: None,
+        has_fine_sparkline: None,
+        has_energy_sparkline: None,
     }
 }
 
@@ -1342,8 +1513,11 @@ fn failure_quality_entry(execution: &ReplayExecutionContext<'_>, error: &str) ->
         },
         raw_semantics: None,
         metrics: ReportMetrics::default(),
-        postprocess_stats: None,
         errors: vec![error.to_string()],
+        engine_mode: None,
+        fallback_used: None,
+        has_fine_sparkline: None,
+        has_energy_sparkline: None,
     }
 }
 
@@ -1393,23 +1567,11 @@ fn build_quality_report(
             )
         })
         .count();
-    let raw_quality_gate_dropped = entries
-        .iter()
-        .filter(|entry| {
-            matches!(
-                entry
-                    .raw_semantics
-                    .as_ref()
-                    .map(|semantics| semantics.state),
-                Some(ReportTranscriptState::QualityGateDropped)
-            )
-        })
-        .count();
     QualityReport {
         generated_at: Utc::now().to_rfc3339(),
         environment: ReportEnvironment {
-            stt_endpoint: None,
-            stt_api_key_present: false,
+            stt_file_endpoint: None,
+            stt_file_api_key_present: false,
             llm_formatting_endpoint: None,
             llm_formatting_model: None,
             llm_formatting_key_present: false,
@@ -1429,7 +1591,6 @@ fn build_quality_report(
             avg_raw_cer: mean_f32(&raw_cer),
             avg_post_cer: mean_f32(&post_cer),
             raw_no_speech_detected,
-            raw_quality_gate_dropped,
             raw_text_committed,
             ..ReportSummary::default()
         },
@@ -1462,11 +1623,6 @@ fn validate_worker_environment(profile: ReplayProfile, apple_bridge: &Path) -> R
             "CODESCRIBE_SILERO_FUSION",
             if profile.fusion() { "on" } else { "off" },
         ),
-        (
-            "CODESCRIBE_SPAN_IDEMPOTENCE",
-            if profile.idempotence() { "on" } else { "off" },
-        ),
-        ("CODESCRIBE_INLINE_FORMAT", "off"),
         ("CODESCRIBE_DISABLE_KEYCHAIN", "1"),
         ("CODESCRIBE_APPLE_STT_ALLOW_DOWNLOAD", "0"),
         ("CODESCRIBE_BRIDGE_DISCLAIM", "1"),
@@ -1563,8 +1719,6 @@ fn success_row(
         teacher_similarity: teacher_similarity(execution.truth, &replay.delivered_text),
         final_pass_attempted: replay.final_pass_attempted,
         final_pass_skipped: replay.final_pass_skipped,
-        lexicon_rewrites: replay.postprocess_stats.lexicon_rewrites,
-        gate_drops: replay.postprocess_stats.gate_drops,
         audio_hash_unchanged,
         reference_hash_unchanged,
     })
@@ -1605,8 +1759,6 @@ fn failure_row(execution: &ReplayExecutionContext<'_>) -> Result<ExecutionRow> {
         teacher_similarity: 0.0,
         final_pass_attempted: false,
         final_pass_skipped: false,
-        lexicon_rewrites: 0,
-        gate_drops: 0,
         audio_hash_unchanged: sha256_file(&execution.clip.path)? == execution.clip.sha256,
         reference_hash_unchanged: sha256_file(&execution.reference.path)?
             == execution.reference.sha256,
@@ -1861,7 +2013,12 @@ fn matrix_markdown(report: &MatrixReport) -> String {
         report.permission_state_proven_unchanged
     )
     .unwrap();
-    writeln!(output, "- Quality gate: `{}`\n", report.quality_gate).unwrap();
+    writeln!(
+        output,
+        "- Measurement policy: `{}`\n",
+        report.measurement_policy
+    )
+    .unwrap();
     writeln!(
         output,
         "| Profile | OK | Failed | Observed L1 | Mean WER | Mean CER | Char parity | Qube quality |"
@@ -1907,6 +2064,134 @@ fn optional_score(value: Option<f64>) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn comparison_fixture() -> ProfileReport {
+        let root = tempfile::tempdir().unwrap();
+        let census = discover_corpus(&[root.path().to_owned()], ReferencePolicy::Human, None)
+            .unwrap()
+            .census;
+        let mut value: serde_json::Value = serde_json::from_str(
+            r#"{
+            "schema": "codescribe-corpus-parity/v3", "engine_contract": "the-engine/v1",
+            "generated_at": "synthetic", "commit": "synthetic", "profile": "apple_layer0",
+            "reference_policy": "human", "corpus": null, "distinct_recordings": 1,
+            "requested_runs_per_recording": 1, "requested_executions": 1,
+            "successful_executions": 1, "failed_executions": 0,
+            "total_audio_seconds_executed": 1.0, "total_tail_patches": 0,
+            "requested_layered": false, "observed_layered": false,
+            "profile_observation_matches": true, "mean_wer": 0.1, "mean_cer": 0.1,
+            "mean_character_parity": 0.9, "input_hashes_unchanged": true,
+            "settings_loaded": false, "dotenv_loaded": false, "keychain_disabled": true,
+            "apple_stt_bridge": {"label": "synthetic", "exists": true, "sha256": "abc"},
+            "quality_html": "synthetic.html",
+            "rows": [{
+                "opaque_id": "synthetic", "run": 1, "audio_sha256": "audio",
+                "reference_sha256": "reference", "reference_kind": "human",
+                "duration_seconds": 1.0, "sample_rate_hz": 16000, "status": "ok",
+                "error_class": null, "wall_seconds": 1.0, "events": 1, "previews": 1,
+                "sealed_finals": 1, "final_count": 1, "unique_final_id_count": 1,
+                "repeated_final_id_count": 0, "overlapping_final_window_count": 0,
+                "tail_patches": 0, "layer1_provider_armed": false,
+                "live_chars": 4, "adjudicated_chars": 4, "delivered_chars": 4,
+                "reference_tokens": 1, "delivered_tokens": 1, "token_ratio": 1.0,
+                "head_present": true, "tail_present": true, "wer": 0.1, "cer": 0.1,
+                "character_parity": 0.9, "teacher_similarity": 0.9,
+                "final_pass_attempted": false, "final_pass_skipped": true,
+                "audio_hash_unchanged": true, "reference_hash_unchanged": true
+            }]
+        }"#,
+        )
+        .unwrap();
+        value["corpus"] = serde_json::to_value(census).unwrap();
+        serde_json::from_value(value).unwrap()
+    }
+
+    #[test]
+    fn comparison_reports_deltas_and_refuses_changed_reference_or_failed_run() {
+        let before = comparison_fixture();
+        let mut after = comparison_fixture();
+        after.rows[0].wer = 0.3;
+        let result = compare_profile_reports(&before, &after).unwrap();
+        assert!((result[0]["delta"]["wer"].as_f64().unwrap() - 0.2).abs() < 1e-10);
+        after.rows[0].reference_sha256 = "different".into();
+        assert!(compare_profile_reports(&before, &after).is_err());
+        after = comparison_fixture();
+        after.rows[0].status = "error".into();
+        assert!(compare_profile_reports(&before, &after).is_err());
+        after = comparison_fixture();
+        after.failed_executions = 1;
+        assert!(compare_profile_reports(&before, &after).is_err());
+        after = comparison_fixture();
+        after.apple_stt_bridge.sha256 = Some("different".into());
+        assert!(compare_profile_reports(&before, &after).is_err());
+    }
+
+    #[test]
+    fn comparison_refuses_duplicate_rows_and_inconsistent_counts() {
+        let before = comparison_fixture();
+        let mut after = comparison_fixture();
+        after.requested_runs_per_recording = 2;
+        assert!(compare_profile_reports(&before, &after).is_err());
+        after.requested_executions = 2;
+        after.successful_executions = 2;
+        let duplicate =
+            serde_json::from_value(serde_json::to_value(&after.rows[0]).unwrap()).unwrap();
+        after.rows.push(duplicate);
+        assert!(compare_profile_reports(&after, &after).is_err());
+        after.rows[1].run = 2;
+        assert!(compare_profile_reports(&after, &after).is_ok());
+        after.rows[1].wer = f64::NAN;
+        assert!(compare_profile_reports(&after, &after).is_err());
+    }
+
+    #[test]
+    fn execution_completion_refuses_empty_failed_missing_or_excess_rows() {
+        assert!(validate_execution_counts(2, 2, 0).is_ok());
+        for counts in [
+            (0, 0, 0),
+            (2, 0, 2),
+            (2, 1, 1),
+            (2, 1, 0),
+            (2, 3, 0),
+            (2, 2, 1),
+        ] {
+            assert!(validate_execution_counts(counts.0, counts.1, counts.2).is_err());
+        }
+    }
+
+    #[test]
+    fn corpus_discovers_both_human_reference_names() {
+        for suffix in [
+            "_human_transcription.txt",
+            "_codescribe_raw_human_transcription_from_wav.txt",
+        ] {
+            let root = tempfile::tempdir().unwrap();
+            let audio = root.path().join("take.wav");
+            fs::write(&audio, b"census hashes without decoding").unwrap();
+            fs::write(reference_path(&audio, suffix).unwrap(), "human truth").unwrap();
+            let found =
+                discover_corpus(&[root.path().to_owned()], ReferencePolicy::Human, None).unwrap();
+            assert_eq!(found.selected.len(), 1);
+            assert_eq!(found.census.distinct_human_paired, 1);
+        }
+    }
+
+    #[test]
+    fn human_reference_conflicts_and_empty_labels_are_refused() {
+        let root = tempfile::tempdir().unwrap();
+        let audio = root.path().join("take.wav");
+        let first = reference_path(&audio, "_human_transcription.txt").unwrap();
+        let second =
+            reference_path(&audio, "_codescribe_raw_human_transcription_from_wav.txt").unwrap();
+        assert!(resolve_human_reference(&audio).unwrap().is_none());
+        fs::write(&first, "truth").unwrap();
+        fs::write(&second, "truth").unwrap();
+        assert!(resolve_human_reference(&audio).unwrap().is_some());
+        fs::write(&second, "different").unwrap();
+        assert!(resolve_human_reference(&audio).is_err());
+        fs::write(&second, " \n\t").unwrap();
+        assert!(resolve_human_reference(&audio).is_err());
+    }
 
     #[test]
     fn profile_tokens_round_trip_without_hidden_defaults() {
@@ -2035,8 +2320,11 @@ mod tests {
                 post_wer: Some(0.25),
                 ..ReportMetrics::default()
             },
-            postprocess_stats: None,
             errors: Vec::new(),
+            engine_mode: None,
+            fallback_used: None,
+            has_fine_sparkline: None,
+            has_energy_sparkline: None,
         }];
         let report = build_quality_report(
             ReplayProfile::AppleLayer0,

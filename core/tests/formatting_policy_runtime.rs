@@ -1,6 +1,4 @@
-use codescribe_core::ai_formatting::{
-    AiFormatStatus, format_text_with_status_for_policy, formatting_provider_system_prompt,
-};
+use codescribe_core::ai_formatting::{AiFormatStatus, format_text_with_status_for_policy};
 use codescribe_core::config::{
     Config, FormattingPolicy, PromptKind, PromptWriteReason, prompt_snapshot, prompts, write_prompt,
 };
@@ -8,6 +6,7 @@ use serial_test::serial;
 use sha2::{Digest, Sha256};
 use std::ffi::{OsStr, OsString};
 use std::path::PathBuf;
+use std::time::Duration;
 
 struct EnvGuard {
     key: &'static str,
@@ -42,11 +41,31 @@ impl Drop for EnvGuard {
     }
 }
 
+/// Registry defaults are sealed by the loader when all four overlays are
+/// absent. Formatter and Agent execution only borrow these selected facts.
+#[test]
+#[serial]
+fn runtime_ai_execution_uses_registered_defaults() {
+    let _max_retries = EnvGuard::unset("CODESCRIBE_AI_MAX_RETRIES");
+    let _retry_delay = EnvGuard::unset("CODESCRIBE_AI_RETRY_DELAY_MS");
+    let _attempt_timeout = EnvGuard::unset("CODESCRIBE_AI_ATTEMPT_TIMEOUT_MS");
+    let _inter_chunk_timeout = EnvGuard::unset("CODESCRIBE_AI_INTER_CHUNK_TIMEOUT_MS");
+    let runtime_settings = Config::load_runtime_snapshot().expect("seal runtime settings");
+    let formatter = runtime_settings.ai_execution().formatter();
+    let timing = runtime_settings.ai_execution().request_timing();
+    assert_eq!(formatter.max_retries(), 3);
+    assert_eq!(formatter.retry_delay(), Duration::from_millis(2_000));
+    assert_eq!(timing.attempt_timeout(), Duration::from_millis(30_000));
+    assert_eq!(timing.inter_chunk_timeout(), Duration::from_millis(30_000));
+}
+
 #[test]
 #[serial]
 fn formatting_policy_selects_exact_prompt() {
     let sandbox = tempfile::TempDir::new().expect("isolated prompt data");
     let _data_dir = EnvGuard::set("CODESCRIBE_DATA_DIR", sandbox.path());
+    let _runtime_policy = EnvGuard::unset("FORMATTING_LEVEL");
+    let config = Config::default();
     let fixtures = [
         (
             FormattingPolicy::Correction,
@@ -75,15 +94,30 @@ fn formatting_policy_selects_exact_prompt() {
     .expect("seed common tuning");
 
     for (policy, _, content) in fixtures {
+        config
+            .save_to_env("FORMATTING_LEVEL", policy.as_str())
+            .expect("persist selected formatting policy");
+        let runtime_settings = Config::load_runtime_snapshot().expect("seal runtime settings");
         let expected = format!("{content}\n\nshared tuning fixture");
         assert_eq!(
-            formatting_provider_system_prompt(false, policy).as_deref(),
+            runtime_settings
+                .ai_execution()
+                .formatter()
+                .formatting_prompt()
+                .map(|prompt| prompt.composed_content()),
             Some(expected.as_str()),
             "provider seam selected the wrong prompt for {policy:?}"
         );
     }
+    config
+        .save_to_env("FORMATTING_LEVEL", FormattingPolicy::Off.as_str())
+        .expect("persist Off formatting policy");
+    let runtime_settings = Config::load_runtime_snapshot().expect("seal Off runtime settings");
     assert_eq!(
-        formatting_provider_system_prompt(false, FormattingPolicy::Off),
+        runtime_settings
+            .ai_execution()
+            .formatter()
+            .formatting_prompt(),
         None
     );
 }
@@ -132,8 +166,12 @@ fn formatting_policy_walkaround_receipt() {
         Config::formatting_policy().expect("resolve Off"),
         FormattingPolicy::Off
     );
+    let runtime_settings = Config::load_runtime_snapshot().expect("seal Off runtime settings");
     assert_eq!(
-        formatting_provider_system_prompt(false, FormattingPolicy::Off),
+        runtime_settings
+            .ai_execution()
+            .formatter()
+            .formatting_prompt(),
         None
     );
     println!(
@@ -152,8 +190,14 @@ fn formatting_policy_walkaround_receipt() {
         assert_eq!(Config::formatting_policy().expect("resolve policy"), policy);
 
         let snapshot = prompt_snapshot(kind);
-        let selected = formatting_provider_system_prompt(false, policy)
-            .expect("enabled policy selects provider prompt");
+        let runtime_settings =
+            Config::load_runtime_snapshot().expect("seal selected runtime settings");
+        let selected = runtime_settings
+            .ai_execution()
+            .formatter()
+            .formatting_prompt()
+            .expect("enabled policy selects provider prompt")
+            .composed_content();
         let prompt_digest = format!("{:x}", Sha256::digest(snapshot.content.as_bytes()));
         let selected_digest = format!("{:x}", Sha256::digest(selected.as_bytes()));
         assert_eq!(selected_digest, prompt_digest);
@@ -173,20 +217,83 @@ fn formatting_policy_walkaround_receipt() {
 #[tokio::test]
 #[serial]
 async fn formatting_off_bypasses_llm() {
+    let sandbox = tempfile::TempDir::new().expect("isolated formatting data");
+    let _data_dir = EnvGuard::set("CODESCRIBE_DATA_DIR", sandbox.path());
     let mut server = mockito::Server::new_async().await;
     let provider = server
         .mock("POST", "/v1/responses")
         .expect(0)
         .create_async()
         .await;
-    let _endpoint = EnvGuard::set("LLM_FORMATTING_ENDPOINT", server.url());
     let _model = EnvGuard::set("LLM_FORMATTING_MODEL", "test-model");
-    let _key = EnvGuard::set("LLM_FORMATTING_API_KEY", "test-key");
+    let _key = EnvGuard::set("LLM_OPENAI_API_KEY", "test-key");
+    let _policy = EnvGuard::unset("FORMATTING_LEVEL");
+    Config::default()
+        .save_to_env("FORMATTING_LEVEL", FormattingPolicy::Off.as_str())
+        .expect("persist Off formatting policy");
+    let runtime_settings = Config::load_runtime_snapshot().expect("seal runtime settings");
+    assert_eq!(runtime_settings.formatting_policy(), FormattingPolicy::Off);
 
     let input = "This transcript is intentionally long enough to reach the provider path.";
-    let result = format_text_with_status_for_policy(input, Some("en"), FormattingPolicy::Off).await;
+    let result =
+        format_text_with_status_for_policy(input, Some("en"), &runtime_settings, None).await;
 
     assert_eq!(result.text, input);
     assert_eq!(result.status, AiFormatStatus::Skipped);
     provider.assert_async().await;
+}
+
+#[tokio::test]
+#[serial]
+async fn max_uses_explicit_consultation_even_for_short_corrections() {
+    use codescribe_core::ai_formatting::{FormattingAgent, FormattingConsultation};
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    struct Executor(AtomicUsize);
+    #[async_trait::async_trait]
+    impl FormattingAgent for Executor {
+        async fn execute(
+            &self,
+            turn_id: &str,
+            text: &str,
+            settings: &codescribe_core::config::RuntimeSettingsSnapshot,
+        ) -> anyhow::Result<String> {
+            assert_eq!(turn_id, "correction-2");
+            assert_eq!(settings.formatting_policy(), FormattingPolicy::Max);
+            self.0.fetch_add(1, Ordering::SeqCst);
+            Ok(text.to_string())
+        }
+    }
+    let sandbox = tempfile::TempDir::new().expect("isolated formatting data");
+    let _data_dir = EnvGuard::set("CODESCRIBE_DATA_DIR", sandbox.path());
+    let _policy = EnvGuard::unset("FORMATTING_LEVEL");
+    let executor = Executor(AtomicUsize::new(0));
+    for policy in FormattingPolicy::ALL {
+        Config::default()
+            .save_to_env("FORMATTING_LEVEL", policy.as_str())
+            .expect("policy");
+        let settings = Config::load_runtime_snapshot().expect("snapshot");
+        let before = executor.0.load(Ordering::SeqCst);
+        let result = format_text_with_status_for_policy(
+            "co?",
+            None,
+            &settings,
+            Some(FormattingConsultation {
+                agent: &executor,
+                turn_id: "correction-2",
+            }),
+        )
+        .await;
+        assert_eq!(result.text, "co?");
+        if policy == FormattingPolicy::Max {
+            assert_eq!(result.status, AiFormatStatus::Applied);
+            assert_eq!(executor.0.load(Ordering::SeqCst), before + 1);
+            let unavailable =
+                format_text_with_status_for_policy("co?", None, &settings, None).await;
+            assert_eq!(unavailable.status, AiFormatStatus::Failed);
+            assert_eq!(executor.0.load(Ordering::SeqCst), before + 1);
+        } else {
+            assert_eq!(result.status, AiFormatStatus::Skipped);
+            assert_eq!(executor.0.load(Ordering::SeqCst), before);
+        }
+    }
 }

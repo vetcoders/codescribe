@@ -236,26 +236,10 @@ impl ToolRegistry {
         self.policy = std::mem::take(&mut self.policy).with_legacy_grants(granted);
     }
 
-    /// Replace per-thread overrides for the active session turn.
-    pub fn set_thread_overrides(&mut self, overrides: HashMap<String, PermissionLevel>) {
-        self.thread_overrides = overrides;
-    }
-
     /// Set one per-thread override (agent UI). Identity must be
     /// [`tool_identity`] / grant key form.
     pub fn set_thread_override(&mut self, identity: String, level: PermissionLevel) {
         self.thread_overrides.insert(identity, level);
-    }
-
-    /// Drop the turn-scoped overrides. Durable settings rules survive — only
-    /// the choices the operator made for this thread are forgotten.
-    pub fn clear_thread_overrides(&mut self) {
-        self.thread_overrides.clear();
-    }
-
-    /// The durable policy currently installed, for inspection by the UI.
-    pub fn permission_policy(&self) -> &AgentPermissions {
-        &self.policy
     }
 
     /// Capability list from the SAME registry the dispatcher uses.

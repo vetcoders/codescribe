@@ -12,7 +12,6 @@
 //! 5. typed `capability_unavailable` with recovery guidance
 
 use serde::{Deserialize, Serialize};
-use std::collections::BTreeMap;
 
 /// Canonical capability operations exposed to the agent surface.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
@@ -423,23 +422,7 @@ pub struct AgentCapabilityPreferences {
     pub disabled_ops: Vec<String>,
 }
 
-impl AgentCapabilityPreferences {
-    /// Whether the user has denied this op. Matches both the canonical dotted
-    /// name and any spelling that [`CapabilityOp::parse`] maps to the same op.
-    pub fn is_op_disabled(&self, op: CapabilityOp) -> bool {
-        self.disabled_ops
-            .iter()
-            .any(|name| name == op.as_str() || CapabilityOp::parse(name) == Some(op))
-    }
-}
-
-/// Compact matrix keyed by op for JSON consumers.
-pub fn matrix_map(health: &ConnectorHealth) -> BTreeMap<String, CapabilityStatus> {
-    capability_matrix(health)
-        .into_iter()
-        .map(|status| (status.op.clone(), status))
-        .collect()
-}
+impl AgentCapabilityPreferences {}
 
 /// Capability resolution: native ops, IntelliJ match, unavailable tiers.
 #[cfg(test)]

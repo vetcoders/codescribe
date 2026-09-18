@@ -110,18 +110,26 @@ fn capitalize_span(text: &str, open_at_start: bool) -> String {
     out
 }
 
-/// Drop hesitation sounds and immediately repeated words, and normalise every
-/// run of whitespace to a single space.
+/// Drop hesitation sounds and normalise every run of whitespace to a single
+/// space.
+///
+/// A second rule used to live here: an immediately repeated word was deleted as
+/// a seam artifact. It is gone, and for the same reason the Python original's
+/// filler deletion was never ported — it deletes user words. Worse, it decides
+/// by content alone. "Iwo Iwo Iwo Iwo Iwo" is five acoustic occurrences of a
+/// name and this pass turned it into one, every time, with no evidence beyond
+/// the strings being equal. Nothing in a bare string can tell an operator
+/// saying a word twice apart from a concatenation duplicating it.
+///
+/// Duplication introduced by joining overlapping engine output is real, but it
+/// is decided where the PCM ranges are — the tail patcher and the span
+/// idempotence ledger — not here. Hesitations stay because a hesitation is a
+/// non-lexical sound rather than an occurrence of a word, and the punctuation
+/// pass stays because it collapses characters, not tokens.
 fn collapse_tokens(text: &str) -> String {
     let mut kept: Vec<&str> = Vec::new();
     for token in text.split_whitespace() {
         if is_hesitation(token) {
-            continue;
-        }
-        if kept
-            .last()
-            .is_some_and(|previous| is_same_word(previous, token))
-        {
             continue;
         }
         kept.push(token);
@@ -152,20 +160,6 @@ fn is_hesitation(token: &str) -> bool {
         core.as_str(),
         "hm" | "hmm" | "hmmm" | "mhm" | "mhmm" | "uh" | "uhm" | "um" | "umm"
     )
-}
-
-/// Are these the same word, ignoring case and any punctuation hanging off them?
-/// Punctuation-only tokens never count as repeats — `. .` is the character
-/// pass's problem, and treating them as words would eat real ellipses.
-fn is_same_word(a: &str, b: &str) -> bool {
-    let normalize = |s: &str| -> String {
-        s.chars()
-            .filter(|c| c.is_alphanumeric())
-            .flat_map(char::to_lowercase)
-            .collect()
-    };
-    let (left, right) = (normalize(a), normalize(b));
-    !left.is_empty() && left == right
 }
 
 /// Collapse repeated punctuation and pull marks back onto the preceding word.
@@ -264,12 +258,26 @@ mod tests {
         );
     }
 
-    /// Drops repeated words/punct seams; does not invent or delete content words.
+    /// Collapses punctuation seams; never deletes a word.
+    ///
+    /// The repeated-word rule this pass used to carry is gone: it decided by
+    /// content alone, so it could not tell a concatenation artifact from an
+    /// operator saying the same word twice, and it always chose deletion.
     #[test]
-    fn collapses_seam_artifacts_without_touching_words() {
-        assert_eq!(apply("to to jest jest test"), "To jest test.");
+    fn collapses_punctuation_seams_without_touching_words() {
         assert_eq!(apply("koniec.. naprawdę??"), "Koniec. Naprawdę?");
         assert_eq!(apply("słowo , potem"), "Słowo, potem.");
+    }
+
+    /// The conservation law, at the layer that used to break it hardest: five
+    /// spoken occurrences of one name stay five tokens.
+    #[test]
+    fn intentional_repetition_is_never_deleted_by_content() {
+        assert_eq!(apply("Iwo Iwo Iwo Iwo Iwo"), "Iwo Iwo Iwo Iwo Iwo.");
+        assert_eq!(apply("to to jest jest test"), "To to jest jest test.");
+        // Still idempotent: shaping the shaped text changes nothing.
+        let once = apply("Iwo Iwo Iwo Iwo Iwo");
+        assert_eq!(apply(&once), once);
     }
 
     /// Hesitation sounds drop; content fillers like `tak`/`no` survive.
@@ -311,5 +319,63 @@ mod tests {
     fn empty_and_whitespace_stay_empty() {
         assert_eq!(apply(""), "");
         assert_eq!(apply("   \n  "), "");
+    }
+
+    /// A span that shapes to nothing returns an empty string rather than a
+    /// lone period. The live per-occurrence caller reads that emptiness as
+    /// "refuse", so a hesitation-only utterance keeps its spoken label instead
+    /// of being deleted from the document by a formatting pass.
+    #[test]
+    fn a_span_that_shapes_to_nothing_returns_nothing() {
+        for hesitation in ["yyy", "  eee ", "hmm", "\n"] {
+            assert_eq!(
+                apply_with_left_context("Zdanie przed.", hesitation),
+                "",
+                "a shape that consumed every word must be empty, not punctuation"
+            );
+        }
+    }
+
+    /// Left context that closes on a comma is an unfinished clause: the span
+    /// continues it and must not rise to a capital.
+    #[test]
+    fn a_span_after_an_unclosed_clause_stays_lowercase() {
+        let shaped = apply_with_left_context("Zaczynamy od tego,", "że to jest ciag dalszy");
+        assert!(
+            shaped.starts_with("że"),
+            "a continuation after a comma stays lowercase: {shaped}"
+        );
+        assert!(shaped.ends_with('.'), "the span still closes: {shaped}");
+    }
+
+    /// The incremental path is idempotent too: re-shaping an already shaped
+    /// span against the same left context yields the same bytes, so a repeated
+    /// seal observation cannot make the document drift.
+    #[test]
+    fn reshaping_a_shaped_span_with_the_same_left_context_is_stable() {
+        let left = "Pierwsze zdanie.";
+        let once = apply_with_left_context(left, "drugie zdanie bez kropki");
+        assert_eq!(once, "Drugie zdanie bez kropki.");
+        assert_eq!(apply_with_left_context(left, &once), once);
+    }
+
+    /// Spans shaped one at a time, as their occurrences close, join into the
+    /// same readable document a single whole-transcript pass would produce.
+    /// This is the property the live Light+ floor is built on.
+    #[test]
+    fn spans_shaped_one_by_one_join_into_a_readable_document() {
+        let spoken = ["to jest pierwsze zdanie", "a to jest drugie"];
+        let mut document = String::new();
+        for span in spoken {
+            let shaped = apply_with_left_context(&document, span);
+            if !document.is_empty() {
+                document.push(' ');
+            }
+            document.push_str(&shaped);
+        }
+        assert_eq!(document, "To jest pierwsze zdanie. A to jest drugie.");
+        // And the whole-document pass leaves that result alone, so the terminal
+        // Light+ gate mints nothing on top of it.
+        assert_eq!(apply(&document), document);
     }
 }

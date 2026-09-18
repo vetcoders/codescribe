@@ -17,7 +17,7 @@ private let attachLog = Logger(
 /// drag & drop, and ⌘V paste — all landing in `store.addAttachments`.
 struct Composer: View {
   @ObservedObject var store: AgentChatStore
-  @ObservedObject var overlay: OverlayState
+  let overlay: OverlayState
   @State private var fieldFocused = false
   /// Chat text scale (⌘+/-/0) — applied to the message field + placeholder so the
   /// composer input tracks the message bodies. Chrome (chips, affordance hints,
@@ -49,7 +49,7 @@ struct Composer: View {
   private var isDragging: Bool { overOuter || overInner }
 
   var body: some View {
-    VStack(alignment: .leading, spacing: 9) {
+    VStack(alignment: .leading, spacing: 6) {
       agenticGate
 
       // Palette sits ABOVE the field: the list grows upward from the
@@ -76,7 +76,7 @@ struct Composer: View {
             height: ComposerControlMetrics.hitTargetSize
           )
         }
-        .csFocusRing(cornerRadius: 8)
+        .csFocusRing()
         .help("Attach an image (PNG, JPEG, GIF, WebP)")
 
         ComposerTextView(
@@ -112,7 +112,7 @@ struct Composer: View {
             height: ComposerControlMetrics.hitTargetSize
           )
         }
-        .csFocusRing(cornerRadius: 8)
+        .csFocusRing()
         .disabled(!primaryAction.isEnabled)
         .opacity(primaryAction == .stopping ? 0.72 : 1)
         .help(primaryAction.accessibilityLabel)
@@ -121,16 +121,16 @@ struct Composer: View {
       }
       .padding(.leading, 13)
       .padding(.trailing, 11)
-      .padding(.vertical, 9)
+      .padding(.vertical, 6)
       .background(CSColor.surfaceRaised(isDragging ? 0.07 : 0.04))
       .overlay(
-        RoundedRectangle(cornerRadius: 13, style: .continuous)
+        RoundedRectangle(cornerRadius: CSRadius.composer, style: .continuous)
           .strokeBorder(
             isDragging ? CSColor.chromeAccent : CSColor.hairline(0.09),
             lineWidth: isDragging ? 1.5 : 1
           )
       )
-      .clipShape(RoundedRectangle(cornerRadius: 13, style: .continuous))
+      .clipShape(RoundedRectangle(cornerRadius: CSRadius.composer, style: .continuous))
       // Sits above the NSTextField and swallows a drop that lands *on* the
       // field, so the field editor never pastes the path as text. Only
       // hit-testable mid-drag (isDragging) so typing/clicks pass through
@@ -139,6 +139,7 @@ struct Composer: View {
       .animation(.easeOut(duration: 0.12), value: isDragging)
 
       dictationFeedback
+      recoveryDocuments
 
       // Affordance row
       HStack(spacing: 16) {
@@ -149,8 +150,8 @@ struct Composer: View {
         }
       }
     }
-    .padding(.horizontal, 18)
-    .padding(.vertical, 14)
+    .padding(.horizontal, 14)
+    .padding(.vertical, 8)
     .overlay(alignment: .top) {
       Rectangle().fill(CSColor.hairline(0.06)).frame(height: 1)
     }
@@ -170,6 +171,49 @@ struct Composer: View {
       // same run-loop turn. Yield once so the native field editor exists.
       await Task.yield()
       focusNativeComposer()
+    }
+  }
+
+  private var recoveryDocuments: some View {
+    VStack(alignment: .leading, spacing: 6) {
+      ForEach(store.composerRecoveryDocuments) { document in
+        DisclosureGroup("Recovered text — review before using") {
+          ScrollView {
+            Text(document.text)
+              .font(CSFont.mono(12, .regular))
+              .foregroundStyle(CSColor.textFaintAlt)
+              .textSelection(.enabled)
+              .frame(maxWidth: .infinity, alignment: .leading)
+          }
+          .frame(maxHeight: 160)
+          .accessibilityIdentifier("composer.recovery.text." + document.id)
+          HStack {
+            Button("Insert into current draft") {
+              if let threadID = store.selectedThreadID {
+                store.insertComposerRecovery(document.id, into: threadID)
+              }
+            }
+            .disabled(store.selectedThreadID == nil)
+            .accessibilityIdentifier("composer.recovery.insert." + document.id)
+            Button("Copy") {
+              store.copyComposerRecovery(document.id) { text in
+                NSPasteboard.general.clearContents()
+                return NSPasteboard.general.setString(text, forType: .string)
+              }
+            }
+            .accessibilityIdentifier("composer.recovery.copy." + document.id)
+            Button("Dismiss", role: .destructive) {
+              store.dismissComposerRecovery(document.id)
+            }
+            .accessibilityIdentifier("composer.recovery.dismiss." + document.id)
+          }
+          .buttonStyle(.borderless)
+        }
+        .padding(8)
+        .background(CSColor.surfaceRaised(0.04))
+        .clipShape(RoundedRectangle(cornerRadius: CSRadius.composer))
+        .accessibilityIdentifier("composer.recovery.inspect." + document.id)
+      }
     }
   }
 
@@ -193,7 +237,7 @@ struct Composer: View {
           SettingsDeepLink.pendingSection = .license
           openSettings()
         }
-        .csFocusRing(cornerRadius: 8)
+        .csFocusRing()
         .font(CSFont.mono(10.5, .semibold))
         .foregroundStyle(CSColor.chromeAccent)
       }
@@ -298,7 +342,7 @@ struct Composer: View {
       .frame(maxWidth: .infinity, alignment: .leading)
       .contentShape(Rectangle())
     }
-    .csFocusRing(cornerRadius: 8)
+    .csFocusRing()
   }
 
   private func performPrimaryAction() {
@@ -347,7 +391,7 @@ struct Composer: View {
   private var liveAgentCapture: some View {
     let live = overlay.activeText.trimmingCharacters(in: .whitespacesAndNewlines)
     if store.dictationOwnsSelectedThread,
-      (store.dictationPhase == .preparing || store.dictationPhase == .recording),
+      store.dictationPhase == .preparing || store.dictationPhase == .recording,
       !live.isEmpty
     {
       Text(live)
@@ -375,7 +419,7 @@ struct Composer: View {
         .contentShape(Rectangle())
         .opacity(micState == .blocked ? 0.35 : micState == .preparing ? 0.68 : 1)
     }
-    .csFocusRing(cornerRadius: 8)
+    .csFocusRing()
     .disabled(!micState.isEnabled)
     .help(micState.accessibilityLabel)
     .accessibilityIdentifier(ComposerAccessibility.micIdentifier)
@@ -463,12 +507,12 @@ struct Composer: View {
                   .frame(maxWidth: 160)
               }
             }
-            .csFocusRing(cornerRadius: 8)
+            .csFocusRing()
             .help("Preview attachment")
             Button(action: { store.removeAttachment(attachment.id) }) {
               CSIconView(icon: .close, size: 9, weight: .bold, color: CSColor.textFaint)
             }
-            .csFocusRing(cornerRadius: 8)
+            .csFocusRing()
             .help("Remove attachment")
           }
           .padding(.horizontal, 9)
@@ -600,12 +644,23 @@ struct Composer: View {
   private func installPasteMonitor() {
     guard pasteMonitor == nil else { return }
     pasteMonitor = NSEvent.addLocalMonitorForEvents(matching: .keyDown) { event in
+      let characters = event.charactersIgnoringModifiers?.lowercased()
+      let modifierFlags = event.modifierFlags
+      let windowNumber = event.windowNumber
       // Local key monitors always deliver on the main thread; assume the
-      // main actor statically so the store calls stay isolation-checked.
-      MainActor.assumeIsolated {
-        guard isComposerPasteEvent(event) else { return event }
-        return handlePaste(NSPasteboard.general) ? nil : event
+      // main actor only after the non-Sendable NSEvent has been reduced to
+      // Sendable value fields.
+      let consumed = MainActor.assumeIsolated {
+        guard
+          isComposerPasteEvent(
+            characters: characters,
+            modifierFlags: modifierFlags,
+            windowNumber: windowNumber
+          )
+        else { return false }
+        return handlePaste(NSPasteboard.general)
       }
+      return consumed ? nil : event
     }
   }
 
@@ -617,15 +672,21 @@ struct Composer: View {
   /// True only for a plain ⌘V aimed at this composer: field focused, event in
   /// our own window, no other modifiers (⌘⇧V paste-and-match-style passes on).
   @MainActor
-  private func isComposerPasteEvent(_ event: NSEvent) -> Bool {
-    guard fieldFocused, let hostWindow, event.window === hostWindow else { return false }
-    let flags = event.modifierFlags.intersection(.deviceIndependentFlagsMask)
+  private func isComposerPasteEvent(
+    characters: String?,
+    modifierFlags: NSEvent.ModifierFlags,
+    windowNumber: Int
+  ) -> Bool {
+    guard fieldFocused, let hostWindow, windowNumber == hostWindow.windowNumber else {
+      return false
+    }
+    let flags = modifierFlags.intersection(.deviceIndependentFlagsMask)
     // ⌘ alone — shift/option/control bail (⌘⇧V stays native), but stray
     // state flags like capsLock must not defeat the match.
     guard flags.contains(.command),
       flags.isDisjoint(with: [.shift, .option, .control])
     else { return false }
-    return event.charactersIgnoringModifiers?.lowercased() == "v"
+    return characters == "v"
   }
 
   /// Route a composer ⌘V. Returns true when the event was consumed by staging

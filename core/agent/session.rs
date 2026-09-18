@@ -163,6 +163,19 @@ impl AgentSession {
         &self.messages
     }
 
+    /// Change the sealed provider between turns without creating a new
+    /// consultation. History, tool receipts, approvals and local identity stay
+    /// on this session; response ids cannot cross provider/model boundaries.
+    /// The caller admits the new settings lane before constructing `provider`.
+    /// Exclusive access prevents a switch while `send` owns an active turn.
+    pub async fn replace_provider(&mut self, provider: Box<dyn AgentProvider>) {
+        // Clear the incoming client's chain before publishing it. If this await
+        // is cancelled, the current session and its provider remain untouched.
+        provider.restore_response_chain(None).await;
+        self.provider = provider;
+        self.thread_id = None;
+    }
+
     /// Seed the session with rehydrated history (thread reopen).
     ///
     /// Large tool outputs are spilled back to the store instead of being
@@ -337,6 +350,8 @@ impl AgentSession {
             let mut assistant_text = String::new();
             let mut reasoning_text = String::new();
             let mut text_done_seen = false;
+            let mut clean_terminal_seen = false;
+            let mut terminal_rejected = false;
 
             let mut pending_calls: HashMap<String, PendingToolCall> = HashMap::new();
             let mut tool_call_order: Vec<String> = Vec::new();
@@ -400,9 +415,11 @@ impl AgentSession {
                         // A dirty terminal (EOF/timeout, failed/incomplete) must
                         // not persist a poisoned chain id; clearing it forces the
                         // next turn to full-replay from local history (P1.6).
-                        if clean {
+                        if clean && !terminal_rejected {
+                            clean_terminal_seen = true;
                             self.thread_id = response_id;
                         } else {
+                            terminal_rejected = true;
                             if let Some(id) = response_id {
                                 warn!(
                                     "Agent dirty terminal: discarding response id {} and resetting chain (provider={})",
@@ -411,9 +428,11 @@ impl AgentSession {
                                 );
                             }
                             self.thread_id = None;
+                            self.provider.restore_response_chain(None).await;
                         }
                     }
                     AgentEvent::Error(message) => {
+                        self.provider.restore_response_chain(None).await;
                         // P2.13: reset the chain BEFORE returning. A provider
                         // Error (e.g. a failed/incomplete/cancelled terminal
                         // mapped to Error) must never leave `thread_id` pointing
@@ -444,6 +463,14 @@ impl AgentSession {
                         return Err(anyhow::anyhow!("Provider stream error: {message}"));
                     }
                 }
+            }
+
+            if !clean_terminal_seen || terminal_rejected {
+                self.thread_id = None;
+                self.provider.restore_response_chain(None).await;
+                return Err(anyhow::anyhow!(
+                    "Provider stream error: no authoritative clean terminal; refusing answer and tool execution"
+                ));
             }
 
             if !reasoning_text.trim().is_empty() {
@@ -1012,6 +1039,8 @@ mod tests {
     /// Test provider that dequeues a pre-scripted event batch per `stream` call.
     struct ScriptedProvider {
         scripted_events: Mutex<VecDeque<Vec<AgentEvent>>>,
+        received_messages: Arc<Mutex<Vec<Vec<Message>>>>,
+        response_chain: Mutex<Option<String>>,
     }
 
     impl ScriptedProvider {
@@ -1019,6 +1048,8 @@ mod tests {
         fn new(scripted_events: Vec<Vec<AgentEvent>>) -> Self {
             Self {
                 scripted_events: Mutex::new(scripted_events.into()),
+                received_messages: Arc::new(Mutex::new(Vec::new())),
+                response_chain: Mutex::new(None),
             }
         }
     }
@@ -1028,10 +1059,14 @@ mod tests {
         /// Pop the next scripted batch; empty queue yields an empty stream.
         async fn stream(
             &self,
-            _messages: &[Message],
+            messages: &[Message],
             _tools: &[ToolDefinition],
             _options: &StreamOptions,
         ) -> anyhow::Result<mpsc::Receiver<AgentEvent>> {
+            self.received_messages
+                .lock()
+                .expect("messages lock")
+                .push(messages.to_vec());
             let events = self
                 .scripted_events
                 .lock()
@@ -1046,6 +1081,14 @@ mod tests {
                     .expect("test stream channel should accept scripted event");
             }
             Ok(rx)
+        }
+
+        async fn response_chain_id(&self) -> Option<String> {
+            self.response_chain.lock().expect("chain lock").clone()
+        }
+
+        async fn restore_response_chain(&self, id: Option<String>) {
+            *self.response_chain.lock().expect("chain lock") = id;
         }
 
         /// Wrap tool output as a user tool-result message (trait stub).
@@ -1249,6 +1292,82 @@ mod tests {
         assert_eq!(session.thread_id(), None);
     }
 
+    /// A settings switch keeps the consultation and sends its history to the
+    /// new provider without carrying either client's server-side response id.
+    #[tokio::test]
+    async fn provider_change_retains_consultation_and_replays_history() {
+        let (ui_tx, _ui_rx) = mpsc::channel(32);
+        let tools = Arc::new(ToolRegistry::new());
+        let approval: super::ToolApprovalHandler = Arc::new(|_| Box::pin(async { false }));
+        let mut session = AgentSession::new(
+            Box::new(ScriptedProvider::new(Vec::new())),
+            Arc::clone(&tools),
+            ui_tx,
+        )
+        .with_tool_approval("max-consultation-a", Arc::clone(&approval));
+        let history = vec![
+            Message::new(
+                Role::User,
+                vec![ContentBlock::Text(
+                    "Prepare git add, do not execute it.".into(),
+                )],
+            ),
+            Message::new(
+                Role::Assistant,
+                vec![ContentBlock::Text("git add -- 'one.rs'".into())],
+            ),
+        ];
+        session.restore_messages(history.clone());
+        session.thread_id = Some("old-provider-response".into());
+        session
+            .provider
+            .restore_response_chain(Some("old-chain".into()))
+            .await;
+        let execution_session = session.execution_session_id.clone();
+        let replacement = ScriptedProvider::new(vec![vec![
+            AgentEvent::TextDone("git add -- 'two.rs'".into()),
+            AgentEvent::ResponseDone {
+                response_id: Some("new-response".into()),
+                clean: true,
+            },
+        ]]);
+        replacement
+            .restore_response_chain(Some("unrelated-chain".into()))
+            .await;
+        let received = Arc::clone(&replacement.received_messages);
+
+        session.replace_provider(Box::new(replacement)).await;
+
+        assert_eq!(session.messages(), history.as_slice());
+        assert_eq!(session.thread_id(), None);
+        assert_eq!(session.snapshot_response_chain().await, None);
+        assert_eq!(session.execution_thread_id, "max-consultation-a");
+        assert_eq!(session.execution_session_id, execution_session);
+        assert!(Arc::ptr_eq(&session.tools, &tools));
+        assert!(Arc::ptr_eq(
+            session
+                .approval_handler
+                .as_ref()
+                .expect("approval retained"),
+            &approval
+        ));
+
+        let correction = "Use two.rs instead, still only prepare the command.";
+        session
+            .send(correction.into(), Vec::new(), &StreamOptions::default())
+            .await
+            .expect("second turn");
+        let requests = received.lock().expect("messages lock");
+        assert_eq!(requests.len(), 1);
+        assert_eq!(&requests[0][..history.len()], history.as_slice());
+        assert_eq!(
+            requests[0].last().expect("correction").content,
+            vec![ContentBlock::Text(correction.into())]
+        );
+        assert_eq!(session.messages().len(), 4);
+        assert_eq!(session.thread_id(), Some("new-response"));
+    }
+
     /// Spilled tool-output references stay as pointers; rehydrate does not rewrite disk.
     #[test]
     fn restore_messages_keeps_stored_tool_reference_without_reinflating() {
@@ -1402,6 +1521,81 @@ mod tests {
         result.expect("a 30-round turn must complete under the default loop guard");
         drop(session);
         drain.await.expect("ui drain task should finish");
+    }
+
+    #[tokio::test]
+    async fn tool_execution_requires_clean_terminal_and_dirty_terminal_cannot_be_reversed() {
+        for terminals in [
+            vec![],
+            vec![false],
+            vec![true, false],
+            vec![false, true],
+            vec![true],
+        ] {
+            let allowed = terminals == vec![true];
+            let calls = Arc::new(AtomicUsize::new(0));
+            let counted = Arc::clone(&calls);
+            let mut registry = ToolRegistry::new();
+            registry
+                .register_native(
+                    ToolDefinition {
+                        name: "count_call".into(),
+                        description: "Count execution".into(),
+                        input_schema: json!({"type":"object"}),
+                    },
+                    Box::new(move |_| {
+                        let counted = Arc::clone(&counted);
+                        Box::pin(async move {
+                            counted.fetch_add(1, Ordering::SeqCst);
+                            vec![ToolResultContent::Text("counted".into())]
+                        })
+                    }),
+                    ToolRisk::ReadOnly,
+                )
+                .expect("register tool");
+            let mut first = vec![AgentEvent::ToolCallReady {
+                id: "call-1".into(),
+                name: "count_call".into(),
+                arguments: json!({}),
+            }];
+            first.extend(terminals.into_iter().map(|clean| AgentEvent::ResponseDone {
+                response_id: Some("candidate".into()),
+                clean,
+            }));
+            let provider = ScriptedProvider::new(vec![
+                first,
+                vec![
+                    AgentEvent::TextDone("finished".into()),
+                    AgentEvent::ResponseDone {
+                        response_id: Some("finished".into()),
+                        clean: true,
+                    },
+                ],
+            ]);
+            let (tx, mut rx) = mpsc::channel(32);
+            let mut session = AgentSession::new(Box::new(provider), Arc::new(registry), tx);
+            session.thread_id = Some("prior".into());
+            session
+                .provider
+                .restore_response_chain(Some("prior-chain".into()))
+                .await;
+            let result = session
+                .send("count once".into(), Vec::new(), &StreamOptions::default())
+                .await;
+            assert_eq!(result.is_ok(), allowed);
+            assert_eq!(calls.load(Ordering::SeqCst), usize::from(allowed));
+            if !allowed {
+                assert_eq!(session.thread_id(), None);
+                assert_eq!(session.snapshot_response_chain().await, None);
+                assert_eq!(session.messages().len(), 1);
+                while let Ok(event) = rx.try_recv() {
+                    assert!(!matches!(
+                        event,
+                        AgentUiEvent::Done | AgentUiEvent::ToolExecuting { .. }
+                    ));
+                }
+            }
+        }
     }
 
     /// Text-only turn adopts a clean response id and emits TextDone + Done.
@@ -1739,12 +1933,24 @@ mod tests {
     #[tokio::test]
     async fn rejected_approval_never_starts_handler() {
         let provider = ScriptedProvider::new(vec![
-            vec![AgentEvent::ToolCallReady {
-                id: "call_rejected".to_string(),
-                name: "external_mutation".to_string(),
-                arguments: json!({}),
-            }],
-            vec![AgentEvent::TextDone("rejection handled".to_string())],
+            vec![
+                AgentEvent::ToolCallReady {
+                    id: "call_rejected".to_string(),
+                    name: "external_mutation".to_string(),
+                    arguments: json!({}),
+                },
+                AgentEvent::ResponseDone {
+                    response_id: Some("reject-call".into()),
+                    clean: true,
+                },
+            ],
+            vec![
+                AgentEvent::TextDone("rejection handled".to_string()),
+                AgentEvent::ResponseDone {
+                    response_id: Some("reject-answer".into()),
+                    clean: true,
+                },
+            ],
         ]);
         let handler_started = Arc::new(AtomicBool::new(false));
         let started = Arc::clone(&handler_started);
@@ -1774,8 +1980,12 @@ mod tests {
                 None,
             )
             .expect("register tool");
-        let approval_handler =
-            Arc::new(|_| Box::pin(async { false }) as crate::agent::ToolApprovalFuture);
+        let approval_requested = Arc::new(AtomicBool::new(false));
+        let requested = Arc::clone(&approval_requested);
+        let approval_handler = Arc::new(move |_| {
+            requested.store(true, Ordering::SeqCst);
+            Box::pin(async { false }) as crate::agent::ToolApprovalFuture
+        });
         let (ui_tx, _ui_rx) = mpsc::channel(32);
         let mut session = AgentSession::new(Box::new(provider), Arc::new(registry), ui_tx)
             .with_tool_approval("thread-reject", approval_handler);
@@ -1793,6 +2003,7 @@ mod tests {
             )
             .await
             .expect("rejection becomes a tool result");
+        assert!(approval_requested.load(Ordering::SeqCst));
         assert!(!handler_started.load(Ordering::SeqCst));
     }
 
@@ -1800,12 +2011,24 @@ mod tests {
     #[tokio::test]
     async fn timed_out_approval_never_starts_handler() {
         let provider = ScriptedProvider::new(vec![
-            vec![AgentEvent::ToolCallReady {
-                id: "call_timeout".to_string(),
-                name: "external_mutation".to_string(),
-                arguments: json!({}),
-            }],
-            vec![AgentEvent::TextDone("timeout handled".to_string())],
+            vec![
+                AgentEvent::ToolCallReady {
+                    id: "call_timeout".to_string(),
+                    name: "external_mutation".to_string(),
+                    arguments: json!({}),
+                },
+                AgentEvent::ResponseDone {
+                    response_id: Some("timeout-call".into()),
+                    clean: true,
+                },
+            ],
+            vec![
+                AgentEvent::TextDone("timeout handled".to_string()),
+                AgentEvent::ResponseDone {
+                    response_id: Some("timeout-answer".into()),
+                    clean: true,
+                },
+            ],
         ]);
         let handler_started = Arc::new(AtomicBool::new(false));
         let started = Arc::clone(&handler_started);
@@ -1835,7 +2058,10 @@ mod tests {
                 None,
             )
             .expect("register tool");
-        let approval_handler = Arc::new(|_| {
+        let approval_requested = Arc::new(AtomicBool::new(false));
+        let requested = Arc::clone(&approval_requested);
+        let approval_handler = Arc::new(move |_| {
+            requested.store(true, Ordering::SeqCst);
             Box::pin(std::future::pending::<bool>()) as crate::agent::ToolApprovalFuture
         });
         let (ui_tx, _ui_rx) = mpsc::channel(32);
@@ -1856,6 +2082,7 @@ mod tests {
             )
             .await
             .expect("timeout becomes a tool result");
+        assert!(approval_requested.load(Ordering::SeqCst));
         assert!(!handler_started.load(Ordering::SeqCst));
     }
 

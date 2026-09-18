@@ -113,7 +113,7 @@ struct OnboardingChoiceCard: View {
           )
       )
     }
-    .csFocusRing(cornerRadius: 8)
+    .csFocusRing()
   }
 }
 
@@ -355,7 +355,7 @@ struct AgenticReadinessStepView: View {
         .foregroundStyle(CSColor.textFaint)
         .textSelection(.enabled)
     }
-    .padding(14)
+    .padding(CSSpace.card)
     .frame(maxWidth: .infinity, alignment: .leading)
     .background(
       RoundedRectangle(cornerRadius: 12, style: .continuous)
@@ -394,7 +394,7 @@ struct AgenticReadinessStepView: View {
         }
       }
     }
-    .padding(14)
+    .padding(CSSpace.card)
     .frame(maxWidth: .infinity, alignment: .leading)
     .background(
       RoundedRectangle(cornerRadius: 12, style: .continuous)
@@ -615,7 +615,7 @@ struct ApiKeyStepView: View {
   }
 
   private var keyField: some View {
-    let account = model.selectedProvider?.apiKeyAccount ?? "LLM_ASSISTIVE_API_KEY"
+    let account = model.selectedProvider?.apiKeyAccount ?? "LLM_OPENAI_API_KEY"
     let isSet = model.selectedProviderKeySet
     return VStack(alignment: .leading, spacing: 10) {
       HStack(spacing: 10) {

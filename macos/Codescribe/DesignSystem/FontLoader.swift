@@ -3,9 +3,10 @@ import SwiftUI
 
 // Registers the bundled OFL fonts at runtime so they work in the app AND in
 // SwiftUI Previews regardless of bundle layout. Idempotent; safe to call often.
+@MainActor
 enum FontLoader {
-  static let spaceGrotesk = "Space Grotesk"
-  static let jetBrainsMono = "JetBrains Mono"
+  nonisolated static let spaceGrotesk = "Space Grotesk"
+  nonisolated static let jetBrainsMono = "JetBrains Mono"
 
   private static var didRegister = false
 

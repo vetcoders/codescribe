@@ -20,6 +20,23 @@
 // Platform-agnostic surface (pure data, no AppKit)
 // ─────────────────────────────────────────────────────────────
 
+#[cfg(any(target_os = "macos", test))]
+fn ax_caret_to_appkit(x: f64, y: f64, height: f64, primary_height: f64) -> (f64, f64) {
+    (x, primary_height - y - height)
+}
+
+#[cfg(any(target_os = "macos", test))]
+fn fit_origin(origin: f64, extent: f64, screen_origin: f64, screen_extent: f64) -> f64 {
+    origin
+        .max(screen_origin)
+        .min((screen_origin + screen_extent - extent).max(screen_origin))
+}
+
+#[cfg(any(target_os = "macos", test))]
+fn token_is_current(token: u64, generation: u64) -> bool {
+    token == generation
+}
+
 /// Badge display mode for different recording/processing states
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum BadgeMode {
@@ -113,6 +130,36 @@ impl HoldBadgeConfig {
 #[cfg(test)]
 mod tests {
     use super::{BadgeMode, HoldBadgeConfig};
+
+    #[test]
+    fn ax_caret_coordinates_preserve_negative_and_stacked_displays() {
+        assert_eq!(
+            super::ax_caret_to_appkit(100.0, 200.0, 20.0, 1080.0),
+            (100.0, 860.0)
+        );
+        assert_eq!(
+            super::ax_caret_to_appkit(-900.0, -500.0, 20.0, 1080.0),
+            (-900.0, 1560.0)
+        );
+        assert_eq!(
+            super::ax_caret_to_appkit(100.0, 1300.0, 20.0, 1080.0),
+            (100.0, -240.0)
+        );
+    }
+
+    #[test]
+    fn cursor_widget_stays_inside_small_or_negative_screen() {
+        assert_eq!(super::fit_origin(-10.0, 200.0, -1000.0, 1000.0), -200.0);
+        assert_eq!(super::fit_origin(90.0, 200.0, 0.0, 100.0), 0.0);
+    }
+
+    #[test]
+    fn dismissed_take_cannot_paint_or_track_the_next_generation() {
+        let old_take = 7;
+        assert!(super::token_is_current(old_take, 7));
+        assert!(!super::token_is_current(old_take, 8));
+        assert!(super::token_is_current(8, 8));
+    }
 
     /// Processing pulses orange; Assistive glows purple and is slightly larger.
     #[test]
@@ -212,6 +259,12 @@ mod imp {
         /// Read one attribute off an AX element. Returns [`AX_ERROR_SUCCESS`]
         /// and writes a `+1` handle to `value` on success.
         fn AXUIElementCopyAttributeValue(element: AXId, attribute: AXId, value: *mut AXId) -> i32;
+        fn AXUIElementCopyParameterizedAttributeValue(
+            element: AXId,
+            attribute: AXId,
+            parameter: AXId,
+            value: *mut AXId,
+        ) -> i32;
         /// Create the system-wide AX element (the root for "whatever is focused
         /// right now"). Returns a `+1` handle. Requires Accessibility trust.
         fn AXUIElementCreateSystemWide() -> AXId;
@@ -225,6 +278,8 @@ mod imp {
     // CGColor functions
     #[link(name = "CoreGraphics", kind = "framework")]
     unsafe extern "C" {
+        fn CGMainDisplayID() -> u32;
+        fn CGDisplayBounds(display: u32) -> CGRect;
         /// Create a `+1` `CGColorRef` from `components` in `space`.
         fn CGColorCreate(
             space: *const std::ffi::c_void,
@@ -248,18 +303,6 @@ mod imp {
     const AX_ROLE_ATTRIBUTE: &str = "AXRole";
     /// Attribute holding the current selection/caret range.
     const AX_SELECTED_TEXT_RANGE_ATTRIBUTE: &str = "AXSelectedTextRange";
-    /// Attribute holding an element's screen-space origin.
-    const AX_POSITION_ATTRIBUTE: &str = "AXPosition";
-    /// Attribute holding an element's size.
-    const AX_SIZE_ATTRIBUTE: &str = "AXSize";
-
-    // AXValue types
-    /// `kAXValueCGPointType` discriminator for [`AXValueGetValue`].
-    const AX_VALUE_CGPOINT_TYPE: i32 = 1;
-    /// `kAXValueCGSizeType` discriminator for [`AXValueGetValue`].
-    const AX_VALUE_CGSIZE_TYPE: i32 = 2;
-    /// `kAXValueCFRangeType` discriminator for [`AXValueGetValue`].
-    const AX_VALUE_CFRANGE_TYPE: i32 = 3;
 
     // Window level constants
     /// `NSStatusWindowLevel`. Sits above the floating level (3), which is what
@@ -292,6 +335,7 @@ mod imp {
     unsafe fn panel_close(panel: Id) {
         unsafe {
             let _: () = msg_send![panel, close];
+            let _: () = msg_send![panel, release];
         }
     }
 
@@ -325,6 +369,74 @@ mod imp {
     /// enqueued show would be undone, leaving a badge panel + updater thread stuck
     /// with nothing to tear them down.
     static BADGE_GENERATION: AtomicU64 = AtomicU64::new(0);
+
+    /// Token captured by the take, never by an arriving late projection.
+    pub fn take_token() -> u64 {
+        BADGE_GENERATION.load(Ordering::SeqCst)
+    }
+
+    /// Paint a supplied projection in-place; never show or resurrect a panel.
+    pub fn update_transcript(token: u64, text: &str, degraded: bool) {
+        let text = text.chars().take(120).collect::<String>();
+        Queue::main().exec_async(move || {
+            if !super::token_is_current(token, take_token()) {
+                return;
+            }
+            let (panel, diameter, base_color) = {
+                let state = BADGE_STATE.lock().unwrap_or_else(|e| e.into_inner());
+                let Some(panel) = state.window else {
+                    return;
+                };
+                (panel as Id, state.config.diameter, state.config.color)
+            };
+            unsafe {
+                let content: Id = msg_send![panel, contentView];
+                let children: Id = msg_send![content, subviews];
+                let count: usize = msg_send![children, count];
+                if count < 2 {
+                    return;
+                }
+                let dot: Id = msg_send![children, objectAtIndex: 0usize];
+                let label: Id = msg_send![children, objectAtIndex: 1usize];
+                let value = CFString::new(&text);
+                let _: () = msg_send![label, setStringValue: value.as_concrete_TypeRef() as Id];
+                let _: () = msg_send![label, setHidden: text.is_empty()];
+                let _: () = msg_send![label, sizeToFit];
+                let label_frame: CGRect = msg_send![label, frame];
+                let width = label_frame.size.width.min(360.0);
+                let height = label_frame.size.height.max(diameter);
+                let frame = CGRect {
+                    origin: CGPoint {
+                        x: diameter + 6.0,
+                        y: 0.0,
+                    },
+                    size: CGSize { width, height },
+                };
+                let _: () = msg_send![label, setFrame: frame];
+                let size = CGSize {
+                    width: if text.is_empty() {
+                        diameter
+                    } else {
+                        diameter + 6.0 + width
+                    },
+                    height,
+                };
+                let _: () = msg_send![panel, setContentSize: size];
+                let panel_frame: CGRect = msg_send![panel, frame];
+                let origin = fit_panel_origin(panel, panel_frame.origin.x, panel_frame.origin.y);
+                let _: () = msg_send![panel, setFrameOrigin: origin];
+                let color = if degraded {
+                    (1.0, 0.62, 0.0, 1.0)
+                } else {
+                    base_color
+                };
+                let cg = create_cg_color(color.0, color.1, color.2, color.3);
+                let layer: Id = msg_send![dot, layer];
+                let _: () = msg_send![layer, setBackgroundColor: cg];
+                CGColorRelease(cg);
+            }
+        });
+    }
 
     /// Check if the currently focused element accepts text input
     pub fn focused_element_accepts_text() -> bool {
@@ -379,130 +491,64 @@ mod imp {
     /// Get the current text caret position in screen coordinates
     pub fn get_caret_position() -> Option<(f64, f64)> {
         unsafe {
-            let system_wide = AXUIElementCreateSystemWide();
-            if system_wide.is_null() {
+            let system = AXUIElementCreateSystemWide();
+            if system.is_null() {
                 return None;
             }
-
-            let mut focused_element: AXId = ptr::null_mut();
-            let attr_name = CFString::new(AX_FOCUSED_UIELEMENT_ATTRIBUTE);
+            let mut focused: AXId = ptr::null_mut();
+            let attr = CFString::new(AX_FOCUSED_UIELEMENT_ATTRIBUTE);
             let result = AXUIElementCopyAttributeValue(
-                system_wide,
-                attr_name.as_concrete_TypeRef() as AXId,
-                &mut focused_element,
+                system,
+                attr.as_concrete_TypeRef() as AXId,
+                &mut focused,
             );
-
-            CFRelease(system_wide);
-
-            if result != AX_ERROR_SUCCESS || focused_element.is_null() {
+            CFRelease(system);
+            if result != AX_ERROR_SUCCESS || focused.is_null() {
                 return None;
             }
-
-            // Get selected text range
-            let mut range_value: AXId = ptr::null_mut();
-            let range_attr = CFString::new(AX_SELECTED_TEXT_RANGE_ATTRIBUTE);
-            let range_result = AXUIElementCopyAttributeValue(
-                focused_element,
-                range_attr.as_concrete_TypeRef() as AXId,
-                &mut range_value,
+            let mut range: AXId = ptr::null_mut();
+            let attr = CFString::new(AX_SELECTED_TEXT_RANGE_ATTRIBUTE);
+            let result = AXUIElementCopyAttributeValue(
+                focused,
+                attr.as_concrete_TypeRef() as AXId,
+                &mut range,
             );
-
-            if range_result != AX_ERROR_SUCCESS || range_value.is_null() {
-                CFRelease(focused_element);
-                return None;
-            }
-
-            // Extract range. Populated by `AXValueGetValue` through an out-pointer;
-            // fields are written by the framework, so `dead_code` on them is spurious.
-            /// C layout for AX selected-text range out-parameter from AXValueGetValue.
-            #[repr(C)]
-            #[allow(dead_code)]
-            struct CFRange {
-                location: i64,
-                length: i64,
-            }
-
-            let mut cf_range = CFRange {
-                location: 0,
-                length: 0,
-            };
-
-            let range_ok = AXValueGetValue(
-                range_value,
-                AX_VALUE_CFRANGE_TYPE,
-                &mut cf_range as *mut _ as *mut std::ffi::c_void,
-            );
-
-            CFRelease(range_value);
-
-            if !range_ok {
-                CFRelease(focused_element);
-                return None;
-            }
-
-            // Try to get position and size of the focused element
-            let mut position_value: AXId = ptr::null_mut();
-            let position_attr = CFString::new(AX_POSITION_ATTRIBUTE);
-            let position_result = AXUIElementCopyAttributeValue(
-                focused_element,
-                position_attr.as_concrete_TypeRef() as AXId,
-                &mut position_value,
-            );
-
-            let mut size_value: AXId = ptr::null_mut();
-            let size_attr = CFString::new(AX_SIZE_ATTRIBUTE);
-            let size_result = AXUIElementCopyAttributeValue(
-                focused_element,
-                size_attr.as_concrete_TypeRef() as AXId,
-                &mut size_value,
-            );
-
-            CFRelease(focused_element);
-
-            if position_result != AX_ERROR_SUCCESS
-                || position_value.is_null()
-                || size_result != AX_ERROR_SUCCESS
-                || size_value.is_null()
-            {
-                if !position_value.is_null() {
-                    CFRelease(position_value);
+            if result != AX_ERROR_SUCCESS || range.is_null() {
+                if !range.is_null() {
+                    CFRelease(range);
                 }
-                if !size_value.is_null() {
-                    CFRelease(size_value);
+                CFRelease(focused);
+                return None;
+            }
+            let mut bounds: AXId = ptr::null_mut();
+            let attr = CFString::new("AXBoundsForRange");
+            let result = AXUIElementCopyParameterizedAttributeValue(
+                focused,
+                attr.as_concrete_TypeRef() as AXId,
+                range,
+                &mut bounds,
+            );
+            CFRelease(range);
+            CFRelease(focused);
+            if result != AX_ERROR_SUCCESS || bounds.is_null() {
+                if !bounds.is_null() {
+                    CFRelease(bounds);
                 }
                 return None;
             }
-
-            // Extract position
-            let mut position = CGPoint { x: 0.0, y: 0.0 };
-            let position_ok = AXValueGetValue(
-                position_value,
-                AX_VALUE_CGPOINT_TYPE,
-                &mut position as *mut _ as *mut std::ffi::c_void,
-            );
-
-            CFRelease(position_value);
-
-            // Extract size
-            let mut size = CGSize {
-                width: 0.0,
-                height: 0.0,
-            };
-            let size_ok = AXValueGetValue(
-                size_value,
-                AX_VALUE_CGSIZE_TYPE,
-                &mut size as *mut _ as *mut std::ffi::c_void,
-            );
-
-            CFRelease(size_value);
-
-            if !position_ok || !size_ok {
+            let mut rect = CGRect::new(&CGPoint::new(0.0, 0.0), &CGSize::new(0.0, 0.0));
+            let valid = AXValueGetValue(bounds, 3, &mut rect as *mut _ as *mut std::ffi::c_void);
+            CFRelease(bounds);
+            if !valid {
                 return None;
             }
-
-            // Estimate caret position (top-left of element + small offset)
-            // For better accuracy, we'd need to parse the text layout, but this is a reasonable approximation
-            Some((position.x, position.y + size.height / 2.0))
+            let display = CGDisplayBounds(CGMainDisplayID());
+            Some(super::ax_caret_to_appkit(
+                rect.origin.x,
+                rect.origin.y,
+                rect.size.height,
+                display.size.height,
+            ))
         }
     }
 
@@ -515,6 +561,41 @@ mod imp {
     /// Get the best available position for the badge (caret or cursor)
     fn get_badge_position() -> (f64, f64) {
         get_caret_position().unwrap_or_else(get_cursor_position)
+    }
+
+    /// Called only on the main queue, where AppKit owns screen and panel geometry.
+    unsafe fn fit_panel_origin(panel: Id, x: f64, y: f64) -> CGPoint {
+        unsafe {
+            let screens: Id = msg_send![Class::get("NSScreen").unwrap(), screens];
+            let count: usize = msg_send![screens, count];
+            let panel_frame: CGRect = msg_send![panel, frame];
+            for index in 0..count {
+                let screen: Id = msg_send![screens, objectAtIndex: index];
+                let frame: CGRect = msg_send![screen, frame];
+                if x >= frame.origin.x
+                    && x <= frame.origin.x + frame.size.width
+                    && y >= frame.origin.y
+                    && y <= frame.origin.y + frame.size.height
+                {
+                    let visible: CGRect = msg_send![screen, visibleFrame];
+                    return CGPoint {
+                        x: super::fit_origin(
+                            x,
+                            panel_frame.size.width,
+                            visible.origin.x,
+                            visible.size.width,
+                        ),
+                        y: super::fit_origin(
+                            y,
+                            panel_frame.size.height,
+                            visible.origin.y,
+                            visible.size.height,
+                        ),
+                    };
+                }
+            }
+            CGPoint { x, y }
+        }
     }
 
     /// Create a CGColor from RGBA components
@@ -587,7 +668,8 @@ mod imp {
             let ns_panel = Class::get("NSPanel").unwrap();
 
             // Get initial position
-            let (x, y) = get_badge_position();
+            // Initial paint must not synchronously query another app's AX server.
+            let (x, y) = get_cursor_position();
             let adjusted_x = x + config.offset.0;
             let adjusted_y = y + config.offset.1;
             debug!(
@@ -618,6 +700,7 @@ mod imp {
                 backing: backing
                 defer: false
             ];
+            let _: () = msg_send![panel, setReleasedWhenClosed: false];
 
             // Configure panel for floating transparent overlay.
             let clear_color = NSColor::clearColor();
@@ -647,6 +730,14 @@ mod imp {
 
             // Force the view to display
             let _: () = msg_send![badge_view, setNeedsDisplay: true];
+            let _: () = msg_send![badge_view, release];
+
+            let empty = CFString::new("");
+            let label_class = Class::get("NSTextField").unwrap();
+            let label: Id =
+                msg_send![label_class, labelWithString: empty.as_concrete_TypeRef() as Id];
+            let _: () = msg_send![label, setHidden: true];
+            add_subview(content_view, label);
 
             panel
         }
@@ -740,7 +831,9 @@ mod imp {
                                     continue;
                                 }
                             };
-                            if !state.timer_running {
+                            if !state.timer_running
+                                || !super::token_is_current(generation, take_token())
+                            {
                                 break;
                             }
                             (
@@ -789,7 +882,10 @@ mod imp {
                                     Err(TryLockError::Poisoned(err)) => err.into_inner(),
                                     Err(TryLockError::WouldBlock) => return,
                                 };
-                                if !state.timer_running || state.window != Some(window_ptr) {
+                                if !state.timer_running
+                                    || state.window != Some(window_ptr)
+                                    || !super::token_is_current(generation, take_token())
+                                {
                                     return;
                                 }
                                 state.last_position = (new_x, new_y);
@@ -797,10 +893,7 @@ mod imp {
 
                             let window = window_ptr as Id;
                             if position_changed {
-                                let new_origin = CGPoint {
-                                    x: adjusted_x,
-                                    y: adjusted_y,
-                                };
+                                let new_origin = fit_panel_origin(window, adjusted_x, adjusted_y);
                                 let _: () = msg_send![window, setFrameOrigin: new_origin];
                             }
 
@@ -835,19 +928,10 @@ mod imp {
         // itself as stale and does not resurrect a dismissed badge.
         let generation = BADGE_GENERATION.load(Ordering::SeqCst);
 
-        // Check if we're already on the main thread by checking thread name.
-        // Note: exec_sync on main queue from main thread causes deadlock.
-        let is_main_thread = std::thread::current().name() == Some("main");
-
-        if is_main_thread {
+        // Queue ownership, not a Rust thread name, proves AppKit main-thread access.
+        Queue::main().exec_async(move || {
             show_hold_badge_impl(config, generation);
-        } else {
-            // Dispatch to main thread - AppKit panel creation MUST be on main thread.
-            // Using exec_async to avoid deadlock when called from tokio runtime.
-            Queue::main().exec_async(move || {
-                show_hold_badge_impl(config, generation);
-            });
-        }
+        });
     }
 
     /// Hide the hold badge and stop position tracking.
@@ -881,7 +965,8 @@ mod imp {
 #[cfg(target_os = "macos")]
 pub use imp::{
     focused_element_accepts_text, get_caret_position, get_cursor_position, hide_hold_badge,
-    show_badge_for_mode, show_hold_badge, show_hold_badge_with_config,
+    show_badge_for_mode, show_hold_badge, show_hold_badge_with_config, take_token,
+    update_transcript,
 };
 
 // ─────────────────────────────────────────────────────────────
@@ -896,6 +981,13 @@ pub use imp::{
 #[cfg(not(target_os = "macos"))]
 mod stubs {
     use super::{BadgeMode, HoldBadgeConfig};
+
+    /// Inert take token outside macOS.
+    pub fn take_token() -> u64 {
+        0
+    }
+    /// Inert cursor projection outside macOS.
+    pub fn update_transcript(_token: u64, _text: &str, _degraded: bool) {}
 
     /// No-op: focused-element text detection is macOS-only.
     pub fn focused_element_accepts_text() -> bool {
@@ -928,5 +1020,6 @@ mod stubs {
 #[cfg(not(target_os = "macos"))]
 pub use stubs::{
     focused_element_accepts_text, get_caret_position, get_cursor_position, hide_hold_badge,
-    show_badge_for_mode, show_hold_badge, show_hold_badge_with_config,
+    show_badge_for_mode, show_hold_badge, show_hold_badge_with_config, take_token,
+    update_transcript,
 };

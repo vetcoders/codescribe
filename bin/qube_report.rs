@@ -9,7 +9,10 @@ use clap::Parser;
 use std::path::PathBuf;
 
 use codescribe::config::Config;
-use codescribe::qube_report::{LocalTranscriptionMode, MetricsReference, QualityReportConfig, run};
+use codescribe::qube_report::{
+    LocalTranscriptionMode, MetricsReference, QualityReportConfig, compare_truth_dirs,
+    render_truth_comparison, run,
+};
 use codescribe_core::quality::overlay_quality::replay_corrections_through_extractor;
 
 /// Command-line surface of the report generator. Two distinct jobs share this
@@ -25,8 +28,16 @@ struct Args {
     input: Option<PathBuf>,
 
     /// Output directory (default: ~/.codescribe/reports/quality_<timestamp>)
-    #[arg(long)]
+    #[arg(long, visible_alias = "output")]
     out: Option<PathBuf>,
+
+    /// Baseline archive directory of `*.truth.json` sidecars (requires `--candidate-dir`)
+    #[arg(long, requires = "candidate_dir")]
+    baseline_dir: Option<PathBuf>,
+
+    /// Fresh-run directory of `*.truth.json` sidecars (requires `--baseline-dir`)
+    #[arg(long, requires = "baseline_dir")]
+    candidate_dir: Option<PathBuf>,
 
     /// Filter by date folder (e.g., 2026-01-17)
     #[arg(long)]
@@ -99,6 +110,17 @@ enum ReferenceSourceArg {
 #[tokio::main]
 async fn main() -> Result<()> {
     let args = Args::parse();
+
+    if let (Some(baseline_dir), Some(candidate_dir)) = (&args.baseline_dir, &args.candidate_dir) {
+        let comparison = compare_truth_dirs(baseline_dir, candidate_dir)?;
+        print!("{}", render_truth_comparison(&comparison));
+        let out_dir = args.out.clone().unwrap_or_else(|| candidate_dir.clone());
+        std::fs::create_dir_all(&out_dir)?;
+        let path = out_dir.join("comparison.json");
+        std::fs::write(&path, serde_json::to_vec_pretty(&comparison)?)?;
+        println!("comparison: {}", path.display());
+        return Ok(());
+    }
 
     if args.replay_corrections {
         let config_dir = Config::config_dir();

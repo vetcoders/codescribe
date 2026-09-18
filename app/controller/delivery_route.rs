@@ -4,6 +4,17 @@
 //! The mic, the transcript, and the agent chain stay other thrones. This module
 //! is only the destination axis (operator diagnosis 2026-08-15: "walka o tron").
 //!
+//! W1-D part set (destination only):
+//! - [`DeliveryRoute`] — sole typed destination owner.
+//! - [`DeliveryIntent`] — operator intent frozen at session start / overlay click.
+//! - [`DeliveryDecision`] — destination-decision part: selected route plus a
+//!   recoverable-failure reason token. Route never chooses transcript text;
+//!   automatic label authorship lives in the formatter module, not here.
+//!
+//! Removed competitors that must not return: `assistive_delivery`,
+//! `overlay_paste`, `quality_delivery` destination construction, and any
+//! second route owner beside [`resolve_delivery_route`].
+//!
 //! Law:
 //! - `DeliveryIntent` is frozen at session start (or at an explicit overlay
 //!   click). It is not re-derived from OS focus.
@@ -14,6 +25,11 @@
 //!   The Agent window, Alacritty/Zellij, Notes, and every other caret are
 //!   legal ambulances. Assistive still delivers as a first-class Agent
 //!   message — that is a different intent, not a paste ban.
+//!
+//! # Intended W2 consumers
+//! - `app/controller/mod.rs` stop / overlay Insert / To Agent paths that
+//!   already import this module. Clipboard, Agent composer, and canvas execute
+//!   a decided route; they do not invent one.
 
 /// Where a finished transcript is allowed to land.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -21,8 +37,6 @@ pub enum DeliveryRoute {
     /// Spoken intent goes to the Agent composer as a first-class message.
     /// Never a clipboard paste into whatever is focused.
     AgentComposer,
-    /// Transcript stays on the Orient overlay canvas. No paste, no agent send.
-    OrientCanvas,
     /// Auto-paste / overlay Insert into the *latched session target*.
     /// Focus at stop time is not the authority.
     ClipboardPaste,
@@ -33,52 +47,96 @@ pub enum DeliveryRoute {
     ArchiveOnly,
 }
 
+/// Transport result for an explicit overlay delivery action. Destination
+/// selection still belongs exclusively to [`resolve_delivery_route`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum OverlayPasteDelivery {
+    Pasted,
+    CopiedToClipboard,
+    AccessibilityPermissionNeeded,
+    DeferredInsertArmed,
+    Noop,
+}
+
+/// Operator-visible outcome after executing an already selected overlay route.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct OverlayPasteResult {
+    pub delivery: OverlayPasteDelivery,
+    pub target_app_name: Option<String>,
+    pub frontmost_app_name: Option<String>,
+    pub deferred_insert_shortcut: Option<String>,
+    pub deferred_insert_failure: Option<String>,
+}
+
 impl DeliveryRoute {
     /// Stable telemetry label (snake_case, one token).
     pub const fn as_str(self) -> &'static str {
         match self {
             Self::AgentComposer => "agent_composer",
-            Self::OrientCanvas => "orient_canvas",
             Self::ClipboardPaste => "clipboard_paste",
             Self::DeferredInsert => "deferred_insert",
             Self::ArchiveOnly => "archive_only",
         }
     }
-
-    /// True when the stop path is allowed to post a synthetic Cmd+V.
-    pub const fn posts_synthetic_paste(self) -> bool {
-        matches!(self, Self::ClipboardPaste)
-    }
 }
 
-/// Session-start (or explicit overlay) intent. Frozen before recording ends.
+/// Operator delivery intent, frozen at session start (Orient, AgentVoice,
+/// NotesOnly) or at the explicit overlay click that declares it (overlay
+/// intents). OS focus at stop time is never an input.
+///
+/// The stop path lost its intents in the W0 authority demolition
+/// (`ac6d399b3`, 2026-08-24) and with them auto-paste. Restored 2026-09-08:
+/// Auto Paste is the product's basic verb (Founder C02 2026-07-20, one
+/// persisted setting shared by Hold and Double Left Option).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum DeliveryIntent {
-    /// Hold Fn / Globe — Orient dictation.
-    OrientDictation,
-    /// Double-left-option formatting hold — still Orient, may auto-paste formatted.
-    OrientFormat,
-    /// Assistive / Double-right-option — Agent composer is the destination.
+    /// Assistive hold / Double Right Option: the transcript is a first-class
+    /// Agent message. Never a focus-derived paste.
     AgentVoice,
+    /// Hold Fn / Globe or toggle dictation: auto-paste into the latched target.
+    OrientDictation,
+    /// Double Left Option: formatted dictation. Same destination as dictation.
+    OrientFormat,
+    /// Save-only Quick Notes: history only, no user-visible delivery.
+    NotesOnly,
     /// Explicit overlay "To Agent" after any session.
     OverlayToAgent,
     /// Explicit overlay Insert / Paste Here. Frozen at the click, not at stop.
     OverlayInsert,
-    /// Notes-only / save-only.
-    NotesOnly,
 }
 
 impl DeliveryIntent {
     /// Stable telemetry label.
     pub const fn as_str(self) -> &'static str {
         match self {
+            Self::AgentVoice => "agent_voice",
             Self::OrientDictation => "orient_dictation",
             Self::OrientFormat => "orient_format",
-            Self::AgentVoice => "agent_voice",
+            Self::NotesOnly => "notes_only",
             Self::OverlayToAgent => "overlay_to_agent",
             Self::OverlayInsert => "overlay_insert",
-            Self::NotesOnly => "notes_only",
         }
+    }
+}
+
+/// Freeze the stop-path intent from the flags the session started with.
+///
+/// Save-only notes outrank everything (nothing may leave history). Assistive
+/// outranks formatting: an assistive hold is an Agent message even when AI
+/// formatting is on. Everything else is Orient dictation.
+pub fn delivery_intent_from_session(
+    assistive: bool,
+    force_ai: bool,
+    notes_save_only: bool,
+) -> DeliveryIntent {
+    if notes_save_only {
+        DeliveryIntent::NotesOnly
+    } else if assistive {
+        DeliveryIntent::AgentVoice
+    } else if force_ai {
+        DeliveryIntent::OrientFormat
+    } else {
+        DeliveryIntent::OrientDictation
     }
 }
 
@@ -97,36 +155,29 @@ pub struct DeliveryFacts {
     pub latched_target_is_self: bool,
 }
 
-/// One verdict: a route plus a stable reason token for the budget line.
+/// Typed destination-decision part: operator intent resolved to a
+/// [`DeliveryRoute`] plus a stable reason token.
+///
+/// Success and recoverable failure share this shape. Failure still names the
+/// parked route (`DeferredInsert`, `ArchiveOnly`, …) so the
+/// stop path can recover without inventing a second destination owner or
+/// choosing transcript text.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct DeliveryDecision {
     pub route: DeliveryRoute,
     pub reason: &'static str,
 }
 
-/// Map session flags onto an intent. Assistive wins; notes-only next; format
-/// hold is still Orient (destination is the canvas / latched target, not Agent).
-pub fn delivery_intent_from_session(
-    assistive: bool,
-    force_ai: bool,
-    notes_save_only: bool,
-) -> DeliveryIntent {
-    if assistive {
-        DeliveryIntent::AgentVoice
-    } else if notes_save_only {
-        DeliveryIntent::NotesOnly
-    } else if force_ai {
-        DeliveryIntent::OrientFormat
-    } else {
-        DeliveryIntent::OrientDictation
-    }
-}
-
-/// Localized name of **this process**. Used to skip `NSRunningApplication`
-/// activate (we are already running). Not a paste veto — the Agent window
-/// is a legal Cmd+V sink. Overlay-canvas veto is the Swift caret probe.
-pub fn target_is_self_app(name: &str) -> bool {
-    name.trim().eq_ignore_ascii_case("codescribe")
+/// Read-only projection of which overlay actions are legal for one immutable
+/// take snapshot. It does not execute delivery or choose transcript text.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub(crate) struct TranscriptProjectionAvailability {
+    pub can_paste: bool,
+    pub can_insert: bool,
+    pub can_copy: bool,
+    pub can_retranscribe: bool,
+    pub can_format: bool,
+    pub can_send_to_agent: bool,
 }
 
 /// Facts an overlay Insert / defer click may feed the throne.
@@ -160,18 +211,96 @@ pub fn resolve_delivery_route(intent: DeliveryIntent, facts: DeliveryFacts) -> D
     match intent {
         DeliveryIntent::AgentVoice => DeliveryDecision {
             route: DeliveryRoute::AgentComposer,
-            reason: "assistive_intent",
-        },
-        DeliveryIntent::OverlayToAgent => DeliveryDecision {
-            route: DeliveryRoute::AgentComposer,
-            reason: "explicit_to_agent",
+            reason: "assistive_first_class",
         },
         DeliveryIntent::NotesOnly => DeliveryDecision {
             route: DeliveryRoute::ArchiveOnly,
             reason: "notes_save_only",
         },
-        DeliveryIntent::OverlayInsert => overlay_insert_route(facts),
         DeliveryIntent::OrientDictation | DeliveryIntent::OrientFormat => orient_route(facts),
+        DeliveryIntent::OverlayToAgent => DeliveryDecision {
+            route: DeliveryRoute::AgentComposer,
+            reason: "explicit_to_agent",
+        },
+        DeliveryIntent::OverlayInsert => overlay_insert_route(facts),
+    }
+}
+
+/// Stop-path Orient (Hold Fn / Globe, Double Left Option, toggle Finish).
+///
+/// Auto Paste is one persisted setting shared by every Orient gesture. The
+/// vetoes that keep Orient off the paste gun, in order: the setting itself, a
+/// live-stream consumer that already owns the text, a pending quality commit,
+/// and the overlay canvas holding the caret. The doc table's `OrientCanvas` is
+/// `ArchiveOnly` here: the canvas already shows the committed document, so
+/// nothing else moves.
+fn orient_route(facts: DeliveryFacts) -> DeliveryDecision {
+    if !facts.auto_paste_enabled {
+        return DeliveryDecision {
+            route: DeliveryRoute::ArchiveOnly,
+            reason: "auto_paste_disabled",
+        };
+    }
+    if facts.live_stream_session {
+        return DeliveryDecision {
+            route: DeliveryRoute::ArchiveOnly,
+            reason: "live_stream_session",
+        };
+    }
+    if facts.commit_required {
+        return DeliveryDecision {
+            route: DeliveryRoute::ArchiveOnly,
+            reason: "quality_commit_pending",
+        };
+    }
+    if facts.latched_target_is_self {
+        return DeliveryDecision {
+            route: DeliveryRoute::DeferredInsert,
+            reason: "refuse_paste_into_self",
+        };
+    }
+    DeliveryDecision {
+        route: DeliveryRoute::ClipboardPaste,
+        reason: "auto_paste",
+    }
+}
+
+/// Derive canvas availability through the delivery throne plus immutable book,
+/// audio, and lifecycle facts. A caller may paint these bits but must not
+/// reconstruct them independently.
+pub(crate) fn resolve_transcript_projection_availability(
+    has_text: bool,
+    take_in_progress: bool,
+    session_wav_exists: bool,
+    has_latched_target: bool,
+    latched_target_is_self: bool,
+) -> TranscriptProjectionAvailability {
+    let insert = resolve_delivery_route(
+        DeliveryIntent::OverlayInsert,
+        overlay_insert_facts(has_text, latched_target_is_self),
+    );
+    let insert_route_is_legal = matches!(
+        insert.route,
+        DeliveryRoute::ClipboardPaste | DeliveryRoute::DeferredInsert
+    );
+
+    TranscriptProjectionAvailability {
+        can_paste: !take_in_progress
+            && has_latched_target
+            && matches!(insert.route, DeliveryRoute::ClipboardPaste),
+        can_insert: !take_in_progress && insert_route_is_legal,
+        can_copy: has_text,
+        can_retranscribe: !take_in_progress && session_wav_exists,
+        can_format: !take_in_progress && has_text,
+        can_send_to_agent: !take_in_progress
+            && matches!(
+                resolve_delivery_route(
+                    DeliveryIntent::OverlayToAgent,
+                    overlay_insert_facts(has_text, latched_target_is_self),
+                )
+                .route,
+                DeliveryRoute::AgentComposer
+            ),
     }
 }
 
@@ -192,40 +321,30 @@ fn overlay_insert_route(facts: DeliveryFacts) -> DeliveryDecision {
     }
 }
 
-fn orient_route(facts: DeliveryFacts) -> DeliveryDecision {
-    if facts.live_stream_session {
-        return DeliveryDecision {
-            route: DeliveryRoute::OrientCanvas,
-            reason: "live_stream_owns_canvas",
-        };
-    }
-    if facts.commit_required {
-        return DeliveryDecision {
-            route: DeliveryRoute::OrientCanvas,
-            reason: "quality_commit_pending",
-        };
-    }
-    if facts.latched_target_is_self {
-        return DeliveryDecision {
-            route: DeliveryRoute::OrientCanvas,
-            reason: "refuse_paste_into_self",
-        };
-    }
-    if facts.auto_paste_enabled {
-        return DeliveryDecision {
-            route: DeliveryRoute::ClipboardPaste,
-            reason: "auto_paste_to_latched_target",
-        };
-    }
-    if facts.overlay_enabled {
-        return DeliveryDecision {
-            route: DeliveryRoute::OrientCanvas,
-            reason: "overlay_is_destination",
-        };
-    }
-    DeliveryDecision {
-        route: DeliveryRoute::ArchiveOnly,
-        reason: "no_visible_surface",
+/// Transport law for an already decided `ClipboardPaste`: may the synthetic
+/// Cmd+V be posted right now?
+///
+/// - A **latched** target must have confirmed focus (bounded wait) or be
+///   observed frontmost afterwards. It never yields to whoever happens to be
+///   frontmost — that fallback re-admitted "focus at stop" through the back
+///   door (`2fb2bd8ec`, 2026-09-08) and was the canary finding P1-01
+///   "auto-paste accepts unconfirmed activation" (2026-08-24).
+/// - With **no** latch (an overlay Insert started from Codescribe itself, so
+///   the latch never stored a target) the external frontmost app is the only
+///   caret the user can mean; Codescribe's own windows are still refused.
+///
+/// Event-tap permission is checked by the caller; this is destination law only.
+#[must_use]
+pub const fn clipboard_paste_may_post(
+    target_latched: bool,
+    focus_confirmed: bool,
+    target_observed_frontmost: bool,
+    frontmost_is_external: bool,
+) -> bool {
+    if target_latched {
+        focus_confirmed || target_observed_frontmost
+    } else {
+        frontmost_is_external
     }
 }
 
@@ -248,6 +367,7 @@ pub fn format_delivery_route_line(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::os::selection::is_codescribe_app;
 
     fn facts(overrides: impl FnOnce(&mut DeliveryFacts)) -> DeliveryFacts {
         let mut f = DeliveryFacts {
@@ -266,8 +386,10 @@ mod tests {
     #[test]
     fn empty_or_no_speech_archives_regardless_of_intent() {
         for intent in [
-            DeliveryIntent::OrientDictation,
             DeliveryIntent::AgentVoice,
+            DeliveryIntent::OrientDictation,
+            DeliveryIntent::OrientFormat,
+            DeliveryIntent::NotesOnly,
             DeliveryIntent::OverlayToAgent,
             DeliveryIntent::OverlayInsert,
         ] {
@@ -291,11 +413,94 @@ mod tests {
     }
 
     #[test]
-    fn assistive_never_pastes() {
+    fn orient_auto_pastes_into_the_latched_target() {
+        for intent in [
+            DeliveryIntent::OrientDictation,
+            DeliveryIntent::OrientFormat,
+        ] {
+            let decision = resolve_delivery_route(intent, facts(|_| {}));
+            assert_eq!(decision.route, DeliveryRoute::ClipboardPaste, "{intent:?}");
+            assert_eq!(decision.reason, "auto_paste");
+        }
+    }
+
+    #[test]
+    fn orient_with_auto_paste_off_archives_only() {
+        let decision = resolve_delivery_route(
+            DeliveryIntent::OrientDictation,
+            facts(|f| {
+                f.auto_paste_enabled = false;
+            }),
+        );
+        assert_eq!(decision.route, DeliveryRoute::ArchiveOnly);
+        assert_eq!(decision.reason, "auto_paste_disabled");
+    }
+
+    #[test]
+    fn orient_honours_live_stream_and_commit_vetoes() {
+        let live = resolve_delivery_route(
+            DeliveryIntent::OrientDictation,
+            facts(|f| {
+                f.live_stream_session = true;
+            }),
+        );
+        assert_eq!(live.route, DeliveryRoute::ArchiveOnly);
+        assert_eq!(live.reason, "live_stream_session");
+
+        let commit = resolve_delivery_route(
+            DeliveryIntent::OrientFormat,
+            facts(|f| {
+                f.commit_required = true;
+            }),
+        );
+        assert_eq!(commit.route, DeliveryRoute::ArchiveOnly);
+        assert_eq!(commit.reason, "quality_commit_pending");
+    }
+
+    #[test]
+    fn orient_into_self_parks_paste_here() {
+        let decision = resolve_delivery_route(
+            DeliveryIntent::OrientDictation,
+            facts(|f| {
+                f.latched_target_is_self = true;
+            }),
+        );
+        assert_eq!(decision.route, DeliveryRoute::DeferredInsert);
+        assert_eq!(decision.reason, "refuse_paste_into_self");
+    }
+
+    #[test]
+    fn agent_voice_never_auto_pastes() {
         let decision = resolve_delivery_route(DeliveryIntent::AgentVoice, facts(|_| {}));
         assert_eq!(decision.route, DeliveryRoute::AgentComposer);
-        assert_eq!(decision.reason, "assistive_intent");
-        assert!(!decision.route.posts_synthetic_paste());
+        assert_eq!(decision.reason, "assistive_first_class");
+    }
+
+    #[test]
+    fn notes_only_archives_even_with_auto_paste_on() {
+        let decision = resolve_delivery_route(DeliveryIntent::NotesOnly, facts(|_| {}));
+        assert_eq!(decision.route, DeliveryRoute::ArchiveOnly);
+        assert_eq!(decision.reason, "notes_save_only");
+    }
+
+    #[test]
+    fn session_intent_precedence_is_notes_then_assistive_then_format() {
+        assert_eq!(
+            delivery_intent_from_session(true, true, true),
+            DeliveryIntent::NotesOnly
+        );
+        assert_eq!(
+            delivery_intent_from_session(true, true, false),
+            DeliveryIntent::AgentVoice
+        );
+        assert_eq!(
+            delivery_intent_from_session(false, true, false),
+            DeliveryIntent::OrientFormat
+        );
+        assert_eq!(
+            delivery_intent_from_session(false, false, false),
+            DeliveryIntent::OrientDictation
+        );
     }
 
     #[test]
@@ -306,79 +511,10 @@ mod tests {
     }
 
     #[test]
-    fn hold_fn_with_agent_window_latched_auto_pastes() {
-        let decision = resolve_delivery_route(
-            DeliveryIntent::OrientDictation,
-            facts(|f| {
-                f.auto_paste_enabled = true;
-            }),
-        );
-        assert_eq!(decision.route, DeliveryRoute::ClipboardPaste);
-        assert_eq!(decision.reason, "auto_paste_to_latched_target");
-        assert!(decision.route.posts_synthetic_paste());
-    }
-
-    #[test]
-    fn hold_fn_with_overlay_caret_stays_on_canvas() {
-        let decision = resolve_delivery_route(
-            DeliveryIntent::OrientDictation,
-            facts(|f| {
-                f.latched_target_is_self = true;
-                f.auto_paste_enabled = true;
-            }),
-        );
-        assert_eq!(decision.route, DeliveryRoute::OrientCanvas);
-        assert_eq!(decision.reason, "refuse_paste_into_self");
-        assert!(!decision.route.posts_synthetic_paste());
-    }
-
-    #[test]
-    fn hold_fn_auto_paste_targets_latched_app() {
-        let decision = resolve_delivery_route(DeliveryIntent::OrientDictation, facts(|_| {}));
-        assert_eq!(decision.route, DeliveryRoute::ClipboardPaste);
-        assert_eq!(decision.reason, "auto_paste_to_latched_target");
-        assert!(decision.route.posts_synthetic_paste());
-    }
-
-    #[test]
-    fn overlay_without_auto_paste_is_the_canvas() {
-        let decision = resolve_delivery_route(
-            DeliveryIntent::OrientDictation,
-            facts(|f| {
-                f.auto_paste_enabled = false;
-            }),
-        );
-        assert_eq!(decision.route, DeliveryRoute::OrientCanvas);
-        assert_eq!(decision.reason, "overlay_is_destination");
-    }
-
-    #[test]
-    fn quality_commit_and_live_stream_veto_paste() {
-        let commit = resolve_delivery_route(
-            DeliveryIntent::OrientFormat,
-            facts(|f| {
-                f.commit_required = true;
-            }),
-        );
-        assert_eq!(commit.route, DeliveryRoute::OrientCanvas);
-        assert_eq!(commit.reason, "quality_commit_pending");
-
-        let live = resolve_delivery_route(
-            DeliveryIntent::OrientDictation,
-            facts(|f| {
-                f.live_stream_session = true;
-            }),
-        );
-        assert_eq!(live.route, DeliveryRoute::OrientCanvas);
-        assert_eq!(live.reason, "live_stream_owns_canvas");
-    }
-
-    #[test]
     fn overlay_insert_to_foreign_app_is_clipboard_paste() {
         let decision = resolve_delivery_route(DeliveryIntent::OverlayInsert, facts(|_| {}));
         assert_eq!(decision.route, DeliveryRoute::ClipboardPaste);
         assert_eq!(decision.reason, "explicit_insert");
-        assert!(decision.route.posts_synthetic_paste());
     }
 
     #[test]
@@ -392,7 +528,6 @@ mod tests {
         );
         assert_eq!(decision.route, DeliveryRoute::DeferredInsert);
         assert_eq!(decision.reason, "refuse_paste_into_self");
-        assert!(!decision.route.posts_synthetic_paste());
     }
 
     #[test]
@@ -419,53 +554,113 @@ mod tests {
     }
 
     #[test]
-    fn notes_only_never_pastes() {
-        let decision = resolve_delivery_route(DeliveryIntent::NotesOnly, facts(|_| {}));
-        assert_eq!(decision.route, DeliveryRoute::ArchiveOnly);
-        assert_eq!(decision.reason, "notes_save_only");
-    }
+    fn projection_availability_follows_book_lifecycle_audio_and_delivery_table() {
+        let cases = [
+            (
+                "listening",
+                (true, true, false, true, false),
+                TranscriptProjectionAvailability {
+                    can_paste: false,
+                    can_insert: false,
+                    can_copy: true,
+                    can_retranscribe: false,
+                    can_format: false,
+                    can_send_to_agent: false,
+                },
+            ),
+            (
+                "formatted_foreign_target",
+                (true, false, true, true, false),
+                TranscriptProjectionAvailability {
+                    can_paste: true,
+                    can_insert: true,
+                    can_copy: true,
+                    can_retranscribe: true,
+                    can_format: true,
+                    can_send_to_agent: true,
+                },
+            ),
+            (
+                "formatted_self_target",
+                (true, false, true, true, true),
+                TranscriptProjectionAvailability {
+                    can_paste: false,
+                    can_insert: true,
+                    can_copy: true,
+                    can_retranscribe: true,
+                    can_format: true,
+                    can_send_to_agent: true,
+                },
+            ),
+            (
+                "no_speech",
+                (false, false, true, true, false),
+                TranscriptProjectionAvailability {
+                    can_paste: false,
+                    can_insert: false,
+                    can_copy: false,
+                    can_retranscribe: true,
+                    can_format: false,
+                    can_send_to_agent: false,
+                },
+            ),
+        ];
 
-    #[test]
-    fn session_flags_map_to_intent() {
-        assert_eq!(
-            delivery_intent_from_session(true, true, true),
-            DeliveryIntent::AgentVoice
-        );
-        assert_eq!(
-            delivery_intent_from_session(false, false, true),
-            DeliveryIntent::NotesOnly
-        );
-        assert_eq!(
-            delivery_intent_from_session(false, true, false),
-            DeliveryIntent::OrientFormat
-        );
-        assert_eq!(
-            delivery_intent_from_session(false, false, false),
-            DeliveryIntent::OrientDictation
-        );
+        for (name, (has_text, in_progress, wav, has_target, target_is_self), expected) in cases {
+            assert_eq!(
+                resolve_transcript_projection_availability(
+                    has_text,
+                    in_progress,
+                    wav,
+                    has_target,
+                    target_is_self,
+                ),
+                expected,
+                "{name}"
+            );
+        }
     }
 
     #[test]
     fn codescribe_is_self_case_insensitive() {
-        assert!(target_is_self_app("Codescribe"));
-        assert!(target_is_self_app(" codescribe "));
-        assert!(!target_is_self_app("Ghostty"));
-        assert!(!target_is_self_app(""));
+        assert!(is_codescribe_app("Codescribe"));
+        assert!(is_codescribe_app(" codescribe "));
+        assert!(!is_codescribe_app("Ghostty"));
+        assert!(!is_codescribe_app(""));
+    }
+
+    #[test]
+    fn latched_target_unconfirmed_never_follows_foreign_frontmost() {
+        // Today's take: target latched, activation unconfirmed, a foreign app frontmost.
+        assert!(!clipboard_paste_may_post(true, false, false, true));
+        assert!(!clipboard_paste_may_post(true, false, false, false));
+    }
+
+    #[test]
+    fn latched_target_posts_when_confirmed_or_observed() {
+        assert!(clipboard_paste_may_post(true, true, false, false));
+        assert!(clipboard_paste_may_post(true, false, true, false));
+    }
+
+    #[test]
+    fn unlatched_insert_follows_external_frontmost_only() {
+        assert!(clipboard_paste_may_post(false, false, false, true));
+        assert!(!clipboard_paste_may_post(false, false, false, false));
     }
 
     #[test]
     fn budget_line_names_the_throne() {
         let line = format_delivery_route_line(
-            DeliveryIntent::OrientDictation,
+            DeliveryIntent::OverlayInsert,
             DeliveryDecision {
                 route: DeliveryRoute::ClipboardPaste,
-                reason: "auto_paste_to_latched_target",
+                reason: "explicit_insert",
             },
             Some("Ghostty"),
         );
         assert_eq!(
             line,
-            "delivery_route: intent=orient_dictation route=clipboard_paste reason=auto_paste_to_latched_target target=Ghostty"
+            "delivery_route: intent=overlay_insert route=clipboard_paste reason=explicit_insert target=Ghostty"
         );
     }
 }

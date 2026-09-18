@@ -1,10 +1,44 @@
 import AppKit
+import SwiftUI
 import XCTest
 
 @testable import Codescribe
 
 @MainActor
 final class ComposerTextViewTests: XCTestCase {
+  func testNativeComposerDisablesSystemRewritingButKeepsEditing() throws {
+    let host = NSHostingView(
+      rootView: ComposerTextView(
+        text: .constant(""), height: .constant(40), textScale: 1,
+        isFocused: .constant(false), history: [], onSend: {}))
+    host.frame = NSRect(x: 0, y: 0, width: 400, height: 80)
+    host.layoutSubtreeIfNeeded()
+
+    func composer(in view: NSView) -> NSTextView? {
+      if let text = view as? NSTextView,
+        text.accessibilityIdentifier() == ComposerAccessibility.textViewIdentifier
+      {
+        return text
+      }
+      return view.subviews.lazy.compactMap { composer(in: $0) }.first
+    }
+
+    let text = try XCTUnwrap(composer(in: host))
+    XCTAssertEqual(text.inlinePredictionType, .no)
+    XCTAssertFalse(text.isAutomaticTextCompletionEnabled)
+    XCTAssertFalse(text.isAutomaticTextReplacementEnabled)
+    XCTAssertFalse(text.isAutomaticSpellingCorrectionEnabled)
+    XCTAssertFalse(text.isAutomaticQuoteSubstitutionEnabled)
+    XCTAssertFalse(text.isAutomaticDashSubstitutionEnabled)
+    if #available(macOS 15.0, *) {
+      XCTAssertEqual(text.writingToolsBehavior, .none)
+      XCTAssertEqual(text.mathExpressionCompletionType, .no)
+    }
+    XCTAssertTrue(text.isEditable)
+    XCTAssertTrue(text.isSelectable)
+    XCTAssertTrue(text.allowsUndo)
+  }
+
   func testHeightGrowsFromOneLineAndClampsAtEight() {
     let lineHeight: CGFloat = 20
 

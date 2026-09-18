@@ -50,7 +50,7 @@ final class AppModel: ObservableObject {
       mcpAdmin: RealMCPAdminEngine()
     )
     self.chat = chat
-    self.overlay = OverlayController(engine: ControllerDictationEngine())
+    self.overlay = OverlayController(engine: ControllerDictationEngine(), composer: chat)
     self.tray = TrayViewModel(engine: RealTrayEngine())
     // The composer is a gesture-only adapter over RecordingController. Right
     // Option, composer mic, Dictation, and Formatting share one recorder/STT.
@@ -75,6 +75,29 @@ final class OverlayController: ObservableObject {
   private let panelFactory: @MainActor (OverlayState, TextScaleController) -> NSPanel
   private let orderPanelFront: @MainActor (NSPanel) -> Void
   private let orderPanelOut: @MainActor (NSPanel) -> Void
+  /// Runs the agent-handoff fade and calls back when it finishes. Injected so a
+  /// test can fire the completion at an exact moment in the lifecycle instead of
+  /// racing a wall-clock animation; the default keeps the real 0.18 s fade.
+  ///
+  /// The completion is `@escaping` because that is the lifetime BOTH consumers
+  /// actually take, not a precaution:
+  ///
+  /// - the default implementation below hands it to
+  ///   `NSAnimationContext.runAnimationGroup`'s `completionHandler`, which AppKit
+  ///   stores and calls after this call has returned;
+  /// - the delayed-completion test stores it in a local `pendingFade` and fires
+  ///   it after a successor capture has opened.
+  ///
+  /// A closure parameter of a function type is non-escaping by default exactly
+  /// as it is in a function declaration, so without this attribute neither
+  /// consumer may keep the callback past the call — which is the whole point of
+  /// a fade completion. `@MainActor @Sendable` stays: the completion runs on the
+  /// main actor and its captures are main-actor isolated.
+  private let runHandoffFade:
+    @MainActor (NSPanel, @escaping @MainActor @Sendable () -> Void) -> Void
+  /// A direct edge resize is the user's size decision for the current session.
+  /// The next recording may breathe again from that persisted starting point.
+  private var automaticContentSizingEnabled = true
   /// Latched across the session (preparing → started → stopped) because the
   /// Rust controller clears its assistive flag right after the stop pipeline —
   /// a single read at finalize would race it. Mid-hold upgrades (Fn → Fn+Shift)
@@ -84,6 +107,7 @@ final class OverlayController: ObservableObject {
   init(
     state: OverlayState? = nil,
     engine: DictationEngine? = nil,
+    composer: AgentChatStore? = nil,
     overlayEnabledProvider: @escaping () -> Bool = {
       DictationOverlayGate.shouldShowOverlay(
         trayEnabled: CodescribeConfig().trayToggles().transcriptionOverlayEnabled
@@ -94,7 +118,10 @@ final class OverlayController: ObservableObject {
     },
     panelFactory: (@MainActor (OverlayState, TextScaleController) -> NSPanel)? = nil,
     orderPanelFront: (@MainActor (NSPanel) -> Void)? = nil,
-    orderPanelOut: (@MainActor (NSPanel) -> Void)? = nil
+    orderPanelOut: (@MainActor (NSPanel) -> Void)? = nil,
+    runHandoffFade: (
+      @MainActor (NSPanel, @escaping @MainActor @Sendable () -> Void) -> Void
+    )? = nil
   ) {
     let state = state ?? OverlayState()
     self.state = state
@@ -106,6 +133,15 @@ final class OverlayController: ObservableObject {
       }
     self.orderPanelFront = orderPanelFront ?? { $0.orderFrontRegardless() }
     self.orderPanelOut = orderPanelOut ?? { $0.orderOut(nil) }
+    self.runHandoffFade =
+      runHandoffFade ?? { panel, completed in
+        NSAnimationContext.runAnimationGroup { context in
+          context.duration = 0.18
+          panel.animator().alphaValue = 0
+        } completionHandler: {
+          MainActor.assumeIsolated { completed() }
+        }
+      }
     state.engine = engine
     // Drive the tray status off the SAME authoritative recording lifecycle the
     // overlay already receives. The tray view-model otherwise only polls on
@@ -118,39 +154,57 @@ final class OverlayController: ObservableObject {
     // true is a mic that can die permanently. Non-assistive sessions therefore
     // push the composer back to `.idle` (it renders as `.blocked` off
     // `dictationBlocked`, which is the honest "busy elsewhere" state), and every
-    // terminal beat resets unconditionally.
+    // identity-less lifecycle paint cannot revoke an admitted composer request.
     state.onRecordingPreparing = { [weak self] in
       guard let self else { return }
+      self.automaticContentSizingEnabled = true
       self.sessionWasAssistive = false
       self.refreshAssistiveLatch()
       self.showForRecording()
-      AppModel.shared.chat.setDictationPhase(self.sessionWasAssistive ? .preparing : .idle)
+      if !AppModel.shared.chat.hasComposerCaptureRequest {
+        AppModel.shared.chat.setDictationPhase(self.sessionWasAssistive ? .preparing : .idle)
+      }
       AppModel.shared.tray.isStartingDictation = true
       // Block the composer mic while the shared recorder owns the microphone.
       AppModel.shared.chat.dictationBlocked = true
       Task.detached(priority: .utility) {
-        VoiceLabRuntime.ensureListening()
+        await VoiceLabRuntime.shared.ensureListening()
       }
     }
     state.onRecordingStarted = { [weak self] in
       guard let self else { return }
       self.refreshAssistiveLatch()
       self.showForRecording()
-      AppModel.shared.chat.setDictationPhase(self.sessionWasAssistive ? .recording : .idle)
+      if !AppModel.shared.chat.hasComposerCaptureRequest {
+        AppModel.shared.chat.setDictationPhase(self.sessionWasAssistive ? .recording : .idle)
+      }
       AppModel.shared.tray.isRecording = true
       AppModel.shared.tray.isStartingDictation = false
       AppModel.shared.chat.dictationBlocked = true
     }
+    // The composition root supplies its existing chat before the listener is
+    // attached. Looking up AppModel.shared here re-enters its once initializer.
+    // Standalone overlays have no implicit global composer; delivery and
+    // ownership release still use connectComposer's authenticated session path.
+    if let composer { state.connectComposer(to: composer) }
     state.onRecordingStopped = { [weak self] in
       guard let self else { return }
+      // A pending/newer composer request cannot be released by identity-less
+      // lifecycle paint. Its matching projection releases it via connectComposer.
+      guard !AppModel.shared.chat.hasComposerCaptureRequest else { return }
       self.refreshAssistiveLatch()
       self.markStopped()
       AppModel.shared.tray.isRecording = false
       AppModel.shared.tray.isStartingDictation = false
-      // Unconditional: releases the composer phase, the blocked flag and the
-      // thread-ownership latch in one beat, whatever the lane turned out to be.
-      AppModel.shared.chat.endDictationSession()
-      VoiceLabRuntime.stopOwnedProcess()
+      AppModel.shared.chat.finishDictationCapture(sessionID: nil)
+      Task { await VoiceLabRuntime.shared.stopOwnedProcess() }
+    }
+    // Admission and calibration outcomes are product feedback even when the
+    // transcript overlay preference is off. The typed status is passive; this
+    // seam only brings its already-reduced card on screen.
+    state.onPresentationStatus = { [weak self] in self?.show() }
+    state.onTranscriptPresentationChanged = { [weak self] in
+      self?.resizeForProjectedContent()
     }
     state.onSuccessfulDictation = {
       Task { @MainActor in
@@ -198,6 +252,7 @@ final class OverlayController: ObservableObject {
     let panel = panel ?? panelFactory(state, textScale)
     self.panel = panel
     if let floating = panel as? FloatingOverlayPanel {
+      floating.startPresence()
       floating.onUserMove = { [weak self] in
         guard let self, !Self.isApplyingFrame, let panel = self.panel else { return }
         if self.state.freeMotion {
@@ -205,11 +260,17 @@ final class OverlayController: ObservableObject {
         }
         self.state.userDraggedOverlay()
       }
+      floating.onUserResize = { [weak self] in
+        guard let self, !Self.isApplyingFrame else { return }
+        self.automaticContentSizingEnabled = false
+        self.state.userResizedOverlay()
+      }
     }
     // A pending fade-out must not leave a freshly shown panel invisible.
     panel.alphaValue = 1
     applyPlacement(animated: false)
     orderPanelFront(panel)
+    resizeForProjectedContent()
   }
 
   /// True while we `setFrame` from prefs. AppKit still fires `windowDidMove`
@@ -225,7 +286,10 @@ final class OverlayController: ObservableObject {
     Self.isApplyingFrame = true
     defer { Self.isApplyingFrame = false }
     let screen = NSScreen.main
-    let size = DictationOverlayWindow.clamp(panel.frame.size, to: screen)
+    let clamped = DictationOverlayWindow.clamp(panel.frame.size, to: screen)
+    let size = NSSize(
+      width: clamped.width,
+      height: state.isCollapsed ? DictationOverlayWindow.collapsedHeight : clamped.height)
     let origin: NSPoint?
     if state.freeMotion {
       origin = OverlayPlacement.restoredOrigin(size: size, on: screen) ?? panel.frame.origin
@@ -242,6 +306,40 @@ final class OverlayController: ObservableObject {
     } else {
       panel.setFrame(frame, display: false)
     }
+  }
+
+  /// Grow only: short projections keep the user's/restored resting size, long
+  /// projections reveal more lines until 60% of the visible screen, then the
+  /// native transcript scroll view takes over. Window-frame writes are direct
+  /// and unanimated; content keeps its existing reveal transition instead of
+  /// morphing the glass panel or exporting hosting constraints.
+  private func resizeForProjectedContent() {
+    guard automaticContentSizingEnabled, !state.isCollapsed, let panel else { return }
+    let screen = panel.screen ?? NSScreen.main
+    let targetHeight = OverlayContentSizePolicy.preferredHeight(
+      for: state.activeText,
+      width: panel.frame.width,
+      textScale: textScale.scale,
+      screen: screen
+    )
+    guard targetHeight > panel.frame.height + 0.5 else { return }
+
+    Self.isApplyingFrame = true
+    defer { Self.isApplyingFrame = false }
+    let size = NSSize(width: panel.frame.width, height: targetHeight)
+    let origin: NSPoint
+    if state.freeMotion, let visible = screen?.visibleFrame {
+      origin = OverlayPlacement.clampOrigin(
+        NSPoint(x: panel.frame.minX, y: panel.frame.maxY - targetHeight),
+        size: size,
+        in: visible
+      )
+    } else {
+      origin =
+        OverlayPlacement.origin(for: state.placementAnchor, size: size, on: screen)
+        ?? NSPoint(x: panel.frame.minX, y: panel.frame.maxY - targetHeight)
+    }
+    panel.setFrame(NSRect(origin: origin, size: size), display: true)
   }
 
   func markStopped() {
@@ -278,10 +376,12 @@ final class OverlayController: ObservableObject {
     // which used to write back the old feedback loop's runaway sizes) — and,
     // in free motion, the dragged origin.
     if let panel {
-      DictationOverlayWindow.persist(size: panel.frame.size)
+      DictationOverlayWindow.persist(
+        size: (panel as? FloatingOverlayPanel)?.sizeForPersistence ?? panel.frame.size)
       if state.freeMotion {
         OverlayPlacement.persistOrigin(panel.frame.origin)
       }
+      (panel as? FloatingOverlayPanel)?.invalidatePresence()
     }
     if let panel { orderPanelOut(panel) }
   }
@@ -291,19 +391,32 @@ final class OverlayController: ObservableObject {
   /// of lingering over the conversation it just fed.
   func hideForAgentHandoff() {
     guard let panel, panel.isVisible else { return }
-    DictationOverlayWindow.persist(size: panel.frame.size)
+    DictationOverlayWindow.persist(
+      size: (panel as? FloatingOverlayPanel)?.sizeForPersistence ?? panel.frame.size)
     if state.freeMotion {
       OverlayPlacement.persistOrigin(panel.frame.origin)
     }
-    NSAnimationContext.runAnimationGroup { context in
-      context.duration = 0.18
-      panel.animator().alphaValue = 0
-    } completionHandler: { [weak self] in
-      Task { @MainActor in
-        guard let self, let panel = self.panel else { return }
-        self.orderPanelOut(panel)
-        panel.alphaValue = 1
+    // Bind the completion to the exact panel AND the capture it is fading out.
+    // The panel object is cached and reused, so the old completion re-read
+    // `self.panel` and ordered out whichever window was current — a take that
+    // started inside the 0.18 s fade lost its overlay to its predecessor's
+    // handoff. Alpha is always restored: refusing the order-out while leaving a
+    // reused window at alpha 0 would trade a hidden panel for an invisible one.
+    let fadedPanel = panel
+    let generation = state.captureGeneration
+    runHandoffFade(
+      fadedPanel,
+      { [weak self] in
+        defer { fadedPanel.alphaValue = 1 }
+        guard let self else { return }
+        // Still the live window, but a successor capture owns it now: this fade
+        // has no authority over the take that replaced its own. A panel that is
+        // no longer current is an orphan and is ordered out either way.
+        if self.panel === fadedPanel, self.state.captureGeneration != generation {
+          return
+        }
+        self.orderPanelOut(fadedPanel)
       }
-    }
+    )
   }
 }

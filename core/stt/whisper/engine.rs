@@ -33,10 +33,6 @@ use crate::pipeline::contracts::{
     TranscriptionEngineMode, TranscriptionEngineVerdict, TranscriptionSource, TranscriptionVerdict,
     VadVerdict,
 };
-use crate::pipeline::stream_postprocess::{
-    StreamPostProcessStats, StreamPostProcessor, WHISPER_INITIAL_PROMPT_TOKEN_BUDGET,
-    final_pass_guardrail_reason,
-};
 use crate::safe_path;
 
 use super::embedded::EmbeddedModel;
@@ -56,9 +52,6 @@ fn candle_config(architecture: crate::whisper_weights::WhisperArchitecture) -> C
         suppress_tokens: Vec::new(),
     }
 }
-
-/// Callback for streaming chunk results (called after each chunk is transcribed)
-pub type ChunkCallback<'a> = &'a dyn Fn(&str);
 
 /// Process-lifetime Candle device for Whisper.
 ///
@@ -105,6 +98,12 @@ const RUNAWAY_BUDGET_MARGIN: f32 = 2.0;
 /// Minimum token budget for the runaway watchdog regardless of audio length, so
 /// very short chunks still get enough headroom to emit normal short utterances.
 const RUNAWAY_MIN_BUDGET: usize = 64;
+/// Frozen decoder watchdog value retained as a decoder safety limit, not text
+/// admission.
+const RUNAWAY_MAX_WORDS_PER_SEC: f32 = 5.0;
+/// Prompt capacity is a Whisper decoder constraint, independent of the retired
+/// transcript postprocessor that used to provide prompt contents.
+const WHISPER_INITIAL_PROMPT_TOKEN_BUDGET: usize = 224;
 /// Whisper's marker introducing previous-context tokens. Everything between it
 /// and the decode prefix is treated by the model as prior context, not as text
 /// to transcribe.
@@ -112,12 +111,11 @@ const WHISPER_START_OF_PREVIOUS_TOKEN: &str = "<|startofprev|>";
 
 /// Token budget for the in-loop runaway watchdog given the chunk audio length.
 ///
-/// Derived from the shared words-per-second cap
-/// (`quality_gate::MAX_WORDS_PER_SEC`) times tokens-per-word and a generous
-/// safety margin. When generated tokens exceed this budget the decode loop bails
-/// instead of paying the full O(n^2)/O(n^3) cost of a runaway hallucination.
+/// Derived from the decoder's words-per-second cap times tokens-per-word and a
+/// generous safety margin. When generated tokens exceed this budget the decode
+/// loop stops instead of paying the full O(n^2)/O(n^3) cost of a runaway decode.
 fn runaway_token_budget(audio_sec: f32) -> usize {
-    let raw = (crate::pipeline::streaming::quality_gate::MAX_WORDS_PER_SEC
+    let raw = (RUNAWAY_MAX_WORDS_PER_SEC
         * audio_sec.max(0.0)
         * RUNAWAY_TOKENS_PER_WORD
         * RUNAWAY_BUDGET_MARGIN)
@@ -182,6 +180,7 @@ fn skipped_final_pass(options: FileTranscriptionOptions, reason: &str) -> Option
 /// `final_pass_guardrail_reason` is `Rejected` and the **raw text is kept**;
 /// otherwise the candidate wins as `Changed`. The guardrail is what stops
 /// cleanup from silently rewriting words the model actually heard.
+#[cfg(any())]
 fn finalize_requested_final_pass(
     raw_text: &str,
     candidate_text: String,
@@ -229,115 +228,6 @@ fn finalize_requested_final_pass(
     )
 }
 
-/// Run the requested final pass over a raw transcript.
-///
-/// [`FinalPassMode::None`] returns the raw text untouched.
-/// `EmbeddedLexiconCleanup` runs the stream post-processor; if cleanup empties
-/// the text the result is a `Dropped` verdict with empty output, which the
-/// caller must treat as "no speech" rather than as a transcript.
-fn apply_requested_final_pass(
-    raw: &RawTranscript,
-    options: FileTranscriptionOptions,
-) -> (String, Option<FinalPassVerdict>) {
-    match options.final_pass {
-        FinalPassMode::None => (raw.text.clone(), None),
-        FinalPassMode::EmbeddedLexiconCleanup => {
-            let mut processor = StreamPostProcessor::new();
-            match processor.process_utterance(&raw.text) {
-                Some(text) => {
-                    let stats = processor.stats();
-                    let (text, verdict) = finalize_requested_final_pass(
-                        &raw.text,
-                        text,
-                        FinalPassMode::EmbeddedLexiconCleanup,
-                        stats,
-                    );
-                    (text, Some(verdict))
-                }
-                None => {
-                    let stats = processor.stats();
-                    (
-                        String::new(),
-                        Some(FinalPassVerdict {
-                            mode: FinalPassMode::EmbeddedLexiconCleanup,
-                            disposition: FinalPassDisposition::Dropped,
-                            reason: Some("empty_after_cleanup".to_string()),
-                            lexicon_rewrites: stats.lexicon_rewrites,
-                            repetition_cleanups: stats.repetition_cleanups,
-                        }),
-                    )
-                }
-            }
-        }
-    }
-}
-
-/// Fold a Silero VAD filtering result back into the transcript.
-///
-/// Segments are always replaced, but the **text** is preserved from `raw` when
-/// nothing was actually dropped and the filtered text is merely an equivalent
-/// or a strict subset. Rebuilding text from segments loses punctuation and
-/// casing, so it is only accepted when a real drop justifies it.
-fn apply_silero_filter_outcome(
-    raw: &RawTranscript,
-    filtered_text: String,
-    filtered_segments: Vec<crate::pipeline::contracts::TranscriptSegment>,
-    dropped_count: u32,
-) -> RawTranscript {
-    let mut filtered = raw.clone();
-    let should_preserve_raw_text = dropped_count == 0
-        && (is_text_equivalent(&filtered_text, &raw.text)
-            || is_strict_text_subset(&filtered_text, &raw.text));
-    filtered.text = if should_preserve_raw_text {
-        raw.text.clone()
-    } else {
-        filtered_text
-    };
-    filtered.segments = filtered_segments;
-    filtered
-}
-
-/// Whether `candidate` is a non-empty, strictly smaller fragment of
-/// `full_text` once both are normalized. Equality is deliberately excluded —
-/// that case is [`is_text_equivalent`].
-fn is_strict_text_subset(candidate: &str, full_text: &str) -> bool {
-    let candidate = normalize_transcript_text(candidate);
-    let full_text = normalize_transcript_text(full_text);
-    !candidate.is_empty() && candidate != full_text && full_text.contains(&candidate)
-}
-
-/// Whether two non-empty texts are the same modulo casing, punctuation and
-/// whitespace.
-fn is_text_equivalent(candidate: &str, full_text: &str) -> bool {
-    let candidate = normalize_transcript_text(candidate);
-    let full_text = normalize_transcript_text(full_text);
-    !candidate.is_empty() && candidate == full_text
-}
-
-/// Reduce a transcript to lowercase alphanumeric words joined by single spaces.
-///
-/// Comparison-only helper: it deliberately destroys punctuation and casing so
-/// that two renderings of the same speech compare equal. Never store its output
-/// as a transcript.
-fn normalize_transcript_text(text: &str) -> String {
-    text.split_whitespace()
-        .filter_map(|token| {
-            let mut normalized = String::new();
-            for ch in token.chars() {
-                if ch.is_alphanumeric() {
-                    normalized.extend(ch.to_lowercase());
-                }
-            }
-            if normalized.is_empty() {
-                None
-            } else {
-                Some(normalized)
-            }
-        })
-        .collect::<Vec<_>>()
-        .join(" ")
-}
-
 /// Whether decoder control tokens should be suppressed at this decode step.
 ///
 /// Only before the first generated token: suppressing them later would stop the
@@ -345,6 +235,28 @@ fn normalize_transcript_text(text: &str) -> String {
 /// runaway decode.
 fn should_suppress_decoder_control_tokens(generated_tokens: usize) -> bool {
     generated_tokens == 0
+}
+
+/// Blank suppression is an initial-step constraint, using this tokenizer's
+/// space encoding and end token. Later spaces must remain available to speech.
+fn apply_initial_blank_suppression(
+    logits: &mut [f32],
+    generated_tokens: usize,
+    space_tokens: &[u32],
+    eot_token: u32,
+) {
+    if generated_tokens != 0 {
+        return;
+    }
+    for token in space_tokens
+        .iter()
+        .copied()
+        .chain(std::iter::once(eot_token))
+    {
+        if let Some(logit) = logits.get_mut(token as usize) {
+            *logit = f32::NEG_INFINITY;
+        }
+    }
 }
 
 /// Apply Whisper's timestamp-token constraints to one decoder step.
@@ -449,7 +361,35 @@ pub struct LocalWhisperEngine {
     pub decoding_params: DecodingParams,
 }
 
+struct EngineRequest<'a> {
+    engine: &'a mut LocalWhisperEngine,
+    previous_prompt: Option<String>,
+}
+
+impl Drop for EngineRequest<'_> {
+    fn drop(&mut self) {
+        self.engine.decoding_params.initial_prompt = self.previous_prompt.take();
+        self.engine.clear_execution_cache();
+    }
+}
+
 impl LocalWhisperEngine {
+    /// One cleanup corridor for public file calls and controlled local repair.
+    /// Restores prompt and cache on success, cancellation, error, and unwind.
+    pub(crate) fn with_request<R>(
+        &mut self,
+        initial_prompt: Option<String>,
+        work: impl FnOnce(&mut Self) -> Result<R>,
+    ) -> Result<R> {
+        let previous_prompt =
+            std::mem::replace(&mut self.decoding_params.initial_prompt, initial_prompt);
+        let request = EngineRequest {
+            engine: self,
+            previous_prompt,
+        };
+        work(&mut *request.engine)
+    }
+
     /// Load a model from a directory (development / external models).
     ///
     /// Expects `config.json` plus `weights.safetensors` or `model.safetensors`.
@@ -627,10 +567,11 @@ impl LocalWhisperEngine {
 
     /// Transcribe a file end to end and return the full verdict.
     ///
-    /// The complete path: load and resample the audio, transcribe (chunked for
-    /// long input), apply the Silero VAD filter, then run the requested final
-    /// pass. The returned [`TranscriptionVerdict`] carries both the delivered
-    /// text and the raw text, so a rejected final pass stays auditable.
+    /// The complete path loads and resamples audio, records Silero VAD evidence
+    /// and silence-window guidance, and decodes the original full recording
+    /// (chunked for long input). The returned [`TranscriptionVerdict`] carries
+    /// both the delivered text and the raw text, so a rejected final pass stays
+    /// auditable.
     ///
     /// `language` of `None` triggers detection from the audio itself.
     pub fn transcribe_file_with_language(
@@ -638,6 +579,18 @@ impl LocalWhisperEngine {
         path: &Path,
         language: Option<&str>,
         options: FileTranscriptionOptions,
+    ) -> Result<TranscriptionVerdict> {
+        self.transcribe_file_with_language_observed(path, language, options, &mut |_| Ok(()))
+    }
+
+    /// Observe admitted segments after each window, before decoding the next.
+    /// Streaming and ordinary file calls use the same assembly and verdict.
+    pub fn transcribe_file_with_language_observed(
+        &mut self,
+        path: &Path,
+        language: Option<&str>,
+        options: FileTranscriptionOptions,
+        on_segments: &mut dyn FnMut(&[crate::pipeline::contracts::TranscriptSegment]) -> Result<()>,
     ) -> Result<TranscriptionVerdict> {
         let (samples, sample_rate) =
             audio_loader::load_audio_file(path).context("Failed to load audio file")?;
@@ -668,37 +621,45 @@ impl LocalWhisperEngine {
             no_speech,
             no_speech_reason: stats.no_speech_reason.clone(),
             sparkline: stats.sparkline.clone(),
+            fine_sparkline: stats.fine_sparkline.clone(),
+            fine_hop_ms: (stats.fine_hop_samples * 1000 / 16_000) as u16,
         };
 
+        // Silero is the judge of whether there is anything to decode. Whisper on
+        // audio with no speech (a 0.2 s click, a noise-floor take) hallucinates
+        // a language-model prior ("Thank you.") instead of staying silent
+        // (measured 2026-09-09 on session 05d37129), so an audible-speech
+        // verdict of "none" ends the file pass here with an empty transcript.
+        // Silero never cuts or glues the PCM the decoder sees; it only decides
+        // whether the decoder runs at all.
         if no_speech {
             tracing::info!(
-                "transcribe_file: no speech detected after VAD; returning empty verdict"
+                reason = vad
+                    .no_speech_reason
+                    .as_deref()
+                    .unwrap_or("no_speech_windows"),
+                total_secs = duration_secs,
+                total_windows = stats.total_windows,
+                "file_pass_skipped_no_speech: Silero found no speech; decoder not run"
             );
+            let final_pass = skipped_final_pass(options, "no_speech");
             return Ok(TranscriptionVerdict::from_parts(
                 String::new(),
                 RawTranscript::default(),
                 Some(vad),
                 TranscriptionSource::LocalFinalPass,
                 self.engine_provenance,
-                skipped_final_pass(
-                    options,
-                    stats
-                        .no_speech_reason
-                        .as_deref()
-                        .unwrap_or("vad_no_speech_detected"),
-                ),
+                final_pass,
             ));
         }
 
         tracing::debug!(
-            "transcribe_file: speech detected; preserving full-audio decode path and using VAD as telemetry/no-speech gate only"
+            "transcribe_file: VAD evidence recorded; decoding full audio with silence-aligned windows"
         );
 
-        // Keep file transcription semantically honest: VAD contributes verdict
-        // metadata and an explicit no-speech short-circuit, but the raw STT
-        // result still comes from the full recording. Trimming down to
-        // `speech_samples` changed the behavior of the historical "raw file
-        // transcription" path and regressed canonical transcripts.
+        // VAD contributes verdict evidence and silence-window guidance. It does
+        // not author the raw STT result: decode uses the original full samples,
+        // never `speech_samples`.
         let vad_config = crate::vad::VadConfig::default();
         let silence_spans = silence_spans_from_vad_probabilities(
             &stats.probabilities,
@@ -711,43 +672,21 @@ impl LocalWhisperEngine {
             sample_rate,
             language,
             &silence_spans,
+            on_segments,
+            &crate::stt::LocalExecutionControl::default(),
         )?;
         super::timing::record_inference_ms(inference_started.elapsed().as_millis() as u64);
-        let timeline = crate::vad::classify_windows(&stats.probabilities, &vad_config);
+        let raw_for_final_pass = raw;
+        let text = raw_for_final_pass.text.clone();
+        let final_pass = skipped_final_pass(options, "whole_session_final_pass_retired");
 
-        let (raw_for_final_pass, tail_drop_count) = if raw.segments.is_empty() {
-            (raw.clone(), 0u32)
-        } else {
-            let outcome = crate::stt::whisper::map_whisper_segments_to_silero(
-                &raw.segments,
-                &timeline,
-                &vad_config,
-            );
-            if outcome.dropped_count > 0 {
-                tracing::info!(
-                    target: "tail_silence_filter",
-                    dropped_count = outcome.dropped_count,
-                    dropped_samples = ?outcome.dropped_text_samples,
-                    "Silero dropped Whisper tail segment(s)"
-                );
-            }
-
-            let dropped_count = outcome.dropped_count;
-            let filtered =
-                apply_silero_filter_outcome(&raw, outcome.text, outcome.segments, dropped_count);
-            (filtered, dropped_count)
-        };
-
-        let (text, final_pass) = apply_requested_final_pass(&raw_for_final_pass, options);
-
-        Ok(TranscriptionVerdict::from_parts_with_silero_drops(
+        Ok(TranscriptionVerdict::from_parts(
             text,
             raw_for_final_pass,
             Some(vad),
             TranscriptionSource::LocalFinalPass,
             self.engine_provenance,
             final_pass,
-            tail_drop_count,
         ))
     }
 
@@ -820,15 +759,20 @@ impl LocalWhisperEngine {
             }
         };
 
-        self.transcribe_samples_16k_raw(&samples, language, debug_tokens)
+        self.transcribe_samples_16k_raw(
+            &samples,
+            language,
+            debug_tokens,
+            &crate::stt::LocalExecutionControl::default(),
+        )
     }
 
     /// Transcribe arbitrarily long audio in VAD-aligned, overlapping windows.
     ///
     /// The overlap exists so a word split across a boundary is still heard
     /// whole; [`merge_chunk_transcripts`] then removes the duplicated region by
-    /// segment time, falling back to [`append_with_overlap_dedup`] only when a
-    /// decoder does not provide segments.
+    /// segment time. Non-empty output without timestamped segments is refused
+    /// because text is not replay identity.
     /// Segment timestamps are rebased onto the full recording, `avg_logprob` is
     /// averaged across chunks, and `compression_ratio` reports the **worst**
     /// chunk — one hallucinating window must not be hidden by good neighbours.
@@ -838,7 +782,41 @@ impl LocalWhisperEngine {
         sample_rate: u32,
         language: Option<&str>,
     ) -> Result<RawTranscript> {
+        self.transcribe_long_controlled(
+            audio,
+            sample_rate,
+            language,
+            &crate::stt::LocalExecutionControl::default(),
+        )
+    }
+
+    pub(crate) fn clear_execution_cache(&mut self) {
+        self.model.reset_kv_cache();
+    }
+
+    pub(crate) fn transcribe_long_controlled(
+        &mut self,
+        audio: &[f32],
+        sample_rate: u32,
+        language: Option<&str>,
+        control: &crate::stt::LocalExecutionControl,
+    ) -> Result<RawTranscript> {
+        let result = self.transcribe_long_inner(audio, sample_rate, language, control);
+        self.clear_execution_cache();
+        control.check()?;
+        result
+    }
+
+    fn transcribe_long_inner(
+        &mut self,
+        audio: &[f32],
+        sample_rate: u32,
+        language: Option<&str>,
+        control: &crate::stt::LocalExecutionControl,
+    ) -> Result<RawTranscript> {
+        control.check()?;
         let (_, stats) = crate::vad::extract_speech(audio, sample_rate);
+        control.check()?;
         let silence_spans = silence_spans_from_vad_probabilities(
             &stats.probabilities,
             crate::vad::VadConfig::default().threshold,
@@ -853,6 +831,8 @@ impl LocalWhisperEngine {
             sample_rate,
             language,
             &silence_spans,
+            &mut |_| Ok(()),
+            control,
         )
     }
 
@@ -860,13 +840,20 @@ impl LocalWhisperEngine {
     ///
     /// File transcription passes its existing Silero result here so window
     /// planning does not add a second VAD run to the stop-path budget.
+    ///
+    /// A window that decodes words but no closed timestamp span is retried as
+    /// halves up to `SEGMENTLESS_WINDOW_MAX_SPLITS` times (quarters of the
+    /// planned window) and then refused on its own; the file continues.
     fn transcribe_long_with_language_segments_using_silences(
         &mut self,
         audio: &[f32],
         sample_rate: u32,
         language: Option<&str>,
         silence_spans: &[(f32, f32)],
+        on_segments: &mut dyn FnMut(&[crate::pipeline::contracts::TranscriptSegment]) -> Result<()>,
+        control: &crate::stt::LocalExecutionControl,
     ) -> Result<RawTranscript> {
+        control.check()?;
         let samples = audio_loader::resample_to_16k(audio, sample_rate);
         if samples.is_empty() {
             tracing::debug!("Skipping long transcription: empty audio after resampling");
@@ -880,7 +867,7 @@ impl LocalWhisperEngine {
         let language = match language {
             Some(l) => Some(l),
             None => {
-                detected_lang = self.detect_language_16k(&samples)?;
+                detected_lang = self.detect_language_16k_controlled(&samples, control)?;
                 tracing::info!("Detected language: {}", detected_lang);
                 Some(detected_lang.as_str())
             }
@@ -894,21 +881,75 @@ impl LocalWhisperEngine {
             "planned VAD-aligned long-file decode windows"
         );
 
+        // One file-level log-mel pass (not per window). candle 0.9.2 pads each
+        // call; `file_level_log_mel` slices at 30 s and keeps real hops only.
+        let energy = {
+            let n_mels = self.config.num_mel_bins;
+            let mel_all = file_level_log_mel(&self.config, &samples, &self.mel_filters);
+            Some(super::energy::energy_timeline(&mel_all, n_mels, 10))
+        };
+
         let mut merged = RawTranscript::default();
         let mut covered_until_secs = 0.0_f32;
         let mut logprob_sum = 0.0_f32;
         let mut logprob_count = 0_u32;
         let mut worst_compression = 0.0_f32;
-        let mut any_quality_gate_dropped = false;
+        let mut refused_windows = 0_u32;
 
-        for (start_sec, end_sec) in windows {
+        // Time-ordered work stack: a window whose decode carries words but no
+        // closed timestamp span (a runaway decode never emits the closing
+        // clock token) is re-tried as two halves before it is refused.
+        let mut pending: Vec<(f32, f32, u8)> = windows
+            .into_iter()
+            .rev()
+            .map(|(start_sec, end_sec)| (start_sec, end_sec, 0_u8))
+            .collect();
+
+        while let Some((start_sec, end_sec, splits)) = pending.pop() {
+            control.checkpoint(crate::stt::LocalExecutionBoundary::Window)?;
             let start = ((start_sec * 16_000.0).round() as usize).min(samples.len());
             let end = ((end_sec * 16_000.0).round() as usize).min(samples.len());
             if end <= start {
                 continue;
             }
             let chunk = &samples[start..end];
-            let mut transcript = self.transcribe_samples_16k_raw(chunk, language, debug_tokens)?;
+            let mut transcript =
+                self.transcribe_samples_16k_raw(chunk, language, debug_tokens, control)?;
+
+            // `merge_chunk_transcripts` refuses words without timestamp
+            // provenance by contract. That refusal is the WINDOW's verdict,
+            // not the file's: retry shorter, then drop the window and keep
+            // `covered_until_secs` where it was so the neighbour's overlap
+            // re-describes as much of the hole as it can.
+            if transcript.segments.is_empty() && !transcript.text.trim().is_empty() {
+                let window_chars = transcript.text.chars().count();
+                if splits < SEGMENTLESS_WINDOW_MAX_SPLITS
+                    && end_sec - start_sec >= SEGMENTLESS_WINDOW_MIN_SPLIT_SECS
+                {
+                    let mid_sec = (start_sec + end_sec) / 2.0;
+                    tracing::warn!(
+                        window_start = start_sec,
+                        window_end = end_sec,
+                        chars = window_chars,
+                        split = splits + 1,
+                        "long-file window decoded words without a closed timestamp span; \
+                         retrying as two halves"
+                    );
+                    pending.push((mid_sec, end_sec, splits + 1));
+                    pending.push((start_sec, mid_sec, splits + 1));
+                    continue;
+                }
+                refused_windows += 1;
+                tracing::warn!(
+                    window_start = start_sec,
+                    window_end = end_sec,
+                    chars = window_chars,
+                    refused_windows,
+                    "long-file window refused: words without timestamp provenance \
+                     after retries; this span is missing from the transcript"
+                );
+                continue;
+            }
 
             if let Some(lp) = transcript.avg_logprob {
                 logprob_sum += lp;
@@ -919,10 +960,6 @@ impl LocalWhisperEngine {
             {
                 worst_compression = cr;
             }
-            if transcript.quality_gate_dropped {
-                any_quality_gate_dropped = true;
-            }
-
             if !transcript.segments.is_empty() {
                 let offset_sec = start as f32 / 16_000.0;
                 transcript.segments.iter_mut().for_each(|segment| {
@@ -932,12 +969,33 @@ impl LocalWhisperEngine {
             }
 
             let overlap_end_secs = covered_until_secs.max(start_sec);
-            merge_chunk_transcripts(&mut merged, transcript, overlap_end_secs);
+            let window_segments = transcript.segments.len();
+            let window_chars = transcript.text.chars().count();
+            let prior_segments = merged.segments.len();
+            merge_chunk_transcripts(&mut merged, transcript, overlap_end_secs).with_context(
+                || {
+                    format!(
+                        "long-file window {start_sec:.2}-{end_sec:.2}s \
+                         (overlap_end {overlap_end_secs:.2}s, {window_segments} segments, \
+                         {window_chars} chars)"
+                    )
+                },
+            )?;
+            on_segments(&merged.segments[prior_segments..])?;
             covered_until_secs = covered_until_secs.max(end_sec);
         }
 
+        if refused_windows > 0 {
+            tracing::warn!(
+                refused_windows,
+                total_secs,
+                "long-file transcript assembled with refused windows; \
+                 the missing spans are logged above"
+            );
+        }
+
         Ok(RawTranscript {
-            text: dedup_repetitions(merged.text.trim()),
+            text: merged.text.trim().to_string(),
             segments: merged.segments,
             avg_logprob: if logprob_count > 0 {
                 Some(logprob_sum / logprob_count as f32)
@@ -949,7 +1007,7 @@ impl LocalWhisperEngine {
             } else {
                 None
             },
-            quality_gate_dropped: any_quality_gate_dropped,
+            energy,
         })
     }
 
@@ -965,67 +1023,6 @@ impl LocalWhisperEngine {
             .text)
     }
 
-    /// Transcribe long audio with streaming callback
-    /// Callback is called after each chunk with cumulative transcription so far
-    pub fn transcribe_long_streaming(
-        &mut self,
-        audio: &[f32],
-        sample_rate: u32,
-        language: Option<&str>,
-        on_chunk: Option<ChunkCallback>,
-    ) -> Result<String> {
-        let samples = audio_loader::resample_to_16k(audio, sample_rate);
-        let debug_tokens = env::var("CODESCRIBE_DEBUG_TOKENS")
-            .map(|v| v != "0" && v.to_lowercase() != "false")
-            .unwrap_or(false);
-
-        let detected_lang;
-        let language = match language {
-            Some(l) => Some(l),
-            None => {
-                detected_lang = self.detect_language_16k(&samples)?;
-                tracing::info!("Detected language: {}", detected_lang);
-                Some(detected_lang.as_str())
-            }
-        };
-
-        let chunk_samples = 16_000usize * 25; // 25 seconds
-        let overlap = 16_000usize * 5; // 5 seconds overlap
-        ensure!(chunk_samples > overlap, "chunk_samples must be > overlap");
-        let step = chunk_samples - overlap;
-
-        let total_chunks = (samples.len().saturating_sub(1) / step) + 1;
-        let mut out = String::new();
-        let mut offset = 0usize;
-        let mut chunk_num = 0usize;
-
-        while offset < samples.len() {
-            chunk_num += 1;
-            let end = (offset + chunk_samples).min(samples.len());
-            let chunk = &samples[offset..end];
-
-            tracing::debug!(
-                "Processing chunk {}/{} ({} samples)",
-                chunk_num,
-                total_chunks,
-                chunk.len()
-            );
-
-            let text = self.transcribe_samples_16k(chunk, language, debug_tokens)?;
-            append_with_overlap_dedup(&mut out, &text);
-
-            // Call streaming callback with cumulative result
-            if let Some(ref callback) = on_chunk {
-                callback(out.trim());
-            }
-
-            offset = offset.saturating_add(step);
-        }
-
-        // Apply word/phrase-level repetition deduplication before returning
-        Ok(dedup_repetitions(out.trim()))
-    }
-
     /// Detect the spoken language of in-memory audio, resampling to 16 kHz
     /// first.
     pub fn detect_language(&mut self, audio: &[f32], sample_rate: u32) -> Result<String> {
@@ -1039,6 +1036,18 @@ impl LocalWhisperEngine {
     /// scoring language token, so detection costs one step rather than a full
     /// decode.
     fn detect_language_16k(&mut self, samples_16k: &[f32]) -> Result<String> {
+        self.detect_language_16k_controlled(
+            samples_16k,
+            &crate::stt::LocalExecutionControl::default(),
+        )
+    }
+
+    fn detect_language_16k_controlled(
+        &mut self,
+        samples_16k: &[f32],
+        control: &crate::stt::LocalExecutionControl,
+    ) -> Result<String> {
+        control.check()?;
         let max_samples = 16_000usize * 30;
         let samples = &samples_16k[..samples_16k.len().min(max_samples)];
         ensure!(!samples.is_empty(), "audio is empty");
@@ -1057,7 +1066,9 @@ impl LocalWhisperEngine {
             &self.device,
         )?;
 
+        control.check()?;
         let encoder_output = self.model.encoder.forward(&mel, true)?;
+        control.check()?;
 
         let start_token = self
             .tokenizer
@@ -1073,6 +1084,7 @@ impl LocalWhisperEngine {
         let (_b, seq_len, _vocab) = logits.dims3()?;
         let last_logits = logits.i((.., seq_len - 1, ..))?.squeeze(0)?;
         let logits_vec = last_logits.to_vec1::<f32>()?;
+        control.check()?;
 
         let candidates =
             crate::whisper_weights::language_token_candidates(&self.tokenizer, logits_vec.len());
@@ -1098,28 +1110,14 @@ impl LocalWhisperEngine {
         Ok(best_lang)
     }
 
-    /// Text-only wrapper over [`Self::transcribe_samples_16k_raw`].
-    fn transcribe_samples_16k(
-        &mut self,
-        samples_16k: &[f32],
-        language: Option<&str>,
-        debug_tokens: bool,
-    ) -> Result<String> {
-        Ok(self
-            .transcribe_samples_16k_raw(samples_16k, language, debug_tokens)?
-            .text)
-    }
-
     /// The decode loop: mel spectrogram, encoder pass, then greedy decoding of
     /// one audio window into text, segments and quality signals.
     ///
-    /// Three guards run inside the loop and are the reason this function is not
-    /// a thin wrapper over the model:
+    /// Decoder safeguards and diagnostics remain explicit inside the loop:
     /// - a runaway watchdog ([`runaway_token_budget`]) bails before a
     ///   hallucination costs the full quadratic decode,
-    /// - [`NgramBlocker`] suppresses repeated n-grams incrementally,
-    /// - the quality gate ([`should_drop_for_quality_gate`]) can discard a
-    ///   window whose logprob and compression ratio both look pathological.
+    /// - avg-logprob and compression-ratio diagnostics remain attached to the
+    ///   decoded observation for downstream inspection.
     ///
     /// `debug_tokens` logs the raw token stream for diagnosis.
     fn transcribe_samples_16k_raw(
@@ -1127,7 +1125,9 @@ impl LocalWhisperEngine {
         samples_16k: &[f32],
         language: Option<&str>,
         debug_tokens: bool,
+        control: &crate::stt::LocalExecutionControl,
     ) -> Result<RawTranscript> {
+        control.check()?;
         ensure!(!samples_16k.is_empty(), "audio is empty");
 
         self.model.reset_kv_cache();
@@ -1157,6 +1157,15 @@ impl LocalWhisperEngine {
         let nospeech_token = self.tokenizer.token_to_id("<|nospeech|>");
         let no_timestamps_token = self.tokenizer.token_to_id("<|notimestamps|>");
         let start_of_previous_token = self.tokenizer.token_to_id(WHISPER_START_OF_PREVIOUS_TOKEN);
+        let space_tokens = if self.decoding_params.suppress_blank {
+            self.tokenizer
+                .encode(" ", false)
+                .map_err(|error| anyhow!("Tokenizer space encoding failed: {error}"))?
+                .get_ids()
+                .to_vec()
+        } else {
+            Vec::new()
+        };
 
         // Initial tokens: <|startoftranscript|> <|lang|>? <|transcribe|> <|notimestamps|>
         let mut tokens = vec![start_token];
@@ -1212,27 +1221,26 @@ impl LocalWhisperEngine {
         let mut all_tokens = Vec::new();
 
         // Run encoder once
+        control.check()?;
         let encoder_output = self.model.encoder.forward(&mel, true)?;
+        control.check()?;
 
         // Decoder loop – allow up to the configured maximum target positions minus initial tokens
         let max_new_tokens = self
             .config
             .max_target_positions
             .saturating_sub(tokens.len());
-        let ngram_size = self.decoding_params.no_repeat_ngram_size;
-        let mut ngram_blocker = NgramBlocker::new(ngram_size);
 
         // Runaway watchdog: cap generated tokens at a generous multiple of the
         // plausible word rate for this chunk's audio length, so a hallucinating
         // decode bails early instead of grinding to max_new_tokens at O(n^2) cost.
         let audio_sec = samples_16k.len() as f32 / whisper::SAMPLE_RATE as f32;
         let runaway_budget = runaway_token_budget(audio_sec);
-        let mut runaway_tripped = false;
-
         let mut sum_logprob = 0.0f32;
         let mut token_count = 0usize;
 
         for step in 0..max_new_tokens {
+            control.checkpoint(crate::stt::LocalExecutionBoundary::Token)?;
             if all_tokens.len() >= runaway_budget {
                 tracing::warn!(
                     "Runaway watchdog tripped: {} tokens for {:.2}s audio (budget {})",
@@ -1240,7 +1248,6 @@ impl LocalWhisperEngine {
                     audio_sec,
                     runaway_budget
                 );
-                runaway_tripped = true;
                 break;
             }
             let token_tensor = Tensor::new(tokens.as_slice(), &self.device)?.unsqueeze(0)?;
@@ -1254,46 +1261,15 @@ impl LocalWhisperEngine {
             let (_b, seq_len, _vocab) = logits.dims3()?;
             let last_logits = logits.i((.., seq_len - 1, ..))?.squeeze(0)?;
             let mut logits_vec = last_logits.to_vec1::<f32>()?;
+            control.check()?;
 
-            // 3. No-Speech Threshold (no_speech_threshold)
-            if step == 0
-                && let Some(nos) = nospeech_token
-            {
-                let nos_idx = nos as usize;
-                if nos_idx < logits_vec.len() {
-                    // Compute softmax probability for nospeech only
-                    let max_val = logits_vec.iter().cloned().fold(f32::NEG_INFINITY, f32::max);
-                    let exp_sum: f32 = logits_vec.iter().map(|&x| (x - max_val).exp()).sum();
-                    let nos_prob = (logits_vec[nos_idx] - max_val).exp() / exp_sum;
-
-                    if nos_prob > self.decoding_params.no_speech_threshold {
-                        tracing::debug!("No speech detected (prob={:.3})", nos_prob);
-                        return Ok(RawTranscript::default()); // Return empty for silence
-                    }
-                }
-            }
-
-            // 2. Suppress Blank (suppress_blank)
-            if self.decoding_params.suppress_blank && all_tokens.len() < 4 {
-                // Block common blank tokens (space, empty, etc.)
-                // Token IDs depend on tokenizer - check whisper tokenizer
-                let blank_tokens = [220, 50256];
-                for &tok in &blank_tokens {
-                    if tok < logits_vec.len() {
-                        logits_vec[tok] = f32::NEG_INFINITY;
-                    }
-                }
-            }
-
-            // Apply no_repeat_ngram blocking (faster-whisper style).
-            // Block tokens that would create a repeated n-gram. Uses an
-            // incremental lookup (see NgramBlocker) instead of a full O(n) scan
-            // of all_tokens per step.
-            for &blocked_token in ngram_blocker.blocked_tokens(&all_tokens) {
-                let idx = blocked_token as usize;
-                if idx < logits_vec.len() {
-                    logits_vec[idx] = f32::NEG_INFINITY;
-                }
+            if self.decoding_params.suppress_blank {
+                apply_initial_blank_suppression(
+                    &mut logits_vec,
+                    all_tokens.len(),
+                    &space_tokens,
+                    eot_token,
+                );
             }
 
             if timestamps_enabled && let Some(range) = self.ts_range.as_ref() {
@@ -1388,18 +1364,6 @@ impl LocalWhisperEngine {
 
             tokens.push(best_token);
             all_tokens.push(best_token);
-            ngram_blocker.observe(&all_tokens);
-        }
-
-        // Runaway decode: drop the transcript rather than emit a hallucinated
-        // wall of text. Mirrors the post-hoc quality gate's dropped contract.
-        if runaway_tripped {
-            let avg_logprob = (token_count > 0).then(|| sum_logprob / token_count as f32);
-            return Ok(RawTranscript {
-                avg_logprob,
-                quality_gate_dropped: true,
-                ..Default::default()
-            });
         }
 
         let (text, segments) = if timestamps_enabled {
@@ -1429,185 +1393,67 @@ impl LocalWhisperEngine {
             None
         };
 
-        // 4. Compression Ratio Threshold - apply dedup if ratio too high
-        let mut final_text = text;
-        let mut final_segments = segments;
-        let mut final_ratio = compression_ratio(&final_text);
+        // 4. Compression Ratio Threshold - diagnostic evidence only
+        let final_ratio = compression_ratio(&text);
         if final_ratio > self.decoding_params.compression_ratio_threshold {
             tracing::warn!(
-                "High compression ratio ({:.2}) - applying dedup cleanup",
+                threshold = self.decoding_params.compression_ratio_threshold,
+                "High compression ratio ({:.2}); preserving decoded transcript for occurrence-authority adjudication",
                 final_ratio
             );
-
-            // Apply word/phrase deduplication to reduce repetitions
-            let cleaned = dedup_repetitions(&final_text).trim().to_string();
-            let new_ratio = compression_ratio(&cleaned);
-
-            if new_ratio > self.decoding_params.compression_ratio_threshold {
-                tracing::warn!("Still high after dedup ({:.2})", new_ratio);
-            } else {
-                tracing::debug!(
-                    "Compression ratio improved: {:.2} -> {:.2}",
-                    final_ratio,
-                    new_ratio
-                );
-            }
-            final_text = cleaned;
-            final_segments = Vec::new();
-            final_ratio = new_ratio;
         }
 
-        if should_drop_for_quality_gate(avg_logprob, final_ratio, &self.decoding_params) {
-            tracing::warn!(
-                "Quality gate dropped transcript (avg_logprob={:?}, compression_ratio={:.2})",
-                avg_logprob,
-                final_ratio
-            );
+        if text.is_empty() {
             return Ok(RawTranscript {
                 avg_logprob,
                 compression_ratio: Some(final_ratio),
-                quality_gate_dropped: true,
-                ..Default::default()
-            });
-        }
-
-        if final_text.is_empty() {
-            return Ok(RawTranscript {
-                avg_logprob,
-                compression_ratio: Some(final_ratio),
+                energy: None,
                 ..Default::default()
             });
         }
 
         Ok(RawTranscript {
-            text: final_text,
-            segments: final_segments,
+            text,
+            segments,
             avg_logprob,
             compression_ratio: Some(final_ratio),
-            quality_gate_dropped: false,
+            energy: None,
         })
     }
 }
 
-/// Normalize a word for overlap comparison: lowercase, alphanumerics only.
+/// File-level log-mel in 30 s slices, concatenated on the frame axis.
 ///
-/// Falls back to the lowercased original when stripping would leave nothing, so
-/// a purely punctuation token still compares as itself instead of matching
-/// every other punctuation token.
-fn normalize_token_for_overlap(token: &str) -> String {
-    let mut out = String::new();
-    for ch in token.chars() {
-        if ch.is_alphanumeric() {
-            out.extend(ch.to_lowercase());
+/// candle-transformers 0.9.2 log-mel conversion does not truncate to 30 s. It pads
+/// `n_len` up to a multiple of 1500 frames (15 s) and then adds another 1500
+/// frames. A single call on a long file would therefore emit a longer timeline
+/// than the audio. Slicing at `N_SAMPLES` and keeping `chunk.len() / HOP_LENGTH`
+/// frames per slice keeps `frames.len() ≈ samples.len() / 160`.
+fn file_level_log_mel(config: &Config, samples: &[f32], mel_filters: &[f32]) -> Vec<f32> {
+    let n_mels = config.num_mel_bins;
+    if n_mels == 0 || samples.is_empty() {
+        return Vec::new();
+    }
+    let hop = whisper::HOP_LENGTH;
+    let mut bins: Vec<Vec<f32>> = vec![Vec::new(); n_mels];
+    for chunk in samples.chunks(whisper::N_SAMPLES) {
+        let padded = whisper::audio::pcm_to_mel(config, chunk, mel_filters);
+        let padded_frames = padded.len() / n_mels;
+        if padded_frames == 0 {
+            continue;
+        }
+        let take = (chunk.len() / hop).min(padded_frames);
+        for (bin, dest) in bins.iter_mut().enumerate() {
+            let start = bin * padded_frames;
+            dest.extend_from_slice(&padded[start..start + take]);
         }
     }
-    if out.is_empty() {
-        token.to_lowercase()
-    } else {
-        out
+    let n_frames = bins[0].len();
+    let mut out = Vec::with_capacity(n_mels.saturating_mul(n_frames));
+    for dest in bins {
+        out.extend(dest);
     }
-}
-
-/// Word-level edit distance for short sequences (used by fuzzy overlap)
-fn word_edit_distance(a: &[String], b: &[String]) -> usize {
-    let m = a.len();
-    let n = b.len();
-    let mut prev: Vec<usize> = (0..=n).collect();
-    let mut cur = vec![0usize; n + 1];
-
-    for i in 1..=m {
-        cur[0] = i;
-        for j in 1..=n {
-            let cost = if a[i - 1] == b[j - 1] { 0 } else { 1 };
-            cur[j] = (prev[j] + 1).min(cur[j - 1] + 1).min(prev[j - 1] + cost);
-        }
-        prev.clone_from(&cur);
-    }
-    prev[n]
-}
-
-/// Helper for deduplication at chunk boundaries.
-///
-/// Two-pass approach:
-/// 1. Exact match (fast path) — suffix of `out` == prefix of `segment`
-/// 2. Fuzzy match (fallback) — allows up to k/3 word-level edits in overlap region
-///    Catches cases where Whisper produces slightly different text for the same audio
-pub fn append_with_overlap_dedup(out: &mut String, segment: &str) {
-    let seg = segment.trim();
-    if seg.is_empty() {
-        return;
-    }
-
-    if out.trim().is_empty() {
-        out.push_str(seg);
-        return;
-    }
-
-    let out_trim = out.trim_end();
-    let out_words: Vec<&str> = out_trim.split_whitespace().collect();
-    let seg_words: Vec<&str> = seg.split_whitespace().collect();
-    if out_words.is_empty() || seg_words.is_empty() {
-        if !out.ends_with(' ') {
-            out.push(' ');
-        }
-        out.push_str(seg);
-        return;
-    }
-
-    let out_norm: Vec<String> = out_words
-        .iter()
-        .map(|word| normalize_token_for_overlap(word))
-        .collect();
-    let seg_norm: Vec<String> = seg_words
-        .iter()
-        .map(|word| normalize_token_for_overlap(word))
-        .collect();
-
-    let max_overlap = out_words.len().min(seg_words.len()).min(30);
-    let mut overlap = 0usize;
-
-    // Pass 1: exact match (fast path)
-    for k in (1..=max_overlap).rev() {
-        if out_norm[out_norm.len() - k..] == seg_norm[..k] {
-            overlap = k;
-            break;
-        }
-    }
-
-    // Pass 2: fuzzy match — allow up to k/3 word edits (min 1)
-    if overlap == 0 {
-        for k in (3..=max_overlap).rev() {
-            let tail = &out_norm[out_norm.len() - k..];
-            let head = &seg_norm[..k];
-            let max_errors = (k / 3).max(1);
-            let dist = word_edit_distance(tail, head);
-            if dist <= max_errors {
-                overlap = k;
-                tracing::debug!(
-                    "[FUZZY_DEDUP] matched k={} dist={} max_err={} tail={:?} head={:?}",
-                    k,
-                    dist,
-                    max_errors,
-                    &tail[..tail.len().min(5)],
-                    &head[..head.len().min(5)]
-                );
-                break;
-            }
-        }
-    }
-
-    if !out.ends_with(' ') {
-        out.push(' ');
-    }
-
-    if overlap >= seg_words.len() {
-        return;
-    }
-    if overlap > 0 {
-        out.push_str(&seg_words[overlap..].join(" "));
-    } else {
-        out.push_str(seg);
-    }
+    out
 }
 
 /// Load mel filters from an `.npz` on disk, opened through `safe_path`.
@@ -1653,76 +1499,10 @@ fn load_mel_filters_from_reader<R: Read + std::io::Seek>(
     Ok(data)
 }
 
-/// Incremental no-repeat n-gram blocker.
-///
-/// Replaces the per-step O(n) full scan of `all_tokens` (which made the decode
-/// loop O(n^2) in blocking cost) with an O(1)-amortized map from each completed
-/// `(ngram_size - 1)`-gram to the set of tokens that have followed it. After
-/// every emitted token the new trailing window is recorded; before each step the
-/// current tail's `(ngram_size - 1)`-gram is looked up to find tokens to block.
-///
-/// Behavior is identical to the previous full-scan: it blocks exactly the tokens
-/// that ever followed the current `(ngram_size - 1)`-gram tail elsewhere in the
-/// generated sequence. `ngram_size == 0` disables blocking; sequences shorter
-/// than `ngram_size` produce no blocks.
-struct NgramBlocker {
-    ngram_size: usize,
-    // (n-1)-gram window -> tokens observed immediately after it.
-    seen: HashMap<Vec<u32>, Vec<u32>>,
-    emitted: usize,
-}
-
-impl NgramBlocker {
-    /// Create a blocker for `ngram_size`; `0` disables blocking entirely.
-    fn new(ngram_size: usize) -> Self {
-        Self {
-            ngram_size,
-            seen: HashMap::new(),
-            emitted: 0,
-        }
-    }
-
-    /// Tokens to block given the full generated sequence so far. Mirrors the
-    /// prefix = last (n-1) tokens lookup of the original scan.
-    fn blocked_tokens(&self, all_tokens: &[u32]) -> &[u32] {
-        if self.ngram_size == 0 || all_tokens.len() < self.ngram_size {
-            return &[];
-        }
-        let prefix = &all_tokens[all_tokens.len() + 1 - self.ngram_size..];
-        self.seen.get(prefix).map(Vec::as_slice).unwrap_or(&[])
-    }
-
-    /// Record the newly completed (n-1)-gram windows after `all_tokens` grew by
-    /// one. Must be called after each push to `all_tokens`.
-    fn observe(&mut self, all_tokens: &[u32]) {
-        // A successor at position `len-1` completes the window
-        // all_tokens[len-1-(n-1) .. len-1] -> all_tokens[len-1].
-        if self.ngram_size == 0 {
-            self.emitted = all_tokens.len();
-            return;
-        }
-        // Catch up if observe was skipped (defensive; loop calls every push).
-        let win = self.ngram_size - 1;
-        while self.emitted < all_tokens.len() {
-            let succ_pos = self.emitted;
-            if succ_pos >= win {
-                let key = all_tokens[succ_pos - win..succ_pos].to_vec();
-                let succ = all_tokens[succ_pos];
-                let entry = self.seen.entry(key).or_default();
-                if !entry.contains(&succ) {
-                    entry.push(succ);
-                }
-            }
-            self.emitted += 1;
-        }
-    }
-}
-
 /// Ratio of raw length to gzip-compressed length.
 ///
 /// A hallucinated loop compresses far better than natural speech, so a high
-/// ratio is the repetition signal half of the quality gate. Empty text yields
-/// `0.0`.
+/// ratio is useful diagnostic evidence for repetition. Empty text yields `0.0`.
 fn compression_ratio(text: &str) -> f32 {
     let original_len = text.len();
     if original_len == 0 {
@@ -1734,22 +1514,6 @@ fn compression_ratio(text: &str) -> f32 {
     let compressed = encoder.finish().unwrap_or_default();
 
     original_len as f32 / compressed.len() as f32
-}
-
-/// Whether a decoded window should be discarded as hallucinated.
-///
-/// Requires **both** signals: low confidence (`avg_logprob` under threshold)
-/// and high repetition (`compression_ratio` over threshold). Either alone is
-/// common in legitimate speech — quiet audio scores low, a chant compresses
-/// well — so demanding both is what keeps the gate from eating real words.
-fn should_drop_for_quality_gate(
-    avg_logprob: Option<f32>,
-    compression_ratio: f32,
-    params: &DecodingParams,
-) -> bool {
-    let low_logprob = avg_logprob.is_some_and(|avg| avg < params.logprob_threshold);
-    let high_compression = compression_ratio > params.compression_ratio_threshold;
-    low_logprob && high_compression
 }
 
 /// Build a VarBuilder from verified unquantized tensors.
@@ -2081,189 +1845,10 @@ mod model_payload_tests {
     }
 }
 
-// ═══════════════════════════════════════════════════════════════════════════════
-// Repetition Deduplication (Word and Phrase Level)
-// ═══════════════════════════════════════════════════════════════════════════════
-
-/// Normalize word for comparison: lowercase + strip trailing punctuation
-fn normalize_for_compare(word: &str) -> String {
-    word.trim_end_matches(|c: char| c.is_ascii_punctuation())
-        .to_lowercase()
-}
-
-/// Check if two words are equivalent (ignoring case and trailing punctuation)
-fn words_equivalent(a: &str, b: &str) -> bool {
-    normalize_for_compare(a) == normalize_for_compare(b)
-}
-
-/// Remove consecutive repeated words: "test test test value" -> "test value"
-/// Case-insensitive comparison, ignores trailing punctuation.
-/// Preserves original form of first occurrence.
-pub fn dedup_repeated_words(text: &str) -> String {
-    let words: Vec<&str> = text.split_whitespace().collect();
-    if words.len() < 2 {
-        return text.to_string();
-    }
-
-    let mut result: Vec<&str> = Vec::with_capacity(words.len());
-    let mut i = 0;
-
-    while i < words.len() {
-        result.push(words[i]);
-        // Skip consecutive duplicates (case-insensitive, punctuation-tolerant)
-        while i + 1 < words.len() && words_equivalent(words[i], words[i + 1]) {
-            i += 1;
-        }
-        i += 1;
-    }
-
-    result.join(" ")
-}
-
-/// Remove repeated 2-4 word phrases: "w tej chwili w tej chwili zajmuje" -> "w tej chwili zajmuje"
-pub fn dedup_repeated_phrases(text: &str) -> String {
-    let words: Vec<&str> = text.split_whitespace().collect();
-    if words.len() < 4 {
-        return text.to_string();
-    }
-
-    let mut result: Vec<&str> = Vec::with_capacity(words.len());
-    let mut i = 0;
-
-    while i < words.len() {
-        // Try phrase lengths 4, 3, 2 (longest first)
-        let mut skipped = false;
-        for phrase_len in (2..=4).rev() {
-            if i + phrase_len * 2 <= words.len() {
-                let phrase1 = &words[i..i + phrase_len];
-                let phrase2 = &words[i + phrase_len..i + phrase_len * 2];
-
-                // Case-insensitive, punctuation-tolerant phrase comparison
-                let matches = phrase1
-                    .iter()
-                    .zip(phrase2.iter())
-                    .all(|(a, b)| words_equivalent(a, b));
-
-                if matches {
-                    // Add phrase once, skip the duplicate
-                    result.extend_from_slice(phrase1);
-                    i += phrase_len * 2;
-                    // Continue checking for more repetitions of same phrase
-                    while i + phrase_len <= words.len() {
-                        let next = &words[i..i + phrase_len];
-                        let still_matches = phrase1
-                            .iter()
-                            .zip(next.iter())
-                            .all(|(a, b)| words_equivalent(a, b));
-                        if still_matches {
-                            i += phrase_len;
-                        } else {
-                            break;
-                        }
-                    }
-                    skipped = true;
-                    break;
-                }
-            }
-        }
-
-        if !skipped {
-            result.push(words[i]);
-            i += 1;
-        }
-    }
-
-    result.join(" ")
-}
-
-/// Apply both word and phrase deduplication
-pub fn dedup_repetitions(text: &str) -> String {
-    let pass1 = dedup_repeated_phrases(text);
-    dedup_repeated_words(&pass1)
-}
-
-/// Dedup helpers, n-gram parity, quality gate, Silero filter, and final-pass tests.
+/// Decoder diagnostics, Silero filter, and final-pass tests.
 #[cfg(test)]
 mod dedup_tests {
     use super::*;
-
-    /// Adjacent identical words collapse to a single occurrence.
-    #[test]
-    fn test_dedup_repeated_words() {
-        assert_eq!(
-            dedup_repeated_words("zaimplementowane. zaimplementowane i w idei"),
-            "zaimplementowane. i w idei"
-        );
-        assert_eq!(dedup_repeated_words("test test test value"), "test value");
-        assert_eq!(
-            dedup_repeated_words("no repetition here"),
-            "no repetition here"
-        );
-    }
-
-    /// Adjacent repeated multi-word phrases collapse once, punctuation-tolerant.
-    #[test]
-    fn test_dedup_repeated_phrases() {
-        assert_eq!(
-            dedup_repeated_phrases("56 GB. 56 GB. który zajmuje"),
-            "56 GB. który zajmuje"
-        );
-        assert_eq!(
-            dedup_repeated_phrases("w tej chwili w tej chwili zajmuje"),
-            "w tej chwili zajmuje"
-        );
-    }
-
-    /// Phrase pass then word pass removes both kinds of Whisper stutter.
-    #[test]
-    fn test_dedup_repetitions_combined() {
-        let input = "który zajmuje który zajmuje 56 GB. 56 GB. test test";
-        let expected = "który zajmuje 56 GB. test";
-        assert_eq!(dedup_repetitions(input), expected);
-    }
-
-    /// Reference implementation: the original full-scan n-gram block, used only
-    /// to prove the incremental NgramBlocker produces an identical block set.
-    fn reference_blocked(ngram_size: usize, all_tokens: &[u32]) -> Vec<u32> {
-        let mut blocked = Vec::new();
-        if ngram_size > 0 && all_tokens.len() >= ngram_size {
-            let prefix_start = all_tokens.len() + 1 - ngram_size;
-            let prefix = &all_tokens[prefix_start..];
-            let search_end = all_tokens.len() - ngram_size + 1;
-            for i in 0..search_end {
-                if all_tokens[i..i + ngram_size - 1] == *prefix {
-                    blocked.push(all_tokens[i + ngram_size - 1]);
-                }
-            }
-        }
-        blocked
-    }
-
-    /// Step through `seq` and assert incremental blocker matches full-scan blocks.
-    fn assert_ngram_parity(ngram_size: usize, seq: &[u32]) {
-        let mut blocker = NgramBlocker::new(ngram_size);
-        let mut all: Vec<u32> = Vec::new();
-        for &t in seq {
-            // Lookup happens against the sequence as it stood before pushing t.
-            // Compare as sets: blocking a token is idempotent, so duplicate
-            // hits in the reference scan and the deduped incremental list have
-            // identical effect on the logits.
-            let mut inc: Vec<u32> = blocker.blocked_tokens(&all).to_vec();
-            let mut refr = reference_blocked(ngram_size, &all);
-            inc.sort_unstable();
-            inc.dedup();
-            refr.sort_unstable();
-            refr.dedup();
-            assert_eq!(
-                inc,
-                refr,
-                "block-set mismatch (n={ngram_size}) at len {}: inc={inc:?} ref={refr:?}",
-                all.len()
-            );
-            all.push(t);
-            blocker.observe(&all);
-        }
-    }
 
     /// Token budget floors short audio and stops a runaway before max_new_tokens.
     #[test]
@@ -2366,109 +1951,6 @@ mod dedup_tests {
         assert!(!prompt_token_ids_fit_vocab(&[5], 4));
     }
 
-    /// Incremental n-gram blocker matches full-scan blocks across sizes and edges.
-    #[test]
-    fn ngram_block_parity() {
-        // Repetition-heavy synthetic sequence exercises the block path.
-        let seq = [5u32, 6, 7, 5, 6, 7, 5, 6, 7, 8, 9, 8, 9, 8, 9, 8];
-        for n in [0usize, 1, 2, 3, 5] {
-            assert_ngram_parity(n, &seq);
-        }
-        // Sequence shorter than n -> no blocks.
-        assert_ngram_parity(5, &[1, 2, 3]);
-        // Empty.
-        assert_ngram_parity(3, &[]);
-        // Single distinct token repeated (worst case for ngram_size==1).
-        assert_ngram_parity(1, &[42, 42, 42, 42]);
-    }
-
-    /// Drop requires both low avg logprob and high compression ratio together.
-    #[test]
-    fn quality_gate_requires_both_logprob_and_compression_signals() {
-        let params = DecodingParams::default();
-        assert!(!should_drop_for_quality_gate(Some(-0.2), 3.0, &params));
-        assert!(!should_drop_for_quality_gate(Some(-3.0), 1.4, &params));
-        assert!(should_drop_for_quality_gate(Some(-3.0), 3.0, &params));
-    }
-
-    /// Zero dropped segments keeps the original raw text (not the re-joined filter).
-    #[test]
-    fn silero_filter_preserves_raw_text_when_no_segments_were_dropped() {
-        let segments = vec![crate::pipeline::contracts::TranscriptSegment {
-            text: "close chart".to_string(),
-            start_ts: 0.0,
-            end_ts: 1.2,
-        }];
-        let raw = RawTranscript {
-            text: "Close chart, and add plan.".to_string(),
-            segments: segments.clone(),
-            ..Default::default()
-        };
-
-        let filtered = apply_silero_filter_outcome(&raw, "close chart".to_string(), segments, 0);
-
-        assert_eq!(filtered.text, raw.text);
-        assert_eq!(filtered.segments, raw.segments);
-    }
-
-    /// Case/punctuation-only filter text still preserves raw when nothing was dropped.
-    #[test]
-    fn silero_filter_preserves_raw_text_when_no_drop_only_case_or_punctuation_differs() {
-        let segments = vec![crate::pipeline::contracts::TranscriptSegment {
-            text: "close chart and add plan".to_string(),
-            start_ts: 0.0,
-            end_ts: 1.2,
-        }];
-        let raw = RawTranscript {
-            text: "Close chart, and add plan.".to_string(),
-            segments: segments.clone(),
-            ..Default::default()
-        };
-
-        let filtered =
-            apply_silero_filter_outcome(&raw, "close chart and add plan".to_string(), segments, 0);
-
-        assert_eq!(filtered.text, raw.text);
-        assert_eq!(filtered.segments, raw.segments);
-        assert!(!is_strict_text_subset(
-            "close chart and add plan",
-            "Close chart, and add plan."
-        ));
-    }
-
-    /// When segments are dropped, filtered text and segment list replace raw.
-    #[test]
-    fn silero_filter_uses_filtered_text_when_segments_were_dropped() {
-        let raw_segments = vec![
-            crate::pipeline::contracts::TranscriptSegment {
-                text: "close chart".to_string(),
-                start_ts: 0.0,
-                end_ts: 1.2,
-            },
-            crate::pipeline::contracts::TranscriptSegment {
-                text: "subscribe".to_string(),
-                start_ts: 1.2,
-                end_ts: 2.0,
-            },
-        ];
-        let filtered_segments = vec![raw_segments[0].clone()];
-        let raw = RawTranscript {
-            text: "Close chart, and subscribe.".to_string(),
-            segments: raw_segments,
-            ..Default::default()
-        };
-
-        let filtered = apply_silero_filter_outcome(
-            &raw,
-            "close chart".to_string(),
-            filtered_segments.clone(),
-            1,
-        );
-
-        assert_eq!(filtered.text, "close chart");
-        assert_eq!(filtered.segments, filtered_segments);
-    }
-
     /// Control-token suppression applies only at decode step zero.
     #[test]
     fn decoder_control_tokens_are_only_suppressed_before_first_token() {
@@ -2477,11 +1959,46 @@ mod dedup_tests {
         assert!(!should_suppress_decoder_control_tokens(15));
     }
 
+    #[test]
+    fn blank_suppression_uses_tokenizer_ids_only_at_initial_step() {
+        let mut logits = vec![1.0; 9];
+        apply_initial_blank_suppression(&mut logits, 0, &[2, 5], 7);
+        assert_eq!(
+            logits,
+            vec![
+                1.0,
+                1.0,
+                f32::NEG_INFINITY,
+                1.0,
+                1.0,
+                f32::NEG_INFINITY,
+                1.0,
+                f32::NEG_INFINITY,
+                1.0
+            ]
+        );
+        for generated in [1, 2, 3, 4, 15] {
+            let mut later = vec![1.0; 9];
+            apply_initial_blank_suppression(&mut later, generated, &[2, 5], 7);
+            assert_eq!(later, vec![1.0; 9], "step {generated}");
+        }
+    }
+
+    #[test]
+    fn blank_suppression_bounds_tokenizer_ids_to_logits() {
+        let mut logits = vec![1.0; 3];
+        apply_initial_blank_suppression(&mut logits, 0, &[1, u32::MAX], 8);
+        assert_eq!(logits, vec![1.0, f32::NEG_INFINITY, 1.0]);
+        apply_initial_blank_suppression(&mut [], 0, &[1], 8);
+    }
+
     /// Embedded lexicon cleanup reports Changed with rewrite counts.
+    #[cfg(any())]
     #[test]
     fn requested_final_pass_reports_embedded_lexicon_changes() {
         let raw = RawTranscript {
             text: "doker".to_string(),
+            energy: None,
             ..Default::default()
         };
 
@@ -2515,6 +2032,7 @@ mod dedup_tests {
     }
 
     /// Artifact-token drift rejects the candidate and keeps the raw transcript.
+    #[cfg(any())]
     #[test]
     fn requested_final_pass_rejects_artifact_token_drift_and_keeps_raw() {
         let raw = "zastanawiam się co ośreda, że ta funkcja już teoretycznie obsolesi legacy";
@@ -2683,6 +2201,15 @@ pub(crate) fn silence_spans_from_vad_probabilities(
     spans
 }
 
+/// How many times a long-file window may be halved after decoding words
+/// without a closed timestamp span (2 = down to quarters of the planned
+/// window) before that span is refused and the file continues without it.
+const SEGMENTLESS_WINDOW_MAX_SPLITS: u8 = 2;
+
+/// Windows shorter than this are not split further; a runaway decode on
+/// two seconds of audio is refused outright.
+const SEGMENTLESS_WINDOW_MIN_SPLIT_SECS: f32 = 2.0;
+
 /// Merge the next window's transcript onto the accumulated one, deduplicating
 /// the overlap REGION by segment time instead of by text.
 ///
@@ -2695,20 +2222,20 @@ pub fn merge_chunk_transcripts(
     out: &mut crate::pipeline::contracts::RawTranscript,
     next: crate::pipeline::contracts::RawTranscript,
     overlap_end_secs: f32,
-) {
-    if next.segments.is_empty() {
-        append_with_overlap_dedup(&mut out.text, &next.text);
-        // Segment truth is no longer complete. Clear it so every later chunk
-        // remains on the text fallback instead of rebuilding the transcript
-        // from a partial segment set and dropping this chunk.
-        out.segments.clear();
-        return;
+) -> Result<()> {
+    ensure!(
+        out.text.trim().is_empty() || !out.segments.is_empty(),
+        "overlap assembly requires segment provenance for accumulated text"
+    );
+
+    if next.text.trim().is_empty() && next.segments.is_empty() {
+        return Ok(());
     }
 
-    if !out.text.trim().is_empty() && out.segments.is_empty() {
-        append_with_overlap_dedup(&mut out.text, &next.text);
-        return;
-    }
+    ensure!(
+        next.text.trim().is_empty() || !next.segments.is_empty(),
+        "overlap assembly refused non-empty decode without timestamped segments"
+    );
 
     out.segments.extend(
         next.segments
@@ -2722,6 +2249,7 @@ pub fn merge_chunk_transcripts(
         .filter(|text| !text.is_empty())
         .collect::<Vec<_>>()
         .join(" ");
+    Ok(())
 }
 
 #[cfg(test)]
@@ -2825,6 +2353,7 @@ mod stt_live_first_v2_red {
                 start_ts: 15.0,
                 end_ts: 24.0,
             }],
+            energy: None,
             ..Default::default()
         };
         // Next window starts at 20 s; its decode of the 20–25 s overlap came out
@@ -2843,9 +2372,11 @@ mod stt_live_first_v2_red {
                     end_ts: 33.0,
                 },
             ],
+            energy: None,
             ..Default::default()
         };
-        merge_chunk_transcripts(&mut out, next, 25.0);
+        merge_chunk_transcripts(&mut out, next, 25.0)
+            .expect("timestamped overlap merge must succeed");
         assert!(
             !out.text.contains("Zdanie pierwsze"),
             "overlap re-decode leaked into the merged text: {}",
@@ -2874,6 +2405,7 @@ mod stt_live_first_v2_red {
                 start_ts: 2.0,
                 end_ts: 10.0,
             }],
+            energy: None,
             ..Default::default()
         };
         let next = RawTranscript {
@@ -2895,10 +2427,12 @@ mod stt_live_first_v2_red {
                     end_ts: 13.0,
                 },
             ],
+            energy: None,
             ..Default::default()
         };
 
-        merge_chunk_transcripts(&mut out, next, 10.0);
+        merge_chunk_transcripts(&mut out, next, 10.0)
+            .expect("timestamped boundary merge must succeed");
 
         assert_eq!(out.segments.len(), 3);
         assert_eq!(
@@ -2909,53 +2443,9 @@ mod stt_live_first_v2_red {
         assert!(!out.text.contains("  "));
     }
 
-    /// Timestamp-less decoders retain the established text overlap fallback.
+    /// Non-empty decoder output without timestamp provenance fails closed.
     #[test]
-    fn seam_merge_uses_text_fallback_without_segments() {
-        let mut out = RawTranscript {
-            text: "one two three".into(),
-            ..Default::default()
-        };
-        let next = RawTranscript {
-            text: "two three four".into(),
-            ..Default::default()
-        };
-
-        merge_chunk_transcripts(&mut out, next, 3.0);
-
-        assert_eq!(out.text, "one two three four");
-        assert!(out.segments.is_empty());
-    }
-
-    /// Once an earlier chunk lacked timestamps, keep one text-only source of
-    /// truth instead of entering a mixed state that can drop the old prefix on
-    /// a later segment-aware merge.
-    #[test]
-    fn seam_merge_keeps_mixed_sequences_on_the_text_fallback() {
-        let mut out = RawTranscript {
-            text: "one two three".into(),
-            ..Default::default()
-        };
-        let next = RawTranscript {
-            text: "two three four".into(),
-            segments: vec![TranscriptSegment {
-                text: "four".into(),
-                start_ts: 3.0,
-                end_ts: 4.0,
-            }],
-            ..Default::default()
-        };
-
-        merge_chunk_transcripts(&mut out, next, 3.0);
-
-        assert_eq!(out.text, "one two three four");
-        assert!(out.segments.is_empty());
-    }
-
-    /// A timestamp-less middle chunk invalidates the accumulated segment map;
-    /// a later timestamped chunk must not rebuild text without that middle.
-    #[test]
-    fn seam_merge_stays_text_only_after_a_middle_chunk_loses_segments() {
+    fn seam_merge_rejects_nonempty_segmentless_decode() {
         let mut out = RawTranscript {
             text: "one two".into(),
             segments: vec![TranscriptSegment {
@@ -2963,26 +2453,239 @@ mod stt_live_first_v2_red {
                 start_ts: 0.0,
                 end_ts: 2.0,
             }],
+            energy: None,
             ..Default::default()
         };
-        let middle = RawTranscript {
-            text: "two three".into(),
+        let next = RawTranscript {
+            text: "two middle three".into(),
+            energy: None,
             ..Default::default()
         };
-        let tail = RawTranscript {
-            text: "three four".into(),
+
+        let error = merge_chunk_transcripts(&mut out, next, 2.0)
+            .expect_err("segmentless non-empty decode must fail closed");
+
+        assert!(
+            error
+                .to_string()
+                .contains("overlap assembly refused non-empty decode without timestamped segments")
+        );
+        assert_eq!(out.text, "one two");
+        assert_eq!(out.segments.len(), 1);
+        assert_eq!(out.segments[0].text, "one two");
+        assert_eq!(out.segments[0].start_ts, 0.0);
+        assert_eq!(out.segments[0].end_ts, 2.0);
+    }
+
+    /// Accumulated text without timestamp provenance is not lawful input.
+    #[test]
+    fn seam_merge_rejects_text_without_segment_provenance() {
+        let mut out = RawTranscript {
+            text: "one two three".into(),
+            energy: None,
+            ..Default::default()
+        };
+        let next = RawTranscript {
+            text: "two three four".into(),
             segments: vec![TranscriptSegment {
                 text: "four".into(),
                 start_ts: 3.0,
                 end_ts: 4.0,
             }],
+            energy: None,
             ..Default::default()
         };
 
-        merge_chunk_transcripts(&mut out, middle, 2.0);
-        merge_chunk_transcripts(&mut out, tail, 3.0);
+        let error = merge_chunk_transcripts(&mut out, next, 3.0)
+            .expect_err("accumulated text without segments must fail closed");
 
-        assert_eq!(out.text, "one two three four");
+        assert!(
+            error
+                .to_string()
+                .contains("overlap assembly requires segment provenance for accumulated text")
+        );
+        assert_eq!(out.text, "one two three");
         assert!(out.segments.is_empty());
+    }
+
+    /// A refused segmentless chunk cannot poison a later timestamped retry.
+    #[test]
+    fn seam_merge_segmentless_failure_preserves_state_for_timestamped_retry() {
+        let mut out = RawTranscript {
+            text: "one two".into(),
+            segments: vec![TranscriptSegment {
+                text: "one two".into(),
+                start_ts: 0.0,
+                end_ts: 2.0,
+            }],
+            energy: None,
+            ..Default::default()
+        };
+        let middle = RawTranscript {
+            text: "two middle three".into(),
+            energy: None,
+            ..Default::default()
+        };
+        let tail = RawTranscript {
+            text: "two replay four five".into(),
+            segments: vec![
+                TranscriptSegment {
+                    text: "two replay".into(),
+                    start_ts: 1.5,
+                    end_ts: 2.0,
+                },
+                TranscriptSegment {
+                    text: "four five".into(),
+                    start_ts: 3.0,
+                    end_ts: 4.0,
+                },
+            ],
+            energy: None,
+            ..Default::default()
+        };
+
+        let error = merge_chunk_transcripts(&mut out, middle, 2.0)
+            .expect_err("segmentless middle decode must fail closed");
+        assert!(
+            error
+                .to_string()
+                .contains("overlap assembly refused non-empty decode without timestamped segments")
+        );
+        assert_eq!(out.text, "one two");
+        assert_eq!(out.segments.len(), 1);
+        assert_eq!(out.segments[0].text, "one two");
+
+        merge_chunk_transcripts(&mut out, tail, 2.0)
+            .expect("timestamped retry must succeed after segmentless failure");
+
+        assert_eq!(out.text, "one two four five");
+        assert_eq!(out.segments.len(), 2);
+        assert_eq!(out.segments[0].text, "one two");
+        assert_eq!(out.segments[1].text, "four five");
+        assert!(!out.text.contains("middle"));
+    }
+}
+
+#[cfg(test)]
+mod local_execution_control_tests {
+    use super::*;
+    use crate::stt::{LocalExecutionBoundary, LocalExecutionControl};
+
+    /// Tiny CPU weights exercise the real encoder/decoder without a model
+    /// download, Metal, VAD runtime or process-global engine mutation.
+    fn engine() -> LocalWhisperEngine {
+        let config = Config {
+            num_mel_bins: 80,
+            max_source_positions: 1500,
+            d_model: 4,
+            encoder_attention_heads: 1,
+            encoder_layers: 1,
+            vocab_size: 5,
+            max_target_positions: 16,
+            decoder_attention_heads: 1,
+            decoder_layers: 1,
+            suppress_tokens: Vec::new(),
+        };
+        let device = Device::Cpu;
+        let vb = candle_nn::VarBuilder::zeros(candle_core::DType::F32, &device);
+        let model = Model::load(&vb, config.clone()).unwrap();
+        let wordlevel = tokenizers::models::wordlevel::WordLevel::builder()
+            .vocab(
+                [
+                    ("hello".to_string(), 0),
+                    ("<|startoftranscript|>".to_string(), 1),
+                    ("<|endoftext|>".to_string(), 2),
+                    ("<|transcribe|>".to_string(), 3),
+                    ("unknown".to_string(), 4),
+                ]
+                .into_iter()
+                .collect(),
+            )
+            .unk_token("unknown".into())
+            .build()
+            .unwrap();
+        LocalWhisperEngine {
+            model,
+            tokenizer: Tokenizer::new(wordlevel),
+            device,
+            config,
+            mel_filters: vec![0.0; 80 * 201],
+            ts_range: None,
+            engine_provenance: TranscriptionEngineVerdict::whisper(
+                TranscriptionEngineMode::RuntimeFallback,
+            ),
+            decoding_params: DecodingParams {
+                initial_prompt: Some("previous".into()),
+                ..DecodingParams::default()
+            },
+        }
+    }
+
+    #[test]
+    fn production_window_and_token_cancellation_restore_request_state() {
+        for boundary in [
+            LocalExecutionBoundary::Window,
+            LocalExecutionBoundary::Token,
+        ] {
+            let mut engine = engine();
+            let control = LocalExecutionControl::cancelling_at(boundary);
+            let result = engine.with_request(Some("hello".into()), |engine| {
+                engine.transcribe_long_with_language_segments_using_silences(
+                    &[0.25; 3200],
+                    16_000,
+                    Some("en"),
+                    &[],
+                    &mut |_| Ok(()),
+                    &control,
+                )
+            });
+            assert!(result.unwrap_err().to_string().contains("cancelled"));
+            assert!(
+                control.check().is_err(),
+                "the requested production boundary was reached"
+            );
+            assert_eq!(
+                engine.decoding_params.initial_prompt.as_deref(),
+                Some("previous")
+            );
+            // An independent successor still executes the same decoder. It
+            // cannot inherit the prior request's cancellation or prompt.
+            let successor = engine
+                .with_request(None, |engine| {
+                    engine.transcribe_samples_16k_raw(
+                        &[0.25; 3200],
+                        Some("en"),
+                        false,
+                        &LocalExecutionControl::default(),
+                    )
+                })
+                .unwrap();
+            assert!(!successor.text.is_empty());
+            assert_eq!(
+                engine.decoding_params.initial_prompt.as_deref(),
+                Some("previous")
+            );
+        }
+    }
+
+    #[test]
+    fn request_scope_restores_prompt_after_error_and_unwind() {
+        let mut engine = engine();
+        let failed: Result<()> = engine.with_request(Some("temporary".into()), |_| {
+            Err(anyhow!("injected decoder failure"))
+        });
+        assert!(failed.is_err());
+        assert_eq!(
+            engine.decoding_params.initial_prompt.as_deref(),
+            Some("previous")
+        );
+        let unwind = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            let _: Result<()> = engine.with_request(None, |_| panic!("native worker panic"));
+        }));
+        assert!(unwind.is_err());
+        assert_eq!(
+            engine.decoding_params.initial_prompt.as_deref(),
+            Some("previous")
+        );
     }
 }

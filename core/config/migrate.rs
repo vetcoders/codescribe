@@ -4,30 +4,50 @@
 //! macOS Keychain. This is an import path, not an ongoing precedence rule.
 
 use super::keychain;
+use super::llm_migration::{SpeechV2Legacy, migrate_legacy_llm_lanes};
 use super::settings::{FormattingPolicy, UserSettings, parse_agent_workspace_roots};
 use std::collections::HashMap;
 use tracing::{debug, info};
 
-/// Runs the one-time migration if `settings.json` does not yet exist.
-///
-/// 1. Skips if `settings.json` already exists.
-/// 2. Reads the existing `.env` contents to build a `UserSettings`.
-/// 3. Saves to `settings.json`.
-/// 4. Migrates API keys from env to Keychain.
-pub fn migrate_if_needed(file_env: Option<&HashMap<String, String>>) {
+/// Exact, secret-free source-to-account intent, stable across Settings edits.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct PendingEnvKeyImport {
+    pub env_path: std::path::PathBuf,
+    pub source: String,
+    pub target: String,
+}
+
+pub(super) fn import_pending_env_key(row: &PendingEnvKeyImport) -> anyhow::Result<()> {
+    let values = super::Config::parse_env_file(&row.env_path)?;
+    let secret = values
+        .get(&row.source)
+        .filter(|value| !value.trim().is_empty())
+        .ok_or_else(|| anyhow::anyhow!("pending credential source is absent: {}", row.source))?;
+    save_migrated_key(&row.target, secret)
+}
+
+/// Prepare the first import once, then settle only its durable credential rows
+/// when authorized. Existing settings without pending rows never reimport keys.
+/// Return in-memory settings only when their initial persistence fails.
+pub fn migrate_if_needed(
+    file_env: Option<&HashMap<String, String>>,
+    acquire_credentials: bool,
+) -> Option<UserSettings> {
     let path = UserSettings::settings_path();
     if path.exists() {
-        debug!("settings.json already exists, skipping migration");
-        return;
+        if acquire_credentials && let Err(error) = UserSettings::settle_pending_env_key_imports() {
+            tracing::warn!(%error, "Credential import remains pending");
+        }
+        return None;
     }
 
     let Some(file_env) = file_env else {
         debug!("No .env snapshot present, skipping migration");
-        return;
+        return None;
     };
     if file_env.is_empty() {
         debug!("Empty .env snapshot, skipping migration");
-        return;
+        return None;
     }
     let file_env = Some(file_env);
 
@@ -37,17 +57,32 @@ pub fn migrate_if_needed(file_env: Option<&HashMap<String, String>>) {
     if let Some(v) = migrated_value(file_env, "WHISPER_LANGUAGE") {
         settings.whisper_language = Some(v);
     }
-    if let Some(v) = migrated_value(file_env, "LLM_ENDPOINT") {
-        settings.llm_endpoint = Some(v);
-    }
-    if let Some(v) = migrated_value(file_env, "LLM_MODEL") {
-        settings.llm_model = Some(v);
-    }
-    if let Some(v) = migrated_value(file_env, "LLM_ASSISTIVE_ENDPOINT") {
-        settings.llm_assistive_endpoint = Some(v);
-    }
-    if let Some(v) = migrated_value(file_env, "LLM_ASSISTIVE_MODEL") {
-        settings.llm_assistive_model = Some(v);
+    // LLM lanes: the legacy endpoint/model/provider rows go through the same
+    // one-shot migration as a legacy settings.json (vendor by host, Custom row
+    // otherwise); the key rows below land directly in the account each lane
+    // resolved to.
+    let legacy_llm = SpeechV2Legacy {
+        llm_endpoint: migrated_value(file_env, "LLM_ENDPOINT"),
+        llm_model: migrated_value(file_env, "LLM_MODEL"),
+        formatting_endpoint: migrated_value(file_env, "LLM_FORMATTING_ENDPOINT"),
+        formatting_model: migrated_value(file_env, "LLM_FORMATTING_MODEL"),
+        assistive_endpoint: migrated_value(file_env, "LLM_ASSISTIVE_ENDPOINT"),
+        assistive_model: migrated_value(file_env, "LLM_ASSISTIVE_MODEL"),
+        assistive_provider: migrated_value(file_env, "LLM_ASSISTIVE_PROVIDER"),
+    };
+    let legacy_key_targets: Vec<(String, String)> = if legacy_llm.needs_migration() {
+        migrate_legacy_llm_lanes(&legacy_llm, &mut settings)
+            .into_iter()
+            .map(|step| (step.from, step.to))
+            .collect()
+    } else {
+        settings.llm_formatting_model = legacy_llm.formatting_model.clone();
+        settings.llm_assistive_model = legacy_llm.assistive_model.clone();
+        settings.llm_assistive_provider = legacy_llm.assistive_provider.clone();
+        Vec::new()
+    };
+    if let Some(v) = migrated_value(file_env, "LLM_FORMATTING_PROVIDER") {
+        settings.llm_formatting_provider = Some(v);
     }
     if let Some(v) = migrated_value(file_env, "FORMATTING_LEVEL") {
         match FormattingPolicy::parse(&v) {
@@ -56,17 +91,22 @@ pub fn migrate_if_needed(file_env: Option<&HashMap<String, String>>) {
         }
     }
     // Promoted fields (previously .env only)
-    if let Some(v) = migrated_value(file_env, "LLM_FORMATTING_ENDPOINT") {
-        settings.llm_formatting_endpoint = Some(v);
-    }
-    if let Some(v) = migrated_value(file_env, "LLM_FORMATTING_MODEL") {
-        settings.llm_formatting_model = Some(v);
-    }
     if let Some(v) = migrated_value(file_env, "LOCAL_MODEL") {
         settings.local_model = Some(v);
     }
+    for (lane, target) in [
+        (crate::stt::SttLane::File, &mut settings.stt_file_endpoint),
+        (crate::stt::SttLane::Live, &mut settings.stt_live_endpoint),
+    ] {
+        if let Some(value) = migrated_value(file_env, lane.wire_key()) {
+            *target = crate::stt::validate_stt_endpoint(lane, &value).ok();
+        }
+    }
     if let Some(v) = migrated_value(file_env, "STT_ENDPOINT") {
-        settings.stt_endpoint = Some(v);
+        super::stt_migration::migrate_legacy_stt_lanes(
+            &super::stt_migration::SttV2Legacy::from_endpoint(&v),
+            &mut settings,
+        );
     }
     if let Some(v) = migrated_value(file_env, "TRANSCRIPT_SEND_MODE") {
         settings.transcript_send_mode = Some(v);
@@ -165,28 +205,64 @@ pub fn migrate_if_needed(file_env: Option<&HashMap<String, String>>) {
         settings.backend_max_upload_mb = Some(n);
     }
 
-    // Migrate API keys to Keychain before writing settings.json. The existence
-    // of settings.json is the migration-complete sentinel, so a failed secret
-    // write must leave the migration retryable on the next launch.
-    for &account in keychain::KEYCHAIN_ACCOUNTS {
-        if let Some(secret) = migrated_value(file_env, account)
-            && !secret.is_empty()
-            && let Err(e) = save_migrated_key(account, &secret)
+    if let Some(value) = migrated_value(file_env, "AGENT_WORKSPACE_ROOTS") {
+        let roots = parse_agent_workspace_roots(&value);
+        if !roots.is_empty() {
+            settings.agent_workspace_roots = Some(roots);
+        }
+    }
+    // Persist exact account mappings before secret acquisition. No secret value
+    // enters settings, and custom provider identities are never regenerated.
+    let key_rows = keychain::KEYCHAIN_ACCOUNTS
+        .iter()
+        .map(|account| (*account, account.to_string()))
+        .chain(
+            legacy_key_targets
+                .iter()
+                .map(|(from, to)| (from.as_str(), to.clone())),
+        );
+    let key_rows = key_rows.chain(
+        ["STT_FILE_API_KEY", "STT_LIVE_API_KEY"]
+            .into_iter()
+            .filter(|target| {
+                migrated_value(file_env, target).is_none_or(|value| value.trim().is_empty())
+            })
+            .map(|target| ("STT_API_KEY", target.to_string())),
+    );
+    let env_path = super::Config::env_path();
+    let env_path = if env_path.is_absolute() {
+        env_path
+    } else {
+        match std::env::current_dir() {
+            Ok(cwd) => cwd.join(env_path),
+            Err(error) => {
+                tracing::warn!(%error, "Cannot resolve credential import source path");
+                return Some(settings);
+            }
+        }
+    };
+    for (source, target) in key_rows {
+        if let Some(secret) = migrated_value(file_env, source)
+            && !secret.trim().is_empty()
         {
-            tracing::warn!(
-                "Migration: failed to save {account} to Keychain; will retry on next launch: {e}"
-            );
-            return;
+            settings.pending_env_key_imports.push(PendingEnvKeyImport {
+                env_path: env_path.clone(),
+                source: source.into(),
+                target,
+            });
         }
     }
 
-    // Save settings.json last because its presence marks the one-time import as complete.
     if let Err(e) = settings.save() {
         tracing::warn!("Migration: failed to save settings.json: {e}");
-        return;
+        return Some(settings);
     }
 
-    info!("Migrated config to settings.json + Keychain");
+    if acquire_credentials && let Err(error) = UserSettings::settle_pending_env_key_imports() {
+        tracing::warn!(%error, "Credential import remains pending");
+    }
+    info!("Imported settings and recorded credential migration intent");
+    None
 }
 
 /// Backfill the workspace roots from the legacy `.env` store even when an
@@ -230,9 +306,8 @@ fn migrated_value(file_env: Option<&HashMap<String, String>>, key: &str) -> Opti
 
 /// Write one secret to the Keychain, with a test-only failure injection point.
 ///
-/// The seam exists because the retry contract — a failed secret write must leave
-/// `settings.json` unwritten so the next launch tries again — cannot be exercised
-/// against a real Keychain.
+/// A failed write must retain the durable import row for the next authorized
+/// load. Synthetic injection proves this without accessing the OS secret store.
 fn save_migrated_key(account: &str, secret: &str) -> anyhow::Result<()> {
     #[cfg(test)]
     if test_save_key_failure_account(account) {
@@ -301,7 +376,7 @@ mod tests {
     fn migrate_skips_when_env_snapshot_is_absent() {
         let _tmp = setup_isolated_data_dir();
 
-        migrate_if_needed(None);
+        migrate_if_needed(None, true);
 
         assert!(
             !UserSettings::settings_path().exists(),
@@ -318,7 +393,7 @@ mod tests {
         let _tmp = setup_isolated_data_dir();
         let empty = HashMap::new();
 
-        migrate_if_needed(Some(&empty));
+        migrate_if_needed(Some(&empty), true);
 
         assert!(
             !UserSettings::settings_path().exists(),
@@ -337,7 +412,7 @@ mod tests {
         file_env.insert("WHISPER_LANGUAGE".to_string(), "en".to_string());
 
         set_env_for_test("AI_FORMATTING_ENABLED", "1");
-        migrate_if_needed(Some(&file_env));
+        migrate_if_needed(Some(&file_env), true);
         remove_env_for_test("AI_FORMATTING_ENABLED");
 
         let path = UserSettings::settings_path();
@@ -435,7 +510,7 @@ mod tests {
 
             let mut file_env = HashMap::new();
             file_env.insert("FORMATTING_LEVEL".to_string(), input.to_string());
-            migrate_if_needed(Some(&file_env));
+            migrate_if_needed(Some(&file_env), true);
 
             assert_eq!(UserSettings::load().formatting_level.as_deref(), expected);
             for _probe in 0..3 {
@@ -464,7 +539,7 @@ mod tests {
             let mut file_env = HashMap::new();
             file_env.insert("AUTO_PASTE_ENABLED".to_string(), input.to_string());
 
-            migrate_if_needed(Some(&file_env));
+            migrate_if_needed(Some(&file_env), true);
 
             assert_eq!(
                 UserSettings::load().auto_paste_enabled,
@@ -479,38 +554,50 @@ mod tests {
     #[serial]
     fn migrate_retries_when_keychain_save_fails() {
         let _tmp = setup_isolated_data_dir();
+        remove_env_for_test("CODESCRIBE_ENV_PATH");
         let mut file_env = HashMap::new();
         file_env.insert("WHISPER_LANGUAGE".to_string(), "en".to_string());
-        file_env.insert("LLM_API_KEY".to_string(), "retry-secret".to_string());
+        file_env.insert("LLM_OPENAI_API_KEY".to_string(), "retry-secret".to_string());
+        std::fs::write(
+            super::super::Config::env_path(),
+            "WHISPER_LANGUAGE=en\nLLM_OPENAI_API_KEY=retry-secret\n",
+        )
+        .unwrap();
 
-        set_test_save_key_failure(Some("LLM_API_KEY"));
-        remove_env_for_test("LLM_API_KEY");
+        set_test_save_key_failure(Some("LLM_OPENAI_API_KEY"));
+        remove_env_for_test("LLM_OPENAI_API_KEY");
 
-        migrate_if_needed(Some(&file_env));
+        migrate_if_needed(Some(&file_env), true);
 
         assert!(
-            !UserSettings::settings_path().exists(),
-            "failed keychain save must not mark migration complete"
+            !UserSettings::load().pending_env_key_imports.is_empty(),
+            "failed keychain save must retain durable import intent"
         );
         assert!(
-            std::env::var("LLM_API_KEY").is_err(),
+            std::env::var("LLM_OPENAI_API_KEY").is_err(),
             "injected failure happens before test key persistence"
         );
 
         set_test_save_key_failure(None);
-        migrate_if_needed(Some(&file_env));
+        let mut edited = UserSettings::load();
+        edited.show_dock_icon = Some(true);
+        edited.save().unwrap();
+        migrate_if_needed(Some(&file_env), true);
 
         assert!(
             UserSettings::settings_path().exists(),
             "retry after keychain recovery should complete migration"
         );
+        let persisted = UserSettings::load();
+        assert!(persisted.pending_env_key_imports.is_empty());
+        assert_eq!(persisted.show_dock_icon, Some(true));
         assert_eq!(
-            std::env::var("LLM_API_KEY").as_deref(),
+            std::env::var("LLM_OPENAI_API_KEY").as_deref(),
             Ok("retry-secret"),
             "retry writes the migrated secret"
         );
 
-        remove_env_for_test("LLM_API_KEY");
+        remove_env_for_test("LLM_OPENAI_API_KEY");
         remove_env_for_test("CODESCRIBE_DATA_DIR");
     }
 
@@ -519,24 +606,36 @@ mod tests {
     #[serial]
     fn successful_migration_marks_complete_once() {
         let _tmp = setup_isolated_data_dir();
+        remove_env_for_test("CODESCRIBE_ENV_PATH");
         let mut first_env = HashMap::new();
         first_env.insert("WHISPER_LANGUAGE".to_string(), "en".to_string());
-        first_env.insert("LLM_API_KEY".to_string(), "first-secret".to_string());
+        first_env.insert("LLM_OPENAI_API_KEY".to_string(), "first-secret".to_string());
+        std::fs::write(
+            super::super::Config::env_path(),
+            "WHISPER_LANGUAGE=en\nLLM_OPENAI_API_KEY=first-secret\n",
+        )
+        .unwrap();
 
-        migrate_if_needed(Some(&first_env));
+        migrate_if_needed(Some(&first_env), true);
 
         let path = UserSettings::settings_path();
         assert!(
             path.exists(),
             "successful migration writes completion sentinel"
         );
-        assert_eq!(std::env::var("LLM_API_KEY").as_deref(), Ok("first-secret"));
+        assert_eq!(
+            std::env::var("LLM_OPENAI_API_KEY").as_deref(),
+            Ok("first-secret")
+        );
 
         let mut second_env = HashMap::new();
         second_env.insert("WHISPER_LANGUAGE".to_string(), "pl".to_string());
-        second_env.insert("LLM_API_KEY".to_string(), "second-secret".to_string());
+        second_env.insert(
+            "LLM_OPENAI_API_KEY".to_string(),
+            "second-secret".to_string(),
+        );
 
-        migrate_if_needed(Some(&second_env));
+        migrate_if_needed(Some(&second_env), true);
 
         let persisted = UserSettings::load();
         assert_eq!(
@@ -545,12 +644,143 @@ mod tests {
             "existing settings.json skips re-migration"
         );
         assert_eq!(
-            std::env::var("LLM_API_KEY").as_deref(),
+            std::env::var("LLM_OPENAI_API_KEY").as_deref(),
             Ok("first-secret"),
             "existing completion sentinel skips duplicate key migration"
         );
 
-        remove_env_for_test("LLM_API_KEY");
+        remove_env_for_test("LLM_OPENAI_API_KEY");
+        remove_env_for_test("CODESCRIBE_DATA_DIR");
+    }
+
+    #[test]
+    #[serial]
+    fn deferred_custom_import_keeps_account_and_selected_source_across_settings_edits() {
+        let tmp = setup_isolated_data_dir();
+        let old_env = std::env::var_os("CODESCRIBE_ENV_PATH");
+        let source = tmp.path().join("selected.env");
+        let replacement = tmp.path().join("other.env");
+        let text = "LLM_FORMATTING_ENDPOINT=https://synthetic.example/v1/chat/completions\nLLM_FORMATTING_API_KEY=synthetic-original-secret\n";
+        std::fs::write(&source, text).unwrap();
+        std::fs::write(
+            &replacement,
+            text.replace("synthetic-original-secret", "synthetic-other-secret"),
+        )
+        .unwrap();
+        set_env_for_test("CODESCRIBE_ENV_PATH", &source);
+        let vars = super::super::Config::parse_env_file(&source).unwrap();
+        let _bundle = super::super::keychain::test_support::install_bundle(&[]);
+        {
+            let probe = super::super::keychain::CredentialAcquisitionProbe::forbid();
+            migrate_if_needed(Some(&vars), false);
+            assert!(probe.attempts().is_empty());
+        }
+        let mut settings = UserSettings::load();
+        let provider = settings.llm_custom_providers.first().unwrap().clone();
+        let rows = settings.pending_env_key_imports.clone();
+        assert!(
+            rows.iter()
+                .any(|row| row.target == provider.key_account() && row.env_path == source)
+        );
+        settings.show_dock_icon = Some(true);
+        settings.save().unwrap();
+        let bytes = std::fs::read_to_string(UserSettings::settings_path()).unwrap();
+        assert!(!bytes.contains("synthetic-original-secret"));
+        set_env_for_test("CODESCRIBE_ENV_PATH", &replacement);
+        migrate_if_needed(None, true);
+        let loaded = UserSettings::load();
+        assert_eq!(loaded.show_dock_icon, Some(true));
+        assert_eq!(loaded.llm_custom_providers.first(), Some(&provider));
+        assert!(loaded.pending_env_key_imports.is_empty());
+        assert_eq!(
+            super::super::keychain::cached_runtime_key(&provider.key_account()).as_deref(),
+            Some("synthetic-original-secret")
+        );
+        // Acknowledged imports never revive a subsequently removed credential.
+        super::super::keychain::delete_key(&provider.key_account()).unwrap();
+        migrate_if_needed(Some(&vars), true);
+        assert!(super::super::keychain::cached_runtime_key(&provider.key_account()).is_none());
+        match old_env {
+            Some(value) => set_env_for_test("CODESCRIBE_ENV_PATH", value),
+            None => remove_env_for_test("CODESCRIBE_ENV_PATH"),
+        }
+        remove_env_for_test("CODESCRIBE_DATA_DIR");
+    }
+
+    #[test]
+    #[serial]
+    fn retired_stt_env_import_fills_missing_lanes_without_overwriting_explicit_lane() {
+        let tmp = setup_isolated_data_dir();
+        let old_env = std::env::var_os("CODESCRIBE_ENV_PATH");
+        let old_file = std::env::var_os("STT_FILE_API_KEY");
+        let old_live = std::env::var_os("STT_LIVE_API_KEY");
+        let path = tmp.path().join("source.env");
+        let text = "STT_API_KEY=synthetic-retired\nSTT_FILE_API_KEY=synthetic-explicit-file\n";
+        std::fs::write(&path, text).unwrap();
+        set_env_for_test("CODESCRIBE_ENV_PATH", &path);
+        let vars = super::super::Config::parse_env_file(&path).unwrap();
+        {
+            let probe = super::super::keychain::CredentialAcquisitionProbe::forbid();
+            migrate_if_needed(Some(&vars), false);
+            assert!(probe.attempts().is_empty());
+        }
+        let rows = UserSettings::load().pending_env_key_imports;
+        assert_eq!(rows.len(), 2);
+        assert!(
+            rows.iter()
+                .any(|row| row.source == "STT_FILE_API_KEY" && row.target == "STT_FILE_API_KEY")
+        );
+        assert!(
+            rows.iter()
+                .any(|row| row.source == "STT_API_KEY" && row.target == "STT_LIVE_API_KEY")
+        );
+        migrate_if_needed(None, true);
+        assert!(UserSettings::load().pending_env_key_imports.is_empty());
+        assert_eq!(
+            std::env::var("STT_FILE_API_KEY").as_deref(),
+            Ok("synthetic-explicit-file")
+        );
+        assert_eq!(
+            std::env::var("STT_LIVE_API_KEY").as_deref(),
+            Ok("synthetic-retired")
+        );
+        for (key, value) in [
+            ("CODESCRIBE_ENV_PATH", old_env),
+            ("STT_FILE_API_KEY", old_file),
+            ("STT_LIVE_API_KEY", old_live),
+        ] {
+            match value {
+                Some(value) => set_env_for_test(key, value),
+                None => remove_env_for_test(key),
+            }
+        }
+        remove_env_for_test("CODESCRIBE_DATA_DIR");
+    }
+
+    #[test]
+    #[serial]
+    fn retired_stt_env_import_records_both_absent_lane_targets() {
+        let tmp = setup_isolated_data_dir();
+        let old_env = std::env::var_os("CODESCRIBE_ENV_PATH");
+        set_env_for_test("CODESCRIBE_ENV_PATH", tmp.path().join("selected.env"));
+        let vars = HashMap::from([("STT_API_KEY".into(), "synthetic-both-lanes".into())]);
+        let probe = super::super::keychain::CredentialAcquisitionProbe::forbid();
+        migrate_if_needed(Some(&vars), false);
+        let settings = UserSettings::load();
+        assert_eq!(settings.pending_env_key_imports.len(), 2);
+        for target in ["STT_FILE_API_KEY", "STT_LIVE_API_KEY"] {
+            assert!(
+                settings
+                    .pending_env_key_imports
+                    .iter()
+                    .any(|row| row.source == "STT_API_KEY" && row.target == target)
+            );
+        }
+        assert!(probe.attempts().is_empty());
+        match old_env {
+            Some(value) => set_env_for_test("CODESCRIBE_ENV_PATH", value),
+            None => remove_env_for_test("CODESCRIBE_ENV_PATH"),
+        }
         remove_env_for_test("CODESCRIBE_DATA_DIR");
     }
 }

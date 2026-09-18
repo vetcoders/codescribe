@@ -16,6 +16,8 @@
 //!   derivation paths never overwrite an owned title.
 
 use std::fs;
+use std::io::Write;
+use std::os::unix::fs::OpenOptionsExt;
 use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result, bail};
@@ -29,6 +31,9 @@ use tracing::{debug, warn};
 
 use super::thread_index::ThreadIndex;
 use super::types::{ContentBlock, Message, Role};
+
+/// Durable admission receipts for Max turns, beside canonical thread history.
+pub(crate) mod consultation;
 
 /// Subdirectory under app data holding per-thread JSON files.
 const THREADS_DIR_NAME: &str = "threads";
@@ -136,6 +141,20 @@ impl From<&Message> for ThreadMessage {
 }
 
 impl ThreadMessage {
+    /// Restore executable conversation context without promoting unknown roles
+    /// or malformed tool payloads to user text. Display-only callers can still
+    /// use `to_message`; consultation admission must use this checked path.
+    pub fn try_to_message(&self) -> Result<Message> {
+        let role: Role = serde_json::from_value(Value::String(self.role.clone()))
+            .context("Unknown role in executable conversation history")?;
+        for block in &self.content {
+            validate_context_block(block, 0)?;
+        }
+        let mut message = self.to_message();
+        message.role = role;
+        Ok(message)
+    }
+
     /// Rebuild the runtime [`Message`] from stored JSON. Unknown block types
     /// and unrecognised roles degrade to text/user rather than failing, so a
     /// thread from a newer build still loads.
@@ -836,10 +855,67 @@ fn content_block_to_value(block: &ContentBlock) -> Value {
     }
 }
 
-/// Rebuild a runtime content block from storage JSON. The inverse of
-/// [`content_block_to_value`], and likewise total: a missing or unknown `type`
-/// degrades to text rather than failing the load. Legacy `image` entries
-/// restore without bytes, since the thread file never carried them.
+/// Validate stored context before using the existing storage projection for
+/// executable Agent history. Missing information is an error, not new prose.
+fn validate_context_block(value: &Value, depth: usize) -> Result<()> {
+    anyhow::ensure!(
+        depth < 32,
+        "Stored tool payload nesting exceeds context limit"
+    );
+    let kind = value
+        .get("type")
+        .and_then(Value::as_str)
+        .context("Missing content type")?;
+    let required_string = |key: &str| -> Result<&str> {
+        value
+            .get(key)
+            .and_then(Value::as_str)
+            .with_context(|| format!("Missing {key} in {kind}"))
+    };
+    match kind {
+        "text" | "input_text" | "output_text" => {
+            required_string("text")?;
+        }
+        "image_asset" => {
+            for key in ["asset_id", "path", "media_type"] {
+                anyhow::ensure!(!required_string(key)?.is_empty(), "Empty image asset {key}");
+            }
+            anyhow::ensure!(
+                value.get("size_bytes").and_then(Value::as_u64).is_some(),
+                "Missing image size"
+            );
+        }
+        "tool_use" => {
+            anyhow::ensure!(
+                !required_string("id")?.is_empty(),
+                "Empty tool call identity"
+            );
+            anyhow::ensure!(!required_string("name")?.is_empty(), "Empty tool name");
+            anyhow::ensure!(value.get("input").is_some(), "Missing tool arguments");
+        }
+        "tool_result" => {
+            anyhow::ensure!(
+                !required_string("tool_use_id")?.is_empty(),
+                "Empty tool result identity"
+            );
+            anyhow::ensure!(
+                value.get("is_error").and_then(Value::as_bool).is_some(),
+                "Missing tool result status"
+            );
+            for child in value
+                .get("content")
+                .and_then(Value::as_array)
+                .context("Missing tool result content")?
+            {
+                validate_context_block(child, depth + 1)?;
+            }
+        }
+        _ => bail!("Unsupported or incomplete stored context block: {kind}"),
+    }
+    Ok(())
+}
+
+/// Display projection of stored content; executable history validates first.
 fn value_to_content_block(value: &Value) -> ContentBlock {
     let Some(value_type) = value.get("type").and_then(Value::as_str) else {
         return ContentBlock::Text(value.to_string());
@@ -933,9 +1009,19 @@ fn atomic_write(path: &Path, data: &[u8]) -> Result<()> {
             .with_context(|| format!("Failed to create parent directory for {}", path.display()))?;
     }
 
-    let tmp = path.with_extension("tmp");
-    fs::write(&tmp, data)
+    // Never truncate or follow a pre-existing staging path. Each writer owns
+    // a newly created sibling, including concurrent attachment writes.
+    let tmp = path.with_extension(format!("{}.tmp", uuid::Uuid::new_v4()));
+    let mut file = fs::OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .mode(0o600)
+        .open(&tmp)
+        .with_context(|| format!("Failed to create temporary file {}", tmp.display()))?;
+    file.write_all(data)
         .with_context(|| format!("Failed to write temporary file {}", tmp.display()))?;
+    file.sync_all()
+        .context("Failed to sync thread data before rename")?;
     fs::rename(&tmp, path).with_context(|| {
         format!(
             "Failed to atomically rename {} -> {}",
@@ -943,6 +1029,11 @@ fn atomic_write(path: &Path, data: &[u8]) -> Result<()> {
             path.display()
         )
     })?;
+    if let Some(parent) = path.parent() {
+        fs::File::open(parent)?
+            .sync_all()
+            .context("Failed to sync thread directory")?;
+    }
     Ok(())
 }
 
@@ -972,6 +1063,57 @@ mod tests {
     use tempfile::TempDir;
 
     use super::*;
+
+    #[test]
+    fn atomic_write_does_not_follow_preexisting_staging_symlink() -> Result<()> {
+        use std::os::unix::fs::{PermissionsExt, symlink};
+        let root = TempDir::new()?;
+        let outside = root.path().join("unrelated.txt");
+        fs::write(&outside, b"preserve unrelated content")?;
+        let destination = root.path().join("thread.json");
+        let staging = destination.with_extension("tmp");
+        symlink(&outside, &staging)?;
+        atomic_write(&destination, b"new thread")?;
+        assert_eq!(fs::read(&outside)?, b"preserve unrelated content");
+        assert_eq!(fs::read(&destination)?, b"new thread");
+        assert!(fs::symlink_metadata(staging)?.file_type().is_symlink());
+        assert_eq!(
+            fs::metadata(&destination)?.permissions().mode() & 0o777,
+            0o600
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn executable_restore_does_not_promote_corrupt_roles_or_tool_payloads() {
+        let mut stored = ThreadMessage {
+            role: "user".into(),
+            content: vec![
+                json!({"type":"tool_result", "tool_use_id":"call-1", "is_error":false,
+                "content":[{"type":"text", "text":"untrusted tool data"}]}),
+            ],
+            timestamp: Utc::now(),
+            metadata: None,
+        };
+        let restored = stored.try_to_message().expect("valid tool result");
+        assert!(matches!(
+            &restored.content[0],
+            ContentBlock::ToolResult { .. }
+        ));
+        stored.role = "tool".into();
+        assert!(stored.try_to_message().is_err());
+        stored.role = "user".into();
+        for block in [
+            json!({"type":"unknown", "text":"do something"}),
+            json!({"type":"tool_result", "tool_use_id":"call-1", "content":[]}),
+            json!({"type":"tool_result", "tool_use_id":"call-1", "is_error":false,
+                "content":[{"type":"text", "text":12}]}),
+            json!({"type":"image", "data_omitted":true}),
+        ] {
+            stored.content = vec![block];
+            assert!(stored.try_to_message().is_err());
+        }
+    }
 
     /// Fixture thread with notes, dual messages, summary, and token usage.
     fn sample_thread(id: String, updated_at: DateTime<Utc>) -> Thread {
