@@ -114,11 +114,11 @@ build:
 	@echo "Building (debug)..."
 	@cargo build
 
-# Slim public default: Silero in the dylib; MiniLM is a signed app resource;
+# Slim public default: Silero in the dylib; MiniLM is not shipped at all;
 # Whisper is runtime/cache/Settings download. Large model bytes never flow
 # through normal Cargo targets.
 release-codescribe: dist-preflight
-	@echo "Building codescribe-ffi (release dylib: Silero embedded; MiniLM/Whisper runtime)..."
+	@echo "Building codescribe-ffi (release dylib: Silero embedded; Whisper runtime; no MiniLM)..."
 	@echo "  The app front-end is no longer a Rust bin; this builds the UniFFI bridge dylib."
 	@echo "  Produce the runnable SwiftUI app with: make app PROFILE=release"
 	@echo "  Fat Whisper embed: make release-codescribe-embedded"
@@ -128,7 +128,7 @@ release-codescribe: dist-preflight
 # Optional fat SKU / offline curiosity: bake Whisper into the dylib (~1GB+).
 # Not the daily release path. Pair with `make release-full` for a _full DMG.
 release-codescribe-embedded: dist-preflight ensure-models
-	@echo "Building codescribe-ffi (FAT Whisper: Silero + Whisper embedded; MiniLM runtime resource)..."
+	@echo "Building codescribe-ffi (FAT Whisper: Silero + Whisper embedded; no MiniLM)..."
 	@CODESCRIBE_EMBED_WHISPER=1 CODESCRIBE_LICENSE_PUBLIC_KEY_HEX="$(CODESCRIBE_DIST_LICENSE_KEY)" \
 	 env -u CODESCRIBE_EMBED_EMBEDDER cargo build --release -p codescribe-ffi
 
@@ -151,9 +151,10 @@ release-qube: dist-preflight
 release: release-codescribe release-qube
 
 install:
-	@echo "Installing qube tools + codescribe CLI (Silero embedded; MiniLM/Whisper from cache)..."
+	@echo "Installing qube tools + codescribe CLI (Silero embedded; Whisper from cache)..."
 	@echo "Local install uses the development license verifier — same contract as install-app."
-	@./scripts/download-embedder.sh || true
+	@echo "MiniLM is not fetched: no runtime path loads it. Need it for e2e_round_trip or"
+	@echo "lexicon_gate_calibration? Run 'make download-embedder' once."
 	@env -u CODESCRIBE_EMBED_WHISPER -u CODESCRIBE_EMBED_EMBEDDER -u CODESCRIBE_NO_EMBED -u CODESCRIBE_LICENSE_PUBLIC_KEY_HEX \
 	 CODESCRIBE_LOCAL_INSTALL=1 cargo install --path . --force
 	@mkdir -p ~/.codescribe
@@ -1192,8 +1193,8 @@ help:
 	@printf '\n'
 	@printf '  $(HELP_C_YELLOW)%s$(HELP_C_RESET)\n' 'BUILD & INSTALL'
 	@printf '    $(HELP_C_GREEN)%-18s$(HELP_C_RESET) %s\n' 'build' 'Build debug binary'
-	@printf '    $(HELP_C_GREEN)%-18s$(HELP_C_RESET) %s\n' 'release' 'Build release dylib slim (Silero embedded; MiniLM/Whisper runtime)'
-	@printf '    $(HELP_C_GREEN)%-18s$(HELP_C_RESET) %s\n' 'install' 'Install CLI slim (Whisper via cache/Settings, not embedded)'
+	@printf '    $(HELP_C_GREEN)%-18s$(HELP_C_RESET) %s\n' 'release' 'Build release dylib slim (Silero embedded; Whisper runtime; no MiniLM)'
+	@printf '    $(HELP_C_GREEN)%-18s$(HELP_C_RESET) %s\n' 'install' 'Install CLI slim (Whisper via cache/Settings; MiniLM not fetched)'
 	@printf '%s\n' '  make install-no-embed DEV/RECOVERY: no optional embeds (runtime paths only)'
 	@printf '%s\n' '  make release-codescribe-embedded Fat dylib with Whisper baked in (not daily)'
 	@printf '    $(HELP_C_GREEN)%-18s$(HELP_C_RESET) %s\n' 'config' 'Edit ~/.codescribe/.env'
@@ -1212,7 +1213,7 @@ help:
 	@printf '    $(HELP_C_GREEN)%-18s$(HELP_C_RESET) %s\n' 'verify-dmg' 'Fail-closed payload gate (DMG=… VARIANT=slim|full VERSION=X.Y.Z)'
 	@printf '    $(HELP_C_GREEN)%-18s$(HELP_C_RESET) %s\n' 'download-model' 'Download Whisper model from HF'
 	@printf '    $(HELP_C_GREEN)%-18s$(HELP_C_RESET) %s\n' 'download-e5' 'Download E5 embedder model from HF'
-	@printf '%s\n' '  make download-embedder Download MiniLM embedder from HF'
+	@printf '%s\n' '  make download-embedder Download MiniLM from HF (only for e2e/calibration lanes)'
 	@printf '    $(HELP_C_GREEN)%-18s$(HELP_C_RESET) %s\n' 'ensure-models' 'Download Whisper+MiniLM if missing from cache'
 	@printf '\n'
 	@printf '  $(HELP_C_YELLOW)%s$(HELP_C_RESET)\n' 'RUN'
@@ -1301,8 +1302,9 @@ dist-preflight-signed: dist-preflight
 	fi
 	@echo "dist preflight: Sparkle public key OK (32-byte Ed25519 from $(if $(SPARKLE_ED_PUBLIC_KEY),environment,$(CODESCRIBE_SPARKLE_PUBLIC_KEY_FILE)))"
 
-# Daily slim DMG (public default): Silero embedded, MiniLM runtime resource,
-# Whisper NOT embedded.
+# Daily slim DMG (public default): Silero embedded; Whisper NOT embedded;
+# MiniLM NOT bundled (nothing loads it — see scripts/verify-dmg-payload.sh header).
+# Ship MiniLM with: ./scripts/build-dmg.sh --bundle-embedder (verify with --expect-embedder).
 dmg: dist-preflight
 	@CODESCRIBE_LICENSE_PUBLIC_KEY_HEX="$(CODESCRIBE_DIST_LICENSE_KEY)" ./scripts/build-dmg.sh
 
@@ -1315,7 +1317,8 @@ dmg-signed: dist-preflight-signed
 # Daily signed+notarized public artifact (same as make dmg-signed + notarize).
 # Does NOT download/embed Whisper. Apple STT works out of the box; Whisper is
 # opt-in via Settings → Dictation download (or make download-model).
-# Ends with the fail-closed payload gate (signed ≠ complete; see 0.13.2 MiniLM miss).
+# Ends with the fail-closed payload gate (signed ≠ complete; the gate now proves
+# structure, not DMG size — see its header for why size stopped being evidence).
 release-standard: dist-preflight-signed
 	@set -eu; \
 	receipt_dir=$$(mktemp -d "$${TMPDIR:-/tmp}/codescribe-release.XXXXXXXXXX"); \
@@ -1364,7 +1367,7 @@ release-stable: release-standard install-app-release
 
 # Optional fat SKU: bake Whisper (~1GB+) into the app. Not the daily path.
 # Ends with the fail-closed payload gate (full = Silero + Whisper embedded,
-# MiniLM runtime resource).
+# no MiniLM).
 release-full: dist-preflight-signed ensure-models
 	@set -eu; \
 	receipt_dir=$$(mktemp -d "$${TMPDIR:-/tmp}/codescribe-release.XXXXXXXXXX"); \

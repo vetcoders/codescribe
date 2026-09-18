@@ -36,6 +36,26 @@ configuration loading remain under investigation.
 
 ## [Unreleased]
 
+### Changed
+
+- **MiniLM left the default payload** — the public `.app` shipped a 471 MB
+  `Contents/Resources/models/embedder/model.safetensors` that no runtime path
+  loaded. `embedder::{embed,embed_batch,similarity}` has no caller in `app/`,
+  `bridge/`, `bin/` or `macos/`: its only consumers are `tests/e2e_round_trip.rs`,
+  `examples/roundtrip_live.rs` and `core/examples/lexicon_gate_calibration.rs`.
+  `Turn.embedding` is always `None`, and `QualityIssue::SemanticMeaningChange`
+  only names `semantic_cosine` in a finding spec that nothing computes.
+  `scripts/build-app.sh` now bundles the weights solely under
+  `CODESCRIBE_BUNDLE_EMBEDDER=1` (`build-dmg.sh --bundle-embedder`), and
+  `make install` no longer downloads them. Standard DMG drops from ~515 MB to
+  ~60 MB; `make download-embedder` still serves the test and calibration lanes.
+- **Payload gate proves structure, not size** — `verify-dmg-payload.sh` asserts
+  the MiniLM resource in both directions: required with `--expect-embedder`, and
+  refused when the build did not ask for it. Because the legitimate slim DMG is
+  now smaller than the 0.13.2 regression (~85 MB), the DMG floor can no longer
+  distinguish the two; the fail-closed signal is the dylib floor (Silero must be
+  embedded), the required binaries, and that present/absent assertion.
+
 > The `0.14.1` stabilization fight: retire Q8 completely, compose and validate
 > one loader-compatible FP16/F32 Whisper bundle, make Apple and Whisper observe
 > the same PCM clock, stop text-only deduplication from deleting intentional
