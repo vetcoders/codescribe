@@ -43,6 +43,10 @@ struct Cli {
 #[derive(Subcommand)]
 enum Command {
     /// Transcribe files or follow the app-owned live transcript bus
+    ///
+    /// stdout carries the payload and nothing else: transcript text in file
+    /// mode, projection JSONL under --json. Headers, provenance and engine
+    /// warnings go to stderr, so `... 2>/dev/null` needs no further filtering.
     Transcribe {
         /// Audio files to transcribe in order (omit when using `transcribe live`)
         files: Vec<std::path::PathBuf>,
@@ -56,7 +60,7 @@ enum Command {
         #[arg(long)]
         no_bus: bool,
         /// Live: raw projection JSONL for machine consumers instead of the human view
-        #[arg(long)]
+        #[arg(long, global = true)]
         json: bool,
         /// Literal words: skip the Light+ sentence shaping (the app's Ctrl-hold lane)
         #[arg(long)]
@@ -70,6 +74,47 @@ enum Command {
         no_truth: bool,
         #[command(subcommand)]
         mode: Option<TranscribeMode>,
+    },
+    /// Inspect, replay and recover the custom pronunciation lexicon
+    ///
+    /// The lexicon is a PRE-LLM variant→canonical substitution table. It is
+    /// grown two ways: by hand, and by replaying human corrections through the
+    /// extractor. Only the second needs adjudicating, which is what `replay`
+    /// reports and `--apply` obeys.
+    Lexicon {
+        #[command(subcommand)]
+        action: LexiconAction,
+    },
+}
+
+#[derive(Subcommand)]
+enum LexiconAction {
+    /// Summarise the live lexicon: rows, variants, provenance, recoverable backups
+    Show,
+    /// Replay corrections through the extractor and the admission gate
+    Replay {
+        /// corrections.jsonl to replay (default: <config>/quality/corrections.jsonl)
+        #[arg(long)]
+        corrections: Option<std::path::PathBuf>,
+        /// Where the three tier files and the report land (default: <config>)
+        #[arg(long)]
+        out: Option<std::path::PathBuf>,
+        /// Write the accepted tier into the live lexicon; the others never land
+        #[arg(long)]
+        apply: bool,
+    },
+    /// Merge a rotation backup back into the live lexicon
+    ///
+    /// Hand-curated rows return verbatim; rows the extractor wrote are
+    /// re-adjudicated through the same gate `replay` uses. The merge is a
+    /// union, so nothing the live file gained after the backup is lost.
+    Restore {
+        /// Backup to restore from (default: the richest recoverable one)
+        #[arg(long)]
+        from: Option<std::path::PathBuf>,
+        /// Report what would change without writing the lexicon
+        #[arg(long)]
+        dry_run: bool,
     },
 }
 
@@ -134,6 +179,110 @@ fn main() -> anyhow::Result<()> {
                 )
             }
         },
+        Command::Lexicon { action } => run_lexicon(action),
+    }
+}
+
+/// Lexicon surface: summarise, replay, recover.
+fn run_lexicon(action: LexiconAction) -> anyhow::Result<()> {
+    use codescribe_core::config::Config;
+    use codescribe_core::quality::lexicon_replay::run_lexicon_replay;
+    use codescribe_core::quality::lexicon_restore::{
+        newest_recoverable_backup, restore_custom_lexicon_from_backup,
+    };
+
+    let config_dir = Config::config_dir();
+    match action {
+        LexiconAction::Show => {
+            let path = config_dir.join("lexicon.custom.jsonl");
+            let text = std::fs::read_to_string(&path).unwrap_or_default();
+            let mut rows = 0usize;
+            let mut variants = 0usize;
+            let mut curated = 0usize;
+            for line in text.lines().filter(|line| !line.trim().is_empty()) {
+                let Ok(value) = serde_json::from_str::<serde_json::Value>(line) else {
+                    continue;
+                };
+                rows += 1;
+                variants += value
+                    .get("mispronunciations")
+                    .and_then(|v| v.as_array())
+                    .map_or(0, |a| a.len());
+                if value.get("source").and_then(|v| v.as_str()) != Some("correction") {
+                    curated += 1;
+                }
+            }
+            println!("lexicon: {}", path.display());
+            println!("rows: {rows}  variants: {variants}");
+            println!("curated: {curated}  from corrections: {}", rows - curated);
+            match newest_recoverable_backup(&config_dir) {
+                // A richer backup than the live file means the live file lost
+                // rules. Saying so here is the whole point of `show`.
+                Some(backup) => println!(
+                    "recoverable backup holds MORE rows than the live file: {}\n\
+                     run `codescribe lexicon restore` to merge it back",
+                    backup.display()
+                ),
+                None => println!("no backup holds more than the live file"),
+            }
+            Ok(())
+        }
+        LexiconAction::Replay {
+            corrections,
+            out,
+            apply,
+        } => {
+            let source =
+                corrections.unwrap_or_else(|| config_dir.join("quality").join("corrections.jsonl"));
+            let out_dir = out.unwrap_or_else(|| config_dir.clone());
+            let outcome = run_lexicon_replay(&source, &out_dir, apply)?;
+            eprintln!(
+                "replay: {} candidate pair(s), {} accepted{}",
+                outcome.table.len(),
+                outcome.accepted(),
+                if apply { " and applied" } else { " (dry-run)" }
+            );
+            for (tier, count) in &outcome.tier_counts {
+                eprintln!("  {tier}: {count}");
+            }
+            eprintln!("accepted: {}", outcome.accepted_path.display());
+            eprintln!("review:   {}", outcome.review_path.display());
+            eprintln!("rejected: {}", outcome.rejected_path.display());
+            eprintln!("report:   {}", outcome.report_path.display());
+            Ok(())
+        }
+        LexiconAction::Restore { from, dry_run } => {
+            let backup = match from {
+                Some(path) => path,
+                None => newest_recoverable_backup(&config_dir).ok_or_else(|| {
+                    anyhow::anyhow!(
+                        "no backup in {} holds more rows than the live lexicon",
+                        config_dir.display()
+                    )
+                })?,
+            };
+            if dry_run {
+                // Reading is free; the caller asked not to write, so stop before
+                // the merge rather than writing and reporting after the fact.
+                println!("would restore from {}", backup.display());
+                println!("run without --dry-run to merge it into the live lexicon");
+                return Ok(());
+            }
+            let report = restore_custom_lexicon_from_backup(&backup)?;
+            println!("restored from {}", backup.display());
+            println!(
+                "backup rows: {}  curated restored: {}  auto examined: {}  auto pairs accepted: {}",
+                report.backup_rows,
+                report.curated_rows_restored,
+                report.auto_rows_examined,
+                report.auto_pairs_accepted
+            );
+            println!(
+                "live rows: {} -> {}  variants now: {}",
+                report.live_rows_before, report.live_rows_after, report.variants_after
+            );
+            Ok(())
+        }
     }
 }
 
@@ -945,7 +1094,10 @@ mod tests {
             no_truth,
             files,
             ..
-        } = cli.command;
+        } = cli.command
+        else {
+            panic!("`transcribe` must parse as the transcribe command");
+        };
         assert!(inspect);
         assert!(no_truth);
         assert_eq!(files.len(), 1);
@@ -960,10 +1112,53 @@ mod tests {
             language,
             mode,
             ..
-        } = cli.command;
+        } = cli.command
+        else {
+            panic!("`transcribe live` must parse as the transcribe command");
+        };
         assert!(files.is_empty());
         assert_eq!(language.as_deref(), Some("pl"));
         assert!(matches!(mode, Some(TranscribeMode::Live)));
+    }
+
+    /// The trap this cut closes: `--json` used to be rejected after `live`,
+    /// because it was declared on the parent and was not global.
+    #[test]
+    fn json_parses_on_either_side_of_the_live_subcommand() {
+        for argv in [
+            ["codescribe", "transcribe", "live", "--json"],
+            ["codescribe", "transcribe", "--json", "live"],
+        ] {
+            let cli = Cli::try_parse_from(argv).expect("--json must parse in both positions");
+            let Command::Transcribe { json, mode, .. } = cli.command else {
+                panic!("`transcribe live` must parse as the transcribe command");
+            };
+            assert!(json, "{argv:?}");
+            assert!(matches!(mode, Some(TranscribeMode::Live)));
+        }
+    }
+
+    /// File-only flags stay local on purpose: `transcribe live --help` must not
+    /// advertise options that lane refuses.
+    #[test]
+    fn file_only_flags_are_refused_after_the_live_subcommand() {
+        assert!(
+            Cli::try_parse_from(["codescribe", "transcribe", "live", "--raw"]).is_err(),
+            "--raw belongs to file mode and must not parse under `live`"
+        );
+    }
+
+    #[test]
+    fn lexicon_actions_parse() {
+        let cli = Cli::try_parse_from(["codescribe", "lexicon", "restore", "--dry-run"])
+            .expect("lexicon restore should parse");
+        let Command::Lexicon { action } = cli.command else {
+            panic!("`lexicon` must parse as the lexicon command");
+        };
+        assert!(matches!(
+            action,
+            LexiconAction::Restore { dry_run: true, .. }
+        ));
     }
 
     /// Founder 2026-09-05: "to też naturalne, że powinno przejść" — a batch of
@@ -972,7 +1167,9 @@ mod tests {
     fn multiple_files_parse_as_a_batch_not_an_error() {
         let cli = Cli::try_parse_from(["codescribe", "transcribe", "a.wav", "b.wav", "c.wav"])
             .expect("multi-file should parse");
-        let Command::Transcribe { files, mode, .. } = cli.command;
+        let Command::Transcribe { files, mode, .. } = cli.command else {
+            panic!("a wav batch must parse as the transcribe command");
+        };
         assert_eq!(files.len(), 3);
         assert!(mode.is_none());
     }

@@ -8,6 +8,11 @@
 //!   take classifier Voice Lab embeds as supervisor findings.
 //! - `overlay_quality` — captures human edits of the overlay FINAL transcript and
 //!   distils them into custom lexicon rules (the live, per-user loop).
+//! - `lexicon_gate` — decides which of those distilled pairs may reach the live
+//!   lexicon at all: grammar inflections, reversed product names and sentence
+//!   bleed are rejected, suspicious pairs quarantined for review.
+//! - `lexicon_restore` — brings a lexicon back from its own rotation backups
+//!   when the live file has been truncated outside this code.
 //! - `qube_report` — batch WAV evaluation: transcribe, format, score, emit artifacts.
 //! - `qube_daemon` — wraps the report in a self-improving cycle (report → regression
 //!   analysis → tuning updates → re-run).
@@ -19,6 +24,12 @@
 
 /// Locked THE ENGINE contract for quality-report HTML and corpus JSON.
 pub mod engine_contract;
+/// Admission gate between extracted correction pairs and the live lexicon.
+pub mod lexicon_gate;
+/// Operator-facing replay job: adjudicated corrections in, three tiers out.
+pub mod lexicon_replay;
+/// Recovery of a custom lexicon from one of its own rotation backups.
+pub mod lexicon_restore;
 pub mod overlay_quality;
 /// Background Qube donor daemon: opt-in stop-path WAV/transcript persistence.
 pub mod qube_daemon;
@@ -30,6 +41,14 @@ pub mod seal_atlas_html;
 pub mod supervisor;
 /// Teacher loop: attention flags, lexicon feedback, polygon token helpers.
 pub mod teacher;
+
+pub use lexicon_gate::{
+    LexiconVerdict, ProtectedTerms, RejectReason, ReviewReason, adjudicate_lexicon_candidates,
+};
+pub use lexicon_replay::{ReplayOutcome, run_lexicon_replay};
+pub use lexicon_restore::{
+    LexiconRestoreReport, newest_recoverable_backup, restore_custom_lexicon_from_backup,
+};
 
 pub use engine_contract::{
     CORPUS_REPORT_SCHEMA, ENGINE_CONTRACT, ENGINE_CONTRACT_ID, EngineContract,

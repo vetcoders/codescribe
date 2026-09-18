@@ -13,7 +13,7 @@ use codescribe::qube_report::{
     LocalTranscriptionMode, MetricsReference, QualityReportConfig, compare_truth_dirs,
     render_truth_comparison, run,
 };
-use codescribe_core::quality::overlay_quality::replay_corrections_through_extractor;
+use codescribe_core::quality::lexicon_replay::{ReplayOutcome, run_lexicon_replay};
 
 /// Command-line surface of the report generator. Two distinct jobs share this
 /// binary: the default batch quality report, and the `--replay-corrections`
@@ -127,77 +127,11 @@ async fn main() -> Result<()> {
         let path = args
             .corrections_path
             .unwrap_or_else(|| config_dir.join("quality").join("corrections.jsonl"));
-        // Live lexicon is untouched unless --apply. Dry-run always writes a proposed
-        // JSONL + human-readable report under the config dir (or --out).
-        let table = replay_corrections_through_extractor(&path, args.apply)?;
         let out_dir = args.out.unwrap_or_else(|| config_dir.clone());
-        std::fs::create_dir_all(&out_dir)?;
-        let proposed_path = out_dir.join("lexicon.custom.proposed.jsonl");
-        let report_path = out_dir.join("lexicon_replay_report.md");
-
-        // Proposed rows: one JSON object per pair (not applied).
-        {
-            use std::io::Write;
-            let mut proposed = std::fs::File::create(&proposed_path)?;
-            for row in &table {
-                let line = serde_json::json!({
-                    "term": row.canonical,
-                    "mispronunciations": [row.variant],
-                    "source": "correction",
-                    "correction_id": row.correction_id,
-                    "source_line": row.line,
-                });
-                writeln!(proposed, "{line}")?;
-            }
-        }
-
-        {
-            use std::io::Write;
-            let mut report = std::fs::File::create(&report_path)?;
-            writeln!(report, "# Lexicon corrections replay")?;
-            writeln!(report)?;
-            writeln!(report, "- source: `{}`", path.display())?;
-            writeln!(report, "- candidate pairs: {}", table.len())?;
-            writeln!(
-                report,
-                "- mode: {}",
-                if args.apply {
-                    "apply (live lexicon updated after backup)"
-                } else {
-                    "dry-run (live lexicon untouched)"
-                }
-            )?;
-            writeln!(report, "- proposed file: `{}`", proposed_path.display())?;
-            writeln!(report)?;
-            writeln!(report, "| line | correction_id | variant | canonical |")?;
-            writeln!(report, "| --- | --- | --- | --- |")?;
-            for row in &table {
-                writeln!(
-                    report,
-                    "| {} | `{}` | {} | {} |",
-                    row.line, row.correction_id, row.variant, row.canonical
-                )?;
-            }
-        }
-
-        println!(
-            "line\tcorrection_id\tvariant\tcanonical\tapplied\t(source={})",
-            path.display()
-        );
-        for row in &table {
-            println!(
-                "{}\t{}\t{}\t{}\t{}",
-                row.line, row.correction_id, row.variant, row.canonical, row.applied
-            );
-        }
-        println!(
-            "replay: {} candidate pair(s){} from {}",
-            table.len(),
-            if args.apply { " applied" } else { " (dry-run)" },
-            path.display()
-        );
-        println!("proposed: {}", proposed_path.display());
-        println!("report: {}", report_path.display());
+        // Same library call `codescribe lexicon replay` makes, so both entry
+        // points produce byte-identical artifacts.
+        let outcome = run_lexicon_replay(&path, &out_dir, args.apply)?;
+        print_replay_outcome(&outcome, &path, args.apply);
         return Ok(());
     }
 
@@ -250,4 +184,37 @@ fn env_bool(key: &str) -> bool {
         .ok()
         .map(|v| v == "1" || v.eq_ignore_ascii_case("true"))
         .unwrap_or(false)
+}
+
+/// Print a replay outcome the way the legacy binary always has: one TSV row per
+/// pair, then the tier histogram and the artifact paths.
+fn print_replay_outcome(outcome: &ReplayOutcome, source: &std::path::Path, applied: bool) {
+    println!(
+        "line\tcorrection_id\tvariant\tcanonical\tverdict\tapplied\t(source={})",
+        source.display()
+    );
+    for row in &outcome.table {
+        println!(
+            "{}\t{}\t{}\t{}\t{}\t{}",
+            row.line, row.correction_id, row.variant, row.canonical, row.verdict, row.applied
+        );
+    }
+    println!(
+        "replay: {} candidate pair(s), {} accepted{} from {}",
+        outcome.table.len(),
+        outcome.accepted(),
+        if applied {
+            " and applied"
+        } else {
+            " (dry-run)"
+        },
+        source.display()
+    );
+    for (tier, count) in &outcome.tier_counts {
+        println!("  {tier}: {count}");
+    }
+    println!("accepted: {}", outcome.accepted_path.display());
+    println!("review: {}", outcome.review_path.display());
+    println!("rejected: {}", outcome.rejected_path.display());
+    println!("report: {}", outcome.report_path.display());
 }

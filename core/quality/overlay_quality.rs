@@ -20,6 +20,7 @@ use sha2::{Digest, Sha256};
 use uuid::Uuid;
 
 use crate::config::{Config, FormattingPolicy};
+use crate::quality::lexicon_gate::{ProtectedTerms, adjudicate_lexicon_candidates};
 
 /// Serializes every custom-lexicon rewrite in this process.
 ///
@@ -1515,13 +1516,34 @@ pub fn replay_corrections_through_extractor(
                 variant: variant.clone(),
                 canonical: canonical.clone(),
                 applied: false,
+                // Filled in by the gate once the whole batch is known.
+                verdict: String::new(),
+                accepted: false,
             });
         }
     }
 
-    if apply && !results.is_empty() {
+    // The extractor answers "what changed"; the gate answers "may this become a
+    // substitution rule". Adjudicate the whole batch, because contradiction and
+    // ambiguity are properties of the set, then apply the accepted tier only.
+    let config_dir = Config::config_dir();
+    let protected = ProtectedTerms::load_from(&ProtectedTerms::default_path(&config_dir));
+    let batch: Vec<(String, String)> = results
+        .iter()
+        .map(|candidate| (candidate.variant.clone(), candidate.canonical.clone()))
+        .collect();
+    for (candidate, verdict) in results
+        .iter_mut()
+        .zip(adjudicate_lexicon_candidates(&batch, &protected))
+    {
+        candidate.verdict = verdict.label().to_string();
+        candidate.accepted = verdict.is_accepted();
+    }
+
+    let accepted_count = results.iter().filter(|c| c.accepted).count();
+    if apply && accepted_count > 0 {
         assert_test_data_dir_isolated("replay_corrections_through_extractor");
-        let lexicon_path = Config::config_dir().join("lexicon.custom.jsonl");
+        let lexicon_path = config_dir.join("lexicon.custom.jsonl");
         if lexicon_path.exists() {
             let ts = SystemTime::now()
                 .duration_since(UNIX_EPOCH)
@@ -1540,10 +1562,11 @@ pub fn replay_corrections_through_extractor(
         }
         let pairs: Vec<(&str, &str)> = results
             .iter()
+            .filter(|candidate| candidate.accepted)
             .map(|candidate| (candidate.variant.as_str(), candidate.canonical.as_str()))
             .collect();
         upsert_corrections_in_custom_lexicon(&pairs)?;
-        for candidate in &mut results {
+        for candidate in results.iter_mut().filter(|c| c.accepted) {
             candidate.applied = true;
         }
     }
@@ -1561,8 +1584,14 @@ pub struct ReplayCandidate {
     pub variant: String,
     /// Term it would be rewritten to.
     pub canonical: String,
-    /// False in a dry run; true once the batch upsert succeeded.
+    /// False in a dry run; true once the batch upsert succeeded. Only accepted
+    /// rows can ever flip: the other tiers are reported, never written.
     pub applied: bool,
+    /// Gate tier label, e.g. `accept`, `review:common-word`,
+    /// `reject:protected-variant`. See [`crate::quality::lexicon_gate`].
+    pub verdict: String,
+    /// True only for the `accept` tier — the one `--apply` may write.
+    pub accepted: bool,
 }
 
 /// Result of promoting store evidence (corrections + proposed) into the live dictionary.
