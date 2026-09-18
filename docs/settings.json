@@ -1,0 +1,57 @@
+{
+  "schema_version": 3,
+  "audio": {
+    "seal_lane_armed": true,
+    "feedback": {
+      "beep_on_start": true,
+      "volume": 0.4
+    }
+  },
+  "interaction": {
+    "auto_paste_enabled": true,
+    "deferred_insert_shortcut": "command_option_v",
+    "mode_bindings": [
+      {
+        "binding": "hold_fn",
+        "mode": "dictation"
+      },
+      {
+        "binding": "double_left_option",
+        "mode": "formatting"
+      },
+      {
+        "binding": "double_right_option",
+        "mode": "assistive"
+      }
+    ]
+  },
+  "speech": {
+    "language": "pl",
+    "engine": {
+      "asr_mode": "local_power",
+      "stt_engine": "apple",
+      "final_pass_mode": "smart",
+      "file_transcription_endpoint": "https://api.libraxis.com/v1/audio/transcriptions",
+      "live_transcription_endpoint": "wss://api.libraxis.com/v1/audio/transcribe"
+    },
+    "formatting": {
+      "enabled": true,
+      "level": "correction",
+      "llm_provider": "openai",
+      "llm_model": "gpt-5.3-codex"
+    },
+    "assistive": {
+      "provider": "openai",
+      "llm_model": "gpt-6-astra"
+    }
+  },
+  "ui": {
+    "hold_indicator": true,
+    "hold_badge_size": 8,
+    "transcription_overlay_enabled": true,
+    "overlay_expanded_by_default": false
+  },
+  "features": {
+    "history_enabled": true
+  }
+}

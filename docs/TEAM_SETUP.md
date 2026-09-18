@@ -85,23 +85,37 @@ If runtime lookup cannot find the model, point `CODESCRIBE_MODEL_PATH` at a vali
 
 ## Qube CLI Utilities
 
-The app path is the SwiftUI bundle. Terminal utilities are limited to batch quality/reporting tools:
+The app path is the SwiftUI bundle. Every terminal surface now hangs off one
+entry point:
 
 ```bash
-qube-report --help
-qube-daemon --help
+codescribe --help          # transcribe · bus · lexicon · report · daemon · teach · corpus
 ```
+
+The standalone binaries still exist and run the same code, so old scripts and
+muscle memory keep working:
+
+| Unified             | Legacy binary        |
+| ------------------- | -------------------- |
+| `codescribe report` | `qube-report`        |
+| `codescribe daemon` | `qube-daemon`        |
+| `codescribe teach`  | `codescribe-teacher` |
+| `codescribe corpus` | `codescribe-corpus`  |
 
 ## Quality & Tools
 
-New CLI tools for batch processing and automation:
-
 ```bash
 # Batch quality report
-qube-report --help
+codescribe report --help
 
 # Quality daemon
-qube-daemon --help
+codescribe daemon --help
+
+# Custom pronunciation lexicon: what is in it, replay, recover
+codescribe lexicon show
+
+# Transcript bus: size, composition, retention
+codescribe bus status
 ```
 
 ## Configuration

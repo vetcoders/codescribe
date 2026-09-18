@@ -2516,7 +2516,16 @@ mod tests {
         assert!(stored.source.is_none());
     }
 
-    /// Replay dry-run keeps only local teachable pairs; apply writes the lexicon.
+    /// Replay dry-run keeps only local teachable pairs; apply writes the tier the
+    /// gate accepted, and nothing else.
+    ///
+    /// Two stages, two questions. Extraction asks "what changed" and is blind to
+    /// meaning: it yields `zaznaczenie -> selection` from a one-word edit just as
+    /// readily as `grypa -> grepa`. The gate then asks "may this be a
+    /// substitution rule", and a Polish word paired with its English translation
+    /// is not a mishearing — that rule would rewrite every future
+    /// "zaznaczenie". Both pairs must therefore appear in the table, and only
+    /// one may reach the lexicon.
     #[test]
     #[serial]
     fn replay_dry_run_on_fixture_corpus_produces_expected_table() {
@@ -2537,6 +2546,9 @@ mod tests {
         }
         let delivered = format!("{body}zaznaczenie");
         let edited = format!("{body}selection");
+        // A second, phonetic one-word fix: same extraction shape, opposite verdict.
+        let heard = format!("{body}grypa");
+        let meant = format!("{body}grepa");
         let lines = [
             serde_json::json!({
                 "timestamp_ms": 1,
@@ -2568,23 +2580,46 @@ mod tests {
                 "meta": {"action": "copy"}
             })
             .to_string(),
+            serde_json::json!({
+                "timestamp_ms": 4,
+                "mode": "overlay",
+                "formatting_level": "correction",
+                "raw_text": heard,
+                "delivered_text": heard,
+                "edited_text": meant,
+                "meta": {"action": "copy"}
+            })
+            .to_string(),
         ];
         fs::write(&path, format!("{}\n", lines.join("\n"))).unwrap();
 
         let table = replay_corrections_through_extractor(&path, false).expect("replay");
         assert_eq!(
             table.len(),
-            1,
-            "only the local word fix should extract: {table:?}"
+            2,
+            "only the two local word fixes should extract: {table:?}"
         );
         assert_eq!(table[0].variant, "zaznaczenie");
         assert_eq!(table[0].canonical, "selection");
-        assert!(!table[0].applied);
+        assert_eq!(table[0].verdict, "reject:not-phonetic");
+        assert!(!table[0].accepted, "a translation is not a mishearing");
+        assert_eq!(table[1].variant, "grypa");
+        assert_eq!(table[1].canonical, "grepa");
+        assert_eq!(table[1].verdict, "accept");
+        assert!(!table[1].applied, "a dry run writes nothing");
 
         let applied = replay_corrections_through_extractor(&path, true).expect("apply");
-        assert!(applied[0].applied);
+        assert!(
+            !applied[0].applied,
+            "the refused pair stays out of the lexicon"
+        );
+        assert!(applied[1].applied);
         let entries = custom_lexicon_entries().unwrap();
-        assert!(entries.iter().any(|e| e.variant == "zaznaczenie"));
+        assert!(entries.iter().any(|e| e.variant == "grypa"));
+        assert!(
+            !entries.iter().any(|e| e.variant == "zaznaczenie"),
+            "apply must not smuggle in a pair the gate refused"
+        );
     }
 
     /// Commit under DATA_DIR isolation writes quality + meta and may teach pairs.

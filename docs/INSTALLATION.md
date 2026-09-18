@@ -30,7 +30,7 @@ make release-qube
 make install
 ```
 
-**Result**: `qube-report` and `qube-daemon` installed from `bin/qube_report.rs` and `bin/qube_daemon.rs`.
+**Result**: `qube-report` and `qube-daemon` installed from `bin/qube_report.rs` and `bin/qube_daemon.rs`. Both are shims over `codescribe report` and `codescribe daemon`; the flags and the behaviour are identical.
 
 **How it runs**: Terminal-only quality/reporting utilities, not the user-facing app.
 

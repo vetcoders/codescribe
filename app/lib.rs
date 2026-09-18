@@ -25,6 +25,8 @@ pub mod agent;
 
 /// Process-global broadcast carrying voice-assistive reply events to the UI.
 pub mod agent_delivery;
+/// Command surfaces shared by `codescribe <subcommand>` and the legacy bins.
+pub mod cli;
 /// Tracing/log initialization shared by the app and the UniFFI bridge.
 pub mod logging;
 /// macOS platform layer: hotkeys, clipboard, onboarding, permissions.

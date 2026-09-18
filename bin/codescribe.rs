@@ -95,6 +95,20 @@ enum Command {
         #[command(subcommand)]
         action: LexiconAction,
     },
+    /// Batch quality report over a corpus of WAV+TXT pairs
+    Report(codescribe::cli::report::ReportArgs),
+    /// Self-improving quality loop: report, regression analysis, tuning
+    Daemon(codescribe::cli::daemon::DaemonArgs),
+    /// Learning triangle: Apple-live × Whisper × human reference
+    Teach {
+        #[command(subcommand)]
+        cmd: codescribe::cli::teacher::TeacherCommand,
+    },
+    /// Private corpus census and production-overlay replay
+    Corpus {
+        #[command(subcommand)]
+        command: codescribe::cli::corpus::CorpusCommand,
+    },
 }
 
 #[derive(Subcommand)]
@@ -155,12 +169,39 @@ enum TranscribeMode {
     Last,
 }
 
-fn main() -> anyhow::Result<()> {
+fn main() -> std::process::ExitCode {
+    // The corpus lane must be unable to reach the operator's Keychain, and the
+    // lock has to be in place before ANY parsing — so the decision is made
+    // from raw argv, exactly as the standalone binary made it from its first
+    // statement. See `cli::corpus` for why this cannot be a typed check.
+    //
+    // SAFETY: first executable statement of the process, before Clap, before
+    // the tracing subscriber, before any thread or runtime exists.
+    if codescribe::cli::corpus::corpus_argv_requested() {
+        unsafe {
+            std::env::set_var("CODESCRIBE_DISABLE_KEYCHAIN", "1");
+        }
+    }
     // Engine warnings (a refused long-file span, a degraded lane) are the
     // CLI's only way to say "this transcript is missing something"; they go
     // to stderr, so `transcribe last` stdout stays verbatim for the widget.
     codescribe::logging::init_logging_with_default_filter("warn");
-    let cli = Cli::parse();
+    match dispatch(Cli::parse()) {
+        Ok(code) => code,
+        Err(error) => {
+            eprintln!("codescribe: {error:#}");
+            std::process::ExitCode::FAILURE
+        }
+    }
+}
+
+/// Route a parsed command line to its job.
+///
+/// Returns the process exit code rather than `()` because the corpus lane
+/// distinguishes "ran and failed" (2) from "could not run" (1), and folding
+/// that into an anyhow error would erase the difference.
+fn dispatch(cli: Cli) -> anyhow::Result<std::process::ExitCode> {
+    let success = std::process::ExitCode::SUCCESS;
     match cli.command {
         Command::Transcribe {
             files,
@@ -206,10 +247,35 @@ fn main() -> anyhow::Result<()> {
                     !no_truth,
                 )
             }
-        },
-        Command::Bus { action } => run_bus(action),
-        Command::Lexicon { action } => run_lexicon(action),
+        }
+        .map(|()| success),
+        Command::Bus { action } => run_bus(action).map(|()| success),
+        Command::Lexicon { action } => run_lexicon(action).map(|()| success),
+        Command::Report(args) => {
+            blocking_runtime()?.block_on(codescribe::cli::report::run(args))?;
+            Ok(success)
+        }
+        Command::Daemon(args) => {
+            blocking_runtime()?.block_on(codescribe::cli::daemon::run(args))?;
+            Ok(success)
+        }
+        Command::Teach { cmd } => codescribe::cli::teacher::run(cmd).map(|()| success),
+        // `main_with` owns the corpus exit contract; the unified entry point
+        // adopts it rather than reinventing a second one.
+        Command::Corpus { command } => Ok(codescribe::cli::corpus::main_with(
+            command,
+            codescribe::cli::corpus::Invocation::subcommand("corpus"),
+        )),
     }
+}
+
+/// A Tokio runtime for the two async jobs.
+///
+/// Built on demand, not with `#[tokio::main]`: the transcribe lanes are
+/// synchronous and must stay that way, and the corpus lane spawns child
+/// processes before any runtime should exist.
+fn blocking_runtime() -> anyhow::Result<tokio::runtime::Runtime> {
+    tokio::runtime::Runtime::new().map_err(Into::into)
 }
 
 /// Transcript bus surface: what is in it, and how to get the space back.
