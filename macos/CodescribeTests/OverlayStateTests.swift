@@ -2073,6 +2073,31 @@ final class OverlayStateTests: XCTestCase {
     XCTAssertEqual(state.toast, "Dictation failed — transcript kept")
   }
 
+  /// Assistive hides the overlay, so "transcript kept" on a canvas the user
+  /// cannot see is a drop. A terminal failure with a committed draft must hand
+  /// the projection to the composer join before abort wipes capture identity —
+  /// and exactly once, because the delivery slot is per session.
+  func testTerminalFailureHandsTheDraftToTheComposerJoin() {
+    let state = OverlayState()
+    var delivered: [(text: String, sessionId: String)] = []
+    state.onComposerTranscript = { text, sessionId in
+      delivered.append((text: text, sessionId: sessionId))
+      return .admitted(threadID: UUID())
+    }
+    state.handleRecordingStarted()
+    projectText("zdanie pierwsze", to: state, sessionId: "failed-take-join")
+
+    state.handleError(message: "transcription_failed: engine gave up mid-take")
+
+    XCTAssertEqual(delivered.count, 1, "the failed take must reach the composer join")
+    XCTAssertEqual(delivered.first?.text, "zdanie pierwsze")
+    XCTAssertEqual(delivered.first?.sessionId, "failed-take-join")
+    XCTAssertEqual(state.toast, "Dictation failed — transcript kept")
+
+    state.handleError(message: "transcription_failed: engine gave up mid-take")
+    XCTAssertEqual(delivered.count, 1, "a duplicate terminal must not insert a second copy")
+  }
+
   func testEngineErrorSidebandPreservesProjectedPhaseOnEmptyTake() {
     let state = OverlayState()
     state.handleError(message: "layer1_lane_degraded: Layer 1 lane fell back")
