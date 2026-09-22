@@ -145,6 +145,17 @@ enum LexiconAction {
         #[arg(long)]
         apply: bool,
     },
+    /// Remove a term, or one variant of it, from the live lexicon
+    ///
+    /// A lexicon that can only grow is a lexicon whose mistakes are permanent.
+    /// A rotation backup is taken before the write.
+    Remove {
+        /// Canonical term whose row to touch
+        term: String,
+        /// Remove only this misheard spelling; without it the whole row goes
+        #[arg(long)]
+        variant: Option<String>,
+    },
     /// Merge a rotation backup back into the live lexicon
     ///
     /// Hand-curated rows return verbatim; rows the extractor wrote are
@@ -157,6 +168,13 @@ enum LexiconAction {
         /// Report what would change without writing the lexicon
         #[arg(long)]
         dry_run: bool,
+        /// Also hold hand-written rows to the admission gate
+        ///
+        /// Hand-written does not mean correct: a curated row can list a term's
+        /// own inflections as mispronunciations (`Monika <- Moniki, Monikę`),
+        /// which rewrites correct speech and breaks the sentence.
+        #[arg(long)]
+        gate_curated: bool,
     },
 }
 
@@ -181,6 +199,16 @@ fn main() -> std::process::ExitCode {
         unsafe {
             std::env::set_var("CODESCRIBE_DISABLE_KEYCHAIN", "1");
         }
+    }
+    // Rust starts with SIGPIPE ignored, so a `println!` into a closed pipe
+    // returns EPIPE and panics with a backtrace. `codescribe lexicon show |
+    // head` is an ordinary thing to type, and every other Unix tool just ends
+    // there. Restore the default disposition.
+    //
+    // SAFETY: still the process's first moments — no threads, no runtime, and
+    // no handler this replaces.
+    unsafe {
+        libc::signal(libc::SIGPIPE, libc::SIG_DFL);
     }
     // Engine warnings (a refused long-file span, a degraded lane) are the
     // CLI's only way to say "this transcript is missing something"; they go
@@ -428,7 +456,25 @@ fn run_lexicon(action: LexiconAction) -> anyhow::Result<()> {
             eprintln!("report:   {}", outcome.report_path.display());
             Ok(())
         }
-        LexiconAction::Restore { from, dry_run } => {
+        LexiconAction::Remove { term, variant } => {
+            let report = codescribe_core::quality::lexicon_restore::remove_from_custom_lexicon(
+                &term,
+                variant.as_deref(),
+            )?;
+            println!(
+                "removed {} row(s) and {} variant(s); {} row(s) remain",
+                report.rows_removed, report.variants_removed, report.rows_after
+            );
+            if let Some(backup) = report.backup {
+                println!("backup: {}", backup.display());
+            }
+            Ok(())
+        }
+        LexiconAction::Restore {
+            from,
+            dry_run,
+            gate_curated,
+        } => {
             let backup = match from {
                 Some(path) => path,
                 None => newest_recoverable_backup(&config_dir).ok_or_else(|| {
@@ -445,7 +491,7 @@ fn run_lexicon(action: LexiconAction) -> anyhow::Result<()> {
                 println!("run without --dry-run to merge it into the live lexicon");
                 return Ok(());
             }
-            let report = restore_custom_lexicon_from_backup(&backup)?;
+            let report = restore_custom_lexicon_from_backup(&backup, gate_curated)?;
             println!("restored from {}", backup.display());
             println!(
                 "backup rows: {}  curated restored: {}  auto examined: {}  auto pairs accepted: {}",

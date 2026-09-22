@@ -1,24 +1,29 @@
 //! Recovery of a custom lexicon from one of its own rotation backups.
 //!
 //! WHY THIS EXISTS. `--replay-corrections --apply` copies the live lexicon to
-//! `.lexicon.custom.jsonl.bak-replay-<unix>` before every write. That rotation
-//! turned out to be the only surviving record of months of curation: on
-//! 2026-09-18 the live file held **one** row while the 2026-08-14 backup held
-//! 781 rows and 2191 variant spellings, grown steadily from 678 rows on
-//! 2026-07-18. Nothing in the upsert path can shrink a lexicon — it is a
-//! read-modify-write union — so the loss came from outside this code, and the
-//! backups are the recovery surface.
+//! `.lexicon.custom.jsonl.bak-replay-<unix>` before every write, and those
+//! rotations are the only record of months of curation: on 2026-09-18 the live
+//! file held one row while the 2026-08-16 backup held 781 rows and 2191 variant
+//! spellings, grown from 678 rows on 2026-07-18.
 //!
-//! The two provenances in a backup are not equally trustworthy and are not
-//! restored the same way:
+//! **A shrunken lexicon is not evidence of a bug.** The 2026-09-18 clearing was
+//! the operator's own decision — "leksykon wywaliłem ja - był poisoned i psuł
+//! najprostsze transkrypcje" — so this module restores only when asked, never
+//! on its own initiative, and `lexicon show` reports a recoverable backup as
+//! information rather than as a fault.
 //!
-//! - rows without a `source` (or with anything other than `correction`) are
-//!   hand-curated. They are the operator's own work and come back verbatim.
-//! - rows with `source: "correction"` were extracted automatically by the very
-//!   pass whose output the gate now exists to judge, and the 2026-08-14 backup
-//!   shows exactly why (`to <- ten`, `kiedy <- jak`, `Zerknij <- tak`). They
-//!   are re-adjudicated through [`crate::quality::lexicon_gate`] and only the
-//!   accepted tier returns.
+//! The two provenances in a backup are not equally trustworthy:
+//!
+//! - rows with `source: "correction"` were extracted automatically and are
+//!   always re-adjudicated through [`crate::quality::lexicon_gate`]; the
+//!   2026-08-16 backup shows why (`to <- ten`, `kiedy <- jak`, `Zerknij <- tak`).
+//! - rows without a `source` are hand-written. They come back verbatim by
+//!   default — but "hand-written" does not mean "correct". The same backup
+//!   carries the curated row `Monika <- Monia, Moniki, Monikę, Monisia`, whose
+//!   middle two entries are inflections of the term itself, so speaking
+//!   "Moniki" gets rewritten to "Monika" and the grammar of the sentence is
+//!   destroyed. That class is what the operator was clearing. `gate_curated`
+//!   therefore puts the hand-written half through the same admission gate.
 //!
 //! The merge is a union keyed on the casefolded term, so restoring never drops
 //! a rule the live file gained after the backup was taken.
@@ -134,11 +139,17 @@ fn merge_into(
 /// Restore the live custom lexicon from `backup_path`, merging into whatever is
 /// there now.
 ///
-/// Curated rows return verbatim; `source: correction` rows are re-gated. The
-/// live file is replaced atomically, and the caller is responsible for having
-/// made its own backup first — this function does not rotate, because the
-/// backup it is reading from may be the only copy left.
-pub fn restore_custom_lexicon_from_backup(backup_path: &Path) -> Result<LexiconRestoreReport> {
+/// `source: correction` rows are always re-gated. Curated rows return verbatim
+/// unless `gate_curated`, which puts them through the same admission gate — use
+/// it when the backup is known to carry hand-written poison such as inflections
+/// listed as mispronunciations. The live file is replaced atomically, and the
+/// caller is responsible for having made its own backup first: this function
+/// does not rotate, because the backup it is reading from may be the only copy
+/// left.
+pub fn restore_custom_lexicon_from_backup(
+    backup_path: &Path,
+    gate_curated: bool,
+) -> Result<LexiconRestoreReport> {
     let backup_rows = read_rows(backup_path)?;
     anyhow::ensure!(
         !backup_rows.is_empty(),
@@ -184,11 +195,42 @@ pub fn restore_custom_lexicon_from_backup(backup_path: &Path) -> Result<LexiconR
         );
     }
 
+    // Optionally hold the hand-written half to the same bar as the extracted
+    // half. Off by default: a human who wrote a rule usually meant it.
+    let curated_for_merge: Vec<LexiconRow> = if gate_curated {
+        let curated_pairs: Vec<(String, String)> = curated_rows
+            .iter()
+            .flat_map(|row| {
+                row.mispronunciations
+                    .iter()
+                    .map(move |variant| (variant.clone(), row.term.clone()))
+            })
+            .collect();
+        let curated_verdicts = adjudicate_lexicon_candidates(&curated_pairs, &protected);
+        let mut kept: BTreeMap<String, LexiconRow> = BTreeMap::new();
+        for ((variant, canonical), verdict) in curated_pairs.iter().zip(&curated_verdicts) {
+            if !verdict.is_accepted() {
+                continue;
+            }
+            merge_into(
+                &mut kept,
+                [LexiconRow {
+                    term: canonical.clone(),
+                    mispronunciations: vec![variant.clone()],
+                    source: None,
+                }],
+            );
+        }
+        kept.into_values().collect()
+    } else {
+        curated_rows.clone()
+    };
+
     // Live first, so a rule learned after the backup survives; then curated
     // history; then the surviving auto rows.
     let mut merged: BTreeMap<String, LexiconRow> = BTreeMap::new();
     merge_into(&mut merged, live_rows.iter().cloned());
-    merge_into(&mut merged, curated_rows.iter().cloned());
+    merge_into(&mut merged, curated_for_merge.iter().cloned());
     merge_into(&mut merged, gated_auto.into_values());
 
     let mut out = String::new();
@@ -254,6 +296,175 @@ pub fn newest_recoverable_backup(dir: &Path) -> Option<std::path::PathBuf> {
         }
     }
     best.map(|(_, _, path)| path)
+}
+
+/// What a removal took out of the live lexicon.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct LexiconRemovalReport {
+    /// Rows deleted outright.
+    pub rows_removed: usize,
+    /// Variant spellings deleted from rows that survived.
+    pub variants_removed: usize,
+    /// Rows in the lexicon afterwards.
+    pub rows_after: usize,
+    /// Backup taken before the write, when one was due.
+    pub backup: Option<std::path::PathBuf>,
+}
+
+/// Delete a term, or one variant of it, from the live lexicon.
+///
+/// WHY THIS EXISTS. On 2026-08-22 the operator had to fight a rule out of the
+/// dictionary by hand, because nothing in the product could remove one. A
+/// lexicon that can only grow is a lexicon whose mistakes are permanent — and a
+/// rule keyed on a name ("Klaudiusz") is precisely the kind that must be
+/// removable in one command rather than by editing JSONL.
+///
+/// With `variant`, only that spelling goes; a row left with no variants is
+/// dropped, because a rule with nothing to match is a husk. Matching is
+/// casefolded on both sides. A backup is rotated first.
+pub fn remove_from_custom_lexicon(
+    term: &str,
+    variant: Option<&str>,
+) -> Result<LexiconRemovalReport> {
+    let config_dir = Config::config_dir();
+    let path = config_dir.join("lexicon.custom.jsonl");
+    let rows = read_rows(&path)?;
+    anyhow::ensure!(
+        !rows.is_empty(),
+        "custom lexicon {} is empty or missing",
+        path.display()
+    );
+
+    let wanted: String = term.trim().chars().flat_map(char::to_lowercase).collect();
+    let wanted_variant = variant.map(|v| {
+        v.trim()
+            .chars()
+            .flat_map(char::to_lowercase)
+            .collect::<String>()
+    });
+
+    let mut kept: Vec<LexiconRow> = Vec::new();
+    let mut rows_removed = 0usize;
+    let mut variants_removed = 0usize;
+    let mut matched = false;
+
+    for mut row in rows {
+        let key: String = row
+            .term
+            .trim()
+            .chars()
+            .flat_map(char::to_lowercase)
+            .collect();
+        if key != wanted {
+            kept.push(row);
+            continue;
+        }
+        matched = true;
+        match &wanted_variant {
+            None => rows_removed += 1,
+            Some(target) => {
+                let before = row.mispronunciations.len();
+                row.mispronunciations.retain(|m| {
+                    let folded: String = m.trim().chars().flat_map(char::to_lowercase).collect();
+                    folded != *target
+                });
+                variants_removed += before - row.mispronunciations.len();
+                if row.mispronunciations.is_empty() {
+                    rows_removed += 1;
+                } else {
+                    kept.push(row);
+                }
+            }
+        }
+    }
+
+    anyhow::ensure!(matched, "no lexicon row for term {term:?}");
+    anyhow::ensure!(
+        rows_removed + variants_removed > 0,
+        "term {term:?} carries no variant {:?}",
+        variant.unwrap_or_default()
+    );
+
+    let backup = rotate_lexicon_backup_if_stale(&config_dir);
+    let mut out = String::new();
+    for row in &kept {
+        out.push_str(&serde_json::to_string(row)?);
+        out.push('\n');
+    }
+    let tmp = path.with_file_name(format!(
+        ".lexicon.custom.jsonl.tmp.remove.{}",
+        std::process::id()
+    ));
+    std::fs::write(&tmp, out.as_bytes())
+        .with_context(|| format!("write staged lexicon {}", tmp.display()))?;
+    std::fs::rename(&tmp, &path).with_context(|| format!("replace lexicon {}", path.display()))?;
+
+    Ok(LexiconRemovalReport {
+        rows_removed,
+        variants_removed,
+        rows_after: kept.len(),
+        backup,
+    })
+}
+
+/// A rotation backup that holds hand-curated rows, if any exists in `dir`.
+///
+/// Used by the live upsert path as a *tripwire*, not for recovery: when the
+/// lexicon file cannot be read but a curated backup is sitting right next to
+/// it, the correct response is to stop, not to create a fresh one-row lexicon
+/// on top of the loss. See `overlay_quality::upsert_corrections_unlocked`.
+pub fn any_backup_with_curated_rows(dir: &Path) -> Option<std::path::PathBuf> {
+    for entry in std::fs::read_dir(dir).ok()?.flatten() {
+        let name = entry.file_name();
+        let name = name.to_string_lossy();
+        if !name.starts_with(".lexicon.custom.jsonl.bak-replay-") {
+            continue;
+        }
+        let path = entry.path();
+        let Ok(rows) = read_rows(&path) else {
+            continue;
+        };
+        if !curated_terms(&rows).is_empty() {
+            return Some(path);
+        }
+    }
+    None
+}
+
+/// Copy the current lexicon aside as a rotation backup, at most once an hour.
+///
+/// The `--apply` replay has always rotated; the live learning path never did,
+/// which is why the 2026-09-18 truncation left no copy of the moment it
+/// happened. Rate-limiting keeps a per-pair learner from filling the directory
+/// while still guaranteeing that any given hour of curation is recoverable.
+pub fn rotate_lexicon_backup_if_stale(dir: &Path) -> Option<std::path::PathBuf> {
+    const MIN_BACKUP_INTERVAL_SECS: u64 = 3600;
+    let live = dir.join("lexicon.custom.jsonl");
+    if read_rows(&live).map(|rows| rows.is_empty()).unwrap_or(true) {
+        return None;
+    }
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .ok()?
+        .as_secs();
+    let newest = std::fs::read_dir(dir)
+        .ok()?
+        .flatten()
+        .filter_map(|entry| {
+            entry
+                .file_name()
+                .to_string_lossy()
+                .strip_prefix(".lexicon.custom.jsonl.bak-replay-")
+                .and_then(|stamp| stamp.parse::<u64>().ok())
+        })
+        .max()
+        .unwrap_or(0);
+    if now.saturating_sub(newest) < MIN_BACKUP_INTERVAL_SECS {
+        return None;
+    }
+    let backup = dir.join(format!(".lexicon.custom.jsonl.bak-replay-{now}"));
+    std::fs::copy(&live, &backup).ok()?;
+    Some(backup)
 }
 
 /// Casefolded terms of the hand-curated rows — the work a restore must recover.

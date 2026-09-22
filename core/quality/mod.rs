@@ -47,7 +47,9 @@ pub use lexicon_gate::{
 };
 pub use lexicon_replay::{ReplayOutcome, run_lexicon_replay};
 pub use lexicon_restore::{
-    LexiconRestoreReport, newest_recoverable_backup, restore_custom_lexicon_from_backup,
+    LexiconRemovalReport, LexiconRestoreReport, any_backup_with_curated_rows,
+    newest_recoverable_backup, remove_from_custom_lexicon, restore_custom_lexicon_from_backup,
+    rotate_lexicon_backup_if_stale,
 };
 
 pub use engine_contract::{

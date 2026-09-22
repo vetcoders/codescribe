@@ -21,6 +21,9 @@ use uuid::Uuid;
 
 use crate::config::{Config, FormattingPolicy};
 use crate::quality::lexicon_gate::{ProtectedTerms, adjudicate_lexicon_candidates};
+use crate::quality::lexicon_restore::{
+    any_backup_with_curated_rows, rotate_lexicon_backup_if_stale,
+};
 
 /// Serializes every custom-lexicon rewrite in this process.
 ///
@@ -826,11 +829,28 @@ fn upsert_corrections_unlocked(pairs: &[(&str, &str)]) -> Result<()> {
     if accepted.is_empty() {
         return Ok(());
     }
-    let path = Config::config_dir().join("lexicon.custom.jsonl");
+    let config_dir = Config::config_dir();
+    let path = config_dir.join("lexicon.custom.jsonl");
     cleanup_orphaned_lexicon_temps(path.parent().unwrap_or_else(|| Path::new(".")));
     let existing = match fs::read_to_string(&path) {
         Ok(content) => content,
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => String::new(),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+            // Leave a trace when a lexicon is created from scratch while curated
+            // backups sit beside it. NOT an error: the operator may have cleared
+            // a poisoned lexicon on purpose (2026-09-18, Founder: "leksykon
+            // wywaliłem ja - był poisoned i psuł najprostsze transkrypcje").
+            // Failing closed here would make live learning demand a restore of
+            // exactly what a human decided to throw away.
+            if let Some(backup) = any_backup_with_curated_rows(&config_dir) {
+                tracing::warn!(
+                    lexicon = %path.display(),
+                    backup = %backup.display(),
+                    "creating a fresh custom lexicon while curated backups exist; \
+                     `codescribe lexicon restore` would merge them back"
+                );
+            }
+            String::new()
+        }
         Err(error) => {
             return Err(error).with_context(|| format!("read custom lexicon {}", path.display()));
         }
@@ -839,6 +859,10 @@ fn upsert_corrections_unlocked(pairs: &[(&str, &str)]) -> Result<()> {
     for (variant, canonical) in accepted {
         rewritten = rewrite_custom_lexicon(&rewritten, variant, canonical)?;
     }
+    // Every full-file replace is now recoverable, not just the `--apply`
+    // replay. Rate-limited inside the helper so per-pair learning cannot fill
+    // the directory.
+    rotate_lexicon_backup_if_stale(&config_dir);
     atomic_write_with_rename(&path, rewritten.as_bytes(), |from, to| fs::rename(from, to))
 }
 
@@ -2514,6 +2538,64 @@ mod tests {
         let stored: StoredCustomLexiconEntry =
             serde_json::from_str(legacy_line).expect("legacy parse");
         assert!(stored.source.is_none());
+    }
+
+    /// A deliberately cleared lexicon is neither resurrected nor treated as an
+    /// error by the writer.
+    ///
+    /// This test first asserted a hard refusal, on the theory that the
+    /// 2026-09-18 truncation was accidental. It was not: the operator cleared a
+    /// poisoned lexicon on purpose. Fail-closed would have made live learning
+    /// demand a restore of exactly what they had thrown away.
+    #[test]
+    #[serial]
+    fn a_cleared_lexicon_is_not_resurrected_by_the_writer() {
+        let temp_dir = tempfile::tempdir().expect("temp");
+        let _guard = EnvRestore::capture("CODESCRIBE_DATA_DIR");
+        let root = temp_dir.path().canonicalize().unwrap();
+        unsafe {
+            std::env::set_var("CODESCRIBE_DATA_DIR", &root);
+        }
+        let config_dir = Config::config_dir();
+        fs::create_dir_all(&config_dir).unwrap();
+
+        // Curation preserved only in a rotation backup — the shape both
+        // machines were found in on 2026-09-18.
+        fs::write(
+            config_dir.join(".lexicon.custom.jsonl.bak-replay-1786891882"),
+            "{\"term\":\"100k\",\"mispronunciations\":[\"sto tysięcy\"]}\n",
+        )
+        .unwrap();
+        assert!(!config_dir.join("lexicon.custom.jsonl").exists());
+
+        upsert_corrections_in_custom_lexicon(&[("grypa", "grepa")])
+            .expect("a cleared lexicon is a decision, not a failure");
+
+        let entries = custom_lexicon_entries().unwrap();
+        assert!(entries.iter().any(|e| e.variant == "grypa"));
+        assert!(
+            !entries.iter().any(|e| e.canonical == "100k"),
+            "only `lexicon restore` merges a backup back; the writer never does it silently"
+        );
+    }
+
+    /// A genuinely fresh machine still gets its first lexicon.
+    #[test]
+    #[serial]
+    fn a_first_run_with_no_history_may_create_the_lexicon() {
+        let temp_dir = tempfile::tempdir().expect("temp");
+        let _guard = EnvRestore::capture("CODESCRIBE_DATA_DIR");
+        let root = temp_dir.path().canonicalize().unwrap();
+        unsafe {
+            std::env::set_var("CODESCRIBE_DATA_DIR", &root);
+        }
+        let config_dir = Config::config_dir();
+        fs::create_dir_all(&config_dir).unwrap();
+
+        upsert_corrections_in_custom_lexicon(&[("grypa", "grepa")])
+            .expect("no history means nothing to protect");
+        let entries = custom_lexicon_entries().unwrap();
+        assert!(entries.iter().any(|e| e.variant == "grypa"));
     }
 
     /// Replay dry-run keeps only local teachable pairs; apply writes the tier the
