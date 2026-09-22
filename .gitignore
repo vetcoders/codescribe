@@ -109,3 +109,4 @@ tests/fixtures/w2_05_local_suspicious_span.json
 
 # probe-libraxis.sh writes its log to cwd
 libraxis_probe.jsonl
+/.playwright-mcp
