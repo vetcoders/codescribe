@@ -23,6 +23,7 @@ notice. The original transcript is never rewritten.
 from __future__ import annotations
 
 import argparse
+import datetime
 import fcntl
 import hashlib
 import json
@@ -149,14 +150,21 @@ def installation_idle(path: Path) -> bool:
     buses), not a live recording — treating them as live makes
     ``install-if-idle`` refuse forever after the first missing end.
 
-    CLI ``cli_file_verdict`` sessions may run while the app records and
-    do not hold the install flock. Any unpaired CLI session is live.
+    CLI ``cli_file_verdict`` sessions may run while the app records and do
+    not hold the install flock, so an unpaired CLI session is live — but
+    only within :data:`CLI_ABANDONED_AFTER_SECONDS` of its start. A file
+    transcription is bounded by its audio; a start that old with no
+    terminal is a crashed CLI (a SIGPIPE-killed ``codescribe transcribe |
+    head`` left exactly this residue), and, like an abandoned app start,
+    it must not refuse installs forever. An unpaired CLI start whose
+    ``emitted_at`` is missing or unparseable stays live: abandonment must
+    be proven, not presumed.
     """
     if not path.exists():
         return True
     if not path.is_file():
         return False
-    open_cli: set[str] = set()
+    open_cli: dict[str, str | None] = {}
     live_app: str | None = None
     try:
         with path.open(encoding="utf-8", errors="strict") as handle:
@@ -179,16 +187,42 @@ def installation_idle(path: Path) -> bool:
                 is_cli = event.get("source") == CLI_FILE_VERDICT_SOURCE
                 if status == "session_started":
                     if is_cli:
-                        open_cli.add(session_id)
+                        emitted = event.get("emitted_at")
+                        open_cli[session_id] = (
+                            emitted if isinstance(emitted, str) else None
+                        )
                     else:
                         live_app = session_id
                 elif is_cli:
-                    open_cli.discard(session_id)
+                    open_cli.pop(session_id, None)
                 elif session_id == live_app:
                     live_app = None
     except (OSError, UnicodeDecodeError):
         return False
-    return live_app is None and not open_cli
+    now = time.time()
+    live_cli = [
+        session_id
+        for session_id, emitted_at in open_cli.items()
+        if not _cli_session_abandoned(emitted_at, now)
+    ]
+    return live_app is None and not live_cli
+
+
+# A CLI file transcription is bounded by its audio; six hours is generous.
+CLI_ABANDONED_AFTER_SECONDS = 6 * 3600.0
+
+
+def _cli_session_abandoned(emitted_at: str | None, now: float) -> bool:
+    """Only a provably old, unpaired CLI start counts as abandoned."""
+    if not emitted_at:
+        return False
+    try:
+        started = datetime.datetime.fromisoformat(emitted_at.replace("Z", "+00:00"))
+    except ValueError:
+        return False
+    if started.tzinfo is None:
+        started = started.replace(tzinfo=datetime.timezone.utc)
+    return now - started.timestamp() > CLI_ABANDONED_AFTER_SECONDS
 
 
 def bridge_home() -> Path:

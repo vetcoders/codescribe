@@ -691,6 +691,53 @@ cli_live = write(
     ],
 )
 assert module.installation_idle(cli_live) is False
+
+# A crashed CLI run (e.g. SIGPIPE mid-transcription) leaves an unpaired start
+# forever. Provably old = abandoned; fresh or timestamp-less = still live.
+import datetime
+
+utcnow = datetime.datetime.now(datetime.timezone.utc)
+old_ts = (utcnow - datetime.timedelta(hours=48)).isoformat().replace("+00:00", "Z")
+fresh_ts = utcnow.isoformat().replace("+00:00", "Z")
+
+cli_abandoned = write(
+    "idle-cli-abandoned.jsonl",
+    [
+        {
+            "session_id": "cli-crashed",
+            "status": "session_started",
+            "source": module.CLI_FILE_VERDICT_SOURCE,
+            "emitted_at": old_ts,
+        }
+    ],
+)
+assert module.installation_idle(cli_abandoned) is True
+
+cli_fresh = write(
+    "idle-cli-fresh.jsonl",
+    [
+        {
+            "session_id": "cli-running",
+            "status": "session_started",
+            "source": module.CLI_FILE_VERDICT_SOURCE,
+            "emitted_at": fresh_ts,
+        }
+    ],
+)
+assert module.installation_idle(cli_fresh) is False
+
+cli_bad_ts = write(
+    "idle-cli-bad-ts.jsonl",
+    [
+        {
+            "session_id": "cli-mystery",
+            "status": "session_started",
+            "source": module.CLI_FILE_VERDICT_SOURCE,
+            "emitted_at": "not-a-timestamp",
+        }
+    ],
+)
+assert module.installation_idle(cli_bad_ts) is False
 PY
 
 # Acknowledgment works while the sole follower owns its lock. Capacity refusal
