@@ -268,12 +268,18 @@ struct StatusPill: View {
       Text(text)
         .csMono(11, .medium)
         .foregroundStyle(color)
+        // A squeezed chrome HStack was wrapping this one word into a vertical
+        // capsule (S-t-r-e-a-m-i-n-g, operator crop 2026-09-22). Capsules stay
+        // horizontal; the title truncates first.
+        .lineLimit(1)
+        .fixedSize()
     }
     .padding(.horizontal, 9)
     .padding(.vertical, 4)
     .background(color.opacity(0.12))
     .overlay(Capsule().strokeBorder(color.opacity(0.3), lineWidth: 1))
     .clipShape(Capsule())
+    .fixedSize()
     .onAppear { syncStatusAnimations() }
     .onChange(of: rippling) { _, _ in syncStatusAnimations() }
     .onChange(of: reduceMotion) { _, _ in syncStatusAnimations() }
@@ -318,12 +324,15 @@ struct StaticStatusPill: View {
       Text(text)
         .csMono(11, .medium)
         .foregroundStyle(color)
+        .lineLimit(1)
+        .fixedSize()
     }
     .padding(.horizontal, 9)
     .padding(.vertical, 4)
     .background(color.opacity(0.12))
     .overlay(Capsule().strokeBorder(color.opacity(0.3), lineWidth: 1))
     .clipShape(Capsule())
+    .fixedSize()
   }
 }
 

@@ -1677,6 +1677,10 @@ final class OverlayState {
       if let engine {
         Task { @MainActor in _ = try? await engine.stopRecording() }
       }
+      // Assistive hides the overlay. "Transcript kept" on a canvas the user
+      // cannot see is a drop. Hand the live projection to the composer join
+      // before abort wipes capture identity — same throne as a clean stop.
+      admitComposerDelivery(projection)
       abortRecordingSession()
       showToast("Dictation failed — transcript kept")
       return
