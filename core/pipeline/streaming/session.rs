@@ -231,14 +231,20 @@ pub struct TailPatchSessionReceipt {
     pub timed_out: u64,
     /// Jobs discarded for a non-timeout reason after admission.
     pub abandoned: u64,
+    /// Terminal counts above `submitted`. Zero when the buckets fit.
+    pub overcount: u64,
     pub drain: TailPatchDrainDisposition,
     /// Conservation loop for this session. Absent until a ledger supplies it.
     pub conservation: SessionConservationReceipt,
 }
 
 impl TailPatchSessionReceipt {
-    /// Construct a receipt. The caller owns counter provenance; this type owns
-    /// the invariant checks and stable event encoding.
+    /// Construct a receipt. The caller owns counter provenance; this type names
+    /// a mismatch instead of aborting the take.
+    ///
+    /// A shortfall below `submitted` is added to `abandoned` and the drain
+    /// becomes [`TailPatchDrainDisposition::Abandoned`]. An excess is kept in
+    /// the caller's buckets, named as `overcount`, and warned.
     pub fn new(
         armed: bool,
         submitted: u64,
@@ -248,26 +254,47 @@ impl TailPatchSessionReceipt {
         abandoned: u64,
         drain: TailPatchDrainDisposition,
     ) -> Self {
-        let receipt = Self {
+        let accounted = applied
+            .saturating_add(skipped)
+            .saturating_add(timed_out)
+            .saturating_add(abandoned);
+        let (abandoned, drain, overcount) = if accounted < submitted {
+            (
+                abandoned.saturating_add(submitted - accounted),
+                TailPatchDrainDisposition::Abandoned,
+                0,
+            )
+        } else if accounted > submitted {
+            let overcount = accounted - submitted;
+            warn!(
+                submitted,
+                applied,
+                skipped,
+                timed_out,
+                abandoned,
+                overcount,
+                "tail-patch terminal buckets over-count submitted jobs"
+            );
+            (abandoned, drain, overcount)
+        } else {
+            (abandoned, drain, 0)
+        };
+        Self {
             armed,
             submitted,
             applied,
             skipped,
             timed_out,
             abandoned,
+            overcount,
             drain,
             conservation: SessionConservationReceipt::default(),
-        };
-        assert!(
-            receipt.is_reconciled(),
-            "tail-patch terminal buckets must reconcile exactly to submitted jobs"
-        );
-        receipt
+        }
     }
 
     /// Build the production stop receipt. Every job still outstanding after
     /// the worker's real bounded closure loop is classified as timed out.
-    /// `abandoned` is reserved for a distinct non-timeout discard path.
+    /// Any further gap below `submitted` is abandoned by [`Self::new`].
     pub fn from_stop(
         armed: bool,
         submitted: u64,
@@ -304,24 +331,26 @@ impl TailPatchSessionReceipt {
         self.armed && self.submitted == 0
     }
 
-    /// Whether every submitted job has exactly one terminal bucket.
+    /// Whether every submitted job is named by exactly one terminal bucket,
+    /// with any excess named by `overcount`.
     pub fn is_reconciled(&self) -> bool {
         self.applied
             .saturating_add(self.skipped)
             .saturating_add(self.timed_out)
             .saturating_add(self.abandoned)
-            == self.submitted
+            == self.submitted.saturating_add(self.overcount)
     }
 
     pub(crate) fn as_event(&self) -> EngineEvent {
         let mut message = format!(
-            "armed={} submitted={} applied={} skipped={} timed_out={} abandoned={} drain={}",
+            "armed={} submitted={} applied={} skipped={} timed_out={} abandoned={} overcount={} drain={}",
             self.armed,
             self.submitted,
             self.applied,
             self.skipped,
             self.timed_out,
             self.abandoned,
+            self.overcount,
             self.drain.as_token(),
         );
         if self.conservation.emitted {
@@ -355,6 +384,10 @@ impl TailPatchSessionReceipt {
             skipped: fields.get("skipped")?.parse().ok()?,
             timed_out: fields.get("timed_out")?.parse().ok()?,
             abandoned: fields.get("abandoned")?.parse().ok()?,
+            overcount: fields
+                .get("overcount")
+                .and_then(|value| value.parse().ok())
+                .unwrap_or(0),
             drain: TailPatchDrainDisposition::from_token(fields.get("drain")?)?,
             conservation: SessionConservationReceipt::decode_fields(&fields),
         };
@@ -494,7 +527,7 @@ pub(super) fn tail_patch_lane_starved(applied: u64, skipped: u64) -> bool {
 /// sealed utterance and the canvas received none of it — is a WARN, because
 /// that is the lane not doing its one job, silently.
 pub(super) fn log_tail_patch_session_receipt(receipt: &TailPatchSessionReceipt) {
-    if receipt.timed_out > 0 || receipt.abandoned > 0 {
+    if receipt.overcount > 0 {
         warn!(
             armed = receipt.armed,
             submitted = receipt.submitted,
@@ -502,6 +535,19 @@ pub(super) fn log_tail_patch_session_receipt(receipt: &TailPatchSessionReceipt) 
             skipped = receipt.skipped,
             timed_out = receipt.timed_out,
             abandoned = receipt.abandoned,
+            overcount = receipt.overcount,
+            drain = receipt.drain.as_token(),
+            "tail_patch_session_overcount: terminal buckets exceed submitted jobs"
+        );
+    } else if receipt.timed_out > 0 || receipt.abandoned > 0 {
+        warn!(
+            armed = receipt.armed,
+            submitted = receipt.submitted,
+            applied = receipt.applied,
+            skipped = receipt.skipped,
+            timed_out = receipt.timed_out,
+            abandoned = receipt.abandoned,
+            overcount = receipt.overcount,
             drain = receipt.drain.as_token(),
             "tail_patch_session_degraded: accepted work missed the bounded stop drain"
         );
@@ -526,6 +572,7 @@ pub(super) fn log_tail_patch_session_receipt(receipt: &TailPatchSessionReceipt) 
             skipped = receipt.skipped,
             timed_out = receipt.timed_out,
             abandoned = receipt.abandoned,
+            overcount = receipt.overcount,
             drain = receipt.drain.as_token(),
             "tail_patch_session_receipt"
         );
@@ -697,15 +744,65 @@ mod session_tests {
         assert_eq!(completed.drain, TailPatchDrainDisposition::Completed);
         assert_eq!(completed.timed_out, 0);
         assert_eq!(completed.abandoned, 0);
+        assert!(completed.is_reconciled());
 
         let timed_out = TailPatchSessionReceipt::from_stop(true, 3, 1, 0, 2);
         assert_eq!(timed_out.drain, TailPatchDrainDisposition::TimedOut);
         assert_eq!(timed_out.timed_out, 2);
         assert_eq!(timed_out.abandoned, 0);
+        assert!(timed_out.is_reconciled());
         assert_eq!(
             TailPatchSessionReceipt::from_events(&[timed_out.as_event()]),
             Some(timed_out)
         );
+    }
+
+    /// Stop used to abort the process here: release builds set `panic = "abort"`,
+    /// so a shortfall never reached seal or delivery.
+    #[test]
+    fn stop_receipt_names_unexplained_shortfall_instead_of_aborting() {
+        let receipt = TailPatchSessionReceipt::from_stop(true, 3, 1, 1, 0);
+        assert_eq!(receipt.applied, 1);
+        assert_eq!(receipt.skipped, 1);
+        assert_eq!(receipt.timed_out, 0);
+        assert_eq!(receipt.abandoned, 1);
+        assert_eq!(receipt.overcount, 0);
+        assert_eq!(receipt.drain, TailPatchDrainDisposition::Abandoned);
+        assert!(receipt.is_reconciled());
+        let restored = TailPatchSessionReceipt::from_events(&[receipt.as_event()])
+            .expect("a named shortfall stays readable");
+        assert_eq!(restored, receipt);
+    }
+
+    #[test]
+    fn stop_receipt_names_overcount_and_round_trips() {
+        let receipt =
+            TailPatchSessionReceipt::new(true, 2, 2, 1, 0, 0, TailPatchDrainDisposition::Completed);
+        assert_eq!(receipt.overcount, 1);
+        assert_eq!(receipt.abandoned, 0);
+        assert_eq!(receipt.drain, TailPatchDrainDisposition::Completed);
+        assert!(receipt.is_reconciled());
+        let EngineEvent::Warning { message, .. } = receipt.as_event() else {
+            panic!("receipt must stay a warning event");
+        };
+        assert!(
+            message.contains("overcount=1"),
+            "overcount must be a named event field: {message}"
+        );
+        assert_eq!(
+            TailPatchSessionReceipt::from_events(&[receipt.as_event()]),
+            Some(receipt)
+        );
+
+        let legacy = TailPatchSessionReceipt::from_events(&[EngineEvent::Warning {
+            code: TAIL_PATCH_SESSION_RECEIPT_WARNING_CODE.to_string(),
+            message: "armed=true submitted=10 applied=4 skipped=3 timed_out=1 abandoned=2 drain=timed_out"
+                .to_string(),
+        }])
+        .expect("events written before overcount= must stay readable");
+        assert_eq!(legacy.overcount, 0);
+        assert!(legacy.is_reconciled());
+        assert_eq!(legacy.drain, TailPatchDrainDisposition::TimedOut);
     }
 
     #[tokio::test]

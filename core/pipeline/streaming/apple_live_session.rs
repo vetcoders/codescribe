@@ -829,6 +829,7 @@ fn tail_patch_receipt_after_stop(
         ),
         None => (0, 0, 0, submitted),
     };
+    // `new` names any remaining gap as abandoned. A mismatch must not abort the take.
     TailPatchSessionReceipt::new(
         armed,
         submitted,
@@ -2299,7 +2300,7 @@ impl AppleSealState {
         let admit_sample_end = job.admit_sample_end;
         self.tail_patch_awaiting_completion = self.tail_patch_awaiting_completion.saturating_sub(1);
         let exact_open_members = member_occurrences
-            .into_iter()
+            .iter()
             .filter(|(member_id, occurrence)| {
                 self.pending_events
                     .get(member_id)
@@ -2315,8 +2316,16 @@ impl AppleSealState {
                                 .contains(&LedgerObservationProducer::Whisper)
                         })
             })
+            .cloned()
             .collect::<Vec<_>>();
+        // Members closed while this job was in flight (invalid identity, no
+        // label, a seal, or stop-path text-debt recovery). The completion is
+        // still one submitted job: name it skipped and do not mutate.
         if exact_open_members.is_empty() {
+            for (_, occurrence) in &member_occurrences {
+                self.refinement_receipt(occurrence, "stale_completion");
+            }
+            self.tail_patch_jobs_skipped = self.tail_patch_jobs_skipped.saturating_add(1);
             return;
         }
 
@@ -7220,9 +7229,8 @@ mod tests {
     }
 
     #[test]
-    #[should_panic(expected = "tail-patch terminal buckets must reconcile exactly")]
     fn tail_patch_receipt_rejects_missing_independent_terminal_evidence() {
-        let _ = tail_patch_receipt_after_stop(
+        let receipt = tail_patch_receipt_after_stop(
             true,
             3,
             Some(TailPatchWorkerAccounting {
@@ -7232,6 +7240,9 @@ mod tests {
             }),
             SessionConservationReceipt::default(),
         );
+        assert_eq!(receipt.abandoned, 1);
+        assert_eq!(receipt.drain, TailPatchDrainDisposition::Abandoned);
+        assert!(receipt.is_reconciled());
     }
 
     fn synthetic_tail_job(utterance_id: u64, outcome: TailPatchOutcome) -> TailPatchJobResult {
@@ -11772,6 +11783,65 @@ mod live_refinement_admission_tests {
         }
     }
 
+    fn refinement_log(run: impl FnOnce()) -> String {
+        let buffer = Arc::new(Mutex::new(String::new()));
+        let capture = RefinementCapture {
+            buffer: Arc::clone(&buffer),
+            next_span: std::sync::atomic::AtomicU64::new(1),
+        };
+        tracing::subscriber::with_default(capture, run);
+        buffer.lock().expect("refinement log").clone()
+    }
+
+    struct RefinementCapture {
+        buffer: Arc<Mutex<String>>,
+        next_span: std::sync::atomic::AtomicU64,
+    }
+
+    impl tracing::Subscriber for RefinementCapture {
+        fn enabled(&self, metadata: &tracing::Metadata<'_>) -> bool {
+            *metadata.level() <= tracing::Level::INFO
+        }
+
+        fn new_span(&self, _span: &tracing::span::Attributes<'_>) -> tracing::span::Id {
+            let id = self
+                .next_span
+                .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+            tracing::span::Id::from_u64(id.max(1))
+        }
+
+        fn record(&self, _span: &tracing::span::Id, _values: &tracing::span::Record<'_>) {}
+
+        fn record_follows_from(&self, _span: &tracing::span::Id, _follows: &tracing::span::Id) {}
+
+        fn event(&self, event: &tracing::Event<'_>) {
+            let mut visitor = FieldVisitor(String::new());
+            event.record(&mut visitor);
+            if let Ok(mut buffer) = self.buffer.lock() {
+                buffer.push_str(&visitor.0);
+                buffer.push('\n');
+            }
+        }
+
+        fn enter(&self, _span: &tracing::span::Id) {}
+
+        fn exit(&self, _span: &tracing::span::Id) {}
+    }
+
+    struct FieldVisitor(String);
+
+    impl tracing::field::Visit for FieldVisitor {
+        fn record_debug(&mut self, field: &tracing::field::Field, value: &dyn std::fmt::Debug) {
+            use std::fmt::Write;
+            let _ = write!(self.0, "{}={:?} ", field.name(), value);
+        }
+
+        fn record_str(&mut self, field: &tracing::field::Field, value: &str) {
+            use std::fmt::Write;
+            let _ = write!(self.0, "{}={} ", field.name(), value);
+        }
+    }
+
     fn warnings(receiver: &mut mpsc::UnboundedReceiver<EngineEvent>, code: &str) -> usize {
         std::iter::from_fn(|| receiver.try_recv().ok())
             .filter(
@@ -12711,6 +12781,107 @@ mod live_refinement_admission_tests {
         state.complete_whisper_window(&events, finish(&request), 20.0);
         assert_eq!(state.tail_patch_awaiting_completion, 0);
         assert_eq!(state.tail_patch_jobs_skipped, 1);
+    }
+
+    /// A submitted job whose members close before its completion returns
+    /// (invalid identity, no label, seal, or stop-path text-debt recovery)
+    /// must still occupy exactly one terminal bucket and must not mutate.
+    #[test]
+    fn completion_after_closed_members_is_one_skipped_job() {
+        let (mut state, events, mut receiver, mut requests) = fixture(1);
+        reconcile_silero_ledger(&mut state, &events, &closed(1), &[]);
+        state.flush_layer1_coalesce(&events);
+        let request = requests.try_recv().expect("one submitted window");
+        assert_eq!(state.tail_patch_awaiting_completion, 1);
+        let (member_id, occurrence) = request.member_occurrences[0].clone();
+        state.fail_refinement(
+            &events,
+            member_id,
+            &occurrence,
+            RefinementFailure::InvalidIdentity,
+        );
+        let text_after_close = state
+            .acoustic_ledger
+            .lock()
+            .expect("ledger")
+            .text_of(&occurrence)
+            .map(str::to_owned);
+        let sealed_after_close = state
+            .acoustic_ledger
+            .lock()
+            .expect("ledger")
+            .is_sealed(&occurrence);
+        while receiver.try_recv().is_ok() {}
+
+        let logged = refinement_log(|| {
+            state.complete_whisper_window(&events, labelled_completion(&request), 20.0);
+        });
+
+        assert_eq!(state.tail_patch_awaiting_completion, 0);
+        assert!(state.refinement_submitted.is_empty());
+        assert_eq!(state.tail_patch_jobs_applied, 0);
+        assert_eq!(
+            state.tail_patch_jobs_skipped, 1,
+            "a completion whose members closed meanwhile must be skipped, not dropped"
+        );
+        assert!(
+            logged.contains("stale_completion"),
+            "expected refinement_receipt stale_completion, log was: {logged}"
+        );
+        {
+            let ledger = state.acoustic_ledger.lock().expect("ledger");
+            assert_eq!(
+                ledger.text_of(&occurrence).map(str::to_owned),
+                text_after_close,
+                "stale completion must not change the grounded label"
+            );
+            assert_eq!(ledger.is_sealed(&occurrence), sealed_after_close);
+        }
+        let mutations = std::iter::from_fn(|| receiver.try_recv().ok())
+            .filter(|event| matches!(event, EngineEvent::LedgerMutation { .. }))
+            .count();
+        assert_eq!(mutations, 0, "stale completion must not admit or correct");
+
+        let receipt = tail_patch_receipt_after_stop(
+            true,
+            1,
+            Some(TailPatchWorkerAccounting {
+                applied_jobs: state.tail_patch_jobs_applied,
+                skipped_jobs: state.tail_patch_jobs_skipped,
+                timeout_residue: 0,
+            }),
+            SessionConservationReceipt::default(),
+        );
+        assert!(receipt.is_reconciled());
+        assert_eq!(receipt.skipped, 1);
+        assert_eq!(receipt.abandoned, 0);
+        assert_eq!(receipt.overcount, 0);
+        assert_eq!(receipt.drain, TailPatchDrainDisposition::Completed);
+    }
+
+    #[test]
+    fn tail_patch_receipt_names_missing_terminal_evidence() {
+        let receipt = tail_patch_receipt_after_stop(
+            true,
+            3,
+            Some(TailPatchWorkerAccounting {
+                applied_jobs: 1,
+                skipped_jobs: 1,
+                timeout_residue: 0,
+            }),
+            SessionConservationReceipt::default(),
+        );
+        assert_eq!(receipt.applied, 1);
+        assert_eq!(receipt.skipped, 1);
+        assert_eq!(receipt.timed_out, 0);
+        assert_eq!(receipt.abandoned, 1);
+        assert_eq!(receipt.overcount, 0);
+        assert_eq!(receipt.drain, TailPatchDrainDisposition::Abandoned);
+        assert!(receipt.is_reconciled());
+        assert_eq!(
+            TailPatchSessionReceipt::from_events(&[receipt.as_event()]),
+            Some(receipt)
+        );
     }
 
     #[test]
