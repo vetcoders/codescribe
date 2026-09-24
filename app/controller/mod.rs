@@ -523,6 +523,26 @@ fn recover_capture_stop_failure(
     error
 }
 
+/// The archive a refused terminal take deserves.
+///
+/// The ledger refused the SEAL, not the words: `committed_text` is the
+/// reducer-committed document at refusal time, and archiving it keeps the take
+/// readable in history instead of a `_failed` audio bag with no text while the
+/// overlay was showing a full formatted document (operator take 2026-09-24
+/// 08:23). No seal is claimed — the daily bag writes it as `Raw`. An empty
+/// document keeps the diagnostic-only retention.
+fn refused_take_archive(
+    refusal: &TerminalSealRefused,
+) -> codescribe_core::state::SessionTranscriptArchive<'_> {
+    if refusal.committed_text.trim().is_empty() {
+        codescribe_core::state::SessionTranscriptArchive::Unavailable(
+            refusal.finality.reason().as_str(),
+        )
+    } else {
+        codescribe_core::state::SessionTranscriptArchive::Committed(&refusal.committed_text)
+    }
+}
+
 /// Stop the recorder for a finished take and classify the outcome.
 ///
 /// A ledger refusal of the terminal transcript ([`TerminalSealRefused`]) is a
@@ -554,13 +574,7 @@ async fn stop_recorder_for_terminal(
                     "terminal transcript refused after a successful capture stop; retaining take audio"
                 );
                 match refusal.audio_path.as_deref() {
-                    Some(path) => retain_session_audio(
-                        session_id,
-                        path,
-                        codescribe_core::state::SessionTranscriptArchive::Unavailable(
-                            refusal.finality.reason().as_str(),
-                        ),
-                    ),
+                    Some(path) => retain_session_audio(session_id, path, refused_take_archive(&refusal)),
                     None => warn!("refused take has no audio path to retain"),
                 }
                 Err(anyhow::Error::new(refusal))
@@ -5364,6 +5378,28 @@ mod refusal_recovery_tests {
                 committed_text: if words { WORDS.into() } else { String::new() },
             },
         }
+    }
+
+    /// The ledger refused the seal, not the words: history must receive the
+    /// committed document as `Raw` text instead of a `_failed` audio bag.
+    #[tokio::test]
+    async fn a_refused_take_with_committed_words_archives_them_as_raw_text() {
+        let take = take(State::RecHold, true).await;
+        assert_eq!(
+            refused_take_archive(&take.refusal),
+            codescribe_core::state::SessionTranscriptArchive::Committed(WORDS)
+        );
+    }
+
+    /// No committed words = nothing to archive as speech; the diagnostic-only
+    /// retention stays, and the reason is never persisted as transcript text.
+    #[tokio::test]
+    async fn a_refused_take_without_words_keeps_the_diagnostic_only_retention() {
+        let take = take(State::RecHold, false).await;
+        assert!(matches!(
+            refused_take_archive(&take.refusal),
+            codescribe_core::state::SessionTranscriptArchive::Unavailable(_)
+        ));
     }
 
     #[tokio::test]
