@@ -14084,4 +14084,74 @@ mod relay_l1_overlap_admission_tests {
         assert_eq!(held_count(&lane), 1);
         assert_conserved(&lane, None);
     }
+
+    /// Loud PCM is not itself Silero speech. This models a padded ownership
+    /// span with one genuine early speech island and a later noisy, non-speech
+    /// stretch. The pin in that later stretch must not borrow the capture
+    /// energy hop as permission to write a word into Silero-verified silence.
+    #[test]
+    fn silero_speech_absent_pin_cannot_borrow_capture_energy() {
+        let mut lane = open("relay-silero-versus-energy");
+        let session = "relay-silero-versus-energy";
+        let end = 94 * 512_u64;
+        let pin_start = 32_000_u64;
+        let pin_end = 42_000_u64;
+        record_energy(&lane, &[vec![0.2; end as usize]]);
+        assert!(
+            lane.state
+                .capture_energy
+                .voiced_hops_in(session, 1, pin_start, pin_end)
+                .is_some_and(|hops| !hops.is_empty()),
+            "the capture-energy gate would admit this noisy pin"
+        );
+
+        let mut silero = SileroIngress::new(RATE, session.to_string(), 1);
+        assert!(silero.vad_available(), "this test needs a live VAD observer");
+        for frame in 0..94_u64 {
+            silero.push_scripted_speech_prob_for_test(if frame < 20 { 0.9 } else { 0.0 });
+            silero.ingest(&vec![0.2; 512], (frame + 1) * 512);
+        }
+        let speech = silero.acoustic_speech_evidence();
+        assert!(
+            !speech.ranges().is_empty(),
+            "the early speech island must actually be measured"
+        );
+        assert!(
+            speech
+                .ranges()
+                .iter()
+                .all(|range| range.sample_end <= pin_start || range.sample_start >= pin_end),
+            "Silero must have measured no speech in the offered pin"
+        );
+        lane.state.fusion = Some(silero);
+
+        let occurrence = OccurrenceIdentity::new(session, 1, 0, end);
+        stage(&mut lane, 1, occurrence.clone(), "mowa");
+        assert!(
+            lane.state
+                .enqueue_layer1_piece(&lane.tx, piece(1, &occurrence, "mowa"))
+        );
+        assert!(lane.state.flush_layer1_coalesce(&lane.tx));
+        close_lexicon(&mut lane, 1, &occurrence, "mowa");
+        let _ = drain(&mut lane.rx);
+        let requests = take_requests(&mut lane.tail_rx);
+        assert_eq!(requests.len(), 1);
+
+        lane.state.complete_whisper_window(
+            &lane.tx,
+            completion(
+                &requests[0],
+                vec![word_pin(session, "halucynacja", pin_start, pin_end)],
+            ),
+            3.0,
+        );
+        let events = drain(&mut lane.rx);
+        assert_eq!(
+            mutation_count(&events),
+            0,
+            "capture energy cannot overrule Silero's measured non-speech"
+        );
+        assert_eq!(held_text(&lane, &occurrence).as_deref(), Some("mowa"));
+        assert_conserved(&lane, None);
+    }
 }
