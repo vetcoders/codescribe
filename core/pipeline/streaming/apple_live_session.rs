@@ -14355,7 +14355,16 @@ mod relay_l1_overlap_admission_tests {
             LONG_SAMPLES,
             &[(8_000, 48_000), (100_000, 140_000)],
         );
-        let (_occurrence, requests) = launch_long_span(&mut lane, None);
+        let occurrence = OccurrenceIdentity::new(session, 1, 0, LONG_SAMPLES);
+        qualify_unlabelled(&mut lane, &occurrence);
+        let mut input = piece(1, &occurrence, "");
+        input.audio.fill(0.0);
+        input.audio[8_000..48_000].fill(0.2);
+        input.audio[100_000..140_000].fill(0.2);
+        assert!(lane.state.enqueue_layer1_piece(&lane.tx, input));
+        let _ = drain(&mut lane.rx);
+        let requests = take_requests(&mut lane.tail_rx);
+        assert_eq!(requests.len(), 3);
         lane.state.complete_whisper_window(
             &lane.tx,
             completion(
