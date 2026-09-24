@@ -3338,6 +3338,10 @@ mod settings_snapshot_tests {
                     Err(error) => panic!("discovery request did not arrive: {error}"),
                 }
             };
+            // An accepted socket inherits O_NONBLOCK from the listener on macOS,
+            // and set_read_timeout has no effect on a nonblocking socket: a read
+            // ahead of the client's request returns WouldBlock instead of waiting.
+            stream.set_nonblocking(false).unwrap();
             stream
                 .set_read_timeout(Some(std::time::Duration::from_secs(5)))
                 .unwrap();
