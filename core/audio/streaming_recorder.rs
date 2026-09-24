@@ -2064,6 +2064,12 @@ mod capture_stop_failure_tests {
         for has_measurement in [false, true] {
             for text in ["", "unattributed words"] {
                 let mut recorder = recorder();
+                // Longer than a gesture: the quiet short-take end
+                // (`short_capture_without_ledger_speech_ends_cleanly`) must not apply.
+                let past_gesture = u64::from(recorder.sample_rate) * 3 / 10 + 1;
+                recorder
+                    .captured_samples
+                    .store(past_gesture, Ordering::Relaxed);
                 *recorder.transcript_buffer.lock().await = text.into();
                 if has_measurement {
                     recorder.acoustic_ledger =
