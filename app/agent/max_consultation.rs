@@ -12,14 +12,31 @@ use codescribe_core::agent::{
     ToolRegistry,
 };
 use codescribe_core::config::{FormattingPolicy, RuntimeLlmLaneKind, RuntimeSettingsSnapshot};
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 use tokio::sync::{mpsc, oneshot};
 
 /// Selected consultation with request-scoped settings admission.
 /// The controller owns this across captures and replaces it only on an
 /// explicit new-consultation action, not on focus or recording end.
 pub struct MaxConsultation {
-    runtime: ConsultationRuntime,
+    id: String,
+    state: Mutex<ConsultationState>,
+}
+
+struct ConsultationState {
+    runtime: Option<ConsultationRuntime>,
+    startup: Option<ConsultationStartup>,
+    closed: bool,
+}
+
+struct ConsultationStartup {
+    settings: RuntimeSettingsSnapshot,
+    tools: Box<dyn Fn() -> Arc<ToolRegistry> + Send>,
+    approval: Option<ToolApprovalHandler>,
+    gateway: ThreadDeliveryGateway,
+    events: ConsultationEvents,
+    install_lease_path: std::path::PathBuf,
+    runtime_handle: tokio::runtime::Handle,
 }
 
 impl MaxConsultation {
@@ -35,24 +52,123 @@ impl MaxConsultation {
         events: ConsultationEvents,
         install_lease_path: std::path::PathBuf,
     ) -> Result<Self> {
+        let runtime = Self::build_runtime(
+            id.clone(),
+            settings,
+            tools,
+            approval,
+            gateway,
+            events,
+            install_lease_path,
+        )?;
+        Ok(Self {
+            id,
+            state: Mutex::new(ConsultationState {
+                runtime: Some(runtime),
+                startup: None,
+                closed: false,
+            }),
+        })
+    }
+
+    /// Bind the selected Max identity at capture admission. Tool discovery and
+    /// provider construction run only when a consultation first needs them.
+    pub fn start_deferred(
+        id: String,
+        settings: &RuntimeSettingsSnapshot,
+        tools: Box<dyn Fn() -> Arc<ToolRegistry> + Send>,
+        approval: Option<ToolApprovalHandler>,
+        gateway: ThreadDeliveryGateway,
+        events: ConsultationEvents,
+        install_lease_path: std::path::PathBuf,
+    ) -> Self {
+        Self {
+            id,
+            state: Mutex::new(ConsultationState {
+                runtime: None,
+                startup: Some(ConsultationStartup {
+                    settings: settings.clone(),
+                    tools,
+                    approval,
+                    gateway,
+                    events,
+                    install_lease_path,
+                    runtime_handle: tokio::runtime::Handle::current(),
+                }),
+                closed: false,
+            }),
+        }
+    }
+
+    fn build_runtime(
+        id: String,
+        settings: &RuntimeSettingsSnapshot,
+        tools: Arc<ToolRegistry>,
+        approval: Option<ToolApprovalHandler>,
+        gateway: ThreadDeliveryGateway,
+        events: ConsultationEvents,
+        install_lease_path: std::path::PathBuf,
+    ) -> Result<ConsultationRuntime> {
         let provider = super::create_provider_for_lane(settings, RuntimeLlmLaneKind::Formatting)?;
         let (tx, rx) = mpsc::channel(64);
         let mut session = AgentSession::new(provider, tools, tx);
         if let Some(approval) = approval {
             session = session.with_tool_approval(id.clone(), approval);
         }
-        let runtime =
-            ConsultationRuntime::start(id, session, rx, gateway, events, install_lease_path)?;
-        Ok(Self { runtime })
+        ConsultationRuntime::start(id, session, rx, gateway, events, install_lease_path)
+    }
+
+    fn runtime(&self) -> Result<ConsultationRuntime> {
+        let mut state = self
+            .state
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        ensure!(!state.closed, "Max consultation is closed");
+        if let Some(runtime) = state.runtime.as_ref() {
+            return Ok(runtime.clone());
+        }
+        let startup = state
+            .startup
+            .as_ref()
+            .expect("Max consultation startup must be present before initialization");
+        let tools = (startup.tools)();
+        let _runtime_context = startup.runtime_handle.enter();
+        let runtime = Self::build_runtime(
+            self.id.clone(),
+            &startup.settings,
+            tools,
+            startup.approval.clone(),
+            startup.gateway.clone(),
+            Arc::clone(&startup.events),
+            startup.install_lease_path.clone(),
+        )?;
+        state.runtime = Some(runtime.clone());
+        state.startup = None;
+        Ok(runtime)
     }
 
     pub fn id(&self) -> &str {
-        self.runtime.id()
+        &self.id
     }
 
     /// A reset must await this acknowledgement before changing selection.
     pub async fn close_if_idle(&self) -> Result<()> {
-        self.runtime.close_if_idle().await
+        let ready = {
+            let mut state = self
+                .state
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner());
+            if state.runtime.is_none() {
+                state.closed = true;
+                state.startup = None;
+                return Ok(());
+            }
+            state.runtime.clone()
+        };
+        ready
+            .expect("checked initialized consultation")
+            .close_if_idle()
+            .await
     }
 
     /// All request knobs and provenance come from one immutable formatting
@@ -64,7 +180,7 @@ impl MaxConsultation {
         attachments: Vec<ImageAttachment>,
         settings: &RuntimeSettingsSnapshot,
     ) -> Result<oneshot::Receiver<Result<ConsultationAnswer>>> {
-        self.runtime
+        self.runtime()?
             .enqueue(Self::prepare_turn(turn_id, text, attachments, settings)?)
     }
 
@@ -161,7 +277,7 @@ impl codescribe_core::ai_formatting::FormattingAgent for MaxConsultation {
             Vec::new(),
             settings,
         )?;
-        self.runtime.prepare_group(input, turn)
+        self.runtime()?.prepare_group(input, turn)
     }
 
     async fn execute(
@@ -338,5 +454,81 @@ mod readiness_tests {
             .await
             .is_err()
         );
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn slow_discovery_does_not_delay_capture_capability() {
+        let settings = codescribe_core::config::Config::load_runtime_snapshot()
+            .expect("load one sealed settings generation");
+        let data_dir = tempfile::tempdir().expect("isolated consultation data");
+        let gateway =
+            codescribe_core::agent::ThreadDeliveryGateway::new_in(data_dir.path().join("threads"))
+                .expect("isolated gateway");
+        let (entered_tx, entered_rx) = std::sync::mpsc::channel();
+        let (release_tx, release_rx) = std::sync::mpsc::channel();
+        let release_rx = std::sync::Mutex::new(release_rx);
+        let discovery_calls = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let calls = std::sync::Arc::clone(&discovery_calls);
+        let start = std::time::Instant::now();
+        let consultation = super::MaxConsultation::start_deferred(
+            "slow-discovery-fixture".into(),
+            &settings,
+            Box::new(move || {
+                calls.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                entered_tx.send(()).expect("signal discovery start");
+                release_rx
+                    .lock()
+                    .expect("discovery gate lock")
+                    .recv()
+                    .expect("wait for discovery release");
+                std::sync::Arc::new(codescribe_core::agent::ToolRegistry::new())
+            }),
+            None,
+            gateway,
+            std::sync::Arc::new(|_, _, _| {}),
+            data_dir.path().join("agent-turn.lock"),
+        );
+        let capture_capability_ms = start.elapsed().as_millis();
+        eprintln!("capture capability ready in {capture_capability_ms} ms with discovery held");
+        assert!(
+            capture_capability_ms < 150,
+            "capture capability took {capture_capability_ms} ms before audio could open"
+        );
+        assert_eq!(discovery_calls.load(std::sync::atomic::Ordering::SeqCst), 0);
+
+        let consultation = std::sync::Arc::new(consultation);
+        let waiting = std::sync::Arc::clone(&consultation);
+        let turn = tokio::task::spawn_blocking(move || waiting.runtime().is_ok());
+        entered_rx
+            .recv_timeout(std::time::Duration::from_secs(5))
+            .expect("agent turn begins discovery");
+        assert!(
+            !turn.is_finished(),
+            "agent turn must wait for complete discovery"
+        );
+        release_tx.send(()).expect("release discovery");
+        let _ = turn.await.expect("agent turn worker completes");
+        assert_eq!(discovery_calls.load(std::sync::atomic::Ordering::SeqCst), 1);
+    }
+
+    #[tokio::test]
+    async fn resetting_an_unused_consultation_does_not_discover_tools() {
+        let settings = codescribe_core::config::Config::load_runtime_snapshot()
+            .expect("load one sealed settings generation");
+        let data_dir = tempfile::tempdir().expect("isolated consultation data");
+        let gateway =
+            codescribe_core::agent::ThreadDeliveryGateway::new_in(data_dir.path().join("threads"))
+                .expect("isolated gateway");
+        let consultation = super::MaxConsultation::start_deferred(
+            "unused-consultation-fixture".into(),
+            &settings,
+            Box::new(|| panic!("unused consultation must not discover tools")),
+            None,
+            gateway,
+            std::sync::Arc::new(|_, _, _| {}),
+            data_dir.path().join("agent-turn.lock"),
+        );
+        consultation.close_if_idle().await.expect("idle reset");
+        assert!(consultation.runtime().is_err());
     }
 }

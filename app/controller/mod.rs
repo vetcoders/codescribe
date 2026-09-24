@@ -1172,10 +1172,10 @@ impl RecordingController {
             let approvals = Arc::clone(&self.max_approvals);
             let approval_handler: codescribe_core::agent::ToolApprovalHandler =
                 Arc::new(move |request| approvals.begin(request));
-            let consultation = crate::agent::max_consultation::MaxConsultation::start(
+            let consultation = crate::agent::max_consultation::MaxConsultation::start_deferred(
                 consultation_id,
                 settings,
-                Arc::new(crate::agent::tools::configured_registry()),
+                Box::new(|| Arc::new(crate::agent::tools::configured_registry())),
                 Some(approval_handler),
                 gateway,
                 Arc::new(|_consultation, _turn, event| {
@@ -1184,7 +1184,7 @@ impl RecordingController {
                     }
                 }),
                 codescribe_core::config::agent_turn_lease_path(),
-            )?;
+            );
             *selected = Some(Arc::new(consultation));
         }
         Ok(selected.clone())
@@ -7779,5 +7779,27 @@ mod explicit_startup_tests {
             assert!(std::panic::catch_unwind(constructor).is_err());
             assert_eq!(probe.attempts(), ["settings capture"]);
         }
+    }
+}
+
+#[cfg(test)]
+mod max_start_order_tests {
+    #[test]
+    fn recording_selection_does_not_discover_tools_before_audio_opens() {
+        let controller = include_str!("mod.rs");
+        let selection = controller
+            .split("async fn selected_max_consultation(")
+            .nth(1)
+            .expect("Max selection exists")
+            .split("pub fn subscribe_max_approval_changes")
+            .next()
+            .expect("selection body exists");
+        let discovery = selection
+            .find("configured_registry()")
+            .expect("selected consultation uses the production registry");
+        assert!(
+            selection[..discovery].rfind("Box::new(||").is_some(),
+            "recording selection constructs the tool registry before opening audio"
+        );
     }
 }
