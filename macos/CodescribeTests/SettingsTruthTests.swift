@@ -398,6 +398,38 @@ final class SettingsTruthTests: XCTestCase {
     XCTAssertTrue(PromptFile.assistive.editorSubtitle.hasSuffix("(assistive.txt)"))
   }
 
+  /// The Tools tab binds by key path now; each projection must read the
+  /// registry snapshot and route its write to the same setter and kind the
+  /// closure bindings used.
+  func testToolPermissionPickersRouteThroughTheExistingSetters() async {
+    let admin = RecordingPermissionAdmin(capabilities: [
+      CsToolCapability(
+        name: "search", identity: "loctree-mcp:search", origin: "mcp", server: "loctree-mcp",
+        risk: "read_only", effective: "allow", requiresApprovalFlag: false)
+    ])
+    let model = SettingsViewModel(engine: MockSettingsEngine(), mcpAdmin: admin)
+    model.reloadToolPermissions()
+    for _ in 0..<100 where model.toolCapabilities.isEmpty { await Task.yield() }
+
+    XCTAssertEqual(model[toolLevel: "loctree-mcp:search"], "allow")
+    XCTAssertEqual(model[toolLevel: "ghost:tool"], "", "an unknown identity selects nothing")
+    XCTAssertEqual(model.readOnlyDefaultPicker, "allow")
+    XCTAssertEqual(model.sideEffectDefaultPicker, "ask")
+    XCTAssertEqual(model.globalDefaultPicker, "ask")
+
+    model[toolLevel: "loctree-mcp:search"] = "deny"
+    XCTAssertEqual(admin.toolWrites.map(\.identity), ["loctree-mcp:search"])
+    XCTAssertEqual(admin.toolWrites.map(\.level), ["deny"])
+
+    model.readOnlyDefaultPicker = "deny"
+    XCTAssertEqual(admin.defaultWrites.last?.readOnlyDefault, "deny")
+    model.sideEffectDefaultPicker = "deny"
+    XCTAssertEqual(admin.defaultWrites.last?.sideEffectDefault, "deny")
+    model.globalDefaultPicker = "deny"
+    XCTAssertEqual(admin.defaultWrites.last?.defaultLevel, "deny")
+    XCTAssertEqual(admin.defaultWrites.count, 3)
+  }
+
   func testSectionAvailabilityKeepsPromisesHonest() {
     for section in [
       SettingsSection.creator, .shortcuts, .keys, .agent, .engine, .audio, .voiceLab,
@@ -1616,4 +1648,39 @@ final class SettingsTruthTests: XCTestCase {
     )
     XCTAssertEqual(model.settings.layeredTranscription, "off")
   }
+}
+
+/// Serves one permission snapshot and records the writes the Tools tab makes.
+@MainActor
+private final class RecordingPermissionAdmin: MCPAdminEngine {
+  private(set) var toolWrites: [(identity: String, level: String)] = []
+  private(set) var defaultWrites: [CsPermissionPolicy] = []
+  private var policy = CsPermissionPolicy(
+    defaultLevel: "ask", readOnlyDefault: "allow", sideEffectDefault: "ask", tools: [], servers: [])
+  private let capabilities: [CsToolCapability]
+
+  init(capabilities: [CsToolCapability]) { self.capabilities = capabilities }
+
+  func listServers() throws -> [CsMcpServer] { [] }
+  func addServer(_ input: CsMcpServerInput) throws {}
+  func updateServer(name: String, input: CsMcpServerInput) throws {}
+  func removeServer(name: String) throws {}
+  func testServer(_ name: String) async -> CsMcpTestResult {
+    CsMcpTestResult(
+      ok: false, toolCount: 0, serverName: name, serverVersion: "", protocolVersion: "",
+      error: "unused")
+  }
+  func getPermissionPolicy() -> CsPermissionPolicy { policy }
+  func setPermissionDefaults(
+    defaultLevel: String, readOnlyDefault: String, sideEffectDefault: String
+  ) throws {
+    policy = CsPermissionPolicy(
+      defaultLevel: defaultLevel, readOnlyDefault: readOnlyDefault,
+      sideEffectDefault: sideEffectDefault, tools: policy.tools, servers: policy.servers)
+    defaultWrites.append(policy)
+  }
+  func setToolPermission(identity: String, level: String) throws {
+    toolWrites.append((identity, level))
+  }
+  func listToolCapabilities() -> [CsToolCapability] { capabilities }
 }

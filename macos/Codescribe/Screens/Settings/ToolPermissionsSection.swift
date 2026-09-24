@@ -41,12 +41,10 @@ struct ToolPermissionsSection: View {
         SettingsSectionLabel("Tool overrides · \(model.toolCapabilities.count)")
           .padding(.top, CSSpace.section)
         ToolOverridesBrowser(
+          model: model,
           groups: grouped,
           searchText: $searchText,
-          selectedServer: $selectedServer,
-          onLevel: { identity, level in
-            model.setToolPermission(identity: identity, level: level)
-          }
+          selectedServer: $selectedServer
         )
         .padding(.top, CSSpace.control)
       }
@@ -61,27 +59,9 @@ struct ToolPermissionsSection: View {
         .foregroundStyle(CSColor.textBody)
 
       HStack(spacing: 12) {
-        defaultPicker(
-          title: "Read-only",
-          selection: Binding(
-            get: { model.permissionPolicy.readOnlyDefault },
-            set: { model.setPermissionDefault(kind: .readOnly, level: $0) }
-          )
-        )
-        defaultPicker(
-          title: "Side effects",
-          selection: Binding(
-            get: { model.permissionPolicy.sideEffectDefault },
-            set: { model.setPermissionDefault(kind: .sideEffect, level: $0) }
-          )
-        )
-        defaultPicker(
-          title: "Global / unknown",
-          selection: Binding(
-            get: { model.permissionPolicy.defaultLevel },
-            set: { model.setPermissionDefault(kind: .global, level: $0) }
-          )
-        )
+        defaultPicker(title: "Read-only", selection: $model.readOnlyDefaultPicker)
+        defaultPicker(title: "Side effects", selection: $model.sideEffectDefaultPicker)
+        defaultPicker(title: "Global / unknown", selection: $model.globalDefaultPicker)
       }
     }
     .padding(CSSpace.card)
@@ -216,7 +196,7 @@ enum ToolPermissionGrouping {
 
 struct ToolCapabilityRow: View {
   let item: ToolPermissionItem
-  let onLevel: @MainActor (String) -> Void
+  @Binding var level: String
 
   var body: some View {
     HStack(alignment: .center, spacing: 12) {
@@ -234,13 +214,7 @@ struct ToolCapabilityRow: View {
           .foregroundStyle(CSColor.textFaint)
       }
       Spacer(minLength: 8)
-      Picker(
-        "Level",
-        selection: Binding(
-          get: { item.effective },
-          set: { onLevel($0) }
-        )
-      ) {
+      Picker("Permission for \(item.name)", selection: $level) {
         Text("Allow").tag("allow")
         Text("Ask").tag("ask")
         Text("Deny").tag("deny")

@@ -6,10 +6,10 @@ import SwiftUI
 /// Search filters both columns; a selection the search hides falls back to
 /// the first server with hits without forgetting the user's choice.
 struct ToolOverridesBrowser: View {
+  @ObservedObject var model: SettingsViewModel
   let groups: [(server: String, items: [ToolPermissionItem])]
   @Binding var searchText: String
   @Binding var selectedServer: String?
-  let onLevel: @MainActor (String, String) -> Void
 
   var body: some View {
     let current = groups.first { $0.server == selectedServer } ?? groups.first
@@ -36,10 +36,7 @@ struct ToolOverridesBrowser: View {
           ScrollView {
             LazyVStack(alignment: .leading, spacing: CSSpace.sm) {
               ForEach(current.items) { item in
-                ToolCapabilityRow(
-                  item: item,
-                  onLevel: { onLevel(item.identity, $0) }
-                )
+                ToolCapabilityRow(item: item, level: $model[toolLevel: item.identity])
               }
             }
           }
