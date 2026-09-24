@@ -896,9 +896,9 @@ fn transcribe(
         eprintln!("bus=unavailable (transcription continues; nothing published)");
     }
     if let Some(lane) = lane.as_mut() {
-        match lane.retain_source_wav(file) {
-            Ok(wav) => eprintln!("wav={}", wav.display()),
-            Err(error) => eprintln!("session wav retain failed: {error}"),
+        match lane.retain_source_reference(file) {
+            Ok(source) => eprintln!("source={}", source.display()),
+            Err(error) => eprintln!("session source reference failed: {error}"),
         }
     }
 

@@ -297,6 +297,7 @@ fn retain_session_audio_at(
         codescribe_core::state::SessionTranscriptArchive<'_>,
     ) -> Option<std::path::PathBuf>,
 ) -> Result<()> {
+    let has_speech = matches!(transcript, codescribe_core::state::SessionTranscriptArchive::Committed(text) if !text.trim().is_empty());
     let id = retainable_session_id(session_id)
         .ok_or_else(|| anyhow::anyhow!("audio retention refused: missing or unsafe session id"))?;
     // Freeze the source object before invoking the daily history owner.
@@ -313,8 +314,8 @@ fn retain_session_audio_at(
         "audio retention source is not a regular file"
     );
 
-    // Pin both destinations before the callback, too. Each result is retained
-    // independently so a refused sessions directory does not skip the alias.
+    // Pin destinations before the callback. Session identity and the latest
+    // spoken take remain independent when a quiet take follows speech.
     let root_directory = (|| -> Result<std::fs::File> {
         let (parent, name) = open_retention_parent(root)?;
         retention_subdirectory(&parent, &name)
@@ -330,24 +331,35 @@ fn retain_session_audio_at(
     let session_path = session_audio_path(root, id)
         .ok_or_else(|| anyhow::anyhow!("audio retention refused: unsafe session id"))?;
     let session_name = std::ffi::CString::new(format!("{id}.wav"))?;
-    for (directory, name, dest) in [
-        (&sessions_directory, session_name.as_c_str(), session_path),
-        (
-            &root_directory,
-            c"last_session.wav",
-            root.join("last_session.wav"),
+    let linked = sessions_directory
+        .as_ref()
+        .map_err(|error| anyhow::anyhow!("{error:#}"))
+        .and_then(|directory| {
+            publish_retained_link(
+                &source_parent,
+                &source_name,
+                &mut source,
+                directory,
+                session_name.as_c_str(),
+            )
+        });
+    let session_retained = linked.is_ok();
+    match linked {
+        Ok(()) => info!(
+            "session audio retained as link for {}",
+            session_path.display()
         ),
-    ] {
-        let copied = directory
+        Err(error) => failures.push(format!("{}: {error:#}", session_path.display())),
+    }
+    if has_speech && session_retained {
+        let alias = root.join("last_session.wav");
+        match root_directory
             .as_ref()
             .map_err(|error| anyhow::anyhow!("{error:#}"))
-            .and_then(|directory| publish_retained_audio(&mut source, directory, name));
-        match copied {
-            Ok(()) => info!(
-                "session audio retained in pinned directory for {}",
-                dest.display()
-            ),
-            Err(error) => failures.push(format!("{}: {error:#}", dest.display())),
+            .and_then(|directory| publish_session_alias(directory, id))
+        {
+            Ok(()) => info!("last spoken take alias updated for {}", alias.display()),
+            Err(error) => failures.push(format!("{}: {error:#}", alias.display())),
         }
     }
     if failures.is_empty() {
@@ -359,6 +371,79 @@ fn retain_session_audio_at(
             failures.join("; ")
         ))
     }
+}
+
+fn publish_session_alias(directory: &std::fs::File, id: &str) -> Result<()> {
+    use std::os::fd::AsRawFd;
+    let target = std::ffi::CString::new(format!("sessions/{id}.wav"))?;
+    let temporary = std::ffi::CString::new(format!(".retain-{}.tmp", Uuid::new_v4()))?;
+    // SAFETY: all names and the held directory descriptor survive both calls.
+    if unsafe { libc::symlinkat(target.as_ptr(), directory.as_raw_fd(), temporary.as_ptr()) } < 0 {
+        return Err(std::io::Error::last_os_error().into());
+    }
+    if unsafe {
+        libc::renameat(
+            directory.as_raw_fd(),
+            temporary.as_ptr(),
+            directory.as_raw_fd(),
+            c"last_session.wav".as_ptr(),
+        )
+    } < 0
+    {
+        let error = std::io::Error::last_os_error();
+        unsafe { libc::unlinkat(directory.as_raw_fd(), temporary.as_ptr(), 0) };
+        return Err(error.into());
+    }
+    Ok(())
+}
+
+/// Link the verified source inode through a temporary destination name, then
+/// publish atomically. If the volume refuses links, copy from the pinned file
+/// descriptor and emit an explicit receipt for the extra physical bytes.
+fn publish_retained_link(
+    source_directory: &std::fs::File,
+    source_name: &std::ffi::CStr,
+    source: &mut std::fs::File,
+    directory: &std::fs::File,
+    name: &std::ffi::CStr,
+) -> Result<()> {
+    use std::os::fd::AsRawFd;
+    use std::os::unix::fs::MetadataExt;
+
+    let temporary = std::ffi::CString::new(format!(".retain-{}.tmp", Uuid::new_v4()))?;
+    // SAFETY: held parent descriptors and C strings survive the call.
+    let linked = unsafe {
+        libc::linkat(
+            source_directory.as_raw_fd(),
+            source_name.as_ptr(),
+            directory.as_raw_fd(),
+            temporary.as_ptr(),
+            0,
+        )
+    } == 0;
+    if linked {
+        let candidate = open_retention_entry(directory, &temporary, libc::O_RDONLY)?;
+        let expected = source.metadata()?;
+        let actual = candidate.metadata()?;
+        if expected.dev() == actual.dev() && expected.ino() == actual.ino() {
+            // SAFETY: this renames only the freshly linked entry in the held directory.
+            if unsafe {
+                libc::renameat(
+                    directory.as_raw_fd(),
+                    temporary.as_ptr(),
+                    directory.as_raw_fd(),
+                    name.as_ptr(),
+                )
+            } == 0
+            {
+                return Ok(());
+            }
+        }
+        // SAFETY: only our fresh temporary name is removed.
+        unsafe { libc::unlinkat(directory.as_raw_fd(), temporary.as_ptr(), 0) };
+    }
+    warn!(destination = %name.to_string_lossy(), "audio hardlink unavailable; copying pinned source");
+    publish_retained_audio(source, directory, name)
 }
 
 /// Resolve only the trusted parent (including platform aliases such as /var),
@@ -1293,6 +1378,37 @@ impl RecordingController {
         source_revision: u64,
         rendered_text: String,
     ) -> Result<UserRevisionCommit> {
+        self.apply_document_revision_from_overlay(
+            session_id,
+            source_revision,
+            rendered_text,
+            DocumentRevisionProvenance::UserEdit,
+        )
+        .await
+    }
+
+    pub async fn apply_retranscribe_revision_from_overlay(
+        &self,
+        session_id: String,
+        source_revision: u64,
+        rendered_text: String,
+    ) -> Result<UserRevisionCommit> {
+        self.apply_document_revision_from_overlay(
+            session_id,
+            source_revision,
+            rendered_text,
+            DocumentRevisionProvenance::Retranscribe,
+        )
+        .await
+    }
+
+    async fn apply_document_revision_from_overlay(
+        &self,
+        session_id: String,
+        source_revision: u64,
+        rendered_text: String,
+        provenance: DocumentRevisionProvenance,
+    ) -> Result<UserRevisionCommit> {
         if self.current_state().await != State::Idle {
             return Err(anyhow::anyhow!(
                 "transcript revision refused while recording is active"
@@ -1309,7 +1425,7 @@ impl RecordingController {
                 session_id,
                 source_revision,
                 rendered_text,
-                provenance: DocumentRevisionProvenance::UserEdit,
+                provenance,
             })
             .map_err(anyhow::Error::new)
     }
@@ -7494,13 +7610,10 @@ mod capture_failure_recovery_tests {
             std::io::ErrorKind::BrokenPipe
         );
         assert!(error.downcast_ref::<TerminalSealRefused>().is_none());
-        for path in [
-            source,
-            root.join("sessions/capture-owner.wav"),
-            root.join("last_session.wav"),
-        ] {
+        for path in [source, root.join("sessions/capture-owner.wav")] {
             assert_eq!(std::fs::read(path).unwrap(), bytes);
         }
+        assert!(!root.join("last_session.wav").exists());
     }
 
     #[test]
@@ -7565,7 +7678,7 @@ mod capture_failure_recovery_tests {
             },
         );
         assert!(error.to_string().contains("daily audio archive failed"));
-        assert!(error.to_string().contains("last_session.wav"));
+        assert!(error.to_string().contains("sessions/capture-owner.wav"));
         assert!(error.to_string().contains("original processing failure"));
         assert!(error.downcast_ref::<CaptureStopFailure>().is_some());
         assert_eq!(std::fs::read(source).unwrap(), b"source survives");
@@ -7596,10 +7709,54 @@ mod capture_failure_recovery_tests {
         retain_session_audio_at(
             Some("capture-owner"),
             source,
-            SessionTranscriptArchive::Unavailable("filesystem fixture"),
+            SessionTranscriptArchive::Committed("fixture"),
             root,
             |_, _| Some(source.to_path_buf()),
         )
+    }
+
+    #[test]
+    fn quiet_take_keeps_last_spoken_audio_and_each_session_links_its_take() {
+        use std::os::unix::fs::MetadataExt;
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path().join("data");
+        std::fs::create_dir(&root).unwrap();
+        let speech = dir.path().join("speech.wav");
+        let quiet = dir.path().join("quiet.wav");
+        std::fs::write(&speech, b"spoken take").unwrap();
+        std::fs::write(&quiet, b"quiet take").unwrap();
+        retain_session_audio_at(
+            Some("speech-take"),
+            &speech,
+            SessionTranscriptArchive::Committed("hello"),
+            &root,
+            |_, _| Some(speech.clone()),
+        )
+        .unwrap();
+        retain_session_audio_at(
+            Some("quiet-take"),
+            &quiet,
+            SessionTranscriptArchive::NoSpeech,
+            &root,
+            |_, _| Some(quiet.clone()),
+        )
+        .unwrap();
+        assert_eq!(
+            std::fs::metadata(&speech).unwrap().ino(),
+            std::fs::metadata(root.join("sessions/speech-take.wav"))
+                .unwrap()
+                .ino()
+        );
+        assert_eq!(
+            std::fs::metadata(&quiet).unwrap().ino(),
+            std::fs::metadata(root.join("sessions/quiet-take.wav"))
+                .unwrap()
+                .ino()
+        );
+        assert_eq!(
+            std::fs::read(root.join("last_session.wav")).unwrap(),
+            b"spoken take"
+        );
     }
 
     #[test]
@@ -7614,14 +7771,16 @@ mod capture_failure_recovery_tests {
         let alias = root.join("last_session.wav");
         std::fs::hard_link(&source, &session).unwrap();
         std::fs::hard_link(&source, &alias).unwrap();
-        for donor in [&source, &source, &session, &alias] {
+        for donor in [&source, &source, &session] {
             retain_fixture(donor, &root).unwrap();
             for path in [&source, &session, &alias] {
                 assert_eq!(std::fs::read(path).unwrap(), bytes);
             }
         }
-        std::fs::write(&source, b"a later legitimate take").unwrap();
-        retain_fixture(&source, &root).unwrap();
+        let later = dir.path().join("later.wav");
+        std::fs::write(&later, b"a later legitimate take").unwrap();
+        retain_fixture(&later, &root).unwrap();
+        assert_eq!(std::fs::read(source).unwrap(), bytes);
         assert_eq!(std::fs::read(session).unwrap(), b"a later legitimate take");
         assert_eq!(std::fs::read(alias).unwrap(), b"a later legitimate take");
     }
@@ -7644,14 +7803,19 @@ mod capture_failure_recovery_tests {
         retain_fixture(&source, &root).unwrap();
         assert_eq!(std::fs::read(&source).unwrap(), b"take");
         assert_eq!(std::fs::read(external).unwrap(), b"unrelated");
-        for path in [session, alias] {
-            assert!(std::fs::symlink_metadata(&path).unwrap().is_file());
-            assert_eq!(std::fs::read(path).unwrap(), b"take");
-        }
+        assert!(std::fs::symlink_metadata(&session).unwrap().is_file());
+        assert!(
+            std::fs::symlink_metadata(&alias)
+                .unwrap()
+                .file_type()
+                .is_symlink()
+        );
+        assert_eq!(std::fs::read(session).unwrap(), b"take");
+        assert_eq!(std::fs::read(alias).unwrap(), b"take");
     }
 
     #[test]
-    fn sessions_symlink_refuses_escape_but_still_refreshes_alias() {
+    fn sessions_symlink_refuses_escape_and_preserves_alias() {
         use std::os::unix::fs::symlink;
 
         let dir = tempfile::tempdir().unwrap();
@@ -7668,10 +7832,7 @@ mod capture_failure_recovery_tests {
         assert!(error.to_string().contains("sessions/capture-owner.wav"));
         assert_eq!(std::fs::read(unrelated).unwrap(), b"external bytes");
         assert_eq!(std::fs::read(source).unwrap(), b"take");
-        assert_eq!(
-            std::fs::read(root.join("last_session.wav")).unwrap(),
-            b"take"
-        );
+        assert!(!root.join("last_session.wav").exists());
     }
 
     #[test]
@@ -7737,12 +7898,9 @@ mod capture_failure_recovery_tests {
             std::fs::read(blocked.join("unrelated")).unwrap(),
             b"keep directory bytes"
         );
-        assert_eq!(
-            std::fs::read(root.join("last_session.wav")).unwrap(),
-            b"take"
-        );
+        assert!(!root.join("last_session.wav").exists());
         assert_eq!(std::fs::read_dir(root.join("sessions")).unwrap().count(), 1);
-        assert_eq!(std::fs::read_dir(root).unwrap().count(), 2);
+        assert_eq!(std::fs::read_dir(root).unwrap().count(), 1);
     }
 
     #[test]
@@ -7777,10 +7935,7 @@ mod capture_failure_recovery_tests {
             std::fs::read(root.join("sessions/capture-owner.wav")).unwrap(),
             b"opened take"
         );
-        assert_eq!(
-            std::fs::read(root.join("last_session.wav")).unwrap(),
-            b"opened take"
-        );
+        assert!(!root.join("last_session.wav").exists());
     }
 
     #[test]

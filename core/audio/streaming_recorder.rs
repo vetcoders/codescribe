@@ -750,7 +750,12 @@ impl StreamingRecorder {
         }
 
         let transcript = self.transcript_buffer.lock().await.clone();
-        let empty_capture = self.captured_samples.load(Ordering::Relaxed) == 0
+        // A gesture shorter than one complete speech window can contain PCM
+        // while producing no Silero/ledger observation. It is still a take,
+        // but cannot owe a terminal transcript receipt. A longer unobserved
+        // capture remains a processing refusal.
+        let captured_samples = self.captured_samples.load(Ordering::Relaxed);
+        let empty_capture = captured_samples <= u64::from(self.sample_rate) * 3 / 10
             && transcript.is_empty()
             && self.acoustic_ledger.as_ref().is_none_or(|ledger| {
                 ledger
@@ -1585,6 +1590,21 @@ mod capture_stop_failure_tests {
         recorder.captured_samples.store(4, Ordering::Relaxed);
         recorder.lifecycle_handle = Some(recorder_lifecycle_channel().0);
         recorder
+    }
+
+    #[tokio::test]
+    async fn short_capture_without_ledger_speech_ends_cleanly() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("take.wav");
+        write_wav(&path);
+        let mut recorder = recorder();
+        recorder.captured_samples.store(2_560, Ordering::Relaxed);
+        let (text, audio) = recorder
+            .complete_stop(Ok(Some(path.clone())))
+            .await
+            .unwrap();
+        assert!(text.is_empty());
+        assert_eq!(audio.as_deref(), Some(path.as_path()));
     }
 
     #[tokio::test]

@@ -161,8 +161,14 @@ private final class OverlayStateTestEngine: DictationEngine {
     return assistiveSendResult
   }
   var lastSessionAudioPathValue: String?
+  var requestedAudioSessionIds: [String] = []
+  var audioPathsBySession: [String: String] = [:]
   var transcriptionText = ""
   func lastSessionAudioPath() -> String? { lastSessionAudioPathValue }
+  func sessionAudioPath(sessionId: String) -> String? {
+    requestedAudioSessionIds.append(sessionId)
+    return audioPathsBySession[sessionId] ?? lastSessionAudioPathValue
+  }
   func transcribeFile(path _: String) async throws -> CsTranscription {
     CsTranscription(text: transcriptionText, language: "pl")
   }
@@ -2145,6 +2151,25 @@ final class OverlayStateTests: XCTestCase {
       engine.revisionRequests.last?.sourceRevision, 8,
       "the restore builds on the CURRENT tip, not the pre-retranscribe one")
     XCTAssertFalse(state.canUndoRetranscribe, "the slot is consumed by a landed restore")
+  }
+
+  func testRetranscribeUsesVisibleTakeAfterLaterQuietTake() async {
+    let state = OverlayState()
+    let engine = OverlayStateTestEngine()
+    engine.lastSessionAudioPathValue = "/tmp/quiet-b.wav"
+    engine.audioPathsBySession["spoken-a"] = "/tmp/spoken-a.wav"
+    engine.transcriptionText = "poprawione A"
+    state.engine = engine
+    projectText(
+      "pierwotne A", to: state, canRetranscribe: true, terminal: true,
+      sessionId: "spoken-a", reducerRevision: 4)
+    let committed = expectation(description: "A revision committed")
+    engine.onRevision = { committed.fulfill() }
+    state.retranscribe(pass: .cloud)
+    await fulfillment(of: [committed], timeout: 2)
+    XCTAssertEqual(engine.requestedAudioSessionIds, ["spoken-a"])
+    XCTAssertEqual(engine.revisionRequests.first?.sessionId, "spoken-a")
+    XCTAssertEqual(state.engineChip, "cloud")
   }
 
   /// The rollback repaints the canvas, so it dies with its take: a new capture

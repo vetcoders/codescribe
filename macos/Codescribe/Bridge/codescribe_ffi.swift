@@ -2345,6 +2345,8 @@ public protocol CodescribeHotkeysProtocol: AnyObject, Sendable {
      */
     func commitFormatterRevision(sessionId: String, sourceRevision: UInt64) async throws  -> CsUserRevisionResult
 
+    func commitRetranscribeRevision(sessionId: String, sourceRevision: UInt64, renderedText: String) async throws  -> CsUserRevisionResult
+
     /**
      * Commit a terminal overlay draft as a Rust-authored document revision.
      * The returned value is acknowledgement only; Swift repaints exclusively
@@ -2467,6 +2469,8 @@ public protocol CodescribeHotkeysProtocol: AnyObject, Sendable {
      */
     func sendAssistiveTranscript(text: String) async throws  -> Bool
 
+    func sessionAudioPath(sessionId: String)  -> String?
+
     /**
      * Register the Swift AgentChat listener that renders voice-assistive replies
      * live. Process-global, so it takes effect for the delivery forwarder spawned
@@ -2559,6 +2563,11 @@ public protocol CodescribeHotkeysProtocol: AnyObject, Sendable {
      * Bare paths are a Full HQ file pass; daily Overlay never calls this API.
      */
     func transcribeFile(path: String) async throws  -> CsTranscription
+
+    /**
+     * A button pass is bound to the visible take, including CLI source references.
+     */
+    func transcribeTake(sessionId: String, path: String) async throws  -> CsTranscription
 
     /**
      * Validate a candidate binding set WITHOUT persisting it. Returns every
@@ -2745,6 +2754,23 @@ open func commitFormatterRevision(sessionId: String, sourceRevision: UInt64)asyn
                 uniffi_codescribe_ffi_fn_method_codescribehotkeys_commit_formatter_revision(
                     self.uniffiCloneHandle(),
                     FfiConverterString.lower(sessionId),FfiConverterUInt64.lower(sourceRevision)
+                )
+            },
+            pollFunc: ffi_codescribe_ffi_rust_future_poll_rust_buffer,
+            completeFunc: ffi_codescribe_ffi_rust_future_complete_rust_buffer,
+            freeFunc: ffi_codescribe_ffi_rust_future_free_rust_buffer,
+            liftFunc: FfiConverterTypeCsUserRevisionResult_lift,
+            errorHandler: FfiConverterTypeCsError_lift
+        )
+}
+
+open func commitRetranscribeRevision(sessionId: String, sourceRevision: UInt64, renderedText: String)async throws  -> CsUserRevisionResult  {
+    return
+        try  await uniffiRustCallAsync(
+            rustFutureFunc: {
+                uniffi_codescribe_ffi_fn_method_codescribehotkeys_commit_retranscribe_revision(
+                    self.uniffiCloneHandle(),
+                    FfiConverterString.lower(sessionId),FfiConverterUInt64.lower(sourceRevision),FfiConverterString.lower(renderedText)
                 )
             },
             pollFunc: ffi_codescribe_ffi_rust_future_poll_rust_buffer,
@@ -3095,6 +3121,15 @@ open func sendAssistiveTranscript(text: String)async throws  -> Bool  {
         )
 }
 
+open func sessionAudioPath(sessionId: String) -> String?  {
+    return try!  FfiConverterOptionString.lift(try! rustCall() {
+    uniffi_codescribe_ffi_fn_method_codescribehotkeys_session_audio_path(
+            self.uniffiCloneHandle(),
+        FfiConverterString.lower(sessionId),$0
+    )
+})
+}
+
     /**
      * Register the Swift AgentChat listener that renders voice-assistive replies
      * live. Process-global, so it takes effect for the delivery forwarder spawned
@@ -3319,6 +3354,26 @@ open func transcribeFile(path: String)async throws  -> CsTranscription  {
                 uniffi_codescribe_ffi_fn_method_codescribehotkeys_transcribe_file(
                     self.uniffiCloneHandle(),
                     FfiConverterString.lower(path)
+                )
+            },
+            pollFunc: ffi_codescribe_ffi_rust_future_poll_rust_buffer,
+            completeFunc: ffi_codescribe_ffi_rust_future_complete_rust_buffer,
+            freeFunc: ffi_codescribe_ffi_rust_future_free_rust_buffer,
+            liftFunc: FfiConverterTypeCsTranscription_lift,
+            errorHandler: FfiConverterTypeCsError_lift
+        )
+}
+
+    /**
+     * A button pass is bound to the visible take, including CLI source references.
+     */
+open func transcribeTake(sessionId: String, path: String)async throws  -> CsTranscription  {
+    return
+        try  await uniffiRustCallAsync(
+            rustFutureFunc: {
+                uniffi_codescribe_ffi_fn_method_codescribehotkeys_transcribe_take(
+                    self.uniffiCloneHandle(),
+                    FfiConverterString.lower(sessionId),FfiConverterString.lower(path)
                 )
             },
             pollFunc: ffi_codescribe_ffi_rust_future_poll_rust_buffer,
@@ -16295,6 +16350,9 @@ private let initializationResult: InitializationResult = {
     if (uniffi_codescribe_ffi_checksum_method_codescribehotkeys_commit_formatter_revision() != 59971) {
         return InitializationResult.apiChecksumMismatch
     }
+    if (uniffi_codescribe_ffi_checksum_method_codescribehotkeys_commit_retranscribe_revision() != 61135) {
+        return InitializationResult.apiChecksumMismatch
+    }
     if (uniffi_codescribe_ffi_checksum_method_codescribehotkeys_commit_user_revision() != 37560) {
         return InitializationResult.apiChecksumMismatch
     }
@@ -16349,6 +16407,9 @@ private let initializationResult: InitializationResult = {
     if (uniffi_codescribe_ffi_checksum_method_codescribehotkeys_send_assistive_transcript() != 10588) {
         return InitializationResult.apiChecksumMismatch
     }
+    if (uniffi_codescribe_ffi_checksum_method_codescribehotkeys_session_audio_path() != 39939) {
+        return InitializationResult.apiChecksumMismatch
+    }
     if (uniffi_codescribe_ffi_checksum_method_codescribehotkeys_set_agent_delivery_listener() != 36044) {
         return InitializationResult.apiChecksumMismatch
     }
@@ -16386,6 +16447,9 @@ private let initializationResult: InitializationResult = {
         return InitializationResult.apiChecksumMismatch
     }
     if (uniffi_codescribe_ffi_checksum_method_codescribehotkeys_transcribe_file() != 1637) {
+        return InitializationResult.apiChecksumMismatch
+    }
+    if (uniffi_codescribe_ffi_checksum_method_codescribehotkeys_transcribe_take() != 510) {
         return InitializationResult.apiChecksumMismatch
     }
     if (uniffi_codescribe_ffi_checksum_method_codescribehotkeys_validate_bindings() != 29971) {

@@ -1000,9 +1000,25 @@ impl CodescribeHotkeys {
         .await?
     }
 
+    /// A button pass is bound to the visible take, including CLI source references.
+    pub async fn transcribe_take(
+        &self,
+        session_id: String,
+        path: String,
+    ) -> Result<CsTranscription, CsError> {
+        application_runtime::run(async move {
+            crate::recording::transcribe_session_file_with_identity(path, Some(session_id)).await
+        })
+        .await?
+    }
+
     /// Stable path of the last retained session WAV, if it exists.
     pub fn last_session_audio_path(&self) -> Option<String> {
         crate::recording::last_session_audio_path()
+    }
+
+    pub fn session_audio_path(&self, session_id: String) -> Option<String> {
+        crate::recording::session_audio_path(&session_id)
     }
 
     /// Stop the active legacy-controller recording flow, if one is live.
@@ -1048,6 +1064,35 @@ impl CodescribeHotkeys {
                 .map(CsUserRevisionResult::from)
                 .map_err(|error| CsError::Recording {
                     msg: error.to_string(),
+                })
+        })
+        .await?
+    }
+
+    pub async fn commit_retranscribe_revision(
+        &self,
+        session_id: String,
+        source_revision: u64,
+        rendered_text: String,
+    ) -> Result<CsUserRevisionResult, CsError> {
+        application_runtime::run(async move {
+            let controller =
+                current_controller(&shared_controller()).ok_or_else(|| CsError::Recording {
+                    msg: "no recording controller for retranscription revision".to_string(),
+                })?;
+            controller
+                .apply_retranscribe_revision_from_overlay(
+                    session_id,
+                    source_revision,
+                    rendered_text,
+                )
+                .await
+                .map(CsUserRevisionResult::from)
+                .map_err(|error| {
+                    tracing::warn!(refusal = %error, "retranscription revision refused");
+                    CsError::Recording {
+                        msg: error.to_string(),
+                    }
                 })
         })
         .await?

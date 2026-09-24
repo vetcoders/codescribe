@@ -2140,7 +2140,7 @@ class NeutralAstTests(unittest.TestCase):
     def test_terminal_finality_authority_mutants_rejected(self):
         cases = [
             ("stop_mints_seal", "complete_stop", ".terminal_finality(session, self.capture_epoch)", ".seal_terminal(session, self.capture_epoch)"),
-            ("zero_sample_guard_removed", "complete_stop", "self.captured_samples.load(Ordering::Relaxed) == 0", "true"),
+            ("short_capture_guard_removed", "complete_stop", "captured_samples <= u64::from(self.sample_rate) * 3 / 10", "true"),
             ("missing_authority_succeeds", "complete_stop", "match finality {", "if finality.is_none() { return Ok((transcript, audio_path)); } match finality {"),
             ("foreign_receipt", "terminal_finality", "receipt.coverage.capture_epoch == capture_epoch", "true"),
             ("stale_occurrence_set", "terminal_finality", "receipt.sealed_occurrences.contains(range)", "true"),

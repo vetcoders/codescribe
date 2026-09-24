@@ -787,21 +787,109 @@ impl From<&LayerSummary> for CsLayerSummary {
 /// - `hq:` or no prefix — Full HQ file pass (`transcribe_file_verdict`)
 /// - `cloud:` — Cloud pass (`transcribe_cloud` with Settings STT credentials)
 pub(crate) async fn transcribe_session_file(path: String) -> Result<CsTranscription, CsError> {
+    transcribe_session_file_with_identity(path, None).await
+}
+
+pub(crate) async fn transcribe_session_file_with_identity(
+    path: String,
+    take_session_id: Option<String>,
+) -> Result<CsTranscription, CsError> {
     let (pass, file_path) = split_retranscribe_path(&path);
-    match pass {
+    let path = std::path::Path::new(&file_path);
+    if let Some(ref id) = take_session_id {
+        let resolved = session_audio_path(id).ok_or_else(|| CsError::Recording {
+            msg: format!("take {id} audio is unavailable"),
+        })?;
+        if path != std::path::Path::new(&resolved) {
+            return Err(CsError::Recording {
+                msg: format!("take {id} audio identity changed"),
+            });
+        }
+    }
+    let session_id = take_session_id.unwrap_or_else(|| {
+        path.parent()
+            .filter(|parent| parent.file_name().is_some_and(|name| name == "sessions"))
+            .and_then(|_| path.file_stem())
+            .and_then(|name| name.to_str())
+            .unwrap_or("unknown")
+            .to_string()
+    });
+    let audio_seconds = hound::WavReader::open(path)
+        .ok()
+        .map(|wav| f64::from(wav.duration()) / f64::from(wav.spec().sample_rate));
+    let pass_name = match pass {
+        RetranscribePass::Hq => "local_whisper_hq",
+        RetranscribePass::Cloud => "cloud",
+    };
+    tracing::info!(
+        pass = pass_name,
+        session_id,
+        ?audio_seconds,
+        "file pass started"
+    );
+    let result = match pass {
         RetranscribePass::Hq => tokio::task::spawn_blocking(move || transcribe_file_hq(file_path))
             .await
-            .map_err(|e| CsError::Recording {
-                msg: format!("transcribe_file task join error: {e}"),
-            })?,
+            .unwrap_or_else(|e| {
+                Err(CsError::Recording {
+                    msg: format!("transcribe_file task join error: {e}"),
+                })
+            }),
         RetranscribePass::Cloud => transcribe_file_cloud(file_path).await,
+    };
+    match &result {
+        Ok(transcript) => tracing::info!(
+            pass = pass_name,
+            session_id,
+            ?audio_seconds,
+            result_chars = transcript.text.chars().count(),
+            "file pass completed"
+        ),
+        Err(_) => tracing::warn!(
+            pass = pass_name,
+            session_id,
+            ?audio_seconds,
+            error_class = "recording",
+            "file pass failed"
+        ),
     }
+    result
 }
 
 /// `~/.codescribe/last_session.wav` when the last stop retained audio.
 pub(crate) fn last_session_audio_path() -> Option<String> {
     let dest = codescribe_core::config::Config::config_dir().join("last_session.wav");
     dest.exists().then(|| dest.to_string_lossy().into_owned())
+}
+
+/// Resolve the exact take shown by a projection. App takes have a retained
+/// session hardlink; CLI verdicts carry a source reference instead of audio.
+pub(crate) fn session_audio_path(session_id: &str) -> Option<String> {
+    session_audio_path_at(session_id, &codescribe_core::config::Config::config_dir())
+}
+
+fn session_audio_path_at(session_id: &str, root: &std::path::Path) -> Option<String> {
+    if !(8..=80).contains(&session_id.len())
+        || !session_id
+            .bytes()
+            .all(|byte| byte.is_ascii_alphanumeric() || byte == b'-' || byte == b'_')
+    {
+        return None;
+    }
+    let sessions = root.join("sessions");
+    let wav = sessions.join(format!("{session_id}.wav"));
+    if wav.is_file() {
+        return Some(wav.to_string_lossy().into_owned());
+    }
+    let reference = sessions.join(format!("{session_id}.source.json"));
+    let value: serde_json::Value = serde_json::from_slice(&std::fs::read(reference).ok()?).ok()?;
+    if value.get("session_id")?.as_str()? != session_id {
+        return None;
+    }
+    let source = std::path::Path::new(value.get("source_path")?.as_str()?);
+    source
+        .is_file()
+        .then(|| source.to_string_lossy().into_owned())
 }
 
 enum RetranscribePass {
@@ -864,6 +952,34 @@ async fn transcribe_file_cloud(path: String) -> Result<CsTranscription, CsError>
 #[cfg(test)]
 mod retranscribe_tests {
     use super::*;
+
+    #[test]
+    fn session_audio_resolver_keeps_take_identity_and_cli_source() {
+        let temp = tempfile::tempdir().unwrap();
+        let sessions = temp.path().join("sessions");
+        std::fs::create_dir(&sessions).unwrap();
+        let take = sessions.join("speech-a.wav");
+        std::fs::write(&take, b"take A").unwrap();
+        let quiet = sessions.join("quiet-b.wav");
+        std::fs::write(&quiet, b"take B").unwrap();
+        assert_eq!(
+            session_audio_path_at("speech-a", temp.path()).as_deref(),
+            take.to_str()
+        );
+        let container = temp.path().join("file.mov");
+        std::fs::write(&container, b"source container").unwrap();
+        let receipt = serde_json::json!({"session_id":"cli-source", "source_path":container});
+        std::fs::write(
+            sessions.join("cli-source.source.json"),
+            serde_json::to_vec(&receipt).unwrap(),
+        )
+        .unwrap();
+        assert_eq!(
+            session_audio_path_at("cli-source", temp.path()).as_deref(),
+            container.to_str()
+        );
+        assert!(session_audio_path_at("../escape", temp.path()).is_none());
+    }
 
     #[test]
     fn retranscribe_path_prefixes_select_hq_or_cloud() {

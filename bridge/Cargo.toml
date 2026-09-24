@@ -28,6 +28,7 @@ directories = "6"
 serde_json = { workspace = true }
 crossbeam-channel = "0.5"
 cpal = "0.17"
+hound = "3.5"
 
 [dev-dependencies]
 async-trait = "0.1"

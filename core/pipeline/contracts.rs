@@ -656,10 +656,19 @@ pub struct PreviewPin {
 impl PreviewPin {
     /// Union of the partial's own segments, already on the capture counter.
     pub fn from_segments(range: TailSampleRange) -> Self {
+        let unanchored = range.sample_start >= range.sample_end;
         Self {
             range,
-            grain: AcousticSpanGrain::Word,
-            receipt: PreviewPinReceipt::SegmentsOnCaptureClock,
+            grain: if unanchored {
+                AcousticSpanGrain::Utterance
+            } else {
+                AcousticSpanGrain::Word
+            },
+            receipt: if unanchored {
+                PreviewPinReceipt::UnanchoredZeroWidth
+            } else {
+                PreviewPinReceipt::SegmentsOnCaptureClock
+            },
         }
     }
 
@@ -680,6 +689,8 @@ impl PreviewPin {
 pub enum PreviewPinReceipt {
     /// The partial's segments, mapped onto the capture counter.
     SegmentsOnCaptureClock,
+    /// Segment timing collapsed and cannot establish an acoustic anchor.
+    UnanchoredZeroWidth,
     /// The partial carried text and no segments.
     PartialWithoutSegments,
 }
@@ -689,6 +700,7 @@ impl PreviewPinReceipt {
     pub fn as_str(self) -> &'static str {
         match self {
             Self::SegmentsOnCaptureClock => "segments_on_capture_clock",
+            Self::UnanchoredZeroWidth => "unanchored_zero_width",
             Self::PartialWithoutSegments => "partial_without_segments",
         }
     }
@@ -1494,6 +1506,17 @@ mod tests {
             open,
             "the pin crosses a serde hop unchanged"
         );
+    }
+
+    #[test]
+    fn zero_width_preview_is_unanchored() {
+        let pin = PreviewPin::from_segments(TailSampleRange {
+            session: "take".into(),
+            capture_epoch: 2,
+            sample_start: 4_000,
+            sample_end: 4_000,
+        });
+        assert_eq!(pin.receipt.as_str(), "unanchored_zero_width");
     }
 
     /// NoSpeech reason string survives clone for sink presentation.

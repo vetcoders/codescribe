@@ -1765,7 +1765,8 @@ impl AcousticLedger {
         if source_occurrences.iter().any(|occurrence| {
             occurrence.session != session_id
                 || !self.is_qualified(occurrence)
-                || !self.is_sealed(occurrence)
+                || (provenance != DocumentRevisionProvenance::Retranscribe
+                    && !self.is_sealed(occurrence))
                 || !self.committed.contains_key(occurrence)
         }) {
             return Err("manual_document_occurrence_not_sealed");
@@ -2795,6 +2796,8 @@ pub struct ManualEditReceipt {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum DocumentRevisionProvenance {
     UserEdit,
+    /// Explicit whole-file button pass after capture lifecycle closure.
+    Retranscribe,
     Formatter,
     /// Deterministic Light+ sentence shaping minted by Rust at the terminal
     /// seal, before any formatter or user edit sees the document.
@@ -2806,6 +2809,7 @@ impl DocumentRevisionProvenance {
     pub const fn as_str(self) -> &'static str {
         match self {
             Self::UserEdit => "user-edit",
+            Self::Retranscribe => "retranscribe",
             Self::Formatter => "formatter",
             Self::LightPlus => "light-plus",
         }

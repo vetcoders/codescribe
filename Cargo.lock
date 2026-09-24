@@ -762,6 +762,7 @@ dependencies = [
  "cpal",
  "crossbeam-channel",
  "directories",
+ "hound",
  "serde_json",
  "serial_test",
  "tempfile",

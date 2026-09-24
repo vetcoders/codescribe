@@ -20,7 +20,8 @@ use codescribe_core::pipeline::acoustic_ledger::{
     TranscriptComparisonReceipt,
 };
 use codescribe_core::pipeline::contracts::{
-    DeltaSink, EngineEvent, EventSink, SpeechIntegrity, SpeechIntegrityPhase, TranscriptDelta,
+    DeltaSink, EngineEvent, EventSink, PreviewPinReceipt, SpeechIntegrity, SpeechIntegrityPhase,
+    TranscriptDelta,
 };
 use sha2::{Digest, Sha256};
 use tokio::sync::Mutex;
@@ -1399,6 +1400,7 @@ pub struct PresentationEmitter {
     cursor_integrity: std::sync::Mutex<Option<SpeechIntegrity>>,
     /// Last bounded paint, not a document or independently reconstructed delta.
     cursor_tail: std::sync::Mutex<String>,
+    cursor_unanchored_preview: std::sync::Mutex<Option<UnanchoredEvidence>>,
     cmd_tx: std::sync::Mutex<Option<tokio::sync::mpsc::UnboundedSender<EmitterCmd>>>,
     cmd_handle: Option<tokio::task::JoinHandle<()>>,
     /// One occurrence-keyed committed document plus volatile overlay paint.
@@ -1514,6 +1516,7 @@ impl PresentationEmitter {
             cursor_sequence: std::sync::Mutex::new(0),
             cursor_integrity: std::sync::Mutex::new(None),
             cursor_tail: std::sync::Mutex::new(String::new()),
+            cursor_unanchored_preview: std::sync::Mutex::new(None),
         }
     }
 
@@ -1576,11 +1579,19 @@ impl PresentationEmitter {
         let tail = self.cursor_tail.lock().unwrap_or_else(|e| e.into_inner());
         // Snapshot under the sequence lock so a later sequence can never carry
         // older evidence. Callers never hold the reducer lock while painting.
-        let evidence = self
+        let mut evidence = self
             .session_state
             .lock()
             .unwrap_or_else(|e| e.into_inner())
             .unanchored_evidence(session_id, *capture_epoch);
+        if let Some(preview) = self
+            .cursor_unanchored_preview
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .as_ref()
+        {
+            evidence.push(preview.clone());
+        }
         *sequence = next;
         observer(&CompactProjection {
             session_id: session_id.clone(),
@@ -2268,6 +2279,31 @@ impl EventSink for PresentationEmitter {
                     text_chars = text.chars().count(),
                     "L0 preview painted"
                 );
+                if pin.receipt == PreviewPinReceipt::UnanchoredZeroWidth {
+                    *self
+                        .cursor_unanchored_preview
+                        .lock()
+                        .unwrap_or_else(|e| e.into_inner()) = Some(UnanchoredEvidence {
+                        sample_start: pin.range.sample_start,
+                        sample_end: pin.range.sample_end,
+                        text: text.clone(),
+                        reason: pin.receipt.as_str().to_string(),
+                    });
+                    let canonical = {
+                        let mut state =
+                            self.session_state.lock().unwrap_or_else(|e| e.into_inner());
+                        state.clear_ephemeral_preview();
+                        state.committed_rendered_text()
+                    };
+                    self.send_cmd(EmitterCmd::PaintEphemeralPreview(canonical));
+                    self.repaint_cursor();
+                    return;
+                }
+                *self
+                    .cursor_unanchored_preview
+                    .lock()
+                    .unwrap_or_else(|e| e.into_inner()) = None;
+                self.repaint_cursor();
                 let visual_text = {
                     let mut state = self.session_state.lock().unwrap_or_else(|e| e.into_inner());
                     state.set_ephemeral_preview(text);
@@ -2289,6 +2325,11 @@ impl EventSink for PresentationEmitter {
                 );
             }
             EngineEvent::NoSpeech { reason } => {
+                *self
+                    .cursor_unanchored_preview
+                    .lock()
+                    .unwrap_or_else(|e| e.into_inner()) = None;
+                self.repaint_cursor();
                 let canonical_text = {
                     let mut state = self.session_state.lock().unwrap_or_else(|e| e.into_inner());
                     state.mark_terminal_lifecycle();
@@ -2350,6 +2391,11 @@ impl EventSink for PresentationEmitter {
                 tracing::warn!("Engine warning [{}]: {}", code, message);
             }
             EngineEvent::SessionFinalised { .. } => {
+                *self
+                    .cursor_unanchored_preview
+                    .lock()
+                    .unwrap_or_else(|e| e.into_inner()) = None;
+                self.repaint_cursor();
                 let canonical_text = {
                     let mut state = self.session_state.lock().unwrap_or_else(|e| e.into_inner());
                     state.mark_terminal_lifecycle();
@@ -3110,6 +3156,69 @@ mod tests {
     /// than text identity, Rust mints the next document revision and a
     /// `user-edit` ledger receipt, the Bus persists it after microphone
     /// lifecycle end, and replay returns the same terminal bytes.
+    #[tokio::test]
+    async fn explicit_retranscribe_commits_after_refused_terminal_seal() {
+        let temp = tempfile::tempdir().unwrap();
+        let bus = Arc::new(
+            TranscriptBus::open_at(
+                TranscriptSession {
+                    session_id: "refused-take".to_string(),
+                    mode: TranscriptMode::Dictation,
+                    has_latched_target: false,
+                    latched_target_is_self: false,
+                },
+                temp.path().join("refused.jsonl"),
+                None,
+            )
+            .unwrap(),
+        );
+        let occurrence = OccurrenceIdentity::new("refused-take", 7, 0, 16_000);
+        let ledger = Arc::new(StdMutex::new(AcousticLedger::new()));
+        let mutation = admitted_mutation(
+            &mut ledger.lock().unwrap_or_else(|error| error.into_inner()),
+            occurrence,
+            1,
+            "Pierwsza wersja",
+        );
+        bus.publish_started();
+        let mut emitter = PresentationEmitter::new_with_authority(
+            Arc::new(Mutex::new(String::new())),
+            None,
+            None,
+            Some(Arc::clone(&bus)),
+            Some(Arc::clone(&ledger)),
+            None,
+        );
+        emitter.on_event(&mutation);
+        emitter.on_event(&EngineEvent::SessionFinalised {
+            session_id: "refused-take".to_string(),
+            layer_summary: LayerSummary::default(),
+        });
+        let terminal = bus
+            .publish_ended(
+                TranscriptSessionEndReason::CoverageRefused,
+                true,
+                TranscriptDelivery::Retained,
+            )
+            .unwrap();
+        let edit = UserRevisionIntent {
+            session_id: "refused-take".to_string(),
+            source_revision: terminal.reducer_revision,
+            rendered_text: "Nowa wersja".to_string(),
+            provenance: DocumentRevisionProvenance::UserEdit,
+        };
+        assert!(emitter.apply_user_revision(edit.clone()).is_err());
+        let committed = emitter
+            .apply_user_revision(UserRevisionIntent {
+                provenance: DocumentRevisionProvenance::Retranscribe,
+                ..edit
+            })
+            .expect("explicit button pass revises the refused take");
+        assert_eq!(committed.rendered_text, "Nowa wersja");
+        assert!(committed.provenance_receipt.starts_with("retranscribe-"));
+        emitter.finish().await;
+    }
+
     #[tokio::test]
     async fn terminal_user_revision_is_ledger_stamped_and_replayable() {
         let delivery = Arc::new(Mutex::new(String::new()));
@@ -5486,6 +5595,36 @@ mod tests {
             assert!(lines[0].contains(field), "missing {field}: {}", lines[0]);
         }
         assert!(!log.contains("tajne"), "preview words must not be logged");
+    }
+
+    #[tokio::test]
+    async fn collapsed_preview_is_read_only_evidence_beside_the_canvas() {
+        let paints = Arc::new(StdMutex::new(Vec::<super::CompactProjection>::new()));
+        let observed = Arc::clone(&paints);
+        let delivery = Arc::new(Mutex::new(String::new()));
+        let mut emitter = PresentationEmitter::new(Arc::clone(&delivery), None, None)
+            .with_cursor_observer(Arc::new(move |projection| {
+                observed.lock().unwrap().push(projection.clone());
+            }));
+        emitter.on_capture_opened("collapsed", 3);
+        emitter.on_event(&EngineEvent::Preview {
+            rev: 1,
+            text: "preview only".to_string(),
+            pin: PreviewPin::from_segments(TailSampleRange {
+                session: "collapsed".to_string(),
+                capture_epoch: 3,
+                sample_start: 400,
+                sample_end: 400,
+            }),
+        });
+        let paint = paints.lock().unwrap().last().cloned().unwrap();
+        assert!(paint.text.is_empty());
+        assert_eq!(paint.evidence.len(), 1);
+        assert_eq!(paint.evidence[0].text, "preview only");
+        assert_eq!(paint.evidence[0].reason, "unanchored_zero_width");
+        assert!(emitter.visible_canvas_snapshot().unwrap().text.is_empty());
+        emitter.finish().await;
+        assert!(delivery.lock().await.is_empty());
     }
 
     /// Evidence painted under one capture never carries another capture's

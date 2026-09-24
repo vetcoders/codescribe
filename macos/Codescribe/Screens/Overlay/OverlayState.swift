@@ -32,6 +32,9 @@ protocol DictationEngine: AnyObject {
   func commitUserRevision(
     sessionId: String, sourceRevision: UInt64, renderedText: String
   ) async throws -> CsUserRevisionResult
+  func commitRetranscribeRevision(
+    sessionId: String, sourceRevision: UInt64, renderedText: String
+  ) async throws -> CsUserRevisionResult
   func commitFormatterRevision(
     sessionId: String, sourceRevision: UInt64
   ) async throws -> CsUserRevisionResult
@@ -49,11 +52,23 @@ protocol DictationEngine: AnyObject {
   func pasteTargetAppName() async -> String?
   func sendAssistiveTranscript(text: String) async throws -> Bool
   func lastSessionAudioPath() -> String?
+  func sessionAudioPath(sessionId: String) -> String?
   func transcribeFile(path: String) async throws -> CsTranscription
+  func transcribeTake(sessionId: String, path: String) async throws -> CsTranscription
 }
 
 extension DictationEngine {
+  func commitRetranscribeRevision(
+    sessionId: String, sourceRevision: UInt64, renderedText: String
+  ) async throws -> CsUserRevisionResult {
+    try await commitUserRevision(
+      sessionId: sessionId, sourceRevision: sourceRevision, renderedText: renderedText)
+  }
   func lastSessionAudioPath() -> String? { nil }
+  func sessionAudioPath(sessionId: String) -> String? { nil }
+  func transcribeTake(sessionId _: String, path: String) async throws -> CsTranscription {
+    try await transcribeFile(path: path)
+  }
   func overlayExpandedByDefault() -> Bool { false }
   func setOverlayExpandedByDefault(_ enabled: Bool) -> Bool { false }
 }
@@ -976,58 +991,68 @@ final class OverlayState {
         "Retranscription needs the recording engine", notice: "retranscribe unavailable")
       return
     }
-    guard let path = engine.lastSessionAudioPath() else {
-      presentActionFailure(
-        "The previous recording is no longer available", notice: "no recording")
+    guard let projection = latestTranscriptProjection else {
+      presentActionFailure("The visible take has no session identity", notice: "retranscribe unavailable")
+      return
+    }
+    guard let path = engine.sessionAudioPath(sessionId: projection.sessionId) else {
+      presentActionFailure("The visible take's audio is unavailable", notice: "take audio unavailable")
       return
     }
     let prefixedPath = "\(pass.pathPrefix)\(path)"
 
     cancelAutoHide()
-    showFooterNotice("retranscribing…", persists: true)
+    let passEngine = pass == .cloud ? "cloud" : "local Whisper HQ"
+    let previousChip = engineChip
+    engineChip = "retranscribing · \(passEngine)"
+    engineChipLatched = true
+    showFooterNotice("retranscribing · \(passEngine)", persists: true)
     Task { @MainActor [weak self] in
       guard let self else { return }
       do {
-        let result = try await engine.transcribeFile(path: prefixedPath)
+        let result = try await engine.transcribeTake(
+          sessionId: projection.sessionId, path: prefixedPath)
         let text = result.text.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !text.isEmpty else {
+          self.engineChip = previousChip
+          self.presentActionFailure("The \(passEngine) pass returned no text", notice: "retranscribe returned no text")
+          return
+        }
         if !text.isEmpty {
-          if let projection = self.latestTranscriptProjection {
+          if self.latestTranscriptProjection?.sessionId == projection.sessionId {
             // The commit replaces the rendered text irreversibly on the
             // reducer's current tip. Retain the exact text it replaces, so the
             // rail can offer a real Back — a worse retranscription must never
-            // be a one-way door (operator, 2026-09-24).
+            // be a one-way door.
             let replaced = projection.renderedText
-            if (try? await engine.commitUserRevision(
+            _ = try await engine.commitRetranscribeRevision(
               sessionId: projection.sessionId,
               sourceRevision: projection.reducerRevision,
               renderedText: text
-            )) != nil,
-              replaced != text,
+            )
+            if replaced != text,
               !replaced.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
             {
               self.retranscribeRollback = OverlayRetranscribeRollback(
                 sessionId: projection.sessionId, renderedText: replaced)
             }
           } else {
-            let replaced = self.revisionDraft
-            self.revisionDraft = text
-            if replaced != text,
-              !replaced.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
-            {
-              self.retranscribeRollback = OverlayRetranscribeRollback(
-                sessionId: nil, renderedText: replaced)
-            }
+            self.engineChip = previousChip
+            self.presentActionFailure("A newer take replaced this overlay", notice: "take changed")
+            return
           }
           if self.mode == .noSpeech {
             self.mode = .formatted
           }
         }
+        self.engineChip = passEngine
         self.showFooterNotice(
           self.retranscribeRollback == nil ? "retranscribed" : "retranscribed — Back keeps the old text")
         self.restartAutoHideCountdown()
       } catch {
+        self.engineChip = previousChip
         self.presentActionFailure(
-          "Couldn't retranscribe recording: \(error)", notice: "retranscribe failed")
+          "Couldn't retranscribe recording: \(error)", notice: "retranscribe refused · \(error)")
         self.restartAutoHideCountdown()
       }
     }
@@ -2711,7 +2736,19 @@ final class ControllerDictationEngine: DictationEngine {
   func lastSessionAudioPath() -> String? {
     hotkeys.lastSessionAudioPath()
   }
+  func sessionAudioPath(sessionId: String) -> String? {
+    hotkeys.sessionAudioPath(sessionId: sessionId)
+  }
+  func commitRetranscribeRevision(
+    sessionId: String, sourceRevision: UInt64, renderedText: String
+  ) async throws -> CsUserRevisionResult {
+    try await hotkeys.commitRetranscribeRevision(
+      sessionId: sessionId, sourceRevision: sourceRevision, renderedText: renderedText)
+  }
   func transcribeFile(path: String) async throws -> CsTranscription {
     try await hotkeys.transcribeFile(path: path)
+  }
+  func transcribeTake(sessionId: String, path: String) async throws -> CsTranscription {
+    try await hotkeys.transcribeTake(sessionId: sessionId, path: path)
   }
 }

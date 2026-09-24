@@ -61,6 +61,7 @@ private final class OverlayIntentBoundaryEngine: DictationEngine {
   func pasteTargetAppName() async -> String? { nil }
   func sendAssistiveTranscript(text: String) async throws -> Bool { false }
   func lastSessionAudioPath() -> String? { "/tmp/overlay-intent-boundary.wav" }
+  func sessionAudioPath(sessionId: String) -> String? { "/tmp/overlay-intent-boundary.wav" }
   func transcribeFile(path: String) async throws -> CsTranscription {
     receivedTranscribePath = path
     onTranscribeFile?()
