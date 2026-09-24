@@ -9541,6 +9541,46 @@ mod rc_w2_acoustic_tests {
     }
 
     #[test]
+    fn terminal_repair_requests_only_measured_speech() {
+        let mut state = two_bursts("terminal-speech-fence");
+        let speech = coverage_speech_evidence(&state).ranges().to_vec();
+        assert_eq!(speech.len(), 2);
+        assert!(
+            speech[0].sample_end < speech[1].sample_start,
+            "the fixture must contain a measured silence fence"
+        );
+        let expected = speech.clone();
+        let requests = Arc::new(Mutex::new(Vec::new()));
+        let observed = Arc::clone(&requests);
+        let (tx, _rx) = mpsc::unbounded_channel();
+        let execution = LocalExecutionOwner::default();
+        let receipt = repair_terminal_seal_coverage_with(
+            &mut state,
+            &tx,
+            Some("pl"),
+            &execution,
+            move |request, pcm, control| {
+                control.check()?;
+                request.validate_pcm(pcm)?;
+                observed.lock().unwrap().push(request.identity.range.clone());
+                let gap = expected
+                    .iter()
+                    .find(|gap| gap.sample_end == request.identity.range.sample_end)
+                    .expect("each request must end at a measured speech gap");
+                let mut payload = gap_payload(request);
+                payload.segments[0].range = gap.clone();
+                Ok(payload)
+            },
+        );
+        assert_eq!(receipt.status, SealCoverageStatus::Complete);
+        assert_eq!(
+            *requests.lock().unwrap(),
+            speech,
+            "terminal Whisper must not backfill silence or a previous occurrence merely to reach four seconds"
+        );
+    }
+
+    #[test]
     fn multigap_expiry_uses_one_budget_and_cannot_publish_late_native_success() {
         let mut state = two_bursts("expired-repair");
         let expected_ranges = coverage_speech_evidence(&state).ranges().to_vec();
