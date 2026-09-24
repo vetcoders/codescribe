@@ -25,6 +25,15 @@ use crate::{CsError, application_runtime};
 /// truncation.
 const MAX_COMPOSER_VISION_IMAGES: usize = 16;
 
+fn send_origin_label(origin: &str) -> &'static str {
+    match origin {
+        "enter" => "enter",
+        "button" => "button",
+        "programmatic" => "programmatic",
+        _ => "unknown",
+    }
+}
+
 /// One outgoing composer attachment. Path-based on purpose: the bridge reads and
 /// validates the file on the Rust side (via `load_image_for_vision`), which is
 /// cheaper than marshalling raw image bytes across FFI and reuses core's single
@@ -178,6 +187,25 @@ impl CodescribeAgent {
     pub fn new() -> Self {
         codescribe::logging::init_logging();
         Self::default()
+    }
+
+    /// The accepted composer send enters Rust before queue promotion. Log only
+    /// its source and size so a mid-capture provider request has a durable
+    /// trigger receipt without copying any dictated words into the log.
+    pub fn record_composer_send(
+        &self,
+        origin: String,
+        chars: u64,
+        thread_id: String,
+        recording_active: bool,
+    ) {
+        tracing::info!(
+            "agent_send origin={} chars={} thread={} recording_active={}",
+            send_origin_label(&origin),
+            chars,
+            thread_id,
+            recording_active
+        );
     }
 
     /// True when the assistive lane can reach its provider under the CURRENT
@@ -792,6 +820,15 @@ async fn deliver_completed_thread(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn send_origin_log_accepts_only_named_sources() {
+        assert_eq!(send_origin_label("enter"), "enter");
+        assert_eq!(send_origin_label("button"), "button");
+        assert_eq!(send_origin_label("programmatic"), "programmatic");
+        assert_eq!(send_origin_label(""), "unknown");
+        assert_eq!(send_origin_label("enter\nforged field"), "unknown");
+    }
 
     /// Per-process scratch directory for attachment fixtures, namespaced by pid
     /// and `tag` so concurrent test binaries do not collide.

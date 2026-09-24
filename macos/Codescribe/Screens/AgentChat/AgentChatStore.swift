@@ -76,6 +76,10 @@ protocol AgentChatEngine: AnyObject {
   /// `AgentChatEngine` existential otherwise statically dispatch to the
   /// extension's preview no-op instead of `RealChatEngine`.
   func setAssistiveTargetThread(backendId: String?)
+  /// Record accepted composer sends at the Rust log entry without message text.
+  func recordSendOrigin(
+    _ origin: AgentSendOrigin, chars: Int, threadId: String, recordingActive: Bool
+  )
   func installToolApprovalHandler(
     _ handler: @escaping @MainActor (PendingToolApproval) -> Void
   )
@@ -107,6 +111,16 @@ extension AgentChatEngine {
   /// user is looking at; a new thread only via an explicit "+ New thread").
   /// Default no-op keeps preview/mock stores standalone.
   func setAssistiveTargetThread(backendId: String?) {}
+  func recordSendOrigin(
+    _ origin: AgentSendOrigin, chars: Int, threadId: String, recordingActive: Bool
+  ) {}
+}
+
+enum AgentSendOrigin: String {
+  case enter
+  case button
+  case programmatic
+  case unknown
 }
 
 /// Source-specific adapter for hotkey/voice turns owned by the shared controller
@@ -561,6 +575,7 @@ enum ComposerDeliveryReceipt: Equatable {
 struct ThreadComposition: Equatable {
   var text: String = ""
   var attachments: [PendingAttachment] = []
+  var hasUnsentDictation: Bool = false
   /// True while this composition holds a delivered document its owner has not
   /// seen yet, because the take finished while another thread was selected. It
   /// is what makes "surface it once" observable — not a second copy of the text.
@@ -601,7 +616,14 @@ final class AgentChatStore: ObservableObject {
   }
   /// The composer text of the *selected* thread. Live truth while that thread is
   /// on screen; parked into `threadCompositions` the moment the selection moves.
-  @Published var draft: String = ""
+  @Published var draft: String = "" {
+    didSet { if draft.isEmpty { hasUnsentDictationDraft = false } }
+  }
+  @Published private(set) var hasUnsentDictationDraft = false
+  var unsentDictationNotice: String? {
+    hasUnsentDictationDraft && !draft.isEmpty
+      ? String(localized: "Not sent — dictated text is in the draft") : nil
+  }
   /// Monotonic UI command consumed by the composer. It carries no text and
   /// deliberately does not mutate the selected thread or staged attachments.
   @Published private(set) var composerFocusRequest: UInt64 = 0
@@ -894,6 +916,7 @@ final class AgentChatStore: ObservableObject {
     }
     if selectedThreadID == owner {
       draft = appendComposerDelivery(text, to: draft)
+      hasUnsentDictationDraft = true
       requestComposerFocus()
       let receipt = ComposerDeliveryReceipt.admitted(threadID: owner)
       captureDeliveryReceipts[captureID] = receipt
@@ -902,6 +925,7 @@ final class AgentChatStore: ObservableObject {
     var parked = threadCompositions[owner] ?? .empty
     parked.text = appendComposerDelivery(text, to: parked.text)
     parked.hasUnseenDelivery = true
+    parked.hasUnsentDictation = true
     threadCompositions[owner] = parked
     let receipt = ComposerDeliveryReceipt.parked(threadID: owner)
     captureDeliveryReceipts[captureID] = receipt
@@ -918,7 +942,9 @@ final class AgentChatStore: ObservableObject {
   private func handOffComposition(from previous: UUID?, to next: UUID?) {
     guard previous != next else { return }
     if let previous {
-      let outgoing = ThreadComposition(text: draft, attachments: pendingAttachments)
+      let outgoing = ThreadComposition(
+        text: draft, attachments: pendingAttachments,
+        hasUnsentDictation: hasUnsentDictationDraft)
       if outgoing.isEmpty {
         threadCompositions.removeValue(forKey: previous)
       } else {
@@ -928,6 +954,7 @@ final class AgentChatStore: ObservableObject {
     let incoming = next.flatMap { threadCompositions.removeValue(forKey: $0) } ?? .empty
     draft = incoming.text
     pendingAttachments = incoming.attachments
+    hasUnsentDictationDraft = incoming.hasUnsentDictation
     // A document that arrived while the user was elsewhere is surfaced once,
     // when its thread first comes back on screen. Coming back a second time is
     // not a second delivery: the text is already in the box and the flag is
@@ -941,7 +968,9 @@ final class AgentChatStore: ObservableObject {
   /// entry alone would silently leave it on screen for whoever is selected next.
   private func takeComposition(of id: UUID) -> ThreadComposition {
     if selectedThreadID == id {
-      let live = ThreadComposition(text: draft, attachments: pendingAttachments)
+      let live = ThreadComposition(
+        text: draft, attachments: pendingAttachments,
+        hasUnsentDictation: hasUnsentDictationDraft)
       draft = ""
       pendingAttachments = []
       threadCompositions.removeValue(forKey: id)
@@ -969,6 +998,7 @@ final class AgentChatStore: ObservableObject {
       let document = composerRecoveryDocuments.first(where: { $0.id == id })
     else { return false }
     draft = appendComposerDelivery(document.text, to: draft)
+    hasUnsentDictationDraft = true
     composerRecoveryDocuments.removeAll { $0.id == id }
     requestComposerFocus()
     return true
@@ -1791,7 +1821,7 @@ final class AgentChatStore: ObservableObject {
 
   // MARK: Send (accept → queue → serialized dispatch)
 
-  func send() {
+  func send(origin: AgentSendOrigin = .unknown) {
     guard !isAgenticLocked else { return }
     let text = draft.trimmingCharacters(in: .whitespacesAndNewlines)
     let staged = pendingAttachments
@@ -1805,17 +1835,22 @@ final class AgentChatStore: ObservableObject {
     // queued or streamed in one conversation cannot empty the box in another.
     draft = ""
     pendingAttachments = []
-    accept(text: text, staged: staged, threadID: threadID)
+    accept(text: text, staged: staged, threadID: threadID, origin: origin)
   }
 
   /// Accept a message: persist it durably, enqueue it FIFO on its thread, and
   /// let the single dispatch owner start it if the composer slot is idle.
-  private func accept(text: String, staged: [PendingAttachment], threadID: UUID) {
+  private func accept(
+    text: String, staged: [PendingAttachment], threadID: UUID, origin: AgentSendOrigin
+  ) {
     threadListRevision &+= 1
     // Search only hides rows. Restore them before the existing turn owner
     // mutates messages, including a selected row hidden by a no-match query.
     if threadsBeforeSearch != nil { searchThreads("") }
     let backendId = ensureBackendId(threadID)
+    engine?.recordSendOrigin(
+      origin, chars: text.count, threadId: backendId,
+      recordingActive: dictationPhase == .recording)
     let turn = QueuedTurn(
       id: UUID(),
       threadID: threadID,

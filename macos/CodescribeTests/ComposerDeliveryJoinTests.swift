@@ -128,9 +128,15 @@ final class ComposerDeliveryJoinTests: XCTestCase {
 
   private final class HeldReplyEngine: AgentChatEngine {
     let state = HeldReplyState()
+    private(set) var sendOrigins: [(AgentSendOrigin, Int, String, Bool)] = []
     func isAvailable() -> Bool { true }
     func availabilityDetail() -> String? { nil }
     func generateThreadTitle(_ text: String) async throws -> String? { nil }
+    func recordSendOrigin(
+      _ origin: AgentSendOrigin, chars: Int, threadId: String, recordingActive: Bool
+    ) {
+      sendOrigins.append((origin, chars, threadId, recordingActive))
+    }
 
     func streamReply(
       _ text: String,
@@ -1002,16 +1008,19 @@ final class ComposerDeliveryJoinTests: XCTestCase {
     XCTAssertEqual(receipt, .parked(threadID: f.threadA))
     XCTAssertEqual(f.store.selectedThreadID, f.threadB, "delivery never moves the rail")
     XCTAssertEqual(f.store.draft, "typed in B", "B's draft is B's")
+    XCTAssertNil(f.store.unsentDictationNotice, "A's unsent marker must not paint B")
     XCTAssertEqual(f.store.pendingAttachments.count, 1, "B keeps its staged attachments")
 
     f.store.select(f.threadA)
     XCTAssertEqual(f.store.draft, "words from A", "A's words surface in A")
+    XCTAssertEqual(f.store.unsentDictationNotice, "Not sent — dictated text is in the draft")
     XCTAssertTrue(f.store.pendingAttachments.isEmpty, "B's image did not travel to A")
 
     // The return trip is the other half of the same claim: B's composition was
     // parked, not consumed to make A's assertion true.
     f.store.select(f.threadB)
     XCTAssertEqual(f.store.draft, "typed in B", "B is exactly as the user left it")
+    XCTAssertNil(f.store.unsentDictationNotice)
     XCTAssertEqual(f.store.pendingAttachments.map(\.id), bAttachmentIDs, "the same staged files")
   }
 
@@ -1026,6 +1035,56 @@ final class ComposerDeliveryJoinTests: XCTestCase {
 
     XCTAssertEqual(receipt, .admitted(threadID: f.threadA))
     XCTAssertEqual(f.store.draft, "already here\nspoken words")
+  }
+
+  func testAgentVoiceDeliveryStaysUnsentAndNamesTheDraft() {
+    let f = makeFixture(recording: [false, true])
+    let state = OverlayState()
+    state.connectComposer(to: f.store)
+    admitCapture(f.store, threadID: f.threadA)
+    let messagesBefore = f.store.currentThread?.messages.count
+
+    listening("the complete", to: state)
+    XCTAssertEqual(f.store.draft, "", "live preview stays outside the draft")
+    sessionEnded("the complete dictated message", to: state)
+
+    XCTAssertEqual(f.store.draft, "the complete dictated message")
+    XCTAssertEqual(f.store.currentThread?.messages.count, messagesBefore)
+    XCTAssertEqual(f.store.unsentDictationNotice, "Not sent — dictated text is in the draft")
+  }
+
+  func testMidCaptureSendDoesNotConsumeTheTerminalDictation() {
+    let f = makeFixture(recording: [false, true])
+    let state = OverlayState()
+    state.connectComposer(to: f.store)
+    admitCapture(f.store, threadID: f.threadA)
+    f.store.setDictationPhase(.recording)
+    f.store.draft = "mi"
+    f.store.send(origin: .enter)
+    XCTAssertEqual(f.store.draft, "")
+
+    sessionEnded("mi and every word that followed", to: state)
+    XCTAssertEqual(f.store.draft, "mi and every word that followed")
+    XCTAssertEqual(f.store.unsentDictationNotice, "Not sent — dictated text is in the draft")
+  }
+
+  func testAcceptedSendCarriesOriginSizeThreadAndRecordingStateToRustSeam() {
+    let engine = HeldReplyEngine()
+    let store = AgentChatStore(
+      engine: engine, threadsProvider: StubThreadsProvider(),
+      persistenceDefaults: isolatedDefaults())
+    let thread = store.threads.first { $0.backendId == "t_a" }!.id
+    store.select(thread)
+    store.setDictationPhase(.recording)
+    store.draft = "mi"
+    store.send(origin: .enter)
+
+    XCTAssertEqual(engine.sendOrigins.count, 1)
+    XCTAssertEqual(engine.sendOrigins.first?.0, .enter)
+    XCTAssertEqual(engine.sendOrigins.first?.1, 2)
+    XCTAssertEqual(engine.sendOrigins.first?.2, "t_a")
+    XCTAssertEqual(engine.sendOrigins.first?.3, true)
+    engine.state.cancelAll()
   }
 
   /// The capturing thread was deleted while the take was in flight. There is no

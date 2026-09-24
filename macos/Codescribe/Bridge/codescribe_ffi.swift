@@ -672,6 +672,13 @@ public protocol CodescribeAgentProtocol: AnyObject, Sendable {
     func pendingToolApprovals(threadId: String)  -> [CsToolApprovalRequest]
 
     /**
+     * The accepted composer send enters Rust before queue promotion. Log only
+     * its source and size so a mid-capture provider request has a durable
+     * trigger receipt without copying any dictated words into the log.
+     */
+    func recordComposerSend(origin: String, chars: UInt64, threadId: String, recordingActive: Bool)
+
+    /**
      * Answer a pending tool-approval request, resuming the suspended call.
      * Returns `false` when no call matches — the identity must match on all
      * three of session, thread and call id, so a stale card cannot resume a
@@ -866,6 +873,22 @@ open func pendingToolApprovals(threadId: String) -> [CsToolApprovalRequest]  {
         FfiConverterString.lower(threadId),$0
     )
 })
+}
+
+    /**
+     * The accepted composer send enters Rust before queue promotion. Log only
+     * its source and size so a mid-capture provider request has a durable
+     * trigger receipt without copying any dictated words into the log.
+     */
+open func recordComposerSend(origin: String, chars: UInt64, threadId: String, recordingActive: Bool)  {try! rustCall() {
+    uniffi_codescribe_ffi_fn_method_codescribeagent_record_composer_send(
+            self.uniffiCloneHandle(),
+        FfiConverterString.lower(origin),
+        FfiConverterUInt64.lower(chars),
+        FfiConverterString.lower(threadId),
+        FfiConverterBool.lower(recordingActive),$0
+    )
+}
 }
 
     /**
@@ -16069,6 +16092,9 @@ private let initializationResult: InitializationResult = {
         return InitializationResult.apiChecksumMismatch
     }
     if (uniffi_codescribe_ffi_checksum_method_codescribeagent_pending_tool_approvals() != 52256) {
+        return InitializationResult.apiChecksumMismatch
+    }
+    if (uniffi_codescribe_ffi_checksum_method_codescribeagent_record_composer_send() != 28652) {
         return InitializationResult.apiChecksumMismatch
     }
     if (uniffi_codescribe_ffi_checksum_method_codescribeagent_resolve_tool_approval() != 55035) {
