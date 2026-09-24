@@ -39,6 +39,11 @@ extension SettingsViewModel {
     set { setToggleSilenceSeconds(Float(newValue)) }
   }
 
+  var whisperContextWindowSlider: Double {
+    get { Double(settings.whisperContextWindowSec) }
+    set { setWhisperContextWindowSeconds(Float(newValue)) }
+  }
+
   var readOnlyDefaultPicker: String {
     get { permissionPolicy.readOnlyDefault }
     set { setPermissionDefault(kind: .readOnly, level: newValue) }

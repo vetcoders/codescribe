@@ -728,6 +728,7 @@ final class SettingsTruthTests: XCTestCase {
 
     model.setSttEngine("whisper")
     model.setToggleSilenceSeconds(3.5)
+    model.setWhisperContextWindowSeconds(4.5)
     model.setPreviewBufferDelayMs(1038)
     model.setPreviewTypingCps(10.6)
     model.setPreviewEmitWordsMax(5)
@@ -738,6 +739,7 @@ final class SettingsTruthTests: XCTestCase {
       [
         "CODESCRIBE_STT_ENGINE",
         "TOGGLE_SILENCE_SEC",
+        "WHISPER_CONTEXT_WINDOW_SEC",
         "CODESCRIBE_BUFFER_DELAY_MS",
         "CODESCRIBE_TYPING_CPS",
         "CODESCRIBE_EMIT_WORDS_MAX",
@@ -746,7 +748,7 @@ final class SettingsTruthTests: XCTestCase {
     XCTAssertEqual(
       writes.map(\.value),
       [
-        "whisper", "3.5", "1038", "10.6", "5", "8.0",
+        "whisper", "3.5", "4.5", "1038", "10.6", "5", "8.0",
       ])
   }
 

@@ -10802,6 +10802,10 @@ public struct CsSettings: Equatable, Hashable {
     public var doubleTapIntervalMs: UInt64
     public var toggleSilenceSec: Float
     /**
+     * `WHISPER_CONTEXT_WINDOW_SEC`. Seconds of PCM each Layer 1 window covers.
+     */
+    public var whisperContextWindowSec: Float
+    /**
      * Deferred-insert chord (`DeferredInsertShortcut::wire_id()`), sourced
      * from the canonical merged config snapshot. `"disabled"` is the
      * product default when no persisted choice exists.
@@ -10910,6 +10914,9 @@ public struct CsSettings: Equatable, Hashable {
          * Assistive-arm modifier on hold base: `"shift"` (default) or `"cmd"` (W10-B).
          */holdArmModifier: String, holdStartDelayMs: UInt64, doubleTapIntervalMs: UInt64, toggleSilenceSec: Float,
         /**
+         * `WHISPER_CONTEXT_WINDOW_SEC`. Seconds of PCM each Layer 1 window covers.
+         */whisperContextWindowSec: Float,
+        /**
          * Deferred-insert chord (`DeferredInsertShortcut::wire_id()`), sourced
          * from the canonical merged config snapshot. `"disabled"` is the
          * product default when no persisted choice exists.
@@ -10963,6 +10970,7 @@ public struct CsSettings: Equatable, Hashable {
         self.holdStartDelayMs = holdStartDelayMs
         self.doubleTapIntervalMs = doubleTapIntervalMs
         self.toggleSilenceSec = toggleSilenceSec
+        self.whisperContextWindowSec = whisperContextWindowSec
         self.deferredInsertShortcut = deferredInsertShortcut
         self.whisperLanguage = whisperLanguage
         self.aiFormattingEnabled = aiFormattingEnabled
@@ -11036,6 +11044,7 @@ public struct FfiConverterTypeCsSettings: FfiConverterRustBuffer {
                 holdStartDelayMs: FfiConverterUInt64.read(from: &buf),
                 doubleTapIntervalMs: FfiConverterUInt64.read(from: &buf),
                 toggleSilenceSec: FfiConverterFloat.read(from: &buf),
+                whisperContextWindowSec: FfiConverterFloat.read(from: &buf),
                 deferredInsertShortcut: FfiConverterString.read(from: &buf),
                 whisperLanguage: FfiConverterTypeCsLanguage.read(from: &buf),
                 aiFormattingEnabled: FfiConverterBool.read(from: &buf),
@@ -11097,6 +11106,7 @@ public struct FfiConverterTypeCsSettings: FfiConverterRustBuffer {
         FfiConverterUInt64.write(value.holdStartDelayMs, into: &buf)
         FfiConverterUInt64.write(value.doubleTapIntervalMs, into: &buf)
         FfiConverterFloat.write(value.toggleSilenceSec, into: &buf)
+        FfiConverterFloat.write(value.whisperContextWindowSec, into: &buf)
         FfiConverterString.write(value.deferredInsertShortcut, into: &buf)
         FfiConverterTypeCsLanguage.write(value.whisperLanguage, into: &buf)
         FfiConverterBool.write(value.aiFormattingEnabled, into: &buf)

@@ -1042,6 +1042,11 @@ impl Config {
         {
             self.toggle_silence_sec = sec;
         }
+        if let Ok(val) = Self::config_runtime_env_var("WHISPER_CONTEXT_WINDOW_SEC")
+            && let Ok(sec) = val.parse::<f32>()
+        {
+            self.whisper_context_window_sec = sec;
+        }
         if let Ok(val) = Self::config_runtime_env_var("CODESCRIBE_DEFERRED_INSERT_SHORTCUT")
             && let Ok(shortcut) = val.parse::<DeferredInsertShortcut>()
         {
@@ -1299,6 +1304,11 @@ impl Config {
             && let Some(v) = settings.toggle_silence_sec
         {
             self.toggle_silence_sec = v;
+        }
+        if Self::config_runtime_env_var("WHISPER_CONTEXT_WINDOW_SEC").is_err()
+            && let Some(v) = settings.whisper_context_window_sec
+        {
+            self.whisper_context_window_sec = v;
         }
         if Self::config_runtime_env_var("HOLD_EXCLUSIVE").is_err()
             && let Some(v) = settings.hold_exclusive
@@ -1611,6 +1621,7 @@ impl Config {
                 }
                 "SOUND_VOLUME"
                 | "TOGGLE_SILENCE_SEC"
+                | "WHISPER_CONTEXT_WINDOW_SEC"
                 | "CODESCRIBE_TYPING_CPS"
                 | "CODESCRIBE_BUFFERED_INTERIM_SEC" => {
                     if let Ok(v) = value.parse::<f32>() {
@@ -1846,6 +1857,12 @@ impl Config {
                     "TOGGLE_SILENCE_SEC" => {
                         if let Ok(v) = value.parse::<f32>() {
                             settings_ref.toggle_silence_sec = Some(v);
+                        }
+                    }
+                    "WHISPER_CONTEXT_WINDOW_SEC" => {
+                        if let Ok(v) = value.parse::<f32>() {
+                            settings_ref.whisper_context_window_sec =
+                                Some(super::normalize_whisper_context_window_sec(v));
                         }
                     }
                     "CODESCRIBE_TYPING_CPS" => {
@@ -3564,6 +3581,38 @@ mod tests {
         restore_env_for_test("DOUBLE_TAP_INTERVAL_MS", prev_double_tap);
         restore_env_for_test("TOGGLE_SILENCE_SEC", prev_toggle_silence);
         restore_env_for_test("HOLD_EXCLUSIVE", prev_hold_exclusive);
+    }
+
+    /// `whisper_context_window_sec` round-trips through settings.json.
+    /// A process env value wins over the file, and both land on the 0.5 step.
+    #[test]
+    #[serial]
+    fn whisper_context_window_round_trips_and_env_wins() {
+        let _tmp = setup_isolated_data_dir();
+        let previous = std::env::var("WHISPER_CONTEXT_WINDOW_SEC").ok();
+        remove_env_for_test("WHISPER_CONTEXT_WINDOW_SEC");
+
+        Config::default()
+            .save_to_env("WHISPER_CONTEXT_WINDOW_SEC", "6.2")
+            .expect("persist whisper context window");
+        let stored = super::super::settings::UserSettings::load();
+        assert_eq!(stored.whisper_context_window_sec, Some(6.0));
+        let from_file = Config::load();
+        assert!(
+            (from_file.whisper_context_window_sec - 6.0).abs() < f32::EPSILON,
+            "settings.json value {}, expected 6.0",
+            from_file.whisper_context_window_sec
+        );
+
+        unsafe { std::env::set_var("WHISPER_CONTEXT_WINDOW_SEC", "2.5") };
+        let from_env = Config::load();
+        assert!(
+            (from_env.whisper_context_window_sec - 2.5).abs() < f32::EPSILON,
+            "env override {}, expected 2.5",
+            from_env.whisper_context_window_sec
+        );
+
+        restore_env_for_test("WHISPER_CONTEXT_WINDOW_SEC", previous);
     }
 
     /// settings.json can disable local STT; load must honor that flag.

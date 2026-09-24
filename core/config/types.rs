@@ -435,6 +435,11 @@ pub struct Config {
     #[serde(default = "default_toggle_silence_sec")]
     pub toggle_silence_sec: f32,
 
+    /// Seconds of captured PCM Whisper hears for each Layer 1 fragment,
+    /// ending at that fragment. Hot: the next take reads the sealed snapshot.
+    #[serde(default = "default_whisper_context_window_sec")]
+    pub whisper_context_window_sec: f32,
+
     /// Global one-shot command for inserting the in-memory deferred transcript.
     #[serde(default)]
     pub deferred_insert_shortcut: DeferredInsertShortcut,
@@ -619,6 +624,7 @@ impl Default for Config {
             hold_start_delay_ms: default_hold_start_delay_ms(),
             double_tap_interval_ms: default_double_tap_interval_ms(),
             toggle_silence_sec: default_toggle_silence_sec(),
+            whisper_context_window_sec: default_whisper_context_window_sec(),
             deferred_insert_shortcut: DeferredInsertShortcut::default(),
             whisper_language: Language::default(),
             ai_formatting_enabled: false,
@@ -673,6 +679,8 @@ impl Config {
 
         // Clamp toggle silence to a reasonable range
         self.toggle_silence_sec = self.toggle_silence_sec.clamp(0.5, 30.0);
+        self.whisper_context_window_sec =
+            normalize_whisper_context_window_sec(self.whisper_context_window_sec);
 
         // Clamp double-tap interval to safe bounds
         self.double_tap_interval_ms = self.double_tap_interval_ms.clamp(100, 450);

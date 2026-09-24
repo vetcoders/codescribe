@@ -19,6 +19,38 @@ pub fn default_toggle_silence_sec() -> f32 {
     5.0
 }
 
+/// Seconds of captured PCM a Layer 1 Whisper window must cover, ending at
+/// the occurrence. Shorter than the occurrence, the existing pad stands.
+pub fn default_whisper_context_window_sec() -> f32 {
+    4.0
+}
+
+/// Lowest Settings value for [`default_whisper_context_window_sec`].
+pub fn min_whisper_context_window_sec() -> f32 {
+    0.5
+}
+
+/// Highest Settings value for [`default_whisper_context_window_sec`].
+pub fn max_whisper_context_window_sec() -> f32 {
+    10.0
+}
+
+/// Clamp to 0.5–10 s and snap to the 0.5 s Settings step.
+pub fn normalize_whisper_context_window_sec(value: f32) -> f32 {
+    if !value.is_finite() {
+        return default_whisper_context_window_sec();
+    }
+    let clamped = value.clamp(
+        min_whisper_context_window_sec(),
+        max_whisper_context_window_sec(),
+    );
+    let steps = (clamped / 0.5).round();
+    (steps * 0.5).clamp(
+        min_whisper_context_window_sec(),
+        max_whisper_context_window_sec(),
+    )
+}
+
 // Token limits removed - API decides. Tokens are cheap, lost notes are not.
 /// Output token cap for the formatting lane; `0` means no cap.
 pub fn default_ai_max_tokens() -> i32 {

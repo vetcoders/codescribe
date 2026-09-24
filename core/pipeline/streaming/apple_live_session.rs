@@ -87,7 +87,7 @@ use super::session::{
 };
 use super::silero_fusion::{
     ContextBounds, FusionContextMode, FusionWord, SileroIngress, bound_context_range,
-    slice_apple_words,
+    decode_window_with_min_context, slice_apple_words,
 };
 use super::speech_progress::SpeechProgress;
 use super::stream_log::append_to_stream_log;
@@ -1513,6 +1513,9 @@ struct AppleSealState {
     /// back to Apple's own segment boundaries.
     fusion_seal_armed: bool,
     fusion_context: FusionContextMode,
+    /// Seconds of captured PCM each Layer 1 window must cover. Read once,
+    /// from the sealed snapshot, when the take's session is built.
+    whisper_context_window_sec: f32,
     pending_silero_words: BTreeMap<u64, Vec<FusionWord>>,
     unmatched_silero_words: Vec<FusionWord>,
     /// Session PCM identity, never text equality: repeated labels may be speech.
@@ -1748,6 +1751,7 @@ impl AppleSealState {
             // ingress nothing reads this field; when one arms, `from_env`
             // resolves the same default unless an operator overrode it.
             fusion_context: FusionContextMode::default(),
+            whisper_context_window_sec: crate::config::default_whisper_context_window_sec(),
             pending_silero_words: BTreeMap::new(),
             unmatched_silero_words: Vec::new(),
             warned_unmatched_words: BTreeSet::new(),
@@ -1872,6 +1876,67 @@ impl AppleSealState {
         true
     }
 
+    fn whisper_context_window_samples(&self) -> u64 {
+        let secs = self.whisper_context_window_sec;
+        if !secs.is_finite() || secs <= 0.0 {
+            return 0;
+        }
+        (secs * self.sample_rate.max(1) as f32).round() as u64
+    }
+
+    /// Oldest sample the active PCM store can still serve. A terminal archive
+    /// is the whole capture, so its floor is the capture start.
+    fn pcm_floor_sample(&self) -> u64 {
+        if self.terminal_pcm.is_some() {
+            0
+        } else {
+            self.audio.retained_start_sample()
+        }
+    }
+
+    fn with_min_context(&self, range: TailSampleRange) -> TailSampleRange {
+        decode_window_with_min_context(
+            &range,
+            &range,
+            self.whisper_context_window_samples(),
+            0,
+            self.pcm_floor_sample(),
+        )
+    }
+
+    /// Prepend retained PCM so a short admit span ends on at least
+    /// `whisper_context_window_sec` of audio. Admit bounds stay put.
+    fn extend_flush_context(&self, flush: &mut CoalesceFlush) {
+        let min_samples = self.whisper_context_window_samples();
+        if min_samples == 0 || flush.admit_sample_end <= flush.admit_sample_start {
+            return;
+        }
+        let heard = flush
+            .admit_sample_end
+            .saturating_sub(flush.sample_start.min(flush.admit_sample_end));
+        if heard >= min_samples {
+            return;
+        }
+        let floor = self.pcm_floor_sample();
+        let want = flush
+            .admit_sample_end
+            .saturating_sub(min_samples)
+            .max(floor);
+        if want >= flush.sample_start {
+            return;
+        }
+        let Some(prefix) = self.window_by_samples(want, flush.sample_start) else {
+            return;
+        };
+        if prefix.sample_start != want || prefix.sample_end != flush.sample_start {
+            return;
+        }
+        let mut audio = prefix.samples;
+        audio.extend_from_slice(&flush.audio);
+        flush.audio = audio;
+        flush.sample_start = prefix.sample_start;
+    }
+
     fn flush_layer1_coalesce(&mut self, ev_tx: &mpsc::UnboundedSender<EngineEvent>) -> bool {
         // A held window can drain as several requests when its pieces are not
         // adjacent; every contiguous run is queued on its own.
@@ -1887,8 +1952,9 @@ impl AppleSealState {
     fn queue_layer1_flush(
         &mut self,
         ev_tx: &mpsc::UnboundedSender<EngineEvent>,
-        flush: CoalesceFlush,
+        mut flush: CoalesceFlush,
     ) -> bool {
+        self.extend_flush_context(&mut flush);
         let identity = flush
             .member_occurrences
             .first()
@@ -4407,9 +4473,10 @@ fn range_overlaps_occurrence(range: &TailSampleRange, occurrence: &OccurrenceIde
 /// Compare committed occurrence coverage with the existing Silero speech
 /// ledger (or the capture energy ladder when Silero produced no spans).
 ///
-/// An occurrence that owes text recovery is requested on its own
-/// `[sample_start, sample_end)`. The provider result is one whole-span
-/// observation of that identity. A material uncovered range that no pending
+/// An occurrence that owes text recovery is requested on a window that ends
+/// at its `sample_end` and covers the configured context when the tail is
+/// shorter. The provider result is one whole-span observation of that
+/// identity. A material uncovered range that no pending
 /// debt occurrence owns keeps the gap path. Only mapped segments enter the
 /// ledger. Unscoped text, uncertain timing and a segment that escapes the
 /// requested span cannot manufacture occurrence evidence.
@@ -4545,12 +4612,12 @@ where
         if occurrence.sample_end <= occurrence.sample_start {
             continue;
         }
-        let range = TailSampleRange {
+        let range = state.with_min_context(TailSampleRange {
             session: occurrence.session.clone(),
             capture_epoch: occurrence.capture_epoch,
             sample_start: occurrence.sample_start,
             sample_end: occurrence.sample_end,
-        };
+        });
         match attempt(state, range) {
             StopRangeAttempt::Ready(payload) => {
                 admit_debt_occurrence_recovery(state, ev_tx, &occurrence, &payload);
@@ -4588,14 +4655,16 @@ where
         {
             continue;
         }
-        let requested = range.clone();
-        match attempt(state, requested.clone()) {
+        let requested = state.with_min_context(range.clone());
+        match attempt(state, requested) {
             StopRangeAttempt::Ready(payload) => {
+                // The decode window may extend left of the gap. Containment
+                // stays on the uncovered speech range.
                 admit_full_pass_gap_segments(
                     state,
                     ev_tx,
                     &payload,
-                    std::slice::from_ref(&requested),
+                    std::slice::from_ref(&range),
                     threshold_samples,
                     EnergyAdmission::QualifyFinalPassGap,
                 );
@@ -5257,6 +5326,7 @@ fn apple_stream_worker(
     };
     state.bind_capture_energy(capture_energy);
     state.formatter = formatter;
+    state.whisper_context_window_sec = runtime_settings.values().whisper_context_window_sec;
     // The session's ONE Silero. Both consumers of speech edges read it: the
     // utterance ledger (identity, ranges) and the engine lifecycle (wake/sleep).
     // It is built whenever either consumer wants it — the fusion flag decides
@@ -9227,6 +9297,11 @@ mod rc_w2_acoustic_tests {
     #[test]
     fn debt_stop_path_recovers_each_occurrence_span_not_its_speech_subrange() {
         let (mut state, occurrences) = five_debt_occurrences("debt-span");
+        let occurrence_ends = occurrences
+            .iter()
+            .map(|occurrence| occurrence.sample_end)
+            .collect::<Vec<_>>();
+        let speech = coverage_speech_evidence(&state).ranges().to_vec();
         let calls = Arc::new(Mutex::new(Vec::new()));
         let observed = Arc::clone(&calls);
         let (tx, mut rx) = mpsc::unbounded_channel();
@@ -9243,7 +9318,18 @@ mod rc_w2_acoustic_tests {
                     .lock()
                     .unwrap()
                     .push(request.identity.range.clone());
-                Ok(gap_payload(request))
+                let mut payload = gap_payload(request);
+                let end = request.identity.range.sample_end;
+                let start = request.identity.range.sample_start;
+                if occurrence_ends.contains(&end) {
+                    payload.segments[0].range.sample_start = end.saturating_sub(at(2.0)).max(start);
+                    payload.segments[0].grain = crate::stt::tail_provider::TailSegmentGrain::Word;
+                    payload.evidence.segment_grain =
+                        crate::stt::tail_provider::TailSegmentGrain::Word;
+                } else if let Some(gap) = speech.iter().find(|gap| gap.sample_end == end) {
+                    payload.segments[0].range = gap.clone();
+                }
+                Ok(payload)
             },
         );
         let calls = calls.lock().unwrap();
@@ -9252,12 +9338,18 @@ mod rc_w2_acoustic_tests {
             calls.len() >= occurrences.len(),
             "stop path made no occurrence request: {calls:?}\n{trace}"
         );
+        let context_samples = 4 * u64::from(RATE);
         for (call, occurrence) in calls.iter().take(occurrences.len()).zip(&occurrences) {
             assert_eq!(
-                (call.sample_start, call.sample_end),
-                (occurrence.sample_start, occurrence.sample_end),
-                "debt recovery requested {call:?}, not the occurrence span\ncalls={calls:?}\n{trace}"
+                call.sample_end, occurrence.sample_end,
+                "context window must end on the occurrence\ncalls={calls:?}\n{trace}"
             );
+            assert_eq!(
+                call.sample_start,
+                occurrence.sample_end.saturating_sub(context_samples),
+                "short debt occurrence must hear 4 s ending at its close\ncalls={calls:?}\n{trace}"
+            );
+            assert!(call.sample_start <= occurrence.sample_start);
         }
         let ledger = state.acoustic_ledger.lock().unwrap();
         let pending = ledger.pending_text_recoveries(&state.session_id, state.capture_epoch);
@@ -9289,6 +9381,11 @@ mod rc_w2_acoustic_tests {
     #[test]
     fn debt_recovery_runs_after_the_live_drain_deadline_expired() {
         let (mut state, occurrences) = five_debt_occurrences("debt-after-drain");
+        let occurrence_ends = occurrences
+            .iter()
+            .map(|occurrence| occurrence.sample_end)
+            .collect::<Vec<_>>();
+        let speech = coverage_speech_evidence(&state).ranges().to_vec();
         let execution = LocalExecutionOwner::default();
         execution.begin_drain(Duration::ZERO);
         let (tx, _rx) = mpsc::unbounded_channel();
@@ -9297,10 +9394,18 @@ mod rc_w2_acoustic_tests {
             &tx,
             None,
             &execution,
-            |request, pcm, control| {
+            move |request, pcm, control| {
                 control.check()?;
                 request.validate_pcm(pcm)?;
-                Ok(gap_payload(request))
+                let end = request.identity.range.sample_end;
+                let start = request.identity.range.sample_start;
+                let mut payload = gap_payload(request);
+                if occurrence_ends.contains(&end) {
+                    payload.segments[0].range.sample_start = end.saturating_sub(at(2.0)).max(start);
+                } else if let Some(gap) = speech.iter().find(|gap| gap.sample_end == end) {
+                    payload.segments[0].range = gap.clone();
+                }
+                Ok(payload)
             },
         );
         assert_eq!(receipt.status, SealCoverageStatus::Complete, "{receipt:?}");
@@ -9383,6 +9488,7 @@ mod rc_w2_acoustic_tests {
         let mut state = two_bursts("owned-repair");
         let ranges = coverage_speech_evidence(&state).ranges().to_vec();
         assert_eq!(ranges.len(), 2);
+        let gaps = ranges.clone();
         let calls = Arc::new(Mutex::new(Vec::new()));
         let observed = Arc::clone(&calls);
         let (tx, mut rx) = mpsc::unbounded_channel();
@@ -9396,14 +9502,27 @@ mod rc_w2_acoustic_tests {
                 control.check()?;
                 request.validate_pcm(pcm)?;
                 observed.lock().unwrap().push(request.identity.clone());
-                Ok(gap_payload(request))
+                let gap = gaps.iter().find(|range| {
+                    range.sample_end == request.identity.range.sample_end
+                        && range.sample_start >= request.identity.range.sample_start
+                });
+                let mut payload = gap_payload(request);
+                if let Some(gap) = gap {
+                    payload.segments[0].range = gap.clone();
+                }
+                Ok(payload)
             },
         );
         assert_eq!(receipt.status, SealCoverageStatus::Complete);
         let calls = calls.lock().unwrap();
         assert_eq!(calls.len(), 2);
+        let context_samples = 4 * u64::from(RATE);
         for (call, range) in calls.iter().zip(&ranges) {
-            assert_eq!(&call.range, range);
+            assert_eq!(call.range.sample_end, range.sample_end);
+            assert_eq!(
+                call.range.sample_start,
+                range.sample_end.saturating_sub(context_samples)
+            );
             assert_eq!(
                 state
                     .acoustic_ledger
@@ -10816,6 +10935,183 @@ mod rc_w2_acoustic_tests {
         );
         assert_eq!(receipt.coverage_ratio(), None);
     }
+
+    /// Context words before the admit range stay out of the label and do not
+    /// refuse the occurrence. A short flush grows to the context window.
+    #[test]
+    fn short_flush_hears_four_seconds_and_context_words_stay_out_of_the_label() {
+        let mut state = state_for("context-window", 5.0);
+        let occurrence_end = at(5.0);
+        let occurrence_len = (0.31 * RATE as f32).round() as u64;
+        let occurrence_start = occurrence_end - occurrence_len;
+        let occurrence = OccurrenceIdentity::new(
+            state.session_id.clone(),
+            state.capture_epoch,
+            occurrence_start,
+            occurrence_end,
+        );
+        {
+            let calibration = state.energy_calibration.clone().unwrap();
+            let window = state
+                .window_by_samples(occurrence_start, occurrence_end)
+                .unwrap();
+            let energy_integral = window
+                .samples
+                .iter()
+                .map(|sample| f64::from(*sample) * f64::from(*sample))
+                .sum::<f64>();
+            let mut ledger = state.acoustic_ledger.lock().unwrap();
+            assert!(
+                ledger
+                    .qualify(
+                        &AcousticEvidence {
+                            occurrence: occurrence.clone(),
+                            duration_ms: 310.0,
+                            energy_integral,
+                            mean_rms_dbfs: -12.0,
+                            peak_dbfs: -12.0,
+                            vad_open_sample: Some(occurrence_start),
+                            vad_close_sample: Some(occurrence_end),
+                            evidence_calibration_version: calibration.version.clone(),
+                        },
+                        &calibration,
+                    )
+                    .is_qualified()
+            );
+            ledger.schedule_frontier(occurrence.clone(), vec![LedgerObservationProducer::Whisper]);
+        }
+        state.pending_events.insert(
+            1,
+            PendingAppleSeal {
+                occurrence: occurrence.clone(),
+                raw_text: String::new(),
+                layer1_baseline: String::new(),
+                start_ts: occurrence_start as f32 / RATE as f32,
+                end_ts: occurrence_end as f32 / RATE as f32,
+                segments: Vec::new(),
+            },
+        );
+        let (tx, mut rx) = mpsc::unbounded_channel();
+        let (tail_tx, mut tail_rx) = mpsc::channel(4);
+        state.tail_patch = Some(tail_tx);
+        let short = state
+            .window_by_samples(occurrence_start, occurrence_end)
+            .unwrap();
+        assert!(state.queue_layer1_flush(
+            &tx,
+            CoalesceFlush {
+                audio: short.samples,
+                committed_text: String::new(),
+                member_ids: vec![(1, occurrence_end as f32 / RATE as f32)],
+                member_occurrences: vec![(1, occurrence.clone())],
+                neighbour_context: String::new(),
+                sample_start: occurrence_start,
+                sample_end: occurrence_end,
+                admit_sample_start: occurrence_start,
+                admit_sample_end: occurrence_end,
+                primary_utterance_id: 1,
+            },
+        ));
+        let request = tail_rx.try_recv().expect("widened context window");
+        let heard = request
+            .provider_request
+            .identity
+            .range
+            .sample_end
+            .saturating_sub(request.provider_request.identity.range.sample_start);
+        assert!(heard >= 4 * RATE as u64, "decode window is {heard} samples");
+        assert_eq!(
+            request.provider_request.identity.range.sample_end,
+            occurrence_end
+        );
+        assert_eq!(request.admit_sample_start, occurrence_start);
+        assert_eq!(request.admit_sample_end, occurrence_end);
+        assert!(request.provider_request.identity.range.sample_start < occurrence_start);
+
+        let context_end = occurrence_start.saturating_sub(400);
+        let context_start = request.provider_request.identity.range.sample_start + 800;
+        let inside_start = occurrence_start + 200;
+        let inside_end = occurrence_end - 200;
+        let payload = TailProviderPayload {
+            identity: request.provider_request.identity.clone(),
+            text: "znajdz ICX".into(),
+            segments: vec![
+                TimedTailSegment {
+                    grain: crate::stt::tail_provider::TailSegmentGrain::Word,
+                    text: "znajdz".into(),
+                    range: TailSampleRange {
+                        session: state.session_id.clone(),
+                        capture_epoch: state.capture_epoch,
+                        sample_start: context_start,
+                        sample_end: context_end,
+                    },
+                },
+                TimedTailSegment {
+                    grain: crate::stt::tail_provider::TailSegmentGrain::Word,
+                    text: "ICX".into(),
+                    range: TailSampleRange {
+                        session: state.session_id.clone(),
+                        capture_epoch: state.capture_epoch,
+                        sample_start: inside_start,
+                        sample_end: inside_end,
+                    },
+                },
+            ],
+            avg_logprob: Some(-0.2),
+            compression_ratio: Some(1.1),
+            provider_id: crate::stt::tail_provider::TailProviderId::Fake,
+            elapsed_ms: 1,
+            evidence: crate::stt::tail_provider::TailProviderEvidence {
+                segment_grain: crate::stt::tail_provider::TailSegmentGrain::Word,
+                source: crate::stt::tail_provider::TailEvidenceSource::Whisper,
+                revision: Some("context-window".into()),
+                stability: crate::stt::tail_provider::TailEvidenceStability::Final,
+                timing_quality: crate::stt::tail_provider::TailTimingQuality::Synthetic,
+                avg_logprob: Some(-0.2),
+            },
+        };
+        state.complete_whisper_window(
+            &tx,
+            TailPatchCompletion {
+                utterance_id: 1,
+                request_identity: Some(request.provider_request.identity.clone()),
+                payload: Some(payload),
+                member_occurrences: vec![(1, occurrence.clone())],
+            },
+            5.0,
+        );
+        let mut saw_intersecting = false;
+        while let Ok(event) = rx.try_recv() {
+            if let EngineEvent::LedgerMutation { receipt, .. } = event
+                && matches!(
+                    receipt,
+                    MutationReceipt::Refuse {
+                        reason: RefuseReason::IntersectingPinNotExclusive,
+                        ..
+                    }
+                )
+            {
+                saw_intersecting = true;
+            }
+        }
+        assert!(
+            !saw_intersecting,
+            "context words must not refuse the occurrence"
+        );
+        assert!(
+            !state.whisper_span_refused.contains(&occurrence),
+            "the occurrence is wholly inside its admit range"
+        );
+        assert_eq!(
+            state
+                .acoustic_ledger
+                .lock()
+                .unwrap()
+                .text_of(&occurrence)
+                .map(str::to_owned),
+            Some("ICX".to_string())
+        );
+    }
 }
 
 /// rc-w2-test-rehab: current-owner replacements for the 26 parked contracts.
@@ -11602,15 +11898,12 @@ mod rc_w2_test_rehab {
             request.committed_text, "uruchom doker",
             "sliced lane preserves raw observed baseline"
         );
-        assert_eq!(
-            request.provider_request.identity.range.sample_start,
-            sample(0.1)
-        );
+        assert_eq!(request.provider_request.identity.range.sample_start, 0);
         assert_eq!(
             request.provider_request.identity.range.sample_end,
             sample(2.4)
         );
-        assert_eq!(request.audio, vec![0.25; sample(2.3) as usize]);
+        assert_eq!(request.audio, vec![0.25; sample(2.4) as usize]);
         assert_eq!(
             request.provider_request.identity.request_id,
             request.utterance_id

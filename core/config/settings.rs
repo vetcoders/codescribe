@@ -197,6 +197,9 @@ pub struct UserSettings {
     pub double_tap_interval_ms: Option<u64>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub toggle_silence_sec: Option<f32>,
+    /// Layer 1 Whisper context, seconds. `None` keeps the code default.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub whisper_context_window_sec: Option<f32>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub ai_formatting_enabled: Option<bool>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -1382,6 +1385,9 @@ struct SpeechEngineV2 {
     // De-ghosted (2026-05-30): Whisper model id (distinct from local_model_id path).
     #[serde(skip_serializing_if = "Option::is_none")]
     whisper_model: Option<String>,
+    /// Seconds of captured PCM each Layer 1 window must cover.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    whisper_context_window_sec: Option<f32>,
     // F1 layered transcription: engine selector + phase flag (string, 1:1 env).
     #[serde(skip_serializing_if = "Option::is_none")]
     stt_engine: Option<String>,
@@ -1572,6 +1578,7 @@ pub const PROMOTED_SETTINGS_KEYS: &[&str] = &[
     "HOLD_START_DELAY_MS",
     "DOUBLE_TAP_INTERVAL_MS",
     "TOGGLE_SILENCE_SEC",
+    "WHISPER_CONTEXT_WINDOW_SEC",
     "HOLD_EXCLUSIVE",
     "HOLD_ARM_MODIFIER",
     // AI / Formatting
@@ -1691,6 +1698,7 @@ impl UserSettings {
                     live_transcription_endpoint: self.stt_live_endpoint.clone(),
                     cloud_max_upload_mb: self.backend_max_upload_mb,
                     whisper_model: self.whisper_model.clone(),
+                    whisper_context_window_sec: self.whisper_context_window_sec,
                     stt_engine: self.stt_engine.clone(),
                     final_pass_mode: self.final_pass_mode.clone(),
                     layered_transcription: self.layered_transcription.clone(),
@@ -1996,6 +2004,11 @@ impl UserSettings {
                 .as_ref()
                 .and_then(|s| s.engine.as_ref())
                 .and_then(|e| e.whisper_model.clone()),
+            whisper_context_window_sec: v2
+                .speech
+                .as_ref()
+                .and_then(|s| s.engine.as_ref())
+                .and_then(|e| e.whisper_context_window_sec),
             backend_max_upload_mb: v2
                 .speech
                 .as_ref()
@@ -2911,6 +2924,10 @@ impl UserSettings {
         match key {
             "SOUND_VOLUME" => self.sound_volume = Some(value),
             "TOGGLE_SILENCE_SEC" => self.toggle_silence_sec = Some(value),
+            "WHISPER_CONTEXT_WINDOW_SEC" => {
+                self.whisper_context_window_sec =
+                    Some(super::normalize_whisper_context_window_sec(value));
+            }
             "CODESCRIBE_TYPING_CPS" => self.typing_cps = Some(value),
             "CODESCRIBE_BUFFERED_INTERIM_SEC" => self.buffered_interim_sec = Some(value),
             other => {
