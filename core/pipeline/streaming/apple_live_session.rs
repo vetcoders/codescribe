@@ -14162,50 +14162,57 @@ mod relay_l1_overlap_admission_tests {
     /// not turn that diagnostic text into a whole-member correction.
     #[test]
     fn segmentless_whisper_cannot_relabel_mixed_speech_and_measured_silence() {
-        let mut lane = open("relay-segmentless-silence");
-        let session = "relay-segmentless-silence";
-        let speech_end = 16_000_u64;
-        let end = 48_000_u64;
-        let mut captured = vec![0.2; speech_end as usize];
-        captured.extend(vec![0.0; (end - speech_end) as usize]);
-        record_energy(&lane, &[captured.clone()]);
-        assert!(
-            lane.state
-                .capture_energy
-                .voiced_hops_in(session, 1, 20_000, 44_000)
-                .is_some_and(|hops| hops.is_empty()),
-            "the latter part of this member must be measured silence"
-        );
+        for timing_quality in [
+            TailTimingQuality::ExactSampleRange,
+            TailTimingQuality::CompactedSpeechRelative,
+        ] {
+            let mut lane = open("relay-segmentless-silence");
+            let session = "relay-segmentless-silence";
+            let speech_end = 16_000_u64;
+            let end = 48_000_u64;
+            let mut captured = vec![0.2; speech_end as usize];
+            captured.extend(vec![0.0; (end - speech_end) as usize]);
+            record_energy(&lane, &[captured.clone()]);
+            assert!(
+                lane.state
+                    .capture_energy
+                    .voiced_hops_in(session, 1, 20_000, 44_000)
+                    .is_some_and(|hops| hops.is_empty()),
+                "the latter part of this member must be measured silence"
+            );
 
-        let occurrence = OccurrenceIdentity::new(session, 1, 0, end);
-        stage(&mut lane, 1, occurrence.clone(), "mowa");
-        let mut offered = piece(1, &occurrence, "mowa");
-        offered.audio = captured;
-        assert!(lane.state.enqueue_layer1_piece(&lane.tx, offered));
-        assert!(lane.state.flush_layer1_coalesce(&lane.tx));
-        close_lexicon(&mut lane, 1, &occurrence, "mowa");
-        let _ = drain(&mut lane.rx);
-        let requests = take_requests(&mut lane.tail_rx);
-        assert_eq!(requests.len(), 1);
-        let mut returned = completion(&requests[0], Vec::new());
-        let payload = returned.payload.as_mut().expect("payload");
-        payload.text = "mowa halucynacja".to_string();
-        assert!(payload.validate().is_ok(), "transport accepts this shape");
+            let occurrence = OccurrenceIdentity::new(session, 1, 0, end);
+            stage(&mut lane, 1, occurrence.clone(), "mowa");
+            let mut offered = piece(1, &occurrence, "mowa");
+            offered.audio = captured;
+            assert!(lane.state.enqueue_layer1_piece(&lane.tx, offered));
+            assert!(lane.state.flush_layer1_coalesce(&lane.tx));
+            close_lexicon(&mut lane, 1, &occurrence, "mowa");
+            let _ = drain(&mut lane.rx);
+            let requests = take_requests(&mut lane.tail_rx);
+            assert_eq!(requests.len(), 1);
+            let mut returned = completion(&requests[0], Vec::new());
+            let payload = returned.payload.as_mut().expect("payload");
+            payload.provider_id = TailProviderId::InProcess;
+            payload.evidence.timing_quality = timing_quality;
+            payload.text = "mowa halucynacja".to_string();
+            assert!(payload.validate().is_ok(), "transport accepts this shape");
 
-        lane.state.complete_whisper_window(&lane.tx, returned, 3.0);
-        let events = drain(&mut lane.rx);
-        assert_eq!(
-            mutation_count(&events),
-            0,
-            "segmentless text cannot borrow the padded member's early speech"
-        );
-        assert_eq!(held_text(&lane, &occurrence).as_deref(), Some("mowa"));
-        assert!(
-            whisper_mutations(&events)
-                .into_iter()
-                .any(|(label, receipt)| label == "mowa halucynacja" && !receipt.grants_mutation()),
-            "keep the unanchored text visible as read-only evidence"
-        );
-        assert_conserved(&lane, None);
+            lane.state.complete_whisper_window(&lane.tx, returned, 3.0);
+            let events = drain(&mut lane.rx);
+            assert_eq!(
+                mutation_count(&events),
+                0,
+                "{timing_quality:?}: segmentless text cannot borrow early speech"
+            );
+            assert_eq!(held_text(&lane, &occurrence).as_deref(), Some("mowa"));
+            assert!(
+                whisper_mutations(&events).into_iter().any(|(label, receipt)| {
+                    label == "mowa halucynacja" && !receipt.grants_mutation()
+                }),
+                "{timing_quality:?}: keep the unanchored text read-only"
+            );
+            assert_conserved(&lane, None);
+        }
     }
 }
