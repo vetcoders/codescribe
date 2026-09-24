@@ -11112,6 +11112,55 @@ mod rc_w2_acoustic_tests {
             Some("ICX".to_string())
         );
     }
+
+    /// The live request must not turn a prior utterance and a long silent gap
+    /// into L1 context for a short, separately admitted speech tail.
+    #[test]
+    fn live_flush_context_does_not_replay_prior_speech_across_silence() {
+        let session = "live-speech-fence";
+        let mut state = AppleSealState::new_for_session(RATE, session.into(), 0);
+        state.whisper_context_window_sec = 4.0;
+        let tail_start = at(4.69);
+        let tail_end = at(5.0);
+        let mut pcm = vec![0.0_f32; tail_end as usize];
+        pcm[at(1.0) as usize..at(2.0) as usize].fill(0.25);
+        pcm[tail_start as usize..tail_end as usize].fill(0.25);
+        state.audio.push(&pcm);
+
+        let mut ingress = SileroIngress::new(RATE, session, state.capture_epoch);
+        ingress.note_observed_pcm(tail_end, tail_end);
+        ingress.observe_boundaries(&[
+            crossing(VadBoundaryKind::SpeechStart, at(1.0)),
+            crossing(VadBoundaryKind::SpeechEnd, at(2.0)),
+            crossing(VadBoundaryKind::SpeechStart, tail_start),
+            crossing(VadBoundaryKind::SpeechEnd, tail_end),
+        ]);
+        ingress.observe(Some((0, tail_end)), true, tail_end);
+        state.fusion = Some(ingress);
+
+        let tail = state
+            .window_by_samples(tail_start, tail_end)
+            .expect("short tail PCM");
+        let occurrence = OccurrenceIdentity::new(session, state.capture_epoch, tail_start, tail_end);
+        let mut flush = CoalesceFlush {
+            audio: tail.samples,
+            committed_text: String::new(),
+            member_ids: vec![(1, 5.0)],
+            member_occurrences: vec![(1, occurrence)],
+            neighbour_context: String::new(),
+            sample_start: tail_start,
+            sample_end: tail_end,
+            admit_sample_start: tail_start,
+            admit_sample_end: tail_end,
+            primary_utterance_id: 1,
+        };
+
+        state.extend_flush_context(&mut flush);
+        assert_eq!(flush.sample_start, tail_start);
+        assert_eq!(flush.sample_end, tail_end);
+        assert_eq!(flush.audio.len(), (tail_end - tail_start) as usize);
+        assert!(flush.audio.iter().all(|sample| *sample == 0.25));
+    }
 }
 
 /// rc-w2-test-rehab: current-owner replacements for the 26 parked contracts.
