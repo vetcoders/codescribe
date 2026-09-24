@@ -96,3 +96,43 @@ fn continuous_voiced_pcm_past_the_max_split_stays_live_and_the_epoch_stays_open(
         "sleep must land in the silence tail, not in the voiced span"
     );
 }
+
+#[test]
+fn retroactive_split_closes_at_reopen_boundary_without_overlapping_pcm() {
+    let mut ingress = SileroIngress::new(RATE, "retroactive", 1);
+    let mut seen = 0;
+    let mut split_cursor = None;
+    let probabilities = std::iter::repeat_n(0.90, 340)
+        .chain(std::iter::repeat_n(0.05, 6))
+        .chain(std::iter::repeat_n(0.90, 100));
+    for prob in probabilities {
+        ingress.push_scripted_speech_prob_for_test(prob);
+        seen += FRAME as u64;
+        let observed = ingress.ingest(&[0.2; FRAME], seen);
+        if !observed.closed.is_empty() {
+            split_cursor = Some(seen);
+            break;
+        }
+    }
+    let split_cursor = split_cursor.expect("script must force a retroactive split");
+    ingress.push_scripted_speech_prob_for_test(0.90);
+    seen += FRAME as u64;
+    ingress.ingest(&[0.2; FRAME], seen);
+    let utterances = ingress.ledger().utterances();
+    assert_eq!(utterances.len(), 2, "reopen must mint another occurrence");
+    let closed_end = utterances[0].range.sample_end;
+    let reopen_start = utterances[1].range.sample_start;
+    assert!(
+        reopen_start < split_cursor,
+        "fixture must split in the past"
+    );
+    assert_eq!(
+        closed_end, reopen_start,
+        "closed end must be the chunker final boundary"
+    );
+    assert!(
+        utterances
+            .windows(2)
+            .all(|pair| pair[0].range.sample_end <= pair[1].range.sample_start)
+    );
+}

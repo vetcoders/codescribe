@@ -211,6 +211,8 @@ pub(crate) struct SpeechSession {
     raw_cursor: usize,
     segment_start: Option<usize>,
     pending_end: Option<usize>,
+    /// Exact segment finalized by the most recent Supervisor feed call.
+    last_closed_segment_raw_range: Option<(u64, u64)>,
     pre_roll_raw: usize,
     speech_pad_raw: usize,
     last_emit_raw: usize,
@@ -330,6 +332,7 @@ impl SpeechSession {
             raw_cursor: 0,
             segment_start: None,
             pending_end: None,
+            last_closed_segment_raw_range: None,
             pre_roll_raw,
             speech_pad_raw,
             last_emit_raw: 0,
@@ -459,6 +462,7 @@ impl SpeechSession {
             raw_cursor: 0,
             segment_start: None,
             pending_end: None,
+            last_closed_segment_raw_range: None,
             pre_roll_raw: (sample_rate as f32 * config.pre_roll_sec).round().max(0.0) as usize,
             speech_pad_raw: (sample_rate as f32 * config.speech_pad_sec)
                 .round()
@@ -571,6 +575,7 @@ impl SpeechSession {
     /// every emit so a long dictation cannot grow it without bound.
     fn feed_supervisor(&mut self, audio: &[f32]) -> Vec<SpeechEvent> {
         let mut events = Vec::new();
+        self.last_closed_segment_raw_range = None;
         if audio.is_empty() {
             return events;
         }
@@ -657,6 +662,8 @@ impl SpeechSession {
                     self.force_reopen_after_seal = true;
                     info!(
                         end_raw = raw_boundary,
+                        closed_end = self.pending_end.unwrap_or(raw_boundary),
+                        reopen_start = self.pending_end.unwrap_or(raw_boundary),
                         speech_probability = speech_prob,
                         cursor = self.raw_cursor,
                         "silero forced boundary: max-duration split while speech continues"
@@ -746,6 +753,8 @@ impl SpeechSession {
                 info!(
                     segment_start = start,
                     end_raw = self.raw_cursor,
+                    closed_end = self.raw_cursor,
+                    reopen_start = self.raw_cursor,
                     speech_probability = speech_prob,
                     "silero forced boundary: max-duration split while speech continues"
                 );
@@ -780,6 +789,7 @@ impl SpeechSession {
                             &mut events,
                             SpeechEvent::UtteranceFinal,
                         );
+                        self.last_closed_segment_raw_range = Some((start as u64, end as u64));
                     }
                 }
             }
@@ -817,6 +827,10 @@ impl SpeechSession {
     pub(crate) fn open_segment_raw_range(&self) -> Option<(u64, u64)> {
         let start = self.segment_start?;
         Some((start as u64, self.raw_cursor as u64))
+    }
+
+    pub(crate) fn last_closed_segment_raw_range(&self) -> Option<(u64, u64)> {
+        self.last_closed_segment_raw_range
     }
 
     fn record_vad_boundary(&mut self, boundary: VadBoundaryEvidence) {

@@ -155,7 +155,7 @@ impl UtteranceLedger {
     /// Close the open utterance so the next speech edge mints a new identity.
     pub fn close_open(&mut self, sample_end: u64) -> Option<u64> {
         let open = self.utterances.iter_mut().rev().find(|u| !u.closed)?;
-        open.range.sample_end = sample_end.max(open.range.sample_end);
+        open.range.sample_end = sample_end.max(open.range.sample_start);
         open.closed = true;
         Some(open.id)
     }
@@ -551,7 +551,9 @@ impl SileroIngress {
             .iter()
             .any(|event| matches!(event, SpeechEvent::UtteranceFinal));
         let open_range = self.vad.open_segment_raw_range();
-        let mut out = self.observe(open_range, closed_here, samples_seen);
+        let closed_end = self.vad.last_closed_segment_raw_range().map(|(_, end)| end);
+        let mut out =
+            self.observe_with_closed_end(open_range, closed_here, closed_end, samples_seen);
         out.sideband = self.observe_boundaries(&boundaries);
         out
     }
@@ -560,16 +562,40 @@ impl SileroIngress {
     /// synthetic edges (Silero loads from embedded bytes; a unit test that
     /// silently degraded to "no model" would prove nothing). Production calls
     /// this exactly once per chunk, from [`Self::ingest`].
+    #[cfg(test)]
     pub fn observe(
         &mut self,
         open_range: Option<(u64, u64)>,
         closed_here: bool,
         samples_seen: u64,
     ) -> SileroIngest {
+        self.observe_with_closed_end(open_range, closed_here, None, samples_seen)
+    }
+
+    pub(crate) fn observe_with_closed_end(
+        &mut self,
+        open_range: Option<(u64, u64)>,
+        closed_here: bool,
+        closed_end: Option<u64>,
+        samples_seen: u64,
+    ) -> SileroIngest {
         let mut out = SileroIngest {
             speech_live: closed_here || open_range.is_some(),
             ..SileroIngest::default()
         };
+        let end = closed_end.unwrap_or(samples_seen);
+        let reopens = closed_here
+            && open_range.is_some_and(|(start, _)| {
+                self.ledger
+                    .utterances()
+                    .iter()
+                    .rev()
+                    .find(|utterance| !utterance.closed)
+                    .is_some_and(|old| start > old.range.sample_start && start >= end)
+            });
+        if reopens && let Some(id) = self.ledger.close_open(end) {
+            out.closed.push(id);
+        }
         if let Some((start, end)) = open_range {
             out.open =
                 Some(
@@ -577,7 +603,10 @@ impl SileroIngress {
                         .open_or_extend(&self.session, self.capture_epoch, start, end),
                 );
         }
-        if closed_here && let Some(id) = self.ledger.close_open(samples_seen) {
+        if closed_here
+            && !reopens
+            && let Some(id) = self.ledger.close_open(end)
+        {
             out.closed.push(id);
             if out.open == Some(id) {
                 out.open = None;

@@ -113,6 +113,71 @@ enum LiveConsultationRequest {
     Finish(PendingConsultationGroup),
 }
 
+#[cfg(test)]
+mod retroactive_split_delivery_tests {
+    use super::*;
+
+    fn sample(seconds: f32) -> u64 {
+        (seconds * 16_000.0) as u64
+    }
+
+    fn word(text: &str, start: f32, end: f32) -> TranscriptSegment {
+        TranscriptSegment {
+            text: text.into(),
+            start_ts: start,
+            end_ts: end,
+        }
+    }
+
+    #[test]
+    fn retroactive_split_delivers_apple_words_on_both_sides_without_overlap_refusal() {
+        let (tx, mut rx) = mpsc::unbounded_channel();
+        let mut state = AppleSealState::new_for_session(16_000, "retro-apple".into(), 0);
+        state.energy_calibration = Some(EnergyCalibration::new("synthetic", 0.0, 0));
+        state.audio.push(&vec![0.25; sample(30.0) as usize]);
+        let mut fusion = SileroIngress::new(16_000, state.session_id.clone(), 0);
+        fusion.observe(Some((0, sample(20.0))), false, sample(20.0));
+        state.fusion = Some(fusion);
+        state.fusion_seal_armed = true;
+        assert!(seal_sliced_by_silero(
+            &mut state,
+            &tx,
+            &[word("before", 5.0, 5.5), word("after", 14.0, 14.5)]
+        ));
+        state.fusion.as_mut().unwrap().observe_with_closed_end(
+            Some((sample(11.0), sample(20.0))),
+            true,
+            Some(sample(11.0)),
+            sample(20.0),
+        );
+        assert!(seal_sliced_by_silero(&mut state, &tx, &[]));
+        state.fusion.as_mut().unwrap().observe(
+            Some((sample(11.0), sample(22.0))),
+            false,
+            sample(22.0),
+        );
+        state
+            .fusion
+            .as_mut()
+            .unwrap()
+            .observe(None, true, sample(22.0));
+        assert!(seal_sliced_by_silero(&mut state, &tx, &[]));
+        let text = state.acoustic_ledger.lock().unwrap().rendered_text();
+        assert!(
+            text.contains("before"),
+            "first Apple word must have a decision: {text}"
+        );
+        assert!(
+            text.contains("after"),
+            "second Apple word must have a decision: {text}"
+        );
+        let events = std::iter::from_fn(|| rx.try_recv().ok()).collect::<Vec<_>>();
+        assert!(!events.iter().any(
+            |event| matches!(event, EngineEvent::Warning { code, .. } if code.contains("overlap"))
+        ));
+    }
+}
+
 enum LiveConsultationResult {
     Assessed(Result<ConsultationReadiness>),
     Prepared(Result<PreparedConsultationGroup>),
@@ -3564,6 +3629,13 @@ fn reconcile_silero_ledger(
                         && silero.range.sample_end <= end
                 });
                 if swallowed {
+                    let _ = ev_tx.send(EngineEvent::Warning {
+                        code: "silero_occurrence_overlap_refused".into(),
+                        message: format!(
+                            "utterance={utterance_id} range=[{}..{}] has no exclusive PCM after overlap",
+                            silero.range.sample_start, silero.range.sample_end
+                        ),
+                    });
                     state.reconciled_silero.insert(utterance_id);
                     continue;
                 }
