@@ -14,6 +14,7 @@ pub(crate) mod apple_live_session;
 pub(crate) mod layer1_window;
 /// Bounded per-session PCM retention, so a sealed utterance can be re-read for tail-patch.
 pub(crate) mod live_audio_buffer;
+pub(crate) mod live_lexicon;
 /// Event-based transcription session and buffered production-replay seams.
 pub(crate) mod session;
 /// W13-3B Silero identity + conservative per-word fusion (product-owned arming).

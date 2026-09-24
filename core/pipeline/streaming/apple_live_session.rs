@@ -30,6 +30,7 @@
 //! `EngineEvent`s out.
 
 use std::collections::{BTreeMap, BTreeSet, VecDeque};
+use std::path::PathBuf;
 use std::sync::mpsc as std_mpsc;
 use std::sync::{Arc, Mutex};
 use std::thread;
@@ -1412,6 +1413,8 @@ pub(crate) async fn apple_stream_transcription_session(
     }
 
     let mut accepted_tail_patch_replacements = 0u64;
+    let mut lexicon_rewrites = 0u64;
+    let mut lexicon_entries_custom = 0usize;
     let mut tail_patch_worker_accounting = None;
     let mut conservation = SessionConservationReceipt::default();
     match worker.join() {
@@ -1426,6 +1429,8 @@ pub(crate) async fn apple_stream_transcription_session(
                 "Apple progressive live session finished"
             );
             accepted_tail_patch_replacements = outcome.tail_patch_replacements;
+            lexicon_rewrites = outcome.lexicon_rewrites;
+            lexicon_entries_custom = outcome.lexicon_entries_custom;
             conservation = outcome.conservation.clone();
             tail_patch_worker_accounting = Some(TailPatchWorkerAccounting {
                 applied_jobs: outcome.tail_patch_jobs_applied,
@@ -1462,6 +1467,12 @@ pub(crate) async fn apple_stream_transcription_session(
     emit_capture_level_receipt(
         event_sink.as_ref(),
         &capture_level.finalize(CapturePathMeta::resolve(sample_rate, 1, None)),
+    );
+    info!(
+        lexicon_rewrites,
+        lexicon_entries_bundled = super::live_lexicon::bundled_count(),
+        lexicon_entries_custom,
+        "Live lexicon take finalised"
     );
     emit_session_finalised(
         event_sink.as_ref(),
@@ -1501,6 +1512,9 @@ struct AppleSealState {
     open_partial_segments: Vec<TranscriptSegment>,
     sealed_count: u64,
     filtered_empty_drops: u64,
+    lexicon_custom_path: PathBuf,
+    lexicon_rewrites: u64,
+    lexicon_entries_custom: usize,
     /// Bounded PCM retention, so a sealed boundary can be resolved back to the
     /// audio behind it (Layer 1 tail-patch prerequisite).
     audio: LiveAudioBuffer,
@@ -1781,6 +1795,9 @@ impl AppleSealState {
             open_partial_segments: Vec::new(),
             sealed_count: 0,
             filtered_empty_drops: 0,
+            lexicon_custom_path: crate::config::Config::config_dir().join("lexicon.custom.jsonl"),
+            lexicon_rewrites: 0,
+            lexicon_entries_custom: 0,
             audio: LiveAudioBuffer::new(sample_rate, DEFAULT_RETENTION_SECS),
             terminal_pcm: None,
             last_sealed_end: 0.0,
@@ -2950,6 +2967,8 @@ impl AppleSealState {
 struct AppleStreamOutcome {
     sealed: u64,
     filtered_empty_drops: u64,
+    lexicon_rewrites: u64,
+    lexicon_entries_custom: usize,
     unresolved_windows: u64,
     /// How many seals escalated an unplaceable Layer 1 under-commit (W-C).
     under_commit_escalations: u64,
@@ -3617,9 +3636,8 @@ fn reconcile_silero_ledger(
         // Silero has already selected the physical occurrence. The identity is
         // the exclusive PCM, not the pad it shares with a neighbour. Admit the
         // slice-local Apple label before the raw final can escape as telemetry.
-        // There is no independent slice-local Lexicon rewrite on this path, so
-        // Lexicon reports a no-change observation for the same exact label and
-        // range. Callback-wide text is never copied across sliced occurrences.
+        // Lexicon rewrites that exact slice in its own ledger observation;
+        // callback-wide text is never copied across sliced occurrences.
         let (owned_start, owned_end) = match exclusive.get(&utterance_id) {
             Some(&(start, end)) if end > start => (start, end),
             _ => {
@@ -3959,6 +3977,20 @@ fn admit_ledger_label(
     if occurrence.session != state.session_id || occurrence.capture_epoch != state.capture_epoch {
         return None;
     }
+    let rewritten = if matches!(
+        producer,
+        LedgerObservationProducer::Lexicon | LedgerObservationProducer::Whisper
+    ) {
+        let (text, counts) = super::live_lexicon::rewrite(label, &state.lexicon_custom_path);
+        state.lexicon_entries_custom = counts.custom;
+        if text != label {
+            state.lexicon_rewrites = state.lexicon_rewrites.saturating_add(1);
+        }
+        Some(text)
+    } else {
+        None
+    };
+    let label = rewritten.as_deref().unwrap_or(label);
     if matches!(
         energy,
         EnergyAdmission::QualifyFromOwnedPcm | EnergyAdmission::QualifyFinalPassGap
@@ -5722,6 +5754,8 @@ fn apple_stream_worker(
         return Ok(AppleStreamOutcome {
             sealed: state.sealed_count,
             filtered_empty_drops: state.filtered_empty_drops,
+            lexicon_rewrites: state.lexicon_rewrites,
+            lexicon_entries_custom: state.lexicon_entries_custom,
             unresolved_windows: state.unresolved_windows,
             under_commit_escalations: state.under_commit_escalations,
             tail_patch_replacements: state.tail_patch_replacements,
@@ -5747,6 +5781,8 @@ fn apple_stream_worker(
     Ok(AppleStreamOutcome {
         sealed: state.sealed_count,
         filtered_empty_drops: state.filtered_empty_drops,
+        lexicon_rewrites: state.lexicon_rewrites,
+        lexicon_entries_custom: state.lexicon_entries_custom,
         unresolved_windows: state.unresolved_windows,
         under_commit_escalations: state.under_commit_escalations,
         tail_patch_replacements: state.tail_patch_replacements,
@@ -11316,6 +11352,87 @@ mod rc_w2_test_rehab {
     }
 
     #[test]
+    fn fusion_lexicon_admits_bundled_canonical_after_apple() {
+        let (tx, mut rx) = mpsc::unbounded_channel();
+        let dir = tempfile::tempdir().unwrap();
+        let mut state = physical_state("bundled-lexicon", 2.0, &[(0.0, 1.0)]);
+        state.lexicon_custom_path = dir.path().join("lexicon.custom.jsonl");
+        emit(&mut state, &tx, vec![segment("accepromazyna", 0.0, 1.0)]);
+        assert_eq!(document(&state), "Acepromazyna");
+        let events = drain(&mut rx);
+        assert!(events.iter().any(|event| matches!(event,
+            EngineEvent::LedgerMutation { observation, label, receipt }
+            if observation.producer == LedgerObservationProducer::Lexicon
+                && label == "Acepromazyna" && receipt.grants_mutation()
+        )));
+    }
+
+    #[test]
+    fn fusion_lexicon_fixture_custom_entry_wins_over_bundled_variant() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("lexicon.custom.jsonl");
+        std::fs::write(
+            &path,
+            "{\"term\":\"CustomDrug\",\"mispronunciations\":[\"accepromazyna\"]}\n",
+        )
+        .unwrap();
+        let (tx, _rx) = mpsc::unbounded_channel();
+        let mut state = physical_state("custom-lexicon", 2.0, &[(0.0, 1.0)]);
+        state.lexicon_custom_path = path;
+        emit(&mut state, &tx, vec![segment("accepromazyna", 0.0, 1.0)]);
+        assert_eq!(document(&state), "CustomDrug");
+    }
+
+    #[test]
+    fn fusion_dictation_preserves_ordinary_polish_command_words() {
+        let (tx, _rx) = mpsc::unbounded_channel();
+        let dir = tempfile::tempdir().unwrap();
+        let mut state = physical_state("ordinary-polish", 2.0, &[(0.0, 1.0)]);
+        state.lexicon_custom_path = dir.path().join("lexicon.custom.jsonl");
+        emit(
+            &mut state,
+            &tx,
+            vec![segment("schowek i zaznaczenie", 0.0, 1.0)],
+        );
+        assert_eq!(document(&state), "schowek i zaznaczenie");
+    }
+
+    #[test]
+    fn whisper_label_is_rewritten_before_ledger_admission() {
+        let (tx, mut rx) = mpsc::unbounded_channel();
+        let dir = tempfile::tempdir().unwrap();
+        let mut state = state("whisper-lexicon", 2.0);
+        state.lexicon_custom_path = dir.path().join("lexicon.custom.jsonl");
+        let occurrence = qualify(&mut state, 0.0, 1.0);
+        state
+            .acoustic_ledger
+            .lock()
+            .unwrap()
+            .schedule_frontier(occurrence.clone(), [LedgerObservationProducer::Whisper]);
+        let receipt = admit_ledger_label(
+            &mut state,
+            &tx,
+            LabelAdmission {
+                observation: LedgerObservationIdentity::new(
+                    LedgerObservationProducer::Whisper,
+                    1,
+                    0,
+                    occurrence,
+                ),
+                label: "accepromazyna",
+                energy: EnergyAdmission::RequireExistingQualification,
+            },
+        );
+        assert!(receipt.is_some_and(|receipt| receipt.grants_mutation()));
+        assert_eq!(document(&state), "Acepromazyna");
+        assert!(drain(&mut rx).iter().any(|event| matches!(event,
+            EngineEvent::LedgerMutation { observation, label, .. }
+            if observation.producer == LedgerObservationProducer::Whisper
+                && label == "Acepromazyna"
+        )));
+    }
+
+    #[test]
     fn emit_maps_partial_and_two_phrase_finals() {
         let (tx, mut rx) = mpsc::unbounded_channel();
         let mut state = physical_state("two-finals", 2.0, &[(0.0, 1.0), (1.0, 2.0)]);
@@ -11915,15 +12032,17 @@ mod rc_w2_test_rehab {
     }
 
     #[test]
-    fn apple_seal_preserves_observed_text_until_ledger_repair() {
+    fn fusion_lexicon_corrects_before_seal_and_refuses_late_replay() {
         let (tx, mut rx) = mpsc::unbounded_channel();
+        let dir = tempfile::tempdir().unwrap();
         let mut state = physical_state("apple-raw", 1.0, &[(0.0, 1.0)]);
+        state.lexicon_custom_path = dir.path().join("lexicon.custom.jsonl");
         emit(
             &mut state,
             &tx,
             vec![segment("uruchom doker teraz", 0.0, 1.0)],
         );
-        assert_eq!(document(&state), "uruchom doker teraz");
+        assert_eq!(document(&state), "uruchom Docker teraz");
         assert_eq!(raw_finals(&drain(&mut rx)), vec!["uruchom doker teraz"]);
         let occurrence = OccurrenceIdentity::new("apple-raw", 7, 0, sample(1.0));
         let late = admit_ledger_label(
@@ -11948,7 +12067,7 @@ mod rc_w2_test_rehab {
                 ..
             }
         ));
-        assert_eq!(document(&state), "uruchom doker teraz");
+        assert_eq!(document(&state), "uruchom Docker teraz");
     }
 
     #[test]
