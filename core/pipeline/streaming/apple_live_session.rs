@@ -12653,16 +12653,41 @@ mod live_refinement_admission_tests {
         state.fusion = Some(fusion);
 
         assert!(seal_sliced_by_silero(&mut state, &events, &[]));
-        let request = requests.try_recv().expect(
+        let first = requests.try_recv().expect(
             "five seconds of measured speech must reach L1 before Apple or Silero closes it",
         );
-        let range = &request.provider_request.identity.range;
-        assert_eq!(range.session, "live-admission");
-        assert_eq!(range.capture_epoch, 7);
-        assert!(range.sample_start < range.sample_end);
-        assert!(range.sample_end <= 5_000);
-        assert!(range.sample_end - range.sample_start <= 4_000);
-        request.provider_request.validate_pcm(&request.audio).unwrap();
+        let first_range = &first.provider_request.identity.range;
+        assert_eq!(first_range.session, "live-admission");
+        assert_eq!(first_range.capture_epoch, 7);
+        assert!(first_range.sample_start < first_range.sample_end);
+        assert!(first_range.sample_end <= 5_000);
+        assert!(first_range.sample_end - first_range.sample_start <= 4_000);
+        first.provider_request.validate_pcm(&first.audio).unwrap();
+
+        // The same physical speech remains open. A second observation must
+        // advance the PCM clock with about one second of read-only overlap;
+        // it must not wait for Apple final. Exact occurrence binding is a
+        // separate test because the open Silero range's end still changes.
+        let fusion = state.fusion.as_mut().unwrap();
+        fusion.note_observed_pcm(8_000, 8_000);
+        fusion
+            .ledger_mut()
+            .open_or_extend("live-admission", 7, 0, 8_000);
+        assert!(!fusion.ledger().utterances()[0].closed);
+        assert!(seal_sliced_by_silero(&mut state, &events, &[]));
+        let second = requests.try_recv().expect(
+            "eight seconds of still-open speech must offer a second L1 observation",
+        );
+        let second_range = &second.provider_request.identity.range;
+        assert_eq!(second_range.session, first_range.session);
+        assert_eq!(second_range.capture_epoch, first_range.capture_epoch);
+        assert!(second_range.sample_end > first_range.sample_end);
+        assert!(second_range.sample_end <= 8_000);
+        assert!(second_range.sample_end - second_range.sample_start <= 4_000);
+        assert!((500..=1_500).contains(
+            &first_range.sample_end.saturating_sub(second_range.sample_start)
+        ));
+        second.provider_request.validate_pcm(&second.audio).unwrap();
     }
 
     #[test]
