@@ -446,6 +446,10 @@ struct TailPatchRequest {
     audio: Vec<f32>,
     /// Exact capture range behind `audio`; this is the window-start authority.
     provider_request: TailProviderRequest,
+    /// Pins inside this half-open range may be admitted. Overlap context and
+    /// the trailing second reserved for the next window stay outside it.
+    admit_sample_start: u64,
+    admit_sample_end: u64,
     /// Every exact occurrence whose launched Whisper slot this job must close.
     member_occurrences: Vec<(u64, OccurrenceIdentity)>,
 }
@@ -492,6 +496,8 @@ struct TailPatchCompletion {
 struct TailPatchInFlight {
     utterance_id: u64,
     request_identity: TailRequestIdentity,
+    admit_sample_start: u64,
+    admit_sample_end: u64,
     member_occurrences: Vec<(u64, OccurrenceIdentity)>,
 }
 
@@ -1148,6 +1154,8 @@ pub(crate) async fn apple_stream_transcription_session(
                 let inflight = TailPatchInFlight {
                     utterance_id: req.utterance_id,
                     request_identity: req.provider_request.identity.clone(),
+                    admit_sample_start: req.admit_sample_start,
+                    admit_sample_end: req.admit_sample_end,
                     member_occurrences: req.member_occurrences.clone(),
                 };
                 tail_patch_lane.push_request(req);
@@ -1408,7 +1416,10 @@ struct AppleSealState {
     /// Sealed fragments waiting to share one Whisper window (~5 segments).
     layer1_coalesce: Layer1Coalesce,
     refinement_pending: VecDeque<TailPatchRequest>,
-    refinement_submitted: BTreeMap<u64, TailPatchInFlight>,
+    refinement_submitted: BTreeMap<(u64, u64, u64), TailPatchInFlight>,
+    /// Exclusive Whisper text for an occurrence sliced across windows.
+    /// Admitted once, when those slices partition the occurrence.
+    whisper_slices: BTreeMap<OccurrenceIdentity, Vec<(u64, u64, String)>>,
     refinement_clock: Instant,
     refinement_lane_lost: bool,
     refinement_started: Instant,
@@ -1469,6 +1480,26 @@ struct AppleSealState {
     /// This take's capture energy ladder, bound to session and capture epoch.
     /// The live writer is the async capture arm; this is its reader handle.
     capture_energy: CaptureEnergyOwner,
+}
+
+fn inflight_key(identity: &TailRequestIdentity) -> (u64, u64, u64) {
+    (
+        identity.request_id,
+        identity.range.sample_start,
+        identity.range.sample_end,
+    )
+}
+
+/// Exclusive windows cover the occurrence when they abut from its start to its end.
+fn exclusive_slices_cover(occurrence: &OccurrenceIdentity, slices: &[(u64, u64, String)]) -> bool {
+    let mut cursor = occurrence.sample_start;
+    for (start, end, _) in slices {
+        if *start != cursor || *end <= *start {
+            return false;
+        }
+        cursor = *end;
+    }
+    cursor == occurrence.sample_end
 }
 
 impl AppleSealState {
@@ -1567,6 +1598,7 @@ impl AppleSealState {
             layer1_coalesce: Layer1Coalesce::default(),
             refinement_pending: VecDeque::new(),
             refinement_submitted: BTreeMap::new(),
+            whisper_slices: BTreeMap::new(),
             refinement_clock: Instant::now(),
             refinement_lane_lost: false,
             refinement_started: Instant::now(),
@@ -1723,10 +1755,16 @@ impl AppleSealState {
         let valid = identity.is_some_and(|first| {
             first.session == self.session_id
                 && first.capture_epoch == self.capture_epoch
+                && flush.admit_sample_start >= flush.sample_start
+                && flush.admit_sample_end <= flush.sample_end
+                && flush.admit_sample_end > flush.admit_sample_start
                 && flush.member_occurrences.iter().all(|(_, member)| {
                     member.same_capture(first)
-                        && member.sample_start >= flush.sample_start
-                        && member.sample_end <= flush.sample_end
+                        && ((member.sample_start >= flush.sample_start
+                            && member.sample_end <= flush.sample_end)
+                            || (flush.member_occurrences.len() == 1
+                                && member.sample_start <= flush.admit_sample_start
+                                && member.sample_end >= flush.admit_sample_end))
                 })
         }) && flush.member_occurrences.len() == flush.member_ids.len()
             && flush.sample_end > flush.sample_start
@@ -1756,6 +1794,8 @@ impl AppleSealState {
                 language: None,
             },
             member_occurrences: flush.member_occurrences,
+            admit_sample_start: flush.admit_sample_start,
+            admit_sample_end: flush.admit_sample_end,
         };
         self.retry_refinements(ev_tx);
         let pending_samples: usize = self
@@ -1798,6 +1838,7 @@ impl AppleSealState {
         occurrence: &OccurrenceIdentity,
         reason: RefinementFailure,
     ) {
+        self.whisper_slices.remove(occurrence);
         self.refinement_receipt(occurrence, reason.code());
         let _ = ev_tx.send(EngineEvent::Warning {
             code: reason.code().into(),
@@ -1826,6 +1867,8 @@ impl AppleSealState {
             let inflight = TailPatchInFlight {
                 utterance_id: request.utterance_id,
                 request_identity: request.provider_request.identity.clone(),
+                admit_sample_start: request.admit_sample_start,
+                admit_sample_end: request.admit_sample_end,
                 member_occurrences: request.member_occurrences.clone(),
             };
             match sender.try_send(request) {
@@ -1833,8 +1876,8 @@ impl AppleSealState {
                     for (_, occurrence) in &inflight.member_occurrences {
                         self.refinement_receipt(occurrence, "submitted");
                     }
-                    self.refinement_submitted
-                        .insert(inflight.utterance_id, inflight);
+                    let key = inflight_key(&inflight.request_identity);
+                    self.refinement_submitted.insert(key, inflight);
                     self.tail_patch_awaiting_completion =
                         self.tail_patch_awaiting_completion.saturating_add(1);
                 }
@@ -1915,17 +1958,23 @@ impl AppleSealState {
             payload,
             member_occurrences,
         } = completion;
-        let matched = self
-            .refinement_submitted
-            .get(&utterance_id)
-            .is_some_and(|job| {
-                request_identity.as_ref() == Some(&job.request_identity)
+        let job_key = request_identity.as_ref().map(inflight_key);
+        let matched = job_key.as_ref().is_some_and(|key| {
+            self.refinement_submitted.get(key).is_some_and(|job| {
+                job.utterance_id == utterance_id
+                    && request_identity.as_ref() == Some(&job.request_identity)
                     && member_occurrences == job.member_occurrences
-            });
+            })
+        });
         if !matched {
             return;
         }
-        self.refinement_submitted.remove(&utterance_id);
+        let job = self
+            .refinement_submitted
+            .remove(&job_key.expect("matched key"))
+            .expect("matched job");
+        let admit_sample_start = job.admit_sample_start;
+        let admit_sample_end = job.admit_sample_end;
         self.tail_patch_awaiting_completion = self.tail_patch_awaiting_completion.saturating_sub(1);
         let exact_open_members = member_occurrences
             .into_iter()
@@ -1985,6 +2034,8 @@ impl AppleSealState {
                             && pin.sample_end > pin.sample_start
                             && pin.sample_start >= occurrence.sample_start
                             && pin.sample_end <= occurrence.sample_end
+                            && pin.sample_start >= admit_sample_start
+                            && pin.sample_end <= admit_sample_end
                     })
                     .map(|segment| segment.text.trim())
                     .filter(|text| !text.is_empty())
@@ -2002,6 +2053,36 @@ impl AppleSealState {
                     None
                 }
             });
+            let sliced = occurrence.sample_start < admit_sample_start
+                || occurrence.sample_end > admit_sample_end;
+            let label = if sliced {
+                let slices = self.whisper_slices.entry(occurrence.clone()).or_default();
+                slices.push((
+                    admit_sample_start,
+                    admit_sample_end,
+                    label.unwrap_or_default(),
+                ));
+                slices.sort_by_key(|(start, _, _)| *start);
+                slices.dedup_by_key(|(start, end, _)| (*start, *end));
+                if !exclusive_slices_cover(occurrence, slices) {
+                    self.refinement_receipt(occurrence, "sliced");
+                    continue;
+                }
+                let joined = slices
+                    .iter()
+                    .map(|(_, _, text)| text.trim())
+                    .filter(|text| !text.is_empty())
+                    .collect::<Vec<_>>()
+                    .join(" ");
+                self.whisper_slices.remove(occurrence);
+                if joined.is_empty() {
+                    None
+                } else {
+                    Some(joined)
+                }
+            } else {
+                label
+            };
             let no_label = label.is_none();
             match admit_ledger_label(
                 self,
@@ -6417,6 +6498,8 @@ mod tests {
                         sample_end: 16_000,
                     },
                 },
+                admit_sample_start: 0,
+                admit_sample_end: 16_000,
                 span_map: Vec::new(),
                 member_occurrences: vec![(
                     1,
@@ -6463,6 +6546,8 @@ mod tests {
                         sample_end: 32_000,
                     },
                 },
+                admit_sample_start: 16_000,
+                admit_sample_end: 32_000,
                 span_map: Vec::new(),
                 member_occurrences: vec![(
                     2,
@@ -8627,6 +8712,8 @@ mod rc_w2_acoustic_tests {
                 neighbour_context: String::new(),
                 sample_start: 0,
                 sample_end: at(1.0),
+                admit_sample_start: 0,
+                admit_sample_end: at(1.0),
                 primary_utterance_id: 9,
             },
         ));
@@ -8665,6 +8752,8 @@ mod rc_w2_acoustic_tests {
             Some(TailPatchInFlight {
                 utterance_id: 9,
                 request_identity: identity,
+                admit_sample_start: occurrence.sample_start,
+                admit_sample_end: occurrence.sample_end,
                 member_occurrences: vec![(9, occurrence.clone())],
             }),
             Ok(TailPatchJobResult {
