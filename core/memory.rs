@@ -8,6 +8,67 @@
 //! toward the multi-GB figures users see in Activity Monitor. This module asks
 //! the allocator to give that memory back at natural quiescent points.
 
+/// This process's `phys_footprint` in bytes.
+///
+/// Same counter `footprint -p` prints. macOS reports it through `task_info`
+/// flavor `TASK_VM_INFO` (22) on the current task. `None` off macOS, or when
+/// the kernel returns a `task_vm_info` shorter than the `phys_footprint` field.
+pub fn phys_footprint_bytes() -> Option<u64> {
+    #[cfg(target_os = "macos")]
+    {
+        macos_phys_footprint_bytes()
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        None
+    }
+}
+
+/// `task_vm_info` prefix through `phys_footprint`.
+///
+/// xnu places `phys_footprint` at byte 144 of `task_vm_info`.
+#[cfg(target_os = "macos")]
+#[repr(C)]
+struct TaskVmInfo {
+    _before_phys_footprint: [u8; 144],
+    phys_footprint: u64,
+}
+
+#[cfg(target_os = "macos")]
+fn macos_phys_footprint_bytes() -> Option<u64> {
+    // The libc wrapper around this symbol is deprecated in favor of mach2.
+    // The Mach global itself is the current-task port.
+    unsafe extern "C" {
+        static mach_task_self_: libc::mach_port_t;
+    }
+    /// `TASK_VM_INFO` from `<mach/task_info.h>`. Not exported by libc 0.2.
+    const TASK_VM_INFO: libc::task_flavor_t = 22;
+
+    let mut info = std::mem::MaybeUninit::<TaskVmInfo>::zeroed();
+    let mut count = (std::mem::size_of::<TaskVmInfo>() / std::mem::size_of::<libc::natural_t>())
+        as libc::mach_msg_type_number_t;
+    // SAFETY: `mach_task_self_` is this process's task port. `info` is a
+    // zeroed `task_vm_info` prefix and `count` is its size in `natural_t`s.
+    // `KERN_SUCCESS` means the kernel wrote `count` fields.
+    let rc = unsafe {
+        libc::task_info(
+            mach_task_self_,
+            TASK_VM_INFO,
+            info.as_mut_ptr().cast(),
+            &mut count,
+        )
+    };
+    if rc != libc::KERN_SUCCESS {
+        return None;
+    }
+    let needed = (std::mem::size_of::<TaskVmInfo>() / std::mem::size_of::<libc::natural_t>())
+        as libc::mach_msg_type_number_t;
+    if count < needed {
+        return None;
+    }
+    Some(unsafe { info.assume_init() }.phys_footprint)
+}
+
 /// Ask the system allocator to return freed-but-retained pages to the OS.
 ///
 /// On macOS this calls `malloc_zone_pressure_relief(NULL, 0)`, which madvises
@@ -112,6 +173,22 @@ mod tests {
         drop(tensor);
         reclaim_metal_buffer_pool(&device);
         reclaim_metal_buffer_pool(&device); // idempotent on an empty pool
+    }
+
+    /// `phys_footprint` is a live positive counter on macOS and absent elsewhere.
+    #[test]
+    fn phys_footprint_bytes_matches_host() {
+        let bytes = phys_footprint_bytes();
+        if cfg!(target_os = "macos") {
+            let bytes = bytes.expect("task_info phys_footprint");
+            assert!(bytes > 1_048_576, "phys_footprint {bytes} is below 1 MiB");
+            assert!(
+                bytes < 64 * 1024 * 1024 * 1024,
+                "phys_footprint {bytes} exceeds 64 GiB"
+            );
+        } else {
+            assert!(bytes.is_none());
+        }
     }
 
     /// `release_freed_heap` is always safe to call (no-op off macOS).
