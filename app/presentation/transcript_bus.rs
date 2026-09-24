@@ -2387,4 +2387,72 @@ mod tests {
             Some(48_000)
         );
     }
+
+    /// A differing alternative kept wholly inside a committed occurrence is
+    /// reducer paint evidence only. The next committed revision the Bus
+    /// publishes carries the committed label, never the alternative, and the
+    /// seal of that occurrence closes the evidence.
+    #[test]
+    fn differing_unanchored_alternative_never_enters_a_bus_revision() {
+        use codescribe_core::pipeline::acoustic_ledger::NoAuthorityReason;
+
+        let temp = tempfile::tempdir().unwrap();
+        let path = temp.path().join("bus.jsonl");
+        let bus = TranscriptBus::open_with_path(session("alternative-bus"), path.clone());
+        bus.publish_started();
+        let mut ledger = AcousticLedger::new();
+        let mut reducer = TranscriptReducer::default();
+        let apple = OccurrenceIdentity::new("alternative-bus", 7, 0, 48_000);
+        let calibration = EnergyCalibration::new("bus-alternative", 1.0, 1);
+        let evidence = AcousticEvidence {
+            occurrence: apple.clone(),
+            duration_ms: 3_000.0,
+            energy_integral: 10.0,
+            mean_rms_dbfs: -12.0,
+            peak_dbfs: -3.0,
+            vad_open_sample: Some(apple.sample_start),
+            vad_close_sample: Some(apple.sample_end),
+            evidence_calibration_version: calibration.version.clone(),
+        };
+        assert!(ledger.qualify(&evidence, &calibration).is_qualified());
+        let observation = ObservationIdentity::new(ObservationProducer::Apple, 1, 0, apple.clone());
+        let receipt = ledger.admit(&observation, "Apple mówi tak");
+        let revision = reducer
+            .apply_ledger_mutation(&ledger, &observation, &receipt)
+            .expect("committed Apple occurrence");
+        assert_eq!(bus.publish_revision(&revision, &ledger).len(), 1);
+
+        let pin = OccurrenceIdentity::new("alternative-bus", 7, 16_000, 32_000);
+        let whisper = ObservationIdentity::new(ObservationProducer::Whisper, 2, 1_000, pin);
+        let kept = ledger.keep_visible_unanchored(
+            &whisper,
+            "Whisper mówi inaczej",
+            NoAuthorityReason::ExclusiveTailAwaitingWholeSpan,
+        );
+        assert!(
+            reducer
+                .apply_ledger_mutation(&ledger, &whisper, &kept)
+                .is_none()
+        );
+        assert_eq!(reducer.visible_projection(), "Apple mówi tak");
+        assert_eq!(
+            reducer.unanchored_evidence("alternative-bus", 7)[0].text,
+            "Whisper mówi inaczej"
+        );
+
+        ledger.schedule_frontier(apple.clone(), [ObservationProducer::Apple]);
+        assert!(ledger.note_frontier_return(&apple, ObservationProducer::Apple));
+        let seal = ledger.seal(&apple).expect("closed occurrence").clone();
+        let sealed = reducer.apply_ledger_seal(&seal).expect("seal revision");
+        let events = bus.publish_revision(&sealed, &ledger);
+        assert!(!events.is_empty());
+        assert!(events.iter().all(|event| {
+            !event.rendered_text.contains("Whisper") && !event.label.contains("Whisper")
+        }));
+        assert!(
+            reducer.unanchored_evidence("alternative-bus", 7).is_empty(),
+            "the seal over its range closed the evidence"
+        );
+        assert!(!std::fs::read_to_string(&path).unwrap().contains("Whisper"));
+    }
 }

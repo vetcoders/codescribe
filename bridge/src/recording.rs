@@ -332,6 +332,19 @@ pub struct CsCompactProjection {
     pub sequence: u64,
     pub text: String,
     pub degraded: bool,
+    /// Read-only unanchored text beside the canvas, in PCM order. Swift paints
+    /// it as secondary text; it is never canvas, Bus, or delivery bytes.
+    pub evidence: Vec<CsUnanchoredEvidence>,
+}
+
+/// One unanchored text and the capture range it belongs to. `reason` is the
+/// ledger's no-authority label; nothing here can mutate the document.
+#[derive(uniffi::Record, Debug, Clone, PartialEq, Eq)]
+pub struct CsUnanchoredEvidence {
+    pub sample_start: u64,
+    pub sample_end: u64,
+    pub text: String,
+    pub reason: String,
 }
 
 impl From<codescribe::presentation::emitter::CompactProjection> for CsCompactProjection {
@@ -342,6 +355,16 @@ impl From<codescribe::presentation::emitter::CompactProjection> for CsCompactPro
             sequence: value.sequence,
             text: value.text,
             degraded: value.degraded,
+            evidence: value
+                .evidence
+                .into_iter()
+                .map(|item| CsUnanchoredEvidence {
+                    sample_start: item.sample_start,
+                    sample_end: item.sample_end,
+                    text: item.text,
+                    reason: item.reason,
+                })
+                .collect(),
         }
     }
 }

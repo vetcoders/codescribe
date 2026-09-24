@@ -640,6 +640,60 @@ pub enum AcousticSpanGrain {
     Utterance,
 }
 
+/// Where one L0 [`EngineEvent::Preview`] paints on the capture sample counter.
+///
+/// Segments the recognizer returned are mapped onto that counter and give word
+/// grain. A partial that arrives with text and no segments paints the open
+/// occurrence's capture range at utterance grain, and its receipt names that;
+/// the range is never split into invented per-word ranges.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct PreviewPin {
+    pub range: TailSampleRange,
+    pub grain: AcousticSpanGrain,
+    pub receipt: PreviewPinReceipt,
+}
+
+impl PreviewPin {
+    /// Union of the partial's own segments, already on the capture counter.
+    pub fn from_segments(range: TailSampleRange) -> Self {
+        Self {
+            range,
+            grain: AcousticSpanGrain::Word,
+            receipt: PreviewPinReceipt::SegmentsOnCaptureClock,
+        }
+    }
+
+    /// Capture range of the occurrence still open when a segment-less partial
+    /// arrived.
+    pub fn open_occurrence(range: TailSampleRange) -> Self {
+        Self {
+            range,
+            grain: AcousticSpanGrain::Utterance,
+            receipt: PreviewPinReceipt::PartialWithoutSegments,
+        }
+    }
+}
+
+/// How a [`PreviewPin`] range was obtained.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum PreviewPinReceipt {
+    /// The partial's segments, mapped onto the capture counter.
+    SegmentsOnCaptureClock,
+    /// The partial carried text and no segments.
+    PartialWithoutSegments,
+}
+
+impl PreviewPinReceipt {
+    /// Stable label for logs and receipts.
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::SegmentsOnCaptureClock => "segments_on_capture_clock",
+            Self::PartialWithoutSegments => "partial_without_segments",
+        }
+    }
+}
+
 /// Live acoustic integrity projected by the session's one Silero observer.
 /// No phase grants transcript mutation or terminal delivery permission.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -734,7 +788,13 @@ pub enum EngineEvent {
     ///   `last_preview` and compute diffs themselves (see `TranscriptDelta::from_diff`).
     /// - Sinks that need session-accumulated text must concatenate across utterances.
     /// - On `UtteranceFinal`, sinks must reset their `last_preview` state.
-    Preview { rev: u64, text: String },
+    /// - `pin` is the PCM range the text paints, at the grain the recognizer
+    ///   actually returned. It grants no document or delivery authority.
+    Preview {
+        rev: u64,
+        text: String,
+        pin: PreviewPin,
+    },
 
     /// Correction — re-transcription of accumulated audio improved previous output.
     ///
@@ -1381,20 +1441,59 @@ mod tests {
 
     // ── EngineEvent ──
 
-    /// Preview events clone field-for-field (rev + utterance-local text).
+    /// Preview events clone field-for-field (rev + utterance-local text + pin).
     #[test]
     fn engine_event_preview_clone() {
+        let pin = PreviewPin::from_segments(TailSampleRange {
+            session: "take".into(),
+            capture_epoch: 1,
+            sample_start: 0,
+            sample_end: 16_000,
+        });
         let event = EngineEvent::Preview {
             rev: 1,
             text: "Hello world".to_string(),
+            pin: pin.clone(),
         };
         let cloned = event.clone();
-        if let EngineEvent::Preview { rev, text } = cloned {
+        if let EngineEvent::Preview {
+            rev,
+            text,
+            pin: cloned_pin,
+        } = cloned
+        {
             assert_eq!(rev, 1);
             assert_eq!(text, "Hello world");
+            assert_eq!(cloned_pin, pin);
         } else {
             panic!("Expected Preview variant");
         }
+    }
+
+    /// Each pin constructor carries the grain and receipt of its source, so a
+    /// segment-less partial can never be reported at word grain.
+    #[test]
+    fn preview_pin_grain_follows_its_source() {
+        let range = TailSampleRange {
+            session: "take".into(),
+            capture_epoch: 2,
+            sample_start: 4_000,
+            sample_end: 8_000,
+        };
+        let pinned = PreviewPin::from_segments(range.clone());
+        assert_eq!(pinned.grain, AcousticSpanGrain::Word);
+        assert_eq!(pinned.receipt.as_str(), "segments_on_capture_clock");
+        let open = PreviewPin::open_occurrence(range);
+        assert_eq!(open.grain, AcousticSpanGrain::Utterance);
+        assert_eq!(open.receipt.as_str(), "partial_without_segments");
+        let json = serde_json::to_value(&open).unwrap();
+        assert_eq!(json["grain"], "utterance");
+        assert_eq!(json["receipt"], "partial_without_segments");
+        assert_eq!(
+            serde_json::from_value::<PreviewPin>(json).unwrap(),
+            open,
+            "the pin crosses a serde hop unchanged"
+        );
     }
 
     /// NoSpeech reason string survives clone for sink presentation.

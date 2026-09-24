@@ -717,22 +717,29 @@ fn repair_wave_privacy_contract_fails_on_transcript_body() {
 
 // ── Always-on contract tests (no STT / no model) ────────────────────────────
 
+/// One L0 preview pinned to an open occurrence; the pin is not under test here.
+fn preview(rev: u64, text: &str) -> EngineEvent {
+    EngineEvent::Preview {
+        rev,
+        text: text.to_string(),
+        pin: codescribe_core::pipeline::contracts::PreviewPin::open_occurrence(
+            codescribe_core::stt::tail_provider::TailSampleRange {
+                session: "overlay-parity".into(),
+                capture_epoch: 1,
+                sample_start: 0,
+                sample_end: 16_000,
+            },
+        ),
+    }
+}
+
 #[test]
 fn preview_is_excluded_from_committed_projection_and_delivery_floor() {
     let events = vec![
-        EngineEvent::Preview {
-            rev: 1,
-            text: "pierwsze".into(),
-        },
+        preview(1, "pierwsze"),
         admitted_occurrence_label(1, "pierwsze zdanie"),
-        EngineEvent::Preview {
-            rev: 2,
-            text: "drugie".into(),
-        },
-        EngineEvent::Preview {
-            rev: 3,
-            text: "drugie zdanie live".into(),
-        },
+        preview(2, "drugie"),
+        preview(3, "drugie zdanie live"),
     ];
 
     let overlay = overlay_assembly_from_events(&events);

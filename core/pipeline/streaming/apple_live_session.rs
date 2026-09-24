@@ -68,8 +68,8 @@ use crate::pipeline::acoustic_ledger::{
     RefuseReason, SealCoverageReceipt, SealCoverageStatus, SealRefusal,
 };
 use crate::pipeline::contracts::{
-    EngineEvent, EventSink, SessionConservationReceipt, SpeechIntegrity, SpeechIntegrityPhase,
-    TranscriptSegment,
+    EngineEvent, EventSink, PreviewPin, SessionConservationReceipt, SpeechIntegrity,
+    SpeechIntegrityPhase, TranscriptSegment,
 };
 use crate::stt::apple_stt::{LiveStreamEvent, LiveStreamSession};
 use crate::stt::tail_patcher::{SkipReasonCode, TailPatchConfig, TailPatchOutcome};
@@ -5366,6 +5366,41 @@ fn emit_stream_events(
                     seal_utterance_final(state, ev_tx, &frozen, frozen_segments, audio_secs);
                     state.open_partial.clear();
                 }
+                // The preview paints where its words sit on the capture
+                // counter. Segments give word grain. A segment-less partial
+                // paints the occurrence still open since the last Apple
+                // boundary, at utterance grain, and its receipt says so.
+                let on_pcm = apple_segments_on_pcm_clock(state, &segments);
+                let pin = match (
+                    on_pcm.iter().map(|word| word.range.sample_start).min(),
+                    on_pcm.iter().map(|word| word.range.sample_end).max(),
+                ) {
+                    (Some(sample_start), Some(sample_end)) => {
+                        PreviewPin::from_segments(TailSampleRange {
+                            session: state.session_id.clone(),
+                            capture_epoch: state.capture_epoch,
+                            sample_start,
+                            sample_end,
+                        })
+                    }
+                    _ => {
+                        let captured_end = state.audio.session_sample_end();
+                        let open_from = state.last_apple_segment_end.max(state.last_sealed_end);
+                        let sample_start =
+                            seconds_to_captured_sample(open_from, state.sample_rate, captured_end);
+                        PreviewPin::open_occurrence(TailSampleRange {
+                            session: state.session_id.clone(),
+                            capture_epoch: state.capture_epoch,
+                            sample_start,
+                            sample_end: seconds_to_captured_sample(
+                                audio_secs,
+                                state.sample_rate,
+                                captured_end,
+                            )
+                            .max(sample_start),
+                        })
+                    }
+                };
                 // Previews stay RAW: they are in-flight presentation, not
                 // canvas, and correcting them would make the lexicon rewrite
                 // flicker letter by letter while the phrase is still forming.
@@ -5375,6 +5410,7 @@ fn emit_stream_events(
                 let _ = ev_tx.send(EngineEvent::Preview {
                     rev: state.preview_rev,
                     text,
+                    pin,
                 });
             }
             LiveStreamEvent::PhraseFinal { text, segments } => {
@@ -6147,6 +6183,12 @@ mod c13a_lifecycle_tests {
             .send(EngineEvent::Preview {
                 rev: 1,
                 text: "live".to_string(),
+                pin: PreviewPin::open_occurrence(TailSampleRange {
+                    session: "drainage".into(),
+                    capture_epoch: 1,
+                    sample_start: 0,
+                    sample_end: 0,
+                }),
             })
             .expect("event receiver");
 
@@ -10567,7 +10609,7 @@ mod rc_w2_test_rehab {
         emit(&mut state, &tx, vec![segment("hello world", 0.0, 1.0)]);
         emit(&mut state, &tx, vec![segment("second", 1.0, 2.0)]);
         let events = drain(&mut rx);
-        assert!(matches!(&events[0], EngineEvent::Preview { rev: 1, text } if text == "hello"));
+        assert!(matches!(&events[0], EngineEvent::Preview { rev: 1, text, .. } if text == "hello"));
         let ids = events
             .iter()
             .filter_map(|event| match event {
@@ -10881,12 +10923,81 @@ mod rc_w2_test_rehab {
                 .expect("preview before EOF")
                 .expect("producer stays open");
             assert!(
-                matches!(event, EngineEvent::Preview { rev, text } if rev == expected_rev && text == expected)
+                matches!(event, EngineEvent::Preview { rev, text, .. } if rev == expected_rev && text == expected)
             );
         }
         assert!(!rx.is_closed());
         assert!(document(&state).is_empty());
         drop(tx);
+    }
+
+    fn only_preview(events: &[EngineEvent]) -> serde_json::Value {
+        let previews = events
+            .iter()
+            .filter(|event| matches!(event, EngineEvent::Preview { .. }))
+            .collect::<Vec<_>>();
+        assert_eq!(previews.len(), 1, "one partial paints one preview");
+        serde_json::to_value(previews[0]).unwrap()
+    }
+
+    /// Counterexample B (Roman, 2026-09-24): a partial with text and word
+    /// segments became a Preview with no PCM range — the pins were dropped
+    /// before the emitter painted. The preview must carry the range those
+    /// segments occupy on the capture counter, at word grain.
+    #[test]
+    fn partial_with_segments_paints_its_capture_range() {
+        let (tx, mut rx) = mpsc::unbounded_channel();
+        let mut state = state("preview-pins", 2.0);
+        emit_stream_events(
+            vec![LiveStreamEvent::Partial {
+                text: "dzień dobry".into(),
+                segments: vec![segment("dzień", 0.25, 0.5), segment("dobry", 0.5, 1.0)],
+            }],
+            &tx,
+            &mut state,
+            1.0,
+        );
+        let preview = only_preview(&drain(&mut rx));
+        assert_eq!(preview["text"], "dzień dobry");
+        assert_eq!(
+            preview["pin"]["range"]["sample_start"],
+            sample(0.25),
+            "the preview paint carries no PCM range: {preview}"
+        );
+        assert_eq!(preview["pin"]["range"]["sample_end"], sample(1.0));
+        assert_eq!(preview["pin"]["range"]["session"], "preview-pins");
+        assert_eq!(preview["pin"]["range"]["capture_epoch"], 7);
+        assert_eq!(preview["pin"]["grain"], "word");
+        assert!(document(&state).is_empty(), "a preview never admits words");
+    }
+
+    /// Counterexample B, second half: Swift may send a partial with text and
+    /// no segments after filtering. That preview was painted with no receipt.
+    /// It must paint the open occurrence's capture range as utterance grain
+    /// with one named receipt — never invented per-word ranges.
+    #[test]
+    fn partial_without_segments_paints_the_open_occurrence_at_utterance_grain() {
+        let (tx, mut rx) = mpsc::unbounded_channel();
+        let mut state = state("preview-unpinned", 2.0);
+        emit_stream_events(
+            vec![LiveStreamEvent::Partial {
+                text: "bez pinów".into(),
+                segments: Vec::new(),
+            }],
+            &tx,
+            &mut state,
+            1.5,
+        );
+        let preview = only_preview(&drain(&mut rx));
+        assert_eq!(preview["text"], "bez pinów");
+        assert_eq!(
+            preview["pin"]["grain"], "utterance",
+            "a segment-less partial was painted with no grain or receipt: {preview}"
+        );
+        assert_eq!(preview["pin"]["receipt"], "partial_without_segments");
+        assert_eq!(preview["pin"]["range"]["sample_start"], 0);
+        assert_eq!(preview["pin"]["range"]["sample_end"], sample(1.5));
+        assert!(document(&state).is_empty(), "a preview never admits words");
     }
 
     /// Run the same named test in an isolated process with a real custom table.

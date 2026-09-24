@@ -531,9 +531,12 @@ fn forward_event_to_listener(payload: IpcEventPayload, listener: Arc<dyn CsTrans
                 tracing::debug!(%reason, "no-speech reason forwarded as sideband; projection owns terminal phase");
                 listener.on_no_speech(reason);
             }
-            EngineEventWire::Preview { rev, text } => tracing::debug!(
+            EngineEventWire::Preview { rev, text, pin } => tracing::debug!(
                 rev,
                 text_len = text.len(),
+                sample_start = pin.range.sample_start,
+                sample_end = pin.range.sample_end,
+                grain = ?pin.grain,
                 "raw preview observation (diagnostic only)"
             ),
             EngineEventWire::Correction {
@@ -2955,7 +2958,8 @@ mod preparing_compensation_tests {
         assert!(current_controller(&shared_controller()).is_none());
     }
 
-    /// AudioLevel IPC payload forwards the RMS sample to the Swift listener.
+    /// The compact paint crosses IPC with its capture identity and its
+    /// read-only evidence intact; an invalid payload is rejected.
     #[test]
     fn compact_projection_transport_preserves_identity_and_rejects_invalid_json() {
         let listener = Arc::new(RecordingLifecycleListener::default());
@@ -2965,6 +2969,12 @@ mod preparing_compensation_tests {
             sequence: 2,
             text: "…".into(),
             degraded: true,
+            evidence: vec![codescribe::presentation::emitter::UnanchoredEvidence {
+                sample_start: 16_000,
+                sample_end: 32_000,
+                text: "inna wersja".into(),
+                reason: "exclusive_tail_awaiting_whole_span".into(),
+            }],
         };
         forward_event_to_listener(
             IpcEventPayload::CompactProjection {
@@ -2976,7 +2986,10 @@ mod preparing_compensation_tests {
             IpcEventPayload::CompactProjection { json: "{}".into() },
             listener.clone(),
         );
-        assert_eq!(*listener.compact_paints.lock().unwrap(), vec![paint.into()]);
+        let received = listener.compact_paints.lock().unwrap().clone();
+        assert_eq!(received, vec![paint.into()]);
+        assert_eq!(received[0].evidence[0].text, "inna wersja");
+        assert_eq!(received[0].evidence[0].sample_end, 32_000);
         assert_eq!(listener.started(), 0);
         assert_eq!(listener.stopped(), 0);
     }

@@ -15,8 +15,9 @@ use codescribe_core::llm::inline_format::{LabelProposalDisposition, OccurrenceLa
 use codescribe_core::pipeline::acoustic_ledger::{
     AcousticLedger, AcousticSerial, ConsultationPresentationInput, ConsultationPresentationReceipt,
     DocumentRevisionProvenance, IncrementalShapingInput, IncrementalShapingReceipt,
-    LedgerSealReceipt, ManualDocumentRevisionReceipt, MutationReceipt, ObservationIdentity,
-    ObservationProducer, OccurrenceIdentity, SealCoverageReceipt, TranscriptComparisonReceipt,
+    LedgerSealReceipt, ManualDocumentRevisionReceipt, MutationReceipt, NoAuthorityReason,
+    ObservationIdentity, ObservationProducer, OccurrenceIdentity, SealCoverageReceipt,
+    TranscriptComparisonReceipt,
 };
 use codescribe_core::pipeline::contracts::{
     DeltaSink, EngineEvent, EventSink, SpeechIntegrity, SpeechIntegrityPhase, TranscriptDelta,
@@ -39,6 +40,22 @@ pub struct CompactProjection {
     pub sequence: u64,
     pub text: String,
     pub degraded: bool,
+    /// Every unanchored text of this capture, in PCM order. It is painted
+    /// beside the canvas, never inside the canvas string, the Bus, or delivery.
+    pub evidence: Vec<UnanchoredEvidence>,
+}
+
+/// Read-only text the ledger kept visible without mutation authority,
+/// anchored to its PCM range on the capture clock. `reason` is the ledger's
+/// [`NoAuthorityReason`] label. Its text is never compared with the canvas: a
+/// differing alternative wholly inside a committed token is shown, not
+/// suppressed as a duplicate, because it is not canvas.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct UnanchoredEvidence {
+    pub sample_start: u64,
+    pub sample_end: u64,
+    pub text: String,
+    pub reason: String,
 }
 
 /// Commands sent through the ordered channel to the emitter worker.
@@ -473,8 +490,17 @@ pub struct TranscriptReducer {
     observed_seals: std::collections::BTreeSet<String>,
     applied_observations: Vec<ObservationIdentity>,
     /// Read-only overlap evidence, keyed by the pin's PCM range. It is painted
-    /// beside committed occurrences and never becomes a document token.
-    unanchored_evidence: BTreeMap<OccurrenceIdentity, String>,
+    /// beside committed occurrences and never becomes a document token. It
+    /// lives until a seal closes a committed token over its range, or until
+    /// the lifecycle ends.
+    unanchored_evidence: BTreeMap<OccurrenceIdentity, (String, NoAuthorityReason)>,
+}
+
+/// Whether `inner` lies wholly inside `outer` on one capture clock.
+fn range_within(inner: &OccurrenceIdentity, outer: &OccurrenceIdentity) -> bool {
+    inner.same_capture(outer)
+        && inner.sample_start >= outer.sample_start
+        && inner.sample_end <= outer.sample_end
 }
 
 fn group_matches_entries<'a>(
@@ -582,13 +608,12 @@ impl TranscriptReducer {
             .unanchored_evidence
             .iter()
             .filter(|(occurrence, _)| {
-                !self.document_by_occurrence.keys().any(|committed| {
-                    occurrence.same_capture(committed)
-                        && occurrence.sample_start >= committed.sample_start
-                        && occurrence.sample_end <= committed.sample_end
-                })
+                !self
+                    .document_by_occurrence
+                    .keys()
+                    .any(|committed| range_within(occurrence, committed))
             })
-            .map(|(occurrence, label)| (occurrence.sample_start, label.as_str()))
+            .map(|(occurrence, (label, _))| (occurrence.sample_start, label.as_str()))
             .collect::<Vec<_>>();
         if extras.is_empty() {
             return self.committed_rendered_text();
@@ -611,15 +636,39 @@ impl TranscriptReducer {
         rendered
     }
 
+    /// Every unanchored text of one capture in PCM order, for the paint beside
+    /// the canvas. Unlike [`Self::visible_projection`] this keeps ranges wholly
+    /// inside a committed token: no string decides what is shown.
+    pub fn unanchored_evidence(
+        &self,
+        session_id: &str,
+        capture_epoch: u64,
+    ) -> Vec<UnanchoredEvidence> {
+        self.unanchored_evidence
+            .iter()
+            .filter(|(occurrence, _)| {
+                occurrence.session == session_id && occurrence.capture_epoch == capture_epoch
+            })
+            .map(|(occurrence, (label, reason))| UnanchoredEvidence {
+                sample_start: occurrence.sample_start,
+                sample_end: occurrence.sample_end,
+                text: label.clone(),
+                reason: reason.as_str().to_string(),
+            })
+            .collect()
+    }
+
     fn project_unanchored(&mut self, receipt: &MutationReceipt) {
         if let MutationReceipt::KeepVisibleUnanchored {
-            occurrence, label, ..
+            occurrence,
+            label,
+            reason,
         } = receipt
         {
             let label = label.trim();
             if !label.is_empty() {
                 self.unanchored_evidence
-                    .insert(occurrence.clone(), label.to_string());
+                    .insert(occurrence.clone(), (label.to_string(), *reason));
             }
         }
     }
@@ -749,6 +798,13 @@ impl TranscriptReducer {
                 entry.seal_receipt = Some(receipt.receipt_id.clone());
             }
         }
+        // A sealed committed token closes the alternatives painted inside it.
+        self.unanchored_evidence.retain(|evidence, _| {
+            !receipt
+                .sealed_occurrences
+                .iter()
+                .any(|sealed| range_within(evidence, sealed))
+        });
         let occurrence = receipt.sealed_occurrences.first()?.clone();
         self.observed_seals.insert(receipt.receipt_id.clone());
         let terminal = !receipt.is_occurrence_seal();
@@ -1070,6 +1126,7 @@ impl TranscriptReducer {
     /// cardinality has no finality meaning. Edit admission still checks seals.
     fn mark_terminal_lifecycle(&mut self) {
         self.terminal = true;
+        self.unanchored_evidence.clear();
     }
 
     /// Record ledger-computed session coverage without changing a single
@@ -1488,6 +1545,13 @@ impl PresentationEmitter {
             )
         });
         let tail = self.cursor_tail.lock().unwrap_or_else(|e| e.into_inner());
+        // Snapshot under the sequence lock so a later sequence can never carry
+        // older evidence. Callers never hold the reducer lock while painting.
+        let evidence = self
+            .session_state
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .unanchored_evidence(session_id, *capture_epoch);
         *sequence = next;
         observer(&CompactProjection {
             session_id: session_id.clone(),
@@ -1501,6 +1565,7 @@ impl PresentationEmitter {
                 tail.clone()
             },
             degraded,
+            evidence,
         });
     }
 
@@ -2010,11 +2075,20 @@ impl EventSink for PresentationEmitter {
                 if !ledger.authenticates_seal(receipt) {
                     return;
                 }
-                let revision = self
-                    .session_state
-                    .lock()
-                    .unwrap_or_else(|error| error.into_inner())
-                    .apply_ledger_seal(receipt);
+                let (revision, evidence_closed) = {
+                    let mut state = self
+                        .session_state
+                        .lock()
+                        .unwrap_or_else(|error| error.into_inner());
+                    let before = state.unanchored_evidence.len();
+                    let revision = state.apply_ledger_seal(receipt);
+                    (revision, state.unanchored_evidence.len() != before)
+                };
+                // Evidence the seal closed leaves the paint now, not at the
+                // next paint that happens to follow.
+                if evidence_closed {
+                    self.repaint_cursor();
+                }
                 let Some(revision) = revision else {
                     return;
                 };
@@ -2088,19 +2162,24 @@ impl EventSink for PresentationEmitter {
                     proposal.sample_end,
                 );
                 let mut ledger = ledger.lock().unwrap_or_else(|error| error.into_inner());
-                let (proposal_revision, seal_revision) = {
+                let (proposal_revision, seal_revision, evidence_closed) = {
                     let mut reducer = self
                         .session_state
                         .lock()
                         .unwrap_or_else(|error| error.into_inner());
+                    let before = reducer.unanchored_evidence.len();
                     let (formatter_returned, proposal_revision) =
                         reducer.apply_occurrence_label_proposal(&mut ledger, proposal);
                     let seal_revision = formatter_returned
                         .then(|| ledger.seal(&occurrence).ok().cloned())
                         .flatten()
                         .and_then(|receipt| reducer.apply_ledger_seal(&receipt));
-                    (proposal_revision, seal_revision)
+                    let evidence_closed = reducer.unanchored_evidence.len() != before;
+                    (proposal_revision, seal_revision, evidence_closed)
                 };
+                if evidence_closed {
+                    self.repaint_cursor();
+                }
                 for (is_label_revision, revision) in
                     [(true, proposal_revision), (false, seal_revision)]
                         .into_iter()
@@ -2146,7 +2225,20 @@ impl EventSink for PresentationEmitter {
                     "PresentationEmitter observed sideband evidence without mutating text"
                 );
             }
-            EngineEvent::Preview { text, .. } => {
+            EngineEvent::Preview { rev, text, pin } => {
+                // One line per L0 paint, so a take traces partial -> paint on
+                // the capture clock. Text is counted, never logged.
+                info!(
+                    rev = *rev,
+                    session = %pin.range.session,
+                    capture_epoch = pin.range.capture_epoch,
+                    sample_start = pin.range.sample_start,
+                    sample_end = pin.range.sample_end,
+                    grain = ?pin.grain,
+                    receipt = pin.receipt.as_str(),
+                    text_chars = text.chars().count(),
+                    "L0 preview painted"
+                );
                 let visual_text = {
                     let mut state = self.session_state.lock().unwrap_or_else(|e| e.into_inner());
                     state.set_ephemeral_preview(text);
@@ -2271,13 +2363,28 @@ mod tests {
         ObservationIdentity, ObservationProducer, OccurrenceIdentity,
     };
     use codescribe_core::pipeline::contracts::{
-        AnnotationKind, DeltaSink, EngineEvent, EventSink, LayerSource, LayerSummary,
+        AnnotationKind, DeltaSink, EngineEvent, EventSink, LayerSource, LayerSummary, PreviewPin,
         TranscriptDelta,
     };
+    use codescribe_core::stt::tail_provider::TailSampleRange;
     use sha2::{Digest, Sha256};
     use std::sync::atomic::{AtomicUsize, Ordering};
     use std::sync::{Arc, Mutex as StdMutex};
     use tokio::sync::Mutex;
+
+    /// One L0 preview pinned to an open occurrence of `take`/7.
+    fn preview(rev: u64, text: &str) -> EngineEvent {
+        EngineEvent::Preview {
+            rev,
+            text: text.to_string(),
+            pin: PreviewPin::open_occurrence(TailSampleRange {
+                session: "take".into(),
+                capture_epoch: 7,
+                sample_start: 0,
+                sample_end: 16_000,
+            }),
+        }
+    }
 
     #[derive(Default)]
     struct RecordingDeltaSink {
@@ -2305,10 +2412,7 @@ mod tests {
             },
         });
         assert_eq!(paints.lock().unwrap().last().unwrap().text, "…");
-        emitter.on_event(&EngineEvent::Preview {
-            rev: 1,
-            text: "nowe słowa na żywo".into(),
-        });
+        emitter.on_event(&preview(1, "nowe słowa na żywo"));
         let paint = paints.lock().unwrap().last().unwrap().clone();
         assert_eq!(paint.text, "nowe słowa na żywo");
         assert!(
@@ -2385,10 +2489,7 @@ mod tests {
                 .unwrap()
                 .push((projection.text.clone(), projection.degraded));
         }));
-        emitter.on_event(&EngineEvent::Preview {
-            rev: 1,
-            text: "zero jeden dwa trzy cztery pięć".into(),
-        });
+        emitter.on_event(&preview(1, "zero jeden dwa trzy cztery pięć"));
         assert!(paints.lock().unwrap().is_empty());
         let mut evidence = SpeechIntegrity {
             session_id: "take".into(),
@@ -2436,10 +2537,7 @@ mod tests {
                 paints.lock().unwrap().last().unwrap(),
                 &("jeden dwa trzy cztery pięć".into(), true)
             );
-            emitter.on_event(&EngineEvent::Preview {
-                rev: evidence.sequence + 1,
-                text: "nowe słowa na żywo".into(),
-            });
+            emitter.on_event(&preview(evidence.sequence + 1, "nowe słowa na żywo"));
             assert_eq!(
                 paints.lock().unwrap().last().unwrap(),
                 &("nowe słowa na żywo".into(), true)
@@ -2679,10 +2777,7 @@ mod tests {
         let mut emitter =
             PresentationEmitter::new(Arc::clone(&delivery), Some(deltas.clone()), None);
 
-        emitter.on_event(&EngineEvent::Preview {
-            rev: 1,
-            text: "volatile words".to_string(),
-        });
+        emitter.on_event(&preview(1, "volatile words"));
         emitter.finish().await;
 
         assert_eq!(delivery.lock().await.as_str(), "ledger truth");
@@ -2815,10 +2910,7 @@ mod tests {
             })),
         );
 
-        emitter.on_event(&EngineEvent::Preview {
-            rev: 1,
-            text: "volatile".to_string(),
-        });
+        emitter.on_event(&preview(1, "volatile"));
         emitter.on_event(&raw_final("raw final"));
         emitter.on_event(&EngineEvent::Correction {
             rev: 2,
@@ -4891,5 +4983,391 @@ mod tests {
             "delivery must stay committed-only, got {delivered}"
         );
         assert!(delivered.split_whitespace().any(|word| word == "delta"));
+    }
+
+    /// Counterexample A (Roman, 2026-09-24): a refused whole-span Whisper
+    /// replacement keeps its exclusive text as `KeepVisibleUnanchored` wholly
+    /// inside the Apple occurrence. The text differs from the Apple label, so
+    /// hiding it is not duplicate suppression — the receipt exists and the
+    /// words must reach a paint. They never reach the canvas string, the Bus,
+    /// or delivery.
+    #[tokio::test]
+    async fn refused_whole_span_whisper_text_reaches_a_paint_as_evidence() {
+        use codescribe_core::pipeline::acoustic_ledger::NoAuthorityReason;
+
+        let session = "refused-span";
+        let whisper = "Whisper mówi inaczej";
+        let paints = Arc::new(StdMutex::new(Vec::<super::CompactProjection>::new()));
+        let observed = Arc::clone(&paints);
+        let deltas = Arc::new(RecordingDeltaSink::default());
+        let projected = Arc::new(StdMutex::new(Vec::<TranscriptBusEvidenceEvent>::new()));
+        let projected_for_callback = Arc::clone(&projected);
+        let delivery = Arc::new(Mutex::new(String::new()));
+        let temp = tempfile::tempdir().unwrap();
+        let bus_path = temp.path().join("refused-span.jsonl");
+        let bus = Arc::new(
+            TranscriptBus::open_at(
+                TranscriptSession {
+                    session_id: session.to_string(),
+                    mode: TranscriptMode::Dictation,
+                    has_latched_target: true,
+                    latched_target_is_self: false,
+                },
+                bus_path.clone(),
+                None,
+            )
+            .unwrap(),
+        );
+        bus.publish_started();
+        let ledger = Arc::new(StdMutex::new(AcousticLedger::new()));
+        let mut emitter = super::PresentationEmitter::new_with_authority(
+            Arc::clone(&delivery),
+            Some(Arc::clone(&deltas) as Arc<dyn DeltaSink>),
+            None,
+            Some(bus),
+            Some(Arc::clone(&ledger)),
+            Some(Arc::new(move |event: &TranscriptBusEvidenceEvent| {
+                projected_for_callback.lock().unwrap().push(event.clone());
+            })),
+        )
+        .with_cursor_observer(Arc::new(move |projection| {
+            observed.lock().unwrap().push(projection.clone());
+        }));
+        emitter.on_capture_opened(session, 1);
+        let apple = OccurrenceIdentity::new(session, 1, 0, 48_000);
+        let committed = {
+            let mut ledger = ledger.lock().unwrap();
+            admitted_mutation(&mut ledger, apple.clone(), 1, "Apple mówi tak")
+        };
+        emitter.on_event(&committed);
+        let pin = OccurrenceIdentity::new(session, 1, 16_000, 32_000);
+        let observation =
+            ObservationIdentity::new(ObservationProducer::Whisper, 2, 1_000, pin.clone());
+        let receipt = ledger.lock().unwrap().keep_visible_unanchored(
+            &observation,
+            whisper,
+            NoAuthorityReason::ExclusiveTailAwaitingWholeSpan,
+        );
+        emitter.on_event(&EngineEvent::LedgerMutation {
+            observation,
+            label: whisper.into(),
+            receipt,
+        });
+        emitter.finish().await;
+
+        let compact = paints
+            .lock()
+            .unwrap()
+            .iter()
+            .map(|paint| serde_json::to_string(paint).unwrap())
+            .collect::<Vec<_>>();
+        let painted = deltas
+            .deltas
+            .lock()
+            .unwrap()
+            .iter()
+            .map(|delta| delta.delta.clone())
+            .collect::<String>();
+        assert!(
+            compact.iter().any(|json| json.contains(whisper)),
+            "the refused Whisper text never reached a paint.\ncompact paints: {compact:#?}\n\
+             canvas deltas: {painted:?}"
+        );
+        assert!(
+            !painted.contains(whisper),
+            "evidence must stay off the canvas string: {painted:?}"
+        );
+        assert!(
+            projected
+                .lock()
+                .unwrap()
+                .iter()
+                .all(|event| !event.rendered_text.contains(whisper)),
+            "evidence must never reach a Bus projection"
+        );
+        let bus_bytes = std::fs::read_to_string(&bus_path).unwrap();
+        assert!(
+            !bus_bytes.contains(whisper),
+            "evidence entered the Bus file"
+        );
+        assert_eq!(delivery.lock().await.as_str(), "Apple mówi tak");
+        assert_eq!(
+            ledger.lock().unwrap().text_of(&apple),
+            Some("Apple mówi tak")
+        );
+
+        let last = paints.lock().unwrap().last().cloned().unwrap();
+        assert_eq!(
+            last.evidence,
+            vec![super::UnanchoredEvidence {
+                sample_start: 16_000,
+                sample_end: 32_000,
+                text: whisper.into(),
+                reason: "exclusive_tail_awaiting_whole_span".into(),
+            }],
+            "the evidence names its PCM range and why it has no authority"
+        );
+        assert_eq!(
+            last.text, "Apple mówi tak",
+            "the canvas tail stays canvas-only"
+        );
+    }
+
+    /// Qualify, admit and hand one Apple occurrence to `emitter`.
+    fn admit_into(
+        emitter: &super::PresentationEmitter,
+        ledger: &Arc<StdMutex<AcousticLedger>>,
+        occurrence: &OccurrenceIdentity,
+        request: u64,
+        label: &str,
+    ) {
+        let event = {
+            let mut ledger = ledger.lock().unwrap();
+            admitted_mutation(&mut ledger, occurrence.clone(), request, label)
+        };
+        emitter.on_event(&event);
+    }
+
+    /// Close the Apple frontier, seal the occurrence, deliver the receipt.
+    fn seal_into(
+        emitter: &super::PresentationEmitter,
+        ledger: &Arc<StdMutex<AcousticLedger>>,
+        occurrence: &OccurrenceIdentity,
+    ) {
+        let receipt = {
+            let mut ledger = ledger.lock().unwrap();
+            ledger.schedule_frontier(occurrence.clone(), [ObservationProducer::Apple]);
+            assert!(ledger.note_frontier_return(occurrence, ObservationProducer::Apple));
+            ledger
+                .seal(occurrence)
+                .expect("closed qualified occurrence")
+                .clone()
+        };
+        emitter.on_event(&EngineEvent::LedgerSeal { receipt });
+    }
+
+    /// Keep one Whisper pin visible without authority and hand it to `emitter`.
+    fn keep_visible_into(
+        emitter: &super::PresentationEmitter,
+        ledger: &Arc<StdMutex<AcousticLedger>>,
+        pin: &OccurrenceIdentity,
+        request: u64,
+        text: &str,
+    ) {
+        use codescribe_core::pipeline::acoustic_ledger::NoAuthorityReason;
+        let observation =
+            ObservationIdentity::new(ObservationProducer::Whisper, request, 1_000, pin.clone());
+        let receipt = ledger.lock().unwrap().keep_visible_unanchored(
+            &observation,
+            text,
+            NoAuthorityReason::ExclusiveTailAwaitingWholeSpan,
+        );
+        emitter.on_event(&EngineEvent::LedgerMutation {
+            observation,
+            label: text.into(),
+            receipt,
+        });
+    }
+
+    /// Evidence survives later L0 and committed paints. A seal of a token that
+    /// does not cover it leaves it; the seal of the token over its range
+    /// closes it. Evidence no token covers stays until the lifecycle ends.
+    #[tokio::test]
+    async fn unanchored_evidence_lives_until_a_sealed_token_covers_it_or_the_session_ends() {
+        let session = "take";
+        let paints = Arc::new(StdMutex::new(Vec::<super::CompactProjection>::new()));
+        let observed = Arc::clone(&paints);
+        let delivery = Arc::new(Mutex::new(String::new()));
+        let temp = tempfile::tempdir().unwrap();
+        let bus = Arc::new(
+            TranscriptBus::open_at(
+                TranscriptSession {
+                    session_id: session.to_string(),
+                    mode: TranscriptMode::Dictation,
+                    has_latched_target: true,
+                    latched_target_is_self: false,
+                },
+                temp.path().join("evidence-life.jsonl"),
+                None,
+            )
+            .unwrap(),
+        );
+        bus.publish_started();
+        let ledger = Arc::new(StdMutex::new(AcousticLedger::new()));
+        let mut emitter = super::PresentationEmitter::new_with_authority(
+            Arc::clone(&delivery),
+            None,
+            None,
+            Some(bus),
+            Some(Arc::clone(&ledger)),
+            None,
+        )
+        .with_cursor_observer(Arc::new(move |projection| {
+            observed.lock().unwrap().push(projection.clone());
+        }));
+        // Literal takes mint no live shape, so no committed paint follows a
+        // seal: the evidence the seal closes must leave the paint on its own.
+        emitter.set_literal_delivery(true);
+        emitter.on_capture_opened(session, 7);
+        let evidence_texts = || {
+            paints
+                .lock()
+                .unwrap()
+                .last()
+                .map(|paint| {
+                    paint
+                        .evidence
+                        .iter()
+                        .map(|item| item.text.clone())
+                        .collect::<Vec<_>>()
+                })
+                .unwrap_or_default()
+        };
+
+        let apple = OccurrenceIdentity::new(session, 7, 0, 48_000);
+        let later = OccurrenceIdentity::new(session, 7, 96_000, 112_000);
+        admit_into(&emitter, &ledger, &apple, 1, "pierwsze zdanie");
+        keep_visible_into(
+            &emitter,
+            &ledger,
+            &OccurrenceIdentity::new(session, 7, 16_000, 32_000),
+            2,
+            "inna wersja",
+        );
+        keep_visible_into(
+            &emitter,
+            &ledger,
+            &OccurrenceIdentity::new(session, 7, 60_000, 72_000),
+            3,
+            "między tokenami",
+        );
+        assert_eq!(evidence_texts(), ["inna wersja", "między tokenami"]);
+
+        emitter.on_event(&preview(1, "dalej mówię"));
+        assert_eq!(
+            evidence_texts(),
+            ["inna wersja", "między tokenami"],
+            "an L0 paint keeps the evidence"
+        );
+        admit_into(&emitter, &ledger, &later, 4, "drugie zdanie");
+        assert_eq!(
+            evidence_texts(),
+            ["inna wersja", "między tokenami"],
+            "a committed paint keeps the evidence"
+        );
+        seal_into(&emitter, &ledger, &later);
+        assert_eq!(
+            evidence_texts(),
+            ["inna wersja", "między tokenami"],
+            "a seal elsewhere does not close it"
+        );
+        seal_into(&emitter, &ledger, &apple);
+        assert_eq!(
+            evidence_texts(),
+            ["między tokenami"],
+            "the seal of the token over its range closes it"
+        );
+
+        emitter.on_event(&EngineEvent::SessionFinalised {
+            session_id: session.into(),
+            layer_summary: LayerSummary::default(),
+        });
+        assert!(evidence_texts().is_empty(), "the lifecycle end closes it");
+        emitter.finish().await;
+        let delivered = delivery.lock().await.clone();
+        assert!(
+            !delivered.contains("inna") && !delivered.contains("między"),
+            "evidence never reaches delivery: {delivered}"
+        );
+    }
+
+    /// Each L0 paint leaves one diagnostic line naming rev, PCM range, grain
+    /// and receipt, so a take traces partial -> paint. The words stay out.
+    #[tokio::test]
+    async fn preview_paint_logs_one_trace_line_without_its_words() {
+        let temp = tempfile::tempdir().unwrap();
+        let log_path = temp.path().join("preview.log");
+        let log_file = std::fs::File::create(&log_path).unwrap();
+        let subscriber = tracing_subscriber::fmt()
+            .without_time()
+            .with_ansi(false)
+            .with_max_level(tracing::Level::INFO)
+            .with_writer(move || log_file.try_clone().unwrap())
+            .finish();
+        let emitter =
+            super::PresentationEmitter::new(Arc::new(Mutex::new(String::new())), None, None);
+        tracing::subscriber::with_default(subscriber, || {
+            emitter.on_event(&EngineEvent::Preview {
+                rev: 3,
+                text: "tajne słowa".into(),
+                pin: PreviewPin::from_segments(TailSampleRange {
+                    session: "traced".into(),
+                    capture_epoch: 2,
+                    sample_start: 4_000,
+                    sample_end: 12_000,
+                }),
+            });
+        });
+        let log = std::fs::read_to_string(log_path).unwrap();
+        let lines = log
+            .lines()
+            .filter(|line| line.contains("L0 preview painted"))
+            .collect::<Vec<_>>();
+        assert_eq!(lines.len(), 1, "one line per preview: {log}");
+        for field in [
+            "rev=3",
+            "session=traced",
+            "capture_epoch=2",
+            "sample_start=4000",
+            "sample_end=12000",
+            "grain=Word",
+            "segments_on_capture_clock",
+        ] {
+            assert!(lines[0].contains(field), "missing {field}: {}", lines[0]);
+        }
+        assert!(!log.contains("tajne"), "preview words must not be logged");
+    }
+
+    /// Evidence painted under one capture never carries another capture's
+    /// ranges: the range would name different audio.
+    #[tokio::test]
+    async fn evidence_paint_is_bound_to_the_opened_capture() {
+        let paints = Arc::new(StdMutex::new(Vec::<super::CompactProjection>::new()));
+        let observed = Arc::clone(&paints);
+        let ledger = Arc::new(StdMutex::new(AcousticLedger::new()));
+        let emitter = super::PresentationEmitter::new_with_authority(
+            Arc::new(Mutex::new(String::new())),
+            None,
+            None,
+            None,
+            Some(Arc::clone(&ledger)),
+            None,
+        )
+        .with_cursor_observer(Arc::new(move |projection| {
+            observed.lock().unwrap().push(projection.clone());
+        }));
+        emitter.on_capture_opened("take", 7);
+        keep_visible_into(
+            &emitter,
+            &ledger,
+            &OccurrenceIdentity::new("take", 8, 0, 16_000),
+            1,
+            "inna epoka",
+        );
+        keep_visible_into(
+            &emitter,
+            &ledger,
+            &OccurrenceIdentity::new("take", 7, 0, 16_000),
+            2,
+            "ta epoka",
+        );
+        let last = paints.lock().unwrap().last().cloned().unwrap();
+        assert_eq!(
+            last.evidence
+                .iter()
+                .map(|item| item.text.as_str())
+                .collect::<Vec<_>>(),
+            ["ta epoka"]
+        );
     }
 }

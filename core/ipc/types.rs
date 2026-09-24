@@ -11,7 +11,7 @@
 use serde::{Deserialize, Serialize};
 
 use crate::pipeline::contracts::{
-    AnnotationKind, DropKind, EngineEvent, LayerSource, LayerSummary, SidebandEvidence,
+    AnnotationKind, DropKind, EngineEvent, LayerSource, LayerSummary, PreviewPin, SidebandEvidence,
     TranscriptSegment, TranscriptionConfidenceFlag,
 };
 
@@ -93,6 +93,7 @@ pub enum EngineEventWire {
     Preview {
         rev: u64,
         text: String,
+        pin: PreviewPin,
     },
     Correction {
         rev: u64,
@@ -185,9 +186,10 @@ impl TryFrom<&EngineEvent> for EngineEventWire {
             EngineEvent::NoSpeech { reason } => Self::NoSpeech {
                 reason: reason.clone(),
             },
-            EngineEvent::Preview { rev, text } => Self::Preview {
+            EngineEvent::Preview { rev, text, pin } => Self::Preview {
                 rev: *rev,
                 text: text.clone(),
+                pin: pin.clone(),
             },
             EngineEvent::Correction {
                 rev,
@@ -385,6 +387,12 @@ mod tests {
         let payload = IpcEventPayload::Engine(EngineEventWire::Preview {
             rev: 7,
             text: "preview".to_string(),
+            pin: PreviewPin::open_occurrence(TailSampleRange {
+                session: "take".into(),
+                capture_epoch: 1,
+                sample_start: 0,
+                sample_end: 8_000,
+            }),
         });
 
         let value = serde_json::to_value(payload).expect("serialize payload");
@@ -695,13 +703,23 @@ mod tests {
             Err(IpcIneligibleEngineEvent)
         ));
 
+        let pin = PreviewPin::from_segments(TailSampleRange {
+            session: "take".into(),
+            capture_epoch: 1,
+            sample_start: 4_000,
+            sample_end: 12_000,
+        });
         let preview = EngineEvent::Preview {
             rev: 1,
             text: "ephemeral".to_string(),
+            pin: pin.clone(),
         };
         assert!(matches!(
             EngineEventWire::try_from(&preview),
-            Ok(EngineEventWire::Preview { rev: 1, .. })
+            Ok(EngineEventWire::Preview { rev: 1, pin: wire_pin, .. }) if wire_pin == pin
         ));
+        let wire = serde_json::to_value(EngineEventWire::try_from(&preview).unwrap()).unwrap();
+        assert_eq!(wire["pin"]["range"]["sample_start"], 4_000);
+        assert_eq!(wire["pin"]["grain"], "word");
     }
 }
