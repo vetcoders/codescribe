@@ -14341,6 +14341,76 @@ mod relay_l1_overlap_admission_tests {
         assert_conserved(&lane, None);
     }
 
+    /// A local L1 word has its own PCM support even when later speech in the
+    /// same long Silero occurrence is still unresolved. Accepting the word
+    /// must neither wait for that later hop nor certify it by relabelling the
+    /// whole occurrence. This is the per-span Relay contract, not a terminal
+    /// seal or permission to guess the missing word.
+    #[test]
+    fn local_word_pin_advances_without_covering_unresolved_neighbour() {
+        let session = "relay-local-pin-debt";
+        let mut lane = open(session);
+        record_voiced_spans(
+            &lane,
+            LONG_SAMPLES,
+            &[(8_000, 48_000), (100_000, 140_000)],
+        );
+        let (_occurrence, requests) = launch_long_span(&mut lane, None);
+        lane.state.complete_whisper_window(
+            &lane.tx,
+            completion(
+                &requests[0],
+                vec![word_pin(session, "raz", 8_000, 48_000)],
+            ),
+            4.0,
+        );
+        let events = drain(&mut lane.rx);
+        assert!(
+            mutation_count(&events) > 0,
+            "the first grounded word must reach the ledger before the later hop is decoded"
+        );
+
+        let speech = AcousticSpeechEvidence::measured(
+            crate::audio::capture_receipt::CaptureEvidenceIdentity::new(session, 1),
+            "relay-local-pin-debt-test",
+            AcousticAvailability::Observed {
+                observed_samples: LONG_SAMPLES,
+            },
+            vec![
+                TailSampleRange {
+                    session: session.to_string(),
+                    capture_epoch: 1,
+                    sample_start: 8_000,
+                    sample_end: 48_000,
+                },
+                TailSampleRange {
+                    session: session.to_string(),
+                    capture_epoch: 1,
+                    sample_start: 100_000,
+                    sample_end: 140_000,
+                },
+            ],
+        );
+        let coverage = lane
+            .state
+            .acoustic_ledger
+            .lock()
+            .expect("ledger")
+            .assess_seal_coverage(session, 1, &speech, 250);
+        assert_eq!(coverage.status, SealCoverageStatus::Incomplete);
+        assert_eq!(coverage.speech_samples, 80_000);
+        assert_eq!(coverage.covered_samples, 40_000);
+        assert_eq!(
+            coverage
+                .uncovered_speech_ranges
+                .iter()
+                .map(|range| (range.sample_start, range.sample_end))
+                .collect::<Vec<_>>(),
+            vec![(100_000, 140_000)]
+        );
+        assert_conserved(&lane, None);
+    }
+
     /// 9.5 s at 16 kHz. `emit_long_piece` cuts it into three step-1 windows,
     /// the same geometry as take d566fa17's late occurrences.
     const LONG_SAMPLES: u64 = 152_000;
