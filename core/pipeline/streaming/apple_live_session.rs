@@ -2002,7 +2002,7 @@ impl AppleSealState {
     ) -> bool {
         if now >= deadline {
             self.refinement_clock = now;
-            self.return_outstanding_whisper_without_label(ev_tx);
+            self.return_outstanding_whisper_without_label(ev_tx, RefinementFailure::StopDeadline);
             return false;
         }
         self.tick_refinements(ev_tx, now);
@@ -2553,6 +2553,7 @@ impl AppleSealState {
     fn return_outstanding_whisper_without_label(
         &mut self,
         ev_tx: &mpsc::UnboundedSender<EngineEvent>,
+        reason: RefinementFailure,
     ) {
         self.refuse_incomplete_whisper_spans(ev_tx);
         let occurrences = {
@@ -2578,7 +2579,7 @@ impl AppleSealState {
                 .iter()
                 .find_map(|(id, pending)| (pending.occurrence == occurrence).then_some(*id))
                 .unwrap_or(0);
-            self.fail_refinement(ev_tx, id, &occurrence, RefinementFailure::StopDeadline);
+            self.fail_refinement(ev_tx, id, &occurrence, reason);
         }
         self.refinement_pending.clear();
         self.refinement_submitted.clear();
@@ -4866,11 +4867,19 @@ fn apple_stream_worker(
             Err(error) => {
                 warn!("tail-patch closure wait ended before all observations returned: {error}");
                 tail_patch_timeout_residue = state.tail_patch_awaiting_completion;
-                state.return_outstanding_whisper_without_label(&ev_tx);
+                state.return_outstanding_whisper_without_label(
+                    &ev_tx,
+                    RefinementFailure::StopDeadline,
+                );
                 break;
             }
         }
     }
+
+    // The job counter can be zero while an occurrence still owes Whisper's
+    // frontier return (for example, incomplete exclusive slices). EOF owns no
+    // future L1 work, so settle that observer before formatter and ledger seal.
+    state.return_outstanding_whisper_without_label(&ev_tx, RefinementFailure::NoLabel);
 
     // A bounded formatter execution has its own provider timeout policy. Once
     // its exact slot is scheduled, stop drains the typed completion without a
@@ -6238,7 +6247,7 @@ mod c13a_lifecycle_tests {
         );
         assert!(state.pending_events.contains_key(&2));
 
-        state.return_outstanding_whisper_without_label(&tx);
+        state.return_outstanding_whisper_without_label(&tx, RefinementFailure::StopDeadline);
         state.seal_remaining_at_session_end(&tx);
         assert_eq!(state.tail_patch_awaiting_completion, 0);
         assert!(
@@ -6715,7 +6724,7 @@ mod tests {
         stage_pending_occurrence(&mut timed_out, &tx, 1, timed.clone(), "Iwo");
         launch_whisper_and_return_lexicon(&mut timed_out, &tx, 1, &timed, "Iwo");
         timed_out.tail_patch_awaiting_completion = 1;
-        timed_out.return_outstanding_whisper_without_label(&tx);
+        timed_out.return_outstanding_whisper_without_label(&tx, RefinementFailure::StopDeadline);
         assert_eq!(timed_out.tail_patch_awaiting_completion, 0);
         assert!(
             timed_out
@@ -12630,6 +12639,10 @@ mod relay_l1_overlap_admission_tests {
         }
         assert_eq!(mutation_count(&events), 0);
         assert!(unanchored_label(&events, "krawedz"));
+        assert!(
+            unanchored_label(&events, "trzy"),
+            "later windows still return visible pins before terminal observer closure"
+        );
         assert!(named_refusal(&events, "intersecting_pin_not_exclusive"));
         assert_eq!(
             held_text(&lane, &occurrence).as_deref(),
@@ -12640,9 +12653,20 @@ mod relay_l1_overlap_admission_tests {
             lane.state.tail_patch_awaiting_completion, 0,
             "every launched window returned before terminal drain"
         );
-        // The production Stop path skips its outstanding-job loop at zero,
-        // then attempts this exact terminal seal operation.
+        // The production Stop path no longer equates zero jobs with a closed
+        // observer: it settles any still-open Whisper frontier before seal.
+        lane.state
+            .return_outstanding_whisper_without_label(&lane.tx, RefinementFailure::NoLabel);
         lane.state.seal_remaining_at_session_end(&lane.tx);
+        let terminal = drain(&mut lane.rx);
+        assert_eq!(
+            terminal
+                .iter()
+                .filter(|event| matches!(event, EngineEvent::LedgerSeal { .. }))
+                .count(),
+            1,
+            "a straddle refuses Whisper text but must still allow one ledger seal"
+        );
         let whisper_still_open = lane
             .state
             .acoustic_ledger
@@ -12658,6 +12682,56 @@ mod relay_l1_overlap_admission_tests {
             !whisper_still_open,
             "a read-only straddling pin must not strand Whisper's observer after all windows return"
         );
+    }
+
+    /// All provider jobs can return without enough exclusive text to relabel
+    /// the occurrence. This is a normal no-label EOF, not a stop deadline.
+    #[test]
+    fn completed_windows_with_incomplete_slices_return_the_whisper_frontier() {
+        let mut lane = open("relay-complete-incomplete");
+        let (occurrence, requests) = launch_long(&mut lane, "cale zdanie");
+        let session = "relay-complete-incomplete";
+        for (request, segments) in requests.iter().zip([
+            vec![segment(session, "raz", 8_000, 40_000)],
+            Vec::new(),
+            vec![segment(session, "trzy", 100_000, 150_000)],
+        ]) {
+            lane.state
+                .complete_whisper_window(&lane.tx, completion(request, segments), 8.0);
+        }
+        let mut events = drain(&mut lane.rx);
+        assert_eq!(lane.state.tail_patch_awaiting_completion, 0);
+        assert!(lane
+            .state
+            .acoustic_ledger
+            .lock()
+            .expect("ledger")
+            .frontier_of(&occurrence)
+            .is_some_and(|frontier| frontier.open_producers().contains(&ObservationProducer::Whisper)));
+
+        lane.state
+            .return_outstanding_whisper_without_label(&lane.tx, RefinementFailure::NoLabel);
+        lane.state.seal_remaining_at_session_end(&lane.tx);
+        events.extend(drain(&mut lane.rx));
+        assert_eq!(mutation_count(&events), 0, "partial slices cannot rewrite Apple");
+        assert_eq!(held_text(&lane, &occurrence).as_deref(), Some("cale zdanie"));
+        assert_eq!(
+            events
+                .iter()
+                .filter(|event| matches!(event, EngineEvent::LedgerSeal { .. }))
+                .count(),
+            1,
+            "completed jobs must permit one terminal ledger seal"
+        );
+        assert!(events.iter().any(|event| matches!(
+            event,
+            EngineEvent::Warning { code, .. } if code == RefinementFailure::NoLabel.code()
+        )));
+        assert!(!events.iter().any(|event| matches!(
+            event,
+            EngineEvent::Warning { code, .. } if code == RefinementFailure::StopDeadline.code()
+        )));
+        assert_conserved(&lane, Some("incomplete_exclusive_coverage"));
     }
 
     /// (iii) Two of three windows return, then stop drains the accumulator.
@@ -12679,7 +12753,7 @@ mod relay_l1_overlap_admission_tests {
             events.extend(drain(&mut lane.rx));
         }
         lane.state
-            .return_outstanding_whisper_without_label(&lane.tx);
+            .return_outstanding_whisper_without_label(&lane.tx, RefinementFailure::StopDeadline);
         events.extend(drain(&mut lane.rx));
         assert_eq!(mutation_count(&events), 0);
         assert!(unanchored_label(&events, "raz"));
